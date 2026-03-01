@@ -1,5 +1,5 @@
 {
-  "name": "@dash/app",
+  "name": "@dash/chat",
   "version": "0.1.0",
   "type": "module",
   "main": "dist/index.js",
@@ -12,19 +12,13 @@
   },
   "scripts": {
     "build": "tsup",
-    "dev": "node --import tsx src/index.ts",
-    "start": "node dist/index.js"
+    "dev": "tsup --watch"
   },
   "dependencies": {
-    "@dash/llm": "*",
-    "@dash/agent": "*",
-    "@dash/chat": "*",
-    "@dash/management": "*",
-    "dotenv": "^16.4.0",
-    "pino": "^9.6.0"
-  },
-  "devDependencies": {
-    "tsx": "^4.19.0"
+    "hono": "^4",
+    "@hono/node-server": "^1",
+    "@hono/node-ws": "^1",
+    "@dash/agent": "*"
   },
   "tsup": {
     "entry": ["src/index.ts"],

@@ -5,7 +5,7 @@
   "type": "module",
   "workspaces": ["packages/*", "apps/*"],
   "scripts": {
-    "build": "npm run build -w packages/llm -w packages/agent -w packages/channels -w packages/management -w packages/mc -w apps/dash -w apps/tui -w apps/mc-cli",
+    "build": "npm run build -w packages/llm -w packages/agent -w packages/channels -w packages/management -w packages/chat -w packages/mc -w apps/dash -w apps/tui -w apps/mc-cli",
     "dev": "npm run dev --workspace=apps/dash",
     "tui": "npm run dev --workspace=apps/tui",
     "mc-cli": "node --import tsx apps/mc-cli/src/index.ts",

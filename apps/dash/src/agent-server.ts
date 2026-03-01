@@ -9,8 +9,9 @@ import {
   resolveTools,
 } from '@dash/agent';
 import type { AgentClient } from '@dash/agent';
+import { startChatServer } from '@dash/chat';
 import { AnthropicProvider, ProviderRegistry } from '@dash/llm';
-import { startChatServer, startManagementServer } from '@dash/management';
+import { startManagementServer } from '@dash/management';
 import type { InfoResponse } from '@dash/management';
 import type { DashConfig } from './config.js';
 
