@@ -72,6 +72,31 @@ Each key under `agents` defines a named agent configuration.
 }
 ```
 
+### Per-agent files (`agents/` directory)
+
+Instead of defining all agents in `dash.json`, you can create individual JSON files in an `agents/` directory. Each filename (minus `.json`) becomes the agent name.
+
+```
+config/
+├── dash.json          # sessions, logging (no agents key needed)
+└── agents/
+    ├── default.json   # → agent named "default"
+    └── coder.json     # → agent named "coder"
+```
+
+Each agent file contains just the agent config:
+
+```json
+{
+  "model": "claude-sonnet-4-20250514",
+  "systemPrompt": "You are Dash Coder.",
+  "tools": ["bash", "read_file"],
+  "maxTokens": 16000
+}
+```
+
+When an `agents/` directory is present, it **replaces** the `agents` key in `dash.json` entirely. This makes agent definitions portable and easy to share without exposing secrets or session config.
+
 ## Sessions
 
 | Field | Type | Default | Description |
@@ -125,7 +150,12 @@ node apps/dash/dist/index.js --config /path/to/dash.json --secrets /path/to/secr
 
 ### `--config <path>`
 
-Load the JSON config file from an explicit path instead of searching `config/dash.json` or `dash.json` at the project root.
+Load configuration from an explicit path. This can be either:
+
+- **A file** — load that JSON file directly (same as before). If an `agents/` sibling directory exists, agent definitions are loaded from it.
+- **A directory** — load `dash.json` from the directory for non-agent settings, and load individual agent definitions from the `agents/` subdirectory.
+
+When `--config` is omitted, Dash searches for `config/dash.json` or `dash.json` at the project root, and additionally checks `config/agents/` for per-agent files.
 
 ### `--secrets <path>`
 
