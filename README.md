@@ -9,9 +9,15 @@
 [![Docker](https://img.shields.io/badge/Docker-ready-2496ED?logo=docker&logoColor=white)](https://www.docker.com)
 [![License](https://img.shields.io/badge/license-private-red)]()
 
-Dash helps non-technical users safely deploy autonomous "claw" agents on their own machines or private cloud. Agents connect to the LLM provider of your choice and integrate with messaging channels like Telegram — all while keeping your data private and under your control.
+Dash empowers anyone to safely deploy autonomous "claw" agents on their own devices or private clouds. Bring your preferred AI model, connect to platforms like Telegram, and put your agents to work—all while maintaining absolute control over your private data.
 
-We believe that helping people accelerate the deployment of their personal or work agents is the best way to help everyone experiment and understand how AI can make their lives better. This has to be done safely: Dash provides secure defaults, proper secrets management, and isolation for each individual agent's autonomous powers.
+We believe the best way to discover AI's potential is by easily experimenting with it. Dash accelerates how you launch personal and professional agents by prioritizing security from the ground up:
+
+Secure Defaults: Out-of-the-box protection so you can launch with confidence.
+
+Secrets Management: Safe, encrypted handling of your API keys and credentials.
+
+Strict Isolation: Clear operational boundaries to keep every agent's autonomous actions contained.
 
 ## Why Dash?
 
