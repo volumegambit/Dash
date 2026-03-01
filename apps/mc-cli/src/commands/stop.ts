@@ -7,7 +7,7 @@ export function registerStopCommand(program: Command): void {
     .description('Stop a running deployment')
     .action(async (id: string) => {
       try {
-        const runtime = getRuntime();
+        const runtime = await getRuntime();
         await runtime.stop(id);
         console.log(`Deployment ${id} stopped.`);
       } catch (err) {

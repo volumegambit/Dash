@@ -7,7 +7,7 @@ export function registerRemoveCommand(program: Command): void {
     .description('Remove a deployment and clean up its secrets')
     .action(async (id: string) => {
       try {
-        const runtime = getRuntime();
+        const runtime = await getRuntime();
         await runtime.remove(id);
         console.log(`Deployment ${id} removed.`);
       } catch (err) {
