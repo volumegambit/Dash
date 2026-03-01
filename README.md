@@ -25,27 +25,19 @@ Run on your own hardware or private cloud. Your data never leaves your infrastru
 
 ```mermaid
 graph TB
-  subgraph platforms ["Chat platforms"]
-    telegram["Telegram"]
+  platforms["Chat platforms<br/><small>Telegram, etc.</small>"]
+
+  subgraph infra ["Your infrastructure"]
+    agent-server["Agent Server<br/><small>Chat API :9101 · Management API :9100</small>"]
+    gateway["Gateway<br/><small>Channel routing :9200</small>"]
+    gateway -- "WebSocket" --> agent-server
   end
 
-  subgraph server ["Server (your infrastructure)"]
-    agent-server["agent-server<br/><small>config, lifecycle</small>"]
-    agent-server --> chat["chat<br/><small>WebSocket :9101</small>"]
-    agent-server --> management["management<br/><small>HTTP :9100</small>"]
-    chat --> agent["agent<br/><small>tools, sessions</small>"]
-    agent --> llm["llm<br/><small>Anthropic API</small>"]
-    gateway["gateway<br/><small>channel routing</small>"]
-    gateway -- "WebSocket :9101" --> chat
-  end
+  mc["Mission Control<br/><small>Desktop app / CLI</small>"]
 
-  subgraph client ["Client (your machine)"]
-    mc["mission-control / mc-cli"]
-  end
-
-  telegram -- "Bot API (polling)" --> gateway
-  mc -- "HTTP :9100" --> management
-  mc -- "WebSocket :9200" --> gateway
+  platforms -- "Bot API" --> gateway
+  mc -- "HTTP / WebSocket" --> agent-server
+  mc -- "WebSocket" --> gateway
 ```
 
 Dash has four components that can run on different machines:
