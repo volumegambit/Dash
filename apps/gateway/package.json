@@ -1,5 +1,5 @@
 {
-  "name": "@dash/channels",
+  "name": "@dash/gateway",
   "version": "0.1.0",
   "type": "module",
   "main": "dist/index.js",
@@ -12,15 +12,16 @@
   },
   "scripts": {
     "build": "tsup",
-    "dev": "tsup --watch"
+    "dev": "node --import tsx src/index.ts",
+    "start": "node dist/index.js"
   },
   "dependencies": {
-    "@dash/agent": "*",
-    "grammy": "^1.31.0",
-    "ws": "^8"
+    "@dash/channels": "*",
+    "@dash/chat": "*",
+    "dotenv": "^16.4.0"
   },
   "devDependencies": {
-    "@types/ws": "^8"
+    "tsx": "^4.19.0"
   },
   "tsup": {
     "entry": ["src/index.ts"],
