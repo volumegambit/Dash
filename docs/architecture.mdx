@@ -9,38 +9,26 @@ Dash is a TypeScript monorepo for deploying autonomous AI agents. It runs as a h
 
 ```mermaid
 graph TB
-  subgraph platforms ["Chat platforms"]
-    telegram["Telegram"]
+  platforms["Chat platforms<br/><small>Telegram, etc.</small>"]
+
+  subgraph infra ["Your infrastructure"]
+    agent-server["Agent Server<br/><small>Chat API :9101 · Management API :9100</small>"]
+    gateway["Gateway<br/><small>Channel routing :9200</small>"]
+    gateway -- "WebSocket" --> agent-server
   end
 
-  subgraph server ["Server (your infrastructure)"]
-    direction TB
-    agent-server["Agent server<br/><small>config, lifecycle</small>"]
-    agent-server --> chat["Chat API<br/><small>WebSocket :9101</small>"]
-    agent-server --> management["Management API<br/><small>HTTP :9100</small>"]
-    chat --> agent["Agent<br/><small>tools, sessions, orchestration</small>"]
-    agent --> llm["LLM<br/><small>Anthropic API</small>"]
-    gateway["Gateway<br/><small>channel routing</small>"]
-    gateway -- "WebSocket :9101" --> chat
-  end
+  mc["Mission Control<br/><small>Desktop app / CLI</small>"]
 
-  subgraph client ["Client (your machine)"]
-    tui["TUI<br/><small>terminal UI</small>"]
-    mc["Mission Control / mc-cli<br/><small>desktop app or CLI</small>"]
-  end
-
-  telegram -- "Bot API (polling)" --> gateway
-  tui -. "in-process (no server needed)" .-> agent
-  mc -- "HTTP :9100" --> management
-  mc -- "WebSocket :9200" --> gateway
+  platforms -- "Bot API" --> gateway
+  mc -- "HTTP / WebSocket" --> agent-server
+  mc -- "WebSocket" --> gateway
 ```
 
-Dash has four components that can run on different machines:
+Dash has three main components that can run on different machines:
 
 - **Agent server** — runs on your infrastructure (a VPS, private cloud, or local machine). This is the main deployment target. It reads your config, creates agents with their assigned models and tools, and starts two APIs: the Chat API (WebSocket, port 9101) for real-time interaction, and the Management API (HTTP, port 9100) for health checks, server info, and shutdown.
 - **Gateway** — runs alongside the agent server. Owns all channel connections and routes messages to agents via the Chat API. External chat platforms like Telegram connect through the gateway — it runs a Telegram bot that polls for messages and forwards them to the agent. Mission Control's chat panel also connects through the gateway over WebSocket. Every channel is handled the same way: one process, one config file, one message path to the agent.
-- **TUI** — runs on your local machine. A standalone terminal interface that connects to an agent in-process, with no network involved. Best for development and quick experimentation.
-- **Mission Control** — runs on your local machine. A desktop app (Electron) or CLI for monitoring and managing remote agent servers. Connects to the gateway for chat (WebSocket, port 9200) and to agent servers for monitoring (HTTP, port 9100).
+- **Mission Control** — runs on your local machine. A desktop app (Electron) or CLI for monitoring and managing remote agent servers. Connects to the gateway for chat (WebSocket, port 9200) and to agent servers for monitoring (HTTP, port 9100). Includes a built-in TUI for terminal-based interaction.
 
 ### Deployment options
 
