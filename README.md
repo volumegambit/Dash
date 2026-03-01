@@ -40,12 +40,10 @@ graph TB
   end
 
   subgraph client ["Client (your machine)"]
-    tui["tui<br/><small>terminal UI</small>"]
     mc["mission-control / mc-cli"]
   end
 
   telegram -- "Bot API (polling)" --> gateway
-  tui -. "in-process<br/>(no server needed)" .-> agent
   mc -- "HTTP :9100" --> management
   mc -- "WebSocket :9200" --> gateway
 ```
@@ -54,8 +52,7 @@ Dash has four components that can run on different machines:
 
 - **Agent server** — runs on your infrastructure (a VPS, private cloud, or local machine). Hosts agents and exposes two APIs: a Chat API (WebSocket, port 9101) for real-time interaction and a Management API (HTTP, port 9100) for health checks and shutdown. Each API uses its own auth token.
 - **Gateway** — runs alongside the agent server. Connects to external chat platforms (Telegram, etc.) and routes messages to agents via the Chat API. Mission Control's chat panel also connects through the gateway. One process, one config file for all channels.
-- **TUI** — runs on your local machine. Connects to an agent in-process with no network involved. Best for development and quick experimentation.
-- **Mission Control** — desktop app or CLI, runs on your local machine. Connects to the gateway for chat (WebSocket, port 9200) and to agent servers for monitoring (HTTP, port 9100).
+- **Mission Control** — desktop app or CLI, runs on your local machine. Connects to the gateway for chat (WebSocket, port 9200) and to agent servers for monitoring (HTTP, port 9100). Includes a built-in TUI for terminal-based interaction.
 
 Everything can run on a single machine for development, or split across machines for production — the agent server and gateway on a VPS, Mission Control on your laptop.
 
