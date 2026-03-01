@@ -1,4 +1,7 @@
-# Architecture
+---
+title: "Architecture"
+description: "Technical overview of Dash's package structure, data flow, session format, and build system."
+---
 
 Dash is a TypeScript monorepo with five packages organized in a layered dependency graph.
 
@@ -30,25 +33,23 @@ Dependency flow: `llm` → `agent` → `channels` → `server`. The `tui` packag
 
 ## Package responsibilities
 
-### `@dash/llm`
-
-LLM provider abstraction layer. Defines the core types (`Message`, `ContentBlock`, `CompletionRequest/Response`, `StreamChunk`) and the `LlmProvider` interface. The `AnthropicProvider` implements streaming via the `@anthropic-ai/sdk`, converting between Dash's type system and Anthropic's SDK types. Handles extended thinking blocks, tool use blocks, and content block serialization. The `ProviderRegistry` maps model name prefixes to providers.
-
-### `@dash/agent`
-
-Agent orchestration layer. `DashAgent` manages the conversation loop: loading sessions, appending messages, delegating to a backend, and persisting results. `NativeBackend` implements the agent loop — it streams LLM responses, detects tool use, executes tools, and loops until the model produces a final text response (up to 25 tool rounds). The tool system (`BashTool`, `ReadFileTool`) provides workspace-sandboxed command execution and file reading. `JsonlSessionStore` handles append-only session persistence.
-
-### `@dash/channels`
-
-Channel adapter layer. Defines the `ChannelAdapter` interface for messaging platforms and the `MessageRouter` that binds adapters to agents. The `TelegramAdapter` uses grammY for long-polling, handles user authorization via `allowedUsers`, and collects the full agent response before sending it as a single Telegram message.
-
-### `@dash/tui`
-
-Terminal UI package. An interactive REPL that connects directly to an agent (bypassing `channels` and `server`). Loads its own config from `config/dash.json`, creates an `AnthropicProvider` and `NativeBackend`, and renders streaming output with ANSI formatting. Shows a spinner during inference, formatted tool execution blocks, and token usage stats.
-
-### `@dash/server`
-
-Entry point for server mode. Loads `.env`, reads config via `loadConfig()`, creates agents and channel adapters, wires them through `MessageRouter`, and manages the gateway lifecycle (start/stop with signal handling).
+<AccordionGroup>
+  <Accordion title="@dash/llm" icon="microchip">
+    LLM provider abstraction layer. Defines the core types (`Message`, `ContentBlock`, `CompletionRequest/Response`, `StreamChunk`) and the `LlmProvider` interface. The `AnthropicProvider` implements streaming via the `@anthropic-ai/sdk`, converting between Dash's type system and Anthropic's SDK types. Handles extended thinking blocks, tool use blocks, and content block serialization. The `ProviderRegistry` maps model name prefixes to providers.
+  </Accordion>
+  <Accordion title="@dash/agent" icon="robot">
+    Agent orchestration layer. `DashAgent` manages the conversation loop: loading sessions, appending messages, delegating to a backend, and persisting results. `NativeBackend` implements the agent loop — it streams LLM responses, detects tool use, executes tools, and loops until the model produces a final text response (up to 25 tool rounds). The tool system (`BashTool`, `ReadFileTool`) provides workspace-sandboxed command execution and file reading. `JsonlSessionStore` handles append-only session persistence.
+  </Accordion>
+  <Accordion title="@dash/channels" icon="messages">
+    Channel adapter layer. Defines the `ChannelAdapter` interface for messaging platforms and the `MessageRouter` that binds adapters to agents. The `TelegramAdapter` uses grammY for long-polling, handles user authorization via `allowedUsers`, and collects the full agent response before sending it as a single Telegram message.
+  </Accordion>
+  <Accordion title="@dash/tui" icon="terminal">
+    Terminal UI package. An interactive REPL that connects directly to an agent (bypassing `channels` and `server`). Loads its own config from `config/dash.json`, creates an `AnthropicProvider` and `NativeBackend`, and renders streaming output with ANSI formatting. Shows a spinner during inference, formatted tool execution blocks, and token usage stats.
+  </Accordion>
+  <Accordion title="@dash/server" icon="server">
+    Entry point for server mode. Loads `.env`, reads config via `loadConfig()`, creates agents and channel adapters, wires them through `MessageRouter`, and manages the gateway lifecycle (start/stop with signal handling).
+  </Accordion>
+</AccordionGroup>
 
 ## Data flow
 
@@ -96,17 +97,29 @@ Adapter sends response to user
 
 The `NativeBackend` implements a loop that allows the model to use tools iteratively:
 
-1. Send messages + tools to the LLM via streaming
-2. Collect text, thinking, and tool use blocks from the stream
-3. If the model requests tool use (`stopReason: "tool_use"`):
-   - Execute each tool and yield `tool_result` events
-   - Append the assistant message and tool results to the session
-   - Loop back to step 1 with the updated message history
-4. If the model finishes (`stopReason: "end_turn"`):
-   - Yield the final `response` event with accumulated token usage
-   - Return
+<Steps>
+  <Step title="Stream LLM response">
+    Send messages + tools to the LLM via streaming
+  </Step>
+  <Step title="Collect blocks">
+    Collect text, thinking, and tool use blocks from the stream
+  </Step>
+  <Step title="Handle tool use">
+    If the model requests tool use (`stopReason: "tool_use"`):
+    - Execute each tool and yield `tool_result` events
+    - Append the assistant message and tool results to the session
+    - Loop back to step 1 with the updated message history
+  </Step>
+  <Step title="Return response">
+    If the model finishes (`stopReason: "end_turn"`):
+    - Yield the final `response` event with accumulated token usage
+    - Return
+  </Step>
+</Steps>
 
-The loop is capped at **25 tool rounds** to prevent runaway execution. If the limit is reached, the last available text is returned.
+<Note>
+  The loop is capped at **25 tool rounds** to prevent runaway execution. If the limit is reached, the last available text is returned.
+</Note>
 
 ## Content block system
 
@@ -169,9 +182,17 @@ On load, entries are replayed in order to reconstruct the message array for the 
 
 Multi-stage build using `node:22-slim`:
 
-1. **Builder stage** — `npm ci`, copy source, `npm run build`
-2. **Production stage** — `npm ci --omit=dev`, copy `dist/` from builder
-3. **Entry point** — `node packages/server/dist/index.js`
+<Steps>
+  <Step title="Builder stage">
+    `npm ci`, copy source, `npm run build`
+  </Step>
+  <Step title="Production stage">
+    `npm ci --omit=dev`, copy `dist/` from builder
+  </Step>
+  <Step title="Entry point">
+    `node packages/server/dist/index.js`
+  </Step>
+</Steps>
 
 Volumes:
 - `./data/sessions:/app/data/sessions` — persist session data

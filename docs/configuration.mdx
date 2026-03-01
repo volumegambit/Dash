@@ -1,4 +1,7 @@
-# Configuration
+---
+title: "Configuration"
+description: "Configure agents, channels, sessions, and credentials through JSON config files and environment variables."
+---
 
 Dash loads configuration from three sources, merged in this order (later wins):
 
@@ -51,7 +54,7 @@ Each key under `agents` defines a named agent configuration.
 | `tools` | `string[]` | no | Tool names to enable. Available: `bash`, `read_file` |
 | `maxTokens` | `number` | no | Maximum response tokens (default: `4096`) |
 | `workspace` | `string` | no | Working directory for tools, resolved relative to project root |
-| `thinking` | `object` | no | Enable extended thinking. See [Extended Thinking](extended-thinking.md) |
+| `thinking` | `object` | no | Enable extended thinking. See [extended thinking](/extended-thinking) |
 | `thinking.budgetTokens` | `number` | — | Token budget for thinking (must be >= 1024, must be < `maxTokens`) |
 
 ### Example: multiple agents
@@ -137,4 +140,6 @@ When no config file is found, Dash uses these defaults:
 
 ## Deep merge behavior
 
-JSON config is deep-merged with defaults. Objects are merged recursively; arrays are **replaced**, not concatenated. This means specifying `tools: ["bash"]` in your config replaces the default `["bash", "read_file"]` entirely.
+<Warning>
+  JSON config is deep-merged with defaults. Objects are merged recursively, but arrays are **replaced**, not concatenated. Specifying `tools: ["bash"]` in your config replaces the default `["bash", "read_file"]` entirely.
+</Warning>

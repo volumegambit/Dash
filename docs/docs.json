@@ -1,0 +1,33 @@
+{
+  "$schema": "https://mintlify.com/docs.json",
+  "theme": "maple",
+  "name": "Dash",
+  "colors": {
+    "primary": "#3B82F6",
+    "light": "#60A5FA",
+    "dark": "#2563EB"
+  },
+  "navigation": {
+    "groups": [
+      {
+        "group": "Getting started",
+        "pages": ["introduction", "getting-started"]
+      },
+      {
+        "group": "Guides",
+        "pages": ["channels", "extended-thinking"]
+      },
+      {
+        "group": "Reference",
+        "pages": ["configuration", "tools", "architecture"]
+      },
+      {
+        "group": "Help",
+        "pages": ["troubleshooting"]
+      }
+    ]
+  },
+  "footerSocials": {
+    "github": "https://github.com/your-org/dash"
+  }
+}
