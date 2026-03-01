@@ -6,7 +6,7 @@ For project overview, setup, and configuration see the [README](README.md). For 
 
 ```bash
 npm run build         # Build all packages (tsup)
-npm run dev           # Dev server (packages/server via tsx)
+npm run dev           # Dev server (apps/dash via tsx)
 npm test              # Run all tests (vitest)
 npm run lint          # Biome check
 npm run lint:fix      # Biome auto-fix
