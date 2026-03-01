@@ -186,26 +186,51 @@ export class ProcessRuntime implements DeploymentRuntime {
     const absConfigDir = resolve(configDir);
     validateConfigDir(absConfigDir);
 
-    // Read agent configs from agents/ directory
+    // Read agent configs from agents/ directory or dash.json
+    interface AgentCfg {
+      name: string;
+      model: string;
+      systemPrompt: string;
+      tools?: string[];
+    }
+    const agentConfigs: Record<string, AgentCfg> = {};
+
     const agentsDir = join(absConfigDir, 'agents');
-    let agentNames: string[] = [];
     if (existsSync(agentsDir) && statSync(agentsDir).isDirectory()) {
       const files = await readdir(agentsDir);
-      agentNames = files.filter((f) => f.endsWith('.json')).map((f) => f.slice(0, -5));
+      for (const file of files.filter((f) => f.endsWith('.json'))) {
+        const name = file.slice(0, -5);
+        const raw = await readFile(join(agentsDir, file), 'utf-8');
+        const cfg = JSON.parse(raw) as Partial<AgentCfg>;
+        agentConfigs[name] = {
+          name,
+          model: cfg.model ?? '',
+          systemPrompt: cfg.systemPrompt ?? '',
+          tools: cfg.tools,
+        };
+      }
     }
 
-    if (agentNames.length === 0) {
+    if (Object.keys(agentConfigs).length === 0) {
       // Fall back to dash.json agents
       const dashJsonPath = join(absConfigDir, 'dash.json');
       if (existsSync(dashJsonPath)) {
         const raw = await readFile(dashJsonPath, 'utf-8');
-        const dashJson = JSON.parse(raw) as { agents?: Record<string, unknown> };
+        const dashJson = JSON.parse(raw) as { agents?: Record<string, Partial<AgentCfg>> };
         if (dashJson.agents) {
-          agentNames = Object.keys(dashJson.agents);
+          for (const [name, cfg] of Object.entries(dashJson.agents)) {
+            agentConfigs[name] = {
+              name,
+              model: cfg.model ?? '',
+              systemPrompt: cfg.systemPrompt ?? '',
+              tools: cfg.tools,
+            };
+          }
         }
       }
     }
 
+    const agentNames = Object.keys(agentConfigs);
     if (agentNames.length === 0) {
       throw new Error('No agent configurations found in config directory');
     }
@@ -306,6 +331,14 @@ export class ProcessRuntime implements DeploymentRuntime {
     // Set up log capture
     const logBuffer = new LogBuffer();
 
+    // Handle spawn errors
+    agentServer.on('error', (err) => {
+      logBuffer.append(`[agent-server] Spawn error: ${err.message}`);
+    });
+    gateway.on('error', (err) => {
+      logBuffer.append(`[gateway] Spawn error: ${err.message}`);
+    });
+
     agentServer.stdout?.on('data', (data: Buffer) => {
       for (const line of data.toString().split('\n').filter(Boolean)) {
         logBuffer.append(`[agent-server] ${line}`);
@@ -364,9 +397,7 @@ export class ProcessRuntime implements DeploymentRuntime {
       status: 'running',
       config: {
         target: 'local',
-        agents: Object.fromEntries(
-          agentNames.map((n) => [n, { name: n, model: '', systemPrompt: '' }]),
-        ),
+        agents: agentConfigs,
         channels: {},
       },
       createdAt: new Date().toISOString(),
@@ -470,9 +501,8 @@ export class ProcessRuntime implements DeploymentRuntime {
 
     const state = this.processes.get(id);
     if (state) {
-      // Process tracked in memory
+      // Process tracked in memory — status based on agent-server (primary process)
       const agentRunning = state.agentServer.exitCode === null;
-      const gatewayRunning = !state.gateway || state.gateway.exitCode === null;
       return {
         state: agentRunning ? 'running' : 'stopped',
         agentServerPid: state.agentServer.pid,
@@ -499,9 +529,15 @@ export class ProcessRuntime implements DeploymentRuntime {
       }
     }
 
+    // Map deployment status to runtime state
+    const stateMap: Record<string, RuntimeStatus['state']> = {
+      running: 'stopped', // Registry says running but PID is dead
+      stopped: 'stopped',
+      error: 'error',
+      provisioning: 'starting',
+    };
     return {
-      state:
-        deployment.status === 'running' ? 'stopped' : (deployment.status as RuntimeStatus['state']),
+      state: stateMap[deployment.status] ?? 'error',
       managementPort: deployment.managementPort,
       chatPort: deployment.chatPort,
     };
