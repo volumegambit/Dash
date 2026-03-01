@@ -86,15 +86,18 @@ When adding new features, follow these conventions: yield error events in genera
 
 ## Environment
 
-Required env vars (in `.env` at project root, loaded by dotenv):
-- `ANTHROPIC_API_KEY` — Claude API key
-- `TELEGRAM_BOT_TOKEN` — Telegram bot token
+All env vars live in `.env` at the project root, loaded by dotenv.
 
-Optional:
-- `LOG_LEVEL` — logging level (default: `info`)
-- `TELEGRAM_ALLOWED_USERS` — comma-separated user IDs or @usernames
-- `MANAGEMENT_API_TOKEN` — enables management API when set
-- `MANAGEMENT_API_PORT` — management API port (default: `9100`)
+| Variable | Used by | Required | Description |
+|----------|---------|----------|-------------|
+| `ANTHROPIC_API_KEY` | `app`, `tui` | Yes | Claude API key |
+| `TELEGRAM_BOT_TOKEN` | `app` | Yes (for Telegram) | Telegram bot token |
+| `TELEGRAM_ALLOWED_USERS` | `app` | No | Comma-separated user IDs or @usernames |
+| `LOG_LEVEL` | `app` | No | Logging level (default: `info`) |
+| `MANAGEMENT_API_TOKEN` | `app` | No | Enables management API when set |
+| `MANAGEMENT_API_PORT` | `app` | No | Management API port (default: `9100`) |
+
+`mc-cli` and `mission-control` do not use `.env` — they read deployment config from `~/.mission-control/`.
 
 ## File Layout
 
