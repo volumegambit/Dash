@@ -1,0 +1,14 @@
+appId: com.dash.mission-control
+productName: Mission Control
+directories:
+  buildResources: build
+  output: release
+files:
+  - out/**/*
+mac:
+  target: dmg
+  category: public.app-category.developer-tools
+win:
+  target: nsis
+linux:
+  target: AppImage

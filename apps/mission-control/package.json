@@ -1,0 +1,33 @@
+{
+  "name": "@dash/mission-control",
+  "version": "0.1.0",
+  "private": true,
+  "main": "./out/main/index.js",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "preview": "electron-vite preview",
+    "package": "electron-builder"
+  },
+  "dependencies": {
+    "@dash/mc": "*",
+    "@dash/management": "*"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4",
+    "@tanstack/react-query": "^5",
+    "@tanstack/react-router": "^1",
+    "@tanstack/router-devtools": "^1",
+    "@tanstack/router-plugin": "^1",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "@vitejs/plugin-react": "^4",
+    "electron": "^33",
+    "electron-builder": "^25",
+    "electron-vite": "^3",
+    "react": "^19",
+    "react-dom": "^19",
+    "tailwindcss": "^4",
+    "zustand": "^5"
+  }
+}
