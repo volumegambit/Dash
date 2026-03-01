@@ -9,23 +9,17 @@
 [![Docker](https://img.shields.io/badge/Docker-ready-2496ED?logo=docker&logoColor=white)](https://www.docker.com)
 [![License](https://img.shields.io/badge/license-private-red)]()
 
-Dash empowers anyone to safely deploy autonomous "claw" agents on their own devices or private clouds. Bring your preferred AI model, connect to platforms like Telegram, and put your agents to work—all while maintaining absolute control over your private data.
+Dash is a desktop-first, private-cloud-first platform that empowers anyone to safely deploy autonomous "claw" agents. Bring your preferred AI model, connect to platforms like Telegram, and put your agents to work — all while maintaining absolute control over your private data.
 
 We believe the best way to discover AI's potential is by easily experimenting with it. Dash accelerates how you launch personal and professional agents by prioritizing security from the ground up:
 
-Secure Defaults: Out-of-the-box protection so you can launch with confidence.
-
-Secrets Management: Safe, encrypted handling of your API keys and credentials.
-
-Strict Isolation: Clear operational boundaries to keep every agent's autonomous actions contained.
+- **Secure defaults** — Out-of-the-box protection so you can launch with confidence.
+- **Secrets management** — Safe, encrypted handling of your API keys and credentials.
+- **Strict isolation** — Clear operational boundaries to keep every agent's autonomous actions contained.
 
 ## Why Dash?
 
-- **Private by design** — Run on your own hardware or private cloud. Your data never leaves your infrastructure.
-- **Bring your own model** — Connect to Anthropic, OpenAI, Google, or any LLM provider you choose.
-- **Multi-channel** — Interact with your agents through Telegram, a terminal UI, or add your own channel adapter.
-- **Safe defaults** — Secrets are separated from config, agents are sandboxed, and access controls are built in.
-- **Non-technical friendly** — Simple JSON configuration, Docker deployment, and clear documentation.
+Run on your own hardware or private cloud. Your data never leaves your infrastructure. Connect to Anthropic, OpenAI, Google, or any LLM provider you choose. Interact with agents through Telegram, a terminal UI, or add your own channel adapter. Secrets are separated from config, agents are sandboxed, and access controls are built in. Simple JSON configuration, Docker deployment, and clear documentation. Define multiple agents with different models, tools, and system prompts. Bind each to a channel.
 
 ## Architecture
 
