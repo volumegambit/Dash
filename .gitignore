@@ -41,6 +41,13 @@ coverage/
 # Docker
 .docker/
 
+# Gateway config (contains tokens)
+gateway.json
+
+# Claude Code
+CLAUDE.md
+skills-lock.json
+
 # Project-local docs
 PLAN.md
 MissionControlPlan.md
