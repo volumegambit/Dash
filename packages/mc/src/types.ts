@@ -9,6 +9,12 @@ export interface AgentDeployment {
   containerId?: string;
   managementPort?: number;
   managementToken?: string;
+  // Process-based deployment
+  configDir?: string;
+  agentServerPid?: number;
+  gatewayPid?: number;
+  chatPort?: number;
+  chatToken?: string;
   // Cloud-specific
   dropletId?: number;
   dropletIp?: string;
@@ -17,7 +23,9 @@ export interface AgentDeployment {
 
 export interface DeployConfig {
   target: 'local' | 'digitalocean';
-  agent: AgentDeployAgentConfig;
+  agents?: Record<string, AgentDeployAgentConfig>;
+  /** @deprecated Use `agents` instead */
+  agent?: AgentDeployAgentConfig;
   channels: Record<string, ChannelDeployConfig>;
 }
 
@@ -33,4 +41,6 @@ export interface AgentDeployAgentConfig {
 export interface ChannelDeployConfig {
   agent: string;
   allowedUsers?: string[];
+  adapter?: string;
+  port?: number;
 }
