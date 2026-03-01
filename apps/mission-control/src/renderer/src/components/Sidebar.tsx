@@ -1,12 +1,14 @@
 import { Link } from '@tanstack/react-router';
+import { Bot, KeyRound, LayoutDashboard, Rocket, Settings } from 'lucide-react';
+import type { LucideIcon } from 'lucide-react';
 
-const navItems = [
-  { to: '/', label: 'Dashboard', icon: '~' },
-  { to: '/agents', label: 'Agents', icon: '>' },
-  { to: '/deploy', label: 'Deploy', icon: '+' },
-  { to: '/secrets', label: 'Secrets', icon: '#' },
-  { to: '/settings', label: 'Settings', icon: '*' },
-] as const;
+const navItems: { to: string; label: string; icon: LucideIcon }[] = [
+  { to: '/', label: 'Dashboard', icon: LayoutDashboard },
+  { to: '/agents', label: 'Agents', icon: Bot },
+  { to: '/deploy', label: 'Deploy', icon: Rocket },
+  { to: '/secrets', label: 'Secrets', icon: KeyRound },
+  { to: '/settings', label: 'Settings', icon: Settings },
+];
 
 export function Sidebar(): JSX.Element {
   return (
@@ -21,14 +23,11 @@ export function Sidebar(): JSX.Element {
             to={item.to}
             className="flex items-center gap-3 rounded-md px-3 py-2 text-sm text-muted transition-colors hover:bg-sidebar-hover hover:text-foreground [&.active]:bg-sidebar-active [&.active]:text-foreground"
           >
-            <span className="font-mono text-xs">{item.icon}</span>
+            <item.icon size={16} />
             {item.label}
           </Link>
         ))}
       </nav>
-      <div className="border-t border-border p-4">
-        <p className="text-xs text-muted">Dash v0.1.0</p>
-      </div>
     </aside>
   );
 }
