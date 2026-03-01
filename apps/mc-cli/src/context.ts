@@ -68,37 +68,74 @@ export async function ensureUnlocked(): Promise<void> {
     }
   }
 
-  if (await store.needsSetup()) {
-    // First-time setup (or migration)
-    const password = await promptPassword('Create encryption password: ');
-    if (!password) {
-      throw new Error('Password is required to set up the secret store.');
+  const prompt = createPrompt();
+  try {
+    if (await store.needsSetup()) {
+      // First-time setup (or migration)
+      const password = await prompt.question('Create encryption password: ');
+      if (!password) {
+        throw new Error('Password is required to set up the secret store.');
+      }
+      const confirm = await prompt.question('Confirm password: ');
+      if (password !== confirm) {
+        throw new Error('Passwords do not match.');
+      }
+      const key = await store.setup(password);
+      await keychain.store(key);
+    } else {
+      // Existing encrypted store — prompt for password
+      const password = await prompt.question('Encryption password: ');
+      if (!password) {
+        throw new Error('Password is required to unlock the secret store.');
+      }
+      const key = await store.unlockWithPassword(password);
+      await keychain.store(key);
     }
-    const confirm = await promptPassword('Confirm password: ');
-    if (password !== confirm) {
-      throw new Error('Passwords do not match.');
-    }
-    const key = await store.setup(password);
-    await keychain.store(key);
-  } else {
-    // Existing encrypted store — prompt for password
-    const password = await promptPassword('Encryption password: ');
-    if (!password) {
-      throw new Error('Password is required to unlock the secret store.');
-    }
-    const key = await store.unlockWithPassword(password);
-    await keychain.store(key);
+  } finally {
+    prompt.close();
   }
 }
 
-function promptPassword(prompt: string): Promise<string> {
+export interface Prompt {
+  question(text: string): Promise<string>;
+  close(): void;
+}
+
+/**
+ * Create a line-buffered prompt that works with both TTY and piped stdin.
+ * Node's readline.question() drops lines when piped input delivers multiple
+ * lines before the next question() call is registered. This buffers lines
+ * eagerly so no input is lost.
+ */
+export function createPrompt(): Prompt {
   const rl = createInterface({ input: process.stdin, output: process.stderr });
-  return new Promise((resolve) => {
-    rl.question(prompt, (answer) => {
-      rl.close();
-      resolve(answer.trim());
-    });
+  const buffer: string[] = [];
+  let waiting: ((line: string) => void) | null = null;
+
+  rl.on('line', (line) => {
+    if (waiting) {
+      const resolve = waiting;
+      waiting = null;
+      resolve(line.trim());
+    } else {
+      buffer.push(line.trim());
+    }
   });
+
+  return {
+    question(text: string): Promise<string> {
+      process.stderr.write(text);
+      if (buffer.length > 0) {
+        return Promise.resolve(buffer.shift() as string);
+      }
+      return new Promise((resolve) => {
+        waiting = resolve;
+      });
+    },
+    close() {
+      rl.close();
+    },
+  };
 }
 
 /**
