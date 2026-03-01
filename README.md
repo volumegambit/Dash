@@ -1,5 +1,13 @@
 # Dash
 
+[![Node.js](https://img.shields.io/badge/Node.js-22%2B-339933?logo=node.js&logoColor=white)](https://nodejs.org)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5.7-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org)
+[![ESM](https://img.shields.io/badge/module-ESM-F7DF1E?logo=javascript&logoColor=black)](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Guide/Modules)
+[![Biome](https://img.shields.io/badge/Biome-lint%20%26%20format-60A5FA?logo=biome&logoColor=white)](https://biomejs.dev)
+[![Vitest](https://img.shields.io/badge/Vitest-tests-6E9F18?logo=vitest&logoColor=white)](https://vitest.dev)
+[![Docker](https://img.shields.io/badge/Docker-ready-2496ED?logo=docker&logoColor=white)](https://www.docker.com)
+[![License](https://img.shields.io/badge/license-private-red)]()
+
 Multi-channel AI agent system. TypeScript monorepo that connects LLM providers (Anthropic, OpenAI, Google) to messaging channels (Telegram, CLI) with tool use, session persistence, and a terminal UI.
 
 ## Architecture
@@ -137,13 +145,13 @@ Dash/
 
 Full documentation is in the [`docs/`](docs/) directory:
 
-- [Getting Started](docs/getting-started.md) — install, configure, first run
-- [Configuration](docs/configuration.md) — `dash.json` schema, env vars, defaults
-- [Tools](docs/tools.md) — bash and read_file: parameters, sandboxing, limits
-- [Channels](docs/channels.md) — Telegram setup, CLI usage, access control
-- [Extended Thinking](docs/extended-thinking.md) — budget tuning, constraints
-- [Architecture](docs/architecture.md) — package map, data flow, session format
-- [Troubleshooting](docs/troubleshooting.md) — common errors, debugging tips
+- [Getting Started](docs/getting-started.mdx) — install, configure, first run
+- [Configuration](docs/configuration.mdx) — `dash.json` schema, env vars, defaults
+- [Tools](docs/tools.mdx) — bash and read_file: parameters, sandboxing, limits
+- [Channels](docs/channels.mdx) — Telegram setup, CLI usage, access control
+- [Extended Thinking](docs/extended-thinking.mdx) — budget tuning, constraints
+- [Architecture](docs/architecture.mdx) — package map, data flow, session format
+- [Troubleshooting](docs/troubleshooting.mdx) — common errors, debugging tips
 
 ## Tooling
 
