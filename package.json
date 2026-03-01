@@ -4,7 +4,7 @@
   "type": "module",
   "workspaces": ["packages/*", "apps/*"],
   "scripts": {
-    "build": "npm run build --workspaces --if-present",
+    "build": "npm run build -w packages/llm -w packages/agent -w packages/channels -w packages/management -w apps/dash -w apps/tui",
     "dev": "npm run dev --workspace=apps/dash",
     "tui": "npm run dev --workspace=apps/tui",
     "test": "vitest run",
