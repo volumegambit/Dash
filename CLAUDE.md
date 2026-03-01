@@ -37,7 +37,7 @@ Ten workspaces split across `packages/` (libraries) and `apps/` (runnables):
 
 | Package | Location | Role | Key Deps |
 |---------|----------|------|----------|
-| `@dash/app` | `apps/dash` | Headless agent server, config loading, bootstrap | `@dash/agent`, `@dash/chat`, `@dash/management`, `@dash/llm` |
+| `@dash/agent-server` | `apps/dash` | Headless agent server, config loading, bootstrap | `@dash/agent`, `@dash/chat`, `@dash/management`, `@dash/llm` |
 | `@dash/tui` | `apps/tui` | Terminal UI / CLI entry point | `@dash/agent`, `@dash/llm`, `dotenv` |
 | `@dash/mc-cli` | `apps/mc-cli` | Mission Control CLI (`health`, `info` commands) | `@dash/mc`, `@dash/management`, `commander` |
 | `@dash/mission-control` | `apps/mission-control` | Mission Control desktop app (Electron + React) | `@dash/mc`, `@dash/management`, `electron`, `react` |
@@ -92,12 +92,12 @@ All env vars live in `.env` at the project root, loaded by dotenv.
 
 | Variable | Used by | Required | Description |
 |----------|---------|----------|-------------|
-| `ANTHROPIC_API_KEY` | `app`, `tui` | Yes | Claude API key |
-| `LOG_LEVEL` | `app` | No | Logging level (default: `info`) |
-| `MANAGEMENT_API_TOKEN` | `app` | No | Enables management API when set |
-| `MANAGEMENT_API_PORT` | `app` | No | Management API port (default: `9100`) |
-| `CHAT_API_TOKEN` | `app` | No | Enables chat API when set |
-| `CHAT_API_PORT` | `app` | No | Chat API port (default: `9101`) |
+| `ANTHROPIC_API_KEY` | `agent-server`, `tui` | Yes | Claude API key |
+| `LOG_LEVEL` | `agent-server` | No | Logging level (default: `info`) |
+| `MANAGEMENT_API_TOKEN` | `agent-server` | No | Enables management API when set |
+| `MANAGEMENT_API_PORT` | `agent-server` | No | Management API port (default: `9100`) |
+| `CHAT_API_TOKEN` | `agent-server` | No | Enables chat API when set |
+| `CHAT_API_PORT` | `agent-server` | No | Chat API port (default: `9101`) |
 
 `mc-cli` and `mission-control` do not use `.env` — they read deployment config from `~/.mission-control/`.
 

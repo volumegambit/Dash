@@ -1,5 +1,5 @@
 {
-  "name": "@dash/app",
+  "name": "@dash/agent-server",
   "version": "0.1.0",
   "type": "module",
   "main": "dist/index.js",

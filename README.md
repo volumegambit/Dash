@@ -59,7 +59,7 @@ The agent server runs two servers: a **Management API** (HTTP, port 9100) for he
 | `@dash/chat` | Chat API — WebSocket server for real-time agent interaction |
 | `@dash/management` | Management API — HTTP server for health, info, shutdown |
 | `@dash/mc` | Deployment registry, secrets store, agent connector |
-| `@dash/app` | Agent server entry point, config loading, lifecycle |
+| `@dash/agent-server` | Agent server entry point, config loading, lifecycle |
 | `@dash/tui` | Terminal UI for interactive use |
 | `@dash/mc-cli` | Mission Control CLI — query agent health and info |
 | `@dash/mission-control` | Mission Control desktop app (Electron + React) |
