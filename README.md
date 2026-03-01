@@ -51,18 +51,25 @@ Run on your own hardware or private cloud. Your data never leaves your infrastru
 
 The agent server runs two servers: a **Management API** (HTTP, port 9100) for health/info/shutdown and a **Chat API** (WebSocket, port 9101) for real-time agent interaction. Each uses its own auth token. Channel adapters (Telegram) connect via the message router.
 
-| Package | Purpose |
-|---------|---------|
-| `@dash/llm` | Multi-provider LLM client (Anthropic SDK) |
-| `@dash/agent` | Agent runtime — tool registry, session management, agentic loop |
-| `@dash/channels` | Channel adapters (Telegram via grammY) + message router |
-| `@dash/chat` | Chat API — WebSocket server for real-time agent interaction |
-| `@dash/management` | Management API — HTTP server for health, info, shutdown |
-| `@dash/mc` | Deployment registry, secrets store, agent connector |
-| `@dash/agent-server` | Agent server entry point, config loading, lifecycle |
-| `@dash/tui` | Terminal UI for interactive use |
-| `@dash/mc-cli` | Mission Control CLI — query agent health and info |
-| `@dash/mission-control` | Mission Control desktop app (Electron + React) |
+**Libraries** (`packages/`) — ordered by dependency layer, foundational first:
+
+| Package | What it does |
+|---------|-------------|
+| `@dash/llm` | Wraps LLM provider SDKs (Anthropic) behind a streaming interface |
+| `@dash/agent` | Runs the agentic loop — tool execution, session persistence, orchestration |
+| `@dash/channels` | Routes messages from channel adapters (Telegram) to agents |
+| `@dash/chat` | Exposes agents over WebSocket for real-time streaming (port 9101) |
+| `@dash/management` | HTTP endpoints for health checks, server info, and shutdown (port 9100) |
+| `@dash/mc` | Manages agent deployments, secrets, and remote connections for Mission Control |
+
+**Apps** (`apps/`) — things you run:
+
+| Package | What it does |
+|---------|-------------|
+| `@dash/agent-server` | Headless server that wires up agents and starts the management + chat APIs |
+| `@dash/tui` | Interactive terminal UI — connects directly to an agent, no server needed |
+| `@dash/mission-control` | Desktop app for managing agent deployments (Electron + React) |
+| `@dash/mc-cli` | CLI equivalent of Mission Control — `health`, `info` commands |
 
 ## Quick Start
 
