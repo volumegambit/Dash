@@ -23,35 +23,32 @@ Run on your own hardware or private cloud. Your data never leaves your infrastru
 
 ## Architecture
 
-```
-  ┌────────────────┐
-  │  agent-server   │  wires up agents, starts both servers
-  └───┬─────────┬───┘
-      │         │
-      v         v
-  ┌──────┐  ┌────────────┐
-  │ chat │  │ management │
-  └──┬───┘  └────────────┘
-     v
-  ┌───────┐
-  │ agent │  tools, sessions, orchestration
-  └──┬────┘
-     v
-  ┌─────┐
-  │ llm │
-  └─────┘
+```mermaid
+graph TB
+  subgraph server ["Server (your infrastructure)"]
+    agent-server["agent-server<br/><small>config, lifecycle</small>"]
+    agent-server --> chat["chat<br/><small>WebSocket :9101</small>"]
+    agent-server --> management["management<br/><small>HTTP :9100</small>"]
+    chat --> agent["agent<br/><small>tools, sessions</small>"]
+    agent --> llm["llm<br/><small>Anthropic API</small>"]
+  end
 
-  ┌─────┐
-  │ tui │ → agent, llm
-  └─────┘
+  subgraph client ["Client (your machine)"]
+    tui["tui<br/><small>terminal UI</small>"]
+    mc["mission-control / mc-cli"]
+  end
 
-  ┌──────────────────┐
-  │ mission-control   │ → mc → management
-  │ mc-cli            │
-  └──────────────────┘
+  tui -. "in-process<br/>(no server needed)" .-> agent
+  mc -- "HTTP :9100" --> management
 ```
 
-The agent server starts two servers: a **Management API** (HTTP, port 9100) for health/info/shutdown and a **Chat API** (WebSocket, port 9101) for real-time agent interaction. Each uses its own auth token. The `tui` connects directly to an agent without the server. Mission Control and `mc-cli` connect to remote agent servers via the management API.
+Dash has three components that can run on different machines:
+
+- **Agent server** — runs on your infrastructure (a VPS, private cloud, or local machine). Hosts agents and exposes two APIs: a Chat API (WebSocket, port 9101) for real-time interaction and a Management API (HTTP, port 9100) for health checks and shutdown. Each API uses its own auth token.
+- **TUI** — runs on your local machine. Connects to an agent in-process with no network involved. Best for development and quick experimentation.
+- **Mission Control** — desktop app or CLI, runs on your local machine. Connects to one or more remote agent servers over HTTP for monitoring and management.
+
+Everything can run on a single machine for development, or split across machines for production — the agent server on a VPS, Mission Control on your laptop.
 
 **Libraries** (`packages/`) — ordered by dependency layer, foundational first:
 

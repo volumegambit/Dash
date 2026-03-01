@@ -7,35 +7,37 @@ Dash is a TypeScript monorepo for deploying autonomous AI agents. It runs as a h
 
 ## System overview
 
-```
-  ┌────────────────┐
-  │  agent-server   │  loads config, creates agents, starts servers
-  └───┬─────────┬───┘
-      │         │
-      v         v
-  ┌──────┐  ┌────────────┐
-  │ chat │  │ management │
-  └──┬───┘  └────────────┘
-     v         WebSocket (9101)    HTTP (9100)
-  ┌───────┐
-  │ agent │  tools, sessions, orchestration
-  └──┬────┘
-     v
-  ┌─────┐
-  │ llm │  Anthropic API
-  └─────┘
+```mermaid
+graph TB
+  subgraph server ["Server (your infrastructure)"]
+    direction TB
+    agent-server["Agent server<br/><small>config, lifecycle</small>"]
+    agent-server --> chat["Chat API<br/><small>WebSocket :9101</small>"]
+    agent-server --> management["Management API<br/><small>HTTP :9100</small>"]
+    chat --> agent["Agent<br/><small>tools, sessions, orchestration</small>"]
+    agent --> llm["LLM<br/><small>Anthropic API</small>"]
+  end
 
-  ┌─────┐
-  │ tui │ → agent, llm (standalone, no server)
-  └─────┘
+  subgraph client ["Client (your machine)"]
+    tui["TUI<br/><small>terminal UI</small>"]
+    mc["Mission Control / mc-cli<br/><small>desktop app or CLI</small>"]
+  end
 
-  ┌──────────────────┐
-  │ mission-control   │ → mc → management (remote)
-  │ mc-cli            │
-  └──────────────────┘
+  tui -. "in-process (no server needed)" .-> agent
+  mc -- "HTTP :9100" --> management
 ```
 
-The **agent server** is the main deployment target. It creates agents from config and exposes them through two servers. The **TUI** is a standalone alternative that connects directly to an agent in-process. **Mission Control** (desktop app or CLI) manages remote agent server deployments via the management API.
+Dash has three components that can run on different machines:
+
+- **Agent server** — runs on your infrastructure (a VPS, private cloud, or local machine). This is the main deployment target. It reads your config, creates agents with their assigned models and tools, and starts two APIs: the Chat API (WebSocket, port 9101) for real-time interaction, and the Management API (HTTP, port 9100) for health checks, server info, and shutdown.
+- **TUI** — runs on your local machine. A standalone terminal interface that connects to an agent in-process, with no network involved. Best for development and quick experimentation.
+- **Mission Control** — runs on your local machine. A desktop app (Electron) or CLI for monitoring and managing remote agent servers. Connects to one or more agent servers over HTTP via the Management API.
+
+### Deployment options
+
+**Single machine** — run everything locally. Start the agent server and use the TUI or connect to the Chat API from `localhost`. Good for development and personal use.
+
+**Multi-machine** — run the agent server on a VPS or private cloud, and use Mission Control from your laptop to manage it. The Chat API and Management API are the only network-facing surfaces, each protected by its own auth token. You can manage multiple agent servers from a single Mission Control instance.
 
 ## Components
 
