@@ -9,7 +9,7 @@
     "dev": "npm run dev --workspace=apps/dash",
     "tui": "npm run dev --workspace=apps/tui",
     "mc-cli": "node --import tsx apps/mc-cli/src/index.ts",
-    "gateway": "npm run dev --workspace=apps/gateway",
+    "gateway": "node --import tsx apps/gateway/src/index.ts",
     "mc:dev": "npm run dev --workspace=apps/mission-control",
     "mc:build": "npm run build --workspace=apps/mission-control",
     "test": "vitest run",
