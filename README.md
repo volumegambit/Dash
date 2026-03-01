@@ -9,7 +9,7 @@
 [![Docker](https://img.shields.io/badge/Docker-ready-2496ED?logo=docker&logoColor=white)](https://www.docker.com)
 [![License](https://img.shields.io/badge/license-private-red)]()
 
-Dash is a desktop-first, private-cloud-first platform that empowers anyone to safely deploy autonomous "claw" agents. Bring your preferred AI model, connect to platforms like Telegram, and put your agents to work — all while maintaining absolute control over your private data.
+Dash is a desktop-first, private-cloud-first platform that empowers anyone to safely deploy autonomous "claw" agents within minutes. Bring your preferred AI model, connect to platforms like Telegram, and put your agents to work — all while maintaining absolute control over your private data.
 
 We believe the best way to discover AI's potential is by easily experimenting with it. Dash accelerates how you launch personal and professional agents by prioritizing security from the ground up:
 
