@@ -1,4 +1,7 @@
-# Channels
+---
+title: "Channels"
+description: "Connect agents to messaging platforms via channel adapters. Supports Telegram and a terminal UI."
+---
 
 Channels connect users to agents. Each channel adapter handles a specific messaging platform and routes messages to a configured agent.
 
@@ -6,42 +9,51 @@ Channels connect users to agents. Each channel adapter handles a specific messag
 
 ### Setup
 
-1. **Create a bot** — message [@BotFather](https://t.me/BotFather) on Telegram and follow the `/newbot` flow to get a bot token.
+<Steps>
+  <Step title="Create a bot">
+    Message [@BotFather](https://t.me/BotFather) on Telegram and follow the `/newbot` flow to get a bot token.
+  </Step>
+  <Step title="Set the token">
+    Add it to `.env` or `config/credentials.json`:
 
-2. **Set the token** — add it to `.env` or `config/credentials.json`:
+    ```env
+    TELEGRAM_BOT_TOKEN=123456:ABC-DEF...
+    ```
+  </Step>
+  <Step title="Find your user ID">
+    Message [@userinfobot](https://t.me/userinfobot) to get your numeric Telegram user ID.
+  </Step>
+  <Step title="Restrict access">
+    Set allowed users to prevent unauthorized access:
 
-   ```env
-   TELEGRAM_BOT_TOKEN=123456:ABC-DEF...
-   ```
+    <Tabs>
+      <Tab title="Environment variable">
+        ```env
+        TELEGRAM_ALLOWED_USERS=123456789,987654321
+        ```
+      </Tab>
+      <Tab title="Config file">
+        ```json
+        {
+          "channels": {
+            "telegram": {
+              "agent": "default",
+              "allowedUsers": ["123456789", "@username"]
+            }
+          }
+        }
+        ```
+      </Tab>
+    </Tabs>
 
-3. **Find your user ID** — message [@userinfobot](https://t.me/userinfobot) to get your numeric Telegram user ID.
-
-4. **Restrict access** (recommended) — set allowed users to prevent unauthorized access:
-
-   ```env
-   TELEGRAM_ALLOWED_USERS=123456789,987654321
-   ```
-
-   Or in `config/dash.json`:
-
-   ```json
-   {
-     "channels": {
-       "telegram": {
-         "agent": "default",
-         "allowedUsers": ["123456789", "@username"]
-       }
-     }
-   }
-   ```
-
-   Users can be specified by numeric ID or `@username`. When the list is empty, **all users** are allowed.
-
-5. **Start the server**:
-
-   ```bash
-   npm run dev
-   ```
+    Users can be specified by numeric ID or `@username`. When the list is empty, **all users** are allowed.
+  </Step>
+  <Step title="Start the server">
+    ```bash
+    npm run dev
+    ```
+  </Step>
+</Steps>
 
 ### How it works
 
@@ -85,11 +97,11 @@ If no `cli` channel is configured, the TUI falls back to the `default` agent.
 
 ### Features
 
-- Streaming text output — tokens appear as they arrive
-- Spinner with status — shows "thinking" during inference, "thinking deeply" during extended thinking
-- Tool execution display — shows tool name, input, and result in a formatted block (truncated to 6 lines)
-- Token usage — displayed after each response (input/output counts)
-- Color support — ANSI colors with `NO_COLOR` environment variable respected
+- **Streaming text output** — tokens appear as they arrive
+- **Spinner with status** — shows "thinking" during inference, "thinking deeply" during extended thinking
+- **Tool execution display** — shows tool name, input, and result in a formatted block (truncated to 6 lines)
+- **Token usage** — displayed after each response (input/output counts)
+- **Color support** — ANSI colors with `NO_COLOR` environment variable respected
 
 ### Session handling
 
@@ -126,4 +138,6 @@ User message
   → Adapter sends response back to user
 ```
 
-In the TUI, events are streamed directly to the terminal. In Telegram, the full response is sent as a single message after all tool rounds complete.
+<Note>
+  In the TUI, events are streamed directly to the terminal. In Telegram, the full response is sent as a single message after all tool rounds complete.
+</Note>

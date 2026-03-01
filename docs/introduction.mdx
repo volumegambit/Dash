@@ -1,0 +1,71 @@
+---
+title: "Introduction"
+description: "Dash is a multi-channel AI agent platform with Telegram integration, session persistence, and an extensible tool system."
+---
+
+Dash is a TypeScript monorepo that connects AI agents to messaging channels. It's built on Anthropic's Claude SDK with a streaming-first architecture, JSONL session persistence, and workspace-sandboxed tools.
+
+## Features
+
+<CardGroup cols={2}>
+  <Card title="Multi-channel" icon="messages">
+    Connect agents to Telegram, a terminal UI, or build your own channel adapter.
+  </Card>
+  <Card title="Streaming" icon="bolt">
+    Async generator architecture streams tokens to users as they arrive.
+  </Card>
+  <Card title="Tool system" icon="wrench">
+    Built-in bash and file reading tools with workspace sandboxing. Extensible via a simple interface.
+  </Card>
+  <Card title="Extended thinking" icon="brain">
+    Enable deeper reasoning with configurable token budgets for complex tasks.
+  </Card>
+  <Card title="Session persistence" icon="database">
+    Append-only JSONL sessions preserve full conversation history across restarts.
+  </Card>
+  <Card title="Multi-agent" icon="users">
+    Define multiple agents with different models, tools, and system prompts. Bind each to a channel.
+  </Card>
+</CardGroup>
+
+## Architecture
+
+Five packages organized in a layered dependency graph:
+
+```
+server → channels → agent → llm
+              tui ↗
+```
+
+| Package | Role |
+|---------|------|
+| `@dash/llm` | LLM provider abstraction and Anthropic streaming |
+| `@dash/agent` | Agent orchestration, sessions, and tool execution |
+| `@dash/channels` | Channel adapters (Telegram) and message routing |
+| `@dash/server` | Entry point, config loading, and gateway wiring |
+| `@dash/tui` | Terminal UI / CLI entry point |
+
+## Quick start
+
+<Steps>
+  <Step title="Install dependencies">
+    ```bash
+    git clone <repo-url> Dash
+    cd Dash
+    npm install && npm run build
+    ```
+  </Step>
+  <Step title="Configure credentials">
+    ```bash
+    cp .env.example .env
+    ```
+    Add your `ANTHROPIC_API_KEY` to the `.env` file.
+  </Step>
+  <Step title="Run the TUI">
+    ```bash
+    npm run dev --workspace=packages/tui
+    ```
+  </Step>
+</Steps>
+
+See [getting started](/getting-started) for the full setup guide.
