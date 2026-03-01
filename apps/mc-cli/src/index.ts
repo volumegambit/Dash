@@ -2,10 +2,17 @@ import { Command } from 'commander';
 import { registerDeployCommand } from './commands/deploy.js';
 import { registerHealthCommand } from './commands/health.js';
 import { registerInfoCommand } from './commands/info.js';
+import { registerLockCommand } from './commands/lock.js';
 import { registerLogsCommand } from './commands/logs.js';
 import { registerRemoveCommand } from './commands/remove.js';
+import { registerSecretsChangePasswordCommand } from './commands/secrets-change-password.js';
+import { registerSecretsDeleteCommand } from './commands/secrets-delete.js';
+import { registerSecretsGetCommand } from './commands/secrets-get.js';
+import { registerSecretsListCommand } from './commands/secrets-list.js';
+import { registerSecretsSetCommand } from './commands/secrets-set.js';
 import { registerStatusCommand } from './commands/status.js';
 import { registerStopCommand } from './commands/stop.js';
+import { registerUnlockCommand } from './commands/unlock.js';
 
 const program = new Command()
   .name('mc')
@@ -15,9 +22,19 @@ const program = new Command()
 registerDeployCommand(program);
 registerHealthCommand(program);
 registerInfoCommand(program);
+registerLockCommand(program);
 registerLogsCommand(program);
 registerRemoveCommand(program);
 registerStatusCommand(program);
 registerStopCommand(program);
+registerUnlockCommand(program);
+
+// Secrets subcommand group
+const secrets = program.command('secrets').description('Manage encrypted secrets');
+registerSecretsListCommand(secrets);
+registerSecretsGetCommand(secrets);
+registerSecretsSetCommand(secrets);
+registerSecretsDeleteCommand(secrets);
+registerSecretsChangePasswordCommand(secrets);
 
 program.parse();

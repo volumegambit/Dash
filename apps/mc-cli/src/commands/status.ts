@@ -8,7 +8,7 @@ export function registerStatusCommand(program: Command): void {
     .action(async (id?: string) => {
       try {
         if (id) {
-          const runtime = getRuntime();
+          const runtime = await getRuntime();
           const status = await runtime.getStatus(id);
           console.log(`Deployment: ${id}`);
           console.log(`  State: ${status.state}`);
