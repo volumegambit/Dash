@@ -20,7 +20,7 @@ npm run version:sync  # Sync root version to all packages and apps
 
 ## Architecture
 
-Nine workspaces split across `packages/` (libraries) and `apps/` (runnables):
+Ten workspaces split across `packages/` (libraries) and `apps/` (runnables):
 
 ### Libraries (`packages/`)
 
@@ -30,13 +30,14 @@ Nine workspaces split across `packages/` (libraries) and `apps/` (runnables):
 | `@dash/agent` | `packages/agent` | Agent orchestration, sessions, tool execution | `@dash/llm` |
 | `@dash/channels` | `packages/channels` | Channel adapters (Telegram) + message router | `@dash/agent`, `grammy` |
 | `@dash/management` | `packages/management` | Management API (health, info, shutdown) | `hono`, `@hono/node-server` |
+| `@dash/chat` | `packages/chat` | Chat API (WebSocket server + RemoteAgentClient) | `@dash/agent`, `hono`, `@hono/node-ws` |
 | `@dash/mc` | `packages/mc` | Deployment registry, secrets store, agent connector | `@dash/management` |
 
 ### Apps (`apps/`)
 
 | Package | Location | Role | Key Deps |
 |---------|----------|------|----------|
-| `@dash/app` | `apps/dash` | Gateway entry point, config loading, bootstrap | all packages, `pino`, `dotenv` |
+| `@dash/app` | `apps/dash` | Headless agent server, config loading, bootstrap | `@dash/agent`, `@dash/chat`, `@dash/management`, `@dash/llm` |
 | `@dash/tui` | `apps/tui` | Terminal UI / CLI entry point | `@dash/agent`, `@dash/llm`, `dotenv` |
 | `@dash/mc-cli` | `apps/mc-cli` | Mission Control CLI (`health`, `info` commands) | `@dash/mc`, `@dash/management`, `commander` |
 | `@dash/mission-control` | `apps/mission-control` | Mission Control desktop app (Electron + React) | `@dash/mc`, `@dash/management`, `electron`, `react` |
@@ -44,13 +45,13 @@ Nine workspaces split across `packages/` (libraries) and `apps/` (runnables):
 ### Dependency flow
 
 ```
-llm → agent → channels ──→ app (gateway)
-                            ↑
+llm → agent → chat ──→ app (agent server)
+                        ↑
 management ──→ mc ──→ mc-cli (CLI)
               ↓
               mission-control (Electron)
 
-tui → agent + llm (standalone, bypasses channels/app)
+tui → agent + llm (standalone, bypasses app)
 ```
 
 ## Code Conventions
@@ -64,12 +65,13 @@ tui → agent + llm (standalone, bypasses channels/app)
 
 ## Key Patterns
 
-- **Streaming via async generators**: `LlmProvider.stream()` yields `StreamChunk`, `AgentBackend.run()` yields `AgentEvent`, `DashAgent.chat()` yields events for channel delivery
+- **Streaming via async generators**: `LlmProvider.stream()` yields `StreamChunk`, `AgentBackend.run()` yields `AgentEvent`, `DashAgent.chat()` yields events streamed over WebSocket
 - **ContentBlock system**: Messages carry `content: string | ContentBlock[]` — types include `TextBlock`, `ToolUseBlock`, `ToolResultBlock`, `ThinkingBlock`
 - **Tool interface**: Each tool exposes `name`, `definition` (JSON schema), and `execute(input) → ToolExecutionResult`. Tools are workspace-sandboxed via an optional `workspace` path
 - **JSONL sessions**: Append-only persistence at `data/sessions/{channelId}/{conversationId}/session.jsonl`
 - **Config**: JSON at `config/dash.json` with env var overrides. Deep-merge with defaults (arrays replaced, not merged). Credentials in `config/credentials.json`
 - **Management API**: Hono-based HTTP server with `/health`, `/info`, `/lifecycle/shutdown` endpoints. Bearer token auth via `MANAGEMENT_API_TOKEN` env var. Port defaults to 9100
+- **Chat API**: Hono + `@hono/node-ws` WebSocket server at `/ws`. Auth via `?token=` query param. Streams `AgentEvent` objects with message `id` correlation. Port defaults to 9101
 - **Deployment management**: `AgentRegistry` persists deployments to `agents.json`. `FileSecretStore` stores secrets with 0600 permissions at `~/.mission-control/secrets.json`. `AgentConnector` resolves deployment IDs to `ManagementClient` instances
 
 ## Error Handling
@@ -91,11 +93,11 @@ All env vars live in `.env` at the project root, loaded by dotenv.
 | Variable | Used by | Required | Description |
 |----------|---------|----------|-------------|
 | `ANTHROPIC_API_KEY` | `app`, `tui` | Yes | Claude API key |
-| `TELEGRAM_BOT_TOKEN` | `app` | Yes (for Telegram) | Telegram bot token |
-| `TELEGRAM_ALLOWED_USERS` | `app` | No | Comma-separated user IDs or @usernames |
 | `LOG_LEVEL` | `app` | No | Logging level (default: `info`) |
 | `MANAGEMENT_API_TOKEN` | `app` | No | Enables management API when set |
 | `MANAGEMENT_API_PORT` | `app` | No | Management API port (default: `9100`) |
+| `CHAT_API_TOKEN` | `app` | No | Enables chat API when set |
+| `CHAT_API_PORT` | `app` | No | Chat API port (default: `9101`) |
 
 `mc-cli` and `mission-control` do not use `.env` — they read deployment config from `~/.mission-control/`.
 
@@ -104,12 +106,13 @@ All env vars live in `.env` at the project root, loaded by dotenv.
 ```
 packages/
   llm/src/            types.ts, registry.ts, providers/anthropic.ts
-  agent/src/          types.ts, agent.ts, session.ts, backends/native.ts, tools/{bash,read-file}.ts
+  agent/src/          types.ts, agent.ts, client.ts, session.ts, backends/native.ts, tools/{bash,read-file}.ts
   channels/src/       types.ts, router.ts, adapters/telegram.ts
   management/src/     types.ts, server.ts, client.ts
+  chat/src/           types.ts, chat-server.ts, ws-client.ts
   mc/src/             types.ts, agents/{registry,connector}.ts, security/{secrets,keygen}.ts
 apps/
-  dash/src/           index.ts (entry), config.ts, gateway.ts
+  dash/src/           index.ts (entry), config.ts, agent-server.ts
   tui/src/            index.ts (CLI entry with shebang)
   mc-cli/src/         index.ts (CLI entry), context.ts, commands/{health,info}.ts
   mission-control/    Electron app — src/main/, src/preload/, src/renderer/
