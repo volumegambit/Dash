@@ -15,8 +15,7 @@
     "dev": "tsup --watch"
   },
   "dependencies": {
-    "@dash/management": "*",
-    "keytar": "^7"
+    "@dash/management": "*"
   },
   "tsup": {
     "entry": ["src/index.ts"],
