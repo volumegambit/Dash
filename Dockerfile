@@ -5,13 +5,14 @@ COPY package.json package-lock.json ./
 COPY packages/llm/package.json packages/llm/
 COPY packages/agent/package.json packages/agent/
 COPY packages/channels/package.json packages/channels/
-COPY packages/tui/package.json packages/tui/
-COPY packages/server/package.json packages/server/
+COPY apps/dash/package.json apps/dash/
+COPY apps/tui/package.json apps/tui/
 
 RUN npm ci
 
 COPY tsconfig.base.json ./
 COPY packages/ packages/
+COPY apps/ apps/
 
 RUN npm run build
 
@@ -22,14 +23,14 @@ COPY package.json package-lock.json ./
 COPY packages/llm/package.json packages/llm/
 COPY packages/agent/package.json packages/agent/
 COPY packages/channels/package.json packages/channels/
-COPY packages/tui/package.json packages/tui/
-COPY packages/server/package.json packages/server/
+COPY apps/dash/package.json apps/dash/
+COPY apps/tui/package.json apps/tui/
 
 RUN npm ci --omit=dev
 
 COPY --from=builder /app/packages/llm/dist packages/llm/dist
 COPY --from=builder /app/packages/agent/dist packages/agent/dist
 COPY --from=builder /app/packages/channels/dist packages/channels/dist
-COPY --from=builder /app/packages/server/dist packages/server/dist
+COPY --from=builder /app/apps/dash/dist apps/dash/dist
 
-CMD ["node", "packages/server/dist/index.js"]
+CMD ["node", "apps/dash/dist/index.js"]

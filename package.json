@@ -2,20 +2,14 @@
   "name": "dash",
   "private": true,
   "type": "module",
-  "workspaces": [
-    "packages/llm",
-    "packages/agent",
-    "packages/channels",
-    "packages/tui",
-    "packages/server"
-  ],
+  "workspaces": ["packages/*", "apps/*"],
   "scripts": {
     "build": "npm run build --workspaces --if-present",
-    "dev": "npm run dev --workspace=packages/server",
+    "dev": "npm run dev --workspace=apps/dash",
     "test": "vitest run",
     "lint": "biome check .",
     "lint:fix": "biome check --write .",
-    "clean": "rm -rf packages/*/dist"
+    "clean": "rm -rf packages/*/dist apps/*/dist"
   },
   "devDependencies": {
     "@biomejs/biome": "^1.9.0",
