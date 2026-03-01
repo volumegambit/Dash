@@ -8,15 +8,21 @@ For project overview, setup, and configuration see the [README](README.md). For 
 npm run build         # Build all packages and apps (tsup)
 npm run dev           # Dev server (apps/dash via tsx)
 npm run tui           # Terminal UI (apps/tui via tsx)
+npm run mc-cli        # Mission Control CLI (apps/mc-cli via tsx)
+npm run mc:dev        # Mission Control desktop app (dev mode)
+npm run mc:build      # Mission Control desktop app (production build)
 npm test              # Run all tests (vitest)
 npm run lint          # Biome check
 npm run lint:fix      # Biome auto-fix
 npm run clean         # Remove dist/ from all packages and apps
+npm run version:sync  # Sync root version to all packages and apps
 ```
 
 ## Architecture
 
-Six workspace packages split across `packages/` (libraries) and `apps/` (runnables):
+Nine workspaces split across `packages/` (libraries) and `apps/` (runnables):
+
+### Libraries (`packages/`)
 
 | Package | Location | Role | Key Deps |
 |---------|----------|------|----------|
@@ -24,10 +30,28 @@ Six workspace packages split across `packages/` (libraries) and `apps/` (runnabl
 | `@dash/agent` | `packages/agent` | Agent orchestration, sessions, tool execution | `@dash/llm` |
 | `@dash/channels` | `packages/channels` | Channel adapters (Telegram) + message router | `@dash/agent`, `grammy` |
 | `@dash/management` | `packages/management` | Management API (health, info, shutdown) | `hono`, `@hono/node-server` |
+| `@dash/mc` | `packages/mc` | Deployment registry, secrets store, agent connector | `@dash/management` |
+
+### Apps (`apps/`)
+
+| Package | Location | Role | Key Deps |
+|---------|----------|------|----------|
 | `@dash/app` | `apps/dash` | Gateway entry point, config loading, bootstrap | all packages, `pino`, `dotenv` |
 | `@dash/tui` | `apps/tui` | Terminal UI / CLI entry point | `@dash/agent`, `@dash/llm`, `dotenv` |
+| `@dash/mc-cli` | `apps/mc-cli` | Mission Control CLI (`health`, `info` commands) | `@dash/mc`, `@dash/management`, `commander` |
+| `@dash/mission-control` | `apps/mission-control` | Mission Control desktop app (Electron + React) | `@dash/mc`, `@dash/management`, `electron`, `react` |
 
-Dependency flow: `llm` → `agent` → `channels` → `app`. The `management` package is consumed by `app` directly. The `tui` app depends on `agent` + `llm` (bypasses `channels` and `app`).
+### Dependency flow
+
+```
+llm → agent → channels ──→ app (gateway)
+                            ↑
+management ──→ mc ──→ mc-cli (CLI)
+              ↓
+              mission-control (Electron)
+
+tui → agent + llm (standalone, bypasses channels/app)
+```
 
 ## Code Conventions
 
@@ -46,6 +70,19 @@ Dependency flow: `llm` → `agent` → `channels` → `app`. The `management` pa
 - **JSONL sessions**: Append-only persistence at `data/sessions/{channelId}/{conversationId}/session.jsonl`
 - **Config**: JSON at `config/dash.json` with env var overrides. Deep-merge with defaults (arrays replaced, not merged). Credentials in `config/credentials.json`
 - **Management API**: Hono-based HTTP server with `/health`, `/info`, `/lifecycle/shutdown` endpoints. Bearer token auth via `MANAGEMENT_API_TOKEN` env var. Port defaults to 9100
+- **Deployment management**: `AgentRegistry` persists deployments to `agents.json`. `FileSecretStore` stores secrets with 0600 permissions at `~/.mission-control/secrets.json`. `AgentConnector` resolves deployment IDs to `ManagementClient` instances
+
+## Error Handling
+
+Errors follow a consistent pattern across the codebase:
+
+- **Stream errors**: Unhandled errors in the agentic loop are yielded as `{ type: 'error', error: Error }` events. Consumers handle them without breaking the async generator
+- **Tool errors**: Tool implementations return `ToolExecutionResult` with `isError: true` instead of throwing. Unknown tools return an error result, not an exception
+- **Malformed input**: Invalid tool JSON silently defaults to `{}` to avoid crashing the agent loop
+- **Max rounds**: When the 25-round tool limit is hit, the backend yields a response with the last available text rather than throwing
+- **Session storage**: Persistence errors propagate to the caller (no silent swallowing)
+
+When adding new features, follow these conventions: yield error events in generators, return `isError` flags from tools, and let storage errors propagate.
 
 ## Environment
 
@@ -67,9 +104,12 @@ packages/
   agent/src/          types.ts, agent.ts, session.ts, backends/native.ts, tools/{bash,read-file}.ts
   channels/src/       types.ts, router.ts, adapters/telegram.ts
   management/src/     types.ts, server.ts, client.ts
+  mc/src/             types.ts, agents/{registry,connector}.ts, security/{secrets,keygen}.ts
 apps/
   dash/src/           index.ts (entry), config.ts, gateway.ts
   tui/src/            index.ts (CLI entry with shebang)
+  mc-cli/src/         index.ts (CLI entry), context.ts, commands/{health,info}.ts
+  mission-control/    Electron app — src/main/, src/preload/, src/renderer/
 config/               dash.json, credentials.json (gitignored, runtime)
 config.example/       Example config files
 data/                 sessions/, workspace/ (gitignored, runtime)
@@ -95,7 +135,11 @@ Multi-stage build: `node:22-slim` builder → production image. Entry point is `
 
 ## Git Workflow
 
+Before pushing, run `npm run lint && npm run build && npm test` to catch issues locally. Do not push broken code to `main`.
+
 After each completed change, commit and push to git. Only stage the specific files you changed — do not use `git add -A` or `git add .`. If a change is incomplete or broken after a run, do not commit it — wait until the work is in a complete, working state before committing. Do not add "Co-Authored-By" lines to commit messages. Break large changes into smaller, focused commits — each commit should do one thing.
+
+For non-trivial features or changes that touch multiple packages, use a feature branch and open a PR against `main`. This gives a review checkpoint before merging. Direct commits to `main` are fine for small fixes, docs updates, and config changes.
 
 ## Versioning
 
