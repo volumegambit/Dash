@@ -46,7 +46,7 @@ Dependency flow: `llm` → `agent` → `management` → `agent server`. The `tui
   <Accordion title="@dash/tui" icon="terminal">
     Terminal UI package. An interactive REPL that connects directly to an agent (bypassing the agent server). Loads its own config from `config/dash.json`, creates an `AnthropicProvider` and `NativeBackend`, and renders streaming output with ANSI formatting. Shows a spinner during inference, formatted tool execution blocks, and token usage stats.
   </Accordion>
-  <Accordion title="@dash/app (agent server)" icon="server">
+  <Accordion title="@dash/agent-server" icon="server">
     Entry point for server mode. Loads `.env`, reads config via `loadConfig()`, creates agents as `LocalAgentClient` instances, and starts two servers: the Management API (HTTP) and the Chat API (WebSocket). Supports `--config` and `--secrets` CLI flags for deployment.
   </Accordion>
   <Accordion title="@dash/mc" icon="grid-2">
