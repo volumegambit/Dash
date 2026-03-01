@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { createInterface } from 'node:readline';
 import type { Command } from 'commander';
-import { getRuntime, getSecretStore } from '../context.js';
+import { ensureUnlocked, getRuntime, getSecretStore } from '../context.js';
 
 async function promptSecret(prompt: string): Promise<string> {
   const rl = createInterface({ input: process.stdin, output: process.stderr });
@@ -26,6 +26,7 @@ export function registerDeployCommand(program: Command): void {
     .action(async (configDir: string) => {
       try {
         const absConfigDir = resolve(configDir);
+        await ensureUnlocked();
         const secrets = getSecretStore();
 
         // Check for Anthropic API key
@@ -63,7 +64,7 @@ export function registerDeployCommand(program: Command): void {
         }
 
         // Deploy
-        const runtime = getRuntime();
+        const runtime = await getRuntime();
         const id = await runtime.deploy(absConfigDir);
 
         // Wait a moment for processes to start
