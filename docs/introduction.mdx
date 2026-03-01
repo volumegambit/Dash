@@ -8,7 +8,7 @@ Dash is a desktop-first, private-cloud-possible platform that empowers anyone to
 We believe the best way to discover AI's potential is by easily experimenting with it. Dash accelerates how you launch personal and professional agents by prioritizing security from the ground up:
 
 - **Secure defaults** — Out-of-the-box protection so you can launch with confidence.
-- **Secrets management** — Safe, encrypted handling of your API keys and credentials.
+- **Secrets management** — AES-256-GCM encrypted storage for your API keys and credentials, with OS keychain integration so you only enter your password once.
 - **Strict isolation** — Clear operational boundaries to keep every agent's autonomous actions contained.
 
 ## Why Dash?
@@ -50,7 +50,7 @@ agent server → management → agent → llm
 | `@dash/management` | Management API (HTTP) and Chat API (WebSocket) |
 | `@dash/agent-server` | Entry point, config loading, and server startup |
 | `@dash/tui` | Terminal UI / CLI entry point |
-| `@dash/mc` | Deployment registry and secrets store |
+| `@dash/mc` | Deployment registry, encrypted secrets store, and OS keychain integration |
 
 ## Quick start
 

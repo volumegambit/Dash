@@ -50,6 +50,41 @@ description: "Common errors, their causes, and how to fix them."
   </Accordion>
 </AccordionGroup>
 
+## Secrets and encryption
+
+<AccordionGroup>
+  <Accordion title="Secret store is locked">
+    **Error:**
+    ```
+    Secret store is locked
+    ```
+
+    **Fix:** Run `mc unlock` to unlock the store, or any `mc secrets` command — you'll be prompted for your encryption password. If you've previously unlocked in this session and see this error, your keychain cache may have been cleared. Run `mc unlock` again.
+  </Accordion>
+
+  <Accordion title="Wrong password / unable to authenticate data">
+    **Error:**
+    ```
+    Unsupported state or unable to authenticate data
+    ```
+
+    **Fix:** You entered the wrong encryption password. Try again with the correct password. If you've forgotten your password, the encrypted secrets cannot be recovered — delete `~/.mission-control/secrets.enc` and set up a new password. You'll need to re-enter all your secrets.
+  </Accordion>
+
+  <Accordion title="Password must be at least 8 characters">
+    **Error:**
+    ```
+    Password must be at least 8 characters.
+    ```
+
+    **Fix:** Choose a longer password. The minimum length is 8 characters.
+  </Accordion>
+
+  <Accordion title="Keychain not working / always prompting for password">
+    If you're prompted for your password on every command, the OS keychain may not be available. On macOS, make sure the `security` command is accessible. On Linux, make sure `secret-tool` (from `libsecret-tools`) is installed. On unsupported platforms, you'll be prompted each time — this is expected behavior.
+  </Accordion>
+</AccordionGroup>
+
 ## Tool errors
 
 <AccordionGroup>
