@@ -6,6 +6,12 @@ export type {
 } from './types.js';
 export type { SecretStore } from './security/secrets.js';
 export { FileSecretStore } from './security/secrets.js';
+export type { EncryptedPayload } from './security/crypto.js';
+export { deriveKey, generateSalt } from './security/crypto.js';
+export type { LockableSecretStore } from './security/encrypted-secrets.js';
+export { EncryptedSecretStore } from './security/encrypted-secrets.js';
+export type { KeychainProvider } from './security/keychain.js';
+export { createKeychain } from './security/keychain.js';
 export { generateToken } from './security/keygen.js';
 export { AgentRegistry } from './agents/registry.js';
 export { AgentConnector } from './agents/connector.js';
