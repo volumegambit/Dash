@@ -40,6 +40,8 @@ export interface DashConfig {
   channels: Record<string, ChannelConfig>;
   sessionDir: string;
   logLevel: string;
+  managementPort: number;
+  managementToken?: string;
 }
 
 const DEFAULTS: DashJsonConfig = {
@@ -157,6 +159,12 @@ export async function loadConfig(): Promise<DashConfig> {
     merged.logging.level = process.env.LOG_LEVEL;
   }
 
+  // Management API config
+  const managementPort = process.env.MANAGEMENT_API_PORT
+    ? Number.parseInt(process.env.MANAGEMENT_API_PORT, 10)
+    : 9100;
+  const managementToken = process.env.MANAGEMENT_API_TOKEN;
+
   return {
     anthropicApiKey,
     telegramBotToken,
@@ -164,5 +172,7 @@ export async function loadConfig(): Promise<DashConfig> {
     channels: merged.channels,
     sessionDir: merged.sessions.dir,
     logLevel: merged.logging.level,
+    managementPort,
+    managementToken,
   };
 }
