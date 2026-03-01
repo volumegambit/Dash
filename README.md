@@ -154,7 +154,7 @@ Dash/
 
 ## Documentation
 
-Full documentation is in the [`docs/`](docs/) directory:
+Full documentation is available at [dash-aa8db5b5.mintlify.app](https://dash-aa8db5b5.mintlify.app/introduction), or in the [`docs/`](docs/) directory:
 
 - [Getting Started](docs/getting-started.mdx) — install, configure, first run
 - [Configuration](docs/configuration.mdx) — `dash.json` schema, env vars, defaults
