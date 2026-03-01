@@ -1,27 +1,29 @@
 ---
 title: "Introduction"
-description: "Dash is a multi-channel AI agent platform with Telegram integration, session persistence, and an extensible tool system."
+description: "Dash helps non-technical users safely deploy autonomous AI agents on their own machines or private cloud."
 ---
 
-Dash is a TypeScript monorepo that connects AI agents to messaging channels. It's built on Anthropic's Claude SDK with a streaming-first architecture, JSONL session persistence, and workspace-sandboxed tools.
+Dash helps you safely deploy autonomous "claw" agents on your own machine or private cloud. Connect agents to the LLM provider you choose, integrate them with messaging channels like Telegram, and keep your data private and under your control.
 
-## Features
+We believe helping people deploy their own personal or work agents is the best way for everyone to experiment and understand how AI can make their lives better. This has to be done safely — Dash provides secure defaults, proper secrets management, and isolation for each agent.
+
+## Why Dash?
 
 <CardGroup cols={2}>
+  <Card title="Private by design" icon="lock">
+    Run on your own hardware or private cloud. Your data never leaves your infrastructure.
+  </Card>
+  <Card title="Bring your own model" icon="microchip">
+    Connect to Anthropic, OpenAI, Google, or any LLM provider you choose.
+  </Card>
   <Card title="Multi-channel" icon="messages">
-    Connect agents to Telegram, a terminal UI, or build your own channel adapter.
+    Interact with agents through Telegram, a terminal UI, or add your own channel adapter.
   </Card>
-  <Card title="Streaming" icon="bolt">
-    Async generator architecture streams tokens to users as they arrive.
+  <Card title="Safe defaults" icon="shield">
+    Secrets are separated from config, agents are sandboxed, and access controls are built in.
   </Card>
-  <Card title="Tool system" icon="wrench">
-    Built-in bash and file reading tools with workspace sandboxing. Extensible via a simple interface.
-  </Card>
-  <Card title="Extended thinking" icon="brain">
-    Enable deeper reasoning with configurable token budgets for complex tasks.
-  </Card>
-  <Card title="Session persistence" icon="database">
-    Append-only JSONL sessions preserve full conversation history across restarts.
+  <Card title="Non-technical friendly" icon="hand-wave">
+    Simple JSON configuration, Docker deployment, and clear documentation.
   </Card>
   <Card title="Multi-agent" icon="users">
     Define multiple agents with different models, tools, and system prompts. Bind each to a channel.
