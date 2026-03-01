@@ -3,33 +3,33 @@ title: "Architecture"
 description: "Technical overview of Dash's package structure, data flow, session format, and build system."
 ---
 
-Dash is a TypeScript monorepo designed for safe, private deployment of autonomous AI agents. Five packages are organized in a layered dependency graph, with each agent isolated and sandboxed by default.
+Dash is a TypeScript monorepo designed for safe, private deployment of autonomous AI agents. Packages are organized in a layered dependency graph, with each agent isolated and sandboxed by default.
 
 ## Package dependency graph
 
 ```
-                 ┌──────────┐
-                 │  server   │  entry point, config, gateway
-                 └────┬─────┘
-          ┌───────────┼───────────┐
-          v           v           │
-     ┌────────┐  ┌─────────┐     │
-     │  tui   │  │channels │     │
-     └────┬───┘  └────┬────┘     │
-          │           │           │
-          v           v           │
-     ┌────────────────────────────┘
-     │         agent              │
-     │  (orchestration, tools,    │
-     │   sessions)                │
-     └────────────┬───────────────┘
+                ┌──────────────┐
+                │  agent server │  entry point, config, servers
+                └──────┬───────┘
+        ┌──────────────┼──────────────┐
+        v              v              │
+   ┌────────┐   ┌────────────┐       │
+   │  tui   │   │ management │       │
+   └────┬───┘   └──────┬─────┘       │
+        │              │              │
+        v              v              │
+   ┌──────────────────────────────────┘
+   │         agent                    │
+   │  (orchestration, tools,          │
+   │   sessions)                      │
+   └──────────────┬───────────────────┘
                   v
             ┌──────────┐
             │   llm    │
             └──────────┘
 ```
 
-Dependency flow: `llm` → `agent` → `channels` → `server`. The `tui` package depends on `agent` and `llm` directly (it has its own config loading, independent of `server`).
+Dependency flow: `llm` → `agent` → `management` → `agent server`. The `tui` package depends on `agent` and `llm` directly (it has its own config loading, independent of the agent server). The `mc` package depends on `management` for deployment orchestration.
 
 ## Package responsibilities
 
@@ -38,34 +38,48 @@ Dependency flow: `llm` → `agent` → `channels` → `server`. The `tui` packag
     LLM provider abstraction layer. Defines the core types (`Message`, `ContentBlock`, `CompletionRequest/Response`, `StreamChunk`) and the `LlmProvider` interface. The `AnthropicProvider` implements streaming via the `@anthropic-ai/sdk`, converting between Dash's type system and Anthropic's SDK types. Handles extended thinking blocks, tool use blocks, and content block serialization. The `ProviderRegistry` maps model name prefixes to providers.
   </Accordion>
   <Accordion title="@dash/agent" icon="robot">
-    Agent orchestration layer. `DashAgent` manages the conversation loop: loading sessions, appending messages, delegating to a backend, and persisting results. `NativeBackend` implements the agent loop — it streams LLM responses, detects tool use, executes tools, and loops until the model produces a final text response (up to 25 tool rounds). The tool system (`BashTool`, `ReadFileTool`) provides workspace-sandboxed command execution and file reading. `JsonlSessionStore` handles append-only session persistence.
+    Agent orchestration layer. `DashAgent` manages the conversation loop: loading sessions, appending messages, delegating to a backend, and persisting results. `NativeBackend` implements the agent loop — it streams LLM responses, detects tool use, executes tools, and loops until the model produces a final text response (up to 25 tool rounds). The tool system (`BashTool`, `ReadFileTool`) provides workspace-sandboxed command execution and file reading. `JsonlSessionStore` handles append-only session persistence. Defines the `AgentClient` interface and `LocalAgentClient` for in-process agent access.
   </Accordion>
-  <Accordion title="@dash/channels" icon="messages">
-    Channel adapter layer. Defines the `ChannelAdapter` interface for messaging platforms and the `MessageRouter` that binds adapters to agents. The `TelegramAdapter` uses grammY for long-polling, handles user authorization via `allowedUsers`, and collects the full agent response before sending it as a single Telegram message.
+  <Accordion title="@dash/management" icon="tower-control">
+    Server infrastructure layer. Provides the Management API (HTTP server with health, info, and shutdown endpoints) and the Chat API (WebSocket server for real-time agent interaction). Also provides `ManagementClient` for HTTP access and `RemoteAgentClient` for connecting to the Chat API as a client.
   </Accordion>
   <Accordion title="@dash/tui" icon="terminal">
-    Terminal UI package. An interactive REPL that connects directly to an agent (bypassing `channels` and `server`). Loads its own config from `config/dash.json`, creates an `AnthropicProvider` and `NativeBackend`, and renders streaming output with ANSI formatting. Shows a spinner during inference, formatted tool execution blocks, and token usage stats.
+    Terminal UI package. An interactive REPL that connects directly to an agent (bypassing the agent server). Loads its own config from `config/dash.json`, creates an `AnthropicProvider` and `NativeBackend`, and renders streaming output with ANSI formatting. Shows a spinner during inference, formatted tool execution blocks, and token usage stats.
   </Accordion>
-  <Accordion title="@dash/server" icon="server">
-    Entry point for server mode. Loads `.env`, reads config via `loadConfig()`, creates agents and channel adapters, wires them through `MessageRouter`, and manages the gateway lifecycle (start/stop with signal handling).
+  <Accordion title="@dash/app (agent server)" icon="server">
+    Entry point for server mode. Loads `.env`, reads config via `loadConfig()`, creates agents as `LocalAgentClient` instances, and starts two servers: the Management API (HTTP) and the Chat API (WebSocket). Supports `--config` and `--secrets` CLI flags for deployment.
+  </Accordion>
+  <Accordion title="@dash/mc" icon="grid-2">
+    Mission Control support package. Provides the agent deployment registry, secrets store, and `AgentConnector` for resolving deployments to management clients.
   </Accordion>
 </AccordionGroup>
 
+## Two-server model
+
+The agent server runs two separate servers with independent authentication:
+
+| Server | Protocol | Default port | Auth | Purpose |
+|--------|----------|-------------|------|---------|
+| Management API | HTTP | 9100 | Bearer token (`MANAGEMENT_API_TOKEN`) | Health checks, info, shutdown |
+| Chat API | WebSocket | 9101 | Query param (`?token=`, `CHAT_API_TOKEN`) | Real-time agent chat |
+
+Both servers bind to `127.0.0.1` by default. Each has its own token — a management token cannot be used on the chat port, and vice versa.
+
 ## Data flow
 
-### User message to response
+### User message to response (Chat API)
 
 ```
-User sends message (Telegram / TUI)
+Client connects to ws://host:9101/ws?token=...
   │
   v
-ChannelAdapter.onMessage() / readline
+Client sends: { type: "message", id, agent, channelId, conversationId, text }
   │
   v
-MessageRouter.handleMessage()
+Chat server resolves agent by name
   │
   v
-DashAgent.chat(channelId, conversationId, text)
+AgentClient.chat(channelId, conversationId, text)
   │
   ├─ Load or create session (JSONL)
   ├─ Append user message to session
@@ -74,24 +88,43 @@ DashAgent.chat(channelId, conversationId, text)
 NativeBackend.run(state)
   │
   ├─ LlmProvider.stream(request)  ──→  Anthropic API
-  ├─ Yield streaming events (text_delta, thinking_delta, tool_use_*)
+  ├─ Server sends: { type: "event", id, event } for each AgentEvent
   │
   ├─ If stopReason == "tool_use":
   │     ├─ Execute tool(s)
-  │     ├─ Yield tool_result events
+  │     ├─ Send tool_result events
   │     ├─ Append tool results to messages
   │     └─ Loop (next LLM round, up to 25 rounds)
   │
   ├─ If stopReason == "end_turn":
-  │     ├─ Yield final response event
+  │     ├─ Send final response event
   │     └─ Append assistant message to session
   │
   v
 Persist new messages to JSONL
   │
   v
-Adapter sends response to user
+Server sends: { type: "done", id }
 ```
+
+### WebSocket message protocol
+
+**Client → Server:**
+
+| Type | Fields | Description |
+|------|--------|-------------|
+| `message` | `id`, `agent`, `channelId`, `conversationId`, `text` | Send a chat message |
+| `cancel` | `id` | Cancel an in-flight request |
+
+**Server → Client:**
+
+| Type | Fields | Description |
+|------|--------|-------------|
+| `event` | `id`, `event` | An `AgentEvent` (text_delta, tool_use, response, etc.) |
+| `done` | `id` | Stream complete for this request |
+| `error` | `id`, `error` | Error message |
+
+The `id` field correlates requests with responses, allowing multiple concurrent requests on a single connection.
 
 ## Agent loop
 
@@ -146,7 +179,7 @@ Sessions are stored as append-only JSONL (one JSON object per line) files.
 Example:
 
 ```
-data/sessions/telegram/123456789/session.jsonl
+data/sessions/ws/client-123/session.jsonl
 data/sessions/cli/cli:1706123456789/session.jsonl
 ```
 
@@ -190,7 +223,7 @@ Multi-stage build using `node:22-slim`:
     `npm ci --omit=dev`, copy `dist/` from builder
   </Step>
   <Step title="Entry point">
-    `node packages/server/dist/index.js`
+    `node apps/dash/dist/index.js`
   </Step>
 </Steps>
 

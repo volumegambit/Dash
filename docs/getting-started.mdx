@@ -9,7 +9,6 @@ Get your first agent running in a few minutes. Dash runs entirely on your machin
 
 - **Node.js 22+** — Dash uses ESM and modern language features requiring Node 22 or later
 - **An LLM API key** — for example, sign up at [console.anthropic.com](https://console.anthropic.com) for an Anthropic key
-- **Telegram bot token** (optional) — only needed if connecting an agent to Telegram
 
 ## Installation
 
@@ -34,7 +33,7 @@ Set up your credentials using either environment variables or a credentials file
 
 <Tabs>
   <Tab title="Environment variables">
-    Copy the example `.env` file and fill in your keys:
+    Copy the example `.env` file and fill in your key:
 
     ```bash
     cp .env.example .env
@@ -44,8 +43,6 @@ Set up your credentials using either environment variables or a credentials file
 
     ```env
     ANTHROPIC_API_KEY=sk-ant-...
-    TELEGRAM_BOT_TOKEN=123456:ABC-DEF...
-    TELEGRAM_ALLOWED_USERS=123456789
     LOG_LEVEL=info
     ```
   </Tab>
@@ -62,9 +59,6 @@ Set up your credentials using either environment variables or a credentials file
     {
       "anthropic": {
         "apiKey": "sk-ant-..."
-      },
-      "telegram": {
-        "botToken": "123456:ABC-DEF..."
       }
     }
     ```
@@ -89,22 +83,29 @@ See [configuration](/configuration) for the full schema.
 
 <Tabs>
   <Tab title="TUI (terminal)">
-    The TUI connects to the `cli` channel agent and provides an interactive REPL:
+    The TUI provides an interactive REPL that connects directly to an agent:
 
     ```bash
-    npm run dev --workspace=packages/tui
+    npm run tui
     ```
 
     You'll see a header showing the active agent, model, tools, and workspace path. Type a message and press Enter.
   </Tab>
-  <Tab title="Server (Telegram)">
-    The server starts the gateway and connects all configured channel adapters:
+  <Tab title="Agent server">
+    The agent server starts a headless server with a Management API (HTTP) and Chat API (WebSocket):
 
     ```bash
     npm run dev
     ```
 
-    This requires both `ANTHROPIC_API_KEY` and `TELEGRAM_BOT_TOKEN` to be set.
+    To enable the APIs, set tokens in your `.env`:
+
+    ```env
+    MANAGEMENT_API_TOKEN=your-management-token
+    CHAT_API_TOKEN=your-chat-token
+    ```
+
+    The Management API listens on port 9100 and the Chat API on port 9101. Connect via WebSocket to interact with agents.
   </Tab>
   <Tab title="Docker">
     ```bash
@@ -119,10 +120,10 @@ See [configuration](/configuration) for the full schema.
 
 <CardGroup cols={2}>
   <Card title="Configuration" icon="gear" href="/configuration">
-    Full config schema and defaults
+    Full config schema, env vars, and CLI flags
   </Card>
   <Card title="Channels" icon="messages" href="/channels">
-    Telegram setup and CLI usage
+    TUI usage and Chat API protocol
   </Card>
   <Card title="Tools" icon="wrench" href="/tools">
     Built-in tools and workspace sandboxing
