@@ -35,3 +35,7 @@ coverage/
 
 # Docker
 .docker/
+
+# Project-local docs
+PLAN.md
+CLAUDE.md
