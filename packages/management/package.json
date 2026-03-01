@@ -16,7 +16,9 @@
   },
   "dependencies": {
     "hono": "^4",
-    "@hono/node-server": "^1"
+    "@hono/node-server": "^1",
+    "@hono/node-ws": "^1",
+    "@dash/agent": "*"
   },
   "tsup": {
     "entry": ["src/index.ts"],

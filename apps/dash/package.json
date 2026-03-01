@@ -18,7 +18,6 @@
   "dependencies": {
     "@dash/llm": "*",
     "@dash/agent": "*",
-    "@dash/channels": "*",
     "@dash/management": "*",
     "dotenv": "^16.4.0",
     "pino": "^9.6.0"

@@ -9,22 +9,20 @@ import {
   resolveTools,
 } from '@dash/agent';
 import type { AgentClient } from '@dash/agent';
-import { MessageRouter, TelegramAdapter } from '@dash/channels';
 import { AnthropicProvider, ProviderRegistry } from '@dash/llm';
-import { startManagementServer } from '@dash/management';
+import { startChatServer, startManagementServer } from '@dash/management';
 import type { InfoResponse } from '@dash/management';
 import type { DashConfig } from './config.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const projectRoot = resolve(__dirname, '../../..');
 
-export async function createGateway(config: DashConfig) {
+export async function createAgentServer(config: DashConfig) {
   // LLM
   const registry = new ProviderRegistry();
   registry.register(new AnthropicProvider(config.anthropicApiKey));
 
   // Create agents from config
-  const agents = new Map<string, DashAgent>();
   const clients = new Map<string, AgentClient>();
   const sessionStore = new JsonlSessionStore(config.sessionDir);
 
@@ -49,44 +47,25 @@ export async function createGateway(config: DashConfig) {
       thinking: agentConfig.thinking,
     });
 
-    agents.set(name, agent);
     clients.set(name, new LocalAgentClient(agent));
     console.log(
       `Agent "${name}" created (model: ${agentConfig.model}, tools: ${agentConfig.tools?.join(', ') ?? 'none'}, workspace: ${workspace ?? 'unrestricted'})`,
     );
   }
 
-  // Channels
-  const router = new MessageRouter(clients);
-
-  for (const [name, channelConfig] of Object.entries(config.channels)) {
-    if (name === 'telegram') {
-      const telegram = new TelegramAdapter(
-        config.telegramBotToken,
-        channelConfig.allowedUsers ?? [],
-      );
-      router.addAdapter(telegram, channelConfig.agent);
-    }
-  }
-
-  // Management server
+  // Server close handles
   let managementClose: (() => Promise<void>) | undefined;
+  let chatClose: (() => Promise<void>) | undefined;
 
   return {
-    router,
     async start() {
-      await router.startAll();
-
+      // Management server
       if (config.managementToken) {
         const getInfo = (): InfoResponse => ({
           agents: Object.entries(config.agents).map(([name, ac]) => ({
             name,
             model: ac.model,
             tools: ac.tools ?? [],
-          })),
-          channels: Object.entries(config.channels).map(([name, cc]) => ({
-            name,
-            agent: cc.agent,
           })),
         });
 
@@ -95,11 +74,9 @@ export async function createGateway(config: DashConfig) {
           token: config.managementToken,
           getInfo,
           onShutdown: async () => {
-            await router.stopAll();
-            if (managementClose) {
-              await managementClose();
-            }
-            console.log('Dash gateway stopped via management API');
+            if (chatClose) await chatClose();
+            if (managementClose) await managementClose();
+            console.log('Dash agent server stopped via management API');
             process.exit(0);
           },
         });
@@ -107,14 +84,23 @@ export async function createGateway(config: DashConfig) {
         console.log(`Management API listening on port ${config.managementPort}`);
       }
 
-      console.log('Dash gateway started');
+      // Chat server
+      if (config.chatToken) {
+        const { close } = startChatServer({
+          port: config.chatPort,
+          token: config.chatToken,
+          agents: clients,
+        });
+        chatClose = close;
+        console.log(`Chat API listening on port ${config.chatPort}`);
+      }
+
+      console.log('Dash agent server started');
     },
     async stop() {
-      await router.stopAll();
-      if (managementClose) {
-        await managementClose();
-      }
-      console.log('Dash gateway stopped');
+      if (chatClose) await chatClose();
+      if (managementClose) await managementClose();
+      console.log('Dash agent server stopped');
     },
   };
 }
