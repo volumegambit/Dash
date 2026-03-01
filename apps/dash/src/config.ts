@@ -1,5 +1,5 @@
-import { existsSync } from 'node:fs';
-import { readFile, unlink } from 'node:fs/promises';
+import { existsSync, statSync } from 'node:fs';
+import { readFile, readdir, unlink } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -52,6 +52,27 @@ const DEFAULTS: DashJsonConfig = {
   logging: { level: 'info' },
 };
 
+/** Load agent definitions from individual JSON files in a directory */
+export async function loadAgentsFromDirectory(
+  agentsDir: string,
+): Promise<Record<string, AgentConfig> | null> {
+  if (!existsSync(agentsDir) || !statSync(agentsDir).isDirectory()) {
+    return null;
+  }
+
+  const files = await readdir(agentsDir);
+  const jsonFiles = files.filter((f) => f.endsWith('.json'));
+  if (jsonFiles.length === 0) return null;
+
+  const agents: Record<string, AgentConfig> = {};
+  for (const file of jsonFiles) {
+    const name = file.slice(0, -5); // strip .json
+    const raw = await readFile(resolve(agentsDir, file), 'utf-8');
+    agents[name] = JSON.parse(raw) as AgentConfig;
+  }
+  return agents;
+}
+
 /** Search for config/dash.json or dash.json relative to project root */
 async function loadJsonConfig(projectRoot: string): Promise<Partial<DashJsonConfig>> {
   const candidates = [resolve(projectRoot, 'config/dash.json'), resolve(projectRoot, 'dash.json')];
@@ -70,6 +91,19 @@ async function loadJsonConfig(projectRoot: string): Promise<Partial<DashJsonConf
 async function loadJsonConfigFromPath(configPath: string): Promise<Partial<DashJsonConfig>> {
   const raw = await readFile(configPath, 'utf-8');
   return JSON.parse(raw) as Partial<DashJsonConfig>;
+}
+
+/** Load JSON config + agents from a config directory */
+async function loadFromConfigDir(
+  configDir: string,
+): Promise<{ json: Partial<DashJsonConfig>; agents: Record<string, AgentConfig> | null }> {
+  // Load dash.json from the directory if it exists
+  const dashJsonPath = resolve(configDir, 'dash.json');
+  const json = existsSync(dashJsonPath) ? await loadJsonConfigFromPath(dashJsonPath) : {};
+
+  // Load agents from agents/ subdirectory
+  const agents = await loadAgentsFromDirectory(resolve(configDir, 'agents'));
+  return { json, agents };
 }
 
 /** Search for config/credentials.json or credentials.json relative to project root */
@@ -139,10 +173,31 @@ export async function loadConfig(options?: LoadConfigOptions): Promise<DashConfi
   const __dirname = dirname(fileURLToPath(import.meta.url));
   const projectRoot = resolve(__dirname, '../../..');
 
-  // Load JSON config — explicit path or default search
-  const jsonConfig = options?.configPath
-    ? await loadJsonConfigFromPath(options.configPath)
-    : await loadJsonConfig(projectRoot);
+  // Load JSON config + optional agents directory
+  let jsonConfig: Partial<DashJsonConfig>;
+  let directoryAgents: Record<string, AgentConfig> | null = null;
+
+  if (options?.configPath) {
+    const configPath = options.configPath;
+    if (existsSync(configPath) && statSync(configPath).isDirectory()) {
+      // --config points to a directory
+      const result = await loadFromConfigDir(configPath);
+      jsonConfig = result.json;
+      directoryAgents = result.agents;
+    } else {
+      // --config points to a file
+      jsonConfig = await loadJsonConfigFromPath(configPath);
+      // Check for agents/ sibling directory
+      directoryAgents = await loadAgentsFromDirectory(resolve(dirname(configPath), 'agents'));
+    }
+  } else {
+    // Default search
+    jsonConfig = await loadJsonConfig(projectRoot);
+    // Additionally check config/agents/ and agents/
+    directoryAgents =
+      (await loadAgentsFromDirectory(resolve(projectRoot, 'config/agents'))) ??
+      (await loadAgentsFromDirectory(resolve(projectRoot, 'agents')));
+  }
 
   // Load secrets file if provided (read + unlink)
   const secrets = options?.secretsPath ? await loadSecrets(options.secretsPath) : undefined;
@@ -151,6 +206,11 @@ export async function loadConfig(options?: LoadConfigOptions): Promise<DashConfi
   const credentials = secrets ? {} : await loadCredentials(projectRoot);
 
   const merged = deepMerge(DEFAULTS, jsonConfig);
+
+  // agents/ directory overrides the agents key from dash.json
+  if (directoryAgents) {
+    merged.agents = directoryAgents;
+  }
 
   // Resolve credentials: secrets file > env vars > config/credentials.json
   const anthropicApiKey =

@@ -9,10 +9,12 @@ import { AgentRegistry } from './registry.js';
 
 const baseConfig: AgentDeployment['config'] = {
   target: 'local',
-  agent: {
-    name: 'default',
-    model: 'claude-sonnet-4-20250514',
-    systemPrompt: 'Test agent',
+  agents: {
+    default: {
+      name: 'default',
+      model: 'claude-sonnet-4-20250514',
+      systemPrompt: 'Test agent',
+    },
   },
   channels: {},
 };

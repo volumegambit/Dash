@@ -27,7 +27,7 @@ Run on your own hardware or private cloud. Your data never leaves your infrastru
 graph TB
   platforms["Chat platforms<br/><small>Telegram, etc.</small>"]
 
-  subgraph infra ["Your infrastructure"]
+  subgraph infra ["Your Desktop or Private Server"]
     agent-server["Agent Server<br/><small>Chat API :9101 · Management API :9100</small>"]
     gateway["Gateway<br/><small>Channel routing :9200</small>"]
     gateway -- "WebSocket" --> agent-server
@@ -36,11 +36,11 @@ graph TB
   mc["Mission Control<br/><small>Desktop app / CLI</small>"]
 
   platforms -- "Bot API" --> gateway
-  mc -- "HTTP / WebSocket" --> agent-server
+  mc -- "Deploy & Manage" --> agent-server
   mc -- "WebSocket" --> gateway
 ```
 
-Dash has four components that can run on different machines:
+Dash has components that can run on different machines:
 
 - **Agent server** — runs on your infrastructure (a VPS, private cloud, or local machine). Hosts agents and exposes two APIs: a Chat API (WebSocket, port 9101) for real-time interaction and a Management API (HTTP, port 9100) for health checks and shutdown. Each API uses its own auth token.
 - **Gateway** — runs alongside the agent server. Connects to external chat platforms (Telegram, etc.) and routes messages to agents via the Chat API. Mission Control's chat panel also connects through the gateway. One process, one config file for all channels.
@@ -57,7 +57,7 @@ Everything can run on a single machine for development, or split across machines
 | `@dash/channels` | Routes messages from channel adapters (Telegram, MC) to agents |
 | `@dash/chat` | Exposes agents over WebSocket for real-time streaming (port 9101) |
 | `@dash/management` | HTTP endpoints for health checks, server info, and shutdown (port 9100) |
-| `@dash/mc` | Manages agent deployments, secrets, and remote connections for Mission Control |
+| `@dash/mc` | Manages agent deployments, secrets, process runtime, and remote connections for Mission Control |
 
 **Apps** (`apps/`) — things you run:
 
@@ -65,9 +65,9 @@ Everything can run on a single machine for development, or split across machines
 |---------|-------------|
 | `@dash/agent-server` | Headless server that wires up agents and starts the management + chat APIs |
 | `@dash/gateway` | Channel gateway — routes Telegram, MC chat, and other channels to agents |
-| `@dash/tui` | Interactive terminal UI — connects directly to an agent, no server needed |
+| `@dash/tui` | Built-in terminal interface within Mission Control for quick agent interaction |
 | `@dash/mission-control` | Desktop app for managing agent deployments and chatting (Electron + React) |
-| `@dash/mc-cli` | CLI equivalent of Mission Control — `health`, `info` commands |
+| `@dash/mc-cli` | CLI equivalent of Mission Control — `deploy`, `status`, `stop`, `remove`, `logs`, `health`, `info` |
 
 ## Quick Start
 
