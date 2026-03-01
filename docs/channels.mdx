@@ -1,99 +1,19 @@
 ---
 title: "Channels"
-description: "Connect agents to messaging platforms via channel adapters. Supports Telegram and a terminal UI."
+description: "Interact with agents through the terminal UI or the WebSocket Chat API."
 ---
 
-Channels connect users to agents. Each channel adapter handles a specific messaging platform and routes messages to a configured agent.
+Dash provides two ways to interact with agents: the TUI for local terminal use and the Chat API for programmatic access over WebSocket.
 
-## Telegram
+## TUI (terminal)
 
-### Setup
-
-<Steps>
-  <Step title="Create a bot">
-    Message [@BotFather](https://t.me/BotFather) on Telegram and follow the `/newbot` flow to get a bot token.
-  </Step>
-  <Step title="Set the token">
-    Add it to `.env` or `config/credentials.json`:
-
-    ```env
-    TELEGRAM_BOT_TOKEN=123456:ABC-DEF...
-    ```
-  </Step>
-  <Step title="Find your user ID">
-    Message [@userinfobot](https://t.me/userinfobot) to get your numeric Telegram user ID.
-  </Step>
-  <Step title="Restrict access">
-    Set allowed users to prevent unauthorized access:
-
-    <Tabs>
-      <Tab title="Environment variable">
-        ```env
-        TELEGRAM_ALLOWED_USERS=123456789,987654321
-        ```
-      </Tab>
-      <Tab title="Config file">
-        ```json
-        {
-          "channels": {
-            "telegram": {
-              "agent": "default",
-              "allowedUsers": ["123456789", "@username"]
-            }
-          }
-        }
-        ```
-      </Tab>
-    </Tabs>
-
-    Users can be specified by numeric ID or `@username`. When the list is empty, **all users** are allowed.
-  </Step>
-  <Step title="Start the server">
-    ```bash
-    npm run dev
-    ```
-  </Step>
-</Steps>
-
-### How it works
-
-- The Telegram adapter uses **long polling** (not webhooks) via the [grammY](https://grammy.dev/) framework
-- On startup, pending updates are dropped to avoid 409 conflicts with stale polling sessions
-- Only text messages are processed — other message types (photos, stickers, etc.) are ignored
-- The full response is collected before sending — no streaming to Telegram
-- Each Telegram chat ID maps to a separate conversation with its own session history
-
-### Access control
-
-When `allowedUsers` is set (via config or `TELEGRAM_ALLOWED_USERS`), the adapter checks incoming messages against the list. Users not on the list receive "Sorry, you are not authorized to use this bot." and their message is discarded.
-
-Matching checks the user's numeric ID and username (with or without the `@` prefix).
-
-## CLI (TUI)
-
-The TUI is a terminal-based REPL that connects to an agent via the `cli` channel.
+The TUI is a terminal-based REPL that connects directly to an agent.
 
 ### Running
 
 ```bash
-npm run dev --workspace=packages/tui
+npm run tui
 ```
-
-### Configuration
-
-Map the `cli` channel to an agent in `config/dash.json`:
-
-```json
-{
-  "channels": {
-    "cli": {
-      "agent": "coder"
-    }
-  }
-}
-```
-
-If no `cli` channel is configured, the TUI falls back to the `default` agent.
 
 ### Features
 
@@ -107,37 +27,90 @@ If no `cli` channel is configured, the TUI falls back to the `default` agent.
 
 Each TUI session creates a conversation ID in the format `cli:<timestamp>`. Sessions are persisted to the JSONL session store but currently cannot be resumed — each TUI launch starts a new conversation.
 
-## Channel-agent binding
+## Chat API (WebSocket)
 
-The `channels` config maps channel names to agent names:
+The agent server exposes a WebSocket endpoint for real-time agent interaction. Enable it by setting `CHAT_API_TOKEN` in your environment or via the `--secrets` flag.
+
+### Connecting
+
+```
+ws://localhost:9101/ws?token=<your-chat-token>
+```
+
+Authentication is via the `token` query parameter on the WebSocket upgrade request. Connections without a valid token are closed with code `4001`.
+
+### Sending a message
+
+Send a JSON message to start a conversation with an agent:
 
 ```json
 {
-  "channels": {
-    "telegram": { "agent": "default" },
-    "cli": { "agent": "coder" }
-  }
+  "type": "message",
+  "id": "unique-request-id",
+  "agent": "default",
+  "channelId": "my-app",
+  "conversationId": "conv-123",
+  "text": "Hello, what can you help me with?"
 }
 ```
 
-The agent name must match a key in the `agents` config. If an agent name is not found, the server throws an error at startup:
+| Field | Type | Description |
+|-------|------|-------------|
+| `type` | `"message"` | Message type |
+| `id` | `string` | Unique ID for correlating responses |
+| `agent` | `string` | Name of the agent (must match a key in the `agents` config) |
+| `channelId` | `string` | Channel identifier for session grouping |
+| `conversationId` | `string` | Conversation identifier for session continuity |
+| `text` | `string` | The user's message |
+
+### Receiving events
+
+The server streams events back as JSON messages:
+
+```json
+{ "type": "event", "id": "unique-request-id", "event": { "type": "text_delta", "text": "Hello" } }
+{ "type": "event", "id": "unique-request-id", "event": { "type": "response", "content": "Hello! ...", "usage": { "inputTokens": 10, "outputTokens": 50 } } }
+{ "type": "done", "id": "unique-request-id" }
+```
+
+| Server message | Description |
+|----------------|-------------|
+| `event` | Contains an `AgentEvent` — `text_delta`, `thinking_delta`, `tool_use_start`, `tool_result`, `response`, or `error` |
+| `done` | Indicates the stream for this request is complete |
+| `error` | An error occurred (contains `error` string) |
+
+The `id` field matches your request, allowing multiple concurrent conversations on a single connection.
+
+### Cancelling a request
+
+Send a cancel message to stop an in-flight request:
+
+```json
+{
+  "type": "cancel",
+  "id": "unique-request-id"
+}
+```
+
+The server acknowledges with a `done` message.
+
+### Message flow
 
 ```
-Agent "unknown" not found. Available: default, coder
-```
-
-## Message flow
-
-```
-User message
-  → Channel adapter receives message
-  → MessageRouter finds the bound agent
-  → agent.chat(channelId, conversationId, text)
-  → Agent streams events (text, tool use, tool results)
-  → Full response collected
-  → Adapter sends response back to user
+Client                          Server
+  │                               │
+  ├── connect ws://.../ws?token= ─→│
+  │                               │
+  ├── { type: "message", ... }  ──→│
+  │                               ├── resolve agent
+  │                               ├── agent.chat()
+  │←── { type: "event", ... }  ───┤  (streaming)
+  │←── { type: "event", ... }  ───┤
+  │←── { type: "event", ... }  ───┤
+  │←── { type: "done", ... }   ───┤
+  │                               │
 ```
 
 <Note>
-  In the TUI, events are streamed directly to the terminal. In Telegram, the full response is sent as a single message after all tool rounds complete.
+  The Chat API and Management API use separate tokens and run on separate ports. A management token cannot be used on the chat port, and vice versa.
 </Note>

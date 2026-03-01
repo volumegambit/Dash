@@ -3,7 +3,7 @@ title: "Introduction"
 description: "Dash is a desktop-first, private-cloud-first platform for safely deploying autonomous AI agents."
 ---
 
-Dash is a desktop-first, private-cloud-first platform that empowers anyone to safely deploy autonomous "claw" agents within minutes. Bring your preferred AI model, connect to platforms like Telegram, and put your agents to work — all while maintaining absolute control over your private data.
+Dash is a desktop-first, private-cloud-first platform that empowers anyone to safely deploy autonomous "claw" agents within minutes. Bring your preferred AI model, connect via WebSocket or the terminal UI, and put your agents to work — all while maintaining absolute control over your private data.
 
 We believe the best way to discover AI's potential is by easily experimenting with it. Dash accelerates how you launch personal and professional agents by prioritizing security from the ground up:
 
@@ -20,8 +20,8 @@ We believe the best way to discover AI's potential is by easily experimenting wi
   <Card title="Bring your own model" icon="microchip">
     Connect to Anthropic, OpenAI, Google, or any LLM provider you choose.
   </Card>
-  <Card title="Multi-channel" icon="messages">
-    Interact with agents through Telegram, a terminal UI, or add your own channel adapter.
+  <Card title="WebSocket Chat API" icon="plug">
+    Connect any client to your agents over a real-time WebSocket protocol with streaming events.
   </Card>
   <Card title="Safe defaults" icon="shield">
     Secrets are separated from config, agents are sandboxed, and access controls are built in.
@@ -30,26 +30,27 @@ We believe the best way to discover AI's potential is by easily experimenting wi
     Simple JSON configuration, Docker deployment, and clear documentation.
   </Card>
   <Card title="Multi-agent" icon="users">
-    Define multiple agents with different models, tools, and system prompts. Bind each to a channel.
+    Define multiple agents with different models, tools, and system prompts. Access each by name.
   </Card>
 </CardGroup>
 
 ## Architecture
 
-Five packages organized in a layered dependency graph:
+Packages organized in a layered dependency graph:
 
 ```
-server → channels → agent → llm
-              tui ↗
+agent server → management → agent → llm
+                    tui ↗
 ```
 
 | Package | Role |
 |---------|------|
 | `@dash/llm` | LLM provider abstraction and Anthropic streaming |
 | `@dash/agent` | Agent orchestration, sessions, and tool execution |
-| `@dash/channels` | Channel adapters (Telegram) and message routing |
-| `@dash/server` | Entry point, config loading, and gateway wiring |
+| `@dash/management` | Management API (HTTP) and Chat API (WebSocket) |
+| `@dash/app` | Entry point, config loading, and server startup |
 | `@dash/tui` | Terminal UI / CLI entry point |
+| `@dash/mc` | Deployment registry and secrets store |
 
 ## Quick start
 
@@ -69,7 +70,7 @@ server → channels → agent → llm
   </Step>
   <Step title="Run the TUI">
     ```bash
-    npm run dev --workspace=packages/tui
+    npm run tui
     ```
   </Step>
 </Steps>

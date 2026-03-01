@@ -1,6 +1,6 @@
 ---
 title: "Configuration"
-description: "Configure agents, channels, sessions, and credentials through JSON config files and environment variables."
+description: "Configure agents, sessions, and credentials through JSON config files, environment variables, and CLI flags."
 ---
 
 Dash loads configuration from three sources, merged in this order (later wins):
@@ -9,7 +9,7 @@ Dash loads configuration from three sources, merged in this order (later wins):
 2. **JSON config file** — `config/dash.json` or `dash.json` at the project root
 3. **Environment variables** — override specific values (via `.env` or shell)
 
-Credentials can also be loaded from `config/credentials.json` or `credentials.json`, but environment variables always take precedence.
+Credentials can also be loaded from `config/credentials.json` or `credentials.json`, but environment variables always take precedence. For deployed agents, the `--secrets` flag provides a secure alternative (see [CLI flags](#cli-flags)).
 
 ## Config file schema
 
@@ -23,15 +23,6 @@ Credentials can also be loaded from `config/credentials.json` or `credentials.js
       "maxTokens": 4096,
       "workspace": "./data/workspace",
       "thinking": { "budgetTokens": 10000 }
-    }
-  },
-  "channels": {
-    "telegram": {
-      "agent": "default",
-      "allowedUsers": ["123456789", "@username"]
-    },
-    "cli": {
-      "agent": "default"
     }
   },
   "sessions": {
@@ -81,19 +72,6 @@ Each key under `agents` defines a named agent configuration.
 }
 ```
 
-## Channels
-
-Each key under `channels` maps a channel name to an agent.
-
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `agent` | `string` | yes | Name of the agent (must match a key in `agents`) |
-| `allowedUsers` | `string[]` | no | Telegram-only: user IDs or @usernames allowed to interact |
-
-The channel name determines which adapter is used:
-- `telegram` — Telegram bot (polling mode)
-- `cli` — TUI terminal interface
-
 ## Sessions
 
 | Field | Type | Default | Description |
@@ -121,9 +99,6 @@ When no config file is found, Dash uses these defaults:
       "workspace": "./data/workspace"
     }
   },
-  "channels": {
-    "telegram": { "agent": "default", "allowedUsers": [] }
-  },
   "sessions": { "dir": "./data/sessions" },
   "logging": { "level": "info" }
 }
@@ -134,9 +109,37 @@ When no config file is found, Dash uses these defaults:
 | Variable | Overrides | Description |
 |----------|-----------|-------------|
 | `ANTHROPIC_API_KEY` | `credentials.json → anthropic.apiKey` | Anthropic API key (required) |
-| `TELEGRAM_BOT_TOKEN` | `credentials.json → telegram.botToken` | Telegram bot token (required for server mode) |
-| `TELEGRAM_ALLOWED_USERS` | `channels.telegram.allowedUsers` | Comma-separated user IDs or @usernames |
+| `MANAGEMENT_API_TOKEN` | — | Enables the Management API when set |
+| `MANAGEMENT_API_PORT` | — | Management API port (default: `9100`) |
+| `CHAT_API_TOKEN` | — | Enables the Chat API when set |
+| `CHAT_API_PORT` | — | Chat API port (default: `9101`) |
 | `LOG_LEVEL` | `logging.level` | Log level override |
+
+## CLI flags
+
+The agent server accepts `--config` and `--secrets` flags for deployment scenarios where environment variables and project-relative config files aren't practical.
+
+```bash
+node apps/dash/dist/index.js --config /path/to/dash.json --secrets /path/to/secrets.json
+```
+
+### `--config <path>`
+
+Load the JSON config file from an explicit path instead of searching `config/dash.json` or `dash.json` at the project root.
+
+### `--secrets <path>`
+
+Load secrets from a JSON file. The file is read once and then **deleted** immediately. This is designed for deployment systems that write a temporary secrets file for the agent to consume.
+
+```json
+{
+  "anthropicApiKey": "sk-ant-...",
+  "managementToken": "mgmt-...",
+  "chatToken": "chat-..."
+}
+```
+
+When a secrets file is provided, it takes precedence over environment variables and `credentials.json`.
 
 ## Deep merge behavior
 

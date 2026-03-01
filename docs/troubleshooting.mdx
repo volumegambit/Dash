@@ -15,35 +15,25 @@ description: "Common errors, their causes, and how to fix them."
     **Fix:** Set `ANTHROPIC_API_KEY` in your `.env` file or `config/credentials.json`. See [getting started](/getting-started#configuration).
   </Accordion>
 
-  <Accordion title="Missing Telegram token">
-    **Error (server mode):**
-    ```
-    Missing TELEGRAM_BOT_TOKEN. Set it in config/credentials.json or as an env var.
-    ```
+  <Accordion title="Chat API connection refused">
+    **Symptom:** WebSocket connection to `ws://localhost:9101/ws` is refused.
 
-    **Fix:** Set `TELEGRAM_BOT_TOKEN` in `.env` or `config/credentials.json`. If you only want to use the TUI, run `npm run dev --workspace=packages/tui` instead — it doesn't require a Telegram token.
+    **Fix:** Make sure `CHAT_API_TOKEN` is set in your environment or secrets file. The Chat API only starts when a token is configured. Check the server logs for "Chat API listening on port 9101".
   </Accordion>
 
-  <Accordion title="Agent not found">
-    **Error:**
-    ```
-    Agent "myagent" not found. Available: default, coder
-    ```
+  <Accordion title="Chat API unauthorized (4001)">
+    **Symptom:** WebSocket connection closes immediately with code `4001`.
 
-    **Fix:** The `agent` field in your channel config references an agent name that doesn't exist in `agents`. Check `config/dash.json` and make sure the channel's `agent` value matches a key in the `agents` object.
+    **Fix:** Include the correct token as a query parameter: `ws://localhost:9101/ws?token=your-chat-token`. Make sure you're using the chat token, not the management token — they are separate.
   </Accordion>
 
-  <Accordion title="Telegram 409 conflict">
-    **Error:**
-    ```
-    Telegram bot error: 409: Conflict: terminated by other getUpdates request
+  <Accordion title="Unknown agent error">
+    **Error (via Chat API):**
+    ```json
+    { "type": "error", "id": "...", "error": "Unknown agent: myagent" }
     ```
 
-    **Cause:** Another instance of the bot is already polling. Only one process can poll a Telegram bot at a time.
-
-    **Fix:**
-    - Stop the other instance (check for running Docker containers or background processes)
-    - Dash drops pending updates on startup to mitigate stale sessions, but it can't fix a concurrent polling conflict
+    **Fix:** The `agent` field in your message references an agent name that doesn't exist in the config. Check `config/dash.json` and make sure the agent name matches a key in the `agents` object.
   </Accordion>
 
   <Accordion title="Config not found (TUI)">
