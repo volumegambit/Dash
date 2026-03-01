@@ -11,6 +11,8 @@ Dash loads configuration from three sources, merged in this order (later wins):
 
 Credentials can also be loaded from `config/credentials.json` or `credentials.json`, but environment variables always take precedence. For deployed agents, the `--secrets` flag provides a secure alternative (see [CLI flags](#cli-flags)).
 
+For Mission Control users, secrets are stored in an encrypted file — see [encrypted secrets](#encrypted-secrets) below.
+
 ## Config file schema
 
 ```json
@@ -170,6 +172,43 @@ Load secrets from a JSON file. The file is read once and then **deleted** immedi
 ```
 
 When a secrets file is provided, it takes precedence over environment variables and `credentials.json`.
+
+## Encrypted secrets
+
+Mission Control (desktop app and CLI) stores secrets in an AES-256-GCM encrypted file at `~/.mission-control/secrets.enc`. This replaces plaintext storage and protects API keys, tokens, and credentials at rest.
+
+### How it works
+
+1. On first use, you create an encryption password (minimum 8 characters)
+2. A 256-bit key is derived from your password using scrypt
+3. Secrets are encrypted and written to `secrets.enc` with 0600 file permissions
+4. The derived key is cached in your OS keychain (macOS Keychain or Linux `secret-tool`) so you don't need to re-enter your password on every command
+
+### CLI commands
+
+```bash
+mc secrets list                  # List all secret key names
+mc secrets get <key>             # Show a masked secret value
+mc secrets get <key> --reveal    # Show the full value (for scripting)
+mc secrets set <key>             # Store a secret (prompts for value)
+mc secrets set <key> --value v   # Store a secret inline
+mc secrets delete <key>          # Remove a secret
+mc secrets change-password       # Re-encrypt with a new password
+mc unlock                        # Unlock the store (cache key in keychain)
+mc lock                          # Clear the cached key from the keychain
+```
+
+### Migration from plaintext
+
+If you have an existing `~/.mission-control/secrets.json` from before encryption was added, it's migrated automatically. The first command that accesses secrets will prompt you to create a password, encrypt the existing data, and delete the plaintext file.
+
+### Credential precedence
+
+When Mission Control deploys an agent, secrets are injected via a temporary file (read once, then deleted). The agent server resolves credentials in this order:
+
+1. `--secrets` file (highest priority)
+2. Environment variables (`.env` or shell)
+3. `config/credentials.json`
 
 ## Deep merge behavior
 

@@ -29,11 +29,24 @@ Get your first agent running in a few minutes. Dash runs entirely on your machin
 
 ## Configuration
 
-Set up your credentials using either environment variables or a credentials file.
+Set up your credentials. There are several options depending on how you're running Dash.
 
 <Tabs>
+  <Tab title="Mission Control (recommended)">
+    When using Mission Control (desktop app or CLI), secrets are stored in an encrypted file at `~/.mission-control/secrets.enc`. The first time you run a command, you'll be prompted to create an encryption password:
+
+    ```bash
+    npm run mc-cli -- secrets set anthropic-api-key
+    # Create encryption password: ********
+    # Confirm password: ********
+    # Value for 'anthropic-api-key': sk-ant-...
+    # Secret 'anthropic-api-key' stored.
+    ```
+
+    Your password-derived key is cached in the OS keychain (macOS Keychain / Linux secret-tool), so subsequent commands don't prompt again. Use `mc lock` to clear the cache.
+  </Tab>
   <Tab title="Environment variables">
-    Copy the example `.env` file and fill in your key:
+    For the agent server and TUI, set your key in a `.env` file:
 
     ```bash
     cp .env.example .env
@@ -66,7 +79,7 @@ Set up your credentials using either environment variables or a credentials file
 </Tabs>
 
 <Note>
-  Environment variables take precedence over `credentials.json` when both are set.
+  For the agent server: environment variables take precedence over `credentials.json`. For Mission Control deployments: the encrypted secret store is the primary source, and secrets are injected into agents via temporary read-then-delete files.
 </Note>
 
 ### Agent configuration
