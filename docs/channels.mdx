@@ -1,9 +1,9 @@
 ---
 title: "Channels"
-description: "Interact with agents through the terminal UI or the WebSocket Chat API."
+description: "Interact with agents through the terminal UI, the gateway, or the WebSocket Chat API."
 ---
 
-Dash provides two ways to interact with agents: the TUI for local terminal use and the Chat API for programmatic access over WebSocket.
+Dash provides several ways to interact with agents: the TUI for local terminal use, the gateway for channel routing (Telegram, Mission Control chat), and the Chat API for direct programmatic access over WebSocket.
 
 ## TUI (terminal)
 
@@ -27,9 +27,73 @@ npm run tui
 
 Each TUI session creates a conversation ID in the format `cli:<timestamp>`. Sessions are persisted to the JSONL session store but currently cannot be resumed — each TUI launch starts a new conversation.
 
+## Gateway
+
+The gateway is a separate process that owns all channel connections and routes messages to agents via the Chat API. Mission Control's chat panel connects through the gateway — MC chat is just another channel.
+
+### Running
+
+```bash
+npm run gateway -- --config gateway.json
+```
+
+### Configuration
+
+Create a `gateway.json` file that maps channels to agents:
+
+```json
+{
+  "channels": {
+    "telegram": {
+      "adapter": "telegram",
+      "token": "your-telegram-bot-token",
+      "allowedUsers": ["@yourusername"],
+      "agent": "default"
+    },
+    "mission-control": {
+      "adapter": "mission-control",
+      "port": 9200,
+      "agent": "default"
+    }
+  },
+  "agents": {
+    "default": {
+      "url": "ws://localhost:9101/ws",
+      "token": "your-chat-api-token"
+    }
+  }
+}
+```
+
+Each channel specifies an `adapter` type and which `agent` to route messages to. The `agents` section defines how to connect to agent servers via the Chat API.
+
+### Supported adapters
+
+| Adapter | Description | Config fields |
+|---------|-------------|---------------|
+| `telegram` | Telegram bot via grammY | `token` (required), `allowedUsers` (optional) |
+| `mission-control` | WebSocket server for Mission Control chat | `port` (default: 9200) |
+
+### Secrets
+
+For production, use `--secrets` to pass tokens securely:
+
+```bash
+npm run gateway -- --config gateway.json --secrets secrets.json
+```
+
+The secrets file is deleted after reading. It can override agent tokens and channel tokens:
+
+```json
+{
+  "agents": { "default": { "token": "secret-chat-token" } },
+  "channels": { "telegram": { "token": "secret-bot-token" } }
+}
+```
+
 ## Chat API (WebSocket)
 
-The agent server exposes a WebSocket endpoint for real-time agent interaction. Enable it by setting `CHAT_API_TOKEN` in your environment or via the `--secrets` flag.
+The agent server exposes a WebSocket endpoint for real-time agent interaction. The gateway uses this API to route channel messages to agents, but you can also connect directly. Enable it by setting `CHAT_API_TOKEN` in your environment or via the `--secrets` flag.
 
 ### Connecting
 
