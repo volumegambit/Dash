@@ -1,0 +1,24 @@
+export interface InboundMessage {
+  channelId: string;
+  conversationId: string;
+  senderId: string;
+  senderName: string;
+  text: string;
+  timestamp: Date;
+  raw?: unknown;
+}
+
+export interface OutboundMessage {
+  text: string;
+  parseMode?: 'Markdown' | 'HTML';
+}
+
+export type MessageHandler = (msg: InboundMessage) => Promise<void>;
+
+export interface ChannelAdapter {
+  readonly name: string;
+  start(): Promise<void>;
+  stop(): Promise<void>;
+  send(conversationId: string, message: OutboundMessage): Promise<void>;
+  onMessage(handler: MessageHandler): void;
+}

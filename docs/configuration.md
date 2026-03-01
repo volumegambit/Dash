@@ -1,0 +1,140 @@
+# Configuration
+
+Dash loads configuration from three sources, merged in this order (later wins):
+
+1. **Built-in defaults** — sensible starting values
+2. **JSON config file** — `config/dash.json` or `dash.json` at the project root
+3. **Environment variables** — override specific values (via `.env` or shell)
+
+Credentials can also be loaded from `config/credentials.json` or `credentials.json`, but environment variables always take precedence.
+
+## Config file schema
+
+```json
+{
+  "agents": {
+    "<name>": {
+      "model": "claude-sonnet-4-20250514",
+      "systemPrompt": "You are a helpful assistant.",
+      "tools": ["bash", "read_file"],
+      "maxTokens": 4096,
+      "workspace": "./data/workspace",
+      "thinking": { "budgetTokens": 10000 }
+    }
+  },
+  "channels": {
+    "telegram": {
+      "agent": "default",
+      "allowedUsers": ["123456789", "@username"]
+    },
+    "cli": {
+      "agent": "default"
+    }
+  },
+  "sessions": {
+    "dir": "./data/sessions"
+  },
+  "logging": {
+    "level": "info"
+  }
+}
+```
+
+## Agents
+
+Each key under `agents` defines a named agent configuration.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `model` | `string` | yes | Anthropic model ID (e.g. `claude-sonnet-4-20250514`) |
+| `systemPrompt` | `string` | yes | System prompt sent with every request |
+| `tools` | `string[]` | no | Tool names to enable. Available: `bash`, `read_file` |
+| `maxTokens` | `number` | no | Maximum response tokens (default: `4096`) |
+| `workspace` | `string` | no | Working directory for tools, resolved relative to project root |
+| `thinking` | `object` | no | Enable extended thinking. See [Extended Thinking](extended-thinking.md) |
+| `thinking.budgetTokens` | `number` | — | Token budget for thinking (must be >= 1024, must be < `maxTokens`) |
+
+### Example: multiple agents
+
+```json
+{
+  "agents": {
+    "default": {
+      "model": "claude-sonnet-4-20250514",
+      "systemPrompt": "You are Dash, a helpful AI assistant.",
+      "tools": ["bash", "read_file"],
+      "maxTokens": 4096,
+      "workspace": "./data/workspace"
+    },
+    "coder": {
+      "model": "claude-sonnet-4-20250514",
+      "systemPrompt": "You are Dash Coder, a software engineering assistant.",
+      "tools": ["bash", "read_file"],
+      "maxTokens": 16000,
+      "thinking": { "budgetTokens": 10000 },
+      "workspace": "./data/coder-workspace"
+    }
+  }
+}
+```
+
+## Channels
+
+Each key under `channels` maps a channel name to an agent.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `agent` | `string` | yes | Name of the agent (must match a key in `agents`) |
+| `allowedUsers` | `string[]` | no | Telegram-only: user IDs or @usernames allowed to interact |
+
+The channel name determines which adapter is used:
+- `telegram` — Telegram bot (polling mode)
+- `cli` — TUI terminal interface
+
+## Sessions
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `dir` | `string` | `./data/sessions` | Directory for session JSONL files |
+
+## Logging
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `level` | `string` | `info` | Log level (e.g. `debug`, `info`, `warn`, `error`) |
+
+## Defaults
+
+When no config file is found, Dash uses these defaults:
+
+```json
+{
+  "agents": {
+    "default": {
+      "model": "claude-sonnet-4-20250514",
+      "systemPrompt": "You are Dash, a helpful AI assistant. You can use tools to help accomplish tasks.",
+      "tools": ["bash", "read_file"],
+      "maxTokens": 4096,
+      "workspace": "./data/workspace"
+    }
+  },
+  "channels": {
+    "telegram": { "agent": "default", "allowedUsers": [] }
+  },
+  "sessions": { "dir": "./data/sessions" },
+  "logging": { "level": "info" }
+}
+```
+
+## Environment variables
+
+| Variable | Overrides | Description |
+|----------|-----------|-------------|
+| `ANTHROPIC_API_KEY` | `credentials.json → anthropic.apiKey` | Anthropic API key (required) |
+| `TELEGRAM_BOT_TOKEN` | `credentials.json → telegram.botToken` | Telegram bot token (required for server mode) |
+| `TELEGRAM_ALLOWED_USERS` | `channels.telegram.allowedUsers` | Comma-separated user IDs or @usernames |
+| `LOG_LEVEL` | `logging.level` | Log level override |
+
+## Deep merge behavior
+
+JSON config is deep-merged with defaults. Objects are merged recursively; arrays are **replaced**, not concatenated. This means specifying `tools: ["bash"]` in your config replaces the default `["bash", "read_file"]` entirely.

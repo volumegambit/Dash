@@ -1,0 +1,9 @@
+services:
+  dash:
+    build: .
+    container_name: dash
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - ./data/sessions:/app/data/sessions
+      - ./config:/app/config:ro

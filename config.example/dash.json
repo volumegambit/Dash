@@ -1,0 +1,34 @@
+{
+  "agents": {
+    "default": {
+      "model": "claude-sonnet-4-20250514",
+      "systemPrompt": "You are Dash, a helpful AI assistant. You can use tools to help accomplish tasks.",
+      "tools": ["bash", "read_file"],
+      "maxTokens": 4096,
+      "workspace": "./data/workspace"
+    },
+    "coder": {
+      "model": "claude-sonnet-4-20250514",
+      "systemPrompt": "You are Dash Coder, a software engineering assistant. You help with writing, debugging, and explaining code. Use bash to run commands and read_file to examine source files. Be concise and prefer showing code over lengthy explanations.",
+      "tools": ["bash", "read_file"],
+      "maxTokens": 16000,
+      "thinking": { "budgetTokens": 10000 },
+      "workspace": "./data/coder-workspace"
+    }
+  },
+  "channels": {
+    "telegram": {
+      "agent": "default",
+      "allowedUsers": ["1069354155"]
+    },
+    "cli": {
+      "agent": "coder"
+    }
+  },
+  "sessions": {
+    "dir": "./data/sessions"
+  },
+  "logging": {
+    "level": "info"
+  }
+}

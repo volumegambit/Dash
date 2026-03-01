@@ -1,0 +1,29 @@
+{
+  "name": "dash",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/llm",
+    "packages/agent",
+    "packages/channels",
+    "packages/tui",
+    "packages/server"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "dev": "npm run dev --workspace=packages/server",
+    "test": "vitest run",
+    "lint": "biome check .",
+    "lint:fix": "biome check --write .",
+    "clean": "rm -rf packages/*/dist"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^1.9.0",
+    "tsup": "^8.3.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}
