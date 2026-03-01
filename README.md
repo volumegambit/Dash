@@ -65,7 +65,7 @@ Everything can run on a single machine for development, or split across machines
 |---------|-------------|
 | `@dash/agent-server` | Headless server that wires up agents and starts the management + chat APIs |
 | `@dash/gateway` | Channel gateway — routes Telegram, MC chat, and other channels to agents |
-| `@dash/tui` | Interactive terminal UI — connects directly to an agent, no server needed |
+| `@dash/tui` | Built-in terminal interface within Mission Control for quick agent interaction |
 | `@dash/mission-control` | Desktop app for managing agent deployments and chatting (Electron + React) |
 | `@dash/mc-cli` | CLI equivalent of Mission Control — `deploy`, `status`, `stop`, `remove`, `logs`, `health`, `info` |
 
