@@ -14,3 +14,5 @@ export { DashAgent } from './agent.js';
 export { JsonlSessionStore } from './session.js';
 export { NativeBackend } from './backends/native.js';
 export { resolveTools, BashTool, ReadFileTool } from './tools/index.js';
+export type { AgentClient } from './client.js';
+export { LocalAgentClient } from './client.js';

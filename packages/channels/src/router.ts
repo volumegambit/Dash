@@ -1,10 +1,10 @@
-import type { DashAgent } from '@dash/agent';
+import type { AgentClient } from '@dash/agent';
 import type { ChannelAdapter, InboundMessage } from './types.js';
 
 export class MessageRouter {
   private adapters: { adapter: ChannelAdapter; agentName: string }[] = [];
 
-  constructor(private agents: Map<string, DashAgent>) {}
+  constructor(private agents: Map<string, AgentClient>) {}
 
   addAdapter(adapter: ChannelAdapter, agentName: string): void {
     if (!this.agents.has(agentName)) {
