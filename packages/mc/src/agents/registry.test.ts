@@ -16,10 +16,12 @@ describe('AgentRegistry', () => {
     status: 'running',
     config: {
       target: 'local',
-      agent: {
-        name: 'default',
-        model: 'claude-sonnet-4-20250514',
-        systemPrompt: 'You are a test agent.',
+      agents: {
+        default: {
+          name: 'default',
+          model: 'claude-sonnet-4-20250514',
+          systemPrompt: 'You are a test agent.',
+        },
       },
       channels: {},
     },
