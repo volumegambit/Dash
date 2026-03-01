@@ -24,32 +24,34 @@ Run on your own hardware or private cloud. Your data never leaves your infrastru
 ## Architecture
 
 ```
-              ┌──────────────┐
-              │  agent server │  config, management + chat servers
-              └──────┬───────┘
-       ┌─────────────┼──────────────┐
-       v             v              v
-  ┌────────┐  ┌────────────┐  ┌──────────┐
-  │channels│  │ management │  │   chat   │
-  └────┬───┘  └──────┬─────┘  └────┬─────┘
-       │             │             │
-       └─────────────┼─────────────┘
-                     v
-              ┌────────────┐
-              │   agent    │  tools, sessions, orchestration
-              └──────┬─────┘
-                     v
-              ┌────────────┐
-              │    llm     │
-              └────────────┘
+  ┌────────────────┐
+  │  agent-server   │  wires up agents, starts both servers
+  └───┬─────────┬───┘
+      │         │
+      v         v
+  ┌──────┐  ┌────────────┐
+  │ chat │  │ management │
+  └──┬───┘  └────────────┘
+     v
+  ┌───────┐
+  │ agent │  tools, sessions, orchestration
+  └──┬────┘
+     v
+  ┌─────┐
+  │ llm │
+  └─────┘
 
-  ┌─────┐                    ┌──────────────────┐
-  │ tui │→ agent + llm       │ mission-control   │→ mc → management
-  └─────┘                    │ mc-cli            │
-                             └──────────────────┘
+  ┌─────┐
+  │ tui │ → agent, llm
+  └─────┘
+
+  ┌──────────────────┐
+  │ mission-control   │ → mc → management
+  │ mc-cli            │
+  └──────────────────┘
 ```
 
-The agent server runs two servers: a **Management API** (HTTP, port 9100) for health/info/shutdown and a **Chat API** (WebSocket, port 9101) for real-time agent interaction. Each uses its own auth token. Channel adapters (Telegram) connect via the message router.
+The agent server starts two servers: a **Management API** (HTTP, port 9100) for health/info/shutdown and a **Chat API** (WebSocket, port 9101) for real-time agent interaction. Each uses its own auth token. The `tui` connects directly to an agent without the server. Mission Control and `mc-cli` connect to remote agent servers via the management API.
 
 **Libraries** (`packages/`) — ordered by dependency layer, foundational first:
 

@@ -1,56 +1,65 @@
 ---
 title: "Architecture"
-description: "Technical overview of Dash's package structure, data flow, session format, and build system."
+description: "How Dash is structured, how data flows, and how agents process messages."
 ---
 
-Dash is a TypeScript monorepo designed for safe, private deployment of autonomous AI agents. Packages are organized in a layered dependency graph, with each agent isolated and sandboxed by default.
+Dash is a TypeScript monorepo for deploying autonomous AI agents. It runs as a headless server with two APIs, or as a standalone terminal UI.
 
-## Package dependency graph
+## System overview
 
 ```
-                ┌──────────────┐
-                │  agent server │  entry point, config, servers
-                └──────┬───────┘
-        ┌──────────────┼──────────────┐
-        v              v              │
-   ┌────────┐   ┌────────────┐       │
-   │  tui   │   │ management │       │
-   └────┬───┘   └──────┬─────┘       │
-        │              │              │
-        v              v              │
-   ┌──────────────────────────────────┘
-   │         agent                    │
-   │  (orchestration, tools,          │
-   │   sessions)                      │
-   └──────────────┬───────────────────┘
-                  v
-            ┌──────────┐
-            │   llm    │
-            └──────────┘
+  ┌────────────────┐
+  │  agent-server   │  loads config, creates agents, starts servers
+  └───┬─────────┬───┘
+      │         │
+      v         v
+  ┌──────┐  ┌────────────┐
+  │ chat │  │ management │
+  └──┬───┘  └────────────┘
+     v         WebSocket (9101)    HTTP (9100)
+  ┌───────┐
+  │ agent │  tools, sessions, orchestration
+  └──┬────┘
+     v
+  ┌─────┐
+  │ llm │  Anthropic API
+  └─────┘
+
+  ┌─────┐
+  │ tui │ → agent, llm (standalone, no server)
+  └─────┘
+
+  ┌──────────────────┐
+  │ mission-control   │ → mc → management (remote)
+  │ mc-cli            │
+  └──────────────────┘
 ```
 
-Dependency flow: `llm` → `agent` → `management` → `agent server`. The `tui` package depends on `agent` and `llm` directly (it has its own config loading, independent of the agent server). The `mc` package depends on `management` for deployment orchestration.
+The **agent server** is the main deployment target. It creates agents from config and exposes them through two servers. The **TUI** is a standalone alternative that connects directly to an agent in-process. **Mission Control** (desktop app or CLI) manages remote agent server deployments via the management API.
 
-## Package responsibilities
+## Components
 
 <AccordionGroup>
-  <Accordion title="@dash/llm" icon="microchip">
-    LLM provider abstraction layer. Defines the core types (`Message`, `ContentBlock`, `CompletionRequest/Response`, `StreamChunk`) and the `LlmProvider` interface. The `AnthropicProvider` implements streaming via the `@anthropic-ai/sdk`, converting between Dash's type system and Anthropic's SDK types. Handles extended thinking blocks, tool use blocks, and content block serialization. The `ProviderRegistry` maps model name prefixes to providers.
+  <Accordion title="LLM layer" icon="microchip">
+    Abstraction over LLM provider APIs. Currently supports Anthropic (Claude). Handles streaming responses, extended thinking blocks, and tool use blocks. Model names are resolved to providers automatically — any model starting with `claude-` routes to Anthropic.
   </Accordion>
-  <Accordion title="@dash/agent" icon="robot">
-    Agent orchestration layer. `DashAgent` manages the conversation loop: loading sessions, appending messages, delegating to a backend, and persisting results. `NativeBackend` implements the agent loop — it streams LLM responses, detects tool use, executes tools, and loops until the model produces a final text response (up to 25 tool rounds). The tool system (`BashTool`, `ReadFileTool`) provides workspace-sandboxed command execution and file reading. `JsonlSessionStore` handles append-only session persistence. Defines the `AgentClient` interface and `LocalAgentClient` for in-process agent access.
+  <Accordion title="Agent" icon="robot">
+    The core runtime. An agent manages conversations: it loads session history, sends messages to the LLM, executes tools when the model requests them, and persists everything to disk. Agents loop automatically — if the model asks to run a tool, the agent executes it and sends the result back until the model produces a final response (up to 25 rounds).
   </Accordion>
-  <Accordion title="@dash/management" icon="tower-control">
-    Server infrastructure layer. Provides the Management API (HTTP server with health, info, and shutdown endpoints) and the Chat API (WebSocket server for real-time agent interaction). Also provides `ManagementClient` for HTTP access and `RemoteAgentClient` for connecting to the Chat API as a client.
+  <Accordion title="Chat API" icon="comments">
+    WebSocket server (port 9101) for real-time agent interaction. Clients connect, send messages, and receive a stream of events (text deltas, tool executions, final responses) as they happen. Supports multiple concurrent conversations on a single connection via message ID correlation.
   </Accordion>
-  <Accordion title="@dash/tui" icon="terminal">
-    Terminal UI package. An interactive REPL that connects directly to an agent (bypassing the agent server). Loads its own config from `config/dash.json`, creates an `AnthropicProvider` and `NativeBackend`, and renders streaming output with ANSI formatting. Shows a spinner during inference, formatted tool execution blocks, and token usage stats.
+  <Accordion title="Management API" icon="tower-control">
+    HTTP server (port 9100) for operational control. Provides health checks (`/health`), server info (`/info`), and graceful shutdown (`/lifecycle/shutdown`). Used by Mission Control to monitor and manage remote deployments.
   </Accordion>
-  <Accordion title="@dash/agent-server" icon="server">
-    Entry point for server mode. Loads `.env`, reads config via `loadConfig()`, creates agents as `LocalAgentClient` instances, and starts two servers: the Management API (HTTP) and the Chat API (WebSocket). Supports `--config` and `--secrets` CLI flags for deployment.
+  <Accordion title="Agent server" icon="server">
+    The main entry point. Reads config files and environment variables, creates agents with their assigned models and tools, and starts both the Chat API and Management API. Supports `--config` and `--secrets` CLI flags for production deployments.
   </Accordion>
-  <Accordion title="@dash/mc" icon="grid-2">
-    Mission Control support package. Provides the agent deployment registry, secrets store, and `AgentConnector` for resolving deployments to management clients.
+  <Accordion title="TUI" icon="terminal">
+    An interactive terminal interface. Connects directly to an agent in-process — no server needed. Useful for local development and quick experimentation. Renders streaming output with formatting, shows tool executions, and displays token usage.
+  </Accordion>
+  <Accordion title="Mission Control" icon="grid-2">
+    Desktop app (Electron) and CLI for managing agent deployments across machines. Stores deployment records and secrets locally, connects to remote agent servers via their management APIs. The CLI provides `health` and `info` commands; the desktop app adds a visual interface.
   </Accordion>
 </AccordionGroup>
 
@@ -65,49 +74,32 @@ The agent server runs two separate servers with independent authentication:
 
 Both servers bind to `127.0.0.1` by default. Each has its own token — a management token cannot be used on the chat port, and vice versa.
 
-## Data flow
+## Message flow
 
-### User message to response (Chat API)
+When a client sends a message through the Chat API:
 
-```
-Client connects to ws://host:9101/ws?token=...
-  │
-  v
-Client sends: { type: "message", id, agent, channelId, conversationId, text }
-  │
-  v
-Chat server resolves agent by name
-  │
-  v
-AgentClient.chat(channelId, conversationId, text)
-  │
-  ├─ Load or create session (JSONL)
-  ├─ Append user message to session
-  │
-  v
-NativeBackend.run(state)
-  │
-  ├─ LlmProvider.stream(request)  ──→  Anthropic API
-  ├─ Server sends: { type: "event", id, event } for each AgentEvent
-  │
-  ├─ If stopReason == "tool_use":
-  │     ├─ Execute tool(s)
-  │     ├─ Send tool_result events
-  │     ├─ Append tool results to messages
-  │     └─ Loop (next LLM round, up to 25 rounds)
-  │
-  ├─ If stopReason == "end_turn":
-  │     ├─ Send final response event
-  │     └─ Append assistant message to session
-  │
-  v
-Persist new messages to JSONL
-  │
-  v
-Server sends: { type: "done", id }
-```
+<Steps>
+  <Step title="Connect and authenticate">
+    Client opens a WebSocket to `ws://host:9101/ws?token=...`
+  </Step>
+  <Step title="Send a message">
+    Client sends a JSON message with the agent name, conversation ID, and text
+  </Step>
+  <Step title="Agent processes">
+    The agent loads the conversation's session history, appends the new message, and streams it to the LLM
+  </Step>
+  <Step title="Stream events">
+    As the LLM responds, events are streamed back in real time — text deltas, tool executions, and tool results
+  </Step>
+  <Step title="Tool loop">
+    If the model requests a tool (e.g., running a shell command), the agent executes it and sends the result back to the LLM. This can repeat up to 25 times per message
+  </Step>
+  <Step title="Final response">
+    When the model finishes, the agent persists the full conversation and sends a completion signal
+  </Step>
+</Steps>
 
-### WebSocket message protocol
+## WebSocket protocol
 
 **Client → Server:**
 
@@ -120,96 +112,21 @@ Server sends: { type: "done", id }
 
 | Type | Fields | Description |
 |------|--------|-------------|
-| `event` | `id`, `event` | An `AgentEvent` (text_delta, tool_use, response, etc.) |
+| `event` | `id`, `event` | A streaming event (text delta, tool use, response, etc.) |
 | `done` | `id` | Stream complete for this request |
 | `error` | `id`, `error` | Error message |
 
 The `id` field correlates requests with responses, allowing multiple concurrent requests on a single connection.
 
-## Agent loop
-
-The `NativeBackend` implements a loop that allows the model to use tools iteratively:
-
-<Steps>
-  <Step title="Stream LLM response">
-    Send messages + tools to the LLM via streaming
-  </Step>
-  <Step title="Collect blocks">
-    Collect text, thinking, and tool use blocks from the stream
-  </Step>
-  <Step title="Handle tool use">
-    If the model requests tool use (`stopReason: "tool_use"`):
-    - Execute each tool and yield `tool_result` events
-    - Append the assistant message and tool results to the session
-    - Loop back to step 1 with the updated message history
-  </Step>
-  <Step title="Return response">
-    If the model finishes (`stopReason: "end_turn"`):
-    - Yield the final `response` event with accumulated token usage
-    - Return
-  </Step>
-</Steps>
-
-<Note>
-  The loop is capped at **25 tool rounds** to prevent runaway execution. If the limit is reached, the last available text is returned.
-</Note>
-
-## Content block system
-
-Messages carry `content: string | ContentBlock[]`. When content is a plain string, it's a simple text message. When it's `ContentBlock[]`, it contains structured blocks:
-
-| Block type | Description |
-|------------|-------------|
-| `TextBlock` | Visible text content (`{ type: "text", text: "..." }`) |
-| `ToolUseBlock` | Tool call request (`{ type: "tool_use", id, name, input }`) |
-| `ToolResultBlock` | Tool execution result (`{ type: "tool_result", tool_use_id, content, is_error }`) |
-| `ThinkingBlock` | Model's internal reasoning (`{ type: "thinking", thinking, signature }`) |
-| `RedactedThinkingBlock` | Redacted thinking (`{ type: "redacted_thinking", data }`) |
-
 ## Session persistence
 
-Sessions are stored as append-only JSONL (one JSON object per line) files.
-
-### Directory layout
+Conversations are stored as append-only JSONL files (one JSON object per line):
 
 ```
-{sessionDir}/{channelId}/{conversationId}/session.jsonl
+data/sessions/{channelId}/{conversationId}/session.jsonl
 ```
 
-Example:
-
-```
-data/sessions/ws/client-123/session.jsonl
-data/sessions/cli/cli:1706123456789/session.jsonl
-```
-
-### Entry types
-
-Each line in a session file is a `SessionEntry`:
-
-```typescript
-interface SessionEntry {
-  timestamp: string;        // ISO 8601
-  type: 'message' | 'response' | 'tool_call' | 'tool_result' | 'error';
-  data: Record<string, unknown>;
-}
-```
-
-| Type | Data | Description |
-|------|------|-------------|
-| `message` | `{ role: "user", content: "..." }` | User message |
-| `response` | `{ content: "..." \| ContentBlock[] }` | Assistant response |
-| `tool_result` | `{ content: ContentBlock[] }` | Tool execution results |
-
-On load, entries are replayed in order to reconstruct the message array for the session.
-
-## Build system
-
-- **tsup** — each package builds from `src/index.ts` to `dist/` as ESM
-- **TypeScript 5.7+** — strict mode, ES2024 target, NodeNext module resolution
-- **Biome** — linting and formatting (2-space indent, single quotes, semicolons)
-- **Vitest** — test runner with globals enabled
-- **npm workspaces** — monorepo management, `npm run build` builds all packages
+Each line records a timestamped event — user messages, assistant responses, and tool results. When an agent loads a session, it replays these entries to reconstruct the conversation history. This format is simple, crash-safe (partial writes don't corrupt earlier entries), and easy to inspect.
 
 ## Docker
 
@@ -217,13 +134,13 @@ Multi-stage build using `node:22-slim`:
 
 <Steps>
   <Step title="Builder stage">
-    `npm ci`, copy source, `npm run build`
+    Install dependencies, compile TypeScript
   </Step>
   <Step title="Production stage">
-    `npm ci --omit=dev`, copy `dist/` from builder
+    Production dependencies only, compiled output from builder
   </Step>
   <Step title="Entry point">
-    `node apps/dash/dist/index.js`
+    Starts the agent server
   </Step>
 </Steps>
 
