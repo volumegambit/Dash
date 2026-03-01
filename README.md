@@ -9,7 +9,17 @@
 [![Docker](https://img.shields.io/badge/Docker-ready-2496ED?logo=docker&logoColor=white)](https://www.docker.com)
 [![License](https://img.shields.io/badge/license-private-red)]()
 
-Multi-channel AI agent system. TypeScript monorepo that connects LLM providers (Anthropic, OpenAI, Google) to messaging channels (Telegram, CLI) with tool use, session persistence, and a terminal UI.
+Dash helps non-technical users safely deploy autonomous "claw" agents on their own machines or private cloud. Agents connect to the LLM provider of your choice and integrate with messaging channels like Telegram — all while keeping your data private and under your control.
+
+We believe that helping people accelerate the deployment of their personal or work agents is the best way to help everyone experiment and understand how AI can make their lives better. This has to be done safely: Dash provides secure defaults, proper secrets management, and isolation for each individual agent's autonomous powers.
+
+## Why Dash?
+
+- **Private by design** — Run on your own hardware or private cloud. Your data never leaves your infrastructure.
+- **Bring your own model** — Connect to Anthropic, OpenAI, Google, or any LLM provider you choose.
+- **Multi-channel** — Interact with your agents through Telegram, a terminal UI, or add your own channel adapter.
+- **Safe defaults** — Secrets are separated from config, agents are sandboxed, and access controls are built in.
+- **Non-technical friendly** — Simple JSON configuration, Docker deployment, and clear documentation.
 
 ## Architecture
 
