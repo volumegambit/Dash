@@ -3,7 +3,11 @@ node_modules/
 
 # Build output
 dist/
+out/
 *.tsbuildinfo
+
+# Auto-generated
+routeTree.gen.ts
 
 # Environment & secrets
 .env

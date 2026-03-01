@@ -57,7 +57,7 @@ Mission Control is a desktop application (Electron) and CLI tool that manages th
 | Docker | dockerode | Programmatic Docker API from Node.js |
 | SSH | ssh2 | Pure JS SSH client, no native deps |
 | Cloud | do-wrapper or raw fetch | DigitalOcean API v2 |
-| Secrets | OS keychain (keytar) | Shared keychain access across desktop and CLI interfaces |
+| Secrets | FileSecretStore (pure JS) | File-based with 0600 permissions, no native deps, shared across desktop and CLI |
 | Packaging | electron-builder | Cross-platform builds, auto-update |
 
 ---
@@ -847,31 +847,81 @@ When the user changes agent config (model, system prompt, tools, channels) in Mi
 ### Phase 2b: Mission Control Desktop Shell
 **Goal**: Electron app launches with React UI, navigation works, trivial IPC proves the bridge.
 
+**Architecture decisions:**
+- **Manual electron-vite setup** (not scaffold) — full control, no generated boilerplate to clean up
+- **File-based TanStack Router** — routes as files in `src/renderer/src/routes/`, auto-generated route tree via `@tanstack/router-plugin/vite`. Scales to sub-routes (`/agents/:id`, `/deploy/local`)
+- **Tailwind CSS 4** — CSS-first config via `@import 'tailwindcss'` + `@theme`, `@tailwindcss/vite` plugin. No `tailwind.config.js`
+- **IPC type safety** — shared TypeScript interface in `src/shared/ipc.ts` consumed by preload (implements via `ipcRenderer.invoke`) and main (handles via `ipcMain.handle`). Renderer accesses `window.api` with full type safety
+- **Dark theme only** — desktop app, always dark. Custom CSS theme variables
+- **Electron in devDependencies** — it's a build tool, not a runtime dependency for other packages. Keeps `npm install` lighter for non-Electron development
+
 **Steps:**
-1. Initialize `apps/mission-control/` with `electron-vite`:
-   - Configure `electron.vite.config.ts` for main/preload/renderer
-   - Add `electron-builder.yml` for packaging config
-2. Set up React in renderer:
-   - React 19, TanStack Router, TypeScript
-   - Tailwind CSS 4 configuration
-   - shadcn/ui initialization
-3. Build the app shell:
-   - `Shell.tsx` — sidebar + content layout
-   - `Sidebar.tsx` — navigation links
-   - Placeholder pages: Dashboard, Agents, Deploy, Secrets, Settings
-4. Set up IPC bridge with one trivial command (`app.getVersion`) to prove main↔renderer works:
-   - `src/shared/ipc.ts` — define MissionControlAPI interface
-   - `preload/index.ts` — contextBridge exposing typed API
-   - `main/ipc.ts` — handle `app:getVersion`, delegate to @dash/mc or Electron API
-5. Set up state management:
-   - Zustand store for UI state
-   - TanStack Query provider
-6. Configure build and dev scripts:
-   - `npm run mc:dev` — starts Electron in dev mode with HMR
-   - `npm run mc:build` — builds the Electron app
+1. Initialize `apps/mission-control/` with electron-vite:
+   - `package.json` — name `@dash/mission-control`, electron + electron-vite + electron-builder in devDeps
+   - `electron.vite.config.ts` — three Vite configs (main/preload/renderer) with `externalizeDepsPlugin`, `@tailwindcss/vite`, `@tanstack/router-plugin/vite`, `@vitejs/plugin-react`
+   - `electron-builder.yml` — macOS dmg, Windows nsis, Linux AppImage
+   - `tsconfig.json` — project references to `tsconfig.node.json` (main/preload) and `tsconfig.web.json` (renderer)
+2. Set up Electron main process:
+   - `src/main/index.ts` — app lifecycle, BrowserWindow creation, loads renderer
+   - `src/main/ipc.ts` — registers IPC handlers, delegates to Electron APIs (and later `@dash/mc`)
+3. Set up IPC bridge:
+   - `src/shared/ipc.ts` — `MissionControlAPI` interface (just `getVersion()` for now)
+   - `src/preload/index.ts` — `contextBridge.exposeInMainWorld('api', ...)` implementing the interface
+   - `src/preload/index.d.ts` — type declaration for `window.api`
+4. Set up React renderer:
+   - `src/renderer/index.html` — entry HTML with dark theme
+   - `src/renderer/src/main.tsx` — React root with TanStack Router + Query providers
+   - `src/renderer/src/assets/main.css` — Tailwind CSS 4 with `@theme` dark color variables
+5. Build app shell with file-based routes:
+   - `routes/__root.tsx` — root layout with sidebar + content area
+   - `routes/index.tsx` — Dashboard placeholder
+   - `routes/agents.tsx` — Agents placeholder
+   - `routes/deploy.tsx` — Deploy placeholder
+   - `routes/secrets.tsx` — Secrets placeholder
+   - `routes/settings.tsx` — Settings page, displays app version via `window.api.getVersion()` to prove IPC
+   - `components/Sidebar.tsx` — navigation links using TanStack Router `Link`
+6. Configure scripts:
+   - `npm run mc:dev` in root → `electron-vite dev` with HMR
+   - `npm run mc:build` in root → `electron-vite build`
    - NOT included in root `npm run build` (different pipeline, too slow)
 
 **Verification**: `npm run mc:dev` launches an Electron window with sidebar navigation. Settings page shows app version via IPC.
+
+**File structure:**
+```
+apps/mission-control/
+├── package.json
+├── electron.vite.config.ts
+├── electron-builder.yml
+├── tsconfig.json
+├── tsconfig.node.json
+├── tsconfig.web.json
+└── src/
+    ├── main/
+    │   ├── index.ts              # App lifecycle, window creation
+    │   └── ipc.ts                # IPC handlers
+    ├── preload/
+    │   ├── index.ts              # contextBridge
+    │   └── index.d.ts            # window.api types
+    ├── shared/
+    │   └── ipc.ts                # MissionControlAPI interface
+    └── renderer/
+        ├── index.html            # Entry HTML
+        └── src/
+            ├── main.tsx          # React root
+            ├── env.d.ts          # Vite client types
+            ├── assets/
+            │   └── main.css      # Tailwind CSS 4 + theme
+            ├── routes/
+            │   ├── __root.tsx    # Shell layout
+            │   ├── index.tsx     # Dashboard
+            │   ├── agents.tsx    # Agents
+            │   ├── deploy.tsx    # Deploy
+            │   ├── secrets.tsx   # Secrets
+            │   └── settings.tsx  # Settings (IPC proof)
+            └── components/
+                └── Sidebar.tsx   # Navigation
+```
 
 ---
 
