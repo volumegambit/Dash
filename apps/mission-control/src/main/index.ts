@@ -2,8 +2,10 @@ import { join } from 'node:path';
 import { BrowserWindow, app } from 'electron';
 import { registerIpcHandlers } from './ipc';
 
+let mainWindow: BrowserWindow | undefined;
+
 function createWindow(): void {
-  const win = new BrowserWindow({
+  mainWindow = new BrowserWindow({
     width: 1200,
     height: 800,
     minWidth: 800,
@@ -17,15 +19,19 @@ function createWindow(): void {
     },
   });
 
+  mainWindow.on('closed', () => {
+    mainWindow = undefined;
+  });
+
   if (!app.isPackaged && process.env.ELECTRON_RENDERER_URL) {
-    win.loadURL(process.env.ELECTRON_RENDERER_URL);
+    mainWindow.loadURL(process.env.ELECTRON_RENDERER_URL);
   } else {
-    win.loadFile(join(__dirname, '../renderer/index.html'));
+    mainWindow.loadFile(join(__dirname, '../renderer/index.html'));
   }
 }
 
 app.whenReady().then(() => {
-  registerIpcHandlers();
+  registerIpcHandlers(() => mainWindow);
   createWindow();
 
   app.on('activate', () => {
