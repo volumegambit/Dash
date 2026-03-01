@@ -52,7 +52,7 @@ Dash has three main components that can run on different machines:
     HTTP server (port 9100) for operational control. Provides health checks (`/health`), server info (`/info`), and graceful shutdown (`/lifecycle/shutdown`). Used by Mission Control to monitor and manage remote deployments.
   </Accordion>
   <Accordion title="Agent server" icon="server">
-    The main entry point. Reads config files and environment variables, creates agents with their assigned models and tools, and starts both the Chat API and Management API. Supports `--config` and `--secrets` CLI flags for production deployments.
+    The main entry point. Reads config files and environment variables, creates agents with their assigned models and tools, and starts both the Chat API and Management API. Supports `--config` and `--secrets` CLI flags for production deployments. When deployed via Mission Control, secrets from the encrypted store are injected as a temporary `--secrets` file that is deleted after reading.
   </Accordion>
   <Accordion title="Gateway" icon="shuffle">
     A separate process that owns all channel connections. Reads a JSON config that maps channels to agents, then routes messages through the Chat API. The gateway is a client of the agent server — it connects to the Chat API like any other client. External chat platforms connect through platform-specific adapters: the Telegram adapter runs a bot that polls the Telegram Bot API for incoming messages, converts them into a common format, and forwards them to the agent. Mission Control's chat panel connects over WebSocket (port 9200) using the same adapter pattern. Adding a new platform means writing a new adapter — the routing and agent interaction stay the same.
@@ -61,7 +61,7 @@ Dash has three main components that can run on different machines:
     An interactive terminal interface. Connects directly to an agent in-process — no server needed. Useful for local development and quick experimentation. Renders streaming output with formatting, shows tool executions, and displays token usage.
   </Accordion>
   <Accordion title="Mission Control" icon="grid-2">
-    Desktop app (Electron) and CLI for managing agent deployments across machines. Stores deployment records and secrets locally, connects to remote agent servers via their management APIs. The CLI provides `health` and `info` commands; the desktop app adds a visual interface.
+    Desktop app (Electron) and CLI for managing agent deployments across machines. Stores deployment records locally and secrets in an AES-256-GCM encrypted file (`~/.mission-control/secrets.enc`). Connects to remote agent servers via their management APIs. The CLI provides commands for deployment management (`deploy`, `status`, `stop`, `remove`, `logs`) and secret management (`secrets list`, `secrets set`, `secrets get`, `secrets delete`). The desktop app adds a visual interface with a secrets management page.
   </Accordion>
 </AccordionGroup>
 

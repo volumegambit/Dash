@@ -76,13 +76,15 @@ Each channel specifies an `adapter` type and which `agent` to route messages to.
 
 ### Secrets
 
-For production, use `--secrets` to pass tokens securely:
+When deploying through Mission Control, gateway tokens are stored in the encrypted secret store and injected automatically. See [encrypted secrets](/configuration#encrypted-secrets).
+
+For manual deployments, use `--secrets` to pass tokens securely via a temporary file (deleted after reading):
 
 ```bash
 npm run gateway -- --config gateway.json --secrets secrets.json
 ```
 
-The secrets file is deleted after reading. It can override agent tokens and channel tokens:
+The secrets file can override agent tokens and channel tokens:
 
 ```json
 {

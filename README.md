@@ -14,7 +14,7 @@ Dash is a desktop-first, private-cloud-possible platform that empowers anyone to
 We believe the best way to discover AI's potential is by easily experimenting with it. Dash accelerates how you launch personal and professional agents by prioritizing security from the ground up:
 
 - **Secure defaults** — Out-of-the-box protection so you can launch with confidence.
-- **Secrets management** — Safe handling of your API keys and credentials, with read-then-delete secrets files for deployments.
+- **Secrets management** — AES-256-GCM encrypted storage for API keys and credentials, with OS keychain integration and read-then-delete secrets injection for deployments.
 - **Strict isolation** — Clear operational boundaries to keep every agent's autonomous actions contained.
 
 ## Why Dash?
@@ -57,7 +57,7 @@ Everything can run on a single machine for development, or split across machines
 | `@dash/channels` | Routes messages from channel adapters (Telegram, MC) to agents |
 | `@dash/chat` | Exposes agents over WebSocket for real-time streaming (port 9101) |
 | `@dash/management` | HTTP endpoints for health checks, server info, and shutdown (port 9100) |
-| `@dash/mc` | Manages agent deployments, secrets, process runtime, and remote connections for Mission Control |
+| `@dash/mc` | Manages agent deployments, encrypted secrets (AES-256-GCM), process runtime, and remote connections for Mission Control |
 
 **Apps** (`apps/`) — things you run:
 
@@ -67,7 +67,7 @@ Everything can run on a single machine for development, or split across machines
 | `@dash/gateway` | Channel gateway — routes Telegram, MC chat, and other channels to agents |
 | `@dash/tui` | Built-in terminal interface within Mission Control for quick agent interaction |
 | `@dash/mission-control` | Desktop app for managing agent deployments and chatting (Electron + React) |
-| `@dash/mc-cli` | CLI equivalent of Mission Control — `deploy`, `status`, `stop`, `remove`, `logs`, `health`, `info` |
+| `@dash/mc-cli` | CLI equivalent of Mission Control — `deploy`, `status`, `stop`, `remove`, `logs`, `health`, `info`, `secrets`, `lock`, `unlock` |
 
 ## Quick Start
 
@@ -116,9 +116,26 @@ npm test
 
 ## Configuration
 
-### Credentials (`config/credentials.json`)
+### Credentials
 
-API keys live in `config/credentials.json` (gitignored):
+**Mission Control (recommended):** Secrets are stored in an encrypted file at `~/.mission-control/secrets.enc` (AES-256-GCM, password-derived key via scrypt). The derived key is cached in your OS keychain so you only enter your password once per session.
+
+```bash
+npm run mc-cli -- secrets set anthropic-api-key    # Prompts for value
+npm run mc-cli -- secrets list                     # Show stored key names
+npm run mc-cli -- secrets get anthropic-api-key    # Show masked value
+npm run mc-cli -- lock                             # Clear keychain cache
+```
+
+**Agent server / TUI:** Use environment variables or `config/credentials.json`:
+
+```
+ANTHROPIC_API_KEY=sk-ant-...
+MANAGEMENT_API_TOKEN=your-mgmt-token
+CHAT_API_TOKEN=your-chat-token
+```
+
+Or `config/credentials.json` (gitignored):
 
 ```json
 {
@@ -126,16 +143,7 @@ API keys live in `config/credentials.json` (gitignored):
 }
 ```
 
-Environment variables (`.env` or shell) override `credentials.json`, useful for CI or Docker:
-
-```
-ANTHROPIC_API_KEY=sk-ant-...
-MANAGEMENT_API_TOKEN=your-mgmt-token
-CHAT_API_TOKEN=your-chat-token
-LOG_LEVEL=info
-```
-
-For deployments, use `--secrets` to pass a temporary secrets file that is deleted after reading:
+For manual deployments, use `--secrets` to pass a temporary secrets file that is deleted after reading:
 
 ```bash
 node apps/dash/dist/index.js --config /path/to/dash.json --secrets /path/to/secrets.json
@@ -167,7 +175,7 @@ Dash/
 │   ├── channels/     # Channel adapters (Telegram, MC) + message router
 │   ├── chat/         # Chat API (WebSocket server)
 │   ├── management/   # Management API (HTTP server)
-│   └── mc/           # Deployment registry, secrets store
+│   └── mc/           # Deployment registry, encrypted secrets store
 ├── apps/
 │   ├── dash/         # Agent server entry point, config
 │   ├── gateway/      # Channel gateway (routes channels to agents)
