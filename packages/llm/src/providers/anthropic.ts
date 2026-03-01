@@ -4,10 +4,10 @@ import type {
   CompletionResponse,
   ContentBlock,
   LlmProvider,
+  RedactedThinkingBlock,
   StreamChunk,
   TextBlock,
   ThinkingBlock,
-  RedactedThinkingBlock,
   ToolUseBlock,
 } from '../types.js';
 
@@ -25,7 +25,11 @@ function toSdkMessages(messages: CompletionRequest['messages']): SdkMessage[] {
       // ContentBlock[] — map each block to SDK format
       const blocks: SdkContent[] = m.content.map((block) => {
         if (block.type === 'thinking') {
-          return { type: 'thinking' as const, thinking: block.thinking, signature: block.signature };
+          return {
+            type: 'thinking' as const,
+            thinking: block.thinking,
+            signature: block.signature,
+          };
         }
         if (block.type === 'redacted_thinking') {
           return { type: 'redacted_thinking' as const, data: block.data };
@@ -56,11 +60,11 @@ function toSdkMessages(messages: CompletionRequest['messages']): SdkMessage[] {
 }
 
 /** Convert SDK response content to our types. Returns string if text-only, ContentBlock[] if tool_use or thinking present */
-function fromSdkContent(
-  sdkContent: Anthropic.Messages.ContentBlock[],
-): string | ContentBlock[] {
+function fromSdkContent(sdkContent: Anthropic.Messages.ContentBlock[]): string | ContentBlock[] {
   const hasToolUse = sdkContent.some((b) => b.type === 'tool_use');
-  const hasThinking = sdkContent.some((b) => b.type === 'thinking' || b.type === 'redacted_thinking');
+  const hasThinking = sdkContent.some(
+    (b) => b.type === 'thinking' || b.type === 'redacted_thinking',
+  );
   if (!hasToolUse && !hasThinking) {
     return sdkContent
       .filter((b) => b.type === 'text')
@@ -190,7 +194,8 @@ export class AnthropicProvider implements LlmProvider {
           currentThinking += delta;
           yield { type: 'thinking_delta', thinking: delta };
         } else if (event.delta.type === 'signature_delta') {
-          currentSignature += (event.delta as { type: 'signature_delta'; signature: string }).signature;
+          currentSignature += (event.delta as { type: 'signature_delta'; signature: string })
+            .signature;
         } else if (event.delta.type === 'text_delta') {
           fullText += event.delta.text;
           yield { type: 'text_delta', text: event.delta.text };

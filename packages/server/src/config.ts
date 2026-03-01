@@ -1,6 +1,6 @@
 import { existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
-import { resolve, dirname } from 'node:path';
+import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 // --- JSON config schema ---
@@ -46,7 +46,8 @@ const DEFAULTS: DashJsonConfig = {
   agents: {
     default: {
       model: 'claude-sonnet-4-20250514',
-      systemPrompt: 'You are Dash, a helpful AI assistant. You can use tools to help accomplish tasks.',
+      systemPrompt:
+        'You are Dash, a helpful AI assistant. You can use tools to help accomplish tasks.',
       tools: ['bash', 'read_file'],
       maxTokens: 4096,
       workspace: './data/workspace',
@@ -61,10 +62,7 @@ const DEFAULTS: DashJsonConfig = {
 
 /** Search for config/dash.json or dash.json relative to project root */
 async function loadJsonConfig(projectRoot: string): Promise<Partial<DashJsonConfig>> {
-  const candidates = [
-    resolve(projectRoot, 'config/dash.json'),
-    resolve(projectRoot, 'dash.json'),
-  ];
+  const candidates = [resolve(projectRoot, 'config/dash.json'), resolve(projectRoot, 'dash.json')];
 
   for (const path of candidates) {
     if (existsSync(path)) {

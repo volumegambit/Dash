@@ -10,7 +10,9 @@ export class ProviderRegistry {
   get(name: string): LlmProvider {
     const provider = this.providers.get(name);
     if (!provider) {
-      throw new Error(`LLM provider "${name}" not registered. Available: ${this.list().join(', ')}`);
+      throw new Error(
+        `LLM provider "${name}" not registered. Available: ${this.list().join(', ')}`,
+      );
     }
     return provider;
   }
@@ -25,7 +27,12 @@ export class ProviderRegistry {
 
   resolveProvider(model: string): LlmProvider {
     if (model.startsWith('claude-')) return this.get('anthropic');
-    if (model.startsWith('gpt-') || model.startsWith('o1') || model.startsWith('o3') || model.startsWith('o4'))
+    if (
+      model.startsWith('gpt-') ||
+      model.startsWith('o1') ||
+      model.startsWith('o3') ||
+      model.startsWith('o4')
+    )
       return this.get('openai');
     if (model.startsWith('gemini-')) return this.get('google');
 

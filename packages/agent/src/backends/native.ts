@@ -1,4 +1,4 @@
-import type { LlmProvider, ContentBlock, ToolUseBlock, StreamChunk } from '@dash/llm';
+import type { ContentBlock, LlmProvider, StreamChunk, ToolUseBlock } from '@dash/llm';
 import type { AgentBackend, AgentEvent, AgentState, RunOptions } from '../types.js';
 
 const MAX_TOOL_ROUNDS = 25;
@@ -15,7 +15,7 @@ export class NativeBackend implements AgentBackend {
     const toolDefs = state.tools?.map((t) => t.definition);
     const toolMap = new Map(state.tools?.map((t) => [t.name, t]) ?? []);
 
-    let totalUsage = { inputTokens: 0, outputTokens: 0 };
+    const totalUsage = { inputTokens: 0, outputTokens: 0 };
     let finalTextContent = '';
 
     try {
@@ -41,8 +41,9 @@ export class NativeBackend implements AgentBackend {
         let currentToolJson = '';
 
         let result: IteratorResult<StreamChunk, import('@dash/llm').CompletionResponse>;
+        result = await stream.next();
 
-        while (!(result = await stream.next()).done) {
+        while (!result.done) {
           if (this.abortController.signal.aborted) break;
 
           const chunk = result.value;
@@ -85,6 +86,8 @@ export class NativeBackend implements AgentBackend {
             currentToolName = '';
             currentToolJson = '';
           }
+
+          result = await stream.next();
         }
 
         // Get the return value (CompletionResponse)
@@ -152,15 +155,19 @@ export class NativeBackend implements AgentBackend {
         }
 
         // No tool use — this is the final response
-        finalTextContent = typeof response.content === 'string'
-          ? response.content
-          : (response.content as ContentBlock[])
-              .filter((b) => b.type === 'text')
-              .map((b) => (b as { text: string }).text)
-              .join('');
+        finalTextContent =
+          typeof response.content === 'string'
+            ? response.content
+            : (response.content as ContentBlock[])
+                .filter((b) => b.type === 'text')
+                .map((b) => (b as { text: string }).text)
+                .join('');
 
         // Push final assistant message to session (preserve thinking blocks if present)
-        if (Array.isArray(response.content) && response.content.some((b) => b.type === 'thinking' || b.type === 'redacted_thinking')) {
+        if (
+          Array.isArray(response.content) &&
+          response.content.some((b) => b.type === 'thinking' || b.type === 'redacted_thinking')
+        ) {
           state.session.messages.push({ role: 'assistant', content: response.content });
         } else {
           state.session.messages.push({ role: 'assistant', content: finalTextContent });

@@ -25,7 +25,10 @@ export class MessageRouter {
     agentName: string,
     msg: InboundMessage,
   ): Promise<void> {
-    const agent = this.agents.get(agentName)!;
+    const agent = this.agents.get(agentName);
+    if (!agent) {
+      throw new Error(`Agent "${agentName}" not found`);
+    }
     let fullResponse = '';
 
     for await (const event of agent.chat(msg.channelId, msg.conversationId, msg.text)) {
