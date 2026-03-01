@@ -20,6 +20,18 @@ const api: MissionControlAPI = {
     ipcRenderer.on('chat:error', listener);
     return () => ipcRenderer.removeListener('chat:error', listener);
   },
+
+  // Secrets
+  secretsNeedsSetup: () => ipcRenderer.invoke('secrets:needsSetup'),
+  secretsNeedsMigration: () => ipcRenderer.invoke('secrets:needsMigration'),
+  secretsIsUnlocked: () => ipcRenderer.invoke('secrets:isUnlocked'),
+  secretsSetup: (password: string) => ipcRenderer.invoke('secrets:setup', password),
+  secretsUnlock: (password: string) => ipcRenderer.invoke('secrets:unlock', password),
+  secretsLock: () => ipcRenderer.invoke('secrets:lock'),
+  secretsList: () => ipcRenderer.invoke('secrets:list'),
+  secretsGet: (key: string) => ipcRenderer.invoke('secrets:get', key),
+  secretsSet: (key: string, value: string) => ipcRenderer.invoke('secrets:set', key, value),
+  secretsDelete: (key: string) => ipcRenderer.invoke('secrets:delete', key),
 };
 
 contextBridge.exposeInMainWorld('api', api);
