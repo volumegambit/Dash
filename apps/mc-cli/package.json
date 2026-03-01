@@ -1,0 +1,32 @@
+{
+  "name": "@dash/mc-cli",
+  "version": "0.1.0",
+  "type": "module",
+  "bin": {
+    "mc": "dist/index.js"
+  },
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsup",
+    "dev": "node --import tsx src/index.ts",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "@dash/mc": "*",
+    "@dash/management": "*",
+    "commander": "^13"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.0"
+  },
+  "tsup": {
+    "entry": ["src/index.ts"],
+    "format": ["esm"],
+    "dts": true,
+    "clean": true,
+    "sourcemap": true,
+    "banner": {
+      "js": "#!/usr/bin/env node"
+    }
+  }
+}
