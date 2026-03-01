@@ -1,6 +1,5 @@
-import { createInterface } from 'node:readline';
 import type { Command } from 'commander';
-import { ensureUnlocked, getSecretStore } from '../context.js';
+import { createPrompt, ensureUnlocked, getSecretStore } from '../context.js';
 
 export function registerSecretsSetCommand(secrets: Command): void {
   secrets
@@ -12,13 +11,9 @@ export function registerSecretsSetCommand(secrets: Command): void {
         await ensureUnlocked();
         let value = opts.value;
         if (!value) {
-          const rl = createInterface({ input: process.stdin, output: process.stderr });
-          value = await new Promise<string>((resolve) => {
-            rl.question(`Value for '${key}': `, (answer) => {
-              rl.close();
-              resolve(answer.trim());
-            });
-          });
+          const prompt = createPrompt();
+          value = await prompt.question(`Value for '${key}': `);
+          prompt.close();
         }
         if (!value) {
           console.error('Value is required.');
