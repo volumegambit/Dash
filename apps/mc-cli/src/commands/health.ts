@@ -1,14 +1,14 @@
-import { ManagementClient } from '@dash/management';
 import type { Command } from 'commander';
+import { resolveClient } from '../context.js';
 
 export function registerHealthCommand(program: Command): void {
   program
-    .command('health <url>')
-    .description('Check health of a Dash agent')
-    .requiredOption('-t, --token <token>', 'Management API token')
-    .action(async (url: string, opts: { token: string }) => {
-      const client = new ManagementClient(url, opts.token);
+    .command('health <target>')
+    .description('Check health of a Dash agent (target: URL or deployment ID)')
+    .option('-t, --token <token>', 'Management API token (required for URL targets)')
+    .action(async (target: string, opts: { token?: string }) => {
       try {
+        const client = await resolveClient(target, opts.token);
         const health = await client.health();
         console.log(JSON.stringify(health, null, 2));
       } catch (err) {

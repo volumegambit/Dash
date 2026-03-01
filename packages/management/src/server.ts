@@ -54,6 +54,7 @@ export function startManagementServer(options: ManagementServerOptions): {
   const server = serve({
     fetch: app.fetch,
     port: options.port,
+    hostname: '127.0.0.1',
   }) as Server;
 
   return {
