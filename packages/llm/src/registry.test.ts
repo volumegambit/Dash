@@ -1,12 +1,13 @@
-import { describe, it, expect } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { ProviderRegistry } from './registry.js';
-import type { LlmProvider, CompletionRequest, CompletionResponse, StreamChunk } from './types.js';
+import type { CompletionRequest, CompletionResponse, LlmProvider, StreamChunk } from './types.js';
 
 function mockProvider(name: string): LlmProvider {
   return {
     name,
-    complete: async () => ({} as CompletionResponse),
-    async *stream() {
+    complete: async () => ({}) as CompletionResponse,
+    async *stream(): AsyncGenerator<StreamChunk, CompletionResponse> {
+      yield { type: 'text_delta' } as StreamChunk;
       return {} as CompletionResponse;
     },
   };

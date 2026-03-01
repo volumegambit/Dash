@@ -1,11 +1,11 @@
-import { createInterface } from 'node:readline';
 import { existsSync } from 'node:fs';
-import { readFile, mkdir } from 'node:fs/promises';
-import { resolve, dirname } from 'node:path';
+import { mkdir, readFile } from 'node:fs/promises';
+import { dirname, resolve } from 'node:path';
+import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
-import { config } from 'dotenv';
-import { AnthropicProvider } from '@dash/llm';
 import { DashAgent, JsonlSessionStore, NativeBackend, resolveTools } from '@dash/agent';
+import { AnthropicProvider } from '@dash/llm';
+import { config } from 'dotenv';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const projectRoot = resolve(__dirname, '../../..');
@@ -37,13 +37,27 @@ const c = isColorSupported
       bgGreen: esc('42'),
       bgYellow: esc('43'),
     }
-  : Object.fromEntries(
+  : (Object.fromEntries(
       [
-        'reset', 'bold', 'dim', 'italic', 'cyan', 'green', 'yellow',
-        'red', 'magenta', 'blue', 'gray', 'white', 'bgCyan', 'bgMagenta',
-        'bgRed', 'bgGreen', 'bgYellow',
+        'reset',
+        'bold',
+        'dim',
+        'italic',
+        'cyan',
+        'green',
+        'yellow',
+        'red',
+        'magenta',
+        'blue',
+        'gray',
+        'white',
+        'bgCyan',
+        'bgMagenta',
+        'bgRed',
+        'bgGreen',
+        'bgYellow',
       ].map((k) => [k, '']),
-    ) as Record<string, string>;
+    ) as Record<string, string>);
 
 // ── Spinner ─────────────────────────────────────────────────────────
 
@@ -110,10 +124,7 @@ interface CredentialsConfig {
 }
 
 async function loadDashConfig(): Promise<DashJsonConfig> {
-  const candidates = [
-    resolve(projectRoot, 'config/dash.json'),
-    resolve(projectRoot, 'dash.json'),
-  ];
+  const candidates = [resolve(projectRoot, 'config/dash.json'), resolve(projectRoot, 'dash.json')];
 
   for (const path of candidates) {
     if (existsSync(path)) {
@@ -143,7 +154,13 @@ async function loadCredentials(): Promise<CredentialsConfig> {
 
 // ── Display helpers ─────────────────────────────────────────────────
 
-function printHeader(agentName: string, model: string, tools: string[], workspace: string | undefined, thinking?: { budgetTokens: number }) {
+function printHeader(
+  agentName: string,
+  model: string,
+  tools: string[],
+  workspace: string | undefined,
+  thinking?: { budgetTokens: number },
+) {
   const width = 42;
   const pad = (s: string, w: number) => s + ' '.repeat(Math.max(0, w - s.length));
   const hr = '─'.repeat(width);
@@ -152,19 +169,31 @@ function printHeader(agentName: string, model: string, tools: string[], workspac
   const home = process.env.HOME ?? '';
   let wsDisplay = workspace ?? projectRoot;
   if (home && wsDisplay.startsWith(home)) {
-    wsDisplay = '~' + wsDisplay.slice(home.length);
+    wsDisplay = `~${wsDisplay.slice(home.length)}`;
   }
 
   console.log();
   console.log(`  ${c.cyan}╭${hr}╮${c.reset}`);
-  console.log(`  ${c.cyan}│${c.reset} ${c.bold}${c.magenta}⚡ Dash TUI${c.reset}${' '.repeat(width - 12)}${c.cyan}│${c.reset}`);
+  console.log(
+    `  ${c.cyan}│${c.reset} ${c.bold}${c.magenta}⚡ Dash TUI${c.reset}${' '.repeat(width - 12)}${c.cyan}│${c.reset}`,
+  );
   console.log(`  ${c.cyan}├${hr}┤${c.reset}`);
-  console.log(`  ${c.cyan}│${c.reset} ${c.dim}agent${c.reset}  ${pad(agentName, width - 9)}${c.cyan}│${c.reset}`);
-  console.log(`  ${c.cyan}│${c.reset} ${c.dim}model${c.reset}  ${pad(shortModel(model), width - 9)}${c.cyan}│${c.reset}`);
-  console.log(`  ${c.cyan}│${c.reset} ${c.dim}tools${c.reset}  ${pad(tools.join(', ') || 'none', width - 9)}${c.cyan}│${c.reset}`);
-  console.log(`  ${c.cyan}│${c.reset} ${c.dim}path${c.reset}   ${pad(wsDisplay, width - 9)}${c.cyan}│${c.reset}`);
+  console.log(
+    `  ${c.cyan}│${c.reset} ${c.dim}agent${c.reset}  ${pad(agentName, width - 9)}${c.cyan}│${c.reset}`,
+  );
+  console.log(
+    `  ${c.cyan}│${c.reset} ${c.dim}model${c.reset}  ${pad(shortModel(model), width - 9)}${c.cyan}│${c.reset}`,
+  );
+  console.log(
+    `  ${c.cyan}│${c.reset} ${c.dim}tools${c.reset}  ${pad(tools.join(', ') || 'none', width - 9)}${c.cyan}│${c.reset}`,
+  );
+  console.log(
+    `  ${c.cyan}│${c.reset} ${c.dim}path${c.reset}   ${pad(wsDisplay, width - 9)}${c.cyan}│${c.reset}`,
+  );
   if (thinking) {
-    console.log(`  ${c.cyan}│${c.reset} ${c.dim}think${c.reset}  ${pad(`${thinking.budgetTokens} token budget`, width - 9)}${c.cyan}│${c.reset}`);
+    console.log(
+      `  ${c.cyan}│${c.reset} ${c.dim}think${c.reset}  ${pad(`${thinking.budgetTokens} token budget`, width - 9)}${c.cyan}│${c.reset}`,
+    );
   }
   console.log(`  ${c.cyan}╰${hr}╯${c.reset}`);
   console.log(`  ${c.dim}Type a message. Ctrl+C to exit.${c.reset}`);
@@ -172,9 +201,7 @@ function printHeader(agentName: string, model: string, tools: string[], workspac
 }
 
 function shortModel(model: string): string {
-  return model
-    .replace('claude-', '')
-    .replace(/-\d{8}$/, '');
+  return model.replace('claude-', '').replace(/-\d{8}$/, '');
 }
 
 function printPrompt() {
@@ -194,11 +221,16 @@ function printToolBlock(name: string, input: string, result: string, isError?: b
   const truncate = (s: string) => {
     const lines = s.split('\n');
     if (lines.length <= maxLines) return lines;
-    return [...lines.slice(0, maxLines), `${c.dim}… ${lines.length - maxLines} more lines${c.reset}`];
+    return [
+      ...lines.slice(0, maxLines),
+      `${c.dim}… ${lines.length - maxLines} more lines${c.reset}`,
+    ];
   };
 
   console.log();
-  console.log(`${indent}${border}┌─ ${c.reset}${label}${border} ${'─'.repeat(Math.max(0, 30 - name.length))}${c.reset}`);
+  console.log(
+    `${indent}${border}┌─ ${c.reset}${label}${border} ${'─'.repeat(Math.max(0, 30 - name.length))}${c.reset}`,
+  );
 
   if (input) {
     for (const line of truncate(input)) {
@@ -217,22 +249,19 @@ function printToolBlock(name: string, input: string, result: string, isError?: b
 }
 
 function printUsage(usage: { inputTokens: number; outputTokens: number }) {
-  console.log(
-    `\n${c.dim}       ${usage.inputTokens}↑ ${usage.outputTokens}↓ tokens${c.reset}`,
-  );
+  console.log(`\n${c.dim}       ${usage.inputTokens}↑ ${usage.outputTokens}↓ tokens${c.reset}`);
 }
 
 // ── Main ────────────────────────────────────────────────────────────
 
 async function main() {
-  const [dashConfig, credentials] = await Promise.all([
-    loadDashConfig(),
-    loadCredentials(),
-  ]);
+  const [dashConfig, credentials] = await Promise.all([loadDashConfig(), loadCredentials()]);
 
   const apiKey = process.env.ANTHROPIC_API_KEY ?? credentials.anthropic?.apiKey;
   if (!apiKey) {
-    console.error(`\n  ${c.red}${c.bold}Error:${c.reset} ANTHROPIC_API_KEY is required. Set it in config/credentials.json or environment.\n`);
+    console.error(
+      `\n  ${c.red}${c.bold}Error:${c.reset} ANTHROPIC_API_KEY is required. Set it in config/credentials.json or environment.\n`,
+    );
     process.exit(1);
   }
 
@@ -240,7 +269,9 @@ async function main() {
   const agentName = cliChannel?.agent ?? 'default';
   const agentConfig = dashConfig.agents[agentName];
   if (!agentConfig) {
-    console.error(`\n  ${c.red}${c.bold}Error:${c.reset} Agent "${agentName}" not found in config.\n`);
+    console.error(
+      `\n  ${c.red}${c.bold}Error:${c.reset} Agent "${agentName}" not found in config.\n`,
+    );
     process.exit(1);
   }
 
@@ -266,7 +297,13 @@ async function main() {
     thinking: agentConfig.thinking,
   });
 
-  printHeader(agentName, agentConfig.model, agentConfig.tools ?? [], workspace, agentConfig.thinking);
+  printHeader(
+    agentName,
+    agentConfig.model,
+    agentConfig.tools ?? [],
+    workspace,
+    agentConfig.thinking,
+  );
 
   const rl = createInterface({
     input: process.stdin,
@@ -305,7 +342,9 @@ async function main() {
           case 'text_delta':
             if (firstToken) {
               spinner.stop();
-              process.stdout.write(`${c.magenta}${c.bold}  dash ${c.reset}${c.magenta}› ${c.reset}`);
+              process.stdout.write(
+                `${c.magenta}${c.bold}  dash ${c.reset}${c.magenta}› ${c.reset}`,
+              );
               firstToken = false;
             }
             process.stdout.write(event.text);
@@ -348,7 +387,9 @@ async function main() {
 
           case 'error':
             spinner.stop();
-            console.log(`\n  ${c.red}${c.bold}  error ${c.reset}${c.red}› ${event.error.message}${c.reset}`);
+            console.log(
+              `\n  ${c.red}${c.bold}  error ${c.reset}${c.red}› ${event.error.message}${c.reset}`,
+            );
             break;
         }
       }

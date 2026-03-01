@@ -1,7 +1,7 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { JsonlSessionStore } from './session.js';
 
 describe('JsonlSessionStore', () => {
@@ -39,9 +39,9 @@ describe('JsonlSessionStore', () => {
 
     const session = await store.load('telegram', '123');
     expect(session).not.toBeNull();
-    expect(session!.messages).toHaveLength(2);
-    expect(session!.messages[0]).toEqual({ role: 'user', content: 'Hello' });
-    expect(session!.messages[1]).toEqual({ role: 'assistant', content: 'Hi there!' });
+    expect(session?.messages).toHaveLength(2);
+    expect(session?.messages[0]).toEqual({ role: 'user', content: 'Hello' });
+    expect(session?.messages[1]).toEqual({ role: 'assistant', content: 'Hi there!' });
   });
 
   it('handles structured content (ContentBlock[]) in responses', async () => {
@@ -83,24 +83,24 @@ describe('JsonlSessionStore', () => {
 
     const session = await store.load('telegram', '456');
     expect(session).not.toBeNull();
-    expect(session!.messages).toHaveLength(4);
+    expect(session?.messages).toHaveLength(4);
 
     // User message
-    expect(session!.messages[0]).toEqual({ role: 'user', content: 'run ls' });
+    expect(session?.messages[0]).toEqual({ role: 'user', content: 'run ls' });
 
     // Assistant with structured content
-    expect(session!.messages[1].role).toBe('assistant');
-    expect(Array.isArray(session!.messages[1].content)).toBe(true);
-    const blocks = session!.messages[1].content as { type: string }[];
+    expect(session?.messages[1].role).toBe('assistant');
+    expect(Array.isArray(session?.messages[1].content)).toBe(true);
+    const blocks = session?.messages[1].content as { type: string }[];
     expect(blocks[0].type).toBe('text');
     expect(blocks[1].type).toBe('tool_use');
 
     // Tool result
-    expect(session!.messages[2].role).toBe('user');
-    expect(Array.isArray(session!.messages[2].content)).toBe(true);
+    expect(session?.messages[2].role).toBe('user');
+    expect(Array.isArray(session?.messages[2].content)).toBe(true);
 
     // Final text response
-    expect(session!.messages[3]).toEqual({
+    expect(session?.messages[3]).toEqual({
       role: 'assistant',
       content: 'The directory contains file1.txt and file2.txt.',
     });

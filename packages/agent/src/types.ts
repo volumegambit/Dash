@@ -1,4 +1,4 @@
-import type { Message, CompletionResponse, ToolDefinition, ContentBlock } from '@dash/llm';
+import type { CompletionResponse, ContentBlock, Message, ToolDefinition } from '@dash/llm';
 
 export interface SessionEntry {
   timestamp: string;

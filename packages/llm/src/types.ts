@@ -74,7 +74,13 @@ export interface CompletionResponse {
 }
 
 export interface StreamChunk {
-  type: 'text_delta' | 'tool_use_start' | 'tool_use_delta' | 'thinking_delta' | 'thinking_stop' | 'stop';
+  type:
+    | 'text_delta'
+    | 'tool_use_start'
+    | 'tool_use_delta'
+    | 'thinking_delta'
+    | 'thinking_stop'
+    | 'stop';
   text?: string;
   thinking?: string;
   signature?: string;

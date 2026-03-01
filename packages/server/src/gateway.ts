@@ -1,9 +1,9 @@
 import { mkdir } from 'node:fs/promises';
-import { resolve, dirname } from 'node:path';
+import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { AnthropicProvider, ProviderRegistry } from '@dash/llm';
 import { DashAgent, JsonlSessionStore, NativeBackend, resolveTools } from '@dash/agent';
 import { MessageRouter, TelegramAdapter } from '@dash/channels';
+import { AnthropicProvider, ProviderRegistry } from '@dash/llm';
 import type { DashConfig } from './config.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -40,7 +40,9 @@ export async function createGateway(config: DashConfig) {
     });
 
     agents.set(name, agent);
-    console.log(`Agent "${name}" created (model: ${agentConfig.model}, tools: ${agentConfig.tools?.join(', ') ?? 'none'}, workspace: ${workspace ?? 'unrestricted'})`);
+    console.log(
+      `Agent "${name}" created (model: ${agentConfig.model}, tools: ${agentConfig.tools?.join(', ') ?? 'none'}, workspace: ${workspace ?? 'unrestricted'})`,
+    );
   }
 
   // Channels

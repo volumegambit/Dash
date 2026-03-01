@@ -47,7 +47,7 @@ export class ReadFileTool implements Tool {
       try {
         const real = await realpath(filePath);
         const workspaceReal = await realpath(this.workspace);
-        if (!real.startsWith(workspaceReal + '/') && real !== workspaceReal) {
+        if (!real.startsWith(`${workspaceReal}/`) && real !== workspaceReal) {
           return {
             content: `Error: path "${inputPath}" escapes the workspace directory`,
             isError: true,
@@ -58,7 +58,7 @@ export class ReadFileTool implements Tool {
         const normalized = resolve(filePath);
         const workspaceNormalized = resolve(this.workspace);
         if (
-          !normalized.startsWith(workspaceNormalized + '/') &&
+          !normalized.startsWith(`${workspaceNormalized}/`) &&
           normalized !== workspaceNormalized
         ) {
           return {

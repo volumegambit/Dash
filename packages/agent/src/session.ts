@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs';
-import { mkdir, readFile, appendFile } from 'node:fs/promises';
+import { appendFile, mkdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { ContentBlock } from '@dash/llm';
 import type { Session, SessionEntry, SessionStore } from './types.js';
@@ -69,6 +69,6 @@ export class JsonlSessionStore implements SessionStore {
     const dir = this.sessionDir(channelId, conversationId);
     await mkdir(dir, { recursive: true });
     const file = this.sessionFile(channelId, conversationId);
-    await appendFile(file, JSON.stringify(entry) + '\n');
+    await appendFile(file, `${JSON.stringify(entry)}\n`);
   }
 }
