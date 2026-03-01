@@ -16,7 +16,6 @@ describe('ManagementClient', () => {
     agents: [
       { name: 'assistant', model: 'claude-sonnet-4-20250514', tools: ['bash', 'read_file'] },
     ],
-    channels: [{ name: 'telegram', agent: 'assistant' }],
   };
 
   beforeEach(async () => {

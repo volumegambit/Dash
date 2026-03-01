@@ -12,7 +12,6 @@ describe('Management Server', () => {
   let onShutdown: ReturnType<typeof vi.fn>;
   const testInfo: InfoResponse = {
     agents: [{ name: 'default', model: 'claude-sonnet-4-20250514', tools: ['bash'] }],
-    channels: [{ name: 'telegram', agent: 'default' }],
   };
 
   beforeEach(async () => {

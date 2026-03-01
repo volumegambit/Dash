@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs';
-import { readFile } from 'node:fs/promises';
+import { readFile, unlink } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -14,34 +14,27 @@ export interface AgentConfig {
   thinking?: { budgetTokens: number };
 }
 
-export interface ChannelConfig {
-  agent: string;
-  allowedUsers?: string[];
-}
-
 export interface DashJsonConfig {
   agents: Record<string, AgentConfig>;
-  channels: Record<string, ChannelConfig>;
   sessions: { dir: string };
   logging: { level: string };
 }
 
 export interface CredentialsConfig {
   anthropic?: { apiKey?: string };
-  telegram?: { botToken?: string };
 }
 
 // --- Runtime config (merged JSON + env) ---
 
 export interface DashConfig {
   anthropicApiKey: string;
-  telegramBotToken: string;
   agents: Record<string, AgentConfig>;
-  channels: Record<string, ChannelConfig>;
   sessionDir: string;
   logLevel: string;
   managementPort: number;
   managementToken?: string;
+  chatPort: number;
+  chatToken?: string;
 }
 
 const DEFAULTS: DashJsonConfig = {
@@ -54,9 +47,6 @@ const DEFAULTS: DashJsonConfig = {
       maxTokens: 4096,
       workspace: './data/workspace',
     },
-  },
-  channels: {
-    telegram: { agent: 'default', allowedUsers: [] },
   },
   sessions: { dir: './data/sessions' },
   logging: { level: 'info' },
@@ -76,6 +66,12 @@ async function loadJsonConfig(projectRoot: string): Promise<Partial<DashJsonConf
   return {};
 }
 
+/** Load config from explicit path */
+async function loadJsonConfigFromPath(configPath: string): Promise<Partial<DashJsonConfig>> {
+  const raw = await readFile(configPath, 'utf-8');
+  return JSON.parse(raw) as Partial<DashJsonConfig>;
+}
+
 /** Search for config/credentials.json or credentials.json relative to project root */
 async function loadCredentials(projectRoot: string): Promise<CredentialsConfig> {
   const candidates = [
@@ -91,6 +87,20 @@ async function loadCredentials(projectRoot: string): Promise<CredentialsConfig> 
   }
 
   return {};
+}
+
+interface SecretsFile {
+  anthropicApiKey?: string;
+  managementToken?: string;
+  chatToken?: string;
+}
+
+/** Load secrets from explicit path, then unlink the file */
+async function loadSecrets(secretsPath: string): Promise<SecretsFile> {
+  const raw = await readFile(secretsPath, 'utf-8');
+  const secrets = JSON.parse(raw) as SecretsFile;
+  await unlink(secretsPath);
+  return secrets;
 }
 
 /** Deep merge: b overrides a, arrays are replaced not merged */
@@ -119,39 +129,36 @@ function deepMerge<T extends Record<string, unknown>>(a: T, b: Partial<T>): T {
   return result;
 }
 
-export async function loadConfig(): Promise<DashConfig> {
+export interface LoadConfigOptions {
+  configPath?: string;
+  secretsPath?: string;
+}
+
+export async function loadConfig(options?: LoadConfigOptions): Promise<DashConfig> {
   // Determine project root (3 levels up from dist/src or src)
   const __dirname = dirname(fileURLToPath(import.meta.url));
   const projectRoot = resolve(__dirname, '../../..');
 
-  const [jsonConfig, credentials] = await Promise.all([
-    loadJsonConfig(projectRoot),
-    loadCredentials(projectRoot),
-  ]);
+  // Load JSON config — explicit path or default search
+  const jsonConfig = options?.configPath
+    ? await loadJsonConfigFromPath(options.configPath)
+    : await loadJsonConfig(projectRoot);
+
+  // Load secrets file if provided (read + unlink)
+  const secrets = options?.secretsPath ? await loadSecrets(options.secretsPath) : undefined;
+
+  // Load credentials from project (only if no explicit secrets file)
+  const credentials = secrets ? {} : await loadCredentials(projectRoot);
+
   const merged = deepMerge(DEFAULTS, jsonConfig);
 
-  // Resolve credentials: env vars override config/credentials.json
-  const anthropicApiKey = process.env.ANTHROPIC_API_KEY ?? credentials.anthropic?.apiKey;
+  // Resolve credentials: secrets file > env vars > config/credentials.json
+  const anthropicApiKey =
+    secrets?.anthropicApiKey ?? process.env.ANTHROPIC_API_KEY ?? credentials.anthropic?.apiKey;
   if (!anthropicApiKey) {
     throw new Error(
       'Missing ANTHROPIC_API_KEY. Set it in config/credentials.json or as an env var.',
     );
-  }
-
-  const telegramBotToken = process.env.TELEGRAM_BOT_TOKEN ?? credentials.telegram?.botToken;
-  if (!telegramBotToken) {
-    throw new Error(
-      'Missing TELEGRAM_BOT_TOKEN. Set it in config/credentials.json or as an env var.',
-    );
-  }
-
-  // Env overrides for channel-level settings
-  const envAllowedUsers = process.env.TELEGRAM_ALLOWED_USERS;
-  if (envAllowedUsers && merged.channels.telegram) {
-    merged.channels.telegram.allowedUsers = envAllowedUsers
-      .split(',')
-      .map((s) => s.trim())
-      .filter(Boolean);
   }
 
   // Env overrides for logging
@@ -163,16 +170,39 @@ export async function loadConfig(): Promise<DashConfig> {
   const managementPort = process.env.MANAGEMENT_API_PORT
     ? Number.parseInt(process.env.MANAGEMENT_API_PORT, 10)
     : 9100;
-  const managementToken = process.env.MANAGEMENT_API_TOKEN;
+  const managementToken = secrets?.managementToken ?? process.env.MANAGEMENT_API_TOKEN;
+
+  // Chat API config
+  const chatPort = process.env.CHAT_API_PORT
+    ? Number.parseInt(process.env.CHAT_API_PORT, 10)
+    : 9101;
+  const chatToken = secrets?.chatToken ?? process.env.CHAT_API_TOKEN;
 
   return {
     anthropicApiKey,
-    telegramBotToken,
     agents: merged.agents,
-    channels: merged.channels,
     sessionDir: merged.sessions.dir,
     logLevel: merged.logging.level,
     managementPort,
     managementToken,
+    chatPort,
+    chatToken,
   };
+}
+
+/** Parse --config and --secrets flags from argv */
+export function parseFlags(argv: string[]): LoadConfigOptions {
+  const options: LoadConfigOptions = {};
+
+  for (let i = 0; i < argv.length; i++) {
+    if (argv[i] === '--config' && argv[i + 1]) {
+      options.configPath = argv[i + 1];
+      i++;
+    } else if (argv[i] === '--secrets' && argv[i + 1]) {
+      options.secretsPath = argv[i + 1];
+      i++;
+    }
+  }
+
+  return options;
 }

@@ -4,23 +4,24 @@ import { config } from 'dotenv';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 config({ path: resolve(__dirname, '../../../.env') });
-import { loadConfig } from './config.js';
-import { createGateway } from './gateway.js';
+import { createAgentServer } from './agent-server.js';
+import { loadConfig, parseFlags } from './config.js';
 
 async function main() {
-  const cfg = await loadConfig();
-  const gateway = await createGateway(cfg);
+  const flags = parseFlags(process.argv.slice(2));
+  const cfg = await loadConfig(flags);
+  const server = await createAgentServer(cfg);
 
   const shutdown = async (signal: string) => {
     console.log(`\nReceived ${signal}, shutting down...`);
-    await gateway.stop();
+    await server.stop();
     process.exit(0);
   };
 
   process.on('SIGINT', () => shutdown('SIGINT'));
   process.on('SIGTERM', () => shutdown('SIGTERM'));
 
-  await gateway.start();
+  await server.start();
 }
 
 main().catch((err) => {
