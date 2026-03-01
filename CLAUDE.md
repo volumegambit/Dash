@@ -97,6 +97,23 @@ Multi-stage build: `node:22-slim` builder → production image. Entry point is `
 
 After each completed change, commit and push to git. Only stage the specific files you changed — do not use `git add -A` or `git add .`. If a change is incomplete or broken after a run, do not commit it — wait until the work is in a complete, working state before committing. Do not add "Co-Authored-By" lines to commit messages. Break large changes into smaller, focused commits — each commit should do one thing.
 
+## Versioning
+
+Unified semver across all packages and apps. The root `package.json` version is the source of truth.
+
+- **Patch** (`0.1.0` → `0.1.1`) — bug fixes, small tweaks
+- **Minor** (`0.1.0` → `0.2.0`) — new features, non-breaking changes
+- **Major** (`0.1.0` → `1.0.0`) — breaking changes
+
+To bump the version:
+
+```bash
+npm version patch|minor|major    # Bumps root package.json
+npm run version:sync             # Syncs version to all packages and apps
+```
+
+Then commit all updated `package.json` files together. Do not bump version on every commit — only when a meaningful change ships.
+
 ## Documentation Maintenance
 
 Docs in `docs/` are **user-facing only**. They help users set up, configure, and use Dash. Do not add developer-facing details (CI, internal tooling, contribution workflows, linter configs).
