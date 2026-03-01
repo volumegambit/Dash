@@ -20,7 +20,7 @@ npm run version:sync  # Sync root version to all packages and apps
 
 ## Architecture
 
-Ten workspaces split across `packages/` (libraries) and `apps/` (runnables):
+Eleven workspaces split across `packages/` (libraries) and `apps/` (runnables):
 
 ### Libraries (`packages/`)
 
@@ -28,7 +28,7 @@ Ten workspaces split across `packages/` (libraries) and `apps/` (runnables):
 |---------|----------|------|----------|
 | `@dash/llm` | `packages/llm` | LLM provider abstraction + Anthropic streaming | `@anthropic-ai/sdk` |
 | `@dash/agent` | `packages/agent` | Agent orchestration, sessions, tool execution | `@dash/llm` |
-| `@dash/channels` | `packages/channels` | Channel adapters (Telegram) + message router | `@dash/agent`, `grammy` |
+| `@dash/channels` | `packages/channels` | Channel adapters (Telegram, MC) + message router | `@dash/agent`, `grammy`, `ws` |
 | `@dash/management` | `packages/management` | Management API (health, info, shutdown) | `hono`, `@hono/node-server` |
 | `@dash/chat` | `packages/chat` | Chat API (WebSocket server + RemoteAgentClient) | `@dash/agent`, `hono`, `@hono/node-ws` |
 | `@dash/mc` | `packages/mc` | Deployment registry, secrets store, agent connector | `@dash/management` |
@@ -38,6 +38,7 @@ Ten workspaces split across `packages/` (libraries) and `apps/` (runnables):
 | Package | Location | Role | Key Deps |
 |---------|----------|------|----------|
 | `@dash/agent-server` | `apps/dash` | Headless agent server, config loading, bootstrap | `@dash/agent`, `@dash/chat`, `@dash/management`, `@dash/llm` |
+| `@dash/gateway` | `apps/gateway` | Channel gateway — routes channels to agents via Chat API | `@dash/channels`, `@dash/chat` |
 | `@dash/tui` | `apps/tui` | Terminal UI / CLI entry point | `@dash/agent`, `@dash/llm`, `dotenv` |
 | `@dash/mc-cli` | `apps/mc-cli` | Mission Control CLI (`health`, `info` commands) | `@dash/mc`, `@dash/management`, `commander` |
 | `@dash/mission-control` | `apps/mission-control` | Mission Control desktop app (Electron + React) | `@dash/mc`, `@dash/management`, `electron`, `react` |
@@ -45,13 +46,15 @@ Ten workspaces split across `packages/` (libraries) and `apps/` (runnables):
 ### Dependency flow
 
 ```
-llm → agent → chat ──→ app (agent server)
+llm → agent → chat ──→ agent-server
+               ↑
+       channels ──→ gateway (routes channels to agents via chat API)
                         ↑
 management ──→ mc ──→ mc-cli (CLI)
               ↓
-              mission-control (Electron)
+              mission-control (Electron) → gateway (chat via WS)
 
-tui → agent + llm (standalone, bypasses app)
+tui → agent + llm (standalone, bypasses server)
 ```
 
 ## Code Conventions
@@ -107,12 +110,13 @@ All env vars live in `.env` at the project root, loaded by dotenv.
 packages/
   llm/src/            types.ts, registry.ts, providers/anthropic.ts
   agent/src/          types.ts, agent.ts, client.ts, session.ts, backends/native.ts, tools/{bash,read-file}.ts
-  channels/src/       types.ts, router.ts, adapters/telegram.ts
+  channels/src/       types.ts, router.ts, adapters/{telegram,mission-control}.ts
   management/src/     types.ts, server.ts, client.ts
   chat/src/           types.ts, chat-server.ts, ws-client.ts
   mc/src/             types.ts, agents/{registry,connector}.ts, security/{secrets,keygen}.ts
 apps/
   dash/src/           index.ts (entry), config.ts, agent-server.ts
+  gateway/src/        index.ts (entry), config.ts, gateway.ts
   tui/src/            index.ts (CLI entry with shebang)
   mc-cli/src/         index.ts (CLI entry), context.ts, commands/{health,info}.ts
   mission-control/    Electron app — src/main/, src/preload/, src/renderer/
@@ -189,7 +193,3 @@ Skip docs for: internal refactors, lint fixes, CI changes, test-only changes, de
 - `introduction.mdx`, `getting-started.mdx`, `channels.mdx` — non-technical friendly. Short sentences, no jargon, focus on steps and outcomes
 - `configuration.mdx`, `tools.mdx`, `troubleshooting.mdx` — practical reference. Clear error messages, copy-pasteable fixes
 - `architecture.mdx` — technical users who want to understand how Dash works. Data flow and concepts are fine, internal dev tooling is not
-
-## Project Status
-
-See `PLAN.md` for the full roadmap.

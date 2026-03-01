@@ -31,6 +31,8 @@ graph TB
     agent-server --> management["management<br/><small>HTTP :9100</small>"]
     chat --> agent["agent<br/><small>tools, sessions</small>"]
     agent --> llm["llm<br/><small>Anthropic API</small>"]
+    gateway["gateway<br/><small>channel routing</small>"]
+    gateway -- "WebSocket :9101" --> chat
   end
 
   subgraph client ["Client (your machine)"]
@@ -40,15 +42,17 @@ graph TB
 
   tui -. "in-process<br/>(no server needed)" .-> agent
   mc -- "HTTP :9100" --> management
+  mc -- "WebSocket :9200" --> gateway
 ```
 
-Dash has three components that can run on different machines:
+Dash has four components that can run on different machines:
 
 - **Agent server** — runs on your infrastructure (a VPS, private cloud, or local machine). Hosts agents and exposes two APIs: a Chat API (WebSocket, port 9101) for real-time interaction and a Management API (HTTP, port 9100) for health checks and shutdown. Each API uses its own auth token.
+- **Gateway** — runs alongside the agent server. Owns all channel connections (Telegram, Mission Control chat) and routes messages to agents via the Chat API. One process, one config file for all channels.
 - **TUI** — runs on your local machine. Connects to an agent in-process with no network involved. Best for development and quick experimentation.
-- **Mission Control** — desktop app or CLI, runs on your local machine. Connects to one or more remote agent servers over HTTP for monitoring and management.
+- **Mission Control** — desktop app or CLI, runs on your local machine. Connects to the gateway for chat (WebSocket, port 9200) and to agent servers for monitoring (HTTP, port 9100).
 
-Everything can run on a single machine for development, or split across machines for production — the agent server on a VPS, Mission Control on your laptop.
+Everything can run on a single machine for development, or split across machines for production — the agent server and gateway on a VPS, Mission Control on your laptop.
 
 **Libraries** (`packages/`) — ordered by dependency layer, foundational first:
 
@@ -56,7 +60,7 @@ Everything can run on a single machine for development, or split across machines
 |---------|-------------|
 | `@dash/llm` | Wraps LLM provider SDKs (Anthropic) behind a streaming interface |
 | `@dash/agent` | Runs the agentic loop — tool execution, session persistence, orchestration |
-| `@dash/channels` | Routes messages from channel adapters (Telegram) to agents |
+| `@dash/channels` | Routes messages from channel adapters (Telegram, MC) to agents |
 | `@dash/chat` | Exposes agents over WebSocket for real-time streaming (port 9101) |
 | `@dash/management` | HTTP endpoints for health checks, server info, and shutdown (port 9100) |
 | `@dash/mc` | Manages agent deployments, secrets, and remote connections for Mission Control |
@@ -66,8 +70,9 @@ Everything can run on a single machine for development, or split across machines
 | Package | What it does |
 |---------|-------------|
 | `@dash/agent-server` | Headless server that wires up agents and starts the management + chat APIs |
+| `@dash/gateway` | Channel gateway — routes Telegram, MC chat, and other channels to agents |
 | `@dash/tui` | Interactive terminal UI — connects directly to an agent, no server needed |
-| `@dash/mission-control` | Desktop app for managing agent deployments (Electron + React) |
+| `@dash/mission-control` | Desktop app for managing agent deployments and chatting (Electron + React) |
 | `@dash/mc-cli` | CLI equivalent of Mission Control — `health`, `info` commands |
 
 ## Quick Start
@@ -165,12 +170,13 @@ Dash/
 ├── packages/
 │   ├── llm/          # LLM provider abstraction
 │   ├── agent/        # Agent runtime, tools, sessions
-│   ├── channels/     # Channel adapters (Telegram) + message router
+│   ├── channels/     # Channel adapters (Telegram, MC) + message router
 │   ├── chat/         # Chat API (WebSocket server)
 │   ├── management/   # Management API (HTTP server)
 │   └── mc/           # Deployment registry, secrets store
 ├── apps/
 │   ├── dash/         # Agent server entry point, config
+│   ├── gateway/      # Channel gateway (routes channels to agents)
 │   ├── tui/          # Terminal UI
 │   ├── mc-cli/       # Mission Control CLI
 │   └── mission-control/  # Mission Control desktop app (Electron)
