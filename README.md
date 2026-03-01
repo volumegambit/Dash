@@ -9,48 +9,51 @@
 [![Docker](https://img.shields.io/badge/Docker-ready-2496ED?logo=docker&logoColor=white)](https://www.docker.com)
 [![License](https://img.shields.io/badge/license-private-red)]()
 
-Dash is a desktop-first, private-cloud-first platform that empowers anyone to safely deploy autonomous "claw" agents within minutes. Bring your preferred AI model, connect to platforms like Telegram, and put your agents to work — all while maintaining absolute control over your private data.
+Dash is a desktop-first, private-cloud-first platform that empowers anyone to safely deploy autonomous "claw" agents within minutes. Bring your preferred AI model, connect via WebSocket or the terminal UI, and put your agents to work — all while maintaining absolute control over your private data.
 
 We believe the best way to discover AI's potential is by easily experimenting with it. Dash accelerates how you launch personal and professional agents by prioritizing security from the ground up:
 
 - **Secure defaults** — Out-of-the-box protection so you can launch with confidence.
-- **Secrets management** — Safe, encrypted handling of your API keys and credentials.
+- **Secrets management** — Safe handling of your API keys and credentials, with read-then-delete secrets files for deployments.
 - **Strict isolation** — Clear operational boundaries to keep every agent's autonomous actions contained.
 
 ## Why Dash?
 
-Run on your own hardware or private cloud. Your data never leaves your infrastructure. Connect to Anthropic, OpenAI, Google, or any LLM provider you choose. Interact with agents through Telegram, a terminal UI, or add your own channel adapter. Secrets are separated from config, agents are sandboxed, and access controls are built in. Simple JSON configuration, Docker deployment, and clear documentation. Define multiple agents with different models, tools, and system prompts. Bind each to a channel.
+Run on your own hardware or private cloud. Your data never leaves your infrastructure. Connect to Anthropic, OpenAI, Google, or any LLM provider you choose. Connect any client to your agents over a real-time WebSocket Chat API. Secrets are separated from config, agents are sandboxed, and access controls are built in. Simple JSON configuration, Docker deployment, and clear documentation. Define multiple agents with different models, tools, and system prompts.
 
 ## Architecture
 
 ```
-                 ┌──────────┐
-                 │  server   │  gateway, config, bootstrap
-                 └────┬─────┘
-          ┌───────────┼───────────┐
-          v           v           v
-     ┌────────┐  ┌─────────┐
-     │  tui   │  │channels │
-     └────┬───┘  └────┬────┘
-          │           │
-          v           v
-     ┌────────────────────────────┐
-     │         agent              │
-     │  (tools, skills, sessions) │
-     └────────────┬───────────────┘
+                ┌──────────────┐
+                │  agent server │  config, two servers
+                └──────┬───────┘
+        ┌──────────────┼──────────────┐
+        v              v              │
+   ┌────────┐   ┌────────────┐       │
+   │  tui   │   │ management │       │
+   └────┬───┘   └──────┬─────┘       │
+        │              │              │
+        v              v              │
+   ┌──────────────────────────────────┘
+   │         agent                    │
+   │  (tools, sessions, orchestration)│
+   └──────────────┬───────────────────┘
                   v
             ┌──────────┐
             │   llm    │
             └──────────┘
 ```
 
+The agent server runs two servers: a **Management API** (HTTP, port 9100) for health/info/shutdown and a **Chat API** (WebSocket, port 9101) for real-time agent interaction. Each uses its own auth token.
+
 | Package | Purpose |
 |---------|---------|
 | `@dash/llm` | Multi-provider LLM client (Anthropic SDK) |
 | `@dash/agent` | Agent runtime — tool registry, session management, agentic loop |
-| `@dash/channels` | Channel adapters (Telegram via grammY, CLI) + message router |
+| `@dash/management` | Management API (HTTP) and Chat API (WebSocket) servers and clients |
 | `@dash/tui` | Terminal UI for interactive use |
-| `@dash/server` | Gateway entry point, config loading, lifecycle |
+| `@dash/app` | Agent server entry point, config loading, lifecycle |
+| `@dash/mc` | Deployment registry, secrets store, agent connector |
 
 ## Quick Start
 
@@ -58,7 +61,6 @@ Run on your own hardware or private cloud. Your data never leaves your infrastru
 
 - Node.js 22+
 - An Anthropic API key
-- A Telegram bot token (for Telegram channel)
 
 ### Setup
 
@@ -66,13 +68,23 @@ Run on your own hardware or private cloud. Your data never leaves your infrastru
 git clone <repo-url> && cd Dash
 npm install
 cp -r config.example config
-# Edit config/credentials.json with your API keys
-# Edit config/dash.json for agent and channel settings
+# Edit config/credentials.json with your API key
+# Edit config/dash.json for agent settings
 ```
 
-### Run (development)
+### Run the TUI
 
 ```bash
+npm run tui
+```
+
+### Run the agent server
+
+```bash
+# Set tokens in .env to enable the APIs
+MANAGEMENT_API_TOKEN=your-mgmt-token
+CHAT_API_TOKEN=your-chat-token
+
 npm run dev
 ```
 
@@ -92,12 +104,11 @@ npm test
 
 ### Credentials (`config/credentials.json`)
 
-API keys and bot tokens live in `config/credentials.json` (gitignored):
+API keys live in `config/credentials.json` (gitignored):
 
 ```json
 {
-  "anthropic": { "apiKey": "sk-ant-..." },
-  "telegram": { "botToken": "123456:ABC-DEF..." }
+  "anthropic": { "apiKey": "sk-ant-..." }
 }
 ```
 
@@ -105,14 +116,20 @@ Environment variables (`.env` or shell) override `credentials.json`, useful for 
 
 ```
 ANTHROPIC_API_KEY=sk-ant-...
-TELEGRAM_BOT_TOKEN=123456:ABC-DEF...
-TELEGRAM_ALLOWED_USERS=123456789,@username
+MANAGEMENT_API_TOKEN=your-mgmt-token
+CHAT_API_TOKEN=your-chat-token
 LOG_LEVEL=info
+```
+
+For deployments, use `--secrets` to pass a temporary secrets file that is deleted after reading:
+
+```bash
+node apps/dash/dist/index.js --config /path/to/dash.json --secrets /path/to/secrets.json
 ```
 
 ### Agent Config (`config/dash.json`)
 
-Define named agent profiles with model, system prompt, tools, and token limits. Map channels to agent profiles:
+Define named agent profiles with model, system prompt, tools, and token limits:
 
 ```json
 {
@@ -122,10 +139,6 @@ Define named agent profiles with model, system prompt, tools, and token limits. 
       "tools": ["bash", "read_file"],
       "maxTokens": 4096
     }
-  },
-  "channels": {
-    "telegram": { "agent": "default" },
-    "cli": { "agent": "coder" }
   }
 }
 ```
@@ -137,14 +150,17 @@ Dash/
 ├── packages/
 │   ├── llm/          # LLM provider abstraction
 │   ├── agent/        # Agent runtime, tools, sessions
-│   ├── channels/     # Telegram + CLI adapters, message router
+│   ├── management/   # Management API (HTTP) + Chat API (WebSocket)
+│   └── mc/           # Deployment registry, secrets store
+├── apps/
+│   ├── dash/         # Agent server entry point, config
 │   ├── tui/          # Terminal UI
-│   └── server/       # Entry point, gateway, config
+│   ├── mc-cli/       # Mission Control CLI
+│   └── mission-control/  # Mission Control desktop app (Electron)
 ├── config.example/
 │   ├── credentials.json  # Credential placeholders
-│   └── dash.json         # Default agent + channel configuration
+│   └── dash.json         # Default agent configuration
 ├── config/           # User's runtime config (gitignored)
-├── skills/           # User's skill files (gitignored)
 ├── data/
 │   └── sessions/     # JSONL session files (persisted)
 ├── docker-compose.yml
@@ -159,7 +175,7 @@ Full documentation is available at [dash-aa8db5b5.mintlify.app](https://dash-aa8
 - [Getting Started](docs/getting-started.mdx) — install, configure, first run
 - [Configuration](docs/configuration.mdx) — `dash.json` schema, env vars, defaults
 - [Tools](docs/tools.mdx) — bash and read_file: parameters, sandboxing, limits
-- [Channels](docs/channels.mdx) — Telegram setup, CLI usage, access control
+- [Channels](docs/channels.mdx) — TUI usage, Chat API protocol
 - [Extended Thinking](docs/extended-thinking.mdx) — budget tuning, constraints
 - [Architecture](docs/architecture.mdx) — package map, data flow, session format
 - [Troubleshooting](docs/troubleshooting.mdx) — common errors, debugging tips
@@ -172,7 +188,7 @@ Full documentation is available at [dash-aa8db5b5.mintlify.app](https://dash-aa8
 | Build | tsup |
 | Lint/Format | Biome |
 | Test | Vitest |
-| Telegram | grammY |
+| WebSocket | @hono/node-ws |
 | Sessions | JSONL (append-only) |
 | Logging | pino |
 | Docker | node:22-slim, multi-stage |
