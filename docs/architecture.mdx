@@ -9,6 +9,10 @@ Dash is a TypeScript monorepo for deploying autonomous AI agents. It runs as a h
 
 ```mermaid
 graph TB
+  subgraph platforms ["Chat platforms"]
+    telegram["Telegram"]
+  end
+
   subgraph server ["Server (your infrastructure)"]
     direction TB
     agent-server["Agent server<br/><small>config, lifecycle</small>"]
@@ -25,6 +29,7 @@ graph TB
     mc["Mission Control / mc-cli<br/><small>desktop app or CLI</small>"]
   end
 
+  telegram -- "Bot API (polling)" --> gateway
   tui -. "in-process (no server needed)" .-> agent
   mc -- "HTTP :9100" --> management
   mc -- "WebSocket :9200" --> gateway
@@ -33,7 +38,7 @@ graph TB
 Dash has four components that can run on different machines:
 
 - **Agent server** — runs on your infrastructure (a VPS, private cloud, or local machine). This is the main deployment target. It reads your config, creates agents with their assigned models and tools, and starts two APIs: the Chat API (WebSocket, port 9101) for real-time interaction, and the Management API (HTTP, port 9100) for health checks, server info, and shutdown.
-- **Gateway** — runs alongside the agent server. Owns all channel connections (Telegram, Mission Control chat) and routes messages to agents via the Chat API. One process, one config file for all channels. Mission Control's chat panel connects through the gateway — MC chat is just another channel.
+- **Gateway** — runs alongside the agent server. Owns all channel connections and routes messages to agents via the Chat API. External chat platforms like Telegram connect through the gateway — it runs a Telegram bot that polls for messages and forwards them to the agent. Mission Control's chat panel also connects through the gateway over WebSocket. Every channel is handled the same way: one process, one config file, one message path to the agent.
 - **TUI** — runs on your local machine. A standalone terminal interface that connects to an agent in-process, with no network involved. Best for development and quick experimentation.
 - **Mission Control** — runs on your local machine. A desktop app (Electron) or CLI for monitoring and managing remote agent servers. Connects to the gateway for chat (WebSocket, port 9200) and to agent servers for monitoring (HTTP, port 9100).
 
@@ -62,7 +67,7 @@ Dash has four components that can run on different machines:
     The main entry point. Reads config files and environment variables, creates agents with their assigned models and tools, and starts both the Chat API and Management API. Supports `--config` and `--secrets` CLI flags for production deployments.
   </Accordion>
   <Accordion title="Gateway" icon="shuffle">
-    A separate process that owns all channel connections. Reads a JSON config that maps channels (Telegram, Mission Control chat) to agents, then routes messages through the Chat API. The gateway is a client of the agent server — it connects to the Chat API like any other client. Mission Control's chat panel connects to the gateway over WebSocket (port 9200).
+    A separate process that owns all channel connections. Reads a JSON config that maps channels to agents, then routes messages through the Chat API. The gateway is a client of the agent server — it connects to the Chat API like any other client. External chat platforms connect through platform-specific adapters: the Telegram adapter runs a bot that polls the Telegram Bot API for incoming messages, converts them into a common format, and forwards them to the agent. Mission Control's chat panel connects over WebSocket (port 9200) using the same adapter pattern. Adding a new platform means writing a new adapter — the routing and agent interaction stay the same.
   </Accordion>
   <Accordion title="TUI" icon="terminal">
     An interactive terminal interface. Connects directly to an agent in-process — no server needed. Useful for local development and quick experimentation. Renders streaming output with formatting, shows tool executions, and displays token usage.
