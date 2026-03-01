@@ -9,7 +9,7 @@
 [![Docker](https://img.shields.io/badge/Docker-ready-2496ED?logo=docker&logoColor=white)](https://www.docker.com)
 [![License](https://img.shields.io/badge/license-private-red)]()
 
-Dash is a desktop-first, private-cloud-first platform that empowers anyone to safely deploy autonomous "claw" agents within minutes. Bring your preferred AI model, connect via WebSocket or the terminal UI, and put your agents to work — all while maintaining absolute control over your private data.
+Dash is a desktop-first, private-cloud-first platform that empowers anyone to safely deploy autonomous "claw" agents within minutes. Bring your preferred AI model, connect via Telegram, WebSocket, or the terminal UI, and put your agents to work — all while maintaining absolute control over your private data.
 
 We believe the best way to discover AI's potential is by easily experimenting with it. Dash accelerates how you launch personal and professional agents by prioritizing security from the ground up:
 
@@ -19,41 +19,50 @@ We believe the best way to discover AI's potential is by easily experimenting wi
 
 ## Why Dash?
 
-Run on your own hardware or private cloud. Your data never leaves your infrastructure. Connect to Anthropic, OpenAI, Google, or any LLM provider you choose. Connect any client to your agents over a real-time WebSocket Chat API. Secrets are separated from config, agents are sandboxed, and access controls are built in. Simple JSON configuration, Docker deployment, and clear documentation. Define multiple agents with different models, tools, and system prompts.
+Run on your own hardware or private cloud. Your data never leaves your infrastructure. Connect to Anthropic, OpenAI, Google, or any LLM provider you choose. Interact with agents through Telegram, a real-time WebSocket Chat API, or the terminal UI. Secrets are separated from config, agents are sandboxed, and access controls are built in. Simple JSON configuration, Docker deployment, and clear documentation. Define multiple agents with different models, tools, and system prompts. Manage deployments from the Mission Control desktop app or CLI.
 
 ## Architecture
 
 ```
-                ┌──────────────┐
-                │  agent server │  config, two servers
-                └──────┬───────┘
-        ┌──────────────┼──────────────┐
-        v              v              │
-   ┌────────┐   ┌────────────┐       │
-   │  tui   │   │ management │       │
-   └────┬───┘   └──────┬─────┘       │
-        │              │              │
-        v              v              │
-   ┌──────────────────────────────────┘
-   │         agent                    │
-   │  (tools, sessions, orchestration)│
-   └──────────────┬───────────────────┘
-                  v
-            ┌──────────┐
-            │   llm    │
-            └──────────┘
+              ┌──────────────┐
+              │  agent server │  config, management + chat servers
+              └──────┬───────┘
+       ┌─────────────┼──────────────┐
+       v             v              v
+  ┌────────┐  ┌────────────┐  ┌──────────┐
+  │channels│  │ management │  │   chat   │
+  └────┬───┘  └──────┬─────┘  └────┬─────┘
+       │             │             │
+       └─────────────┼─────────────┘
+                     v
+              ┌────────────┐
+              │   agent    │  tools, sessions, orchestration
+              └──────┬─────┘
+                     v
+              ┌────────────┐
+              │    llm     │
+              └────────────┘
+
+  ┌─────┐                    ┌──────────────────┐
+  │ tui │→ agent + llm       │ mission-control   │→ mc → management
+  └─────┘                    │ mc-cli            │
+                             └──────────────────┘
 ```
 
-The agent server runs two servers: a **Management API** (HTTP, port 9100) for health/info/shutdown and a **Chat API** (WebSocket, port 9101) for real-time agent interaction. Each uses its own auth token.
+The agent server runs two servers: a **Management API** (HTTP, port 9100) for health/info/shutdown and a **Chat API** (WebSocket, port 9101) for real-time agent interaction. Each uses its own auth token. Channel adapters (Telegram) connect via the message router.
 
 | Package | Purpose |
 |---------|---------|
 | `@dash/llm` | Multi-provider LLM client (Anthropic SDK) |
 | `@dash/agent` | Agent runtime — tool registry, session management, agentic loop |
-| `@dash/management` | Management API (HTTP) and Chat API (WebSocket) servers and clients |
-| `@dash/tui` | Terminal UI for interactive use |
-| `@dash/app` | Agent server entry point, config loading, lifecycle |
+| `@dash/channels` | Channel adapters (Telegram via grammY) + message router |
+| `@dash/chat` | Chat API — WebSocket server for real-time agent interaction |
+| `@dash/management` | Management API — HTTP server for health, info, shutdown |
 | `@dash/mc` | Deployment registry, secrets store, agent connector |
+| `@dash/app` | Agent server entry point, config loading, lifecycle |
+| `@dash/tui` | Terminal UI for interactive use |
+| `@dash/mc-cli` | Mission Control CLI — query agent health and info |
+| `@dash/mission-control` | Mission Control desktop app (Electron + React) |
 
 ## Quick Start
 
@@ -150,7 +159,9 @@ Dash/
 ├── packages/
 │   ├── llm/          # LLM provider abstraction
 │   ├── agent/        # Agent runtime, tools, sessions
-│   ├── management/   # Management API (HTTP) + Chat API (WebSocket)
+│   ├── channels/     # Channel adapters (Telegram) + message router
+│   ├── chat/         # Chat API (WebSocket server)
+│   ├── management/   # Management API (HTTP server)
 │   └── mc/           # Deployment registry, secrets store
 ├── apps/
 │   ├── dash/         # Agent server entry point, config
@@ -188,7 +199,9 @@ Full documentation is available at [dash-aa8db5b5.mintlify.app](https://dash-aa8
 | Build | tsup |
 | Lint/Format | Biome |
 | Test | Vitest |
+| Telegram | grammY |
 | WebSocket | @hono/node-ws |
+| Desktop | Electron + React |
 | Sessions | JSONL (append-only) |
 | Logging | pino |
 | Docker | node:22-slim, multi-stage |
