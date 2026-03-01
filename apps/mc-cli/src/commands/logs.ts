@@ -7,7 +7,7 @@ export function registerLogsCommand(program: Command): void {
     .description('Stream logs from a running deployment')
     .action(async (id: string) => {
       try {
-        const runtime = getRuntime();
+        const runtime = await getRuntime();
         for await (const line of runtime.getLogs(id)) {
           process.stdout.write(`${line}\n`);
         }
