@@ -47,6 +47,7 @@ function DeployWizard(): JSX.Element {
   const [channels, setChannels] = useState<ChannelConfig>({
     enableTelegram: false,
   });
+  const [telegramTokenMissing, setTelegramTokenMissing] = useState(false);
 
   const canAdvanceAgent = agent.name.trim().length > 0;
 
@@ -185,9 +186,15 @@ function DeployWizard(): JSX.Element {
               </div>
               <button
                 type="button"
-                onClick={() =>
-                  setChannels((prev) => ({ ...prev, enableTelegram: !prev.enableTelegram }))
-                }
+                onClick={async () => {
+                  if (!channels.enableTelegram) {
+                    const token = await window.api.secretsGet('telegram-bot-token');
+                    setTelegramTokenMissing(!token);
+                  } else {
+                    setTelegramTokenMissing(false);
+                  }
+                  setChannels((prev) => ({ ...prev, enableTelegram: !prev.enableTelegram }));
+                }}
                 className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${channels.enableTelegram ? 'bg-primary' : 'bg-border'}`}
               >
                 <span
@@ -195,6 +202,12 @@ function DeployWizard(): JSX.Element {
                 />
               </button>
             </div>
+            {channels.enableTelegram && telegramTokenMissing && (
+              <p className="mt-2 text-xs text-red-400">
+                telegram-bot-token not found in Secrets. Add it on the Secrets page before
+                deploying.
+              </p>
+            )}
           </div>
 
           <div className="flex justify-between">
