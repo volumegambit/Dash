@@ -1,21 +1,42 @@
 import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
-import { homedir } from 'node:os';
-import { join } from 'node:path';
-import { EncryptedSecretStore } from '@dash/mc';
+import { mkdir, writeFile } from 'node:fs/promises';
+import { homedir, tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+import { AgentRegistry, EncryptedSecretStore, ProcessRuntime } from '@dash/mc';
 import { app, ipcMain, safeStorage } from 'electron';
 import type { BrowserWindow } from 'electron';
+import type { DeployWithConfigOptions } from '../shared/ipc.js';
 
 const DATA_DIR = join(homedir(), '.mission-control');
 const SESSION_KEY_PATH = join(DATA_DIR, 'session.key');
 
 let ws: WebSocket | undefined;
 let secretStore: EncryptedSecretStore | undefined;
+let registry: AgentRegistry | undefined;
+let runtime: ProcessRuntime | undefined;
+
+const logSubscriptions = new Map<string, AbortController>();
 
 function getSecretStore(): EncryptedSecretStore {
   if (!secretStore) {
     secretStore = new EncryptedSecretStore(DATA_DIR);
   }
   return secretStore;
+}
+
+function getRegistry(): AgentRegistry {
+  if (!registry) {
+    registry = new AgentRegistry(DATA_DIR);
+  }
+  return registry;
+}
+
+function getRuntime(): ProcessRuntime {
+  if (!runtime) {
+    const projectRoot = process.env.DASH_PROJECT_ROOT || resolve(app.getAppPath(), '../../../..');
+    runtime = new ProcessRuntime(getRegistry(), getSecretStore(), projectRoot);
+  }
+  return runtime;
 }
 
 function cacheKey(key: Buffer): void {
@@ -61,6 +82,21 @@ export async function registerIpcHandlers(
   }
 
   ipcMain.handle('app:getVersion', () => app.getVersion());
+
+  // Setup handler
+  ipcMain.handle('setup:getStatus', async () => {
+    const store = getSecretStore();
+    const needsSetup = await store.needsSetup();
+    if (needsSetup) {
+      return { needsSetup: true, needsApiKey: true };
+    }
+    if (!store.isUnlocked()) {
+      // Secrets exist but are locked — still need setup flow (unlock first)
+      return { needsSetup: true, needsApiKey: false };
+    }
+    const apiKey = await store.get('anthropic-api-key');
+    return { needsSetup: false, needsApiKey: !apiKey };
+  });
 
   // Chat handlers
   ipcMain.handle('chat:connect', (_event, gatewayUrl: string) => {
@@ -159,5 +195,119 @@ export async function registerIpcHandlers(
 
   ipcMain.handle('secrets:delete', async (_event, key: string) => {
     return getSecretStore().delete(key);
+  });
+
+  // Deployment handlers
+  ipcMain.handle('deployments:list', async () => {
+    return getRegistry().list();
+  });
+
+  ipcMain.handle('deployments:get', async (_event, id: string) => {
+    return getRegistry().get(id);
+  });
+
+  ipcMain.handle('deployments:deploy', async (_event, configDir: string) => {
+    return getRuntime().deploy(configDir);
+  });
+
+  ipcMain.handle(
+    'deployments:deployWithConfig',
+    async (_event, options: DeployWithConfigOptions) => {
+      const { name, model, systemPrompt, tools, enableTelegram } = options;
+
+      // Create a temp config directory with the agent and gateway config
+      const configDir = join(tmpdir(), `mc-deploy-${Date.now()}`);
+      const agentsDir = join(configDir, 'agents');
+      await mkdir(agentsDir, { recursive: true });
+
+      // Write agent config
+      const agentConfig = {
+        name,
+        model,
+        systemPrompt,
+        tools: tools.length > 0 ? tools : undefined,
+      };
+      await writeFile(join(agentsDir, `${name}.json`), JSON.stringify(agentConfig, null, 2));
+
+      // Write gateway config if telegram is enabled
+      if (enableTelegram) {
+        const gatewayConfig = {
+          channels: {
+            telegram: {
+              adapter: 'telegram',
+              agent: name,
+            },
+          },
+        };
+        await writeFile(join(configDir, 'gateway.json'), JSON.stringify(gatewayConfig, null, 2));
+      }
+
+      return getRuntime().deploy(configDir);
+    },
+  );
+
+  ipcMain.handle('deployments:stop', async (_event, id: string) => {
+    await getRuntime().stop(id);
+    const win = getWindow();
+    if (win) {
+      win.webContents.send('deployment:statusChange', id, 'stopped');
+    }
+  });
+
+  ipcMain.handle('deployments:remove', async (_event, id: string) => {
+    // Cancel any active log subscription
+    const sub = logSubscriptions.get(id);
+    if (sub) {
+      sub.abort();
+      logSubscriptions.delete(id);
+    }
+    await getRuntime().remove(id);
+    const win = getWindow();
+    if (win) {
+      win.webContents.send('deployment:statusChange', id, 'removed');
+    }
+  });
+
+  ipcMain.handle('deployments:getStatus', async (_event, id: string) => {
+    return getRuntime().getStatus(id);
+  });
+
+  ipcMain.handle('deployments:logs:subscribe', async (_event, id: string) => {
+    // Cancel existing subscription for this ID
+    const existing = logSubscriptions.get(id);
+    if (existing) {
+      existing.abort();
+    }
+
+    const controller = new AbortController();
+    logSubscriptions.set(id, controller);
+
+    // Start iterating logs in the background
+    (async () => {
+      try {
+        const logs = getRuntime().getLogs(id);
+        for await (const line of logs) {
+          if (controller.signal.aborted) break;
+          const win = getWindow();
+          if (win && !win.isDestroyed()) {
+            win.webContents.send('deployment:log', id, line);
+          } else {
+            break;
+          }
+        }
+      } catch {
+        // Deployment may not have active processes
+      } finally {
+        logSubscriptions.delete(id);
+      }
+    })();
+  });
+
+  ipcMain.handle('deployments:logs:unsubscribe', async (_event, id: string) => {
+    const sub = logSubscriptions.get(id);
+    if (sub) {
+      sub.abort();
+      logSubscriptions.delete(id);
+    }
   });
 }
