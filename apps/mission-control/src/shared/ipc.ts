@@ -1,5 +1,23 @@
+import type { AgentDeployment, RuntimeStatus } from '@dash/mc';
+
+export interface DeployWithConfigOptions {
+  name: string;
+  model: string;
+  systemPrompt: string;
+  tools: string[];
+  enableTelegram: boolean;
+}
+
+export interface SetupStatus {
+  needsSetup: boolean;
+  needsApiKey: boolean;
+}
+
 export interface MissionControlAPI {
   getVersion(): Promise<string>;
+
+  // Setup
+  setupGetStatus(): Promise<SetupStatus>;
 
   // Chat
   chatConnect(gatewayUrl: string): Promise<void>;
@@ -19,4 +37,19 @@ export interface MissionControlAPI {
   secretsGet(key: string): Promise<string | null>;
   secretsSet(key: string, value: string): Promise<void>;
   secretsDelete(key: string): Promise<void>;
+
+  // Deployments
+  deploymentsList(): Promise<AgentDeployment[]>;
+  deploymentsGet(id: string): Promise<AgentDeployment | null>;
+  deploymentsDeploy(configDir: string): Promise<string>;
+  deploymentsDeployWithConfig(options: DeployWithConfigOptions): Promise<string>;
+  deploymentsStop(id: string): Promise<void>;
+  deploymentsRemove(id: string): Promise<void>;
+  deploymentsGetStatus(id: string): Promise<RuntimeStatus>;
+  deploymentsLogsSubscribe(id: string): Promise<void>;
+  deploymentsLogsUnsubscribe(id: string): Promise<void>;
+
+  // Events (push from main → renderer)
+  onDeploymentLog(callback: (id: string, line: string) => void): () => void;
+  onDeploymentStatusChange(callback: (id: string, status: string) => void): () => void;
 }
