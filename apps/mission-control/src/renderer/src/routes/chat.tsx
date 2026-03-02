@@ -64,10 +64,16 @@ function Chat(): JSX.Element {
     // Clean up previous connection
     cleanupRef.current?.();
 
-    window.api.chatConnect(gatewayUrl).then(() => {
-      setConnected(true);
-      setConnecting(false);
-    });
+    window.api
+      .chatConnect(gatewayUrl)
+      .then(() => {
+        setConnected(true);
+        setConnecting(false);
+      })
+      .catch(() => {
+        setConnecting(false);
+        setMessages((prev) => [...prev, { role: 'error', text: 'Failed to connect to agent' }]);
+      });
 
     const cleanupResponse = window.api.chatOnResponse((_conversationId, text) => {
       setMessages((prev) => [...prev, { role: 'assistant', text }]);

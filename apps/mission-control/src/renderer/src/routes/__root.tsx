@@ -16,12 +16,20 @@ function RootLayout(): JSX.Element {
   const [needsApiKey, setNeedsApiKey] = useState(false);
 
   useEffect(() => {
-    window.api.setupGetStatus().then((status) => {
-      setNeedsSetup(status.needsSetup);
-      setNeedsApiKey(status.needsApiKey);
-      setReady(!status.needsSetup && !status.needsApiKey);
-      setChecking(false);
-    });
+    window.api
+      .setupGetStatus()
+      .then((status) => {
+        setNeedsSetup(status.needsSetup);
+        setNeedsApiKey(status.needsApiKey);
+        setReady(!status.needsSetup && !status.needsApiKey);
+        setChecking(false);
+      })
+      .catch(() => {
+        // If IPC fails (e.g. store not ready), fall through to setup wizard
+        setNeedsSetup(true);
+        setNeedsApiKey(true);
+        setChecking(false);
+      });
   }, []);
 
   useEffect(() => {
