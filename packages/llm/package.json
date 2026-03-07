@@ -15,11 +15,16 @@
     "dev": "tsup --watch"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.39.0"
+    "@anthropic-ai/sdk": "^0.39.0",
+    "@google/genai": "^1.44.0"
   },
   "tsup": {
-    "entry": ["src/index.ts"],
-    "format": ["esm"],
+    "entry": [
+      "src/index.ts"
+    ],
+    "format": [
+      "esm"
+    ],
     "dts": true,
     "clean": true,
     "sourcemap": true
