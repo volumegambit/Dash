@@ -1,4 +1,4 @@
-import { vi, beforeEach } from 'vitest';
+import { beforeEach, vi } from 'vitest';
 import type { MissionControlAPI } from './src/shared/ipc.js';
 
 function createMockApi(): Record<keyof MissionControlAPI, ReturnType<typeof vi.fn>> {
