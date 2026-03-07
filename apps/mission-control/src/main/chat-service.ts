@@ -1,0 +1,137 @@
+import { randomUUID } from 'node:crypto';
+import type { AgentRegistry, ConversationStore, McConversation, McMessage } from '@dash/mc';
+
+// Serializable event type — errors are strings over the wire, not Error objects
+export type McAgentEvent = Record<string, unknown>;
+
+export class ChatService {
+  private activeStreams = new Map<string, WebSocket>();
+
+  constructor(
+    private registry: AgentRegistry,
+    private store: ConversationStore,
+    private onEvent: (conversationId: string, event: McAgentEvent) => void,
+    private onDone: (conversationId: string) => void,
+    private onError: (conversationId: string, error: string) => void,
+  ) {}
+
+  async createConversation(deploymentId: string, agentName: string): Promise<McConversation> {
+    return this.store.create(deploymentId, agentName);
+  }
+
+  async listConversations(deploymentId: string): Promise<McConversation[]> {
+    return this.store.list(deploymentId);
+  }
+
+  async getMessages(conversationId: string): Promise<McMessage[]> {
+    return this.store.getMessages(conversationId);
+  }
+
+  async deleteConversation(conversationId: string): Promise<void> {
+    this.cancel(conversationId);
+    return this.store.delete(conversationId);
+  }
+
+  async sendMessage(conversationId: string, text: string): Promise<void> {
+    const conversation = await this.store.get(conversationId);
+    if (!conversation) throw new Error(`Conversation "${conversationId}" not found`);
+
+    const deployment = await this.registry.get(conversation.deploymentId);
+    if (!deployment) throw new Error(`Deployment "${conversation.deploymentId}" not found`);
+    if (!deployment.chatPort) {
+      throw new Error(`Deployment "${conversation.deploymentId}" is not running`);
+    }
+
+    const userMessage: McMessage = {
+      id: randomUUID(),
+      role: 'user',
+      content: { type: 'user', text },
+      timestamp: new Date().toISOString(),
+    };
+    await this.store.appendMessage(conversationId, userMessage);
+
+    const token = deployment.chatToken;
+    const url = `ws://localhost:${deployment.chatPort}${token ? `?token=${encodeURIComponent(token)}` : ''}`;
+    const ws = new WebSocket(url);
+    this.activeStreams.set(conversationId, ws);
+
+    const accumulatedEvents: McAgentEvent[] = [];
+
+    ws.addEventListener('open', () => {
+      ws.send(
+        JSON.stringify({
+          type: 'message',
+          conversationId,
+          agentName: conversation.agentName,
+          text,
+        }),
+      );
+    });
+
+    ws.addEventListener('message', async (event) => {
+      try {
+        const msg = JSON.parse(String(event.data)) as {
+          type: string;
+          conversationId: string;
+          event?: McAgentEvent;
+          error?: string;
+        };
+
+        if (msg.conversationId !== conversationId) return;
+
+        if (msg.type === 'event' && msg.event) {
+          accumulatedEvents.push(msg.event);
+          this.onEvent(conversationId, msg.event);
+        } else if (msg.type === 'done') {
+          const assistantMessage: McMessage = {
+            id: randomUUID(),
+            role: 'assistant',
+            content: { type: 'assistant', events: accumulatedEvents },
+            timestamp: new Date().toISOString(),
+          };
+          await this.store.appendMessage(conversationId, assistantMessage);
+          this.activeStreams.delete(conversationId);
+          ws.close();
+          this.onDone(conversationId);
+        } else if (msg.type === 'error') {
+          this.activeStreams.delete(conversationId);
+          ws.close();
+          this.onError(conversationId, msg.error ?? 'Unknown error');
+        }
+      } catch {
+        // Ignore malformed messages
+      }
+    });
+
+    ws.addEventListener('error', () => {
+      if (this.activeStreams.has(conversationId)) {
+        this.activeStreams.delete(conversationId);
+        this.onError(conversationId, 'WebSocket connection error');
+      }
+    });
+
+    ws.addEventListener('close', () => {
+      if (this.activeStreams.has(conversationId)) {
+        // Closed unexpectedly — save partial events if any
+        this.activeStreams.delete(conversationId);
+        if (accumulatedEvents.length > 0) {
+          const partialMessage: McMessage = {
+            id: randomUUID(),
+            role: 'assistant',
+            content: { type: 'assistant', events: accumulatedEvents },
+            timestamp: new Date().toISOString(),
+          };
+          this.store.appendMessage(conversationId, partialMessage).catch(() => {});
+        }
+      }
+    });
+  }
+
+  cancel(conversationId: string): void {
+    const ws = this.activeStreams.get(conversationId);
+    if (ws) {
+      ws.close();
+      this.activeStreams.delete(conversationId);
+    }
+  }
+}
