@@ -10,7 +10,7 @@ import {
 } from '@dash/agent';
 import type { AgentClient } from '@dash/agent';
 import { startChatServer } from '@dash/chat';
-import { AnthropicProvider, GoogleProvider, ProviderRegistry } from '@dash/llm';
+import { AnthropicProvider, GoogleProvider, OpenAIProvider, ProviderRegistry } from '@dash/llm';
 import { startManagementServer } from '@dash/management';
 import type { InfoResponse } from '@dash/management';
 import type { DashConfig } from './config.js';
@@ -24,6 +24,9 @@ export async function createAgentServer(config: DashConfig) {
   registry.register(new AnthropicProvider(config.anthropicApiKey));
   if (config.googleApiKey) {
     registry.register(new GoogleProvider(config.googleApiKey));
+  }
+  if (config.openaiApiKey) {
+    registry.register(new OpenAIProvider(config.openaiApiKey));
   }
 
   // Create agents from config
