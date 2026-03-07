@@ -19,7 +19,14 @@
       },
       {
         "group": "Reference",
-        "pages": ["configuration", "providers", "tools", "architecture", "api-reference", "cli-reference"]
+        "pages": [
+          "configuration",
+          "providers",
+          "tools",
+          "architecture",
+          "api-reference",
+          "cli-reference"
+        ]
       },
       {
         "group": "Help",
