@@ -3,6 +3,7 @@ import { Loader } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { SetupWizard } from '../components/SetupWizard';
 import { Sidebar } from '../components/Sidebar';
+import { initChatListeners } from '../stores/chat';
 import { initDeploymentListeners } from '../stores/deployments';
 
 export const Route = createRootRoute({
@@ -35,6 +36,7 @@ function RootLayout(): JSX.Element {
   useEffect(() => {
     if (ready) {
       initDeploymentListeners();
+      initChatListeners();
     }
   }, [ready]);
 
