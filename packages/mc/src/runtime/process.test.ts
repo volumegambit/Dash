@@ -176,8 +176,8 @@ class FakeProcess extends EventEmitter implements SpawnedProcess {
   }
 
   kill(signal?: NodeJS.Signals | number): boolean {
-    this.killed = true;
     if (signal !== 0) {
+      this.killed = true;
       this.exitCode = 0;
       this.emit('exit', 0, signal ?? 'SIGTERM');
     }
