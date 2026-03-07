@@ -96,9 +96,10 @@ function mapStopReason(
 }
 
 /** Extract content from Responses API output items */
-function fromOutputItems(
-  output: Record<string, unknown>[],
-): { content: string | ContentBlock[]; hasFunctionCalls: boolean } {
+function fromOutputItems(output: Record<string, unknown>[]): {
+  content: string | ContentBlock[];
+  hasFunctionCalls: boolean;
+} {
   const hasFunctionCalls = output.some((item) => item.type === 'function_call');
   const hasReasoning = output.some((item) => item.type === 'reasoning');
 
@@ -153,10 +154,7 @@ function fromOutputItems(
 }
 
 /** Build Responses API params from a CompletionRequest */
-function buildParams(
-  request: CompletionRequest,
-  streaming: boolean,
-): Record<string, unknown> {
+function buildParams(request: CompletionRequest, streaming: boolean): Record<string, unknown> {
   const input = toInputItems(request.messages);
   const reasoning = isReasoningModel(request.model);
 

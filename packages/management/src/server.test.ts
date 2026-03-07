@@ -1,4 +1,7 @@
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import type { Server } from 'node:http';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { startManagementServer } from './server.js';
 import type { InfoResponse } from './types.js';
@@ -97,5 +100,85 @@ describe('Management Server', () => {
   it('returns 404 for unknown routes', async () => {
     const res = await fetch(url('/unknown'), { headers: authHeaders() });
     expect(res.status).toBe(404);
+  });
+
+  describe('log endpoints', () => {
+    let logDir: string;
+    let logClose: () => Promise<void>;
+    let logPort: number;
+
+    beforeEach(async () => {
+      logDir = await mkdtemp(join(tmpdir(), 'mgmt-logs-'));
+      const logLines =
+        '2026-03-07T10:00:00.000Z [info] Agent started\n2026-03-07T10:00:01.000Z [info] Processing message\n2026-03-07T10:00:02.000Z [warn] Slow response\n2026-03-07T10:00:03.000Z [info] Message complete\n2026-03-07T10:00:04.000Z [error] Connection lost\n';
+      await writeFile(join(logDir, 'agent.log'), logLines);
+
+      const result = startManagementServer({
+        port: 0,
+        token: TEST_TOKEN,
+        getInfo: () => testInfo,
+        onShutdown: vi.fn().mockResolvedValue(undefined),
+        logFilePath: join(logDir, 'agent.log'),
+      });
+      await new Promise<void>((resolve) => {
+        if (result.server.listening) resolve();
+        else result.server.once('listening', resolve);
+      });
+      const addr = result.server.address();
+      logPort = typeof addr === 'object' && addr ? addr.port : 0;
+      logClose = result.close;
+    });
+
+    afterEach(async () => {
+      await logClose();
+      await rm(logDir, { recursive: true });
+    });
+
+    function logUrl(path: string) {
+      return `http://localhost:${logPort}${path}`;
+    }
+
+    it('GET /logs returns last N lines with tail param', async () => {
+      const res = await fetch(logUrl('/logs?tail=2'), { headers: authHeaders() });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { lines: string[] };
+      expect(body.lines).toHaveLength(2);
+      expect(body.lines[0]).toContain('Message complete');
+      expect(body.lines[1]).toContain('Connection lost');
+    });
+
+    it('GET /logs defaults to last 100 lines', async () => {
+      const res = await fetch(logUrl('/logs'), { headers: authHeaders() });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { lines: string[] };
+      expect(body.lines).toHaveLength(5);
+    });
+
+    it('GET /logs with since filters by timestamp', async () => {
+      const res = await fetch(logUrl('/logs?since=2026-03-07T10:00:02.000Z'), {
+        headers: authHeaders(),
+      });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { lines: string[] };
+      expect(body.lines).toHaveLength(3);
+      expect(body.lines[0]).toContain('Slow response');
+    });
+
+    it('GET /logs returns 404 when no log file configured', async () => {
+      // Use the default server (no logFilePath) via the outer port variable
+      const res = await fetch(`http://localhost:${port}/logs`, { headers: authHeaders() });
+      expect(res.status).toBe(404);
+    });
+
+    it('GET /logs/stream returns SSE content type', async () => {
+      const controller = new AbortController();
+      const res = await fetch(logUrl('/logs/stream'), {
+        headers: authHeaders(),
+        signal: controller.signal,
+      });
+      expect(res.status).toBe(200);
+      expect(res.headers.get('content-type')).toContain('text/event-stream');
+      controller.abort();
+    });
   });
 });

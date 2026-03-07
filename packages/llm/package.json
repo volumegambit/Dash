@@ -20,12 +20,8 @@
     "openai": "^5.8.0"
   },
   "tsup": {
-    "entry": [
-      "src/index.ts"
-    ],
-    "format": [
-      "esm"
-    ],
+    "entry": ["src/index.ts"],
+    "format": ["esm"],
     "dts": true,
     "clean": true,
     "sourcemap": true
