@@ -3,7 +3,7 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { AgentRegistry, EncryptedSecretStore, ProcessRuntime } from '@dash/mc';
-import { app, ipcMain, safeStorage } from 'electron';
+import { app, ipcMain, safeStorage, shell } from 'electron';
 import type { BrowserWindow } from 'electron';
 import type { DeployWithConfigOptions } from '../shared/ipc.js';
 
@@ -31,10 +31,19 @@ function getRegistry(): AgentRegistry {
   return registry;
 }
 
+function resolveProjectRoot(): string {
+  if (process.env.DASH_PROJECT_ROOT) {
+    return process.env.DASH_PROJECT_ROOT;
+  }
+  // Dev mode: __dirname is apps/mission-control/out/main — 4 levels up is the monorepo root.
+  // Production: DASH_PROJECT_ROOT must be set (the monorepo layout doesn't exist in a packaged app).
+  const candidate = resolve(__dirname, '../../../..');
+  return candidate;
+}
+
 function getRuntime(): ProcessRuntime {
   if (!runtime) {
-    const projectRoot = process.env.DASH_PROJECT_ROOT || resolve(app.getAppPath(), '../../../..');
-    runtime = new ProcessRuntime(getRegistry(), getSecretStore(), projectRoot);
+    runtime = new ProcessRuntime(getRegistry(), getSecretStore(), resolveProjectRoot());
   }
   return runtime;
 }
@@ -82,6 +91,11 @@ export async function registerIpcHandlers(
   }
 
   ipcMain.handle('app:getVersion', () => app.getVersion());
+
+  // Shell
+  ipcMain.handle('openExternal', async (_event, url: string) => {
+    await shell.openExternal(url);
+  });
 
   // Setup handler
   ipcMain.handle('setup:getStatus', async () => {

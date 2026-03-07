@@ -4,6 +4,9 @@ import type { MissionControlAPI } from '../shared/ipc';
 const api: MissionControlAPI = {
   getVersion: () => ipcRenderer.invoke('app:getVersion'),
 
+  // Shell
+  openExternal: (url: string) => ipcRenderer.invoke('openExternal', url),
+
   // Setup
   setupGetStatus: () => ipcRenderer.invoke('setup:getStatus'),
 

@@ -16,6 +16,9 @@ export interface SetupStatus {
 export interface MissionControlAPI {
   getVersion(): Promise<string>;
 
+  // Shell
+  openExternal(url: string): Promise<void>;
+
   // Setup
   setupGetStatus(): Promise<SetupStatus>;
 
