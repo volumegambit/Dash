@@ -4,7 +4,7 @@ export type AgentEvent =
   | { type: 'tool_use_start'; id: string; name: string }
   | { type: 'tool_use_delta'; partial_json: string }
   | { type: 'tool_result'; id: string; name: string; content: string; isError?: boolean }
-  | { type: 'response'; content: string; usage: { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number } }
+  | { type: 'response'; content: string; usage: { inputTokens: number; outputTokens: number; cacheReadTokens?: number; cacheWriteTokens?: number } }
   | { type: 'error'; error: Error }
   | { type: 'file_changed'; files: string[] }
   | { type: 'agent_spawned'; name: string }
