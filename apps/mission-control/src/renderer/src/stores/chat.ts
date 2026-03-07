@@ -53,10 +53,16 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   async deleteConversation(id: string) {
     await window.api.chatDeleteConversation(id);
-    set((s) => ({
-      conversations: s.conversations.filter((c) => c.id !== id),
-      selectedConversationId: s.selectedConversationId === id ? null : s.selectedConversationId,
-    }));
+    set((s) => {
+      const { [id]: _m, ...restMessages } = s.messages;
+      const { [id]: _se, ...restEvents } = s.streamingEvents;
+      return {
+        conversations: s.conversations.filter((c) => c.id !== id),
+        selectedConversationId: s.selectedConversationId === id ? null : s.selectedConversationId,
+        messages: restMessages,
+        streamingEvents: restEvents,
+      };
+    });
   },
 
   async sendMessage(conversationId: string, text: string) {
@@ -75,7 +81,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
       streamingEvents: { ...s.streamingEvents, [conversationId]: [] },
       sending: { ...s.sending, [conversationId]: true },
     }));
-    await window.api.chatSendMessage(conversationId, text);
+    try {
+      await window.api.chatSendMessage(conversationId, text);
+    } catch (err) {
+      set((s) => ({ sending: { ...s.sending, [conversationId]: false } }));
+      throw err;
+    }
   },
 
   cancelMessage(conversationId: string) {
@@ -129,20 +140,19 @@ export const useChatStore = create<ChatState>((set, get) => ({
 }));
 
 // Global IPC event listeners — call once at app startup (see routes/__root.tsx)
-let cleanupEvent: (() => void) | null = null;
-let cleanupDone: (() => void) | null = null;
-let cleanupError: (() => void) | null = null;
+let initialized = false;
 
 export function initChatListeners(): void {
-  if (cleanupEvent) return;
+  if (initialized) return;
+  initialized = true;
 
-  cleanupEvent = window.api.chatOnEvent((conversationId, event) => {
+  window.api.chatOnEvent((conversationId, event) => {
     useChatStore.getState().appendStreamingEvent(conversationId, event);
   });
-  cleanupDone = window.api.chatOnDone((conversationId) => {
+  window.api.chatOnDone((conversationId) => {
     useChatStore.getState().finalizeMessage(conversationId);
   });
-  cleanupError = window.api.chatOnError((conversationId, error) => {
+  window.api.chatOnError((conversationId, error) => {
     useChatStore.getState().setMessageError(conversationId, error);
   });
 }
