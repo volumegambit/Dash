@@ -131,16 +131,42 @@ When no config file is found, Dash uses these defaults:
 }
 ```
 
+## Credentials file
+
+<Tabs>
+  <Tab title="Credentials file">
+    ```json
+    {
+      "anthropic": {
+        "apiKey": "sk-ant-..."
+      },
+      "openai": {
+        "apiKey": "sk-..."
+      },
+      "google": {
+        "apiKey": "AIza..."
+      }
+    }
+    ```
+  </Tab>
+</Tabs>
+
 ## Environment variables
 
 | Variable | Overrides | Description |
 |----------|-----------|-------------|
-| `ANTHROPIC_API_KEY` | `credentials.json → anthropic.apiKey` | Anthropic API key (required) |
+| `ANTHROPIC_API_KEY` | `credentials.json → anthropic.apiKey` | Anthropic API key |
+| `OPENAI_API_KEY` | `credentials.json → openai.apiKey` | OpenAI API key |
+| `GOOGLE_API_KEY` | `credentials.json → google.apiKey` | Google API key |
 | `MANAGEMENT_API_TOKEN` | — | Enables the Management API when set |
 | `MANAGEMENT_API_PORT` | — | Management API port (default: `9100`) |
 | `CHAT_API_TOKEN` | — | Enables the Chat API when set |
 | `CHAT_API_PORT` | — | Chat API port (default: `9101`) |
 | `LOG_LEVEL` | `logging.level` | Log level override |
+
+<Note>
+  For details on which models each provider supports and how routing works, see [LLM Providers](/providers).
+</Note>
 
 ## CLI flags
 
