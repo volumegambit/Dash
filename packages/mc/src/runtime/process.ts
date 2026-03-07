@@ -463,7 +463,25 @@ export class ProcessRuntime implements DeploymentRuntime {
         }
       : null;
 
-    return await resolveRuntimeStatus(snapshot, deployment);
+    // Build health check callback if management API is configured
+    let healthCheck: (() => Promise<boolean>) | undefined;
+    if (deployment.managementPort && deployment.managementToken) {
+      const { ManagementClient } = await import('@dash/management');
+      const client = new ManagementClient(
+        `http://localhost:${deployment.managementPort}`,
+        deployment.managementToken,
+      );
+      healthCheck = async () => {
+        try {
+          await client.health();
+          return true;
+        } catch {
+          return false;
+        }
+      };
+    }
+
+    return await resolveRuntimeStatus(snapshot, deployment, undefined, healthCheck);
   }
 
   async *getLogs(id: string): AsyncIterable<string> {
