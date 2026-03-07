@@ -48,7 +48,7 @@ describe('loadConfig', () => {
 
   const validConfig = {
     channels: {
-      mc: { adapter: 'mission-control', agent: 'default', port: 9200 },
+      mc: { adapter: 'mission-control', port: 9200 }, // agent not required for MC
     },
     agents: {
       default: { url: 'ws://localhost:9101/ws', token: 'test-token' },
