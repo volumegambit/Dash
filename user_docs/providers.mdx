@@ -1,0 +1,138 @@
+---
+title: "LLM Providers"
+description: "Configure Anthropic, OpenAI, and Google as LLM providers for your agents."
+---
+
+Dash supports multiple LLM providers. The provider for each agent is determined automatically from the model name — no extra configuration needed beyond supplying the right API key.
+
+## Provider routing
+
+Model names are matched by prefix:
+
+| Model prefix | Provider |
+|-------------|----------|
+| `claude-*` | Anthropic |
+| `gpt-*`, `o1*`, `o3*`, `o4*` | OpenAI |
+| `gemini-*` | Google |
+
+If the model prefix doesn't match any provider, Dash falls back to the first registered provider.
+
+## Configuring credentials
+
+Each provider needs an API key. Set it via environment variable, `credentials.json`, or a `--secrets` file (see [CLI flags](/configuration#cli-flags)).
+
+### credentials.json
+
+```json
+{
+  "anthropic": {
+    "apiKey": "sk-ant-..."
+  },
+  "openai": {
+    "apiKey": "sk-..."
+  },
+  "google": {
+    "apiKey": "AIza..."
+  }
+}
+```
+
+You only need to include providers you're actually using.
+
+### Environment variables
+
+| Variable | Provider |
+|----------|----------|
+| `ANTHROPIC_API_KEY` | Anthropic |
+| `OPENAI_API_KEY` | OpenAI |
+| `GOOGLE_API_KEY` | Google |
+
+Environment variables take precedence over `credentials.json`.
+
+## Anthropic
+
+Sign up at [console.anthropic.com](https://console.anthropic.com) to get an API key.
+
+**Example models:**
+- `claude-sonnet-4-20250514` — balanced performance and speed
+- `claude-opus-4-20250514` — highest capability
+
+**Configuration:**
+
+```env
+ANTHROPIC_API_KEY=sk-ant-...
+```
+
+or in `credentials.json`:
+
+```json
+{ "anthropic": { "apiKey": "sk-ant-..." } }
+```
+
+## OpenAI
+
+Sign up at [platform.openai.com](https://platform.openai.com) to get an API key.
+
+**Example models:**
+- `gpt-4o` — multimodal, fast
+- `o3` — advanced reasoning
+
+**Configuration:**
+
+```env
+OPENAI_API_KEY=sk-...
+```
+
+or in `credentials.json`:
+
+```json
+{ "openai": { "apiKey": "sk-..." } }
+```
+
+## Google
+
+Sign up at [aistudio.google.com](https://aistudio.google.com) to get an API key.
+
+**Example models:**
+- `gemini-2.0-flash` — fast, efficient
+- `gemini-2.5-pro` — highest capability
+
+**Configuration:**
+
+```env
+GOOGLE_API_KEY=AIza...
+```
+
+or in `credentials.json`:
+
+```json
+{ "google": { "apiKey": "AIza..." } }
+```
+
+## Using a provider in an agent
+
+Set the `model` field in your agent config to any model from the provider:
+
+```json
+{
+  "agents": {
+    "default": {
+      "model": "claude-sonnet-4-20250514",
+      "systemPrompt": "You are a helpful assistant.",
+      "tools": ["bash", "read_file"]
+    },
+    "gpt-agent": {
+      "model": "gpt-4o",
+      "systemPrompt": "You are a helpful assistant.",
+      "tools": ["bash", "read_file"]
+    },
+    "gemini-agent": {
+      "model": "gemini-2.0-flash",
+      "systemPrompt": "You are a helpful assistant.",
+      "tools": ["bash", "read_file"]
+    }
+  }
+}
+```
+
+Dash will use the corresponding provider for each agent automatically.
