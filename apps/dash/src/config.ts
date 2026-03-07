@@ -35,6 +35,7 @@ export interface DashConfig {
   agents: Record<string, AgentConfig>;
   sessionDir: string;
   logLevel: string;
+  logDir?: string;
   managementPort: number;
   managementToken?: string;
   chatPort: number;
@@ -250,6 +251,16 @@ export async function loadConfig(options?: LoadConfigOptions): Promise<DashConfi
     : 9101;
   const chatToken = secrets?.chatToken ?? process.env.CHAT_API_TOKEN;
 
+  // Log directory: derived from the config directory when --config is provided
+  let logDir: string | undefined;
+  if (options?.configPath) {
+    const configPath = resolve(options.configPath);
+    const configBase = existsSync(configPath) && statSync(configPath).isDirectory()
+      ? configPath
+      : dirname(configPath);
+    logDir = resolve(configBase, 'logs');
+  }
+
   return {
     anthropicApiKey,
     googleApiKey,
@@ -257,6 +268,7 @@ export async function loadConfig(options?: LoadConfigOptions): Promise<DashConfi
     agents: merged.agents,
     sessionDir: merged.sessions.dir,
     logLevel: merged.logging.level,
+    logDir,
     managementPort,
     managementToken,
     chatPort,
