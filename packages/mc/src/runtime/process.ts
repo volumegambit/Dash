@@ -463,7 +463,7 @@ export class ProcessRuntime implements DeploymentRuntime {
         }
       : null;
 
-    return resolveRuntimeStatus(snapshot, deployment);
+    return await resolveRuntimeStatus(snapshot, deployment);
   }
 
   async *getLogs(id: string): AsyncIterable<string> {
