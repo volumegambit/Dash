@@ -4,7 +4,16 @@ export type AgentEvent =
   | { type: 'tool_use_start'; id: string; name: string }
   | { type: 'tool_use_delta'; partial_json: string }
   | { type: 'tool_result'; id: string; name: string; content: string; isError?: boolean }
-  | { type: 'response'; content: string; usage: { inputTokens: number; outputTokens: number; cacheReadTokens?: number; cacheWriteTokens?: number } }
+  | {
+      type: 'response';
+      content: string;
+      usage: {
+        inputTokens: number;
+        outputTokens: number;
+        cacheReadTokens?: number;
+        cacheWriteTokens?: number;
+      };
+    }
   | { type: 'error'; error: Error }
   | { type: 'file_changed'; files: string[] }
   | { type: 'agent_spawned'; name: string }
@@ -13,9 +22,9 @@ export type AgentEvent =
   | { type: 'question'; id: string; question: string; options: string[] };
 
 export interface DashAgentConfig {
-  model: string;      // "provider/model-id", e.g. "anthropic/claude-opus-4-5"
+  model: string; // "provider/model-id", e.g. "anthropic/claude-opus-4-5"
   systemPrompt: string;
-  tools?: string[];   // OpenCode tool names
+  tools?: string[]; // OpenCode tool names
   workspace?: string;
 }
 

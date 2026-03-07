@@ -19,7 +19,11 @@ export class SessionIdMap {
     }
   }
 
-  async getOrCreate(channelId: string, conversationId: string, client: SessionClient): Promise<string> {
+  async getOrCreate(
+    channelId: string,
+    conversationId: string,
+    client: SessionClient,
+  ): Promise<string> {
     const key = `${channelId}:${conversationId}`;
     const existing = this.map.get(key);
     if (existing) return existing;

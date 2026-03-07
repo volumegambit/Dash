@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 // --- JSON config schema ---
 
 export interface AgentConfig {
-  model: string;      // "provider/model-id", e.g. "anthropic/claude-sonnet-4-5"
+  model: string; // "provider/model-id", e.g. "anthropic/claude-sonnet-4-5"
   systemPrompt: string;
   tools?: string[];
   workspace?: string;

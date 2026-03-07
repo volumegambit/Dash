@@ -1,7 +1,13 @@
-import { createOpencodeServer, createOpencodeClient } from '@opencode-ai/sdk/v2';
+import { createOpencodeClient, createOpencodeServer } from '@opencode-ai/sdk/v2';
+import { buildToolsMap, parseModel } from '../config-generator.js';
 import { SessionIdMap } from '../session-id-map.js';
-import { parseModel, buildToolsMap } from '../config-generator.js';
-import type { AgentBackend, AgentEvent, AgentState, DashAgentConfig, RunOptions } from '../types.js';
+import type {
+  AgentBackend,
+  AgentEvent,
+  AgentState,
+  DashAgentConfig,
+  RunOptions,
+} from '../types.js';
 
 type OcClient = ReturnType<typeof createOpencodeClient>;
 
@@ -37,6 +43,7 @@ export class OpenCodeBackend implements AgentBackend {
     }
 
     // Rebuild session map from existing sessions
+    // biome-ignore lint/suspicious/noExplicitAny: SDK type is richer than SessionClient interface
     await this.sessionIdMap.init(this.sdk as any);
   }
 
@@ -46,6 +53,7 @@ export class OpenCodeBackend implements AgentBackend {
     const sessionId = await this.sessionIdMap.getOrCreate(
       state.channelId,
       state.conversationId,
+      // biome-ignore lint/suspicious/noExplicitAny: SDK type is richer than SessionClient interface
       this.sdk as any,
     );
     this.currentSessionId = sessionId;
@@ -54,7 +62,7 @@ export class OpenCodeBackend implements AgentBackend {
     const tools = buildToolsMap(state.tools);
 
     // Subscribe to SSE events BEFORE sending prompt (avoid missing early events)
-    const eventStream = this.sdk.event.subscribe();
+    const { stream: eventStream } = await this.sdk.event.subscribe();
 
     // Fire prompt (blocks until done; run concurrently with SSE consumption)
     const promptPromise = this.sdk.session.prompt({
@@ -70,20 +78,27 @@ export class OpenCodeBackend implements AgentBackend {
       for await (const event of eventStream) {
         if (options.signal?.aborted) break;
 
+        // biome-ignore lint/suspicious/noExplicitAny: SDK Event is a union type; we access properties dynamically by event.type
+        const eventProps = event.properties as any;
+
         // Check for end-of-turn
         if (
           event.type === 'session.status' &&
-          (event.properties as any).sessionID === sessionId &&
-          (event.properties as any).status?.type === 'idle'
+          eventProps.sessionID === sessionId &&
+          eventProps.status?.type === 'idle'
         ) {
           break;
         }
 
         // Auto-approve permission requests (headless mode)
-        if (event.type === 'permission.asked' && (event.properties as any).sessionID === sessionId) {
-          const permProps = event.properties as any;
-          console.warn(`[opencode] auto-approving permission: ${permProps.permission} ${JSON.stringify(permProps.patterns)}`);
-          await (this.sdk as any).permission.reply({ requestID: permProps.id, reply: 'once' }).catch(() => {});
+        if (event.type === 'permission.asked' && eventProps.sessionID === sessionId) {
+          console.warn(
+            `[opencode] auto-approving permission: ${eventProps.permission} ${JSON.stringify(eventProps.patterns)}`,
+          );
+          // biome-ignore lint/suspicious/noExplicitAny: SDK client's permission API not in generated type
+          await (this.sdk as any).permission
+            .reply({ requestID: eventProps.id, reply: 'once' })
+            .catch(() => {});
           continue;
         }
 
@@ -99,7 +114,11 @@ export class OpenCodeBackend implements AgentBackend {
     await promptPromise;
   }
 
-  normalizeEvent(event: { type: string; properties: unknown }, sessionId: string): AgentEvent | null {
+  normalizeEvent(
+    event: { type: string; properties: unknown },
+    sessionId: string,
+  ): AgentEvent | null {
+    // biome-ignore lint/suspicious/noExplicitAny: SDK Event properties vary by event.type union
     const props = event.properties as any;
 
     switch (event.type) {
@@ -124,10 +143,21 @@ export class OpenCodeBackend implements AgentBackend {
               return { type: 'tool_use_delta', partial_json: JSON.stringify(state.input) };
             }
             if (state.status === 'completed') {
-              return { type: 'tool_result', id: part.callID, name: part.tool, content: state.output };
+              return {
+                type: 'tool_result',
+                id: part.callID,
+                name: part.tool,
+                content: state.output,
+              };
             }
             if (state.status === 'error') {
-              return { type: 'tool_result', id: part.callID, name: part.tool, content: state.error, isError: true };
+              return {
+                type: 'tool_result',
+                id: part.callID,
+                name: part.tool,
+                content: state.error,
+                isError: true,
+              };
             }
             return null;
           }
@@ -138,7 +168,11 @@ export class OpenCodeBackend implements AgentBackend {
           case 'compaction':
             return { type: 'context_compacted', overflow: part.overflow ?? false };
           case 'retry':
-            return { type: 'agent_retry', attempt: part.attempt, reason: part.error?.message ?? 'unknown' };
+            return {
+              type: 'agent_retry',
+              attempt: part.attempt,
+              reason: part.error?.message ?? 'unknown',
+            };
           default:
             return null;
         }
@@ -147,7 +181,11 @@ export class OpenCodeBackend implements AgentBackend {
       case 'session.status': {
         if (props.sessionID !== sessionId) return null;
         if (props.status?.type === 'retry') {
-          return { type: 'agent_retry', attempt: props.status.attempt, reason: props.status.message };
+          return {
+            type: 'agent_retry',
+            attempt: props.status.attempt,
+            reason: props.status.message,
+          };
         }
         return null;
       }
@@ -166,6 +204,7 @@ export class OpenCodeBackend implements AgentBackend {
           type: 'question',
           id: props.id,
           question: first.question,
+          // biome-ignore lint/suspicious/noExplicitAny: SDK question option shape is untyped
           options: first.options?.map((o: any) => o.label) ?? [],
         };
       }
@@ -177,11 +216,13 @@ export class OpenCodeBackend implements AgentBackend {
 
   async answerQuestion(id: string, answers: string[][]): Promise<void> {
     if (!this.sdk) return;
+    // biome-ignore lint/suspicious/noExplicitAny: SDK client's question API not in generated type
     await (this.sdk as any).question.reply({ requestID: id, answers });
   }
 
   abort(): void {
     if (this.sdk && this.currentSessionId) {
+      // biome-ignore lint/suspicious/noExplicitAny: SDK client's abort API accessed dynamically
       (this.sdk as any).session.abort({ sessionID: this.currentSessionId }).catch(() => {});
     }
   }

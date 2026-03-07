@@ -23,7 +23,11 @@ describe('OpenCodeBackend.normalizeEvent', () => {
   it('returns thinking_delta for message.part.delta with field=reasoning', () => {
     const backend = makeBackend();
     const result = backend.normalizeEvent(
-      makeEvent('message.part.delta', { sessionID: 'sess-1', field: 'reasoning', delta: 'Thinking...' }),
+      makeEvent('message.part.delta', {
+        sessionID: 'sess-1',
+        field: 'reasoning',
+        delta: 'Thinking...',
+      }),
       'sess-1',
     );
     expect(result).toEqual({ type: 'thinking_delta', text: 'Thinking...' });
@@ -51,7 +55,13 @@ describe('OpenCodeBackend.normalizeEvent', () => {
     const backend = makeBackend();
     const result = backend.normalizeEvent(
       makeEvent('message.part.updated', {
-        part: { type: 'tool', sessionID: 'sess-1', callID: 'call-1', tool: 'bash', state: { status: 'pending', input: {}, raw: '' } },
+        part: {
+          type: 'tool',
+          sessionID: 'sess-1',
+          callID: 'call-1',
+          tool: 'bash',
+          state: { status: 'pending', input: {}, raw: '' },
+        },
       }),
       'sess-1',
     );
@@ -62,7 +72,20 @@ describe('OpenCodeBackend.normalizeEvent', () => {
     const backend = makeBackend();
     const result = backend.normalizeEvent(
       makeEvent('message.part.updated', {
-        part: { type: 'tool', sessionID: 'sess-1', callID: 'call-1', tool: 'bash', state: { status: 'completed', input: {}, output: 'done', title: 'bash', metadata: {}, time: { start: 0, end: 1 } } },
+        part: {
+          type: 'tool',
+          sessionID: 'sess-1',
+          callID: 'call-1',
+          tool: 'bash',
+          state: {
+            status: 'completed',
+            input: {},
+            output: 'done',
+            title: 'bash',
+            metadata: {},
+            time: { start: 0, end: 1 },
+          },
+        },
       }),
       'sess-1',
     );
@@ -103,7 +126,10 @@ describe('OpenCodeBackend.normalizeEvent', () => {
   it('returns agent_retry for session.status retry', () => {
     const backend = makeBackend();
     const result = backend.normalizeEvent(
-      makeEvent('session.status', { sessionID: 'sess-1', status: { type: 'retry', attempt: 2, message: 'Rate limit' } }),
+      makeEvent('session.status', {
+        sessionID: 'sess-1',
+        status: { type: 'retry', attempt: 2, message: 'Rate limit' },
+      }),
       'sess-1',
     );
     expect(result).toEqual({ type: 'agent_retry', attempt: 2, reason: 'Rate limit' });
@@ -124,11 +150,25 @@ describe('OpenCodeBackend.normalizeEvent', () => {
       makeEvent('question.asked', {
         sessionID: 'sess-1',
         id: 'q-1',
-        questions: [{ question: 'Which approach?', header: 'Approach', options: [{ label: 'A', description: 'Option A' }, { label: 'B', description: 'Option B' }] }],
+        questions: [
+          {
+            question: 'Which approach?',
+            header: 'Approach',
+            options: [
+              { label: 'A', description: 'Option A' },
+              { label: 'B', description: 'Option B' },
+            ],
+          },
+        ],
       }),
       'sess-1',
     );
-    expect(result).toEqual({ type: 'question', id: 'q-1', question: 'Which approach?', options: ['A', 'B'] });
+    expect(result).toEqual({
+      type: 'question',
+      id: 'q-1',
+      question: 'Which approach?',
+      options: ['A', 'B'],
+    });
   });
 
   it('returns null for unknown event type', () => {

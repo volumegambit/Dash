@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseModel, buildToolsMap, ALL_OPENCODE_TOOLS } from './config-generator.js';
+import { ALL_OPENCODE_TOOLS, buildToolsMap, parseModel } from './config-generator.js';
 
 describe('parseModel', () => {
   it('splits provider and model correctly', () => {
@@ -39,11 +39,11 @@ describe('buildToolsMap', () => {
 
   it('enables only listed tools, disables others', () => {
     const map = buildToolsMap(['bash', 'read']);
-    expect(map['bash']).toBe(true);
-    expect(map['read']).toBe(true);
-    expect(map['edit']).toBe(false);
-    expect(map['web_search']).toBe(false);
-    expect(map['mcp']).toBe(false);
+    expect(map.bash).toBe(true);
+    expect(map.read).toBe(true);
+    expect(map.edit).toBe(false);
+    expect(map.web_search).toBe(false);
+    expect(map.mcp).toBe(false);
   });
 
   it('always includes all 10 tool keys regardless of input', () => {
