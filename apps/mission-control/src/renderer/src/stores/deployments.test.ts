@@ -48,8 +48,8 @@ describe('appendLogLine', () => {
 
     const { logLines } = useDeploymentsStore.getState();
     expect(logLines['dep-1']).toHaveLength(500);
-    expect(logLines['dep-1']![0]).toBe('line-1');
-    expect(logLines['dep-1']![499]).toBe('line-500');
+    expect(logLines['dep-1']?.[0]).toBe('line-1');
+    expect(logLines['dep-1']?.[499]).toBe('line-500');
   });
 });
 
@@ -62,9 +62,9 @@ describe('handleStatusChange', () => {
     useDeploymentsStore.getState().handleStatusChange('dep-1', 'error');
 
     const { deployments } = useDeploymentsStore.getState();
-    expect(deployments[0]!.status).toBe('error');
-    expect(deployments[1]!.status).toBe('stopped');
-    expect(deployments[1]!.name).toBe('Other');
+    expect(deployments[0]?.status).toBe('error');
+    expect(deployments[1]?.status).toBe('stopped');
+    expect(deployments[1]?.name).toBe('Other');
   });
 });
 

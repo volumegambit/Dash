@@ -6,7 +6,7 @@ import { useDeploymentsStore } from '../stores/deployments.js';
 
 const mockNavigate = vi.fn();
 vi.mock('@tanstack/react-router', () => ({
-  createFileRoute: () => (opts: any) => ({ component: opts.component }),
+  createFileRoute: () => (opts: Record<string, unknown>) => ({ component: opts.component }),
   useNavigate: () => mockNavigate,
 }));
 
@@ -138,8 +138,6 @@ describe('DeployWizard', () => {
     await user.click(telegramToggle);
 
     // Check for the warning message
-    expect(
-      await screen.findByText(/telegram-bot-token not found/i),
-    ).toBeInTheDocument();
+    expect(await screen.findByText(/telegram-bot-token not found/i)).toBeInTheDocument();
   });
 });
