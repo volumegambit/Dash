@@ -1,0 +1,256 @@
+---
+title: "CLI Reference"
+description: "Full reference for the mc (Mission Control) CLI."
+---
+
+The `mc` CLI manages Dash agent deployments and encrypted secrets. Run it with `npm run mc-cli -- <command>` from the project root, or use the `mc` binary if installed globally.
+
+## Deployment commands
+
+### mc deploy \<config-dir\>
+
+Deploy an agent server (and optionally a gateway) from a config directory.
+
+```bash
+mc deploy ./my-config
+```
+
+The config directory should contain a `dash.json` and optionally a `gateway.json`. If a Telegram adapter is configured in `gateway.json`, you'll be prompted for the bot token if it hasn't been stored yet.
+
+On first run, you'll be prompted for your Anthropic API key if it hasn't been stored. The key is saved to the encrypted secret store.
+
+**Output:**
+
+```
+Deployment abc123 created.
+  Status: running
+  Management API: http://localhost:9100
+  Chat API: ws://localhost:9101/ws
+  Agent server PID: 12345
+```
+
+---
+
+### mc status \[id\]
+
+List all deployments, or show detailed status for a specific deployment.
+
+```bash
+mc status          # list all deployments
+mc status abc123   # detailed status for abc123
+```
+
+**Output (list):**
+
+```
+abc123  my-config  running  2026-03-07T12:00:00.000Z
+```
+
+**Output (detail):**
+
+```
+Deployment: abc123
+  State: running
+  Management port: 9100
+  Chat port: 9101
+  Agent server PID: 12345
+  Gateway PID: 12346
+  Uptime: 300s
+```
+
+| State | Meaning |
+|-------|---------|
+| `running` | All processes are up |
+| `stopped` | Processes have exited |
+| `error` | One or more processes failed to start |
+
+---
+
+### mc stop \<id\>
+
+Stop a running deployment.
+
+```bash
+mc stop abc123
+```
+
+Sends a shutdown signal to the agent server and gateway. Does not remove the deployment record — use `mc status` to confirm it stopped, and `mc remove` to clean up.
+
+---
+
+### mc remove \<id\>
+
+Remove a deployment and clean up its associated secrets.
+
+```bash
+mc remove abc123
+```
+
+---
+
+### mc logs \<id\>
+
+Stream stdout/stderr from a running deployment.
+
+```bash
+mc logs abc123
+```
+
+Streams log lines until interrupted (Ctrl+C). Only works for locally running deployments.
+
+---
+
+### mc health \<target\>
+
+Check the health of a Dash agent server.
+
+```bash
+mc health abc123                          # by deployment ID
+mc health http://localhost:9100 -t $TOKEN # by URL
+```
+
+`target` can be a deployment ID (token is looked up automatically) or a full URL (token required via `--token`).
+
+**Options:**
+
+| Flag | Description |
+|------|-------------|
+| `-t, --token <token>` | Management API token (required when target is a URL) |
+
+**Output:**
+
+```json
+{
+  "status": "healthy",
+  "uptime": 42.3,
+  "version": "0.1.0"
+}
+```
+
+---
+
+### mc info \<target\>
+
+Get agent configuration info from a running server.
+
+```bash
+mc info abc123
+mc info http://localhost:9100 -t $TOKEN
+```
+
+**Options:**
+
+| Flag | Description |
+|------|-------------|
+| `-t, --token <token>` | Management API token (required when target is a URL) |
+
+**Output:**
+
+```json
+{
+  "agents": [
+    {
+      "name": "default",
+      "model": "claude-sonnet-4-20250514",
+      "tools": ["bash", "read_file"]
+    }
+  ]
+}
+```
+
+---
+
+## Secrets commands
+
+Secrets are stored in an AES-256-GCM encrypted file at `~/.mission-control/secrets.enc`. See [encrypted secrets](/configuration#encrypted-secrets) for how the encryption works.
+
+### mc secrets list
+
+List all stored secret key names (values are not shown).
+
+```bash
+mc secrets list
+```
+
+**Output:**
+
+```
+anthropic-api-key
+telegram-bot-token
+```
+
+---
+
+### mc secrets get \<key\>
+
+Show a secret value (masked by default).
+
+```bash
+mc secrets get anthropic-api-key
+mc secrets get anthropic-api-key --reveal
+```
+
+**Options:**
+
+| Flag | Description |
+|------|-------------|
+| `--reveal` | Show the full value instead of a masked version |
+
+---
+
+### mc secrets set \<key\>
+
+Store a secret. Prompts for the value interactively by default.
+
+```bash
+mc secrets set anthropic-api-key
+mc secrets set anthropic-api-key --value sk-ant-...
+```
+
+**Options:**
+
+| Flag | Description |
+|------|-------------|
+| `--value <v>` | Set the value inline (useful for scripting) |
+
+---
+
+### mc secrets delete \<key\>
+
+Remove a stored secret.
+
+```bash
+mc secrets delete anthropic-api-key
+```
+
+---
+
+### mc secrets change-password
+
+Re-encrypt the entire secret store with a new password.
+
+```bash
+mc secrets change-password
+```
+
+You'll be prompted for your current password, then a new password. The store is decrypted and re-encrypted in place.
+
+---
+
+### mc lock
+
+Clear the cached encryption key from the OS keychain. Subsequent secret commands will prompt for your password again.
+
+```bash
+mc lock
+```
+
+---
+
+### mc unlock
+
+Unlock the secret store and cache the derived key in the OS keychain. Avoids repeated password prompts across commands.
+
+```bash
+mc unlock
+```
