@@ -1,4 +1,4 @@
-import { describe, expect, it, vi, beforeEach } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CompletionRequest, Message } from '../types.js';
 
 // Mock the @google/genai module
@@ -227,10 +227,7 @@ describe('GoogleProvider', () => {
         candidates: [
           {
             content: {
-              parts: [
-                { text: 'thinking text', thought: true },
-                { text: 'response' },
-              ],
+              parts: [{ text: 'thinking text', thought: true }, { text: 'response' }],
               role: 'model',
             },
             finishReason: 'STOP',
@@ -424,7 +421,10 @@ describe('GoogleProvider', () => {
 
       const chunks: import('../types.js').StreamChunk[] = [];
       const gen = provider.stream(request);
-      let result: IteratorResult<import('../types.js').StreamChunk, import('../types.js').CompletionResponse>;
+      let result: IteratorResult<
+        import('../types.js').StreamChunk,
+        import('../types.js').CompletionResponse
+      >;
 
       do {
         result = await gen.next();
@@ -496,7 +496,10 @@ describe('GoogleProvider', () => {
 
       const chunks: import('../types.js').StreamChunk[] = [];
       const gen = provider.stream(request);
-      let result: IteratorResult<import('../types.js').StreamChunk, import('../types.js').CompletionResponse>;
+      let result: IteratorResult<
+        import('../types.js').StreamChunk,
+        import('../types.js').CompletionResponse
+      >;
 
       do {
         result = await gen.next();
@@ -566,7 +569,10 @@ describe('GoogleProvider', () => {
 
       const chunks: import('../types.js').StreamChunk[] = [];
       const gen = provider.stream(request);
-      let result: IteratorResult<import('../types.js').StreamChunk, import('../types.js').CompletionResponse>;
+      let result: IteratorResult<
+        import('../types.js').StreamChunk,
+        import('../types.js').CompletionResponse
+      >;
 
       do {
         result = await gen.next();
@@ -588,7 +594,6 @@ describe('GoogleProvider', () => {
     });
 
     it('generates UUID for function calls without id', async () => {
-
       async function* mockStream() {
         yield {
           candidates: [
@@ -619,7 +624,10 @@ describe('GoogleProvider', () => {
       });
 
       const chunks: import('../types.js').StreamChunk[] = [];
-      let result: IteratorResult<import('../types.js').StreamChunk, import('../types.js').CompletionResponse>;
+      let result: IteratorResult<
+        import('../types.js').StreamChunk,
+        import('../types.js').CompletionResponse
+      >;
 
       do {
         result = await gen.next();

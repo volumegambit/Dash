@@ -88,11 +88,8 @@ describe('ManagementClient', () => {
 
     beforeEach(async () => {
       logDir = await mkdtemp(join(tmpdir(), 'client-logs-'));
-      const logLines = [
-        '2026-03-07T10:00:00.000Z [info] Line one',
-        '2026-03-07T10:00:01.000Z [info] Line two',
-        '2026-03-07T10:00:02.000Z [info] Line three',
-      ].join('\n') + '\n';
+      const logLines =
+        '2026-03-07T10:00:00.000Z [info] Line one\n2026-03-07T10:00:01.000Z [info] Line two\n2026-03-07T10:00:02.000Z [info] Line three\n';
       await writeFile(join(logDir, 'agent.log'), logLines);
 
       const result = startManagementServer({
