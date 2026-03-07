@@ -118,9 +118,7 @@ async function loadCredentials(projectRoot: string): Promise<CredentialsConfig> 
 }
 
 interface SecretsFile {
-  anthropicApiKey?: string;
-  googleApiKey?: string;
-  openaiApiKey?: string;
+  providerApiKeys?: Record<string, string>;
   managementToken?: string;
   chatToken?: string;
 }
@@ -217,8 +215,10 @@ export async function loadConfig(options?: LoadConfigOptions): Promise<DashConfi
 
   const providerApiKeys: Record<string, string> = {};
   for (const [provider, envVars] of Object.entries(credEnvMap)) {
-    const val = envVars.map((v) => process.env[v]).find(Boolean)
-      ?? credentials.providerApiKeys?.[provider];
+    const val =
+      envVars.map((v) => process.env[v]).find(Boolean) ??
+      secrets?.providerApiKeys?.[provider] ??
+      credentials.providerApiKeys?.[provider];
     if (val) providerApiKeys[provider] = val;
   }
 
