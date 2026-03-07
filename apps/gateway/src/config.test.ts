@@ -48,7 +48,7 @@ describe('loadConfig', () => {
 
   const validConfig = {
     channels: {
-      mc: { adapter: 'mission-control', agent: 'default', port: 9200 },
+      mc: { adapter: 'mission-control', port: 9200 }, // agent not required for MC
     },
     agents: {
       default: { url: 'ws://localhost:9101/ws', token: 'test-token' },
@@ -68,15 +68,27 @@ describe('loadConfig', () => {
     await expect(loadConfig()).rejects.toThrow('Gateway requires --config');
   });
 
-  it('throws when channel references unknown agent', async () => {
+  it('throws when telegram channel references unknown agent', async () => {
     const bad = {
-      channels: { mc: { adapter: 'mission-control', agent: 'nonexistent', port: 9200 } },
+      channels: { tg: { adapter: 'telegram', agent: 'nonexistent', token: 'tok' } },
       agents: { default: { url: 'ws://localhost:9101/ws', token: 't' } },
     };
     const configPath = join(tmpDir, 'bad.json');
     await writeFile(configPath, JSON.stringify(bad));
 
     await expect(loadConfig({ configPath })).rejects.toThrow('unknown agent "nonexistent"');
+  });
+
+  it('accepts mission-control channel without agent field', async () => {
+    const cfg = {
+      channels: { mc: { adapter: 'mission-control', port: 9200 } },
+      agents: { default: { url: 'ws://localhost:9101/ws', token: 't' } },
+    };
+    const configPath = join(tmpDir, 'mc.json');
+    await writeFile(configPath, JSON.stringify(cfg));
+
+    const config = await loadConfig({ configPath });
+    expect(config.channels.mc.adapter).toBe('mission-control');
   });
 
   it('throws when no channels defined', async () => {

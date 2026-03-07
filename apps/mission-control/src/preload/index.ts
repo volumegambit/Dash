@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron';
-import type { MissionControlAPI } from '../shared/ipc';
+import type { McAgentEvent, MissionControlAPI } from '../shared/ipc.js';
 
 const api: MissionControlAPI = {
   getVersion: () => ipcRenderer.invoke('app:getVersion'),
@@ -11,19 +11,37 @@ const api: MissionControlAPI = {
   setupGetStatus: () => ipcRenderer.invoke('setup:getStatus'),
 
   // Chat
-  chatConnect: (gatewayUrl: string) => ipcRenderer.invoke('chat:connect', gatewayUrl),
-  chatDisconnect: () => ipcRenderer.invoke('chat:disconnect'),
-  chatSend: (conversationId: string, text: string) =>
-    ipcRenderer.invoke('chat:send', conversationId, text),
-  chatOnResponse: (callback: (conversationId: string, text: string) => void) => {
-    const listener = (_event: Electron.IpcRendererEvent, conversationId: string, text: string) =>
-      callback(conversationId, text);
-    ipcRenderer.on('chat:response', listener);
-    return () => ipcRenderer.removeListener('chat:response', listener);
+  chatListConversations: (deploymentId) =>
+    ipcRenderer.invoke('chat:listConversations', deploymentId),
+  chatCreateConversation: (deploymentId, agentName) =>
+    ipcRenderer.invoke('chat:createConversation', deploymentId, agentName),
+  chatGetMessages: (conversationId) => ipcRenderer.invoke('chat:getMessages', conversationId),
+  chatDeleteConversation: (conversationId) =>
+    ipcRenderer.invoke('chat:deleteConversation', conversationId),
+  chatSendMessage: (conversationId, text) =>
+    ipcRenderer.invoke('chat:sendMessage', conversationId, text),
+  chatCancel: (conversationId) => ipcRenderer.invoke('chat:cancel', conversationId),
+  chatOnEvent: (callback) => {
+    const listener = (
+      _event: Electron.IpcRendererEvent,
+      conversationId: string,
+      event: McAgentEvent,
+    ) => callback(conversationId, event);
+    ipcRenderer.on('chat:event', listener);
+    return () => ipcRenderer.removeListener('chat:event', listener);
   },
-  chatOnError: (callback: (conversationId: string, error: string) => void) => {
-    const listener = (_event: Electron.IpcRendererEvent, conversationId: string, error: string) =>
-      callback(conversationId, error);
+  chatOnDone: (callback) => {
+    const listener = (_event: Electron.IpcRendererEvent, conversationId: string) =>
+      callback(conversationId);
+    ipcRenderer.on('chat:done', listener);
+    return () => ipcRenderer.removeListener('chat:done', listener);
+  },
+  chatOnError: (callback) => {
+    const listener = (
+      _event: Electron.IpcRendererEvent,
+      conversationId: string,
+      error: string,
+    ) => callback(conversationId, error);
     ipcRenderer.on('chat:error', listener);
     return () => ipcRenderer.removeListener('chat:error', listener);
   },

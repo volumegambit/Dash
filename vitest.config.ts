@@ -1,6 +1,14 @@
+import { resolve } from 'node:path';
 import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
+  resolve: {
+    alias: {
+      // Ensure tests in this worktree resolve @dash/mc from the worktree's
+      // own built dist (not the main-branch copy in the root node_modules).
+      '@dash/mc': resolve(__dirname, 'packages/mc/dist/index.js'),
+    },
+  },
   test: {
     globals: true,
     include: ['packages/*/src/**/*.test.ts', 'apps/*/src/**/*.test.{ts,tsx}'],

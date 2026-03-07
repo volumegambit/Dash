@@ -1,4 +1,14 @@
-import type { AgentDeployment, RuntimeStatus } from '@dash/mc';
+import type { AgentDeployment, McConversation, McMessage, RuntimeStatus } from '@dash/mc';
+
+// Serializable AgentEvent (error is string, not Error object, for IPC transport)
+export type McAgentEvent =
+  | { type: 'text_delta'; text: string }
+  | { type: 'thinking_delta'; text: string }
+  | { type: 'tool_use_start'; id: string; name: string }
+  | { type: 'tool_use_delta'; partial_json: string }
+  | { type: 'tool_result'; id: string; name: string; content: string; isError?: boolean }
+  | { type: 'response'; content: string; usage: Record<string, number> }
+  | { type: 'error'; error: string };
 
 export interface DeployWithConfigOptions {
   name: string;
@@ -23,10 +33,14 @@ export interface MissionControlAPI {
   setupGetStatus(): Promise<SetupStatus>;
 
   // Chat
-  chatConnect(gatewayUrl: string): Promise<void>;
-  chatDisconnect(): Promise<void>;
-  chatSend(conversationId: string, text: string): Promise<void>;
-  chatOnResponse(callback: (conversationId: string, text: string) => void): () => void;
+  chatListConversations(deploymentId: string): Promise<McConversation[]>;
+  chatCreateConversation(deploymentId: string, agentName: string): Promise<McConversation>;
+  chatGetMessages(conversationId: string): Promise<McMessage[]>;
+  chatDeleteConversation(conversationId: string): Promise<void>;
+  chatSendMessage(conversationId: string, text: string): Promise<void>;
+  chatCancel(conversationId: string): Promise<void>;
+  chatOnEvent(callback: (conversationId: string, event: McAgentEvent) => void): () => void;
+  chatOnDone(callback: (conversationId: string) => void): () => void;
   chatOnError(callback: (conversationId: string, error: string) => void): () => void;
 
   // Secrets
