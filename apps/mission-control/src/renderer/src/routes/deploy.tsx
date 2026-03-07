@@ -173,6 +173,7 @@ export function DeployWizard(): JSX.Element {
               </div>
               <button
                 type="button"
+                aria-label="Toggle Telegram"
                 onClick={async () => {
                   if (!channels.enableTelegram) {
                     const token = await window.api.secretsGet('telegram-bot-token');
