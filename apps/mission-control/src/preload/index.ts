@@ -4,6 +4,13 @@ import type { MissionControlAPI } from '../shared/ipc';
 const api: MissionControlAPI = {
   getVersion: () => ipcRenderer.invoke('app:getVersion'),
 
+  // Shell
+  openExternal: (url: string) => ipcRenderer.invoke('openExternal', url),
+
+  // Setup
+  setupGetStatus: () => ipcRenderer.invoke('setup:getStatus'),
+
+  // Chat
   chatConnect: (gatewayUrl: string) => ipcRenderer.invoke('chat:connect', gatewayUrl),
   chatDisconnect: () => ipcRenderer.invoke('chat:disconnect'),
   chatSend: (conversationId: string, text: string) =>
@@ -32,6 +39,33 @@ const api: MissionControlAPI = {
   secretsGet: (key: string) => ipcRenderer.invoke('secrets:get', key),
   secretsSet: (key: string, value: string) => ipcRenderer.invoke('secrets:set', key, value),
   secretsDelete: (key: string) => ipcRenderer.invoke('secrets:delete', key),
+
+  // Deployments
+  deploymentsList: () => ipcRenderer.invoke('deployments:list'),
+  deploymentsGet: (id: string) => ipcRenderer.invoke('deployments:get', id),
+  deploymentsDeploy: (configDir: string) => ipcRenderer.invoke('deployments:deploy', configDir),
+  deploymentsDeployWithConfig: (options) =>
+    ipcRenderer.invoke('deployments:deployWithConfig', options),
+  deploymentsStop: (id: string) => ipcRenderer.invoke('deployments:stop', id),
+  deploymentsRemove: (id: string) => ipcRenderer.invoke('deployments:remove', id),
+  deploymentsGetStatus: (id: string) => ipcRenderer.invoke('deployments:getStatus', id),
+  deploymentsLogsSubscribe: (id: string) => ipcRenderer.invoke('deployments:logs:subscribe', id),
+  deploymentsLogsUnsubscribe: (id: string) =>
+    ipcRenderer.invoke('deployments:logs:unsubscribe', id),
+
+  // Deployment events
+  onDeploymentLog: (callback: (id: string, line: string) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, id: string, line: string) =>
+      callback(id, line);
+    ipcRenderer.on('deployment:log', listener);
+    return () => ipcRenderer.removeListener('deployment:log', listener);
+  },
+  onDeploymentStatusChange: (callback: (id: string, status: string) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, id: string, status: string) =>
+      callback(id, status);
+    ipcRenderer.on('deployment:statusChange', listener);
+    return () => ipcRenderer.removeListener('deployment:statusChange', listener);
+  },
 };
 
 contextBridge.exposeInMainWorld('api', api);
