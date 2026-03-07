@@ -25,9 +25,7 @@ describe('PROVIDER_CONFIG', () => {
   });
 
   it('anthropic helpUrl points to Anthropic docs', () => {
-    expect(PROVIDER_CONFIG.anthropic.helpUrl).toMatch(
-      /^https:\/\/docs\.anthropic\.com\//,
-    );
+    expect(PROVIDER_CONFIG.anthropic.helpUrl).toMatch(/^https:\/\/docs\.anthropic\.com\//);
   });
 
   it('every provider config has valid URLs', () => {
