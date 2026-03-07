@@ -46,6 +46,17 @@ describe('ProviderRegistry', () => {
     expect(registry.resolveProvider('gemini-2.5-pro')).toBe(google);
   });
 
+  it('resolves gpt- and o-series models to openai provider', () => {
+    const registry = new ProviderRegistry();
+    const openai = mockProvider('openai');
+    registry.register(openai);
+
+    expect(registry.resolveProvider('gpt-4o')).toBe(openai);
+    expect(registry.resolveProvider('gpt-4.1')).toBe(openai);
+    expect(registry.resolveProvider('o3')).toBe(openai);
+    expect(registry.resolveProvider('o4-mini')).toBe(openai);
+  });
+
   it('falls back to first provider for unknown model prefix', () => {
     const registry = new ProviderRegistry();
     const p = mockProvider('custom');
