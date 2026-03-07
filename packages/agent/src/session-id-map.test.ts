@@ -45,12 +45,45 @@ describe('SessionIdMap', () => {
   });
 
   it('returns same UUID on repeated calls for same key', async () => {
-    const client = makeClient([]);
+    let callCount = 0;
+    const client = {
+      session: {
+        list: vi.fn().mockResolvedValue({ data: [] }),
+        create: vi.fn().mockImplementation(({ title }: { title: string }) => {
+          callCount++;
+          return Promise.resolve({ data: { id: `uuid-${callCount}`, title } });
+        }),
+      },
+    };
     const map = new SessionIdMap();
     await map.init(client as any);
 
     const id1 = await map.getOrCreate('slack', 'thread-1', client as any);
     const id2 = await map.getOrCreate('slack', 'thread-1', client as any);
+
+    expect(id1).toBe(id2);
+    expect(client.session.create).toHaveBeenCalledTimes(1);
+  });
+
+  it('deduplicates concurrent getOrCreate calls for same key', async () => {
+    let callCount = 0;
+    const client = {
+      session: {
+        list: vi.fn().mockResolvedValue({ data: [] }),
+        create: vi.fn().mockImplementation(({ title }: { title: string }) => {
+          callCount++;
+          return Promise.resolve({ data: { id: `uuid-${callCount}`, title } });
+        }),
+      },
+    };
+    const map = new SessionIdMap();
+    await map.init(client as any);
+
+    // Both calls fired without awaiting
+    const [id1, id2] = await Promise.all([
+      map.getOrCreate('slack', 'parallel-1', client as any),
+      map.getOrCreate('slack', 'parallel-1', client as any),
+    ]);
 
     expect(id1).toBe(id2);
     expect(client.session.create).toHaveBeenCalledTimes(1);
