@@ -1,4 +1,4 @@
-import { type ChildProcess, spawn } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { existsSync, statSync } from 'node:fs';
@@ -9,6 +9,7 @@ import { join, resolve } from 'node:path';
 import type { AgentRegistry } from '../agents/registry.js';
 import { generateToken } from '../security/keygen.js';
 import type { SecretStore } from '../security/secrets.js';
+import { type ProcessSnapshot, resolveRuntimeStatus } from './status.js';
 import type { DeploymentRuntime, RuntimeStatus } from './types.js';
 
 const LOG_BUFFER_MAX = 10_000;
@@ -60,11 +61,35 @@ class LogBuffer {
 }
 
 interface ProcessState {
-  agentServer: ChildProcess;
-  gateway: ChildProcess | null;
+  agentServer: SpawnedProcess;
+  gateway: SpawnedProcess | null;
   logBuffer: LogBuffer;
   startTime: number;
 }
+
+export interface SpawnedProcess {
+  pid?: number;
+  exitCode: number | null;
+  stdout: import('node:stream').Readable | null;
+  stderr: import('node:stream').Readable | null;
+  kill(signal?: NodeJS.Signals | number): boolean;
+  on(event: 'exit', listener: (code: number | null, signal: NodeJS.Signals | null) => void): this;
+  on(event: 'error', listener: (err: Error) => void): this;
+  on(event: string, listener: (...args: unknown[]) => void): this;
+}
+
+export interface ProcessSpawner {
+  spawn(
+    command: string,
+    args: string[],
+    options: { env?: Record<string, string | undefined>; stdio?: unknown[] },
+  ): SpawnedProcess;
+}
+
+const defaultSpawner: ProcessSpawner = {
+  spawn: (command, args, options) =>
+    spawn(command, args, options as Parameters<typeof spawn>[2]) as SpawnedProcess,
+};
 
 export async function findAvailablePort(): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -180,6 +205,7 @@ export class ProcessRuntime implements DeploymentRuntime {
     private registry: AgentRegistry,
     private secrets: SecretStore,
     private projectRoot: string,
+    private spawner: ProcessSpawner = defaultSpawner,
   ) {}
 
   async deploy(configDir: string): Promise<string> {
@@ -304,7 +330,7 @@ export class ProcessRuntime implements DeploymentRuntime {
 
     // Spawn agent-server
     const agentServerBin = join(this.projectRoot, 'apps/dash/dist/index.js');
-    const agentServer = spawn(
+    const agentServer = this.spawner.spawn(
       'node',
       [agentServerBin, '--config', absConfigDir, '--secrets', agentSecretsPath],
       {
@@ -319,7 +345,7 @@ export class ProcessRuntime implements DeploymentRuntime {
 
     // Spawn gateway
     const gatewayBin = join(this.projectRoot, 'apps/gateway/dist/index.js');
-    const gateway = spawn(
+    const gateway = this.spawner.spawn(
       'node',
       [gatewayBin, '--config', gatewayConfigPath, '--secrets', gwSecretsPath],
       {
@@ -426,7 +452,7 @@ export class ProcessRuntime implements DeploymentRuntime {
     const state = this.processes.get(id);
     if (state) {
       // Graceful shutdown: SIGTERM → wait 5s → SIGKILL
-      const killProcess = (proc: ChildProcess, label: string): Promise<void> => {
+      const killProcess = (proc: SpawnedProcess, label: string): Promise<void> => {
         return new Promise((resolve) => {
           if (proc.exitCode !== null) {
             resolve();
@@ -500,47 +526,20 @@ export class ProcessRuntime implements DeploymentRuntime {
     }
 
     const state = this.processes.get(id);
-    if (state) {
-      // Process tracked in memory — status based on agent-server (primary process)
-      const agentRunning = state.agentServer.exitCode === null;
-      return {
-        state: agentRunning ? 'running' : 'stopped',
-        agentServerPid: state.agentServer.pid,
-        gatewayPid: state.gateway?.pid,
-        managementPort: deployment.managementPort,
-        chatPort: deployment.chatPort,
-        uptime: Date.now() - state.startTime,
-      };
-    }
+    const snapshot: ProcessSnapshot | null = state
+      ? {
+          agentServer: {
+            exitCode: state.agentServer.exitCode,
+            pid: state.agentServer.pid,
+          },
+          gateway: state.gateway
+            ? { pid: state.gateway.pid, exitCode: state.gateway.exitCode }
+            : undefined,
+          startTime: state.startTime,
+        }
+      : null;
 
-    // Not in memory — check PID liveness
-    if (deployment.agentServerPid) {
-      try {
-        process.kill(deployment.agentServerPid, 0);
-        return {
-          state: 'running',
-          agentServerPid: deployment.agentServerPid,
-          gatewayPid: deployment.gatewayPid,
-          managementPort: deployment.managementPort,
-          chatPort: deployment.chatPort,
-        };
-      } catch {
-        // Process not running
-      }
-    }
-
-    // Map deployment status to runtime state
-    const stateMap: Record<string, RuntimeStatus['state']> = {
-      running: 'stopped', // Registry says running but PID is dead
-      stopped: 'stopped',
-      error: 'error',
-      provisioning: 'starting',
-    };
-    return {
-      state: stateMap[deployment.status] ?? 'error',
-      managementPort: deployment.managementPort,
-      chatPort: deployment.chatPort,
-    };
+    return resolveRuntimeStatus(snapshot, deployment);
   }
 
   async *getLogs(id: string): AsyncIterable<string> {

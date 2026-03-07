@@ -1,11 +1,18 @@
+import { EventEmitter } from 'node:events';
 import { existsSync, statSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { Readable } from 'node:stream';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { AgentRegistry } from '../agents/registry.js';
+import type { SecretStore } from '../security/secrets.js';
 import {
   type AgentSecretsFile,
   type GatewaySecretsFile,
+  ProcessRuntime,
+  type ProcessSpawner,
+  type SpawnedProcess,
   buildGatewayConfig,
   findAvailablePort,
   validateConfigDir,
@@ -151,5 +158,201 @@ describe('buildGatewayConfig', () => {
     const channels = config.channels as Record<string, { adapter: string }>;
     expect(channels['my-mc'].adapter).toBe('mission-control');
     expect(channels.mc).toBeUndefined();
+  });
+});
+
+class FakeProcess extends EventEmitter implements SpawnedProcess {
+  pid: number;
+  exitCode: number | null = null;
+  stdout: Readable;
+  stderr: Readable;
+  killed = false;
+
+  constructor(pid: number) {
+    super();
+    this.pid = pid;
+    this.stdout = new Readable({ read() {} });
+    this.stderr = new Readable({ read() {} });
+  }
+
+  kill(signal?: NodeJS.Signals | number): boolean {
+    if (signal !== 0) {
+      this.killed = true;
+      this.exitCode = 0;
+      this.emit('exit', 0, signal ?? 'SIGTERM');
+    }
+    return true;
+  }
+}
+
+function createMockSpawner(): { spawner: ProcessSpawner; processes: FakeProcess[] } {
+  const processes: FakeProcess[] = [];
+  let nextPid = 10_000;
+  return {
+    processes,
+    spawner: {
+      spawn: () => {
+        const proc = new FakeProcess(nextPid++);
+        processes.push(proc);
+        return proc;
+      },
+    },
+  };
+}
+
+function createMockSecrets(): SecretStore {
+  const store = new Map<string, string>();
+  store.set('anthropic-api-key', 'sk-ant-test');
+  return {
+    get: async (key: string) => store.get(key) ?? null,
+    set: async (key: string, value: string) => {
+      store.set(key, value);
+    },
+    delete: async (key: string) => {
+      store.delete(key);
+    },
+    list: async () => Array.from(store.keys()),
+  };
+}
+
+describe('ProcessRuntime lifecycle', () => {
+  let tmpDir: string;
+  let configDir: string;
+  let registry: AgentRegistry;
+  let secrets: SecretStore;
+
+  beforeEach(async () => {
+    tmpDir = await mkdtemp(join(tmpdir(), 'mc-lifecycle-'));
+    configDir = await mkdtemp(join(tmpdir(), 'mc-config-'));
+    await mkdir(join(configDir, 'agents'));
+    await writeFile(
+      join(configDir, 'agents', 'test-agent.json'),
+      JSON.stringify({ name: 'test-agent', model: 'claude-sonnet-4-20250514', systemPrompt: 'hi' }),
+    );
+    registry = new AgentRegistry(tmpDir);
+    secrets = createMockSecrets();
+  });
+
+  afterEach(async () => {
+    await rm(tmpDir, { recursive: true });
+    await rm(configDir, { recursive: true });
+  });
+
+  it('deploy() registers deployment as running', async () => {
+    const { spawner } = createMockSpawner();
+    const runtime = new ProcessRuntime(registry, secrets, '/fake/root', spawner);
+
+    const id = await runtime.deploy(configDir);
+
+    const deployment = await registry.get(id);
+    expect(deployment).not.toBeNull();
+    expect(deployment?.status).toBe('running');
+    expect(deployment?.name).toBe('test-agent');
+  });
+
+  it('deploy() records PIDs from spawned processes', async () => {
+    const { spawner } = createMockSpawner();
+    const runtime = new ProcessRuntime(registry, secrets, '/fake/root', spawner);
+
+    const id = await runtime.deploy(configDir);
+
+    const deployment = await registry.get(id);
+    expect(deployment?.agentServerPid).toBe(10_000);
+    expect(deployment?.gatewayPid).toBe(10_001);
+  });
+
+  it('exit handler updates registry to stopped when both processes exit', async () => {
+    const { spawner, processes } = createMockSpawner();
+    const runtime = new ProcessRuntime(registry, secrets, '/fake/root', spawner);
+
+    const id = await runtime.deploy(configDir);
+
+    const [agentServer, gateway] = processes;
+    agentServer.exitCode = 0;
+    agentServer.emit('exit', 0, null);
+    gateway.exitCode = 0;
+    gateway.emit('exit', 0, null);
+
+    // Wait for async registry update
+    await new Promise((r) => setTimeout(r, 50));
+
+    const deployment = await registry.get(id);
+    expect(deployment?.status).toBe('stopped');
+  });
+
+  it('exit handler does not update registry when only agent exits', async () => {
+    const { spawner, processes } = createMockSpawner();
+    const runtime = new ProcessRuntime(registry, secrets, '/fake/root', spawner);
+
+    const id = await runtime.deploy(configDir);
+
+    const [agentServer] = processes;
+    agentServer.exitCode = 1;
+    agentServer.emit('exit', 1, null);
+
+    await new Promise((r) => setTimeout(r, 50));
+
+    const deployment = await registry.get(id);
+    expect(deployment?.status).toBe('running');
+  });
+
+  it('stop() kills processes and updates registry', async () => {
+    const { spawner, processes } = createMockSpawner();
+    const runtime = new ProcessRuntime(registry, secrets, '/fake/root', spawner);
+
+    const id = await runtime.deploy(configDir);
+    await runtime.stop(id);
+
+    const [agentServer, gateway] = processes;
+    expect(agentServer.killed).toBe(true);
+    expect(gateway.killed).toBe(true);
+
+    const deployment = await registry.get(id);
+    expect(deployment?.status).toBe('stopped');
+  });
+
+  it('getStatus() returns running for live deployment', async () => {
+    const { spawner } = createMockSpawner();
+    const runtime = new ProcessRuntime(registry, secrets, '/fake/root', spawner);
+
+    const id = await runtime.deploy(configDir);
+    const status = await runtime.getStatus(id);
+
+    expect(status.state).toBe('running');
+    expect(status.agentServerPid).toBe(10_000);
+    expect(status.gatewayPid).toBe(10_001);
+    expect(status.uptime).toBeGreaterThanOrEqual(0);
+  });
+
+  it('getStatus() returns stopped after processes exit', async () => {
+    const { spawner, processes } = createMockSpawner();
+    const runtime = new ProcessRuntime(registry, secrets, '/fake/root', spawner);
+
+    const id = await runtime.deploy(configDir);
+
+    const [agentServer, gateway] = processes;
+    agentServer.exitCode = 0;
+    agentServer.emit('exit', 0, null);
+    gateway.exitCode = 0;
+    gateway.emit('exit', 0, null);
+
+    await new Promise((r) => setTimeout(r, 50));
+
+    const status = await runtime.getStatus(id);
+    expect(status.state).toBe('stopped');
+  });
+
+  it('remove() stops, cleans secrets, and removes from registry', async () => {
+    const { spawner } = createMockSpawner();
+    const runtime = new ProcessRuntime(registry, secrets, '/fake/root', spawner);
+
+    const id = await runtime.deploy(configDir);
+    await runtime.remove(id);
+
+    const deployment = await registry.get(id);
+    expect(deployment).toBeNull();
+
+    expect(await secrets.get(`agent-token:${id}`)).toBeNull();
+    expect(await secrets.get(`chat-token:${id}`)).toBeNull();
   });
 });

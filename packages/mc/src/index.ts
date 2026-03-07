@@ -17,3 +17,6 @@ export { AgentRegistry } from './agents/registry.js';
 export { AgentConnector } from './agents/connector.js';
 export type { DeploymentRuntime, RuntimeStatus } from './runtime/types.js';
 export { ProcessRuntime, findAvailablePort, validateConfigDir } from './runtime/process.js';
+export type { ProcessSpawner, SpawnedProcess } from './runtime/process.js';
+export { resolveRuntimeStatus } from './runtime/status.js';
+export type { ProcessSnapshot } from './runtime/status.js';
