@@ -1,7 +1,7 @@
 import { createWriteStream } from 'node:fs';
+import type { WriteStream } from 'node:fs';
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
-import type { WriteStream } from 'node:fs';
 
 export type LogLevel = 'info' | 'warn' | 'error';
 
@@ -25,9 +25,15 @@ export class FileLogger {
     this.stream.write(line);
   }
 
-  info(message: string): void { this.write('info', message); }
-  warn(message: string): void { this.write('warn', message); }
-  error(message: string): void { this.write('error', message); }
+  info(message: string): void {
+    this.write('info', message);
+  }
+  warn(message: string): void {
+    this.write('warn', message);
+  }
+  error(message: string): void {
+    this.write('error', message);
+  }
 
   flush(): Promise<void> {
     if (!this.stream.writableNeedDrain) {

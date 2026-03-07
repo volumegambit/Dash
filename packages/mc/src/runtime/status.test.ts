@@ -1,5 +1,5 @@
-import type { AgentDeployment } from '../types.js';
 import { vi } from 'vitest';
+import type { AgentDeployment } from '../types.js';
 import { type ProcessSnapshot, resolveRuntimeStatus } from './status.js';
 
 function makeDeployment(overrides: Partial<AgentDeployment> = {}): AgentDeployment {

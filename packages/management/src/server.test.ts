@@ -109,13 +109,8 @@ describe('Management Server', () => {
 
     beforeEach(async () => {
       logDir = await mkdtemp(join(tmpdir(), 'mgmt-logs-'));
-      const logLines = [
-        '2026-03-07T10:00:00.000Z [info] Agent started',
-        '2026-03-07T10:00:01.000Z [info] Processing message',
-        '2026-03-07T10:00:02.000Z [warn] Slow response',
-        '2026-03-07T10:00:03.000Z [info] Message complete',
-        '2026-03-07T10:00:04.000Z [error] Connection lost',
-      ].join('\n') + '\n';
+      const logLines =
+        '2026-03-07T10:00:00.000Z [info] Agent started\n2026-03-07T10:00:01.000Z [info] Processing message\n2026-03-07T10:00:02.000Z [warn] Slow response\n2026-03-07T10:00:03.000Z [info] Message complete\n2026-03-07T10:00:04.000Z [error] Connection lost\n';
       await writeFile(join(logDir, 'agent.log'), logLines);
 
       const result = startManagementServer({
@@ -146,7 +141,7 @@ describe('Management Server', () => {
     it('GET /logs returns last N lines with tail param', async () => {
       const res = await fetch(logUrl('/logs?tail=2'), { headers: authHeaders() });
       expect(res.status).toBe(200);
-      const body = await res.json() as { lines: string[] };
+      const body = (await res.json()) as { lines: string[] };
       expect(body.lines).toHaveLength(2);
       expect(body.lines[0]).toContain('Message complete');
       expect(body.lines[1]).toContain('Connection lost');
@@ -155,14 +150,16 @@ describe('Management Server', () => {
     it('GET /logs defaults to last 100 lines', async () => {
       const res = await fetch(logUrl('/logs'), { headers: authHeaders() });
       expect(res.status).toBe(200);
-      const body = await res.json() as { lines: string[] };
+      const body = (await res.json()) as { lines: string[] };
       expect(body.lines).toHaveLength(5);
     });
 
     it('GET /logs with since filters by timestamp', async () => {
-      const res = await fetch(logUrl('/logs?since=2026-03-07T10:00:02.000Z'), { headers: authHeaders() });
+      const res = await fetch(logUrl('/logs?since=2026-03-07T10:00:02.000Z'), {
+        headers: authHeaders(),
+      });
       expect(res.status).toBe(200);
-      const body = await res.json() as { lines: string[] };
+      const body = (await res.json()) as { lines: string[] };
       expect(body.lines).toHaveLength(3);
       expect(body.lines[0]).toContain('Slow response');
     });

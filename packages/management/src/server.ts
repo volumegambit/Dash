@@ -3,7 +3,13 @@ import { readFile, stat } from 'node:fs/promises';
 import type { Server } from 'node:http';
 import { serve } from '@hono/node-server';
 import { Hono } from 'hono';
-import type { ErrorResponse, HealthResponse, InfoResponse, LogsResponse, ShutdownResponse } from './types.js';
+import type {
+  ErrorResponse,
+  HealthResponse,
+  InfoResponse,
+  LogsResponse,
+  ShutdownResponse,
+} from './types.js';
 
 export interface ManagementServerOptions {
   port: number;

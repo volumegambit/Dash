@@ -11,7 +11,6 @@ import type { SecretStore } from '../security/secrets.js';
 import { type ProcessSnapshot, resolveRuntimeStatus } from './status.js';
 import type { DeploymentRuntime, RuntimeStatus } from './types.js';
 
-
 interface ProcessState {
   agentServer: SpawnedProcess;
   gateway: SpawnedProcess | null;
@@ -491,9 +490,7 @@ export class ProcessRuntime implements DeploymentRuntime {
     }
 
     if (!deployment.managementPort || !deployment.managementToken) {
-      throw new Error(
-        `Deployment "${id}" has no management API configured. Cannot retrieve logs.`,
-      );
+      throw new Error(`Deployment "${id}" has no management API configured. Cannot retrieve logs.`);
     }
 
     const { ManagementClient } = await import('@dash/management');

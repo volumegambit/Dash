@@ -255,9 +255,10 @@ export async function loadConfig(options?: LoadConfigOptions): Promise<DashConfi
   let logDir: string | undefined;
   if (options?.configPath) {
     const configPath = resolve(options.configPath);
-    const configBase = existsSync(configPath) && statSync(configPath).isDirectory()
-      ? configPath
-      : dirname(configPath);
+    const configBase =
+      existsSync(configPath) && statSync(configPath).isDirectory()
+        ? configPath
+        : dirname(configPath);
     logDir = resolve(configBase, 'logs');
   }
 
