@@ -1,0 +1,122 @@
+---
+title: "Management API"
+description: "HTTP API for monitoring and controlling a running Dash agent server."
+---
+
+The Management API is an HTTP server that runs on port 9100 (configurable via `MANAGEMENT_API_PORT`). Enable it by setting `MANAGEMENT_API_TOKEN` in your environment or via `--secrets`.
+
+All endpoints require a Bearer token in the `Authorization` header. Requests with a missing or invalid token return `401`.
+
+## Authentication
+
+```
+Authorization: Bearer <your-management-token>
+```
+
+## Endpoints
+
+### GET /health
+
+Returns the current health status and uptime of the agent server.
+
+**Request**
+
+```bash
+curl http://localhost:9100/health \
+  -H "Authorization: Bearer $MANAGEMENT_API_TOKEN"
+```
+
+**Response**
+
+```json
+{
+  "status": "healthy",
+  "uptime": 42.3,
+  "version": "0.1.0"
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `status` | `"healthy"` | Always `"healthy"` when the server is up |
+| `uptime` | `number` | Seconds since the server started |
+| `version` | `string` | Server version |
+
+---
+
+### GET /info
+
+Returns information about the configured agents.
+
+**Request**
+
+```bash
+curl http://localhost:9100/info \
+  -H "Authorization: Bearer $MANAGEMENT_API_TOKEN"
+```
+
+**Response**
+
+```json
+{
+  "agents": [
+    {
+      "name": "default",
+      "model": "claude-sonnet-4-20250514",
+      "tools": ["bash", "read_file"]
+    }
+  ]
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `agents` | `AgentInfo[]` | List of configured agents |
+| `agents[].name` | `string` | Agent name (matches config key) |
+| `agents[].model` | `string` | Model ID the agent uses |
+| `agents[].tools` | `string[]` | Enabled tool names |
+
+---
+
+### POST /lifecycle/shutdown
+
+Gracefully shuts down the agent server.
+
+**Request**
+
+```bash
+curl -X POST http://localhost:9100/lifecycle/shutdown \
+  -H "Authorization: Bearer $MANAGEMENT_API_TOKEN"
+```
+
+**Response**
+
+```json
+{ "success": true }
+```
+
+<Warning>
+  This immediately initiates shutdown. In-flight requests may be interrupted. Use this only when you intend to stop the server.
+</Warning>
+
+---
+
+## Error responses
+
+All endpoints return the same error shape on failure:
+
+```json
+{ "error": "Unauthorized" }
+```
+
+| HTTP status | Meaning |
+|------------|---------|
+| `401` | Missing or invalid `Authorization` header |
+
+## Binding
+
+The Management API binds to `127.0.0.1` by default, so it is not accessible from other machines without a reverse proxy or tunnel.
+
+<Note>
+  The Management API and Chat API use separate tokens and separate ports. A management token cannot be used on the chat port, and vice versa.
+</Note>
