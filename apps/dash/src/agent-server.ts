@@ -121,8 +121,8 @@ export async function createAgentServer(config: DashConfig) {
     async stop() {
       if (chatClose) await chatClose();
       if (managementClose) await managementClose();
-      if (logger) await logger.close();
       log('Dash agent server stopped');
+      if (logger) await logger.close();
     },
   };
 }
