@@ -3,7 +3,7 @@ import type { RuntimeStatus } from './types.js';
 
 export interface ProcessSnapshot {
   agentServer: { exitCode: number | null; pid?: number };
-  gateway?: { pid?: number };
+  gateway?: { pid?: number; exitCode?: number | null };
   startTime: number;
 }
 
