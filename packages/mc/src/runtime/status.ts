@@ -7,11 +7,12 @@ export interface ProcessSnapshot {
   startTime: number;
 }
 
-export function resolveRuntimeStatus(
+export async function resolveRuntimeStatus(
   processState: ProcessSnapshot | null,
   deployment: AgentDeployment,
   isPidAlive?: (pid: number) => boolean,
-): RuntimeStatus {
+  healthCheck?: () => Promise<boolean>,
+): Promise<RuntimeStatus> {
   const checkPid =
     isPidAlive ??
     ((pid: number) => {
@@ -36,7 +37,25 @@ export function resolveRuntimeStatus(
     };
   }
 
-  // Path 2: Not in memory — check PID liveness
+  // Path 2a: Health check (HTTP-level, confirms API is responding)
+  if (healthCheck && deployment.managementPort) {
+    try {
+      const healthy = await healthCheck();
+      if (healthy) {
+        return {
+          state: 'running',
+          agentServerPid: deployment.agentServerPid,
+          gatewayPid: deployment.gatewayPid,
+          managementPort: deployment.managementPort,
+          chatPort: deployment.chatPort,
+        };
+      }
+    } catch {
+      // Health check failed, fall through to PID check
+    }
+  }
+
+  // Path 2b: PID liveness check (process-level)
   if (deployment.agentServerPid) {
     if (checkPid(deployment.agentServerPid)) {
       return {
