@@ -14,3 +14,4 @@ export type {
 } from './types.js';
 export { ProviderRegistry } from './registry.js';
 export { AnthropicProvider } from './providers/anthropic.js';
+export { GoogleProvider } from './providers/google.js';
