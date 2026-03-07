@@ -1,8 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { AgentRegistry, ConversationStore, McConversation, McMessage } from '@dash/mc';
-
-// Serializable event type — errors are strings over the wire, not Error objects
-export type McAgentEvent = Record<string, unknown>;
+import type { McAgentEvent } from '../shared/ipc.js';
 
 export class ChatService {
   private activeStreams = new Map<string, WebSocket>();
