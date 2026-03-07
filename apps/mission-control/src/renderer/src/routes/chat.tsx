@@ -10,6 +10,7 @@ import type { McMessage } from '@dash/mc';
 
 function renderEvents(events: Record<string, unknown>[]): JSX.Element[] {
   const elements: JSX.Element[] = [];
+  let blockCount = 0;
   let textBuffer = '';
   let thinkingBuffer = '';
   let toolName = '';
@@ -24,7 +25,7 @@ function renderEvents(events: Record<string, unknown>[]): JSX.Element[] {
       // Flush thinking before text
       if (thinkingBuffer) {
         elements.push(
-          <ThinkingBlock key={`think-${i}`} text={thinkingBuffer} />,
+          <ThinkingBlock key={`think-${blockCount++}`} text={thinkingBuffer} />,
         );
         thinkingBuffer = '';
       }
@@ -32,7 +33,7 @@ function renderEvents(events: Record<string, unknown>[]): JSX.Element[] {
     } else if (event.type === 'tool_use_start') {
       // Flush text before tool
       if (textBuffer) {
-        elements.push(<p key={`text-${i}`} className="whitespace-pre-wrap">{textBuffer}</p>);
+        elements.push(<p key={`text-${blockCount++}`} className="whitespace-pre-wrap">{textBuffer}</p>);
         textBuffer = '';
       }
       toolName = event.name;
@@ -41,13 +42,13 @@ function renderEvents(events: Record<string, unknown>[]): JSX.Element[] {
       toolInputBuffer += event.partial_json;
     } else if (event.type === 'tool_result') {
       elements.push(
-        <ToolBlock key={`tool-${i}`} name={toolName || event.name} input={toolInputBuffer} result={event.content} isError={event.isError} />,
+        <ToolBlock key={`tool-${blockCount++}`} name={toolName || event.name} input={toolInputBuffer} result={event.content} isError={event.isError} />,
       );
       toolName = '';
       toolInputBuffer = '';
     } else if (event.type === 'error') {
       elements.push(
-        <p key={`err-${i}`} className="text-red-400">{String(event.error)}</p>,
+        <p key={`err-${blockCount++}`} className="text-red-400">{String(event.error)}</p>,
       );
     }
   }
@@ -168,11 +169,15 @@ function Chat(): JSX.Element {
     }
   }, [selectedDeploymentId, runningDeployments]);
 
-  // Load conversations and auto-select agent when deployment changes
+  // Load conversations when deployment changes
   useEffect(() => {
     if (!selectedDeploymentId) return;
     loadConversations(selectedDeploymentId);
+  }, [selectedDeploymentId, loadConversations]);
 
+  // Auto-select first agent when deployment changes
+  useEffect(() => {
+    if (!selectedDeploymentId) return;
     const dep = deployments.find((d) => d.id === selectedDeploymentId);
     if (dep?.config.agents) {
       const agentNames = Object.keys(dep.config.agents);
@@ -180,7 +185,7 @@ function Chat(): JSX.Element {
         setSelectedAgentName(agentNames[0]);
       }
     }
-  }, [selectedDeploymentId, deployments, loadConversations, selectedAgentName]);
+  }, [selectedDeploymentId, deployments, selectedAgentName]);
 
   // Scroll to bottom on new messages
   const selectedMessages = selectedConversationId ? (messages[selectedConversationId] ?? []) : [];
@@ -193,15 +198,24 @@ function Chat(): JSX.Element {
 
   const handleNewConversation = useCallback(async () => {
     if (!selectedDeploymentId || !selectedAgentName) return;
-    const conv = await createConversation(selectedDeploymentId, selectedAgentName);
-    await selectConversation(conv.id);
+    try {
+      const conv = await createConversation(selectedDeploymentId, selectedAgentName);
+      await selectConversation(conv.id);
+    } catch (err) {
+      console.error('[Chat] Failed to create conversation:', err);
+    }
   }, [selectedDeploymentId, selectedAgentName, createConversation, selectConversation]);
 
   const handleSend = useCallback(async () => {
     const text = input.trim();
     if (!text || !selectedConversationId || isStreaming) return;
     setInput('');
-    await sendMessage(selectedConversationId, text);
+    try {
+      await sendMessage(selectedConversationId, text);
+    } catch (err) {
+      console.error('[Chat] Failed to send message:', err);
+      // Note: store already clears sending flag on error
+    }
   }, [input, selectedConversationId, isStreaming, sendMessage]);
 
   const selectedDeployment = deployments.find((d) => d.id === selectedDeploymentId);
@@ -210,7 +224,7 @@ function Chat(): JSX.Element {
     : [];
 
   return (
-    <div className="flex h-full">
+    <div className="-m-8 flex flex-1 overflow-hidden">
       {/* Left panel: conversation list */}
       <div className="flex w-64 flex-col border-r border-border">
         <div className="border-b border-border px-4 py-3">
@@ -249,36 +263,39 @@ function Chat(): JSX.Element {
           </button>
         </div>
 
-        <div className="flex-1 overflow-y-auto py-2">
+        <ul className="flex-1 overflow-y-auto py-2">
           {conversations.length === 0 ? (
-            <p className="px-4 text-xs text-muted">No conversations yet.</p>
+            <li className="px-4 text-xs text-muted">No conversations yet.</li>
           ) : (
             conversations.map((conv) => (
-              <div
+              <li
                 key={conv.id}
-                className={`group flex cursor-pointer items-start justify-between px-4 py-2 text-xs transition-colors hover:bg-sidebar-hover ${
-                  conv.id === selectedConversationId ? 'bg-sidebar-hover text-foreground' : 'text-muted'
+                className={`group flex items-start justify-between transition-colors hover:bg-sidebar-hover ${
+                  conv.id === selectedConversationId ? 'bg-sidebar-hover' : ''
                 }`}
-                onClick={() => selectConversation(conv.id)}
-                onKeyDown={(e) => e.key === 'Enter' && selectConversation(conv.id)}
-                role="button"
-                tabIndex={0}
               >
-                <div className="min-w-0 flex-1">
-                  <p className="truncate font-medium">{conv.title}</p>
-                  <p className="truncate text-muted/60">{conv.agentName}</p>
-                </div>
                 <button
                   type="button"
-                  onClick={(e) => { e.stopPropagation(); deleteConversation(conv.id); }}
-                  className="ml-1 shrink-0 opacity-0 transition-opacity group-hover:opacity-100"
+                  onClick={() => selectConversation(conv.id)}
+                  className={`min-w-0 flex-1 px-4 py-2 text-left text-xs ${
+                    conv.id === selectedConversationId ? 'text-foreground' : 'text-muted'
+                  }`}
+                >
+                  <p className="truncate font-medium">{conv.title}</p>
+                  <p className="truncate text-muted/60">{conv.agentName}</p>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => deleteConversation(conv.id)}
+                  className="mr-2 mt-2 shrink-0 opacity-0 transition-opacity group-hover:opacity-100"
+                  aria-label={`Delete conversation ${conv.title}`}
                 >
                   <Trash2 size={10} />
                 </button>
-              </div>
+              </li>
             ))
           )}
-        </div>
+        </ul>
       </div>
 
       {/* Right panel: message thread */}
@@ -359,7 +376,4 @@ function Chat(): JSX.Element {
 
 export const Route = createFileRoute('/chat')({
   component: Chat,
-  validateSearch: (search: Record<string, unknown>) => ({
-    agent: (search.agent as string) ?? '',
-  }),
 });
