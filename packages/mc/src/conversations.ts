@@ -1,5 +1,4 @@
 import { randomUUID } from 'node:crypto';
-import { existsSync } from 'node:fs';
 import { mkdir, readFile, unlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
@@ -21,6 +20,10 @@ export interface McMessage {
   timestamp: string;
 }
 
+/**
+ * Persists conversation metadata and message history to disk.
+ * Not safe for concurrent access from multiple processes.
+ */
 export class ConversationStore {
   private readonly dir: string;
   private readonly indexPath: string;
@@ -31,8 +34,10 @@ export class ConversationStore {
   }
 
   private async loadIndex(): Promise<McConversation[]> {
-    if (!existsSync(this.indexPath)) return [];
-    const raw = await readFile(this.indexPath, 'utf-8');
+    const raw = await readFile(this.indexPath, 'utf-8').catch((e: NodeJS.ErrnoException) => {
+      if (e.code === 'ENOENT') return '[]';
+      throw e;
+    });
     return JSON.parse(raw) as McConversation[];
   }
 
@@ -71,9 +76,9 @@ export class ConversationStore {
     const conversations = await this.loadIndex();
     await this.saveIndex(conversations.filter((c) => c.id !== id));
     const messagesPath = join(this.dir, `${id}.jsonl`);
-    if (existsSync(messagesPath)) {
-      await unlink(messagesPath);
-    }
+    await unlink(messagesPath).catch((e: NodeJS.ErrnoException) => {
+      if (e.code !== 'ENOENT') throw e;
+    });
   }
 
   async appendMessage(conversationId: string, message: McMessage): Promise<void> {
@@ -99,8 +104,11 @@ export class ConversationStore {
 
   async getMessages(conversationId: string): Promise<McMessage[]> {
     const messagesPath = join(this.dir, `${conversationId}.jsonl`);
-    if (!existsSync(messagesPath)) return [];
-    const raw = await readFile(messagesPath, 'utf-8');
+    const raw = await readFile(messagesPath, 'utf-8').catch((e: NodeJS.ErrnoException) => {
+      if (e.code === 'ENOENT') return '';
+      throw e;
+    });
+    if (!raw) return [];
     return raw
       .split('\n')
       .filter((line) => line.trim())
