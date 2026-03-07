@@ -10,21 +10,25 @@
     "package": "electron-builder"
   },
   "dependencies": {
-    "@dash/mc": "*",
-    "@dash/management": "*"
+    "@dash/management": "*",
+    "@dash/mc": "*"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4",
     "@tanstack/react-query": "^5",
     "@tanstack/react-router": "^1",
     "@tanstack/router-plugin": "^1",
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.2",
+    "@testing-library/user-event": "^14.6.1",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "@vitejs/plugin-react": "^4",
-    "lucide-react": "^0.468",
     "electron": "^33",
     "electron-builder": "^25",
     "electron-vite": "^3",
+    "jsdom": "^27.0.1",
+    "lucide-react": "^0.468",
     "react": "^19",
     "react-dom": "^19",
     "tailwindcss": "^4",
