@@ -3,7 +3,6 @@ import { existsSync, statSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { Readable } from 'node:stream';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { AgentRegistry } from '../agents/registry.js';
 import type { SecretStore } from '../security/secrets.js';
@@ -164,15 +163,11 @@ describe('buildGatewayConfig', () => {
 class FakeProcess extends EventEmitter implements SpawnedProcess {
   pid: number;
   exitCode: number | null = null;
-  stdout: Readable;
-  stderr: Readable;
   killed = false;
 
   constructor(pid: number) {
     super();
     this.pid = pid;
-    this.stdout = new Readable({ read() {} });
-    this.stderr = new Readable({ read() {} });
   }
 
   kill(signal?: NodeJS.Signals | number): boolean {
@@ -182,6 +177,10 @@ class FakeProcess extends EventEmitter implements SpawnedProcess {
       this.emit('exit', 0, signal ?? 'SIGTERM');
     }
     return true;
+  }
+
+  unref(): void {
+    // no-op in tests
   }
 }
 
