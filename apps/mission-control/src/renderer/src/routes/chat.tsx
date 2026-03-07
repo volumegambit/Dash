@@ -55,6 +55,14 @@ function renderEvents(events: Record<string, unknown>[]): JSX.Element[] {
   // Flush remaining
   if (thinkingBuffer) elements.push(<ThinkingBlock key="think-final" text={thinkingBuffer} />);
   if (textBuffer) elements.push(<p key="text-final" className="whitespace-pre-wrap">{textBuffer}</p>);
+  // Flush in-progress tool call (tool_use_start seen but no tool_result yet)
+  if (toolName) {
+    elements.push(
+      <div key="tool-progress" className="mb-2 text-xs text-muted">
+        🔧 <span className="font-mono">{toolName}</span>({toolInputBuffer || '…'})
+      </div>
+    );
+  }
 
   return elements;
 }
