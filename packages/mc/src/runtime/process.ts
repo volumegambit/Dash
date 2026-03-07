@@ -152,6 +152,31 @@ export function buildGatewayConfig(
   return { agents, channels };
 }
 
+async function killPidWithEscalation(pid: number): Promise<void> {
+  try {
+    process.kill(pid, 'SIGTERM');
+  } catch {
+    return; // Process already dead
+  }
+
+  // Poll for up to 5 seconds, then escalate to SIGKILL
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline) {
+    await new Promise<void>((resolve) => setTimeout(resolve, 100));
+    try {
+      process.kill(pid, 0); // throws ESRCH if process is dead
+    } catch {
+      return; // Process has exited
+    }
+  }
+
+  try {
+    process.kill(pid, 'SIGKILL');
+  } catch {
+    // Process died just before SIGKILL
+  }
+}
+
 export class ProcessRuntime implements DeploymentRuntime {
   private processes = new Map<string, ProcessState>();
 
@@ -403,21 +428,11 @@ export class ProcessRuntime implements DeploymentRuntime {
       await Promise.all(kills);
       this.processes.delete(id);
     } else {
-      // Process not tracked in memory — try PID-based kill
-      if (deployment.agentServerPid) {
-        try {
-          process.kill(deployment.agentServerPid, 'SIGTERM');
-        } catch {
-          // Process already dead
-        }
-      }
-      if (deployment.gatewayPid) {
-        try {
-          process.kill(deployment.gatewayPid, 'SIGTERM');
-        } catch {
-          // Process already dead
-        }
-      }
+      // Process not tracked in memory — PID-based kill with SIGTERM → SIGKILL escalation
+      const pids: number[] = [];
+      if (deployment.agentServerPid) pids.push(deployment.agentServerPid);
+      if (deployment.gatewayPid) pids.push(deployment.gatewayPid);
+      await Promise.all(pids.map(killPidWithEscalation));
     }
 
     await this.registry.update(id, { status: 'stopped' });
@@ -483,7 +498,7 @@ export class ProcessRuntime implements DeploymentRuntime {
     return await resolveRuntimeStatus(snapshot, deployment, undefined, healthCheck);
   }
 
-  async *getLogs(id: string): AsyncIterable<string> {
+  async *getLogs(id: string, signal?: AbortSignal): AsyncIterable<string> {
     const deployment = await this.registry.get(id);
     if (!deployment) {
       throw new Error(`Deployment "${id}" not found`);
@@ -498,6 +513,6 @@ export class ProcessRuntime implements DeploymentRuntime {
       `http://localhost:${deployment.managementPort}`,
       deployment.managementToken,
     );
-    yield* client.streamLogs();
+    yield* client.streamLogs(signal);
   }
 }

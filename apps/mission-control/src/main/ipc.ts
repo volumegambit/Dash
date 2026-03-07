@@ -299,7 +299,7 @@ export async function registerIpcHandlers(
     // Start iterating logs in the background
     (async () => {
       try {
-        const logs = getRuntime().getLogs(id);
+        const logs = getRuntime().getLogs(id, controller.signal);
         for await (const line of logs) {
           if (controller.signal.aborted) break;
           const win = getWindow();
