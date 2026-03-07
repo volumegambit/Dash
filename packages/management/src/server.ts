@@ -65,7 +65,8 @@ export function createManagementApp(options: ManagementServerOptions): Hono {
     }
 
     const tail = c.req.query('tail');
-    const tailNum = tail ? Number.parseInt(tail, 10) : 100;
+    const parsed = tail !== undefined && tail !== '' ? Number.parseInt(tail, 10) : 100;
+    const tailNum = Number.isNaN(parsed) ? 100 : parsed;
     if (lines.length > tailNum) {
       lines = lines.slice(-tailNum);
     }
@@ -96,33 +97,42 @@ export function createManagementApp(options: ManagementServerOptions): Hono {
           }
         }
 
-        // Watch for new lines using fs.watch
-        const { watch } = await import('node:fs');
-        let offset = existsSync(logFilePath)
-          ? (await stat(logFilePath)).size
-          : 0;
+        // Watch for new lines using fs.watch (only if file exists)
+        let watcher: import('node:fs').FSWatcher | undefined;
+        if (existsSync(logFilePath)) {
+          const { watch } = await import('node:fs');
+          let offset = (await stat(logFilePath)).size;
 
-        const watcher = watch(logFilePath, async () => {
-          try {
-            const fileStat = await stat(logFilePath);
-            if (fileStat.size > offset) {
-              const { open } = await import('node:fs/promises');
-              const fh = await open(logFilePath, 'r');
-              const buf = Buffer.alloc(fileStat.size - offset);
-              await fh.read(buf, 0, buf.length, offset);
-              await fh.close();
-              offset = fileStat.size;
-              for (const line of buf.toString('utf-8').split('\n').filter(Boolean)) {
-                enqueue(line);
+          watcher = watch(logFilePath);
+          watcher.on('change', async () => {
+            try {
+              const fileStat = await stat(logFilePath);
+              if (fileStat.size > offset) {
+                const { open } = await import('node:fs/promises');
+                const fh = await open(logFilePath, 'r');
+                const buf = Buffer.alloc(fileStat.size - offset);
+                await fh.read(buf, 0, buf.length, offset);
+                await fh.close();
+                offset = fileStat.size;
+                for (const line of buf.toString('utf-8').split('\n').filter(Boolean)) {
+                  try {
+                    enqueue(line);
+                  } catch {
+                    // Stream may have been closed
+                  }
+                }
               }
+            } catch {
+              // File may have been deleted or rotated
             }
-          } catch {
-            // File may have been deleted or rotated
-          }
-        });
+          });
+          watcher.on('error', () => {
+            watcher?.close();
+          });
+        }
 
         c.req.raw.signal.addEventListener('abort', () => {
-          watcher.close();
+          watcher?.close();
           controller.close();
         });
       },
