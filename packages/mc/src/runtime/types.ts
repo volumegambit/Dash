@@ -14,5 +14,5 @@ export interface DeploymentRuntime {
   stop(id: string): Promise<void>;
   remove(id: string): Promise<void>;
   getStatus(id: string): Promise<RuntimeStatus>;
-  getLogs(id: string): AsyncIterable<string>;
+  getLogs(id: string, signal?: AbortSignal): AsyncIterable<string>;
 }

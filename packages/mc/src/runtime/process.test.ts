@@ -3,8 +3,7 @@ import { existsSync, statSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { Readable } from 'node:stream';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AgentRegistry } from '../agents/registry.js';
 import type { SecretStore } from '../security/secrets.js';
 import {
@@ -164,15 +163,11 @@ describe('buildGatewayConfig', () => {
 class FakeProcess extends EventEmitter implements SpawnedProcess {
   pid: number;
   exitCode: number | null = null;
-  stdout: Readable;
-  stderr: Readable;
   killed = false;
 
   constructor(pid: number) {
     super();
     this.pid = pid;
-    this.stdout = new Readable({ read() {} });
-    this.stderr = new Readable({ read() {} });
   }
 
   kill(signal?: NodeJS.Signals | number): boolean {
@@ -182,6 +177,10 @@ class FakeProcess extends EventEmitter implements SpawnedProcess {
       this.emit('exit', 0, signal ?? 'SIGTERM');
     }
     return true;
+  }
+
+  unref(): void {
+    // no-op in tests
   }
 }
 
@@ -340,6 +339,35 @@ describe('ProcessRuntime lifecycle', () => {
 
     const status = await runtime.getStatus(id);
     expect(status.state).toBe('stopped');
+  });
+
+  it('stop() uses PID-based kill with SIGKILL escalation when not tracked in memory', async () => {
+    const { spawner } = createMockSpawner();
+    const runtime = new ProcessRuntime(registry, secrets, '/fake/root', spawner);
+    const id = await runtime.deploy(configDir);
+
+    // Fresh runtime simulates MC restart — no in-memory process state
+    const runtime2 = new ProcessRuntime(registry, secrets, '/fake/root', spawner);
+
+    const killed: { pid: number | bigint; signal: unknown }[] = [];
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation((pid, signal) => {
+      killed.push({ pid, signal });
+      if (signal === 0) throw new Error('ESRCH'); // Simulate dead process on liveness check
+      return true;
+    });
+
+    try {
+      await runtime2.stop(id);
+    } finally {
+      killSpy.mockRestore();
+    }
+
+    // Both PIDs should get SIGTERM
+    expect(killed.some((k) => k.pid === 10_000 && k.signal === 'SIGTERM')).toBe(true);
+    expect(killed.some((k) => k.pid === 10_001 && k.signal === 'SIGTERM')).toBe(true);
+
+    const deployment = await registry.get(id);
+    expect(deployment?.status).toBe('stopped');
   });
 
   it('remove() stops, cleans secrets, and removes from registry', async () => {

@@ -120,9 +120,10 @@ function mapFinishReason(
 }
 
 /** Convert Google response parts to our content format */
-function fromSdkParts(
-  parts: Part[],
-): { content: string | ContentBlock[]; hasFunctionCalls: boolean } {
+function fromSdkParts(parts: Part[]): {
+  content: string | ContentBlock[];
+  hasFunctionCalls: boolean;
+} {
   const hasFunctionCalls = parts.some((p) => p.functionCall);
   const hasThinking = parts.some((p) => p.thought);
 

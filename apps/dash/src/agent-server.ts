@@ -3,6 +3,7 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   DashAgent,
+  FileLogger,
   JsonlSessionStore,
   LocalAgentClient,
   NativeBackend,
@@ -28,6 +29,17 @@ export async function createAgentServer(config: DashConfig) {
   if (config.openaiApiKey) {
     registry.register(new OpenAIProvider(config.openaiApiKey));
   }
+
+  // Initialize file logger if logDir is configured
+  let logger: FileLogger | undefined;
+  if (config.logDir) {
+    logger = await FileLogger.create(config.logDir, 'agent.log');
+  }
+
+  const log = (message: string): void => {
+    console.log(message);
+    logger?.info(message);
+  };
 
   // Create agents from config
   const clients = new Map<string, AgentClient>();
@@ -55,7 +67,7 @@ export async function createAgentServer(config: DashConfig) {
     });
 
     clients.set(name, new LocalAgentClient(agent));
-    console.log(
+    log(
       `Agent "${name}" created (model: ${agentConfig.model}, tools: ${agentConfig.tools?.join(', ') ?? 'none'}, workspace: ${workspace ?? 'unrestricted'})`,
     );
   }
@@ -83,12 +95,14 @@ export async function createAgentServer(config: DashConfig) {
           onShutdown: async () => {
             if (chatClose) await chatClose();
             if (managementClose) await managementClose();
-            console.log('Dash agent server stopped via management API');
+            log('Dash agent server stopped via management API');
+            if (logger) await logger.close();
             process.exit(0);
           },
+          logFilePath: config.logDir ? resolve(config.logDir, 'agent.log') : undefined,
         });
         managementClose = close;
-        console.log(`Management API listening on port ${config.managementPort}`);
+        log(`Management API listening on port ${config.managementPort}`);
       }
 
       // Chat server
@@ -99,15 +113,16 @@ export async function createAgentServer(config: DashConfig) {
           agents: clients,
         });
         chatClose = close;
-        console.log(`Chat API listening on port ${config.chatPort}`);
+        log(`Chat API listening on port ${config.chatPort}`);
       }
 
-      console.log('Dash agent server started');
+      log('Dash agent server started');
     },
     async stop() {
       if (chatClose) await chatClose();
       if (managementClose) await managementClose();
-      console.log('Dash agent server stopped');
+      log('Dash agent server stopped');
+      if (logger) await logger.close();
     },
   };
 }
