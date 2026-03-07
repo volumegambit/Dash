@@ -37,6 +37,15 @@ describe('ProviderRegistry', () => {
     expect(registry.resolveProvider('claude-sonnet-4-20250514')).toBe(anthropic);
   });
 
+  it('resolves gemini- models to google provider', () => {
+    const registry = new ProviderRegistry();
+    const google = mockProvider('google');
+    registry.register(google);
+
+    expect(registry.resolveProvider('gemini-2.5-flash')).toBe(google);
+    expect(registry.resolveProvider('gemini-2.5-pro')).toBe(google);
+  });
+
   it('falls back to first provider for unknown model prefix', () => {
     const registry = new ProviderRegistry();
     const p = mockProvider('custom');
