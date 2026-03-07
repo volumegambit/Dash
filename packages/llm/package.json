@@ -16,7 +16,8 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.39.0",
-    "@google/genai": "^1.44.0"
+    "@google/genai": "^1.44.0",
+    "openai": "^5.8.0"
   },
   "tsup": {
     "entry": [
