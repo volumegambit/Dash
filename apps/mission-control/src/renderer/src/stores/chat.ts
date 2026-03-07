@@ -56,11 +56,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
     set((s) => {
       const { [id]: _m, ...restMessages } = s.messages;
       const { [id]: _se, ...restEvents } = s.streamingEvents;
+      const { [id]: _s, ...restSending } = s.sending;
       return {
         conversations: s.conversations.filter((c) => c.id !== id),
         selectedConversationId: s.selectedConversationId === id ? null : s.selectedConversationId,
         messages: restMessages,
         streamingEvents: restEvents,
+        sending: restSending,
       };
     });
   },
@@ -84,6 +86,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     try {
       await window.api.chatSendMessage(conversationId, text);
     } catch (err) {
+      // Optimistic user message is kept — user can see what they sent and retry
       set((s) => ({ sending: { ...s.sending, [conversationId]: false } }));
       throw err;
     }
