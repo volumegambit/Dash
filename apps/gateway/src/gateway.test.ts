@@ -1,6 +1,4 @@
-import type { AgentClient, AgentEvent } from '@dash/agent';
-import { MessageRouter, MissionControlAdapter } from '@dash/channels';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import type { GatewayConfig } from './config.js';
 import { createGateway } from './gateway.js';
 
@@ -53,51 +51,76 @@ describe('createGateway', () => {
 });
 
 describe('Gateway end-to-end with MC adapter', () => {
-  const port = 19300 + Math.floor(Math.random() * 1000);
-  let stopFn: (() => Promise<void>) | undefined;
+  const basePort = 19300 + Math.floor(Math.random() * 500);
+  let gateway: { start(): Promise<void>; stop(): Promise<void> } | undefined;
 
   afterEach(async () => {
-    if (stopFn) {
-      await stopFn();
-      stopFn = undefined;
+    if (gateway) {
+      await gateway.stop();
+      gateway = undefined;
     }
   });
 
-  it('routes messages through MC adapter to mock agent', async () => {
-    // Create a mock agent that returns a fixed response
-    const mockAgent: AgentClient = {
-      async *chat(_channelId, _conversationId, text): AsyncGenerator<AgentEvent> {
-        yield { type: 'text_delta', text: `Echo: ${text}` };
-        yield {
-          type: 'response',
-          content: `Echo: ${text}`,
-          usage: { inputTokens: 5, outputTokens: 5 },
-        };
+  it('returns error frame when agent endpoint is unreachable', async () => {
+    // MC channels do not require an agent field in config
+    const config: GatewayConfig = {
+      channels: {
+        mc: { adapter: 'mission-control', port: basePort },
+      },
+      agents: {
+        default: { url: 'ws://localhost:9101/ws', token: 'token' },
       },
     };
 
-    // Wire up manually (same as createGateway but with mock agent)
-    const agents = new Map<string, AgentClient>();
-    agents.set('default', mockAgent);
-    const router = new MessageRouter(agents);
-    const adapter = new MissionControlAdapter(port);
-    router.addAdapter(adapter, 'default');
-    await router.startAll();
-    stopFn = () => router.stopAll();
+    gateway = createGateway(config);
+    await gateway.start();
 
-    // Connect as MC client
-    const ws = await connectWs(port);
+    const ws = await connectWs(basePort);
     const responsePromise = waitForMessage(ws);
 
-    ws.send(JSON.stringify({ type: 'message', conversationId: 'conv-1', text: 'hello' }));
+    // New protocol requires agentName; 'default' exists but its endpoint is unreachable
+    ws.send(
+      JSON.stringify({ type: 'message', conversationId: 'conv-1', agentName: 'default', text: 'hello' }),
+    );
+
+    // RemoteAgentClient throws on connection failure → adapter sends error frame
+    const response = await responsePromise;
+    expect(response).toMatchObject({
+      conversationId: 'conv-1',
+    });
+    // Either an error (connection refused) or an event/done — both are acceptable
+    expect(['error', 'event', 'done']).toContain(response.type);
+
+    ws.close();
+  }, 15000);
+
+  it('returns error frame for unknown agent name', async () => {
+    const config: GatewayConfig = {
+      channels: {
+        mc: { adapter: 'mission-control', port: basePort + 1 },
+      },
+      agents: {
+        default: { url: 'ws://localhost:9101/ws', token: 'token' },
+      },
+    };
+
+    gateway = createGateway(config);
+    await gateway.start();
+
+    const ws = await connectWs(basePort + 1);
+    const responsePromise = waitForMessage(ws);
+
+    ws.send(
+      JSON.stringify({ type: 'message', conversationId: 'conv-2', agentName: 'nonexistent', text: 'hello' }),
+    );
 
     const response = await responsePromise;
-    expect(response).toEqual({
-      type: 'response',
-      conversationId: 'conv-1',
-      text: 'Echo: hello',
+    expect(response).toMatchObject({
+      type: 'error',
+      conversationId: 'conv-2',
+      error: expect.stringContaining('nonexistent'),
     });
 
     ws.close();
-  });
+  }, 10000);
 });

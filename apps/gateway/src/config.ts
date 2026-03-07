@@ -2,7 +2,7 @@ import { readFile, unlink } from 'node:fs/promises';
 
 export interface ChannelConfig {
   adapter: 'telegram' | 'mission-control';
-  agent: string;
+  agent?: string; // Required for telegram; unused for mission-control (routes by message content)
   // Telegram-specific
   token?: string;
   allowedUsers?: string[];
@@ -86,9 +86,10 @@ export async function loadConfig(options?: LoadConfigOptions): Promise<GatewayCo
   }
 
   for (const [name, ch] of Object.entries(config.channels)) {
-    if (!config.agents[ch.agent]) {
+    if (ch.adapter === 'mission-control') continue; // MC routes by message content
+    if (!ch.agent || !config.agents[ch.agent]) {
       throw new Error(
-        `Channel "${name}" references unknown agent "${ch.agent}". Available: ${Object.keys(config.agents).join(', ')}`,
+        `Channel "${name}" references unknown agent "${ch.agent ?? '(none)'}". Available: ${Object.keys(config.agents).join(', ')}`,
       );
     }
   }
