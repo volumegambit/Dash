@@ -16,3 +16,5 @@ export { NativeBackend } from './backends/native.js';
 export { resolveTools, BashTool, ReadFileTool } from './tools/index.js';
 export type { AgentClient } from './client.js';
 export { LocalAgentClient } from './client.js';
+export { FileLogger } from './logger.js';
+export type { LogLevel } from './logger.js';
