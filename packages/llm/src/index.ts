@@ -15,3 +15,4 @@ export type {
 export { ProviderRegistry } from './registry.js';
 export { AnthropicProvider } from './providers/anthropic.js';
 export { GoogleProvider } from './providers/google.js';
+export { OpenAIProvider } from './providers/openai.js';

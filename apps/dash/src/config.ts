@@ -23,6 +23,7 @@ export interface DashJsonConfig {
 export interface CredentialsConfig {
   anthropic?: { apiKey?: string };
   google?: { apiKey?: string };
+  openai?: { apiKey?: string };
 }
 
 // --- Runtime config (merged JSON + env) ---
@@ -30,6 +31,7 @@ export interface CredentialsConfig {
 export interface DashConfig {
   anthropicApiKey: string;
   googleApiKey?: string;
+  openaiApiKey?: string;
   agents: Record<string, AgentConfig>;
   sessionDir: string;
   logLevel: string;
@@ -128,6 +130,7 @@ async function loadCredentials(projectRoot: string): Promise<CredentialsConfig> 
 interface SecretsFile {
   anthropicApiKey?: string;
   googleApiKey?: string;
+  openaiApiKey?: string;
   managementToken?: string;
   chatToken?: string;
 }
@@ -227,6 +230,9 @@ export async function loadConfig(options?: LoadConfigOptions): Promise<DashConfi
   const googleApiKey =
     secrets?.googleApiKey ?? process.env.GOOGLE_API_KEY ?? credentials.google?.apiKey;
 
+  const openaiApiKey =
+    secrets?.openaiApiKey ?? process.env.OPENAI_API_KEY ?? credentials.openai?.apiKey;
+
   // Env overrides for logging
   if (process.env.LOG_LEVEL) {
     merged.logging.level = process.env.LOG_LEVEL;
@@ -247,6 +253,7 @@ export async function loadConfig(options?: LoadConfigOptions): Promise<DashConfi
   return {
     anthropicApiKey,
     googleApiKey,
+    openaiApiKey,
     agents: merged.agents,
     sessionDir: merged.sessions.dir,
     logLevel: merged.logging.level,
