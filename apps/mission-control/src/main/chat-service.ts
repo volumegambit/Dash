@@ -36,6 +36,10 @@ export class ChatService {
     const conversation = await this.store.get(conversationId);
     if (!conversation) throw new Error(`Conversation "${conversationId}" not found`);
 
+    if (this.activeStreams.has(conversationId)) {
+      throw new Error(`Conversation "${conversationId}" already has an active stream`);
+    }
+
     const deployment = await this.registry.get(conversation.deploymentId);
     if (!deployment) throw new Error(`Deployment "${conversation.deploymentId}" not found`);
     if (!deployment.chatPort) {
@@ -68,38 +72,37 @@ export class ChatService {
       );
     });
 
-    ws.addEventListener('message', async (event) => {
+    ws.addEventListener('message', (event) => {
+      let msg: { type: string; conversationId: string; event?: McAgentEvent; error?: string };
       try {
-        const msg = JSON.parse(String(event.data)) as {
-          type: string;
-          conversationId: string;
-          event?: McAgentEvent;
-          error?: string;
-        };
-
-        if (msg.conversationId !== conversationId) return;
-
-        if (msg.type === 'event' && msg.event) {
-          accumulatedEvents.push(msg.event);
-          this.onEvent(conversationId, msg.event);
-        } else if (msg.type === 'done') {
-          const assistantMessage: McMessage = {
-            id: randomUUID(),
-            role: 'assistant',
-            content: { type: 'assistant', events: accumulatedEvents },
-            timestamp: new Date().toISOString(),
-          };
-          await this.store.appendMessage(conversationId, assistantMessage);
-          this.activeStreams.delete(conversationId);
-          ws.close();
-          this.onDone(conversationId);
-        } else if (msg.type === 'error') {
-          this.activeStreams.delete(conversationId);
-          ws.close();
-          this.onError(conversationId, msg.error ?? 'Unknown error');
-        }
+        msg = JSON.parse(String(event.data));
       } catch {
-        // Ignore malformed messages
+        return; // ignore malformed JSON
+      }
+
+      if (msg.conversationId !== conversationId) return;
+
+      if (msg.type === 'event' && msg.event) {
+        accumulatedEvents.push(msg.event);
+        this.onEvent(conversationId, msg.event);
+      } else if (msg.type === 'done') {
+        this.activeStreams.delete(conversationId);
+        ws.close();
+        // Save assistant message — best-effort, don't block onDone
+        const assistantMessage: McMessage = {
+          id: randomUUID(),
+          role: 'assistant',
+          content: { type: 'assistant', events: accumulatedEvents },
+          timestamp: new Date().toISOString(),
+        };
+        this.store.appendMessage(conversationId, assistantMessage).catch((err) => {
+          console.error('[ChatService] Failed to persist assistant message:', err);
+        });
+        this.onDone(conversationId);
+      } else if (msg.type === 'error') {
+        this.activeStreams.delete(conversationId);
+        ws.close();
+        this.onError(conversationId, msg.error ?? 'Unknown error');
       }
     });
 
@@ -121,7 +124,9 @@ export class ChatService {
             content: { type: 'assistant', events: accumulatedEvents },
             timestamp: new Date().toISOString(),
           };
-          this.store.appendMessage(conversationId, partialMessage).catch(() => {});
+          this.store.appendMessage(conversationId, partialMessage).catch((err) => {
+            console.error('[ChatService] Failed to save partial message:', err);
+          });
         }
       }
     });
@@ -130,8 +135,8 @@ export class ChatService {
   cancel(conversationId: string): void {
     const ws = this.activeStreams.get(conversationId);
     if (ws) {
-      ws.close();
       this.activeStreams.delete(conversationId);
+      ws.close();
     }
   }
 }
