@@ -21,3 +21,7 @@ export interface ShutdownResponse {
 export interface ErrorResponse {
   error: string;
 }
+
+export interface LogsResponse {
+  lines: string[];
+}
