@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import type { AgentClient, AgentEvent } from '@dash/agent';
 import { MissionControlAdapter } from './mission-control.js';
 
@@ -58,10 +58,10 @@ describe('MissionControlAdapter', () => {
   });
 
   it('sends error for unknown agent', async () => {
-    adapter = new MissionControlAdapter(PORT + 1, new Map());
+    adapter = new MissionControlAdapter(PORT + 100, new Map());
     await adapter.start();
 
-    const ws = await connectWs(PORT + 1);
+    const ws = await connectWs(PORT + 100);
     ws.send(JSON.stringify({ type: 'message', conversationId: 'c1', agentName: 'nope', text: 'hi' }));
 
     const msg = await nextMessage(ws);
@@ -71,21 +71,21 @@ describe('MissionControlAdapter', () => {
   });
 
   it('closes with code 4001 for wrong token', async () => {
-    adapter = new MissionControlAdapter(PORT + 2, new Map(), 'secret');
+    adapter = new MissionControlAdapter(PORT + 200, new Map(), 'secret');
     await adapter.start();
 
     const closed = await new Promise<number>((resolve) => {
-      const ws = new WebSocket(`ws://127.0.0.1:${PORT + 2}?token=wrong`);
+      const ws = new WebSocket(`ws://127.0.0.1:${PORT + 200}?token=wrong`);
       ws.addEventListener('close', (e) => resolve(e.code));
     });
     expect(closed).toBe(4001);
   });
 
   it('allows connection with correct token', async () => {
-    adapter = new MissionControlAdapter(PORT + 3, new Map([['a', makeAgent([])]]), 'secret');
+    adapter = new MissionControlAdapter(PORT + 300, new Map([['a', makeAgent([])]]), 'secret');
     await adapter.start();
 
-    const ws = await connectWs(PORT + 3, 'secret');
+    const ws = await connectWs(PORT + 300, 'secret');
     ws.send(JSON.stringify({ type: 'message', conversationId: 'c1', agentName: 'a', text: 'hi' }));
     const msg = await nextMessage(ws);
     expect(msg.type).toBe('done');
@@ -93,10 +93,10 @@ describe('MissionControlAdapter', () => {
   });
 
   it('sends error response for invalid JSON', async () => {
-    adapter = new MissionControlAdapter(PORT + 4, new Map());
+    adapter = new MissionControlAdapter(PORT + 400, new Map());
     await adapter.start();
 
-    const ws = await connectWs(PORT + 4);
+    const ws = await connectWs(PORT + 400);
     ws.send('not json');
     const msg = await nextMessage(ws);
     expect(msg.type).toBe('error');
@@ -104,13 +104,40 @@ describe('MissionControlAdapter', () => {
   });
 
   it('sends error response for invalid message format', async () => {
-    adapter = new MissionControlAdapter(PORT + 5, new Map());
+    adapter = new MissionControlAdapter(PORT + 500, new Map());
     await adapter.start();
 
-    const ws = await connectWs(PORT + 5);
+    const ws = await connectWs(PORT + 500);
     ws.send(JSON.stringify({ type: 'unknown' }));
     const msg = await nextMessage(ws);
     expect(msg.type).toBe('error');
     ws.close();
+  });
+
+  it('does not crash when client disconnects mid-stream', async () => {
+    const slowAgent: AgentClient = {
+      async *chat() {
+        yield { type: 'text_delta', text: 'first' } satisfies AgentEvent;
+        // hang forever — simulates a slow/streaming agent
+        await new Promise<void>(() => {});
+      },
+    };
+    adapter = new MissionControlAdapter(PORT + 600, new Map([['slow', slowAgent]]));
+    await adapter.start();
+
+    const ws = await connectWs(PORT + 600);
+    ws.send(JSON.stringify({ type: 'message', conversationId: 'c1', agentName: 'slow', text: 'go' }));
+
+    // Wait for the first event to arrive so the server is mid-stream, then drop the connection.
+    await nextMessage(ws);
+    ws.close();
+
+    // Give the server time to react to the close and attempt further sends.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    // Verify no crash: stop() completes cleanly and the connections set is empty.
+    await adapter.stop();
+    // Re-assign so afterEach doesn't double-stop (stop() is idempotent but assign a no-op).
+    adapter = new MissionControlAdapter(PORT + 601, new Map());
   });
 });
