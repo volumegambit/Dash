@@ -1,5 +1,5 @@
-import { describe, expect, it, vi, beforeEach } from 'vitest';
-import type { CompletionRequest, Message, ContentBlock } from '../types.js';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { CompletionRequest, ContentBlock, Message } from '../types.js';
 
 // Mock the openai module
 const mockCreate = vi.fn();
@@ -406,7 +406,10 @@ describe('OpenAIProvider', () => {
 
       const chunks: import('../types.js').StreamChunk[] = [];
       const gen = provider.stream(request);
-      let result: IteratorResult<import('../types.js').StreamChunk, import('../types.js').CompletionResponse>;
+      let result: IteratorResult<
+        import('../types.js').StreamChunk,
+        import('../types.js').CompletionResponse
+      >;
 
       do {
         result = await gen.next();
@@ -473,7 +476,10 @@ describe('OpenAIProvider', () => {
 
       const chunks: import('../types.js').StreamChunk[] = [];
       const gen = provider.stream(request);
-      let result: IteratorResult<import('../types.js').StreamChunk, import('../types.js').CompletionResponse>;
+      let result: IteratorResult<
+        import('../types.js').StreamChunk,
+        import('../types.js').CompletionResponse
+      >;
 
       do {
         result = await gen.next();
@@ -533,7 +539,10 @@ describe('OpenAIProvider', () => {
 
       const chunks: import('../types.js').StreamChunk[] = [];
       const gen = provider.stream(request);
-      let result: IteratorResult<import('../types.js').StreamChunk, import('../types.js').CompletionResponse>;
+      let result: IteratorResult<
+        import('../types.js').StreamChunk,
+        import('../types.js').CompletionResponse
+      >;
 
       do {
         result = await gen.next();
@@ -573,7 +582,10 @@ describe('OpenAIProvider', () => {
       });
 
       // Drain the generator
-      let result: IteratorResult<import('../types.js').StreamChunk, import('../types.js').CompletionResponse>;
+      let result: IteratorResult<
+        import('../types.js').StreamChunk,
+        import('../types.js').CompletionResponse
+      >;
       do {
         result = await gen.next();
       } while (!result.done);
