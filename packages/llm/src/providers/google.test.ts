@@ -289,6 +289,22 @@ describe('GoogleProvider', () => {
       ]);
     });
 
+    it('handles empty candidates gracefully', async () => {
+      mockGenerateContent.mockResolvedValue({
+        candidates: [],
+        usageMetadata: { promptTokenCount: 5, candidatesTokenCount: 0 },
+      });
+
+      const response = await provider.complete({
+        model: 'gemini-2.0-flash',
+        messages: [{ role: 'user', content: 'test' }],
+      });
+
+      expect(response.content).toBe('');
+      expect(response.stopReason).toBe('end_turn');
+      expect(response.usage).toEqual({ inputTokens: 5, outputTokens: 0 });
+    });
+
     it('maps MAX_TOKENS finish reason to max_tokens', async () => {
       mockGenerateContent.mockResolvedValue({
         candidates: [
@@ -560,8 +576,9 @@ describe('GoogleProvider', () => {
       } while (!result.done);
 
       expect(chunks[0]).toEqual({ type: 'thinking_delta', thinking: 'Let me think...' });
-      expect(chunks[1]).toEqual({ type: 'text_delta', text: 'The answer is 42.' });
-      expect(chunks[2]).toEqual({ type: 'stop', stopReason: 'end_turn' });
+      expect(chunks[1]).toEqual({ type: 'thinking_stop', signature: '' });
+      expect(chunks[2]).toEqual({ type: 'text_delta', text: 'The answer is 42.' });
+      expect(chunks[3]).toEqual({ type: 'stop', stopReason: 'end_turn' });
 
       const finalResponse = result.value;
       expect(Array.isArray(finalResponse.content)).toBe(true);
