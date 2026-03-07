@@ -71,12 +71,16 @@ describe('MissionControlAPI contract', () => {
 
   it('MissionControlAPI exposes chat methods', () => {
     const methodNames: (keyof MissionControlAPI)[] = [
-      'chatConnect',
-      'chatDisconnect',
-      'chatSend',
-      'chatOnResponse',
+      'chatListConversations',
+      'chatCreateConversation',
+      'chatGetMessages',
+      'chatDeleteConversation',
+      'chatSendMessage',
+      'chatCancel',
+      'chatOnEvent',
+      'chatOnDone',
       'chatOnError',
     ];
-    expect(methodNames).toHaveLength(5);
+    expect(methodNames).toHaveLength(9);
   });
 });
