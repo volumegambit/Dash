@@ -1,21 +1,8 @@
 import { createFileRoute, useNavigate } from '@tanstack/react-router';
 import { ArrowLeft, ArrowRight, Check, Loader, Rocket } from 'lucide-react';
 import { useState } from 'react';
+import { AVAILABLE_MODELS, AVAILABLE_TOOLS } from '../components/deploy-options.js';
 import { useDeploymentsStore } from '../stores/deployments';
-
-const AVAILABLE_MODELS = [
-  { value: 'claude-sonnet-4-20250514', label: 'Claude Sonnet 4' },
-  { value: 'claude-haiku-4-5-20251001', label: 'Claude Haiku 4.5' },
-];
-
-const AVAILABLE_TOOLS = [
-  { value: 'read_file', label: 'Read File' },
-  { value: 'write_file', label: 'Write File' },
-  { value: 'list_directory', label: 'List Directory' },
-  { value: 'execute_command', label: 'Execute Command' },
-  { value: 'web_search', label: 'Web Search' },
-  { value: 'web_fetch', label: 'Web Fetch' },
-];
 
 type Step = 'agent' | 'channels' | 'review';
 
@@ -30,7 +17,7 @@ interface ChannelConfig {
   enableTelegram: boolean;
 }
 
-function DeployWizard(): JSX.Element {
+export function DeployWizard(): JSX.Element {
   const navigate = useNavigate();
   const { deployWithConfig } = useDeploymentsStore();
   const [step, setStep] = useState<Step>('agent');
