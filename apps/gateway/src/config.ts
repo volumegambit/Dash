@@ -2,7 +2,7 @@ import { readFile, unlink } from 'node:fs/promises';
 
 export interface ChannelConfig {
   adapter: 'telegram' | 'mission-control';
-  agent?: string; // Required for telegram; unused for mission-control (routes by message content)
+  agent?: string; // Required for all non-mission-control adapters; unused for mission-control (routes by message content)
   // Telegram-specific
   token?: string;
   allowedUsers?: string[];
