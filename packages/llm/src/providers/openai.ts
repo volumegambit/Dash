@@ -6,8 +6,6 @@ import type {
   LlmProvider,
   Message,
   StreamChunk,
-  ThinkingBlock,
-  ToolUseBlock,
 } from '../types.js';
 
 /** Returns true for reasoning models (o1, o3, o4 families) */
@@ -194,12 +192,11 @@ export class OpenAIProvider implements LlmProvider {
       params as Parameters<typeof this.client.responses.create>[0],
     );
 
-    const outputItems = (response as Record<string, unknown>).output as Record<string, unknown>[];
+    const res = response as unknown as Record<string, unknown>;
+    const outputItems = res.output as Record<string, unknown>[];
     const { content, hasFunctionCalls } = fromOutputItems(outputItems ?? []);
-    const usage = (response as Record<string, unknown>).usage as
-      | Record<string, number>
-      | undefined;
-    const status = (response as Record<string, unknown>).status as string;
+    const usage = res.usage as Record<string, number> | undefined;
+    const status = res.status as string;
 
     return {
       content,
