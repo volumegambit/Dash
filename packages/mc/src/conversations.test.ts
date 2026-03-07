@@ -111,4 +111,43 @@ describe('ConversationStore', () => {
     const updated = await store.get(conv.id);
     expect(updated?.title).toHaveLength(60);
   });
+
+  it('returns empty array from getMessages when no messages file exists', async () => {
+    const conv = await store.create('deploy-1', 'agent');
+    // No messages appended — JSONL file does not exist yet
+    expect(await store.getMessages(conv.id)).toEqual([]);
+  });
+
+  it('does not overwrite title after it has been set', async () => {
+    const conv = await store.create('deploy-1', 'agent');
+    await store.appendMessage(conv.id, {
+      id: 'msg-1',
+      role: 'user',
+      content: { type: 'user', text: 'First message sets the title' },
+      timestamp: new Date().toISOString(),
+    });
+    await store.appendMessage(conv.id, {
+      id: 'msg-2',
+      role: 'user',
+      content: { type: 'user', text: 'Second message should not change title' },
+      timestamp: new Date().toISOString(),
+    });
+
+    const updated = await store.get(conv.id);
+    expect(updated?.title).toBe('First message sets the title');
+  });
+
+  it('handles trailing blank line in JSONL gracefully', async () => {
+    const conv = await store.create('deploy-1', 'agent');
+    await store.appendMessage(conv.id, {
+      id: 'msg-1',
+      role: 'user',
+      content: { type: 'user', text: 'hello' },
+      timestamp: new Date().toISOString(),
+    });
+    // The JSONL file already has a trailing newline from appendMessage — verify getMessages still works
+    const msgs = await store.getMessages(conv.id);
+    expect(msgs).toHaveLength(1);
+    expect(msgs[0].id).toBe('msg-1');
+  });
 });
