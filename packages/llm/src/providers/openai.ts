@@ -152,6 +152,46 @@ function fromOutputItems(
   return { content: blocks, hasFunctionCalls };
 }
 
+/** Build Responses API params from a CompletionRequest */
+function buildParams(
+  request: CompletionRequest,
+  streaming: boolean,
+): Record<string, unknown> {
+  const input = toInputItems(request.messages);
+  const reasoning = isReasoningModel(request.model);
+
+  const params: Record<string, unknown> = {
+    model: request.model,
+    input,
+  };
+
+  if (streaming) {
+    params.stream = true;
+  }
+  if (request.systemPrompt) {
+    params.instructions = request.systemPrompt;
+  }
+  if (request.maxTokens !== undefined) {
+    params.max_output_tokens = request.maxTokens;
+  }
+  if (!reasoning && request.temperature !== undefined) {
+    params.temperature = request.temperature;
+  }
+  if (request.thinking && reasoning) {
+    params.reasoning = { effort: 'high', summary: 'auto' };
+  }
+  if (request.tools?.length) {
+    params.tools = request.tools.map((t) => ({
+      type: 'function' as const,
+      name: t.name,
+      description: t.description,
+      parameters: t.input_schema,
+    }));
+  }
+
+  return params;
+}
+
 export class OpenAIProvider implements LlmProvider {
   readonly name = 'openai';
   private client: OpenAI;
@@ -161,34 +201,7 @@ export class OpenAIProvider implements LlmProvider {
   }
 
   async complete(request: CompletionRequest): Promise<CompletionResponse> {
-    const input = toInputItems(request.messages);
-    const reasoning = isReasoningModel(request.model);
-
-    const params: Record<string, unknown> = {
-      model: request.model,
-      input,
-    };
-
-    if (request.systemPrompt) {
-      params.instructions = request.systemPrompt;
-    }
-    if (request.maxTokens !== undefined) {
-      params.max_output_tokens = request.maxTokens;
-    }
-    if (!reasoning && request.temperature !== undefined) {
-      params.temperature = request.temperature;
-    }
-    if (request.thinking && reasoning) {
-      params.reasoning = { effort: 'high', summary: 'auto' };
-    }
-    if (request.tools?.length) {
-      params.tools = request.tools.map((t) => ({
-        type: 'function' as const,
-        name: t.name,
-        description: t.description,
-        parameters: t.input_schema,
-      }));
-    }
+    const params = buildParams(request, false);
 
     const response = await this.client.responses.create(
       params as Parameters<typeof this.client.responses.create>[0],
@@ -212,35 +225,7 @@ export class OpenAIProvider implements LlmProvider {
   }
 
   async *stream(request: CompletionRequest): AsyncGenerator<StreamChunk, CompletionResponse> {
-    const input = toInputItems(request.messages);
-    const reasoning = isReasoningModel(request.model);
-
-    const params: Record<string, unknown> = {
-      model: request.model,
-      input,
-      stream: true,
-    };
-
-    if (request.systemPrompt) {
-      params.instructions = request.systemPrompt;
-    }
-    if (request.maxTokens !== undefined) {
-      params.max_output_tokens = request.maxTokens;
-    }
-    if (!reasoning && request.temperature !== undefined) {
-      params.temperature = request.temperature;
-    }
-    if (request.thinking && reasoning) {
-      params.reasoning = { effort: 'high', summary: 'auto' };
-    }
-    if (request.tools?.length) {
-      params.tools = request.tools.map((t) => ({
-        type: 'function' as const,
-        name: t.name,
-        description: t.description,
-        parameters: t.input_schema,
-      }));
-    }
+    const params = buildParams(request, true);
 
     const stream = await this.client.responses.create(
       params as Parameters<typeof this.client.responses.create>[0],
