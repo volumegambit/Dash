@@ -114,7 +114,8 @@ function mapFinishReason(
 ): CompletionResponse['stopReason'] {
   if (hasFunctionCalls) return 'tool_use';
   if (finishReason === 'MAX_TOKENS') return 'max_tokens';
-  if (finishReason === 'STOP_SEQUENCE') return 'stop_sequence';
+  // Google does not have a STOP_SEQUENCE finish reason.
+  // When stop sequences trigger, the API returns 'STOP'.
   return 'end_turn';
 }
 
@@ -229,6 +230,7 @@ export class GoogleProvider implements LlmProvider {
             signature: part.thoughtSignature ?? '',
           });
           yield { type: 'thinking_delta', thinking: part.text };
+          yield { type: 'thinking_stop', signature: part.thoughtSignature ?? '' };
         } else if (part.text !== undefined) {
           // Regular text part
           fullText += part.text;
