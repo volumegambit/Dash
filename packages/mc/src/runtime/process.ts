@@ -88,7 +88,7 @@ export interface ProcessSpawner {
 
 const defaultSpawner: ProcessSpawner = {
   spawn: (command, args, options) =>
-    spawn(command, args, options as Parameters<typeof spawn>[2]) as unknown as SpawnedProcess,
+    spawn(command, args, options as Parameters<typeof spawn>[2]) as SpawnedProcess,
 };
 
 export async function findAvailablePort(): Promise<number> {
@@ -532,7 +532,9 @@ export class ProcessRuntime implements DeploymentRuntime {
             exitCode: state.agentServer.exitCode,
             pid: state.agentServer.pid,
           },
-          gateway: state.gateway ? { pid: state.gateway.pid } : undefined,
+          gateway: state.gateway
+            ? { pid: state.gateway.pid, exitCode: state.gateway.exitCode }
+            : undefined,
           startTime: state.startTime,
         }
       : null;
