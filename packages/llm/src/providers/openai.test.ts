@@ -382,4 +382,204 @@ describe('OpenAIProvider', () => {
       });
     });
   });
+
+  describe('stream()', () => {
+    it('streams text chunks', async () => {
+      async function* mockStream() {
+        yield { type: 'response.output_text.delta', delta: 'Hello' };
+        yield { type: 'response.output_text.delta', delta: ', world!' };
+        yield {
+          type: 'response.completed',
+          response: {
+            status: 'completed',
+            usage: { input_tokens: 5, output_tokens: 3 },
+          },
+        };
+      }
+
+      mockCreate.mockResolvedValue(mockStream());
+
+      const request: CompletionRequest = {
+        model: 'gpt-4o',
+        messages: [{ role: 'user', content: 'Hi' }],
+      };
+
+      const chunks: import('../types.js').StreamChunk[] = [];
+      const gen = provider.stream(request);
+      let result: IteratorResult<import('../types.js').StreamChunk, import('../types.js').CompletionResponse>;
+
+      do {
+        result = await gen.next();
+        if (!result.done) {
+          chunks.push(result.value);
+        }
+      } while (!result.done);
+
+      expect(chunks).toEqual([
+        { type: 'text_delta', text: 'Hello' },
+        { type: 'text_delta', text: ', world!' },
+        { type: 'stop', stopReason: 'end_turn' },
+      ]);
+
+      const finalResponse = result.value;
+      expect(finalResponse.content).toBe('Hello, world!');
+      expect(finalResponse.stopReason).toBe('end_turn');
+      expect(finalResponse.usage).toEqual({ inputTokens: 5, outputTokens: 3 });
+    });
+
+    it('streams function call chunks', async () => {
+      async function* mockStream() {
+        yield { type: 'response.output_text.delta', delta: 'Let me check.' };
+        yield {
+          type: 'response.output_item.added',
+          item: { type: 'function_call', call_id: 'call-456', name: 'search' },
+        };
+        yield {
+          type: 'response.function_call_arguments.delta',
+          delta: '{"query":',
+        };
+        yield {
+          type: 'response.function_call_arguments.delta',
+          delta: '"weather"}',
+        };
+        yield {
+          type: 'response.function_call_arguments.done',
+          call_id: 'call-456',
+          name: 'search',
+          arguments: '{"query":"weather"}',
+        };
+        yield {
+          type: 'response.completed',
+          response: {
+            status: 'completed',
+            usage: { input_tokens: 5, output_tokens: 15 },
+          },
+        };
+      }
+
+      mockCreate.mockResolvedValue(mockStream());
+
+      const request: CompletionRequest = {
+        model: 'gpt-4o',
+        messages: [{ role: 'user', content: 'Search for weather' }],
+        tools: [
+          {
+            name: 'search',
+            description: 'Search the web',
+            input_schema: { type: 'object', properties: { query: { type: 'string' } } },
+          },
+        ],
+      };
+
+      const chunks: import('../types.js').StreamChunk[] = [];
+      const gen = provider.stream(request);
+      let result: IteratorResult<import('../types.js').StreamChunk, import('../types.js').CompletionResponse>;
+
+      do {
+        result = await gen.next();
+        if (!result.done) {
+          chunks.push(result.value);
+        }
+      } while (!result.done);
+
+      expect(chunks[0]).toEqual({ type: 'text_delta', text: 'Let me check.' });
+      expect(chunks[1]).toEqual({
+        type: 'tool_use_start',
+        toolUse: { id: 'call-456', name: 'search' },
+      });
+      expect(chunks[2]).toEqual({
+        type: 'tool_use_delta',
+        toolUseDelta: { partial_json: '{"query":' },
+      });
+      expect(chunks[3]).toEqual({
+        type: 'tool_use_delta',
+        toolUseDelta: { partial_json: '"weather"}' },
+      });
+      expect(chunks[4]).toEqual({ type: 'stop', stopReason: 'tool_use' });
+
+      const finalResponse = result.value;
+      expect(Array.isArray(finalResponse.content)).toBe(true);
+      const blocks = finalResponse.content as ContentBlock[];
+      expect(blocks).toContainEqual({ type: 'text', text: 'Let me check.' });
+      expect(blocks).toContainEqual({
+        type: 'tool_use',
+        id: 'call-456',
+        name: 'search',
+        input: { query: 'weather' },
+      });
+    });
+
+    it('streams reasoning summary chunks', async () => {
+      async function* mockStream() {
+        yield { type: 'response.reasoning_summary_text.delta', delta: 'Let me think...' };
+        yield { type: 'response.reasoning_summary_text.done', text: 'Let me think...' };
+        yield { type: 'response.output_text.delta', delta: 'The answer is 42.' };
+        yield {
+          type: 'response.completed',
+          response: {
+            status: 'completed',
+            usage: { input_tokens: 5, output_tokens: 15 },
+          },
+        };
+      }
+
+      mockCreate.mockResolvedValue(mockStream());
+
+      const request: CompletionRequest = {
+        model: 'o3',
+        messages: [{ role: 'user', content: 'Think about life' }],
+        thinking: { type: 'enabled', budgetTokens: 5000 },
+      };
+
+      const chunks: import('../types.js').StreamChunk[] = [];
+      const gen = provider.stream(request);
+      let result: IteratorResult<import('../types.js').StreamChunk, import('../types.js').CompletionResponse>;
+
+      do {
+        result = await gen.next();
+        if (!result.done) {
+          chunks.push(result.value);
+        }
+      } while (!result.done);
+
+      expect(chunks[0]).toEqual({ type: 'thinking_delta', thinking: 'Let me think...' });
+      expect(chunks[1]).toEqual({ type: 'thinking_stop', signature: '' });
+      expect(chunks[2]).toEqual({ type: 'text_delta', text: 'The answer is 42.' });
+      expect(chunks[3]).toEqual({ type: 'stop', stopReason: 'end_turn' });
+
+      const finalResponse = result.value;
+      expect(Array.isArray(finalResponse.content)).toBe(true);
+      const blocks = finalResponse.content as ContentBlock[];
+      expect(blocks[0]).toEqual({ type: 'thinking', thinking: 'Let me think...', signature: '' });
+      expect(blocks[1]).toEqual({ type: 'text', text: 'The answer is 42.' });
+    });
+
+    it('passes stream: true in params', async () => {
+      async function* mockStream() {
+        yield {
+          type: 'response.completed',
+          response: {
+            status: 'completed',
+            usage: { input_tokens: 5, output_tokens: 1 },
+          },
+        };
+      }
+
+      mockCreate.mockResolvedValue(mockStream());
+
+      const gen = provider.stream({
+        model: 'gpt-4o',
+        messages: [{ role: 'user', content: 'test' }],
+      });
+
+      // Drain the generator
+      let result: IteratorResult<import('../types.js').StreamChunk, import('../types.js').CompletionResponse>;
+      do {
+        result = await gen.next();
+      } while (!result.done);
+
+      const callArgs = mockCreate.mock.calls[0][0];
+      expect(callArgs.stream).toBe(true);
+    });
+  });
 });

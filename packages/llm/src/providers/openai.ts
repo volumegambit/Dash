@@ -6,6 +6,8 @@ import type {
   LlmProvider,
   Message,
   StreamChunk,
+  ThinkingBlock,
+  ToolUseBlock,
 } from '../types.js';
 
 /** Returns true for reasoning models (o1, o3, o4 families) */
@@ -209,8 +211,132 @@ export class OpenAIProvider implements LlmProvider {
     };
   }
 
-  async *stream(_request: CompletionRequest): AsyncGenerator<StreamChunk, CompletionResponse> {
-    // Implemented in Task 3
-    throw new Error('Not implemented');
+  async *stream(request: CompletionRequest): AsyncGenerator<StreamChunk, CompletionResponse> {
+    const input = toInputItems(request.messages);
+    const reasoning = isReasoningModel(request.model);
+
+    const params: Record<string, unknown> = {
+      model: request.model,
+      input,
+      stream: true,
+    };
+
+    if (request.systemPrompt) {
+      params.instructions = request.systemPrompt;
+    }
+    if (request.maxTokens !== undefined) {
+      params.max_output_tokens = request.maxTokens;
+    }
+    if (!reasoning && request.temperature !== undefined) {
+      params.temperature = request.temperature;
+    }
+    if (request.thinking && reasoning) {
+      params.reasoning = { effort: 'high', summary: 'auto' };
+    }
+    if (request.tools?.length) {
+      params.tools = request.tools.map((t) => ({
+        type: 'function' as const,
+        name: t.name,
+        description: t.description,
+        parameters: t.input_schema,
+      }));
+    }
+
+    const stream = await this.client.responses.create(
+      params as Parameters<typeof this.client.responses.create>[0],
+    );
+
+    let fullText = '';
+    const toolUseBlocks: ToolUseBlock[] = [];
+    const thinkingBlocks: ThinkingBlock[] = [];
+    let currentThinking = '';
+    let currentToolCallId = '';
+    let currentToolName = '';
+    let lastUsage = { inputTokens: 0, outputTokens: 0 };
+    let lastStatus = 'completed';
+
+    for await (const event of stream as AsyncIterable<Record<string, unknown>>) {
+      const eventType = event.type as string;
+
+      if (eventType === 'response.output_text.delta') {
+        const delta = event.delta as string;
+        fullText += delta;
+        yield { type: 'text_delta', text: delta };
+      } else if (eventType === 'response.output_item.added') {
+        const item = event.item as Record<string, unknown>;
+        if (item.type === 'function_call') {
+          currentToolCallId = item.call_id as string;
+          currentToolName = item.name as string;
+          yield {
+            type: 'tool_use_start',
+            toolUse: { id: currentToolCallId, name: currentToolName },
+          };
+        }
+      } else if (eventType === 'response.function_call_arguments.delta') {
+        yield {
+          type: 'tool_use_delta',
+          toolUseDelta: { partial_json: event.delta as string },
+        };
+      } else if (eventType === 'response.function_call_arguments.done') {
+        let input: Record<string, unknown> = {};
+        try {
+          input = event.arguments ? JSON.parse(event.arguments as string) : {};
+        } catch {
+          // malformed JSON
+        }
+        toolUseBlocks.push({
+          type: 'tool_use',
+          id: event.call_id as string,
+          name: event.name as string,
+          input,
+        });
+        currentToolCallId = '';
+        currentToolName = '';
+      } else if (eventType === 'response.reasoning_summary_text.delta') {
+        const delta = event.delta as string;
+        currentThinking += delta;
+        yield { type: 'thinking_delta', thinking: delta };
+      } else if (eventType === 'response.reasoning_summary_text.done') {
+        thinkingBlocks.push({
+          type: 'thinking',
+          thinking: currentThinking,
+          signature: '',
+        });
+        currentThinking = '';
+        yield { type: 'thinking_stop', signature: '' };
+      } else if (eventType === 'response.completed') {
+        const resp = event.response as Record<string, unknown>;
+        const usage = resp.usage as Record<string, number> | undefined;
+        lastUsage = {
+          inputTokens: usage?.input_tokens ?? 0,
+          outputTokens: usage?.output_tokens ?? 0,
+        };
+        lastStatus = resp.status as string;
+      }
+    }
+
+    const hasFunctionCalls = toolUseBlocks.length > 0;
+    const stopReason = mapStopReason(lastStatus, hasFunctionCalls);
+
+    yield { type: 'stop', stopReason };
+
+    // Build final content
+    let content: string | ContentBlock[];
+    if (toolUseBlocks.length > 0 || thinkingBlocks.length > 0) {
+      const blocks: ContentBlock[] = [];
+      blocks.push(...thinkingBlocks);
+      if (fullText) blocks.push({ type: 'text', text: fullText });
+      blocks.push(...toolUseBlocks);
+      content = blocks;
+    } else {
+      content = fullText;
+    }
+
+    return {
+      content,
+      model: request.model,
+      usage: lastUsage,
+      stopReason,
+    };
   }
 }
