@@ -126,7 +126,6 @@ describe('DeployWizard', () => {
   });
 
   it('telegram token missing shows warning', async () => {
-    mockApi.secretsGet.mockResolvedValue(null);
     const user = userEvent.setup();
     render(<DeployWizard />);
 
@@ -134,10 +133,8 @@ describe('DeployWizard', () => {
     await user.type(screen.getByPlaceholderText('my-agent'), 'test-agent');
     await user.click(screen.getByRole('button', { name: /next/i }));
 
-    // Find and click the telegram toggle button
-    const telegramToggle = screen.getByRole('button', {
-      name: '',
-    });
+    // Click the telegram toggle button
+    const telegramToggle = screen.getByRole('button', { name: /toggle telegram/i });
     await user.click(telegramToggle);
 
     // Check for the warning message
