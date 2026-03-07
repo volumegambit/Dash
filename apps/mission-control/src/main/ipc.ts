@@ -37,11 +37,18 @@ function getChatService(getWindow: () => BrowserWindow | undefined): ChatService
     chatService = new ChatService(
       getRegistry(),
       new ConversationStore(DATA_DIR),
-      (conversationId, event) =>
-        getWindow()?.webContents.send('chat:event', conversationId, event),
-      (conversationId) => getWindow()?.webContents.send('chat:done', conversationId),
-      (conversationId, error) =>
-        getWindow()?.webContents.send('chat:error', conversationId, error),
+      (conversationId, event) => {
+        const win = getWindow();
+        if (win && !win.isDestroyed()) win.webContents.send('chat:event', conversationId, event);
+      },
+      (conversationId) => {
+        const win = getWindow();
+        if (win && !win.isDestroyed()) win.webContents.send('chat:done', conversationId);
+      },
+      (conversationId, error) => {
+        const win = getWindow();
+        if (win && !win.isDestroyed()) win.webContents.send('chat:error', conversationId, error);
+      },
     );
   }
   return chatService;
