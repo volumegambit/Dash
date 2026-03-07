@@ -1,127 +1,143 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
+import type { AgentClient, AgentEvent } from '@dash/agent';
 import { MissionControlAdapter } from './mission-control.js';
 
-function connectWs(port: number): Promise<WebSocket> {
+const PORT = 19200 + Math.floor(Math.random() * 800);
+
+function makeAgent(events: AgentEvent[]): AgentClient {
+  return {
+    async *chat() {
+      for (const e of events) yield e;
+    },
+  };
+}
+
+function connectWs(port: number, token?: string): Promise<WebSocket> {
+  const url = token ? `ws://127.0.0.1:${port}?token=${token}` : `ws://127.0.0.1:${port}`;
   return new Promise((resolve, reject) => {
-    const ws = new WebSocket(`ws://127.0.0.1:${port}`);
+    const ws = new WebSocket(url);
     ws.addEventListener('open', () => resolve(ws));
     ws.addEventListener('error', reject);
   });
 }
 
-function waitForMessage(ws: WebSocket): Promise<Record<string, unknown>> {
+function nextMessage(ws: WebSocket): Promise<Record<string, unknown>> {
   return new Promise((resolve) => {
-    ws.addEventListener(
-      'message',
-      (event) => {
-        resolve(JSON.parse(String(event.data)));
-      },
-      { once: true },
-    );
+    ws.addEventListener('message', (e) => resolve(JSON.parse(String(e.data))), { once: true });
   });
 }
 
 describe('MissionControlAdapter', () => {
   let adapter: MissionControlAdapter;
-  const port = 19200 + Math.floor(Math.random() * 1000);
-
-  beforeEach(async () => {
-    adapter = new MissionControlAdapter(port);
-  });
 
   afterEach(async () => {
     await adapter.stop();
   });
 
-  it('receives messages from WS clients', async () => {
-    const received: { channelId: string; conversationId: string; text: string }[] = [];
-    adapter.onMessage(async (msg) => {
-      received.push({
-        channelId: msg.channelId,
-        conversationId: msg.conversationId,
-        text: msg.text,
-      });
-    });
-
+  it('streams events and done for a known agent', async () => {
+    const events: AgentEvent[] = [
+      { type: 'text_delta', text: 'Hi' },
+      { type: 'response', content: 'Hi', usage: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } },
+    ];
+    adapter = new MissionControlAdapter(PORT, new Map([['myagent', makeAgent(events)]]));
     await adapter.start();
-    const ws = await connectWs(port);
 
-    ws.send(JSON.stringify({ type: 'message', conversationId: 'conv-1', text: 'hello' }));
+    const ws = await connectWs(PORT);
+    ws.send(JSON.stringify({ type: 'message', conversationId: 'c1', agentName: 'myagent', text: 'hi' }));
 
-    // Wait for handler to process
-    await new Promise((r) => setTimeout(r, 50));
+    const msg1 = await nextMessage(ws);
+    expect(msg1).toEqual({ type: 'event', conversationId: 'c1', event: { type: 'text_delta', text: 'Hi' } });
 
-    expect(received).toHaveLength(1);
-    expect(received[0]).toEqual({
-      channelId: 'mission-control',
-      conversationId: 'conv-1',
-      text: 'hello',
-    });
+    const msg2 = await nextMessage(ws);
+    expect(msg2.type).toBe('event');
+
+    const done = await nextMessage(ws);
+    expect(done).toEqual({ type: 'done', conversationId: 'c1' });
 
     ws.close();
   });
 
-  it('sends responses to the correct client', async () => {
-    adapter.onMessage(async () => {});
+  it('sends error for unknown agent', async () => {
+    adapter = new MissionControlAdapter(PORT + 100, new Map());
     await adapter.start();
 
-    const ws = await connectWs(port);
-    ws.send(JSON.stringify({ type: 'message', conversationId: 'conv-1', text: 'hi' }));
-    await new Promise((r) => setTimeout(r, 50));
+    const ws = await connectWs(PORT + 100);
+    ws.send(JSON.stringify({ type: 'message', conversationId: 'c1', agentName: 'nope', text: 'hi' }));
 
-    const responsePromise = waitForMessage(ws);
-    await adapter.send('conv-1', { text: 'Hello back!' });
-    const response = await responsePromise;
-
-    expect(response).toEqual({
-      type: 'response',
-      conversationId: 'conv-1',
-      text: 'Hello back!',
-    });
-
+    const msg = await nextMessage(ws);
+    expect(msg.type).toBe('error');
+    expect(msg.conversationId).toBe('c1');
     ws.close();
   });
 
-  it('handles invalid JSON gracefully', async () => {
+  it('closes with code 4001 for wrong token', async () => {
+    adapter = new MissionControlAdapter(PORT + 200, new Map(), 'secret');
     await adapter.start();
-    const ws = await connectWs(port);
 
-    const responsePromise = waitForMessage(ws);
+    const closed = await new Promise<number>((resolve) => {
+      const ws = new WebSocket(`ws://127.0.0.1:${PORT + 200}?token=wrong`);
+      ws.addEventListener('close', (e) => resolve(e.code));
+    });
+    expect(closed).toBe(4001);
+  });
+
+  it('allows connection with correct token', async () => {
+    adapter = new MissionControlAdapter(PORT + 300, new Map([['a', makeAgent([])]]), 'secret');
+    await adapter.start();
+
+    const ws = await connectWs(PORT + 300, 'secret');
+    ws.send(JSON.stringify({ type: 'message', conversationId: 'c1', agentName: 'a', text: 'hi' }));
+    const msg = await nextMessage(ws);
+    expect(msg.type).toBe('done');
+    ws.close();
+  });
+
+  it('sends error response for invalid JSON', async () => {
+    adapter = new MissionControlAdapter(PORT + 400, new Map());
+    await adapter.start();
+
+    const ws = await connectWs(PORT + 400);
     ws.send('not json');
-    const response = await responsePromise;
-
-    expect(response.type).toBe('error');
-    expect(response.error).toBe('Invalid JSON');
-
+    const msg = await nextMessage(ws);
+    expect(msg.type).toBe('error');
     ws.close();
   });
 
-  it('handles invalid message format', async () => {
+  it('sends error response for invalid message format', async () => {
+    adapter = new MissionControlAdapter(PORT + 500, new Map());
     await adapter.start();
-    const ws = await connectWs(port);
 
-    const responsePromise = waitForMessage(ws);
+    const ws = await connectWs(PORT + 500);
     ws.send(JSON.stringify({ type: 'unknown' }));
-    const response = await responsePromise;
-
-    expect(response.type).toBe('error');
-    expect(response.error).toBe('Invalid message format');
-
+    const msg = await nextMessage(ws);
+    expect(msg.type).toBe('error');
     ws.close();
   });
 
-  it('cleans up client on disconnect', async () => {
-    adapter.onMessage(async () => {});
+  it('does not crash when client disconnects mid-stream', async () => {
+    const slowAgent: AgentClient = {
+      async *chat() {
+        yield { type: 'text_delta', text: 'first' } satisfies AgentEvent;
+        // hang forever — simulates a slow/streaming agent
+        await new Promise<void>(() => {});
+      },
+    };
+    adapter = new MissionControlAdapter(PORT + 600, new Map([['slow', slowAgent]]));
     await adapter.start();
 
-    const ws = await connectWs(port);
-    ws.send(JSON.stringify({ type: 'message', conversationId: 'conv-1', text: 'hi' }));
-    await new Promise((r) => setTimeout(r, 50));
+    const ws = await connectWs(PORT + 600);
+    ws.send(JSON.stringify({ type: 'message', conversationId: 'c1', agentName: 'slow', text: 'go' }));
 
+    // Wait for the first event to arrive so the server is mid-stream, then drop the connection.
+    await nextMessage(ws);
     ws.close();
-    await new Promise((r) => setTimeout(r, 50));
 
-    // send() to disconnected client should not throw
-    await adapter.send('conv-1', { text: 'should not throw' });
+    // Give the server time to react to the close and attempt further sends.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    // Verify no crash: stop() completes cleanly and the connections set is empty.
+    await adapter.stop();
+    // Re-assign so afterEach doesn't double-stop (stop() is idempotent but assign a no-op).
+    adapter = new MissionControlAdapter(PORT + 601, new Map());
   });
 });

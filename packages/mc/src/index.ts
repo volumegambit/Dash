@@ -20,3 +20,5 @@ export { ProcessRuntime, findAvailablePort, validateConfigDir } from './runtime/
 export type { ProcessSpawner, SpawnedProcess } from './runtime/process.js';
 export { resolveRuntimeStatus } from './runtime/status.js';
 export type { ProcessSnapshot } from './runtime/status.js';
+export { ConversationStore } from './conversations.js';
+export type { McConversation, McMessage } from './conversations.js';

@@ -3,6 +3,7 @@ import { Loader } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { SetupWizard } from '../components/SetupWizard';
 import { Sidebar } from '../components/Sidebar';
+import { initChatListeners } from '../stores/chat';
 import { initDeploymentListeners } from '../stores/deployments';
 
 export const Route = createRootRoute({
@@ -35,6 +36,7 @@ function RootLayout(): JSX.Element {
   useEffect(() => {
     if (ready) {
       initDeploymentListeners();
+      initChatListeners();
     }
   }, [ready]);
 
@@ -59,7 +61,7 @@ function RootLayout(): JSX.Element {
   return (
     <div className="flex h-screen bg-background text-foreground">
       <Sidebar />
-      <main className="flex-1 overflow-auto p-8">
+      <main className="flex flex-1 flex-col overflow-auto p-8">
         <Outlet />
       </main>
     </div>
