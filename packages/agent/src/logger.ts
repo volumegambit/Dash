@@ -30,18 +30,18 @@ export class FileLogger {
   error(message: string): void { this.write('error', message); }
 
   flush(): Promise<void> {
+    if (!this.stream.writableNeedDrain) {
+      return Promise.resolve();
+    }
     return new Promise((resolve) => {
       this.stream.once('drain', resolve);
-      if (this.stream.write('')) {
-        resolve();
-      }
     });
   }
 
   close(): Promise<void> {
     return new Promise((resolve, reject) => {
-      this.stream.end(() => resolve());
       this.stream.on('error', reject);
+      this.stream.end(() => resolve());
     });
   }
 }
