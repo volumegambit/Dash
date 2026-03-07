@@ -1,6 +1,5 @@
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { EventEmitter } from 'node:events';
 import { existsSync, statSync } from 'node:fs';
 import { chmod, readFile, readdir, writeFile } from 'node:fs/promises';
 import net from 'node:net';
@@ -12,66 +11,16 @@ import type { SecretStore } from '../security/secrets.js';
 import { type ProcessSnapshot, resolveRuntimeStatus } from './status.js';
 import type { DeploymentRuntime, RuntimeStatus } from './types.js';
 
-const LOG_BUFFER_MAX = 10_000;
-
-class LogBuffer {
-  private lines: string[] = [];
-  private emitter = new EventEmitter();
-
-  append(line: string): void {
-    this.lines.push(line);
-    if (this.lines.length > LOG_BUFFER_MAX) {
-      this.lines.splice(0, this.lines.length - LOG_BUFFER_MAX);
-    }
-    this.emitter.emit('line', line);
-  }
-
-  async *follow(): AsyncIterable<string> {
-    // Yield history
-    for (const line of this.lines) {
-      yield line;
-    }
-    // Follow new lines
-    const queue: string[] = [];
-    let resolve: (() => void) | null = null;
-
-    const onLine = (line: string) => {
-      queue.push(line);
-      if (resolve) {
-        resolve();
-        resolve = null;
-      }
-    };
-
-    this.emitter.on('line', onLine);
-    try {
-      while (true) {
-        if (queue.length > 0) {
-          yield queue.shift() as string;
-        } else {
-          await new Promise<void>((r) => {
-            resolve = r;
-          });
-        }
-      }
-    } finally {
-      this.emitter.off('line', onLine);
-    }
-  }
-}
 
 interface ProcessState {
   agentServer: SpawnedProcess;
   gateway: SpawnedProcess | null;
-  logBuffer: LogBuffer;
   startTime: number;
 }
 
 export interface SpawnedProcess {
   pid?: number;
   exitCode: number | null;
-  stdout: import('node:stream').Readable | null;
-  stderr: import('node:stream').Readable | null;
   kill(signal?: NodeJS.Signals | number): boolean;
   on(event: 'exit', listener: (code: number | null, signal: NodeJS.Signals | null) => void): this;
   on(event: 'error', listener: (err: Error) => void): this;
@@ -82,13 +31,19 @@ export interface ProcessSpawner {
   spawn(
     command: string,
     args: string[],
-    options: { env?: Record<string, string | undefined>; stdio?: unknown[] },
-  ): SpawnedProcess;
+    options: {
+      env?: Record<string, string | undefined>;
+      stdio?: unknown[];
+      detached?: boolean;
+    },
+  ): SpawnedProcess & { unref?: () => void };
 }
 
 const defaultSpawner: ProcessSpawner = {
   spawn: (command, args, options) =>
-    spawn(command, args, options as Parameters<typeof spawn>[2]) as SpawnedProcess,
+    spawn(command, args, options as Parameters<typeof spawn>[2]) as SpawnedProcess & {
+      unref?: () => void;
+    },
 };
 
 export async function findAvailablePort(): Promise<number> {
@@ -339,9 +294,11 @@ export class ProcessRuntime implements DeploymentRuntime {
           MANAGEMENT_API_PORT: String(managementPort),
           CHAT_API_PORT: String(chatPort),
         },
-        stdio: ['ignore', 'pipe', 'pipe'],
+        stdio: ['ignore', 'ignore', 'ignore'],
+        detached: true,
       },
     );
+    (agentServer as { unref?: () => void }).unref?.();
 
     // Spawn gateway
     const gatewayBin = join(this.projectRoot, 'apps/gateway/dist/index.js');
@@ -350,52 +307,20 @@ export class ProcessRuntime implements DeploymentRuntime {
       [gatewayBin, '--config', gatewayConfigPath, '--secrets', gwSecretsPath],
       {
         env: { ...process.env },
-        stdio: ['ignore', 'pipe', 'pipe'],
+        stdio: ['ignore', 'ignore', 'ignore'],
+        detached: true,
       },
     );
-
-    // Set up log capture
-    const logBuffer = new LogBuffer();
-
-    // Handle spawn errors
-    agentServer.on('error', (err) => {
-      logBuffer.append(`[agent-server] Spawn error: ${err.message}`);
-    });
-    gateway.on('error', (err) => {
-      logBuffer.append(`[gateway] Spawn error: ${err.message}`);
-    });
-
-    agentServer.stdout?.on('data', (data: Buffer) => {
-      for (const line of data.toString().split('\n').filter(Boolean)) {
-        logBuffer.append(`[agent-server] ${line}`);
-      }
-    });
-    agentServer.stderr?.on('data', (data: Buffer) => {
-      for (const line of data.toString().split('\n').filter(Boolean)) {
-        logBuffer.append(`[agent-server] ${line}`);
-      }
-    });
-    gateway.stdout?.on('data', (data: Buffer) => {
-      for (const line of data.toString().split('\n').filter(Boolean)) {
-        logBuffer.append(`[gateway] ${line}`);
-      }
-    });
-    gateway.stderr?.on('data', (data: Buffer) => {
-      for (const line of data.toString().split('\n').filter(Boolean)) {
-        logBuffer.append(`[gateway] ${line}`);
-      }
-    });
+    (gateway as { unref?: () => void }).unref?.();
 
     this.processes.set(id, {
       agentServer,
       gateway,
-      logBuffer,
       startTime: Date.now(),
     });
 
     // Watch for process exit
-    const updateOnExit = async (proc: string, code: number | null) => {
-      logBuffer.append(`[${proc}] Process exited with code ${code}`);
+    const updateOnExit = async (_proc: string, _code: number | null) => {
       const state = this.processes.get(id);
       if (!state) return;
 
@@ -452,7 +377,7 @@ export class ProcessRuntime implements DeploymentRuntime {
     const state = this.processes.get(id);
     if (state) {
       // Graceful shutdown: SIGTERM → wait 5s → SIGKILL
-      const killProcess = (proc: SpawnedProcess, label: string): Promise<void> => {
+      const killProcess = (proc: SpawnedProcess): Promise<void> => {
         return new Promise((resolve) => {
           if (proc.exitCode !== null) {
             resolve();
@@ -468,14 +393,13 @@ export class ProcessRuntime implements DeploymentRuntime {
             resolve();
           });
 
-          state.logBuffer.append(`[${label}] Sending SIGTERM...`);
           proc.kill('SIGTERM');
         });
       };
 
-      const kills: Promise<void>[] = [killProcess(state.agentServer, 'agent-server')];
+      const kills: Promise<void>[] = [killProcess(state.agentServer)];
       if (state.gateway) {
-        kills.push(killProcess(state.gateway, 'gateway'));
+        kills.push(killProcess(state.gateway));
       }
       await Promise.all(kills);
       this.processes.delete(id);
@@ -543,12 +467,22 @@ export class ProcessRuntime implements DeploymentRuntime {
   }
 
   async *getLogs(id: string): AsyncIterable<string> {
-    const state = this.processes.get(id);
-    if (!state) {
+    const deployment = await this.registry.get(id);
+    if (!deployment) {
+      throw new Error(`Deployment "${id}" not found`);
+    }
+
+    if (!deployment.managementPort || !deployment.managementToken) {
       throw new Error(
-        `No active process for deployment "${id}". Logs are only available for the current session.`,
+        `Deployment "${id}" has no management API configured. Cannot retrieve logs.`,
       );
     }
-    yield* state.logBuffer.follow();
+
+    const { ManagementClient } = await import('@dash/management');
+    const client = new ManagementClient(
+      `http://localhost:${deployment.managementPort}`,
+      deployment.managementToken,
+    );
+    yield* client.streamLogs();
   }
 }
