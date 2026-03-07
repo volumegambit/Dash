@@ -1,10 +1,12 @@
+import type { IncomingMessage } from 'node:http';
+import type { AgentClient, AgentEvent } from '@dash/agent';
 import { WebSocketServer } from 'ws';
 import type WebSocket from 'ws';
-import type { ChannelAdapter, InboundMessage, MessageHandler, OutboundMessage } from '../types.js';
 
 interface McClientMessage {
   type: 'message';
   conversationId: string;
+  agentName: string;
   text: string;
 }
 
@@ -12,63 +14,104 @@ function validateMessage(data: unknown): data is McClientMessage {
   if (typeof data !== 'object' || data === null) return false;
   const msg = data as Record<string, unknown>;
   return (
-    msg.type === 'message' && typeof msg.conversationId === 'string' && typeof msg.text === 'string'
+    msg.type === 'message' &&
+    typeof msg.conversationId === 'string' &&
+    typeof msg.agentName === 'string' &&
+    typeof msg.text === 'string'
   );
 }
 
-export class MissionControlAdapter implements ChannelAdapter {
-  readonly name = 'mission-control';
-  private handlers: MessageHandler[] = [];
-  private wss: WebSocketServer | undefined;
-  private clients = new Map<string, WebSocket>();
-
-  constructor(private port: number) {}
-
-  onMessage(handler: MessageHandler): void {
-    this.handlers.push(handler);
+function serializeEvent(event: AgentEvent): Record<string, unknown> {
+  if (event.type === 'error') {
+    return { type: 'error', error: event.error instanceof Error ? event.error.message : String(event.error) };
   }
+  // All non-error AgentEvent variants are plain objects safe for JSON serialization.
+  return event as Record<string, unknown>;
+}
+
+export class MissionControlAdapter {
+  readonly name = 'mission-control';
+  private wss: WebSocketServer | undefined;
+  private connections = new Set<WebSocket>();
+
+  constructor(
+    private port: number,
+    private agents: Map<string, AgentClient>,
+    private token?: string,
+  ) {}
 
   async start(): Promise<void> {
     this.wss = new WebSocketServer({ port: this.port });
 
-    this.wss.on('connection', (ws) => {
+    this.wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
+      if (this.token) {
+        const url = new URL(req.url ?? '', 'ws://localhost');
+        if (url.searchParams.get('token') !== this.token) {
+          ws.close(4001, 'Unauthorized');
+          return;
+        }
+      }
+
+      this.connections.add(ws);
+      let closed = false;
+      ws.on('close', () => {
+        closed = true;
+        this.connections.delete(ws);
+      });
+
+      // Multiple concurrent messages on the same socket are intentional — the protocol
+      // is multiplexed by conversationId so frames from parallel streams may interleave.
       ws.on('message', async (raw) => {
         let data: unknown;
         try {
           data = JSON.parse(String(raw));
         } catch {
-          ws.send(JSON.stringify({ type: 'error', conversationId: '', error: 'Invalid JSON' }));
+          if (!closed) ws.send(JSON.stringify({ type: 'error', conversationId: '', error: 'Invalid JSON' }));
           return;
         }
 
         if (!validateMessage(data)) {
-          ws.send(
-            JSON.stringify({ type: 'error', conversationId: '', error: 'Invalid message format' }),
-          );
+          if (!closed) ws.send(JSON.stringify({ type: 'error', conversationId: '', error: 'Invalid message format' }));
           return;
         }
 
-        this.clients.set(data.conversationId, ws);
-
-        const msg: InboundMessage = {
-          channelId: 'mission-control',
-          conversationId: data.conversationId,
-          senderId: 'mc',
-          senderName: 'Mission Control',
-          text: data.text,
-          timestamp: new Date(),
-        };
-
-        for (const handler of this.handlers) {
-          await handler(msg);
+        const agent = this.agents.get(data.agentName);
+        if (!agent) {
+          if (!closed)
+            ws.send(
+              JSON.stringify({
+                type: 'error',
+                conversationId: data.conversationId,
+                error: `Unknown agent: ${data.agentName}`,
+              }),
+            );
+          return;
         }
-      });
 
-      ws.on('close', () => {
-        for (const [convId, client] of this.clients) {
-          if (client === ws) {
-            this.clients.delete(convId);
+        const flush = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
+
+        try {
+          for await (const event of agent.chat('mission-control', data.conversationId, data.text)) {
+            if (closed) break;
+            ws.send(
+              JSON.stringify({
+                type: 'event',
+                conversationId: data.conversationId,
+                event: serializeEvent(event),
+              }),
+            );
+            await flush();
           }
+          if (!closed) ws.send(JSON.stringify({ type: 'done', conversationId: data.conversationId }));
+        } catch (err) {
+          if (!closed)
+            ws.send(
+              JSON.stringify({
+                type: 'error',
+                conversationId: data.conversationId,
+                error: err instanceof Error ? err.message : String(err),
+              }),
+            );
         }
       });
     });
@@ -77,15 +120,13 @@ export class MissionControlAdapter implements ChannelAdapter {
     await new Promise<void>((resolve) => {
       wss.on('listening', resolve);
     });
-
-    console.log(`Mission Control adapter listening on port ${this.port}`);
   }
 
   async stop(): Promise<void> {
-    for (const ws of this.clients.values()) {
-      ws.close();
+    for (const ws of this.connections) {
+      ws.terminate();
     }
-    this.clients.clear();
+    this.connections.clear();
 
     const wss = this.wss;
     if (wss) {
@@ -94,11 +135,5 @@ export class MissionControlAdapter implements ChannelAdapter {
       });
       this.wss = undefined;
     }
-  }
-
-  async send(conversationId: string, message: OutboundMessage): Promise<void> {
-    const ws = this.clients.get(conversationId);
-    if (!ws) return;
-    ws.send(JSON.stringify({ type: 'response', conversationId, text: message.text }));
   }
 }
