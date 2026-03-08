@@ -1,15 +1,20 @@
-import { mkdir } from 'node:fs/promises';
-import { dirname, resolve } from 'node:path';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { homedir } from 'node:os';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DashAgent, FileLogger, LocalAgentClient, OpenCodeBackend } from '@dash/agent';
 import type { AgentClient } from '@dash/agent';
 import { startChatServer } from '@dash/chat';
 import { startManagementServer } from '@dash/management';
-import type { InfoResponse } from '@dash/management';
+import type { InfoResponse, SkillsHandlers } from '@dash/management';
 import type { DashConfig } from './config.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const projectRoot = resolve(__dirname, '../../..');
+
+function expandHome(p: string): string {
+  return p.startsWith('~/') ? join(homedir(), p.slice(2)) : p;
+}
 
 export async function createAgentServer(config: DashConfig) {
   let logger: FileLogger | undefined;
@@ -24,6 +29,7 @@ export async function createAgentServer(config: DashConfig) {
 
   const clients = new Map<string, AgentClient>();
   const backends: OpenCodeBackend[] = [];
+  const backendsByName = new Map<string, OpenCodeBackend>();
 
   for (const [name, agentConfig] of Object.entries(config.agents)) {
     let workspace: string | undefined;
@@ -45,6 +51,7 @@ export async function createAgentServer(config: DashConfig) {
 
     await backend.start(workspace ?? projectRoot);
     backends.push(backend);
+    backendsByName.set(name, backend);
 
     const agent = new DashAgent(backend, {
       model: agentConfig.model,
@@ -59,6 +66,72 @@ export async function createAgentServer(config: DashConfig) {
       `Agent "${name}" started (model: ${agentConfig.model}, tools: ${agentConfig.tools?.join(', ') ?? 'all'}, workspace: ${workspace ?? 'unrestricted'})`,
     );
   }
+
+  const skillsHandlers: SkillsHandlers | undefined = config.managementToken
+    ? {
+        async list(agentName) {
+          const raw = (await backendsByName.get(agentName)?.listSkills()) ?? [];
+          return raw.map((s) => ({
+            name: s.name,
+            description: s.description,
+            location: s.location,
+            editable: !s.location.startsWith('http'),
+          }));
+        },
+
+        async get(agentName, skillName) {
+          const raw = (await backendsByName.get(agentName)?.listSkills()) ?? [];
+          const found = raw.find((s) => s.name === skillName);
+          if (!found) return null;
+          return {
+            name: found.name,
+            description: found.description,
+            location: found.location,
+            editable: !found.location.startsWith('http'),
+            content: found.content,
+          };
+        },
+
+        async updateContent(agentName, skillName, content) {
+          const raw = (await backendsByName.get(agentName)?.listSkills()) ?? [];
+          const found = raw.find((s) => s.name === skillName);
+          if (!found) throw new Error(`Skill "${skillName}" not found`);
+          if (found.location.startsWith('http')) throw new Error('Skill is remote and cannot be edited');
+          await writeFile(found.location, content, 'utf-8');
+        },
+
+        async create(agentName, skillName, description, content) {
+          const paths = config.agents[agentName]?.skills?.paths ?? [];
+          if (paths.length === 0) throw new Error('No local skill paths configured for this agent');
+          const skillDir = join(expandHome(paths[0]), skillName);
+          await mkdir(skillDir, { recursive: true });
+          const skillFile = join(skillDir, 'SKILL.md');
+          const fullContent = `---\nname: ${skillName}\ndescription: ${description}\n---\n\n${content}`;
+          await writeFile(skillFile, fullContent, 'utf-8');
+          return { name: skillName, description, location: skillFile, editable: true, content: fullContent };
+        },
+
+        getConfig(agentName) {
+          return {
+            paths: config.agents[agentName]?.skills?.paths ?? [],
+            urls: config.agents[agentName]?.skills?.urls ?? [],
+          };
+        },
+
+        async updateConfig(agentName, skillsConfig) {
+          if (!config.configDir) {
+            throw new Error('Config directory not available — agent was not started with --config <dir>');
+          }
+          const dashJsonPath = join(config.configDir, 'dash.json');
+          const raw = await readFile(dashJsonPath, 'utf-8');
+          const json = JSON.parse(raw) as { agents?: Record<string, { skills?: unknown }> };
+          if (json.agents?.[agentName]) {
+            json.agents[agentName].skills = skillsConfig;
+          }
+          await writeFile(dashJsonPath, JSON.stringify(json, null, 2), 'utf-8');
+        },
+      }
+    : undefined;
 
   let managementClose: (() => Promise<void>) | undefined;
   let chatClose: (() => Promise<void>) | undefined;
@@ -87,6 +160,7 @@ export async function createAgentServer(config: DashConfig) {
             process.exit(0);
           },
           logFilePath: config.logDir ? resolve(config.logDir, 'agent.log') : undefined,
+          skills: skillsHandlers,
         });
         managementClose = close;
         log(`Management API listening on port ${config.managementPort}`);
