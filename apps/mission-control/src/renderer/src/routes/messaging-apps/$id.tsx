@@ -31,12 +31,14 @@ function MessagingAppDetail(): JSX.Element {
     );
   }
 
-  const availableAgents = deployments.flatMap((d) =>
-    Object.keys(d.config.agents ?? {}).map((agentName) => ({
-      label: `${agentName} (${d.name})`,
-      agentName,
-    })),
-  );
+  const availableAgents = deployments
+    .filter((d) => d.status === 'running')
+    .flatMap((d) =>
+      Object.keys(d.config.agents ?? {}).map((agentName) => ({
+        label: `${agentName} (${d.name})`,
+        agentName,
+      })),
+    );
 
   async function addGlobalDeny() {
     const val = globalDenyInput.trim();

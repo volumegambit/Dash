@@ -363,15 +363,29 @@ export async function registerIpcHandlers(
     return getMessagingAppRegistry().get(id);
   });
 
-  ipcMain.handle('messagingApps:create', async (_event, app: Omit<MessagingApp, 'id' | 'createdAt'>) => {
+  ipcMain.handle('messagingApps:create', async (_event, app: Omit<MessagingApp, 'id' | 'createdAt' | 'credentialsKey'>, token: string) => {
+    const registry = getMessagingAppRegistry();
+    const secretStore = getSecretStore();
     const id = randomUUID().slice(0, 8);
-    const newApp: MessagingApp = {
+    // Create the registry entry first with a placeholder credentialsKey
+    const created: MessagingApp = {
       ...app,
       id,
+      credentialsKey: '', // will be updated after we have the id
       createdAt: new Date().toISOString(),
     };
-    await getMessagingAppRegistry().add(newApp);
-    return newApp;
+    await registry.add(created);
+    const credKey = `messaging-app:${id}:token`;
+    try {
+      await secretStore.set(credKey, token);
+    } catch (err) {
+      // Rollback registry entry if secret storage fails
+      await registry.remove(id).catch(() => {});
+      throw err;
+    }
+    // Update the registry entry with the correct credentialsKey
+    await registry.update(id, { credentialsKey: credKey });
+    return { ...created, credentialsKey: credKey };
   });
 
   ipcMain.handle('messagingApps:update', async (_event, id: string, patch: Partial<MessagingApp>) => {
@@ -396,10 +410,20 @@ export async function registerIpcHandlers(
 
   ipcMain.handle('messagingApps:verifyTelegramToken', async (_event, token: string) => {
     const response = await fetch(`https://api.telegram.org/bot${token}/getMe`);
-    const data = await response.json() as { ok: boolean; description?: string; result?: { username: string; first_name: string } };
+    if (!response.ok) {
+      throw new Error(`Telegram API error: ${response.status} ${response.statusText}`);
+    }
+    const data = await response.json() as {
+      ok: boolean;
+      description?: string;
+      result?: { username: string; first_name: string };
+    };
     if (!data.ok) {
       throw new Error(data.description ?? 'Invalid token');
     }
-    return { username: data.result!.username, firstName: data.result!.first_name };
+    if (!data.result) {
+      throw new Error('Unexpected response from Telegram API');
+    }
+    return { username: data.result.username, firstName: data.result.first_name };
   });
 }

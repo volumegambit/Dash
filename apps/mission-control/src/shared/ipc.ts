@@ -76,7 +76,7 @@ export interface MissionControlAPI {
   // Messaging Apps
   messagingAppsList(): Promise<MessagingApp[]>;
   messagingAppsGet(id: string): Promise<MessagingApp | null>;
-  messagingAppsCreate(app: Omit<MessagingApp, 'id' | 'createdAt'>): Promise<MessagingApp>;
+  messagingAppsCreate(app: Omit<MessagingApp, 'id' | 'createdAt' | 'credentialsKey'>, token: string): Promise<MessagingApp>;
   messagingAppsUpdate(id: string, patch: Partial<MessagingApp>): Promise<void>;
   messagingAppsDelete(id: string): Promise<void>;
   messagingAppsVerifyTelegramToken(token: string): Promise<TelegramBotInfo>;

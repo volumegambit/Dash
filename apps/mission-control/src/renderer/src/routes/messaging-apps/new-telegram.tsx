@@ -62,13 +62,15 @@ function NewTelegramWizard(): JSX.Element {
   const goPrev = () => setStepIndex((i) => Math.max(i - 1, 0));
 
   // Build flat list of all agents across all running deployments
-  const availableAgents = deployments.flatMap((d) =>
-    Object.keys(d.config.agents ?? {}).map((agentName) => ({
-      label: `${agentName} (${d.name})`,
-      deploymentId: d.id,
-      agentName,
-    })),
-  );
+  const availableAgents = deployments
+    .filter((d) => d.status === 'running')
+    .flatMap((d) =>
+      Object.keys(d.config.agents ?? {}).map((agentName) => ({
+        label: `${agentName} (${d.name})`,
+        deploymentId: d.id,
+        agentName,
+      })),
+    );
 
   async function handleVerifyToken() {
     setVerifying(true);
@@ -90,26 +92,24 @@ function NewTelegramWizard(): JSX.Element {
     setSaving(true);
     setSaveError('');
     try {
-      const credKey = `messaging-app:new-${Date.now()}:token`;
-      // Store token in secrets first
-      await window.api.secretsSet(credKey, token);
-      // Create the app
-      await createApp({
-        name: connectionName,
-        type: 'telegram',
-        credentialsKey: credKey,
-        enabled: true,
-        globalDenyList: [],
-        routing: [
-          {
-            id: `rule-${Date.now()}`,
-            condition: { type: 'default' },
-            targetAgentName: selectedAgent.agentName,
-            allowList: [],
-            denyList: [],
-          },
-        ],
-      });
+      await createApp(
+        {
+          name: connectionName,
+          type: 'telegram',
+          enabled: true,
+          globalDenyList: [],
+          routing: [
+            {
+              id: `rule-${Date.now()}`,
+              condition: { type: 'default' },
+              targetAgentName: selectedAgent.agentName,
+              allowList: [],
+              denyList: [],
+            },
+          ],
+        },
+        token,
+      );
       goNext(); // go to done step
     } catch (err) {
       setSaveError((err as Error).message);
