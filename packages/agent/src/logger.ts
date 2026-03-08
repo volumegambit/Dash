@@ -5,7 +5,19 @@ import { join } from 'node:path';
 
 export type LogLevel = 'info' | 'warn' | 'error';
 
-export class FileLogger {
+export interface Logger {
+  info(message: string): void;
+  warn(message: string): void;
+  error(message: string): void;
+}
+
+export const noopLogger: Logger = {
+  info: () => {},
+  warn: () => {},
+  error: () => {},
+};
+
+export class FileLogger implements Logger {
   private stream: WriteStream;
 
   private constructor(stream: WriteStream) {
