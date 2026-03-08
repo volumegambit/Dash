@@ -16,10 +16,13 @@
   },
   "dependencies": {
     "@dash/agent": "*",
+    "@whiskeysockets/baileys": "^6.7.0",
     "grammy": "^1.31.0",
+    "qrcode-terminal": "^0.12.0",
     "ws": "^8"
   },
   "devDependencies": {
+    "@types/qrcode-terminal": "^0.12.2",
     "@types/ws": "^8"
   },
   "tsup": {

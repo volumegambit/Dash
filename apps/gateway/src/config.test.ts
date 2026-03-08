@@ -137,6 +137,43 @@ describe('loadConfig', () => {
     await expect(loadConfig({ configPath })).rejects.toThrow('routing rule references unknown agent "nonexistent"');
   });
 
+  it('accepts whatsapp adapter with authStateDir', async () => {
+    const config = {
+      channels: {
+        wa: { adapter: 'whatsapp', agent: 'myagent', authStateDir: '/tmp/wa-auth' },
+      },
+      agents: {
+        myagent: { url: 'ws://localhost:9101/ws', token: 'tok' },
+      },
+    };
+    const configPath = join(tmpDir, 'wa-config.json');
+    await writeFile(configPath, JSON.stringify(config));
+    const loaded = await loadConfig({ configPath });
+    expect(loaded.channels.wa.adapter).toBe('whatsapp');
+    expect(loaded.channels.wa.authStateDir).toBe('/tmp/wa-auth');
+  });
+
+  it('merges whatsappAuth from secrets file', async () => {
+    const config = {
+      channels: {
+        wa: { adapter: 'whatsapp', agent: 'myagent', authStateDir: '/tmp/wa-auth' },
+      },
+      agents: {
+        myagent: { url: 'ws://localhost:9101/ws', token: 'tok' },
+      },
+    };
+    const secrets = {
+      agents: { myagent: { token: 'real-tok' } },
+      channels: { wa: { whatsappAuth: { creds: '{"noiseKey":{}}' } } },
+    };
+    const configPath = join(tmpDir, 'wa-config2.json');
+    const secretsPath = join(tmpDir, 'wa-secrets.json');
+    await writeFile(configPath, JSON.stringify(config));
+    await writeFile(secretsPath, JSON.stringify(secrets));
+    const loaded = await loadConfig({ configPath, secretsPath });
+    expect(loaded.channels.wa.whatsappAuth).toEqual({ creds: '{"noiseKey":{}}' });
+  });
+
   it('merges secrets and unlinks file', async () => {
     const configPath = join(tmpDir, 'config.json');
     const secretsPath = join(tmpDir, 'secrets.json');

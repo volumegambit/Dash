@@ -21,13 +21,22 @@ function MessagingApps(): JSX.Element {
             Connect messaging platforms so people can talk to your AI assistants.
           </p>
         </div>
-        <Link
-          to="/messaging-apps/new-telegram"
-          className="inline-flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm text-white transition-colors hover:bg-primary-hover"
-        >
-          <Plus size={16} />
-          Add Telegram
-        </Link>
+        <div className="flex items-center gap-2">
+          <Link
+            to="/messaging-apps/new-telegram"
+            className="inline-flex items-center gap-2 rounded-lg border border-border px-4 py-2 text-sm text-muted transition-colors hover:bg-sidebar-hover hover:text-foreground"
+          >
+            <Plus size={16} />
+            Add Telegram
+          </Link>
+          <Link
+            to="/messaging-apps/new-whatsapp"
+            className="inline-flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm text-white transition-colors hover:bg-primary-hover"
+          >
+            <Plus size={16} />
+            Add WhatsApp
+          </Link>
+        </div>
       </div>
 
       {apps.length === 0 && !loading ? (
@@ -35,15 +44,25 @@ function MessagingApps(): JSX.Element {
           <MessageSquare size={24} className="mx-auto mb-2 text-muted" />
           <p className="text-sm font-medium">No messaging apps connected yet</p>
           <p className="mt-1 text-sm text-muted">
-            Connect Telegram so you or others can send messages to your agents.
+            Connect Telegram or WhatsApp so people can message your AI assistant directly.
           </p>
-          <Link
-            to="/messaging-apps/new-telegram"
-            className="mt-3 inline-flex items-center gap-1 text-sm text-primary hover:text-primary-hover"
-          >
-            <Plus size={14} />
-            Add your first Telegram bot
-          </Link>
+          <div className="mt-3 flex items-center justify-center gap-3">
+            <Link
+              to="/messaging-apps/new-telegram"
+              className="inline-flex items-center gap-1 text-sm text-primary hover:text-primary-hover"
+            >
+              <Plus size={14} />
+              Add Telegram
+            </Link>
+            <span className="text-muted">·</span>
+            <Link
+              to="/messaging-apps/new-whatsapp"
+              className="inline-flex items-center gap-1 text-sm text-primary hover:text-primary-hover"
+            >
+              <Plus size={14} />
+              Add WhatsApp
+            </Link>
+          </div>
         </div>
       ) : (
         <div className="rounded-lg border border-border">
@@ -57,7 +76,7 @@ function MessagingApps(): JSX.Element {
                 params={{ id: app.id }}
                 className="flex flex-1 items-center gap-3 transition-colors hover:text-primary"
               >
-                <span className="text-lg">✈️</span>
+                <span className="text-lg">{app.type === 'whatsapp' ? '📱' : '✈️'}</span>
                 <div>
                   <span className="text-sm font-medium">{app.name}</span>
                   <span className="ml-2 text-xs text-muted capitalize">{app.type}</span>
