@@ -12,7 +12,6 @@ export interface AgentDeployment {
   // Process-based deployment
   configDir?: string;
   agentServerPid?: number;
-  gatewayPid?: number;
   chatPort?: number;
   chatToken?: string;
   workspace?: string;
