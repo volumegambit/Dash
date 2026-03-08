@@ -1,8 +1,9 @@
 import type { AgentClient, AgentEvent } from '@dash/agent';
 import { MissionControlAdapter } from '@dash/channels';
-import { afterEach, describe, expect, it } from 'vitest';
+import type { ChannelAdapter, InboundMessage } from '@dash/channels';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { GatewayConfig } from './config.js';
-import { createGateway } from './gateway.js';
+import { createDynamicGateway, createGateway } from './gateway.js';
 
 function connectWs(port: number): Promise<WebSocket> {
   return new Promise((resolve, reject) => {
@@ -219,5 +220,176 @@ describe('MC adapter agent routing (direct)', () => {
     expect(last).toEqual({ type: 'done', conversationId: 'conv-3' });
 
     ws.close();
+  });
+});
+
+// ── createDynamicGateway tests ──
+
+function makeFakeAgent(): AgentClient {
+  return {
+    chat: vi.fn().mockImplementation(async function* () {
+      yield { type: 'response', content: 'hello' };
+    }),
+  } as unknown as AgentClient;
+}
+
+function makeFakeAdapter(name: string): ChannelAdapter & {
+  trigger: (msg: InboundMessage) => Promise<void>;
+} {
+  let handler: ((msg: InboundMessage) => Promise<void>) | undefined;
+  return {
+    name,
+    start: vi.fn().mockResolvedValue(undefined),
+    stop: vi.fn().mockResolvedValue(undefined),
+    send: vi.fn().mockResolvedValue(undefined),
+    onMessage: (h) => {
+      handler = h;
+    },
+    trigger: async (msg) => {
+      await handler?.(msg);
+    },
+  };
+}
+
+describe('createDynamicGateway', () => {
+  it('starts with no agents or channels', () => {
+    const gw = createDynamicGateway();
+    expect(gw.agentCount()).toBe(0);
+    expect(gw.channelCount()).toBe(0);
+  });
+
+  it('registers an agent', () => {
+    const gw = createDynamicGateway();
+    gw.registerAgent('dep1', 'default', makeFakeAgent());
+    expect(gw.agentCount()).toBe(1);
+  });
+
+  it('deregisters all agents for a deployment', async () => {
+    const gw = createDynamicGateway();
+    gw.registerAgent('dep1', 'default', makeFakeAgent());
+    gw.registerAgent('dep1', 'specialist', makeFakeAgent());
+    await gw.deregisterDeployment('dep1');
+    expect(gw.agentCount()).toBe(0);
+  });
+
+  it('registers a channel and starts its adapter', async () => {
+    const gw = createDynamicGateway();
+    gw.registerAgent('dep1', 'default', makeFakeAgent());
+
+    const adapter = makeFakeAdapter('telegram');
+    await gw.registerChannel('dep1', 'tg1', adapter, {
+      globalDenyList: [],
+      routing: [
+        { condition: { type: 'default' }, agentName: 'default', allowList: [], denyList: [] },
+      ],
+    });
+
+    expect(adapter.start).toHaveBeenCalled();
+    expect(gw.channelCount()).toBe(1);
+  });
+
+  it('routes messages from a registered channel to the correct agent', async () => {
+    const gw = createDynamicGateway();
+    const agent = makeFakeAgent();
+    gw.registerAgent('dep1', 'default', agent);
+
+    const adapter = makeFakeAdapter('telegram');
+    await gw.registerChannel('dep1', 'tg1', adapter, {
+      globalDenyList: [],
+      routing: [
+        { condition: { type: 'default' }, agentName: 'default', allowList: [], denyList: [] },
+      ],
+    });
+
+    await adapter.trigger({
+      channelId: 'tg1',
+      conversationId: 'conv1',
+      senderId: 'user1',
+      senderName: 'User',
+      text: 'hi',
+      timestamp: new Date(),
+    });
+
+    expect(agent.chat).toHaveBeenCalledWith('tg1', 'conv1', 'hi');
+  });
+
+  it('deregistering deployment stops adapter when no rules remain', async () => {
+    const gw = createDynamicGateway();
+    gw.registerAgent('dep1', 'default', makeFakeAgent());
+
+    const adapter = makeFakeAdapter('telegram');
+    await gw.registerChannel('dep1', 'tg1', adapter, {
+      globalDenyList: [],
+      routing: [
+        { condition: { type: 'default' }, agentName: 'default', allowList: [], denyList: [] },
+      ],
+    });
+
+    await gw.deregisterDeployment('dep1');
+
+    expect(adapter.stop).toHaveBeenCalled();
+    expect(gw.channelCount()).toBe(0);
+  });
+
+  it('deregistering one deployment leaves channels used by another', async () => {
+    const gw = createDynamicGateway();
+
+    gw.registerAgent('dep1', 'default', makeFakeAgent());
+    gw.registerAgent('dep2', 'default', makeFakeAgent());
+
+    const adapter = makeFakeAdapter('telegram');
+    await gw.registerChannel('dep1', 'tg1', adapter, {
+      globalDenyList: [],
+      routing: [
+        {
+          condition: { type: 'sender', ids: ['user1'] },
+          agentName: 'default',
+          allowList: [],
+          denyList: [],
+        },
+      ],
+    });
+    await gw.registerChannel('dep2', 'tg1', adapter, {
+      globalDenyList: [],
+      routing: [
+        {
+          condition: { type: 'sender', ids: ['user2'] },
+          agentName: 'default',
+          allowList: [],
+          denyList: [],
+        },
+      ],
+    });
+
+    await gw.deregisterDeployment('dep1');
+
+    // Adapter still running — dep2 still has rules
+    expect(adapter.stop).not.toHaveBeenCalled();
+    expect(gw.channelCount()).toBe(1);
+  });
+
+  it('respects globalDenyList', async () => {
+    const gw = createDynamicGateway();
+    const agent = makeFakeAgent();
+    gw.registerAgent('dep1', 'default', agent);
+
+    const adapter = makeFakeAdapter('telegram');
+    await gw.registerChannel('dep1', 'tg1', adapter, {
+      globalDenyList: ['blocked-user'],
+      routing: [
+        { condition: { type: 'default' }, agentName: 'default', allowList: [], denyList: [] },
+      ],
+    });
+
+    await adapter.trigger({
+      channelId: 'tg1',
+      conversationId: 'conv1',
+      senderId: 'blocked-user',
+      senderName: 'Blocked',
+      text: 'hi',
+      timestamp: new Date(),
+    });
+
+    expect(agent.chat).not.toHaveBeenCalled();
   });
 });
