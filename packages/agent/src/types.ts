@@ -94,6 +94,7 @@ export type AgentEvent =
 
 export interface DashAgentConfig {
   model: string; // "provider/model-id", e.g. "anthropic/claude-opus-4-5"
+  fallbackModels?: string[]; // ordered list of fallback "provider/model-id" strings
   systemPrompt: string;
   tools?: string[]; // OpenCode tool names
   workspace?: string;
@@ -108,6 +109,7 @@ export interface AgentState {
   message: string;
   systemPrompt: string;
   model: string;
+  fallbackModels?: string[];
   tools?: string[];
   workspace?: string;
 }

@@ -33,6 +33,7 @@ export interface DeployConfig {
 export interface AgentDeployAgentConfig {
   name: string;
   model: string;
+  fallbackModels?: string[];
   systemPrompt: string;
   tools?: string[];
   maxTokens?: number;

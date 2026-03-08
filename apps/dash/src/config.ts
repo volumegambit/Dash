@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 
 export interface AgentConfig {
   model: string; // "provider/model-id", e.g. "anthropic/claude-sonnet-4-5"
+  fallbackModels?: string[]; // ordered list of fallback "provider/model-id" strings
   systemPrompt: string;
   tools?: string[];
   workspace?: string;
