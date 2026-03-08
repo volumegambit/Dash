@@ -563,6 +563,31 @@ export class ProcessRuntime implements DeploymentRuntime {
     return await resolveRuntimeStatus(snapshot, deployment, undefined, healthCheck);
   }
 
+  async updateAgentConfig(
+    id: string,
+    patch: { model?: string; fallbackModels?: string[] },
+  ): Promise<void> {
+    const deployment = await this.registry.get(id);
+    if (!deployment) throw new Error(`Deployment "${id}" not found`);
+
+    const configDir = deployment.configDir;
+    if (!configDir) throw new Error(`Deployment "${id}" has no config directory`);
+
+    const agentsDir = join(configDir, 'agents');
+    const files = await readdir(agentsDir);
+    const jsonFile = files.find((f) => f.endsWith('.json'));
+    if (!jsonFile) throw new Error(`No agent config file found in ${agentsDir}`);
+
+    const filePath = join(agentsDir, jsonFile);
+    const raw = await readFile(filePath, 'utf-8');
+    const config = JSON.parse(raw) as Record<string, unknown>;
+
+    if (patch.model !== undefined) config.model = patch.model;
+    if (patch.fallbackModels !== undefined) config.fallbackModels = patch.fallbackModels;
+
+    await writeFile(filePath, JSON.stringify(config, null, 2));
+  }
+
   async *getLogs(id: string, signal?: AbortSignal): AsyncIterable<string> {
     const deployment = await this.registry.get(id);
     if (!deployment) {
