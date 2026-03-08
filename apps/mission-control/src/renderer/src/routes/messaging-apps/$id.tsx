@@ -131,8 +131,8 @@ function MessagingAppDetail(): JSX.Element {
           <div>
             <h2 className="mb-2 text-sm font-medium text-muted">Global Block List</h2>
             <p className="mb-3 text-xs text-muted">
-              These senders are always blocked, regardless of routing rules. Add their Telegram user ID
-              (a number like <code>123456789</code>).
+              These senders are always blocked, regardless of routing rules. Add their Telegram user
+              ID (a number like <code>123456789</code>).
             </p>
             {app.globalDenyList.length > 0 && (
               <div className="mb-3 flex flex-wrap gap-2">
@@ -303,7 +303,10 @@ function AddRulePanel({
   const [label, setLabel] = useState('');
 
   function buildCondition(): RoutingCondition {
-    const ids = conditionIds.split(',').map((s) => s.trim()).filter(Boolean);
+    const ids = conditionIds
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
     if (conditionType === 'sender') return { type: 'sender', ids };
     if (conditionType === 'group') return { type: 'group', ids };
     return { type: 'default' };
@@ -315,8 +318,14 @@ function AddRulePanel({
       label: label.trim() || undefined,
       condition: buildCondition(),
       targetAgentName: agentName,
-      allowList: allowList.split(',').map((s) => s.trim()).filter(Boolean),
-      denyList: denyList.split(',').map((s) => s.trim()).filter(Boolean),
+      allowList: allowList
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean),
+      denyList: denyList
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean),
     };
     await onAdd(rule);
   }
@@ -341,7 +350,8 @@ function AddRulePanel({
         {conditionType !== 'default' && (
           <div>
             <label className="block text-xs text-muted">
-              {conditionType === 'sender' ? 'Telegram user IDs' : 'Group chat IDs'} (comma-separated)
+              {conditionType === 'sender' ? 'Telegram user IDs' : 'Group chat IDs'}{' '}
+              (comma-separated)
             </label>
             <input
               type="text"
@@ -361,7 +371,9 @@ function AddRulePanel({
             className="mt-1 w-full rounded border border-border bg-background px-2 py-1.5 text-sm"
           >
             {availableAgents.map((a) => (
-              <option key={a.agentName} value={a.agentName}>{a.label}</option>
+              <option key={a.agentName} value={a.agentName}>
+                {a.label}
+              </option>
             ))}
           </select>
         </div>
@@ -372,7 +384,9 @@ function AddRulePanel({
           </summary>
           <div className="mt-2 space-y-2">
             <div>
-              <label className="block text-xs text-muted">Only allow these senders (IDs, comma-separated — leave empty to allow all)</label>
+              <label className="block text-xs text-muted">
+                Only allow these senders (IDs, comma-separated — leave empty to allow all)
+              </label>
               <input
                 type="text"
                 value={allowList}
@@ -382,7 +396,9 @@ function AddRulePanel({
               />
             </div>
             <div>
-              <label className="block text-xs text-muted">Always block these senders from this agent (IDs, comma-separated)</label>
+              <label className="block text-xs text-muted">
+                Always block these senders from this agent (IDs, comma-separated)
+              </label>
               <input
                 type="text"
                 value={denyList}
@@ -407,7 +423,11 @@ function AddRulePanel({
       </div>
 
       <div className="mt-4 flex justify-end gap-2">
-        <button type="button" onClick={onCancel} className="px-3 py-1.5 text-sm text-muted hover:text-foreground">
+        <button
+          type="button"
+          onClick={onCancel}
+          className="px-3 py-1.5 text-sm text-muted hover:text-foreground"
+        >
           Cancel
         </button>
         <button

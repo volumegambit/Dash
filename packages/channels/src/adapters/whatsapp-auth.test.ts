@@ -6,8 +6,12 @@ function makeStore(initial: Record<string, string> = {}): SecretStore {
   const data = { ...initial };
   return {
     get: vi.fn(async (key: string) => data[key] ?? null),
-    set: vi.fn(async (key: string, value: string) => { data[key] = value; }),
-    delete: vi.fn(async (key: string) => { delete data[key]; }),
+    set: vi.fn(async (key: string, value: string) => {
+      data[key] = value;
+    }),
+    delete: vi.fn(async (key: string) => {
+      delete data[key];
+    }),
     list: vi.fn(async () => Object.keys(data)),
   };
 }
@@ -32,7 +36,10 @@ describe('makeBaileysAuthState', () => {
     const { state, saveCreds } = await makeBaileysAuthState(store, 'wa:');
     (state.creds as Record<string, unknown>).me = { id: '1234@s.whatsapp.net', name: 'Test' };
     await saveCreds();
-    expect(store.set).toHaveBeenCalledWith('wa:creds', expect.stringContaining('1234@s.whatsapp.net'));
+    expect(store.set).toHaveBeenCalledWith(
+      'wa:creds',
+      expect.stringContaining('1234@s.whatsapp.net'),
+    );
   });
 
   it('keys.set stores each key value under namespaced key', async () => {
@@ -44,8 +51,14 @@ describe('makeBaileysAuthState', () => {
         '2': { public: new Uint8Array([3]), private: new Uint8Array([4]) },
       },
     });
-    expect(store.set).toHaveBeenCalledWith('wa:key:pre-key-1', JSON.stringify({ public: new Uint8Array([1]), private: new Uint8Array([2]) }));
-    expect(store.set).toHaveBeenCalledWith('wa:key:pre-key-2', JSON.stringify({ public: new Uint8Array([3]), private: new Uint8Array([4]) }));
+    expect(store.set).toHaveBeenCalledWith(
+      'wa:key:pre-key-1',
+      JSON.stringify({ public: new Uint8Array([1]), private: new Uint8Array([2]) }),
+    );
+    expect(store.set).toHaveBeenCalledWith(
+      'wa:key:pre-key-2',
+      JSON.stringify({ public: new Uint8Array([3]), private: new Uint8Array([4]) }),
+    );
   });
 
   it('keys.set deletes null values from store', async () => {

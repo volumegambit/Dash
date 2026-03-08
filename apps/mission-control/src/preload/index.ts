@@ -98,7 +98,8 @@ const api: MissionControlAPI = {
     ipcRenderer.invoke('messagingApps:verifyTelegramToken', token),
   whatsappStartPairing: (appId: string) => ipcRenderer.invoke('whatsapp:startPairing', appId),
   whatsappOnQr: (callback: (appId: string, qrDataUrl: string) => void) => {
-    const listener = (_event: Electron.IpcRendererEvent, appId: string, qrDataUrl: string) => callback(appId, qrDataUrl);
+    const listener = (_event: Electron.IpcRendererEvent, appId: string, qrDataUrl: string) =>
+      callback(appId, qrDataUrl);
     ipcRenderer.on('whatsapp:qr', listener);
     return () => ipcRenderer.removeListener('whatsapp:qr', listener);
   },
@@ -108,7 +109,8 @@ const api: MissionControlAPI = {
     return () => ipcRenderer.removeListener('whatsapp:linked', listener);
   },
   whatsappOnError: (callback: (appId: string, message: string) => void) => {
-    const listener = (_event: Electron.IpcRendererEvent, appId: string, message: string) => callback(appId, message);
+    const listener = (_event: Electron.IpcRendererEvent, appId: string, message: string) =>
+      callback(appId, message);
     ipcRenderer.on('whatsapp:error', listener);
     return () => ipcRenderer.removeListener('whatsapp:error', listener);
   },

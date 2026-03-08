@@ -1,7 +1,7 @@
 import { createFileRoute } from '@tanstack/react-router';
 import { useEffect, useState } from 'react';
-import { ModelChainEditor } from '../components/ModelChainEditor.js';
 import type { AppSettings } from '../../../shared/ipc.js';
+import { ModelChainEditor } from '../components/ModelChainEditor.js';
 import { useAvailableModels } from '../hooks/useAvailableModels.js';
 
 function Settings(): JSX.Element {
@@ -12,7 +12,10 @@ function Settings(): JSX.Element {
 
   useEffect(() => {
     window.api.getVersion().then(setVersion);
-    window.api.settingsGet().then(setSettings).catch(() => {});
+    window.api
+      .settingsGet()
+      .then(setSettings)
+      .catch(() => {});
   }, []);
 
   const handleChainChange = async (model: string, fallbackModels: string[]): Promise<void> => {

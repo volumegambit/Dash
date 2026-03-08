@@ -51,13 +51,13 @@ export const defaultProcessSpawner: ProcessSpawner = {
 
 export type HealthChecker = (port: number) => Promise<boolean>;
 
-export type StartupResult =
-  | { success: true }
-  | { success: false; logs: string[]; reason: string };
+export type StartupResult = { success: true } | { success: false; logs: string[]; reason: string };
 
 export const defaultHealthChecker: HealthChecker = async (port: number): Promise<boolean> => {
   try {
-    const resp = await fetch(`http://localhost:${port}/health`, { signal: AbortSignal.timeout(1000) });
+    const resp = await fetch(`http://localhost:${port}/health`, {
+      signal: AbortSignal.timeout(1000),
+    });
     return resp.ok;
   } catch {
     return false;
@@ -473,7 +473,13 @@ export class ProcessRuntime implements DeploymentRuntime {
     }
 
     // Build gateway config
-    const gatewayConfig = buildGatewayConfig(agentNames, chatPort, mcAdapterPort, gatewayJson, resolvedApps);
+    const gatewayConfig = buildGatewayConfig(
+      agentNames,
+      chatPort,
+      mcAdapterPort,
+      gatewayJson,
+      resolvedApps,
+    );
 
     // Write temp gateway config
     const gatewayConfigPath = join(tmpdir(), `gw-config-${id}.json`);
