@@ -35,7 +35,7 @@ function MessagingApps(): JSX.Element {
           <MessageSquare size={24} className="mx-auto mb-2 text-muted" />
           <p className="text-sm font-medium">No messaging apps connected yet</p>
           <p className="mt-1 text-sm text-muted">
-            Connect Telegram so people can message your AI assistant directly.
+            Connect Telegram so you or others can send messages to your agents.
           </p>
           <Link
             to="/messaging-apps/new-telegram"
