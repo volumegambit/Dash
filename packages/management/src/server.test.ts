@@ -132,7 +132,8 @@ describe('Management Server', () => {
             if (skillName === 'brainstorming') return { ...baseSkill, content: storedContent };
             return null;
           },
-          updateContent: async (_agentName, _skillName, content) => {
+          updateContent: async (_agentName, skillName, content) => {
+            if (skillName !== 'brainstorming') throw new Error(`Skill "${skillName}" not found`);
             storedContent = content;
           },
           create: async (_agentName, name, description, content) => ({
@@ -234,9 +235,58 @@ describe('Management Server', () => {
       expect(storedConfig.paths).toContain('/new/path');
     });
 
+    it('returns 404 for PUT on missing skill', async () => {
+      const res = await fetch(skillsUrl('/agents/default/skills/ghost'), {
+        method: 'PUT',
+        headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content: 'new content' }),
+      });
+      expect(res.status).toBe(404);
+    });
+
+    it('returns 400 for malformed body on POST', async () => {
+      const res = await fetch(skillsUrl('/agents/default/skills'), {
+        method: 'POST',
+        headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+        body: 'not json',
+      });
+      expect(res.status).toBe(400);
+      const body = (await res.json()) as { error: string };
+      expect(body.error).toBe('Invalid request body');
+    });
+
+    it('returns 400 for malformed body on PUT', async () => {
+      const res = await fetch(skillsUrl('/agents/default/skills/brainstorming'), {
+        method: 'PUT',
+        headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+        body: 'not json',
+      });
+      expect(res.status).toBe(400);
+      const body = (await res.json()) as { error: string };
+      expect(body.error).toBe('Invalid request body');
+    });
+
     it('skills routes return 501 when skills not configured', async () => {
       const res = await fetch(`http://localhost:${port}/agents/default/skills`, {
         headers: authHeaders(),
+      });
+      expect(res.status).toBe(501);
+    });
+
+    it('POST skills route returns 501 when skills not configured', async () => {
+      const res = await fetch(`http://localhost:${port}/agents/default/skills`, {
+        method: 'POST',
+        headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'test', description: 'test', content: 'test' }),
+      });
+      expect(res.status).toBe(501);
+    });
+
+    it('PUT skills route returns 501 when skills not configured', async () => {
+      const res = await fetch(`http://localhost:${port}/agents/default/skills/test`, {
+        method: 'PUT',
+        headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content: 'test' }),
       });
       expect(res.status).toBe(501);
     });

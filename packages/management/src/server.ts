@@ -185,12 +185,21 @@ export function createManagementApp(options: ManagementServerOptions): Hono {
 
     app.patch('/agents/:agentName/skills/config', async (c) => {
       const { agentName } = c.req.param();
-      const body = await c.req.json<Partial<SkillsConfig>>();
-      const current = h.getConfig(agentName);
-      await h.updateConfig(agentName, {
-        paths: body.paths ?? current.paths,
-        urls: body.urls ?? current.urls,
-      });
+      let body: Partial<SkillsConfig>;
+      try {
+        body = await c.req.json<Partial<SkillsConfig>>();
+      } catch {
+        return c.json({ error: 'Invalid request body' } satisfies ErrorResponse, 400);
+      }
+      try {
+        const current = h.getConfig(agentName);
+        await h.updateConfig(agentName, {
+          paths: body.paths ?? current.paths,
+          urls: body.urls ?? current.urls,
+        });
+      } catch {
+        return c.json({ error: 'Internal server error' } satisfies ErrorResponse, 500);
+      }
       return c.json({ requiresRestart: true });
     });
 
@@ -201,9 +210,22 @@ export function createManagementApp(options: ManagementServerOptions): Hono {
 
     app.post('/agents/:agentName/skills', async (c) => {
       const { agentName } = c.req.param();
-      const body = await c.req.json<{ name: string; description: string; content: string }>();
-      const skill = await h.create(agentName, body.name, body.description, body.content);
-      return c.json(skill, 201);
+      let body: { name: string; description: string; content: string };
+      try {
+        body = await c.req.json<{ name: string; description: string; content: string }>();
+      } catch {
+        return c.json({ error: 'Invalid request body' } satisfies ErrorResponse, 400);
+      }
+      try {
+        const skill = await h.create(agentName, body.name, body.description, body.content);
+        return c.json(skill, 201);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : '';
+        if (message.toLowerCase().includes('no writable path')) {
+          return c.json({ error: message } satisfies ErrorResponse, 400);
+        }
+        return c.json({ error: message || 'Internal server error' } satisfies ErrorResponse, 500);
+      }
     });
 
     app.get('/agents/:agentName/skills/:skillName', async (c) => {
@@ -215,9 +237,25 @@ export function createManagementApp(options: ManagementServerOptions): Hono {
 
     app.put('/agents/:agentName/skills/:skillName', async (c) => {
       const { agentName, skillName } = c.req.param();
-      const body = await c.req.json<{ content: string }>();
-      await h.updateContent(agentName, skillName, body.content);
-      return c.json({ success: true });
+      let body: { content: string };
+      try {
+        body = await c.req.json<{ content: string }>();
+      } catch {
+        return c.json({ error: 'Invalid request body' } satisfies ErrorResponse, 400);
+      }
+      try {
+        await h.updateContent(agentName, skillName, body.content);
+        return c.json({ success: true });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : '';
+        if (message.toLowerCase().includes('not found')) {
+          return c.json({ error: message } satisfies ErrorResponse, 404);
+        }
+        if (message.toLowerCase().includes('not editable')) {
+          return c.json({ error: message } satisfies ErrorResponse, 403);
+        }
+        return c.json({ error: message || 'Internal server error' } satisfies ErrorResponse, 500);
+      }
     });
   } else {
     app.all('/agents/:agentName/skills/*', (c) =>
