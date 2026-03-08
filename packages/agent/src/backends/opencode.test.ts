@@ -182,6 +182,21 @@ describe('OpenCodeBackend.normalizeEvent', () => {
     const result = backend.normalizeEvent(makeEvent('tui.prompt.append', { text: 'x' }), 'sess-1');
     expect(result).toBeNull();
   });
+
+  it('calls logger.error when a session.error event fires', async () => {
+    const mockLogger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+    const backend = new OpenCodeBackend(
+      { model: 'anthropic/claude-haiku-4-5', systemPrompt: '', tools: [] },
+      {},
+      mockLogger,
+    );
+    backend.normalizeEvent(
+      makeEvent('session.error', { sessionID: 'sess-1', error: { message: 'API key invalid' } }),
+      'sess-1',
+    );
+    expect(mockLogger.error).toHaveBeenCalledWith('[OpenCode] API key invalid');
+    await backend.stop();
+  });
 });
 
 describe('extractSkillName', () => {
