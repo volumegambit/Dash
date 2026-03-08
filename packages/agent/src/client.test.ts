@@ -7,7 +7,11 @@ describe('LocalAgentClient', () => {
   it('delegates chat() to the underlying agent', async () => {
     const expectedEvents: AgentEvent[] = [
       { type: 'text_delta', text: 'Hello' },
-      { type: 'response', content: 'Hello', usage: { inputTokens: 10, outputTokens: 5 } },
+      {
+        type: 'response',
+        content: 'Hello',
+        usage: { inputTokens: 10, outputTokens: 5, cacheReadTokens: 0, cacheWriteTokens: 0 },
+      },
     ];
 
     // Create a fake DashAgent with an async generator chat method

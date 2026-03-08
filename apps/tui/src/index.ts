@@ -3,8 +3,7 @@ import { mkdir, readFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
-import { DashAgent, JsonlSessionStore, NativeBackend, resolveTools } from '@dash/agent';
-import { AnthropicProvider } from '@dash/llm';
+import { DashAgent, OpenCodeBackend } from '@dash/agent';
 import { config } from 'dotenv';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -107,20 +106,16 @@ interface AgentJsonConfig {
   model: string;
   systemPrompt: string;
   tools?: string[];
-  maxTokens?: number;
   workspace?: string;
-  thinking?: { budgetTokens: number };
 }
 
 interface DashJsonConfig {
   agents: Record<string, AgentJsonConfig>;
   channels: Record<string, { agent: string }>;
-  sessions: { dir: string };
 }
 
 interface CredentialsConfig {
-  anthropic?: { apiKey?: string };
-  telegram?: { botToken?: string };
+  providerApiKeys?: Record<string, string>;
 }
 
 async function loadDashConfig(): Promise<DashJsonConfig> {
@@ -159,7 +154,6 @@ function printHeader(
   model: string,
   tools: string[],
   workspace: string | undefined,
-  thinking?: { budgetTokens: number },
 ) {
   const width = 42;
   const pad = (s: string, w: number) => s + ' '.repeat(Math.max(0, w - s.length));
@@ -190,18 +184,15 @@ function printHeader(
   console.log(
     `  ${c.cyan}│${c.reset} ${c.dim}path${c.reset}   ${pad(wsDisplay, width - 9)}${c.cyan}│${c.reset}`,
   );
-  if (thinking) {
-    console.log(
-      `  ${c.cyan}│${c.reset} ${c.dim}think${c.reset}  ${pad(`${thinking.budgetTokens} token budget`, width - 9)}${c.cyan}│${c.reset}`,
-    );
-  }
   console.log(`  ${c.cyan}╰${hr}╯${c.reset}`);
   console.log(`  ${c.dim}Type a message. Ctrl+C to exit.${c.reset}`);
   console.log();
 }
 
 function shortModel(model: string): string {
-  return model.replace('claude-', '').replace(/-\d{8}$/, '');
+  // model is "provider/model-id", show just the model-id portion
+  const modelId = model.includes('/') ? model.split('/')[1] : model;
+  return modelId.replace('claude-', '').replace(/-\d{8}$/, '');
 }
 
 function printPrompt() {
@@ -257,10 +248,22 @@ function printUsage(usage: { inputTokens: number; outputTokens: number }) {
 async function main() {
   const [dashConfig, credentials] = await Promise.all([loadDashConfig(), loadCredentials()]);
 
-  const apiKey = process.env.ANTHROPIC_API_KEY ?? credentials.anthropic?.apiKey;
-  if (!apiKey) {
+  // Resolve provider API keys from env > credentials file
+  const credEnvMap: Record<string, string[]> = {
+    anthropic: ['ANTHROPIC_API_KEY'],
+    openai: ['OPENAI_API_KEY'],
+    google: ['GOOGLE_API_KEY', 'GEMINI_API_KEY'],
+  };
+  const providerApiKeys: Record<string, string> = {};
+  for (const [provider, envVars] of Object.entries(credEnvMap)) {
+    const val =
+      envVars.map((v) => process.env[v]).find(Boolean) ?? credentials.providerApiKeys?.[provider];
+    if (val) providerApiKeys[provider] = val;
+  }
+
+  if (Object.keys(providerApiKeys).length === 0) {
     console.error(
-      `\n  ${c.red}${c.bold}Error:${c.reset} ANTHROPIC_API_KEY is required. Set it in config/credentials.json or environment.\n`,
+      `\n  ${c.red}${c.bold}Error:${c.reset} No provider API keys found. Set ANTHROPIC_API_KEY (or another provider key) in config/credentials.json or environment.\n`,
     );
     process.exit(1);
   }
@@ -275,35 +278,31 @@ async function main() {
     process.exit(1);
   }
 
-  const provider = new AnthropicProvider(apiKey);
-  const backend = new NativeBackend(provider);
-
   let workspace: string | undefined;
   if (agentConfig.workspace) {
     workspace = resolve(projectRoot, agentConfig.workspace);
     await mkdir(workspace, { recursive: true });
   }
 
-  const tools = agentConfig.tools ? resolveTools(agentConfig.tools, workspace) : undefined;
+  const backend = new OpenCodeBackend(
+    {
+      model: agentConfig.model,
+      systemPrompt: agentConfig.systemPrompt,
+      tools: agentConfig.tools,
+      workspace,
+    },
+    providerApiKeys,
+  );
+  await backend.start(workspace ?? projectRoot);
 
-  const sessionDir = resolve(projectRoot, dashConfig.sessions?.dir ?? './data/sessions');
-  const sessionStore = new JsonlSessionStore(sessionDir);
-
-  const agent = new DashAgent(backend, sessionStore, {
+  const agent = new DashAgent(backend, {
     model: agentConfig.model,
     systemPrompt: agentConfig.systemPrompt,
-    tools,
-    maxTokens: agentConfig.maxTokens,
-    thinking: agentConfig.thinking,
+    tools: agentConfig.tools,
+    workspace,
   });
 
-  printHeader(
-    agentName,
-    agentConfig.model,
-    agentConfig.tools ?? [],
-    workspace,
-    agentConfig.thinking,
-  );
+  printHeader(agentName, agentConfig.model, agentConfig.tools ?? [], workspace);
 
   const rl = createInterface({
     input: process.stdin,
@@ -405,8 +404,9 @@ async function main() {
     printPrompt();
   });
 
-  rl.on('close', () => {
+  rl.on('close', async () => {
     console.log(`\n  ${c.dim}Bye! 👋${c.reset}\n`);
+    await backend.stop();
     process.exit(0);
   });
 }

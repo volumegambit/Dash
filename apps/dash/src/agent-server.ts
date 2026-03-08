@@ -1,17 +1,9 @@
 import { mkdir } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import {
-  DashAgent,
-  FileLogger,
-  JsonlSessionStore,
-  LocalAgentClient,
-  NativeBackend,
-  resolveTools,
-} from '@dash/agent';
+import { DashAgent, FileLogger, LocalAgentClient, OpenCodeBackend } from '@dash/agent';
 import type { AgentClient } from '@dash/agent';
 import { startChatServer } from '@dash/chat';
-import { AnthropicProvider, GoogleProvider, OpenAIProvider, ProviderRegistry } from '@dash/llm';
 import { startManagementServer } from '@dash/management';
 import type { InfoResponse } from '@dash/management';
 import type { DashConfig } from './config.js';
@@ -20,17 +12,6 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const projectRoot = resolve(__dirname, '../../..');
 
 export async function createAgentServer(config: DashConfig) {
-  // LLM
-  const registry = new ProviderRegistry();
-  registry.register(new AnthropicProvider(config.anthropicApiKey));
-  if (config.googleApiKey) {
-    registry.register(new GoogleProvider(config.googleApiKey));
-  }
-  if (config.openaiApiKey) {
-    registry.register(new OpenAIProvider(config.openaiApiKey));
-  }
-
-  // Initialize file logger if logDir is configured
   let logger: FileLogger | undefined;
   if (config.logDir) {
     logger = await FileLogger.create(config.logDir, 'agent.log');
@@ -41,44 +22,47 @@ export async function createAgentServer(config: DashConfig) {
     logger?.info(message);
   };
 
-  // Create agents from config
   const clients = new Map<string, AgentClient>();
-  const sessionStore = new JsonlSessionStore(config.sessionDir);
+  const backends: OpenCodeBackend[] = [];
 
   for (const [name, agentConfig] of Object.entries(config.agents)) {
-    const provider = registry.resolveProvider(agentConfig.model);
-    const backend = new NativeBackend(provider);
-
-    // Resolve workspace path and ensure directory exists
     let workspace: string | undefined;
     if (agentConfig.workspace) {
       workspace = resolve(projectRoot, agentConfig.workspace);
       await mkdir(workspace, { recursive: true });
     }
 
-    const tools = agentConfig.tools ? resolveTools(agentConfig.tools, workspace) : undefined;
+    const backend = new OpenCodeBackend(
+      {
+        model: agentConfig.model,
+        systemPrompt: agentConfig.systemPrompt,
+        tools: agentConfig.tools,
+        workspace,
+      },
+      config.providerApiKeys,
+    );
 
-    const agent = new DashAgent(backend, sessionStore, {
+    await backend.start(workspace ?? projectRoot);
+    backends.push(backend);
+
+    const agent = new DashAgent(backend, {
       model: agentConfig.model,
       systemPrompt: agentConfig.systemPrompt,
-      tools,
-      maxTokens: agentConfig.maxTokens,
-      thinking: agentConfig.thinking,
+      tools: agentConfig.tools,
+      workspace,
     });
 
     clients.set(name, new LocalAgentClient(agent));
     log(
-      `Agent "${name}" created (model: ${agentConfig.model}, tools: ${agentConfig.tools?.join(', ') ?? 'none'}, workspace: ${workspace ?? 'unrestricted'})`,
+      `Agent "${name}" started (model: ${agentConfig.model}, tools: ${agentConfig.tools?.join(', ') ?? 'all'}, workspace: ${workspace ?? 'unrestricted'})`,
     );
   }
 
-  // Server close handles
   let managementClose: (() => Promise<void>) | undefined;
   let chatClose: (() => Promise<void>) | undefined;
 
   return {
     async start() {
-      // Management server
       if (config.managementToken) {
         const getInfo = (): InfoResponse => ({
           agents: Object.entries(config.agents).map(([name, ac]) => ({
@@ -95,6 +79,7 @@ export async function createAgentServer(config: DashConfig) {
           onShutdown: async () => {
             if (chatClose) await chatClose();
             if (managementClose) await managementClose();
+            for (const backend of backends) await backend.stop();
             log('Dash agent server stopped via management API');
             if (logger) await logger.close();
             process.exit(0);
@@ -105,7 +90,6 @@ export async function createAgentServer(config: DashConfig) {
         log(`Management API listening on port ${config.managementPort}`);
       }
 
-      // Chat server
       if (config.chatToken) {
         const { close } = startChatServer({
           port: config.chatPort,
@@ -121,6 +105,7 @@ export async function createAgentServer(config: DashConfig) {
     async stop() {
       if (chatClose) await chatClose();
       if (managementClose) await managementClose();
+      for (const backend of backends) await backend.stop();
       log('Dash agent server stopped');
       if (logger) await logger.close();
     },

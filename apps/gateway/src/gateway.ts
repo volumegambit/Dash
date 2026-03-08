@@ -38,8 +38,12 @@ export function createGateway(config: GatewayConfig) {
       console.log(`Channel "${name}" (mission-control) on port ${port}`);
     } else {
       const adapter = createNonMcAdapter(name, channelConfig);
-      router.addAdapter(adapter, channelConfig.agent!);
-      console.log(`Channel "${name}" (${channelConfig.adapter}) → agent "${channelConfig.agent}"`);
+      const agentName = channelConfig.agent;
+      if (!agentName) {
+        throw new Error(`Channel "${name}" requires an "agent" field.`);
+      }
+      router.addAdapter(adapter, agentName);
+      console.log(`Channel "${name}" (${channelConfig.adapter}) → agent "${agentName}"`);
     }
   }
 
