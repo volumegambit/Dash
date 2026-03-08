@@ -1,3 +1,4 @@
+import { createServer } from 'node:net';
 import { createOpencodeClient, createOpencodeServer } from '@opencode-ai/sdk/v2';
 import { buildToolsMap, parseModel } from '../config-generator.js';
 import { SessionIdMap } from '../session-id-map.js';
@@ -8,6 +9,17 @@ import type {
   DashAgentConfig,
   RunOptions,
 } from '../types.js';
+
+function findFreePort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const server = createServer();
+    server.listen(0, '127.0.0.1', () => {
+      const addr = server.address() as { port: number };
+      server.close(() => resolve(addr.port));
+    });
+    server.on('error', reject);
+  });
+}
 
 type OcClient = ReturnType<typeof createOpencodeClient>;
 
@@ -34,7 +46,9 @@ export class OpenCodeBackend implements AgentBackend {
   ) {}
 
   async start(workspace: string): Promise<void> {
+    const port = await findFreePort();
     const server = await createOpencodeServer({
+      port,
       config: {
         model: this.config.model,
         ...(this.config.skills && { skills: this.config.skills }),
