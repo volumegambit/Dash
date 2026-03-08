@@ -136,6 +136,24 @@ export async function waitForStartup(
   });
 }
 
+export class DeploymentStartupError extends Error {
+  constructor(
+    public readonly deploymentId: string,
+    reason: string,
+  ) {
+    super(reason);
+    this.name = 'DeploymentStartupError';
+  }
+}
+
+export type StartupWatcher = (
+  child: SpawnedProcess,
+  managementPort: number,
+) => Promise<StartupResult>;
+
+export const defaultStartupWatcher: StartupWatcher = (child, port) =>
+  waitForStartup(child, port, 10_000);
+
 export async function findAvailablePort(): Promise<number> {
   return new Promise((resolve, reject) => {
     const server = net.createServer();
@@ -302,6 +320,7 @@ export class ProcessRuntime implements DeploymentRuntime {
     private projectRoot: string,
     private spawner: ProcessSpawner = defaultProcessSpawner,
     private messagingApps?: MessagingAppRegistry,
+    private startupWatcher: StartupWatcher = defaultStartupWatcher,
   ) {}
 
   async deploy(configDir: string): Promise<string> {
@@ -462,7 +481,28 @@ export class ProcessRuntime implements DeploymentRuntime {
 
     const gwSecretsPath = await writeSecretsFile(gwSecrets, 'gw-secrets');
 
-    // Spawn agent-server
+    // Register deployment immediately with provisioning status
+    const name = agentNames[0] ?? 'deployment';
+    await this.registry.add({
+      id,
+      name,
+      target: 'local',
+      status: 'provisioning',
+      config: {
+        target: 'local',
+        agents: agentConfigs,
+        channels: {},
+      },
+      createdAt: new Date().toISOString(),
+      configDir: absConfigDir,
+      managementPort,
+      managementToken,
+      chatPort,
+      chatToken,
+      workspace: agentConfigs[agentNames[0]]?.workspace,
+    });
+
+    // Spawn agent-server with piped stdio for startup monitoring
     const agentServerBin = join(this.projectRoot, 'apps/dash/dist/index.js');
     const agentServer = this.spawner.spawn(
       'node',
@@ -473,13 +513,39 @@ export class ProcessRuntime implements DeploymentRuntime {
           MANAGEMENT_API_PORT: String(managementPort),
           CHAT_API_PORT: String(chatPort),
         },
-        stdio: ['ignore', 'ignore', 'ignore'],
-        detached: true,
+        stdio: ['ignore', 'pipe', 'pipe'],
+        detached: false,
       },
     );
-    (agentServer as { unref?: () => void }).unref?.();
 
-    // Spawn gateway
+    // Wait for startup confirmation
+    const startupResult = await this.startupWatcher(agentServer, managementPort);
+
+    if (!startupResult.success) {
+      // Kill the process if still alive
+      if (agentServer.exitCode === null) {
+        agentServer.kill('SIGKILL');
+      }
+      // Destroy streams
+      (agentServer.stdout as { destroy?: () => void } | undefined)?.destroy?.();
+      (agentServer.stderr as { destroy?: () => void } | undefined)?.destroy?.();
+
+      // Update registry with error state
+      await this.registry.update(id, {
+        status: 'error',
+        errorMessage: startupResult.reason,
+        startupLogs: startupResult.logs,
+      });
+
+      throw new DeploymentStartupError(id, startupResult.reason);
+    }
+
+    // Success: detach process and release streams
+    (agentServer as { unref?: () => void }).unref?.();
+    (agentServer.stdout as { destroy?: () => void } | undefined)?.destroy?.();
+    (agentServer.stderr as { destroy?: () => void } | undefined)?.destroy?.();
+
+    // Spawn gateway (with ignored stdio — not monitored)
     const gatewayBin = join(this.projectRoot, 'apps/gateway/dist/index.js');
     const gateway = this.spawner.spawn(
       'node',
@@ -498,12 +564,17 @@ export class ProcessRuntime implements DeploymentRuntime {
       startTime: Date.now(),
     });
 
-    // Watch for process exit
+    // Update registry to running with PIDs
+    await this.registry.update(id, {
+      status: 'running',
+      agentServerPid: agentServer.pid,
+      gatewayPid: gateway.pid,
+    });
+
+    // Watch for process exit after successful startup
     const updateOnExit = async (_proc: string, _code: number | null) => {
       const state = this.processes.get(id);
       if (!state) return;
-
-      // Check if both processes are dead
       const agentDead = state.agentServer.exitCode !== null;
       const gatewayDead = !state.gateway || state.gateway.exitCode !== null;
       if (agentDead && gatewayDead) {
@@ -517,29 +588,6 @@ export class ProcessRuntime implements DeploymentRuntime {
 
     agentServer.on('exit', (code) => updateOnExit('agent-server', code));
     gateway.on('exit', (code) => updateOnExit('gateway', code));
-
-    // Register deployment
-    const name = agentNames[0] ?? 'deployment';
-    await this.registry.add({
-      id,
-      name,
-      target: 'local',
-      status: 'running',
-      config: {
-        target: 'local',
-        agents: agentConfigs,
-        channels: {},
-      },
-      createdAt: new Date().toISOString(),
-      configDir: absConfigDir,
-      agentServerPid: agentServer.pid,
-      gatewayPid: gateway.pid,
-      managementPort,
-      managementToken,
-      chatPort,
-      chatToken,
-      workspace: agentConfigs[agentNames[0]]?.workspace,
-    });
 
     return id;
   }

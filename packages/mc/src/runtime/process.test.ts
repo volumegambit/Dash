@@ -10,10 +10,12 @@ import type { SecretStore } from '../security/secrets.js';
 import type { MessagingApp } from '../types.js';
 import {
   type AgentSecretsFile,
+  DeploymentStartupError,
   type GatewaySecretsFile,
   ProcessRuntime,
   type ProcessSpawner,
   type SpawnedProcess,
+  type StartupWatcher,
   buildGatewayConfig,
   findAvailablePort,
   validateConfigDir,
@@ -326,7 +328,8 @@ describe('ProcessRuntime.updateAgentConfig', () => {
       lock: () => {},
     };
 
-    const runtime = new ProcessRuntime(fakeRegistry as any, fakeSecrets as any, '/');
+    const successWatcher: StartupWatcher = async () => ({ success: true });
+    const runtime = new ProcessRuntime(fakeRegistry as any, fakeSecrets as any, '/', undefined, undefined, successWatcher);
     await runtime.updateAgentConfig('test-id', {
       model: 'openai/gpt-4o',
       fallbackModels: ['anthropic/claude-haiku-4-5-20251001'],
@@ -368,7 +371,8 @@ describe('ProcessRuntime lifecycle', () => {
 
   it('deploy() registers deployment as running', async () => {
     const { spawner } = createMockSpawner();
-    const runtime = new ProcessRuntime(registry, secrets, '/fake/root', spawner);
+    const successWatcher: StartupWatcher = async () => ({ success: true });
+    const runtime = new ProcessRuntime(registry, secrets, '/fake/root', spawner, undefined, successWatcher);
 
     const id = await runtime.deploy(configDir);
 
@@ -380,7 +384,8 @@ describe('ProcessRuntime lifecycle', () => {
 
   it('deploy() records PIDs from spawned processes', async () => {
     const { spawner } = createMockSpawner();
-    const runtime = new ProcessRuntime(registry, secrets, '/fake/root', spawner);
+    const successWatcher: StartupWatcher = async () => ({ success: true });
+    const runtime = new ProcessRuntime(registry, secrets, '/fake/root', spawner, undefined, successWatcher);
 
     const id = await runtime.deploy(configDir);
 
@@ -391,7 +396,8 @@ describe('ProcessRuntime lifecycle', () => {
 
   it('exit handler updates registry to stopped when both processes exit', async () => {
     const { spawner, processes } = createMockSpawner();
-    const runtime = new ProcessRuntime(registry, secrets, '/fake/root', spawner);
+    const successWatcher: StartupWatcher = async () => ({ success: true });
+    const runtime = new ProcessRuntime(registry, secrets, '/fake/root', spawner, undefined, successWatcher);
 
     const id = await runtime.deploy(configDir);
 
@@ -410,7 +416,8 @@ describe('ProcessRuntime lifecycle', () => {
 
   it('exit handler does not update registry when only agent exits', async () => {
     const { spawner, processes } = createMockSpawner();
-    const runtime = new ProcessRuntime(registry, secrets, '/fake/root', spawner);
+    const successWatcher: StartupWatcher = async () => ({ success: true });
+    const runtime = new ProcessRuntime(registry, secrets, '/fake/root', spawner, undefined, successWatcher);
 
     const id = await runtime.deploy(configDir);
 
@@ -426,7 +433,8 @@ describe('ProcessRuntime lifecycle', () => {
 
   it('stop() kills processes and updates registry', async () => {
     const { spawner, processes } = createMockSpawner();
-    const runtime = new ProcessRuntime(registry, secrets, '/fake/root', spawner);
+    const successWatcher: StartupWatcher = async () => ({ success: true });
+    const runtime = new ProcessRuntime(registry, secrets, '/fake/root', spawner, undefined, successWatcher);
 
     const id = await runtime.deploy(configDir);
     await runtime.stop(id);
@@ -441,7 +449,8 @@ describe('ProcessRuntime lifecycle', () => {
 
   it('getStatus() returns running for live deployment', async () => {
     const { spawner } = createMockSpawner();
-    const runtime = new ProcessRuntime(registry, secrets, '/fake/root', spawner);
+    const successWatcher: StartupWatcher = async () => ({ success: true });
+    const runtime = new ProcessRuntime(registry, secrets, '/fake/root', spawner, undefined, successWatcher);
 
     const id = await runtime.deploy(configDir);
     const status = await runtime.getStatus(id);
@@ -454,7 +463,8 @@ describe('ProcessRuntime lifecycle', () => {
 
   it('getStatus() returns stopped after processes exit', async () => {
     const { spawner, processes } = createMockSpawner();
-    const runtime = new ProcessRuntime(registry, secrets, '/fake/root', spawner);
+    const successWatcher: StartupWatcher = async () => ({ success: true });
+    const runtime = new ProcessRuntime(registry, secrets, '/fake/root', spawner, undefined, successWatcher);
 
     const id = await runtime.deploy(configDir);
 
@@ -472,11 +482,12 @@ describe('ProcessRuntime lifecycle', () => {
 
   it('stop() uses PID-based kill with SIGKILL escalation when not tracked in memory', async () => {
     const { spawner } = createMockSpawner();
-    const runtime = new ProcessRuntime(registry, secrets, '/fake/root', spawner);
+    const successWatcher: StartupWatcher = async () => ({ success: true });
+    const runtime = new ProcessRuntime(registry, secrets, '/fake/root', spawner, undefined, successWatcher);
     const id = await runtime.deploy(configDir);
 
     // Fresh runtime simulates MC restart — no in-memory process state
-    const runtime2 = new ProcessRuntime(registry, secrets, '/fake/root', spawner);
+    const runtime2 = new ProcessRuntime(registry, secrets, '/fake/root', spawner, undefined, successWatcher);
 
     const killed: { pid: number | bigint; signal: unknown }[] = [];
     const killSpy = vi.spyOn(process, 'kill').mockImplementation((pid, signal) => {
@@ -501,7 +512,8 @@ describe('ProcessRuntime lifecycle', () => {
 
   it('remove() stops, cleans secrets, and removes from registry', async () => {
     const { spawner } = createMockSpawner();
-    const runtime = new ProcessRuntime(registry, secrets, '/fake/root', spawner);
+    const successWatcher: StartupWatcher = async () => ({ success: true });
+    const runtime = new ProcessRuntime(registry, secrets, '/fake/root', spawner, undefined, successWatcher);
 
     const id = await runtime.deploy(configDir);
     await runtime.remove(id);
@@ -576,5 +588,92 @@ describe('waitForStartup', () => {
     if (!result.success) {
       expect(result.logs.some((l) => l.includes('Loading config'))).toBe(true);
     }
+  });
+});
+
+describe('ProcessRuntime.deploy() startup watcher', () => {
+  let tmpDir: string;
+  let configDir: string;
+  let registry: AgentRegistry;
+  let secrets: SecretStore;
+
+  beforeEach(async () => {
+    tmpDir = await mkdtemp(join(tmpdir(), 'mc-startup-'));
+    configDir = await mkdtemp(join(tmpdir(), 'mc-startup-cfg-'));
+    await mkdir(join(configDir, 'agents'));
+    await writeFile(
+      join(configDir, 'agents', 'my-agent.json'),
+      JSON.stringify({ name: 'my-agent', model: 'claude-sonnet-4-20250514', systemPrompt: 'hi' }),
+    );
+    registry = new AgentRegistry(tmpDir);
+    secrets = createMockSecrets();
+  });
+
+  afterEach(async () => {
+    await rm(tmpDir, { recursive: true });
+    await rm(configDir, { recursive: true });
+  });
+
+  it('registers with provisioning status during startup', async () => {
+    const { spawner } = createMockSpawner();
+    let provisioningStatusSeen = false;
+
+    const slowWatcher: StartupWatcher = async () => {
+      const deployments = await registry.list();
+      if (deployments.some((d) => d.status === 'provisioning')) {
+        provisioningStatusSeen = true;
+      }
+      return { success: true };
+    };
+
+    const runtime = new ProcessRuntime(registry, secrets, '/fake/root', spawner, undefined, slowWatcher);
+    await runtime.deploy(configDir);
+
+    expect(provisioningStatusSeen).toBe(true);
+    const deployments = await registry.list();
+    expect(deployments[0].status).toBe('running');
+  });
+
+  it('registers as running on startup success', async () => {
+    const { spawner } = createMockSpawner();
+    const successWatcher: StartupWatcher = async () => ({ success: true });
+    const runtime = new ProcessRuntime(registry, secrets, '/fake/root', spawner, undefined, successWatcher);
+
+    const id = await runtime.deploy(configDir);
+
+    const deployment = await registry.get(id);
+    expect(deployment?.status).toBe('running');
+  });
+
+  it('registers as error on startup failure and throws DeploymentStartupError', async () => {
+    const { spawner } = createMockSpawner();
+    const failWatcher: StartupWatcher = async () => ({
+      success: false,
+      logs: ['[err] Something went wrong'],
+      reason: 'timeout after 10000ms',
+    });
+    const runtime = new ProcessRuntime(registry, secrets, '/fake/root', spawner, undefined, failWatcher);
+
+    await expect(runtime.deploy(configDir)).rejects.toThrow(DeploymentStartupError);
+
+    const deployments = await registry.list();
+    expect(deployments).toHaveLength(1);
+    expect(deployments[0].status).toBe('error');
+    expect(deployments[0].errorMessage).toBe('timeout after 10000ms');
+    expect(deployments[0].startupLogs).toEqual(['[err] Something went wrong']);
+  });
+
+  it('kills the process on startup failure', async () => {
+    const { spawner, processes } = createMockSpawner();
+    const failWatcher: StartupWatcher = async () => ({
+      success: false,
+      logs: [],
+      reason: 'process exited with code 1',
+    });
+    const runtime = new ProcessRuntime(registry, secrets, '/fake/root', spawner, undefined, failWatcher);
+
+    await expect(runtime.deploy(configDir)).rejects.toThrow(DeploymentStartupError);
+
+    expect(processes[0].killed).toBe(true);
   });
 });
