@@ -13,7 +13,7 @@ import {
   SettingsStore,
   defaultProcessSpawner,
 } from '@dash/mc';
-import type { MessagingApp } from '@dash/mc';
+import type { MessagingApp, ProcessSpawner } from '@dash/mc';
 import { app, dialog, ipcMain, safeStorage, shell } from 'electron';
 import type { BrowserWindow } from 'electron';
 import type { DeployWithConfigOptions } from '../shared/ipc.js';
@@ -73,14 +73,33 @@ function getChatService(getWindow: () => BrowserWindow | undefined): ChatService
   return chatService;
 }
 
+export function makePackagedSpawner(
+  execPath: string,
+  base: ProcessSpawner,
+  isPackaged: boolean,
+): ProcessSpawner {
+  return {
+    spawn: (command, args, options) => {
+      if (command === 'node' && isPackaged) {
+        return base.spawn(execPath, args, {
+          ...options,
+          env: { ...options.env, ELECTRON_RUN_AS_NODE: '1' },
+        });
+      }
+      return base.spawn(command, args, options);
+    },
+  };
+}
+
 function resolveProjectRoot(): string {
+  if (app.isPackaged) {
+    return process.resourcesPath;
+  }
   if (process.env.DASH_PROJECT_ROOT) {
     return process.env.DASH_PROJECT_ROOT;
   }
-  // Dev mode: __dirname is apps/mission-control/out/main — 4 levels up is the monorepo root.
-  // Production: DASH_PROJECT_ROOT must be set (the monorepo layout doesn't exist in a packaged app).
-  const candidate = resolve(__dirname, '../../../..');
-  return candidate;
+  // Dev: __dirname is apps/mission-control/out/main, 4 levels up is monorepo root
+  return join(__dirname, '../../../..');
 }
 
 function getRuntime(): ProcessRuntime {
@@ -89,7 +108,7 @@ function getRuntime(): ProcessRuntime {
       getRegistry(),
       getSecretStore(),
       resolveProjectRoot(),
-      defaultProcessSpawner,
+      makePackagedSpawner(process.execPath, defaultProcessSpawner, app.isPackaged),
       getMessagingAppRegistry(),
     );
   }
