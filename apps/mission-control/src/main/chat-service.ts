@@ -53,32 +53,35 @@ export class ChatService {
     await this.store.appendMessage(conversationId, userMessage);
 
     const token = deployment.chatToken;
-    const url = `ws://localhost:${deployment.chatPort}${token ? `?token=${encodeURIComponent(token)}` : ''}`;
+    const url = `ws://localhost:${deployment.chatPort}/ws${token ? `?token=${encodeURIComponent(token)}` : ''}`;
     const ws = new WebSocket(url);
     this.activeStreams.set(conversationId, ws);
 
+    const msgId = randomUUID();
     const accumulatedEvents: McAgentEvent[] = [];
 
     ws.addEventListener('open', () => {
       ws.send(
         JSON.stringify({
+          id: msgId,
           type: 'message',
+          agent: conversation.agentName,
+          channelId: 'mission-control',
           conversationId,
-          agentName: conversation.agentName,
           text,
         }),
       );
     });
 
     ws.addEventListener('message', (event) => {
-      let msg: { type: string; conversationId: string; event?: McAgentEvent; error?: string };
+      let msg: { type: string; id: string; event?: McAgentEvent; error?: string };
       try {
         msg = JSON.parse(String(event.data));
       } catch {
         return; // ignore malformed JSON
       }
 
-      if (msg.conversationId !== conversationId) return;
+      if (msg.id !== msgId) return;
 
       if (msg.type === 'event' && msg.event) {
         accumulatedEvents.push(msg.event);
