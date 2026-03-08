@@ -6,6 +6,7 @@ const api: MissionControlAPI = {
 
   // Shell
   openExternal: (url: string) => ipcRenderer.invoke('openExternal', url),
+  dialogOpenDirectory: () => ipcRenderer.invoke('dialog:openDirectory'),
 
   // Setup
   setupGetStatus: () => ipcRenderer.invoke('setup:getStatus'),
@@ -37,11 +38,8 @@ const api: MissionControlAPI = {
     return () => ipcRenderer.removeListener('chat:done', listener);
   },
   chatOnError: (callback) => {
-    const listener = (
-      _event: Electron.IpcRendererEvent,
-      conversationId: string,
-      error: string,
-    ) => callback(conversationId, error);
+    const listener = (_event: Electron.IpcRendererEvent, conversationId: string, error: string) =>
+      callback(conversationId, error);
     ipcRenderer.on('chat:error', listener);
     return () => ipcRenderer.removeListener('chat:error', listener);
   },
@@ -65,7 +63,8 @@ const api: MissionControlAPI = {
   deploymentsDeployWithConfig: (options) =>
     ipcRenderer.invoke('deployments:deployWithConfig', options),
   deploymentsStop: (id: string) => ipcRenderer.invoke('deployments:stop', id),
-  deploymentsRemove: (id: string) => ipcRenderer.invoke('deployments:remove', id),
+  deploymentsRemove: (id: string, deleteWorkspace?: boolean) =>
+    ipcRenderer.invoke('deployments:remove', id, deleteWorkspace),
   deploymentsGetStatus: (id: string) => ipcRenderer.invoke('deployments:getStatus', id),
   deploymentsLogsSubscribe: (id: string) => ipcRenderer.invoke('deployments:logs:subscribe', id),
   deploymentsLogsUnsubscribe: (id: string) =>
