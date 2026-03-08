@@ -35,6 +35,17 @@ export interface AppSettings {
   defaultFallbackModels?: string[];
 }
 
+export class RendererDeploymentError extends Error {
+  constructor(
+    message: string,
+    public readonly deploymentId: string,
+    public readonly startupLogs: string[],
+  ) {
+    super(message);
+    this.name = 'RendererDeploymentError';
+  }
+}
+
 export interface MissionControlAPI {
   getVersion(): Promise<string>;
 
