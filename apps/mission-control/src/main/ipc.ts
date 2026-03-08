@@ -495,13 +495,16 @@ export async function registerIpcHandlers(
           qrCount++;
           if (qrCount > MAX_QR_ROTATIONS) {
             sock.end(undefined);
-            reject(new Error('QR code expired. Please try again.'));
+            const errorMessage = 'QR code expired. Please try again.';
+            const win = getWindow();
+            win?.webContents.send('whatsapp:error', appId, errorMessage);
+            reject(new Error(errorMessage));
             return;
           }
           try {
             const qrDataUrl = await qrcode.default.toDataURL(qr);
             const win = getWindow();
-            win?.webContents.send('whatsapp:qr', qrDataUrl);
+            win?.webContents.send('whatsapp:qr', appId, qrDataUrl);
           } catch {
             // QR generation failed, terminal fallback still works via printQRInTerminal
           }
@@ -509,6 +512,8 @@ export async function registerIpcHandlers(
 
         if (connection === 'open') {
           sock.end(undefined);
+          const win = getWindow();
+          win?.webContents.send('whatsapp:linked', appId);
           resolve();
         }
 
@@ -516,7 +521,10 @@ export async function registerIpcHandlers(
           const statusCode = (lastDisconnect?.error as { output?: { statusCode?: number } } | undefined)
             ?.output?.statusCode;
           if (statusCode === DisconnectReason.loggedOut) {
-            reject(new Error('WhatsApp session rejected. Try again.'));
+            const errorMessage = 'WhatsApp session rejected. Try again.';
+            const win = getWindow();
+            win?.webContents.send('whatsapp:error', appId, errorMessage);
+            reject(new Error(errorMessage));
           }
         }
       });
