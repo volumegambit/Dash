@@ -11,7 +11,7 @@ export async function buildMemoryPreamble(workspace: string): Promise<string> {
     // File does not exist yet
   }
 
-  if (contents && contents.trim()) {
+  if (contents?.trim()) {
     return `You have a persistent memory file at ${memoryPath}.
 
 At the start of each conversation, read it to recall important context.

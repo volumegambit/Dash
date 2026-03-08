@@ -1,4 +1,4 @@
-import type { LlmProvider, Message, TextBlock } from '@dash/llm';
+import type { LlmProvider, Message, TextBlock } from './types.js';
 
 const COMPACTION_SYSTEM_PROMPT = `Summarize this conversation for a long-running AI agent. Include:
 - Goal: what the user is trying to accomplish
