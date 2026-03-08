@@ -19,6 +19,7 @@ import { Route as AgentsRouteImport } from './routes/agents'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as MessagingAppsIndexRouteImport } from './routes/messaging-apps/index'
 import { Route as AgentsIndexRouteImport } from './routes/agents/index'
+import { Route as MessagingAppsNewWhatsappRouteImport } from './routes/messaging-apps/new-whatsapp'
 import { Route as MessagingAppsNewTelegramRouteImport } from './routes/messaging-apps/new-telegram'
 import { Route as MessagingAppsIdRouteImport } from './routes/messaging-apps/$id'
 import { Route as AgentsIdRouteImport } from './routes/agents/$id'
@@ -73,6 +74,12 @@ const AgentsIndexRoute = AgentsIndexRouteImport.update({
   path: '/',
   getParentRoute: () => AgentsRoute,
 } as any)
+const MessagingAppsNewWhatsappRoute =
+  MessagingAppsNewWhatsappRouteImport.update({
+    id: '/new-whatsapp',
+    path: '/new-whatsapp',
+    getParentRoute: () => MessagingAppsRoute,
+  } as any)
 const MessagingAppsNewTelegramRoute =
   MessagingAppsNewTelegramRouteImport.update({
     id: '/new-telegram',
@@ -102,6 +109,7 @@ export interface FileRoutesByFullPath {
   '/agents/$id': typeof AgentsIdRoute
   '/messaging-apps/$id': typeof MessagingAppsIdRoute
   '/messaging-apps/new-telegram': typeof MessagingAppsNewTelegramRoute
+  '/messaging-apps/new-whatsapp': typeof MessagingAppsNewWhatsappRoute
   '/agents/': typeof AgentsIndexRoute
   '/messaging-apps/': typeof MessagingAppsIndexRoute
 }
@@ -115,6 +123,7 @@ export interface FileRoutesByTo {
   '/agents/$id': typeof AgentsIdRoute
   '/messaging-apps/$id': typeof MessagingAppsIdRoute
   '/messaging-apps/new-telegram': typeof MessagingAppsNewTelegramRoute
+  '/messaging-apps/new-whatsapp': typeof MessagingAppsNewWhatsappRoute
   '/agents': typeof AgentsIndexRoute
   '/messaging-apps': typeof MessagingAppsIndexRoute
 }
@@ -131,6 +140,7 @@ export interface FileRoutesById {
   '/agents/$id': typeof AgentsIdRoute
   '/messaging-apps/$id': typeof MessagingAppsIdRoute
   '/messaging-apps/new-telegram': typeof MessagingAppsNewTelegramRoute
+  '/messaging-apps/new-whatsapp': typeof MessagingAppsNewWhatsappRoute
   '/agents/': typeof AgentsIndexRoute
   '/messaging-apps/': typeof MessagingAppsIndexRoute
 }
@@ -148,6 +158,7 @@ export interface FileRouteTypes {
     | '/agents/$id'
     | '/messaging-apps/$id'
     | '/messaging-apps/new-telegram'
+    | '/messaging-apps/new-whatsapp'
     | '/agents/'
     | '/messaging-apps/'
   fileRoutesByTo: FileRoutesByTo
@@ -161,6 +172,7 @@ export interface FileRouteTypes {
     | '/agents/$id'
     | '/messaging-apps/$id'
     | '/messaging-apps/new-telegram'
+    | '/messaging-apps/new-whatsapp'
     | '/agents'
     | '/messaging-apps'
   id:
@@ -176,6 +188,7 @@ export interface FileRouteTypes {
     | '/agents/$id'
     | '/messaging-apps/$id'
     | '/messaging-apps/new-telegram'
+    | '/messaging-apps/new-whatsapp'
     | '/agents/'
     | '/messaging-apps/'
   fileRoutesById: FileRoutesById
@@ -263,6 +276,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AgentsIndexRouteImport
       parentRoute: typeof AgentsRoute
     }
+    '/messaging-apps/new-whatsapp': {
+      id: '/messaging-apps/new-whatsapp'
+      path: '/new-whatsapp'
+      fullPath: '/messaging-apps/new-whatsapp'
+      preLoaderRoute: typeof MessagingAppsNewWhatsappRouteImport
+      parentRoute: typeof MessagingAppsRoute
+    }
     '/messaging-apps/new-telegram': {
       id: '/messaging-apps/new-telegram'
       path: '/new-telegram'
@@ -303,12 +323,14 @@ const AgentsRouteWithChildren =
 interface MessagingAppsRouteChildren {
   MessagingAppsIdRoute: typeof MessagingAppsIdRoute
   MessagingAppsNewTelegramRoute: typeof MessagingAppsNewTelegramRoute
+  MessagingAppsNewWhatsappRoute: typeof MessagingAppsNewWhatsappRoute
   MessagingAppsIndexRoute: typeof MessagingAppsIndexRoute
 }
 
 const MessagingAppsRouteChildren: MessagingAppsRouteChildren = {
   MessagingAppsIdRoute: MessagingAppsIdRoute,
   MessagingAppsNewTelegramRoute: MessagingAppsNewTelegramRoute,
+  MessagingAppsNewWhatsappRoute: MessagingAppsNewWhatsappRoute,
   MessagingAppsIndexRoute: MessagingAppsIndexRoute,
 }
 

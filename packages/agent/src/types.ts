@@ -104,7 +104,7 @@ export interface DashAgentConfig {
   modelContextWindow?: number; // Compaction threshold (default: 200000 tokens)
   skills?: {
     paths?: string[]; // Local dirs to scan (supports ~/ and relative paths)
-    urls?: string[];  // Remote skill registries to fetch from
+    urls?: string[]; // Remote skill registries to fetch from
   };
 }
 

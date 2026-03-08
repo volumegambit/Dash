@@ -23,7 +23,10 @@ function NewWhatsAppWizard(): JSX.Element {
 
   // choose-assistant step
   const { deployments, loadDeployments } = useDeploymentsStore();
-  const [selectedAgent, setSelectedAgent] = useState<{ deploymentId: string; agentName: string } | null>(null);
+  const [selectedAgent, setSelectedAgent] = useState<{
+    deploymentId: string;
+    agentName: string;
+  } | null>(null);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState('');
 
@@ -46,7 +49,8 @@ function NewWhatsAppWizard(): JSX.Element {
 
     const unsub = window.api.whatsappOnQr((_, url) => setQrDataUrl(url));
 
-    window.api.whatsappStartPairing(appId)
+    window.api
+      .whatsappStartPairing(appId)
       .then(() => {
         setLinked(true);
         goNext();
@@ -115,10 +119,12 @@ function NewWhatsAppWizard(): JSX.Element {
             backLabel="Cancel"
           >
             <p className="text-base leading-relaxed">
-              Link your personal WhatsApp account so your AI assistant can receive and reply to messages — just like a regular contact.
+              Link your personal WhatsApp account so your AI assistant can receive and reply to
+              messages — just like a regular contact.
             </p>
             <p className="mt-4 text-base leading-relaxed">
-              This uses WhatsApp's <strong>Linked Devices</strong> feature — the same way WhatsApp Web works. No business account needed.
+              This uses WhatsApp's <strong>Linked Devices</strong> feature — the same way WhatsApp
+              Web works. No business account needed.
             </p>
             <div className="mt-5 rounded-lg border border-border bg-sidebar-bg p-4 text-sm">
               <p className="font-medium">What you'll need:</p>
@@ -140,7 +146,8 @@ function NewWhatsAppWizard(): JSX.Element {
             {!linked && (
               <>
                 <p className="text-base leading-relaxed">
-                  Open WhatsApp on your phone → <strong>Settings → Linked Devices → Link a Device</strong> → scan the code below.
+                  Open WhatsApp on your phone →{' '}
+                  <strong>Settings → Linked Devices → Link a Device</strong> → scan the code below.
                 </p>
                 <div className="mt-6 flex flex-col items-center">
                   {pairingError ? (
@@ -157,7 +164,11 @@ function NewWhatsAppWizard(): JSX.Element {
                       </button>
                     </div>
                   ) : qrDataUrl ? (
-                    <img src={qrDataUrl} alt="WhatsApp QR Code" className="h-56 w-56 rounded-lg border border-border" />
+                    <img
+                      src={qrDataUrl}
+                      alt="WhatsApp QR Code"
+                      className="h-56 w-56 rounded-lg border border-border"
+                    />
                   ) : (
                     <div className="flex items-center gap-3 text-muted">
                       <Loader size={20} className="animate-spin" />
@@ -213,9 +224,12 @@ function NewWhatsAppWizard(): JSX.Element {
                   <button
                     key={`${a.deploymentId}-${a.agentName}`}
                     type="button"
-                    onClick={() => setSelectedAgent({ deploymentId: a.deploymentId, agentName: a.agentName })}
+                    onClick={() =>
+                      setSelectedAgent({ deploymentId: a.deploymentId, agentName: a.agentName })
+                    }
                     className={`rounded-lg border-2 px-4 py-3 text-left text-sm transition-colors ${
-                      selectedAgent?.agentName === a.agentName && selectedAgent?.deploymentId === a.deploymentId
+                      selectedAgent?.agentName === a.agentName &&
+                      selectedAgent?.deploymentId === a.deploymentId
                         ? 'border-primary bg-primary/10'
                         : 'border-border hover:border-primary/50'
                     }`}
@@ -245,7 +259,8 @@ function NewWhatsAppWizard(): JSX.Element {
             <CheckCircle size={64} className="text-green-400" />
             <h2 className="mt-6 text-2xl font-bold">WhatsApp connected!</h2>
             <p className="mt-3 text-base text-muted">
-              Your assistant will now receive and reply to WhatsApp messages. Make sure your deployment is running.
+              Your assistant will now receive and reply to WhatsApp messages. Make sure your
+              deployment is running.
             </p>
             <button
               type="button"

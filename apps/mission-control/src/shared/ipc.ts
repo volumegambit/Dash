@@ -1,4 +1,10 @@
-import type { AgentDeployment, McConversation, McMessage, MessagingApp, RuntimeStatus } from '@dash/mc';
+import type {
+  AgentDeployment,
+  McConversation,
+  McMessage,
+  MessagingApp,
+  RuntimeStatus,
+} from '@dash/mc';
 
 // Serializable AgentEvent (error is string, not Error object, for IPC transport)
 export type McAgentEvent =
@@ -86,14 +92,20 @@ export interface MissionControlAPI {
   deploymentsStop(id: string): Promise<void>;
   deploymentsRemove(id: string, deleteWorkspace?: boolean): Promise<void>;
   deploymentsGetStatus(id: string): Promise<RuntimeStatus>;
-  deploymentsUpdateConfig(id: string, patch: { model?: string; fallbackModels?: string[] }): Promise<void>;
+  deploymentsUpdateConfig(
+    id: string,
+    patch: { model?: string; fallbackModels?: string[] },
+  ): Promise<void>;
   deploymentsLogsSubscribe(id: string): Promise<void>;
   deploymentsLogsUnsubscribe(id: string): Promise<void>;
 
   // Messaging Apps
   messagingAppsList(): Promise<MessagingApp[]>;
   messagingAppsGet(id: string): Promise<MessagingApp | null>;
-  messagingAppsCreate(app: Omit<MessagingApp, 'id' | 'createdAt' | 'credentialsKey'>, token: string): Promise<MessagingApp>;
+  messagingAppsCreate(
+    app: Omit<MessagingApp, 'id' | 'createdAt' | 'credentialsKey'>,
+    token: string,
+  ): Promise<MessagingApp>;
   messagingAppsUpdate(id: string, patch: Partial<MessagingApp>): Promise<void>;
   messagingAppsDelete(id: string): Promise<void>;
   messagingAppsVerifyTelegramToken(token: string): Promise<TelegramBotInfo>;

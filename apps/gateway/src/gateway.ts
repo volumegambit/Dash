@@ -1,5 +1,10 @@
 import type { AgentClient } from '@dash/agent';
-import { MessageRouter, MissionControlAdapter, TelegramAdapter, WhatsAppAdapter } from '@dash/channels';
+import {
+  MessageRouter,
+  MissionControlAdapter,
+  TelegramAdapter,
+  WhatsAppAdapter,
+} from '@dash/channels';
 import type { ChannelAdapter, RouterConfig } from '@dash/channels';
 import { RemoteAgentClient } from '@dash/chat';
 import type { GatewayConfig } from './config.js';
@@ -58,7 +63,9 @@ export function createGateway(config: GatewayConfig) {
           })),
         };
         router.addAdapter(adapter, routerConfig);
-        console.log(`Channel "${name}" (${channelConfig.adapter}) → routing rules (${routerConfig.rules.length} rules)`);
+        console.log(
+          `Channel "${name}" (${channelConfig.adapter}) → routing rules (${routerConfig.rules.length} rules)`,
+        );
       } else {
         // Simple mode
         const agentName = channelConfig.agent;

@@ -66,9 +66,9 @@ export interface RoutingRule {
 
 export interface MessagingApp {
   id: string;
-  name: string;                    // user-given, e.g. "Family Group Bot"
+  name: string; // user-given, e.g. "Family Group Bot"
   type: 'telegram' | 'whatsapp';
-  credentialsKey: string;          // key in EncryptedSecretStore, e.g. 'messaging-app:abc:token'
+  credentialsKey: string; // key in EncryptedSecretStore, e.g. 'messaging-app:abc:token'
   enabled: boolean;
   createdAt: string;
   globalDenyList: string[]; // blocked before any routing evaluates

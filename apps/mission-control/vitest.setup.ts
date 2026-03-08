@@ -37,7 +37,9 @@ function createMockApi(): Record<keyof MissionControlAPI, ReturnType<typeof vi.f
     secretsSetup: vi.fn().mockResolvedValue(undefined),
     secretsUnlock: vi.fn().mockResolvedValue(undefined),
     secretsLock: vi.fn().mockResolvedValue(undefined),
-    secretsList: vi.fn().mockResolvedValue(['anthropic-api-key', 'openai-api-key', 'google-api-key']),
+    secretsList: vi
+      .fn()
+      .mockResolvedValue(['anthropic-api-key', 'openai-api-key', 'google-api-key']),
     secretsGet: vi.fn().mockResolvedValue(null),
     secretsSet: vi.fn().mockResolvedValue(undefined),
     secretsDelete: vi.fn().mockResolvedValue(undefined),
@@ -60,7 +62,9 @@ function createMockApi(): Record<keyof MissionControlAPI, ReturnType<typeof vi.f
     messagingAppsCreate: vi.fn().mockResolvedValue(null),
     messagingAppsUpdate: vi.fn().mockResolvedValue(undefined),
     messagingAppsDelete: vi.fn().mockResolvedValue(undefined),
-    messagingAppsVerifyTelegramToken: vi.fn().mockResolvedValue({ username: 'bot', firstName: 'Bot' }),
+    messagingAppsVerifyTelegramToken: vi
+      .fn()
+      .mockResolvedValue({ username: 'bot', firstName: 'Bot' }),
     whatsappStartPairing: vi.fn().mockResolvedValue(undefined),
     whatsappOnQr: vi.fn().mockReturnValue(() => {}),
     whatsappOnLinked: vi.fn().mockReturnValue(() => {}),

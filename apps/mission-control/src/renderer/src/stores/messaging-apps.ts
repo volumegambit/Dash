@@ -7,7 +7,10 @@ interface MessagingAppsState {
   error: string | null;
 
   loadApps(): Promise<void>;
-  createApp(app: Omit<MessagingApp, 'id' | 'createdAt' | 'credentialsKey'>, token: string): Promise<MessagingApp>;
+  createApp(
+    app: Omit<MessagingApp, 'id' | 'createdAt' | 'credentialsKey'>,
+    token: string,
+  ): Promise<MessagingApp>;
   updateApp(id: string, patch: Partial<MessagingApp>): Promise<void>;
   deleteApp(id: string): Promise<void>;
 }

@@ -58,7 +58,10 @@ function NewTelegramWizard(): JSX.Element {
 
   // Agent selection
   const { deployments, loadDeployments } = useDeploymentsStore();
-  const [selectedAgent, setSelectedAgent] = useState<{ deploymentId: string; agentName: string } | null>(null);
+  const [selectedAgent, setSelectedAgent] = useState<{
+    deploymentId: string;
+    agentName: string;
+  } | null>(null);
 
   const { createApp } = useMessagingAppsStore();
   const [saving, setSaving] = useState(false);
@@ -172,7 +175,9 @@ function NewTelegramWizard(): JSX.Element {
                 className="rounded-lg border-2 border-border px-5 py-4 text-left transition-colors hover:border-primary/50 hover:bg-sidebar-hover"
               >
                 <p className="font-medium">I'm new to Telegram</p>
-                <p className="text-sm text-muted">We'll explain everything and guide you step by step</p>
+                <p className="text-sm text-muted">
+                  We'll explain everything and guide you step by step
+                </p>
               </button>
               <button
                 type="button"
@@ -205,11 +210,7 @@ function NewTelegramWizard(): JSX.Element {
         )}
 
         {stepId === 'what-is-telegram' && (
-          <WizardStep
-            title="What is Telegram?"
-            onNext={goNext}
-            onBack={goPrev}
-          >
+          <WizardStep title="What is Telegram?" onNext={goNext} onBack={goPrev}>
             <p className="text-base leading-relaxed text-foreground">
               <strong>Telegram</strong> is a free messaging app — similar to WhatsApp or iMessage —
               that works on your phone and computer.
@@ -231,8 +232,8 @@ function NewTelegramWizard(): JSX.Element {
               receive messages — think of it like a virtual phone number just for your assistant.
             </p>
             <p className="mt-4 text-base leading-relaxed">
-              When someone opens your bot's chat and sends a message, your AI assistant will read
-              it and reply — automatically.
+              When someone opens your bot's chat and sends a message, your AI assistant will read it
+              and reply — automatically.
             </p>
             <div className="mt-5 rounded-lg border border-border bg-sidebar-bg p-4 text-sm">
               <p className="font-medium">💡 Good to know:</p>
@@ -257,9 +258,12 @@ function NewTelegramWizard(): JSX.Element {
               lives inside Telegram itself.
             </p>
             <div className="mt-5 space-y-4">
-              <Step number={1} text='Open Telegram on your phone or computer' />
-              <Step number={2} text='In the search bar at the top, type: BotFather' />
-              <Step number={3} text="Tap the result that has a blue checkmark — that's the official one" />
+              <Step number={1} text="Open Telegram on your phone or computer" />
+              <Step number={2} text="In the search bar at the top, type: BotFather" />
+              <Step
+                number={3}
+                text="Tap the result that has a blue checkmark — that's the official one"
+              />
               <Step number={4} text='Tap the blue "START" button at the bottom' />
             </div>
             <div className="mt-4 rounded-lg border border-border bg-sidebar-bg p-4 text-sm">
@@ -294,14 +298,18 @@ function NewTelegramWizard(): JSX.Element {
             onBack={goPrev}
             nextLabel="I've created my bot"
           >
-            <p className="text-base leading-relaxed">
-              Inside BotFather, follow these steps:
-            </p>
+            <p className="text-base leading-relaxed">Inside BotFather, follow these steps:</p>
             <div className="mt-5 space-y-4">
-              <Step number={1} text='/newbot and press Send' />
-              <Step number={2} text='BotFather asks for a name. This is what people see — e.g. "My Assistant"' />
-              <Step number={3} text='BotFather asks for a username. This must end in "bot" — e.g. "myassistant_bot"' />
-              <Step number={4} text='BotFather will confirm your bot is created ✅' />
+              <Step number={1} text="/newbot and press Send" />
+              <Step
+                number={2}
+                text='BotFather asks for a name. This is what people see — e.g. "My Assistant"'
+              />
+              <Step
+                number={3}
+                text='BotFather asks for a username. This must end in "bot" — e.g. "myassistant_bot"'
+              />
+              <Step number={4} text="BotFather will confirm your bot is created ✅" />
             </div>
             <div className="mt-4 rounded-lg border border-border bg-sidebar-bg p-4 text-sm text-muted">
               💡 The username can't be changed later, but the display name can. Keep it simple.
@@ -317,27 +325,31 @@ function NewTelegramWizard(): JSX.Element {
             nextLabel="I've copied the token"
           >
             <p className="text-base leading-relaxed">
-              After creating your bot, BotFather shows you a long code called a <strong>token</strong>. This is the "key" that lets your assistant connect to your bot.
+              After creating your bot, BotFather shows you a long code called a{' '}
+              <strong>token</strong>. This is the "key" that lets your assistant connect to your
+              bot.
             </p>
             <div className="mt-4 rounded-lg border border-amber-600/40 bg-amber-900/10 p-4 text-sm">
               <p className="font-medium text-amber-300">⚠️ Keep this code private</p>
               <p className="mt-1 text-muted">
-                The token looks like: <code className="font-mono text-xs">110201543:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw</code>
+                The token looks like:{' '}
+                <code className="font-mono text-xs">
+                  110201543:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw
+                </code>
               </p>
-              <p className="mt-2 text-muted">Copy the entire code — tap and hold it, then tap Copy.</p>
+              <p className="mt-2 text-muted">
+                Copy the entire code — tap and hold it, then tap Copy.
+              </p>
             </div>
             <p className="mt-4 text-sm text-muted">
-              Don't worry if the message disappears — you can always ask BotFather for it again by sending <code className="font-mono">/mybots</code>.
+              Don't worry if the message disappears — you can always ask BotFather for it again by
+              sending <code className="font-mono">/mybots</code>.
             </p>
           </WizardStep>
         )}
 
         {stepId === 'paste-token' && (
-          <WizardStep
-            title="Paste your bot token"
-            onNext={undefined}
-            onBack={goPrev}
-          >
+          <WizardStep title="Paste your bot token" onNext={undefined} onBack={goPrev}>
             <p className="text-base leading-relaxed">
               Paste the token you copied from BotFather into the box below:
             </p>
@@ -345,13 +357,14 @@ function NewTelegramWizard(): JSX.Element {
               <input
                 type="text"
                 value={token}
-                onChange={(e) => { setToken(e.target.value); setVerifyError(''); }}
+                onChange={(e) => {
+                  setToken(e.target.value);
+                  setVerifyError('');
+                }}
                 placeholder="110201543:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw"
                 className="w-full rounded-lg border border-border bg-background px-3 py-2 font-mono text-sm focus:border-primary focus:outline-none"
               />
-              {verifyError && (
-                <p className="mt-2 text-sm text-red-400">❌ {verifyError}</p>
-              )}
+              {verifyError && <p className="mt-2 text-sm text-red-400">❌ {verifyError}</p>}
               <p className="mt-2 text-xs text-muted">
                 We'll verify the token is correct before continuing.
               </p>
@@ -379,12 +392,15 @@ function NewTelegramWizard(): JSX.Element {
                 <CheckCircle size={20} className="text-green-400" />
                 <div>
                   <p className="text-sm font-medium text-green-300">Bot verified!</p>
-                  <p className="text-xs text-muted">@{botInfo.username} · {botInfo.firstName}</p>
+                  <p className="text-xs text-muted">
+                    @{botInfo.username} · {botInfo.firstName}
+                  </p>
                 </div>
               </div>
             )}
             <p className="text-base leading-relaxed">
-              Give this connection a friendly name so you can recognise it later — something that describes what it's for.
+              Give this connection a friendly name so you can recognise it later — something that
+              describes what it's for.
             </p>
             <div className="mt-5">
               <input
@@ -399,11 +415,7 @@ function NewTelegramWizard(): JSX.Element {
         )}
 
         {stepId === 'choose-assistant' && (
-          <WizardStep
-            title="Choose your assistant"
-            onNext={undefined}
-            onBack={goPrev}
-          >
+          <WizardStep title="Choose your assistant" onNext={undefined} onBack={goPrev}>
             <p className="text-base leading-relaxed">
               Which AI assistant should handle messages sent to this bot?
             </p>
@@ -417,9 +429,12 @@ function NewTelegramWizard(): JSX.Element {
                   <button
                     key={`${a.deploymentId}-${a.agentName}`}
                     type="button"
-                    onClick={() => setSelectedAgent({ deploymentId: a.deploymentId, agentName: a.agentName })}
+                    onClick={() =>
+                      setSelectedAgent({ deploymentId: a.deploymentId, agentName: a.agentName })
+                    }
                     className={`rounded-lg border-2 px-4 py-3 text-left text-sm transition-colors ${
-                      selectedAgent?.agentName === a.agentName && selectedAgent?.deploymentId === a.deploymentId
+                      selectedAgent?.agentName === a.agentName &&
+                      selectedAgent?.deploymentId === a.deploymentId
                         ? 'border-primary bg-primary/10'
                         : 'border-border hover:border-primary/50'
                     }`}
@@ -440,9 +455,7 @@ function NewTelegramWizard(): JSX.Element {
                 {saving ? 'Connecting…' : 'Connect bot'}
               </button>
             )}
-            {saveError && (
-              <p className="mt-3 text-sm text-red-400">❌ {saveError}</p>
-            )}
+            {saveError && <p className="mt-3 text-sm text-red-400">❌ {saveError}</p>}
           </WizardStep>
         )}
 

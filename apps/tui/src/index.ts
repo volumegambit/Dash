@@ -107,6 +107,10 @@ interface AgentJsonConfig {
   systemPrompt: string;
   tools?: string[];
   workspace?: string;
+  skills?: {
+    paths?: string[];
+    urls?: string[];
+  };
 }
 
 interface DashJsonConfig {

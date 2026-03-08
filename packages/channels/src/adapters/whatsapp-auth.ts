@@ -21,9 +21,7 @@ export async function makeBaileysAuthState(
   let writeQueue: Promise<void> = Promise.resolve();
 
   function saveCreds(): Promise<void> {
-    writeQueue = writeQueue.then(() =>
-      store.set(`${prefix}creds`, JSON.stringify(creds)),
-    );
+    writeQueue = writeQueue.then(() => store.set(`${prefix}creds`, JSON.stringify(creds)));
     return writeQueue;
   }
 
@@ -36,13 +34,20 @@ export async function makeBaileysAuthState(
           result[id] = raw ? (JSON.parse(raw) as unknown) : null;
         }),
       );
-      return result as unknown as ReturnType<AuthenticationState['keys']['get']> extends Promise<infer T> ? T : never;
+      return result as unknown as ReturnType<AuthenticationState['keys']['get']> extends Promise<
+        infer T
+      >
+        ? T
+        : never;
     },
 
     async set(data) {
       const tasks: Promise<void>[] = [];
       for (const type of Object.keys(data)) {
-        const typeData = data[type as keyof typeof data] as Record<string, unknown> | null | undefined;
+        const typeData = data[type as keyof typeof data] as
+          | Record<string, unknown>
+          | null
+          | undefined;
         if (!typeData) continue;
         for (const [id, value] of Object.entries(typeData)) {
           const storeKey = `${prefix}key:${type}-${id}`;
