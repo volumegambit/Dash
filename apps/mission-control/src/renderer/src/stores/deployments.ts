@@ -25,7 +25,7 @@ interface DeploymentsState {
 
 export const useDeploymentsStore = create<DeploymentsState>((set, get) => ({
   deployments: [],
-  loading: false,
+  loading: true,
   error: null,
   logLines: {},
 
