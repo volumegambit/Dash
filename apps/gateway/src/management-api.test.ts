@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import type { RegisterAgentRequest, RegisterChannelRequest, DeploymentRegistration } from './management-api.js';
+import type {
+  DeploymentRegistration,
+  RegisterAgentRequest,
+  RegisterChannelRequest,
+} from './management-api.js';
 
 describe('management-api types', () => {
   it('RegisterAgentRequest has required fields', () => {
