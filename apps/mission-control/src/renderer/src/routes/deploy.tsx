@@ -11,6 +11,7 @@ interface AgentConfig {
   model: string;
   systemPrompt: string;
   tools: string[];
+  workspace: string; // '' means auto-generate
 }
 
 interface ChannelConfig {
@@ -29,6 +30,7 @@ export function DeployWizard(): JSX.Element {
     model: AVAILABLE_MODELS[0].value,
     systemPrompt: '',
     tools: [],
+    workspace: '',
   });
 
   const [channels, setChannels] = useState<ChannelConfig>({
@@ -48,11 +50,19 @@ export function DeployWizard(): JSX.Element {
         systemPrompt: agent.systemPrompt,
         tools: agent.tools,
         enableTelegram: channels.enableTelegram,
+        workspace: agent.workspace || undefined,
       });
       navigate({ to: '/agents/$id', params: { id } });
     } catch (err) {
       setDeployError((err as Error).message);
       setDeploying(false);
+    }
+  };
+
+  const handleBrowseWorkspace = async (): Promise<void> => {
+    const selected = await window.api.dialogOpenDirectory();
+    if (selected) {
+      setAgent((prev) => ({ ...prev, workspace: selected }));
     }
   };
 
@@ -131,6 +141,38 @@ export function DeployWizard(): JSX.Element {
                 </label>
               ))}
             </div>
+          </div>
+
+          <div>
+            <span className="mb-1 block text-sm font-medium">Workspace</span>
+            <div className="flex items-center gap-2">
+              <input
+                type="text"
+                readOnly
+                value={agent.workspace}
+                placeholder="Auto-generated"
+                className="flex-1 rounded-lg border border-border bg-sidebar-bg px-4 py-2 text-sm text-foreground placeholder:text-muted focus:outline-none"
+              />
+              {agent.workspace && (
+                <button
+                  type="button"
+                  onClick={() => setAgent((prev) => ({ ...prev, workspace: '' }))}
+                  className="rounded-lg border border-border px-3 py-2 text-sm text-muted transition-colors hover:bg-sidebar-hover hover:text-foreground"
+                >
+                  Clear
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={handleBrowseWorkspace}
+                className="rounded-lg border border-border px-3 py-2 text-sm text-muted transition-colors hover:bg-sidebar-hover hover:text-foreground"
+              >
+                Browse…
+              </button>
+            </div>
+            <p className="mt-1 text-xs text-muted">
+              The directory where this agent's file tools will be sandboxed.
+            </p>
           </div>
 
           <div className="flex justify-end">
@@ -232,6 +274,7 @@ export function DeployWizard(): JSX.Element {
               label="Tools"
               value={agent.tools.length > 0 ? agent.tools.join(', ') : '(none)'}
             />
+            <ReviewRow label="Workspace" value={agent.workspace || 'Auto-generated'} />
             <ReviewRow
               label="Channels"
               value={channels.enableTelegram ? 'Mission Control, Telegram' : 'Mission Control'}
