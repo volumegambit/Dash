@@ -10,7 +10,7 @@ import { makeBaileysAuthState } from './whatsapp-auth.js';
 class InlineFileStore implements SecretStore {
   private readonly filePath: string;
   constructor(dir: string) {
-    this.filePath = join(dir, 'auth.json');
+    this.filePath = join(dir, 'secrets.json');
   }
   private async load(): Promise<Record<string, string>> {
     if (!existsSync(this.filePath)) return {};
@@ -44,6 +44,7 @@ export class WhatsAppAdapter implements ChannelAdapter {
   readonly name = 'whatsapp';
   private handlers: MessageHandler[] = [];
   private sock: WASocket | null = null;
+  private stopped = false;
 
   constructor(
     private readonly initialAuthState: Record<string, string>,
@@ -55,6 +56,7 @@ export class WhatsAppAdapter implements ChannelAdapter {
   }
 
   async start(): Promise<void> {
+    this.stopped = false;
     // Ensure auth directory exists
     await mkdir(this.authStateDir, { recursive: true });
 
@@ -86,6 +88,7 @@ export class WhatsAppAdapter implements ChannelAdapter {
         const statusCode = (lastDisconnect?.error as { output?: { statusCode?: number } } | undefined)
           ?.output?.statusCode;
         if (statusCode !== DisconnectReason.loggedOut) {
+          if (this.stopped) return;
           this.start().catch((err) => console.error('[WhatsApp] Reconnect failed:', err));
         } else {
           console.warn('[WhatsApp] Logged out. Please re-authenticate.');
@@ -152,6 +155,7 @@ export class WhatsAppAdapter implements ChannelAdapter {
   }
 
   async stop(): Promise<void> {
+    this.stopped = true;
     if (this.sock) {
       this.sock.end(undefined);
       this.sock = null;
