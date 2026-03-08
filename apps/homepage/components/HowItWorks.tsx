@@ -6,7 +6,7 @@ function ArchNode({ label, sub }: { label: string; sub?: string }) {
         {sub && <p className="mt-0.5 font-mono text-xs text-[#a3a3a3]">{sub}</p>}
       </div>
     </div>
-  )
+  );
 }
 
 function Arrow({ label }: { label?: string }) {
@@ -18,7 +18,7 @@ function Arrow({ label }: { label?: string }) {
         <div className="border-y-4 border-l-4 border-r-0 border-y-transparent border-l-[#3b82f6]" />
       </div>
     </div>
-  )
+  );
 }
 
 const DESCRIPTIONS = [
@@ -34,7 +34,7 @@ const DESCRIPTIONS = [
     title: 'Mission Control',
     desc: 'Desktop app or CLI for deploying, monitoring, and chatting with agents. Connects to both the gateway and agent server.',
   },
-]
+];
 
 export function HowItWorks() {
   return (
@@ -75,5 +75,5 @@ export function HowItWorks() {
         </div>
       </div>
     </section>
-  )
+  );
 }

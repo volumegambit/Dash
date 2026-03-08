@@ -1,10 +1,19 @@
-import { Bot, Monitor, Terminal, Server, MessageSquare, Shield, type LucideIcon } from 'lucide-react'
+import {
+  Bot,
+  type LucideIcon,
+  MessageSquare,
+  Monitor,
+  Server,
+  Shield,
+  Terminal,
+} from 'lucide-react';
 
 const FEATURES: { icon: LucideIcon; title: string; description: string }[] = [
   {
     icon: Bot,
     title: 'Your agents, your LLMs',
-    description: 'Connect Anthropic, OpenAI, Google, or any major LLM provider to power your agents.',
+    description:
+      'Connect Anthropic, OpenAI, Google, or any major LLM provider to power your agents.',
   },
   {
     icon: Monitor,
@@ -19,7 +28,8 @@ const FEATURES: { icon: LucideIcon; title: string; description: string }[] = [
   {
     icon: Server,
     title: 'Runs anywhere',
-    description: 'Your machine, a VPS, or a private cloud. Your data never leaves your infrastructure.',
+    description:
+      'Your machine, a VPS, or a private cloud. Your data never leaves your infrastructure.',
   },
   {
     icon: MessageSquare,
@@ -31,7 +41,7 @@ const FEATURES: { icon: LucideIcon; title: string; description: string }[] = [
     title: 'Safe by default',
     description: 'Secrets encrypted at rest, agents sandboxed, and access controlled from day one.',
   },
-]
+];
 
 export function Features() {
   return (
@@ -57,5 +67,5 @@ export function Features() {
         </div>
       </div>
     </section>
-  )
+  );
 }

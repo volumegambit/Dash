@@ -1,33 +1,32 @@
-'use client'
+'use client';
 
-import { useEffect, useState } from 'react'
-import Link from 'next/link'
-import { ChevronDown } from 'lucide-react'
+import { ChevronDown } from 'lucide-react';
+import Link from 'next/link';
+import { useEffect, useState } from 'react';
 
 const TERMINAL_LINES = [
   '$ git clone https://github.com/volumegambit/Dash',
   '$ npm install && npm run dev',
   '# Agents online. Mission Control ready.',
-]
+];
 
 const DOWNLOAD_OPTIONS = [
   { label: 'macOS (DMG)', href: 'https://github.com/volumegambit/Dash/releases/latest' },
   { label: 'Windows (EXE)', href: 'https://github.com/volumegambit/Dash/releases/latest' },
   { label: 'Linux (AppImage)', href: 'https://github.com/volumegambit/Dash/releases/latest' },
-]
+];
 
 function TerminalAnimation() {
-  const [visibleLines, setVisibleLines] = useState(0)
+  const [visibleLines, setVisibleLines] = useState(0);
 
   useEffect(() => {
-    if (visibleLines >= TERMINAL_LINES.length) return
-    const timer = setTimeout(() => setVisibleLines((v) => v + 1), visibleLines === 0 ? 600 : 900)
-    return () => clearTimeout(timer)
-  }, [visibleLines])
+    if (visibleLines >= TERMINAL_LINES.length) return;
+    const timer = setTimeout(() => setVisibleLines((v) => v + 1), visibleLines === 0 ? 600 : 900);
+    return () => clearTimeout(timer);
+  }, [visibleLines]);
 
   return (
-    <div
-      role="region"
+    <section
       aria-label="terminal"
       className="mx-auto mt-12 max-w-2xl rounded-lg border border-[#262626] bg-[#0d0d0d] p-6 font-mono text-sm"
     >
@@ -39,10 +38,7 @@ function TerminalAnimation() {
       </div>
       <div className="space-y-2">
         {TERMINAL_LINES.slice(0, visibleLines).map((line, i) => (
-          <p
-            key={i}
-            className={line.startsWith('#') ? 'text-[#a3a3a3]' : 'text-[#fafafa]'}
-          >
+          <p key={line} className={line.startsWith('#') ? 'text-[#a3a3a3]' : 'text-[#fafafa]'}>
             {line}
           </p>
         ))}
@@ -50,18 +46,17 @@ function TerminalAnimation() {
           <span className="inline-block h-4 w-2 animate-pulse bg-[#3b82f6]" aria-hidden />
         )}
       </div>
-    </div>
-  )
+    </section>
+  );
 }
 
 export function Hero() {
-  const [dropdownOpen, setDropdownOpen] = useState(false)
+  const [dropdownOpen, setDropdownOpen] = useState(false);
 
   return (
     <section className="flex min-h-[90vh] flex-col items-center justify-center bg-[#0a0a0a] px-6 py-24 text-center">
       <h1 className="max-w-2xl text-5xl font-bold tracking-tight text-white sm:text-6xl">
-        Your AI Team,{' '}
-        <span className="text-[#3b82f6]">Always On</span>
+        Your AI Team, <span className="text-[#3b82f6]">Always On</span>
       </h1>
       <p className="mt-6 max-w-xl text-lg text-[#a3a3a3]">
         Dash runs autonomous AI agents on your infrastructure — handling tasks, making decisions,
@@ -81,6 +76,7 @@ export function Hero() {
               Download for Mac
             </Link>
             <button
+              type="button"
               onClick={() => setDropdownOpen((o) => !o)}
               aria-label="More download options"
               className="rounded-r-md border-l border-[#2563eb] bg-[#3b82f6] px-3 py-3 text-white transition-colors hover:bg-[#2563eb]"
@@ -117,5 +113,5 @@ export function Hero() {
       </div>
       <TerminalAnimation />
     </section>
-  )
+  );
 }

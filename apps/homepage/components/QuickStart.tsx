@@ -1,4 +1,4 @@
-import Link from 'next/link'
+import Link from 'next/link';
 
 const STEPS = [
   {
@@ -16,7 +16,7 @@ const STEPS = [
     code: 'npm run dev',
     label: 'Start the agent server',
   },
-]
+];
 
 export function QuickStart() {
   return (
@@ -25,7 +25,9 @@ export function QuickStart() {
         <h2 className="mb-4 text-3xl font-bold tracking-tight text-[#0a0a0a]">
           Get started in minutes
         </h2>
-        <p className="mb-12 text-[#525252]">Node.js 22+ and an Anthropic API key are all you need.</p>
+        <p className="mb-12 text-[#525252]">
+          Node.js 22+ and an Anthropic API key are all you need.
+        </p>
 
         <div className="overflow-hidden rounded-xl border border-[#262626] bg-[#0d0d0d] text-left">
           <div className="flex items-center gap-2 border-b border-[#262626] bg-[#0a0a0a] px-4 py-3">
@@ -59,5 +61,5 @@ export function QuickStart() {
         </Link>
       </div>
     </section>
-  )
+  );
 }

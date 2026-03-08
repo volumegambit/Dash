@@ -1,10 +1,10 @@
-import Link from 'next/link'
+import Link from 'next/link';
 
 const LINKS = [
   { label: 'GitHub', href: 'https://github.com/volumegambit/Dash' },
   { label: 'Docs', href: 'https://docs.dashsquad.ai' },
   { label: 'Discord', href: 'https://discord.gg/dash' },
-]
+];
 
 export function Footer() {
   return (
@@ -27,5 +27,5 @@ export function Footer() {
         </nav>
       </div>
     </footer>
-  )
+  );
 }
