@@ -218,4 +218,64 @@ describe('Chat Server', () => {
     expect(messages[0].type).toBe('error');
     expect((messages[0] as { error: string }).error).toContain('missing required fields');
   });
+
+  it('calls logger.error when agent yields an error event', async () => {
+    const mockLogger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+
+    const errorAgent: AgentClient = {
+      chat: async function* () {
+        yield { type: 'error' as const, error: new Error('API key missing') };
+      },
+    };
+
+    const agents = new Map<string, AgentClient>();
+    agents.set('error-agent', errorAgent);
+
+    const result = startChatServer({ port: 0, token: CHAT_TOKEN, agents, logger: mockLogger });
+    const localServer = result.server;
+    const localClose = result.close;
+
+    await new Promise<void>((resolve) => {
+      if (localServer.listening) {
+        resolve();
+      } else {
+        localServer.once('listening', resolve);
+      }
+    });
+
+    const addr = localServer.address();
+    const localPort = typeof addr === 'object' && addr ? addr.port : 0;
+
+    const ws = new WebSocket(
+      `ws://localhost:${localPort}/ws?token=${encodeURIComponent(CHAT_TOKEN)}`,
+    );
+    await new Promise<void>((resolve) => ws.addEventListener('open', () => resolve()));
+
+    const collecting = collectMessages(ws);
+
+    const msg: WsClientMessage = {
+      type: 'message',
+      id: 'req-err',
+      agent: 'error-agent',
+      channelId: 'test-channel',
+      conversationId: 'conv-err',
+      text: 'trigger error',
+    };
+    ws.send(JSON.stringify(msg));
+
+    const messages = await collecting;
+    ws.close();
+    await localClose();
+
+    expect(mockLogger.error).toHaveBeenCalledWith(expect.stringContaining('API key missing'));
+
+    const errorEvent = messages.find((m) => m.type === 'event');
+    expect(errorEvent).toBeDefined();
+    const eventPayload = (errorEvent as { type: 'event'; id: string; event: unknown }).event as {
+      type: string;
+      timestamp?: string;
+    };
+    expect(eventPayload.timestamp).toBeDefined();
+    expect(typeof eventPayload.timestamp).toBe('string');
+  });
 });

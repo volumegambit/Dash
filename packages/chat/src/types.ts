@@ -1,4 +1,4 @@
-import type { AgentClient, AgentEvent } from '@dash/agent';
+import type { AgentClient, AgentEvent, Logger } from '@dash/agent';
 
 export type WsClientMessage =
   | {
@@ -20,4 +20,5 @@ export interface ChatServerOptions {
   port: number;
   token: string;
   agents: Map<string, AgentClient>;
+  logger?: Logger;
 }
