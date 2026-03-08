@@ -82,7 +82,7 @@ export class WhatsAppAdapter implements ChannelAdapter {
 
       if (qr) {
         qrcode.toString(qr, { type: 'terminal', small: true }, (err, str) => {
-          if (!err) process.stdout.write(str + '\n');
+          if (!err) process.stdout.write(`${str}\n`);
         });
       }
 

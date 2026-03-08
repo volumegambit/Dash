@@ -77,7 +77,7 @@ describe('WhatsAppAdapter', () => {
       (args: unknown[]) => args[0] === 'messages.upsert',
     );
     expect(upsertCall).toBeDefined();
-    const upsertHandler = upsertCall![1] as (data: unknown) => Promise<void>;
+    const upsertHandler = upsertCall?.[1] as (data: unknown) => Promise<void>;
 
     await upsertHandler({
       messages: [
@@ -110,7 +110,7 @@ describe('WhatsAppAdapter', () => {
     const upsertCall = (mockSock.ev.on as ReturnType<typeof vi.fn>).mock.calls.find(
       (args: unknown[]) => args[0] === 'messages.upsert',
     );
-    const upsertHandler = upsertCall![1] as (data: unknown) => Promise<void>;
+    const upsertHandler = upsertCall?.[1] as (data: unknown) => Promise<void>;
 
     await upsertHandler({
       messages: [
@@ -145,7 +145,7 @@ describe('WhatsAppAdapter', () => {
     const upsertCall = (mockSock.ev.on as ReturnType<typeof vi.fn>).mock.calls.find(
       (args: unknown[]) => args[0] === 'messages.upsert',
     );
-    const upsertHandler = upsertCall![1] as (data: unknown) => Promise<void>;
+    const upsertHandler = upsertCall?.[1] as (data: unknown) => Promise<void>;
 
     await upsertHandler({
       messages: [
@@ -170,7 +170,7 @@ describe('WhatsAppAdapter', () => {
     const upsertCall = (mockSock.ev.on as ReturnType<typeof vi.fn>).mock.calls.find(
       (args: unknown[]) => args[0] === 'messages.upsert',
     );
-    const upsertHandler = upsertCall![1] as (data: unknown) => Promise<void>;
+    const upsertHandler = upsertCall?.[1] as (data: unknown) => Promise<void>;
 
     await upsertHandler({
       messages: [
@@ -196,7 +196,7 @@ describe('WhatsAppAdapter', () => {
     const upsertCall = (mockSock.ev.on as ReturnType<typeof vi.fn>).mock.calls.find(
       (args: unknown[]) => args[0] === 'messages.upsert',
     );
-    const upsertHandler = upsertCall![1] as (data: unknown) => Promise<void>;
+    const upsertHandler = upsertCall?.[1] as (data: unknown) => Promise<void>;
 
     await upsertHandler({
       messages: [
