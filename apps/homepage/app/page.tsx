@@ -4,6 +4,7 @@ import { Features } from '@/components/Features'
 import { HowItWorks } from '@/components/HowItWorks'
 import { AppScreenshot } from '@/components/AppScreenshot'
 import { QuickStart } from '@/components/QuickStart'
+import { Community } from '@/components/Community'
 
 export default function Home() {
   return (
@@ -14,6 +15,7 @@ export default function Home() {
       <HowItWorks />
       <AppScreenshot />
       <QuickStart />
+      <Community />
     </main>
   )
 }
