@@ -97,13 +97,14 @@ export async function createAgentServer(config: DashConfig) {
           const raw = (await backendsByName.get(agentName)?.listSkills()) ?? [];
           const found = raw.find((s) => s.name === skillName);
           if (!found) throw new Error(`Skill "${skillName}" not found`);
-          if (found.location.startsWith('http')) throw new Error('Skill is remote and not editable');
+          if (found.location.startsWith('http'))
+            throw new Error('Skill is remote and not editable');
           const resolvedLocation = resolve(found.location);
           const paths = config.agents[agentName]?.skills?.paths ?? [];
           const insideConfiguredPath = paths.some((p) => {
             const resolvedPath = resolve(expandHome(p));
             return (
-              resolvedLocation === resolvedPath || resolvedLocation.startsWith(resolvedPath + '/')
+              resolvedLocation === resolvedPath || resolvedLocation.startsWith(`${resolvedPath}/`)
             );
           });
           if (!insideConfiguredPath) {
@@ -114,7 +115,8 @@ export async function createAgentServer(config: DashConfig) {
 
         async create(agentName, skillName, description, content) {
           const paths = config.agents[agentName]?.skills?.paths ?? [];
-          if (paths.length === 0) throw new Error('No writable skill path configured for this agent');
+          if (paths.length === 0)
+            throw new Error('No writable skill path configured for this agent');
           const safeSkillName = basename(skillName);
           if (!safeSkillName || safeSkillName === '.' || safeSkillName === '..') {
             throw new Error('Invalid skill name');
@@ -124,7 +126,13 @@ export async function createAgentServer(config: DashConfig) {
           const skillFile = join(skillDir, 'SKILL.md');
           const fullContent = `---\nname: ${safeSkillName}\ndescription: ${description}\n---\n\n${content}`;
           await writeFile(skillFile, fullContent, 'utf-8');
-          return { name: safeSkillName, description, location: skillFile, editable: true, content: fullContent };
+          return {
+            name: safeSkillName,
+            description,
+            location: skillFile,
+            editable: true,
+            content: fullContent,
+          };
         },
 
         getConfig(agentName) {
@@ -136,7 +144,9 @@ export async function createAgentServer(config: DashConfig) {
 
         async updateConfig(agentName, skillsConfig) {
           if (!config.configDir) {
-            throw new Error('Config directory not available — agent was not started with --config <dir>');
+            throw new Error(
+              'Config directory not available — agent was not started with --config <dir>',
+            );
           }
           const dashJsonPath = join(config.configDir, 'dash.json');
           const raw = await readFile(dashJsonPath, 'utf-8');

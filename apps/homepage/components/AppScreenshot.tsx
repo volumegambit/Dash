@@ -33,5 +33,5 @@ export function AppScreenshot() {
         </div>
       </div>
     </section>
-  )
+  );
 }

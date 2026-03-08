@@ -116,7 +116,7 @@ describe('loadConfig', () => {
     const configPath = join(tmpDir, 'routing-valid.json');
     await writeFile(configPath, config);
     const result = await loadConfig({ configPath });
-    expect(result.channels['telegram']?.routing).toHaveLength(1);
+    expect(result.channels.telegram?.routing).toHaveLength(1);
   });
 
   it('throws when routing rule references unknown agent', async () => {
