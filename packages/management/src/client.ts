@@ -70,17 +70,20 @@ export class ManagementClient {
   }
 
   async skills(agentName: string): Promise<SkillInfo[]> {
-    return this.request<SkillInfo[]>('GET', `/agents/${agentName}/skills`);
+    return this.request<SkillInfo[]>('GET', `/agents/${encodeURIComponent(agentName)}/skills`);
   }
 
   async skill(agentName: string, skillName: string): Promise<SkillContent> {
-    return this.request<SkillContent>('GET', `/agents/${agentName}/skills/${skillName}`);
+    return this.request<SkillContent>(
+      'GET',
+      `/agents/${encodeURIComponent(agentName)}/skills/${encodeURIComponent(skillName)}`,
+    );
   }
 
   async updateSkillContent(agentName: string, skillName: string, content: string): Promise<void> {
     await this.requestWithBody<{ success: boolean }>(
       'PUT',
-      `/agents/${agentName}/skills/${skillName}`,
+      `/agents/${encodeURIComponent(agentName)}/skills/${encodeURIComponent(skillName)}`,
       { content },
     );
   }
@@ -91,15 +94,22 @@ export class ManagementClient {
     description: string,
     content: string,
   ): Promise<SkillContent> {
-    return this.requestWithBody<SkillContent>('POST', `/agents/${agentName}/skills`, {
-      name: skillName,
-      description,
-      content,
-    });
+    return this.requestWithBody<SkillContent>(
+      'POST',
+      `/agents/${encodeURIComponent(agentName)}/skills`,
+      {
+        name: skillName,
+        description,
+        content,
+      },
+    );
   }
 
   async skillsConfig(agentName: string): Promise<SkillsConfig> {
-    return this.request<SkillsConfig>('GET', `/agents/${agentName}/skills/config`);
+    return this.request<SkillsConfig>(
+      'GET',
+      `/agents/${encodeURIComponent(agentName)}/skills/config`,
+    );
   }
 
   async updateSkillsConfig(
@@ -108,7 +118,7 @@ export class ManagementClient {
   ): Promise<{ requiresRestart: boolean }> {
     return this.requestWithBody<{ requiresRestart: boolean }>(
       'PATCH',
-      `/agents/${agentName}/skills/config`,
+      `/agents/${encodeURIComponent(agentName)}/skills/config`,
       config,
     );
   }
