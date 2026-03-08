@@ -44,6 +44,7 @@ describe('buildToolsMap', () => {
     expect(map.edit).toBe(false);
     expect(map.web_search).toBe(false);
     expect(map.mcp).toBe(false);
+    expect(map.skill).toBe(false);
   });
 
   it('always includes all 11 tool keys regardless of input', () => {
@@ -56,15 +57,5 @@ describe('buildToolsMap', () => {
     for (const val of Object.values(map)) {
       expect(val).toBe(false);
     }
-  });
-
-  it('includes skill in the tools map', () => {
-    const map = buildToolsMap(undefined);
-    expect(map.skill).toBe(true);
-  });
-
-  it('can disable skill by omitting it from the list', () => {
-    const map = buildToolsMap(['bash', 'read']);
-    expect(map.skill).toBe(false);
   });
 });
