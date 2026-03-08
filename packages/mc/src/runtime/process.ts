@@ -120,7 +120,9 @@ export async function waitForStartup(
     const healthInterval = setInterval(async () => {
       if (settled) return;
       try {
-        healthOk = await healthChecker(managementPort);
+        const ok = await healthChecker(managementPort);
+        if (settled) return; // check again after async gap
+        healthOk = ok;
         checkSuccess();
       } catch {
         // ignore
