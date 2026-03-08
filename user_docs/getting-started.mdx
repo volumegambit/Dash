@@ -3,7 +3,7 @@ title: "Getting started"
 description: "Install Dash, configure credentials, and run your first agent on your own machine."
 ---
 
-Get your first agent running in a few minutes. Dash runs entirely on your machine or private cloud — no data is sent anywhere except the LLM provider you choose.
+Get your first AI agent teammate up and running in minutes. No coding required.
 
 ## Prerequisites
 
@@ -29,7 +29,7 @@ Get your first agent running in a few minutes. Dash runs entirely on your machin
 
 ## Configuration
 
-Set up your credentials. There are several options depending on how you're running Dash.
+Your agents need access to an AI provider. Set that up once and all your agents share it.
 
 <Tabs>
   <Tab title="Mission Control (recommended)">
@@ -92,11 +92,20 @@ cp config.example/dash.json config/dash.json
 
 See [configuration](/configuration) for the full schema.
 
-## Running Dash
+## Launch your team
+
+Choose how you want to manage your agent team.
 
 <Tabs>
-  <Tab title="TUI (terminal)">
-    The TUI provides an interactive REPL that connects directly to an agent:
+  <Tab title="Mission Control (recommended)">
+    Use Mission Control to deploy and chat with your agents from a desktop app. Recommended for most users.
+
+    ```bash
+    npm run mc:dev
+    ```
+  </Tab>
+  <Tab title="TUI">
+    A terminal interface for managing and chatting with agents directly. Great for quick interactions.
 
     ```bash
     npm run tui
@@ -104,8 +113,8 @@ See [configuration](/configuration) for the full schema.
 
     You'll see a header showing the active agent, model, tools, and workspace path. Type a message and press Enter.
   </Tab>
-  <Tab title="Agent server">
-    The agent server starts a headless server with a Management API (HTTP) and Chat API (WebSocket):
+  <Tab title="Agent Server">
+    Run the agent server headlessly — ideal for automated workflows or self-hosted deployments.
 
     ```bash
     npm run dev
@@ -121,6 +130,8 @@ See [configuration](/configuration) for the full schema.
     The Management API listens on port 9100 and the Chat API on port 9101. Connect via WebSocket to interact with agents.
   </Tab>
   <Tab title="Docker">
+    Deploy your agent team in a container. Useful for consistent, portable setups.
+
     ```bash
     docker compose up --build
     ```
