@@ -1,8 +1,9 @@
 import '@testing-library/jest-dom/vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { mockApi } from '../../../../../vitest.setup.js';
 import { useDeploymentsStore } from '../../stores/deployments.js';
+import { useMessagingAppsStore } from '../../stores/messaging-apps.js';
 
 const mockNavigate = vi.fn();
 
@@ -70,5 +71,37 @@ describe('AgentDetail', () => {
     render(<AgentDetail />);
     await screen.findByText('Developer');
     expect(screen.queryByRole('button', { name: /chat/i })).not.toBeInTheDocument();
+  });
+
+  it('shows connect messaging app banner when agent is running and no apps are connected', async () => {
+    render(<AgentDetail />);
+    expect(await screen.findByText(/connect to a messaging app/i)).toBeInTheDocument();
+  });
+
+  it('hides banner when a messaging app routes to this agent', async () => {
+    mockApi.messagingAppsList.mockResolvedValue([
+      {
+        id: 'app-1',
+        name: 'My Telegram',
+        type: 'telegram',
+        enabled: true,
+        routing: [{ id: 'rule-1', condition: 'default', targetAgentName: 'myAgent', allowList: [], denyList: [] }],
+        createdAt: new Date().toISOString(),
+      },
+    ]);
+    useMessagingAppsStore.setState({ apps: [] });
+    render(<AgentDetail />);
+    await screen.findByText('Developer');
+    await waitFor(() => {
+      expect(screen.queryByText(/connect to a messaging app/i)).not.toBeInTheDocument();
+    });
+  });
+
+  it('hides banner when dismissed', async () => {
+    const user = userEvent.setup();
+    render(<AgentDetail />);
+    const dismissBtn = await screen.findByRole('button', { name: /dismiss/i });
+    await user.click(dismissBtn);
+    expect(screen.queryByText(/connect to a messaging app/i)).not.toBeInTheDocument();
   });
 });

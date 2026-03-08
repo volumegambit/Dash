@@ -5,6 +5,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { ModelChainEditor } from '../../components/ModelChainEditor.js';
 import { useAvailableModels } from '../../hooks/useAvailableModels.js';
 import { useDeploymentsStore } from '../../stores/deployments';
+import { useMessagingAppsStore } from '../../stores/messaging-apps.js';
 
 export function AgentDetail(): JSX.Element {
   const { id } = Route.useParams();
@@ -26,6 +27,8 @@ export function AgentDetail(): JSX.Element {
   const [chainModel, setChainModel] = useState('');
   const [chainFallbacks, setChainFallbacks] = useState<string[]>([]);
   const [chainSaving, setChainSaving] = useState(false);
+  const { apps: messagingApps, loadApps: loadMessagingApps } = useMessagingAppsStore();
+  const [bannerDismissed, setBannerDismissed] = useState(false);
 
   const deployment = deployments.find((d) => d.id === id);
   const logs = logLines[id] ?? [];
@@ -56,6 +59,10 @@ export function AgentDetail(): JSX.Element {
       setChainFallbacks(agentConfig.fallbackModels ?? []);
     }
   }, [agentConfig?.model]);
+
+  useEffect(() => {
+    loadMessagingApps();
+  }, [loadMessagingApps]);
 
   const handleStop = useCallback(async () => {
     await stop(id);
@@ -105,6 +112,10 @@ export function AgentDetail(): JSX.Element {
   const agentName = deployment.config?.agents
     ? (Object.keys(deployment.config.agents)[0] ?? '')
     : '';
+  const hasMessagingApp = messagingApps.some((app) =>
+    app.routing.some((rule) => rule.targetAgentName === agentName),
+  );
+  const showConnectBanner = isRunning && !hasMessagingApp && !bannerDismissed;
 
   return (
     <div className="flex h-full flex-col">
@@ -155,6 +166,40 @@ export function AgentDetail(): JSX.Element {
           </button>
         </div>
       </div>
+
+      {showConnectBanner && (
+        <div className="mb-6 flex items-center justify-between rounded-lg border border-border bg-sidebar-bg px-4 py-3">
+          <div>
+            <p className="text-sm font-medium">Connect to a messaging app</p>
+            <p className="mt-0.5 text-xs text-muted">
+              Route Telegram or WhatsApp conversations to this agent.
+            </p>
+            <div className="mt-2 flex items-center gap-3">
+              <Link
+                to="/messaging-apps/new-telegram"
+                className="text-xs text-primary hover:text-primary-hover"
+              >
+                Add Telegram
+              </Link>
+              <span className="text-xs text-muted">·</span>
+              <Link
+                to="/messaging-apps/new-whatsapp"
+                className="text-xs text-primary hover:text-primary-hover"
+              >
+                Add WhatsApp
+              </Link>
+            </div>
+          </div>
+          <button
+            type="button"
+            aria-label="Dismiss"
+            onClick={() => setBannerDismissed(true)}
+            className="ml-4 shrink-0 rounded p-1 text-muted transition-colors hover:bg-sidebar-hover hover:text-foreground"
+          >
+            ×
+          </button>
+        </div>
+      )}
 
       <div className="mb-6 grid grid-cols-2 gap-4">
         <InfoCard label="Model" value={agentConfig?.model ?? 'N/A'} />
