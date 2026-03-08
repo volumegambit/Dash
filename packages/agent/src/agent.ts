@@ -46,43 +46,56 @@ export class DashAgent {
       workspace: this.config.workspace,
     };
 
-    // Run backend, accumulate text response
+    // Run backend, accumulate text response and tool content for compaction tracking
     let responseText = '';
+    let toolContent = '';
     for await (const event of this.backend.run(state, options)) {
       yield event;
       if (event.type === 'text_delta') {
         responseText += event.text;
+      } else if (event.type === 'tool_result') {
+        toolContent += event.content;
       }
     }
 
+    // Combined content used for compaction estimation (text + tool results)
+    const turnContent = responseText + toolContent;
+
     // Persist response and check compaction
-    if (sessionStore && responseText) {
-      await sessionStore.append(sessionId, {
-        timestamp: new Date().toISOString(),
-        type: 'response',
-        data: { content: responseText },
-      });
+    if (sessionStore) {
+      if (responseText) {
+        await sessionStore.append(sessionId, {
+          timestamp: new Date().toISOString(),
+          type: 'response',
+          data: { content: responseText },
+        });
+      }
 
-      if (this.config.provider) {
-        const contextWindow = this.config.modelContextWindow ?? 200000;
-        const allMessages: Message[] = [
-          ...(session?.messages ?? []),
-          { role: 'user', content: userMessage },
-          { role: 'assistant', content: responseText },
-        ];
+      if (this.config.provider && turnContent) {
+        try {
+          const contextWindow = this.config.modelContextWindow ?? 200000;
+          const allMessages: Message[] = [
+            ...(session?.messages ?? []),
+            { role: 'user', content: userMessage },
+            { role: 'assistant', content: turnContent },
+          ];
 
-        if (shouldCompact(allMessages, contextWindow)) {
-          const summary = await compactSession(
-            allMessages,
-            this.config.provider,
-            this.config.model,
-          );
-          await sessionStore.append(sessionId, {
-            timestamp: new Date().toISOString(),
-            type: 'compaction',
-            data: { summary, messageCount: allMessages.length },
-          });
-          yield { type: 'context_compacted', overflow: false };
+          if (shouldCompact(allMessages, contextWindow)) {
+            const summary = await compactSession(
+              allMessages,
+              this.config.provider,
+              this.config.model,
+            );
+            await sessionStore.append(sessionId, {
+              timestamp: new Date().toISOString(),
+              type: 'compaction',
+              data: { summary, messageCount: allMessages.length },
+            });
+            yield { type: 'context_compacted', overflow: false };
+          }
+        } catch {
+          // Compaction failed — silently skip. The response is already persisted
+          // and the session remains in a valid state. Compaction can retry next turn.
         }
       }
     }
