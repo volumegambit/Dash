@@ -107,4 +107,30 @@ describe('GatewayManagementClient', () => {
       client.registerAgent('dep1', 'default', 'ws://localhost:9101/ws', 'tok'),
     ).rejects.toThrow('Gateway registerAgent failed: 500');
   });
+
+  it('registerChannel() throws on non-ok response', async () => {
+    fetchSpy.mockResolvedValueOnce({
+      ok: false,
+      status: 400,
+      json: async () => ({ error: 'Bad request' }),
+    });
+
+    const client = new GatewayManagementClient('http://localhost:9300', 'tok');
+    await expect(
+      client.registerChannel('dep1', 'tg1', {
+        adapter: 'telegram',
+        token: 'bot-tok',
+        globalDenyList: [],
+        routing: [],
+      }),
+    ).rejects.toThrow('Gateway registerChannel failed: 400');
+  });
+
+  it('deregisterDeployment() swallows non-ok HTTP responses', async () => {
+    fetchSpy.mockResolvedValueOnce({ ok: false, status: 404 });
+
+    const client = new GatewayManagementClient('http://localhost:9300', 'tok');
+    // Should not throw even on non-ok response
+    await expect(client.deregisterDeployment('dep1')).resolves.toBeUndefined();
+  });
 });

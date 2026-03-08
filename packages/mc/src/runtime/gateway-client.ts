@@ -39,6 +39,7 @@ export class GatewayManagementClient {
 
   async health(): Promise<GatewayHealthResponse> {
     const res = await fetch(`${this.baseUrl}/health`, {
+      headers: this.headers(),
       signal: AbortSignal.timeout(3000),
     });
     return res.json() as Promise<GatewayHealthResponse>;
