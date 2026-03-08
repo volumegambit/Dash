@@ -32,7 +32,9 @@ describe('summarize', () => {
   });
 
   it('extracts path for write_file', () => {
-    expect(summarize('write_file', JSON.stringify({ path: 'src/index.ts', content: 'hello' }))).toBe('src/index.ts');
+    expect(
+      summarize('write_file', JSON.stringify({ path: 'src/index.ts', content: 'hello' })),
+    ).toBe('src/index.ts');
   });
 
   it('extracts path for read', () => {
@@ -40,11 +42,15 @@ describe('summarize', () => {
   });
 
   it('extracts query for web_search', () => {
-    expect(summarize('web_search', JSON.stringify({ query: 'TypeScript generics' }))).toBe('TypeScript generics');
+    expect(summarize('web_search', JSON.stringify({ query: 'TypeScript generics' }))).toBe(
+      'TypeScript generics',
+    );
   });
 
   it('extracts url for web_fetch', () => {
-    expect(summarize('web_fetch', JSON.stringify({ url: 'https://example.com' }))).toBe('https://example.com');
+    expect(summarize('web_fetch', JSON.stringify({ url: 'https://example.com' }))).toBe(
+      'https://example.com',
+    );
   });
 
   it('falls back to first string value for unknown tool', () => {
