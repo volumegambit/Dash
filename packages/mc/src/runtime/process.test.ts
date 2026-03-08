@@ -222,6 +222,75 @@ describe('buildGatewayConfig', () => {
     const channels = result.channels as Record<string, unknown>;
     expect(channels['messaging-app-app-disabled']).toBeUndefined();
   });
+
+  it('includes whatsapp channel config for whatsapp messaging app', () => {
+    const whatsappApp: MessagingApp = {
+      id: 'app1',
+      name: 'My WhatsApp',
+      type: 'whatsapp',
+      credentialsKey: 'whatsapp-auth:app1',
+      enabled: true,
+      createdAt: new Date().toISOString(),
+      globalDenyList: [],
+      routing: [
+        {
+          id: 'rule1',
+          condition: { type: 'default' },
+          targetAgentName: 'myagent',
+          allowList: [],
+          denyList: [],
+        },
+      ],
+    };
+
+    const result = buildGatewayConfig(
+      ['myagent'],
+      9101,
+      9200,
+      undefined,
+      [{ app: whatsappApp, token: '', authStateDir: '/tmp/wa-sessions/app1' }],
+    );
+
+    const channels = result.channels as Record<string, Record<string, unknown>>;
+    const waChannel = Object.values(channels).find((ch) => ch.adapter === 'whatsapp');
+    expect(waChannel).toBeDefined();
+    expect(waChannel?.authStateDir).toBe('/tmp/wa-sessions/app1');
+    expect(waChannel?.token).toBeUndefined(); // no token for whatsapp
+  });
+
+  it('includes telegram channel config for telegram messaging app (unchanged behavior)', () => {
+    const telegramApp: MessagingApp = {
+      id: 'tg1',
+      name: 'My Telegram',
+      type: 'telegram',
+      credentialsKey: 'messaging-app:tg1:token',
+      enabled: true,
+      createdAt: new Date().toISOString(),
+      globalDenyList: [],
+      routing: [
+        {
+          id: 'rule1',
+          condition: { type: 'default' },
+          targetAgentName: 'myagent',
+          allowList: [],
+          denyList: [],
+        },
+      ],
+    };
+
+    const result = buildGatewayConfig(
+      ['myagent'],
+      9101,
+      9200,
+      undefined,
+      [{ app: telegramApp, token: 'bot-token-123' }],
+    );
+
+    const channels = result.channels as Record<string, Record<string, unknown>>;
+    const tgChannel = Object.values(channels).find((ch) => ch.adapter === 'telegram');
+    expect(tgChannel).toBeDefined();
+    expect(tgChannel?.token).toBe('bot-token-123');
+  });
 });
 
 class FakeProcess extends EventEmitter implements SpawnedProcess {

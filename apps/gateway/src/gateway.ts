@@ -1,5 +1,5 @@
 import type { AgentClient } from '@dash/agent';
-import { MessageRouter, MissionControlAdapter, TelegramAdapter } from '@dash/channels';
+import { MessageRouter, MissionControlAdapter, TelegramAdapter, WhatsAppAdapter } from '@dash/channels';
 import type { ChannelAdapter, RouterConfig } from '@dash/channels';
 import { RemoteAgentClient } from '@dash/chat';
 import type { GatewayConfig } from './config.js';
@@ -15,6 +15,13 @@ function createNonMcAdapter(
       }
       // In routing-rules mode, allowedUsers is not used (filtering is in MessageRouter)
       return new TelegramAdapter(config.token, config.routing ? [] : (config.allowedUsers ?? []));
+    }
+    case 'whatsapp': {
+      const authStateDir = config.authStateDir;
+      if (!authStateDir) {
+        throw new Error(`Channel "${name}" (whatsapp) requires an "authStateDir" field.`);
+      }
+      return new WhatsAppAdapter(config.whatsappAuth ?? {}, authStateDir);
     }
     default:
       throw new Error(`Unknown adapter type "${config.adapter}" for channel "${name}".`);
