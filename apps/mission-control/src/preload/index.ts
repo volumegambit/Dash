@@ -95,6 +95,16 @@ const api: MissionControlAPI = {
   messagingAppsDelete: (id: string) => ipcRenderer.invoke('messagingApps:delete', id),
   messagingAppsVerifyTelegramToken: (token: string) =>
     ipcRenderer.invoke('messagingApps:verifyTelegramToken', token),
+  whatsappStartPairing: (appId: string) => ipcRenderer.invoke('whatsapp:startPairing', appId),
+  whatsappOnQr: (callback: (qrDataUrl: string) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, qrDataUrl: string) => callback(qrDataUrl);
+    ipcRenderer.on('whatsapp:qr', listener);
+    return () => ipcRenderer.removeListener('whatsapp:qr', listener);
+  },
+  messagingAppsCreateWhatsApp: (
+    appId: string,
+    app: Parameters<MissionControlAPI['messagingAppsCreateWhatsApp']>[1],
+  ) => ipcRenderer.invoke('messagingApps:createWhatsApp', appId, app),
 
   // Settings
   settingsGet: () => ipcRenderer.invoke('settings:get'),
