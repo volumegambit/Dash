@@ -4,10 +4,11 @@ import { useEffect, useState } from 'react';
 import { useDeploymentsStore } from '../../stores/deployments';
 import { useMessagingAppsStore } from '../../stores/messaging-apps';
 
-// Step IDs for clarity
+type PathId = 'new' | 'know' | 'token';
+
 type StepId =
+  | 'choose-path'
   | 'what-is-telegram'
-  | 'have-telegram'
   | 'what-is-bot'
   | 'open-botfather'
   | 'create-bot'
@@ -17,18 +18,29 @@ type StepId =
   | 'choose-assistant'
   | 'done';
 
-const STEPS: StepId[] = [
-  'what-is-telegram',
-  'have-telegram',
-  'what-is-bot',
-  'open-botfather',
-  'create-bot',
-  'copy-token',
-  'paste-token',
-  'name-connection',
-  'choose-assistant',
-  'done',
-];
+const PATH_STEPS: Record<PathId, StepId[]> = {
+  new: [
+    'what-is-telegram',
+    'what-is-bot',
+    'open-botfather',
+    'create-bot',
+    'copy-token',
+    'paste-token',
+    'name-connection',
+    'choose-assistant',
+    'done',
+  ],
+  know: [
+    'open-botfather',
+    'create-bot',
+    'copy-token',
+    'paste-token',
+    'name-connection',
+    'choose-assistant',
+    'done',
+  ],
+  token: ['paste-token', 'name-connection', 'choose-assistant', 'done'],
+};
 
 function NewTelegramWizard(): JSX.Element {
   const navigate = useNavigate();
