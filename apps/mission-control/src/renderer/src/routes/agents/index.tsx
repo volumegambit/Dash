@@ -1,10 +1,16 @@
 import { Link, createFileRoute } from '@tanstack/react-router';
 import { Bot, Circle, Loader, Plus, Square, Trash2 } from 'lucide-react';
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { useDeploymentsStore } from '../../stores/deployments';
 
 function Agents(): JSX.Element {
   const { deployments, loading, loadDeployments, stop, remove } = useDeploymentsStore();
+  const [removeTarget, setRemoveTarget] = useState<{
+    id: string;
+    name: string;
+    workspace?: string;
+  } | null>(null);
+  const [deleteWorkspace, setDeleteWorkspace] = useState(false);
 
   useEffect(() => {
     loadDeployments();
@@ -87,7 +93,12 @@ function Agents(): JSX.Element {
                     type="button"
                     onClick={(e) => {
                       e.stopPropagation();
-                      remove(deployment.id);
+                      setDeleteWorkspace(false);
+                      setRemoveTarget({
+                        id: deployment.id,
+                        name: deployment.name,
+                        workspace: deployment.workspace,
+                      });
                     }}
                     title="Remove"
                     className="rounded p-1.5 text-muted transition-colors hover:bg-red-900/30 hover:text-red-400"
@@ -98,6 +109,53 @@ function Agents(): JSX.Element {
               </div>
             </div>
           ))}
+        </div>
+      )}
+
+      {removeTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+          <div className="w-full max-w-sm rounded-lg border border-border bg-sidebar-bg p-6 shadow-lg">
+            <h2 className="text-base font-semibold">Remove {removeTarget.name}?</h2>
+            <p className="mt-1 text-sm text-muted">
+              This will remove the deployment. The agent process will be stopped.
+            </p>
+
+            {removeTarget.workspace && (
+              <label className="mt-4 flex cursor-pointer items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={deleteWorkspace}
+                  onChange={(e) => setDeleteWorkspace(e.target.checked)}
+                  className="accent-primary"
+                />
+                <span>
+                  Also delete workspace at{' '}
+                  <span className="font-mono text-xs">{removeTarget.workspace}</span>
+                </span>
+              </label>
+            )}
+
+            <div className="mt-6 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setRemoveTarget(null)}
+                className="rounded-lg border border-border px-4 py-2 text-sm text-muted transition-colors hover:bg-sidebar-hover hover:text-foreground"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={async () => {
+                  const { id } = removeTarget;
+                  setRemoveTarget(null);
+                  await remove(id, deleteWorkspace);
+                }}
+                className="rounded-lg bg-red-600 px-4 py-2 text-sm text-white transition-colors hover:bg-red-700"
+              >
+                Remove
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>
