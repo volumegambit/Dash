@@ -3,7 +3,7 @@ title: "Architecture"
 description: "How Dash is structured, how data flows, and how agents process messages."
 ---
 
-Dash is a TypeScript monorepo for deploying autonomous AI agents. It runs as a headless server with two APIs, or as a standalone terminal UI.
+Dash is made up of three pieces that work together to keep your agent team running.
 
 ## System overview
 
@@ -26,17 +26,19 @@ graph TB
 
 Dash has three main components that can run on different machines:
 
-- **Agent server** — runs on your infrastructure (a VPS, private cloud, or local machine). This is the main deployment target. It reads your config, creates agents with their assigned models and tools, and starts two APIs: the Chat API (WebSocket, port 9101) for real-time interaction, and the Management API (HTTP, port 9100) for health checks, server info, and shutdown.
-- **Gateway** — runs alongside the agent server. Owns all channel connections and routes messages to agents via the Chat API. External chat platforms like Telegram connect through the gateway — it runs a Telegram bot that polls for messages and forwards them to the agent. Mission Control's chat panel also connects through the gateway over WebSocket. Every channel is handled the same way: one process, one config file, one message path to the agent.
-- **Mission Control** — runs on your local machine. A desktop app (Electron) or CLI for monitoring and managing remote agent servers. Connects to the gateway for chat (WebSocket, port 9200) and to agent servers for monitoring (HTTP, port 9100). Includes a built-in TUI for terminal-based interaction.
+- **Agent server** — The engine behind your agents. The agent server runs on your infrastructure and handles all AI interactions, tool execution, and conversation history. It reads your config, creates agents with their assigned models and tools, and starts two APIs: the Chat API (WebSocket, port 9101) for real-time interaction, and the Management API (HTTP, port 9100) for health checks, server info, and shutdown.
+- **Gateway** — Connects your agents to the outside world. The gateway routes messages from platforms like Telegram to your agent team. It runs alongside the agent server, owns all channel connections, and routes messages to agents via the Chat API. Mission Control's chat panel also connects through the gateway over WebSocket. Every channel is handled the same way: one process, one config file, one message path to the agent.
+- **Mission Control** — Your command center. Mission Control is a desktop app (and CLI) for deploying agents, monitoring their status, and chatting with them directly. Connects to the gateway for chat (WebSocket, port 9200) and to agent servers for monitoring (HTTP, port 9100). Includes a built-in TUI for terminal-based interaction.
 
 ### Deployment options
+
+Dash is flexible about where each piece runs.
 
 **Single machine** — run everything locally. Start the agent server and gateway, then use the TUI or Mission Control from `localhost`. Good for development and personal use.
 
 **Multi-machine** — run the agent server and gateway on a VPS or private cloud, and use Mission Control from your laptop to manage and chat. The Chat API, Management API, and gateway are the only network-facing surfaces, each protected by its own auth token. You can manage multiple agent servers from a single Mission Control instance.
 
-## Components
+## How your team is organized
 
 <AccordionGroup>
   <Accordion title="LLM layer" icon="microchip">
@@ -78,7 +80,7 @@ Both servers bind to `127.0.0.1` by default. Each has its own token — a manage
 
 ## Message flow
 
-When a client sends a message through the Chat API:
+Here's what happens when you send a message to one of your agents.
 
 <Steps>
   <Step title="Connect and authenticate">

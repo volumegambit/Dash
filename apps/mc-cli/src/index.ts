@@ -5,6 +5,9 @@ import { registerInfoCommand } from './commands/info.js';
 import { registerLockCommand } from './commands/lock.js';
 import { registerLogsCommand } from './commands/logs.js';
 import { registerRemoveCommand } from './commands/remove.js';
+import { registerProvidersConnectCommand } from './commands/providers-connect.js';
+import { registerProvidersDisconnectCommand } from './commands/providers-disconnect.js';
+import { registerProvidersListCommand } from './commands/providers-list.js';
 import { registerSecretsChangePasswordCommand } from './commands/secrets-change-password.js';
 import { registerSecretsDeleteCommand } from './commands/secrets-delete.js';
 import { registerSecretsGetCommand } from './commands/secrets-get.js';
@@ -36,5 +39,11 @@ registerSecretsGetCommand(secrets);
 registerSecretsSetCommand(secrets);
 registerSecretsDeleteCommand(secrets);
 registerSecretsChangePasswordCommand(secrets);
+
+// Providers subcommand group
+const providers = program.command('providers').description('Manage AI provider API keys');
+registerProvidersListCommand(providers);
+registerProvidersConnectCommand(providers);
+registerProvidersDisconnectCommand(providers);
 
 program.parse();

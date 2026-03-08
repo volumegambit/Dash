@@ -6,6 +6,7 @@ import { join, resolve } from 'node:path';
 import {
   AgentRegistry,
   ConversationStore,
+  DeploymentStartupError,
   EncryptedSecretStore,
   MessagingAppRegistry,
   ProcessRuntime,
@@ -249,7 +250,14 @@ export async function registerIpcHandlers(
   });
 
   ipcMain.handle('deployments:deploy', async (_event, configDir: string) => {
-    return getRuntime().deploy(configDir);
+    try {
+      return await getRuntime().deploy(configDir);
+    } catch (err) {
+      if (err instanceof DeploymentStartupError) {
+        return err.deploymentId;
+      }
+      throw err;
+    }
   });
 
   ipcMain.handle(
@@ -286,7 +294,14 @@ export async function registerIpcHandlers(
         await writeFile(join(configDir, 'gateway.json'), JSON.stringify(gatewayConfig, null, 2));
       }
 
-      return getRuntime().deploy(configDir);
+      try {
+        return await getRuntime().deploy(configDir);
+      } catch (err) {
+        if (err instanceof DeploymentStartupError) {
+          return err.deploymentId;
+        }
+        throw err;
+      }
     },
   );
 

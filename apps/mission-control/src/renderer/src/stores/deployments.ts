@@ -1,6 +1,6 @@
 import type { AgentDeployment, RuntimeStatus } from '@dash/mc';
 import { create } from 'zustand';
-import type { DeployWithConfigOptions } from '../../../shared/ipc';
+import { type DeployWithConfigOptions, RendererDeploymentError } from '../../../shared/ipc';
 
 const MAX_LOG_LINES = 500;
 
@@ -44,9 +44,21 @@ export const useDeploymentsStore = create<DeploymentsState>((set, get) => ({
     try {
       const id = await window.api.deploymentsDeploy(configDir);
       await get().loadDeployments();
+      const deployment = get().deployments.find((d) => d.id === id);
+      if (deployment?.status === 'error') {
+        const err = new RendererDeploymentError(
+          deployment.errorMessage ?? 'Deployment startup failed',
+          id,
+          deployment.startupLogs ?? [],
+        );
+        set({ error: err.message });
+        throw err;
+      }
       return id;
     } catch (err) {
-      set({ error: (err as Error).message });
+      if (!(err instanceof RendererDeploymentError)) {
+        set({ error: (err as Error).message });
+      }
       throw err;
     }
   },
@@ -56,9 +68,21 @@ export const useDeploymentsStore = create<DeploymentsState>((set, get) => ({
     try {
       const id = await window.api.deploymentsDeployWithConfig(options);
       await get().loadDeployments();
+      const deployment = get().deployments.find((d) => d.id === id);
+      if (deployment?.status === 'error') {
+        const err = new RendererDeploymentError(
+          deployment.errorMessage ?? 'Deployment startup failed',
+          id,
+          deployment.startupLogs ?? [],
+        );
+        set({ error: err.message });
+        throw err;
+      }
       return id;
     } catch (err) {
-      set({ error: (err as Error).message });
+      if (!(err instanceof RendererDeploymentError)) {
+        set({ error: (err as Error).message });
+      }
       throw err;
     }
   },
