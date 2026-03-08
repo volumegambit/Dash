@@ -17,8 +17,8 @@ export interface AgentDeployment {
   chatToken?: string;
   workspace?: string;
   // Startup diagnostics
-  startupLogs?: string[];   // captured stdout/stderr from a failed startup
-  errorMessage?: string;    // human-readable failure reason
+  startupLogs?: string[]; // captured stdout/stderr from a failed startup
+  errorMessage?: string; // human-readable failure reason
   // Cloud-specific
   dropletId?: number;
   dropletIp?: string;
@@ -60,8 +60,8 @@ export interface RoutingRule {
   label?: string;
   condition: RoutingCondition;
   targetAgentName: string;
-  allowList: string[];   // empty = allow all matched senders
-  denyList: string[];    // always block these senders from this agent
+  allowList: string[]; // empty = allow all matched senders
+  denyList: string[]; // always block these senders from this agent
 }
 
 export interface MessagingApp {
@@ -71,6 +71,6 @@ export interface MessagingApp {
   credentialsKey: string;          // key in EncryptedSecretStore, e.g. 'messaging-app:abc:token'
   enabled: boolean;
   createdAt: string;
-  globalDenyList: string[];        // blocked before any routing evaluates
-  routing: RoutingRule[];          // ordered, first match wins
+  globalDenyList: string[]; // blocked before any routing evaluates
+  routing: RoutingRule[]; // ordered, first match wins
 }

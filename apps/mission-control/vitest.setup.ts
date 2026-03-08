@@ -54,6 +54,20 @@ function createMockApi(): Record<keyof MissionControlAPI, ReturnType<typeof vi.f
     deploymentsLogsUnsubscribe: vi.fn().mockResolvedValue(undefined),
     deploymentsUpdateConfig: vi.fn().mockResolvedValue(undefined),
 
+    // Messaging Apps
+    messagingAppsList: vi.fn().mockResolvedValue([]),
+    messagingAppsGet: vi.fn().mockResolvedValue(null),
+    messagingAppsCreate: vi.fn().mockResolvedValue(null),
+    messagingAppsUpdate: vi.fn().mockResolvedValue(undefined),
+    messagingAppsDelete: vi.fn().mockResolvedValue(undefined),
+    messagingAppsVerifyTelegramToken: vi.fn().mockResolvedValue({ username: 'bot', firstName: 'Bot' }),
+    whatsappStartPairing: vi.fn().mockResolvedValue(undefined),
+    whatsappOnQr: vi.fn().mockReturnValue(() => {}),
+    whatsappOnLinked: vi.fn().mockReturnValue(() => {}),
+    whatsappOnError: vi.fn().mockReturnValue(() => {}),
+    messagingAppsCreateWhatsApp: vi.fn().mockResolvedValue(null),
+    dialogOpenDirectory: vi.fn().mockResolvedValue(null),
+
     // Settings
     settingsGet: vi.fn().mockResolvedValue({}),
     settingsSet: vi.fn().mockResolvedValue(undefined),

@@ -6,8 +6,18 @@ import { ModelChainEditor } from './ModelChainEditor.js';
 import type { ModelOption } from './deploy-options.js';
 
 const models: ModelOption[] = [
-  { value: 'anthropic/claude-sonnet-4-20250514', label: 'Claude Sonnet 4', provider: 'anthropic', secretKey: 'anthropic-api-key' },
-  { value: 'anthropic/claude-haiku-4-5-20251001', label: 'Claude Haiku 4.5', provider: 'anthropic', secretKey: 'anthropic-api-key' },
+  {
+    value: 'anthropic/claude-sonnet-4-20250514',
+    label: 'Claude Sonnet 4',
+    provider: 'anthropic',
+    secretKey: 'anthropic-api-key',
+  },
+  {
+    value: 'anthropic/claude-haiku-4-5-20251001',
+    label: 'Claude Haiku 4.5',
+    provider: 'anthropic',
+    secretKey: 'anthropic-api-key',
+  },
   { value: 'openai/gpt-4o', label: 'GPT-4o', provider: 'openai', secretKey: 'openai-api-key' },
 ];
 
@@ -36,7 +46,10 @@ describe('ModelChainEditor', () => {
         onChange={onChange}
       />,
     );
-    await user.selectOptions(screen.getByRole('combobox', { name: /primary model/i }), 'openai/gpt-4o');
+    await user.selectOptions(
+      screen.getByRole('combobox', { name: /primary model/i }),
+      'openai/gpt-4o',
+    );
     expect(onChange).toHaveBeenCalledWith('openai/gpt-4o', []);
   });
 
@@ -88,12 +101,7 @@ describe('ModelChainEditor', () => {
   it('shows empty state when no models available', () => {
     const onChange = vi.fn();
     render(
-      <ModelChainEditor
-        model=""
-        fallbackModels={[]}
-        availableModels={[]}
-        onChange={onChange}
-      />,
+      <ModelChainEditor model="" fallbackModels={[]} availableModels={[]} onChange={onChange} />,
     );
     expect(screen.getByText(/add api keys in settings/i)).toBeInTheDocument();
   });

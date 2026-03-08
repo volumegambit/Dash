@@ -69,8 +69,7 @@ const api: MissionControlAPI = {
   deploymentsLogsSubscribe: (id: string) => ipcRenderer.invoke('deployments:logs:subscribe', id),
   deploymentsLogsUnsubscribe: (id: string) =>
     ipcRenderer.invoke('deployments:logs:unsubscribe', id),
-  deploymentsUpdateConfig: (id, patch) =>
-    ipcRenderer.invoke('deployments:updateConfig', id, patch),
+  deploymentsUpdateConfig: (id, patch) => ipcRenderer.invoke('deployments:updateConfig', id, patch),
 
   // Deployment events
   onDeploymentLog: (callback: (id: string, line: string) => void) => {
@@ -90,8 +89,10 @@ const api: MissionControlAPI = {
   messagingAppsList: () => ipcRenderer.invoke('messagingApps:list'),
   messagingAppsGet: (id: string) => ipcRenderer.invoke('messagingApps:get', id),
   messagingAppsCreate: (app, token) => ipcRenderer.invoke('messagingApps:create', app, token),
-  messagingAppsUpdate: (id: string, patch: Parameters<MissionControlAPI['messagingAppsUpdate']>[1]) =>
-    ipcRenderer.invoke('messagingApps:update', id, patch),
+  messagingAppsUpdate: (
+    id: string,
+    patch: Parameters<MissionControlAPI['messagingAppsUpdate']>[1],
+  ) => ipcRenderer.invoke('messagingApps:update', id, patch),
   messagingAppsDelete: (id: string) => ipcRenderer.invoke('messagingApps:delete', id),
   messagingAppsVerifyTelegramToken: (token: string) =>
     ipcRenderer.invoke('messagingApps:verifyTelegramToken', token),

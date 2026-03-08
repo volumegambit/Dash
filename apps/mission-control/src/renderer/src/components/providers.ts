@@ -79,8 +79,7 @@ export const PROVIDER_CONFIG: Record<Provider, ProviderConfig> = {
     apiKeysUrl: 'https://aistudio.google.com/app/apikey',
     helpUrl: 'https://ai.google.dev/gemini-api/docs/quickstart',
     helpLabel: 'Gemini API quickstart',
-    explanation:
-      'To use Gemini models, you need an API key from Google AI Studio.',
+    explanation: 'To use Gemini models, you need an API key from Google AI Studio.',
     steps: [
       'Click "Create API key", select a project, and copy the key.',
       'Paste it below. It starts with AIza.',
