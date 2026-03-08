@@ -49,7 +49,7 @@ export function QuickStart() {
         </div>
 
         <Link
-          href="https://dash-aa8db5b5.mintlify.app/introduction"
+          href="https://docs.dashsquad.ai"
           target="_blank"
           rel="noopener noreferrer"
           className="mt-6 inline-block text-sm text-[#3b82f6] hover:underline"

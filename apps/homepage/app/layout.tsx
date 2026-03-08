@@ -3,6 +3,7 @@ import { GeistMono } from 'geist/font/mono'
 import './globals.css'
 
 export const metadata: Metadata = {
+  metadataBase: new URL('https://dashsquad.ai'),
   title: 'Dash — Your AI Team, Always On',
   description:
     'Run autonomous AI agents on your infrastructure. Dash lets you deploy, monitor, and chat with AI agents from a desktop app or CLI.',

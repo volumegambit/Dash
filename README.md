@@ -9,7 +9,7 @@
 [![Docker](https://img.shields.io/badge/Docker-ready-2496ED?logo=docker&logoColor=white)](https://www.docker.com)
 [![License](https://img.shields.io/badge/license-private-red)]()
 
-DashTeams.ai (Dash) lets anyone run a team of AI agents that work autonomously — handling tasks, making decisions, and getting things done — so you don't have to.
+DashSquad.ai (Dash) lets anyone run a team of AI agents that work autonomously — handling tasks, making decisions, and getting things done — so you don't have to.
 
 Whether you're a solo operator or managing a team, Dash puts a crew of AI agents to work for you. Define what they do, set them loose, and check back on results.
 
@@ -194,7 +194,7 @@ Define named agent profiles with model, system prompt, tools, and token limits:
 
 ## Documentation
 
-Full documentation is available at [dash-aa8db5b5.mintlify.app](https://dash-aa8db5b5.mintlify.app/introduction), or in the [`user_docs/`](user_docs/) directory:
+Full documentation is available at [docs.dashsquad.ai](https://docs.dashsquad.ai), or in the [`user_docs/`](user_docs/) directory:
 
 - [Getting Started](user_docs/getting-started.mdx) — install, configure, first run
 - [Configuration](user_docs/configuration.mdx) — `dash.json` schema, env vars, defaults

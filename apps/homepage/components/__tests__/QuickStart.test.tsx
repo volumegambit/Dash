@@ -17,6 +17,6 @@ describe('QuickStart', () => {
   it('renders a link to full setup guide', () => {
     render(<QuickStart />)
     const link = screen.getByRole('link', { name: /full setup guide/i })
-    expect(link).toHaveAttribute('href', 'https://dash-aa8db5b5.mintlify.app/introduction')
+    expect(link).toHaveAttribute('href', 'https://docs.dashsquad.ai')
   })
 })
