@@ -119,7 +119,7 @@ export function AgentDetail(): JSX.Element {
   const showConnectBanner = isRunning && !!agentName && !hasMessagingApp && !bannerDismissed;
 
   return (
-    <div className="flex h-full flex-col">
+    <div className="flex min-h-full flex-col overflow-y-auto">
       <div className="mb-6 flex items-center justify-between">
         <div className="flex items-center gap-4">
           <Link
@@ -320,7 +320,7 @@ export function AgentDetail(): JSX.Element {
         </div>
       )}
 
-      <div className="flex min-h-0 flex-1 flex-col">
+      <div className="flex min-h-48 flex-1 flex-col">
         <h2 className="mb-2 text-sm font-medium text-muted">Logs</h2>
         <LogViewer lines={logs} />
       </div>
