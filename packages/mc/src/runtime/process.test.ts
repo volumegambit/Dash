@@ -274,6 +274,58 @@ function createMockSecrets(): SecretStore {
   };
 }
 
+describe('ProcessRuntime.updateAgentConfig', () => {
+  it('rewrites model and fallbackModels in the agent JSON file', async () => {
+    const configDir = await mkdtemp(join(tmpdir(), 'mc-update-test-'));
+    const agentsDir = join(configDir, 'agents');
+    await mkdir(agentsDir, { recursive: true });
+    await writeFile(
+      join(agentsDir, 'my-agent.json'),
+      JSON.stringify({ model: 'anthropic/claude-sonnet-4-20250514', systemPrompt: 'hello' }),
+    );
+
+    const fakeDeployment = {
+      id: 'test-id',
+      configDir,
+      status: 'running' as const,
+      name: 'my-agent',
+      target: 'local' as const,
+      createdAt: new Date().toISOString(),
+      config: { target: 'local' as const, channels: {} },
+    };
+    const fakeRegistry = {
+      get: async (_id: string) => fakeDeployment,
+      list: async () => [fakeDeployment],
+      add: async () => {},
+      update: async () => {},
+      remove: async () => {},
+    };
+    const fakeSecrets = {
+      get: async () => null,
+      set: async () => {},
+      delete: async () => {},
+      list: async () => [],
+      isUnlocked: () => true,
+      lock: () => {},
+    };
+
+    const runtime = new ProcessRuntime(fakeRegistry as any, fakeSecrets as any, '/');
+    await runtime.updateAgentConfig('test-id', {
+      model: 'openai/gpt-4o',
+      fallbackModels: ['anthropic/claude-haiku-4-5-20251001'],
+    });
+
+    const updated = JSON.parse(
+      await readFile(join(agentsDir, 'my-agent.json'), 'utf-8'),
+    );
+    expect(updated.model).toBe('openai/gpt-4o');
+    expect(updated.fallbackModels).toEqual(['anthropic/claude-haiku-4-5-20251001']);
+    expect(updated.systemPrompt).toBe('hello');
+
+    await rm(configDir, { recursive: true });
+  });
+});
+
 describe('ProcessRuntime lifecycle', () => {
   let tmpDir: string;
   let configDir: string;
