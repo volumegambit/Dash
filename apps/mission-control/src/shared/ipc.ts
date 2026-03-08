@@ -99,6 +99,14 @@ export interface MissionControlAPI {
   messagingAppsDelete(id: string): Promise<void>;
   messagingAppsVerifyTelegramToken(token: string): Promise<TelegramBotInfo>;
 
+  // WhatsApp
+  whatsappStartPairing(appId: string): Promise<void>;
+  whatsappOnQr(callback: (qrDataUrl: string) => void): () => void;
+  messagingAppsCreateWhatsApp(
+    appId: string,
+    app: Omit<MessagingApp, 'id' | 'createdAt' | 'credentialsKey'>,
+  ): Promise<MessagingApp>;
+
   // Events (push from main → renderer)
   onDeploymentLog(callback: (id: string, line: string) => void): () => void;
   onDeploymentStatusChange(callback: (id: string, status: string) => void): () => void;
