@@ -11,6 +11,15 @@ import type {
 
 type OcClient = ReturnType<typeof createOpencodeClient>;
 
+/** Extracts the skill name from a completed skill tool event. Returns null for all other events. */
+export function extractSkillName(event: { type: string; properties: unknown }): string | null {
+  // biome-ignore lint/suspicious/noExplicitAny: dynamic event shape
+  const part = (event.properties as any)?.part;
+  if (part?.type !== 'tool' || part.tool !== 'skill') return null;
+  if (part.state?.status !== 'completed') return null;
+  return part.state?.input?.name ?? null;
+}
+
 export class OpenCodeBackend implements AgentBackend {
   readonly name = 'opencode';
 
@@ -26,7 +35,10 @@ export class OpenCodeBackend implements AgentBackend {
 
   async start(workspace: string): Promise<void> {
     const server = await createOpencodeServer({
-      config: { model: this.config.model },
+      config: {
+        model: this.config.model,
+        ...(this.config.skills && { skills: this.config.skills }),
+      },
     });
     this.serverClose = () => server.close();
 
@@ -105,6 +117,12 @@ export class OpenCodeBackend implements AgentBackend {
         const normalized = this.normalizeEvent(event, sessionId);
         if (normalized !== null) {
           yield normalized;
+          if (normalized.type === 'tool_result' && normalized.name === 'skill') {
+            const skillName = extractSkillName(event);
+            if (skillName) {
+              yield { type: 'skill_loaded', name: skillName };
+            }
+          }
         }
       }
     } finally {
