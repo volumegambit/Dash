@@ -16,12 +16,10 @@ describe('MissionControlAPI contract', () => {
       model: 'claude-sonnet-4-20250514',
       systemPrompt: 'You are helpful.',
       tools: ['read_file'],
-      enableTelegram: false,
     };
     expect(options.name).toBe('test-agent');
     expect(options.model).toContain('claude');
     expect(options.tools).toHaveLength(1);
-    expect(options.enableTelegram).toBe(false);
   });
 
   it('MissionControlAPI exposes all deployment methods', () => {
