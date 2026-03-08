@@ -263,8 +263,7 @@ export async function registerIpcHandlers(
   ipcMain.handle(
     'deployments:deployWithConfig',
     async (_event, options: DeployWithConfigOptions) => {
-      const { name, model, fallbackModels, systemPrompt, tools, enableTelegram, workspace } =
-        options;
+      const { name, model, fallbackModels, systemPrompt, tools, workspace } = options;
 
       // Create a temp config directory with the agent and gateway config
       const configDir = join(tmpdir(), `mc-deploy-${Date.now()}`);
@@ -281,19 +280,6 @@ export async function registerIpcHandlers(
         ...(workspace ? { workspace } : {}),
       };
       await writeFile(join(agentsDir, `${name}.json`), JSON.stringify(agentConfig, null, 2));
-
-      // Write gateway config if telegram is enabled
-      if (enableTelegram) {
-        const gatewayConfig = {
-          channels: {
-            telegram: {
-              adapter: 'telegram',
-              agent: name,
-            },
-          },
-        };
-        await writeFile(join(configDir, 'gateway.json'), JSON.stringify(gatewayConfig, null, 2));
-      }
 
       try {
         return await getRuntime().deploy(configDir);
