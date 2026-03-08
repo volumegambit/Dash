@@ -290,6 +290,97 @@ describe('Management Server', () => {
       });
       expect(res.status).toBe(501);
     });
+
+    it('POST with name ".." returns 400 with invalid skill name error', async () => {
+      const res = await fetch(skillsUrl('/agents/default/skills'), {
+        method: 'POST',
+        headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: '..', description: 'bad', content: 'bad' }),
+      });
+      expect(res.status).toBe(400);
+      const body = (await res.json()) as { error: string };
+      expect(body.error).toBe('Invalid skill name');
+    });
+
+    it('GET list returns 500 when handler throws', async () => {
+      const result = startManagementServer({
+        port: 0,
+        token: TEST_TOKEN,
+        getInfo: () => testInfo,
+        onShutdown: vi.fn().mockResolvedValue(undefined),
+        skills: {
+          list: async () => { throw new Error('storage failure'); },
+          get: async () => null,
+          updateContent: async () => {},
+          create: async (_agentName, name, description, content) => ({
+            name,
+            description,
+            content,
+            location: `/tmp/skills/${name}/SKILL.md`,
+            editable: true,
+          }),
+          getConfig: () => ({ paths: [], urls: [] }),
+          updateConfig: async () => {},
+        },
+      });
+      await new Promise<void>((resolve) => {
+        if (result.server.listening) resolve();
+        else result.server.once('listening', resolve);
+      });
+      const addr = result.server.address();
+      const p = typeof addr === 'object' && addr ? addr.port : 0;
+      try {
+        const res = await fetch(`http://localhost:${p}/agents/default/skills`, {
+          headers: authHeaders(),
+        });
+        expect(res.status).toBe(500);
+        const body = (await res.json()) as { error: string };
+        expect(body.error).toBe('Failed to list skills');
+      } finally {
+        await result.close();
+      }
+    });
+
+    it('PATCH /config when agent not found returns 404', async () => {
+      const result = startManagementServer({
+        port: 0,
+        token: TEST_TOKEN,
+        getInfo: () => testInfo,
+        onShutdown: vi.fn().mockResolvedValue(undefined),
+        skills: {
+          list: async () => [],
+          get: async () => null,
+          updateContent: async () => {},
+          create: async (_agentName, name, description, content) => ({
+            name,
+            description,
+            content,
+            location: `/tmp/skills/${name}/SKILL.md`,
+            editable: true,
+          }),
+          getConfig: () => ({ paths: [], urls: [] }),
+          updateConfig: async (agentName) => {
+            throw new Error(`Agent '${agentName}' not found in config`);
+          },
+        },
+      });
+      await new Promise<void>((resolve) => {
+        if (result.server.listening) resolve();
+        else result.server.once('listening', resolve);
+      });
+      const addr = result.server.address();
+      const p = typeof addr === 'object' && addr ? addr.port : 0;
+      try {
+        const res = await fetch(`http://localhost:${p}/agents/ghost/skills/config`, {
+          method: 'PATCH',
+          headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+          body: JSON.stringify({ paths: ['/new/path'], urls: [] }),
+        });
+        expect(res.status).toBe(404);
+      } finally {
+        await result.close();
+      }
+    });
   });
 
   describe('log endpoints', () => {

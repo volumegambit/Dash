@@ -115,6 +115,9 @@ export async function createAgentServer(config: DashConfig) {
           const paths = config.agents[agentName]?.skills?.paths ?? [];
           if (paths.length === 0) throw new Error('No writable skill path configured for this agent');
           const safeSkillName = basename(skillName);
+          if (!safeSkillName || safeSkillName === '.' || safeSkillName === '..') {
+            throw new Error('Invalid skill name');
+          }
           const skillDir = join(expandHome(paths[0]), safeSkillName);
           await mkdir(skillDir, { recursive: true });
           const skillFile = join(skillDir, 'SKILL.md');

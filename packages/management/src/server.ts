@@ -1,6 +1,7 @@
 import { existsSync } from 'node:fs';
 import { readFile, stat } from 'node:fs/promises';
 import type { Server } from 'node:http';
+import { basename } from 'node:path';
 import { serve } from '@hono/node-server';
 import { Hono } from 'hono';
 import type {
@@ -197,15 +198,23 @@ export function createManagementApp(options: ManagementServerOptions): Hono {
           paths: body.paths ?? current.paths,
           urls: body.urls ?? current.urls,
         });
-      } catch {
-        return c.json({ error: 'Internal server error' } satisfies ErrorResponse, 500);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : '';
+        if (message.toLowerCase().includes('not found')) {
+          return c.json({ error: message } satisfies ErrorResponse, 404);
+        }
+        return c.json({ error: message || 'Internal server error' } satisfies ErrorResponse, 500);
       }
       return c.json({ requiresRestart: true });
     });
 
     app.get('/agents/:agentName/skills', async (c) => {
       const { agentName } = c.req.param();
-      return c.json(await h.list(agentName));
+      try {
+        return c.json(await h.list(agentName));
+      } catch {
+        return c.json({ error: 'Failed to list skills' } satisfies ErrorResponse, 500);
+      }
     });
 
     app.post('/agents/:agentName/skills', async (c) => {
@@ -216,12 +225,19 @@ export function createManagementApp(options: ManagementServerOptions): Hono {
       } catch {
         return c.json({ error: 'Invalid request body' } satisfies ErrorResponse, 400);
       }
+      if (!body.name || !body.description || typeof body.content !== 'string') {
+        return c.json({ error: 'Missing required fields: name, description, content' } satisfies ErrorResponse, 400);
+      }
+      const safeSkillName = basename(body.name);
+      if (!safeSkillName || safeSkillName === '.' || safeSkillName === '..') {
+        return c.json({ error: 'Invalid skill name' } satisfies ErrorResponse, 400);
+      }
       try {
         const skill = await h.create(agentName, body.name, body.description, body.content);
         return c.json(skill, 201);
       } catch (err) {
         const message = err instanceof Error ? err.message : '';
-        if (message.toLowerCase().includes('no writable path')) {
+        if (message.toLowerCase().includes('no writable')) {
           return c.json({ error: message } satisfies ErrorResponse, 400);
         }
         return c.json({ error: message || 'Internal server error' } satisfies ErrorResponse, 500);
@@ -230,9 +246,13 @@ export function createManagementApp(options: ManagementServerOptions): Hono {
 
     app.get('/agents/:agentName/skills/:skillName', async (c) => {
       const { agentName, skillName } = c.req.param();
-      const skill = await h.get(agentName, skillName);
-      if (!skill) return c.json({ error: 'Skill not found' } satisfies ErrorResponse, 404);
-      return c.json(skill);
+      try {
+        const skill = await h.get(agentName, skillName);
+        if (!skill) return c.json({ error: 'Skill not found' } satisfies ErrorResponse, 404);
+        return c.json(skill);
+      } catch {
+        return c.json({ error: 'Failed to get skill' } satisfies ErrorResponse, 500);
+      }
     });
 
     app.put('/agents/:agentName/skills/:skillName', async (c) => {
@@ -243,6 +263,9 @@ export function createManagementApp(options: ManagementServerOptions): Hono {
       } catch {
         return c.json({ error: 'Invalid request body' } satisfies ErrorResponse, 400);
       }
+      if (typeof body.content !== 'string') {
+        return c.json({ error: 'Missing required field: content' } satisfies ErrorResponse, 400);
+      }
       try {
         await h.updateContent(agentName, skillName, body.content);
         return c.json({ success: true });
@@ -252,6 +275,9 @@ export function createManagementApp(options: ManagementServerOptions): Hono {
           return c.json({ error: message } satisfies ErrorResponse, 404);
         }
         if (message.toLowerCase().includes('not editable')) {
+          return c.json({ error: message } satisfies ErrorResponse, 403);
+        }
+        if (message.toLowerCase().includes('outside configured')) {
           return c.json({ error: message } satisfies ErrorResponse, 403);
         }
         return c.json({ error: message || 'Internal server error' } satisfies ErrorResponse, 500);
