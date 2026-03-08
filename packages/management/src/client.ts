@@ -59,10 +59,11 @@ export class ManagementClient {
     return this.request<ShutdownResponse>('POST', '/lifecycle/shutdown');
   }
 
-  async logs(opts?: { tail?: number; since?: string }): Promise<string[]> {
+  async logs(opts?: { tail?: number; since?: string; level?: 'info' | 'warn' | 'error' }): Promise<string[]> {
     const params = new URLSearchParams();
     if (opts?.tail !== undefined) params.set('tail', String(opts.tail));
     if (opts?.since) params.set('since', opts.since);
+    if (opts?.level) params.set('level', opts.level);
     const query = params.toString();
     const path = query ? `/logs?${query}` : '/logs';
     const result = await this.request<{ lines: string[] }>('GET', path);
@@ -123,8 +124,11 @@ export class ManagementClient {
     );
   }
 
-  async *streamLogs(signal?: AbortSignal): AsyncGenerator<string> {
-    const response = await fetch(`${this.baseUrl}/logs/stream`, {
+  async *streamLogs(signal?: AbortSignal, opts?: { level?: 'info' | 'warn' | 'error' }): AsyncGenerator<string> {
+    const params = new URLSearchParams();
+    if (opts?.level) params.set('level', opts.level);
+    const query = params.toString();
+    const response = await fetch(`${this.baseUrl}/logs/stream${query ? `?${query}` : ''}`, {
       headers: { Authorization: `Bearer ${this.token}` },
       signal,
     });
