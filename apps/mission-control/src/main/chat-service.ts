@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { AgentRegistry, ConversationStore, McConversation, McMessage } from '@dash/mc';
+import WebSocket from 'ws';
 import type { McAgentEvent } from '../shared/ipc.js';
 
 export class ChatService {

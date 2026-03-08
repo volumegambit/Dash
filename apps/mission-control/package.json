@@ -11,7 +11,8 @@
   },
   "dependencies": {
     "@dash/management": "*",
-    "@dash/mc": "*"
+    "@dash/mc": "*",
+    "ws": "*"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4",
