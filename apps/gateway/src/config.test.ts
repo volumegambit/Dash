@@ -99,6 +99,44 @@ describe('loadConfig', () => {
     await expect(loadConfig({ configPath })).rejects.toThrow('at least one channel');
   });
 
+  it('accepts telegram channel with routing rules referencing known agents', async () => {
+    const config = JSON.stringify({
+      channels: {
+        telegram: {
+          adapter: 'telegram',
+          token: 'bot-token',
+          globalDenyList: [],
+          routing: [
+            { condition: { type: 'default' }, agentName: 'default', allowList: [], denyList: [] },
+          ],
+        },
+      },
+      agents: { default: { url: 'ws://localhost:9101', token: 'secret' } },
+    });
+    const configPath = join(tmpDir, 'routing-valid.json');
+    await writeFile(configPath, config);
+    const result = await loadConfig({ configPath });
+    expect(result.channels['telegram']?.routing).toHaveLength(1);
+  });
+
+  it('throws when routing rule references unknown agent', async () => {
+    const config = JSON.stringify({
+      channels: {
+        telegram: {
+          adapter: 'telegram',
+          token: 'bot-token',
+          routing: [
+            { condition: { type: 'default' }, agentName: 'nonexistent', allowList: [], denyList: [] },
+          ],
+        },
+      },
+      agents: { default: { url: 'ws://localhost:9101', token: 'secret' } },
+    });
+    const configPath = join(tmpDir, 'routing-bad.json');
+    await writeFile(configPath, config);
+    await expect(loadConfig({ configPath })).rejects.toThrow('routing rule references unknown agent "nonexistent"');
+  });
+
   it('merges secrets and unlinks file', async () => {
     const configPath = join(tmpDir, 'config.json');
     const secretsPath = join(tmpDir, 'secrets.json');
