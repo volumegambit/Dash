@@ -14,7 +14,7 @@ vi.mock('@tanstack/react-router', () => ({
     useSearch: () => ({}),
   }),
   useNavigate: () => mockNavigate,
-  Link: ({ children }: { children: React.ReactNode }) => <a>{children}</a>,
+  Link: ({ children }: { children: React.ReactNode }) => <span>{children}</span>,
 }));
 
 const { AgentDetail } = await import('./$id.js');
