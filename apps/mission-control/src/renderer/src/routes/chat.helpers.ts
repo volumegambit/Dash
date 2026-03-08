@@ -53,14 +53,18 @@ export function summarize(name: string, input: string): string {
 }
 
 export function formatDetails(input: string): { key: string; value: string }[] {
-  let parsed: Record<string, unknown>;
+  let parsed: unknown;
   try {
-    parsed = JSON.parse(input) as Record<string, unknown>;
+    parsed = JSON.parse(input);
   } catch {
     return [{ key: 'input', value: input }];
   }
 
-  return Object.entries(parsed).map(([key, val]) => {
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    return [{ key: 'input', value: input }];
+  }
+
+  return Object.entries(parsed as Record<string, unknown>).map(([key, val]) => {
     if (typeof val === 'string') {
       if (val.length > 80) return { key, value: `"${val.slice(0, 80)}…" (${val.length} chars)` };
       return { key, value: val };

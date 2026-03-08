@@ -68,6 +68,10 @@ describe('summarize', () => {
   it('returns empty string when no matching key found', () => {
     expect(summarize('ls', JSON.stringify({}))).toBe('');
   });
+
+  it('falls back to second key when first key is absent (grep with query)', () => {
+    expect(summarize('grep', JSON.stringify({ query: 'useState' }))).toBe('useState');
+  });
 });
 
 describe('formatDetails', () => {
@@ -104,5 +108,13 @@ describe('formatDetails', () => {
   it('falls back gracefully on invalid JSON', () => {
     const result = formatDetails('not json');
     expect(result).toEqual([{ key: 'input', value: 'not json' }]);
+  });
+
+  it('returns fallback for null JSON value', () => {
+    expect(formatDetails('null')).toEqual([{ key: 'input', value: 'null' }]);
+  });
+
+  it('returns fallback for number JSON value', () => {
+    expect(formatDetails('42')).toEqual([{ key: 'input', value: '42' }]);
   });
 });
