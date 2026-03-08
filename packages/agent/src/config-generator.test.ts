@@ -34,7 +34,7 @@ describe('buildToolsMap', () => {
     for (const tool of ALL_OPENCODE_TOOLS) {
       expect(map[tool]).toBe(true);
     }
-    expect(Object.keys(map)).toHaveLength(10);
+    expect(Object.keys(map)).toHaveLength(11);
   });
 
   it('enables only listed tools, disables others', () => {
@@ -46,9 +46,9 @@ describe('buildToolsMap', () => {
     expect(map.mcp).toBe(false);
   });
 
-  it('always includes all 10 tool keys regardless of input', () => {
+  it('always includes all 11 tool keys regardless of input', () => {
     const map = buildToolsMap(['bash']);
-    expect(Object.keys(map)).toHaveLength(10);
+    expect(Object.keys(map)).toHaveLength(11);
   });
 
   it('returns all false when empty array passed', () => {
@@ -56,5 +56,15 @@ describe('buildToolsMap', () => {
     for (const val of Object.values(map)) {
       expect(val).toBe(false);
     }
+  });
+
+  it('includes skill in the tools map', () => {
+    const map = buildToolsMap(undefined);
+    expect(map.skill).toBe(true);
+  });
+
+  it('can disable skill by omitting it from the list', () => {
+    const map = buildToolsMap(['bash', 'read']);
+    expect(map.skill).toBe(false);
   });
 });

@@ -9,6 +9,7 @@ export const ALL_OPENCODE_TOOLS = [
   'web_fetch',
   'web_search',
   'mcp',
+  'skill',
 ] as const;
 
 export type OpencodeTool = (typeof ALL_OPENCODE_TOOLS)[number];
