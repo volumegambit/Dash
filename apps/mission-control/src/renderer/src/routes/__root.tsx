@@ -15,6 +15,7 @@ function RootLayout(): JSX.Element {
   const [checking, setChecking] = useState(true);
   const [needsSetup, setNeedsSetup] = useState(false);
   const [needsApiKey, setNeedsApiKey] = useState(false);
+  const [updateVersion, setUpdateVersion] = useState<string | null>(null);
 
   useEffect(() => {
     window.api
@@ -40,6 +41,12 @@ function RootLayout(): JSX.Element {
     }
   }, [ready]);
 
+  useEffect(() => {
+    return window.api.onUpdateAvailable((info) => {
+      setUpdateVersion(info.version);
+    });
+  }, []);
+
   if (checking) {
     return (
       <div className="flex h-screen items-center justify-center bg-background text-foreground">
@@ -59,11 +66,18 @@ function RootLayout(): JSX.Element {
   }
 
   return (
-    <div className="flex h-screen bg-background text-foreground">
-      <Sidebar />
-      <main className="flex flex-1 flex-col overflow-auto p-8">
-        <Outlet />
-      </main>
+    <div className="flex h-screen flex-col bg-background text-foreground">
+      {updateVersion && (
+        <div className="flex items-center justify-center bg-primary px-4 py-2 text-sm text-primary-foreground">
+          A new version ({updateVersion}) is available and will be installed on next restart.
+        </div>
+      )}
+      <div className="flex flex-1 overflow-hidden">
+        <Sidebar />
+        <main className="flex flex-1 flex-col overflow-auto p-8">
+          <Outlet />
+        </main>
+      </div>
     </div>
   );
 }
