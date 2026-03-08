@@ -1,5 +1,11 @@
-import { describe, expect, it } from 'vitest';
-import { OpenCodeBackend } from './opencode.js';
+import { describe, expect, it, vi } from 'vitest';
+
+vi.mock('@opencode-ai/sdk/v2', () => ({
+  createOpencodeServer: vi.fn(),
+  createOpencodeClient: vi.fn(),
+}));
+
+import { OpenCodeBackend, extractSkillName } from './opencode.js';
 
 function makeBackend() {
   return new OpenCodeBackend(
@@ -175,5 +181,71 @@ describe('OpenCodeBackend.normalizeEvent', () => {
     const backend = makeBackend();
     const result = backend.normalizeEvent(makeEvent('tui.prompt.append', { text: 'x' }), 'sess-1');
     expect(result).toBeNull();
+  });
+});
+
+describe('extractSkillName', () => {
+  it('returns skill name from a completed skill tool event', () => {
+    const event = {
+      type: 'message.part.updated',
+      properties: {
+        part: {
+          type: 'tool',
+          tool: 'skill',
+          callID: 'call-1',
+          state: {
+            status: 'completed',
+            input: { name: 'brainstorming' },
+            output: '<skill_content name="brainstorming">...</skill_content>',
+          },
+        },
+      },
+    };
+    expect(extractSkillName(event)).toBe('brainstorming');
+  });
+
+  it('returns null for non-skill tools', () => {
+    const event = {
+      type: 'message.part.updated',
+      properties: {
+        part: {
+          type: 'tool',
+          tool: 'bash',
+          callID: 'call-2',
+          state: { status: 'completed', input: { command: 'ls' }, output: 'file.ts' },
+        },
+      },
+    };
+    expect(extractSkillName(event)).toBeNull();
+  });
+
+  it('returns null when status is not completed', () => {
+    const event = {
+      type: 'message.part.updated',
+      properties: {
+        part: {
+          type: 'tool',
+          tool: 'skill',
+          callID: 'call-3',
+          state: { status: 'running', input: { name: 'debugging' } },
+        },
+      },
+    };
+    expect(extractSkillName(event)).toBeNull();
+  });
+
+  it('returns null when input has no name', () => {
+    const event = {
+      type: 'message.part.updated',
+      properties: {
+        part: {
+          type: 'tool',
+          tool: 'skill',
+          callID: 'call-4',
+          state: { status: 'completed', input: {}, output: '' },
+        },
+      },
+    };
+    expect(extractSkillName(event)).toBeNull();
   });
 });

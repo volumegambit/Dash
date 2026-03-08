@@ -38,6 +38,7 @@ export async function createAgentServer(config: DashConfig) {
         systemPrompt: agentConfig.systemPrompt,
         tools: agentConfig.tools,
         workspace,
+        skills: agentConfig.skills,
       },
       config.providerApiKeys,
     );
