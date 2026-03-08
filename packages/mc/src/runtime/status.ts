@@ -3,7 +3,6 @@ import type { RuntimeStatus } from './types.js';
 
 export interface ProcessSnapshot {
   agentServer: { exitCode: number | null; pid?: number };
-  gateway?: { pid?: number; exitCode?: number | null };
   startTime: number;
 }
 
@@ -30,7 +29,6 @@ export async function resolveRuntimeStatus(
     return {
       state: agentRunning ? 'running' : 'stopped',
       agentServerPid: processState.agentServer.pid,
-      gatewayPid: processState.gateway?.pid,
       managementPort: deployment.managementPort,
       chatPort: deployment.chatPort,
       uptime: Date.now() - processState.startTime,
@@ -45,7 +43,6 @@ export async function resolveRuntimeStatus(
         return {
           state: 'running',
           agentServerPid: deployment.agentServerPid,
-          gatewayPid: deployment.gatewayPid,
           managementPort: deployment.managementPort,
           chatPort: deployment.chatPort,
         };
@@ -61,7 +58,6 @@ export async function resolveRuntimeStatus(
       return {
         state: 'running',
         agentServerPid: deployment.agentServerPid,
-        gatewayPid: deployment.gatewayPid,
         managementPort: deployment.managementPort,
         chatPort: deployment.chatPort,
       };

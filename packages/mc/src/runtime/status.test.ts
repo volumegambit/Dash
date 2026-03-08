@@ -13,7 +13,6 @@ function makeDeployment(overrides: Partial<AgentDeployment> = {}): AgentDeployme
     managementPort: 9100,
     chatPort: 9101,
     agentServerPid: 1234,
-    gatewayPid: 5678,
     ...overrides,
   };
 }
@@ -23,13 +22,11 @@ describe('resolveRuntimeStatus', () => {
     it('returns running with uptime when process is alive', async () => {
       const snapshot: ProcessSnapshot = {
         agentServer: { exitCode: null, pid: 1234 },
-        gateway: { pid: 5678 },
         startTime: Date.now() - 10_000,
       };
       const result = await resolveRuntimeStatus(snapshot, makeDeployment());
       expect(result.state).toBe('running');
       expect(result.agentServerPid).toBe(1234);
-      expect(result.gatewayPid).toBe(5678);
       expect(result.uptime).toBeGreaterThanOrEqual(9000);
       expect(result.managementPort).toBe(9100);
       expect(result.chatPort).toBe(9101);
@@ -38,7 +35,6 @@ describe('resolveRuntimeStatus', () => {
     it('returns stopped when in-memory process has exited', async () => {
       const snapshot: ProcessSnapshot = {
         agentServer: { exitCode: 1, pid: 1234 },
-        gateway: { pid: 5678 },
         startTime: Date.now() - 5000,
       };
       const result = await resolveRuntimeStatus(snapshot, makeDeployment());
@@ -46,14 +42,14 @@ describe('resolveRuntimeStatus', () => {
       expect(result.agentServerPid).toBe(1234);
     });
 
-    it('handles missing gateway', async () => {
+    it('returns running with agentServerPid only', async () => {
       const snapshot: ProcessSnapshot = {
         agentServer: { exitCode: null, pid: 1234 },
         startTime: Date.now(),
       };
       const result = await resolveRuntimeStatus(snapshot, makeDeployment());
       expect(result.state).toBe('running');
-      expect(result.gatewayPid).toBeUndefined();
+      expect(result.agentServerPid).toBe(1234);
     });
   });
 
@@ -63,7 +59,6 @@ describe('resolveRuntimeStatus', () => {
       const result = await resolveRuntimeStatus(null, deployment, () => true);
       expect(result.state).toBe('running');
       expect(result.agentServerPid).toBe(9999);
-      expect(result.gatewayPid).toBe(5678);
     });
 
     it('falls through to path 3 when PID is dead', async () => {
