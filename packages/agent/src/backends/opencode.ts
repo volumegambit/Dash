@@ -1,6 +1,7 @@
 import { createServer } from 'node:net';
 import { createOpencodeClient, createOpencodeServer } from '@opencode-ai/sdk/v2';
 import { buildToolsMap, parseModel } from '../config-generator.js';
+import type { Logger } from '../logger.js';
 import { SessionIdMap } from '../session-id-map.js';
 import type {
   AgentBackend,
@@ -43,6 +44,7 @@ export class OpenCodeBackend implements AgentBackend {
   constructor(
     private config: DashAgentConfig,
     private providerApiKeys: Record<string, string>,
+    private logger?: Logger,
   ) {}
 
   async start(workspace: string): Promise<void> {
@@ -225,6 +227,7 @@ export class OpenCodeBackend implements AgentBackend {
       case 'session.error': {
         if (props.sessionID && props.sessionID !== sessionId) return null;
         const msg = props.error?.message ?? 'Unknown OpenCode error';
+        this.logger?.error(`[OpenCode] ${msg}`);
         return { type: 'error', error: new Error(msg) };
       }
 
