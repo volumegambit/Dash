@@ -15,7 +15,7 @@ describe('Nav', () => {
   it('renders Docs link pointing to Mintlify', () => {
     render(<Nav />)
     const docsLink = screen.getByRole('link', { name: /docs/i })
-    expect(docsLink).toHaveAttribute('href', 'https://dash-aa8db5b5.mintlify.app/introduction')
+    expect(docsLink).toHaveAttribute('href', 'https://docs.dashsquad.ai')
   })
 
   it('renders GitHub link', () => {
