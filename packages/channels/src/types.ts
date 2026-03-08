@@ -1,3 +1,10 @@
+export interface SecretStore {
+  get(key: string): Promise<string | null>;
+  set(key: string, value: string): Promise<void>;
+  delete(key: string): Promise<void>;
+  list(): Promise<string[]>;
+}
+
 export interface InboundMessage {
   channelId: string;
   conversationId: string;
