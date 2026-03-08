@@ -262,6 +262,20 @@ function NewTelegramWizard(): JSX.Element {
               <Step number={3} text="Tap the result that has a blue checkmark — that's the official one" />
               <Step number={4} text='Tap the blue "START" button at the bottom' />
             </div>
+            <div className="mt-4 rounded-lg border border-border bg-sidebar-bg p-4 text-sm">
+              <p className="font-medium">💡 Tip: use Telegram on the web</p>
+              <p className="mt-1 text-muted">
+                Open Telegram at{' '}
+                <button
+                  type="button"
+                  onClick={() => window.api.openExternal('https://web.telegram.org')}
+                  className="text-primary hover:underline"
+                >
+                  web.telegram.org
+                </button>{' '}
+                — it makes it easier to copy and paste the token in the next step.
+              </p>
+            </div>
             <button
               type="button"
               onClick={() => window.api.openExternal('https://t.me/BotFather')}
