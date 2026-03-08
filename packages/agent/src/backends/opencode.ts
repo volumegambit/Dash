@@ -268,7 +268,9 @@ export class OpenCodeBackend implements AgentBackend {
     this.sdk = null;
   }
 
-  async listSkills(): Promise<Array<{ name: string; description: string; location: string; content: string }>> {
+  async listSkills(): Promise<
+    Array<{ name: string; description: string; location: string; content: string }>
+  > {
     if (!this.sdk) return [];
     const response = await this.sdk.app.skills();
     if (response.error) throw new Error(`Failed to list skills: ${String(response.error)}`);
