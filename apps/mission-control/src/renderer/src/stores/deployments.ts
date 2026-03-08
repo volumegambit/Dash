@@ -44,9 +44,19 @@ export const useDeploymentsStore = create<DeploymentsState>((set, get) => ({
     try {
       const id = await window.api.deploymentsDeploy(configDir);
       await get().loadDeployments();
+      const deployment = get().deployments.find((d) => d.id === id);
+      if (deployment?.status === 'error') {
+        const err = new Error(deployment.errorMessage ?? 'Deployment startup failed');
+        (err as Error & { startupLogs?: string[] }).startupLogs = deployment.startupLogs ?? [];
+        (err as Error & { deploymentId?: string }).deploymentId = id;
+        set({ error: err.message });
+        throw err;
+      }
       return id;
     } catch (err) {
-      set({ error: (err as Error).message });
+      if (!(err instanceof Error && 'deploymentId' in err)) {
+        set({ error: (err as Error).message });
+      }
       throw err;
     }
   },
@@ -56,9 +66,19 @@ export const useDeploymentsStore = create<DeploymentsState>((set, get) => ({
     try {
       const id = await window.api.deploymentsDeployWithConfig(options);
       await get().loadDeployments();
+      const deployment = get().deployments.find((d) => d.id === id);
+      if (deployment?.status === 'error') {
+        const err = new Error(deployment.errorMessage ?? 'Deployment startup failed');
+        (err as Error & { startupLogs?: string[] }).startupLogs = deployment.startupLogs ?? [];
+        (err as Error & { deploymentId?: string }).deploymentId = id;
+        set({ error: err.message });
+        throw err;
+      }
       return id;
     } catch (err) {
-      set({ error: (err as Error).message });
+      if (!(err instanceof Error && 'deploymentId' in err)) {
+        set({ error: (err as Error).message });
+      }
       throw err;
     }
   },
