@@ -1,9 +1,9 @@
+import { spawnSync } from 'node:child_process';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { spawnSync } from 'node:child_process';
-import type { Command } from 'commander';
 import type { SkillsConfig } from '@dash/management';
+import type { Command } from 'commander';
 import { resolveClient } from '../context.js';
 
 interface CommonOpts {
@@ -17,7 +17,9 @@ async function editInEditor(initial: string): Promise<string> {
   try {
     await writeFile(filePath, initial, 'utf8');
     const editor = process.env.EDITOR ?? 'vi';
-    spawnSync(editor, [filePath], { stdio: 'inherit' });
+    const result = spawnSync(editor, [filePath], { stdio: 'inherit' });
+    if (result.error) throw result.error;
+    if (result.status !== 0) throw new Error(`Editor exited with code ${result.status}`);
     const updated = await readFile(filePath, 'utf8');
     return updated;
   } finally {
@@ -111,6 +113,10 @@ export function registerSkillsCommand(program: Command): void {
           return;
         }
         const updated = await editInEditor(skill.content);
+        if (updated === skill.content) {
+          console.log('No changes made.');
+          return;
+        }
         await client.updateSkillContent(agentName, skillName, updated);
         console.log(`✓ Skill "${skillName}" updated.`);
       } catch (err) {
@@ -139,6 +145,10 @@ export function registerSkillsCommand(program: Command): void {
           }
           const placeholder = `# ${skillName}\n\n${opts.description}\n`;
           const content = await editInEditor(placeholder);
+          if (content === placeholder) {
+            console.log('No changes made. Skill not created.');
+            return;
+          }
           const created = await client.createSkill(agentName, skillName, opts.description, content);
           console.log(`✓ Skill "${skillName}" created at ${created.location}`);
         } catch (err) {
