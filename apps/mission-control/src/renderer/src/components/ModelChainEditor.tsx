@@ -51,8 +51,11 @@ export function ModelChainEditor({
   return (
     <div className="space-y-3">
       <div>
-        <label className="mb-1 block text-xs font-medium text-muted">Primary model</label>
+        <label htmlFor="primary-model" className="mb-1 block text-xs font-medium text-muted">
+          Primary model
+        </label>
         <select
+          id="primary-model"
           aria-label="Primary model"
           value={model}
           onChange={(e) => handlePrimaryChange(e.target.value)}
@@ -75,7 +78,7 @@ export function ModelChainEditor({
                 m.value === fb || !usedModels.has(m.value) || fallbackModels.indexOf(m.value) === i,
             );
             return (
-              <div key={`${fb}-${i}`} className="flex items-center gap-2">
+              <div key={fb} className="flex items-center gap-2">
                 <span className="text-xs text-muted w-4">{i + 1}.</span>
                 <select
                   value={fb}

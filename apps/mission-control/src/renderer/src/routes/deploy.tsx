@@ -48,7 +48,7 @@ export function DeployWizard(): JSX.Element {
         if (settings.defaultModel) {
           setAgent((prev) => ({
             ...prev,
-            model: settings.defaultModel!,
+            model: settings.defaultModel ?? '',
             fallbackModels: settings.defaultFallbackModels ?? [],
           }));
         }

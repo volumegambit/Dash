@@ -358,8 +358,11 @@ function AddRulePanel({
       <h3 className="mb-4 text-sm font-medium">Add routing rule</h3>
       <div className="space-y-3">
         <div>
-          <label className="block text-xs text-muted">Who triggers this rule?</label>
+          <label htmlFor="rule-condition-type" className="block text-xs text-muted">
+            Who triggers this rule?
+          </label>
           <select
+            id="rule-condition-type"
             value={conditionType}
             onChange={(e) => setConditionType(e.target.value as typeof conditionType)}
             className="mt-1 w-full rounded border border-border bg-background px-2 py-1.5 text-sm"
@@ -372,11 +375,12 @@ function AddRulePanel({
 
         {conditionType !== 'default' && (
           <div>
-            <label className="block text-xs text-muted">
+            <label htmlFor="rule-condition-ids" className="block text-xs text-muted">
               {conditionType === 'sender' ? 'Telegram user IDs' : 'Group chat IDs'}{' '}
               (comma-separated)
             </label>
             <input
+              id="rule-condition-ids"
               type="text"
               value={conditionIds}
               onChange={(e) => setConditionIds(e.target.value)}
@@ -387,8 +391,11 @@ function AddRulePanel({
         )}
 
         <div>
-          <label className="block text-xs text-muted">Route to agent</label>
+          <label htmlFor="rule-agent-name" className="block text-xs text-muted">
+            Route to agent
+          </label>
           <select
+            id="rule-agent-name"
             value={agentName}
             onChange={(e) => setAgentName(e.target.value)}
             className="mt-1 w-full rounded border border-border bg-background px-2 py-1.5 text-sm"
@@ -407,10 +414,11 @@ function AddRulePanel({
           </summary>
           <div className="mt-2 space-y-2">
             <div>
-              <label className="block text-xs text-muted">
+              <label htmlFor="rule-allow-list" className="block text-xs text-muted">
                 Only allow these senders (IDs, comma-separated — leave empty to allow all)
               </label>
               <input
+                id="rule-allow-list"
                 type="text"
                 value={allowList}
                 onChange={(e) => setAllowList(e.target.value)}
@@ -419,10 +427,11 @@ function AddRulePanel({
               />
             </div>
             <div>
-              <label className="block text-xs text-muted">
+              <label htmlFor="rule-deny-list" className="block text-xs text-muted">
                 Always block these senders from this agent (IDs, comma-separated)
               </label>
               <input
+                id="rule-deny-list"
                 type="text"
                 value={denyList}
                 onChange={(e) => setDenyList(e.target.value)}
@@ -434,8 +443,11 @@ function AddRulePanel({
         </details>
 
         <div>
-          <label className="block text-xs text-muted">Rule label (optional)</label>
+          <label htmlFor="rule-label" className="block text-xs text-muted">
+            Rule label (optional)
+          </label>
           <input
+            id="rule-label"
             type="text"
             value={label}
             onChange={(e) => setLabel(e.target.value)}

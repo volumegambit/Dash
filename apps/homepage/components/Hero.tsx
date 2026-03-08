@@ -59,8 +59,8 @@ export function Hero() {
         Your AI Team, <span className="text-[#3b82f6]">Always On</span>
       </h1>
       <p className="mt-6 max-w-xl text-lg text-[#a3a3a3]">
-        Dash runs autonomous AI agents on your computer — handling tasks, making decisions,
-        and getting work done while you focus on what matters.
+        Dash runs autonomous AI agents on your computer — handling tasks, making decisions, and
+        getting work done while you focus on what matters.
       </p>
       <div className="mt-10 flex flex-wrap items-center justify-center gap-4">
         {/* Download button with dropdown */}
