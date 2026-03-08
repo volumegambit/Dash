@@ -63,4 +63,25 @@ describe('compactSession', () => {
     const lastMessage = callArg.messages[callArg.messages.length - 1];
     expect(lastMessage).toEqual({ role: 'user', content: 'Please summarize this conversation.' });
   });
+
+  it('compactSession — handles ContentBlock[] response from provider', async () => {
+    const messages: Message[] = [{ role: 'user', content: 'hello' }];
+    const mockComplete = vi.fn().mockResolvedValue({
+      content: [
+        { type: 'thinking', thinking: 'let me think', signature: 'sig' },
+        { type: 'text', text: 'Summary from blocks' },
+      ],
+      model: 'test',
+      usage: { inputTokens: 10, outputTokens: 20 },
+      stopReason: 'end_turn' as const,
+    });
+    const mockProvider = {
+      name: 'test',
+      complete: mockComplete,
+      stream: vi.fn() as LlmProvider['stream'],
+    };
+
+    const result = await compactSession(messages, mockProvider, 'test-model');
+    expect(result).toBe('Summary from blocks');
+  });
 });

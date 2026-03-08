@@ -1,4 +1,4 @@
-import type { LlmProvider, Message } from '@dash/llm';
+import type { LlmProvider, Message, TextBlock } from '@dash/llm';
 
 const COMPACTION_SYSTEM_PROMPT = `Summarize this conversation for a long-running AI agent. Include:
 - Goal: what the user is trying to accomplish
@@ -46,8 +46,12 @@ export async function compactSession(
     return response.content;
   }
 
-  return response.content
-    .filter((block) => block.type === 'text')
-    .map((block) => (block as { type: 'text'; text: string }).text)
+  const summary = response.content
+    .filter((block): block is TextBlock => block.type === 'text')
+    .map((block) => block.text)
     .join('');
+  if (!summary) {
+    throw new Error('Compaction failed: provider returned no text content');
+  }
+  return summary;
 }
