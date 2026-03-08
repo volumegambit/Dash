@@ -3,7 +3,7 @@ title: "Configuration"
 description: "Configure agents, sessions, and credentials through JSON config files, environment variables, and CLI flags."
 ---
 
-Dash loads configuration from three sources, merged in this order (later wins):
+Dash is configured with a single JSON file. Define your agent team here — who they are, what models they use, what tools they have access to, and where they can operate.
 
 1. **Built-in defaults** — sensible starting values
 2. **JSON config file** — `config/dash.json` or `dash.json` at the project root
@@ -38,7 +38,7 @@ For Mission Control users, secrets are stored in an encrypted file — see [encr
 
 ## Agents
 
-Each key under `agents` defines a named agent configuration.
+Each entry in the `agents` array is one member of your team.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
