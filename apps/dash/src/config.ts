@@ -37,6 +37,7 @@ export interface DashConfig {
   managementToken?: string;
   chatPort: number;
   chatToken?: string;
+  configDir?: string; // directory containing dash.json, for writing config changes
 }
 
 const DEFAULTS: DashJsonConfig = {
@@ -255,6 +256,13 @@ export async function loadConfig(options?: LoadConfigOptions): Promise<DashConfi
     logDir = resolve(configBase, 'logs');
   }
 
+  let configDir: string | undefined;
+  if (options?.configPath) {
+    const resolved = resolve(options.configPath);
+    configDir =
+      existsSync(resolved) && statSync(resolved).isDirectory() ? resolved : dirname(resolved);
+  }
+
   return {
     providerApiKeys,
     agents: merged.agents,
@@ -264,6 +272,7 @@ export async function loadConfig(options?: LoadConfigOptions): Promise<DashConfi
     managementToken,
     chatPort,
     chatToken,
+    configDir,
   };
 }
 
