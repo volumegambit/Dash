@@ -1,5 +1,5 @@
 import type { McMessage } from '@dash/mc';
-import { createFileRoute } from '@tanstack/react-router';
+import { createFileRoute, useNavigate } from '@tanstack/react-router';
 import { Loader, Plus, Send, Square, Trash2 } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { McAgentEvent } from '../../../shared/ipc.js';
@@ -9,7 +9,10 @@ import { formatDetails, summarize, toolIcon } from './chat.helpers.js';
 
 // --- Event rendering helpers ---
 
-function renderEvents(events: Record<string, unknown>[]): JSX.Element[] {
+function renderEvents(
+  events: Record<string, unknown>[],
+  navigateToLogs?: (timestamp: string) => void,
+): JSX.Element[] {
   const elements: JSX.Element[] = [];
   let blockCount = 0;
   let textBuffer = '';
@@ -56,10 +59,24 @@ function renderEvents(events: Record<string, unknown>[]): JSX.Element[] {
       toolName = '';
       toolInputBuffer = '';
     } else if (event.type === 'error') {
+      const msg =
+        typeof event.error === 'string'
+          ? event.error
+          : (event.error as unknown as { message?: string })?.message ?? 'Unknown error';
+      const timestamp = typeof event.timestamp === 'string' ? event.timestamp : undefined;
       elements.push(
-        <p key={`err-${blockCount++}`} className="text-red-400">
-          {String(event.error)}
-        </p>,
+        <div key={`err-${blockCount++}`} className="flex items-center gap-2 text-red-400">
+          <span>{msg}</span>
+          {navigateToLogs && timestamp && (
+            <button
+              type="button"
+              onClick={() => navigateToLogs(timestamp)}
+              className="text-xs text-muted underline hover:text-foreground"
+            >
+              View logs →
+            </button>
+          )}
+        </div>,
       );
     }
   }
@@ -150,7 +167,12 @@ function ToolBlock({
 function MessageBubble({
   message,
   streamingEvents,
-}: { message?: McMessage; streamingEvents?: McAgentEvent[] }): JSX.Element {
+  navigateToLogs,
+}: {
+  message?: McMessage;
+  streamingEvents?: McAgentEvent[];
+  navigateToLogs?: (timestamp: string) => void;
+}): JSX.Element {
   const isUser = message?.role === 'user';
 
   if (isUser && message) {
@@ -171,7 +193,7 @@ function MessageBubble({
   return (
     <div className="mb-4">
       <div className="max-w-[80%] rounded-lg bg-sidebar-bg px-4 py-2 text-sm text-foreground">
-        {renderEvents(events)}
+        {renderEvents(events, navigateToLogs)}
       </div>
     </div>
   );
@@ -196,11 +218,24 @@ export function Chat(): JSX.Element {
     cancelMessage,
   } = useChatStore();
 
+  const navigate = useNavigate();
   const runningDeployments = deployments.filter((d) => d.status === 'running');
   const [selectedDeploymentId, setSelectedDeploymentId] = useState(search.deploymentId || '');
   const [selectedAgentName, setSelectedAgentName] = useState(search.agentName || '');
   const [input, setInput] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  const navigateToLogs = useCallback(
+    (timestamp: string) => {
+      if (!selectedDeploymentId) return;
+      navigate({
+        to: '/agents/$id',
+        params: { id: selectedDeploymentId },
+        search: { tab: 'logs', since: timestamp, level: 'error' },
+      });
+    },
+    [selectedDeploymentId, navigate],
+  );
 
   useEffect(() => {
     loadDeployments();
@@ -373,7 +408,7 @@ export function Chat(): JSX.Element {
           ) : (
             <>
               {selectedMessages.map((msg, i) => (
-                <MessageBubble key={`${msg.role}-${i}`} message={msg} />
+                <MessageBubble key={`${msg.role}-${i}`} message={msg} navigateToLogs={navigateToLogs} />
               ))}
               {isStreaming && liveEvents.length === 0 && (
                 <div className="mb-4 flex items-center gap-2 text-sm text-muted">
@@ -382,7 +417,7 @@ export function Chat(): JSX.Element {
                 </div>
               )}
               {isStreaming && liveEvents.length > 0 && (
-                <MessageBubble streamingEvents={liveEvents} />
+                <MessageBubble streamingEvents={liveEvents} navigateToLogs={navigateToLogs} />
               )}
             </>
           )}
