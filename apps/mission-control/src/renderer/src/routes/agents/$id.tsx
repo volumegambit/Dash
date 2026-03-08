@@ -167,6 +167,29 @@ export function AgentDetail(): JSX.Element {
         <InfoCard label="Created" value={new Date(deployment.createdAt).toLocaleString()} />
       </div>
 
+      {deployment.status === 'error' && (
+        <div className="mb-6 space-y-2">
+          <div className="rounded-lg bg-red-900/30 px-4 py-3 text-sm text-red-400">
+            <p className="font-medium">Startup failed</p>
+            {deployment.errorMessage && (
+              <p className="mt-1 text-red-400/80">{deployment.errorMessage}</p>
+            )}
+          </div>
+          {deployment.startupLogs && deployment.startupLogs.length > 0 && (
+            <details className="rounded-lg border border-red-900/30">
+              <summary className="cursor-pointer px-4 py-2 text-xs text-red-400/70 hover:text-red-400">
+                Startup logs ({deployment.startupLogs.length} lines)
+              </summary>
+              <div className="max-h-64 overflow-auto rounded-b-lg bg-[#0d0d0d] p-3 font-mono text-xs leading-5">
+                {deployment.startupLogs.map((line, i) => (
+                  <div key={i} className="text-red-300/70">{line}</div>
+                ))}
+              </div>
+            </details>
+          )}
+        </div>
+      )}
+
       {agentConfig && (
         <div className="mb-6">
           <div className="mb-2 flex items-center justify-between">
@@ -296,13 +319,21 @@ function InfoCard({ label, value }: { label: string; value: string | number }): 
 }
 
 function StatusBadge({ status }: { status: string }): JSX.Element {
-  const styles =
-    status === 'running'
-      ? 'bg-green-900/30 text-green-400'
-      : status === 'error'
-        ? 'bg-red-900/30 text-red-400'
-        : 'bg-sidebar-hover text-muted';
-  return <span className={`rounded px-2 py-0.5 text-xs ${styles}`}>{status}</span>;
+  if (status === 'running') {
+    return <span className="rounded px-2 py-0.5 text-xs bg-green-900/30 text-green-400">running</span>;
+  }
+  if (status === 'error') {
+    return <span className="rounded px-2 py-0.5 text-xs bg-red-900/30 text-red-400">error</span>;
+  }
+  if (status === 'provisioning') {
+    return (
+      <span className="inline-flex items-center gap-1 rounded px-2 py-0.5 text-xs bg-blue-900/30 text-blue-400">
+        <Loader size={10} className="animate-spin" />
+        starting
+      </span>
+    );
+  }
+  return <span className="rounded px-2 py-0.5 text-xs bg-sidebar-hover text-muted">{status}</span>;
 }
 
 function formatUptime(ms: number): string {

@@ -649,7 +649,7 @@ export class ProcessRuntime implements DeploymentRuntime {
     }
 
     // Stop if running
-    if (deployment.status === 'running') {
+    if (deployment.status === 'running' || deployment.status === 'provisioning') {
       await this.stop(id);
     }
 
