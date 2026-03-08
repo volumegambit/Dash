@@ -47,6 +47,7 @@ export class DashAgent {
       conversationId,
       message: userMessage,
       model: this.config.model,
+      fallbackModels: this.config.fallbackModels,
       systemPrompt,
       tools: this.config.tools,
       workspace: this.config.workspace,
