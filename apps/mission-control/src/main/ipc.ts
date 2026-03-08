@@ -14,6 +14,7 @@ import {
   defaultProcessSpawner,
 } from '@dash/mc';
 import type { MessagingApp, ProcessSpawner } from '@dash/mc';
+import type { SkillsConfig } from '@dash/management';
 import { app, dialog, ipcMain, safeStorage, shell } from 'electron';
 import type { BrowserWindow } from 'electron';
 import type { DeployWithConfigOptions } from '../shared/ipc.js';
@@ -566,6 +567,39 @@ export async function registerIpcHandlers(
       await registry.add(created);
       return created;
     },
+  );
+
+  // Skills
+  async function getSkillsClient(deploymentId: string) {
+    const dep = await getRegistry().get(deploymentId);
+    if (!dep?.managementPort || !dep?.managementToken) {
+      throw new Error('Deployment not running or Management API not available');
+    }
+    const { ManagementClient } = await import('@dash/management');
+    return new ManagementClient(`http://127.0.0.1:${dep.managementPort}`, dep.managementToken);
+  }
+
+  ipcMain.handle('skills:list', async (_e, deploymentId: string, agentName: string) =>
+    (await getSkillsClient(deploymentId)).skills(agentName),
+  );
+  ipcMain.handle('skills:get', async (_e, deploymentId: string, agentName: string, skillName: string) => {
+    try {
+      return await (await getSkillsClient(deploymentId)).skill(agentName, skillName);
+    } catch {
+      return null;
+    }
+  });
+  ipcMain.handle('skills:updateContent', async (_e, deploymentId: string, agentName: string, skillName: string, content: string) =>
+    (await getSkillsClient(deploymentId)).updateSkillContent(agentName, skillName, content),
+  );
+  ipcMain.handle('skills:create', async (_e, deploymentId: string, agentName: string, name: string, description: string, content: string) =>
+    (await getSkillsClient(deploymentId)).createSkill(agentName, name, description, content),
+  );
+  ipcMain.handle('skills:getConfig', async (_e, deploymentId: string, agentName: string) =>
+    (await getSkillsClient(deploymentId)).skillsConfig(agentName),
+  );
+  ipcMain.handle('skills:updateConfig', async (_e, deploymentId: string, agentName: string, config: SkillsConfig) =>
+    (await getSkillsClient(deploymentId)).updateSkillsConfig(agentName, config),
   );
 
   // Deployment config update

@@ -5,6 +5,7 @@ import type {
   MessagingApp,
   RuntimeStatus,
 } from '@dash/mc';
+import type { SkillContent, SkillInfo, SkillsConfig } from '@dash/management';
 
 // Serializable AgentEvent (error is string, not Error object, for IPC transport)
 export type McAgentEvent =
@@ -119,6 +120,14 @@ export interface MissionControlAPI {
     appId: string,
     app: Omit<MessagingApp, 'id' | 'createdAt' | 'credentialsKey'>,
   ): Promise<MessagingApp>;
+
+  // Skills
+  skillsList(deploymentId: string, agentName: string): Promise<SkillInfo[]>;
+  skillsGet(deploymentId: string, agentName: string, skillName: string): Promise<SkillContent | null>;
+  skillsUpdateContent(deploymentId: string, agentName: string, skillName: string, content: string): Promise<void>;
+  skillsCreate(deploymentId: string, agentName: string, name: string, description: string, content: string): Promise<SkillContent>;
+  skillsGetConfig(deploymentId: string, agentName: string): Promise<SkillsConfig>;
+  skillsUpdateConfig(deploymentId: string, agentName: string, config: SkillsConfig): Promise<{ requiresRestart: boolean }>;
 
   // Events (push from main → renderer)
   onDeploymentLog(callback: (id: string, line: string) => void): () => void;
