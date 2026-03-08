@@ -3,17 +3,27 @@ import { Link, createFileRoute, useNavigate } from '@tanstack/react-router';
 import { ArrowLeft, Circle, Loader, MessageSquare, Square, Trash2 } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useDeploymentsStore } from '../../stores/deployments';
+import { ModelChainEditor } from '../../components/ModelChainEditor.js';
+import { useAvailableModels } from '../../hooks/useAvailableModels.js';
 
 export function AgentDetail(): JSX.Element {
   const { id } = Route.useParams();
   const navigate = useNavigate();
-  const { deployments, logLines, loadDeployments, stop, remove, subscribeLogs, unsubscribeLogs } =
+  const { deployments, logLines, loadDeployments, stop, remove, updateConfig, subscribeLogs, unsubscribeLogs } =
     useDeploymentsStore();
   const [status, setStatus] = useState<RuntimeStatus | null>(null);
   const [loading, setLoading] = useState(true);
+  const availableModels = useAvailableModels();
+  const [editingChain, setEditingChain] = useState(false);
+  const [chainModel, setChainModel] = useState('');
+  const [chainFallbacks, setChainFallbacks] = useState<string[]>([]);
+  const [chainSaving, setChainSaving] = useState(false);
 
   const deployment = deployments.find((d) => d.id === id);
   const logs = logLines[id] ?? [];
+  const agentConfig = deployment?.config?.agents
+    ? Object.values(deployment.config.agents)[0]
+    : deployment?.config?.agent;
 
   useEffect(() => {
     loadDeployments().then(() => setLoading(false));
@@ -32,6 +42,13 @@ export function AgentDetail(): JSX.Element {
     return () => unsubscribeLogs(id);
   }, [id, subscribeLogs, unsubscribeLogs]);
 
+  useEffect(() => {
+    if (agentConfig?.model) {
+      setChainModel(agentConfig.model);
+      setChainFallbacks(agentConfig.fallbackModels ?? []);
+    }
+  }, [agentConfig?.model]);
+
   const handleStop = useCallback(async () => {
     await stop(id);
     const s = await window.api.deploymentsGetStatus(id).catch(() => null);
@@ -42,6 +59,16 @@ export function AgentDetail(): JSX.Element {
     await remove(id);
     navigate({ to: '/agents' });
   }, [id, remove, navigate]);
+
+  const handleSaveChain = async (): Promise<void> => {
+    setChainSaving(true);
+    try {
+      await updateConfig(id, { model: chainModel, fallbackModels: chainFallbacks });
+      setEditingChain(false);
+    } finally {
+      setChainSaving(false);
+    }
+  };
 
   if (loading) {
     return (
@@ -67,9 +94,6 @@ export function AgentDetail(): JSX.Element {
   }
 
   const isRunning = deployment.status === 'running';
-  const agentConfig = deployment.config?.agents
-    ? Object.values(deployment.config.agents)[0]
-    : deployment.config?.agent;
   const agentName =
     deployment.config?.agents ? Object.keys(deployment.config.agents)[0] ?? '' : '';
 
@@ -142,6 +166,56 @@ export function AgentDetail(): JSX.Element {
         <InfoCard label="Uptime" value={status?.uptime ? formatUptime(status.uptime) : 'N/A'} />
         <InfoCard label="Created" value={new Date(deployment.createdAt).toLocaleString()} />
       </div>
+
+      {agentConfig && (
+        <div className="mb-6">
+          <div className="mb-2 flex items-center justify-between">
+            <h2 className="text-sm font-medium text-muted">Model Chain</h2>
+            {!editingChain && (
+              <button
+                type="button"
+                onClick={() => setEditingChain(true)}
+                className="text-xs text-primary hover:underline"
+              >
+                Edit
+              </button>
+            )}
+          </div>
+          {editingChain ? (
+            <div className="rounded-lg border border-border bg-sidebar-bg p-3">
+              <ModelChainEditor
+                model={chainModel}
+                fallbackModels={chainFallbacks}
+                availableModels={availableModels}
+                onChange={(m, fb) => { setChainModel(m); setChainFallbacks(fb); }}
+              />
+              <div className="mt-3 flex gap-2">
+                <button
+                  type="button"
+                  onClick={handleSaveChain}
+                  disabled={chainSaving}
+                  className="rounded-lg bg-primary px-3 py-1.5 text-xs text-white hover:bg-primary-hover disabled:opacity-50"
+                >
+                  {chainSaving ? 'Saving...' : 'Save'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setEditingChain(false)}
+                  className="rounded-lg border border-border px-3 py-1.5 text-xs text-muted hover:bg-sidebar-hover"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="rounded-lg border border-border bg-sidebar-bg p-3 text-sm">
+              {[chainModel, ...chainFallbacks]
+                .map((v) => availableModels.find((m) => m.value === v)?.label ?? v)
+                .join(' → ') || agentConfig.model}
+            </div>
+          )}
+        </div>
+      )}
 
       {agentConfig?.systemPrompt && (
         <div className="mb-6">

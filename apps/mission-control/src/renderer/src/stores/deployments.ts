@@ -16,6 +16,7 @@ interface DeploymentsState {
   stop(id: string): Promise<void>;
   remove(id: string, deleteWorkspace?: boolean): Promise<void>;
   getStatus(id: string): Promise<RuntimeStatus>;
+  updateConfig(id: string, patch: { model?: string; fallbackModels?: string[] }): Promise<void>;
   subscribeLogs(id: string): void;
   unsubscribeLogs(id: string): void;
   appendLogLine(id: string, line: string): void;
@@ -83,6 +84,16 @@ export const useDeploymentsStore = create<DeploymentsState>((set, get) => ({
   async getStatus(id: string) {
     try {
       return await window.api.deploymentsGetStatus(id);
+    } catch (err) {
+      set({ error: (err as Error).message });
+      throw err;
+    }
+  },
+
+  async updateConfig(id: string, patch: { model?: string; fallbackModels?: string[] }) {
+    try {
+      await window.api.deploymentsUpdateConfig(id, patch);
+      await get().loadDeployments();
     } catch (err) {
       set({ error: (err as Error).message });
       throw err;
