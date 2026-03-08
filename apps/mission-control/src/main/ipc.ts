@@ -416,7 +416,22 @@ export async function registerIpcHandlers(
   ipcMain.handle('messagingApps:delete', async (_event, id: string) => {
     const app = await getMessagingAppRegistry().get(id);
     if (app) {
-      await getSecretStore().delete(app.credentialsKey);
+      if (app.type === 'whatsapp') {
+        // Clean up all namespaced auth keys
+        const secretStore = getSecretStore();
+        const prefix = `${app.credentialsKey}:`;
+        const allKeys = await secretStore.list();
+        for (const key of allKeys.filter((k) => k.startsWith(prefix))) {
+          await secretStore.delete(key);
+        }
+        // Clean up runtime auth state directory
+        const { homedir } = await import('node:os');
+        const { rm } = await import('node:fs/promises');
+        const authStateDir = join(homedir(), '.mission-control', 'whatsapp-sessions', id);
+        await rm(authStateDir, { recursive: true, force: true });
+      } else {
+        await getSecretStore().delete(app.credentialsKey);
+      }
     }
     return getMessagingAppRegistry().remove(id);
   });
@@ -439,6 +454,98 @@ export async function registerIpcHandlers(
     }
     return { username: data.result.username, firstName: data.result.first_name };
   });
+
+  ipcMain.handle('whatsapp:startPairing', async (_event, appId: string) => {
+    const store = getSecretStore();
+    const prefix = `whatsapp-auth:${appId}:`;
+
+    // Wrap store with prefix for this pairing session
+    const prefixedStore = {
+      get: (key: string) => store.get(`${prefix}${key}`),
+      set: (key: string, value: string) => store.set(`${prefix}${key}`, value),
+      delete: (key: string) => store.delete(`${prefix}${key}`),
+      list: async () => {
+        const all = await store.list();
+        return all.filter((k) => k.startsWith(prefix)).map((k) => k.slice(prefix.length));
+      },
+    };
+
+    const { makeBaileysAuthState } = await import('@dash/channels');
+    const { state, saveCreds } = await makeBaileysAuthState(prefixedStore, '');
+
+    const { default: makeWASocket, DisconnectReason } = await import('@whiskeysockets/baileys');
+    const qrcode = await import('qrcode');
+
+    return new Promise<void>((resolve, reject) => {
+      const MAX_QR_ROTATIONS = 5;
+      let qrCount = 0;
+
+      const sock = makeWASocket({
+        auth: state,
+        printQRInTerminal: true,
+        logger: { level: 'silent' } as never,
+      });
+
+      sock.ev.on('creds.update', saveCreds);
+
+      sock.ev.on('connection.update', async (update) => {
+        const { connection, lastDisconnect, qr } = update;
+
+        if (qr) {
+          qrCount++;
+          if (qrCount > MAX_QR_ROTATIONS) {
+            sock.end(undefined);
+            const errorMessage = 'QR code expired. Please try again.';
+            const win = getWindow();
+            win?.webContents.send('whatsapp:error', appId, errorMessage);
+            reject(new Error(errorMessage));
+            return;
+          }
+          try {
+            const qrDataUrl = await qrcode.default.toDataURL(qr);
+            const win = getWindow();
+            win?.webContents.send('whatsapp:qr', appId, qrDataUrl);
+          } catch {
+            // QR generation failed, terminal fallback still works via printQRInTerminal
+          }
+        }
+
+        if (connection === 'open') {
+          sock.end(undefined);
+          const win = getWindow();
+          win?.webContents.send('whatsapp:linked', appId);
+          resolve();
+        }
+
+        if (connection === 'close') {
+          const statusCode = (lastDisconnect?.error as { output?: { statusCode?: number } } | undefined)
+            ?.output?.statusCode;
+          if (statusCode === DisconnectReason.loggedOut) {
+            const errorMessage = 'WhatsApp session rejected. Try again.';
+            const win = getWindow();
+            win?.webContents.send('whatsapp:error', appId, errorMessage);
+            reject(new Error(errorMessage));
+          }
+        }
+      });
+    });
+  });
+
+  ipcMain.handle(
+    'messagingApps:createWhatsApp',
+    async (_event, appId: string, app: Omit<MessagingApp, 'id' | 'createdAt' | 'credentialsKey'>) => {
+      const registry = getMessagingAppRegistry();
+      const credentialsKey = `whatsapp-auth:${appId}`;
+      const created: MessagingApp = {
+        ...app,
+        id: appId,
+        credentialsKey,
+        createdAt: new Date().toISOString(),
+      };
+      await registry.add(created);
+      return created;
+    },
+  );
 
   // Deployment config update
   ipcMain.handle(

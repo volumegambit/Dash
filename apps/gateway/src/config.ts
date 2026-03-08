@@ -11,7 +11,7 @@ export interface GatewayRoutingRule {
 }
 
 export interface ChannelConfig {
-  adapter: 'telegram' | 'mission-control';
+  adapter: 'telegram' | 'mission-control' | 'whatsapp';
   // Simple mode: route all messages to one agent
   agent?: string;
   // Advanced mode: ordered routing rules
@@ -22,6 +22,9 @@ export interface ChannelConfig {
   allowedUsers?: string[];
   // Mission Control-specific
   port?: number;
+  // WhatsApp-specific
+  authStateDir?: string;
+  whatsappAuth?: Record<string, string>;
 }
 
 export interface AgentEndpoint {
@@ -36,7 +39,7 @@ export interface GatewayConfig {
 
 interface SecretsFile {
   agents?: Record<string, { token?: string }>;
-  channels?: Record<string, { token?: string }>;
+  channels?: Record<string, { token?: string; whatsappAuth?: Record<string, string> }>;
 }
 
 export interface LoadConfigOptions {
@@ -87,6 +90,9 @@ export async function loadConfig(options?: LoadConfigOptions): Promise<GatewayCo
         if (config.channels[name] && s.token) {
           config.channels[name].token = s.token;
         }
+        if (s.whatsappAuth) {
+          config.channels[name].whatsappAuth = s.whatsappAuth;
+        }
       }
     }
   }
@@ -101,6 +107,24 @@ export async function loadConfig(options?: LoadConfigOptions): Promise<GatewayCo
 
   for (const [name, ch] of Object.entries(config.channels)) {
     if (ch.adapter === 'mission-control') continue;
+
+    // WhatsApp channels do not require a token but still need agent reference validation
+    if (ch.adapter === 'whatsapp') {
+      if (ch.routing) {
+        for (const rule of ch.routing) {
+          if (!config.agents[rule.agentName]) {
+            throw new Error(
+              `Channel "${name}" routing rule references unknown agent "${rule.agentName}". Available: ${Object.keys(config.agents).join(', ')}`,
+            );
+          }
+        }
+      } else if (!ch.agent || !config.agents[ch.agent]) {
+        throw new Error(
+          `Channel "${name}" references unknown agent "${ch.agent ?? '(none)'}". Available: ${Object.keys(config.agents).join(', ')}`,
+        );
+      }
+      continue;
+    }
 
     if (ch.routing) {
       // Advanced mode: validate all agentName references
