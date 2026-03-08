@@ -5,6 +5,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { McAgentEvent } from '../../../shared/ipc.js';
 import { useChatStore } from '../stores/chat.js';
 import { useDeploymentsStore } from '../stores/deployments.js';
+import { formatDetails, summarize, toolIcon } from './chat.helpers.js';
 
 // --- Event rendering helpers ---
 
@@ -73,9 +74,12 @@ function renderEvents(events: Record<string, unknown>[]): JSX.Element[] {
     );
   // Flush in-progress tool call (tool_use_start seen but no tool_result yet)
   if (toolName) {
+    const inProgressSummary = toolInputBuffer ? summarize(toolName, toolInputBuffer) : '';
     elements.push(
       <div key="tool-progress" className="mb-2 text-xs text-muted">
-        🔧 <span className="font-mono">{toolName}</span>({toolInputBuffer || '…'})
+        {toolIcon(toolName)} <span className="font-mono">{toolName}</span>
+        {inProgressSummary && <span className="ml-1">→ {inProgressSummary}</span>}
+        {' …'}
       </div>,
     );
   }
@@ -106,6 +110,10 @@ function ToolBlock({
   isError,
 }: { name: string; input: string; result: string; isError?: boolean }): JSX.Element {
   const [open, setOpen] = useState(false);
+  const icon = toolIcon(name);
+  const summary = summarize(name, input);
+  const details = formatDetails(input);
+
   return (
     <div
       className={`mb-2 rounded border text-xs ${isError ? 'border-red-900/50 bg-red-900/10' : 'border-border bg-sidebar-hover'}`}
@@ -115,12 +123,21 @@ function ToolBlock({
         onClick={() => setOpen((o) => !o)}
         className="w-full px-3 py-1.5 text-left hover:text-foreground"
       >
-        🔧 <span className="font-mono">{name}</span>
+        {icon} <span className="font-mono">{name}</span>
+        {summary && <span className="ml-1 text-muted">→ {summary}</span>}
         {isError ? ' ✗' : ' ✓'}
       </button>
       {open && (
         <div className="border-t border-border px-3 pb-2 pt-1">
-          {input && <p className="mb-1 font-mono text-muted">{input}</p>}
+          {input && (
+            <div className="mb-1 space-y-0.5">
+              {details.map(({ key, value }) => (
+                <p key={key} className="text-muted">
+                  <span className="capitalize">{key}:</span> {value}
+                </p>
+              ))}
+            </div>
+          )}
           <p className={`whitespace-pre-wrap ${isError ? 'text-red-400' : 'text-green-400/80'}`}>
             {result}
           </p>
