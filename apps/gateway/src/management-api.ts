@@ -37,18 +37,6 @@ export interface RegisterChannelRequest {
   config: ChannelRegistrationConfig;
 }
 
-export interface AgentRegistration {
-  agentName: string;
-  chatUrl: string;
-  chatToken: string;
-}
-
-export interface DeploymentRegistration {
-  deploymentId: string;
-  agents: AgentRegistration[];
-  channels: RegisterChannelRequest[];
-}
-
 export interface GatewayHealthResponse {
   status: 'healthy';
   startedAt: string;
@@ -74,6 +62,8 @@ export function createGatewayManagementApp(
       if (!auth || auth !== `Bearer ${token}`) {
         return c.json({ error: 'Unauthorized' }, 401);
       }
+    } else {
+      // No token configured — all routes are public (dev/no-auth mode)
     }
     await next();
   });
@@ -111,7 +101,12 @@ export function createGatewayManagementApp(
 
   app.delete('/deployments/:id', async (c) => {
     const { id } = c.req.param();
-    await gateway.deregisterDeployment(id);
+    try {
+      await gateway.deregisterDeployment(id);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Internal error';
+      return c.json({ error: message }, 500);
+    }
     return c.json({ ok: true });
   });
 
@@ -145,10 +140,15 @@ export function createGatewayManagementApp(
       );
     }
 
-    await gateway.registerChannel(body.deploymentId, body.channelName, adapter, {
-      globalDenyList: cfg.globalDenyList ?? [],
-      routing: cfg.routing,
-    });
+    try {
+      await gateway.registerChannel(body.deploymentId, body.channelName, adapter, {
+        globalDenyList: cfg.globalDenyList ?? [],
+        routing: cfg.routing,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Internal error';
+      return c.json({ error: message }, 500);
+    }
     return c.json({ ok: true }, 201);
   });
 
