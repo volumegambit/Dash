@@ -5,6 +5,9 @@ export type {
   ShutdownResponse,
   ErrorResponse,
   LogsResponse,
+  SkillInfo,
+  SkillContent,
+  SkillsConfig,
 } from './types.js';
 export { createManagementApp, startManagementServer } from './server.js';
 export type { ManagementServerOptions } from './server.js';
