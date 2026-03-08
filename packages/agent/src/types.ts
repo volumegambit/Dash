@@ -1,4 +1,4 @@
-import type { ContentBlock, Message } from '@dash/llm';
+import type { ContentBlock, LlmProvider, Message } from '@dash/llm';
 
 export type AgentEvent =
   | { type: 'text_delta'; text: string }
@@ -28,6 +28,9 @@ export interface DashAgentConfig {
   systemPrompt: string;
   tools?: string[]; // OpenCode tool names
   workspace?: string;
+  provider?: LlmProvider; // For compaction LLM calls
+  sessionStore?: SessionStore; // For session persistence + compaction
+  modelContextWindow?: number; // Compaction threshold (default: 200000 tokens)
 }
 
 export interface AgentState {
