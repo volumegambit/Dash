@@ -9,13 +9,14 @@ import {
   EncryptedSecretStore,
   MessagingAppRegistry,
   ProcessRuntime,
+  SettingsStore,
   defaultProcessSpawner,
 } from '@dash/mc';
 import type { MessagingApp } from '@dash/mc';
+import { ChatService } from './chat-service.js';
 import { app, dialog, ipcMain, safeStorage, shell } from 'electron';
 import type { BrowserWindow } from 'electron';
 import type { DeployWithConfigOptions } from '../shared/ipc.js';
-import { ChatService } from './chat-service.js';
 
 const DATA_DIR = join(homedir(), '.mission-control');
 const SESSION_KEY_PATH = join(DATA_DIR, 'session.key');
@@ -94,6 +95,10 @@ function getRuntime(): ProcessRuntime {
   return runtime;
 }
 
+function getSettingsStore(): SettingsStore {
+  return new SettingsStore(DATA_DIR);
+}
+
 function cacheKey(key: Buffer): void {
   if (!safeStorage.isEncryptionAvailable()) return;
   const encrypted = safeStorage.encryptString(key.toString('hex'));
@@ -161,8 +166,11 @@ export async function registerIpcHandlers(
       // Secrets exist but are locked — still need setup flow (unlock first)
       return { needsSetup: true, needsApiKey: false };
     }
-    const apiKey = await store.get('anthropic-api-key');
-    return { needsSetup: false, needsApiKey: !apiKey };
+    const anthropicKey = await store.get('anthropic-api-key');
+    const openaiKey = await store.get('openai-api-key');
+    const googleKey = await store.get('google-api-key');
+    const hasAnyKey = !!(anthropicKey || openaiKey || googleKey);
+    return { needsSetup: false, needsApiKey: !hasAnyKey };
   });
 
   // Chat handlers
@@ -247,7 +255,7 @@ export async function registerIpcHandlers(
   ipcMain.handle(
     'deployments:deployWithConfig',
     async (_event, options: DeployWithConfigOptions) => {
-      const { name, model, systemPrompt, tools, enableTelegram, workspace } = options;
+      const { name, model, fallbackModels, systemPrompt, tools, enableTelegram, workspace } = options;
 
       // Create a temp config directory with the agent and gateway config
       const configDir = join(tmpdir(), `mc-deploy-${Date.now()}`);
@@ -258,6 +266,7 @@ export async function registerIpcHandlers(
       const agentConfig = {
         name,
         model,
+        fallbackModels: fallbackModels && fallbackModels.length > 0 ? fallbackModels : undefined,
         systemPrompt,
         tools: tools.length > 0 ? tools : undefined,
         ...(workspace ? { workspace } : {}),
@@ -367,11 +376,10 @@ export async function registerIpcHandlers(
     const registry = getMessagingAppRegistry();
     const secretStore = getSecretStore();
     const id = randomUUID().slice(0, 8);
-    // Create the registry entry first with a placeholder credentialsKey
     const created: MessagingApp = {
       ...app,
       id,
-      credentialsKey: '', // will be updated after we have the id
+      credentialsKey: '',
       createdAt: new Date().toISOString(),
     };
     await registry.add(created);
@@ -379,11 +387,9 @@ export async function registerIpcHandlers(
     try {
       await secretStore.set(credKey, token);
     } catch (err) {
-      // Rollback registry entry if secret storage fails
       await registry.remove(id).catch(() => {});
       throw err;
     }
-    // Update the registry entry with the correct credentialsKey
     await registry.update(id, { credentialsKey: credKey });
     return { ...created, credentialsKey: credKey };
   });
@@ -395,14 +401,6 @@ export async function registerIpcHandlers(
   ipcMain.handle('messagingApps:delete', async (_event, id: string) => {
     const app = await getMessagingAppRegistry().get(id);
     if (app) {
-      // Delete credential from secret store first (before removing from registry),
-      // so the registry never points to a missing credential.
-      // Note: this is not atomic — if the registry remove fails after secret deletion,
-      // the entry will remain in the registry with a missing credential.
-      //
-      // Best-effort credential cleanup: if the secret is already gone, that's fine.
-      // Note: if the store is locked, this will throw, which is the right behaviour —
-      // we should not delete the registry entry if we can't clean up credentials.
       await getSecretStore().delete(app.credentialsKey);
     }
     return getMessagingAppRegistry().remove(id);
@@ -425,5 +423,22 @@ export async function registerIpcHandlers(
       throw new Error('Unexpected response from Telegram API');
     }
     return { username: data.result.username, firstName: data.result.first_name };
+  });
+
+  // Deployment config update
+  ipcMain.handle(
+    'deployments:updateConfig',
+    async (_event, id: string, patch: { model?: string; fallbackModels?: string[] }) => {
+      await getRuntime().updateAgentConfig(id, patch);
+    },
+  );
+
+  // Settings handlers
+  ipcMain.handle('settings:get', async () => {
+    return getSettingsStore().get();
+  });
+
+  ipcMain.handle('settings:set', async (_event, patch: { defaultModel?: string; defaultFallbackModels?: string[] }) => {
+    await getSettingsStore().set(patch);
   });
 }
