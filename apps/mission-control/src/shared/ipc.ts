@@ -127,4 +127,7 @@ export interface MissionControlAPI {
   // Settings
   settingsGet(): Promise<AppSettings>;
   settingsSet(patch: Partial<AppSettings>): Promise<void>;
+
+  // Updates
+  onUpdateAvailable(callback: (info: { version: string }) => void): () => void;
 }
