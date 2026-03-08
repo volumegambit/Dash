@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { startManagementServer } from './server.js';
-import type { InfoResponse } from './types.js';
+import type { InfoResponse, SkillsConfig } from './types.js';
 
 const TEST_TOKEN = 'test-secret-token';
 
@@ -101,6 +101,145 @@ describe('Management Server', () => {
   it('returns 404 for unknown routes', async () => {
     const res = await fetch(url('/unknown'), { headers: authHeaders() });
     expect(res.status).toBe(404);
+  });
+
+  describe('skills endpoints', () => {
+    let skillsServer: Server;
+    let skillsClose: () => Promise<void>;
+    let skillsPort: number;
+
+    const baseSkill = {
+      name: 'brainstorming',
+      description: 'Explore ideas before building',
+      location: '/tmp/skills/brainstorming/SKILL.md',
+      editable: true,
+    };
+    let storedContent = '---\nname: brainstorming\n---\n\n# Brainstorm';
+    let storedConfig: SkillsConfig = { paths: ['/tmp/skills'], urls: [] };
+
+    beforeEach(async () => {
+      storedContent = '---\nname: brainstorming\n---\n\n# Brainstorm';
+      storedConfig = { paths: ['/tmp/skills'], urls: [] };
+
+      const result = startManagementServer({
+        port: 0,
+        token: TEST_TOKEN,
+        getInfo: () => testInfo,
+        onShutdown: vi.fn().mockResolvedValue(undefined),
+        skills: {
+          list: async (_agentName) => [baseSkill],
+          get: async (_agentName, skillName) => {
+            if (skillName === 'brainstorming') return { ...baseSkill, content: storedContent };
+            return null;
+          },
+          updateContent: async (_agentName, _skillName, content) => {
+            storedContent = content;
+          },
+          create: async (_agentName, name, description, content) => ({
+            name,
+            description,
+            content,
+            location: `/tmp/skills/${name}/SKILL.md`,
+            editable: true,
+          }),
+          getConfig: (_agentName) => storedConfig,
+          updateConfig: async (_agentName, config) => {
+            storedConfig = config;
+          },
+        },
+      });
+
+      await new Promise<void>((resolve) => {
+        if (result.server.listening) resolve();
+        else result.server.once('listening', resolve);
+      });
+      const addr = result.server.address();
+      skillsPort = typeof addr === 'object' && addr ? addr.port : 0;
+      skillsServer = result.server;
+      skillsClose = result.close;
+    });
+
+    afterEach(async () => {
+      await skillsClose();
+    });
+
+    function skillsUrl(path: string) {
+      return `http://localhost:${skillsPort}${path}`;
+    }
+
+    it('GET /agents/default/skills returns 200 with array of skills', async () => {
+      const res = await fetch(skillsUrl('/agents/default/skills'), { headers: authHeaders() });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { name: string }[];
+      expect(Array.isArray(body)).toBe(true);
+      expect(body).toHaveLength(1);
+      expect(body[0].name).toBe('brainstorming');
+    });
+
+    it('GET /agents/default/skills/brainstorming returns 200 with content', async () => {
+      const res = await fetch(skillsUrl('/agents/default/skills/brainstorming'), {
+        headers: authHeaders(),
+      });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { content: string };
+      expect(body.content).toContain('Brainstorm');
+    });
+
+    it('GET /agents/default/skills/missing returns 404', async () => {
+      const res = await fetch(skillsUrl('/agents/default/skills/missing'), {
+        headers: authHeaders(),
+      });
+      expect(res.status).toBe(404);
+    });
+
+    it('PUT /agents/default/skills/brainstorming updates content and returns 200', async () => {
+      const res = await fetch(skillsUrl('/agents/default/skills/brainstorming'), {
+        method: 'PUT',
+        headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content: 'new content' }),
+      });
+      expect(res.status).toBe(200);
+      expect(storedContent).toBe('new content');
+    });
+
+    it('POST /agents/default/skills creates skill and returns 201', async () => {
+      const res = await fetch(skillsUrl('/agents/default/skills'), {
+        method: 'POST',
+        headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'new-skill', description: 'A new skill', content: 'content' }),
+      });
+      expect(res.status).toBe(201);
+      const body = (await res.json()) as { name: string };
+      expect(body.name).toBe('new-skill');
+    });
+
+    it('GET /agents/default/skills/config returns 200 with paths', async () => {
+      const res = await fetch(skillsUrl('/agents/default/skills/config'), {
+        headers: authHeaders(),
+      });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as SkillsConfig;
+      expect(body.paths).toContain('/tmp/skills');
+    });
+
+    it('PATCH /agents/default/skills/config updates config and returns requiresRestart', async () => {
+      const res = await fetch(skillsUrl('/agents/default/skills/config'), {
+        method: 'PATCH',
+        headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ paths: ['/new/path'], urls: [] }),
+      });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { requiresRestart: boolean };
+      expect(body.requiresRestart).toBe(true);
+      expect(storedConfig.paths).toContain('/new/path');
+    });
+
+    it('skills routes return 501 when skills not configured', async () => {
+      const res = await fetch(`http://localhost:${port}/agents/default/skills`, {
+        headers: authHeaders(),
+      });
+      expect(res.status).toBe(501);
+    });
   });
 
   describe('log endpoints', () => {
