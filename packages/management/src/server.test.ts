@@ -461,5 +461,32 @@ describe('Management Server', () => {
       expect(res.headers.get('content-type')).toContain('text/event-stream');
       controller.abort();
     });
+
+    it('GET /logs?level=error returns only error lines', async () => {
+      const res = await fetch(logUrl('/logs?level=error'), { headers: authHeaders() });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { lines: string[] };
+      expect(body.lines).toHaveLength(1);
+      expect(body.lines[0]).toContain('[error]');
+      expect(body.lines[0]).toContain('Connection lost');
+    });
+
+    it('GET /logs?level=warn returns only warn lines', async () => {
+      const res = await fetch(logUrl('/logs?level=warn'), { headers: authHeaders() });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { lines: string[] };
+      expect(body.lines).toHaveLength(1);
+      expect(body.lines[0]).toContain('[warn]');
+    });
+
+    it('GET /logs?level=info returns only info lines', async () => {
+      const res = await fetch(logUrl('/logs?level=info'), { headers: authHeaders() });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { lines: string[] };
+      expect(body.lines).toHaveLength(3);
+      for (const line of body.lines) {
+        expect(line).toContain('[info]');
+      }
+    });
   });
 });
