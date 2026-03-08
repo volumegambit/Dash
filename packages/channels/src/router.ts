@@ -101,6 +101,7 @@ export class MessageRouter {
       case 'sender':
         return condition.ids.includes(msg.senderId);
       case 'group':
+        // conversationId for Telegram group chats is a negative integer (e.g. -100123456789)
         return condition.ids.includes(msg.conversationId);
     }
   }

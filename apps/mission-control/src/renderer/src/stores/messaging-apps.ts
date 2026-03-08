@@ -7,7 +7,7 @@ interface MessagingAppsState {
   error: string | null;
 
   loadApps(): Promise<void>;
-  createApp(app: Omit<MessagingApp, 'id' | 'createdAt'>): Promise<MessagingApp>;
+  createApp(app: Omit<MessagingApp, 'id' | 'createdAt' | 'credentialsKey'>, token: string): Promise<MessagingApp>;
   updateApp(id: string, patch: Partial<MessagingApp>): Promise<void>;
   deleteApp(id: string): Promise<void>;
 }
@@ -27,10 +27,10 @@ export const useMessagingAppsStore = create<MessagingAppsState>((set, get) => ({
     }
   },
 
-  async createApp(app) {
+  async createApp(app, token) {
     set({ error: null });
     try {
-      const newApp = await window.api.messagingAppsCreate(app);
+      const newApp = await window.api.messagingAppsCreate(app, token);
       await get().loadApps();
       return newApp;
     } catch (err) {
