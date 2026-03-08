@@ -102,7 +102,7 @@ export async function createAgentServer(config: DashConfig) {
         log(`Chat API listening on port ${config.chatPort}`);
       }
 
-      log('Dash agent server started');
+      log('Server ready');
     },
     async stop() {
       if (chatClose) await chatClose();
