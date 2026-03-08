@@ -11,6 +11,10 @@ export interface AgentConfig {
   systemPrompt: string;
   tools?: string[];
   workspace?: string;
+  skills?: {
+    paths?: string[];
+    urls?: string[];
+  };
 }
 
 export interface DashJsonConfig {
