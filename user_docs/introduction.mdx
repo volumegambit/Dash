@@ -3,40 +3,40 @@ title: "Introduction"
 description: "Dash is a desktop-first, private-cloud-possible platform for safely deploying autonomous AI agents."
 ---
 
-Dash is a desktop-first, private-cloud-possible platform that empowers anyone to safely deploy autonomous "claw" agents within minutes. Bring your preferred AI model, connect via WebSocket or the terminal UI, and put your agents to work — all while maintaining absolute control over your private data.
+# Your AI Team, Always On
 
-We believe the best way to discover AI's potential is by easily experimenting with it. Dash accelerates how you launch personal and professional agents by prioritizing security from the ground up:
+Dash lets anyone run a team of AI agents that work autonomously — handling tasks, making decisions, and getting things done — so you don't have to.
 
-- **Secure defaults** — Out-of-the-box protection so you can launch with confidence.
-- **Secrets management** — AES-256-GCM encrypted storage for your API keys and credentials, with OS keychain integration so you only enter your password once.
-- **Strict isolation** — Clear operational boundaries to keep every agent's autonomous actions contained.
-
-## Why Dash?
+Whether you're a solo operator or running a team, Dash puts a crew of AI agents to work for you. Define what they do, set them loose, and check back on results.
 
 <CardGroup cols={2}>
-  <Card title="Private by design" icon="lock">
-    Run on your own hardware or private cloud. Your data never leaves your infrastructure.
+  <Card title="Delegate work" icon="hand-wave">
+    Put your AI agents to work. They run tasks, make decisions, and keep going — no hand-holding required.
   </Card>
-  <Card title="Bring your own model" icon="microchip">
-    Connect to Anthropic, OpenAI, Google, or any LLM provider you choose.
+  <Card title="Any AI provider" icon="microchip">
+    Connect to Anthropic, OpenAI, Google, or any major LLM provider. Mix and match across your team.
   </Card>
-  <Card title="WebSocket Chat API" icon="plug">
-    Connect any client to your agents over a real-time WebSocket protocol with streaming events.
+  <Card title="Mission Control" icon="plug">
+    Manage your agent team from a desktop app. Monitor activity, chat directly, and deploy new teammates in minutes.
   </Card>
-  <Card title="Safe defaults" icon="shield">
-    Secrets are separated from config, agents are sandboxed, and access controls are built in.
+  <Card title="Runs on your infrastructure" icon="lock">
+    Your machine, a VPS, or private cloud. Your data stays with you — except what goes to your AI provider.
   </Card>
-  <Card title="Non-technical friendly" icon="hand-wave">
-    Simple JSON configuration, Docker deployment, and clear documentation.
+  <Card title="Reach agents anywhere" icon="users">
+    Chat with your agents through Telegram, the built-in interface, or integrate via WebSocket API.
   </Card>
-  <Card title="Multi-agent" icon="users">
-    Define multiple agents with different models, tools, and system prompts. Access each by name.
+  <Card title="Safe by default" icon="shield">
+    Secrets encrypted at rest. Agents sandboxed. Access controlled. Safe to experiment from day one.
   </Card>
 </CardGroup>
 
-## Architecture
+## Coming Soon
 
-Packages organized in a layered dependency graph:
+Agents that coordinate with each other, delegate subtasks, and work in parallel are on the way. The groundwork is already in place — stay tuned.
+
+## How Dash Is Organized
+
+Packages organized in a layered dependency graph — here is how your agent team is structured:
 
 ```
 agent server → management → agent → llm
@@ -52,10 +52,10 @@ agent server → management → agent → llm
 | `@dash/tui` | Terminal UI / CLI entry point |
 | `@dash/mc` | Deployment registry, encrypted secrets store, and OS keychain integration |
 
-## Quick start
+## Get Started
 
 <Steps>
-  <Step title="Install dependencies">
+  <Step title="Set up your team">
     ```bash
     git clone <repo-url> Dash
     cd Dash
@@ -68,7 +68,7 @@ agent server → management → agent → llm
     ```
     Add your `ANTHROPIC_API_KEY` to the `.env` file.
   </Step>
-  <Step title="Run the TUI">
+  <Step title="Meet your first agent">
     ```bash
     npm run tui
     ```
