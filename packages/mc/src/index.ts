@@ -22,3 +22,5 @@ export { resolveRuntimeStatus } from './runtime/status.js';
 export type { ProcessSnapshot } from './runtime/status.js';
 export { ConversationStore } from './conversations.js';
 export type { McConversation, McMessage } from './conversations.js';
+export type { MessagingApp, RoutingRule, RoutingCondition } from './types.js';
+export { MessagingAppRegistry } from './messaging-apps/registry.js';
