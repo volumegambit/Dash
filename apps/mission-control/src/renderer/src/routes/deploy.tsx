@@ -6,6 +6,7 @@ import { ModelChainEditor } from '../components/ModelChainEditor.js';
 import { AVAILABLE_MODELS, AVAILABLE_TOOLS } from '../components/deploy-options.js';
 import { useAvailableModels } from '../hooks/useAvailableModels.js';
 import { useDeploymentsStore } from '../stores/deployments';
+import { useSecretsStore } from '../stores/secrets.js';
 
 type Step = 'agent' | 'channels' | 'review';
 
@@ -39,6 +40,10 @@ export function DeployWizard(): JSX.Element {
     tools: [],
     workspace: '',
   });
+
+  useEffect(() => {
+    useSecretsStore.getState().loadKeys();
+  }, []);
 
   useEffect(() => {
     window.api
