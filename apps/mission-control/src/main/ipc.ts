@@ -6,6 +6,7 @@ import { join, resolve } from 'node:path';
 import {
   AgentRegistry,
   ConversationStore,
+  DeploymentStartupError,
   EncryptedSecretStore,
   MessagingAppRegistry,
   ProcessRuntime,
@@ -252,7 +253,6 @@ export async function registerIpcHandlers(
     try {
       return await getRuntime().deploy(configDir);
     } catch (err) {
-      const { DeploymentStartupError } = await import('@dash/mc');
       if (err instanceof DeploymentStartupError) {
         return err.deploymentId;
       }
@@ -297,7 +297,6 @@ export async function registerIpcHandlers(
       try {
         return await getRuntime().deploy(configDir);
       } catch (err) {
-        const { DeploymentStartupError } = await import('@dash/mc');
         if (err instanceof DeploymentStartupError) {
           return err.deploymentId;
         }
