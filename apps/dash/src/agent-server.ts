@@ -47,6 +47,7 @@ export async function createAgentServer(config: DashConfig) {
 
     const agent = new DashAgent(backend, {
       model: agentConfig.model,
+      fallbackModels: agentConfig.fallbackModels,
       systemPrompt: agentConfig.systemPrompt,
       tools: agentConfig.tools,
       workspace,
