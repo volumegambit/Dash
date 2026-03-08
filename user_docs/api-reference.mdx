@@ -3,7 +3,7 @@ title: "Management API"
 description: "HTTP API for monitoring and controlling a running Dash agent server."
 ---
 
-The Management API is an HTTP server that runs on port 9100 (configurable via `MANAGEMENT_API_PORT`). Enable it by setting `MANAGEMENT_API_TOKEN` in your environment or via `--secrets`.
+The Management API lets you monitor and control your agent team programmatically. Useful for health checks, automation, and integration with external systems.
 
 All endpoints require a Bearer token in the `Authorization` header. Requests with a missing or invalid token return `401`.
 
