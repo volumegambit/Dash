@@ -8,7 +8,7 @@ export function Nav() {
         <span className="font-mono text-lg font-semibold tracking-tight text-white">Dash</span>
         <div className="flex items-center gap-6">
           <Link
-            href="https://dash-aa8db5b5.mintlify.app/introduction"
+            href="https://docs.dashsquad.ai"
             target="_blank"
             rel="noopener noreferrer"
             className="text-sm text-[#a3a3a3] transition-colors hover:text-white"

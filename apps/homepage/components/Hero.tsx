@@ -106,7 +106,7 @@ export function Hero() {
           )}
         </div>
         <Link
-          href="https://dash-aa8db5b5.mintlify.app/introduction"
+          href="https://docs.dashsquad.ai"
           target="_blank"
           rel="noopener noreferrer"
           className="text-sm font-medium text-[#a3a3a3] transition-colors hover:text-white"
