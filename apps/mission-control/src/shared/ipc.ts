@@ -16,6 +16,7 @@ export interface DeployWithConfigOptions {
   systemPrompt: string;
   tools: string[];
   enableTelegram: boolean;
+  workspace?: string;
 }
 
 export interface SetupStatus {
@@ -28,6 +29,7 @@ export interface MissionControlAPI {
 
   // Shell
   openExternal(url: string): Promise<void>;
+  dialogOpenDirectory(): Promise<string | null>;
 
   // Setup
   setupGetStatus(): Promise<SetupStatus>;
@@ -61,7 +63,7 @@ export interface MissionControlAPI {
   deploymentsDeploy(configDir: string): Promise<string>;
   deploymentsDeployWithConfig(options: DeployWithConfigOptions): Promise<string>;
   deploymentsStop(id: string): Promise<void>;
-  deploymentsRemove(id: string): Promise<void>;
+  deploymentsRemove(id: string, deleteWorkspace?: boolean): Promise<void>;
   deploymentsGetStatus(id: string): Promise<RuntimeStatus>;
   deploymentsLogsSubscribe(id: string): Promise<void>;
   deploymentsLogsUnsubscribe(id: string): Promise<void>;

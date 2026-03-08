@@ -15,6 +15,7 @@ export interface AgentDeployment {
   gatewayPid?: number;
   chatPort?: number;
   chatToken?: string;
+  workspace?: string;
   // Cloud-specific
   dropletId?: number;
   dropletIp?: string;
