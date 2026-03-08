@@ -1,8 +1,9 @@
 import { createFileRoute, useNavigate } from '@tanstack/react-router';
 import { ArrowLeft, ArrowRight, Check, Loader, Rocket } from 'lucide-react';
 import { useEffect, useState } from 'react';
-import { AVAILABLE_MODELS, AVAILABLE_TOOLS } from '../components/deploy-options.js';
+import { RendererDeploymentError } from '../../../shared/ipc';
 import { ModelChainEditor } from '../components/ModelChainEditor.js';
+import { AVAILABLE_MODELS, AVAILABLE_TOOLS } from '../components/deploy-options.js';
 import { useAvailableModels } from '../hooks/useAvailableModels.js';
 import { useDeploymentsStore } from '../stores/deployments';
 
@@ -28,10 +29,11 @@ export function DeployWizard(): JSX.Element {
   const [step, setStep] = useState<Step>('agent');
   const [deploying, setDeploying] = useState(false);
   const [deployError, setDeployError] = useState<string | null>(null);
+  const [deployStartupLogs, setDeployStartupLogs] = useState<string[]>([]);
 
   const [agent, setAgent] = useState<AgentConfig>({
     name: '',
-    model: AVAILABLE_MODELS[0].value,  // use static list for initial value
+    model: AVAILABLE_MODELS[0].value, // use static list for initial value
     fallbackModels: [],
     systemPrompt: '',
     tools: [],
@@ -39,15 +41,18 @@ export function DeployWizard(): JSX.Element {
   });
 
   useEffect(() => {
-    window.api.settingsGet().then((settings) => {
-      if (settings.defaultModel) {
-        setAgent((prev) => ({
-          ...prev,
-          model: settings.defaultModel!,
-          fallbackModels: settings.defaultFallbackModels ?? [],
-        }));
-      }
-    }).catch(() => {});
+    window.api
+      .settingsGet()
+      .then((settings) => {
+        if (settings.defaultModel) {
+          setAgent((prev) => ({
+            ...prev,
+            model: settings.defaultModel!,
+            fallbackModels: settings.defaultFallbackModels ?? [],
+          }));
+        }
+      })
+      .catch(() => {});
   }, []);
 
   const [channels, setChannels] = useState<ChannelConfig>({
@@ -60,6 +65,7 @@ export function DeployWizard(): JSX.Element {
   const handleDeploy = async (): Promise<void> => {
     setDeploying(true);
     setDeployError(null);
+    setDeployStartupLogs([]);
     try {
       const id = await deployWithConfig({
         name: agent.name.trim(),
@@ -71,8 +77,9 @@ export function DeployWizard(): JSX.Element {
         workspace: agent.workspace || undefined,
       });
       navigate({ to: '/agents/$id', params: { id } });
-    } catch (err) {
+    } catch (err: unknown) {
       setDeployError((err as Error).message);
+      setDeployStartupLogs(err instanceof RendererDeploymentError ? err.startupLogs : []);
       setDeploying(false);
     }
   };
@@ -299,8 +306,25 @@ export function DeployWizard(): JSX.Element {
           </div>
 
           {deployError && (
-            <div className="rounded-lg bg-red-900/30 px-4 py-3 text-sm text-red-400">
-              {deployError}
+            <div className="space-y-2">
+              <div className="rounded-lg bg-red-900/30 px-4 py-3 text-sm text-red-400">
+                {deployError}
+              </div>
+              {deployStartupLogs.length > 0 && (
+                <details className="rounded-lg border border-red-900/30">
+                  <summary className="cursor-pointer px-4 py-2 text-xs text-red-400/70 hover:text-red-400">
+                    Startup logs ({deployStartupLogs.length} lines)
+                  </summary>
+                  <div className="max-h-48 overflow-auto rounded-b-lg bg-[#0d0d0d] p-3 font-mono text-xs leading-5">
+                    {deployStartupLogs.map((line, i) => (
+                      // biome-ignore lint/suspicious/noArrayIndexKey: log lines are ordered by index
+                      <div key={i} className="text-red-300/70">
+                        {line}
+                      </div>
+                    ))}
+                  </div>
+                </details>
+              )}
             </div>
           )}
 
