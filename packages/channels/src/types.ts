@@ -22,3 +22,18 @@ export interface ChannelAdapter {
   send(conversationId: string, message: OutboundMessage): Promise<void>;
   onMessage(handler: MessageHandler): void;
 }
+
+export interface RouterRoutingRule {
+  condition:
+    | { type: 'default' }
+    | { type: 'sender'; ids: string[] }
+    | { type: 'group'; ids: string[] };
+  agentName: string;
+  allowList: string[];
+  denyList: string[];
+}
+
+export interface RouterConfig {
+  globalDenyList: string[];
+  rules: RouterRoutingRule[];
+}
