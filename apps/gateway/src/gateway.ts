@@ -94,6 +94,7 @@ export function createGateway(config: GatewayConfig) {
 
 interface OwnerRule {
   ownerDeploymentId: string;
+  ownerGlobalDenyList: string[];
   condition:
     | { type: 'default' }
     | { type: 'sender'; ids: string[] }
@@ -105,7 +106,6 @@ interface OwnerRule {
 
 interface ChannelState {
   adapter: ChannelAdapter;
-  globalDenyList: string[];
   rules: OwnerRule[];
 }
 
@@ -148,9 +148,8 @@ export function createDynamicGateway(): DynamicGateway {
     const state = channels.get(channelName);
     if (!state) return;
 
-    if (state.globalDenyList.includes(msg.senderId)) return;
-
     const matched = state.rules.find((rule) => {
+      if (rule.ownerGlobalDenyList.includes(msg.senderId)) return false;
       switch (rule.condition.type) {
         case 'default':
           return true;
@@ -174,7 +173,7 @@ export function createDynamicGateway(): DynamicGateway {
     let fullResponse = '';
     for await (const event of agent.chat(msg.channelId, msg.conversationId, msg.text)) {
       if (event.type === 'response') {
-        fullResponse = event.content as string;
+        fullResponse = event.content;
       } else if (event.type === 'error') {
         fullResponse = `Error: ${event.error.message}`;
       }
@@ -208,6 +207,7 @@ export function createDynamicGateway(): DynamicGateway {
     async registerChannel(deploymentId, channelName, adapter, config) {
       const newRules: OwnerRule[] = config.routing.map((r) => ({
         ownerDeploymentId: deploymentId,
+        ownerGlobalDenyList: config.globalDenyList ?? [],
         condition: r.condition,
         agentKey: makeAgentKey(deploymentId, r.agentName),
         allowList: r.allowList,
@@ -221,7 +221,6 @@ export function createDynamicGateway(): DynamicGateway {
       } else {
         const state: ChannelState = {
           adapter,
-          globalDenyList: config.globalDenyList ?? [],
           rules: newRules,
         };
         channels.set(channelName, state);

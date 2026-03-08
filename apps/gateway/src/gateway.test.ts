@@ -453,6 +453,53 @@ describe('createDynamicGateway', () => {
     expect(agent.chat).not.toHaveBeenCalled();
   });
 
+  it('globalDenyList from one deployment does not block messages to another deployment', async () => {
+    const gw = createDynamicGateway();
+    const agentA = makeFakeAgent();
+    const agentB = makeFakeAgent();
+    gw.registerAgent('dep1', 'default', agentA);
+    gw.registerAgent('dep2', 'default', agentB);
+
+    const adapter = makeFakeAdapter('telegram');
+    // dep1 blocks 'userX' globally
+    await gw.registerChannel('dep1', 'tg1', adapter, {
+      globalDenyList: ['userX'],
+      routing: [
+        {
+          condition: { type: 'sender', ids: ['userX'] },
+          agentName: 'default',
+          allowList: [],
+          denyList: [],
+        },
+      ],
+    });
+    // dep2 does not block 'userX'
+    await gw.registerChannel('dep2', 'tg1', adapter, {
+      globalDenyList: [],
+      routing: [
+        {
+          condition: { type: 'sender', ids: ['userX'] },
+          agentName: 'default',
+          allowList: [],
+          denyList: [],
+        },
+      ],
+    });
+
+    await adapter.trigger({
+      channelId: 'tg1',
+      conversationId: 'conv1',
+      senderId: 'userX',
+      senderName: 'User',
+      text: 'hi',
+      timestamp: new Date(),
+    });
+
+    // dep1's agent blocked, dep2's agent should receive (first unblocked match wins)
+    expect(agentA.chat).not.toHaveBeenCalled();
+    expect(agentB.chat).toHaveBeenCalledWith('tg1', 'conv1', 'hi');
+  });
+
   it('routes to first matching rule only (first-match-wins)', async () => {
     const gw = createDynamicGateway();
     const agentA = makeFakeAgent();
