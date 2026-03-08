@@ -1,8 +1,17 @@
+import { randomUUID } from 'node:crypto';
 import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { AgentRegistry, ConversationStore, EncryptedSecretStore, ProcessRuntime } from '@dash/mc';
+import {
+  AgentRegistry,
+  ConversationStore,
+  EncryptedSecretStore,
+  MessagingAppRegistry,
+  ProcessRuntime,
+  defaultProcessSpawner,
+} from '@dash/mc';
+import type { MessagingApp } from '@dash/mc';
 import { app, dialog, ipcMain, safeStorage, shell } from 'electron';
 import type { BrowserWindow } from 'electron';
 import type { DeployWithConfigOptions } from '../shared/ipc.js';
@@ -15,6 +24,14 @@ let chatService: ChatService | undefined;
 let secretStore: EncryptedSecretStore | undefined;
 let registry: AgentRegistry | undefined;
 let runtime: ProcessRuntime | undefined;
+let messagingAppRegistry: MessagingAppRegistry | undefined;
+
+function getMessagingAppRegistry(): MessagingAppRegistry {
+  if (!messagingAppRegistry) {
+    messagingAppRegistry = new MessagingAppRegistry(DATA_DIR);
+  }
+  return messagingAppRegistry;
+}
 
 const logSubscriptions = new Map<string, AbortController>();
 
@@ -66,7 +83,13 @@ function resolveProjectRoot(): string {
 
 function getRuntime(): ProcessRuntime {
   if (!runtime) {
-    runtime = new ProcessRuntime(getRegistry(), getSecretStore(), resolveProjectRoot());
+    runtime = new ProcessRuntime(
+      getRegistry(),
+      getSecretStore(),
+      resolveProjectRoot(),
+      defaultProcessSpawner,
+      getMessagingAppRegistry(),
+    );
   }
   return runtime;
 }
@@ -329,5 +352,46 @@ export async function registerIpcHandlers(
       sub.abort();
       logSubscriptions.delete(id);
     }
+  });
+
+  // Messaging Apps handlers
+  ipcMain.handle('messagingApps:list', async () => {
+    return getMessagingAppRegistry().list();
+  });
+
+  ipcMain.handle('messagingApps:get', async (_event, id: string) => {
+    return getMessagingAppRegistry().get(id);
+  });
+
+  ipcMain.handle('messagingApps:create', async (_event, app: Omit<MessagingApp, 'id' | 'createdAt'>) => {
+    const id = randomUUID().slice(0, 8);
+    const newApp: MessagingApp = {
+      ...app,
+      id,
+      createdAt: new Date().toISOString(),
+    };
+    await getMessagingAppRegistry().add(newApp);
+    return newApp;
+  });
+
+  ipcMain.handle('messagingApps:update', async (_event, id: string, patch: Partial<MessagingApp>) => {
+    return getMessagingAppRegistry().update(id, patch);
+  });
+
+  ipcMain.handle('messagingApps:delete', async (_event, id: string) => {
+    const app = await getMessagingAppRegistry().get(id);
+    if (app) {
+      await getSecretStore().delete(app.credentialsKey).catch(() => {});
+    }
+    return getMessagingAppRegistry().remove(id);
+  });
+
+  ipcMain.handle('messagingApps:verifyTelegramToken', async (_event, token: string) => {
+    const response = await fetch(`https://api.telegram.org/bot${token}/getMe`);
+    const data = await response.json() as { ok: boolean; description?: string; result?: { username: string; first_name: string } };
+    if (!data.ok) {
+      throw new Error(data.description ?? 'Invalid token');
+    }
+    return { username: data.result!.username, firstName: data.result!.first_name };
   });
 }
