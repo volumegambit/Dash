@@ -45,7 +45,7 @@ const PATH_STEPS: Record<PathId, StepId[]> = {
 function NewTelegramWizard(): JSX.Element {
   const navigate = useNavigate();
   const [stepIndex, setStepIndex] = useState(0);
-  const [hasTelegram, setHasTelegram] = useState<boolean | null>(null);
+  const [path, setPath] = useState<PathId | null>(null);
 
   // Step 7: token input
   const [token, setToken] = useState('');
@@ -68,10 +68,22 @@ function NewTelegramWizard(): JSX.Element {
     loadDeployments();
   }, [loadDeployments]);
 
-  const stepId = STEPS[stepIndex];
+  const steps = path ? PATH_STEPS[path] : [];
+  const stepId: StepId = path ? steps[stepIndex] : 'choose-path';
 
-  const goNext = () => setStepIndex((i) => Math.min(i + 1, STEPS.length - 1));
-  const goPrev = () => setStepIndex((i) => Math.max(i - 1, 0));
+  const goNext = () => setStepIndex((i) => Math.min(i + 1, steps.length - 1));
+  const goPrev = () => {
+    if (stepIndex === 0) {
+      setPath(null);
+      setStepIndex(0);
+    } else {
+      setStepIndex((i) => i - 1);
+    }
+  };
+  function choosePath(chosen: PathId) {
+    setPath(chosen);
+    setStepIndex(0);
+  }
 
   // Build flat list of all agents across all running deployments
   const availableAgents = deployments
