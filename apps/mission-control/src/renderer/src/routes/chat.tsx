@@ -62,7 +62,7 @@ function renderEvents(
       const msg =
         typeof event.error === 'string'
           ? event.error
-          : (event.error as unknown as { message?: string })?.message ?? 'Unknown error';
+          : ((event.error as unknown as { message?: string })?.message ?? 'Unknown error');
       const timestamp = typeof event.timestamp === 'string' ? event.timestamp : undefined;
       elements.push(
         <div key={`err-${blockCount++}`} className="flex items-center gap-2 text-red-400">
@@ -408,7 +408,11 @@ export function Chat(): JSX.Element {
           ) : (
             <>
               {selectedMessages.map((msg, i) => (
-                <MessageBubble key={`${msg.role}-${i}`} message={msg} navigateToLogs={navigateToLogs} />
+                <MessageBubble
+                  key={`${msg.role}-${i}`}
+                  message={msg}
+                  navigateToLogs={navigateToLogs}
+                />
               ))}
               {isStreaming && liveEvents.length === 0 && (
                 <div className="mb-4 flex items-center gap-2 text-sm text-muted">
