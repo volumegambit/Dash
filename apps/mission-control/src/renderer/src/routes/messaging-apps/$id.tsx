@@ -1,6 +1,6 @@
 import type { MessagingApp, RoutingCondition, RoutingRule } from '@dash/mc';
 import { Link, createFileRoute } from '@tanstack/react-router';
-import { ArrowLeft, Plus, Trash2 } from 'lucide-react';
+import { AlertTriangle, ArrowLeft, Plus, Trash2 } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { useDeploymentsStore } from '../../stores/deployments';
 import { useMessagingAppsStore } from '../../stores/messaging-apps';
@@ -8,7 +8,7 @@ import { useMessagingAppsStore } from '../../stores/messaging-apps';
 function MessagingAppDetail(): JSX.Element {
   const { id } = Route.useParams();
   const { apps, loadApps, updateApp, error } = useMessagingAppsStore();
-  const { deployments, loadDeployments } = useDeploymentsStore();
+  const { deployments, loading: deploymentsLoading, loadDeployments } = useDeploymentsStore();
   const [activeTab, setActiveTab] = useState<'overview' | 'routing'>('overview');
   const [globalDenyInput, setGlobalDenyInput] = useState('');
   const [showAddRule, setShowAddRule] = useState(false);
@@ -39,6 +39,13 @@ function MessagingAppDetail(): JSX.Element {
         agentName,
       })),
     );
+
+  // All agent names across all deployments (running or stopped).
+  // Used to detect routing rules that reference non-existent agents.
+  // null while deployments are loading to avoid false positives on first render.
+  const knownAgentNames: Set<string> | null = deploymentsLoading
+    ? null
+    : new Set(deployments.flatMap((d) => Object.keys(d.config.agents ?? {})));
 
   async function addGlobalDeny() {
     const val = globalDenyInput.trim();
@@ -188,6 +195,7 @@ function MessagingAppDetail(): JSX.Element {
                   rule={rule}
                   index={i}
                   total={app.routing.length}
+                  knownAgentNames={knownAgentNames}
                   onMoveUp={() => moveRule(rule.id, 'up')}
                   onMoveDown={() => moveRule(rule.id, 'down')}
                   onDelete={() => removeRule(rule.id)}
@@ -225,6 +233,7 @@ function RuleCard({
   rule,
   index,
   total,
+  knownAgentNames,
   onMoveUp,
   onMoveDown,
   onDelete,
@@ -232,10 +241,12 @@ function RuleCard({
   rule: RoutingRule;
   index: number;
   total: number;
+  knownAgentNames: Set<string> | null;
   onMoveUp: () => void;
   onMoveDown: () => void;
   onDelete: () => void;
 }): JSX.Element {
+  const agentMissing = knownAgentNames !== null && !knownAgentNames.has(rule.targetAgentName);
   const conditionLabel =
     rule.condition.type === 'default'
       ? 'Everyone (default)'
@@ -250,7 +261,19 @@ function RuleCard({
           <p className="text-xs font-medium text-muted">Rule {index + 1}</p>
           <p className="mt-0.5 text-sm">{conditionLabel}</p>
           <p className="mt-1 text-xs text-muted">
-            → <strong>{rule.targetAgentName}</strong>
+            →{' '}
+            <strong className={agentMissing ? 'text-amber-400' : undefined}>
+              {rule.targetAgentName}
+            </strong>
+            {agentMissing && (
+              <span
+                className="ml-1.5 inline-flex items-center gap-1 text-amber-400"
+                title="Agent not found — messages matching this rule will be dropped"
+              >
+                <AlertTriangle size={11} />
+                Agent not found
+              </span>
+            )}
             {rule.allowList.length > 0 && ` · Allow: ${rule.allowList.join(', ')}`}
             {rule.denyList.length > 0 && ` · Block: ${rule.denyList.join(', ')}`}
           </p>
