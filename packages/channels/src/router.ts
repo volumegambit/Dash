@@ -63,7 +63,13 @@ export class MessageRouter {
 
     // 4. Route to agent
     const agent = this.agents.get(matchedRule.agentName);
-    if (!agent) return;
+    if (!agent) {
+      console.warn(
+        `[router] message dropped: agent "${matchedRule.agentName}" not found. ` +
+          `sender=${msg.senderId} conversation=${msg.conversationId}`,
+      );
+      return;
+    }
 
     let fullResponse = '';
     for await (const event of agent.chat(msg.channelId, msg.conversationId, msg.text)) {
