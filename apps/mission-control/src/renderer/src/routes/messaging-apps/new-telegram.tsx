@@ -50,6 +50,7 @@ function NewTelegramWizard(): JSX.Element {
 
   const { createApp } = useMessagingAppsStore();
   const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState('');
 
   useEffect(() => {
     loadDeployments();
@@ -87,6 +88,7 @@ function NewTelegramWizard(): JSX.Element {
   async function handleSave() {
     if (!selectedAgent || !botInfo) return;
     setSaving(true);
+    setSaveError('');
     try {
       const credKey = `messaging-app:new-${Date.now()}:token`;
       // Store token in secrets first
@@ -110,7 +112,7 @@ function NewTelegramWizard(): JSX.Element {
       });
       goNext(); // go to done step
     } catch (err) {
-      setVerifyError((err as Error).message);
+      setSaveError((err as Error).message);
     } finally {
       setSaving(false);
     }
@@ -416,6 +418,9 @@ function NewTelegramWizard(): JSX.Element {
                 {saving ? <Loader size={14} className="animate-spin" /> : <Check size={14} />}
                 {saving ? 'Connecting…' : 'Connect bot'}
               </button>
+            )}
+            {saveError && (
+              <p className="mt-3 text-sm text-red-400">❌ {saveError}</p>
             )}
           </WizardStep>
         )}
