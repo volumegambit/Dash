@@ -7,7 +7,7 @@ import { useMessagingAppsStore } from '../../stores/messaging-apps';
 
 function MessagingAppDetail(): JSX.Element {
   const { id } = Route.useParams();
-  const { apps, loadApps, updateApp } = useMessagingAppsStore();
+  const { apps, loadApps, updateApp, error } = useMessagingAppsStore();
   const { deployments, loadDeployments } = useDeploymentsStore();
   const [activeTab, setActiveTab] = useState<'overview' | 'routing'>('overview');
   const [globalDenyInput, setGlobalDenyInput] = useState('');
@@ -95,6 +95,12 @@ function MessagingAppDetail(): JSX.Element {
           </button>
         ))}
       </div>
+
+      {error && (
+        <div className="mb-4 rounded-lg border border-red-600/40 bg-red-900/10 px-4 py-3 text-sm text-red-400">
+          {error}
+        </div>
+      )}
 
       {activeTab === 'overview' && (
         <div className="space-y-6">
@@ -199,7 +205,7 @@ function MessagingAppDetail(): JSX.Element {
 
           {showAddRule && (
             <AddRulePanel
-              availableAgents={availableAgents.map((a) => a.agentName)}
+              availableAgents={availableAgents}
               onAdd={async (rule) => {
                 await updateApp(id, { routing: [...app.routing, rule] });
                 setShowAddRule(false);
@@ -283,13 +289,13 @@ function AddRulePanel({
   onAdd,
   onCancel,
 }: {
-  availableAgents: string[];
+  availableAgents: Array<{ agentName: string; label: string }>;
   onAdd: (rule: RoutingRule) => Promise<void>;
   onCancel: () => void;
 }): JSX.Element {
   const [conditionType, setConditionType] = useState<'default' | 'sender' | 'group'>('default');
   const [conditionIds, setConditionIds] = useState('');
-  const [agentName, setAgentName] = useState(availableAgents[0] ?? '');
+  const [agentName, setAgentName] = useState(availableAgents[0]?.agentName ?? '');
   const [allowList, setAllowList] = useState('');
   const [denyList, setDenyList] = useState('');
   const [label, setLabel] = useState('');
@@ -353,7 +359,7 @@ function AddRulePanel({
             className="mt-1 w-full rounded border border-border bg-background px-2 py-1.5 text-sm"
           >
             {availableAgents.map((a) => (
-              <option key={a} value={a}>{a}</option>
+              <option key={a.agentName} value={a.agentName}>{a.label}</option>
             ))}
           </select>
         </div>
