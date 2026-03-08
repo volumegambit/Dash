@@ -1,0 +1,60 @@
+name: Bug Report
+description: Something isn't working as expected
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: Thanks for reporting a bug! Please fill out as much as you can.
+
+  - type: input
+    id: version
+    attributes:
+      label: Dash version
+      description: Found in Mission Control title bar
+      placeholder: "v0.1.0"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - macOS
+        - Windows
+        - Linux
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: A clear description of the bug.
+      placeholder: When I click Deploy, the app crashes with...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect to happen?
+      placeholder: I expected the agent to deploy successfully.
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open Mission Control
+        2. Click Deploy
+        3. Fill in name and system prompt
+        4. Click Deploy button
+        5. See crash
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs (if any)
+      description: Paste any error messages or logs here.
+      render: shell
