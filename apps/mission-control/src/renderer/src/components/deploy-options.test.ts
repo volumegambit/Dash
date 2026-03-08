@@ -1,24 +1,37 @@
+import { describe, expect, it } from 'vitest';
 import { AVAILABLE_MODELS, AVAILABLE_TOOLS } from './deploy-options.js';
 
 describe('AVAILABLE_MODELS', () => {
-  it('has at least one model', () => {
-    expect(AVAILABLE_MODELS.length).toBeGreaterThanOrEqual(1);
-  });
-
-  it('every model has a value and label', () => {
-    for (const model of AVAILABLE_MODELS) {
-      expect(model.value).toBeTruthy();
-      expect(model.label).toBeTruthy();
+  it('all models use provider/model-id format', () => {
+    for (const m of AVAILABLE_MODELS) {
+      expect(m.value, `${m.value} must contain a slash`).toContain('/');
     }
   });
 
-  it('model values are unique', () => {
-    const values = AVAILABLE_MODELS.map((m) => m.value);
-    expect(new Set(values).size).toBe(values.length);
+  it('all models have a provider field', () => {
+    for (const m of AVAILABLE_MODELS) {
+      expect(['anthropic', 'openai', 'google']).toContain(m.provider);
+    }
   });
 
-  it('includes claude-sonnet-4 as the default model', () => {
-    expect(AVAILABLE_MODELS[0].value).toMatch(/^claude-sonnet-4/);
+  it('all models have a secretKey field', () => {
+    for (const m of AVAILABLE_MODELS) {
+      expect(m.secretKey).toBeTruthy();
+    }
+  });
+
+  it('includes Claude, GPT, and Gemini models', () => {
+    const providers = new Set(AVAILABLE_MODELS.map((m) => m.provider));
+    expect(providers.has('anthropic')).toBe(true);
+    expect(providers.has('openai')).toBe(true);
+    expect(providers.has('google')).toBe(true);
+  });
+
+  it('anthropic models use anthropic-api-key', () => {
+    const anthropicModels = AVAILABLE_MODELS.filter((m) => m.provider === 'anthropic');
+    for (const m of anthropicModels) {
+      expect(m.secretKey).toBe('anthropic-api-key');
+    }
   });
 });
 
