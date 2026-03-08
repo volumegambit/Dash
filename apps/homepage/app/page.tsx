@@ -1,7 +1,9 @@
+import { Nav } from '@/components/Nav'
+
 export default function Home() {
   return (
     <main>
-      {/* sections will be added in later tasks */}
+      <Nav />
     </main>
   )
 }
