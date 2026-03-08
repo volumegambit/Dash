@@ -1,4 +1,11 @@
-import type { HealthResponse, InfoResponse, ShutdownResponse } from './types.js';
+import type {
+  HealthResponse,
+  InfoResponse,
+  ShutdownResponse,
+  SkillContent,
+  SkillInfo,
+  SkillsConfig,
+} from './types.js';
 
 export class ManagementClient {
   constructor(
@@ -17,6 +24,24 @@ export class ManagementClient {
     if (!response.ok) {
       const body = await response.text();
       throw new Error(`Management API error ${response.status}: ${body}`);
+    }
+
+    return response.json() as Promise<T>;
+  }
+
+  private async requestWithBody<T>(method: string, path: string, body: unknown): Promise<T> {
+    const response = await fetch(`${this.baseUrl}${path}`, {
+      method,
+      headers: {
+        Authorization: `Bearer ${this.token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(body),
+    });
+
+    if (!response.ok) {
+      const text = await response.text();
+      throw new Error(`Management API error ${response.status}: ${text}`);
     }
 
     return response.json() as Promise<T>;
@@ -42,6 +67,50 @@ export class ManagementClient {
     const path = query ? `/logs?${query}` : '/logs';
     const result = await this.request<{ lines: string[] }>('GET', path);
     return result.lines;
+  }
+
+  async skills(agentName: string): Promise<SkillInfo[]> {
+    return this.request<SkillInfo[]>('GET', `/agents/${agentName}/skills`);
+  }
+
+  async skill(agentName: string, skillName: string): Promise<SkillContent> {
+    return this.request<SkillContent>('GET', `/agents/${agentName}/skills/${skillName}`);
+  }
+
+  async updateSkillContent(agentName: string, skillName: string, content: string): Promise<void> {
+    await this.requestWithBody<{ success: boolean }>(
+      'PUT',
+      `/agents/${agentName}/skills/${skillName}`,
+      { content },
+    );
+  }
+
+  async createSkill(
+    agentName: string,
+    skillName: string,
+    description: string,
+    content: string,
+  ): Promise<SkillContent> {
+    return this.requestWithBody<SkillContent>('POST', `/agents/${agentName}/skills`, {
+      name: skillName,
+      description,
+      content,
+    });
+  }
+
+  async skillsConfig(agentName: string): Promise<SkillsConfig> {
+    return this.request<SkillsConfig>('GET', `/agents/${agentName}/skills/config`);
+  }
+
+  async updateSkillsConfig(
+    agentName: string,
+    config: SkillsConfig,
+  ): Promise<{ requiresRestart: boolean }> {
+    return this.requestWithBody<{ requiresRestart: boolean }>(
+      'PATCH',
+      `/agents/${agentName}/skills/config`,
+      config,
+    );
   }
 
   async *streamLogs(signal?: AbortSignal): AsyncGenerator<string> {
