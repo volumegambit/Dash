@@ -6,6 +6,7 @@ COPY packages/agent/package.json packages/agent/
 COPY packages/channels/package.json packages/channels/
 COPY packages/management/package.json packages/management/
 COPY packages/mc/package.json packages/mc/
+COPY packages/chat/package.json packages/chat/
 COPY apps/dash/package.json apps/dash/
 COPY apps/tui/package.json apps/tui/
 COPY apps/mc-cli/package.json apps/mc-cli/
@@ -26,6 +27,7 @@ COPY packages/agent/package.json packages/agent/
 COPY packages/channels/package.json packages/channels/
 COPY packages/management/package.json packages/management/
 COPY packages/mc/package.json packages/mc/
+COPY packages/chat/package.json packages/chat/
 COPY apps/dash/package.json apps/dash/
 COPY apps/tui/package.json apps/tui/
 COPY apps/mc-cli/package.json apps/mc-cli/
@@ -36,6 +38,7 @@ COPY --from=builder /app/packages/agent/dist packages/agent/dist
 COPY --from=builder /app/packages/channels/dist packages/channels/dist
 COPY --from=builder /app/packages/management/dist packages/management/dist
 COPY --from=builder /app/packages/mc/dist packages/mc/dist
+COPY --from=builder /app/packages/chat/dist packages/chat/dist
 COPY --from=builder /app/apps/dash/dist apps/dash/dist
 
 CMD ["node", "apps/dash/dist/index.js"]
