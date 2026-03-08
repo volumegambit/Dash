@@ -41,6 +41,10 @@ export interface AgentDeployAgentConfig {
   tools?: string[];
   maxTokens?: number;
   workspace?: string;
+  skills?: {
+    paths?: string[];
+    urls?: string[];
+  };
 }
 
 export interface ChannelDeployConfig {
