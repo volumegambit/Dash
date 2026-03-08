@@ -69,6 +69,8 @@ const api: MissionControlAPI = {
   deploymentsLogsSubscribe: (id: string) => ipcRenderer.invoke('deployments:logs:subscribe', id),
   deploymentsLogsUnsubscribe: (id: string) =>
     ipcRenderer.invoke('deployments:logs:unsubscribe', id),
+  deploymentsUpdateConfig: (id, patch) =>
+    ipcRenderer.invoke('deployments:updateConfig', id, patch),
 
   // Deployment events
   onDeploymentLog: (callback: (id: string, line: string) => void) => {
@@ -93,6 +95,10 @@ const api: MissionControlAPI = {
   messagingAppsDelete: (id: string) => ipcRenderer.invoke('messagingApps:delete', id),
   messagingAppsVerifyTelegramToken: (token: string) =>
     ipcRenderer.invoke('messagingApps:verifyTelegramToken', token),
+
+  // Settings
+  settingsGet: () => ipcRenderer.invoke('settings:get'),
+  settingsSet: (patch) => ipcRenderer.invoke('settings:set', patch),
 };
 
 contextBridge.exposeInMainWorld('api', api);
