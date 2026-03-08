@@ -18,7 +18,8 @@
   "dependencies": {
     "@dash/channels": "*",
     "@dash/chat": "*",
-    "dotenv": "^16.4.0"
+    "dotenv": "^16.4.0",
+    "hono": "^4"
   },
   "devDependencies": {
     "tsx": "^4.19.0"
