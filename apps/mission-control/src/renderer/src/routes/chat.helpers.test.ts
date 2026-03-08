@@ -1,0 +1,102 @@
+import { describe, expect, it } from 'vitest';
+import { formatDetails, summarize, toolIcon } from './chat.helpers.js';
+
+describe('toolIcon', () => {
+  it('returns 💻 for bash', () => expect(toolIcon('bash')).toBe('💻'));
+  it('returns 💻 for execute_command', () => expect(toolIcon('execute_command')).toBe('💻'));
+  it('returns 📝 for write', () => expect(toolIcon('write')).toBe('📝'));
+  it('returns 📝 for write_file', () => expect(toolIcon('write_file')).toBe('📝'));
+  it('returns 📝 for edit', () => expect(toolIcon('edit')).toBe('📝'));
+  it('returns 📖 for read', () => expect(toolIcon('read')).toBe('📖'));
+  it('returns 📖 for read_file', () => expect(toolIcon('read_file')).toBe('📖'));
+  it('returns 🔍 for glob', () => expect(toolIcon('glob')).toBe('🔍'));
+  it('returns 🔍 for grep', () => expect(toolIcon('grep')).toBe('🔍'));
+  it('returns 📂 for ls', () => expect(toolIcon('ls')).toBe('📂'));
+  it('returns 📂 for list_directory', () => expect(toolIcon('list_directory')).toBe('📂'));
+  it('returns 🌐 for web_search', () => expect(toolIcon('web_search')).toBe('🌐'));
+  it('returns 🌐 for web_fetch', () => expect(toolIcon('web_fetch')).toBe('🌐'));
+  it('returns 🔧 for mcp', () => expect(toolIcon('mcp')).toBe('🔧'));
+  it('returns 🔧 for totally unknown tool', () => expect(toolIcon('something_else')).toBe('🔧'));
+});
+
+describe('summarize', () => {
+  it('extracts command for bash', () => {
+    expect(summarize('bash', JSON.stringify({ command: 'ls -la' }))).toBe('ls -la');
+  });
+
+  it('truncates command longer than 40 chars', () => {
+    const long = 'a'.repeat(50);
+    const result = summarize('bash', JSON.stringify({ command: long }));
+    expect(result).toHaveLength(41); // 40 chars + ellipsis char
+    expect(result.endsWith('…')).toBe(true);
+  });
+
+  it('extracts path for write_file', () => {
+    expect(summarize('write_file', JSON.stringify({ path: 'src/index.ts', content: 'hello' }))).toBe('src/index.ts');
+  });
+
+  it('extracts path for read', () => {
+    expect(summarize('read', JSON.stringify({ path: 'package.json' }))).toBe('package.json');
+  });
+
+  it('extracts query for web_search', () => {
+    expect(summarize('web_search', JSON.stringify({ query: 'TypeScript generics' }))).toBe('TypeScript generics');
+  });
+
+  it('extracts url for web_fetch', () => {
+    expect(summarize('web_fetch', JSON.stringify({ url: 'https://example.com' }))).toBe('https://example.com');
+  });
+
+  it('falls back to first string value for unknown tool', () => {
+    expect(summarize('unknown_tool', JSON.stringify({ foo: 'bar' }))).toBe('bar');
+  });
+
+  it('returns empty string on invalid JSON', () => {
+    expect(summarize('bash', 'not json')).toBe('');
+  });
+
+  it('returns empty string on empty input', () => {
+    expect(summarize('bash', '')).toBe('');
+  });
+
+  it('returns empty string when no matching key found', () => {
+    expect(summarize('ls', JSON.stringify({}))).toBe('');
+  });
+});
+
+describe('formatDetails', () => {
+  it('returns short strings as-is', () => {
+    const result = formatDetails(JSON.stringify({ path: 'src/index.ts' }));
+    expect(result).toEqual([{ key: 'path', value: 'src/index.ts' }]);
+  });
+
+  it('truncates long strings with char count', () => {
+    const long = 'x'.repeat(100);
+    const result = formatDetails(JSON.stringify({ content: long }));
+    expect(result[0].key).toBe('content');
+    expect(result[0].value).toContain('(100 chars)');
+    expect(result[0].value).toContain('…');
+  });
+
+  it('formats arrays as [N items]', () => {
+    const result = formatDetails(JSON.stringify({ files: ['a', 'b', 'c'] }));
+    expect(result).toEqual([{ key: 'files', value: '[3 items]' }]);
+  });
+
+  it('formats nested objects as {object}', () => {
+    const result = formatDetails(JSON.stringify({ opts: { a: 1 } }));
+    expect(result).toEqual([{ key: 'opts', value: '{object}' }]);
+  });
+
+  it('returns multiple key-value pairs', () => {
+    const result = formatDetails(JSON.stringify({ path: 'foo.ts', mode: 'write' }));
+    expect(result).toHaveLength(2);
+    expect(result[0]).toEqual({ key: 'path', value: 'foo.ts' });
+    expect(result[1]).toEqual({ key: 'mode', value: 'write' });
+  });
+
+  it('falls back gracefully on invalid JSON', () => {
+    const result = formatDetails('not json');
+    expect(result).toEqual([{ key: 'input', value: 'not json' }]);
+  });
+});
