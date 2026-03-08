@@ -6,7 +6,7 @@ export const metadata: Metadata = {
   metadataBase: new URL('https://dashsquad.ai'),
   title: 'Dash — Your AI Team, Always On',
   description:
-    'Run autonomous AI agents on your infrastructure. Dash lets you deploy, monitor, and chat with AI agents from a desktop app or CLI.',
+    'Run autonomous AI agents on your computer. Dash lets you deploy, monitor, and chat with AI agents from a desktop app or CLI.',
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

@@ -20,7 +20,7 @@ Whether you're a solo operator or managing a team, Dash puts a crew of AI agents
 - **Your team, your tools** — Connect your agents to Anthropic, OpenAI, Google, or any major LLM provider
 - **Mission Control** — A desktop app to manage your agent team, monitor activity, and chat with agents directly
 - **CLI & automation** — Power users can manage agents from the terminal or wire them into automated workflows
-- **Runs anywhere** — Your machine, a VPS, or a private cloud. Your data never leaves your infrastructure except to your chosen AI provider
+- **Runs anywhere** — Your machine, a VPS, or a private cloud. Your data never leaves your computer except to your chosen AI provider
 - **Channels** — Reach your agents through Telegram, a WebSocket API, or the built-in chat interface
 - **Safe by default** — Secrets encrypted at rest, agents sandboxed, access controlled
 

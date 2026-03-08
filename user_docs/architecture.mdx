@@ -26,7 +26,7 @@ graph TB
 
 Dash has three main components that can run on different machines:
 
-- **Agent server** — The engine behind your agents. The agent server runs on your infrastructure and handles all AI interactions, tool execution, and conversation history. It reads your config, creates agents with their assigned models and tools, and starts two APIs: the Chat API (WebSocket, port 9101) for real-time interaction, and the Management API (HTTP, port 9100) for health checks, server info, and shutdown.
+- **Agent server** — The engine behind your agents. The agent server runs on your computer and handles all AI interactions, tool execution, and conversation history. It reads your config, creates agents with their assigned models and tools, and starts two APIs: the Chat API (WebSocket, port 9101) for real-time interaction, and the Management API (HTTP, port 9100) for health checks, server info, and shutdown.
 - **Gateway** — Connects your agents to the outside world. The gateway routes messages from platforms like Telegram to your agent team. It runs alongside the agent server, owns all channel connections, and routes messages to agents via the Chat API. Mission Control's chat panel also connects through the gateway over WebSocket. Every channel is handled the same way: one process, one config file, one message path to the agent.
 - **Mission Control** — Your command center. Mission Control is a desktop app (and CLI) for deploying agents, monitoring their status, and chatting with them directly. Connects to the gateway for chat (WebSocket, port 9200) and to agent servers for monitoring (HTTP, port 9100). Includes a built-in TUI for terminal-based interaction.
 

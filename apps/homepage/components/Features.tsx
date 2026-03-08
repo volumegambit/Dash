@@ -29,7 +29,7 @@ const FEATURES: { icon: LucideIcon; title: string; description: string }[] = [
     icon: Server,
     title: 'Runs anywhere',
     description:
-      'Your machine, a VPS, or a private cloud. Your data never leaves your infrastructure.',
+      'Your machine, a VPS, or a private cloud. Your data never leaves your computer.',
   },
   {
     icon: MessageSquare,
