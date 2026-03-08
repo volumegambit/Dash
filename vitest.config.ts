@@ -8,6 +8,7 @@ export default defineConfig({
       // the worktree's own built dist (not the main-branch copy in the root node_modules).
       '@dash/mc': resolve(__dirname, 'packages/mc/dist/index.js'),
       '@dash/channels': resolve(__dirname, 'packages/channels/dist/index.js'),
+      '@dash/management': resolve(__dirname, 'packages/management/src/index.ts'),
     },
   },
   test: {
