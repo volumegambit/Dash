@@ -15,7 +15,7 @@ export type McAgentEvent =
   | { type: 'tool_use_delta'; partial_json: string }
   | { type: 'tool_result'; id: string; name: string; content: string; isError?: boolean }
   | { type: 'response'; content: string; usage: Record<string, number> }
-  | { type: 'error'; error: string };
+  | { type: 'error'; error: string; timestamp: string };
 
 export interface DeployWithConfigOptions {
   name: string;
