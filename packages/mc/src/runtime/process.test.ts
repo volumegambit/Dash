@@ -202,8 +202,8 @@ describe('ProcessRuntime.updateAgentConfig', () => {
 
     const successWatcher: StartupWatcher = async () => ({ success: true });
     const runtime = new ProcessRuntime(
-      fakeRegistry as any,
-      fakeSecrets as any,
+      fakeRegistry as unknown as AgentRegistry,
+      fakeSecrets as unknown as SecretStore,
       '/',
       undefined,
       undefined,
