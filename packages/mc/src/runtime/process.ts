@@ -22,6 +22,8 @@ interface ProcessState {
 export interface SpawnedProcess {
   pid?: number;
   exitCode: number | null;
+  stdout?: NodeJS.ReadableStream | null;
+  stderr?: NodeJS.ReadableStream | null;
   kill(signal?: NodeJS.Signals | number): boolean;
   on(event: 'exit', listener: (code: number | null, signal: NodeJS.Signals | null) => void): this;
   on(event: 'error', listener: (err: Error) => void): this;
@@ -46,6 +48,91 @@ export const defaultProcessSpawner: ProcessSpawner = {
       unref?: () => void;
     },
 };
+
+export type HealthChecker = (port: number) => Promise<boolean>;
+
+export type StartupResult =
+  | { success: true }
+  | { success: false; logs: string[]; reason: string };
+
+export const defaultHealthChecker: HealthChecker = async (port: number): Promise<boolean> => {
+  try {
+    const resp = await fetch(`http://localhost:${port}/health`, { signal: AbortSignal.timeout(1000) });
+    return resp.ok;
+  } catch {
+    return false;
+  }
+};
+
+export async function waitForStartup(
+  child: SpawnedProcess,
+  managementPort: number,
+  timeoutMs: number,
+  healthChecker: HealthChecker = defaultHealthChecker,
+): Promise<StartupResult> {
+  const logs: string[] = [];
+  let readyLineSeen = false;
+  let healthOk = false;
+  let settled = false;
+
+  return new Promise<StartupResult>((resolve) => {
+    const settle = (result: StartupResult): void => {
+      if (settled) return;
+      settled = true;
+      clearInterval(healthInterval);
+      clearTimeout(timeoutHandle);
+      resolve(result);
+    };
+
+    const checkSuccess = (): void => {
+      if (readyLineSeen && healthOk) {
+        settle({ success: true });
+      }
+    };
+
+    // Capture log lines
+    const onData = (chunk: Buffer | string): void => {
+      const text = chunk.toString();
+      for (const line of text.split('\n')) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        logs.push(trimmed);
+        if (trimmed.includes('Server ready')) {
+          readyLineSeen = true;
+          checkSuccess();
+        }
+      }
+    };
+
+    child.stdout?.on('data', onData);
+    child.stderr?.on('data', onData);
+
+    // Watch for process exit
+    child.on('exit', (code) => {
+      settle({
+        success: false,
+        logs,
+        reason: `process exited with code ${code ?? 'null'}`,
+      });
+    });
+
+    // Poll health endpoint
+    const healthInterval = setInterval(async () => {
+      if (settled) return;
+      try {
+        healthOk = await healthChecker(managementPort);
+        checkSuccess();
+      } catch {
+        // ignore
+      }
+    }, 500);
+
+    // Timeout
+    const timeoutHandle = setTimeout(() => {
+      settle({ success: false, logs, reason: `timeout after ${timeoutMs}ms` });
+    }, timeoutMs);
+  });
+}
 
 export async function findAvailablePort(): Promise<number> {
   return new Promise((resolve, reject) => {
