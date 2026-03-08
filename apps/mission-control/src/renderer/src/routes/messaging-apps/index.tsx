@@ -93,7 +93,11 @@ function MessagingApps(): JSX.Element {
                   title={app.enabled ? 'Disable' : 'Enable'}
                   className="text-muted transition-colors hover:text-foreground"
                 >
-                  {app.enabled ? <ToggleRight size={20} className="text-green-400" /> : <ToggleLeft size={20} />}
+                  {app.enabled ? (
+                    <ToggleRight size={20} className="text-green-400" />
+                  ) : (
+                    <ToggleLeft size={20} />
+                  )}
                 </button>
                 <button
                   type="button"
@@ -114,7 +118,8 @@ function MessagingApps(): JSX.Element {
           <div className="w-full max-w-sm rounded-lg border border-border bg-sidebar-bg p-6 shadow-lg">
             <h2 className="text-base font-semibold">Delete "{deleteTarget.name}"?</h2>
             <p className="mt-1 text-sm text-muted">
-              This will disconnect the {deleteTarget.type} bot and remove all its routing rules. People will no longer be able to message your assistant through it.
+              This will disconnect the {deleteTarget.type} bot and remove all its routing rules.
+              People will no longer be able to message your assistant through it.
             </p>
             <div className="mt-6 flex justify-end gap-2">
               <button

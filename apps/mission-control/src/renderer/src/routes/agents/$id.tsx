@@ -2,15 +2,23 @@ import type { RuntimeStatus } from '@dash/mc';
 import { Link, createFileRoute, useNavigate } from '@tanstack/react-router';
 import { ArrowLeft, Circle, Loader, MessageSquare, Square, Trash2 } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { useDeploymentsStore } from '../../stores/deployments';
 import { ModelChainEditor } from '../../components/ModelChainEditor.js';
 import { useAvailableModels } from '../../hooks/useAvailableModels.js';
+import { useDeploymentsStore } from '../../stores/deployments';
 
 export function AgentDetail(): JSX.Element {
   const { id } = Route.useParams();
   const navigate = useNavigate();
-  const { deployments, logLines, loadDeployments, stop, remove, updateConfig, subscribeLogs, unsubscribeLogs } =
-    useDeploymentsStore();
+  const {
+    deployments,
+    logLines,
+    loadDeployments,
+    stop,
+    remove,
+    updateConfig,
+    subscribeLogs,
+    unsubscribeLogs,
+  } = useDeploymentsStore();
   const [status, setStatus] = useState<RuntimeStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const availableModels = useAvailableModels();
@@ -94,8 +102,9 @@ export function AgentDetail(): JSX.Element {
   }
 
   const isRunning = deployment.status === 'running';
-  const agentName =
-    deployment.config?.agents ? Object.keys(deployment.config.agents)[0] ?? '' : '';
+  const agentName = deployment.config?.agents
+    ? (Object.keys(deployment.config.agents)[0] ?? '')
+    : '';
 
   return (
     <div className="flex h-full flex-col">
@@ -182,7 +191,10 @@ export function AgentDetail(): JSX.Element {
               </summary>
               <div className="max-h-64 overflow-auto rounded-b-lg bg-[#0d0d0d] p-3 font-mono text-xs leading-5">
                 {deployment.startupLogs.map((line, i) => (
-                  <div key={i} className="text-red-300/70">{line}</div>
+                  // biome-ignore lint/suspicious/noArrayIndexKey: log lines are ordered by index
+                  <div key={i} className="text-red-300/70">
+                    {line}
+                  </div>
                 ))}
               </div>
             </details>
@@ -210,7 +222,10 @@ export function AgentDetail(): JSX.Element {
                 model={chainModel}
                 fallbackModels={chainFallbacks}
                 availableModels={availableModels}
-                onChange={(m, fb) => { setChainModel(m); setChainFallbacks(fb); }}
+                onChange={(m, fb) => {
+                  setChainModel(m);
+                  setChainFallbacks(fb);
+                }}
               />
               <div className="mt-3 flex gap-2">
                 <button
@@ -320,7 +335,9 @@ function InfoCard({ label, value }: { label: string; value: string | number }): 
 
 function StatusBadge({ status }: { status: string }): JSX.Element {
   if (status === 'running') {
-    return <span className="rounded px-2 py-0.5 text-xs bg-green-900/30 text-green-400">running</span>;
+    return (
+      <span className="rounded px-2 py-0.5 text-xs bg-green-900/30 text-green-400">running</span>
+    );
   }
   if (status === 'error') {
     return <span className="rounded px-2 py-0.5 text-xs bg-red-900/30 text-red-400">error</span>;

@@ -14,10 +14,10 @@ import {
   defaultProcessSpawner,
 } from '@dash/mc';
 import type { MessagingApp } from '@dash/mc';
-import { ChatService } from './chat-service.js';
 import { app, dialog, ipcMain, safeStorage, shell } from 'electron';
 import type { BrowserWindow } from 'electron';
 import type { DeployWithConfigOptions } from '../shared/ipc.js';
+import { ChatService } from './chat-service.js';
 
 const DATA_DIR = join(homedir(), '.mission-control');
 const SESSION_KEY_PATH = join(DATA_DIR, 'session.key');
@@ -263,7 +263,8 @@ export async function registerIpcHandlers(
   ipcMain.handle(
     'deployments:deployWithConfig',
     async (_event, options: DeployWithConfigOptions) => {
-      const { name, model, fallbackModels, systemPrompt, tools, enableTelegram, workspace } = options;
+      const { name, model, fallbackModels, systemPrompt, tools, enableTelegram, workspace } =
+        options;
 
       // Create a temp config directory with the agent and gateway config
       const configDir = join(tmpdir(), `mc-deploy-${Date.now()}`);
@@ -387,31 +388,41 @@ export async function registerIpcHandlers(
     return getMessagingAppRegistry().get(id);
   });
 
-  ipcMain.handle('messagingApps:create', async (_event, app: Omit<MessagingApp, 'id' | 'createdAt' | 'credentialsKey'>, token: string) => {
-    const registry = getMessagingAppRegistry();
-    const secretStore = getSecretStore();
-    const id = randomUUID().slice(0, 8);
-    const created: MessagingApp = {
-      ...app,
-      id,
-      credentialsKey: '',
-      createdAt: new Date().toISOString(),
-    };
-    await registry.add(created);
-    const credKey = `messaging-app:${id}:token`;
-    try {
-      await secretStore.set(credKey, token);
-    } catch (err) {
-      await registry.remove(id).catch(() => {});
-      throw err;
-    }
-    await registry.update(id, { credentialsKey: credKey });
-    return { ...created, credentialsKey: credKey };
-  });
+  ipcMain.handle(
+    'messagingApps:create',
+    async (
+      _event,
+      app: Omit<MessagingApp, 'id' | 'createdAt' | 'credentialsKey'>,
+      token: string,
+    ) => {
+      const registry = getMessagingAppRegistry();
+      const secretStore = getSecretStore();
+      const id = randomUUID().slice(0, 8);
+      const created: MessagingApp = {
+        ...app,
+        id,
+        credentialsKey: '',
+        createdAt: new Date().toISOString(),
+      };
+      await registry.add(created);
+      const credKey = `messaging-app:${id}:token`;
+      try {
+        await secretStore.set(credKey, token);
+      } catch (err) {
+        await registry.remove(id).catch(() => {});
+        throw err;
+      }
+      await registry.update(id, { credentialsKey: credKey });
+      return { ...created, credentialsKey: credKey };
+    },
+  );
 
-  ipcMain.handle('messagingApps:update', async (_event, id: string, patch: Partial<MessagingApp>) => {
-    return getMessagingAppRegistry().update(id, patch);
-  });
+  ipcMain.handle(
+    'messagingApps:update',
+    async (_event, id: string, patch: Partial<MessagingApp>) => {
+      return getMessagingAppRegistry().update(id, patch);
+    },
+  );
 
   ipcMain.handle('messagingApps:delete', async (_event, id: string) => {
     const app = await getMessagingAppRegistry().get(id);
@@ -441,7 +452,7 @@ export async function registerIpcHandlers(
     if (!response.ok) {
       throw new Error(`Telegram API error: ${response.status} ${response.statusText}`);
     }
-    const data = await response.json() as {
+    const data = (await response.json()) as {
       ok: boolean;
       description?: string;
       result?: { username: string; first_name: string };
@@ -560,7 +571,10 @@ export async function registerIpcHandlers(
     return getSettingsStore().get();
   });
 
-  ipcMain.handle('settings:set', async (_event, patch: { defaultModel?: string; defaultFallbackModels?: string[] }) => {
-    await getSettingsStore().set(patch);
-  });
+  ipcMain.handle(
+    'settings:set',
+    async (_event, patch: { defaultModel?: string; defaultFallbackModels?: string[] }) => {
+      await getSettingsStore().set(patch);
+    },
+  );
 }

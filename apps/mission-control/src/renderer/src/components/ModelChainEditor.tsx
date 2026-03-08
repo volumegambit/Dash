@@ -35,7 +35,10 @@ export function ModelChainEditor({
   };
 
   const handleRemoveFallback = (index: number): void => {
-    onChange(model, fallbackModels.filter((_, i) => i !== index));
+    onChange(
+      model,
+      fallbackModels.filter((_, i) => i !== index),
+    );
   };
 
   const handleAddFallback = (): void => {
@@ -68,7 +71,8 @@ export function ModelChainEditor({
           <p className="text-xs font-medium text-muted">Fallback models (in order)</p>
           {fallbackModels.map((fb, i) => {
             const optionsForRow = availableModels.filter(
-              (m) => m.value === fb || !usedModels.has(m.value) || fallbackModels.indexOf(m.value) === i,
+              (m) =>
+                m.value === fb || !usedModels.has(m.value) || fallbackModels.indexOf(m.value) === i,
             );
             return (
               <div key={`${fb}-${i}`} className="flex items-center gap-2">

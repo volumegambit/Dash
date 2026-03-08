@@ -1,8 +1,8 @@
 import '@testing-library/jest-dom/vitest';
 import { render, screen } from '@testing-library/react';
 import { mockApi } from '../../../../vitest.setup.js';
-import { useDeploymentsStore } from '../stores/deployments.js';
 import { useChatStore } from '../stores/chat.js';
+import { useDeploymentsStore } from '../stores/deployments.js';
 
 // jsdom does not implement scrollIntoView
 Element.prototype.scrollIntoView = vi.fn();
