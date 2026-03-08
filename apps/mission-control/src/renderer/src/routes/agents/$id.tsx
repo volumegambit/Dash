@@ -115,7 +115,7 @@ export function AgentDetail(): JSX.Element {
   const hasMessagingApp = messagingApps.some((app) =>
     app.routing.some((rule) => rule.targetAgentName === agentName),
   );
-  const showConnectBanner = isRunning && !hasMessagingApp && !bannerDismissed;
+  const showConnectBanner = isRunning && !!agentName && !hasMessagingApp && !bannerDismissed;
 
   return (
     <div className="flex h-full flex-col">

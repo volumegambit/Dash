@@ -86,6 +86,7 @@ describe('AgentDetail', () => {
         type: 'telegram',
         enabled: true,
         routing: [{ id: 'rule-1', condition: 'default', targetAgentName: 'myAgent', allowList: [], denyList: [] }],
+        globalDenyList: [],
         createdAt: new Date().toISOString(),
       },
     ]);
