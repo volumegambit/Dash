@@ -44,29 +44,6 @@ describe('DeployWizard', () => {
     expect(nextBtn).toBeEnabled();
   });
 
-  it('navigates to channels step on Next click', async () => {
-    const user = userEvent.setup();
-    render(<DeployWizard />);
-
-    await user.type(screen.getByPlaceholderText('my-agent'), 'test-agent');
-    await user.click(screen.getByRole('button', { name: /next/i }));
-
-    expect(screen.getByText('Mission Control Chat')).toBeInTheDocument();
-    expect(screen.getByText('Telegram Bot')).toBeInTheDocument();
-  });
-
-  it('navigates back from channels to agent step', async () => {
-    const user = userEvent.setup();
-    render(<DeployWizard />);
-
-    await user.type(screen.getByPlaceholderText('my-agent'), 'test-agent');
-    await user.click(screen.getByRole('button', { name: /next/i }));
-    expect(screen.getByText('Mission Control Chat')).toBeInTheDocument();
-
-    await user.click(screen.getByRole('button', { name: /back/i }));
-    expect(screen.getByPlaceholderText('my-agent')).toBeInTheDocument();
-  });
-
   it('tool toggle adds and removes a tool', async () => {
     const user = userEvent.setup();
     render(<DeployWizard />);
@@ -85,17 +62,9 @@ describe('DeployWizard', () => {
     const user = userEvent.setup();
     render(<DeployWizard />);
 
-    // Fill in agent config
     await user.type(screen.getByPlaceholderText('my-agent'), 'my-cool-agent');
-
-    // Advance to channels
-    await user.click(screen.getByRole('button', { name: /next/i }));
-    expect(screen.getByText('Mission Control Chat')).toBeInTheDocument();
-
-    // Advance to review
     await user.click(screen.getByRole('button', { name: /next/i }));
 
-    // Verify review content
     expect(screen.getByText('my-cool-agent')).toBeInTheDocument();
     expect(screen.getByText('Claude Sonnet 4')).toBeInTheDocument();
   });
@@ -104,16 +73,8 @@ describe('DeployWizard', () => {
     const user = userEvent.setup();
     render(<DeployWizard />);
 
-    // Fill in agent name
     await user.type(screen.getByPlaceholderText('my-agent'), 'deploy-test');
-
-    // Advance to channels
     await user.click(screen.getByRole('button', { name: /next/i }));
-
-    // Advance to review
-    await user.click(screen.getByRole('button', { name: /next/i }));
-
-    // Click Deploy
     await user.click(screen.getByRole('button', { name: /deploy/i }));
 
     expect(mockApi.deploymentsDeployWithConfig).toHaveBeenCalledWith({
@@ -122,23 +83,6 @@ describe('DeployWizard', () => {
       fallbackModels: undefined,
       systemPrompt: '',
       tools: [],
-      enableTelegram: false,
     });
-  });
-
-  it('telegram token missing shows warning', async () => {
-    const user = userEvent.setup();
-    render(<DeployWizard />);
-
-    // Fill in agent name and advance to channels
-    await user.type(screen.getByPlaceholderText('my-agent'), 'test-agent');
-    await user.click(screen.getByRole('button', { name: /next/i }));
-
-    // Click the telegram toggle button
-    const telegramToggle = screen.getByRole('button', { name: /toggle telegram/i });
-    await user.click(telegramToggle);
-
-    // Check for the warning message
-    expect(await screen.findByText(/telegram-bot-token not found/i)).toBeInTheDocument();
   });
 });

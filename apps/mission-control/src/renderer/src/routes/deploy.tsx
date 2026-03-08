@@ -8,7 +8,7 @@ import { useAvailableModels } from '../hooks/useAvailableModels.js';
 import { useDeploymentsStore } from '../stores/deployments';
 import { useSecretsStore } from '../stores/secrets.js';
 
-type Step = 'agent' | 'channels' | 'review';
+type Step = 'agent' | 'review';
 
 interface AgentConfig {
   name: string;
@@ -17,10 +17,6 @@ interface AgentConfig {
   systemPrompt: string;
   tools: string[];
   workspace: string; // '' means auto-generate
-}
-
-interface ChannelConfig {
-  enableTelegram: boolean;
 }
 
 export function DeployWizard(): JSX.Element {
@@ -60,11 +56,6 @@ export function DeployWizard(): JSX.Element {
       .catch(() => {});
   }, []);
 
-  const [channels, setChannels] = useState<ChannelConfig>({
-    enableTelegram: false,
-  });
-  const [telegramTokenMissing, setTelegramTokenMissing] = useState(false);
-
   const canAdvanceAgent = agent.name.trim().length > 0;
 
   const handleDeploy = async (): Promise<void> => {
@@ -78,7 +69,6 @@ export function DeployWizard(): JSX.Element {
         fallbackModels: agent.fallbackModels.length > 0 ? agent.fallbackModels : undefined,
         systemPrompt: agent.systemPrompt,
         tools: agent.tools,
-        enableTelegram: channels.enableTelegram,
         workspace: agent.workspace || undefined,
       });
       navigate({ to: '/agents/$id', params: { id } });
@@ -206,80 +196,8 @@ export function DeployWizard(): JSX.Element {
             <button
               type="button"
               disabled={!canAdvanceAgent}
-              onClick={() => setStep('channels')}
-              className="inline-flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm text-white transition-colors hover:bg-primary-hover disabled:opacity-50"
-            >
-              Next
-              <ArrowRight size={16} />
-            </button>
-          </div>
-        </div>
-      )}
-
-      {step === 'channels' && (
-        <div className="space-y-6">
-          <div className="rounded-lg border border-border bg-sidebar-bg p-4">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-sm font-medium">Mission Control Chat</p>
-                <p className="text-xs text-muted">
-                  Chat with your agent from the Mission Control UI
-                </p>
-              </div>
-              <span className="rounded bg-green-900/30 px-2 py-0.5 text-xs text-green-400">
-                Always enabled
-              </span>
-            </div>
-          </div>
-
-          <div className="rounded-lg border border-border bg-sidebar-bg p-4">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-sm font-medium">Telegram Bot</p>
-                <p className="text-xs text-muted">
-                  Connect your agent to Telegram (requires telegram-bot-token in Secrets)
-                </p>
-              </div>
-              <button
-                type="button"
-                aria-label="Toggle Telegram"
-                onClick={async () => {
-                  if (!channels.enableTelegram) {
-                    const token = await window.api.secretsGet('telegram-bot-token');
-                    setTelegramTokenMissing(!token);
-                  } else {
-                    setTelegramTokenMissing(false);
-                  }
-                  setChannels((prev) => ({ ...prev, enableTelegram: !prev.enableTelegram }));
-                }}
-                className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${channels.enableTelegram ? 'bg-primary' : 'bg-border'}`}
-              >
-                <span
-                  className={`inline-block h-4 w-4 rounded-full bg-white transition-transform ${channels.enableTelegram ? 'translate-x-6' : 'translate-x-1'}`}
-                />
-              </button>
-            </div>
-            {channels.enableTelegram && telegramTokenMissing && (
-              <p className="mt-2 text-xs text-red-400">
-                telegram-bot-token not found in Secrets. Add it on the Secrets page before
-                deploying.
-              </p>
-            )}
-          </div>
-
-          <div className="flex justify-between">
-            <button
-              type="button"
-              onClick={() => setStep('agent')}
-              className="inline-flex items-center gap-2 rounded-lg border border-border px-4 py-2 text-sm text-muted transition-colors hover:bg-sidebar-hover hover:text-foreground"
-            >
-              <ArrowLeft size={16} />
-              Back
-            </button>
-            <button
-              type="button"
               onClick={() => setStep('review')}
-              className="inline-flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm text-white transition-colors hover:bg-primary-hover"
+              className="inline-flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm text-white transition-colors hover:bg-primary-hover disabled:opacity-50"
             >
               Next
               <ArrowRight size={16} />
@@ -304,10 +222,6 @@ export function DeployWizard(): JSX.Element {
               value={agent.tools.length > 0 ? agent.tools.join(', ') : '(none)'}
             />
             <ReviewRow label="Workspace" value={agent.workspace || 'Auto-generated'} />
-            <ReviewRow
-              label="Channels"
-              value={channels.enableTelegram ? 'Mission Control, Telegram' : 'Mission Control'}
-            />
           </div>
 
           {deployError && (
@@ -336,7 +250,7 @@ export function DeployWizard(): JSX.Element {
           <div className="flex justify-between">
             <button
               type="button"
-              onClick={() => setStep('channels')}
+              onClick={() => setStep('agent')}
               disabled={deploying}
               className="inline-flex items-center gap-2 rounded-lg border border-border px-4 py-2 text-sm text-muted transition-colors hover:bg-sidebar-hover hover:text-foreground disabled:opacity-50"
             >
@@ -371,7 +285,6 @@ export function DeployWizard(): JSX.Element {
 function StepIndicator({ current }: { current: Step }): JSX.Element {
   const steps: { key: Step; label: string }[] = [
     { key: 'agent', label: 'Agent' },
-    { key: 'channels', label: 'Channels' },
     { key: 'review', label: 'Review' },
   ];
 
