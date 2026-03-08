@@ -118,7 +118,8 @@ describe('DeployWizard', () => {
 
     expect(mockApi.deploymentsDeployWithConfig).toHaveBeenCalledWith({
       name: 'deploy-test',
-      model: 'claude-sonnet-4-20250514',
+      model: 'anthropic/claude-sonnet-4-20250514',
+      fallbackModels: undefined,
       systemPrompt: '',
       tools: [],
       enableTelegram: false,
