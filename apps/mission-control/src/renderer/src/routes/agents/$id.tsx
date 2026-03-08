@@ -1,5 +1,5 @@
-import type { RuntimeStatus } from '@dash/mc';
 import type { SkillContent, SkillInfo, SkillsConfig } from '@dash/management';
+import type { RuntimeStatus } from '@dash/mc';
 import { Link, createFileRoute, useNavigate } from '@tanstack/react-router';
 import { ArrowLeft, Circle, Loader, MessageSquare, Square, Trash2 } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -418,7 +418,10 @@ function formatUptime(ms: number): string {
   return `${hours}h ${minutes % 60}m`;
 }
 
-function SkillsSection({ deploymentId, agentName }: { deploymentId: string; agentName: string }): JSX.Element {
+function SkillsSection({
+  deploymentId,
+  agentName,
+}: { deploymentId: string; agentName: string }): JSX.Element {
   const [skills, setSkills] = useState<SkillInfo[] | null>(null);
   const [config, setConfig] = useState<SkillsConfig | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -434,6 +437,7 @@ function SkillsSection({ deploymentId, agentName }: { deploymentId: string; agen
   const [newSkillName, setNewSkillName] = useState('');
   const [newSkillDesc, setNewSkillDesc] = useState('');
   const [createError, setCreateError] = useState<string | null>(null);
+  const [configError, setConfigError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -450,11 +454,22 @@ function SkillsSection({ deploymentId, agentName }: { deploymentId: string; agen
     }
   }, [deploymentId, agentName]);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    load();
+  }, [load]);
 
   const openEditor = async (skillName: string): Promise<void> => {
-    const skill = await window.api.skillsGet(deploymentId, agentName, skillName);
-    if (skill) { setEditing(skill); setEditorContent(skill.content); }
+    try {
+      const skill = await window.api.skillsGet(deploymentId, agentName, skillName);
+      if (skill) {
+        setEditing(skill);
+        setEditorContent(skill.content);
+      } else {
+        setLoadError(`Skill "${skillName}" not found.`);
+      }
+    } catch (e) {
+      setLoadError((e as Error).message);
+    }
   };
 
   const saveEdit = async (): Promise<void> => {
@@ -469,9 +484,44 @@ function SkillsSection({ deploymentId, agentName }: { deploymentId: string; agen
   };
 
   const applyConfigUpdate = async (updated: SkillsConfig): Promise<void> => {
-    await window.api.skillsUpdateConfig(deploymentId, agentName, updated);
-    setConfig(updated);
-    setConfigPending(true);
+    try {
+      const result = await window.api.skillsUpdateConfig(deploymentId, agentName, updated);
+      setConfig(updated);
+      if (result.requiresRestart) setConfigPending(true);
+      setConfigError(null);
+    } catch (e) {
+      setConfigError((e as Error).message);
+    }
+  };
+
+  const handleAddPath = async (): Promise<void> => {
+    if (config && addPathInput.trim()) {
+      await applyConfigUpdate({
+        ...config,
+        paths: [...config.paths.filter((p) => p !== addPathInput), addPathInput.trim()],
+      });
+      setAddPathInput('');
+      setShowAddPath(false);
+    }
+  };
+
+  const handleAddUrl = async (): Promise<void> => {
+    if (config && addUrlInput.trim()) {
+      await applyConfigUpdate({
+        ...config,
+        urls: [...config.urls.filter((u) => u !== addUrlInput), addUrlInput.trim()],
+      });
+      setAddUrlInput('');
+      setShowAddUrl(false);
+    }
+  };
+
+  const handleRemovePath = (p: string): void => {
+    if (config) void applyConfigUpdate({ ...config, paths: config.paths.filter((x) => x !== p) });
+  };
+
+  const handleRemoveUrl = (u: string): void => {
+    if (config) void applyConfigUpdate({ ...config, urls: config.urls.filter((x) => x !== u) });
   };
 
   const handleCreateSkill = async (): Promise<void> => {
@@ -479,7 +529,13 @@ function SkillsSection({ deploymentId, agentName }: { deploymentId: string; agen
     setSaving(true);
     setCreateError(null);
     try {
-      await window.api.skillsCreate(deploymentId, agentName, newSkillName.trim(), newSkillDesc || 'A custom skill', `# ${newSkillName}\n\nDescribe the skill here.\n`);
+      await window.api.skillsCreate(
+        deploymentId,
+        agentName,
+        newSkillName.trim(),
+        newSkillDesc || 'A custom skill',
+        `# ${newSkillName}\n\nDescribe the skill here.\n`,
+      );
       setCreating(false);
       setNewSkillName('');
       setNewSkillDesc('');
@@ -492,7 +548,9 @@ function SkillsSection({ deploymentId, agentName }: { deploymentId: string; agen
   };
 
   if (loadError === 'not-supported') {
-    return <p className="text-xs text-muted">Skills management not available for this deployment.</p>;
+    return (
+      <p className="text-xs text-muted">Skills management not available for this deployment.</p>
+    );
   }
   if (loadError) return <p className="text-xs text-red-400">{loadError}</p>;
   if (!skills) return <div className="text-xs text-muted">Loading skills...</div>;
@@ -502,9 +560,17 @@ function SkillsSection({ deploymentId, agentName }: { deploymentId: string; agen
     return (
       <div>
         <div className="mb-2 flex items-center gap-3">
-          <button type="button" onClick={() => setEditing(null)} className="text-xs text-primary hover:underline">← Back</button>
+          <button
+            type="button"
+            onClick={() => setEditing(null)}
+            className="text-xs text-primary hover:underline"
+          >
+            ← Back
+          </button>
           <span className="text-xs font-medium">{editing.name}</span>
-          {!editing.editable && <span className="text-xs text-muted">(read-only — remote source)</span>}
+          {!editing.editable && (
+            <span className="text-xs text-muted">(read-only — remote source)</span>
+          )}
         </div>
         <textarea
           value={editorContent}
@@ -515,10 +581,19 @@ function SkillsSection({ deploymentId, agentName }: { deploymentId: string; agen
         />
         {editing.editable && (
           <div className="mt-2 flex gap-2">
-            <button type="button" onClick={saveEdit} disabled={saving} className="rounded-lg bg-primary px-3 py-1.5 text-xs text-white hover:bg-primary-hover disabled:opacity-50">
+            <button
+              type="button"
+              onClick={saveEdit}
+              disabled={saving}
+              className="rounded-lg bg-primary px-3 py-1.5 text-xs text-white hover:bg-primary-hover disabled:opacity-50"
+            >
               {saving ? 'Saving...' : 'Save'}
             </button>
-            <button type="button" onClick={() => setEditing(null)} className="rounded-lg border border-border px-3 py-1.5 text-xs text-muted hover:bg-sidebar-hover">
+            <button
+              type="button"
+              onClick={() => setEditing(null)}
+              className="rounded-lg border border-border px-3 py-1.5 text-xs text-muted hover:bg-sidebar-hover"
+            >
               Cancel
             </button>
           </div>
@@ -540,18 +615,27 @@ function SkillsSection({ deploymentId, agentName }: { deploymentId: string; agen
         {skills.length === 0 && <p className="text-xs text-muted">No skills discovered yet.</p>}
         <div className="space-y-2">
           {skills.map((s) => (
-            <div key={s.name} className="flex items-start justify-between rounded-lg border border-border bg-sidebar-bg p-3">
+            <div
+              key={s.name}
+              className="flex items-start justify-between rounded-lg border border-border bg-sidebar-bg p-3"
+            >
               <div className="min-w-0">
                 <div className="flex items-center gap-2">
                   <span className="text-sm font-medium">{s.name}</span>
-                  <span className={`rounded px-1.5 py-0.5 text-xs ${s.editable ? 'bg-green-900/30 text-green-400' : 'bg-sidebar-hover text-muted'}`}>
+                  <span
+                    className={`rounded px-1.5 py-0.5 text-xs ${s.editable ? 'bg-green-900/30 text-green-400' : 'bg-sidebar-hover text-muted'}`}
+                  >
                     {s.editable ? 'editable' : 'remote'}
                   </span>
                 </div>
                 <p className="mt-0.5 text-xs text-muted">{s.description}</p>
                 <p className="mt-0.5 truncate font-mono text-xs text-muted/60">{s.location}</p>
               </div>
-              <button type="button" onClick={() => openEditor(s.name)} className="ml-4 shrink-0 text-xs text-primary hover:underline">
+              <button
+                type="button"
+                onClick={() => openEditor(s.name)}
+                className="ml-4 shrink-0 text-xs text-primary hover:underline"
+              >
                 {s.editable ? 'Edit' : 'View'}
               </button>
             </div>
@@ -559,24 +643,60 @@ function SkillsSection({ deploymentId, agentName }: { deploymentId: string; agen
         </div>
       </div>
 
+      {configError && <p className="text-xs text-red-400">{configError}</p>}
+
       {/* Discovery paths */}
       <div>
         <div className="mb-1 flex items-center justify-between">
           <h3 className="text-xs font-medium text-muted">Discovery paths</h3>
-          <button type="button" onClick={() => setShowAddPath(true)} className="text-xs text-primary hover:underline">Add path</button>
+          <button
+            type="button"
+            onClick={() => setShowAddPath(true)}
+            className="text-xs text-primary hover:underline"
+          >
+            Add path
+          </button>
         </div>
         {config?.paths.map((p) => (
-          <div key={p} className="mb-1 flex items-center justify-between rounded border border-border px-2 py-1">
+          <div
+            key={p}
+            className="mb-1 flex items-center justify-between rounded border border-border px-2 py-1"
+          >
             <span className="font-mono text-xs">{p}</span>
-            <button type="button" onClick={() => config && applyConfigUpdate({ ...config, paths: config.paths.filter((x) => x !== p) })} className="ml-2 text-xs text-red-400 hover:underline">Remove</button>
+            <button
+              type="button"
+              onClick={() => handleRemovePath(p)}
+              className="ml-2 text-xs text-red-400 hover:underline"
+            >
+              Remove
+            </button>
           </div>
         ))}
-        {config?.paths.length === 0 && <p className="text-xs text-muted">No local paths configured.</p>}
+        {config?.paths.length === 0 && (
+          <p className="text-xs text-muted">No local paths configured.</p>
+        )}
         {showAddPath && (
           <div className="mt-2 flex gap-2">
-            <input value={addPathInput} onChange={(e) => setAddPathInput(e.target.value)} placeholder="~/my-skills" className="flex-1 rounded border border-border bg-[#0d0d0d] px-2 py-1 font-mono text-xs focus:border-primary focus:outline-none" />
-            <button type="button" onClick={async () => { if (config && addPathInput.trim()) { await applyConfigUpdate({ ...config, paths: [...config.paths.filter((p) => p !== addPathInput), addPathInput.trim()] }); setAddPathInput(''); setShowAddPath(false); } }} className="rounded bg-primary px-2 py-1 text-xs text-white hover:bg-primary-hover">Add</button>
-            <button type="button" onClick={() => setShowAddPath(false)} className="rounded border border-border px-2 py-1 text-xs text-muted hover:bg-sidebar-hover">Cancel</button>
+            <input
+              value={addPathInput}
+              onChange={(e) => setAddPathInput(e.target.value)}
+              placeholder="~/my-skills"
+              className="flex-1 rounded border border-border bg-[#0d0d0d] px-2 py-1 font-mono text-xs focus:border-primary focus:outline-none"
+            />
+            <button
+              type="button"
+              onClick={handleAddPath}
+              className="rounded bg-primary px-2 py-1 text-xs text-white hover:bg-primary-hover"
+            >
+              Add
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowAddPath(false)}
+              className="rounded border border-border px-2 py-1 text-xs text-muted hover:bg-sidebar-hover"
+            >
+              Cancel
+            </button>
           </div>
         )}
       </div>
@@ -585,20 +705,54 @@ function SkillsSection({ deploymentId, agentName }: { deploymentId: string; agen
       <div>
         <div className="mb-1 flex items-center justify-between">
           <h3 className="text-xs font-medium text-muted">Remote URLs</h3>
-          <button type="button" onClick={() => setShowAddUrl(true)} className="text-xs text-primary hover:underline">Add URL</button>
+          <button
+            type="button"
+            onClick={() => setShowAddUrl(true)}
+            className="text-xs text-primary hover:underline"
+          >
+            Add URL
+          </button>
         </div>
         {config?.urls.map((u) => (
-          <div key={u} className="mb-1 flex items-center justify-between rounded border border-border px-2 py-1">
+          <div
+            key={u}
+            className="mb-1 flex items-center justify-between rounded border border-border px-2 py-1"
+          >
             <span className="font-mono text-xs">{u}</span>
-            <button type="button" onClick={() => config && applyConfigUpdate({ ...config, urls: config.urls.filter((x) => x !== u) })} className="ml-2 text-xs text-red-400 hover:underline">Remove</button>
+            <button
+              type="button"
+              onClick={() => handleRemoveUrl(u)}
+              className="ml-2 text-xs text-red-400 hover:underline"
+            >
+              Remove
+            </button>
           </div>
         ))}
-        {config?.urls.length === 0 && <p className="text-xs text-muted">No remote URLs configured.</p>}
+        {config?.urls.length === 0 && (
+          <p className="text-xs text-muted">No remote URLs configured.</p>
+        )}
         {showAddUrl && (
           <div className="mt-2 flex gap-2">
-            <input value={addUrlInput} onChange={(e) => setAddUrlInput(e.target.value)} placeholder="https://example.com/.well-known/skills/" className="flex-1 rounded border border-border bg-[#0d0d0d] px-2 py-1 font-mono text-xs focus:border-primary focus:outline-none" />
-            <button type="button" onClick={async () => { if (config && addUrlInput.trim()) { await applyConfigUpdate({ ...config, urls: [...config.urls.filter((u) => u !== addUrlInput), addUrlInput.trim()] }); setAddUrlInput(''); setShowAddUrl(false); } }} className="rounded bg-primary px-2 py-1 text-xs text-white hover:bg-primary-hover">Add</button>
-            <button type="button" onClick={() => setShowAddUrl(false)} className="rounded border border-border px-2 py-1 text-xs text-muted hover:bg-sidebar-hover">Cancel</button>
+            <input
+              value={addUrlInput}
+              onChange={(e) => setAddUrlInput(e.target.value)}
+              placeholder="https://example.com/.well-known/skills/"
+              className="flex-1 rounded border border-border bg-[#0d0d0d] px-2 py-1 font-mono text-xs focus:border-primary focus:outline-none"
+            />
+            <button
+              type="button"
+              onClick={handleAddUrl}
+              className="rounded bg-primary px-2 py-1 text-xs text-white hover:bg-primary-hover"
+            >
+              Add
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowAddUrl(false)}
+              className="rounded border border-border px-2 py-1 text-xs text-muted hover:bg-sidebar-hover"
+            >
+              Cancel
+            </button>
           </div>
         )}
       </div>
@@ -606,15 +760,47 @@ function SkillsSection({ deploymentId, agentName }: { deploymentId: string; agen
       {/* Create new skill */}
       <div>
         {!creating ? (
-          <button type="button" onClick={() => setCreating(true)} className="text-xs text-primary hover:underline">+ New skill</button>
+          <button
+            type="button"
+            onClick={() => setCreating(true)}
+            className="text-xs text-primary hover:underline"
+          >
+            + New skill
+          </button>
         ) : (
           <div className="space-y-2 rounded-lg border border-border bg-sidebar-bg p-3">
-            <input value={newSkillName} onChange={(e) => setNewSkillName(e.target.value)} placeholder="skill-name" className="w-full rounded border border-border bg-[#0d0d0d] px-2 py-1 text-xs focus:border-primary focus:outline-none" />
-            <input value={newSkillDesc} onChange={(e) => setNewSkillDesc(e.target.value)} placeholder="Description (optional)" className="w-full rounded border border-border bg-[#0d0d0d] px-2 py-1 text-xs focus:border-primary focus:outline-none" />
+            <input
+              value={newSkillName}
+              onChange={(e) => setNewSkillName(e.target.value)}
+              placeholder="skill-name"
+              className="w-full rounded border border-border bg-[#0d0d0d] px-2 py-1 text-xs focus:border-primary focus:outline-none"
+            />
+            <input
+              value={newSkillDesc}
+              onChange={(e) => setNewSkillDesc(e.target.value)}
+              placeholder="Description (optional)"
+              className="w-full rounded border border-border bg-[#0d0d0d] px-2 py-1 text-xs focus:border-primary focus:outline-none"
+            />
             {createError && <p className="text-xs text-red-400">{createError}</p>}
             <div className="flex gap-2">
-              <button type="button" onClick={handleCreateSkill} disabled={saving || !newSkillName.trim()} className="rounded bg-primary px-2 py-1 text-xs text-white hover:bg-primary-hover disabled:opacity-50">Create</button>
-              <button type="button" onClick={() => { setCreating(false); setCreateError(null); }} className="rounded border border-border px-2 py-1 text-xs text-muted hover:bg-sidebar-hover">Cancel</button>
+              <button
+                type="button"
+                onClick={handleCreateSkill}
+                disabled={saving || !newSkillName.trim()}
+                className="rounded bg-primary px-2 py-1 text-xs text-white hover:bg-primary-hover disabled:opacity-50"
+              >
+                Create
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setCreating(false);
+                  setCreateError(null);
+                }}
+                className="rounded border border-border px-2 py-1 text-xs text-muted hover:bg-sidebar-hover"
+              >
+                Cancel
+              </button>
             </div>
           </div>
         )}
