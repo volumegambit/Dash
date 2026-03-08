@@ -453,9 +453,6 @@ function NewTelegramWizard(): JSX.Element {
             <p className="mt-3 text-base text-muted">
               Your Telegram bot <strong>@{botInfo.username}</strong> is now connected.
             </p>
-            <p className="mt-2 text-sm text-muted">
-              Share this link so people can start chatting:
-            </p>
             <button
               type="button"
               onClick={() => window.api.openExternal(`https://t.me/${botInfo.username}`)}
