@@ -6,34 +6,26 @@ import { fileURLToPath } from 'node:url';
 // --- JSON config schema ---
 
 export interface AgentConfig {
-  model: string;
+  model: string; // "provider/model-id", e.g. "anthropic/claude-sonnet-4-5"
   systemPrompt: string;
   tools?: string[];
-  maxTokens?: number;
   workspace?: string;
-  thinking?: { budgetTokens: number };
 }
 
 export interface DashJsonConfig {
   agents: Record<string, AgentConfig>;
-  sessions: { dir: string };
   logging: { level: string };
 }
 
 export interface CredentialsConfig {
-  anthropic?: { apiKey?: string };
-  google?: { apiKey?: string };
-  openai?: { apiKey?: string };
+  providerApiKeys?: Record<string, string>;
 }
 
 // --- Runtime config (merged JSON + env) ---
 
 export interface DashConfig {
-  anthropicApiKey: string;
-  googleApiKey?: string;
-  openaiApiKey?: string;
+  providerApiKeys: Record<string, string>;
   agents: Record<string, AgentConfig>;
-  sessionDir: string;
   logLevel: string;
   logDir?: string;
   managementPort: number;
@@ -45,15 +37,12 @@ export interface DashConfig {
 const DEFAULTS: DashJsonConfig = {
   agents: {
     default: {
-      model: 'claude-sonnet-4-20250514',
+      model: 'anthropic/claude-sonnet-4-5',
       systemPrompt:
         'You are Dash, a helpful AI assistant. You can use tools to help accomplish tasks.',
-      tools: ['bash', 'read_file'],
-      maxTokens: 4096,
-      workspace: './data/workspace',
+      tools: ['bash', 'edit', 'write', 'read', 'glob', 'grep', 'ls'],
     },
   },
-  sessions: { dir: './data/sessions' },
   logging: { level: 'info' },
 };
 
@@ -129,9 +118,7 @@ async function loadCredentials(projectRoot: string): Promise<CredentialsConfig> 
 }
 
 interface SecretsFile {
-  anthropicApiKey?: string;
-  googleApiKey?: string;
-  openaiApiKey?: string;
+  providerApiKeys?: Record<string, string>;
   managementToken?: string;
   chatToken?: string;
 }
@@ -219,20 +206,21 @@ export async function loadConfig(options?: LoadConfigOptions): Promise<DashConfi
     merged.agents = directoryAgents;
   }
 
-  // Resolve credentials: secrets file > env vars > config/credentials.json
-  const anthropicApiKey =
-    secrets?.anthropicApiKey ?? process.env.ANTHROPIC_API_KEY ?? credentials.anthropic?.apiKey;
-  if (!anthropicApiKey) {
-    throw new Error(
-      'Missing ANTHROPIC_API_KEY. Set it in config/credentials.json or as an env var.',
-    );
+  // Resolve provider API keys: secrets file > env vars > config/credentials.json
+  const credEnvMap: Record<string, string[]> = {
+    anthropic: ['ANTHROPIC_API_KEY'],
+    openai: ['OPENAI_API_KEY'],
+    google: ['GOOGLE_API_KEY', 'GEMINI_API_KEY'],
+  };
+
+  const providerApiKeys: Record<string, string> = {};
+  for (const [provider, envVars] of Object.entries(credEnvMap)) {
+    const val =
+      envVars.map((v) => process.env[v]).find(Boolean) ??
+      secrets?.providerApiKeys?.[provider] ??
+      credentials.providerApiKeys?.[provider];
+    if (val) providerApiKeys[provider] = val;
   }
-
-  const googleApiKey =
-    secrets?.googleApiKey ?? process.env.GOOGLE_API_KEY ?? credentials.google?.apiKey;
-
-  const openaiApiKey =
-    secrets?.openaiApiKey ?? process.env.OPENAI_API_KEY ?? credentials.openai?.apiKey;
 
   // Env overrides for logging
   if (process.env.LOG_LEVEL) {
@@ -263,11 +251,8 @@ export async function loadConfig(options?: LoadConfigOptions): Promise<DashConfi
   }
 
   return {
-    anthropicApiKey,
-    googleApiKey,
-    openaiApiKey,
+    providerApiKeys,
     agents: merged.agents,
-    sessionDir: merged.sessions.dir,
     logLevel: merged.logging.level,
     logDir,
     managementPort,

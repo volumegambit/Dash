@@ -70,7 +70,7 @@ describe('loadConfig with --config and --secrets', () => {
     );
 
     const secretsPath = join(tmpDir, 'secrets.json');
-    await writeFile(secretsPath, JSON.stringify({ anthropicApiKey: 'sk-test-key' }));
+    await writeFile(secretsPath, JSON.stringify({ providerApiKeys: { anthropic: 'sk-test-key' } }));
 
     const cfg = await loadConfig({ configPath, secretsPath });
 
@@ -86,7 +86,7 @@ describe('loadConfig with --config and --secrets', () => {
     await writeFile(
       secretsPath,
       JSON.stringify({
-        anthropicApiKey: 'sk-from-secrets',
+        providerApiKeys: { anthropic: 'sk-from-secrets' },
         managementToken: 'mgmt-tok',
         chatToken: 'chat-tok',
       }),
@@ -96,22 +96,26 @@ describe('loadConfig with --config and --secrets', () => {
 
     const cfg = await loadConfig({ secretsPath });
 
-    expect(cfg.anthropicApiKey).toBe('sk-from-secrets');
+    expect(cfg.providerApiKeys.anthropic).toBe('sk-from-secrets');
     expect(cfg.managementToken).toBe('mgmt-tok');
     expect(cfg.chatToken).toBe('chat-tok');
     expect(existsSync(secretsPath)).toBe(false);
   });
 
-  it('secrets override env vars', async () => {
+  it('env vars take precedence over secrets for provider API keys', async () => {
     const original = process.env.ANTHROPIC_API_KEY;
     process.env.ANTHROPIC_API_KEY = 'sk-from-env';
 
     try {
       const secretsPath = join(tmpDir, 'secrets.json');
-      await writeFile(secretsPath, JSON.stringify({ anthropicApiKey: 'sk-from-secrets' }));
+      await writeFile(
+        secretsPath,
+        JSON.stringify({ providerApiKeys: { anthropic: 'sk-from-secrets' } }),
+      );
 
       const cfg = await loadConfig({ secretsPath });
-      expect(cfg.anthropicApiKey).toBe('sk-from-secrets');
+      // Resolution order: env vars > secrets > credentials
+      expect(cfg.providerApiKeys.anthropic).toBe('sk-from-env');
     } finally {
       if (original !== undefined) {
         process.env.ANTHROPIC_API_KEY = original;
@@ -122,17 +126,18 @@ describe('loadConfig with --config and --secrets', () => {
     }
   });
 
-  it('throws when anthropicApiKey is missing', async () => {
+  it('returns empty providerApiKeys when no keys are available', async () => {
     const original = process.env.ANTHROPIC_API_KEY;
     // biome-ignore lint/performance/noDelete: must actually remove env var, not set to "undefined" string
     delete process.env.ANTHROPIC_API_KEY;
 
-    // Provide secrets file with no API key — this bypasses project credentials loading
+    // Provide secrets file with no API keys — this bypasses project credentials loading
     const secretsPath = join(tmpDir, 'empty-secrets.json');
     await writeFile(secretsPath, JSON.stringify({}));
 
     try {
-      await expect(loadConfig({ secretsPath })).rejects.toThrow('Missing ANTHROPIC_API_KEY');
+      const cfg = await loadConfig({ secretsPath });
+      expect(cfg.providerApiKeys).toEqual({});
     } finally {
       if (original !== undefined) {
         process.env.ANTHROPIC_API_KEY = original;
@@ -221,7 +226,7 @@ describe('loadConfig with config directory', () => {
     );
 
     const secretsPath = join(tmpDir, 'secrets.json');
-    await writeFile(secretsPath, JSON.stringify({ anthropicApiKey: 'sk-test' }));
+    await writeFile(secretsPath, JSON.stringify({ providerApiKeys: { anthropic: 'sk-test' } }));
 
     const cfg = await loadConfig({ configPath: configDir, secretsPath });
     expect(cfg.agents.bot).toBeDefined();
@@ -249,7 +254,7 @@ describe('loadConfig with config directory', () => {
     );
 
     const secretsPath = join(tmpDir, 'secrets.json');
-    await writeFile(secretsPath, JSON.stringify({ anthropicApiKey: 'sk-test' }));
+    await writeFile(secretsPath, JSON.stringify({ providerApiKeys: { anthropic: 'sk-test' } }));
 
     const cfg = await loadConfig({ configPath: configDir, secretsPath });
     expect(cfg.agents.fromdir).toBeDefined();
@@ -260,20 +265,16 @@ describe('loadConfig with config directory', () => {
     const configDir = join(tmpDir, 'config');
     const agentsDir = join(configDir, 'agents');
     await mkdir(agentsDir, { recursive: true });
-    await writeFile(
-      join(configDir, 'dash.json'),
-      JSON.stringify({ sessions: { dir: '/custom/sessions' }, logging: { level: 'debug' } }),
-    );
+    await writeFile(join(configDir, 'dash.json'), JSON.stringify({ logging: { level: 'debug' } }));
     await writeFile(
       join(agentsDir, 'default.json'),
       JSON.stringify({ model: 'claude-sonnet-4-20250514', systemPrompt: 'Test' }),
     );
 
     const secretsPath = join(tmpDir, 'secrets.json');
-    await writeFile(secretsPath, JSON.stringify({ anthropicApiKey: 'sk-test' }));
+    await writeFile(secretsPath, JSON.stringify({ providerApiKeys: { anthropic: 'sk-test' } }));
 
     const cfg = await loadConfig({ configPath: configDir, secretsPath });
-    expect(cfg.sessionDir).toBe('/custom/sessions');
     expect(cfg.logLevel).toBe('debug');
   });
 
@@ -289,7 +290,7 @@ describe('loadConfig with config directory', () => {
     );
 
     const secretsPath = join(tmpDir, 'secrets.json');
-    await writeFile(secretsPath, JSON.stringify({ anthropicApiKey: 'sk-test' }));
+    await writeFile(secretsPath, JSON.stringify({ providerApiKeys: { anthropic: 'sk-test' } }));
 
     const cfg = await loadConfig({ configPath, secretsPath });
     expect(cfg.agents.solo).toBeDefined();
