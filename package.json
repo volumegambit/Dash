@@ -20,6 +20,8 @@
     "gateway": "node --import tsx apps/gateway/src/index.ts",
     "mc:dev": "npm run dev --workspace=apps/mission-control",
     "mc:build": "npm run build --workspace=apps/mission-control",
+    "homepage:dev": "npm run dev --workspace=apps/homepage",
+    "homepage:build": "npm run build --workspace=apps/homepage",
     "test": "vitest run",
     "lint": "biome check . && npm run typecheck --workspace=apps/mission-control",
     "lint:fix": "biome check --write .",
