@@ -1,8 +1,22 @@
 import { readFile, unlink } from 'node:fs/promises';
 
+export interface GatewayRoutingRule {
+  condition:
+    | { type: 'default' }
+    | { type: 'sender'; ids: string[] }
+    | { type: 'group'; ids: string[] };
+  agentName: string;
+  allowList: string[];
+  denyList: string[];
+}
+
 export interface ChannelConfig {
   adapter: 'telegram' | 'mission-control';
-  agent?: string; // Required for all non-mission-control adapters; unused for mission-control (routes by message content)
+  // Simple mode: route all messages to one agent
+  agent?: string;
+  // Advanced mode: ordered routing rules
+  routing?: GatewayRoutingRule[];
+  globalDenyList?: string[];
   // Telegram-specific
   token?: string;
   allowedUsers?: string[];
@@ -86,8 +100,19 @@ export async function loadConfig(options?: LoadConfigOptions): Promise<GatewayCo
   }
 
   for (const [name, ch] of Object.entries(config.channels)) {
-    if (ch.adapter === 'mission-control') continue; // MC routes by message content
-    if (!ch.agent || !config.agents[ch.agent]) {
+    if (ch.adapter === 'mission-control') continue;
+
+    if (ch.routing) {
+      // Advanced mode: validate all agentName references
+      for (const rule of ch.routing) {
+        if (!config.agents[rule.agentName]) {
+          throw new Error(
+            `Channel "${name}" routing rule references unknown agent "${rule.agentName}". Available: ${Object.keys(config.agents).join(', ')}`,
+          );
+        }
+      }
+    } else if (!ch.agent || !config.agents[ch.agent]) {
+      // Simple mode: validate agent field
       throw new Error(
         `Channel "${name}" references unknown agent "${ch.agent ?? '(none)'}". Available: ${Object.keys(config.agents).join(', ')}`,
       );
