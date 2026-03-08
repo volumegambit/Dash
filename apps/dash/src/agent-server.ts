@@ -47,6 +47,7 @@ export async function createAgentServer(config: DashConfig) {
         skills: agentConfig.skills,
       },
       config.providerApiKeys,
+      logger,
     );
 
     await backend.start(workspace ?? projectRoot);
@@ -187,6 +188,7 @@ export async function createAgentServer(config: DashConfig) {
           port: config.chatPort,
           token: config.chatToken,
           agents: clients,
+          logger,
         });
         chatClose = close;
         log(`Chat API listening on port ${config.chatPort}`);
