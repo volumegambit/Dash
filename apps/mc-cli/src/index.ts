@@ -9,6 +9,7 @@ import { registerProvidersDisconnectCommand } from './commands/providers-disconn
 import { registerProvidersListCommand } from './commands/providers-list.js';
 import { registerRemoveCommand } from './commands/remove.js';
 import { registerSecretsChangePasswordCommand } from './commands/secrets-change-password.js';
+import { registerSkillsCommand } from './commands/skills.js';
 import { registerSecretsDeleteCommand } from './commands/secrets-delete.js';
 import { registerSecretsGetCommand } from './commands/secrets-get.js';
 import { registerSecretsListCommand } from './commands/secrets-list.js';
@@ -45,5 +46,8 @@ const providers = program.command('providers').description('Manage AI provider A
 registerProvidersListCommand(providers);
 registerProvidersConnectCommand(providers);
 registerProvidersDisconnectCommand(providers);
+
+// Skills subcommand group
+registerSkillsCommand(program);
 
 program.parse();
