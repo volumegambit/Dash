@@ -1,16 +1,17 @@
 import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { AgentRegistry, EncryptedSecretStore, ProcessRuntime } from '@dash/mc';
-import { app, ipcMain, safeStorage, shell } from 'electron';
+import { AgentRegistry, ConversationStore, EncryptedSecretStore, ProcessRuntime } from '@dash/mc';
+import { app, dialog, ipcMain, safeStorage, shell } from 'electron';
 import type { BrowserWindow } from 'electron';
 import type { DeployWithConfigOptions } from '../shared/ipc.js';
+import { ChatService } from './chat-service.js';
 
 const DATA_DIR = join(homedir(), '.mission-control');
 const SESSION_KEY_PATH = join(DATA_DIR, 'session.key');
 
-let ws: WebSocket | undefined;
+let chatService: ChatService | undefined;
 let secretStore: EncryptedSecretStore | undefined;
 let registry: AgentRegistry | undefined;
 let runtime: ProcessRuntime | undefined;
@@ -29,6 +30,28 @@ function getRegistry(): AgentRegistry {
     registry = new AgentRegistry(DATA_DIR);
   }
   return registry;
+}
+
+function getChatService(getWindow: () => BrowserWindow | undefined): ChatService {
+  if (!chatService) {
+    chatService = new ChatService(
+      getRegistry(),
+      new ConversationStore(DATA_DIR),
+      (conversationId, event) => {
+        const win = getWindow();
+        if (win && !win.isDestroyed()) win.webContents.send('chat:event', conversationId, event);
+      },
+      (conversationId) => {
+        const win = getWindow();
+        if (win && !win.isDestroyed()) win.webContents.send('chat:done', conversationId);
+      },
+      (conversationId, error) => {
+        const win = getWindow();
+        if (win && !win.isDestroyed()) win.webContents.send('chat:error', conversationId, error);
+      },
+    );
+  }
+  return chatService;
 }
 
 function resolveProjectRoot(): string {
@@ -97,6 +120,13 @@ export async function registerIpcHandlers(
     await shell.openExternal(url);
   });
 
+  ipcMain.handle('dialog:openDirectory', async () => {
+    const result = await dialog.showOpenDialog({
+      properties: ['openDirectory', 'createDirectory'],
+    });
+    return result.canceled ? null : result.filePaths[0];
+  });
+
   // Setup handler
   ipcMain.handle('setup:getStatus', async () => {
     const store = getSecretStore();
@@ -113,56 +143,23 @@ export async function registerIpcHandlers(
   });
 
   // Chat handlers
-  ipcMain.handle('chat:connect', (_event, gatewayUrl: string) => {
-    if (ws) {
-      ws.close();
-      ws = undefined;
-    }
-
-    ws = new WebSocket(gatewayUrl);
-
-    ws.addEventListener('message', (event) => {
-      const win = getWindow();
-      if (!win) return;
-
-      try {
-        const msg = JSON.parse(String(event.data)) as {
-          type: string;
-          conversationId: string;
-          text?: string;
-          error?: string;
-        };
-
-        if (msg.type === 'response') {
-          win.webContents.send('chat:response', msg.conversationId, msg.text ?? '');
-        } else if (msg.type === 'error') {
-          win.webContents.send('chat:error', msg.conversationId, msg.error ?? 'Unknown error');
-        }
-      } catch {
-        // Ignore malformed messages
-      }
-    });
-
-    ws.addEventListener('error', () => {
-      const win = getWindow();
-      if (win) {
-        win.webContents.send('chat:error', '', 'WebSocket connection error');
-      }
-    });
-  });
-
-  ipcMain.handle('chat:disconnect', () => {
-    if (ws) {
-      ws.close();
-      ws = undefined;
-    }
-  });
-
-  ipcMain.handle('chat:send', (_event, conversationId: string, text: string) => {
-    if (!ws || ws.readyState !== WebSocket.OPEN) {
-      throw new Error('Not connected to gateway');
-    }
-    ws.send(JSON.stringify({ type: 'message', conversationId, text }));
+  ipcMain.handle('chat:listConversations', (_event, deploymentId: string) =>
+    getChatService(getWindow).listConversations(deploymentId),
+  );
+  ipcMain.handle('chat:createConversation', (_event, deploymentId: string, agentName: string) =>
+    getChatService(getWindow).createConversation(deploymentId, agentName),
+  );
+  ipcMain.handle('chat:getMessages', (_event, conversationId: string) =>
+    getChatService(getWindow).getMessages(conversationId),
+  );
+  ipcMain.handle('chat:deleteConversation', (_event, conversationId: string) =>
+    getChatService(getWindow).deleteConversation(conversationId),
+  );
+  ipcMain.handle('chat:sendMessage', (_event, conversationId: string, text: string) =>
+    getChatService(getWindow).sendMessage(conversationId, text),
+  );
+  ipcMain.handle('chat:cancel', (_event, conversationId: string) => {
+    getChatService(getWindow).cancel(conversationId);
   });
 
   // Secrets handlers
@@ -227,7 +224,7 @@ export async function registerIpcHandlers(
   ipcMain.handle(
     'deployments:deployWithConfig',
     async (_event, options: DeployWithConfigOptions) => {
-      const { name, model, systemPrompt, tools, enableTelegram } = options;
+      const { name, model, systemPrompt, tools, enableTelegram, workspace } = options;
 
       // Create a temp config directory with the agent and gateway config
       const configDir = join(tmpdir(), `mc-deploy-${Date.now()}`);
@@ -240,6 +237,7 @@ export async function registerIpcHandlers(
         model,
         systemPrompt,
         tools: tools.length > 0 ? tools : undefined,
+        ...(workspace ? { workspace } : {}),
       };
       await writeFile(join(agentsDir, `${name}.json`), JSON.stringify(agentConfig, null, 2));
 
@@ -268,13 +266,21 @@ export async function registerIpcHandlers(
     }
   });
 
-  ipcMain.handle('deployments:remove', async (_event, id: string) => {
+  ipcMain.handle('deployments:remove', async (_event, id: string, deleteWorkspace?: boolean) => {
     // Cancel any active log subscription
     const sub = logSubscriptions.get(id);
     if (sub) {
       sub.abort();
       logSubscriptions.delete(id);
     }
+
+    if (deleteWorkspace) {
+      const deployment = await getRegistry().get(id);
+      if (deployment?.workspace) {
+        await rm(deployment.workspace, { recursive: true, force: true });
+      }
+    }
+
     await getRuntime().remove(id);
     const win = getWindow();
     if (win) {

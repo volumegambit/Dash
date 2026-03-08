@@ -4,9 +4,7 @@ import type { ReactNode } from 'react';
 import { Sidebar } from './Sidebar.js';
 
 vi.mock('@tanstack/react-router', () => ({
-  Link: ({ to, children }: { to: string; children: ReactNode }) => (
-    <a href={to}>{children}</a>
-  ),
+  Link: ({ to, children }: { to: string; children: ReactNode }) => <a href={to}>{children}</a>,
 }));
 
 describe('Sidebar', () => {
