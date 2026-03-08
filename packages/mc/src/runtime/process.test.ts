@@ -73,7 +73,7 @@ describe('validateConfigDir', () => {
 describe('writeSecretsFile', () => {
   it('writes agent secrets with 0600 permissions', async () => {
     const secrets: AgentSecretsFile = {
-      anthropicApiKey: 'sk-test',
+      providerApiKeys: { anthropic: 'sk-test' },
       managementToken: 'mgmt-tok',
       chatToken: 'chat-tok',
     };
@@ -83,7 +83,7 @@ describe('writeSecretsFile', () => {
       expect(existsSync(filePath)).toBe(true);
 
       const content = JSON.parse(await readFile(filePath, 'utf-8'));
-      expect(content.anthropicApiKey).toBe('sk-test');
+      expect(content.providerApiKeys?.anthropic).toBe('sk-test');
       expect(content.managementToken).toBe('mgmt-tok');
       expect(content.chatToken).toBe('chat-tok');
 
