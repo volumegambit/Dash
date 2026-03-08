@@ -22,4 +22,9 @@ describe('Sidebar', () => {
     render(<Sidebar />);
     expect(screen.queryByText('Deploy')).not.toBeInTheDocument();
   });
+
+  it('renders a Send Feedback button', () => {
+    render(<Sidebar />);
+    expect(screen.getByText('Send Feedback')).toBeInTheDocument();
+  });
 });
