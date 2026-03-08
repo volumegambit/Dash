@@ -1,5 +1,5 @@
-import { Github } from 'lucide-react'
-import Link from 'next/link'
+import { Github } from 'lucide-react';
+import Link from 'next/link';
 
 export function Nav() {
   return (
@@ -33,5 +33,5 @@ export function Nav() {
         </div>
       </div>
     </nav>
-  )
+  );
 }

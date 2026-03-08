@@ -1,7 +1,7 @@
-import Link from 'next/link'
-import { MessageCircle } from 'lucide-react'
+import { MessageCircle } from 'lucide-react';
+import Link from 'next/link';
 
-const DISCORD_URL = 'https://discord.gg/dash'
+const DISCORD_URL = 'https://discord.gg/dash';
 
 export function Community() {
   return (
@@ -25,5 +25,5 @@ export function Community() {
         </Link>
       </div>
     </section>
-  )
+  );
 }
