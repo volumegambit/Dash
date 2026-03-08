@@ -1,6 +1,6 @@
-import type { LlmProvider, Message } from '@dash/llm';
 import { describe, expect, it, vi } from 'vitest';
 import { compactSession, estimateTokens, shouldCompact } from './compaction.js';
+import type { LlmProvider, Message } from './types.js';
 
 describe('estimateTokens', () => {
   it('estimates tokens for string content messages', () => {

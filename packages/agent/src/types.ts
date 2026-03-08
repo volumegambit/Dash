@@ -1,4 +1,73 @@
-import type { ContentBlock, LlmProvider, Message } from '@dash/llm';
+// --- LLM provider types (formerly from @dash/llm) ---
+
+export interface TextBlock {
+  type: 'text';
+  text: string;
+}
+
+export interface ToolUseBlock {
+  type: 'tool_use';
+  id: string;
+  name: string;
+  input: Record<string, unknown>;
+}
+
+export interface ToolResultBlock {
+  type: 'tool_result';
+  tool_use_id: string;
+  content: string;
+  is_error?: boolean;
+}
+
+export interface ThinkingBlock {
+  type: 'thinking';
+  thinking: string;
+  signature: string;
+}
+
+export interface RedactedThinkingBlock {
+  type: 'redacted_thinking';
+  data: string;
+}
+
+export type ContentBlock =
+  | TextBlock
+  | ToolUseBlock
+  | ToolResultBlock
+  | ThinkingBlock
+  | RedactedThinkingBlock;
+
+export interface Message {
+  role: 'user' | 'assistant' | 'system';
+  content: string | ContentBlock[];
+}
+
+export interface CompletionRequest {
+  model: string;
+  messages: Message[];
+  systemPrompt?: string;
+  maxTokens?: number;
+  temperature?: number;
+  stopSequences?: string[];
+  thinking?: { type: 'enabled'; budgetTokens: number };
+}
+
+export interface CompletionResponse {
+  content: string | ContentBlock[];
+  model: string;
+  usage: {
+    inputTokens: number;
+    outputTokens: number;
+  };
+  stopReason: 'end_turn' | 'max_tokens' | 'stop_sequence' | 'tool_use';
+}
+
+export interface LlmProvider {
+  readonly name: string;
+  complete(request: CompletionRequest): Promise<CompletionResponse>;
+}
+
+// --- Agent types ---
 
 export type AgentEvent =
   | { type: 'text_delta'; text: string }
@@ -75,5 +144,3 @@ export interface SessionStore {
   save(session: Session): Promise<void>;
   append(sessionId: string, entry: SessionEntry): Promise<void>;
 }
-
-export type { ContentBlock };
