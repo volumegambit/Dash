@@ -16,6 +16,7 @@ function NewWhatsAppWizard(): JSX.Element {
   const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
   const [pairingError, setPairingError] = useState('');
   const [linked, setLinked] = useState(false);
+  const [pairingAttempt, setPairingAttempt] = useState(0);
 
   // name-connection step
   const [connectionName, setConnectionName] = useState('My WhatsApp');
@@ -35,6 +36,7 @@ function NewWhatsAppWizard(): JSX.Element {
   const goPrev = () => setStepIndex((i) => Math.max(i - 1, 0));
 
   // Start pairing when entering scan-qr step
+  // biome-ignore lint/correctness/useExhaustiveDependencies: pairingAttempt is intentionally used as a retry trigger
   useEffect(() => {
     if (stepId !== 'scan-qr' || linked) return;
 
@@ -42,7 +44,7 @@ function NewWhatsAppWizard(): JSX.Element {
     setPairingError('');
     setQrDataUrl(null);
 
-    const unsub = window.api.whatsappOnQr((url) => setQrDataUrl(url));
+    const unsub = window.api.whatsappOnQr((_, url) => setQrDataUrl(url));
 
     window.api.whatsappStartPairing(appId)
       .then(() => {
@@ -52,7 +54,7 @@ function NewWhatsAppWizard(): JSX.Element {
       .catch((err: Error) => setPairingError(err.message));
 
     return () => unsub();
-  }, [stepId]);
+  }, [stepId, pairingAttempt]);
 
   const availableAgents = deployments
     .filter((d) => d.status === 'running')
@@ -147,8 +149,7 @@ function NewWhatsAppWizard(): JSX.Element {
                       <button
                         type="button"
                         onClick={() => {
-                          setLinked(false);
-                          setStepIndex(stepIndex); // re-trigger useEffect
+                          setPairingAttempt((prev) => prev + 1);
                         }}
                         className="mt-3 block rounded-lg bg-primary px-4 py-2 text-white hover:bg-primary-hover"
                       >

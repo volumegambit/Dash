@@ -96,10 +96,20 @@ const api: MissionControlAPI = {
   messagingAppsVerifyTelegramToken: (token: string) =>
     ipcRenderer.invoke('messagingApps:verifyTelegramToken', token),
   whatsappStartPairing: (appId: string) => ipcRenderer.invoke('whatsapp:startPairing', appId),
-  whatsappOnQr: (callback: (qrDataUrl: string) => void) => {
-    const listener = (_event: Electron.IpcRendererEvent, qrDataUrl: string) => callback(qrDataUrl);
+  whatsappOnQr: (callback: (appId: string, qrDataUrl: string) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, appId: string, qrDataUrl: string) => callback(appId, qrDataUrl);
     ipcRenderer.on('whatsapp:qr', listener);
     return () => ipcRenderer.removeListener('whatsapp:qr', listener);
+  },
+  whatsappOnLinked: (callback: (appId: string) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, appId: string) => callback(appId);
+    ipcRenderer.on('whatsapp:linked', listener);
+    return () => ipcRenderer.removeListener('whatsapp:linked', listener);
+  },
+  whatsappOnError: (callback: (appId: string, message: string) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, appId: string, message: string) => callback(appId, message);
+    ipcRenderer.on('whatsapp:error', listener);
+    return () => ipcRenderer.removeListener('whatsapp:error', listener);
   },
   messagingAppsCreateWhatsApp: (
     appId: string,

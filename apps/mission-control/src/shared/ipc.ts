@@ -101,7 +101,9 @@ export interface MissionControlAPI {
 
   // WhatsApp
   whatsappStartPairing(appId: string): Promise<void>;
-  whatsappOnQr(callback: (qrDataUrl: string) => void): () => void;
+  whatsappOnQr(callback: (appId: string, qrDataUrl: string) => void): () => void;
+  whatsappOnLinked(callback: (appId: string) => void): () => void;
+  whatsappOnError(callback: (appId: string, message: string) => void): () => void;
   messagingAppsCreateWhatsApp(
     appId: string,
     app: Omit<MessagingApp, 'id' | 'createdAt' | 'credentialsKey'>,
