@@ -74,7 +74,7 @@ describe('WhatsAppAdapter', () => {
 
     // Get the 'messages.upsert' listener registered via sock.ev.on
     const upsertCall = (mockSock.ev.on as ReturnType<typeof vi.fn>).mock.calls.find(
-      ([event]: [string]) => event === 'messages.upsert'
+      (args: unknown[]) => args[0] === 'messages.upsert'
     );
     expect(upsertCall).toBeDefined();
     const upsertHandler = upsertCall![1] as (data: unknown) => Promise<void>;
@@ -104,7 +104,7 @@ describe('WhatsAppAdapter', () => {
     await adapter.start();
 
     const upsertCall = (mockSock.ev.on as ReturnType<typeof vi.fn>).mock.calls.find(
-      ([event]: [string]) => event === 'messages.upsert'
+      (args: unknown[]) => args[0] === 'messages.upsert'
     );
     const upsertHandler = upsertCall![1] as (data: unknown) => Promise<void>;
 
@@ -135,7 +135,7 @@ describe('WhatsAppAdapter', () => {
     await adapter.start();
 
     const upsertCall = (mockSock.ev.on as ReturnType<typeof vi.fn>).mock.calls.find(
-      ([event]: [string]) => event === 'messages.upsert'
+      (args: unknown[]) => args[0] === 'messages.upsert'
     );
     const upsertHandler = upsertCall![1] as (data: unknown) => Promise<void>;
 
@@ -158,7 +158,7 @@ describe('WhatsAppAdapter', () => {
     await adapter.start();
 
     const upsertCall = (mockSock.ev.on as ReturnType<typeof vi.fn>).mock.calls.find(
-      ([event]: [string]) => event === 'messages.upsert'
+      (args: unknown[]) => args[0] === 'messages.upsert'
     );
     const upsertHandler = upsertCall![1] as (data: unknown) => Promise<void>;
 
@@ -182,7 +182,7 @@ describe('WhatsAppAdapter', () => {
     await adapter.start();
 
     const upsertCall = (mockSock.ev.on as ReturnType<typeof vi.fn>).mock.calls.find(
-      ([event]: [string]) => event === 'messages.upsert'
+      (args: unknown[]) => args[0] === 'messages.upsert'
     );
     const upsertHandler = upsertCall![1] as (data: unknown) => Promise<void>;
 
@@ -192,5 +192,15 @@ describe('WhatsAppAdapter', () => {
     });
 
     expect(handler).not.toHaveBeenCalled();
+  });
+
+  it('stop() calls sock.end when started', async () => {
+    await adapter.start();
+    await adapter.stop();
+    expect(mockSock.end).toHaveBeenCalledWith(undefined);
+  });
+
+  it('send() throws when not started', async () => {
+    await expect(adapter.send('1234@s.whatsapp.net', { text: 'hi' })).rejects.toThrow();
   });
 });
