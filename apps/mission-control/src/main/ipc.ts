@@ -14,7 +14,7 @@ import {
   defaultProcessSpawner,
 } from '@dash/mc';
 import type { MessagingApp, ProcessSpawner } from '@dash/mc';
-import type { SkillsConfig } from '@dash/management';
+import { ManagementClient, type SkillsConfig } from '@dash/management';
 import { app, dialog, ipcMain, safeStorage, shell } from 'electron';
 import type { BrowserWindow } from 'electron';
 import type { DeployWithConfigOptions } from '../shared/ipc.js';
@@ -118,6 +118,14 @@ function getRuntime(): ProcessRuntime {
 
 function getSettingsStore(): SettingsStore {
   return new SettingsStore(DATA_DIR);
+}
+
+async function getSkillsClient(deploymentId: string) {
+  const dep = await getRegistry().get(deploymentId);
+  if (!dep?.managementPort || !dep?.managementToken) {
+    throw new Error('Deployment not running or Management API not available');
+  }
+  return new ManagementClient(`http://127.0.0.1:${dep.managementPort}`, dep.managementToken);
 }
 
 function cacheKey(key: Buffer): void {
@@ -570,23 +578,15 @@ export async function registerIpcHandlers(
   );
 
   // Skills
-  async function getSkillsClient(deploymentId: string) {
-    const dep = await getRegistry().get(deploymentId);
-    if (!dep?.managementPort || !dep?.managementToken) {
-      throw new Error('Deployment not running or Management API not available');
-    }
-    const { ManagementClient } = await import('@dash/management');
-    return new ManagementClient(`http://127.0.0.1:${dep.managementPort}`, dep.managementToken);
-  }
-
   ipcMain.handle('skills:list', async (_e, deploymentId: string, agentName: string) =>
     (await getSkillsClient(deploymentId)).skills(agentName),
   );
   ipcMain.handle('skills:get', async (_e, deploymentId: string, agentName: string, skillName: string) => {
     try {
       return await (await getSkillsClient(deploymentId)).skill(agentName, skillName);
-    } catch {
-      return null;
+    } catch (err) {
+      if (err instanceof Error && err.message.includes('404')) return null;
+      throw err;
     }
   });
   ipcMain.handle('skills:updateContent', async (_e, deploymentId: string, agentName: string, skillName: string, content: string) =>
