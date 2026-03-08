@@ -144,15 +144,19 @@ function NewTelegramWizard(): JSX.Element {
 
   return (
     <div className="mx-auto max-w-2xl">
-      {/* Progress bar */}
-      <div className="mb-8 flex gap-1">
-        {STEPS.filter((s) => s !== 'done').map((s, i) => (
-          <div
-            key={s}
-            className={`h-1 flex-1 rounded-full transition-colors ${i <= stepIndex ? 'bg-primary' : 'bg-sidebar-hover'}`}
-          />
-        ))}
-      </div>
+      {/* Progress bar — only shown once a path is chosen */}
+      {path && (
+        <div className="mb-8 flex gap-1">
+          {steps
+            .filter((s) => s !== 'done')
+            .map((s, i) => (
+              <div
+                key={s}
+                className={`h-1 flex-1 rounded-full transition-colors ${i <= stepIndex ? 'bg-primary' : 'bg-sidebar-hover'}`}
+              />
+            ))}
+        </div>
+      )}
 
       <div className="min-h-[360px]">
         {stepId === 'what-is-telegram' && (
