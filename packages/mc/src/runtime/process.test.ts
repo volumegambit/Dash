@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AgentRegistry } from '../agents/registry.js';
 import type { SecretStore } from '../security/secrets.js';
 import type { MessagingApp } from '../types.js';
+import type { GatewayManagementClient } from './gateway-client.js';
 import {
   type AgentSecretsFile,
   DeploymentStartupError,
@@ -123,7 +124,7 @@ class FakeProcess extends EventEmitter implements SpawnedProcess {
   unref(): void {}
 
   simulateLog(line: string): void {
-    this.stdout.write(line + '\n');
+    this.stdout.write(`${line}\n`);
   }
 
   simulateExit(code: number): void {
@@ -281,7 +282,7 @@ describe('ProcessRuntime lifecycle', () => {
 
     const deployment = await registry.get(id);
     expect(deployment?.agentServerPid).toBe(10_000);
-    expect((deployment as any)?.gatewayPid).toBeUndefined();
+    expect((deployment as Record<string, unknown>)?.gatewayPid).toBeUndefined();
   });
 
   it('exit handler updates registry to stopped when agent server exits', async () => {
@@ -349,7 +350,7 @@ describe('ProcessRuntime lifecycle', () => {
 
     expect(status.state).toBe('running');
     expect(status.agentServerPid).toBe(10_000);
-    expect((status as any).gatewayPid).toBeUndefined();
+    expect((status as Record<string, unknown>).gatewayPid).toBeUndefined();
     expect(status.uptime).toBeGreaterThanOrEqual(0);
   });
 
@@ -652,14 +653,12 @@ describe('ProcessRuntime.ensureGatewayRunning', () => {
     const successWatcher: StartupWatcher = async () => ({ success: true });
 
     const mockGatewayClient = {
-      health: vi
-        .fn()
-        .mockResolvedValue({
-          status: 'healthy',
-          startedAt: '2026-01-01T00:00:00Z',
-          agents: 0,
-          channels: 0,
-        }),
+      health: vi.fn().mockResolvedValue({
+        status: 'healthy',
+        startedAt: '2026-01-01T00:00:00Z',
+        agents: 0,
+        channels: 0,
+      }),
       registerAgent: vi.fn().mockResolvedValue(undefined),
       registerChannel: vi.fn().mockResolvedValue(undefined),
       deregisterDeployment: vi.fn().mockResolvedValue(undefined),
@@ -681,7 +680,10 @@ describe('ProcessRuntime.ensureGatewayRunning', () => {
       spawner,
       undefined,
       successWatcher,
-      { gatewayDataDir: tmpDir, makeGatewayClient: () => mockGatewayClient as any },
+      {
+        gatewayDataDir: tmpDir,
+        makeGatewayClient: () => mockGatewayClient as GatewayManagementClient,
+      },
     );
 
     await runtime.deploy(configDir);
@@ -695,14 +697,12 @@ describe('ProcessRuntime.ensureGatewayRunning', () => {
     const successWatcher: StartupWatcher = async () => ({ success: true });
 
     const mockGatewayClient = {
-      health: vi
-        .fn()
-        .mockResolvedValue({
-          status: 'healthy',
-          startedAt: '2026-01-01T00:00:00Z',
-          agents: 0,
-          channels: 0,
-        }),
+      health: vi.fn().mockResolvedValue({
+        status: 'healthy',
+        startedAt: '2026-01-01T00:00:00Z',
+        agents: 0,
+        channels: 0,
+      }),
       registerAgent: vi.fn().mockResolvedValue(undefined),
       registerChannel: vi.fn().mockResolvedValue(undefined),
       deregisterDeployment: vi.fn().mockResolvedValue(undefined),
@@ -724,7 +724,10 @@ describe('ProcessRuntime.ensureGatewayRunning', () => {
       spawner,
       undefined,
       successWatcher,
-      { gatewayDataDir: tmpDir, makeGatewayClient: () => mockGatewayClient as any },
+      {
+        gatewayDataDir: tmpDir,
+        makeGatewayClient: () => mockGatewayClient as GatewayManagementClient,
+      },
     );
 
     const id = await runtime.deploy(configDir);

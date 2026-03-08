@@ -434,9 +434,9 @@ export class ProcessRuntime implements DeploymentRuntime {
 
     // Build providerApiKeys object for the agent config
     const providerApiKeys: Record<string, string> = {};
-    if (anthropicApiKey) providerApiKeys['anthropic'] = anthropicApiKey;
-    if (googleApiKey) providerApiKeys['google'] = googleApiKey;
-    if (openaiApiKey) providerApiKeys['openai'] = openaiApiKey;
+    if (anthropicApiKey) providerApiKeys.anthropic = anthropicApiKey;
+    if (googleApiKey) providerApiKeys.google = googleApiKey;
+    if (openaiApiKey) providerApiKeys.openai = openaiApiKey;
 
     // Write temp agent-server secrets file
     const agentSecretsFile: AgentSecretsFile = {
@@ -477,9 +477,10 @@ export class ProcessRuntime implements DeploymentRuntime {
 
       // 1. Sync any runtime FileStore updates back into EncryptedSecretStore
       // (Runtime updates from previous gateway runs are stored in authStateDir/auth.json)
+      if (!authStateDir) continue;
       try {
         const { FileSecretStore } = await import('../security/secrets.js');
-        const runtimeStore = new FileSecretStore(authStateDir!);
+        const runtimeStore = new FileSecretStore(authStateDir);
         const runtimeKeys = await runtimeStore.list();
         for (const key of runtimeKeys) {
           const val = await runtimeStore.get(key);
@@ -617,14 +618,11 @@ export class ProcessRuntime implements DeploymentRuntime {
 
     // Watch for process exit after successful startup
     agentServer.on('exit', async () => {
-      const state = this.processes.get(id);
-      if (!state) return;
-      if (state.agentServer.exitCode !== null) {
-        try {
-          await this.registry.update(id, { status: 'stopped' });
-        } catch {
-          // Registry update can fail if already removed
-        }
+      if (!this.processes.get(id)) return;
+      try {
+        await this.registry.update(id, { status: 'stopped' });
+      } catch {
+        // Registry update can fail if already removed
       }
     });
 
