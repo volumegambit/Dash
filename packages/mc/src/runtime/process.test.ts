@@ -3,6 +3,7 @@ import { existsSync, statSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { PassThrough } from 'node:stream';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AgentRegistry } from '../agents/registry.js';
 import type { SecretStore } from '../security/secrets.js';
@@ -16,6 +17,7 @@ import {
   buildGatewayConfig,
   findAvailablePort,
   validateConfigDir,
+  waitForStartup,
   writeSecretsFile,
 } from './process.js';
 
@@ -224,23 +226,38 @@ class FakeProcess extends EventEmitter implements SpawnedProcess {
   pid: number;
   exitCode: number | null = null;
   killed = false;
+  stdout: PassThrough;
+  stderr: PassThrough;
 
   constructor(pid: number) {
     super();
     this.pid = pid;
+    this.stdout = new PassThrough();
+    this.stderr = new PassThrough();
   }
 
   kill(signal?: NodeJS.Signals | number): boolean {
     if (signal !== 0) {
       this.killed = true;
       this.exitCode = 0;
+      this.stdout.end();
+      this.stderr.end();
       this.emit('exit', 0, signal ?? 'SIGTERM');
     }
     return true;
   }
 
-  unref(): void {
-    // no-op in tests
+  unref(): void {}
+
+  simulateLog(line: string): void {
+    this.stdout.write(line + '\n');
+  }
+
+  simulateExit(code: number): void {
+    this.exitCode = code;
+    this.stdout.end();
+    this.stderr.end();
+    this.emit('exit', code, null);
   }
 }
 
@@ -494,5 +511,70 @@ describe('ProcessRuntime lifecycle', () => {
 
     expect(await secrets.get(`agent-token:${id}`)).toBeNull();
     expect(await secrets.get(`chat-token:${id}`)).toBeNull();
+  });
+});
+
+describe('waitForStartup', () => {
+  it('resolves success when health check passes and Server ready line seen', async () => {
+    const proc = new FakeProcess(1234);
+    let healthCallCount = 0;
+
+    const mockHealthCheck = async (): Promise<boolean> => {
+      healthCallCount++;
+      return healthCallCount >= 2; // passes on second call
+    };
+
+    const resultPromise = waitForStartup(proc, 9100, 5000, mockHealthCheck);
+
+    // Emit the ready log line after a tick
+    await new Promise((r) => setTimeout(r, 10));
+    proc.simulateLog('Server ready');
+
+    const result = await resultPromise;
+    expect(result.success).toBe(true);
+  });
+
+  it('fails if process exits before startup', async () => {
+    const proc = new FakeProcess(1234);
+    const mockHealthCheck = async (): Promise<boolean> => false;
+
+    const resultPromise = waitForStartup(proc, 9100, 5000, mockHealthCheck);
+
+    await new Promise((r) => setTimeout(r, 10));
+    proc.simulateExit(1);
+
+    const result = await resultPromise;
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.reason).toContain('exited');
+    }
+  });
+
+  it('fails with timeout when neither health nor log line seen', async () => {
+    const proc = new FakeProcess(1234);
+    const mockHealthCheck = async (): Promise<boolean> => false;
+
+    const result = await waitForStartup(proc, 9100, 200, mockHealthCheck); // 200ms timeout
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.reason).toContain('timeout');
+    }
+  });
+
+  it('captures log lines in failure result', async () => {
+    const proc = new FakeProcess(1234);
+    const mockHealthCheck = async (): Promise<boolean> => false;
+
+    const resultPromise = waitForStartup(proc, 9100, 200, mockHealthCheck);
+
+    await new Promise((r) => setTimeout(r, 10));
+    proc.simulateLog('[12:00:00] Loading config');
+    proc.simulateLog('[12:00:00] Error: something failed');
+
+    const result = await resultPromise;
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.logs.some((l) => l.includes('Loading config'))).toBe(true);
+    }
   });
 });
