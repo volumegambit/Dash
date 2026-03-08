@@ -1,4 +1,4 @@
-import { describe, expect, it, vi, beforeEach } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { SecretStore } from '../types.js';
 import { makeBaileysAuthState } from './whatsapp-auth.js';
 
@@ -38,9 +38,14 @@ describe('makeBaileysAuthState', () => {
   it('keys.set stores each key value under namespaced key', async () => {
     const store = makeStore();
     const { state } = await makeBaileysAuthState(store, 'wa:');
-    await state.keys.set({ 'pre-key': { '1': { keyId: 1 }, '2': { keyId: 2 } } });
-    expect(store.set).toHaveBeenCalledWith('wa:key:pre-key-1', JSON.stringify({ keyId: 1 }));
-    expect(store.set).toHaveBeenCalledWith('wa:key:pre-key-2', JSON.stringify({ keyId: 2 }));
+    await state.keys.set({
+      'pre-key': {
+        '1': { public: new Uint8Array([1]), private: new Uint8Array([2]) },
+        '2': { public: new Uint8Array([3]), private: new Uint8Array([4]) },
+      },
+    });
+    expect(store.set).toHaveBeenCalledWith('wa:key:pre-key-1', JSON.stringify({ public: new Uint8Array([1]), private: new Uint8Array([2]) }));
+    expect(store.set).toHaveBeenCalledWith('wa:key:pre-key-2', JSON.stringify({ public: new Uint8Array([3]), private: new Uint8Array([4]) }));
   });
 
   it('keys.set deletes null values from store', async () => {
