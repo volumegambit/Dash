@@ -23,8 +23,12 @@ export function createManagementApp(options: ManagementServerOptions): Hono {
   const app = new Hono();
   const startTime = Date.now();
 
-  // Bearer token auth middleware
+  // Bearer token auth middleware — /health is exempt (public liveness check)
   app.use('*', async (c, next) => {
+    if (c.req.path === '/health') {
+      await next();
+      return;
+    }
     const auth = c.req.header('Authorization');
     if (!auth || auth !== `Bearer ${options.token}`) {
       return c.json({ error: 'Unauthorized' } satisfies ErrorResponse, 401);
