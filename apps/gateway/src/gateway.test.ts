@@ -50,6 +50,25 @@ describe('createGateway', () => {
 
     expect(() => createGateway(config)).toThrow('requires a "token" field');
   });
+
+  it('creates gateway with routing-rules channel without throwing', () => {
+    const config: GatewayConfig = {
+      agents: {
+        default: { url: 'ws://localhost:9101', token: 'agent-token' },
+      },
+      channels: {
+        telegram: {
+          adapter: 'telegram',
+          token: 'bot-token',
+          globalDenyList: [],
+          routing: [
+            { condition: { type: 'default' }, agentName: 'default', allowList: [], denyList: [] },
+          ],
+        },
+      },
+    };
+    expect(() => createGateway(config)).not.toThrow();
+  });
 });
 
 describe('Gateway end-to-end with MC adapter', () => {
