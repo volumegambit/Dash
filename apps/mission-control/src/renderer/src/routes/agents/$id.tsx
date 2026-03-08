@@ -1,10 +1,10 @@
 import type { RuntimeStatus } from '@dash/mc';
 import { Link, createFileRoute, useNavigate } from '@tanstack/react-router';
-import { ArrowLeft, Circle, Loader, Square, Trash2 } from 'lucide-react';
+import { ArrowLeft, Circle, Loader, MessageSquare, Square, Trash2 } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useDeploymentsStore } from '../../stores/deployments';
 
-function AgentDetail(): JSX.Element {
+export function AgentDetail(): JSX.Element {
   const { id } = Route.useParams();
   const navigate = useNavigate();
   const { deployments, logLines, loadDeployments, stop, remove, subscribeLogs, unsubscribeLogs } =
@@ -70,6 +70,8 @@ function AgentDetail(): JSX.Element {
   const agentConfig = deployment.config?.agents
     ? Object.values(deployment.config.agents)[0]
     : deployment.config?.agent;
+  const agentName =
+    deployment.config?.agents ? Object.keys(deployment.config.agents)[0] ?? '' : '';
 
   return (
     <div className="flex h-full flex-col">
@@ -90,6 +92,16 @@ function AgentDetail(): JSX.Element {
           </div>
         </div>
         <div className="flex items-center gap-2">
+          {isRunning && agentName && (
+            <button
+              type="button"
+              onClick={() => navigate({ to: '/chat', search: { deploymentId: id, agentName } })}
+              className="inline-flex items-center gap-2 rounded-lg border border-border px-3 py-2 text-sm text-muted transition-colors hover:bg-sidebar-hover hover:text-foreground"
+            >
+              <MessageSquare size={14} />
+              Chat
+            </button>
+          )}
           {isRunning && (
             <button
               type="button"
