@@ -1,11 +1,12 @@
 import { Link } from '@tanstack/react-router';
-import { Bot, KeyRound, LayoutDashboard, MessageCircle, Settings } from 'lucide-react';
+import { Bot, KeyRound, LayoutDashboard, MessageCircle, MessageSquare, Settings } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 
 const navItems: { to: string; label: string; icon: LucideIcon }[] = [
   { to: '/', label: 'Dashboard', icon: LayoutDashboard },
   { to: '/chat', label: 'Chat', icon: MessageCircle },
   { to: '/agents', label: 'Agents', icon: Bot },
+  { to: '/messaging-apps', label: 'Messaging Apps', icon: MessageSquare },
   { to: '/secrets', label: 'Secrets', icon: KeyRound },
   { to: '/settings', label: 'Settings', icon: Settings },
 ];
