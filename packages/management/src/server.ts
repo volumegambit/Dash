@@ -238,7 +238,10 @@ export function createManagementApp(options: ManagementServerOptions): Hono {
         return c.json({ error: 'Invalid request body' } satisfies ErrorResponse, 400);
       }
       if (!body.name || !body.description || typeof body.content !== 'string') {
-        return c.json({ error: 'Missing required fields: name, description, content' } satisfies ErrorResponse, 400);
+        return c.json(
+          { error: 'Missing required fields: name, description, content' } satisfies ErrorResponse,
+          400,
+        );
       }
       const safeSkillName = basename(body.name);
       if (!safeSkillName || safeSkillName === '.' || safeSkillName === '..') {
