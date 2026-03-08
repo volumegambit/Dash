@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AgentRegistry } from '../agents/registry.js';
 import type { SecretStore } from '../security/secrets.js';
+import type { MessagingApp } from '../types.js';
 import {
   type AgentSecretsFile,
   type GatewaySecretsFile,
@@ -157,6 +158,65 @@ describe('buildGatewayConfig', () => {
     const channels = config.channels as Record<string, { adapter: string }>;
     expect(channels['my-mc'].adapter).toBe('mission-control');
     expect(channels.mc).toBeUndefined();
+  });
+
+  it('injects messaging app channels with routing rules', () => {
+    const app: MessagingApp = {
+      id: 'app-1',
+      name: 'My Bot',
+      type: 'telegram',
+      credentialsKey: 'messaging-app:app-1:token',
+      enabled: true,
+      createdAt: '2026-03-08T00:00:00Z',
+      globalDenyList: ['bad-user'],
+      routing: [
+        {
+          id: 'rule-1',
+          condition: { type: 'default' },
+          targetAgentName: 'default',
+          allowList: [],
+          denyList: [],
+        },
+      ],
+    };
+
+    const result = buildGatewayConfig(['default'], 9101, 9200, undefined, [
+      { app, token: 'bot-token-123' },
+    ]);
+
+    const channels = result.channels as Record<string, unknown>;
+    const injected = channels['messaging-app-app-1'] as {
+      adapter: string;
+      token: string;
+      globalDenyList: string[];
+      routing: unknown[];
+    };
+
+    expect(injected).toBeDefined();
+    expect(injected.adapter).toBe('telegram');
+    expect(injected.token).toBe('bot-token-123');
+    expect(injected.globalDenyList).toEqual(['bad-user']);
+    expect(injected.routing).toHaveLength(1);
+  });
+
+  it('skips disabled messaging apps', () => {
+    const app: MessagingApp = {
+      id: 'app-disabled',
+      name: 'Disabled Bot',
+      type: 'telegram',
+      credentialsKey: 'messaging-app:app-disabled:token',
+      enabled: false,
+      createdAt: '2026-03-08T00:00:00Z',
+      globalDenyList: [],
+      routing: [{ id: 'r1', condition: { type: 'default' }, targetAgentName: 'default', allowList: [], denyList: [] }],
+    };
+
+    const result = buildGatewayConfig(['default'], 9101, 9200, undefined, [
+      { app, token: 'bot-token' },
+    ]);
+
+    const channels = result.channels as Record<string, unknown>;
+    expect(channels['messaging-app-app-disabled']).toBeUndefined();
   });
 });
 
