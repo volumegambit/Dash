@@ -290,6 +290,7 @@ async function main() {
       systemPrompt: agentConfig.systemPrompt,
       tools: agentConfig.tools,
       workspace,
+      skills: agentConfig.skills,
     },
     providerApiKeys,
   );
