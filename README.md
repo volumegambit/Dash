@@ -65,12 +65,6 @@ npm run dev
 docker compose up --build
 ```
 
-### Run tests
-
-```bash
-npm test
-```
-
 ## Architecture
 
 ```mermaid
@@ -90,13 +84,11 @@ graph TB
   mc -- "WebSocket" --> gateway
 ```
 
-Dash is built around a set of components that work together to keep your agent team running — on your machine, a VPS, or a private cloud:
+Dash has three main components. They can all run on a single machine or split across machines — the agent server and gateway on a VPS, Mission Control on your laptop:
 
-- **Agent server** — runs on your infrastructure (a VPS, private cloud, or local machine). Hosts agents and exposes two APIs: a Chat API (WebSocket, port 9101) for real-time interaction and a Management API (HTTP, port 9100) for health checks and shutdown. Each API uses its own auth token.
-- **Gateway** — runs alongside the agent server. Connects to external chat platforms (Telegram, etc.) and routes messages to agents via the Chat API. Mission Control's chat panel also connects through the gateway. One process, one config file for all channels.
-- **Mission Control** — desktop app or CLI, runs on your local machine. Connects to the gateway for chat (WebSocket, port 9200) and to agent servers for monitoring (HTTP, port 9100). Includes a built-in TUI for terminal-based interaction.
-
-Everything can run on a single machine for development, or split across machines for production — the agent server and gateway on a VPS, Mission Control on your laptop.
+- **Agent server** — hosts agents and exposes two APIs: a Chat API (WebSocket, port 9101) for real-time interaction and a Management API (HTTP, port 9100) for health checks and shutdown. Each API uses its own auth token. Runs on a VPS, private cloud, or local machine.
+- **Gateway** — connects to external chat platforms (Telegram, etc.) and routes messages to agents via the Chat API. Mission Control's chat panel also connects through the gateway. One process, one config file for all channels. Runs alongside the agent server.
+- **Mission Control** — desktop app or CLI for deploying, monitoring, and chatting with agents. Connects to the gateway for chat (WebSocket, port 9200) and to agent servers for monitoring (HTTP, port 9100). Includes a built-in TUI for terminal-based interaction. Runs on your local machine.
 
 ## Packages
 
