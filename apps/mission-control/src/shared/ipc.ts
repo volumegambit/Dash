@@ -1,4 +1,4 @@
-import type { AgentDeployment, McConversation, McMessage, RuntimeStatus } from '@dash/mc';
+import type { AgentDeployment, McConversation, McMessage, MessagingApp, RuntimeStatus } from '@dash/mc';
 
 // Serializable AgentEvent (error is string, not Error object, for IPC transport)
 export type McAgentEvent =
@@ -22,6 +22,11 @@ export interface DeployWithConfigOptions {
 export interface SetupStatus {
   needsSetup: boolean;
   needsApiKey: boolean;
+}
+
+export interface TelegramBotInfo {
+  username: string;
+  firstName: string;
 }
 
 export interface MissionControlAPI {
@@ -67,6 +72,14 @@ export interface MissionControlAPI {
   deploymentsGetStatus(id: string): Promise<RuntimeStatus>;
   deploymentsLogsSubscribe(id: string): Promise<void>;
   deploymentsLogsUnsubscribe(id: string): Promise<void>;
+
+  // Messaging Apps
+  messagingAppsList(): Promise<MessagingApp[]>;
+  messagingAppsGet(id: string): Promise<MessagingApp | null>;
+  messagingAppsCreate(app: Omit<MessagingApp, 'id' | 'createdAt' | 'credentialsKey'>, token: string): Promise<MessagingApp>;
+  messagingAppsUpdate(id: string, patch: Partial<MessagingApp>): Promise<void>;
+  messagingAppsDelete(id: string): Promise<void>;
+  messagingAppsVerifyTelegramToken(token: string): Promise<TelegramBotInfo>;
 
   // Events (push from main → renderer)
   onDeploymentLog(callback: (id: string, line: string) => void): () => void;

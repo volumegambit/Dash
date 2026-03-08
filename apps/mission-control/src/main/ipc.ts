@@ -1,8 +1,17 @@
+import { randomUUID } from 'node:crypto';
 import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { AgentRegistry, ConversationStore, EncryptedSecretStore, ProcessRuntime } from '@dash/mc';
+import {
+  AgentRegistry,
+  ConversationStore,
+  EncryptedSecretStore,
+  MessagingAppRegistry,
+  ProcessRuntime,
+  defaultProcessSpawner,
+} from '@dash/mc';
+import type { MessagingApp } from '@dash/mc';
 import { app, dialog, ipcMain, safeStorage, shell } from 'electron';
 import type { BrowserWindow } from 'electron';
 import type { DeployWithConfigOptions } from '../shared/ipc.js';
@@ -15,6 +24,14 @@ let chatService: ChatService | undefined;
 let secretStore: EncryptedSecretStore | undefined;
 let registry: AgentRegistry | undefined;
 let runtime: ProcessRuntime | undefined;
+let messagingAppRegistry: MessagingAppRegistry | undefined;
+
+function getMessagingAppRegistry(): MessagingAppRegistry {
+  if (!messagingAppRegistry) {
+    messagingAppRegistry = new MessagingAppRegistry(DATA_DIR);
+  }
+  return messagingAppRegistry;
+}
 
 const logSubscriptions = new Map<string, AbortController>();
 
@@ -66,7 +83,13 @@ function resolveProjectRoot(): string {
 
 function getRuntime(): ProcessRuntime {
   if (!runtime) {
-    runtime = new ProcessRuntime(getRegistry(), getSecretStore(), resolveProjectRoot());
+    runtime = new ProcessRuntime(
+      getRegistry(),
+      getSecretStore(),
+      resolveProjectRoot(),
+      defaultProcessSpawner,
+      getMessagingAppRegistry(),
+    );
   }
   return runtime;
 }
@@ -329,5 +352,78 @@ export async function registerIpcHandlers(
       sub.abort();
       logSubscriptions.delete(id);
     }
+  });
+
+  // Messaging Apps handlers
+  ipcMain.handle('messagingApps:list', async () => {
+    return getMessagingAppRegistry().list();
+  });
+
+  ipcMain.handle('messagingApps:get', async (_event, id: string) => {
+    return getMessagingAppRegistry().get(id);
+  });
+
+  ipcMain.handle('messagingApps:create', async (_event, app: Omit<MessagingApp, 'id' | 'createdAt' | 'credentialsKey'>, token: string) => {
+    const registry = getMessagingAppRegistry();
+    const secretStore = getSecretStore();
+    const id = randomUUID().slice(0, 8);
+    // Create the registry entry first with a placeholder credentialsKey
+    const created: MessagingApp = {
+      ...app,
+      id,
+      credentialsKey: '', // will be updated after we have the id
+      createdAt: new Date().toISOString(),
+    };
+    await registry.add(created);
+    const credKey = `messaging-app:${id}:token`;
+    try {
+      await secretStore.set(credKey, token);
+    } catch (err) {
+      // Rollback registry entry if secret storage fails
+      await registry.remove(id).catch(() => {});
+      throw err;
+    }
+    // Update the registry entry with the correct credentialsKey
+    await registry.update(id, { credentialsKey: credKey });
+    return { ...created, credentialsKey: credKey };
+  });
+
+  ipcMain.handle('messagingApps:update', async (_event, id: string, patch: Partial<MessagingApp>) => {
+    return getMessagingAppRegistry().update(id, patch);
+  });
+
+  ipcMain.handle('messagingApps:delete', async (_event, id: string) => {
+    const app = await getMessagingAppRegistry().get(id);
+    if (app) {
+      // Delete credential from secret store first (before removing from registry),
+      // so the registry never points to a missing credential.
+      // Note: this is not atomic — if the registry remove fails after secret deletion,
+      // the entry will remain in the registry with a missing credential.
+      //
+      // Best-effort credential cleanup: if the secret is already gone, that's fine.
+      // Note: if the store is locked, this will throw, which is the right behaviour —
+      // we should not delete the registry entry if we can't clean up credentials.
+      await getSecretStore().delete(app.credentialsKey);
+    }
+    return getMessagingAppRegistry().remove(id);
+  });
+
+  ipcMain.handle('messagingApps:verifyTelegramToken', async (_event, token: string) => {
+    const response = await fetch(`https://api.telegram.org/bot${token}/getMe`);
+    if (!response.ok) {
+      throw new Error(`Telegram API error: ${response.status} ${response.statusText}`);
+    }
+    const data = await response.json() as {
+      ok: boolean;
+      description?: string;
+      result?: { username: string; first_name: string };
+    };
+    if (!data.ok) {
+      throw new Error(data.description ?? 'Invalid token');
+    }
+    if (!data.result) {
+      throw new Error('Unexpected response from Telegram API');
+    }
+    return { username: data.result.username, firstName: data.result.first_name };
   });
 }

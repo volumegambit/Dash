@@ -4,9 +4,10 @@ import { defineConfig } from 'vitest/config';
 export default defineConfig({
   resolve: {
     alias: {
-      // Ensure tests in this worktree resolve @dash/mc from the worktree's
-      // own built dist (not the main-branch copy in the root node_modules).
+      // Ensure tests in this worktree resolve @dash/mc and @dash/channels from
+      // the worktree's own built dist (not the main-branch copy in the root node_modules).
       '@dash/mc': resolve(__dirname, 'packages/mc/dist/index.js'),
+      '@dash/channels': resolve(__dirname, 'packages/channels/dist/index.js'),
     },
   },
   test: {

@@ -1,6 +1,6 @@
 import type { AgentClient } from '@dash/agent';
 import { MessageRouter, MissionControlAdapter, TelegramAdapter } from '@dash/channels';
-import type { ChannelAdapter } from '@dash/channels';
+import type { ChannelAdapter, RouterConfig } from '@dash/channels';
 import { RemoteAgentClient } from '@dash/chat';
 import type { GatewayConfig } from './config.js';
 
@@ -13,7 +13,8 @@ function createNonMcAdapter(
       if (!config.token) {
         throw new Error(`Channel "${name}" (telegram) requires a "token" field.`);
       }
-      return new TelegramAdapter(config.token, config.allowedUsers ?? []);
+      // In routing-rules mode, allowedUsers is not used (filtering is in MessageRouter)
+      return new TelegramAdapter(config.token, config.routing ? [] : (config.allowedUsers ?? []));
     }
     default:
       throw new Error(`Unknown adapter type "${config.adapter}" for channel "${name}".`);
@@ -33,17 +34,31 @@ export function createGateway(config: GatewayConfig) {
   for (const [name, channelConfig] of Object.entries(config.channels)) {
     if (channelConfig.adapter === 'mission-control') {
       const port = channelConfig.port ?? 9200;
-      const token = channelConfig.token;
-      mcAdapters.push(new MissionControlAdapter(port, agents, token));
+      mcAdapters.push(new MissionControlAdapter(port, agents, channelConfig.token));
       console.log(`Channel "${name}" (mission-control) on port ${port}`);
     } else {
       const adapter = createNonMcAdapter(name, channelConfig);
-      const agentName = channelConfig.agent;
-      if (!agentName) {
-        throw new Error(`Channel "${name}" requires an "agent" field.`);
+
+      if (channelConfig.routing) {
+        // Advanced routing-rules mode
+        const routerConfig: RouterConfig = {
+          globalDenyList: channelConfig.globalDenyList ?? [],
+          rules: channelConfig.routing.map((r) => ({
+            condition: r.condition,
+            agentName: r.agentName,
+            allowList: r.allowList,
+            denyList: r.denyList,
+          })),
+        };
+        router.addAdapter(adapter, routerConfig);
+        console.log(`Channel "${name}" (${channelConfig.adapter}) → routing rules (${routerConfig.rules.length} rules)`);
+      } else {
+        // Simple mode
+        const agentName = channelConfig.agent;
+        if (!agentName) throw new Error(`Channel "${name}" requires an "agent" field.`);
+        router.addAdapter(adapter, agentName);
+        console.log(`Channel "${name}" (${channelConfig.adapter}) → agent "${agentName}"`);
       }
-      router.addAdapter(adapter, agentName);
-      console.log(`Channel "${name}" (${channelConfig.adapter}) → agent "${agentName}"`);
     }
   }
 

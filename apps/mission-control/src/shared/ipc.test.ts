@@ -83,4 +83,16 @@ describe('MissionControlAPI contract', () => {
     ];
     expect(methodNames).toHaveLength(9);
   });
+
+  it('MissionControlAPI exposes all messaging apps methods', () => {
+    const methodNames: (keyof MissionControlAPI)[] = [
+      'messagingAppsList',
+      'messagingAppsGet',
+      'messagingAppsCreate',
+      'messagingAppsUpdate',
+      'messagingAppsDelete',
+      'messagingAppsVerifyTelegramToken',
+    ];
+    expect(methodNames).toHaveLength(6);
+  });
 });
