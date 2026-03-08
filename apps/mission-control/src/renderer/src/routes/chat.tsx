@@ -162,7 +162,8 @@ function MessageBubble({
 
 // --- Main Chat component ---
 
-function Chat(): JSX.Element {
+export function Chat(): JSX.Element {
+  const search = Route.useSearch();
   const { deployments, loadDeployments } = useDeploymentsStore();
   const {
     conversations,
@@ -179,8 +180,8 @@ function Chat(): JSX.Element {
   } = useChatStore();
 
   const runningDeployments = deployments.filter((d) => d.status === 'running');
-  const [selectedDeploymentId, setSelectedDeploymentId] = useState('');
-  const [selectedAgentName, setSelectedAgentName] = useState('');
+  const [selectedDeploymentId, setSelectedDeploymentId] = useState(search.deploymentId || '');
+  const [selectedAgentName, setSelectedAgentName] = useState(search.agentName || '');
   const [input, setInput] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -414,5 +415,9 @@ function Chat(): JSX.Element {
 }
 
 export const Route = createFileRoute('/chat')({
+  validateSearch: (search: Record<string, unknown>) => ({
+    deploymentId: typeof search.deploymentId === 'string' ? search.deploymentId : '',
+    agentName: typeof search.agentName === 'string' ? search.agentName : '',
+  }),
   component: Chat,
 });
