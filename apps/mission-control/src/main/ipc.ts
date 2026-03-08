@@ -381,7 +381,15 @@ export async function registerIpcHandlers(
   ipcMain.handle('messagingApps:delete', async (_event, id: string) => {
     const app = await getMessagingAppRegistry().get(id);
     if (app) {
-      await getSecretStore().delete(app.credentialsKey).catch(() => {});
+      // Delete credential from secret store first (before removing from registry),
+      // so the registry never points to a missing credential.
+      // Note: this is not atomic — if the registry remove fails after secret deletion,
+      // the entry will remain in the registry with a missing credential.
+      //
+      // Best-effort credential cleanup: if the secret is already gone, that's fine.
+      // Note: if the store is locked, this will throw, which is the right behaviour —
+      // we should not delete the registry entry if we can't clean up credentials.
+      await getSecretStore().delete(app.credentialsKey);
     }
     return getMessagingAppRegistry().remove(id);
   });
