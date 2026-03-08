@@ -79,7 +79,9 @@ export function validateConfigDir(configDir: string): void {
 }
 
 export interface AgentSecretsFile {
-  anthropicApiKey: string;
+  anthropicApiKey?: string;
+  googleApiKey?: string;
+  openaiApiKey?: string;
   managementToken: string;
   chatToken: string;
 }
@@ -223,6 +225,7 @@ export class ProcessRuntime implements DeploymentRuntime {
     interface AgentCfg {
       name: string;
       model: string;
+      fallbackModels?: string[];
       systemPrompt: string;
       tools?: string[];
       workspace?: string;
@@ -239,6 +242,7 @@ export class ProcessRuntime implements DeploymentRuntime {
         agentConfigs[name] = {
           name,
           model: cfg.model ?? '',
+          fallbackModels: cfg.fallbackModels,
           systemPrompt: cfg.systemPrompt ?? '',
           tools: cfg.tools,
           workspace: cfg.workspace,
@@ -257,6 +261,7 @@ export class ProcessRuntime implements DeploymentRuntime {
             agentConfigs[name] = {
               name,
               model: cfg.model ?? '',
+              fallbackModels: cfg.fallbackModels,
               systemPrompt: cfg.systemPrompt ?? '',
               tools: cfg.tools,
               workspace: cfg.workspace,
@@ -303,17 +308,22 @@ export class ProcessRuntime implements DeploymentRuntime {
     await this.secrets.set(`agent-token:${id}`, managementToken);
     await this.secrets.set(`chat-token:${id}`, chatToken);
 
-    // Read Anthropic API key from secret store
-    const anthropicApiKey = await this.secrets.get('anthropic-api-key');
-    if (!anthropicApiKey) {
+    // Read provider API keys from secret store
+    const anthropicApiKey = (await this.secrets.get('anthropic-api-key')) ?? undefined;
+    const googleApiKey = (await this.secrets.get('google-api-key')) ?? undefined;
+    const openaiApiKey = (await this.secrets.get('openai-api-key')) ?? undefined;
+
+    if (!anthropicApiKey && !googleApiKey && !openaiApiKey) {
       throw new Error(
-        'Missing anthropic-api-key in secret store. Run `mc deploy` to be prompted, or set it manually.',
+        'No provider API key configured. Add at least one API key in Mission Control Settings.',
       );
     }
 
     // Write temp agent-server secrets file
     const agentSecretsFile: AgentSecretsFile = {
       anthropicApiKey,
+      googleApiKey,
+      openaiApiKey,
       managementToken,
       chatToken,
     };
