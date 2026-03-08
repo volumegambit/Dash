@@ -126,7 +126,12 @@ describe('loadConfig', () => {
           adapter: 'telegram',
           token: 'bot-token',
           routing: [
-            { condition: { type: 'default' }, agentName: 'nonexistent', allowList: [], denyList: [] },
+            {
+              condition: { type: 'default' },
+              agentName: 'nonexistent',
+              allowList: [],
+              denyList: [],
+            },
           ],
         },
       },
@@ -134,7 +139,9 @@ describe('loadConfig', () => {
     });
     const configPath = join(tmpDir, 'routing-bad.json');
     await writeFile(configPath, config);
-    await expect(loadConfig({ configPath })).rejects.toThrow('routing rule references unknown agent "nonexistent"');
+    await expect(loadConfig({ configPath })).rejects.toThrow(
+      'routing rule references unknown agent "nonexistent"',
+    );
   });
 
   it('accepts whatsapp adapter with authStateDir', async () => {

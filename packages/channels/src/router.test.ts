@@ -1,7 +1,7 @@
-import { describe, expect, it, vi } from 'vitest';
 import type { AgentClient } from '@dash/agent';
-import type { ChannelAdapter, InboundMessage, RouterConfig } from './types.js';
+import { describe, expect, it, vi } from 'vitest';
 import { MessageRouter } from './router.js';
+import type { ChannelAdapter, InboundMessage, RouterConfig } from './types.js';
 
 function makeAgent(): AgentClient {
   return {
@@ -11,14 +11,18 @@ function makeAgent(): AgentClient {
   } as unknown as AgentClient;
 }
 
-function makeAdapter(): ChannelAdapter & { trigger: (msg: Partial<InboundMessage>) => Promise<void> } {
+function makeAdapter(): ChannelAdapter & {
+  trigger: (msg: Partial<InboundMessage>) => Promise<void>;
+} {
   let handler: ((msg: InboundMessage) => Promise<void>) | null = null;
   return {
     name: 'test',
     start: vi.fn(),
     stop: vi.fn(),
     send: vi.fn(),
-    onMessage: (h) => { handler = h; },
+    onMessage: (h) => {
+      handler = h;
+    },
     async trigger(msg: Partial<InboundMessage>) {
       await handler!({
         channelId: 'test',
@@ -42,7 +46,9 @@ describe('MessageRouter - routing rules', () => {
 
     const config: RouterConfig = {
       globalDenyList: [],
-      rules: [{ condition: { type: 'default' }, agentName: 'default', allowList: [], denyList: [] }],
+      rules: [
+        { condition: { type: 'default' }, agentName: 'default', allowList: [], denyList: [] },
+      ],
     };
     router.addAdapter(adapter, config);
 
@@ -53,14 +59,22 @@ describe('MessageRouter - routing rules', () => {
   it('routes sender-matched rule before default', async () => {
     const vipAgent = makeAgent();
     const defaultAgent = makeAgent();
-    const agents = new Map([['vip', vipAgent], ['default', defaultAgent]]);
+    const agents = new Map([
+      ['vip', vipAgent],
+      ['default', defaultAgent],
+    ]);
     const router = new MessageRouter(agents);
     const adapter = makeAdapter();
 
     const config: RouterConfig = {
       globalDenyList: [],
       rules: [
-        { condition: { type: 'sender', ids: ['vip-user'] }, agentName: 'vip', allowList: [], denyList: [] },
+        {
+          condition: { type: 'sender', ids: ['vip-user'] },
+          agentName: 'vip',
+          allowList: [],
+          denyList: [],
+        },
         { condition: { type: 'default' }, agentName: 'default', allowList: [], denyList: [] },
       ],
     };
@@ -79,7 +93,9 @@ describe('MessageRouter - routing rules', () => {
 
     const config: RouterConfig = {
       globalDenyList: ['blocked-user'],
-      rules: [{ condition: { type: 'default' }, agentName: 'default', allowList: [], denyList: [] }],
+      rules: [
+        { condition: { type: 'default' }, agentName: 'default', allowList: [], denyList: [] },
+      ],
     };
     router.addAdapter(adapter, config);
 
@@ -95,7 +111,14 @@ describe('MessageRouter - routing rules', () => {
 
     const config: RouterConfig = {
       globalDenyList: [],
-      rules: [{ condition: { type: 'default' }, agentName: 'default', allowList: [], denyList: ['blocked-user'] }],
+      rules: [
+        {
+          condition: { type: 'default' },
+          agentName: 'default',
+          allowList: [],
+          denyList: ['blocked-user'],
+        },
+      ],
     };
     router.addAdapter(adapter, config);
 
@@ -111,7 +134,14 @@ describe('MessageRouter - routing rules', () => {
 
     const config: RouterConfig = {
       globalDenyList: [],
-      rules: [{ condition: { type: 'default' }, agentName: 'default', allowList: ['allowed-user'], denyList: [] }],
+      rules: [
+        {
+          condition: { type: 'default' },
+          agentName: 'default',
+          allowList: ['allowed-user'],
+          denyList: [],
+        },
+      ],
     };
     router.addAdapter(adapter, config);
 
@@ -125,14 +155,22 @@ describe('MessageRouter - routing rules', () => {
   it('routes group message via group condition', async () => {
     const groupAgent = makeAgent();
     const defaultAgent = makeAgent();
-    const agents = new Map([['group', groupAgent], ['default', defaultAgent]]);
+    const agents = new Map([
+      ['group', groupAgent],
+      ['default', defaultAgent],
+    ]);
     const router = new MessageRouter(agents);
     const adapter = makeAdapter();
 
     const config: RouterConfig = {
       globalDenyList: [],
       rules: [
-        { condition: { type: 'group', ids: ['-100123456'] }, agentName: 'group', allowList: [], denyList: [] },
+        {
+          condition: { type: 'group', ids: ['-100123456'] },
+          agentName: 'group',
+          allowList: [],
+          denyList: [],
+        },
         { condition: { type: 'default' }, agentName: 'default', allowList: [], denyList: [] },
       ],
     };
@@ -151,7 +189,14 @@ describe('MessageRouter - routing rules', () => {
 
     const config: RouterConfig = {
       globalDenyList: [],
-      rules: [{ condition: { type: 'sender', ids: ['vip-only'] }, agentName: 'vip', allowList: [], denyList: [] }],
+      rules: [
+        {
+          condition: { type: 'sender', ids: ['vip-only'] },
+          agentName: 'vip',
+          allowList: [],
+          denyList: [],
+        },
+      ],
     };
     router.addAdapter(adapter, config);
 

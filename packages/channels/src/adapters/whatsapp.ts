@@ -1,9 +1,9 @@
-import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
+import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import makeWASocket, { DisconnectReason } from '@whiskeysockets/baileys';
 import type { ConnectionState, WASocket } from '@whiskeysockets/baileys';
-import qrcodeTerminal from 'qrcode-terminal';
+import qrcode from 'qrcode';
 import type { ChannelAdapter, MessageHandler, OutboundMessage, SecretStore } from '../types.js';
 import { makeBaileysAuthState } from './whatsapp-auth.js';
 
@@ -81,12 +81,15 @@ export class WhatsAppAdapter implements ChannelAdapter {
       const { connection, lastDisconnect, qr } = update;
 
       if (qr) {
-        qrcodeTerminal.generate(qr, { small: true });
+        qrcode.toString(qr, { type: 'terminal', small: true }, (err, str) => {
+          if (!err) process.stdout.write(str + '\n');
+        });
       }
 
       if (connection === 'close') {
-        const statusCode = (lastDisconnect?.error as { output?: { statusCode?: number } } | undefined)
-          ?.output?.statusCode;
+        const statusCode = (
+          lastDisconnect?.error as { output?: { statusCode?: number } } | undefined
+        )?.output?.statusCode;
         if (statusCode !== DisconnectReason.loggedOut) {
           if (this.stopped) return;
           this.start().catch((err) => console.error('[WhatsApp] Reconnect failed:', err));
@@ -97,61 +100,59 @@ export class WhatsAppAdapter implements ChannelAdapter {
     });
 
     // Handle incoming messages
-    sock.ev.on('messages.upsert', async ({ messages, type }: { messages: unknown[]; type: string }) => {
-      if (type !== 'notify') return;
+    sock.ev.on(
+      'messages.upsert',
+      async ({ messages, type }: { messages: unknown[]; type: string }) => {
+        if (type !== 'notify') return;
 
-      for (const raw of messages) {
-        const msg = raw as {
-          key: { remoteJid?: string; fromMe?: boolean; participant?: string };
-          message?: {
-            conversation?: string;
-            extendedTextMessage?: { text?: string };
-            [key: string]: unknown;
+        for (const raw of messages) {
+          const msg = raw as {
+            key: { remoteJid?: string; fromMe?: boolean; participant?: string };
+            message?: {
+              conversation?: string;
+              extendedTextMessage?: { text?: string };
+              [key: string]: unknown;
+            };
+            pushName?: string;
+            messageTimestamp?: number | bigint;
           };
-          pushName?: string;
-          messageTimestamp?: number | bigint;
-        };
 
-        const { key } = msg;
-        if (key.fromMe) continue;
+          const { key } = msg;
+          if (key.fromMe) continue;
 
-        const remoteJid = key.remoteJid;
-        if (!remoteJid) continue;
+          const remoteJid = key.remoteJid;
+          if (!remoteJid) continue;
 
-        // senderId: participant for groups, remoteJid for DMs
-        const senderId = key.participant ?? remoteJid;
+          // senderId: participant for groups, remoteJid for DMs
+          const senderId = key.participant ?? remoteJid;
 
-        // Extract text
-        const text =
-          msg.message?.conversation ??
-          msg.message?.extendedTextMessage?.text ??
-          null;
+          // Extract text
+          const text = msg.message?.conversation ?? msg.message?.extendedTextMessage?.text ?? null;
 
-        if (text === null) {
-          console.warn(`[WhatsApp] Skipping non-text message from ${senderId}`);
-          continue;
+          if (text === null) {
+            console.warn(`[WhatsApp] Skipping non-text message from ${senderId}`);
+            continue;
+          }
+
+          const ts = msg.messageTimestamp;
+          const timestamp = new Date(typeof ts === 'bigint' ? Number(ts) * 1000 : (ts ?? 0) * 1000);
+
+          const inbound = {
+            channelId: 'whatsapp',
+            conversationId: remoteJid,
+            senderId,
+            senderName: msg.pushName ?? senderId,
+            text,
+            timestamp,
+            raw: msg,
+          };
+
+          for (const handler of this.handlers) {
+            await handler(inbound);
+          }
         }
-
-        const ts = msg.messageTimestamp;
-        const timestamp = new Date(
-          typeof ts === 'bigint' ? Number(ts) * 1000 : (ts ?? 0) * 1000,
-        );
-
-        const inbound = {
-          channelId: 'whatsapp',
-          conversationId: remoteJid,
-          senderId,
-          senderName: msg.pushName ?? senderId,
-          text,
-          timestamp,
-          raw: msg,
-        };
-
-        for (const handler of this.handlers) {
-          await handler(inbound);
-        }
-      }
-    });
+      },
+    );
   }
 
   async stop(): Promise<void> {

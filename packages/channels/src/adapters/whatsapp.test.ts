@@ -1,6 +1,6 @@
-import { describe, expect, it, vi, beforeEach } from 'vitest';
-import { WhatsAppAdapter } from './whatsapp.js';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { MessageHandler } from '../types.js';
+import { WhatsAppAdapter } from './whatsapp.js';
 
 // Mock Baileys at module level
 const mockSock = {
@@ -13,7 +13,8 @@ const mockSock = {
 };
 
 vi.mock('@whiskeysockets/baileys', async () => {
-  const actual = await vi.importActual<typeof import('@whiskeysockets/baileys')>('@whiskeysockets/baileys');
+  const actual =
+    await vi.importActual<typeof import('@whiskeysockets/baileys')>('@whiskeysockets/baileys');
   return {
     ...actual,
     default: vi.fn(() => mockSock),
@@ -61,10 +62,9 @@ describe('WhatsAppAdapter', () => {
   it('sends a text message via sock.sendMessage', async () => {
     await adapter.start();
     await adapter.send('1234567890@s.whatsapp.net', { text: 'Hello!' });
-    expect(mockSock.sendMessage).toHaveBeenCalledWith(
-      '1234567890@s.whatsapp.net',
-      { text: 'Hello!' },
-    );
+    expect(mockSock.sendMessage).toHaveBeenCalledWith('1234567890@s.whatsapp.net', {
+      text: 'Hello!',
+    });
   });
 
   it('calls onMessage handlers for incoming DM text', async () => {
@@ -74,28 +74,32 @@ describe('WhatsAppAdapter', () => {
 
     // Get the 'messages.upsert' listener registered via sock.ev.on
     const upsertCall = (mockSock.ev.on as ReturnType<typeof vi.fn>).mock.calls.find(
-      (args: unknown[]) => args[0] === 'messages.upsert'
+      (args: unknown[]) => args[0] === 'messages.upsert',
     );
     expect(upsertCall).toBeDefined();
     const upsertHandler = upsertCall![1] as (data: unknown) => Promise<void>;
 
     await upsertHandler({
-      messages: [{
-        key: { remoteJid: '1234@s.whatsapp.net', fromMe: false },
-        message: { conversation: 'Hello from DM' },
-        pushName: 'Alice',
-        messageTimestamp: 1700000000,
-      }],
+      messages: [
+        {
+          key: { remoteJid: '1234@s.whatsapp.net', fromMe: false },
+          message: { conversation: 'Hello from DM' },
+          pushName: 'Alice',
+          messageTimestamp: 1700000000,
+        },
+      ],
       type: 'notify',
     });
 
-    expect(handler).toHaveBeenCalledWith(expect.objectContaining({
-      channelId: 'whatsapp',
-      conversationId: '1234@s.whatsapp.net',
-      senderId: '1234@s.whatsapp.net',
-      senderName: 'Alice',
-      text: 'Hello from DM',
-    }));
+    expect(handler).toHaveBeenCalledWith(
+      expect.objectContaining({
+        channelId: 'whatsapp',
+        conversationId: '1234@s.whatsapp.net',
+        senderId: '1234@s.whatsapp.net',
+        senderName: 'Alice',
+        text: 'Hello from DM',
+      }),
+    );
   });
 
   it('uses participant as senderId for group messages', async () => {
@@ -104,29 +108,33 @@ describe('WhatsAppAdapter', () => {
     await adapter.start();
 
     const upsertCall = (mockSock.ev.on as ReturnType<typeof vi.fn>).mock.calls.find(
-      (args: unknown[]) => args[0] === 'messages.upsert'
+      (args: unknown[]) => args[0] === 'messages.upsert',
     );
     const upsertHandler = upsertCall![1] as (data: unknown) => Promise<void>;
 
     await upsertHandler({
-      messages: [{
-        key: {
-          remoteJid: 'group123@g.us',
-          fromMe: false,
-          participant: '5678@s.whatsapp.net',
+      messages: [
+        {
+          key: {
+            remoteJid: 'group123@g.us',
+            fromMe: false,
+            participant: '5678@s.whatsapp.net',
+          },
+          message: { conversation: 'Hello group' },
+          pushName: 'Bob',
+          messageTimestamp: 1700000000,
         },
-        message: { conversation: 'Hello group' },
-        pushName: 'Bob',
-        messageTimestamp: 1700000000,
-      }],
+      ],
       type: 'notify',
     });
 
-    expect(handler).toHaveBeenCalledWith(expect.objectContaining({
-      conversationId: 'group123@g.us',
-      senderId: '5678@s.whatsapp.net',
-      text: 'Hello group',
-    }));
+    expect(handler).toHaveBeenCalledWith(
+      expect.objectContaining({
+        conversationId: 'group123@g.us',
+        senderId: '5678@s.whatsapp.net',
+        text: 'Hello group',
+      }),
+    );
   });
 
   it('skips messages from self (fromMe: true)', async () => {
@@ -135,16 +143,18 @@ describe('WhatsAppAdapter', () => {
     await adapter.start();
 
     const upsertCall = (mockSock.ev.on as ReturnType<typeof vi.fn>).mock.calls.find(
-      (args: unknown[]) => args[0] === 'messages.upsert'
+      (args: unknown[]) => args[0] === 'messages.upsert',
     );
     const upsertHandler = upsertCall![1] as (data: unknown) => Promise<void>;
 
     await upsertHandler({
-      messages: [{
-        key: { remoteJid: '1234@s.whatsapp.net', fromMe: true },
-        message: { conversation: 'My own message' },
-        messageTimestamp: 1700000000,
-      }],
+      messages: [
+        {
+          key: { remoteJid: '1234@s.whatsapp.net', fromMe: true },
+          message: { conversation: 'My own message' },
+          messageTimestamp: 1700000000,
+        },
+      ],
       type: 'notify',
     });
 
@@ -158,16 +168,18 @@ describe('WhatsAppAdapter', () => {
     await adapter.start();
 
     const upsertCall = (mockSock.ev.on as ReturnType<typeof vi.fn>).mock.calls.find(
-      (args: unknown[]) => args[0] === 'messages.upsert'
+      (args: unknown[]) => args[0] === 'messages.upsert',
     );
     const upsertHandler = upsertCall![1] as (data: unknown) => Promise<void>;
 
     await upsertHandler({
-      messages: [{
-        key: { remoteJid: '1234@s.whatsapp.net', fromMe: false },
-        message: { imageMessage: { url: 'https://example.com/img.jpg' } },
-        messageTimestamp: 1700000000,
-      }],
+      messages: [
+        {
+          key: { remoteJid: '1234@s.whatsapp.net', fromMe: false },
+          message: { imageMessage: { url: 'https://example.com/img.jpg' } },
+          messageTimestamp: 1700000000,
+        },
+      ],
       type: 'notify',
     });
 
@@ -182,12 +194,18 @@ describe('WhatsAppAdapter', () => {
     await adapter.start();
 
     const upsertCall = (mockSock.ev.on as ReturnType<typeof vi.fn>).mock.calls.find(
-      (args: unknown[]) => args[0] === 'messages.upsert'
+      (args: unknown[]) => args[0] === 'messages.upsert',
     );
     const upsertHandler = upsertCall![1] as (data: unknown) => Promise<void>;
 
     await upsertHandler({
-      messages: [{ key: { remoteJid: '1234@s.whatsapp.net', fromMe: false }, message: { conversation: 'hi' }, messageTimestamp: 0 }],
+      messages: [
+        {
+          key: { remoteJid: '1234@s.whatsapp.net', fromMe: false },
+          message: { conversation: 'hi' },
+          messageTimestamp: 0,
+        },
+      ],
       type: 'append', // not 'notify'
     });
 

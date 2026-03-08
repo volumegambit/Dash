@@ -515,8 +515,9 @@ export async function registerIpcHandlers(
         }
 
         if (connection === 'close') {
-          const statusCode = (lastDisconnect?.error as { output?: { statusCode?: number } } | undefined)
-            ?.output?.statusCode;
+          const statusCode = (
+            lastDisconnect?.error as { output?: { statusCode?: number } } | undefined
+          )?.output?.statusCode;
           if (statusCode === DisconnectReason.loggedOut) {
             const errorMessage = 'WhatsApp session rejected. Try again.';
             const win = getWindow();
@@ -530,7 +531,11 @@ export async function registerIpcHandlers(
 
   ipcMain.handle(
     'messagingApps:createWhatsApp',
-    async (_event, appId: string, app: Omit<MessagingApp, 'id' | 'createdAt' | 'credentialsKey'>) => {
+    async (
+      _event,
+      appId: string,
+      app: Omit<MessagingApp, 'id' | 'createdAt' | 'credentialsKey'>,
+    ) => {
       const registry = getMessagingAppRegistry();
       const credentialsKey = `whatsapp-auth:${appId}`;
       const created: MessagingApp = {
