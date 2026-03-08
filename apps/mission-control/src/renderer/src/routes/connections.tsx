@@ -1,8 +1,8 @@
 import { createFileRoute } from '@tanstack/react-router';
 import { CheckCircle, Circle } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { ProviderConnectModal } from '../components/ProviderConnectModal.js';
-import { PROVIDER_CONFIG, PROVIDERS, type Provider } from '../components/providers.js';
+import { PROVIDERS, PROVIDER_CONFIG, type Provider } from '../components/providers.js';
 
 function maskKey(key: string): string {
   if (key.length <= 8) return '••••••••';
@@ -18,7 +18,7 @@ export function AiProviders(): JSX.Element {
   const [modal, setModal] = useState<Provider | null>(null);
   const [disconnectConfirm, setDisconnectConfirm] = useState<Provider | null>(null);
 
-  const loadKeys = async (): Promise<void> => {
+  const loadKeys = useCallback(async (): Promise<void> => {
     const results = await Promise.all(
       PROVIDERS.map(async (p) => {
         const value = await window.api.secretsGet(PROVIDER_CONFIG[p.id].secretKey);
@@ -26,11 +26,11 @@ export function AiProviders(): JSX.Element {
       }),
     );
     setKeys(Object.fromEntries(results) as Record<Provider, string | null>);
-  };
+  }, []);
 
   useEffect(() => {
     loadKeys();
-  }, []);
+  }, [loadKeys]);
 
   const handleSaved = (): void => {
     setModal(null);
@@ -68,7 +68,7 @@ export function AiProviders(): JSX.Element {
                 <div>
                   <p className="text-sm font-semibold">{p.name}</p>
                   <p className="text-xs text-muted">
-                    {isConnected ? maskKey(key!) : p.description}
+                    {isConnected && key !== null ? maskKey(key) : p.description}
                   </p>
                 </div>
               </div>
@@ -127,7 +127,11 @@ export function AiProviders(): JSX.Element {
       </div>
 
       {modal && (
-        <ProviderConnectModal provider={modal} onClose={() => setModal(null)} onSaved={handleSaved} />
+        <ProviderConnectModal
+          provider={modal}
+          onClose={() => setModal(null)}
+          onSaved={handleSaved}
+        />
       )}
     </div>
   );

@@ -45,12 +45,19 @@ export function ProviderConnectModal({
 
   return (
     <div
+      role="presentation"
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
       onClick={onClose}
+      onKeyDown={(e) => {
+        if (e.key === 'Escape') onClose();
+      }}
     >
-      <div
+      <dialog
+        open
+        aria-modal="true"
         className="w-full max-w-md rounded-xl bg-background p-6 shadow-xl"
         onClick={(e) => e.stopPropagation()}
+        onKeyDown={(e) => e.stopPropagation()}
       >
         <div className="mb-4 flex items-start justify-between">
           <div className="flex items-center gap-2">
@@ -133,7 +140,6 @@ export function ProviderConnectModal({
             value={apiKey}
             onChange={(e) => setApiKey(e.target.value)}
             placeholder={config.placeholder}
-            autoFocus
             className="w-full rounded-lg border border-border bg-sidebar-bg px-4 py-2 text-sm font-mono text-foreground placeholder:text-muted focus:border-primary focus:outline-none"
           />
           {error && <p className="text-sm text-red-400">{error}</p>}
@@ -154,7 +160,7 @@ export function ProviderConnectModal({
             </button>
           </div>
         </form>
-      </div>
+      </dialog>
     </div>
   );
 }
