@@ -24,6 +24,7 @@ function validateMessage(msg: unknown): msg is WsClientMessage {
 }
 
 export function createChatApp(options: ChatServerOptions) {
+  const { logger } = options;
   const app = new Hono();
   const { injectWebSocket, upgradeWebSocket } = createNodeWebSocket({ app });
 
@@ -106,25 +107,35 @@ export function createChatApp(options: ChatServerOptions) {
               try {
                 for await (const agentEvent of stream) {
                   if (controller.signal.aborted) break;
+                  if (agentEvent.type === 'error') {
+                    logger?.error(`[ChatServer] ${agentEvent.error.message}`);
+                    (agentEvent as { timestamp?: string }).timestamp = new Date().toISOString();
+                  }
                   const serverMsg: WsServerMessage = {
                     type: 'event',
                     id: msg.id,
                     event: agentEvent,
                   };
-                  ws.send(JSON.stringify(serverMsg));
+                  ws.send(
+                    JSON.stringify(serverMsg, (_key, value) =>
+                      value instanceof Error ? value.message : value,
+                    ),
+                  );
                 }
                 if (!controller.signal.aborted) {
                   const done: WsServerMessage = { type: 'done', id: msg.id };
                   ws.send(JSON.stringify(done));
                 }
               } catch (err) {
+                const errMsg = err instanceof Error ? err.message : String(err);
+                logger?.error(`[ChatServer] Unhandled error: ${errMsg}`);
                 if (!controller.signal.aborted) {
-                  const errMsg: WsServerMessage = {
+                  const errResponse: WsServerMessage = {
                     type: 'error',
                     id: msg.id,
-                    error: err instanceof Error ? err.message : String(err),
+                    error: errMsg,
                   };
-                  ws.send(JSON.stringify(errMsg));
+                  ws.send(JSON.stringify(errResponse));
                 }
               } finally {
                 activeStreams.delete(msg.id);
