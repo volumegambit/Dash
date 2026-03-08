@@ -59,7 +59,9 @@ export class ManagementClient {
     return this.request<ShutdownResponse>('POST', '/lifecycle/shutdown');
   }
 
-  async logs(opts?: { tail?: number; since?: string; level?: 'info' | 'warn' | 'error' }): Promise<string[]> {
+  async logs(opts?: { tail?: number; since?: string; level?: 'info' | 'warn' | 'error' }): Promise<
+    string[]
+  > {
     const params = new URLSearchParams();
     if (opts?.tail !== undefined) params.set('tail', String(opts.tail));
     if (opts?.since) params.set('since', opts.since);
@@ -124,7 +126,10 @@ export class ManagementClient {
     );
   }
 
-  async *streamLogs(signal?: AbortSignal, opts?: { level?: 'info' | 'warn' | 'error' }): AsyncGenerator<string> {
+  async *streamLogs(
+    signal?: AbortSignal,
+    opts?: { level?: 'info' | 'warn' | 'error' },
+  ): AsyncGenerator<string> {
     const params = new URLSearchParams();
     if (opts?.level) params.set('level', opts.level);
     const query = params.toString();

@@ -14,6 +14,7 @@ vi.mock('@tanstack/react-router', () => ({
     component: opts.component,
     useSearch: mockUseSearch,
   }),
+  useNavigate: () => vi.fn(),
 }));
 
 const { Chat } = await import('./chat.js');
