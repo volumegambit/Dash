@@ -13,7 +13,7 @@
     "mc:dev": "npm run dev --workspace=apps/mission-control",
     "mc:build": "npm run build --workspace=apps/mission-control",
     "test": "vitest run",
-    "lint": "biome check .",
+    "lint": "biome check . && npm run typecheck --workspace=apps/mission-control",
     "lint:fix": "biome check --write .",
     "clean": "rm -rf packages/*/dist apps/*/dist apps/*/out",
     "version:sync": "V=$(node -p \"require('./package.json').version\") && for f in packages/*/package.json apps/*/package.json; do node -e \"const fs=require('fs');const p=JSON.parse(fs.readFileSync('$f'));p.version='$V';fs.writeFileSync('$f',JSON.stringify(p,null,2)+'\\n')\"; done"
