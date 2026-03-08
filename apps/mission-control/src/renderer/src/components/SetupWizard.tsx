@@ -228,14 +228,6 @@ function ProviderStep({
               <p className="mt-1 text-xs text-muted">{p.description}</p>
             </button>
           ))}
-
-          <div className="rounded-lg border-2 border-dashed border-border px-4 py-4 opacity-50">
-            <span className="text-sm font-semibold text-muted">More providers coming soon</span>
-            <p className="mt-1 text-xs text-muted">
-              Support for OpenAI, Google Gemini, and others is on the way. You'll be able to
-              configure multiple providers and choose which one each agent uses.
-            </p>
-          </div>
         </div>
 
         <button
