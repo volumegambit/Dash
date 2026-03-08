@@ -26,6 +26,10 @@ export interface DashAgentConfig {
   systemPrompt: string;
   tools?: string[]; // OpenCode tool names
   workspace?: string;
+  skills?: {
+    paths?: string[]; // Local dirs to scan (supports ~/ and relative paths)
+    urls?: string[];  // Remote skill registries to fetch from
+  };
 }
 
 export interface AgentState {
