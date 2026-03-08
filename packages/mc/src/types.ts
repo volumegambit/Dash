@@ -16,6 +16,9 @@ export interface AgentDeployment {
   chatPort?: number;
   chatToken?: string;
   workspace?: string;
+  // Startup diagnostics
+  startupLogs?: string[];   // captured stdout/stderr from a failed startup
+  errorMessage?: string;    // human-readable failure reason
   // Cloud-specific
   dropletId?: number;
   dropletIp?: string;
