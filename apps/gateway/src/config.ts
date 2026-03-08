@@ -45,6 +45,8 @@ interface SecretsFile {
 export interface LoadConfigOptions {
   configPath?: string;
   secretsPath?: string;
+  managementPort?: number;
+  token?: string;
 }
 
 export function parseFlags(argv: string[]): LoadConfigOptions {
@@ -56,6 +58,12 @@ export function parseFlags(argv: string[]): LoadConfigOptions {
       i++;
     } else if (argv[i] === '--secrets' && argv[i + 1]) {
       options.secretsPath = argv[i + 1];
+      i++;
+    } else if (argv[i] === '--management-port' && argv[i + 1]) {
+      options.managementPort = Number(argv[i + 1]);
+      i++;
+    } else if (argv[i] === '--token' && argv[i + 1]) {
+      options.token = argv[i + 1];
       i++;
     }
   }
