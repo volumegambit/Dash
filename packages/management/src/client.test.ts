@@ -70,9 +70,9 @@ describe('ManagementClient', () => {
     expect(res.status).toBe('healthy');
   });
 
-  it('throws on wrong auth token', async () => {
+  it('throws on wrong auth token for protected endpoints', async () => {
     const badClient = new ManagementClient(`http://localhost:${port}`, 'wrong-token');
-    await expect(badClient.health()).rejects.toThrow('Management API error 401');
+    await expect(badClient.info()).rejects.toThrow('Management API error 401');
   });
 
   it('throws on non-200 responses', async () => {

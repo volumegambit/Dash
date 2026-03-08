@@ -52,8 +52,9 @@ describe('Management Server', () => {
     return { Authorization: `Bearer ${TEST_TOKEN}` };
   }
 
-  it('GET /health returns 200 with correct shape', async () => {
-    const res = await fetch(url('/health'), { headers: authHeaders() });
+  it('GET /health returns 200 with correct shape (no auth required)', async () => {
+    // Health endpoint is public — no token needed
+    const res = await fetch(url('/health'));
     expect(res.status).toBe(200);
 
     const body = await res.json();
@@ -82,16 +83,16 @@ describe('Management Server', () => {
     expect(onShutdown).toHaveBeenCalledOnce();
   });
 
-  it('returns 401 with missing auth token', async () => {
-    const res = await fetch(url('/health'));
+  it('returns 401 on protected endpoints with missing auth token', async () => {
+    const res = await fetch(url('/info'));
     expect(res.status).toBe(401);
 
     const body = await res.json();
     expect(body.error).toBe('Unauthorized');
   });
 
-  it('returns 401 with wrong auth token', async () => {
-    const res = await fetch(url('/health'), {
+  it('returns 401 on protected endpoints with wrong auth token', async () => {
+    const res = await fetch(url('/info'), {
       headers: { Authorization: 'Bearer wrong-token' },
     });
     expect(res.status).toBe(401);
