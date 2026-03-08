@@ -24,3 +24,5 @@ export { ConversationStore } from './conversations.js';
 export type { McConversation, McMessage } from './conversations.js';
 export type { MessagingApp, RoutingRule, RoutingCondition } from './types.js';
 export { MessagingAppRegistry } from './messaging-apps/registry.js';
+export { SettingsStore } from './settings-store.js';
+export type { AppSettings } from './settings-store.js';
