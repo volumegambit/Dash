@@ -1,8 +1,8 @@
 import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import makeWASocket, { DisconnectReason } from '@whiskeysockets/baileys';
-import type { WASocket } from '@whiskeysockets/baileys';
+import type { ConnectionState, WASocket } from '@whiskeysockets/baileys';
 import qrcodeTerminal from 'qrcode-terminal';
 import type { ChannelAdapter, MessageHandler, OutboundMessage, SecretStore } from '../types.js';
 import { makeBaileysAuthState } from './whatsapp-auth.js';
@@ -18,7 +18,7 @@ class InlineFileStore implements SecretStore {
     return JSON.parse(raw) as Record<string, string>;
   }
   private async save(data: Record<string, string>): Promise<void> {
-    await mkdir(this.filePath.replace(/\/[^/]+$/, ''), { recursive: true });
+    await mkdir(dirname(this.filePath), { recursive: true });
     await writeFile(this.filePath, JSON.stringify(data, null, 2), { mode: 0o600 });
     await chmod(this.filePath, 0o600);
   }
@@ -75,19 +75,16 @@ export class WhatsAppAdapter implements ChannelAdapter {
     sock.ev.on('creds.update', saveCreds);
 
     // Handle connection state changes
-    sock.ev.on('connection.update', (update) => {
-      const { connection, lastDisconnect, qr } = update as {
-        connection?: string;
-        lastDisconnect?: { error?: { output?: { statusCode?: number } } };
-        qr?: string;
-      };
+    sock.ev.on('connection.update', (update: Partial<ConnectionState>) => {
+      const { connection, lastDisconnect, qr } = update;
 
       if (qr) {
         qrcodeTerminal.generate(qr, { small: true });
       }
 
       if (connection === 'close') {
-        const statusCode = lastDisconnect?.error?.output?.statusCode;
+        const statusCode = (lastDisconnect?.error as { output?: { statusCode?: number } } | undefined)
+          ?.output?.statusCode;
         if (statusCode !== DisconnectReason.loggedOut) {
           this.start().catch((err) => console.error('[WhatsApp] Reconnect failed:', err));
         } else {
@@ -141,7 +138,7 @@ export class WhatsAppAdapter implements ChannelAdapter {
           channelId: 'whatsapp',
           conversationId: remoteJid,
           senderId,
-          senderName: msg.pushName ?? '',
+          senderName: msg.pushName ?? senderId,
           text,
           timestamp,
           raw: msg,
