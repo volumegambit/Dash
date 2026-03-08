@@ -1,7 +1,9 @@
 import { createFileRoute, useNavigate } from '@tanstack/react-router';
 import { ArrowLeft, ArrowRight, Check, Loader, Rocket } from 'lucide-react';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { AVAILABLE_MODELS, AVAILABLE_TOOLS } from '../components/deploy-options.js';
+import { ModelChainEditor } from '../components/ModelChainEditor.js';
+import { useAvailableModels } from '../hooks/useAvailableModels.js';
 import { useDeploymentsStore } from '../stores/deployments';
 
 type Step = 'agent' | 'channels' | 'review';
@@ -9,6 +11,7 @@ type Step = 'agent' | 'channels' | 'review';
 interface AgentConfig {
   name: string;
   model: string;
+  fallbackModels: string[];
   systemPrompt: string;
   tools: string[];
   workspace: string; // '' means auto-generate
@@ -21,17 +24,31 @@ interface ChannelConfig {
 export function DeployWizard(): JSX.Element {
   const navigate = useNavigate();
   const { deployWithConfig } = useDeploymentsStore();
+  const availableModels = useAvailableModels();
   const [step, setStep] = useState<Step>('agent');
   const [deploying, setDeploying] = useState(false);
   const [deployError, setDeployError] = useState<string | null>(null);
 
   const [agent, setAgent] = useState<AgentConfig>({
     name: '',
-    model: AVAILABLE_MODELS[0].value,
+    model: AVAILABLE_MODELS[0].value,  // use static list for initial value
+    fallbackModels: [],
     systemPrompt: '',
     tools: [],
     workspace: '',
   });
+
+  useEffect(() => {
+    window.api.settingsGet().then((settings) => {
+      if (settings.defaultModel) {
+        setAgent((prev) => ({
+          ...prev,
+          model: settings.defaultModel!,
+          fallbackModels: settings.defaultFallbackModels ?? [],
+        }));
+      }
+    }).catch(() => {});
+  }, []);
 
   const [channels, setChannels] = useState<ChannelConfig>({
     enableTelegram: false,
@@ -47,6 +64,7 @@ export function DeployWizard(): JSX.Element {
       const id = await deployWithConfig({
         name: agent.name.trim(),
         model: agent.model,
+        fallbackModels: agent.fallbackModels.length > 0 ? agent.fallbackModels : undefined,
         systemPrompt: agent.systemPrompt,
         tools: agent.tools,
         enableTelegram: channels.enableTelegram,
@@ -97,20 +115,17 @@ export function DeployWizard(): JSX.Element {
             />
           </label>
 
-          <label className="block">
+          <div>
             <span className="mb-1 block text-sm font-medium">Model</span>
-            <select
-              value={agent.model}
-              onChange={(e) => setAgent((prev) => ({ ...prev, model: e.target.value }))}
-              className="w-full rounded-lg border border-border bg-sidebar-bg px-4 py-2 text-sm text-foreground focus:border-primary focus:outline-none"
-            >
-              {AVAILABLE_MODELS.map((m) => (
-                <option key={m.value} value={m.value}>
-                  {m.label}
-                </option>
-              ))}
-            </select>
-          </label>
+            <ModelChainEditor
+              model={agent.model}
+              fallbackModels={agent.fallbackModels}
+              availableModels={availableModels}
+              onChange={(model, fallbackModels) =>
+                setAgent((prev) => ({ ...prev, model, fallbackModels }))
+              }
+            />
+          </div>
 
           <label className="block">
             <span className="mb-1 block text-sm font-medium">System Prompt</span>
@@ -267,7 +282,9 @@ export function DeployWizard(): JSX.Element {
             <ReviewRow label="Name" value={agent.name} />
             <ReviewRow
               label="Model"
-              value={AVAILABLE_MODELS.find((m) => m.value === agent.model)?.label ?? agent.model}
+              value={[agent.model, ...agent.fallbackModels]
+                .map((v) => AVAILABLE_MODELS.find((m) => m.value === v)?.label ?? v)
+                .join(' → ')}
             />
             <ReviewRow label="System Prompt" value={agent.systemPrompt || '(default)'} multiline />
             <ReviewRow

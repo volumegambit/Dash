@@ -37,7 +37,7 @@ function createMockApi(): Record<keyof MissionControlAPI, ReturnType<typeof vi.f
     secretsSetup: vi.fn().mockResolvedValue(undefined),
     secretsUnlock: vi.fn().mockResolvedValue(undefined),
     secretsLock: vi.fn().mockResolvedValue(undefined),
-    secretsList: vi.fn().mockResolvedValue([]),
+    secretsList: vi.fn().mockResolvedValue(['anthropic-api-key', 'openai-api-key', 'google-api-key']),
     secretsGet: vi.fn().mockResolvedValue(null),
     secretsSet: vi.fn().mockResolvedValue(undefined),
     secretsDelete: vi.fn().mockResolvedValue(undefined),
@@ -52,6 +52,11 @@ function createMockApi(): Record<keyof MissionControlAPI, ReturnType<typeof vi.f
     deploymentsGetStatus: vi.fn().mockResolvedValue('stopped'),
     deploymentsLogsSubscribe: vi.fn().mockResolvedValue(undefined),
     deploymentsLogsUnsubscribe: vi.fn().mockResolvedValue(undefined),
+    deploymentsUpdateConfig: vi.fn().mockResolvedValue(undefined),
+
+    // Settings
+    settingsGet: vi.fn().mockResolvedValue({}),
+    settingsSet: vi.fn().mockResolvedValue(undefined),
 
     // Events
     onDeploymentLog: vi.fn().mockReturnValue(() => {}),
