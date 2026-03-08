@@ -28,18 +28,34 @@ export const useMessagingAppsStore = create<MessagingAppsState>((set, get) => ({
   },
 
   async createApp(app) {
-    const newApp = await window.api.messagingAppsCreate(app);
-    await get().loadApps();
-    return newApp;
+    set({ error: null });
+    try {
+      const newApp = await window.api.messagingAppsCreate(app);
+      await get().loadApps();
+      return newApp;
+    } catch (err) {
+      set({ error: (err as Error).message });
+      throw err;
+    }
   },
 
   async updateApp(id, patch) {
-    await window.api.messagingAppsUpdate(id, patch);
-    await get().loadApps();
+    set({ error: null });
+    try {
+      await window.api.messagingAppsUpdate(id, patch);
+      await get().loadApps();
+    } catch (err) {
+      set({ error: (err as Error).message });
+    }
   },
 
   async deleteApp(id) {
-    await window.api.messagingAppsDelete(id);
-    await get().loadApps();
+    set({ error: null });
+    try {
+      await window.api.messagingAppsDelete(id);
+      await get().loadApps();
+    } catch (err) {
+      set({ error: (err as Error).message });
+    }
   },
 }));
