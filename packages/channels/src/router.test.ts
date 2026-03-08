@@ -1,5 +1,5 @@
 import type { AgentClient } from '@dash/agent';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MessageRouter } from './router.js';
 import type { ChannelAdapter, InboundMessage, RouterConfig } from './types.js';
 
@@ -24,7 +24,7 @@ function makeAdapter(): ChannelAdapter & {
       handler = h;
     },
     async trigger(msg: Partial<InboundMessage>) {
-      await handler!({
+      await handler?.({
         channelId: 'test',
         conversationId: 'conv-1',
         senderId: 'user-1',
@@ -213,5 +213,67 @@ describe('MessageRouter - routing rules', () => {
     router.addAdapter(adapter, 'default'); // old API
     await adapter.trigger({ senderId: 'user-1' });
     expect(agent.chat).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('MessageRouter — missing agent at runtime', () => {
+  let warnSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    warnSpy.mockRestore();
+  });
+
+  it('logs a warning when the matched rule agent is no longer in the agents map', async () => {
+    const agents = new Map<string, AgentClient>([['my-agent', makeAgent()]]);
+    const router = new MessageRouter(agents);
+    const adapter = makeAdapter();
+
+    router.addAdapter(adapter, {
+      globalDenyList: [],
+      rules: [
+        { condition: { type: 'default' }, agentName: 'my-agent', allowList: [], denyList: [] },
+      ],
+    });
+
+    // Simulate agent disappearing after setup
+    agents.delete('my-agent');
+
+    await adapter.trigger({
+      channelId: 'ch1',
+      conversationId: 'conv1',
+      senderId: 'user1',
+      text: 'hello',
+    });
+
+    expect(warnSpy).toHaveBeenCalledOnce();
+    expect(warnSpy.mock.calls[0][0]).toContain('my-agent');
+    expect(warnSpy.mock.calls[0][0]).toContain('user1');
+    expect(warnSpy.mock.calls[0][0]).toContain('conv1');
+  });
+
+  it('does not warn when the agent is found', async () => {
+    const agents = new Map<string, AgentClient>([['my-agent', makeAgent()]]);
+    const router = new MessageRouter(agents);
+    const adapter = makeAdapter();
+
+    router.addAdapter(adapter, {
+      globalDenyList: [],
+      rules: [
+        { condition: { type: 'default' }, agentName: 'my-agent', allowList: [], denyList: [] },
+      ],
+    });
+
+    await adapter.trigger({
+      channelId: 'ch1',
+      conversationId: 'conv1',
+      senderId: 'user1',
+      text: 'hello',
+    });
+
+    expect(warnSpy).not.toHaveBeenCalled();
   });
 });
