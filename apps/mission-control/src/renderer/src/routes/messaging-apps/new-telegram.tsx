@@ -47,16 +47,16 @@ function NewTelegramWizard(): JSX.Element {
   const [stepIndex, setStepIndex] = useState(0);
   const [path, setPath] = useState<PathId | null>(null);
 
-  // Step 7: token input
+  // Token verification state
   const [token, setToken] = useState('');
   const [verifying, setVerifying] = useState(false);
   const [verifyError, setVerifyError] = useState('');
   const [botInfo, setBotInfo] = useState<{ username: string; firstName: string } | null>(null);
 
-  // Step 8: name
+  // Connection name
   const [connectionName, setConnectionName] = useState('');
 
-  // Step 9: agent selection
+  // Agent selection
   const { deployments, loadDeployments } = useDeploymentsStore();
   const [selectedAgent, setSelectedAgent] = useState<{ deploymentId: string; agentName: string } | null>(null);
 
