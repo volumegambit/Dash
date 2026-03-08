@@ -1,11 +1,10 @@
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { LlmProvider } from '@dash/llm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DashAgent } from './agent.js';
 import { JsonlSessionStore } from './session.js';
-import type { AgentEvent, AgentState, RunOptions } from './types.js';
+import type { AgentEvent, AgentState, LlmProvider, RunOptions } from './types.js';
 
 // Helper to collect all events from an AsyncGenerator
 async function collect(gen: AsyncGenerator<AgentEvent>): Promise<AgentEvent[]> {

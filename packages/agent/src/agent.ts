@@ -1,7 +1,13 @@
-import type { Message } from '@dash/llm';
 import { compactSession, shouldCompact } from './compaction.js';
 import { buildMemoryPreamble } from './memory.js';
-import type { AgentBackend, AgentEvent, AgentState, DashAgentConfig, RunOptions } from './types.js';
+import type {
+  AgentBackend,
+  AgentEvent,
+  AgentState,
+  DashAgentConfig,
+  Message,
+  RunOptions,
+} from './types.js';
 
 export class DashAgent {
   constructor(

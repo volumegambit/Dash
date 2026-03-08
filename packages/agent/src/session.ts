@@ -1,8 +1,7 @@
 import { existsSync } from 'node:fs';
 import { appendFile, mkdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import type { ContentBlock } from '@dash/llm';
-import type { Session, SessionEntry, SessionStore } from './types.js';
+import type { ContentBlock, Session, SessionEntry, SessionStore } from './types.js';
 
 export class JsonlSessionStore implements SessionStore {
   constructor(private baseDir: string) {}
