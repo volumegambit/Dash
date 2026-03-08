@@ -79,9 +79,7 @@ export function validateConfigDir(configDir: string): void {
 }
 
 export interface AgentSecretsFile {
-  anthropicApiKey?: string;
-  googleApiKey?: string;
-  openaiApiKey?: string;
+  providerApiKeys?: Record<string, string>;
   managementToken: string;
   chatToken: string;
 }
@@ -319,11 +317,15 @@ export class ProcessRuntime implements DeploymentRuntime {
       );
     }
 
+    // Build providerApiKeys object for the agent config
+    const providerApiKeys: Record<string, string> = {};
+    if (anthropicApiKey) providerApiKeys['anthropic'] = anthropicApiKey;
+    if (googleApiKey) providerApiKeys['google'] = googleApiKey;
+    if (openaiApiKey) providerApiKeys['openai'] = openaiApiKey;
+
     // Write temp agent-server secrets file
     const agentSecretsFile: AgentSecretsFile = {
-      anthropicApiKey,
-      googleApiKey,
-      openaiApiKey,
+      providerApiKeys,
       managementToken,
       chatToken,
     };
