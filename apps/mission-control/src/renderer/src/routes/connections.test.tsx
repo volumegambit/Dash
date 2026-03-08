@@ -18,7 +18,9 @@ describe('AiProviders page', () => {
       expect(screen.getByText('Claude by Anthropic')).toBeInTheDocument();
     });
     // Connected provider shows masked key, not description
-    expect(screen.queryByText('A powerful AI assistant known for being helpful, harmless, and honest.')).not.toBeInTheDocument();
+    expect(
+      screen.queryByText('A powerful AI assistant known for being helpful, harmless, and honest.'),
+    ).not.toBeInTheDocument();
   });
 
   it('shows Connect button for providers without a key', async () => {
