@@ -1,6 +1,8 @@
 import { join } from 'node:path';
 import { BrowserWindow, app } from 'electron';
+import { autoUpdater } from 'electron-updater';
 import { registerIpcHandlers } from './ipc';
+import { setupAutoUpdater } from './updater.js';
 
 let mainWindow: BrowserWindow | undefined;
 
@@ -31,6 +33,10 @@ function createWindow(): void {
 }
 
 app.whenReady().then(async () => {
+  await setupAutoUpdater(autoUpdater, app.isPackaged);
+  autoUpdater.on('update-available', (info: { version: string }) => {
+    mainWindow?.webContents.send('update:available', { version: info.version });
+  });
   await registerIpcHandlers(() => mainWindow);
   createWindow();
 
