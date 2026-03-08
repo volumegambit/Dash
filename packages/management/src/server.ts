@@ -93,6 +93,11 @@ export function createManagementApp(options: ManagementServerOptions): Hono {
       });
     }
 
+    const level = c.req.query('level');
+    if (level === 'error' || level === 'warn' || level === 'info') {
+      lines = lines.filter((line) => line.includes(`[${level}]`));
+    }
+
     const tail = c.req.query('tail');
     const parsed = tail !== undefined && tail !== '' ? Number.parseInt(tail, 10) : 100;
     const tailNum = Number.isNaN(parsed) ? 100 : parsed;
@@ -109,6 +114,11 @@ export function createManagementApp(options: ManagementServerOptions): Hono {
     }
 
     const logFilePath = options.logFilePath;
+    const levelFilter = c.req.query('level');
+    const matchesLevel = (line: string): boolean => {
+      if (levelFilter !== 'error' && levelFilter !== 'warn' && levelFilter !== 'info') return true;
+      return line.includes(`[${levelFilter}]`);
+    };
 
     const stream = new ReadableStream({
       async start(controller) {
@@ -122,7 +132,7 @@ export function createManagementApp(options: ManagementServerOptions): Hono {
         if (existsSync(logFilePath)) {
           const content = await readFile(logFilePath, 'utf-8');
           for (const line of content.split('\n').filter(Boolean)) {
-            enqueue(line);
+            if (matchesLevel(line)) enqueue(line);
           }
         }
 
@@ -144,10 +154,12 @@ export function createManagementApp(options: ManagementServerOptions): Hono {
                 await fh.close();
                 offset = fileStat.size;
                 for (const line of buf.toString('utf-8').split('\n').filter(Boolean)) {
-                  try {
-                    enqueue(line);
-                  } catch {
-                    // Stream may have been closed
+                  if (matchesLevel(line)) {
+                    try {
+                      enqueue(line);
+                    } catch {
+                      // Stream may have been closed
+                    }
                   }
                 }
               }
