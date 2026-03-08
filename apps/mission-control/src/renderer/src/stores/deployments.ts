@@ -14,7 +14,7 @@ interface DeploymentsState {
   deploy(configDir: string): Promise<string>;
   deployWithConfig(options: DeployWithConfigOptions): Promise<string>;
   stop(id: string): Promise<void>;
-  remove(id: string): Promise<void>;
+  remove(id: string, deleteWorkspace?: boolean): Promise<void>;
   getStatus(id: string): Promise<RuntimeStatus>;
   subscribeLogs(id: string): void;
   unsubscribeLogs(id: string): void;
@@ -71,9 +71,9 @@ export const useDeploymentsStore = create<DeploymentsState>((set, get) => ({
     }
   },
 
-  async remove(id: string) {
+  async remove(id: string, deleteWorkspace?: boolean) {
     try {
-      await window.api.deploymentsRemove(id);
+      await window.api.deploymentsRemove(id, deleteWorkspace);
       await get().loadDeployments();
     } catch (err) {
       set({ error: (err as Error).message });
