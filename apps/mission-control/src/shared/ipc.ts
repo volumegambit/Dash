@@ -13,6 +13,7 @@ export type McAgentEvent =
 export interface DeployWithConfigOptions {
   name: string;
   model: string;
+  fallbackModels?: string[];
   systemPrompt: string;
   tools: string[];
   enableTelegram: boolean;
@@ -27,6 +28,11 @@ export interface SetupStatus {
 export interface TelegramBotInfo {
   username: string;
   firstName: string;
+}
+
+export interface AppSettings {
+  defaultModel?: string;
+  defaultFallbackModels?: string[];
 }
 
 export interface MissionControlAPI {
@@ -70,6 +76,7 @@ export interface MissionControlAPI {
   deploymentsStop(id: string): Promise<void>;
   deploymentsRemove(id: string, deleteWorkspace?: boolean): Promise<void>;
   deploymentsGetStatus(id: string): Promise<RuntimeStatus>;
+  deploymentsUpdateConfig(id: string, patch: { model?: string; fallbackModels?: string[] }): Promise<void>;
   deploymentsLogsSubscribe(id: string): Promise<void>;
   deploymentsLogsUnsubscribe(id: string): Promise<void>;
 
@@ -84,4 +91,8 @@ export interface MissionControlAPI {
   // Events (push from main → renderer)
   onDeploymentLog(callback: (id: string, line: string) => void): () => void;
   onDeploymentStatusChange(callback: (id: string, status: string) => void): () => void;
+
+  // Settings
+  settingsGet(): Promise<AppSettings>;
+  settingsSet(patch: Partial<AppSettings>): Promise<void>;
 }
