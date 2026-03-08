@@ -1,14 +1,68 @@
-appId: com.dash.mission-control
-productName: Mission Control
+appId: com.dashteams.mission-control
+productName: Dash
+copyright: Copyright © 2026 DashTeams
+
 directories:
   buildResources: build
   output: release
+
 files:
   - out/**/*
+
+extraResources:
+  - from: ../../apps/dash/dist
+    to: apps/dash/dist
+    filter:
+      - "**/*"
+  - from: ../../apps/gateway/dist
+    to: apps/gateway/dist
+    filter:
+      - "**/*"
+  - from: ../../packages/agent/dist
+    to: packages/agent/dist
+    filter:
+      - "**/*"
+  - from: ../../packages/channels/dist
+    to: packages/channels/dist
+    filter:
+      - "**/*"
+  - from: ../../packages/chat/dist
+    to: packages/chat/dist
+    filter:
+      - "**/*"
+  - from: ../../packages/management/dist
+    to: packages/management/dist
+    filter:
+      - "**/*"
+  - from: ../../packages/mc/dist
+    to: packages/mc/dist
+    filter:
+      - "**/*"
+  - from: ../../node_modules
+    to: node_modules
+    filter:
+      - "**/*"
+
 mac:
-  target: dmg
+  target:
+    - target: dmg
+    - target: zip
   category: public.app-category.developer-tools
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  entitlementsInherit: build/entitlements.mac.plist
+  entitlements: build/entitlements.mac.plist
+
+dmg:
+  sign: false
+
 win:
   target: nsis
+
 linux:
   target: AppImage
+
+publish:
+  provider: github
+  owner: volumegambit
+  repo: Dash

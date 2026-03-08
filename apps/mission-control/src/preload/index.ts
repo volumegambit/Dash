@@ -122,6 +122,13 @@ const api: MissionControlAPI = {
   // Settings
   settingsGet: () => ipcRenderer.invoke('settings:get'),
   settingsSet: (patch) => ipcRenderer.invoke('settings:set', patch),
+
+  // Updates
+  onUpdateAvailable: (callback: (info: { version: string }) => void): (() => void) => {
+    const handler = (_: Electron.IpcRendererEvent, info: { version: string }) => callback(info);
+    ipcRenderer.on('update:available', handler);
+    return () => ipcRenderer.removeListener('update:available', handler);
+  },
 };
 
 contextBridge.exposeInMainWorld('api', api);
