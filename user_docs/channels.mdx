@@ -3,11 +3,11 @@ title: "Channels"
 description: "Interact with agents through the terminal UI, the gateway, or the WebSocket Chat API."
 ---
 
-Dash provides several ways to interact with agents: the TUI for local terminal use, the gateway for channel routing (Telegram, Mission Control chat), and the Chat API for direct programmatic access over WebSocket.
+Channels are how you reach your agent team. Whether you're typing in a terminal, messaging on Telegram, or integrating programmatically — your agents are always listening.
 
 ## TUI (terminal)
 
-The TUI is a terminal-based REPL that connects directly to an agent.
+A built-in terminal interface. Talk to any agent directly from your machine — no setup beyond running Dash.
 
 ### Running
 
@@ -29,7 +29,7 @@ Each TUI session creates a conversation ID in the format `cli:<timestamp>`. Sess
 
 ## Gateway
 
-The gateway is a separate process that owns all channel connections and routes messages to agents via the Chat API. Mission Control's chat panel connects through the gateway — MC chat is just another channel.
+Route messages from external platforms to your agents. Configure once and your agents become reachable from Telegram, or any channel you add.
 
 ### Running
 
@@ -95,7 +95,7 @@ The secrets file can override agent tokens and channel tokens:
 
 ## Chat API (WebSocket)
 
-The agent server exposes a WebSocket endpoint for real-time agent interaction. The gateway uses this API to route channel messages to agents, but you can also connect directly. Enable it by setting `CHAT_API_TOKEN` in your environment or via the `--secrets` flag.
+A WebSocket API for programmatic access to your agents. Integrate Dash into your own apps or automated workflows.
 
 ### Connecting
 
