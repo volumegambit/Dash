@@ -28,6 +28,7 @@ export function DeployWizard(): JSX.Element {
   const [step, setStep] = useState<Step>('agent');
   const [deploying, setDeploying] = useState(false);
   const [deployError, setDeployError] = useState<string | null>(null);
+  const [deployStartupLogs, setDeployStartupLogs] = useState<string[]>([]);
 
   const [agent, setAgent] = useState<AgentConfig>({
     name: '',
@@ -60,6 +61,7 @@ export function DeployWizard(): JSX.Element {
   const handleDeploy = async (): Promise<void> => {
     setDeploying(true);
     setDeployError(null);
+    setDeployStartupLogs([]);
     try {
       const id = await deployWithConfig({
         name: agent.name.trim(),
@@ -71,8 +73,10 @@ export function DeployWizard(): JSX.Element {
         workspace: agent.workspace || undefined,
       });
       navigate({ to: '/agents/$id', params: { id } });
-    } catch (err) {
-      setDeployError((err as Error).message);
+    } catch (err: unknown) {
+      const e = err as Error & { startupLogs?: string[] };
+      setDeployError(e.message);
+      setDeployStartupLogs(e.startupLogs ?? []);
       setDeploying(false);
     }
   };
@@ -299,8 +303,22 @@ export function DeployWizard(): JSX.Element {
           </div>
 
           {deployError && (
-            <div className="rounded-lg bg-red-900/30 px-4 py-3 text-sm text-red-400">
-              {deployError}
+            <div className="space-y-2">
+              <div className="rounded-lg bg-red-900/30 px-4 py-3 text-sm text-red-400">
+                {deployError}
+              </div>
+              {deployStartupLogs.length > 0 && (
+                <details className="rounded-lg border border-red-900/30">
+                  <summary className="cursor-pointer px-4 py-2 text-xs text-red-400/70 hover:text-red-400">
+                    Startup logs ({deployStartupLogs.length} lines)
+                  </summary>
+                  <div className="max-h-48 overflow-auto rounded-b-lg bg-[#0d0d0d] p-3 font-mono text-xs leading-5">
+                    {deployStartupLogs.map((line, i) => (
+                      <div key={i} className="text-red-300/70">{line}</div>
+                    ))}
+                  </div>
+                </details>
+              )}
             </div>
           )}
 
