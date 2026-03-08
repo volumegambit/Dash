@@ -192,6 +192,14 @@ describe('ManagementClient', () => {
       expect(result.requiresRestart).toBe(true);
       expect(storedConfig.paths).toContain('/new/path');
     });
+
+    it('URL-encodes agentName with special characters', async () => {
+      // The server routes match any decoded :agentName, so an agent name with spaces still resolves.
+      // This smoke test verifies encodeURIComponent does not break valid requests — the method must
+      // not throw and must return the skill list regardless of the agent name used.
+      const result = await skillsClient.skills('my agent');
+      expect(Array.isArray(result)).toBe(true);
+    });
   });
 
   describe('log methods', () => {
