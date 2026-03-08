@@ -16,7 +16,6 @@ export interface DeployWithConfigOptions {
   fallbackModels?: string[];
   systemPrompt: string;
   tools: string[];
-  enableTelegram: boolean;
   workspace?: string;
 }
 

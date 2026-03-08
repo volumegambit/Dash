@@ -83,6 +83,7 @@ describe('DeployWizard', () => {
       fallbackModels: undefined,
       systemPrompt: '',
       tools: [],
+      workspace: undefined,
     });
   });
 });

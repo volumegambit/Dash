@@ -298,11 +298,7 @@ function StepIndicator({ current }: { current: Step }): JSX.Element {
           <div className="flex items-center gap-2">
             <div
               className={`flex h-6 w-6 items-center justify-center rounded-full text-xs ${
-                i < currentIndex
-                  ? 'bg-primary text-white'
-                  : i === currentIndex
-                    ? 'bg-primary text-white'
-                    : 'bg-border text-muted'
+                i <= currentIndex ? 'bg-primary text-white' : 'bg-border text-muted'
               }`}
             >
               {i < currentIndex ? <Check size={12} /> : i + 1}
