@@ -16,7 +16,9 @@ export function registerProvidersListCommand(providers: Command): void {
         console.log(`  ${'─'.repeat(nameWidth)}  ─────────────`);
         for (const meta of PROVIDER_METAS) {
           const connected = keys.includes(meta.secretKey);
-          console.log(`  ${meta.name.padEnd(nameWidth)}  ${connected ? 'connected' : 'not connected'}`);
+          console.log(
+            `  ${meta.name.padEnd(nameWidth)}  ${connected ? 'connected' : 'not connected'}`,
+          );
         }
         console.log();
       } catch (err) {
