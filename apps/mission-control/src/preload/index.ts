@@ -83,6 +83,17 @@ const api: MissionControlAPI = {
     ipcRenderer.on('deployment:statusChange', listener);
     return () => ipcRenderer.removeListener('deployment:statusChange', listener);
   },
+
+  // Messaging Apps
+  messagingAppsList: () => ipcRenderer.invoke('messagingApps:list'),
+  messagingAppsGet: (id: string) => ipcRenderer.invoke('messagingApps:get', id),
+  messagingAppsCreate: (app: Parameters<MissionControlAPI['messagingAppsCreate']>[0]) =>
+    ipcRenderer.invoke('messagingApps:create', app),
+  messagingAppsUpdate: (id: string, patch: Parameters<MissionControlAPI['messagingAppsUpdate']>[1]) =>
+    ipcRenderer.invoke('messagingApps:update', id, patch),
+  messagingAppsDelete: (id: string) => ipcRenderer.invoke('messagingApps:delete', id),
+  messagingAppsVerifyTelegramToken: (token: string) =>
+    ipcRenderer.invoke('messagingApps:verifyTelegramToken', token),
 };
 
 contextBridge.exposeInMainWorld('api', api);
