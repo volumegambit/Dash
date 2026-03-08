@@ -3,6 +3,7 @@ import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { ManagementClient, type SkillsConfig } from '@dash/management';
 import {
   AgentRegistry,
   ConversationStore,
@@ -14,7 +15,6 @@ import {
   defaultProcessSpawner,
 } from '@dash/mc';
 import type { MessagingApp, ProcessSpawner } from '@dash/mc';
-import { ManagementClient, type SkillsConfig } from '@dash/management';
 import { app, dialog, ipcMain, safeStorage, shell } from 'electron';
 import type { BrowserWindow } from 'electron';
 import type { DeployWithConfigOptions } from '../shared/ipc.js';
@@ -581,25 +581,40 @@ export async function registerIpcHandlers(
   ipcMain.handle('skills:list', async (_e, deploymentId: string, agentName: string) =>
     (await getSkillsClient(deploymentId)).skills(agentName),
   );
-  ipcMain.handle('skills:get', async (_e, deploymentId: string, agentName: string, skillName: string) => {
-    try {
-      return await (await getSkillsClient(deploymentId)).skill(agentName, skillName);
-    } catch (err) {
-      if (err instanceof Error && err.message.includes('404')) return null;
-      throw err;
-    }
-  });
-  ipcMain.handle('skills:updateContent', async (_e, deploymentId: string, agentName: string, skillName: string, content: string) =>
-    (await getSkillsClient(deploymentId)).updateSkillContent(agentName, skillName, content),
+  ipcMain.handle(
+    'skills:get',
+    async (_e, deploymentId: string, agentName: string, skillName: string) => {
+      try {
+        return await (await getSkillsClient(deploymentId)).skill(agentName, skillName);
+      } catch (err) {
+        if (err instanceof Error && err.message.includes('404')) return null;
+        throw err;
+      }
+    },
   );
-  ipcMain.handle('skills:create', async (_e, deploymentId: string, agentName: string, name: string, description: string, content: string) =>
-    (await getSkillsClient(deploymentId)).createSkill(agentName, name, description, content),
+  ipcMain.handle(
+    'skills:updateContent',
+    async (_e, deploymentId: string, agentName: string, skillName: string, content: string) =>
+      (await getSkillsClient(deploymentId)).updateSkillContent(agentName, skillName, content),
+  );
+  ipcMain.handle(
+    'skills:create',
+    async (
+      _e,
+      deploymentId: string,
+      agentName: string,
+      name: string,
+      description: string,
+      content: string,
+    ) => (await getSkillsClient(deploymentId)).createSkill(agentName, name, description, content),
   );
   ipcMain.handle('skills:getConfig', async (_e, deploymentId: string, agentName: string) =>
     (await getSkillsClient(deploymentId)).skillsConfig(agentName),
   );
-  ipcMain.handle('skills:updateConfig', async (_e, deploymentId: string, agentName: string, config: SkillsConfig) =>
-    (await getSkillsClient(deploymentId)).updateSkillsConfig(agentName, config),
+  ipcMain.handle(
+    'skills:updateConfig',
+    async (_e, deploymentId: string, agentName: string, config: SkillsConfig) =>
+      (await getSkillsClient(deploymentId)).updateSkillsConfig(agentName, config),
   );
 
   // Deployment config update
