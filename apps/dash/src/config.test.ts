@@ -279,17 +279,17 @@ describe('loadConfig with config directory', () => {
   });
 
   it('sets configDir when --config is a directory', async () => {
-    const dir = await mkdtemp(join(tmpdir(), 'dash-cfg-'));
+    const configDir = join(tmpDir, 'cfg');
+    await mkdir(configDir);
     await writeFile(
-      join(dir, 'dash.json'),
+      join(configDir, 'dash.json'),
       JSON.stringify({
         agents: { default: { model: 'anthropic/m', systemPrompt: 'hi' } },
         logging: { level: 'info' },
       }),
     );
-    const cfg = await loadConfig({ configPath: dir });
-    expect(cfg.configDir).toBe(dir);
-    await rm(dir, { recursive: true });
+    const cfg = await loadConfig({ configPath: configDir });
+    expect(cfg.configDir).toBe(configDir);
   });
 
   it('falls back to dash.json agents when no agents/ directory', async () => {
