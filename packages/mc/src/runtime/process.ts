@@ -6,8 +6,10 @@ import net from 'node:net';
 import { homedir, tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import type { AgentRegistry } from '../agents/registry.js';
+import type { MessagingAppRegistry } from '../messaging-apps/registry.js';
 import { generateToken } from '../security/keygen.js';
 import type { SecretStore } from '../security/secrets.js';
+import type { MessagingApp } from '../types.js';
 import { type ProcessSnapshot, resolveRuntimeStatus } from './status.js';
 import type { DeploymentRuntime, RuntimeStatus } from './types.js';
 
@@ -38,7 +40,7 @@ export interface ProcessSpawner {
   ): SpawnedProcess & { unref?: () => void };
 }
 
-const defaultSpawner: ProcessSpawner = {
+export const defaultProcessSpawner: ProcessSpawner = {
   spawn: (command, args, options) =>
     spawn(command, args, options as Parameters<typeof spawn>[2]) as SpawnedProcess & {
       unref?: () => void;
@@ -87,6 +89,11 @@ export interface GatewaySecretsFile {
   channels: Record<string, { token?: string }>;
 }
 
+export interface ResolvedMessagingApp {
+  app: MessagingApp;
+  token: string;
+}
+
 export async function writeSecretsFile(
   secrets: AgentSecretsFile | GatewaySecretsFile,
   prefix: string,
@@ -106,6 +113,7 @@ export function buildGatewayConfig(
   chatPort: number,
   mcAdapterPort: number,
   gatewayJson?: GatewayJsonConfig,
+  resolvedApps: ResolvedMessagingApp[] = [],
 ): Record<string, unknown> {
   const agents: Record<string, { url: string; token: string }> = {};
   for (const name of agentNames) {
@@ -134,6 +142,25 @@ export function buildGatewayConfig(
         };
       }
     }
+  }
+
+  // Inject enabled messaging apps targeting any of our agents
+  for (const { app, token } of resolvedApps) {
+    if (!app.enabled) continue;
+    const relevantRules = app.routing.filter((r) => agentNames.includes(r.targetAgentName));
+    if (relevantRules.length === 0) continue;
+
+    channels[`messaging-app-${app.id}`] = {
+      adapter: app.type,
+      token,
+      globalDenyList: app.globalDenyList,
+      routing: relevantRules.map((r) => ({
+        condition: r.condition,
+        agentName: r.targetAgentName,
+        allowList: r.allowList,
+        denyList: r.denyList,
+      })),
+    };
   }
 
   // Always add an MC adapter channel if none configured
@@ -184,7 +211,8 @@ export class ProcessRuntime implements DeploymentRuntime {
     private registry: AgentRegistry,
     private secrets: SecretStore,
     private projectRoot: string,
-    private spawner: ProcessSpawner = defaultSpawner,
+    private spawner: ProcessSpawner = defaultProcessSpawner,
+    private messagingApps?: MessagingAppRegistry,
   ) {}
 
   async deploy(configDir: string): Promise<string> {
@@ -291,8 +319,23 @@ export class ProcessRuntime implements DeploymentRuntime {
     };
     const agentSecretsPath = await writeSecretsFile(agentSecretsFile, 'agent-secrets');
 
+    // Resolve messaging apps targeting any of our agents
+    const resolvedApps: ResolvedMessagingApp[] = [];
+    if (this.messagingApps) {
+      const apps = await this.messagingApps.list();
+      for (const app of apps) {
+        if (!app.enabled) continue;
+        const hasRelevantRule = app.routing.some((r) => agentNames.includes(r.targetAgentName));
+        if (!hasRelevantRule) continue;
+        const token = await this.secrets.get(app.credentialsKey);
+        if (token) {
+          resolvedApps.push({ app, token });
+        }
+      }
+    }
+
     // Build gateway config
-    const gatewayConfig = buildGatewayConfig(agentNames, chatPort, mcAdapterPort, gatewayJson);
+    const gatewayConfig = buildGatewayConfig(agentNames, chatPort, mcAdapterPort, gatewayJson, resolvedApps);
 
     // Write temp gateway config
     const gatewayConfigPath = join(tmpdir(), `gw-config-${id}.json`);

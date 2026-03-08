@@ -15,6 +15,7 @@ describe('Sidebar', () => {
     expect(screen.getByText('Agents')).toBeInTheDocument();
     expect(screen.getByText('Secrets')).toBeInTheDocument();
     expect(screen.getByText('Settings')).toBeInTheDocument();
+    expect(screen.getByText('Messaging Apps')).toBeInTheDocument();
   });
 
   it('does not render a Deploy nav item', () => {
