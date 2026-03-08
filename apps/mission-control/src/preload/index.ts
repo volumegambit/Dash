@@ -123,6 +123,20 @@ const api: MissionControlAPI = {
   settingsGet: () => ipcRenderer.invoke('settings:get'),
   settingsSet: (patch) => ipcRenderer.invoke('settings:set', patch),
 
+  // Skills
+  skillsList: (deploymentId, agentName) =>
+    ipcRenderer.invoke('skills:list', deploymentId, agentName),
+  skillsGet: (deploymentId, agentName, skillName) =>
+    ipcRenderer.invoke('skills:get', deploymentId, agentName, skillName),
+  skillsUpdateContent: (deploymentId, agentName, skillName, content) =>
+    ipcRenderer.invoke('skills:updateContent', deploymentId, agentName, skillName, content),
+  skillsCreate: (deploymentId, agentName, name, description, content) =>
+    ipcRenderer.invoke('skills:create', deploymentId, agentName, name, description, content),
+  skillsGetConfig: (deploymentId, agentName) =>
+    ipcRenderer.invoke('skills:getConfig', deploymentId, agentName),
+  skillsUpdateConfig: (deploymentId, agentName, config) =>
+    ipcRenderer.invoke('skills:updateConfig', deploymentId, agentName, config),
+
   // Updates
   onUpdateAvailable: (callback: (info: { version: string }) => void): (() => void) => {
     const handler = (_: Electron.IpcRendererEvent, info: { version: string }) => callback(info);
