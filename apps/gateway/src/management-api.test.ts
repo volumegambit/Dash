@@ -1,9 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type {
-  DeploymentRegistration,
-  RegisterAgentRequest,
-  RegisterChannelRequest,
-} from './management-api.js';
+import type { RegisterAgentRequest, RegisterChannelRequest } from './management-api.js';
 
 describe('management-api types', () => {
   it('RegisterAgentRequest has required fields', () => {
@@ -36,14 +32,5 @@ describe('management-api types', () => {
       },
     };
     expect(req.channelName).toBe('messaging-app-tg1');
-  });
-
-  it('DeploymentRegistration has agents and channels arrays', () => {
-    const reg: DeploymentRegistration = {
-      deploymentId: 'abc123',
-      agents: [{ agentName: 'default', chatUrl: 'ws://localhost:9101/ws', chatToken: 'tok' }],
-      channels: [],
-    };
-    expect(reg.agents).toHaveLength(1);
   });
 });
