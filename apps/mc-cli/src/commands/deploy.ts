@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { createInterface } from 'node:readline';
 import type { Command } from 'commander';
-import { ensureUnlocked, getRuntime, getSecretStore } from '../context.js';
+import { ensureUnlocked, getRegistry, getRuntime, getSecretStore } from '../context.js';
 
 async function promptSecret(prompt: string): Promise<string> {
   const rl = createInterface({ input: process.stdin, output: process.stderr });
@@ -65,14 +65,44 @@ export function registerDeployCommand(program: Command): void {
 
         // Deploy
         const runtime = await getRuntime();
-        const id = await runtime.deploy(absConfigDir);
 
-        // Wait a moment for processes to start
-        await new Promise((resolve) => setTimeout(resolve, 2000));
+        // Show spinner while deploying
+        let dots = 0;
+        const spinner = setInterval(() => {
+          dots = (dots + 1) % 4;
+          process.stderr.write(`\rDeploying${'.'.repeat(dots)}   `);
+        }, 400);
+
+        let id: string;
+        try {
+          id = await runtime.deploy(absConfigDir);
+        } catch (err) {
+          clearInterval(spinner);
+          process.stderr.write('\r                    \r'); // clear spinner line
+
+          const { DeploymentStartupError } = await import('@dash/mc');
+          if (err instanceof DeploymentStartupError) {
+            const deployment = await getRegistry().get(err.deploymentId);
+            console.error(`✗ Deploy failed: ${err.message}`);
+            if (deployment?.startupLogs?.length) {
+              console.error('\n--- Agent server startup logs ---');
+              for (const line of deployment.startupLogs) {
+                console.error(line);
+              }
+              console.error('---------------------------------\n');
+            }
+          } else {
+            console.error(`Deploy failed: ${(err as Error).message}`);
+          }
+          process.exitCode = 1;
+          return;
+        }
+
+        clearInterval(spinner);
+        process.stderr.write('\r                    \r'); // clear spinner line
 
         const status = await runtime.getStatus(id);
-        console.log(`Deployment ${id} created.`);
-        console.log(`  Status: ${status.state}`);
+        console.log(`✓ Deployment ${id} started`);
         if (status.managementPort)
           console.log(`  Management API: http://localhost:${status.managementPort}`);
         if (status.chatPort) console.log(`  Chat API: ws://localhost:${status.chatPort}/ws`);
