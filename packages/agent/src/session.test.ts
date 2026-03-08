@@ -79,6 +79,48 @@ describe('JsonlSessionStore', () => {
     expect(session?.messages[1]).toEqual({ role: 'user', content: 'new message' });
   });
 
+  it('uses the last compaction checkpoint when multiple exist', async () => {
+    const sessionId = 'ch:conv-multi';
+
+    await store.append(sessionId, {
+      timestamp: '2026-01-01T00:00:00Z',
+      type: 'message',
+      data: { role: 'user', content: 'very old message' },
+    });
+
+    // First compaction
+    await store.append(sessionId, {
+      timestamp: '2026-01-01T00:01:00Z',
+      type: 'compaction',
+      data: { summary: 'First summary', messageCount: 1 },
+    });
+
+    await store.append(sessionId, {
+      timestamp: '2026-01-01T00:02:00Z',
+      type: 'message',
+      data: { role: 'user', content: 'middle message' },
+    });
+
+    // Second compaction (this is the one that should be used)
+    await store.append(sessionId, {
+      timestamp: '2026-01-01T00:03:00Z',
+      type: 'compaction',
+      data: { summary: 'Second summary', messageCount: 2 },
+    });
+
+    await store.append(sessionId, {
+      timestamp: '2026-01-01T00:04:00Z',
+      type: 'message',
+      data: { role: 'user', content: 'latest message' },
+    });
+
+    const session = await store.load('ch', 'conv-multi');
+    expect(session).not.toBeNull();
+    expect(session?.messages).toHaveLength(2);
+    expect(session?.messages[0]).toEqual({ role: 'assistant', content: 'Second summary' });
+    expect(session?.messages[1]).toEqual({ role: 'user', content: 'latest message' });
+  });
+
   it('handles structured content (ContentBlock[]) in responses', async () => {
     const sessionId = 'telegram:456';
 

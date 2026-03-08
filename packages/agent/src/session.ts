@@ -30,20 +30,27 @@ export class JsonlSessionStore implements SessionStore {
       messages: [],
     };
 
+    // Parse all lines once, then scan and replay on the parsed array
+    const entries = lines.map((line) => JSON.parse(line) as SessionEntry);
+
     // Find last compaction checkpoint — only replay from there
     let startIndex = 0;
-    for (let i = lines.length - 1; i >= 0; i--) {
-      const entry = JSON.parse(lines[i]) as SessionEntry;
-      if (entry.type === 'compaction') {
+    for (let i = entries.length - 1; i >= 0; i--) {
+      if (entries[i].type === 'compaction') {
         startIndex = i;
         break;
       }
     }
 
-    for (const line of lines.slice(startIndex)) {
-      const entry: SessionEntry = JSON.parse(line);
+    for (const entry of entries.slice(startIndex)) {
       if (entry.type === 'compaction') {
-        session.messages.push({ role: 'assistant', content: entry.data.summary as string });
+        const summary = entry.data.summary;
+        if (typeof summary !== 'string') {
+          throw new Error(
+            `Compaction entry missing 'summary' field in session ${channelId}:${conversationId}`,
+          );
+        }
+        session.messages.push({ role: 'assistant', content: summary });
       } else if (entry.type === 'message') {
         session.messages.push({
           role: entry.data.role as 'user' | 'assistant',
