@@ -1,3 +1,5 @@
+import type { ContentBlock, Message } from '@dash/llm';
+
 export type AgentEvent =
   | { type: 'text_delta'; text: string }
   | { type: 'thinking_delta'; text: string }
@@ -48,3 +50,27 @@ export interface AgentBackend {
   abort(): void;
   answerQuestion?(id: string, answers: string[][]): Promise<void>;
 }
+
+// --- Session interfaces ---
+
+export interface SessionEntry {
+  timestamp: string;
+  type: 'message' | 'response' | 'tool_call' | 'tool_result' | 'error' | 'compaction';
+  data: Record<string, unknown>;
+}
+
+export interface Session {
+  id: string;
+  channelId: string;
+  conversationId: string;
+  createdAt: string;
+  messages: Message[];
+}
+
+export interface SessionStore {
+  load(channelId: string, conversationId: string): Promise<Session | null>;
+  save(session: Session): Promise<void>;
+  append(sessionId: string, entry: SessionEntry): Promise<void>;
+}
+
+export type { ContentBlock };
