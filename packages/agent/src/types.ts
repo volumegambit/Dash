@@ -85,7 +85,7 @@ export type AgentEvent =
         cacheWriteTokens?: number;
       };
     }
-  | { type: 'error'; error: Error }
+  | { type: 'error'; error: Error; timestamp?: string }
   | { type: 'file_changed'; files: string[] }
   | { type: 'agent_spawned'; name: string }
   | { type: 'agent_retry'; attempt: number; reason: string }
