@@ -5,6 +5,7 @@ import { HowItWorks } from '@/components/HowItWorks'
 import { AppScreenshot } from '@/components/AppScreenshot'
 import { QuickStart } from '@/components/QuickStart'
 import { Community } from '@/components/Community'
+import { Footer } from '@/components/Footer'
 
 export default function Home() {
   return (
@@ -16,6 +17,7 @@ export default function Home() {
       <AppScreenshot />
       <QuickStart />
       <Community />
+      <Footer />
     </main>
   )
 }
