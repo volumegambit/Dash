@@ -193,12 +193,13 @@ export interface AgentSecretsFile {
 
 export interface GatewaySecretsFile {
   agents: Record<string, { token: string }>;
-  channels: Record<string, { token?: string }>;
+  channels: Record<string, { token?: string; whatsappAuth?: Record<string, string> }>;
 }
 
 export interface ResolvedMessagingApp {
   app: MessagingApp;
   token: string;
+  authStateDir?: string; // for whatsapp channels
 }
 
 export async function writeSecretsFile(
@@ -252,22 +253,33 @@ export function buildGatewayConfig(
   }
 
   // Inject enabled messaging apps targeting any of our agents
-  for (const { app, token } of resolvedApps) {
+  for (const { app, token, authStateDir } of resolvedApps) {
     if (!app.enabled) continue;
     const relevantRules = app.routing.filter((r) => agentNames.includes(r.targetAgentName));
     if (relevantRules.length === 0) continue;
 
-    channels[`messaging-app-${app.id}`] = {
-      adapter: app.type,
-      token,
-      globalDenyList: app.globalDenyList,
-      routing: relevantRules.map((r) => ({
-        condition: r.condition,
-        agentName: r.targetAgentName,
-        allowList: r.allowList,
-        denyList: r.denyList,
-      })),
-    };
+    const routingRules = relevantRules.map((r) => ({
+      condition: r.condition,
+      agentName: r.targetAgentName,
+      allowList: r.allowList,
+      denyList: r.denyList,
+    }));
+
+    if (app.type === 'whatsapp') {
+      channels[`messaging-app-${app.id}`] = {
+        adapter: 'whatsapp',
+        globalDenyList: app.globalDenyList,
+        authStateDir,
+        routing: routingRules,
+      };
+    } else {
+      channels[`messaging-app-${app.id}`] = {
+        adapter: app.type,
+        token,
+        globalDenyList: app.globalDenyList,
+        routing: routingRules,
+      };
+    }
   }
 
   // Always add an MC adapter channel if none configured
@@ -447,9 +459,15 @@ export class ProcessRuntime implements DeploymentRuntime {
         if (!app.enabled) continue;
         const hasRelevantRule = app.routing.some((r) => agentNames.includes(r.targetAgentName));
         if (!hasRelevantRule) continue;
-        const token = await this.secrets.get(app.credentialsKey);
-        if (token) {
-          resolvedApps.push({ app, token });
+
+        if (app.type === 'whatsapp') {
+          const authStateDir = join(homedir(), '.mission-control', 'whatsapp-sessions', app.id);
+          resolvedApps.push({ app, token: '', authStateDir });
+        } else {
+          const token = await this.secrets.get(app.credentialsKey);
+          if (token) {
+            resolvedApps.push({ app, token });
+          }
         }
       }
     }
@@ -476,6 +494,40 @@ export class ProcessRuntime implements DeploymentRuntime {
             gwSecrets.channels[name] = { token: botToken };
           }
         }
+      }
+    }
+
+    // Collect WhatsApp auth state for each whatsapp messaging app
+    for (const { app, authStateDir } of resolvedApps) {
+      if (app.type !== 'whatsapp') continue;
+
+      const channelKey = `messaging-app-${app.id}`;
+      const authPrefix = `${app.credentialsKey}:`;
+
+      // 1. Sync any runtime FileStore updates back into EncryptedSecretStore
+      // (Runtime updates from previous gateway runs are stored in authStateDir/auth.json)
+      try {
+        const { FileSecretStore } = await import('../security/secrets.js');
+        const runtimeStore = new FileSecretStore(authStateDir!);
+        const runtimeKeys = await runtimeStore.list();
+        for (const key of runtimeKeys) {
+          const val = await runtimeStore.get(key);
+          if (val) await this.secrets.set(`${authPrefix}${key}`, val);
+        }
+      } catch {
+        // No runtime state to sync (first deploy)
+      }
+
+      // 2. Read all auth keys from encrypted store and bundle as blob
+      const allKeys = await this.secrets.list();
+      const authBlob: Record<string, string> = {};
+      for (const k of allKeys.filter((k) => k.startsWith(authPrefix))) {
+        const val = await this.secrets.get(k);
+        if (val) authBlob[k.slice(authPrefix.length)] = val;
+      }
+
+      if (Object.keys(authBlob).length > 0) {
+        gwSecrets.channels[channelKey] = { whatsappAuth: authBlob };
       }
     }
 
