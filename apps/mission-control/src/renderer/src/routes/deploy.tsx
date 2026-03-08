@@ -1,8 +1,9 @@
 import { createFileRoute, useNavigate } from '@tanstack/react-router';
 import { ArrowLeft, ArrowRight, Check, Loader, Rocket } from 'lucide-react';
 import { useEffect, useState } from 'react';
-import { AVAILABLE_MODELS, AVAILABLE_TOOLS } from '../components/deploy-options.js';
+import { RendererDeploymentError } from '../../../shared/ipc';
 import { ModelChainEditor } from '../components/ModelChainEditor.js';
+import { AVAILABLE_MODELS, AVAILABLE_TOOLS } from '../components/deploy-options.js';
 import { useAvailableModels } from '../hooks/useAvailableModels.js';
 import { useDeploymentsStore } from '../stores/deployments';
 
@@ -32,7 +33,7 @@ export function DeployWizard(): JSX.Element {
 
   const [agent, setAgent] = useState<AgentConfig>({
     name: '',
-    model: AVAILABLE_MODELS[0].value,  // use static list for initial value
+    model: AVAILABLE_MODELS[0].value, // use static list for initial value
     fallbackModels: [],
     systemPrompt: '',
     tools: [],
@@ -40,15 +41,18 @@ export function DeployWizard(): JSX.Element {
   });
 
   useEffect(() => {
-    window.api.settingsGet().then((settings) => {
-      if (settings.defaultModel) {
-        setAgent((prev) => ({
-          ...prev,
-          model: settings.defaultModel!,
-          fallbackModels: settings.defaultFallbackModels ?? [],
-        }));
-      }
-    }).catch(() => {});
+    window.api
+      .settingsGet()
+      .then((settings) => {
+        if (settings.defaultModel) {
+          setAgent((prev) => ({
+            ...prev,
+            model: settings.defaultModel!,
+            fallbackModels: settings.defaultFallbackModels ?? [],
+          }));
+        }
+      })
+      .catch(() => {});
   }, []);
 
   const [channels, setChannels] = useState<ChannelConfig>({
@@ -74,9 +78,8 @@ export function DeployWizard(): JSX.Element {
       });
       navigate({ to: '/agents/$id', params: { id } });
     } catch (err: unknown) {
-      const e = err as Error & { startupLogs?: string[] };
-      setDeployError(e.message);
-      setDeployStartupLogs(e.startupLogs ?? []);
+      setDeployError((err as Error).message);
+      setDeployStartupLogs(err instanceof RendererDeploymentError ? err.startupLogs : []);
       setDeploying(false);
     }
   };
@@ -314,7 +317,10 @@ export function DeployWizard(): JSX.Element {
                   </summary>
                   <div className="max-h-48 overflow-auto rounded-b-lg bg-[#0d0d0d] p-3 font-mono text-xs leading-5">
                     {deployStartupLogs.map((line, i) => (
-                      <div key={i} className="text-red-300/70">{line}</div>
+                      // biome-ignore lint/suspicious/noArrayIndexKey: log lines are ordered by index
+                      <div key={i} className="text-red-300/70">
+                        {line}
+                      </div>
                     ))}
                   </div>
                 </details>

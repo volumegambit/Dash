@@ -1,6 +1,6 @@
 import type { AgentDeployment, RuntimeStatus } from '@dash/mc';
 import { create } from 'zustand';
-import type { DeployWithConfigOptions } from '../../../shared/ipc';
+import { type DeployWithConfigOptions, RendererDeploymentError } from '../../../shared/ipc';
 
 const MAX_LOG_LINES = 500;
 
@@ -46,15 +46,17 @@ export const useDeploymentsStore = create<DeploymentsState>((set, get) => ({
       await get().loadDeployments();
       const deployment = get().deployments.find((d) => d.id === id);
       if (deployment?.status === 'error') {
-        const err = new Error(deployment.errorMessage ?? 'Deployment startup failed');
-        (err as Error & { startupLogs?: string[] }).startupLogs = deployment.startupLogs ?? [];
-        (err as Error & { deploymentId?: string }).deploymentId = id;
+        const err = new RendererDeploymentError(
+          deployment.errorMessage ?? 'Deployment startup failed',
+          id,
+          deployment.startupLogs ?? [],
+        );
         set({ error: err.message });
         throw err;
       }
       return id;
     } catch (err) {
-      if (!(err instanceof Error && 'deploymentId' in err)) {
+      if (!(err instanceof RendererDeploymentError)) {
         set({ error: (err as Error).message });
       }
       throw err;
@@ -68,15 +70,17 @@ export const useDeploymentsStore = create<DeploymentsState>((set, get) => ({
       await get().loadDeployments();
       const deployment = get().deployments.find((d) => d.id === id);
       if (deployment?.status === 'error') {
-        const err = new Error(deployment.errorMessage ?? 'Deployment startup failed');
-        (err as Error & { startupLogs?: string[] }).startupLogs = deployment.startupLogs ?? [];
-        (err as Error & { deploymentId?: string }).deploymentId = id;
+        const err = new RendererDeploymentError(
+          deployment.errorMessage ?? 'Deployment startup failed',
+          id,
+          deployment.startupLogs ?? [],
+        );
         set({ error: err.message });
         throw err;
       }
       return id;
     } catch (err) {
-      if (!(err instanceof Error && 'deploymentId' in err)) {
+      if (!(err instanceof RendererDeploymentError)) {
         set({ error: (err as Error).message });
       }
       throw err;
