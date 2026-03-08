@@ -70,11 +70,11 @@ describe('ChatService', () => {
         ws.send(
           JSON.stringify({
             type: 'event',
-            conversationId: msg.conversationId,
+            id: msg.id,
             event: { type: 'text_delta', text: 'Hi' },
           }),
         );
-        ws.send(JSON.stringify({ type: 'done', conversationId: msg.conversationId }));
+        ws.send(JSON.stringify({ type: 'done', id: msg.id }));
       });
     });
     await new Promise<void>((r) => wss?.on('listening', r));
@@ -105,7 +105,7 @@ describe('ChatService', () => {
         ws.send(
           JSON.stringify({
             type: 'error',
-            conversationId: msg.conversationId,
+            id: msg.id,
             error: 'agent exploded',
           }),
         );
