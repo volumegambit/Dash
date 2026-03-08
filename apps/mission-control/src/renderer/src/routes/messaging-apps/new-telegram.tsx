@@ -159,89 +159,68 @@ function NewTelegramWizard(): JSX.Element {
       )}
 
       <div className="min-h-[360px]">
+        {stepId === 'choose-path' && (
+          <div>
+            <h2 className="text-xl font-bold">Connect Telegram</h2>
+            <p className="mt-2 text-sm text-muted">
+              By connecting Telegram, you or others can send messages to your agents.
+            </p>
+            <div className="mt-6 flex flex-col gap-3">
+              <button
+                type="button"
+                onClick={() => choosePath('new')}
+                className="rounded-lg border-2 border-border px-5 py-4 text-left transition-colors hover:border-primary/50 hover:bg-sidebar-hover"
+              >
+                <p className="font-medium">I'm new to Telegram</p>
+                <p className="text-sm text-muted">We'll explain everything and guide you step by step</p>
+              </button>
+              <button
+                type="button"
+                onClick={() => choosePath('know')}
+                className="rounded-lg border-2 border-border px-5 py-4 text-left transition-colors hover:border-primary/50 hover:bg-sidebar-hover"
+              >
+                <p className="font-medium">I know Telegram — help me create a bot</p>
+                <p className="text-sm text-muted">Skip the basics, start with BotFather</p>
+              </button>
+              <button
+                type="button"
+                onClick={() => choosePath('token')}
+                className="rounded-lg border-2 border-border px-5 py-4 text-left transition-colors hover:border-primary/50 hover:bg-sidebar-hover"
+              >
+                <p className="font-medium">I already have a bot token</p>
+                <p className="text-sm text-muted">Go straight to connecting your existing bot</p>
+              </button>
+            </div>
+            <div className="mt-8">
+              <button
+                type="button"
+                onClick={() => navigate({ to: '/messaging-apps' })}
+                className="inline-flex items-center gap-2 rounded-lg border border-border px-4 py-2 text-sm text-muted transition-colors hover:bg-sidebar-hover hover:text-foreground"
+              >
+                <ArrowLeft size={14} />
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
+
         {stepId === 'what-is-telegram' && (
           <WizardStep
             title="What is Telegram?"
             onNext={goNext}
-            onBack={() => navigate({ to: '/messaging-apps' })}
-            backLabel="Cancel"
+            onBack={goPrev}
           >
             <p className="text-base leading-relaxed text-foreground">
               <strong>Telegram</strong> is a free messaging app — similar to WhatsApp or iMessage —
               that works on your phone and computer.
             </p>
             <p className="mt-4 text-base leading-relaxed text-foreground">
-              By connecting Telegram, people can send messages to your AI assistant by simply
+              By connecting Telegram, you or others can send messages to your agents by simply
               opening a chat — just like texting a friend.
             </p>
             <p className="mt-4 text-base leading-relaxed text-foreground">
               Don't worry if you're not familiar with it — we'll guide you through every step.
             </p>
-          </WizardStep>
-        )}
-
-        {stepId === 'have-telegram' && (
-          <WizardStep
-            title="Do you have Telegram installed?"
-            onNext={hasTelegram === false ? undefined : goNext}
-            onBack={goPrev}
-            nextLabel={hasTelegram === false ? undefined : "Yes, I have it"}
-          >
-            <div className="flex flex-col gap-3">
-              <button
-                type="button"
-                onClick={() => { setHasTelegram(true); goNext(); }}
-                className={`rounded-lg border-2 px-5 py-4 text-left transition-colors ${hasTelegram === true ? 'border-primary bg-primary/10' : 'border-border hover:border-primary/50'}`}
-              >
-                <span className="text-2xl">📱</span>
-                <p className="mt-2 font-medium">Yes, I have Telegram</p>
-                <p className="text-sm text-muted">I'm ready to get started</p>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => setHasTelegram(false)}
-                className={`rounded-lg border-2 px-5 py-4 text-left transition-colors ${hasTelegram === false ? 'border-primary bg-primary/10' : 'border-border hover:border-primary/50'}`}
-              >
-                <span className="text-2xl">💻</span>
-                <p className="mt-2 font-medium">No, I need to download it</p>
-                <p className="text-sm text-muted">I'll show you where to get it</p>
-              </button>
-            </div>
-
-            {hasTelegram === false && (
-              <div className="mt-4 rounded-lg border border-border bg-sidebar-bg p-4">
-                <p className="text-sm font-medium">Download Telegram:</p>
-                <div className="mt-3 flex flex-col gap-2">
-                  {[
-                    { label: '📱 iPhone / iPad', url: 'https://apps.apple.com/app/telegram-messenger/id686449807' },
-                    { label: '📱 Android', url: 'https://play.google.com/store/apps/details?id=org.telegram.messenger' },
-                    { label: '💻 Mac / Windows / Linux', url: 'https://desktop.telegram.org/' },
-                  ].map(({ label, url }) => (
-                    <button
-                      key={url}
-                      type="button"
-                      onClick={() => window.api.openExternal(url)}
-                      className="flex items-center gap-2 rounded p-2 text-sm text-primary hover:bg-sidebar-hover"
-                    >
-                      <ExternalLink size={14} />
-                      {label}
-                    </button>
-                  ))}
-                </div>
-                <p className="mt-3 text-sm text-muted">
-                  Once you've installed and logged in to Telegram, come back here and continue.
-                </p>
-                <button
-                  type="button"
-                  onClick={() => { setHasTelegram(true); goNext(); }}
-                  className="mt-3 inline-flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm text-white hover:bg-primary-hover"
-                >
-                  I've installed Telegram, continue
-                  <ArrowRight size={14} />
-                </button>
-              </div>
-            )}
           </WizardStep>
         )}
 
