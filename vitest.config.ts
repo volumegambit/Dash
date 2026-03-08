@@ -13,6 +13,7 @@ export default defineConfig({
   },
   test: {
     globals: true,
+    clearMocks: true,
     include: ['packages/*/src/**/*.test.ts', 'apps/*/src/**/*.test.{ts,tsx}'],
     environmentMatchGlobs: [['apps/mission-control/**/*.test.{ts,tsx}', 'jsdom']],
     setupFiles: ['apps/mission-control/vitest.setup.ts'],
