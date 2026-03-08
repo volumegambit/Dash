@@ -64,7 +64,7 @@ export function AgentDetail(): JSX.Element {
       setChainModel(agentConfig.model);
       setChainFallbacks(agentConfig.fallbackModels ?? []);
     }
-  }, [agentConfig?.model]);
+  }, [agentConfig?.model, agentConfig?.fallbackModels]);
 
   useEffect(() => {
     loadMessagingApps();

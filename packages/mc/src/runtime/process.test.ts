@@ -321,7 +321,7 @@ class FakeProcess extends EventEmitter implements SpawnedProcess {
   unref(): void {}
 
   simulateLog(line: string): void {
-    this.stdout.write(line + '\n');
+    this.stdout.write(`${line}\n`);
   }
 
   simulateExit(code: number): void {
@@ -399,8 +399,8 @@ describe('ProcessRuntime.updateAgentConfig', () => {
 
     const successWatcher: StartupWatcher = async () => ({ success: true });
     const runtime = new ProcessRuntime(
-      fakeRegistry as any,
-      fakeSecrets as any,
+      fakeRegistry as unknown as Parameters<typeof ProcessRuntime>[0],
+      fakeSecrets as unknown as Parameters<typeof ProcessRuntime>[1],
       '/',
       undefined,
       undefined,

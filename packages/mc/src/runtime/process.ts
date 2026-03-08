@@ -439,9 +439,9 @@ export class ProcessRuntime implements DeploymentRuntime {
 
     // Build providerApiKeys object for the agent config
     const providerApiKeys: Record<string, string> = {};
-    if (anthropicApiKey) providerApiKeys['anthropic'] = anthropicApiKey;
-    if (googleApiKey) providerApiKeys['google'] = googleApiKey;
-    if (openaiApiKey) providerApiKeys['openai'] = openaiApiKey;
+    if (anthropicApiKey) providerApiKeys.anthropic = anthropicApiKey;
+    if (googleApiKey) providerApiKeys.google = googleApiKey;
+    if (openaiApiKey) providerApiKeys.openai = openaiApiKey;
 
     // Write temp agent-server secrets file
     const agentSecretsFile: AgentSecretsFile = {
@@ -514,7 +514,7 @@ export class ProcessRuntime implements DeploymentRuntime {
       // (Runtime updates from previous gateway runs are stored in authStateDir/auth.json)
       try {
         const { FileSecretStore } = await import('../security/secrets.js');
-        const runtimeStore = new FileSecretStore(authStateDir!);
+        const runtimeStore = new FileSecretStore(authStateDir as string);
         const runtimeKeys = await runtimeStore.list();
         for (const key of runtimeKeys) {
           const val = await runtimeStore.get(key);

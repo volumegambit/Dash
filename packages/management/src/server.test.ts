@@ -309,7 +309,9 @@ describe('Management Server', () => {
         getInfo: () => testInfo,
         onShutdown: vi.fn().mockResolvedValue(undefined),
         skills: {
-          list: async () => { throw new Error('storage failure'); },
+          list: async () => {
+            throw new Error('storage failure');
+          },
           get: async () => null,
           updateContent: async () => {},
           create: async (_agentName, name, description, content) => ({
