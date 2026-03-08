@@ -1,10 +1,10 @@
+import type { McMessage } from '@dash/mc';
 import { createFileRoute } from '@tanstack/react-router';
 import { Loader, Plus, Send, Square, Trash2 } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { McAgentEvent } from '../../../shared/ipc.js';
-import { useDeploymentsStore } from '../stores/deployments.js';
 import { useChatStore } from '../stores/chat.js';
-import type { McMessage } from '@dash/mc';
+import { useDeploymentsStore } from '../stores/deployments.js';
 
 // --- Event rendering helpers ---
 
@@ -24,16 +24,18 @@ function renderEvents(events: Record<string, unknown>[]): JSX.Element[] {
     } else if (event.type === 'text_delta') {
       // Flush thinking before text
       if (thinkingBuffer) {
-        elements.push(
-          <ThinkingBlock key={`think-${blockCount++}`} text={thinkingBuffer} />,
-        );
+        elements.push(<ThinkingBlock key={`think-${blockCount++}`} text={thinkingBuffer} />);
         thinkingBuffer = '';
       }
       textBuffer += event.text;
     } else if (event.type === 'tool_use_start') {
       // Flush text before tool
       if (textBuffer) {
-        elements.push(<p key={`text-${blockCount++}`} className="whitespace-pre-wrap">{textBuffer}</p>);
+        elements.push(
+          <p key={`text-${blockCount++}`} className="whitespace-pre-wrap">
+            {textBuffer}
+          </p>,
+        );
         textBuffer = '';
       }
       toolName = event.name;
@@ -42,26 +44,39 @@ function renderEvents(events: Record<string, unknown>[]): JSX.Element[] {
       toolInputBuffer += event.partial_json;
     } else if (event.type === 'tool_result') {
       elements.push(
-        <ToolBlock key={`tool-${blockCount++}`} name={toolName || event.name} input={toolInputBuffer} result={event.content} isError={event.isError} />,
+        <ToolBlock
+          key={`tool-${blockCount++}`}
+          name={toolName || event.name}
+          input={toolInputBuffer}
+          result={event.content}
+          isError={event.isError}
+        />,
       );
       toolName = '';
       toolInputBuffer = '';
     } else if (event.type === 'error') {
       elements.push(
-        <p key={`err-${blockCount++}`} className="text-red-400">{String(event.error)}</p>,
+        <p key={`err-${blockCount++}`} className="text-red-400">
+          {String(event.error)}
+        </p>,
       );
     }
   }
 
   // Flush remaining
   if (thinkingBuffer) elements.push(<ThinkingBlock key="think-final" text={thinkingBuffer} />);
-  if (textBuffer) elements.push(<p key="text-final" className="whitespace-pre-wrap">{textBuffer}</p>);
+  if (textBuffer)
+    elements.push(
+      <p key="text-final" className="whitespace-pre-wrap">
+        {textBuffer}
+      </p>,
+    );
   // Flush in-progress tool call (tool_use_start seen but no tool_result yet)
   if (toolName) {
     elements.push(
       <div key="tool-progress" className="mb-2 text-xs text-muted">
         🔧 <span className="font-mono">{toolName}</span>({toolInputBuffer || '…'})
-      </div>
+      </div>,
     );
   }
 
@@ -84,10 +99,17 @@ function ThinkingBlock({ text }: { text: string }): JSX.Element {
   );
 }
 
-function ToolBlock({ name, input, result, isError }: { name: string; input: string; result: string; isError?: boolean }): JSX.Element {
+function ToolBlock({
+  name,
+  input,
+  result,
+  isError,
+}: { name: string; input: string; result: string; isError?: boolean }): JSX.Element {
   const [open, setOpen] = useState(false);
   return (
-    <div className={`mb-2 rounded border text-xs ${isError ? 'border-red-900/50 bg-red-900/10' : 'border-border bg-sidebar-hover'}`}>
+    <div
+      className={`mb-2 rounded border text-xs ${isError ? 'border-red-900/50 bg-red-900/10' : 'border-border bg-sidebar-hover'}`}
+    >
       <button
         type="button"
         onClick={() => setOpen((o) => !o)}
@@ -99,14 +121,19 @@ function ToolBlock({ name, input, result, isError }: { name: string; input: stri
       {open && (
         <div className="border-t border-border px-3 pb-2 pt-1">
           {input && <p className="mb-1 font-mono text-muted">{input}</p>}
-          <p className={`whitespace-pre-wrap ${isError ? 'text-red-400' : 'text-green-400/80'}`}>{result}</p>
+          <p className={`whitespace-pre-wrap ${isError ? 'text-red-400' : 'text-green-400/80'}`}>
+            {result}
+          </p>
         </div>
       )}
     </div>
   );
 }
 
-function MessageBubble({ message, streamingEvents }: { message?: McMessage; streamingEvents?: McAgentEvent[] }): JSX.Element {
+function MessageBubble({
+  message,
+  streamingEvents,
+}: { message?: McMessage; streamingEvents?: McAgentEvent[] }): JSX.Element {
   const isUser = message?.role === 'user';
 
   if (isUser && message) {
@@ -122,8 +149,7 @@ function MessageBubble({ message, streamingEvents }: { message?: McMessage; stre
   }
 
   const events: Record<string, unknown>[] =
-    streamingEvents ??
-    (message?.content.type === 'assistant' ? message.content.events : []);
+    streamingEvents ?? (message?.content.type === 'assistant' ? message.content.events : []);
 
   return (
     <div className="mb-4">
@@ -192,6 +218,7 @@ function Chat(): JSX.Element {
   const isStreaming = selectedConversationId ? (sending[selectedConversationId] ?? false) : false;
   const liveEvents = selectedConversationId ? (streamingEvents[selectedConversationId] ?? []) : [];
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: messagesEndRef is a stable ref
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [selectedMessages.length, liveEvents.length]);
@@ -232,11 +259,16 @@ function Chat(): JSX.Element {
           {runningDeployments.length > 1 && (
             <select
               value={selectedDeploymentId}
-              onChange={(e) => { setSelectedDeploymentId(e.target.value); setSelectedAgentName(''); }}
+              onChange={(e) => {
+                setSelectedDeploymentId(e.target.value);
+                setSelectedAgentName('');
+              }}
               className="mb-2 w-full rounded border border-border bg-sidebar-bg px-2 py-1 text-xs text-foreground focus:outline-none"
             >
               {runningDeployments.map((d) => (
-                <option key={d.id} value={d.id}>{d.name}</option>
+                <option key={d.id} value={d.id}>
+                  {d.name}
+                </option>
               ))}
             </select>
           )}
@@ -248,7 +280,9 @@ function Chat(): JSX.Element {
               className="mb-2 w-full rounded border border-border bg-sidebar-bg px-2 py-1 text-xs text-foreground focus:outline-none"
             >
               {agentNames.map((name) => (
-                <option key={name} value={name}>{name}</option>
+                <option key={name} value={name}>
+                  {name}
+                </option>
               ))}
             </select>
           )}
@@ -306,8 +340,8 @@ function Chat(): JSX.Element {
             {!selectedConversationId
               ? 'Select or create a conversation'
               : isStreaming
-              ? 'Agent is responding…'
-              : 'Connected'}
+                ? 'Agent is responding…'
+                : 'Connected'}
           </p>
         </div>
 
@@ -340,13 +374,18 @@ function Chat(): JSX.Element {
         <div className="border-t border-border px-6 py-4">
           <form
             className="flex gap-2"
-            onSubmit={(e) => { e.preventDefault(); handleSend(); }}
+            onSubmit={(e) => {
+              e.preventDefault();
+              handleSend();
+            }}
           >
             <input
               type="text"
               value={input}
               onChange={(e) => setInput(e.target.value)}
-              placeholder={selectedConversationId ? 'Type a message…' : 'Select a conversation first'}
+              placeholder={
+                selectedConversationId ? 'Type a message…' : 'Select a conversation first'
+              }
               disabled={!selectedConversationId || isStreaming}
               className="flex-1 rounded-lg border border-border bg-sidebar-bg px-4 py-2 text-sm text-foreground placeholder:text-muted focus:border-primary focus:outline-none disabled:opacity-50"
             />

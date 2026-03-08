@@ -16,7 +16,6 @@
     "start": "node dist/index.js"
   },
   "dependencies": {
-    "@dash/llm": "*",
     "@dash/agent": "*",
     "@dash/chat": "*",
     "@dash/management": "*",

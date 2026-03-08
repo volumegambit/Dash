@@ -23,7 +23,10 @@ function validateMessage(data: unknown): data is McClientMessage {
 
 function serializeEvent(event: AgentEvent): Record<string, unknown> {
   if (event.type === 'error') {
-    return { type: 'error', error: event.error instanceof Error ? event.error.message : String(event.error) };
+    return {
+      type: 'error',
+      error: event.error instanceof Error ? event.error.message : String(event.error),
+    };
   }
   // All non-error AgentEvent variants are plain objects safe for JSON serialization.
   return event as Record<string, unknown>;
@@ -66,12 +69,20 @@ export class MissionControlAdapter {
         try {
           data = JSON.parse(String(raw));
         } catch {
-          if (!closed) ws.send(JSON.stringify({ type: 'error', conversationId: '', error: 'Invalid JSON' }));
+          if (!closed)
+            ws.send(JSON.stringify({ type: 'error', conversationId: '', error: 'Invalid JSON' }));
           return;
         }
 
         if (!validateMessage(data)) {
-          if (!closed) ws.send(JSON.stringify({ type: 'error', conversationId: '', error: 'Invalid message format' }));
+          if (!closed)
+            ws.send(
+              JSON.stringify({
+                type: 'error',
+                conversationId: '',
+                error: 'Invalid message format',
+              }),
+            );
           return;
         }
 
@@ -102,7 +113,8 @@ export class MissionControlAdapter {
             );
             await flush();
           }
-          if (!closed) ws.send(JSON.stringify({ type: 'done', conversationId: data.conversationId }));
+          if (!closed)
+            ws.send(JSON.stringify({ type: 'done', conversationId: data.conversationId }));
         } catch (err) {
           if (!closed)
             ws.send(

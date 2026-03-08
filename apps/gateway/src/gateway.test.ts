@@ -81,7 +81,12 @@ describe('Gateway end-to-end with MC adapter', () => {
     const responsePromise = nextMessage(ws);
 
     ws.send(
-      JSON.stringify({ type: 'message', conversationId: 'conv-1', agentName: 'nonexistent', text: 'hello' }),
+      JSON.stringify({
+        type: 'message',
+        conversationId: 'conv-1',
+        agentName: 'nonexistent',
+        text: 'hello',
+      }),
     );
 
     const response = await responsePromise;
@@ -120,6 +125,7 @@ describe('MC adapter agent routing (direct)', () => {
   it('sends error frame when agent.chat() throws', async () => {
     // Deterministic mock: always throws so we can assert exactly type === 'error'
     const throwingAgent: AgentClient = {
+      // biome-ignore lint/correctness/useYield: throw-only generator for testing
       async *chat(): AsyncGenerator<AgentEvent> {
         throw new Error('agent exploded');
       },
@@ -132,7 +138,12 @@ describe('MC adapter agent routing (direct)', () => {
     const responsePromise = nextMessage(ws);
 
     ws.send(
-      JSON.stringify({ type: 'message', conversationId: 'conv-2', agentName: 'default', text: 'hello' }),
+      JSON.stringify({
+        type: 'message',
+        conversationId: 'conv-2',
+        agentName: 'default',
+        text: 'hello',
+      }),
     );
 
     const response = await responsePromise;
@@ -151,7 +162,12 @@ describe('MC adapter agent routing (direct)', () => {
       {
         type: 'response',
         content: 'Hello',
-        usage: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+        usage: {
+          input_tokens: 1,
+          output_tokens: 1,
+          cache_read_input_tokens: 0,
+          cache_creation_input_tokens: 0,
+        },
       },
     ];
     const successAgent: AgentClient = {
@@ -165,7 +181,12 @@ describe('MC adapter agent routing (direct)', () => {
 
     const ws = await connectWs(basePort + 1);
     ws.send(
-      JSON.stringify({ type: 'message', conversationId: 'conv-3', agentName: 'default', text: 'hi' }),
+      JSON.stringify({
+        type: 'message',
+        conversationId: 'conv-3',
+        agentName: 'default',
+        text: 'hi',
+      }),
     );
 
     const frame1 = await nextMessage(ws);

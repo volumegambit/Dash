@@ -1,5 +1,5 @@
-import { afterEach, describe, expect, it } from 'vitest';
 import type { AgentClient, AgentEvent } from '@dash/agent';
+import { afterEach, describe, expect, it } from 'vitest';
 import { MissionControlAdapter } from './mission-control.js';
 
 const PORT = 19200 + Math.floor(Math.random() * 800);
@@ -37,16 +37,31 @@ describe('MissionControlAdapter', () => {
   it('streams events and done for a known agent', async () => {
     const events: AgentEvent[] = [
       { type: 'text_delta', text: 'Hi' },
-      { type: 'response', content: 'Hi', usage: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } },
+      {
+        type: 'response',
+        content: 'Hi',
+        usage: {
+          input_tokens: 1,
+          output_tokens: 1,
+          cache_read_input_tokens: 0,
+          cache_creation_input_tokens: 0,
+        },
+      },
     ];
     adapter = new MissionControlAdapter(PORT, new Map([['myagent', makeAgent(events)]]));
     await adapter.start();
 
     const ws = await connectWs(PORT);
-    ws.send(JSON.stringify({ type: 'message', conversationId: 'c1', agentName: 'myagent', text: 'hi' }));
+    ws.send(
+      JSON.stringify({ type: 'message', conversationId: 'c1', agentName: 'myagent', text: 'hi' }),
+    );
 
     const msg1 = await nextMessage(ws);
-    expect(msg1).toEqual({ type: 'event', conversationId: 'c1', event: { type: 'text_delta', text: 'Hi' } });
+    expect(msg1).toEqual({
+      type: 'event',
+      conversationId: 'c1',
+      event: { type: 'text_delta', text: 'Hi' },
+    });
 
     const msg2 = await nextMessage(ws);
     expect(msg2.type).toBe('event');
@@ -62,7 +77,9 @@ describe('MissionControlAdapter', () => {
     await adapter.start();
 
     const ws = await connectWs(PORT + 100);
-    ws.send(JSON.stringify({ type: 'message', conversationId: 'c1', agentName: 'nope', text: 'hi' }));
+    ws.send(
+      JSON.stringify({ type: 'message', conversationId: 'c1', agentName: 'nope', text: 'hi' }),
+    );
 
     const msg = await nextMessage(ws);
     expect(msg.type).toBe('error');
@@ -126,7 +143,9 @@ describe('MissionControlAdapter', () => {
     await adapter.start();
 
     const ws = await connectWs(PORT + 600);
-    ws.send(JSON.stringify({ type: 'message', conversationId: 'c1', agentName: 'slow', text: 'go' }));
+    ws.send(
+      JSON.stringify({ type: 'message', conversationId: 'c1', agentName: 'slow', text: 'go' }),
+    );
 
     // Wait for the first event to arrive so the server is mid-stream, then drop the connection.
     await nextMessage(ws);

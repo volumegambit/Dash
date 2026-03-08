@@ -14,7 +14,14 @@ function createMockApi(): Record<keyof MissionControlAPI, ReturnType<typeof vi.f
 
     // Chat
     chatListConversations: vi.fn().mockResolvedValue([]),
-    chatCreateConversation: vi.fn().mockResolvedValue({ id: 'conv-1', deploymentId: 'dep-1', agentName: 'agent', title: 'New conversation', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }),
+    chatCreateConversation: vi.fn().mockResolvedValue({
+      id: 'conv-1',
+      deploymentId: 'dep-1',
+      agentName: 'agent',
+      title: 'New conversation',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    }),
     chatGetMessages: vi.fn().mockResolvedValue([]),
     chatDeleteConversation: vi.fn().mockResolvedValue(undefined),
     chatSendMessage: vi.fn().mockResolvedValue(undefined),
