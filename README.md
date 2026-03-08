@@ -194,15 +194,15 @@ Define named agent profiles with model, system prompt, tools, and token limits:
 
 ## Documentation
 
-Full documentation is available at [dash-aa8db5b5.mintlify.app](https://dash-aa8db5b5.mintlify.app/introduction), or in the [`docs/`](docs/) directory:
+Full documentation is available at [dash-aa8db5b5.mintlify.app](https://dash-aa8db5b5.mintlify.app/introduction), or in the [`user_docs/`](user_docs/) directory:
 
-- [Getting Started](docs/getting-started.mdx) — install, configure, first run
-- [Configuration](docs/configuration.mdx) — `dash.json` schema, env vars, defaults
-- [Tools](docs/tools.mdx) — bash and read_file: parameters, sandboxing, limits
-- [Channels](docs/channels.mdx) — TUI usage, Chat API protocol
-- [Extended Thinking](docs/extended-thinking.mdx) — budget tuning, constraints
-- [Architecture](docs/architecture.mdx) — package map, data flow, session format
-- [Troubleshooting](docs/troubleshooting.mdx) — common errors, debugging tips
+- [Getting Started](user_docs/getting-started.mdx) — install, configure, first run
+- [Configuration](user_docs/configuration.mdx) — `dash.json` schema, env vars, defaults
+- [Tools](user_docs/tools.mdx) — bash and read_file: parameters, sandboxing, limits
+- [Channels](user_docs/channels.mdx) — TUI usage, Chat API protocol
+- [Extended Thinking](user_docs/extended-thinking.mdx) — budget tuning, constraints
+- [Architecture](user_docs/architecture.mdx) — package map, data flow, session format
+- [Troubleshooting](user_docs/troubleshooting.mdx) — common errors, debugging tips
 
 ## Development
 
