@@ -1,9 +1,9 @@
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { existsSync, statSync } from 'node:fs';
-import { chmod, readFile, readdir, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import net from 'node:net';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import type { AgentRegistry } from '../agents/registry.js';
 import { generateToken } from '../security/keygen.js';
@@ -197,6 +197,7 @@ export class ProcessRuntime implements DeploymentRuntime {
       model: string;
       systemPrompt: string;
       tools?: string[];
+      workspace?: string;
     }
     const agentConfigs: Record<string, AgentCfg> = {};
 
@@ -212,6 +213,7 @@ export class ProcessRuntime implements DeploymentRuntime {
           model: cfg.model ?? '',
           systemPrompt: cfg.systemPrompt ?? '',
           tools: cfg.tools,
+          workspace: cfg.workspace,
         };
       }
     }
@@ -229,6 +231,7 @@ export class ProcessRuntime implements DeploymentRuntime {
               model: cfg.model ?? '',
               systemPrompt: cfg.systemPrompt ?? '',
               tools: cfg.tools,
+              workspace: cfg.workspace,
             };
           }
         }
@@ -259,6 +262,14 @@ export class ProcessRuntime implements DeploymentRuntime {
     const managementToken = generateToken();
     const chatToken = generateToken();
     const id = randomUUID().slice(0, 8);
+
+    // Resolve workspace for each agent: use config value or auto-generate
+    for (const [name, cfg] of Object.entries(agentConfigs)) {
+      if (!cfg.workspace) {
+        cfg.workspace = join(homedir(), '.mission-control', 'workspaces', `${name}-${id}`);
+      }
+      await mkdir(cfg.workspace, { recursive: true, mode: 0o700 });
+    }
 
     // Store tokens in secret store
     await this.secrets.set(`agent-token:${id}`, managementToken);
@@ -383,6 +394,7 @@ export class ProcessRuntime implements DeploymentRuntime {
       managementToken,
       chatPort,
       chatToken,
+      workspace: agentConfigs[agentNames[0]]?.workspace,
     });
 
     return id;
