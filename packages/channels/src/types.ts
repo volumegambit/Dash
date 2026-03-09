@@ -22,12 +22,16 @@ export interface OutboundMessage {
 
 export type MessageHandler = (msg: InboundMessage) => Promise<void>;
 
+export type ChannelHealth = 'connected' | 'connecting' | 'disconnected' | 'needs_reauth';
+
 export interface ChannelAdapter {
   readonly name: string;
   start(): Promise<void>;
   stop(): Promise<void>;
   send(conversationId: string, message: OutboundMessage): Promise<void>;
   onMessage(handler: MessageHandler): void;
+  getHealth(): ChannelHealth;
+  onHealthChange(handler: (health: ChannelHealth) => void): void;
 }
 
 export interface RouterRoutingRule {

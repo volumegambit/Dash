@@ -222,3 +222,31 @@ describe('WhatsAppAdapter', () => {
     await expect(adapter.send('1234@s.whatsapp.net', { text: 'hi' })).rejects.toThrow();
   });
 });
+
+describe('WhatsAppAdapter health', () => {
+  it('starts as connecting', () => {
+    const adapter = new WhatsAppAdapter({}, '/tmp/test-auth');
+    expect(adapter.getHealth()).toBe('connecting');
+  });
+
+  it('calls health change handler when setHealth is called', () => {
+    const adapter = new WhatsAppAdapter({}, '/tmp/test-auth');
+    const changes: string[] = [];
+    adapter.onHealthChange((h) => changes.push(h));
+
+    // Access private method for testing
+    (adapter as any).setHealth('needs_reauth');
+
+    expect(changes).toContain('needs_reauth');
+  });
+
+  it('does not call handler if health unchanged', () => {
+    const adapter = new WhatsAppAdapter({}, '/tmp/test-auth');
+    const changes: string[] = [];
+    adapter.onHealthChange((h) => changes.push(h));
+
+    (adapter as any).setHealth('connecting'); // same as initial
+
+    expect(changes).toHaveLength(0);
+  });
+});
