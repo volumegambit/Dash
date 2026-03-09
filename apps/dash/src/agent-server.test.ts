@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Mock all external modules before importing the module under test
 vi.mock('@dash/agent', () => {
@@ -34,7 +34,7 @@ vi.mock('node:fs/promises', () => ({
   writeFile: vi.fn().mockResolvedValue(undefined),
 }));
 
-import { OpenCodeBackend } from '@dash/agent';
+import { LocalAgentClient, OpenCodeBackend } from '@dash/agent';
 import { createAgentServer } from './agent-server.js';
 import type { DashConfig } from './config.js';
 
@@ -48,6 +48,8 @@ function makeConfig(agents: DashConfig['agents']): DashConfig {
 }
 
 describe('createAgentServer startup isolation', () => {
+  beforeEach(() => vi.clearAllMocks());
+
   it('starts successfully when all agents succeed', async () => {
     const config = makeConfig({
       alpha: { model: 'claude-test', systemPrompt: 'Alpha' },
@@ -83,6 +85,10 @@ describe('createAgentServer startup isolation', () => {
     // Should not throw
     const server = await createAgentServer(config);
     expect(server).toBeDefined();
+
+    // Only the surviving (working) agent should have a client registered
+    const MockLocalAgentClient = LocalAgentClient as unknown as ReturnType<typeof vi.fn>;
+    expect(MockLocalAgentClient).toHaveBeenCalledTimes(1);
   });
 
   it('throws when all agents fail to start', async () => {
