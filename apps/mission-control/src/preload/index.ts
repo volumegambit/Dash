@@ -70,6 +70,8 @@ const api: MissionControlAPI = {
   deploymentsLogsUnsubscribe: (id: string) =>
     ipcRenderer.invoke('deployments:logs:unsubscribe', id),
   deploymentsUpdateConfig: (id, patch) => ipcRenderer.invoke('deployments:updateConfig', id, patch),
+  deploymentsGetChannelHealth: (id: string) =>
+    ipcRenderer.invoke('deployments:getChannelHealth', id),
 
   // Deployment events
   onDeploymentLog: (callback: (id: string, line: string) => void) => {

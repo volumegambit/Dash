@@ -4,7 +4,7 @@ import { dirname, join } from 'node:path';
 import makeWASocket, { DisconnectReason } from '@whiskeysockets/baileys';
 import type { ConnectionState, WASocket } from '@whiskeysockets/baileys';
 import qrcode from 'qrcode';
-import type { ChannelAdapter, MessageHandler, OutboundMessage, SecretStore } from '../types.js';
+import type { ChannelAdapter, ChannelHealth, MessageHandler, OutboundMessage, SecretStore } from '../types.js';
 import { makeBaileysAuthState } from './whatsapp-auth.js';
 
 class InlineFileStore implements SecretStore {
@@ -45,6 +45,22 @@ export class WhatsAppAdapter implements ChannelAdapter {
   private handlers: MessageHandler[] = [];
   private sock: WASocket | null = null;
   private stopped = false;
+  private health: ChannelHealth = 'connecting';
+  private healthHandlers: Array<(h: ChannelHealth) => void> = [];
+
+  getHealth(): ChannelHealth {
+    return this.health;
+  }
+
+  onHealthChange(handler: (health: ChannelHealth) => void): void {
+    this.healthHandlers.push(handler);
+  }
+
+  private setHealth(h: ChannelHealth): void {
+    if (this.health === h) return;
+    this.health = h;
+    for (const handler of this.healthHandlers) handler(h);
+  }
 
   constructor(
     private readonly initialAuthState: Record<string, string>,
@@ -86,14 +102,20 @@ export class WhatsAppAdapter implements ChannelAdapter {
         });
       }
 
+      if (connection === 'open') {
+        this.setHealth('connected');
+      }
+
       if (connection === 'close') {
+        if (this.stopped) return;
         const statusCode = (
           lastDisconnect?.error as { output?: { statusCode?: number } } | undefined
         )?.output?.statusCode;
         if (statusCode !== DisconnectReason.loggedOut) {
-          if (this.stopped) return;
+          this.setHealth('connecting');
           this.start().catch((err) => console.error('[WhatsApp] Reconnect failed:', err));
         } else {
+          this.setHealth('needs_reauth');
           console.warn('[WhatsApp] Logged out. Please re-authenticate.');
         }
       }
@@ -161,6 +183,7 @@ export class WhatsAppAdapter implements ChannelAdapter {
       this.sock.end(undefined);
       this.sock = null;
     }
+    this.healthHandlers = [];
   }
 
   async send(conversationId: string, message: OutboundMessage): Promise<void> {

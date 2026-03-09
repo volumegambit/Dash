@@ -8,6 +8,8 @@ export type {
   SkillInfo,
   SkillContent,
   SkillsConfig,
+  ChannelHealthEntry,
+  ChannelHealthResponse,
 } from './types.js';
 export { createManagementApp, startManagementServer } from './server.js';
 export type { ManagementServerOptions, SkillsHandlers } from './server.js';

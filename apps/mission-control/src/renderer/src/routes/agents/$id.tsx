@@ -4,6 +4,7 @@ import { Link, createFileRoute, useNavigate } from '@tanstack/react-router';
 import { ArrowLeft, Circle, Loader, MessageSquare, Square, Trash2 } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ModelChainEditor } from '../../components/ModelChainEditor.js';
+import { HealthDot } from '../../components/HealthDot.js';
 import { useAvailableModels } from '../../hooks/useAvailableModels.js';
 import { useDeploymentsStore } from '../../stores/deployments';
 import { useMessagingAppsStore } from '../../stores/messaging-apps.js';
@@ -29,6 +30,8 @@ export function AgentDetail(): JSX.Element {
   const [chainFallbacks, setChainFallbacks] = useState<string[]>([]);
   const [chainSaving, setChainSaving] = useState(false);
   const { apps: messagingApps, loadApps: loadMessagingApps } = useMessagingAppsStore();
+  const channelHealth = useMessagingAppsStore((s) => s.channelHealth);
+  const apps = useMessagingAppsStore((s) => s.apps);
   const [bannerDismissed, setBannerDismissed] = useState(false);
 
   const search = Route.useSearch();
@@ -226,6 +229,36 @@ export function AgentDetail(): JSX.Element {
         <InfoCard label="Uptime" value={status?.uptime ? formatUptime(status.uptime) : 'N/A'} />
         <InfoCard label="Created" value={new Date(deployment.createdAt).toLocaleString()} />
       </div>
+
+      {channelHealth.length > 0 && (
+        <div className="mb-6 rounded-lg border border-border bg-sidebar-bg p-4">
+          <h3 className="mb-3 text-sm font-medium text-muted">Channel Connections</h3>
+          <div className="space-y-2">
+            {channelHealth.map((entry) => {
+              const app = apps.find((a) => a.id === entry.appId);
+              const needsAction = entry.health === 'needs_reauth' || entry.health === 'disconnected';
+              return (
+                <div key={entry.appId} className="flex items-center justify-between text-sm">
+                  <div className="flex items-center gap-2">
+                    <HealthDot health={entry.health} />
+                    <span className="text-foreground">{app?.name ?? entry.appId}</span>
+                    <span className="text-xs text-muted capitalize">{entry.type}</span>
+                  </div>
+                  {needsAction && (
+                    <Link
+                      to="/messaging-apps/$id"
+                      params={{ id: entry.appId }}
+                      className="text-xs text-primary hover:underline"
+                    >
+                      Re-connect →
+                    </Link>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       {deployment.status === 'error' && (
         <div className="mb-6 space-y-2">

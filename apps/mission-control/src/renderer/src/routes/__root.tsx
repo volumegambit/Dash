@@ -4,7 +4,8 @@ import { useEffect, useState } from 'react';
 import { SetupWizard } from '../components/SetupWizard';
 import { Sidebar } from '../components/Sidebar';
 import { initChatListeners } from '../stores/chat';
-import { initDeploymentListeners } from '../stores/deployments';
+import { initDeploymentListeners, useDeploymentsStore } from '../stores/deployments';
+import { useMessagingAppsStore } from '../stores/messaging-apps.js';
 
 export const Route = createRootRoute({
   component: RootLayout,
@@ -16,6 +17,9 @@ function RootLayout(): JSX.Element {
   const [needsSetup, setNeedsSetup] = useState(false);
   const [needsApiKey, setNeedsApiKey] = useState(false);
   const [updateVersion, setUpdateVersion] = useState<string | null>(null);
+
+  const deployments = useDeploymentsStore((s) => s.deployments);
+  const pollHealth = useMessagingAppsStore((s) => s.pollHealth);
 
   useEffect(() => {
     window.api
@@ -46,6 +50,16 @@ function RootLayout(): JSX.Element {
       setUpdateVersion(info.version);
     });
   }, []);
+
+  useEffect(() => {
+    const running = deployments.filter((d) => d.status === 'running');
+    if (running.length === 0) return;
+
+    const deploymentId = running[0].id; // v1: one deployment
+    void pollHealth(deploymentId); // immediate poll
+    const interval = setInterval(() => void pollHealth(deploymentId), 5000);
+    return () => clearInterval(interval);
+  }, [deployments, pollHealth]);
 
   if (checking) {
     return (
