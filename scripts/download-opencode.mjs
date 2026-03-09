@@ -7,6 +7,10 @@ import { pipeline } from 'node:stream/promises';
 
 const OPENCODE_VERSION = '1.2.22';
 
+if (!/^\d+\.\d+\.\d+$/.test(OPENCODE_VERSION)) {
+  throw new Error(`Invalid OPENCODE_VERSION format: '${OPENCODE_VERSION}'. Expected MAJOR.MINOR.PATCH`);
+}
+
 const PLATFORM_MAP = {
   darwin: 'darwin',
   win32: 'windows',
@@ -44,7 +48,7 @@ await mkdir(outDir, { recursive: true });
 
 // Download zip
 const zipPath = join(outDir, zipName);
-const response = await fetch(downloadUrl);
+const response = await fetch(downloadUrl, { signal: AbortSignal.timeout(60_000) });
 if (!response.ok) {
   throw new Error(`Download failed: ${response.status} ${response.statusText}\nURL: ${downloadUrl}`);
 }
@@ -52,13 +56,24 @@ await pipeline(response.body, createWriteStream(zipPath));
 
 // Extract using unzip (macOS/Linux) or Expand-Archive (Windows)
 const { execFileSync } = await import('node:child_process');
-if (platform === 'windows') {
-  execFileSync('powershell', [
-    '-Command',
-    `Expand-Archive -Force -Path "${zipPath}" -DestinationPath "${outDir}"`,
-  ]);
-} else {
-  execFileSync('unzip', ['-o', zipPath, '-d', outDir]);
+try {
+  if (platform === 'windows') {
+    execFileSync('powershell', [
+      '-Command',
+      `$src = '${zipPath.replace(/'/g, "''")}'; $dst = '${outDir.replace(/'/g, "''")}'; Expand-Archive -Force -Path $src -DestinationPath $dst`,
+    ]);
+  } else {
+    execFileSync('unzip', ['-o', '--', zipPath, '-d', outDir]);
+  }
+} catch (err) {
+  await rm(zipPath, { force: true });
+  throw new Error(`Extraction failed: ${err.message}`);
+}
+
+if (!existsSync(binaryPath)) {
+  throw new Error(
+    `Extraction completed but binary not found at expected path: ${binaryPath}\nThe zip may have a different internal layout.`,
+  );
 }
 
 await rm(zipPath);
