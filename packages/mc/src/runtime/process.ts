@@ -609,7 +609,11 @@ export class ProcessRuntime implements DeploymentRuntime {
       'node',
       [gatewayBin, '--config', gatewayConfigPath, '--secrets', gwSecretsPath],
       {
-        env: { ...process.env },
+        env: {
+          ...process.env,
+          MANAGEMENT_API_URL: `http://127.0.0.1:${managementPort}`,
+          MANAGEMENT_API_TOKEN: managementToken,
+        },
         stdio: ['ignore', 'ignore', 'ignore'],
         detached: true,
       },
