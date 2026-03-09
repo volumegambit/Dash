@@ -41,6 +41,12 @@ export interface AppSettings {
   defaultFallbackModels?: string[];
 }
 
+export interface ChannelHealthEntry {
+  appId: string;
+  type: string;
+  health: 'connected' | 'connecting' | 'disconnected' | 'needs_reauth';
+}
+
 export class RendererDeploymentError extends Error {
   constructor(
     message: string,
@@ -99,6 +105,7 @@ export interface MissionControlAPI {
   ): Promise<void>;
   deploymentsLogsSubscribe(id: string): Promise<void>;
   deploymentsLogsUnsubscribe(id: string): Promise<void>;
+  deploymentsGetChannelHealth(deploymentId: string): Promise<ChannelHealthEntry[]>;
 
   // Messaging Apps
   messagingAppsList(): Promise<MessagingApp[]>;

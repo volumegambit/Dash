@@ -354,6 +354,22 @@ export async function registerIpcHandlers(
     return getRuntime().getStatus(id);
   });
 
+  ipcMain.handle('deployments:getChannelHealth', async (_event, id: string) => {
+    const deployment = await getRegistry().get(id);
+    if (!deployment || !deployment.managementPort) {
+      return [];
+    }
+    try {
+      const client = new ManagementClient(
+        `http://127.0.0.1:${deployment.managementPort}`,
+        deployment.managementToken ?? '',
+      );
+      return await client.getChannelHealth();
+    } catch {
+      return [];
+    }
+  });
+
   ipcMain.handle('deployments:logs:subscribe', async (_event, id: string) => {
     // Cancel existing subscription for this ID
     const existing = logSubscriptions.get(id);
