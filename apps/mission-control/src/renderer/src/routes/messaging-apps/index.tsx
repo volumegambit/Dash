@@ -2,10 +2,12 @@ import type { MessagingApp } from '@dash/mc';
 import { Link, createFileRoute } from '@tanstack/react-router';
 import { MessageSquare, Plus, ToggleLeft, ToggleRight, Trash2 } from 'lucide-react';
 import { useEffect, useState } from 'react';
-import { useMessagingAppsStore } from '../../stores/messaging-apps';
+import { HealthDot } from '../../components/HealthDot.js';
+import { useMessagingAppsStore } from '../../stores/messaging-apps.js';
 
 function MessagingApps(): JSX.Element {
   const { apps, loading, loadApps, deleteApp, updateApp } = useMessagingAppsStore();
+  const getAppHealth = useMessagingAppsStore((s) => s.getAppHealth);
   const [deleteTarget, setDeleteTarget] = useState<MessagingApp | null>(null);
 
   useEffect(() => {
@@ -80,6 +82,7 @@ function MessagingApps(): JSX.Element {
                 <div>
                   <span className="text-sm font-medium">{app.name}</span>
                   <span className="ml-2 text-xs text-muted capitalize">{app.type}</span>
+                  <HealthDot health={getAppHealth(app.id)?.health} className="ml-1.5" />
                 </div>
               </Link>
 

@@ -385,6 +385,49 @@ describe('Management Server', () => {
     });
   });
 
+  describe('POST /channels/health + GET /channels/health', () => {
+    it('stores and returns channel health', async () => {
+      const postRes = await fetch(url('/channels/health'), {
+        method: 'POST',
+        headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+        body: JSON.stringify([{ appId: 'app-1', type: 'whatsapp', health: 'connected' }]),
+      });
+      expect(postRes.status).toBe(200);
+
+      const getRes = await fetch(url('/channels/health'), {
+        headers: authHeaders(),
+      });
+      const data = await getRes.json();
+      expect(data).toEqual([{ appId: 'app-1', type: 'whatsapp', health: 'connected' }]);
+    });
+
+    it('replaces all entries on each POST', async () => {
+      await fetch(url('/channels/health'), {
+        method: 'POST',
+        headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+        body: JSON.stringify([{ appId: 'app-1', type: 'whatsapp', health: 'connected' }]),
+      });
+      await fetch(url('/channels/health'), {
+        method: 'POST',
+        headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+        body: JSON.stringify([{ appId: 'app-1', type: 'whatsapp', health: 'needs_reauth' }]),
+      });
+
+      const res = await fetch(url('/channels/health'), {
+        headers: authHeaders(),
+      });
+      const data = (await res.json()) as { health: string }[];
+      expect(data[0].health).toBe('needs_reauth');
+    });
+
+    it('requires auth', async () => {
+      const res = await fetch(url('/channels/health'), {
+        headers: { Authorization: 'Bearer wrong-token' },
+      });
+      expect(res.status).toBe(401);
+    });
+  });
+
   describe('log endpoints', () => {
     let logDir: string;
     let logClose: () => Promise<void>;
