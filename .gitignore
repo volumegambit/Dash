@@ -7,6 +7,9 @@ out/
 release/
 *.tsbuildinfo
 
+# Downloaded binaries (populated at build time)
+apps/mission-control/build/bin/
+
 # Auto-generated
 routeTree.gen.ts
 
