@@ -379,6 +379,49 @@ describe('OpenCodeBackend watchdog', () => {
     vi.unstubAllGlobals();
   });
 
+  it('watchdog health URL is updated to the new server URL after a successful restart', async () => {
+    vi.useFakeTimers();
+
+    // First 3 fetches fail (triggering a restart), then succeed on the new URL
+    const mockFetch = vi.fn().mockRejectedValue(new Error('connection refused'));
+    vi.stubGlobal('fetch', mockFetch);
+
+    const mockLogger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+    const { backend, createOpencodeServer } = await makeStartedBackend(mockLogger);
+
+    // Set up the mock for the restarted server with a different URL/port
+    const newServerClose = vi.fn();
+    vi.mocked(createOpencodeServer).mockResolvedValueOnce({
+      url: 'http://localhost:19999',
+      close: newServerClose,
+    } as any);
+
+    // Advance time to trigger 3 failures and the subsequent restart
+    // 3 polls × 5s = 15s, plus restartWithBackoff 1s delay
+    await vi.advanceTimersByTimeAsync(16_001);
+
+    // After restart, watchdogHealthUrl should be updated to the new server URL
+    expect((backend as any).watchdogHealthUrl).toBe('http://localhost:19999');
+
+    // Now switch fetch to succeed so the next poll on the new URL can verify correctness
+    mockFetch.mockResolvedValue({ ok: true, status: 200 });
+
+    // Advance time for one more poll cycle
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    // The fetch was called with the new URL (not the old http://localhost:9999)
+    const fetchCalls = mockFetch.mock.calls.map((c: unknown[]) => c[0] as string);
+    const newUrlPolls = fetchCalls.filter((url: string) => url === 'http://localhost:19999/health');
+    expect(newUrlPolls.length).toBeGreaterThan(0);
+
+    // Failure count reset after a healthy poll
+    expect((backend as any).watchdogFailureCount).toBe(0);
+
+    await backend.stop();
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
   it('stop() clears the watchdog interval', async () => {
     vi.useFakeTimers();
 
