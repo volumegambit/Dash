@@ -54,7 +54,7 @@ export class OpenCodeBackend implements AgentBackend {
 
   // Stored for restartWithBackoff
   private workDir: string | null = null;
-  private serverPort: number | null = null;
+  private watchdogRestarting = false;
 
   constructor(
     private config: DashAgentConfig,
@@ -89,9 +89,8 @@ export class OpenCodeBackend implements AgentBackend {
     // biome-ignore lint/suspicious/noExplicitAny: SDK type is richer than SessionClient interface
     await this.sessionIdMap.init(this.sdk as any);
 
-    // Store workspace and port for watchdog restarts
+    // Store workspace for watchdog restarts
     this.workDir = workspace;
-    this.serverPort = port;
 
     // Start watchdog after successful server startup
     this.startWatchdog(server.url);
@@ -125,10 +124,17 @@ export class OpenCodeBackend implements AgentBackend {
           return;
         }
 
+        if (this.watchdogRestarting) return;
+
         this.watchdogRestartCount++;
         this.watchdogFailureCount = 0;
         this.sdk = null;
-        await this.restartWithBackoff();
+        this.watchdogRestarting = true;
+        try {
+          await this.restartWithBackoff();
+        } finally {
+          this.watchdogRestarting = false;
+        }
       }
     }, this.WATCHDOG_POLL_MS);
   }
@@ -150,12 +156,24 @@ export class OpenCodeBackend implements AgentBackend {
         });
         this.serverClose?.();
         this.serverClose = () => server.close();
-        this.serverPort = port;
         this.watchdogHealthUrl = server.url;
-        this.sdk = createOpencodeClient({
+        const newSdk = createOpencodeClient({
           baseUrl: server.url,
           directory: this.workDir!,
         });
+
+        // Re-register provider API keys
+        for (const [providerID, key] of Object.entries(this.providerApiKeys)) {
+          if (key) {
+            await newSdk.auth.set({ providerID, auth: { type: 'api', key } });
+          }
+        }
+
+        // Re-initialize the session map
+        // biome-ignore lint/suspicious/noExplicitAny: SDK type is richer than SessionClient interface
+        await this.sessionIdMap.init(newSdk as any);
+
+        this.sdk = newSdk;
         this.logger?.info('[OpenCode] Watchdog: restart successful');
         return;
       } catch (err) {

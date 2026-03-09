@@ -422,6 +422,90 @@ describe('OpenCodeBackend watchdog', () => {
     vi.unstubAllGlobals();
   });
 
+  it('API keys are re-registered on the new client after a watchdog restart', async () => {
+    vi.useFakeTimers();
+
+    // Mock fetch to always fail so health checks trigger a restart
+    const mockFetch = vi.fn().mockRejectedValue(new Error('connection refused'));
+    vi.stubGlobal('fetch', mockFetch);
+
+    const mockLogger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+    const { createOpencodeServer, createOpencodeClient } = await import('@opencode-ai/sdk/v2');
+
+    const mockClose = vi.fn();
+    vi.mocked(createOpencodeServer).mockResolvedValue({ url: 'http://localhost:9999', close: mockClose } as any);
+
+    // Create a second mock SDK to represent the client created after restart
+    const newMockSdk = {
+      auth: { set: vi.fn().mockResolvedValue({}) },
+      app: { skills: vi.fn().mockResolvedValue({ data: [] }) },
+    };
+
+    // First call returns base SDK, second call (after restart) returns newMockSdk
+    vi.mocked(createOpencodeClient)
+      .mockReturnValueOnce({ auth: { set: vi.fn().mockResolvedValue({}) }, app: { skills: vi.fn().mockResolvedValue({ data: [] }) } } as any)
+      .mockReturnValueOnce(newMockSdk as any);
+
+    const backend = new OpenCodeBackend(
+      { model: 'anthropic/claude-opus-4-5', systemPrompt: '' },
+      { anthropic: 'test-api-key-123' },
+      mockLogger,
+    );
+
+    (backend as any).sessionIdMap = {
+      init: vi.fn().mockResolvedValue(undefined),
+      getOrCreate: vi.fn().mockResolvedValue('sess-1'),
+    };
+
+    await backend.start('/tmp/test-workspace');
+
+    // Advance time to trigger 3 failures and the restart (3×5s polls + 1s backoff delay)
+    await vi.advanceTimersByTimeAsync(16_001);
+
+    // The new SDK's auth.set should have been called with the provider key
+    expect(newMockSdk.auth.set).toHaveBeenCalledWith({
+      providerID: 'anthropic',
+      auth: { type: 'api', key: 'test-api-key-123' },
+    });
+
+    await backend.stop();
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  it('concurrent restart attempts are skipped when watchdogRestarting is already true', async () => {
+    vi.useFakeTimers();
+
+    const mockFetch = vi.fn().mockRejectedValue(new Error('connection refused'));
+    vi.stubGlobal('fetch', mockFetch);
+
+    const mockLogger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+    const { backend, createOpencodeServer } = await makeStartedBackend(mockLogger);
+
+    // Record how many times createOpencodeServer was called during start()
+    const callsBeforeRestart = vi.mocked(createOpencodeServer).mock.calls.length;
+
+    // Manually set watchdogRestarting = true to simulate an in-progress restart
+    (backend as any).watchdogRestarting = true;
+    // Also force failure count to threshold so the watchdog would normally trigger a restart
+    (backend as any).watchdogFailureCount = 3;
+
+    // Advance time by one poll interval — the watchdog fires but should skip because
+    // watchdogRestarting is already true
+    await vi.advanceTimersByTimeAsync(5_001);
+
+    // createOpencodeServer should NOT have been called again (no new restart launched)
+    expect(vi.mocked(createOpencodeServer).mock.calls.length).toBe(callsBeforeRestart);
+
+    // watchdogRestartCount should not have incremented either
+    // (it was 0 at start, and no new restart was initiated)
+    expect((backend as any).watchdogRestartCount).toBe(0);
+
+    await backend.stop();
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
   it('stop() clears the watchdog interval', async () => {
     vi.useFakeTimers();
 
