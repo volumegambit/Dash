@@ -31,41 +31,56 @@ export async function createAgentServer(config: DashConfig) {
   const backends: OpenCodeBackend[] = [];
   const backendsByName = new Map<string, OpenCodeBackend>();
 
-  for (const [name, agentConfig] of Object.entries(config.agents)) {
-    let workspace: string | undefined;
-    if (agentConfig.workspace) {
-      workspace = resolve(projectRoot, agentConfig.workspace);
-      await mkdir(workspace, { recursive: true });
-    }
+  const failed: string[] = [];
 
-    const backend = new OpenCodeBackend(
-      {
+  for (const [name, agentConfig] of Object.entries(config.agents)) {
+    try {
+      let workspace: string | undefined;
+      if (agentConfig.workspace) {
+        workspace = resolve(projectRoot, agentConfig.workspace);
+        await mkdir(workspace, { recursive: true });
+      }
+
+      const backend = new OpenCodeBackend(
+        {
+          model: agentConfig.model,
+          systemPrompt: agentConfig.systemPrompt,
+          tools: agentConfig.tools,
+          workspace,
+          skills: agentConfig.skills,
+        },
+        config.providerApiKeys,
+        logger,
+      );
+
+      await backend.start(workspace ?? projectRoot);
+      backends.push(backend);
+      backendsByName.set(name, backend);
+
+      const agent = new DashAgent(backend, {
         model: agentConfig.model,
+        fallbackModels: agentConfig.fallbackModels,
         systemPrompt: agentConfig.systemPrompt,
         tools: agentConfig.tools,
         workspace,
-        skills: agentConfig.skills,
-      },
-      config.providerApiKeys,
-      logger,
-    );
+      });
 
-    await backend.start(workspace ?? projectRoot);
-    backends.push(backend);
-    backendsByName.set(name, backend);
+      clients.set(name, new LocalAgentClient(agent));
+      log(
+        `Agent "${name}" started (model: ${agentConfig.model}, tools: ${agentConfig.tools?.join(', ') ?? 'all'}, workspace: ${workspace ?? 'unrestricted'})`,
+      );
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      log(`[error] Agent "${name}" failed to start: ${msg}`);
+      failed.push(name);
+    }
+  }
 
-    const agent = new DashAgent(backend, {
-      model: agentConfig.model,
-      fallbackModels: agentConfig.fallbackModels,
-      systemPrompt: agentConfig.systemPrompt,
-      tools: agentConfig.tools,
-      workspace,
-    });
-
-    clients.set(name, new LocalAgentClient(agent));
-    log(
-      `Agent "${name}" started (model: ${agentConfig.model}, tools: ${agentConfig.tools?.join(', ') ?? 'all'}, workspace: ${workspace ?? 'unrestricted'})`,
-    );
+  if (failed.length === Object.keys(config.agents).length) {
+    throw new Error(`All agents failed to start: ${failed.join(', ')}`);
+  }
+  if (failed.length > 0) {
+    log(`[warn] ${failed.length} agent(s) skipped due to startup failure: ${failed.join(', ')}`);
   }
 
   const skillsHandlers: SkillsHandlers | undefined = config.managementToken
