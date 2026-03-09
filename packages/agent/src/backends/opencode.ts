@@ -120,8 +120,9 @@ export class OpenCodeBackend implements AgentBackend {
 
         // Auto-approve permission requests (headless mode)
         if (event.type === 'permission.asked' && eventProps.sessionID === sessionId) {
-          console.warn(
-            `[opencode] auto-approving permission: ${eventProps.permission} ${JSON.stringify(eventProps.patterns)}`,
+          this.logger?.warn(
+            `[OpenCode] auto-approving permission: ${eventProps.permission}`,
+            { patterns: JSON.stringify(eventProps.patterns), sessionId },
           );
           // biome-ignore lint/suspicious/noExplicitAny: SDK client's permission API not in generated type
           await (this.sdk as any).permission
@@ -227,7 +228,11 @@ export class OpenCodeBackend implements AgentBackend {
       case 'session.error': {
         if (props.sessionID && props.sessionID !== sessionId) return null;
         const msg = props.error?.message ?? 'Unknown OpenCode error';
-        this.logger?.error(`[OpenCode] ${msg}`);
+        this.logger?.error(`[OpenCode] session.error: ${msg}`, {
+          sessionId: props.sessionID,
+          errorCode: props.error?.code,
+          rawProps: JSON.stringify(props),
+        });
         return { type: 'error', error: new Error(msg) };
       }
 

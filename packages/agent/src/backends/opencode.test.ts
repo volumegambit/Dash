@@ -6,6 +6,7 @@ vi.mock('@opencode-ai/sdk/v2', () => ({
 }));
 
 import { OpenCodeBackend, extractSkillName } from './opencode.js';
+import type { AgentEvent } from '../types.js';
 
 function makeBackend() {
   return new OpenCodeBackend(
@@ -183,18 +184,93 @@ describe('OpenCodeBackend.normalizeEvent', () => {
     expect(result).toBeNull();
   });
 
-  it('calls logger.error when a session.error event fires', async () => {
+  it('calls logger.error with structured context when a session.error event fires', async () => {
     const mockLogger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
     const backend = new OpenCodeBackend(
       { model: 'anthropic/claude-haiku-4-5', systemPrompt: '', tools: [] },
       {},
       mockLogger,
     );
-    backend.normalizeEvent(
-      makeEvent('session.error', { sessionID: 'sess-1', error: { message: 'API key invalid' } }),
-      'sess-1',
+    const errorProps = { sessionID: 'sess-1', error: { message: 'API key invalid', code: 'AUTH_ERR' } };
+    backend.normalizeEvent(makeEvent('session.error', errorProps), 'sess-1');
+    expect(mockLogger.error).toHaveBeenCalledWith(
+      '[OpenCode] session.error: API key invalid',
+      {
+        sessionId: 'sess-1',
+        errorCode: 'AUTH_ERR',
+        rawProps: JSON.stringify(errorProps),
+      },
     );
-    expect(mockLogger.error).toHaveBeenCalledWith('[OpenCode] API key invalid');
+    await backend.stop();
+  });
+
+  it('calls logger.warn with structured context when a permission.asked event fires', async () => {
+    const mockLogger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+
+    // We need to test the run() loop's permission handling, so we stub the SDK
+    const mockPermissionReply = vi.fn().mockResolvedValue({});
+    const mockSdk = {
+      auth: { set: vi.fn().mockResolvedValue({}) },
+      event: {
+        subscribe: vi.fn().mockResolvedValue({
+          stream: (async function* () {
+            yield makeEvent('permission.asked', {
+              sessionID: 'sess-run',
+              id: 'perm-1',
+              permission: 'fs.write',
+              patterns: ['**/*.ts'],
+            });
+            yield makeEvent('session.status', {
+              sessionID: 'sess-run',
+              status: { type: 'idle' },
+            });
+          })(),
+        }),
+      },
+      session: {
+        prompt: vi.fn().mockResolvedValue({}),
+      },
+      permission: { reply: mockPermissionReply },
+    };
+
+    const { createOpencodeServer, createOpencodeClient } = await import('@opencode-ai/sdk/v2');
+    vi.mocked(createOpencodeServer).mockResolvedValue({ url: 'http://localhost:9999', close: vi.fn() } as any);
+    vi.mocked(createOpencodeClient).mockReturnValue(mockSdk as any);
+
+    const backend = new OpenCodeBackend(
+      { model: 'anthropic/claude-haiku-4-5', systemPrompt: '' },
+      {},
+      mockLogger,
+    );
+
+    // Stub sessionIdMap to avoid real SDK calls
+    (backend as any).sessionIdMap = {
+      init: vi.fn().mockResolvedValue(undefined),
+      getOrCreate: vi.fn().mockResolvedValue('sess-run'),
+    };
+
+    await backend.start('/tmp');
+
+    // Consume the generator to completion
+    const events: AgentEvent[] = [];
+    for await (const ev of backend.run(
+      {
+        channelId: 'ch-1',
+        conversationId: 'conv-1',
+        model: 'anthropic/claude-haiku-4-5',
+        message: 'hello',
+        systemPrompt: '',
+        tools: [],
+      },
+      {},
+    )) {
+      events.push(ev);
+    }
+
+    expect(mockLogger.warn).toHaveBeenCalledWith(
+      '[OpenCode] auto-approving permission: fs.write',
+      { patterns: JSON.stringify(['**/*.ts']), sessionId: 'sess-run' },
+    );
     await backend.stop();
   });
 });
