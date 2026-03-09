@@ -1,4 +1,5 @@
 import type {
+  ChannelHealthEntry,
   HealthResponse,
   InfoResponse,
   ShutdownResponse,
@@ -49,6 +50,14 @@ export class ManagementClient {
 
   async health(): Promise<HealthResponse> {
     return this.request<HealthResponse>('GET', '/health');
+  }
+
+  async postChannelHealth(entries: ChannelHealthEntry[]): Promise<void> {
+    await this.requestWithBody<{ ok: boolean }>('POST', '/channels/health', entries);
+  }
+
+  async getChannelHealth(): Promise<ChannelHealthEntry[]> {
+    return this.request<ChannelHealthEntry[]>('GET', '/channels/health');
   }
 
   async info(): Promise<InfoResponse> {
