@@ -43,6 +43,7 @@ export class OpenCodeBackend implements AgentBackend {
 
   // Watchdog state
   private watchdogInterval: NodeJS.Timeout | null = null;
+  private watchdogHealthUrl = '';
   private watchdogFailureCount = 0;
   private watchdogRestartCount = 0;
   private watchdogWindowStart = 0;
@@ -97,9 +98,10 @@ export class OpenCodeBackend implements AgentBackend {
   }
 
   private startWatchdog(serverUrl: string): void {
+    this.watchdogHealthUrl = serverUrl;
     this.watchdogInterval = setInterval(async () => {
       try {
-        const res = await fetch(`${serverUrl}/health`, { signal: AbortSignal.timeout(3_000) });
+        const res = await fetch(`${this.watchdogHealthUrl}/health`, { signal: AbortSignal.timeout(3_000) });
         if (res.ok) {
           this.watchdogFailureCount = 0;
           return;
@@ -149,6 +151,7 @@ export class OpenCodeBackend implements AgentBackend {
         this.serverClose?.();
         this.serverClose = () => server.close();
         this.serverPort = port;
+        this.watchdogHealthUrl = server.url;
         this.sdk = createOpencodeClient({
           baseUrl: server.url,
           directory: this.workDir!,
