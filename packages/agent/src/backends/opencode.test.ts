@@ -275,6 +275,143 @@ describe('OpenCodeBackend.normalizeEvent', () => {
   });
 });
 
+describe('OpenCodeBackend watchdog', () => {
+  // Helper to set up a backend with a mock SDK and start it
+  async function makeStartedBackend(mockLogger?: { info: ReturnType<typeof vi.fn>; warn: ReturnType<typeof vi.fn>; error: ReturnType<typeof vi.fn> }) {
+    const { createOpencodeServer, createOpencodeClient } = await import('@opencode-ai/sdk/v2');
+
+    const mockClose = vi.fn();
+    vi.mocked(createOpencodeServer).mockResolvedValue({ url: 'http://localhost:9999', close: mockClose } as any);
+
+    const mockSdk = {
+      auth: { set: vi.fn().mockResolvedValue({}) },
+      app: { skills: vi.fn().mockResolvedValue({ data: [] }) },
+    };
+    vi.mocked(createOpencodeClient).mockReturnValue(mockSdk as any);
+
+    const backend = new OpenCodeBackend(
+      { model: 'anthropic/claude-opus-4-5', systemPrompt: '' },
+      {},
+      mockLogger,
+    );
+
+    // Stub sessionIdMap to avoid real SDK calls
+    (backend as any).sessionIdMap = {
+      init: vi.fn().mockResolvedValue(undefined),
+      getOrCreate: vi.fn().mockResolvedValue('sess-1'),
+    };
+
+    await backend.start('/tmp/test-workspace');
+
+    return { backend, mockClose, createOpencodeServer, createOpencodeClient };
+  }
+
+  it('healthy poll resets failure count', async () => {
+    vi.useFakeTimers();
+    // Mock fetch to return ok responses
+    const mockFetch = vi.fn().mockResolvedValue({ ok: true, status: 200 });
+    vi.stubGlobal('fetch', mockFetch);
+
+    const { backend } = await makeStartedBackend();
+
+    // Advance time to trigger 3 polls
+    await vi.advanceTimersByTimeAsync(15_000);
+
+    // watchdogFailureCount should be 0 since all polls succeeded
+    expect((backend as any).watchdogFailureCount).toBe(0);
+
+    await backend.stop();
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  it('3 consecutive failures trigger a restart', async () => {
+    vi.useFakeTimers();
+
+    // Mock fetch to always fail
+    const mockFetch = vi.fn().mockRejectedValue(new Error('connection refused'));
+    vi.stubGlobal('fetch', mockFetch);
+
+    const mockLogger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+    const { backend, createOpencodeServer } = await makeStartedBackend(mockLogger);
+
+    // Reset mock to track restart calls (first call was from start())
+    const firstCallCount = vi.mocked(createOpencodeServer).mock.calls.length;
+
+    // Advance time to trigger 3 failures (3 polls at 5s each = 15s)
+    // restartWithBackoff has a 1s delay before first attempt, so advance more
+    await vi.advanceTimersByTimeAsync(16_001);
+
+    // createOpencodeServer should have been called again for restart
+    expect(vi.mocked(createOpencodeServer).mock.calls.length).toBeGreaterThan(firstCallCount);
+
+    await backend.stop();
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  it('restart cap stops watchdog after max restarts', async () => {
+    vi.useFakeTimers();
+
+    // Mock fetch to always fail (health check fails)
+    const mockFetch = vi.fn().mockRejectedValue(new Error('connection refused'));
+    vi.stubGlobal('fetch', mockFetch);
+
+    const mockLogger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+    const { backend } = await makeStartedBackend(mockLogger);
+
+    // Force watchdog state to already be at the max restart cap and within the window
+    // so the next interval poll immediately triggers the cap stop branch
+    (backend as any).watchdogRestartCount = 5; // already at WATCHDOG_MAX_RESTARTS
+    (backend as any).watchdogWindowStart = Date.now();
+
+    // Advance time to trigger 3 consecutive failures (threshold = 3) — 3 polls × 5s = 15s
+    await vi.advanceTimersByTimeAsync(15_001);
+
+    // After hitting max restarts, watchdog should be stopped and sdk null
+    expect((backend as any).watchdogInterval).toBeNull();
+    expect((backend as any).sdk).toBeNull();
+    expect(mockLogger.error).toHaveBeenCalledWith(
+      '[OpenCode] Watchdog: max restarts exceeded, manual redeploy required',
+    );
+
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  it('stop() clears the watchdog interval', async () => {
+    vi.useFakeTimers();
+
+    const mockFetch = vi.fn().mockResolvedValue({ ok: true, status: 200 });
+    vi.stubGlobal('fetch', mockFetch);
+
+    const { backend } = await makeStartedBackend();
+
+    // Verify watchdog is running before stop (interval handle exists)
+    expect((backend as any).watchdogInterval).not.toBeNull();
+
+    await backend.stop();
+
+    // Watchdog interval handle should be cleared to null after stop
+    expect((backend as any).watchdogInterval).toBeNull();
+
+    // Spy on clearInterval to verify it was called; checking watchdogInterval=null is sufficient
+    // since we already verified no handle remains — the interval will not fire again
+    const callsAfterStop = mockFetch.mock.calls.length;
+
+    // Advance by a full poll cycle to confirm no new polls are scheduled
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    // No additional fetch calls should have been made beyond those already in-flight
+    // (the interval is gone, so no new poll callbacks are scheduled)
+    expect((backend as any).watchdogInterval).toBeNull();
+    expect(mockFetch.mock.calls.length).toBe(callsAfterStop);
+
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+});
+
 describe('extractSkillName', () => {
   it('returns skill name from a completed skill tool event', () => {
     const event = {
