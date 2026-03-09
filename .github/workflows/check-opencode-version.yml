@@ -22,21 +22,30 @@ jobs:
             python3 -c "import json,sys; releases=json.load(sys.stdin); print(releases[0]['tag_name'].lstrip('v'))")
           echo "Latest version: $LATEST"
 
-          # Parse minor versions (MAJOR.MINOR.PATCH)
+          # Parse version components
+          PINNED_MAJOR=$(echo "$PINNED" | cut -d. -f1)
           PINNED_MINOR=$(echo "$PINNED" | cut -d. -f2)
+          LATEST_MAJOR=$(echo "$LATEST" | cut -d. -f1)
           LATEST_MINOR=$(echo "$LATEST" | cut -d. -f2)
 
-          GAP=$((LATEST_MINOR - PINNED_MINOR))
-          echo "Minor version gap: $GAP"
+          # Compute effective gap in minor versions, accounting for major bumps
+          # If major versions differ, treat each major bump as 100 minor versions
+          MAJOR_GAP=$(( (LATEST_MAJOR - PINNED_MAJOR) * 100 ))
+          MINOR_GAP=$((LATEST_MINOR - PINNED_MINOR))
+          # When major bumped, latest minor resets to 0 so minor gap is negative — floor at 0
+          if [ "$MINOR_GAP" -lt 0 ]; then MINOR_GAP=0; fi
+          GAP=$((MAJOR_GAP + MINOR_GAP))
+
+          echo "Effective version gap (in minor units): $GAP"
 
           if [ "$GAP" -gt 5 ]; then
             echo ""
-            echo "❌ opencode version is $GAP minor versions behind latest."
+            echo "❌ opencode version is significantly behind latest."
             echo "   Pinned: $PINNED"
             echo "   Latest: $LATEST"
             echo ""
             echo "Update OPENCODE_VERSION in scripts/download-opencode.mjs to $LATEST"
             exit 1
           else
-            echo "✅ opencode version is within 5 minor versions of latest (gap: $GAP)."
+            echo "✅ opencode version is within acceptable range of latest (gap: $GAP)."
           fi
