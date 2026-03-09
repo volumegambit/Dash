@@ -1,8 +1,15 @@
-import { join } from 'node:path';
+import { delimiter, join } from 'node:path';
 import { BrowserWindow, app } from 'electron';
 import { autoUpdater } from 'electron-updater';
 import { registerIpcHandlers } from './ipc';
 import { setupAutoUpdater } from './updater.js';
+
+// When packaged, prepend the bundled opencode binary directory to PATH so
+// spawn('opencode') in @opencode-ai/sdk resolves the bundled binary.
+if (app.isPackaged) {
+  const binDir = join(process.resourcesPath, 'bin');
+  process.env.PATH = `${binDir}${delimiter}${process.env.PATH ?? ''}`;
+}
 
 let mainWindow: BrowserWindow | undefined;
 
