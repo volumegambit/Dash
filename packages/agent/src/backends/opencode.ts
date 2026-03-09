@@ -41,6 +41,20 @@ export class OpenCodeBackend implements AgentBackend {
   private sessionIdMap = new SessionIdMap();
   private currentSessionId: string | null = null;
 
+  // Watchdog state
+  private watchdogInterval: NodeJS.Timeout | null = null;
+  private watchdogFailureCount = 0;
+  private watchdogRestartCount = 0;
+  private watchdogWindowStart = 0;
+  private readonly WATCHDOG_POLL_MS = 5_000;
+  private readonly WATCHDOG_FAILURE_THRESHOLD = 3;
+  private readonly WATCHDOG_MAX_RESTARTS = 5;
+  private readonly WATCHDOG_WINDOW_MS = 10 * 60 * 1_000;
+
+  // Stored for restartWithBackoff
+  private workDir: string | null = null;
+  private serverPort: number | null = null;
+
   constructor(
     private config: DashAgentConfig,
     private providerApiKeys: Record<string, string>,
@@ -73,6 +87,79 @@ export class OpenCodeBackend implements AgentBackend {
     // Rebuild session map from existing sessions
     // biome-ignore lint/suspicious/noExplicitAny: SDK type is richer than SessionClient interface
     await this.sessionIdMap.init(this.sdk as any);
+
+    // Store workspace and port for watchdog restarts
+    this.workDir = workspace;
+    this.serverPort = port;
+
+    // Start watchdog after successful server startup
+    this.startWatchdog(server.url);
+  }
+
+  private startWatchdog(serverUrl: string): void {
+    this.watchdogInterval = setInterval(async () => {
+      try {
+        const res = await fetch(`${serverUrl}/health`, { signal: AbortSignal.timeout(3_000) });
+        if (res.ok) {
+          this.watchdogFailureCount = 0;
+          return;
+        }
+        throw new Error(`HTTP ${res.status}`);
+      } catch {
+        this.watchdogFailureCount++;
+        if (this.watchdogFailureCount < this.WATCHDOG_FAILURE_THRESHOLD) return;
+
+        // Check restart cap
+        const now = Date.now();
+        if (now - this.watchdogWindowStart > this.WATCHDOG_WINDOW_MS) {
+          this.watchdogWindowStart = now;
+          this.watchdogRestartCount = 0;
+        }
+        if (this.watchdogRestartCount >= this.WATCHDOG_MAX_RESTARTS) {
+          clearInterval(this.watchdogInterval!);
+          this.watchdogInterval = null;
+          this.sdk = null;
+          this.logger?.error('[OpenCode] Watchdog: max restarts exceeded, manual redeploy required');
+          return;
+        }
+
+        this.watchdogRestartCount++;
+        this.watchdogFailureCount = 0;
+        this.sdk = null;
+        await this.restartWithBackoff();
+      }
+    }, this.WATCHDOG_POLL_MS);
+  }
+
+  private async restartWithBackoff(): Promise<void> {
+    const delays = [1_000, 2_000, 4_000, 8_000, 16_000];
+    for (let attempt = 0; ; attempt++) {
+      const delay = Math.min(delays[attempt] ?? 60_000, 60_000);
+      this.logger?.warn(`[OpenCode] Watchdog: restarting (attempt ${attempt + 1}), waiting ${delay}ms`);
+      await new Promise(resolve => setTimeout(resolve, delay));
+      try {
+        const port = await findFreePort();
+        const server = await createOpencodeServer({
+          port,
+          config: {
+            model: this.config.model,
+            ...(this.config.skills && { skills: this.config.skills }),
+          },
+        });
+        this.serverClose?.();
+        this.serverClose = () => server.close();
+        this.serverPort = port;
+        this.sdk = createOpencodeClient({
+          baseUrl: server.url,
+          directory: this.workDir!,
+        });
+        this.logger?.info('[OpenCode] Watchdog: restart successful');
+        return;
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        this.logger?.error(`[OpenCode] Watchdog: restart attempt ${attempt + 1} failed: ${msg}`);
+      }
+    }
   }
 
   async *run(state: AgentState, options: RunOptions): AsyncGenerator<AgentEvent> {
@@ -268,6 +355,11 @@ export class OpenCodeBackend implements AgentBackend {
   }
 
   async stop(): Promise<void> {
+    // Clear watchdog before killing the process
+    if (this.watchdogInterval) {
+      clearInterval(this.watchdogInterval);
+      this.watchdogInterval = null;
+    }
     this.serverClose?.();
     this.serverClose = null;
     this.sdk = null;
