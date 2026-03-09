@@ -6,9 +6,9 @@ import { join } from 'node:path';
 export type LogLevel = 'info' | 'warn' | 'error';
 
 export interface Logger {
-  info(message: string): void;
-  warn(message: string): void;
-  error(message: string): void;
+  info(message: string, context?: Record<string, unknown>): void;
+  warn(message: string, context?: Record<string, unknown>): void;
+  error(message: string, context?: Record<string, unknown>): void;
 }
 
 export const noopLogger: Logger = {
@@ -31,20 +31,25 @@ export class FileLogger implements Logger {
     return new FileLogger(stream);
   }
 
-  private write(level: LogLevel, message: string): void {
+  private write(level: LogLevel, message: string, context?: Record<string, unknown>): void {
     const timestamp = new Date().toISOString();
-    const line = `${timestamp} [${level}] ${message}\n`;
+    let line: string;
+    if (context !== undefined) {
+      line = JSON.stringify({ ts: timestamp, level, msg: message, ...context }) + '\n';
+    } else {
+      line = `${timestamp} [${level}] ${message}\n`;
+    }
     this.stream.write(line);
   }
 
-  info(message: string): void {
-    this.write('info', message);
+  info(message: string, context?: Record<string, unknown>): void {
+    this.write('info', message, context);
   }
-  warn(message: string): void {
-    this.write('warn', message);
+  warn(message: string, context?: Record<string, unknown>): void {
+    this.write('warn', message, context);
   }
-  error(message: string): void {
-    this.write('error', message);
+  error(message: string, context?: Record<string, unknown>): void {
+    this.write('error', message, context);
   }
 
   flush(): Promise<void> {
