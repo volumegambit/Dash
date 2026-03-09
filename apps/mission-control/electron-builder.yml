@@ -42,6 +42,10 @@ extraResources:
     to: node_modules
     filter:
       - "**/*"
+  - from: build/bin
+    to: bin
+    filter:
+      - "**/*"
 
 mac:
   target:
