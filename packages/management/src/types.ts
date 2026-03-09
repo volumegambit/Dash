@@ -41,3 +41,11 @@ export interface SkillsConfig {
   paths: string[];
   urls: string[];
 }
+
+export interface ChannelHealthEntry {
+  appId: string;
+  type: 'whatsapp' | 'telegram' | string;
+  health: 'connected' | 'connecting' | 'disconnected' | 'needs_reauth';
+}
+
+export type ChannelHealthResponse = ChannelHealthEntry[];
