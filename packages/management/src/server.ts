@@ -5,6 +5,7 @@ import { basename } from 'node:path';
 import { serve } from '@hono/node-server';
 import { Hono } from 'hono';
 import type {
+  ChannelHealthEntry,
   ErrorResponse,
   HealthResponse,
   InfoResponse,
@@ -41,6 +42,7 @@ export interface ManagementServerOptions {
 export function createManagementApp(options: ManagementServerOptions): Hono {
   const app = new Hono();
   const startTime = Date.now();
+  let channelHealthStore: ChannelHealthEntry[] = [];
 
   // Bearer token auth middleware — /health is exempt (public liveness check)
   app.use('*', async (c, next) => {
@@ -186,6 +188,21 @@ export function createManagementApp(options: ManagementServerOptions): Hono {
         Connection: 'keep-alive',
       },
     });
+  });
+
+  app.post('/channels/health', async (c) => {
+    let entries: ChannelHealthEntry[];
+    try {
+      entries = await c.req.json<ChannelHealthEntry[]>();
+    } catch {
+      return c.json({ error: 'Invalid request body' } satisfies ErrorResponse, 400);
+    }
+    channelHealthStore = entries;
+    return c.json({ ok: true });
+  });
+
+  app.get('/channels/health', (c) => {
+    return c.json(channelHealthStore);
   });
 
   if (options.skills) {
