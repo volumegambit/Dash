@@ -76,4 +76,29 @@ describe('FileLogger', () => {
     const content = await readFile(join(tempDir, 'test.log'), 'utf8');
     expect(content).toContain('final message');
   });
+
+  it('writes JSON-lines entry when context is provided', async () => {
+    const logger = await FileLogger.create(tempDir, 'test.log');
+    logger.error('something went wrong', { agentName: 'my-agent', sessionId: 'abc' });
+    await logger.flush();
+    await logger.close();
+
+    const content = await readFile(join(tempDir, 'test.log'), 'utf8');
+    const parsed = JSON.parse(content.trim());
+    expect(parsed.level).toBe('error');
+    expect(parsed.msg).toBe('something went wrong');
+    expect(parsed.agentName).toBe('my-agent');
+    expect(parsed.sessionId).toBe('abc');
+    expect(typeof parsed.ts).toBe('string');
+  });
+
+  it('plain string calls still produce the original timestamped format', async () => {
+    const logger = await FileLogger.create(tempDir, 'test.log');
+    logger.info('hello world');
+    await logger.flush();
+    await logger.close();
+
+    const content = await readFile(join(tempDir, 'test.log'), 'utf8');
+    expect(content.trim()).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z \[info\] hello world$/);
+  });
 });
