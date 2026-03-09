@@ -45,7 +45,8 @@ extraResources:
   - from: build/bin
     to: bin
     filter:
-      - "**/*"
+      - "opencode"
+      - "opencode.exe"
 
 mac:
   target:
