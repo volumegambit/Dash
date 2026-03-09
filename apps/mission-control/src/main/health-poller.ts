@@ -3,6 +3,7 @@ import { ManagementClient } from '@dash/management';
 export class HealthPoller {
   private timers = new Map<string, NodeJS.Timeout>();
   private lastStatus = new Map<string, string>();
+  private clients = new Map<string, ManagementClient>();
 
   start(
     id: string,
@@ -11,12 +12,13 @@ export class HealthPoller {
     onStatusChange: (status: string) => void,
   ): void {
     this.stop(id); // stop any existing poller for this id
+    const client = new ManagementClient(
+      `http://127.0.0.1:${managementPort}`,
+      managementToken,
+    );
+    this.clients.set(id, client);
     const timer = setInterval(async () => {
       try {
-        const client = new ManagementClient(
-          `http://127.0.0.1:${managementPort}`,
-          managementToken,
-        );
         const result = await client.health();
         const status = result.status;
         const prev = this.lastStatus.get(id);
@@ -41,6 +43,7 @@ export class HealthPoller {
       clearInterval(timer);
       this.timers.delete(id);
       this.lastStatus.delete(id);
+      this.clients.delete(id);
     }
   }
 
