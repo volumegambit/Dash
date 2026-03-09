@@ -92,6 +92,20 @@ describe('FileLogger', () => {
     expect(typeof parsed.ts).toBe('string');
   });
 
+  it('canonical fields (ts, level, msg) win over same-named context keys', async () => {
+    const logger = await FileLogger.create(tempDir, 'test.log');
+    logger.info('real message', { ts: 'FAKE_TS', level: 'FAKE_LEVEL', msg: 'FAKE_MSG', extra: 'ok' });
+    await logger.flush();
+    await logger.close();
+
+    const content = await readFile(join(tempDir, 'test.log'), 'utf8');
+    const parsed = JSON.parse(content.trim());
+    expect(parsed.ts).not.toBe('FAKE_TS');
+    expect(parsed.level).toBe('info');
+    expect(parsed.msg).toBe('real message');
+    expect(parsed.extra).toBe('ok');
+  });
+
   it('plain string calls still produce the original timestamped format', async () => {
     const logger = await FileLogger.create(tempDir, 'test.log');
     logger.info('hello world');

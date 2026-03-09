@@ -28,6 +28,9 @@ export class FileLogger implements Logger {
     await mkdir(logDir, { recursive: true });
     const filePath = join(logDir, filename);
     const stream = createWriteStream(filePath, { flags: 'a' });
+    stream.on('error', (err) => {
+      process.stderr.write(`FileLogger stream error: ${err.message}\n`);
+    });
     return new FileLogger(stream);
   }
 
@@ -35,7 +38,7 @@ export class FileLogger implements Logger {
     const timestamp = new Date().toISOString();
     let line: string;
     if (context !== undefined) {
-      line = JSON.stringify({ ts: timestamp, level, msg: message, ...context }) + '\n';
+      line = JSON.stringify({ ...context, ts: timestamp, level, msg: message }) + '\n';
     } else {
       line = `${timestamp} [${level}] ${message}\n`;
     }
@@ -63,7 +66,7 @@ export class FileLogger implements Logger {
 
   close(): Promise<void> {
     return new Promise((resolve, reject) => {
-      this.stream.on('error', reject);
+      this.stream.once('error', reject);
       this.stream.end(() => resolve());
     });
   }
