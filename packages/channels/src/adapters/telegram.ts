@@ -1,10 +1,26 @@
 import { Bot } from 'grammy';
-import type { ChannelAdapter, MessageHandler, OutboundMessage } from '../types.js';
+import type { ChannelAdapter, ChannelHealth, MessageHandler, OutboundMessage } from '../types.js';
 
 export class TelegramAdapter implements ChannelAdapter {
   readonly name = 'telegram';
   private bot: Bot;
   private handlers: MessageHandler[] = [];
+  private health: ChannelHealth = 'connecting';
+  private healthHandlers: Array<(h: ChannelHealth) => void> = [];
+
+  getHealth(): ChannelHealth {
+    return this.health;
+  }
+
+  onHealthChange(handler: (health: ChannelHealth) => void): void {
+    this.healthHandlers.push(handler);
+  }
+
+  private setHealth(h: ChannelHealth): void {
+    if (this.health === h) return;
+    this.health = h;
+    for (const handler of this.healthHandlers) handler(h);
+  }
 
   constructor(
     token: string,
@@ -52,18 +68,21 @@ export class TelegramAdapter implements ChannelAdapter {
 
     this.bot.catch((err) => {
       console.error('Telegram bot error:', err.message);
+      this.setHealth('disconnected');
     });
 
     this.bot.start({
       drop_pending_updates: true,
       onStart: (botInfo) => {
         console.log(`Telegram bot @${botInfo.username} started (polling)`);
+        this.setHealth('connected');
       },
     });
   }
 
   async stop(): Promise<void> {
     await this.bot.stop();
+    this.setHealth('disconnected');
   }
 
   async send(conversationId: string, message: OutboundMessage): Promise<void> {
