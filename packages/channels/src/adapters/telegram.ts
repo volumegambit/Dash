@@ -71,18 +71,24 @@ export class TelegramAdapter implements ChannelAdapter {
       this.setHealth('disconnected');
     });
 
-    this.bot.start({
-      drop_pending_updates: true,
-      onStart: (botInfo) => {
-        console.log(`Telegram bot @${botInfo.username} started (polling)`);
-        this.setHealth('connected');
-      },
-    });
+    this.bot
+      .start({
+        drop_pending_updates: true,
+        onStart: (botInfo) => {
+          console.log(`Telegram bot @${botInfo.username} started (polling)`);
+          this.setHealth('connected');
+        },
+      })
+      .catch((err: unknown) => {
+        console.error('[Telegram] Bot polling error:', err);
+        this.setHealth('disconnected');
+      });
   }
 
   async stop(): Promise<void> {
     await this.bot.stop();
     this.setHealth('disconnected');
+    this.healthHandlers = [];
   }
 
   async send(conversationId: string, message: OutboundMessage): Promise<void> {
