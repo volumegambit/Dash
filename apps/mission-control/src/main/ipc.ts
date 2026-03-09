@@ -19,6 +19,7 @@ import { app, dialog, ipcMain, safeStorage, shell } from 'electron';
 import type { BrowserWindow } from 'electron';
 import type { DeployWithConfigOptions } from '../shared/ipc.js';
 import { ChatService } from './chat-service.js';
+import { HealthPoller } from './health-poller.js';
 
 const DATA_DIR = join(homedir(), '.mission-control');
 const SESSION_KEY_PATH = join(DATA_DIR, 'session.key');
@@ -28,6 +29,7 @@ let secretStore: EncryptedSecretStore | undefined;
 let registry: AgentRegistry | undefined;
 let runtime: ProcessRuntime | undefined;
 let messagingAppRegistry: MessagingAppRegistry | undefined;
+const healthPoller = new HealthPoller();
 
 function getMessagingAppRegistry(): MessagingAppRegistry {
   if (!messagingAppRegistry) {
@@ -278,14 +280,26 @@ export async function registerIpcHandlers(
   });
 
   ipcMain.handle('deployments:deploy', async (_event, configDir: string) => {
+    let deploymentId: string;
     try {
-      return await getRuntime().deploy(configDir);
+      deploymentId = await getRuntime().deploy(configDir);
     } catch (err) {
       if (err instanceof DeploymentStartupError) {
-        return err.deploymentId;
+        deploymentId = err.deploymentId;
+      } else {
+        throw err;
       }
-      throw err;
     }
+    const dep = await getRegistry().get(deploymentId);
+    if (dep?.managementPort && dep?.managementToken) {
+      healthPoller.start(deploymentId, dep.managementPort, dep.managementToken, (status) => {
+        const win = getWindow();
+        if (win && !win.isDestroyed()) {
+          win.webContents.send('deployment:statusChange', deploymentId, status);
+        }
+      });
+    }
+    return deploymentId;
   });
 
   ipcMain.handle(
@@ -309,18 +323,31 @@ export async function registerIpcHandlers(
       };
       await writeFile(join(agentsDir, `${name}.json`), JSON.stringify(agentConfig, null, 2));
 
+      let deploymentId: string;
       try {
-        return await getRuntime().deploy(configDir);
+        deploymentId = await getRuntime().deploy(configDir);
       } catch (err) {
         if (err instanceof DeploymentStartupError) {
-          return err.deploymentId;
+          deploymentId = err.deploymentId;
+        } else {
+          throw err;
         }
-        throw err;
       }
+      const dep = await getRegistry().get(deploymentId);
+      if (dep?.managementPort && dep?.managementToken) {
+        healthPoller.start(deploymentId, dep.managementPort, dep.managementToken, (status) => {
+          const win = getWindow();
+          if (win && !win.isDestroyed()) {
+            win.webContents.send('deployment:statusChange', deploymentId, status);
+          }
+        });
+      }
+      return deploymentId;
     },
   );
 
   ipcMain.handle('deployments:stop', async (_event, id: string) => {
+    healthPoller.stop(id);
     await getRuntime().stop(id);
     const win = getWindow();
     if (win) {
@@ -329,6 +356,8 @@ export async function registerIpcHandlers(
   });
 
   ipcMain.handle('deployments:remove', async (_event, id: string, deleteWorkspace?: boolean) => {
+    healthPoller.stop(id);
+
     // Cancel any active log subscription
     const sub = logSubscriptions.get(id);
     if (sub) {
@@ -636,4 +665,8 @@ export async function registerIpcHandlers(
       await getSettingsStore().set(patch);
     },
   );
+
+  app.on('before-quit', () => {
+    healthPoller.stopAll();
+  });
 }
