@@ -7,7 +7,7 @@
     "dev": "electron-vite dev",
     "build": "electron-vite build",
     "preview": "electron-vite preview",
-    "package": "electron-builder",
+    "package": "node ../../scripts/download-opencode.mjs && electron-builder",
     "typecheck": "tsc -p tsconfig.node.json --noEmit"
   },
   "dependencies": {
