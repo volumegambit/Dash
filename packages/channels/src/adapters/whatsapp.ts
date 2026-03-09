@@ -107,11 +107,11 @@ export class WhatsAppAdapter implements ChannelAdapter {
       }
 
       if (connection === 'close') {
+        if (this.stopped) return;
         const statusCode = (
           lastDisconnect?.error as { output?: { statusCode?: number } } | undefined
         )?.output?.statusCode;
         if (statusCode !== DisconnectReason.loggedOut) {
-          if (this.stopped) return;
           this.setHealth('connecting');
           this.start().catch((err) => console.error('[WhatsApp] Reconnect failed:', err));
         } else {
@@ -183,6 +183,7 @@ export class WhatsAppAdapter implements ChannelAdapter {
       this.sock.end(undefined);
       this.sock = null;
     }
+    this.healthHandlers = [];
   }
 
   async send(conversationId: string, message: OutboundMessage): Promise<void> {
