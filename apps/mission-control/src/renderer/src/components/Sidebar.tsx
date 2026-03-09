@@ -10,6 +10,8 @@ import {
   Settings,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
+import { HealthDot } from './HealthDot.js';
+import { useMessagingAppsStore } from '../stores/messaging-apps.js';
 
 const navItems: { to: string; label: string; icon: LucideIcon }[] = [
   { to: '/', label: 'Dashboard', icon: LayoutDashboard },
@@ -21,7 +23,11 @@ const navItems: { to: string; label: string; icon: LucideIcon }[] = [
   { to: '/settings', label: 'Settings', icon: Settings },
 ];
 
+const HEALTH_ROUTES = new Set(['/agents', '/messaging-apps']);
+
 export function Sidebar(): JSX.Element {
+  const worstHealth = useMessagingAppsStore((s) => s.getWorstHealth());
+
   return (
     <aside className="flex h-screen w-56 shrink-0 flex-col border-r border-border bg-sidebar-bg">
       <div className="flex h-14 items-center border-b border-border px-4">
@@ -36,6 +42,9 @@ export function Sidebar(): JSX.Element {
           >
             <item.icon size={16} />
             {item.label}
+            {HEALTH_ROUTES.has(item.to) && (
+              <HealthDot health={worstHealth} className="ml-auto" />
+            )}
           </Link>
         ))}
       </nav>
