@@ -1,0 +1,42 @@
+name: Check opencode version
+
+on:
+  schedule:
+    - cron: '0 9 * * 1'  # Every Monday at 09:00 UTC
+  workflow_dispatch:       # Allow manual trigger
+
+jobs:
+  check-version:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check opencode version staleness
+        run: |
+          # Extract pinned version from download script
+          PINNED=$(grep "^const OPENCODE_VERSION" scripts/download-opencode.mjs | sed "s/.*'\(.*\)'.*/\1/")
+          echo "Pinned version: $PINNED"
+
+          # Fetch latest release tag from GitHub (follow redirects)
+          LATEST=$(curl -sL "https://api.github.com/repos/sst/opencode/releases" | \
+            python3 -c "import json,sys; releases=json.load(sys.stdin); print(releases[0]['tag_name'].lstrip('v'))")
+          echo "Latest version: $LATEST"
+
+          # Parse minor versions (MAJOR.MINOR.PATCH)
+          PINNED_MINOR=$(echo "$PINNED" | cut -d. -f2)
+          LATEST_MINOR=$(echo "$LATEST" | cut -d. -f2)
+
+          GAP=$((LATEST_MINOR - PINNED_MINOR))
+          echo "Minor version gap: $GAP"
+
+          if [ "$GAP" -gt 5 ]; then
+            echo ""
+            echo "❌ opencode version is $GAP minor versions behind latest."
+            echo "   Pinned: $PINNED"
+            echo "   Latest: $LATEST"
+            echo ""
+            echo "Update OPENCODE_VERSION in scripts/download-opencode.mjs to $LATEST"
+            exit 1
+          else
+            echo "✅ opencode version is within 5 minor versions of latest (gap: $GAP)."
+          fi
