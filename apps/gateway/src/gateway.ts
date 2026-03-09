@@ -8,6 +8,7 @@ import {
 import type { ChannelAdapter, RouterConfig } from '@dash/channels';
 import { RemoteAgentClient } from '@dash/chat';
 import type { GatewayConfig } from './config.js';
+import { ChannelHealthReporter } from './health-reporter.js';
 
 function createNonMcAdapter(
   name: string,
@@ -42,6 +43,7 @@ export function createGateway(config: GatewayConfig) {
 
   const router = new MessageRouter(agents);
   const mcAdapters: MissionControlAdapter[] = [];
+  const reporterAdapters: Array<{ adapter: ChannelAdapter; appId: string }> = [];
 
   for (const [name, channelConfig] of Object.entries(config.channels)) {
     if (channelConfig.adapter === 'mission-control') {
@@ -50,6 +52,8 @@ export function createGateway(config: GatewayConfig) {
       console.log(`Channel "${name}" (mission-control) on port ${port}`);
     } else {
       const adapter = createNonMcAdapter(name, channelConfig);
+      const appId = name.startsWith('messaging-app-') ? name.slice('messaging-app-'.length) : name;
+      reporterAdapters.push({ adapter, appId });
 
       if (channelConfig.routing) {
         // Advanced routing-rules mode
@@ -76,10 +80,18 @@ export function createGateway(config: GatewayConfig) {
     }
   }
 
+  const managementUrl = process.env.MANAGEMENT_API_URL;
+  const managementToken = process.env.MANAGEMENT_API_TOKEN;
+  const reporter =
+    managementUrl && managementToken
+      ? new ChannelHealthReporter(reporterAdapters, managementUrl, managementToken)
+      : null;
+
   return {
     async start() {
       await router.startAll();
       await Promise.all(mcAdapters.map((a) => a.start()));
+      reporter?.start();
       console.log('Gateway started');
     },
     async stop() {
