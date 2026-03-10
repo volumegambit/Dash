@@ -1,5 +1,5 @@
 import { createFileRoute, useNavigate } from '@tanstack/react-router';
-import { ArrowLeft, ArrowRight, Check, Loader, Rocket } from 'lucide-react';
+import { ArrowLeft, ArrowRight, Check, Clipboard, ClipboardCheck, Loader, Rocket } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { RendererDeploymentError } from '../../../shared/ipc';
 import { ModelChainEditor } from '../components/ModelChainEditor.js';
@@ -27,10 +27,11 @@ export function DeployWizard(): JSX.Element {
   const [deploying, setDeploying] = useState(false);
   const [deployError, setDeployError] = useState<string | null>(null);
   const [deployStartupLogs, setDeployStartupLogs] = useState<string[]>([]);
+  const [logsCopied, setLogsCopied] = useState(false);
 
   const [agent, setAgent] = useState<AgentConfig>({
     name: '',
-    model: AVAILABLE_MODELS[0].value, // use static list for initial value
+    model: '', // set after keys load to avoid defaulting to a model with no key
     fallbackModels: [],
     systemPrompt: '',
     tools: [],
@@ -45,18 +46,24 @@ export function DeployWizard(): JSX.Element {
     window.api
       .settingsGet()
       .then((settings) => {
-        if (settings.defaultModel) {
-          setAgent((prev) => ({
-            ...prev,
-            model: settings.defaultModel ?? '',
-            fallbackModels: settings.defaultFallbackModels ?? [],
-          }));
-        }
+        setAgent((prev) => {
+          const preferred = settings.defaultModel ?? '';
+          const isAvailable = availableModels.some((m) => m.value === preferred);
+          // If preferred model is available, use it.
+          // If preferred is set but unavailable, keep it so the "no key" hint can show.
+          // If no preference, fall back to the first available model.
+          const model = preferred
+            ? preferred
+            : (availableModels[0]?.value ?? '');
+          const fallbackModels = settings.defaultFallbackModels ?? [];
+          return { ...prev, model, fallbackModels };
+        });
       })
       .catch(() => {});
-  }, []);
+  }, [availableModels]);
 
-  const canAdvanceAgent = agent.name.trim().length > 0;
+  const modelHasKey = availableModels.some((m) => m.value === agent.model);
+  const canAdvanceAgent = agent.name.trim().length > 0 && modelHasKey;
 
   const handleDeploy = async (): Promise<void> => {
     setDeploying(true);
@@ -127,6 +134,11 @@ export function DeployWizard(): JSX.Element {
                 setAgent((prev) => ({ ...prev, model, fallbackModels }))
               }
             />
+            {agent.model && !modelHasKey && (
+              <p className="mt-1 text-xs text-red-400">
+                Add an API key in Settings → AI Providers to use this model.
+              </p>
+            )}
           </div>
 
           <label className="block">
@@ -232,7 +244,22 @@ export function DeployWizard(): JSX.Element {
               {deployStartupLogs.length > 0 && (
                 <details className="rounded-lg border border-red-900/30">
                   <summary className="cursor-pointer px-4 py-2 text-xs text-red-400/70 hover:text-red-400">
-                    Startup logs ({deployStartupLogs.length} lines)
+                    <span className="inline-flex items-center justify-between w-[calc(100%-1rem)]">
+                      <span>Startup logs ({deployStartupLogs.length} lines)</span>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.preventDefault();
+                          navigator.clipboard.writeText(deployStartupLogs.join('\n'));
+                          setLogsCopied(true);
+                          setTimeout(() => setLogsCopied(false), 2000);
+                        }}
+                        className="ml-2 inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-red-400/70 hover:bg-red-900/20 hover:text-red-400"
+                      >
+                        {logsCopied ? <ClipboardCheck size={12} /> : <Clipboard size={12} />}
+                        {logsCopied ? 'Copied' : 'Copy'}
+                      </button>
+                    </span>
                   </summary>
                   <div className="max-h-48 overflow-auto rounded-b-lg bg-[#0d0d0d] p-3 font-mono text-xs leading-5">
                     {deployStartupLogs.map((line, i) => (
