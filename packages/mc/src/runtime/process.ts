@@ -443,6 +443,17 @@ export class ProcessRuntime implements DeploymentRuntime {
     if (googleApiKey) providerApiKeys.google = googleApiKey;
     if (openaiApiKey) providerApiKeys.openai = openaiApiKey;
 
+    // Validate that each agent's primary model has a matching provider API key
+    for (const [, cfg] of Object.entries(agentConfigs)) {
+      if (!cfg.model.includes('/')) continue;
+      const providerID = cfg.model.split('/')[0];
+      if (providerID && !providerApiKeys[providerID]) {
+        throw new Error(
+          `No API key configured for provider '${providerID}'. Add a key in Mission Control Settings → AI Providers, or change the agent model to one you have a key for.`,
+        );
+      }
+    }
+
     // Write temp agent-server secrets file
     const agentSecretsFile: AgentSecretsFile = {
       providerApiKeys,
