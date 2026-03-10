@@ -127,9 +127,15 @@ describe('loadConfig with --config and --secrets', () => {
   });
 
   it('returns empty providerApiKeys when no keys are available', async () => {
-    const original = process.env.ANTHROPIC_API_KEY;
-    // biome-ignore lint/performance/noDelete: must actually remove env var, not set to "undefined" string
+    const origAnthropic = process.env.ANTHROPIC_API_KEY;
+    const origOpenAI = process.env.OPENAI_API_KEY;
+    const origGoogle = process.env.GOOGLE_API_KEY;
+    // biome-ignore lint/performance/noDelete: must actually remove env vars, not set to "undefined" string
     delete process.env.ANTHROPIC_API_KEY;
+    // biome-ignore lint/performance/noDelete: must actually remove env vars, not set to "undefined" string
+    delete process.env.OPENAI_API_KEY;
+    // biome-ignore lint/performance/noDelete: must actually remove env vars, not set to "undefined" string
+    delete process.env.GOOGLE_API_KEY;
 
     // Provide secrets file with no API keys — this bypasses project credentials loading
     const secretsPath = join(tmpDir, 'empty-secrets.json');
@@ -139,9 +145,9 @@ describe('loadConfig with --config and --secrets', () => {
       const cfg = await loadConfig({ secretsPath });
       expect(cfg.providerApiKeys).toEqual({});
     } finally {
-      if (original !== undefined) {
-        process.env.ANTHROPIC_API_KEY = original;
-      }
+      if (origAnthropic !== undefined) process.env.ANTHROPIC_API_KEY = origAnthropic;
+      if (origOpenAI !== undefined) process.env.OPENAI_API_KEY = origOpenAI;
+      if (origGoogle !== undefined) process.env.GOOGLE_API_KEY = origGoogle;
     }
   });
 });
