@@ -62,7 +62,28 @@ export class OpenCodeBackend implements AgentBackend {
     private logger?: Logger,
   ) {}
 
+  /** Maps provider IDs to environment variable names used by the opencode binary. */
+  private static readonly PROVIDER_ENV_VARS: Record<string, string> = {
+    anthropic: 'ANTHROPIC_API_KEY',
+    openai: 'OPENAI_API_KEY',
+    google: 'GOOGLE_API_KEY',
+  };
+
+  /**
+   * Injects provider API keys into process.env before spawning the opencode server.
+   * createOpencodeServer spreads process.env, so the binary needs the keys there.
+   */
+  private injectApiKeysToEnv(): void {
+    for (const [providerID, key] of Object.entries(this.providerApiKeys)) {
+      const envVar = OpenCodeBackend.PROVIDER_ENV_VARS[providerID];
+      if (envVar && key) {
+        process.env[envVar] = key;
+      }
+    }
+  }
+
   async start(workspace: string): Promise<void> {
+    this.injectApiKeysToEnv();
     const port = await findFreePort();
     const server = await createOpencodeServer({
       port,
@@ -146,6 +167,7 @@ export class OpenCodeBackend implements AgentBackend {
       this.logger?.warn(`[OpenCode] Watchdog: restarting (attempt ${attempt + 1}), waiting ${delay}ms`);
       await new Promise(resolve => setTimeout(resolve, delay));
       try {
+        this.injectApiKeysToEnv();
         const port = await findFreePort();
         const server = await createOpencodeServer({
           port,
@@ -335,7 +357,12 @@ export class OpenCodeBackend implements AgentBackend {
 
       case 'session.error': {
         if (props.sessionID && props.sessionID !== sessionId) return null;
-        const msg = props.error?.message ?? 'Unknown OpenCode error';
+        // SDK error types nest the message under data.message (e.g. ProviderAuthError, ApiError)
+        const msg =
+          props.error?.data?.message ??
+          props.error?.message ??
+          props.error?.name ??
+          'Unknown OpenCode error';
         this.logger?.error(`[OpenCode] session.error: ${msg}`, {
           sessionId: props.sessionID,
           errorCode: props.error?.code,
