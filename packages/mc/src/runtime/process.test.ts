@@ -362,6 +362,84 @@ function createMockSecrets(): SecretStore {
   };
 }
 
+function createMockSecretsWithKeys(keys: Record<string, string>): SecretStore {
+  const store = new Map<string, string>(Object.entries(keys));
+  return {
+    get: async (key: string) => store.get(key) ?? null,
+    set: async (key: string, value: string) => {
+      store.set(key, value);
+    },
+    delete: async (key: string) => {
+      store.delete(key);
+    },
+    list: async () => Array.from(store.keys()),
+  };
+}
+
+describe('ProcessRuntime.deploy() model/key validation', () => {
+  let tmpDir: string;
+  let configDir: string;
+  let registry: AgentRegistry;
+
+  beforeEach(async () => {
+    tmpDir = await mkdtemp(join(tmpdir(), 'mc-validation-'));
+    configDir = await mkdtemp(join(tmpdir(), 'mc-config-'));
+    await mkdir(join(configDir, 'agents'));
+    registry = new AgentRegistry(tmpDir);
+  });
+
+  afterEach(async () => {
+    await rm(tmpDir, { recursive: true });
+    await rm(configDir, { recursive: true });
+  });
+
+  it('throws if primary model provider has no API key', async () => {
+    await writeFile(
+      join(configDir, 'agents', 'test-agent.json'),
+      JSON.stringify({ model: 'anthropic/claude-sonnet-4-20250514', systemPrompt: 'hi' }),
+    );
+    const secrets = createMockSecretsWithKeys({ 'openai-api-key': 'sk-openai-test' });
+    const { spawner } = createMockSpawner();
+    const successWatcher: StartupWatcher = async () => ({ success: true });
+    const runtime = new ProcessRuntime(registry, secrets, '/fake/root', spawner, undefined, successWatcher);
+
+    await expect(runtime.deploy(configDir)).rejects.toThrow(
+      "No API key configured for provider 'anthropic'",
+    );
+  });
+
+  it('succeeds when primary model provider has a matching key', async () => {
+    await writeFile(
+      join(configDir, 'agents', 'test-agent.json'),
+      JSON.stringify({ model: 'openai/gpt-4o', systemPrompt: 'hi' }),
+    );
+    const secrets = createMockSecretsWithKeys({ 'openai-api-key': 'sk-openai-test' });
+    const { spawner } = createMockSpawner();
+    const successWatcher: StartupWatcher = async () => ({ success: true });
+    const runtime = new ProcessRuntime(registry, secrets, '/fake/root', spawner, undefined, successWatcher);
+
+    await expect(runtime.deploy(configDir)).resolves.toBeTypeOf('string');
+  });
+
+  it('succeeds even if a fallback model provider has no key', async () => {
+    await writeFile(
+      join(configDir, 'agents', 'test-agent.json'),
+      JSON.stringify({
+        model: 'openai/gpt-4o',
+        fallbackModels: ['anthropic/claude-sonnet-4-20250514'],
+        systemPrompt: 'hi',
+      }),
+    );
+    const secrets = createMockSecretsWithKeys({ 'openai-api-key': 'sk-openai-test' });
+    const { spawner } = createMockSpawner();
+    const successWatcher: StartupWatcher = async () => ({ success: true });
+    const runtime = new ProcessRuntime(registry, secrets, '/fake/root', spawner, undefined, successWatcher);
+
+    // Should not throw — fallback with missing key is a warning, not an error
+    await expect(runtime.deploy(configDir)).resolves.toBeTypeOf('string');
+  });
+});
+
 describe('ProcessRuntime.updateAgentConfig', () => {
   it('rewrites model and fallbackModels in the agent JSON file', async () => {
     const configDir = await mkdtemp(join(tmpdir(), 'mc-update-test-'));
