@@ -42,24 +42,33 @@ export function DeployWizard(): JSX.Element {
     useSecretsStore.getState().loadKeys();
   }, []);
 
+  // One-time: load settings and pick initial model
   useEffect(() => {
     window.api
       .settingsGet()
       .then((settings) => {
         setAgent((prev) => {
           const preferred = settings.defaultModel ?? '';
-          const isAvailable = availableModels.some((m) => m.value === preferred);
-          // If preferred model is available, use it.
-          // If preferred is set but unavailable, keep it so the "no key" hint can show.
+          // If preferred model is set, use it (even if unavailable, so the "no key" hint can show).
           // If no preference, fall back to the first available model.
-          const model = preferred
-            ? preferred
-            : (availableModels[0]?.value ?? '');
+          const model = preferred || (availableModels[0]?.value ?? '');
           const fallbackModels = settings.defaultFallbackModels ?? [];
           return { ...prev, model, fallbackModels };
         });
       })
       .catch(() => {});
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // intentionally run once; availableModels already known at this point in practice
+
+  // When available models change (keys added/removed), ensure current model is still valid
+  useEffect(() => {
+    setAgent((prev) => {
+      if (!prev.model) return prev;
+      const stillAvailable = availableModels.some((m) => m.value === prev.model);
+      if (stillAvailable) return prev;
+      // Current model no longer available — switch to first available or ''
+      return { ...prev, model: availableModels[0]?.value ?? '' };
+    });
   }, [availableModels]);
 
   const modelHasKey = availableModels.some((m) => m.value === agent.model);
