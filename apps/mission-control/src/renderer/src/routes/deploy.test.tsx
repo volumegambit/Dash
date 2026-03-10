@@ -1,8 +1,10 @@
 import '@testing-library/jest-dom/vitest';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { mockApi } from '../../../../vitest.setup.js';
 import { useDeploymentsStore } from '../stores/deployments.js';
+import { useSecretsStore } from '../stores/secrets.js';
 
 const mockNavigate = vi.fn();
 vi.mock('@tanstack/react-router', () => ({
@@ -20,6 +22,10 @@ describe('DeployWizard', () => {
       loading: false,
       error: null,
       logLines: {},
+    });
+    // Provide keys so availableModels is non-empty for existing tests
+    useSecretsStore.setState({
+      keys: ['anthropic-api-key', 'openai-api-key', 'google-api-key'],
     });
   });
 
@@ -85,5 +91,43 @@ describe('DeployWizard', () => {
       tools: [],
       workspace: undefined,
     });
+  });
+});
+
+describe('DeployWizard model validation', () => {
+  beforeEach(() => {
+    useSecretsStore.setState({ keys: [] });
+    // Prevent loadKeys() from restoring keys from the mock API
+    vi.mocked(window.api.secretsList).mockResolvedValue([]);
+  });
+
+  it('Next button is disabled when no model is available (no keys configured)', async () => {
+    render(<DeployWizard />);
+    const nameInput = screen.getByPlaceholderText('my-agent');
+    await userEvent.type(nameInput, 'test-agent');
+    const nextButton = screen.getByRole('button', { name: /next/i });
+    expect(nextButton).toBeDisabled();
+  });
+
+  it('Next button is enabled when name is filled and model has a configured key', async () => {
+    useSecretsStore.setState({ keys: ['openai-api-key'] });
+    vi.mocked(window.api.secretsList).mockResolvedValue(['openai-api-key']);
+    render(<DeployWizard />);
+    const nameInput = screen.getByPlaceholderText('my-agent');
+    await userEvent.type(nameInput, 'test-agent');
+    const nextButton = screen.getByRole('button', { name: /next/i });
+    expect(nextButton).not.toBeDisabled();
+  });
+
+  it('shows hint when selected model has no API key', async () => {
+    // Simulate: openai key only, but settings returned an anthropic default model
+    useSecretsStore.setState({ keys: ['openai-api-key'] });
+    vi.mocked(window.api.secretsList).mockResolvedValue(['openai-api-key']);
+    vi.mocked(window.api.settingsGet).mockResolvedValue({
+      defaultModel: 'anthropic/claude-sonnet-4-20250514',
+    });
+    render(<DeployWizard />);
+    // Wait for the settings effect to fire and update model to an unavailable one
+    await screen.findByText(/add an api key/i);
   });
 });
