@@ -6,6 +6,14 @@ import { defineConfig, externalizeDepsPlugin } from 'electron-vite';
 export default defineConfig({
   main: {
     plugins: [externalizeDepsPlugin({ exclude: ['@dash/mc', '@dash/management'] })],
+    build: {
+      rollupOptions: {
+        // @dash/channels is dynamically imported for WhatsApp pairing.
+        // It must be externalized so Baileys and pino load from node_modules
+        // at runtime instead of being bundled (pino CJS breaks when bundled).
+        external: ['@dash/channels'],
+      },
+    },
   },
   preload: {
     plugins: [externalizeDepsPlugin()],
