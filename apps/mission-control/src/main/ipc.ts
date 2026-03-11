@@ -550,9 +550,25 @@ export async function registerIpcHandlers(
       const MAX_QR_ROTATIONS = 5;
       let qrCount = 0;
 
+      // Baileys expects a pino-compatible logger, but pino (CJS) doesn't
+      // load correctly in the Electron main process via Baileys (ESM).
+      // Provide a no-op logger that satisfies the ILogger interface.
+      const noop = (..._args: unknown[]) => {};
+      const noopLogger = {
+        level: 'silent',
+        trace: noop,
+        debug: noop,
+        info: noop,
+        warn: noop,
+        error: noop,
+        fatal: noop,
+        child: () => noopLogger,
+      };
+
       const sock = makeWASocket({
         auth: state,
         printQRInTerminal: true,
+        logger: noopLogger as never,
       });
 
       sock.ev.on('creds.update', saveCreds);
