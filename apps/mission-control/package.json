@@ -11,6 +11,7 @@
     "typecheck": "tsc -p tsconfig.node.json --noEmit"
   },
   "dependencies": {
+    "@dash/channels": "*",
     "@dash/management": "*",
     "@dash/mc": "*",
     "electron-updater": "^6.8.3",
