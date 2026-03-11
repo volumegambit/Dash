@@ -553,7 +553,6 @@ export async function registerIpcHandlers(
       const sock = makeWASocket({
         auth: state,
         printQRInTerminal: true,
-        logger: { level: 'silent' } as never,
       });
 
       sock.ev.on('creds.update', saveCreds);
