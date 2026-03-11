@@ -540,80 +540,28 @@ export async function registerIpcHandlers(
       },
     };
 
-    const { makeBaileysAuthState } = await import('@dash/channels');
-    const { state, saveCreds } = await makeBaileysAuthState(prefixedStore, '');
-
-    const { default: makeWASocket, DisconnectReason } = await import('@whiskeysockets/baileys');
+    const { startWhatsAppPairing } = await import('@dash/channels');
     const qrcode = await import('qrcode');
 
-    return new Promise<void>((resolve, reject) => {
-      const MAX_QR_ROTATIONS = 5;
-      let qrCount = 0;
-
-      // Baileys expects a pino-compatible logger, but pino (CJS) doesn't
-      // load correctly in the Electron main process via Baileys (ESM).
-      // Provide a no-op logger that satisfies the ILogger interface.
-      const noop = (..._args: unknown[]) => {};
-      const noopLogger = {
-        level: 'silent',
-        trace: noop,
-        debug: noop,
-        info: noop,
-        warn: noop,
-        error: noop,
-        fatal: noop,
-        child: () => noopLogger,
-      };
-
-      const sock = makeWASocket({
-        auth: state,
-        printQRInTerminal: true,
-        logger: noopLogger as never,
-      });
-
-      sock.ev.on('creds.update', saveCreds);
-
-      sock.ev.on('connection.update', async (update) => {
-        const { connection, lastDisconnect, qr } = update;
-
-        if (qr) {
-          qrCount++;
-          if (qrCount > MAX_QR_ROTATIONS) {
-            sock.end(undefined);
-            const errorMessage = 'QR code expired. Please try again.';
-            const win = getWindow();
-            win?.webContents.send('whatsapp:error', appId, errorMessage);
-            reject(new Error(errorMessage));
-            return;
-          }
-          try {
-            const qrDataUrl = await qrcode.default.toDataURL(qr);
+    await startWhatsAppPairing(prefixedStore, {
+      onQr: (qrString) => {
+        try {
+          qrcode.default.toDataURL(qrString).then((qrDataUrl) => {
             const win = getWindow();
             win?.webContents.send('whatsapp:qr', appId, qrDataUrl);
-          } catch {
-            // QR generation failed, terminal fallback still works via printQRInTerminal
-          }
+          });
+        } catch {
+          // QR generation failed silently
         }
-
-        if (connection === 'open') {
-          sock.end(undefined);
-          const win = getWindow();
-          win?.webContents.send('whatsapp:linked', appId);
-          resolve();
-        }
-
-        if (connection === 'close') {
-          const statusCode = (
-            lastDisconnect?.error as { output?: { statusCode?: number } } | undefined
-          )?.output?.statusCode;
-          if (statusCode === DisconnectReason.loggedOut) {
-            const errorMessage = 'WhatsApp session rejected. Try again.';
-            const win = getWindow();
-            win?.webContents.send('whatsapp:error', appId, errorMessage);
-            reject(new Error(errorMessage));
-          }
-        }
-      });
+      },
+      onLinked: () => {
+        const win = getWindow();
+        win?.webContents.send('whatsapp:linked', appId);
+      },
+      onError: (message) => {
+        const win = getWindow();
+        win?.webContents.send('whatsapp:error', appId, message);
+      },
     });
   });
 

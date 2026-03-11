@@ -6,3 +6,5 @@ export { TelegramAdapter } from './adapters/telegram.js';
 export { WhatsAppAdapter } from './adapters/whatsapp.js';
 export { makeBaileysAuthState } from './adapters/whatsapp-auth.js';
 export type { BaileysAuthState } from './adapters/whatsapp-auth.js';
+export { startWhatsAppPairing } from './adapters/whatsapp-pairing.js';
+export type { PairingCallbacks } from './adapters/whatsapp-pairing.js';
