@@ -1,7 +1,6 @@
 export interface RuntimeStatus {
   state: 'running' | 'stopped' | 'error' | 'starting';
   agentServerPid?: number;
-  gatewayPid?: number;
   managementPort?: number;
   chatPort?: number;
   uptime?: number;

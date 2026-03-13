@@ -10,13 +10,24 @@ import type { MessagingAppRegistry } from '../messaging-apps/registry.js';
 import { generateToken } from '../security/keygen.js';
 import type { SecretStore } from '../security/secrets.js';
 import type { MessagingApp } from '../types.js';
+import {
+  type GatewayChannelConfig,
+  type GatewayHealthResponse,
+  GatewayManagementClient,
+} from './gateway-client.js';
+import { GatewayStateStore } from './gateway-state.js';
 import { type ProcessSnapshot, resolveRuntimeStatus } from './status.js';
 import type { DeploymentRuntime, RuntimeStatus } from './types.js';
 
 interface ProcessState {
   agentServer: SpawnedProcess;
-  gateway: SpawnedProcess | null;
   startTime: number;
+}
+
+export interface GatewayOptions {
+  gatewayDataDir: string;
+  makeGatewayClient?: (baseUrl: string, token: string) => GatewayManagementClient;
+  managementPort?: number;
 }
 
 export interface SpawnedProcess {
@@ -191,111 +202,17 @@ export interface AgentSecretsFile {
   chatToken: string;
 }
 
-export interface GatewaySecretsFile {
-  agents: Record<string, { token: string }>;
-  channels: Record<string, { token?: string; whatsappAuth?: Record<string, string> }>;
-}
-
 export interface ResolvedMessagingApp {
   app: MessagingApp;
   token: string;
   authStateDir?: string; // for whatsapp channels
 }
 
-export async function writeSecretsFile(
-  secrets: AgentSecretsFile | GatewaySecretsFile,
-  prefix: string,
-): Promise<string> {
+export async function writeSecretsFile(secrets: AgentSecretsFile, prefix: string): Promise<string> {
   const filePath = join(tmpdir(), `${prefix}-${randomUUID()}.json`);
   await writeFile(filePath, JSON.stringify(secrets, null, 2), { mode: 0o600 });
   await chmod(filePath, 0o600);
   return filePath;
-}
-
-interface GatewayJsonConfig {
-  channels?: Record<string, { adapter?: string; agent?: string; allowedUsers?: string[] }>;
-}
-
-export function buildGatewayConfig(
-  agentNames: string[],
-  chatPort: number,
-  mcAdapterPort: number,
-  gatewayJson?: GatewayJsonConfig,
-  resolvedApps: ResolvedMessagingApp[] = [],
-): Record<string, unknown> {
-  const agents: Record<string, { url: string; token: string }> = {};
-  for (const name of agentNames) {
-    agents[name] = {
-      url: `ws://localhost:${chatPort}/ws`,
-      token: 'PLACEHOLDER', // Replaced by secrets file
-    };
-  }
-
-  const channels: Record<string, unknown> = {};
-
-  if (gatewayJson?.channels) {
-    for (const [name, ch] of Object.entries(gatewayJson.channels)) {
-      if (ch.adapter === 'telegram') {
-        channels[name] = {
-          adapter: 'telegram',
-          agent: ch.agent ?? agentNames[0],
-          token: 'PLACEHOLDER',
-          allowedUsers: ch.allowedUsers,
-        };
-      } else if (ch.adapter === 'mission-control') {
-        channels[name] = {
-          adapter: 'mission-control',
-          agent: ch.agent ?? agentNames[0],
-          port: mcAdapterPort,
-        };
-      }
-    }
-  }
-
-  // Inject enabled messaging apps targeting any of our agents
-  for (const { app, token, authStateDir } of resolvedApps) {
-    if (!app.enabled) continue;
-    const relevantRules = app.routing.filter((r) => agentNames.includes(r.targetAgentName));
-    if (relevantRules.length === 0) continue;
-
-    const routingRules = relevantRules.map((r) => ({
-      condition: r.condition,
-      agentName: r.targetAgentName,
-      allowList: r.allowList,
-      denyList: r.denyList,
-    }));
-
-    if (app.type === 'whatsapp') {
-      channels[`messaging-app-${app.id}`] = {
-        adapter: 'whatsapp',
-        globalDenyList: app.globalDenyList,
-        authStateDir,
-        routing: routingRules,
-      };
-    } else {
-      channels[`messaging-app-${app.id}`] = {
-        adapter: app.type,
-        token,
-        globalDenyList: app.globalDenyList,
-        routing: routingRules,
-      };
-    }
-  }
-
-  // Always add an MC adapter channel if none configured
-  if (
-    !Object.values(channels).some(
-      (ch) => (ch as { adapter?: string }).adapter === 'mission-control',
-    )
-  ) {
-    channels.mc = {
-      adapter: 'mission-control',
-      agent: agentNames[0],
-      port: mcAdapterPort,
-    };
-  }
-
-  return { agents, channels };
 }
 
 async function killPidWithEscalation(pid: number): Promise<void> {
@@ -333,7 +250,94 @@ export class ProcessRuntime implements DeploymentRuntime {
     private spawner: ProcessSpawner = defaultProcessSpawner,
     private messagingApps?: MessagingAppRegistry,
     private startupWatcher: StartupWatcher = defaultStartupWatcher,
+    private gatewayOptions?: GatewayOptions,
   ) {}
+
+  private async ensureGatewayRunning(): Promise<GatewayManagementClient | null> {
+    const opts = this.gatewayOptions;
+    if (!opts) return null;
+
+    const managementPort = opts.managementPort ?? 9300;
+    const store = new GatewayStateStore(opts.gatewayDataDir);
+    const makeClient =
+      opts.makeGatewayClient ?? ((url, token) => new GatewayManagementClient(url, token));
+
+    const state = await store.read();
+
+    if (state) {
+      // Check if PID is alive
+      let pidAlive = false;
+      try {
+        process.kill(state.pid, 0);
+        pidAlive = true;
+      } catch {
+        /* dead */
+      }
+
+      if (pidAlive) {
+        try {
+          const client = makeClient(`http://localhost:${state.port}`, state.token);
+          const health = await client.health();
+          if (health.startedAt === state.startedAt) {
+            return client; // healthy and same instance
+          }
+        } catch {
+          /* health check failed, fall through to spawn */
+        }
+      }
+    }
+
+    // Spawn fresh gateway daemon
+    const token = generateToken();
+    const gatewayBin = join(this.projectRoot, 'apps/gateway/dist/index.js');
+    const gateway = this.spawner.spawn(
+      'node',
+      [gatewayBin, '--management-port', String(managementPort), '--token', token],
+      {
+        env: { ...process.env },
+        stdio: ['ignore', 'ignore', 'ignore'],
+        detached: true,
+      },
+    );
+    (gateway as { unref?: () => void }).unref?.();
+
+    // Wait for health endpoint
+    const newClient = makeClient(`http://localhost:${managementPort}`, token);
+    const deadline = Date.now() + 10_000;
+    let health: GatewayHealthResponse | null = null;
+    while (Date.now() < deadline) {
+      await new Promise<void>((r) => setTimeout(r, 300));
+      try {
+        health = await newClient.health();
+        break;
+      } catch {
+        /* not ready yet */
+      }
+    }
+    if (!health) throw new Error('Gateway failed to start within 10s');
+
+    const gatewayPid = gateway.pid;
+    if (!gatewayPid) throw new Error('Gateway process has no PID');
+    await store.write({
+      pid: gatewayPid,
+      startedAt: health.startedAt,
+      token,
+      port: managementPort,
+    });
+
+    return newClient;
+  }
+
+  private async getGatewayClient(): Promise<GatewayManagementClient | null> {
+    const opts = this.gatewayOptions;
+    if (!opts) return null;
+    const store = new GatewayStateStore(opts.gatewayDataDir);
+    const state = await store.read();
+    if (!state) return null;
+    const makeClient =
+      opts.makeGatewayClient ?? ((url, token) => new GatewayManagementClient(url, token));
+    return makeClient(`http://localhost:${state.port}`, state.token);
+  }
 
   async deploy(configDir: string): Promise<string> {
     const absConfigDir = resolve(configDir);
@@ -394,17 +398,8 @@ export class ProcessRuntime implements DeploymentRuntime {
       throw new Error('No agent configurations found in config directory');
     }
 
-    // Read gateway.json if present
-    let gatewayJson: GatewayJsonConfig | undefined;
-    const gatewayJsonPath = join(absConfigDir, 'gateway.json');
-    if (existsSync(gatewayJsonPath)) {
-      const raw = await readFile(gatewayJsonPath, 'utf-8');
-      gatewayJson = JSON.parse(raw) as GatewayJsonConfig;
-    }
-
     // Allocate ports
-    const [managementPort, chatPort, mcAdapterPort] = await Promise.all([
-      findAvailablePort(),
+    const [managementPort, chatPort] = await Promise.all([
       findAvailablePort(),
       findAvailablePort(),
     ]);
@@ -483,38 +478,8 @@ export class ProcessRuntime implements DeploymentRuntime {
       }
     }
 
-    // Build gateway config
-    const gatewayConfig = buildGatewayConfig(
-      agentNames,
-      chatPort,
-      mcAdapterPort,
-      gatewayJson,
-      resolvedApps,
-    );
-
-    // Write temp gateway config
-    const gatewayConfigPath = join(tmpdir(), `gw-config-${id}.json`);
-    await writeFile(gatewayConfigPath, JSON.stringify(gatewayConfig, null, 2));
-
-    // Build gateway secrets file
-    const gwSecrets: GatewaySecretsFile = { agents: {}, channels: {} };
-    for (const name of agentNames) {
-      gwSecrets.agents[name] = { token: chatToken };
-    }
-
-    // Copy channel secrets (e.g. telegram bot token)
-    if (gatewayJson?.channels) {
-      for (const [name, ch] of Object.entries(gatewayJson.channels)) {
-        if (ch.adapter === 'telegram') {
-          const botToken = await this.secrets.get('telegram-bot-token');
-          if (botToken) {
-            gwSecrets.channels[name] = { token: botToken };
-          }
-        }
-      }
-    }
-
-    // Collect WhatsApp auth state for each whatsapp messaging app
+    // Collect WhatsApp auth blobs for messaging apps
+    const whatsappAuthBlobs = new Map<string, Record<string, string>>();
     for (const { app, authStateDir } of resolvedApps) {
       if (app.type !== 'whatsapp') continue;
 
@@ -523,9 +488,10 @@ export class ProcessRuntime implements DeploymentRuntime {
 
       // 1. Sync any runtime FileStore updates back into EncryptedSecretStore
       // (Runtime updates from previous gateway runs are stored in authStateDir/auth.json)
+      if (!authStateDir) continue;
       try {
         const { FileSecretStore } = await import('../security/secrets.js');
-        const runtimeStore = new FileSecretStore(authStateDir as string);
+        const runtimeStore = new FileSecretStore(authStateDir);
         const runtimeKeys = await runtimeStore.list();
         for (const key of runtimeKeys) {
           const val = await runtimeStore.get(key);
@@ -544,11 +510,9 @@ export class ProcessRuntime implements DeploymentRuntime {
       }
 
       if (Object.keys(authBlob).length > 0) {
-        gwSecrets.channels[channelKey] = { whatsappAuth: authBlob };
+        whatsappAuthBlobs.set(channelKey, authBlob);
       }
     }
-
-    const gwSecretsPath = await writeSecretsFile(gwSecrets, 'gw-secrets');
 
     // Register deployment immediately with provisioning status
     const name = agentNames[0] ?? 'deployment';
@@ -614,53 +578,64 @@ export class ProcessRuntime implements DeploymentRuntime {
     (agentServer.stdout as { destroy?: () => void } | undefined)?.destroy?.();
     (agentServer.stderr as { destroy?: () => void } | undefined)?.destroy?.();
 
-    // Spawn gateway (with ignored stdio — not monitored)
-    const gatewayBin = join(this.projectRoot, 'apps/gateway/dist/index.js');
-    const gateway = this.spawner.spawn(
-      'node',
-      [gatewayBin, '--config', gatewayConfigPath, '--secrets', gwSecretsPath],
-      {
-        env: {
-          ...process.env,
-          MANAGEMENT_API_URL: `http://127.0.0.1:${managementPort}`,
-          MANAGEMENT_API_TOKEN: managementToken,
-        },
-        stdio: ['ignore', 'ignore', 'ignore'],
-        detached: true,
-      },
-    );
-    (gateway as { unref?: () => void }).unref?.();
+    // Ensure shared gateway is running and register this deployment
+    const gatewayClient = await this.ensureGatewayRunning();
+    if (gatewayClient) {
+      // Register agent(s)
+      for (const agentName of agentNames) {
+        await gatewayClient.registerAgent(
+          id,
+          agentName,
+          `ws://localhost:${chatPort}/ws`,
+          chatToken,
+        );
+      }
 
-    this.processes.set(id, {
-      agentServer,
-      gateway,
-      startTime: Date.now(),
-    });
+      // Register messaging app channels
+      for (const { app, token: appToken, authStateDir } of resolvedApps) {
+        if (!app.enabled) continue;
+        const relevantRules = app.routing.filter((r) => agentNames.includes(r.targetAgentName));
+        if (relevantRules.length === 0) continue;
 
-    // Update registry to running with PIDs
+        const channelConfig: GatewayChannelConfig = {
+          adapter: app.type,
+          globalDenyList: app.globalDenyList,
+          routing: relevantRules.map((r) => ({
+            condition: r.condition,
+            agentName: r.targetAgentName,
+            allowList: r.allowList,
+            denyList: r.denyList,
+          })),
+        };
+        if (app.type === 'whatsapp') {
+          channelConfig.authStateDir = authStateDir;
+          channelConfig.whatsappAuth = whatsappAuthBlobs.get(`messaging-app-${app.id}`);
+        } else {
+          channelConfig.token = appToken;
+        }
+
+        await gatewayClient.registerChannel(id, `messaging-app-${app.id}`, channelConfig);
+      }
+    }
+
+    this.processes.set(id, { agentServer, startTime: Date.now() });
+
+    // Update registry to running with PID
     await this.registry.update(id, {
       status: 'running',
       agentServerPid: agentServer.pid,
-      gatewayPid: gateway.pid,
+      // No gatewayPid — shared gateway is not per-deployment
     });
 
     // Watch for process exit after successful startup
-    const updateOnExit = async (_proc: string, _code: number | null) => {
-      const state = this.processes.get(id);
-      if (!state) return;
-      const agentDead = state.agentServer.exitCode !== null;
-      const gatewayDead = !state.gateway || state.gateway.exitCode !== null;
-      if (agentDead && gatewayDead) {
-        try {
-          await this.registry.update(id, { status: 'stopped' });
-        } catch {
-          // Registry update can fail if already removed
-        }
+    agentServer.on('exit', async () => {
+      if (!this.processes.get(id)) return;
+      try {
+        await this.registry.update(id, { status: 'stopped' });
+      } catch {
+        // Registry update can fail if already removed
       }
-    };
-
-    agentServer.on('exit', (code) => updateOnExit('agent-server', code));
-    gateway.on('exit', (code) => updateOnExit('gateway', code));
+    });
 
     return id;
   }
@@ -673,6 +648,12 @@ export class ProcessRuntime implements DeploymentRuntime {
     const deployment = await this.registry.get(id);
     if (!deployment) {
       throw new Error(`Deployment "${id}" not found`);
+    }
+
+    // Deregister from shared gateway (best-effort)
+    const gatewayClient = await this.getGatewayClient();
+    if (gatewayClient) {
+      await gatewayClient.deregisterDeployment(id); // already swallows errors
     }
 
     const state = this.processes.get(id);
@@ -698,18 +679,12 @@ export class ProcessRuntime implements DeploymentRuntime {
         });
       };
 
-      const kills: Promise<void>[] = [killProcess(state.agentServer)];
-      if (state.gateway) {
-        kills.push(killProcess(state.gateway));
-      }
-      await Promise.all(kills);
+      await killProcess(state.agentServer);
       this.processes.delete(id);
     } else {
       // Process not tracked in memory — PID-based kill with SIGTERM → SIGKILL escalation
-      const pids: number[] = [];
-      if (deployment.agentServerPid) pids.push(deployment.agentServerPid);
-      if (deployment.gatewayPid) pids.push(deployment.gatewayPid);
-      await Promise.all(pids.map(killPidWithEscalation));
+      // Note: gatewayPid no longer in deployment — gateway is shared
+      if (deployment.agentServerPid) await killPidWithEscalation(deployment.agentServerPid);
     }
 
     await this.registry.update(id, { status: 'stopped' });
@@ -747,9 +722,6 @@ export class ProcessRuntime implements DeploymentRuntime {
             exitCode: state.agentServer.exitCode,
             pid: state.agentServer.pid,
           },
-          gateway: state.gateway
-            ? { pid: state.gateway.pid, exitCode: state.gateway.exitCode }
-            : undefined,
           startTime: state.startTime,
         }
       : null;
