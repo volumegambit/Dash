@@ -8,15 +8,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AgentRegistry } from '../agents/registry.js';
 import type { SecretStore } from '../security/secrets.js';
 import type { MessagingApp } from '../types.js';
+import type { GatewayManagementClient } from './gateway-client.js';
 import {
   type AgentSecretsFile,
   DeploymentStartupError,
-  type GatewaySecretsFile,
   ProcessRuntime,
   type ProcessSpawner,
   type SpawnedProcess,
   type StartupWatcher,
-  buildGatewayConfig,
   findAvailablePort,
   validateConfigDir,
   waitForStartup,
@@ -94,202 +93,6 @@ describe('writeSecretsFile', () => {
     } finally {
       await rm(filePath);
     }
-  });
-
-  it('writes gateway secrets with correct shape', async () => {
-    const secrets: GatewaySecretsFile = {
-      agents: { default: { token: 'agent-tok' } },
-      channels: { telegram: { token: 'bot-tok' } },
-    };
-
-    const filePath = await writeSecretsFile(secrets, 'test-gw');
-    try {
-      const content = JSON.parse(await readFile(filePath, 'utf-8'));
-      expect(content.agents.default.token).toBe('agent-tok');
-      expect(content.channels.telegram.token).toBe('bot-tok');
-    } finally {
-      await rm(filePath);
-    }
-  });
-});
-
-describe('buildGatewayConfig', () => {
-  it('generates config with MC adapter when no gateway.json', () => {
-    const config = buildGatewayConfig(['default'], 9101, 9102);
-
-    expect(config.agents).toEqual({
-      default: { url: 'ws://localhost:9101/ws', token: 'PLACEHOLDER' },
-    });
-    expect((config.channels as Record<string, { adapter: string }>).mc.adapter).toBe(
-      'mission-control',
-    );
-  });
-
-  it('includes all agents in config', () => {
-    const config = buildGatewayConfig(['agent-a', 'agent-b'], 9101, 9102);
-
-    const agents = config.agents as Record<string, { url: string }>;
-    expect(Object.keys(agents)).toEqual(['agent-a', 'agent-b']);
-  });
-
-  it('preserves telegram channel from gateway.json', () => {
-    const config = buildGatewayConfig(['default'], 9101, 9102, {
-      channels: {
-        telegram: { adapter: 'telegram', agent: 'default' },
-      },
-    });
-
-    const channels = config.channels as Record<string, { adapter: string }>;
-    expect(channels.telegram.adapter).toBe('telegram');
-    // MC adapter auto-added
-    expect(channels.mc.adapter).toBe('mission-control');
-  });
-
-  it('uses allocated MC adapter port', () => {
-    const config = buildGatewayConfig(['default'], 9101, 9999);
-
-    const channels = config.channels as Record<string, { port?: number }>;
-    expect(channels.mc.port).toBe(9999);
-  });
-
-  it('does not duplicate MC adapter if already in gateway.json', () => {
-    const config = buildGatewayConfig(['default'], 9101, 9102, {
-      channels: {
-        'my-mc': { adapter: 'mission-control', agent: 'default' },
-      },
-    });
-
-    const channels = config.channels as Record<string, { adapter: string }>;
-    expect(channels['my-mc'].adapter).toBe('mission-control');
-    expect(channels.mc).toBeUndefined();
-  });
-
-  it('injects messaging app channels with routing rules', () => {
-    const app: MessagingApp = {
-      id: 'app-1',
-      name: 'My Bot',
-      type: 'telegram',
-      credentialsKey: 'messaging-app:app-1:token',
-      enabled: true,
-      createdAt: '2026-03-08T00:00:00Z',
-      globalDenyList: ['bad-user'],
-      routing: [
-        {
-          id: 'rule-1',
-          condition: { type: 'default' },
-          targetAgentName: 'default',
-          allowList: [],
-          denyList: [],
-        },
-      ],
-    };
-
-    const result = buildGatewayConfig(['default'], 9101, 9200, undefined, [
-      { app, token: 'bot-token-123' },
-    ]);
-
-    const channels = result.channels as Record<string, unknown>;
-    const injected = channels['messaging-app-app-1'] as {
-      adapter: string;
-      token: string;
-      globalDenyList: string[];
-      routing: unknown[];
-    };
-
-    expect(injected).toBeDefined();
-    expect(injected.adapter).toBe('telegram');
-    expect(injected.token).toBe('bot-token-123');
-    expect(injected.globalDenyList).toEqual(['bad-user']);
-    expect(injected.routing).toHaveLength(1);
-  });
-
-  it('skips disabled messaging apps', () => {
-    const app: MessagingApp = {
-      id: 'app-disabled',
-      name: 'Disabled Bot',
-      type: 'telegram',
-      credentialsKey: 'messaging-app:app-disabled:token',
-      enabled: false,
-      createdAt: '2026-03-08T00:00:00Z',
-      globalDenyList: [],
-      routing: [
-        {
-          id: 'r1',
-          condition: { type: 'default' },
-          targetAgentName: 'default',
-          allowList: [],
-          denyList: [],
-        },
-      ],
-    };
-
-    const result = buildGatewayConfig(['default'], 9101, 9200, undefined, [
-      { app, token: 'bot-token' },
-    ]);
-
-    const channels = result.channels as Record<string, unknown>;
-    expect(channels['messaging-app-app-disabled']).toBeUndefined();
-  });
-
-  it('includes whatsapp channel config for whatsapp messaging app', () => {
-    const whatsappApp: MessagingApp = {
-      id: 'app1',
-      name: 'My WhatsApp',
-      type: 'whatsapp',
-      credentialsKey: 'whatsapp-auth:app1',
-      enabled: true,
-      createdAt: new Date().toISOString(),
-      globalDenyList: [],
-      routing: [
-        {
-          id: 'rule1',
-          condition: { type: 'default' },
-          targetAgentName: 'myagent',
-          allowList: [],
-          denyList: [],
-        },
-      ],
-    };
-
-    const result = buildGatewayConfig(['myagent'], 9101, 9200, undefined, [
-      { app: whatsappApp, token: '', authStateDir: '/tmp/wa-sessions/app1' },
-    ]);
-
-    const channels = result.channels as Record<string, Record<string, unknown>>;
-    const waChannel = Object.values(channels).find((ch) => ch.adapter === 'whatsapp');
-    expect(waChannel).toBeDefined();
-    expect(waChannel?.authStateDir).toBe('/tmp/wa-sessions/app1');
-    expect(waChannel?.token).toBeUndefined(); // no token for whatsapp
-  });
-
-  it('includes telegram channel config for telegram messaging app (unchanged behavior)', () => {
-    const telegramApp: MessagingApp = {
-      id: 'tg1',
-      name: 'My Telegram',
-      type: 'telegram',
-      credentialsKey: 'messaging-app:tg1:token',
-      enabled: true,
-      createdAt: new Date().toISOString(),
-      globalDenyList: [],
-      routing: [
-        {
-          id: 'rule1',
-          condition: { type: 'default' },
-          targetAgentName: 'myagent',
-          allowList: [],
-          denyList: [],
-        },
-      ],
-    };
-
-    const result = buildGatewayConfig(['myagent'], 9101, 9200, undefined, [
-      { app: telegramApp, token: 'bot-token-123' },
-    ]);
-
-    const channels = result.channels as Record<string, Record<string, unknown>>;
-    const tgChannel = Object.values(channels).find((ch) => ch.adapter === 'telegram');
-    expect(tgChannel).toBeDefined();
-    expect(tgChannel?.token).toBe('bot-token-123');
   });
 });
 
@@ -541,7 +344,7 @@ describe('ProcessRuntime lifecycle', () => {
     expect(deployment?.name).toBe('test-agent');
   });
 
-  it('deploy() records PIDs from spawned processes', async () => {
+  it('deploy() records agentServerPid from spawned process', async () => {
     const { spawner } = createMockSpawner();
     const successWatcher: StartupWatcher = async () => ({ success: true });
     const runtime = new ProcessRuntime(
@@ -557,37 +360,10 @@ describe('ProcessRuntime lifecycle', () => {
 
     const deployment = await registry.get(id);
     expect(deployment?.agentServerPid).toBe(10_000);
-    expect(deployment?.gatewayPid).toBe(10_001);
+    expect((deployment as Record<string, unknown>)?.gatewayPid).toBeUndefined();
   });
 
-  it('exit handler updates registry to stopped when both processes exit', async () => {
-    const { spawner, processes } = createMockSpawner();
-    const successWatcher: StartupWatcher = async () => ({ success: true });
-    const runtime = new ProcessRuntime(
-      registry,
-      secrets,
-      '/fake/root',
-      spawner,
-      undefined,
-      successWatcher,
-    );
-
-    const id = await runtime.deploy(configDir);
-
-    const [agentServer, gateway] = processes;
-    agentServer.exitCode = 0;
-    agentServer.emit('exit', 0, null);
-    gateway.exitCode = 0;
-    gateway.emit('exit', 0, null);
-
-    // Wait for async registry update
-    await new Promise((r) => setTimeout(r, 50));
-
-    const deployment = await registry.get(id);
-    expect(deployment?.status).toBe('stopped');
-  });
-
-  it('exit handler does not update registry when only agent exits', async () => {
+  it('exit handler updates registry to stopped when agent server exits', async () => {
     const { spawner, processes } = createMockSpawner();
     const successWatcher: StartupWatcher = async () => ({ success: true });
     const runtime = new ProcessRuntime(
@@ -602,16 +378,17 @@ describe('ProcessRuntime lifecycle', () => {
     const id = await runtime.deploy(configDir);
 
     const [agentServer] = processes;
-    agentServer.exitCode = 1;
-    agentServer.emit('exit', 1, null);
+    agentServer.exitCode = 0;
+    agentServer.emit('exit', 0, null);
 
+    // Wait for async registry update
     await new Promise((r) => setTimeout(r, 50));
 
     const deployment = await registry.get(id);
-    expect(deployment?.status).toBe('running');
+    expect(deployment?.status).toBe('stopped');
   });
 
-  it('stop() kills processes and updates registry', async () => {
+  it('stop() kills agent server and updates registry', async () => {
     const { spawner, processes } = createMockSpawner();
     const successWatcher: StartupWatcher = async () => ({ success: true });
     const runtime = new ProcessRuntime(
@@ -626,15 +403,15 @@ describe('ProcessRuntime lifecycle', () => {
     const id = await runtime.deploy(configDir);
     await runtime.stop(id);
 
-    const [agentServer, gateway] = processes;
+    const [agentServer] = processes;
     expect(agentServer.killed).toBe(true);
-    expect(gateway.killed).toBe(true);
+    expect(processes).toHaveLength(1);
 
     const deployment = await registry.get(id);
     expect(deployment?.status).toBe('stopped');
   });
 
-  it('getStatus() returns running for live deployment', async () => {
+  it('getStatus() returns running with agentServerPid only', async () => {
     const { spawner } = createMockSpawner();
     const successWatcher: StartupWatcher = async () => ({ success: true });
     const runtime = new ProcessRuntime(
@@ -651,11 +428,11 @@ describe('ProcessRuntime lifecycle', () => {
 
     expect(status.state).toBe('running');
     expect(status.agentServerPid).toBe(10_000);
-    expect(status.gatewayPid).toBe(10_001);
+    expect((status as Record<string, unknown>).gatewayPid).toBeUndefined();
     expect(status.uptime).toBeGreaterThanOrEqual(0);
   });
 
-  it('getStatus() returns stopped after processes exit', async () => {
+  it('getStatus() returns stopped after agent server exits', async () => {
     const { spawner, processes } = createMockSpawner();
     const successWatcher: StartupWatcher = async () => ({ success: true });
     const runtime = new ProcessRuntime(
@@ -669,11 +446,9 @@ describe('ProcessRuntime lifecycle', () => {
 
     const id = await runtime.deploy(configDir);
 
-    const [agentServer, gateway] = processes;
+    const [agentServer] = processes;
     agentServer.exitCode = 0;
     agentServer.emit('exit', 0, null);
-    gateway.exitCode = 0;
-    gateway.emit('exit', 0, null);
 
     await new Promise((r) => setTimeout(r, 50));
 
@@ -681,7 +456,7 @@ describe('ProcessRuntime lifecycle', () => {
     expect(status.state).toBe('stopped');
   });
 
-  it('stop() uses PID-based kill with SIGKILL escalation when not tracked in memory', async () => {
+  it('stop() uses PID-based kill when not tracked in memory', async () => {
     const { spawner } = createMockSpawner();
     const successWatcher: StartupWatcher = async () => ({ success: true });
     const runtime = new ProcessRuntime(
@@ -717,9 +492,9 @@ describe('ProcessRuntime lifecycle', () => {
       killSpy.mockRestore();
     }
 
-    // Both PIDs should get SIGTERM
     expect(killed.some((k) => k.pid === 10_000 && k.signal === 'SIGTERM')).toBe(true);
-    expect(killed.some((k) => k.pid === 10_001 && k.signal === 'SIGTERM')).toBe(true);
+    // No gateway PID kill
+    expect(killed.filter((k) => k.signal === 'SIGTERM')).toHaveLength(1);
 
     const deployment = await registry.get(id);
     expect(deployment?.status).toBe('stopped');
@@ -925,5 +700,117 @@ describe('ProcessRuntime.deploy() startup watcher', () => {
     await expect(runtime.deploy(configDir)).rejects.toThrow(DeploymentStartupError);
 
     expect(processes[0].killed).toBe(true);
+  });
+});
+
+describe('ProcessRuntime.ensureGatewayRunning', () => {
+  let tmpDir: string;
+  let configDir: string;
+  let registry: AgentRegistry;
+  let secrets: SecretStore;
+
+  beforeEach(async () => {
+    tmpDir = await mkdtemp(join(tmpdir(), 'mc-gw-'));
+    configDir = await mkdtemp(join(tmpdir(), 'mc-gw-cfg-'));
+    await mkdir(join(configDir, 'agents'));
+    await writeFile(
+      join(configDir, 'agents', 'test-agent.json'),
+      JSON.stringify({ name: 'test-agent', model: 'claude-sonnet-4-20250514', systemPrompt: 'hi' }),
+    );
+    registry = new AgentRegistry(tmpDir);
+    secrets = createMockSecrets();
+  });
+
+  afterEach(async () => {
+    await rm(tmpDir, { recursive: true });
+    await rm(configDir, { recursive: true });
+  });
+
+  it('deploy() spawns only one process (agent server, no gateway)', async () => {
+    const { spawner, processes } = createMockSpawner();
+    const successWatcher: StartupWatcher = async () => ({ success: true });
+
+    const mockGatewayClient = {
+      health: vi.fn().mockResolvedValue({
+        status: 'healthy',
+        startedAt: '2026-01-01T00:00:00Z',
+        agents: 0,
+        channels: 0,
+      }),
+      registerAgent: vi.fn().mockResolvedValue(undefined),
+      registerChannel: vi.fn().mockResolvedValue(undefined),
+      deregisterDeployment: vi.fn().mockResolvedValue(undefined),
+    };
+
+    const { GatewayStateStore } = await import('./gateway-state.js');
+    const store = new GatewayStateStore(tmpDir);
+    await store.write({
+      pid: process.pid,
+      startedAt: '2026-01-01T00:00:00Z',
+      token: 'gw-tok',
+      port: 9300,
+    });
+
+    const runtime = new ProcessRuntime(
+      registry,
+      secrets,
+      '/fake/root',
+      spawner,
+      undefined,
+      successWatcher,
+      {
+        gatewayDataDir: tmpDir,
+        makeGatewayClient: () => mockGatewayClient as GatewayManagementClient,
+      },
+    );
+
+    await runtime.deploy(configDir);
+
+    expect(processes).toHaveLength(1);
+    expect(mockGatewayClient.registerAgent).toHaveBeenCalled();
+  });
+
+  it('stop() calls deregisterDeployment on gateway', async () => {
+    const { spawner } = createMockSpawner();
+    const successWatcher: StartupWatcher = async () => ({ success: true });
+
+    const mockGatewayClient = {
+      health: vi.fn().mockResolvedValue({
+        status: 'healthy',
+        startedAt: '2026-01-01T00:00:00Z',
+        agents: 0,
+        channels: 0,
+      }),
+      registerAgent: vi.fn().mockResolvedValue(undefined),
+      registerChannel: vi.fn().mockResolvedValue(undefined),
+      deregisterDeployment: vi.fn().mockResolvedValue(undefined),
+    };
+
+    const { GatewayStateStore } = await import('./gateway-state.js');
+    const store = new GatewayStateStore(tmpDir);
+    await store.write({
+      pid: process.pid,
+      startedAt: '2026-01-01T00:00:00Z',
+      token: 'gw-tok',
+      port: 9300,
+    });
+
+    const runtime = new ProcessRuntime(
+      registry,
+      secrets,
+      '/fake/root',
+      spawner,
+      undefined,
+      successWatcher,
+      {
+        gatewayDataDir: tmpDir,
+        makeGatewayClient: () => mockGatewayClient as GatewayManagementClient,
+      },
+    );
+
+    const id = await runtime.deploy(configDir);
+    await runtime.stop(id);
+
+    expect(mockGatewayClient.deregisterDeployment).toHaveBeenCalledWith(id);
   });
 });
