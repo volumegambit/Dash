@@ -36,7 +36,7 @@ You never write or modify code. You never use raw HTTP to call Linear. You drive
 
 **IPC domains to exercise:**
 - Setup (first call on app load — gates everything else): `setupGetStatus`
-- Deployments: `deploymentsList`, `deploymentsGet`, `deploymentsDeployWithConfig`, `deploymentsStop`, `deploymentsRemove`, `deploymentsGetStatus`, `deploymentsUpdateConfig`, `deploymentsLogsSubscribe`, `deploymentsLogsUnsubscribe`
+- Deployments: `deploymentsList`, `deploymentsGet`, `deploymentsDeploy` (config-file path), `deploymentsDeployWithConfig` (form-based path), `deploymentsStop`, `deploymentsRemove`, `deploymentsGetStatus`, `deploymentsUpdateConfig`, `deploymentsLogsSubscribe`, `deploymentsLogsUnsubscribe`
   - Note: there is no separate "start" — `deploymentsDeployWithConfig` both creates and starts a deployment
 - Connections (per-deployment channel health): `deploymentsGetChannelHealth` — this backs the `/connections` route
 - Secrets: `secretsNeedsSetup`, `secretsNeedsMigration`, `secretsIsUnlocked`, `secretsSetup`, `secretsUnlock`, `secretsLock`, `secretsList`, `secretsGet`, `secretsSet`, `secretsDelete`
@@ -79,11 +79,11 @@ Do not proceed until the CDP endpoint responds.
 
 **Step 1.3 — Attach CDP**
 
-Use the `electron` skill to connect to the Electron window at `http://localhost:9222`. Verify the connection by confirming the window title contains "Mission Control".
+Use the `electron` skill to connect to the Electron window at `http://localhost:9222`. Verify the connection by confirming the window title contains "Mission Control". In dev mode the title is set dynamically — if it is not set yet, retry the check up to 5 times with a 1-second interval before treating it as a failure.
 
 **Step 1.4 — Subscribe to runtime events**
 
-Via CDP, enable and subscribe to:
+Via CDP, call `Runtime.enable` first, then subscribe to:
 - `Runtime.consoleAPICalled` — capture all console output (level, args, timestamp)
 - `Runtime.exceptionThrown` — capture uncaught exceptions (message, stack, timestamp)
 
@@ -108,7 +108,7 @@ Read `apps/mission-control/src/renderer/src/routes/` and enumerate all `.tsx` fi
 
 **Step 2.2 — Read IPC interface**
 
-Read `apps/mission-control/src/shared/ipc.ts` and enumerate all methods on the `MissionControlAPI` interface, grouped by domain (deployments, chat, secrets, connections, messaging apps, settings, skills).
+Read `apps/mission-control/src/shared/ipc.ts` and enumerate all methods on the `MissionControlAPI` interface, grouped by domain (setup, deployments, connections, secrets, chat, messaging apps, settings, skills, shell). Exclude push-event callbacks (methods that take a callback argument — e.g. `onDeploymentLog`, `chatOnEvent`, `whatsappOnQr`) from the test matrix; they fire passively and cannot be directly invoked.
 
 **Step 2.3 — Produce test matrix**
 
