@@ -183,8 +183,33 @@ For each area, list:
 - Main happy-path flow to execute
 - Known fragile points from reading the source
 
+**Step 2.4 — Pre-flight for Linear filing**
+
+Run these sub-steps in order before Phase 3 begins:
+
+**2.4.1 — Resolve team ID**
+
+Call `mcp__linear-server__list_teams`. Find the team with name "Dash". Record the `id` field of that team as `dashTeamId` (a UUID string). Pass this UUID as `teamId` to `list_issue_statuses`, `list_issue_labels`, and `save_issue`. Note: `list_issues` accepts a team name string (`team: Dash`) and does not require this UUID.
+
+**2.4.2 — Resolve non-terminal state IDs**
+
+Call `mcp__linear-server__list_issue_statuses` with `teamId: <dashTeamId>` (UUID from 2.4.1). Record the IDs of non-terminal states (typically "Todo", "In Progress", "In Review" — exclude "Done", "Cancelled", "Duplicate"). Store as `nonTerminalStateIds`.
+
+**2.4.3 — Ensure labels exist**
+
+Call `mcp__linear-server__list_issue_labels` with `teamId: <dashTeamId>`. For each of `automated-qa` and `mission-control`: if the label does not exist, create it with `mcp__linear-server__create_issue_label` (color `#6B7280` for `automated-qa`, `#8B5CF6` for `mission-control`). Record both label IDs. If either label cannot be resolved or created, treat the entire step 2.4 as failed.
+
+**2.4 failure handling:** If any sub-step fails, print a warning — "Pre-flight failed: background filing disabled for this run" — and continue into Phase 3. Findings are still counted and recorded in working memory, but no background filing agents are spawned.
+
+Store `dashTeamId`, `nonTerminalStateIds`, and both label IDs in working memory alongside the test matrix.
+
 **Exit criteria:** Test matrix written to working memory. Print:
-> "Phase 2 complete — test matrix built. X routes, Y IPC handlers mapped."
+
+> "Phase 2 complete — test matrix built. X routes, Y IPC handlers mapped. Pre-flight complete — state IDs, label IDs, and team ID recorded."
+
+If pre-flight failed:
+
+> "Phase 2 complete — test matrix built. X routes, Y IPC handlers mapped. WARNING: pre-flight failed — background filing disabled."
 
 ---
 
