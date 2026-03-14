@@ -469,7 +469,7 @@ Screenshots saved to: /tmp/mc-qa-RUNID/
 
 1. **Debug mode only** — always launch with `npm run mc:dev:debug`. The standard `npm run mc:dev` does not expose CDP.
 2. **Functional failures only** — do not file tickets for visual regressions, slow performance, or cosmetic issues.
-3. **One ticket per distinct failure** — deduplication key is the `[MC] <Route>:` title prefix.
+3. **One ticket per distinct failure** — deduplication key is the `[MC] <Screen/Flow>:` title prefix.
 4. **Linear MCP only** — never use raw `fetch`/`curl` to call the Linear API.
 5. **Named test fixture** — the Deploy flow uses a deployment named exactly `MC-QA-Test`. Remove any pre-existing `MC-QA-Test` before starting. Touch no other deployments.
 6. **No remediation** — find and report bugs only. Do not fix them or modify application code.
