@@ -19,6 +19,14 @@ import { GatewayStateStore } from './gateway-state.js';
 import { type ProcessSnapshot, resolveRuntimeStatus } from './status.js';
 import type { DeploymentRuntime, RuntimeStatus } from './types.js';
 
+export function parseProviderSecretKey(
+  key: string,
+): { provider: string; keyName: string } | null {
+  const match = key.match(/^(.+)-api-key:(.+)$/);
+  if (!match) return null;
+  return { provider: match[1], keyName: match[2] };
+}
+
 interface ProcessState {
   agentServer: SpawnedProcess;
   startTime: number;
@@ -197,7 +205,7 @@ export function validateConfigDir(configDir: string): void {
 }
 
 export interface AgentSecretsFile {
-  providerApiKeys?: Record<string, string>;
+  providerApiKeys?: Record<string, Record<string, string>>;
   managementToken: string;
   chatToken: string;
 }
@@ -351,6 +359,7 @@ export class ProcessRuntime implements DeploymentRuntime {
       systemPrompt: string;
       tools?: string[];
       workspace?: string;
+      credentialKeys?: Record<string, string>;
     }
     const agentConfigs: Record<string, AgentCfg> = {};
 
@@ -368,6 +377,7 @@ export class ProcessRuntime implements DeploymentRuntime {
           systemPrompt: cfg.systemPrompt ?? '',
           tools: cfg.tools,
           workspace: cfg.workspace,
+          credentialKeys: cfg.credentialKeys,
         };
       }
     }
@@ -387,6 +397,7 @@ export class ProcessRuntime implements DeploymentRuntime {
               systemPrompt: cfg.systemPrompt ?? '',
               tools: cfg.tools,
               workspace: cfg.workspace,
+              credentialKeys: cfg.credentialKeys,
             };
           }
         }
@@ -423,30 +434,41 @@ export class ProcessRuntime implements DeploymentRuntime {
     await this.secrets.set(`chat-token:${id}`, chatToken);
 
     // Read provider API keys from secret store
-    const anthropicApiKey = (await this.secrets.get('anthropic-api-key')) ?? undefined;
-    const googleApiKey = (await this.secrets.get('google-api-key')) ?? undefined;
-    const openaiApiKey = (await this.secrets.get('openai-api-key')) ?? undefined;
+    const allSecretKeys = await this.secrets.list();
+    const providerApiKeys: Record<string, Record<string, string>> = {};
+    for (const secretKey of allSecretKeys) {
+      const parsed = parseProviderSecretKey(secretKey);
+      if (!parsed) continue;
+      const value = await this.secrets.get(secretKey);
+      if (!value) continue;
+      if (!providerApiKeys[parsed.provider]) {
+        providerApiKeys[parsed.provider] = {};
+      }
+      providerApiKeys[parsed.provider][parsed.keyName] = value;
+    }
 
-    if (!anthropicApiKey && !googleApiKey && !openaiApiKey) {
+    if (Object.keys(providerApiKeys).length === 0) {
       throw new Error(
         'No provider API key configured. Add at least one API key in Mission Control Settings.',
       );
     }
 
-    // Build providerApiKeys object for the agent config
-    const providerApiKeys: Record<string, string> = {};
-    if (anthropicApiKey) providerApiKeys.anthropic = anthropicApiKey;
-    if (googleApiKey) providerApiKeys.google = googleApiKey;
-    if (openaiApiKey) providerApiKeys.openai = openaiApiKey;
-
     // Validate that each agent's primary model has a matching provider API key
-    for (const [, cfg] of Object.entries(agentConfigs)) {
+    for (const [name, cfg] of Object.entries(agentConfigs)) {
       if (!cfg.model.includes('/')) continue;
       const providerID = cfg.model.split('/')[0];
       if (providerID && !providerApiKeys[providerID]) {
         throw new Error(
           `No API key configured for provider '${providerID}'. Add a key in Mission Control Settings → AI Providers, or change the agent model to one you have a key for.`,
         );
+      }
+      if (cfg.credentialKeys?.[providerID]) {
+        const keyName = cfg.credentialKeys[providerID];
+        if (!providerApiKeys[providerID]?.[keyName]) {
+          throw new Error(
+            `Agent "${name}" requires credential "${keyName}" for provider "${providerID}", but no key with that name exists.`,
+          );
+        }
       }
     }
 
