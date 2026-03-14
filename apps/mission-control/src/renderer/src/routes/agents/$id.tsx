@@ -197,7 +197,7 @@ export function AgentDetail(): JSX.Element {
   const showConnectBanner = isRunning && !!agentName && !hasMessagingApp && !bannerDismissed;
 
   return (
-    <div className="flex min-h-full flex-col overflow-y-auto">
+    <div className="flex min-h-full flex-col">
       <div className="mb-6 flex items-center justify-between">
         <div className="flex items-center gap-4">
           <Link
