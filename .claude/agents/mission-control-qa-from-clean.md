@@ -14,31 +14,9 @@ You use the `agent-browser` CLI (via Bash tool) to interact with MC and the Agen
 
 ---
 
-## Phase 0 — Pre-checks
+## Phase 0 — Pre-checks and API Key Resolution
 
-**Step 0.1 — Verify API key is available**
-
-`ANTHROPIC_API_KEY` is an inherited environment variable — it persists across Bash calls.
-
-```bash
-echo "${ANTHROPIC_API_KEY:?ANTHROPIC_API_KEY must be set}" > /dev/null
-```
-
-If this fails, abort immediately with:
-> "Aborted: ANTHROPIC_API_KEY must be set in the shell environment for clean QA runs. The QA agent needs it to configure the fresh MC instance."
-
-**Step 0.2 — Verify port 9222 is free**
-
-```bash
-curl -s http://localhost:9222/json
-```
-
-If this returns valid JSON, another process owns the port. Abort with:
-> "Aborted: port 9222 is already in use. Stop the existing process or set MC_DEBUG_PORT to a different port."
-
-If it fails (connection refused / empty), the port is free. Continue.
-
-**Step 0.3 — Generate Run ID and create directories**
+**Step 0.1 — Generate Run ID and create directories**
 
 Generate a timestamp-based ID and persist state to a file:
 
@@ -46,7 +24,93 @@ Generate a timestamp-based ID and persist state to a file:
 RUN_ID="mc-qa-clean-$(date +%Y%m%d-%H%M%S)" && DATA_DIR="/tmp/${RUN_ID}/data" && mkdir -p "$DATA_DIR" && echo "RUN_ID=$RUN_ID" > "/tmp/${RUN_ID}/state.env" && echo "DATA_DIR=$DATA_DIR" >> "/tmp/${RUN_ID}/state.env" && echo "Run ID: $RUN_ID" && echo "Data dir: $DATA_DIR" && echo "State file: /tmp/${RUN_ID}/state.env"
 ```
 
-Record the state file path (`/tmp/mc-qa-clean-.../state.env`) in working memory. All subsequent phases source this file to recover `RUN_ID` and `DATA_DIR`.
+Record the state file path (`/tmp/mc-qa-clean-.../state.env`) in working memory. All subsequent phases source this file to recover variables.
+
+**Step 0.2 — Resolve API key**
+
+The clean MC instance needs an Anthropic API key for the Setup Wizard. Resolve it in priority order:
+
+**Option A: Check `ANTHROPIC_API_KEY` env var**
+
+```bash
+echo "$ANTHROPIC_API_KEY"
+```
+
+If this prints a non-empty value (starts with `sk-`), save it to the state file and skip to Step 0.3:
+
+```bash
+source /tmp/mc-qa-clean-.../state.env && echo "API_KEY=$ANTHROPIC_API_KEY" >> "/tmp/${RUN_ID}/state.env"
+```
+
+**Option B: Extract from existing MC secrets store**
+
+If the env var is not set, extract the key from the user's real `~/.mission-control` by briefly launching MC against it.
+
+First verify port 9222 is free:
+
+```bash
+curl -s http://localhost:9222/json
+```
+
+If this returns valid JSON, abort: "Port 9222 is in use — cannot extract API key. Either set ANTHROPIC_API_KEY env var or free port 9222."
+
+Launch MC against the real data directory (NOT the clean one):
+
+```bash
+npm run mc:dev:debug &
+echo $! > /tmp/mc-qa-clean-.../extract-mc.pid
+```
+
+Wait for CDP (poll every 2s, max 60s):
+
+```bash
+curl -s http://localhost:9222/json
+```
+
+Connect agent-browser and extract the key:
+
+```bash
+agent-browser connect 9222
+agent-browser wait 3000
+```
+
+The secrets store auto-unlocks from the OS keychain on startup. If the app shows the Setup Wizard or unlock screen instead of the dashboard, the secrets store could not auto-unlock — abort with: "Cannot auto-unlock secrets store. Set ANTHROPIC_API_KEY env var instead."
+
+If the dashboard is visible (secrets store is unlocked), extract the API key:
+
+```bash
+agent-browser eval "await window.api.secretsGet('anthropic-api-key')"
+```
+
+If this returns a non-empty string (the key value), save it to the state file:
+
+```bash
+source /tmp/mc-qa-clean-.../state.env && echo "API_KEY=<extracted-key>" >> "/tmp/${RUN_ID}/state.env"
+```
+
+Kill the extraction MC instance:
+
+```bash
+EXTRACT_PID=$(cat /tmp/mc-qa-clean-.../extract-mc.pid) && kill $EXTRACT_PID 2>/dev/null; sleep 3; kill -0 $EXTRACT_PID 2>/dev/null && kill -9 $EXTRACT_PID 2>/dev/null
+```
+
+Wait 2 seconds for the process to fully exit before continuing.
+
+**If neither option yields a key**, abort:
+> "Aborted: No API key available. Either set ANTHROPIC_API_KEY env var or configure an Anthropic key in Mission Control."
+
+**Step 0.3 — Verify port 9222 is free**
+
+After key extraction (if MC was launched), verify the port is free again:
+
+```bash
+curl -s http://localhost:9222/json
+```
+
+If this returns valid JSON, another process owns the port. Abort with:
+> "Aborted: port 9222 is still in use. Stop the existing process or set MC_DEBUG_PORT to a different port."
+
+If it fails (connection refused / empty), the port is free. Continue.
 
 ---
 
@@ -145,12 +209,16 @@ agent-browser wait 1000
 
 The screen shows "Connect to Claude" with a password input (placeholder `sk-ant-...`).
 
-Read the API key from the environment and fill it in:
+Read the API key from the state file and fill it in:
+
+```bash
+source /tmp/mc-qa-clean-.../state.env && agent-browser fill @eN "$API_KEY"
+```
+
+Then click "Save API Key":
 
 ```bash
 agent-browser snapshot -i
-# Fill the API key field with the value from ANTHROPIC_API_KEY
-agent-browser fill @eN "$ANTHROPIC_API_KEY"
 # Click "Save API Key"
 agent-browser click @eN
 agent-browser wait 2000
@@ -232,7 +300,7 @@ To clean up:  rm -rf /tmp/<RUN_ID>
 ## Key Constraints
 
 1. **Always kill MC at the end** — even if the QA agent fails or the setup wizard gets stuck.
-2. **Never touch `~/.mission-control`** — all MC state goes to the temp data directory.
-3. **API key from environment only** — do not hardcode or prompt for API keys.
+2. **Never touch `~/.mission-control`** — the real data dir is only used read-only to extract the API key. All QA state goes to the temp data directory.
+3. **API key resolution** — check `ANTHROPIC_API_KEY` env var first; if not set, extract from the existing MC secrets store by briefly launching MC against `~/.mission-control`. Never hardcode or prompt for keys.
 4. **Reuse mc-qa unchanged** — dispatch it as a subagent, do not duplicate its logic.
 5. **Port 9222 must be free** — abort if anything else is listening on it.
