@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { loadAgentsFromDirectory, loadConfig, parseFlags } from './config.js';
+import { loadAgentsFromDirectory, loadConfig, parseFlags, resolveAgentKeys } from './config.js';
 
 describe('parseFlags', () => {
   it('parses --config flag', () => {
@@ -70,7 +70,10 @@ describe('loadConfig with --config and --secrets', () => {
     );
 
     const secretsPath = join(tmpDir, 'secrets.json');
-    await writeFile(secretsPath, JSON.stringify({ providerApiKeys: { anthropic: 'sk-test-key' } }));
+    await writeFile(
+      secretsPath,
+      JSON.stringify({ providerApiKeys: { anthropic: { default: 'sk-test-key' } } }),
+    );
 
     const cfg = await loadConfig({ configPath, secretsPath });
 
@@ -86,7 +89,7 @@ describe('loadConfig with --config and --secrets', () => {
     await writeFile(
       secretsPath,
       JSON.stringify({
-        providerApiKeys: { anthropic: 'sk-from-secrets' },
+        providerApiKeys: { anthropic: { default: 'sk-from-secrets' } },
         managementToken: 'mgmt-tok',
         chatToken: 'chat-tok',
       }),
@@ -96,7 +99,7 @@ describe('loadConfig with --config and --secrets', () => {
 
     const cfg = await loadConfig({ secretsPath });
 
-    expect(cfg.providerApiKeys.anthropic).toBe('sk-from-secrets');
+    expect(cfg.providerApiKeys.anthropic).toEqual({ default: 'sk-from-secrets' });
     expect(cfg.managementToken).toBe('mgmt-tok');
     expect(cfg.chatToken).toBe('chat-tok');
     expect(existsSync(secretsPath)).toBe(false);
@@ -110,12 +113,12 @@ describe('loadConfig with --config and --secrets', () => {
       const secretsPath = join(tmpDir, 'secrets.json');
       await writeFile(
         secretsPath,
-        JSON.stringify({ providerApiKeys: { anthropic: 'sk-from-secrets' } }),
+        JSON.stringify({ providerApiKeys: { anthropic: { default: 'sk-from-secrets' } } }),
       );
 
       const cfg = await loadConfig({ secretsPath });
-      // Resolution order: env vars > secrets > credentials
-      expect(cfg.providerApiKeys.anthropic).toBe('sk-from-env');
+      // Env vars populate the 'default' slot with highest priority
+      expect(cfg.providerApiKeys.anthropic.default).toBe('sk-from-env');
     } finally {
       if (original !== undefined) {
         process.env.ANTHROPIC_API_KEY = original;
@@ -232,7 +235,7 @@ describe('loadConfig with config directory', () => {
     );
 
     const secretsPath = join(tmpDir, 'secrets.json');
-    await writeFile(secretsPath, JSON.stringify({ providerApiKeys: { anthropic: 'sk-test' } }));
+    await writeFile(secretsPath, JSON.stringify({ providerApiKeys: { anthropic: { default: 'sk-test' } } }));
 
     const cfg = await loadConfig({ configPath: configDir, secretsPath });
     expect(cfg.agents.bot).toBeDefined();
@@ -260,7 +263,7 @@ describe('loadConfig with config directory', () => {
     );
 
     const secretsPath = join(tmpDir, 'secrets.json');
-    await writeFile(secretsPath, JSON.stringify({ providerApiKeys: { anthropic: 'sk-test' } }));
+    await writeFile(secretsPath, JSON.stringify({ providerApiKeys: { anthropic: { default: 'sk-test' } } }));
 
     const cfg = await loadConfig({ configPath: configDir, secretsPath });
     expect(cfg.agents.fromdir).toBeDefined();
@@ -278,7 +281,7 @@ describe('loadConfig with config directory', () => {
     );
 
     const secretsPath = join(tmpDir, 'secrets.json');
-    await writeFile(secretsPath, JSON.stringify({ providerApiKeys: { anthropic: 'sk-test' } }));
+    await writeFile(secretsPath, JSON.stringify({ providerApiKeys: { anthropic: { default: 'sk-test' } } }));
 
     const cfg = await loadConfig({ configPath: configDir, secretsPath });
     expect(cfg.logLevel).toBe('debug');
@@ -310,10 +313,41 @@ describe('loadConfig with config directory', () => {
     );
 
     const secretsPath = join(tmpDir, 'secrets.json');
-    await writeFile(secretsPath, JSON.stringify({ providerApiKeys: { anthropic: 'sk-test' } }));
+    await writeFile(secretsPath, JSON.stringify({ providerApiKeys: { anthropic: { default: 'sk-test' } } }));
 
     const cfg = await loadConfig({ configPath, secretsPath });
     expect(cfg.agents.solo).toBeDefined();
     expect(cfg.agents.solo.systemPrompt).toBe('Solo agent');
+  });
+});
+
+describe('resolveAgentKeys', () => {
+  const allKeys = {
+    anthropic: { default: 'sk-ant-default', 'high-volume': 'sk-ant-hv' },
+    openai: { default: 'sk-openai-default' },
+  };
+
+  it('falls back to default when credentialKeys is omitted', () => {
+    const result = resolveAgentKeys(allKeys);
+    expect(result).toEqual({ anthropic: 'sk-ant-default', openai: 'sk-openai-default' });
+  });
+
+  it('selects named keys from credentialKeys', () => {
+    const result = resolveAgentKeys(allKeys, { anthropic: 'high-volume' });
+    expect(result).toEqual({ anthropic: 'sk-ant-hv', openai: 'sk-openai-default' });
+  });
+
+  it('throws when credentialKeys references a missing key name', () => {
+    expect(() => resolveAgentKeys(allKeys, { anthropic: 'nonexistent' })).toThrow('nonexistent');
+  });
+
+  it('throws when no default key exists and credentialKeys is omitted', () => {
+    const noDefault = { anthropic: { 'high-volume': 'sk-ant-hv' } };
+    expect(() => resolveAgentKeys(noDefault)).toThrow('default');
+  });
+
+  it('returns empty object when allKeys is empty', () => {
+    const result = resolveAgentKeys({});
+    expect(result).toEqual({});
   });
 });
