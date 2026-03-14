@@ -44,3 +44,4 @@ export { SettingsStore } from './settings-store.js';
 export type { AppSettings } from './settings-store.js';
 export { getPlatformDataDir } from './platform-paths.js';
 export type { GatewayOptions } from './runtime/process.js';
+export { migrateLegacyDataDir } from './migration.js';
