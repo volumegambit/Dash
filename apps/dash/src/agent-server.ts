@@ -206,6 +206,16 @@ export async function createAgentServer(config: DashConfig) {
           },
           logFilePath: config.logDir ? resolve(config.logDir, 'agent.log') : undefined,
           skills: skillsHandlers,
+          onUpdateCredentials: async (providerApiKeys) => {
+            config.providerApiKeys = providerApiKeys;
+            for (const [name, agentConfig] of Object.entries(config.agents)) {
+              const backend = backendsByName.get(name);
+              if (!backend) continue;
+              const agentKeys = resolveAgentKeys(providerApiKeys, agentConfig.credentialKeys);
+              await backend.updateCredentials(agentKeys);
+            }
+            log('Credentials updated via Management API');
+          },
         });
         managementClose = close;
         log(`Management API listening on port ${config.managementPort}`);
