@@ -197,10 +197,13 @@ export async function registerIpcHandlers(
       // Secrets exist but are locked — need unlock, NOT setup
       return { needsSetup: false, needsUnlock: true, needsApiKey: false };
     }
-    const anthropicKey = await store.get('anthropic-api-key');
-    const openaiKey = await store.get('openai-api-key');
-    const googleKey = await store.get('google-api-key');
-    const hasAnyKey = !!(anthropicKey || openaiKey || googleKey);
+    const allKeys = await store.list();
+    const hasAnyKey = allKeys.some(
+      (k) =>
+        k.startsWith('anthropic-api-key:') ||
+        k.startsWith('openai-api-key:') ||
+        k.startsWith('google-api-key:'),
+    );
     return { needsSetup: false, needsUnlock: false, needsApiKey: !hasAnyKey };
   });
 
