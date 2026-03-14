@@ -21,7 +21,7 @@ import type { DeployWithConfigOptions } from '../shared/ipc.js';
 import { ChatService } from './chat-service.js';
 import { HealthPoller } from './health-poller.js';
 
-const DATA_DIR = join(homedir(), '.mission-control');
+const DATA_DIR = process.env.MC_DATA_DIR || join(homedir(), '.mission-control');
 const SESSION_KEY_PATH = join(DATA_DIR, 'session.key');
 
 let chatService: ChatService | undefined;
@@ -497,7 +497,7 @@ export async function registerIpcHandlers(
         // Clean up runtime auth state directory
         const { homedir } = await import('node:os');
         const { rm } = await import('node:fs/promises');
-        const authStateDir = join(homedir(), '.mission-control', 'whatsapp-sessions', id);
+        const authStateDir = join(DATA_DIR, 'whatsapp-sessions', id);
         await rm(authStateDir, { recursive: true, force: true });
       } else {
         await getSecretStore().delete(app.credentialsKey);
