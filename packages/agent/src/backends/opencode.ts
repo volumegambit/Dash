@@ -408,6 +408,29 @@ export class OpenCodeBackend implements AgentBackend {
     }
   }
 
+  /**
+   * Update provider API keys at runtime. Calls sdk.auth.set() for each key
+   * and updates process.env so watchdog restarts use the new keys.
+   */
+  async updateCredentials(providerApiKeys: Record<string, string>): Promise<void> {
+    this.providerApiKeys = providerApiKeys;
+    // Update process.env for watchdog restarts
+    for (const [providerID, key] of Object.entries(providerApiKeys)) {
+      const envVar = OpenCodeBackend.PROVIDER_ENV_VARS[providerID];
+      if (envVar && key) {
+        process.env[envVar] = key;
+      }
+    }
+    // Update the running OpenCode server via SDK
+    if (this.sdk) {
+      for (const [providerID, key] of Object.entries(providerApiKeys)) {
+        if (key) {
+          await this.sdk.auth.set({ providerID, auth: { type: 'api', key } });
+        }
+      }
+    }
+  }
+
   async stop(): Promise<void> {
     // Clear watchdog before killing the process
     if (this.watchdogInterval) {
