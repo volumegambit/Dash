@@ -21,6 +21,7 @@
         "group": "Reference",
         "pages": [
           "configuration",
+          "secrets",
           "providers",
           "tools",
           "architecture",
