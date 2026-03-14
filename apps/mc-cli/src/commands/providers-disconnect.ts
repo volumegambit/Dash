@@ -6,7 +6,9 @@ export function registerProvidersDisconnectCommand(providers: Command): void {
   providers
     .command('disconnect <provider>')
     .description('Remove an AI provider API key')
-    .action(async (providerArg: string) => {
+    .option('--key <name>', 'Key name to remove (default: "default")', 'default')
+    .option('--all', 'Remove all keys for this provider')
+    .action(async (providerArg: string, opts: { key: string; all?: boolean }) => {
       try {
         await ensureUnlocked();
         const meta = findProvider(providerArg);
@@ -17,8 +19,11 @@ export function registerProvidersDisconnectCommand(providers: Command): void {
         }
 
         const store = getSecretStore();
-        const keys = await store.list();
-        if (!keys.includes(meta.secretKey)) {
+        const allKeys = await store.list();
+        const prefix = `${meta.id}-api-key:`;
+        const matchingKeys = allKeys.filter((k) => k.startsWith(prefix));
+
+        if (matchingKeys.length === 0) {
           console.error(`${meta.name} is not connected.`);
           process.exitCode = 1;
           return;
@@ -26,15 +31,40 @@ export function registerProvidersDisconnectCommand(providers: Command): void {
 
         const prompt = createPrompt();
         try {
-          const answer = await prompt.question(
-            `Disconnect ${meta.name}? This removes the API key. [y/N]: `,
-          );
-          if (answer.trim().toLowerCase() !== 'y') {
-            console.log('Cancelled.');
-            return;
+          if (opts.all) {
+            const answer = await prompt.question(
+              `Remove all ${matchingKeys.length} key(s) for ${meta.name}? [y/N]: `,
+            );
+            if (answer.trim().toLowerCase() !== 'y') {
+              console.log('Cancelled.');
+              return;
+            }
+            for (const k of matchingKeys) {
+              await store.delete(k);
+            }
+            console.log(
+              `  \u2713 ${meta.name} fully disconnected (${matchingKeys.length} key(s) removed).`,
+            );
+          } else {
+            const targetKey = `${prefix}${opts.key}`;
+            if (!matchingKeys.includes(targetKey)) {
+              console.error(`No key named "${opts.key}" for ${meta.name}.`);
+              console.error(
+                `Available keys: ${matchingKeys.map((k) => k.slice(prefix.length)).join(', ')}`,
+              );
+              process.exitCode = 1;
+              return;
+            }
+            const answer = await prompt.question(
+              `Remove "${opts.key}" key for ${meta.name}? [y/N]: `,
+            );
+            if (answer.trim().toLowerCase() !== 'y') {
+              console.log('Cancelled.');
+              return;
+            }
+            await store.delete(targetKey);
+            console.log(`  \u2713 ${meta.name} key "${opts.key}" removed.`);
           }
-          await store.delete(meta.secretKey);
-          console.log(`  ✓ ${meta.name} disconnected.`);
         } finally {
           prompt.close();
         }
