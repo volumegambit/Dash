@@ -52,6 +52,11 @@ export class EncryptedSecretStore implements LockableSecretStore {
   }
 
   async setup(password: string): Promise<Buffer> {
+    if (existsSync(this.encPath)) {
+      throw new Error(
+        'Encrypted secrets store already exists. Use unlockWithPassword() to unlock it.',
+      );
+    }
     this.validatePassword(password);
 
     const salt = generateSalt();

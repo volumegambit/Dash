@@ -5,8 +5,9 @@ import type { DeployWithConfigOptions, MissionControlAPI, SetupStatus } from './
 
 describe('MissionControlAPI contract', () => {
   it('SetupStatus has required fields', () => {
-    const status: SetupStatus = { needsSetup: true, needsApiKey: false };
+    const status: SetupStatus = { needsSetup: true, needsUnlock: false, needsApiKey: false };
     expect(status.needsSetup).toBe(true);
+    expect(status.needsUnlock).toBe(false);
     expect(status.needsApiKey).toBe(false);
   });
 

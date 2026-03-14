@@ -10,7 +10,9 @@ function createMockApi(): Record<keyof MissionControlAPI, ReturnType<typeof vi.f
     openExternal: vi.fn().mockResolvedValue(undefined),
 
     // Setup
-    setupGetStatus: vi.fn().mockResolvedValue({ needsSetup: false, needsApiKey: false }),
+    setupGetStatus: vi
+      .fn()
+      .mockResolvedValue({ needsSetup: false, needsUnlock: false, needsApiKey: false }),
 
     // Chat
     chatListConversations: vi.fn().mockResolvedValue([]),
