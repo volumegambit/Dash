@@ -1001,6 +1001,109 @@ describe('ProcessRuntime.registerWithGateway', () => {
     );
   });
 
+  it('calls registerChannel for an enabled whatsapp messaging app', async () => {
+    const deploymentId = 'dep-wa-test';
+    const chatPort = 8767;
+    const chatToken = 'test-chat-token-wa';
+
+    const fakeApp: MessagingApp = {
+      id: 'app-wa-1',
+      name: 'My WhatsApp Bot',
+      type: 'whatsapp',
+      credentialsKey: 'whatsapp-auth:app-wa-1',
+      enabled: true,
+      createdAt: new Date().toISOString(),
+      globalDenyList: [],
+      routing: [
+        {
+          condition: 'all',
+          targetAgentName: 'test-agent',
+          allowList: [],
+          denyList: [],
+        },
+      ],
+    };
+
+    const fakeDeployment = {
+      id: deploymentId,
+      name: 'test-agent',
+      target: 'local' as const,
+      status: 'running' as const,
+      createdAt: new Date().toISOString(),
+      chatPort,
+      chatToken,
+      config: {
+        target: 'local' as const,
+        agents: { 'test-agent': { name: 'test-agent', model: 'claude-3', systemPrompt: 'hi' } },
+        channels: {},
+      },
+    };
+
+    const fakeRegistry = {
+      get: async (id: string) => (id === deploymentId ? fakeDeployment : null),
+      list: async () => [fakeDeployment],
+      add: async () => {},
+      update: async () => {},
+      remove: async () => {},
+    };
+
+    const authKey = `${fakeApp.credentialsKey}:creds`;
+    const fakeSecrets: SecretStore = {
+      get: async (key: string) => (key === authKey ? 'some-creds' : null),
+      set: async () => {},
+      delete: async () => {},
+      list: async () => [authKey],
+    };
+
+    const mockRegisterAgent = vi.fn().mockResolvedValue(undefined);
+    const mockRegisterChannel = vi.fn().mockResolvedValue(undefined);
+    const mockGatewayClient = {
+      health: vi.fn().mockResolvedValue({ status: 'healthy', startedAt: '2026-01-01T00:00:00Z', agents: 0, channels: 0 }),
+      registerAgent: mockRegisterAgent,
+      registerChannel: mockRegisterChannel,
+      deregisterDeployment: vi.fn().mockResolvedValue(undefined),
+    };
+
+    const { GatewayStateStore } = await import('./gateway-state.js');
+    const store = new GatewayStateStore(tmpDir);
+    await store.write({
+      pid: process.pid,
+      startedAt: '2026-01-01T00:00:00Z',
+      token: 'gw-tok',
+      port: 9300,
+    });
+
+    const fakeMessagingApps = {
+      list: async () => [fakeApp],
+    };
+
+    const runtime = new ProcessRuntime(
+      fakeRegistry as unknown as Parameters<typeof ProcessRuntime>[0],
+      fakeSecrets,
+      '/fake/root',
+      undefined,
+      fakeMessagingApps as unknown as Parameters<typeof ProcessRuntime>[4],
+      undefined,
+      {
+        gatewayDataDir: tmpDir,
+        makeGatewayClient: () => mockGatewayClient as unknown as GatewayManagementClient,
+      },
+    );
+
+    await runtime.registerWithGateway(deploymentId);
+
+    expect(mockRegisterChannel).toHaveBeenCalledOnce();
+    expect(mockRegisterChannel).toHaveBeenCalledWith(
+      deploymentId,
+      `messaging-app-${fakeApp.id}`,
+      expect.objectContaining({
+        adapter: 'whatsapp',
+        authStateDir: expect.any(String),
+        whatsappAuth: expect.objectContaining({ creds: 'some-creds' }),
+      }),
+    );
+  });
+
   it('skips silently if no gateway is configured', async () => {
     const deploymentId = 'dep-abc';
     const fakeDeployment = {
