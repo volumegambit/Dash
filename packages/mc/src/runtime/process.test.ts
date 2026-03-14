@@ -74,7 +74,7 @@ describe('validateConfigDir', () => {
 describe('writeSecretsFile', () => {
   it('writes agent secrets with 0600 permissions', async () => {
     const secrets: AgentSecretsFile = {
-      providerApiKeys: { anthropic: 'sk-test' },
+      providerApiKeys: { anthropic: { default: 'sk-test' } },
       managementToken: 'mgmt-tok',
       chatToken: 'chat-tok',
     };
@@ -84,7 +84,7 @@ describe('writeSecretsFile', () => {
       expect(existsSync(filePath)).toBe(true);
 
       const content = JSON.parse(await readFile(filePath, 'utf-8'));
-      expect(content.providerApiKeys?.anthropic).toBe('sk-test');
+      expect(content.providerApiKeys?.anthropic?.default).toBe('sk-test');
       expect(content.managementToken).toBe('mgmt-tok');
       expect(content.chatToken).toBe('chat-tok');
 
@@ -152,7 +152,7 @@ function createMockSpawner(): { spawner: ProcessSpawner; processes: FakeProcess[
 
 function createMockSecrets(): SecretStore {
   const store = new Map<string, string>();
-  store.set('anthropic-api-key', 'sk-ant-test');
+  store.set('anthropic-api-key:default', 'sk-ant-test');
   return {
     get: async (key: string) => store.get(key) ?? null,
     set: async (key: string, value: string) => {
@@ -201,7 +201,7 @@ describe('ProcessRuntime.deploy() model/key validation', () => {
       join(configDir, 'agents', 'test-agent.json'),
       JSON.stringify({ model: 'anthropic/claude-sonnet-4-20250514', systemPrompt: 'hi' }),
     );
-    const secrets = createMockSecretsWithKeys({ 'openai-api-key': 'sk-openai-test' });
+    const secrets = createMockSecretsWithKeys({ 'openai-api-key:default': 'sk-openai-test' });
     const { spawner } = createMockSpawner();
     const successWatcher: StartupWatcher = async () => ({ success: true });
     const runtime = new ProcessRuntime(registry, secrets, '/fake/root', spawner, undefined, successWatcher);
@@ -216,7 +216,7 @@ describe('ProcessRuntime.deploy() model/key validation', () => {
       join(configDir, 'agents', 'test-agent.json'),
       JSON.stringify({ model: 'openai/gpt-4o', systemPrompt: 'hi' }),
     );
-    const secrets = createMockSecretsWithKeys({ 'openai-api-key': 'sk-openai-test' });
+    const secrets = createMockSecretsWithKeys({ 'openai-api-key:default': 'sk-openai-test' });
     const { spawner } = createMockSpawner();
     const successWatcher: StartupWatcher = async () => ({ success: true });
     const runtime = new ProcessRuntime(registry, secrets, '/fake/root', spawner, undefined, successWatcher);
@@ -233,7 +233,7 @@ describe('ProcessRuntime.deploy() model/key validation', () => {
         systemPrompt: 'hi',
       }),
     );
-    const secrets = createMockSecretsWithKeys({ 'openai-api-key': 'sk-openai-test' });
+    const secrets = createMockSecretsWithKeys({ 'openai-api-key:default': 'sk-openai-test' });
     const { spawner } = createMockSpawner();
     const successWatcher: StartupWatcher = async () => ({ success: true });
     const runtime = new ProcessRuntime(registry, secrets, '/fake/root', spawner, undefined, successWatcher);
