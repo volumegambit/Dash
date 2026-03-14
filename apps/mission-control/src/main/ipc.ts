@@ -631,7 +631,7 @@ export async function registerIpcHandlers(
   // Deployment config update
   ipcMain.handle(
     'deployments:updateConfig',
-    async (_event, id: string, patch: { model?: string; fallbackModels?: string[] }) => {
+    async (_event, id: string, patch: { model?: string; fallbackModels?: string[]; tools?: string[] }) => {
       await getRuntime().updateAgentConfig(id, patch);
     },
   );

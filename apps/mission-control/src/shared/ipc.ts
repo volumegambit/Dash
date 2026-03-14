@@ -103,7 +103,7 @@ export interface MissionControlAPI {
   deploymentsGetStatus(id: string): Promise<RuntimeStatus>;
   deploymentsUpdateConfig(
     id: string,
-    patch: { model?: string; fallbackModels?: string[] },
+    patch: { model?: string; fallbackModels?: string[]; tools?: string[] },
   ): Promise<void>;
   deploymentsLogsSubscribe(id: string): Promise<void>;
   deploymentsLogsUnsubscribe(id: string): Promise<void>;

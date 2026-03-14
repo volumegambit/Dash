@@ -770,7 +770,7 @@ export class ProcessRuntime implements DeploymentRuntime {
 
   async updateAgentConfig(
     id: string,
-    patch: { model?: string; fallbackModels?: string[] },
+    patch: { model?: string; fallbackModels?: string[]; tools?: string[] },
   ): Promise<void> {
     const deployment = await this.registry.get(id);
     if (!deployment) throw new Error(`Deployment "${id}" not found`);
@@ -789,6 +789,7 @@ export class ProcessRuntime implements DeploymentRuntime {
 
     if (patch.model !== undefined) config.model = patch.model;
     if (patch.fallbackModels !== undefined) config.fallbackModels = patch.fallbackModels;
+    if (patch.tools !== undefined) config.tools = patch.tools;
 
     await writeFile(filePath, JSON.stringify(config, null, 2));
   }
