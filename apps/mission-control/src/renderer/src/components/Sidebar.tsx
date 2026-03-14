@@ -10,8 +10,12 @@ import {
   Settings,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
+import { useState, useEffect } from 'react';
+import type { GatewayStatus, ChannelHealthEntry } from '../../../shared/ipc.js';
 import { useMessagingAppsStore } from '../stores/messaging-apps.js';
 import { HealthDot } from './HealthDot.js';
+
+type ChannelHealth = ChannelHealthEntry['health'];
 
 const navItems: { to: string; label: string; icon: LucideIcon }[] = [
   { to: '/', label: 'Dashboard', icon: LayoutDashboard },
@@ -27,11 +31,25 @@ const HEALTH_ROUTES = new Set(['/agents', '/messaging-apps']);
 
 export function Sidebar(): JSX.Element {
   const worstHealth = useMessagingAppsStore((s) => s.getWorstHealth());
+  const [gatewayStatus, setGatewayStatus] = useState<GatewayStatus>('starting');
+
+  useEffect(() => {
+    window.api.gatewayGetStatus().then(setGatewayStatus);
+    return window.api.gatewayOnStatus(setGatewayStatus);
+  }, []);
+
+  const gatewayHealth: ChannelHealth =
+    gatewayStatus === 'healthy'
+      ? 'connected'
+      : gatewayStatus === 'unhealthy'
+        ? 'disconnected'
+        : 'connecting';
 
   return (
     <aside className="flex h-screen w-56 shrink-0 flex-col border-r border-border bg-sidebar-bg">
-      <div className="flex h-14 items-center border-b border-border px-4">
+      <div className="flex h-14 items-center justify-between border-b border-border px-4">
         <span className="text-sm font-semibold tracking-wide text-foreground">Mission Control</span>
+        <HealthDot health={gatewayHealth} />
       </div>
       <nav className="flex flex-1 flex-col gap-1 p-2">
         {navItems.map((item) => (
