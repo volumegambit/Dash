@@ -2,18 +2,23 @@ import { ExternalLink, KeyRound, X } from 'lucide-react';
 import { useState } from 'react';
 import { PROVIDER_CONFIG, type Provider } from './providers.js';
 
+const KEY_NAME_PATTERN = /^[a-zA-Z0-9-]+$/;
+
 interface ProviderConnectModalProps {
   provider: Provider;
+  keyName?: string;
   onClose: () => void;
   onSaved: () => void;
 }
 
 export function ProviderConnectModal({
   provider,
+  keyName,
   onClose,
   onSaved,
 }: ProviderConnectModalProps): JSX.Element {
   const config = PROVIDER_CONFIG[provider];
+  const [keyNameInput, setKeyNameInput] = useState(keyName ?? '');
   const [apiKey, setApiKey] = useState('');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -21,12 +26,17 @@ export function ProviderConnectModal({
 
   const handleSubmit = async (e: React.FormEvent): Promise<void> => {
     e.preventDefault();
-    const trimmed = apiKey.trim();
-    if (!trimmed) return;
+    const trimmedKey = apiKey.trim();
+    const trimmedName = keyNameInput.trim();
+    if (!trimmedKey || !trimmedName) return;
+    if (!KEY_NAME_PATTERN.test(trimmedName)) {
+      setError('Key name must contain only letters, numbers, and hyphens.');
+      return;
+    }
     setSaving(true);
     setError(null);
     try {
-      await window.api.secretsSet(config.secretKey, trimmed);
+      await window.api.secretsSet(`${provider}-api-key:${trimmedName}`, trimmedKey);
       setSaving(false);
       onSaved();
     } catch (err) {
@@ -136,6 +146,14 @@ export function ProviderConnectModal({
 
         <form onSubmit={handleSubmit} className="space-y-3">
           <input
+            type="text"
+            value={keyNameInput}
+            onChange={(e) => setKeyNameInput(e.target.value)}
+            placeholder="Key name (e.g. default, high-volume)"
+            aria-label="Key name"
+            className="w-full rounded-lg border border-border bg-sidebar-bg px-4 py-2 text-sm text-foreground placeholder:text-muted focus:border-primary focus:outline-none"
+          />
+          <input
             type="password"
             value={apiKey}
             onChange={(e) => setApiKey(e.target.value)}
@@ -153,7 +171,7 @@ export function ProviderConnectModal({
             </button>
             <button
               type="submit"
-              disabled={saving || !apiKey.trim()}
+              disabled={saving || !apiKey.trim() || !keyNameInput.trim()}
               className="flex-1 rounded-lg bg-primary px-4 py-2 text-sm text-white transition-colors hover:bg-primary-hover disabled:opacity-50"
             >
               {saving ? 'Saving...' : 'Save API Key'}
