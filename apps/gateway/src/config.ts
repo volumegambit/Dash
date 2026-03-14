@@ -47,6 +47,7 @@ export interface LoadConfigOptions {
   secretsPath?: string;
   managementPort?: number;
   token?: string;
+  dataDir?: string;
 }
 
 export function parseFlags(argv: string[]): LoadConfigOptions {
@@ -64,6 +65,9 @@ export function parseFlags(argv: string[]): LoadConfigOptions {
       i++;
     } else if (argv[i] === '--token' && argv[i + 1]) {
       options.token = argv[i + 1];
+      i++;
+    } else if (argv[i] === '--data-dir' && argv[i + 1]) {
+      options.dataDir = argv[i + 1];
       i++;
     }
   }
