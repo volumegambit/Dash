@@ -33,6 +33,11 @@ describe('parseFlags', () => {
   it('ignores flags without values', () => {
     expect(parseFlags(['--config'])).toEqual({});
   });
+
+  it('parses --data-dir flag', () => {
+    const opts = parseFlags(['--data-dir', '/tmp/gateway-data']);
+    expect(opts.dataDir).toBe('/tmp/gateway-data');
+  });
 });
 
 describe('loadConfig', () => {

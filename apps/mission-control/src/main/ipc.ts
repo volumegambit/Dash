@@ -122,6 +122,7 @@ function getRuntime(): ProcessRuntime {
       undefined,
       {
         gatewayDataDir: DATA_DIR,
+        gatewayRuntimeDir: getPlatformDataDir('dash-gateway'),
       },
     );
   }
