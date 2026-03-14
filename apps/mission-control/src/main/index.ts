@@ -13,13 +13,22 @@ if (app.isPackaged) {
 
 let mainWindow: BrowserWindow | undefined;
 
+function getAppTitle(): string {
+  if (!app.isPackaged) {
+    const suffix = process.env.MC_DATA_DIR ? '(test)' : '(dev)';
+    return `Mission Control ${suffix}`;
+  }
+  return 'Mission Control';
+}
+
 function createWindow(): void {
+  const title = getAppTitle();
   mainWindow = new BrowserWindow({
     width: 1200,
     height: 800,
     minWidth: 800,
     minHeight: 600,
-    title: 'Mission Control',
+    title,
     backgroundColor: '#0a0a0a',
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
@@ -37,6 +46,12 @@ function createWindow(): void {
   } else {
     mainWindow.loadFile(join(__dirname, '../renderer/index.html'));
   }
+}
+
+// Set dock/taskbar name to include environment suffix in non-production builds
+if (!app.isPackaged) {
+  const suffix = process.env.MC_DATA_DIR ? '(test)' : '(dev)';
+  app.setName(`Dash ${suffix}`);
 }
 
 app.whenReady().then(async () => {
