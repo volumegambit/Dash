@@ -40,6 +40,7 @@ export function AgentDetail(): JSX.Element {
   const [bannerDismissed, setBannerDismissed] = useState(false);
 
   const [apiKeyDisplay, setApiKeyDisplay] = useState<string | null>(null);
+  const [apiKeyLabel, setApiKeyLabel] = useState<string | null>(null);
   const search = Route.useSearch();
   const [activeLevel, setActiveLevel] = useState<'all' | 'info' | 'warn' | 'error'>(
     search.level ?? 'all',
@@ -84,6 +85,7 @@ export function AgentDetail(): JSX.Element {
     const provider = agentConfig.model.split('/')[0];
     if (!provider) return;
     const credName = agentConfig.credentialKeys?.[provider] ?? 'default';
+    setApiKeyLabel(`${provider}/${credName}`);
     const secretKey = `${provider}-api-key:${credName}`;
     window.api
       .secretsGet(secretKey)
@@ -253,7 +255,10 @@ export function AgentDetail(): JSX.Element {
 
       <div className="mb-6 grid grid-cols-2 gap-4">
         <InfoCard label="Model" value={agentConfig?.model ?? 'N/A'} />
-        <InfoCard label="API Key" value={apiKeyDisplay ?? 'Loading...'} />
+        <InfoCard
+          label={`API Key${apiKeyLabel ? ` (${apiKeyLabel})` : ''}`}
+          value={apiKeyDisplay ?? 'Loading...'}
+        />
         <InfoCard label="Status" value={status?.state ?? deployment.status} />
         <InfoCard
           label="Management Port"
