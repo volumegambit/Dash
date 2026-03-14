@@ -7,6 +7,7 @@ import type { AgentClient } from '@dash/agent';
 import { startChatServer } from '@dash/chat';
 import { startManagementServer } from '@dash/management';
 import type { InfoResponse, SkillsHandlers } from '@dash/management';
+import { resolveAgentKeys } from './config.js';
 import type { DashConfig } from './config.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -41,6 +42,8 @@ export async function createAgentServer(config: DashConfig) {
         await mkdir(workspace, { recursive: true });
       }
 
+      const agentKeys = resolveAgentKeys(config.providerApiKeys, agentConfig.credentialKeys);
+
       const backend = new OpenCodeBackend(
         {
           model: agentConfig.model,
@@ -49,7 +52,7 @@ export async function createAgentServer(config: DashConfig) {
           workspace,
           skills: agentConfig.skills,
         },
-        config.providerApiKeys,
+        agentKeys,
         logger,
       );
 

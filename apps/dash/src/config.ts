@@ -11,6 +11,7 @@ export interface AgentConfig {
   systemPrompt: string;
   tools?: string[];
   workspace?: string;
+  credentialKeys?: Record<string, string>;
   skills?: {
     paths?: string[];
     urls?: string[];
@@ -23,13 +24,13 @@ export interface DashJsonConfig {
 }
 
 export interface CredentialsConfig {
-  providerApiKeys?: Record<string, string>;
+  providerApiKeys?: Record<string, Record<string, string>>;
 }
 
 // --- Runtime config (merged JSON + env) ---
 
 export interface DashConfig {
-  providerApiKeys: Record<string, string>;
+  providerApiKeys: Record<string, Record<string, string>>;
   agents: Record<string, AgentConfig>;
   logLevel: string;
   logDir?: string;
@@ -124,7 +125,7 @@ async function loadCredentials(projectRoot: string): Promise<CredentialsConfig> 
 }
 
 interface SecretsFile {
-  providerApiKeys?: Record<string, string>;
+  providerApiKeys?: Record<string, Record<string, string>>;
   managementToken?: string;
   chatToken?: string;
 }
@@ -212,20 +213,35 @@ export async function loadConfig(options?: LoadConfigOptions): Promise<DashConfi
     merged.agents = directoryAgents;
   }
 
-  // Resolve provider API keys: secrets file > env vars > config/credentials.json
+  // Resolve provider API keys: credentials.json < secrets file < env vars
   const credEnvMap: Record<string, string[]> = {
     anthropic: ['ANTHROPIC_API_KEY'],
     openai: ['OPENAI_API_KEY'],
     google: ['GOOGLE_API_KEY', 'GEMINI_API_KEY'],
   };
 
-  const providerApiKeys: Record<string, string> = {};
+  const providerApiKeys: Record<string, Record<string, string>> = {};
+
+  // Start with credentials.json (lowest priority)
+  if (credentials.providerApiKeys) {
+    for (const [provider, keys] of Object.entries(credentials.providerApiKeys)) {
+      providerApiKeys[provider] = { ...keys };
+    }
+  }
+
+  // Merge secrets file (medium priority)
+  if (secrets?.providerApiKeys) {
+    for (const [provider, keys] of Object.entries(secrets.providerApiKeys)) {
+      providerApiKeys[provider] = { ...(providerApiKeys[provider] ?? {}), ...keys };
+    }
+  }
+
+  // Env vars populate the default slot (highest priority)
   for (const [provider, envVars] of Object.entries(credEnvMap)) {
-    const val =
-      envVars.map((v) => process.env[v]).find(Boolean) ??
-      secrets?.providerApiKeys?.[provider] ??
-      credentials.providerApiKeys?.[provider];
-    if (val) providerApiKeys[provider] = val;
+    const val = envVars.map((v) => process.env[v]).find(Boolean);
+    if (val) {
+      providerApiKeys[provider] = { ...(providerApiKeys[provider] ?? {}), default: val };
+    }
   }
 
   // Env overrides for logging
@@ -274,6 +290,30 @@ export async function loadConfig(options?: LoadConfigOptions): Promise<DashConfi
     chatToken,
     configDir,
   };
+}
+
+/**
+ * Resolve per-agent API keys from the full nested map.
+ * Returns a flat Record<string, string> (one key per provider).
+ * Falls back to 'default' when credentialKeys is omitted or doesn't specify a provider.
+ */
+export function resolveAgentKeys(
+  allKeys: Record<string, Record<string, string>>,
+  credentialKeys?: Record<string, string>,
+): Record<string, string> {
+  const resolved: Record<string, string> = {};
+  for (const [provider, keys] of Object.entries(allKeys)) {
+    const keyName = credentialKeys?.[provider] ?? 'default';
+    const value = keys[keyName];
+    if (!value) {
+      throw new Error(
+        `No API key named "${keyName}" for provider "${provider}". ` +
+          `Available keys: ${Object.keys(keys).join(', ')}`,
+      );
+    }
+    resolved[provider] = value;
+  }
+  return resolved;
 }
 
 /** Parse --config and --secrets flags from argv */
