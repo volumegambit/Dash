@@ -259,7 +259,7 @@ export class ProcessRuntime implements DeploymentRuntime {
     private gatewayOptions?: GatewayOptions,
   ) {}
 
-  private async ensureGatewayRunning(): Promise<GatewayManagementClient | null> {
+  async ensureGateway(): Promise<GatewayManagementClient | null> {
     const opts = this.gatewayOptions;
     if (!opts) return null;
 
@@ -666,7 +666,7 @@ export class ProcessRuntime implements DeploymentRuntime {
     (agentServer.stderr as { destroy?: () => void } | undefined)?.destroy?.();
 
     // Ensure shared gateway is running and register this deployment
-    const gatewayClient = await this.ensureGatewayRunning();
+    const gatewayClient = await this.ensureGateway();
     if (gatewayClient) {
       // Register agent(s)
       for (const agentName of agentNames) {
