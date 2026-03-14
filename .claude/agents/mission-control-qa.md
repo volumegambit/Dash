@@ -437,97 +437,28 @@ For each probe: capture a screenshot, check the error interceptor, record anythi
 
 ## Phase 4 — Report
 
-**Goal:** File all findings as Linear issues in the Dash team, deduplicated against existing open issues.
-
-### Pre-flight (run once before filing any issue)
-
-**4.P.1 — Resolve non-terminal state IDs**
-
-Call `mcp__linear-server__list_issue_statuses` for the Dash team. Record the IDs of non-terminal states (typically "Todo", "In Progress", "In Review" — exclude "Done", "Cancelled", "Duplicate"). Use these IDs in the deduplication filter.
-
-**4.P.2 — Ensure labels exist**
-
-Call `mcp__linear-server__list_issue_labels` for the Dash team. For each of `automated-qa` and `mission-control`: if the label does not exist, create it with `mcp__linear-server__create_issue_label` (color `#6B7280` for `automated-qa`, `#8B5CF6` for `mission-control`). Record the label IDs.
-
-### For each finding, in order of priority:
-
-**4.1 — Deduplication check**
-
-Call `mcp__linear-server__list_issues` with `query: "[MC] <Route>:"` and team: Dash.
-
-Then **filter locally**: keep only issues whose `title` starts exactly with `[MC] <Route>:` AND whose `stateId` is one of the non-terminal state IDs from 4.P.1.
-
-- **Match found** → call `mcp__linear-server__save_comment` with the following body:
-
-  ```
-  ## Re-observed — Run ID: mc-qa-YYYYMMDD-HHMMSS
-  **Date:** YYYY-MM-DD
-
-  **Action sequence:**
-  1. <action taken>
-  2. <action taken>
-  ...
-
-  **Error evidence:**
-  <output from window.__qaErrors / window.__qaConsoleErrors>
-
-  **Screenshot:** saved locally at /tmp/mc-qa-RUNID/AREA-STEP.png
-  ```
-- **No match** → call `mcp__linear-server__save_issue` using the template below
-
-**4.2 — Issue template**
-
-**Title:** `[MC] <Screen/Flow>: <one-line description>`
-Example: `[MC] Deploy Flow: app hangs after saving credentials`
-
-**Description:**
-```
-## What happened
-<observed behavior>
-
-## What was expected
-<correct behavior>
-
-## Steps to reproduce
-1. <action taken>
-2. <action taken>
-...
-
-## Error evidence
-<output from window.__qaErrors / window.__qaConsoleErrors>
-
-## App state
-<route, visible UI state at time of failure>
-
-## Test phase
-Systematic | Adversarial
-
-## Run ID
-mc-qa-YYYYMMDD-HHMMSS
-
-## Screenshot
-Saved locally: /tmp/mc-qa-RUNID/AREA-STEP.png
-```
-
-**Labels:** IDs from 4.P.2 (`automated-qa`, `mission-control`)
-
-**Priority mapping:**
-| Severity | Linear priority |
-|---|---|
-| Crash / uncaught exception | 1 (Urgent) |
-| Broken primary flow | 2 (High) |
-| Stuck state / no feedback | 3 (Medium) |
-| Inconsistent UI | 3 (Medium) |
+**Goal:** Print the end-of-run summary.
 
 ### End-of-run summary
 
-Print to terminal:
+If pre-flight succeeded, print:
+
 ```
 MC QA Run mc-qa-YYYYMMDD-HHMMSS complete
 ─────────────────────────────────────────
 Findings:     X functional failures
-New tickets:  Y created in Linear (Dash team)
-Duplicates:   Z commented on existing issues
+Tickets:      filed in background as found (may still be processing)
+
+Screenshots saved to: /tmp/mc-qa-RUNID/
+```
+
+If pre-flight failed, print:
+
+```
+MC QA Run mc-qa-YYYYMMDD-HHMMSS complete
+─────────────────────────────────────────
+Findings:     X functional failures
+Tickets:      none filed — pre-flight failed before run
 
 Screenshots saved to: /tmp/mc-qa-RUNID/
 ```
