@@ -215,6 +215,12 @@ If pre-flight failed:
 
 ## Phase 3 — Execute
 
+**Findings tracking:** At the start of Phase 3, initialize two values in working memory:
+- `findingsCount = 0` — total distinct findings discovered. This drives the `X` in the Phase 4 summary.
+- `pendingFindings = []` — list of finding objects not yet dispatched to a background agent. Each finding object holds: area, screen/flow name, route URL, action sequence, observed, expected, error evidence, screenshot path, test phase.
+
+When a finding is discovered: increment `findingsCount` by 1 and append a finding object to `pendingFindings`.
+
 ### Systematic Pass
 
 **Goal:** Walk the test matrix top to bottom, exercising every route and primary flow.
@@ -289,7 +295,119 @@ Record any non-empty results as findings. Clear the interceptor arrays after che
 agent-browser eval "window.__qaErrors = []; window.__qaConsoleErrors = []"
 ```
 
-**Recording a finding:** note the area, route, exact action sequence, observed vs. expected behavior, interceptor output, and screenshot path.
+**Recording a finding:** note the area, screen/flow name, route URL, exact action sequence, observed vs. expected behavior, interceptor output, and screenshot path. Append to `pendingFindings` and increment `findingsCount`.
+
+**3.S.6 — Report findings in background**
+
+After step 3.S.5 (including clearing the interceptor arrays), dispatch all items in `pendingFindings` as separate background agents — one agent per finding — then clear `pendingFindings`.
+
+Skip this step if pre-flight failed in step 2.4.
+
+For each finding, spawn an Agent with `run_in_background: true` and `model: sonnet`. Background agents inherit the parent agent's MCP server configuration, so `mcp__linear-server__*` tools are available without additional setup. If a background agent fails at any point (including partial execution), the loss is silent and accepted — do not retry.
+
+Construct each background agent prompt by substituting this template with the specific finding's data:
+
+~~~
+You are a Linear bug reporter. File one bug finding from a Mission Control QA run.
+You have access to mcp__linear-server__* tools.
+
+## Finding
+
+Area: <area>
+Screen/Flow: <human-readable screen or flow name — e.g. "Deploy Flow", "Secrets", "Agent Detail">
+Route: <URL path — e.g. /deploy, /secrets, /agents/$id>
+Action sequence:
+1. <step>
+2. <step>
+...
+Observed: <observed behavior>
+Expected: <correct behavior>
+Error evidence: <window.__qaErrors / window.__qaConsoleErrors output>
+Screenshot: <local path>
+Test phase: Systematic | Adversarial
+Run ID: <Phase 1 Run ID — e.g. mc-qa-20260314-143022>
+
+## Pre-flight data
+
+Dash team ID: <dashTeamId>
+Non-terminal state IDs: [<id1>, <id2>, ...]
+Label IDs:
+  automated-qa: <label-id>
+  mission-control: <label-id>
+
+## Instructions
+
+**Step 1 — Deduplication check**
+
+Call mcp__linear-server__list_issues with query "[MC] <Screen/Flow>:" and team: Dash.
+Use the Screen/Flow name from the Finding section above — not the URL path.
+
+Filter locally: keep only issues whose title starts exactly with "[MC] <Screen/Flow>:" AND
+whose stateId is one of the non-terminal state IDs above.
+
+**Step 2a — Match found**
+
+Extract the `id` field from the matching issue. Call mcp__linear-server__save_comment with
+that issueId and body:
+
+  ## Re-observed — Run ID: <run-id>
+  **Date:** <YYYY-MM-DD>
+
+  **Action sequence:**
+  1. <action>
+  ...
+
+  **Error evidence:**
+  <interceptor output>
+
+  **Screenshot:** saved locally at <path>
+
+**Step 2b — No match**
+
+Call mcp__linear-server__save_issue with:
+
+teamId: <dashTeamId>
+title: [MC] <Screen/Flow>: <one-line description>
+labelIds: [<automated-qa label ID>, <mission-control label ID>]
+priority: (see mapping below)
+description: (markdown body as below)
+
+Do NOT set stateId — let Linear assign its default.
+
+Description body:
+  ## What happened
+  <observed behavior>
+
+  ## What was expected
+  <correct behavior>
+
+  ## Steps to reproduce
+  1. <action>
+  ...
+
+  ## Error evidence
+  <interceptor output>
+
+  ## App state
+  <route, visible UI state at time of failure>
+
+  ## Test phase
+  Systematic | Adversarial
+
+  ## Run ID
+  <run-id>
+
+  ## Screenshot
+  Saved locally: <path>
+
+Priority mapping:
+  Crash / uncaught exception → 1 (Urgent)
+  Broken primary flow → 2 (High)
+  Stuck state / no feedback → 3 (Medium)
+  Inconsistent UI → 3 (Medium)
+
+Print "Filed: <issue title or comment URL>" when done.
+~~~
 
 **Exit criteria:** All 5 priority areas exercised. Findings list assembled.
 
@@ -311,7 +429,7 @@ After the systematic pass, revisit any area that produced a finding or looked fr
 | Error recovery | Trigger a known error (e.g. remove a running agent). Verify the UI shows an error state and offers recovery. |
 | Missing credentials | Navigate to deploy form, submit without any secrets configured. Verify a clear error message appears (not a crash). |
 
-For each probe: capture a screenshot, check the error interceptor, record anything that counts as a finding.
+For each probe: capture a screenshot, check the error interceptor, record anything that counts as a finding. After each probe's check, dispatch all items in `pendingFindings` as background agents (same mechanism as step 3.S.6), then clear `pendingFindings`.
 
 **Exit criteria:** All fragile areas probed. All findings recorded with full action sequences.
 
