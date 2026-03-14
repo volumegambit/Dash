@@ -14,7 +14,7 @@ describe('useAvailableModels', () => {
   });
 
   it('returns only anthropic models when only anthropic key is present', () => {
-    useSecretsStore.setState({ keys: ['anthropic-api-key'] });
+    useSecretsStore.setState({ keys: ['anthropic-api-key:default'] });
     const { result } = renderHook(() => useAvailableModels());
     expect(result.current.every((m) => m.provider === 'anthropic')).toBe(true);
     expect(result.current.length).toBeGreaterThan(0);
@@ -22,7 +22,7 @@ describe('useAvailableModels', () => {
 
   it('returns models from all providers when all keys are present', () => {
     useSecretsStore.setState({
-      keys: ['anthropic-api-key', 'openai-api-key', 'google-api-key'],
+      keys: ['anthropic-api-key:default', 'openai-api-key:default', 'google-api-key:default'],
     });
     const { result } = renderHook(() => useAvailableModels());
     const providers = new Set(result.current.map((m) => m.provider));

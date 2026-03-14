@@ -41,7 +41,11 @@ function createMockApi(): Record<keyof MissionControlAPI, ReturnType<typeof vi.f
     secretsLock: vi.fn().mockResolvedValue(undefined),
     secretsList: vi
       .fn()
-      .mockResolvedValue(['anthropic-api-key', 'openai-api-key', 'google-api-key']),
+      .mockResolvedValue([
+        'anthropic-api-key:default',
+        'openai-api-key:default',
+        'google-api-key:default',
+      ]),
     secretsGet: vi.fn().mockResolvedValue(null),
     secretsSet: vi.fn().mockResolvedValue(undefined),
     secretsDelete: vi.fn().mockResolvedValue(undefined),
