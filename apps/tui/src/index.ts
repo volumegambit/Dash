@@ -119,7 +119,7 @@ interface DashJsonConfig {
 }
 
 interface CredentialsConfig {
-  providerApiKeys?: Record<string, string>;
+  providerApiKeys?: Record<string, Record<string, string>>;
 }
 
 async function loadDashConfig(): Promise<DashJsonConfig> {
@@ -260,8 +260,9 @@ async function main() {
   };
   const providerApiKeys: Record<string, string> = {};
   for (const [provider, envVars] of Object.entries(credEnvMap)) {
-    const val =
-      envVars.map((v) => process.env[v]).find(Boolean) ?? credentials.providerApiKeys?.[provider];
+    const envVal = envVars.map((v) => process.env[v]).find(Boolean);
+    const credVal = credentials.providerApiKeys?.[provider]?.default;
+    const val = envVal ?? credVal;
     if (val) providerApiKeys[provider] = val;
   }
 
