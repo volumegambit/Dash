@@ -108,6 +108,7 @@ export function registerDeployCommand(program: Command): void {
         if (status.chatPort) console.log(`  Chat API: ws://localhost:${status.chatPort}/ws`);
         if (status.agentServerPid) console.log(`  Agent server PID: ${status.agentServerPid}`);
         if (status.gatewayPid) console.log(`  Gateway PID: ${status.gatewayPid}`);
+        console.log('  Note: Gateway not managed by Mission Control — no automatic restart if it dies.');
       } catch (err) {
         console.error(`Deploy failed: ${(err as Error).message}`);
         process.exitCode = 1;
