@@ -3,6 +3,7 @@ import type { RuntimeStatus } from '@dash/mc';
 import { Link, createFileRoute, useNavigate } from '@tanstack/react-router';
 import { ArrowLeft, Circle, Loader, MessageSquare, Square, Trash2 } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { AVAILABLE_TOOLS } from '../../components/deploy-options.js';
 import { HealthDot } from '../../components/HealthDot.js';
 import { ModelChainEditor } from '../../components/ModelChainEditor.js';
 import { useAvailableModels } from '../../hooks/useAvailableModels.js';
@@ -29,6 +30,10 @@ export function AgentDetail(): JSX.Element {
   const [chainModel, setChainModel] = useState('');
   const [chainFallbacks, setChainFallbacks] = useState<string[]>([]);
   const [chainSaving, setChainSaving] = useState(false);
+  const [editingTools, setEditingTools] = useState(false);
+  const [toolsDraft, setToolsDraft] = useState<string[]>([]);
+  const [toolsSaving, setToolsSaving] = useState(false);
+  const [toolsRestartNeeded, setToolsRestartNeeded] = useState(false);
   const { apps: messagingApps, loadApps: loadMessagingApps } = useMessagingAppsStore();
   const channelHealth = useMessagingAppsStore((s) => s.channelHealth);
   const apps = useMessagingAppsStore((s) => s.apps);
@@ -92,6 +97,23 @@ export function AgentDetail(): JSX.Element {
     } finally {
       setChainSaving(false);
     }
+  };
+
+  const handleSaveTools = async (): Promise<void> => {
+    setToolsSaving(true);
+    try {
+      await updateConfig(id, { tools: toolsDraft });
+      setEditingTools(false);
+      setToolsRestartNeeded(true);
+    } finally {
+      setToolsSaving(false);
+    }
+  };
+
+  const toggleDraftTool = (tool: string): void => {
+    setToolsDraft((prev) =>
+      prev.includes(tool) ? prev.filter((t) => t !== tool) : [...prev, tool],
+    );
   };
 
   if (loading) {
@@ -346,6 +368,98 @@ export function AgentDetail(): JSX.Element {
           <div className="rounded-lg border border-border bg-sidebar-bg p-3 text-sm whitespace-pre-wrap">
             {agentConfig.systemPrompt}
           </div>
+        </div>
+      )}
+
+      {agentConfig && (
+        <div className="mb-6">
+          <div className="mb-2 flex items-center justify-between">
+            <h2 className="text-sm font-medium text-muted">Tools</h2>
+            {!editingTools && (
+              <button
+                type="button"
+                onClick={() => {
+                  setToolsDraft(agentConfig.tools ?? []);
+                  setEditingTools(true);
+                }}
+                className="text-xs text-primary hover:underline"
+              >
+                Edit
+              </button>
+            )}
+          </div>
+          {toolsRestartNeeded && !editingTools && (
+            <div className="mb-2 rounded-lg bg-yellow-900/20 px-3 py-2 text-xs text-yellow-400">
+              Tools updated — restart the agent to apply changes.
+            </div>
+          )}
+          {editingTools ? (
+            <div className="rounded-lg border border-border bg-sidebar-bg p-3">
+              <div className="mb-2 flex items-center justify-between">
+                <label className="flex cursor-pointer items-center gap-1.5 text-xs text-muted hover:text-foreground">
+                  <input
+                    type="checkbox"
+                    checked={toolsDraft.length === AVAILABLE_TOOLS.length}
+                    ref={(el) => {
+                      if (el)
+                        el.indeterminate =
+                          toolsDraft.length > 0 && toolsDraft.length < AVAILABLE_TOOLS.length;
+                    }}
+                    onChange={() =>
+                      setToolsDraft((prev) =>
+                        prev.length === AVAILABLE_TOOLS.length
+                          ? []
+                          : AVAILABLE_TOOLS.map((t) => t.value),
+                      )
+                    }
+                    className="accent-primary"
+                  />
+                  Select all
+                </label>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                {AVAILABLE_TOOLS.map((tool) => (
+                  <label
+                    key={tool.value}
+                    className="flex cursor-pointer items-center gap-2 rounded-lg border border-border px-3 py-2 text-xs transition-colors hover:bg-sidebar-hover"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={toolsDraft.includes(tool.value)}
+                      onChange={() => toggleDraftTool(tool.value)}
+                      className="accent-primary"
+                    />
+                    {tool.label}
+                  </label>
+                ))}
+              </div>
+              <div className="mt-3 flex gap-2">
+                <button
+                  type="button"
+                  onClick={handleSaveTools}
+                  disabled={toolsSaving}
+                  className="rounded-lg bg-primary px-3 py-1.5 text-xs text-white hover:bg-primary-hover disabled:opacity-50"
+                >
+                  {toolsSaving ? 'Saving...' : 'Save'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setEditingTools(false)}
+                  className="rounded-lg border border-border px-3 py-1.5 text-xs text-muted hover:bg-sidebar-hover"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="rounded-lg border border-border bg-sidebar-bg p-3 text-sm">
+              {(agentConfig.tools ?? []).length > 0
+                ? AVAILABLE_TOOLS.filter((t) => (agentConfig.tools ?? []).includes(t.value))
+                    .map((t) => t.label)
+                    .join(', ')
+                : '(none)'}
+            </div>
+          )}
         </div>
       )}
 
