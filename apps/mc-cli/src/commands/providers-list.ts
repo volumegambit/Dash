@@ -10,15 +10,22 @@ export function registerProvidersListCommand(providers: Command): void {
       try {
         await ensureUnlocked();
         const store = getSecretStore();
-        const keys = await store.list();
+        const allKeys = await store.list();
         const nameWidth = Math.max(...PROVIDER_METAS.map((p) => p.name.length));
         console.log(`\n  ${'Provider'.padEnd(nameWidth)}  Status`);
         console.log(`  ${'─'.repeat(nameWidth)}  ─────────────`);
         for (const meta of PROVIDER_METAS) {
-          const connected = keys.includes(meta.secretKey);
-          console.log(
-            `  ${meta.name.padEnd(nameWidth)}  ${connected ? 'connected' : 'not connected'}`,
-          );
+          const prefix = `${meta.id}-api-key:`;
+          const keyNames = allKeys
+            .filter((k) => k.startsWith(prefix))
+            .map((k) => k.slice(prefix.length));
+          if (keyNames.length === 0) {
+            console.log(`  ${meta.name.padEnd(nameWidth)}  not connected`);
+          } else {
+            console.log(
+              `  ${meta.name.padEnd(nameWidth)}  connected (${keyNames.join(', ')})`,
+            );
+          }
         }
         console.log();
       } catch (err) {
