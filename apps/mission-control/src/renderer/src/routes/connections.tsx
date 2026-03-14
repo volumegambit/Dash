@@ -74,9 +74,7 @@ export function AiProviders(): JSX.Element {
       {locked && (
         <div className="mt-4 flex items-center gap-2 rounded-lg border border-border bg-sidebar-bg px-4 py-3 text-sm text-muted">
           <Lock size={16} className="shrink-0" />
-          <span>
-            Secrets are locked. Unlock your secrets store to view provider status.
-          </span>
+          <span>Secrets are locked. Unlock your secrets store to view provider status.</span>
         </div>
       )}
 
@@ -127,21 +125,15 @@ export function AiProviders(): JSX.Element {
                         className="flex items-center justify-between rounded border border-border bg-background px-3 py-2"
                       >
                         <div>
-                          <span className="text-xs font-medium text-foreground">
-                            {entry.name}
-                          </span>
-                          <span className="ml-2 text-xs text-muted">
-                            {maskKey(entry.value)}
-                          </span>
+                          <span className="text-xs font-medium text-foreground">{entry.name}</span>
+                          <span className="ml-2 text-xs text-muted">{maskKey(entry.value)}</span>
                         </div>
                         <div className="flex items-center gap-2">
                           {!isConfirming && (
                             <>
                               <button
                                 type="button"
-                                onClick={() =>
-                                  setModal({ provider: p.id, keyName: entry.name })
-                                }
+                                onClick={() => setModal({ provider: p.id, keyName: entry.name })}
                                 className="text-xs text-primary hover:underline"
                               >
                                 Update

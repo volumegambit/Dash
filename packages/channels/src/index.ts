@@ -1,4 +1,10 @@
-export type { ChannelAdapter, InboundMessage, OutboundMessage, MessageHandler, ChannelHealth } from './types.js';
+export type {
+  ChannelAdapter,
+  InboundMessage,
+  OutboundMessage,
+  MessageHandler,
+  ChannelHealth,
+} from './types.js';
 export type { RouterRoutingRule, RouterConfig } from './types.js';
 export { MessageRouter } from './router.js';
 export { MissionControlAdapter } from './adapters/mission-control.js';

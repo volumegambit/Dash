@@ -1,5 +1,13 @@
 import { createFileRoute, useNavigate } from '@tanstack/react-router';
-import { ArrowLeft, ArrowRight, Check, Clipboard, ClipboardCheck, Loader, Rocket } from 'lucide-react';
+import {
+  ArrowLeft,
+  ArrowRight,
+  Check,
+  Clipboard,
+  ClipboardCheck,
+  Loader,
+  Rocket,
+} from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { RendererDeploymentError } from '../../../shared/ipc';
 import { ModelChainEditor } from '../components/ModelChainEditor.js';
@@ -57,7 +65,7 @@ export function DeployWizard(): JSX.Element {
         });
       })
       .catch(() => {});
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []); // intentionally run once; availableModels already known at this point in practice
 
   // When available models change (keys added/removed), ensure current model is still valid
@@ -169,7 +177,9 @@ export function DeployWizard(): JSX.Element {
                   type="checkbox"
                   checked={agent.tools.length === AVAILABLE_TOOLS.length}
                   ref={(el) => {
-                    if (el) el.indeterminate = agent.tools.length > 0 && agent.tools.length < AVAILABLE_TOOLS.length;
+                    if (el)
+                      el.indeterminate =
+                        agent.tools.length > 0 && agent.tools.length < AVAILABLE_TOOLS.length;
                   }}
                   onChange={() =>
                     setAgent((prev) => ({

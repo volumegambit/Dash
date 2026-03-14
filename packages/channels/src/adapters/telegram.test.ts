@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { TelegramAdapter } from './telegram.js';
 
 // Mock grammy to avoid real network/bot initialization
