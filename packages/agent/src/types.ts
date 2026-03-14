@@ -99,6 +99,7 @@ export interface DashAgentConfig {
   systemPrompt: string;
   tools?: string[]; // OpenCode tool names
   workspace?: string;
+  credentialKeys?: Record<string, string>;
   provider?: LlmProvider; // For compaction LLM calls
   sessionStore?: SessionStore; // For session persistence + compaction
   modelContextWindow?: number; // Compaction threshold (default: 200000 tokens)

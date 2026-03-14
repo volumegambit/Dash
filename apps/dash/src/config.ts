@@ -11,6 +11,7 @@ export interface AgentConfig {
   systemPrompt: string;
   tools?: string[];
   workspace?: string;
+  credentialKeys?: Record<string, string>;
   skills?: {
     paths?: string[];
     urls?: string[];
