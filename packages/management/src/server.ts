@@ -37,6 +37,7 @@ export interface ManagementServerOptions {
   onShutdown: () => Promise<void>;
   logFilePath?: string;
   skills?: SkillsHandlers;
+  onUpdateCredentials?: (providerApiKeys: Record<string, Record<string, string>>) => Promise<void>;
 }
 
 export function createManagementApp(options: ManagementServerOptions): Hono {
@@ -203,6 +204,25 @@ export function createManagementApp(options: ManagementServerOptions): Hono {
 
   app.get('/channels/health', (c) => {
     return c.json(channelHealthStore);
+  });
+
+  app.post('/credentials', async (c) => {
+    if (!options.onUpdateCredentials) {
+      return c.json({ error: 'Credential updates not supported' } satisfies ErrorResponse, 501);
+    }
+    let body: Record<string, Record<string, string>>;
+    try {
+      body = await c.req.json<Record<string, Record<string, string>>>();
+    } catch {
+      return c.json({ error: 'Invalid request body' } satisfies ErrorResponse, 400);
+    }
+    try {
+      await options.onUpdateCredentials(body);
+      return c.json({ success: true });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Internal server error';
+      return c.json({ error: message } satisfies ErrorResponse, 500);
+    }
   });
 
   if (options.skills) {
