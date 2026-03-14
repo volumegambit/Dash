@@ -214,7 +214,14 @@ export async function createAgentServer(config: DashConfig) {
               const agentKeys = resolveAgentKeys(providerApiKeys, agentConfig.credentialKeys);
               await backend.updateCredentials(agentKeys);
             }
-            log('Credentials updated via Management API');
+            const providers = Object.keys(providerApiKeys);
+            const keyCount = providers.reduce(
+              (sum, p) => sum + Object.keys(providerApiKeys[p]).length,
+              0,
+            );
+            log(
+              `Credentials updated via Management API (${keyCount} key(s) across ${providers.join(', ')})`,
+            );
           },
         });
         managementClose = close;

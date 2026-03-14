@@ -5,8 +5,8 @@ import { ProviderConnectModal } from '../components/ProviderConnectModal.js';
 import { PROVIDERS, type Provider } from '../components/providers.js';
 
 function maskKey(key: string): string {
-  if (key.length <= 8) return '••••••••';
-  return `${key.slice(0, 6)}${'•'.repeat(Math.min(12, key.length - 6))}`;
+  if (key.length <= 17) return '••••••••';
+  return `${key.slice(0, 10)}${'•'.repeat(6)}${key.slice(-7)}`;
 }
 
 interface ProviderKeyEntry {
