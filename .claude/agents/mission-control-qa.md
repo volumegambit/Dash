@@ -340,7 +340,7 @@ Label IDs:
 **Step 1 — Deduplication check**
 
 Call mcp__linear-server__list_issues with query "[MC] <Screen/Flow>:" and team: Dash.
-Use the Screen/Flow name from the Finding section above — not the URL path.
+Substitute the actual Screen/Flow name from the Finding section above (e.g. query "[MC] Deploy Flow:" — not the URL path).
 
 Filter locally: keep only issues whose title starts exactly with "[MC] <Screen/Flow>:" AND
 whose stateId is one of the non-terminal state IDs above.
@@ -429,7 +429,7 @@ After the systematic pass, revisit any area that produced a finding or looked fr
 | Error recovery | Trigger a known error (e.g. remove a running agent). Verify the UI shows an error state and offers recovery. |
 | Missing credentials | Navigate to deploy form, submit without any secrets configured. Verify a clear error message appears (not a crash). |
 
-For each probe: capture a screenshot, check the error interceptor, record anything that counts as a finding. After each probe's check, dispatch all items in `pendingFindings` as background agents (same mechanism as step 3.S.6), then clear `pendingFindings`.
+For each probe: capture a screenshot, check the error interceptor, record anything that counts as a finding. After each probe's check, if pre-flight succeeded in step 2.4, dispatch all items in `pendingFindings` as separate background agents (one per finding, `run_in_background: true`, `model: sonnet`, using the same prompt template as step 3.S.6), then clear `pendingFindings`.
 
 **Exit criteria:** All fragile areas probed. All findings recorded with full action sequences.
 
