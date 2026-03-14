@@ -32,6 +32,7 @@ interface ProcessState {
 
 export interface GatewayOptions {
   gatewayDataDir: string;
+  gatewayRuntimeDir?: string;  // --data-dir passed to the gateway process
   makeGatewayClient?: (baseUrl: string, token: string) => GatewayManagementClient;
   managementPort?: number;
 }
@@ -296,15 +297,19 @@ export class ProcessRuntime implements DeploymentRuntime {
     // Spawn fresh gateway daemon
     const token = generateToken();
     const gatewayBin = join(this.projectRoot, 'apps/gateway/dist/index.js');
-    const gateway = this.spawner.spawn(
-      'node',
-      [gatewayBin, '--management-port', String(managementPort), '--token', token],
-      {
-        env: { ...process.env },
-        stdio: ['ignore', 'ignore', 'ignore'],
-        detached: true,
-      },
-    );
+    const spawnArgs = [
+      gatewayBin,
+      '--management-port', String(managementPort),
+      '--token', token,
+    ];
+    if (opts.gatewayRuntimeDir) {
+      spawnArgs.push('--data-dir', opts.gatewayRuntimeDir);
+    }
+    const gateway = this.spawner.spawn('node', spawnArgs, {
+      env: { ...process.env },
+      stdio: ['ignore', 'ignore', 'ignore'],
+      detached: true,
+    });
     (gateway as { unref?: () => void }).unref?.();
 
     // Wait for health endpoint
