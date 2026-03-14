@@ -24,6 +24,7 @@ export interface DeployWithConfigOptions {
   systemPrompt: string;
   tools: string[];
   workspace?: string;
+  credentialKeys?: Record<string, string>;
 }
 
 export interface SetupStatus {

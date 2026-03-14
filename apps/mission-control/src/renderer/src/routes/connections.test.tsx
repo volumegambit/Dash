@@ -9,7 +9,7 @@ describe('AiProviders page', () => {
     // Default: unlocked, anthropic connected, others not
     mockApi.secretsIsUnlocked.mockResolvedValue(true);
     mockApi.secretsGet.mockImplementation((key: string) =>
-      Promise.resolve(key === 'anthropic-api-key' ? 'sk-ant-abc123secretkey' : null),
+      Promise.resolve(key === 'anthropic-api-key:default' ? 'sk-ant-abc123secretkey' : null),
     );
   });
 
@@ -75,6 +75,6 @@ describe('AiProviders page', () => {
     await waitFor(() => screen.getByText('Disconnect'));
     await user.click(screen.getByText('Disconnect'));
     await user.click(screen.getByText('Yes, remove'));
-    expect(mockApi.secretsDelete).toHaveBeenCalledWith('anthropic-api-key');
+    expect(mockApi.secretsDelete).toHaveBeenCalledWith('anthropic-api-key:default');
   });
 });

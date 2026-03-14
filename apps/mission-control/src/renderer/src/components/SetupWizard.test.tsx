@@ -122,7 +122,7 @@ describe('SetupWizard', () => {
   });
 
   describe('api key step', () => {
-    it('calls secretsSet with anthropic-api-key on save', async () => {
+    it('calls secretsSet with anthropic-api-key:default on save', async () => {
       const user = userEvent.setup();
       render(<SetupWizard needsSetup={false} needsUnlock={false} needsApiKey={true} onComplete={noop} />);
 
@@ -133,7 +133,7 @@ describe('SetupWizard', () => {
       await user.type(screen.getByPlaceholderText('sk-ant-...'), 'sk-ant-test-key-123');
       await user.click(screen.getByText('Save API Key'));
 
-      expect(mockApi.secretsSet).toHaveBeenCalledWith('anthropic-api-key', 'sk-ant-test-key-123');
+      expect(mockApi.secretsSet).toHaveBeenCalledWith('anthropic-api-key:default', 'sk-ant-test-key-123');
       await screen.findByText("You're All Set!");
     });
 

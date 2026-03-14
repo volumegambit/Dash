@@ -25,7 +25,7 @@ describe('DeployWizard', () => {
     });
     // Provide keys so availableModels is non-empty for existing tests
     useSecretsStore.setState({
-      keys: ['anthropic-api-key', 'openai-api-key', 'google-api-key'],
+      keys: ['anthropic-api-key:default', 'openai-api-key:default', 'google-api-key:default'],
     });
   });
 
@@ -110,8 +110,8 @@ describe('DeployWizard model validation', () => {
   });
 
   it('Next button is enabled when name is filled and model has a configured key', async () => {
-    useSecretsStore.setState({ keys: ['openai-api-key'] });
-    vi.mocked(window.api.secretsList).mockResolvedValue(['openai-api-key']);
+    useSecretsStore.setState({ keys: ['openai-api-key:default'] });
+    vi.mocked(window.api.secretsList).mockResolvedValue(['openai-api-key:default']);
     render(<DeployWizard />);
     const nameInput = screen.getByPlaceholderText('my-agent');
     await userEvent.type(nameInput, 'test-agent');
@@ -121,8 +121,8 @@ describe('DeployWizard model validation', () => {
 
   it('shows hint when selected model has no API key', async () => {
     // Simulate: openai key only, but settings returned an anthropic default model
-    useSecretsStore.setState({ keys: ['openai-api-key'] });
-    vi.mocked(window.api.secretsList).mockResolvedValue(['openai-api-key']);
+    useSecretsStore.setState({ keys: ['openai-api-key:default'] });
+    vi.mocked(window.api.secretsList).mockResolvedValue(['openai-api-key:default']);
     vi.mocked(window.api.settingsGet).mockResolvedValue({
       defaultModel: 'anthropic/claude-sonnet-4-20250514',
     });
