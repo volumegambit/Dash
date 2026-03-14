@@ -3,7 +3,7 @@ import type { Server } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { startManagementServer } from './server.js';
+import { createManagementApp, startManagementServer } from './server.js';
 import type { InfoResponse, SkillsConfig } from './types.js';
 
 const TEST_TOKEN = 'test-secret-token';
@@ -425,6 +425,117 @@ describe('Management Server', () => {
         headers: { Authorization: 'Bearer wrong-token' },
       });
       expect(res.status).toBe(401);
+    });
+  });
+
+  describe('POST /credentials', () => {
+    it('calls onUpdateCredentials with the provided keys', async () => {
+      const onUpdateCredentials = vi.fn().mockResolvedValue(undefined);
+      const app = createManagementApp({
+        port: 0,
+        token: 'test-token',
+        getInfo: () => ({ agents: [] }),
+        onShutdown: async () => {},
+        onUpdateCredentials,
+      });
+
+      const res = await app.request('/credentials', {
+        method: 'POST',
+        headers: {
+          Authorization: 'Bearer test-token',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          anthropic: { default: 'sk-new-key' },
+        }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(onUpdateCredentials).toHaveBeenCalledWith({
+        anthropic: { default: 'sk-new-key' },
+      });
+    });
+
+    it('returns 501 when onUpdateCredentials is not configured', async () => {
+      const app = createManagementApp({
+        port: 0,
+        token: 'test-token',
+        getInfo: () => ({ agents: [] }),
+        onShutdown: async () => {},
+      });
+
+      const res = await app.request('/credentials', {
+        method: 'POST',
+        headers: {
+          Authorization: 'Bearer test-token',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ anthropic: { default: 'sk-key' } }),
+      });
+
+      expect(res.status).toBe(501);
+    });
+
+    it('returns 401 without auth token', async () => {
+      const app = createManagementApp({
+        port: 0,
+        token: 'test-token',
+        getInfo: () => ({ agents: [] }),
+        onShutdown: async () => {},
+      });
+
+      const res = await app.request('/credentials', {
+        method: 'POST',
+        body: JSON.stringify({ anthropic: { default: 'sk-key' } }),
+      });
+
+      expect(res.status).toBe(401);
+    });
+
+    it('returns 400 for invalid JSON body', async () => {
+      const onUpdateCredentials = vi.fn().mockResolvedValue(undefined);
+      const app = createManagementApp({
+        port: 0,
+        token: 'test-token',
+        getInfo: () => ({ agents: [] }),
+        onShutdown: async () => {},
+        onUpdateCredentials,
+      });
+
+      const res = await app.request('/credentials', {
+        method: 'POST',
+        headers: {
+          Authorization: 'Bearer test-token',
+          'Content-Type': 'application/json',
+        },
+        body: 'not json',
+      });
+
+      expect(res.status).toBe(400);
+    });
+
+    it('returns 500 when onUpdateCredentials throws', async () => {
+      const onUpdateCredentials = vi.fn().mockRejectedValue(new Error('update failed'));
+      const app = createManagementApp({
+        port: 0,
+        token: 'test-token',
+        getInfo: () => ({ agents: [] }),
+        onShutdown: async () => {},
+        onUpdateCredentials,
+      });
+
+      const res = await app.request('/credentials', {
+        method: 'POST',
+        headers: {
+          Authorization: 'Bearer test-token',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ anthropic: { default: 'sk-key' } }),
+      });
+
+      expect(res.status).toBe(500);
+      const body = (await res.json()) as { error: string };
+      expect(body.error).toBe('update failed');
     });
   });
 

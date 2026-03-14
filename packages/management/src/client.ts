@@ -135,6 +135,10 @@ export class ManagementClient {
     );
   }
 
+  async updateCredentials(providerApiKeys: Record<string, Record<string, string>>): Promise<void> {
+    await this.requestWithBody<{ success: boolean }>('POST', '/credentials', providerApiKeys);
+  }
+
   async *streamLogs(
     signal?: AbortSignal,
     opts?: { level?: 'info' | 'warn' | 'error' },
