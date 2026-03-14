@@ -16,6 +16,7 @@ import {
   defaultProcessSpawner,
   getPlatformDataDir,
   migrateLegacyDataDir,
+  parseProviderSecretKey,
 } from '@dash/mc';
 import type { MessagingApp, ProcessSpawner } from '@dash/mc';
 import { app, dialog, ipcMain, safeStorage, shell } from 'electron';
@@ -165,6 +166,39 @@ function clearCachedKey(): void {
   }
 }
 
+async function pushCredentialsToRunningDeployments(): Promise<void> {
+  const store = getSecretStore();
+  if (!store.isUnlocked()) return;
+
+  const allKeys = await store.list();
+  const providerApiKeys: Record<string, Record<string, string>> = {};
+  for (const key of allKeys) {
+    const parsed = parseProviderSecretKey(key);
+    if (!parsed) continue;
+    const value = await store.get(key);
+    if (!value) continue;
+    if (!providerApiKeys[parsed.provider]) {
+      providerApiKeys[parsed.provider] = {};
+    }
+    providerApiKeys[parsed.provider][parsed.keyName] = value;
+  }
+
+  const reg = getRegistry();
+  const deployments = await reg.list();
+  for (const dep of deployments) {
+    if (dep.status !== 'running' || !dep.managementPort || !dep.managementToken) continue;
+    try {
+      const client = new ManagementClient(
+        `http://127.0.0.1:${dep.managementPort}`,
+        dep.managementToken,
+      );
+      await client.updateCredentials(providerApiKeys);
+    } catch {
+      // Deployment may be unreachable — skip silently
+    }
+  }
+}
+
 export async function registerIpcHandlers(
   getWindow: () => BrowserWindow | undefined,
 ): Promise<void> {
@@ -308,11 +342,19 @@ export async function registerIpcHandlers(
   });
 
   ipcMain.handle('secrets:set', async (_event, key: string, value: string) => {
-    return getSecretStore().set(key, value);
+    await getSecretStore().set(key, value);
+    // Push updated credentials to running deployments if a provider key changed
+    if (key.includes('-api-key:')) {
+      pushCredentialsToRunningDeployments().catch(() => {});
+    }
   });
 
   ipcMain.handle('secrets:delete', async (_event, key: string) => {
-    return getSecretStore().delete(key);
+    await getSecretStore().delete(key);
+    // Push updated credentials to running deployments if a provider key changed
+    if (key.includes('-api-key:')) {
+      pushCredentialsToRunningDeployments().catch(() => {});
+    }
   });
 
   // Deployment handlers
