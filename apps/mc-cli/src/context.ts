@@ -8,9 +8,12 @@ import {
   EncryptedSecretStore,
   ProcessRuntime,
   createKeychain,
+  getPlatformDataDir,
+  migrateLegacyDataDir,
 } from '@dash/mc';
 
-const DATA_DIR = join(homedir(), '.mission-control');
+const DATA_DIR = getPlatformDataDir('dash');
+const LEGACY_DATA_DIR = join(homedir(), '.mission-control');
 
 let registry: AgentRegistry | null = null;
 let connector: AgentConnector | null = null;
@@ -42,8 +45,17 @@ async function getConnector(): Promise<AgentConnector> {
 export async function getRuntime(): Promise<ProcessRuntime> {
   if (!runtime) {
     await ensureUnlocked();
+    await migrateLegacyDataDir(LEGACY_DATA_DIR, DATA_DIR);
     const projectRoot = process.env.DASH_PROJECT_ROOT ?? process.cwd();
-    runtime = new ProcessRuntime(getRegistry(), getSecretStore(), projectRoot);
+    runtime = new ProcessRuntime(
+      getRegistry(),
+      getSecretStore(),
+      projectRoot,
+      undefined,
+      undefined,
+      undefined,
+      { gatewayDataDir: DATA_DIR },
+    );
   }
   return runtime;
 }
