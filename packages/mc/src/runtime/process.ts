@@ -410,9 +410,10 @@ export class ProcessRuntime implements DeploymentRuntime {
     const id = randomUUID().slice(0, 8);
 
     // Resolve workspace for each agent: use config value or auto-generate
+    const mcDataDir = process.env.MC_DATA_DIR || join(homedir(), '.mission-control');
     for (const [name, cfg] of Object.entries(agentConfigs)) {
       if (!cfg.workspace) {
-        cfg.workspace = join(homedir(), '.mission-control', 'workspaces', `${name}-${id}`);
+        cfg.workspace = join(mcDataDir, 'workspaces', `${name}-${id}`);
       }
       await mkdir(cfg.workspace, { recursive: true, mode: 0o700 });
     }
@@ -467,7 +468,7 @@ export class ProcessRuntime implements DeploymentRuntime {
         if (!hasRelevantRule) continue;
 
         if (app.type === 'whatsapp') {
-          const authStateDir = join(homedir(), '.mission-control', 'whatsapp-sessions', app.id);
+          const authStateDir = join(mcDataDir, 'whatsapp-sessions', app.id);
           resolvedApps.push({ app, token: '', authStateDir });
         } else {
           const token = await this.secrets.get(app.credentialsKey);
