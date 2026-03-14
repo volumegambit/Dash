@@ -345,6 +345,72 @@ export class ProcessRuntime implements DeploymentRuntime {
     return makeClient(`http://localhost:${state.port}`, state.token);
   }
 
+  async registerWithGateway(deploymentId: string): Promise<void> {
+    const deployment = await this.registry.get(deploymentId);
+    if (!deployment || deployment.status !== 'running') return;
+
+    const gatewayClient = await this.getGatewayClient();
+    if (!gatewayClient) return;
+
+    const agentNames = Object.keys(deployment.config?.agents ?? {});
+    if (!agentNames.length || !deployment.chatPort || !deployment.chatToken) {
+      console.warn(`registerWithGateway: deployment ${deploymentId} missing agents/ports, skipping`);
+      return;
+    }
+
+    for (const agentName of agentNames) {
+      await gatewayClient.registerAgent(
+        deploymentId,
+        agentName,
+        `ws://localhost:${deployment.chatPort}/ws`,
+        deployment.chatToken,
+      );
+    }
+
+    if (this.messagingApps) {
+      const mcDataDir = process.env.MC_DATA_DIR || join(homedir(), '.mission-control');
+      const apps = await this.messagingApps.list();
+      for (const app of apps) {
+        if (!app.enabled) continue;
+        const relevantRules = app.routing.filter((r) => agentNames.includes(r.targetAgentName));
+        if (relevantRules.length === 0) continue;
+
+        const token = app.type !== 'whatsapp' ? await this.secrets.get(app.credentialsKey) : undefined;
+        if (app.type !== 'whatsapp' && !token) continue;
+
+        const channelConfig: GatewayChannelConfig = {
+          adapter: app.type as 'telegram' | 'whatsapp',
+          globalDenyList: app.globalDenyList,
+          routing: relevantRules.map((r) => ({
+            condition: r.condition,
+            agentName: r.targetAgentName,
+            allowList: r.allowList ?? [],
+            denyList: r.denyList ?? [],
+          })),
+        };
+        if (app.type === 'whatsapp') {
+          const authStateDir = join(mcDataDir, 'whatsapp-sessions', app.id);
+          channelConfig.authStateDir = authStateDir;
+
+          const authPrefix = `${app.credentialsKey}:`;
+          const allKeys = await this.secrets.list();
+          const authBlob: Record<string, string> = {};
+          for (const k of allKeys.filter((k) => k.startsWith(authPrefix))) {
+            const val = await this.secrets.get(k);
+            if (val) authBlob[k.slice(authPrefix.length)] = val;
+          }
+          if (Object.keys(authBlob).length > 0) {
+            channelConfig.whatsappAuth = authBlob;
+          }
+        } else {
+          channelConfig.token = token ?? undefined;
+        }
+
+        await gatewayClient.registerChannel(deploymentId, `messaging-app-${app.id}`, channelConfig);
+      }
+    }
+  }
+
   async deploy(configDir: string): Promise<string> {
     const absConfigDir = resolve(configDir);
     validateConfigDir(absConfigDir);
