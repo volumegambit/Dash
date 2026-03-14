@@ -162,7 +162,29 @@ export function DeployWizard(): JSX.Element {
           </label>
 
           <div>
-            <span className="mb-2 block text-sm font-medium">Tools</span>
+            <div className="mb-2 flex items-center justify-between">
+              <span className="text-sm font-medium">Tools</span>
+              <label className="flex cursor-pointer items-center gap-1.5 text-xs text-muted hover:text-foreground">
+                <input
+                  type="checkbox"
+                  checked={agent.tools.length === AVAILABLE_TOOLS.length}
+                  ref={(el) => {
+                    if (el) el.indeterminate = agent.tools.length > 0 && agent.tools.length < AVAILABLE_TOOLS.length;
+                  }}
+                  onChange={() =>
+                    setAgent((prev) => ({
+                      ...prev,
+                      tools:
+                        prev.tools.length === AVAILABLE_TOOLS.length
+                          ? []
+                          : AVAILABLE_TOOLS.map((t) => t.value),
+                    }))
+                  }
+                  className="accent-primary"
+                />
+                Select all
+              </label>
+            </div>
             <div className="grid grid-cols-2 gap-2">
               {AVAILABLE_TOOLS.map((tool) => (
                 <label

@@ -50,6 +50,43 @@ describe('DeployWizard', () => {
     expect(nextBtn).toBeEnabled();
   });
 
+  it('select all checks all tools and toggles them off', async () => {
+    const user = userEvent.setup();
+    render(<DeployWizard />);
+
+    const selectAll = screen.getByRole('checkbox', { name: /select all/i });
+    expect(selectAll).not.toBeChecked();
+
+    await user.click(selectAll);
+    // All individual tool checkboxes should now be checked
+    const toolCheckboxes = screen.getAllByRole('checkbox').filter((cb) => cb !== selectAll);
+    for (const cb of toolCheckboxes) {
+      expect(cb).toBeChecked();
+    }
+    expect(selectAll).toBeChecked();
+
+    // Click again to deselect all
+    await user.click(selectAll);
+    for (const cb of toolCheckboxes) {
+      expect(cb).not.toBeChecked();
+    }
+    expect(selectAll).not.toBeChecked();
+  });
+
+  it('select all becomes checked when all tools are individually selected', async () => {
+    const user = userEvent.setup();
+    render(<DeployWizard />);
+
+    const selectAll = screen.getByRole('checkbox', { name: /select all/i });
+    const toolCheckboxes = screen.getAllByRole('checkbox').filter((cb) => cb !== selectAll);
+
+    // Check all tools one by one
+    for (const cb of toolCheckboxes) {
+      await user.click(cb);
+    }
+    expect(selectAll).toBeChecked();
+  });
+
   it('tool toggle adds and removes a tool', async () => {
     const user = userEvent.setup();
     render(<DeployWizard />);
