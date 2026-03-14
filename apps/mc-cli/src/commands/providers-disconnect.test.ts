@@ -31,15 +31,38 @@ describe('providers disconnect', () => {
     return cmd;
   }
 
-  it('deletes the key after confirmation', async () => {
-    mockStore.list.mockResolvedValue(['anthropic-api-key']);
+  it('deletes the default key after confirmation', async () => {
+    mockStore.list.mockResolvedValue(['anthropic-api-key:default']);
     mockPrompt.question.mockResolvedValueOnce('y');
     await buildCommand().parseAsync(['disconnect', 'anthropic'], { from: 'user' });
-    expect(mockStore.delete).toHaveBeenCalledWith('anthropic-api-key');
+    expect(mockStore.delete).toHaveBeenCalledWith('anthropic-api-key:default');
+  });
+
+  it('deletes a named key when --key is specified', async () => {
+    mockStore.list.mockResolvedValue([
+      'anthropic-api-key:default',
+      'anthropic-api-key:high-volume',
+    ]);
+    mockPrompt.question.mockResolvedValueOnce('y');
+    await buildCommand().parseAsync(['disconnect', 'anthropic', '--key', 'high-volume'], {
+      from: 'user',
+    });
+    expect(mockStore.delete).toHaveBeenCalledWith('anthropic-api-key:high-volume');
+  });
+
+  it('deletes all keys when --all is specified', async () => {
+    mockStore.list.mockResolvedValue([
+      'anthropic-api-key:default',
+      'anthropic-api-key:high-volume',
+    ]);
+    mockPrompt.question.mockResolvedValueOnce('y');
+    await buildCommand().parseAsync(['disconnect', 'anthropic', '--all'], { from: 'user' });
+    expect(mockStore.delete).toHaveBeenCalledWith('anthropic-api-key:default');
+    expect(mockStore.delete).toHaveBeenCalledWith('anthropic-api-key:high-volume');
   });
 
   it('does not delete when confirmation is declined', async () => {
-    mockStore.list.mockResolvedValue(['anthropic-api-key']);
+    mockStore.list.mockResolvedValue(['anthropic-api-key:default']);
     mockPrompt.question.mockResolvedValueOnce('n');
     await buildCommand().parseAsync(['disconnect', 'anthropic'], { from: 'user' });
     expect(mockStore.delete).not.toHaveBeenCalled();
@@ -53,9 +76,18 @@ describe('providers disconnect', () => {
   });
 
   it('errors on unknown provider', async () => {
-    mockStore.list.mockResolvedValue(['anthropic-api-key']);
+    mockStore.list.mockResolvedValue(['anthropic-api-key:default']);
     await buildCommand().parseAsync(['disconnect', 'unknownprovider'], { from: 'user' });
     expect(mockStore.delete).not.toHaveBeenCalled();
     expect(console.error).toHaveBeenCalledWith(expect.stringContaining('Unknown provider'));
+  });
+
+  it('errors when named key does not exist', async () => {
+    mockStore.list.mockResolvedValue(['anthropic-api-key:default']);
+    await buildCommand().parseAsync(['disconnect', 'anthropic', '--key', 'nonexistent'], {
+      from: 'user',
+    });
+    expect(mockStore.delete).not.toHaveBeenCalled();
+    expect(console.error).toHaveBeenCalledWith(expect.stringContaining('No key named'));
   });
 });

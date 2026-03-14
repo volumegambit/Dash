@@ -30,7 +30,7 @@ describe('providers connect', () => {
   it('saves key to store when provider is given as argument', async () => {
     mockPrompt.question.mockResolvedValueOnce('sk-ant-test-key');
     await buildCommand().parseAsync(['connect', 'anthropic'], { from: 'user' });
-    expect(mockStore.set).toHaveBeenCalledWith('anthropic-api-key', 'sk-ant-test-key');
+    expect(mockStore.set).toHaveBeenCalledWith('anthropic-api-key:default', 'sk-ant-test-key');
   });
 
   it('shows a numbered menu when no provider arg given and saves on selection', async () => {
@@ -38,7 +38,7 @@ describe('providers connect', () => {
       .mockResolvedValueOnce('1') // pick provider #1 (anthropic)
       .mockResolvedValueOnce('sk-ant-test-key');
     await buildCommand().parseAsync(['connect'], { from: 'user' });
-    expect(mockStore.set).toHaveBeenCalledWith('anthropic-api-key', 'sk-ant-test-key');
+    expect(mockStore.set).toHaveBeenCalledWith('anthropic-api-key:default', 'sk-ant-test-key');
   });
 
   it('errors on unknown provider arg', async () => {

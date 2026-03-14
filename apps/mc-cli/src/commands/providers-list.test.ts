@@ -29,10 +29,10 @@ describe('providers list', () => {
   }
 
   it('shows "connected" for providers whose secretKey is present', async () => {
-    mockStore.list.mockResolvedValue(['anthropic-api-key']);
+    mockStore.list.mockResolvedValue(['anthropic-api-key:default']);
     await buildCommand().parseAsync(['list'], { from: 'user' });
     const joined = output.join('\n');
-    expect(joined).toMatch(/Claude by Anthropic.*connected/);
+    expect(joined).toMatch(/Claude by Anthropic.*connected \(default\)/);
     expect(joined).toMatch(/OpenAI.*not connected/);
     expect(joined).toMatch(/Google Gemini.*not connected/);
   });

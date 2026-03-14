@@ -30,7 +30,7 @@ export function registerDeployCommand(program: Command): void {
         const secrets = getSecretStore();
 
         // Check for Anthropic API key
-        let apiKey = await secrets.get('anthropic-api-key');
+        let apiKey = await secrets.get('anthropic-api-key:default');
         if (!apiKey) {
           apiKey = await promptSecret('Anthropic API key: ');
           if (!apiKey) {
@@ -38,7 +38,7 @@ export function registerDeployCommand(program: Command): void {
             process.exitCode = 1;
             return;
           }
-          await secrets.set('anthropic-api-key', apiKey);
+          await secrets.set('anthropic-api-key:default', apiKey);
           console.error('Stored Anthropic API key.');
         }
 

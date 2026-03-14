@@ -14,7 +14,7 @@ export const PROVIDER_METAS: ProviderMeta[] = [
   {
     id: 'anthropic',
     name: 'Claude by Anthropic',
-    secretKey: 'anthropic-api-key',
+    secretKey: 'anthropic-api-key:default',
     placeholder: 'sk-ant-...',
     consoleUrl: 'https://console.anthropic.com',
     apiKeysUrl: 'https://console.anthropic.com/settings/keys',
@@ -27,7 +27,7 @@ export const PROVIDER_METAS: ProviderMeta[] = [
   {
     id: 'openai',
     name: 'OpenAI (GPT-4o, o3)',
-    secretKey: 'openai-api-key',
+    secretKey: 'openai-api-key:default',
     placeholder: 'sk-...',
     consoleUrl: 'https://platform.openai.com',
     apiKeysUrl: 'https://platform.openai.com/api-keys',
@@ -40,7 +40,7 @@ export const PROVIDER_METAS: ProviderMeta[] = [
   {
     id: 'google',
     name: 'Google Gemini',
-    secretKey: 'google-api-key',
+    secretKey: 'google-api-key:default',
     placeholder: 'AIza...',
     consoleUrl: 'https://aistudio.google.com',
     apiKeysUrl: 'https://aistudio.google.com/app/apikey',
