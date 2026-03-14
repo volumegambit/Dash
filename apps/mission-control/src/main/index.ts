@@ -37,6 +37,11 @@ function createWindow(): void {
     },
   });
 
+  // Prevent the HTML <title> from overriding our environment-aware title
+  mainWindow.on('page-title-updated', (e) => {
+    e.preventDefault();
+  });
+
   mainWindow.on('closed', () => {
     mainWindow = undefined;
   });
@@ -48,13 +53,12 @@ function createWindow(): void {
   }
 }
 
-// Set dock/taskbar name to include environment suffix in non-production builds
-if (!app.isPackaged) {
-  const suffix = process.env.MC_DATA_DIR ? '(test)' : '(dev)';
-  app.setName(`Dash ${suffix}`);
-}
-
 app.whenReady().then(async () => {
+  // Show environment badge on macOS dock icon
+  if (!app.isPackaged && process.platform === 'darwin') {
+    const badge = process.env.MC_DATA_DIR ? 'TEST' : 'DEV';
+    app.dock.setBadge(badge);
+  }
   await setupAutoUpdater(autoUpdater, app.isPackaged);
   autoUpdater.on('update-available', (info: { version: string }) => {
     mainWindow?.webContents.send('update:available', { version: info.version });
