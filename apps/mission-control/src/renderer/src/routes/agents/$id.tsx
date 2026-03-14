@@ -39,6 +39,7 @@ export function AgentDetail(): JSX.Element {
   const apps = useMessagingAppsStore((s) => s.apps);
   const [bannerDismissed, setBannerDismissed] = useState(false);
 
+  const [apiKeyDisplay, setApiKeyDisplay] = useState<string | null>(null);
   const search = Route.useSearch();
   const [activeLevel, setActiveLevel] = useState<'all' | 'info' | 'warn' | 'error'>(
     search.level ?? 'all',
@@ -77,6 +78,24 @@ export function AgentDetail(): JSX.Element {
   useEffect(() => {
     loadMessagingApps();
   }, [loadMessagingApps]);
+
+  useEffect(() => {
+    if (!agentConfig?.model) return;
+    const provider = agentConfig.model.split('/')[0];
+    if (!provider) return;
+    const credName = agentConfig.credentialKeys?.[provider] ?? 'default';
+    const secretKey = `${provider}-api-key:${credName}`;
+    window.api
+      .secretsGet(secretKey)
+      .then((val) => {
+        if (val && val.length > 17) {
+          setApiKeyDisplay(`${val.slice(0, 10)}${'•'.repeat(6)}${val.slice(-7)}`);
+        } else {
+          setApiKeyDisplay(val ? '••••••••' : 'N/A');
+        }
+      })
+      .catch(() => setApiKeyDisplay('N/A'));
+  }, [agentConfig?.model, agentConfig?.credentialKeys]);
 
   const handleStop = useCallback(async () => {
     await stop(id);
@@ -234,6 +253,7 @@ export function AgentDetail(): JSX.Element {
 
       <div className="mb-6 grid grid-cols-2 gap-4">
         <InfoCard label="Model" value={agentConfig?.model ?? 'N/A'} />
+        <InfoCard label="API Key" value={apiKeyDisplay ?? 'Loading...'} />
         <InfoCard label="Status" value={status?.state ?? deployment.status} />
         <InfoCard
           label="Management Port"
