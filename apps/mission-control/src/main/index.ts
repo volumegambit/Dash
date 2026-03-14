@@ -54,10 +54,10 @@ function createWindow(): void {
 }
 
 app.whenReady().then(async () => {
-  // Show environment badge on macOS dock icon
-  if (!app.isPackaged && process.platform === 'darwin') {
-    const badge = process.env.MC_DATA_DIR ? 'TEST' : 'DEV';
-    app.dock.setBadge(badge);
+  // Show environment badge on macOS dock icon for test builds
+  // (dev builds get "Dash (dev)" via the plist patch in scripts/patch-electron-name.sh)
+  if (!app.isPackaged && process.platform === 'darwin' && process.env.MC_DATA_DIR) {
+    app.dock.setBadge('TEST');
   }
   await setupAutoUpdater(autoUpdater, app.isPackaged);
   autoUpdater.on('update-available', (info: { version: string }) => {
