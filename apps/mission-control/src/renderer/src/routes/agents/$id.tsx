@@ -39,8 +39,9 @@ export function AgentDetail(): JSX.Element {
   const apps = useMessagingAppsStore((s) => s.apps);
   const [bannerDismissed, setBannerDismissed] = useState(false);
 
-  const [apiKeyDisplay, setApiKeyDisplay] = useState<string | null>(null);
-  const [apiKeyLabel, setApiKeyLabel] = useState<string | null>(null);
+  const [modelKeys, setModelKeys] = useState<
+    Record<string, { label: string; masked: string }>
+  >({});
   const search = Route.useSearch();
   const [activeLevel, setActiveLevel] = useState<'all' | 'info' | 'warn' | 'error'>(
     search.level ?? 'all',
@@ -82,22 +83,48 @@ export function AgentDetail(): JSX.Element {
 
   useEffect(() => {
     if (!agentConfig?.model) return;
-    const provider = agentConfig.model.split('/')[0];
-    if (!provider) return;
-    const credName = agentConfig.credentialKeys?.[provider] ?? 'default';
-    setApiKeyLabel(`${provider}/${credName}`);
-    const secretKey = `${provider}-api-key:${credName}`;
-    window.api
-      .secretsGet(secretKey)
-      .then((val) => {
-        if (val && val.length > 17) {
-          setApiKeyDisplay(`${val.slice(0, 10)}${'•'.repeat(6)}${val.slice(-7)}`);
-        } else {
-          setApiKeyDisplay(val ? '••••••••' : 'N/A');
+    const allModels = [agentConfig.model, ...(agentConfig.fallbackModels ?? [])];
+    const seen = new Set<string>();
+    const result: Record<string, { label: string; masked: string }> = {};
+
+    const resolve = async (): Promise<void> => {
+      for (const model of allModels) {
+        const provider = model.split('/')[0];
+        if (!provider || seen.has(provider)) {
+          // Reuse already-resolved key for same provider
+          if (provider && result[provider]) {
+            result[model] = result[Object.keys(result).find((k) => k.startsWith(provider)) ?? ''];
+          }
+          continue;
         }
-      })
-      .catch(() => setApiKeyDisplay('N/A'));
-  }, [agentConfig?.model, agentConfig?.credentialKeys]);
+        seen.add(provider);
+        const credName = agentConfig.credentialKeys?.[provider] ?? 'default';
+        const secretKey = `${provider}-api-key:${credName}`;
+        try {
+          const val = await window.api.secretsGet(secretKey);
+          const masked =
+            val && val.length > 17
+              ? `${val.slice(0, 10)}${'•'.repeat(6)}${val.slice(-7)}`
+              : val
+                ? '••••••••'
+                : 'N/A';
+          result[model] = { label: credName, masked };
+        } catch {
+          result[model] = { label: credName, masked: 'N/A' };
+        }
+      }
+      // For fallback models that share a provider, copy the resolved key
+      for (const model of allModels) {
+        if (!result[model]) {
+          const provider = model.split('/')[0];
+          const match = allModels.find((m) => result[m] && m.split('/')[0] === provider);
+          if (match) result[model] = result[match];
+        }
+      }
+      setModelKeys(result);
+    };
+    resolve();
+  }, [agentConfig?.model, agentConfig?.fallbackModels, agentConfig?.credentialKeys]);
 
   const handleStop = useCallback(async () => {
     await stop(id);
@@ -254,11 +281,6 @@ export function AgentDetail(): JSX.Element {
       )}
 
       <div className="mb-6 grid grid-cols-2 gap-4">
-        <InfoCard label="Model" value={agentConfig?.model ?? 'N/A'} />
-        <InfoCard
-          label={`API Key${apiKeyLabel ? ` (${apiKeyLabel})` : ''}`}
-          value={apiKeyDisplay ?? 'Loading...'}
-        />
         <InfoCard label="Status" value={status?.state ?? deployment.status} />
         <InfoCard
           label="Management Port"
@@ -337,7 +359,7 @@ export function AgentDetail(): JSX.Element {
       {agentConfig && (
         <div className="mb-6">
           <div className="mb-2 flex items-center justify-between">
-            <h2 className="text-sm font-medium text-muted">Model Chain</h2>
+            <h2 className="text-sm font-medium text-muted">Models</h2>
             {!editingChain && (
               <button
                 type="button"
@@ -378,10 +400,37 @@ export function AgentDetail(): JSX.Element {
               </div>
             </div>
           ) : (
-            <div className="rounded-lg border border-border bg-sidebar-bg p-3 text-sm">
-              {[chainModel, ...chainFallbacks]
-                .map((v) => availableModels.find((m) => m.value === v)?.label ?? v)
-                .join(' → ') || agentConfig.model}
+            <div className="space-y-2">
+              {[chainModel, ...chainFallbacks].map((model, i) => {
+                const label = availableModels.find((m) => m.value === model)?.label ?? model;
+                const keyInfo = modelKeys[model];
+                return (
+                  <div
+                    key={model}
+                    className="flex items-center justify-between rounded-lg border border-border bg-sidebar-bg px-3 py-2"
+                  >
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm font-medium">{label}</span>
+                      {i === 0 && (
+                        <span className="rounded bg-primary/20 px-1.5 py-0.5 text-[10px] font-medium text-primary">
+                          primary
+                        </span>
+                      )}
+                      {i > 0 && (
+                        <span className="rounded bg-sidebar-hover px-1.5 py-0.5 text-[10px] font-medium text-muted">
+                          fallback {i}
+                        </span>
+                      )}
+                    </div>
+                    {keyInfo && (
+                      <div className="flex items-center gap-2 text-xs text-muted">
+                        <span className="font-medium">{keyInfo.label}</span>
+                        <span className="font-mono">{keyInfo.masked}</span>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           )}
         </div>
