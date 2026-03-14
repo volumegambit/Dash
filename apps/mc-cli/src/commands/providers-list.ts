@@ -22,9 +22,7 @@ export function registerProvidersListCommand(providers: Command): void {
           if (keyNames.length === 0) {
             console.log(`  ${meta.name.padEnd(nameWidth)}  not connected`);
           } else {
-            console.log(
-              `  ${meta.name.padEnd(nameWidth)}  connected (${keyNames.join(', ')})`,
-            );
+            console.log(`  ${meta.name.padEnd(nameWidth)}  connected (${keyNames.join(', ')})`);
           }
         }
         console.log();

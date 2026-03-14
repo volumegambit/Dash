@@ -204,7 +204,14 @@ describe('ProcessRuntime.deploy() model/key validation', () => {
     const secrets = createMockSecretsWithKeys({ 'openai-api-key:default': 'sk-openai-test' });
     const { spawner } = createMockSpawner();
     const successWatcher: StartupWatcher = async () => ({ success: true });
-    const runtime = new ProcessRuntime(registry, secrets, '/fake/root', spawner, undefined, successWatcher);
+    const runtime = new ProcessRuntime(
+      registry,
+      secrets,
+      '/fake/root',
+      spawner,
+      undefined,
+      successWatcher,
+    );
 
     await expect(runtime.deploy(configDir)).rejects.toThrow(
       "No API key configured for provider 'anthropic'",
@@ -219,7 +226,14 @@ describe('ProcessRuntime.deploy() model/key validation', () => {
     const secrets = createMockSecretsWithKeys({ 'openai-api-key:default': 'sk-openai-test' });
     const { spawner } = createMockSpawner();
     const successWatcher: StartupWatcher = async () => ({ success: true });
-    const runtime = new ProcessRuntime(registry, secrets, '/fake/root', spawner, undefined, successWatcher);
+    const runtime = new ProcessRuntime(
+      registry,
+      secrets,
+      '/fake/root',
+      spawner,
+      undefined,
+      successWatcher,
+    );
 
     await expect(runtime.deploy(configDir)).resolves.toBeTypeOf('string');
   });
@@ -236,7 +250,14 @@ describe('ProcessRuntime.deploy() model/key validation', () => {
     const secrets = createMockSecretsWithKeys({ 'openai-api-key:default': 'sk-openai-test' });
     const { spawner } = createMockSpawner();
     const successWatcher: StartupWatcher = async () => ({ success: true });
-    const runtime = new ProcessRuntime(registry, secrets, '/fake/root', spawner, undefined, successWatcher);
+    const runtime = new ProcessRuntime(
+      registry,
+      secrets,
+      '/fake/root',
+      spawner,
+      undefined,
+      successWatcher,
+    );
 
     // Should not throw — fallback with missing key is a warning, not an error
     await expect(runtime.deploy(configDir)).resolves.toBeTypeOf('string');

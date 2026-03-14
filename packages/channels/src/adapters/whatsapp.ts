@@ -4,7 +4,13 @@ import { dirname, join } from 'node:path';
 import makeWASocket, { DisconnectReason } from '@whiskeysockets/baileys';
 import type { ConnectionState, WASocket } from '@whiskeysockets/baileys';
 import qrcode from 'qrcode';
-import type { ChannelAdapter, ChannelHealth, MessageHandler, OutboundMessage, SecretStore } from '../types.js';
+import type {
+  ChannelAdapter,
+  ChannelHealth,
+  MessageHandler,
+  OutboundMessage,
+  SecretStore,
+} from '../types.js';
 import { makeBaileysAuthState } from './whatsapp-auth.js';
 
 class InlineFileStore implements SecretStore {

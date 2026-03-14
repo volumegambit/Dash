@@ -94,7 +94,12 @@ describe('FileLogger', () => {
 
   it('canonical fields (ts, level, msg) win over same-named context keys', async () => {
     const logger = await FileLogger.create(tempDir, 'test.log');
-    logger.info('real message', { ts: 'FAKE_TS', level: 'FAKE_LEVEL', msg: 'FAKE_MSG', extra: 'ok' });
+    logger.info('real message', {
+      ts: 'FAKE_TS',
+      level: 'FAKE_LEVEL',
+      msg: 'FAKE_MSG',
+      extra: 'ok',
+    });
     await logger.flush();
     await logger.close();
 
@@ -113,6 +118,8 @@ describe('FileLogger', () => {
     await logger.close();
 
     const content = await readFile(join(tempDir, 'test.log'), 'utf8');
-    expect(content.trim()).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z \[info\] hello world$/);
+    expect(content.trim()).toMatch(
+      /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z \[info\] hello world$/,
+    );
   });
 });

@@ -121,7 +121,9 @@ export class OpenCodeBackend implements AgentBackend {
     this.watchdogHealthUrl = serverUrl;
     this.watchdogInterval = setInterval(async () => {
       try {
-        const res = await fetch(`${this.watchdogHealthUrl}/health`, { signal: AbortSignal.timeout(3_000) });
+        const res = await fetch(`${this.watchdogHealthUrl}/health`, {
+          signal: AbortSignal.timeout(3_000),
+        });
         if (res.ok) {
           this.watchdogFailureCount = 0;
           return;
@@ -141,7 +143,9 @@ export class OpenCodeBackend implements AgentBackend {
           clearInterval(this.watchdogInterval!);
           this.watchdogInterval = null;
           this.sdk = null;
-          this.logger?.error('[OpenCode] Watchdog: max restarts exceeded, manual redeploy required');
+          this.logger?.error(
+            '[OpenCode] Watchdog: max restarts exceeded, manual redeploy required',
+          );
           return;
         }
 
@@ -164,8 +168,10 @@ export class OpenCodeBackend implements AgentBackend {
     const delays = [1_000, 2_000, 4_000, 8_000, 16_000];
     for (let attempt = 0; ; attempt++) {
       const delay = Math.min(delays[attempt] ?? 60_000, 60_000);
-      this.logger?.warn(`[OpenCode] Watchdog: restarting (attempt ${attempt + 1}), waiting ${delay}ms`);
-      await new Promise(resolve => setTimeout(resolve, delay));
+      this.logger?.warn(
+        `[OpenCode] Watchdog: restarting (attempt ${attempt + 1}), waiting ${delay}ms`,
+      );
+      await new Promise((resolve) => setTimeout(resolve, delay));
       try {
         this.injectApiKeysToEnv();
         const port = await findFreePort();
@@ -250,10 +256,10 @@ export class OpenCodeBackend implements AgentBackend {
 
         // Auto-approve permission requests (headless mode)
         if (event.type === 'permission.asked' && eventProps.sessionID === sessionId) {
-          this.logger?.warn(
-            `[OpenCode] auto-approving permission: ${eventProps.permission}`,
-            { patterns: JSON.stringify(eventProps.patterns), sessionId },
-          );
+          this.logger?.warn(`[OpenCode] auto-approving permission: ${eventProps.permission}`, {
+            patterns: JSON.stringify(eventProps.patterns),
+            sessionId,
+          });
           // biome-ignore lint/suspicious/noExplicitAny: SDK client's permission API not in generated type
           await (this.sdk as any).permission
             .reply({ requestID: eventProps.id, reply: 'once' })
