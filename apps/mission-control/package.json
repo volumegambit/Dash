@@ -4,8 +4,8 @@
   "private": true,
   "main": "./out/main/index.js",
   "scripts": {
-    "dev": "electron-vite dev",
-    "dev:debug": "electron-vite dev -- --remote-debugging-port=${MC_DEBUG_PORT:-9222}",
+    "dev": "bash scripts/patch-electron-name.sh && electron-vite dev",
+    "dev:debug": "bash scripts/patch-electron-name.sh && electron-vite dev -- --remote-debugging-port=${MC_DEBUG_PORT:-9222}",
     "build": "electron-vite build",
     "preview": "electron-vite preview",
     "package": "node ../../scripts/download-opencode.mjs && electron-builder",
