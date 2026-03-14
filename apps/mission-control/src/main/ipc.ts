@@ -191,17 +191,17 @@ export async function registerIpcHandlers(
     const store = getSecretStore();
     const needsSetup = await store.needsSetup();
     if (needsSetup) {
-      return { needsSetup: true, needsApiKey: true };
+      return { needsSetup: true, needsUnlock: false, needsApiKey: true };
     }
     if (!store.isUnlocked()) {
-      // Secrets exist but are locked — still need setup flow (unlock first)
-      return { needsSetup: true, needsApiKey: false };
+      // Secrets exist but are locked — need unlock, NOT setup
+      return { needsSetup: false, needsUnlock: true, needsApiKey: false };
     }
     const anthropicKey = await store.get('anthropic-api-key');
     const openaiKey = await store.get('openai-api-key');
     const googleKey = await store.get('google-api-key');
     const hasAnyKey = !!(anthropicKey || openaiKey || googleKey);
-    return { needsSetup: false, needsApiKey: !hasAnyKey };
+    return { needsSetup: false, needsUnlock: false, needsApiKey: !hasAnyKey };
   });
 
   // Chat handlers

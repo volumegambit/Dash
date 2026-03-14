@@ -15,16 +15,24 @@ type Step = 'welcome' | 'password' | 'provider' | 'api-key' | 'done';
 
 interface SetupWizardProps {
   needsSetup: boolean;
+  needsUnlock: boolean;
   needsApiKey: boolean;
   onComplete: () => void;
 }
 
 export function SetupWizard({
   needsSetup,
+  needsUnlock,
   needsApiKey,
   onComplete,
 }: SetupWizardProps): JSX.Element {
-  const initialStep = needsSetup ? 'welcome' : needsApiKey ? 'provider' : 'done';
+  const initialStep = needsSetup
+    ? 'welcome'
+    : needsUnlock
+      ? 'password'
+      : needsApiKey
+        ? 'provider'
+        : 'done';
   const [step, setStep] = useState<Step>(initialStep);
   const [provider, setProvider] = useState<Provider>('anthropic');
 
@@ -43,7 +51,7 @@ export function SetupWizard({
         {step === 'password' && (
           <PasswordStep
             needsSetup={needsSetup}
-            onBack={() => setStep('welcome')}
+            onBack={needsUnlock ? undefined : () => setStep('welcome')}
             onDone={handlePasswordDone}
           />
         )}
@@ -106,7 +114,7 @@ function PasswordStep({
   needsSetup,
   onBack,
   onDone,
-}: { needsSetup: boolean; onBack: () => void; onDone: () => void }): JSX.Element {
+}: { needsSetup: boolean; onBack?: () => void; onDone: () => void }): JSX.Element {
   const [password, setPassword] = useState('');
   const [confirm, setConfirm] = useState('');
   const [loading, setLoading] = useState(false);
@@ -139,7 +147,7 @@ function PasswordStep({
 
   return (
     <div>
-      <BackButton onClick={onBack} />
+      {onBack && <BackButton onClick={onBack} />}
       <div className="text-center">
         <Lock size={36} className="mx-auto mb-4 text-muted" />
         <h1 className="text-2xl font-bold">

@@ -28,6 +28,7 @@ export interface DeployWithConfigOptions {
 
 export interface SetupStatus {
   needsSetup: boolean;
+  needsUnlock: boolean;
   needsApiKey: boolean;
 }
 

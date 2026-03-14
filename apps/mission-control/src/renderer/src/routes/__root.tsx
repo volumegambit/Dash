@@ -15,6 +15,7 @@ function RootLayout(): JSX.Element {
   const [ready, setReady] = useState(false);
   const [checking, setChecking] = useState(true);
   const [needsSetup, setNeedsSetup] = useState(false);
+  const [needsUnlock, setNeedsUnlock] = useState(false);
   const [needsApiKey, setNeedsApiKey] = useState(false);
   const [updateVersion, setUpdateVersion] = useState<string | null>(null);
 
@@ -26,8 +27,9 @@ function RootLayout(): JSX.Element {
       .setupGetStatus()
       .then((status) => {
         setNeedsSetup(status.needsSetup);
+        setNeedsUnlock(status.needsUnlock);
         setNeedsApiKey(status.needsApiKey);
-        setReady(!status.needsSetup && !status.needsApiKey);
+        setReady(!status.needsSetup && !status.needsUnlock && !status.needsApiKey);
         setChecking(false);
       })
       .catch(() => {
@@ -73,6 +75,7 @@ function RootLayout(): JSX.Element {
     return (
       <SetupWizard
         needsSetup={needsSetup}
+        needsUnlock={needsUnlock}
         needsApiKey={needsApiKey}
         onComplete={() => setReady(true)}
       />
