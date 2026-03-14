@@ -86,7 +86,7 @@ describe('loadConfig with --config and --secrets', () => {
     await writeFile(
       secretsPath,
       JSON.stringify({
-        providerApiKeys: { anthropic: 'sk-from-secrets' },
+        providerApiKeys: { anthropic: { default: 'sk-from-secrets' } },
         managementToken: 'mgmt-tok',
         chatToken: 'chat-tok',
       }),
@@ -96,7 +96,7 @@ describe('loadConfig with --config and --secrets', () => {
 
     const cfg = await loadConfig({ secretsPath });
 
-    expect(cfg.providerApiKeys.anthropic).toBe('sk-from-secrets');
+    expect(cfg.providerApiKeys.anthropic?.default).toBe('sk-from-secrets');
     expect(cfg.managementToken).toBe('mgmt-tok');
     expect(cfg.chatToken).toBe('chat-tok');
     expect(existsSync(secretsPath)).toBe(false);
@@ -110,12 +110,14 @@ describe('loadConfig with --config and --secrets', () => {
       const secretsPath = join(tmpDir, 'secrets.json');
       await writeFile(
         secretsPath,
-        JSON.stringify({ providerApiKeys: { anthropic: 'sk-from-secrets' } }),
+        JSON.stringify({
+          providerApiKeys: { anthropic: { default: 'sk-from-secrets' } },
+        }),
       );
 
       const cfg = await loadConfig({ secretsPath });
       // Resolution order: env vars > secrets > credentials
-      expect(cfg.providerApiKeys.anthropic).toBe('sk-from-env');
+      expect(cfg.providerApiKeys.anthropic?.default).toBe('sk-from-env');
     } finally {
       if (original !== undefined) {
         process.env.ANTHROPIC_API_KEY = original;
