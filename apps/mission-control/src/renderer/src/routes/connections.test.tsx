@@ -6,7 +6,8 @@ import { AiProviders } from './connections.js';
 
 describe('AiProviders page', () => {
   beforeEach(() => {
-    // Default: anthropic connected, others not
+    // Default: unlocked, anthropic connected, others not
+    mockApi.secretsIsUnlocked.mockResolvedValue(true);
     mockApi.secretsGet.mockImplementation((key: string) =>
       Promise.resolve(key === 'anthropic-api-key' ? 'sk-ant-abc123secretkey' : null),
     );
@@ -54,6 +55,17 @@ describe('AiProviders page', () => {
     await user.click(screen.getByText('Disconnect'));
     expect(screen.getByText('Remove key?')).toBeInTheDocument();
     expect(screen.getByText('Yes, remove')).toBeInTheDocument();
+  });
+
+  it('shows locked banner and does not call secretsGet when store is locked', async () => {
+    mockApi.secretsIsUnlocked.mockResolvedValue(false);
+    render(<AiProviders />);
+    await waitFor(() => {
+      expect(
+        screen.getByText('Secrets are locked. Unlock your secrets store to view provider status.'),
+      ).toBeInTheDocument();
+    });
+    expect(mockApi.secretsGet).not.toHaveBeenCalled();
   });
 
   it('calls secretsDelete and refreshes when disconnect confirmed', async () => {

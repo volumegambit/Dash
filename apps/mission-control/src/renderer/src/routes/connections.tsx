@@ -1,5 +1,5 @@
 import { createFileRoute } from '@tanstack/react-router';
-import { CheckCircle, Circle } from 'lucide-react';
+import { CheckCircle, Circle, Lock } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
 import { ProviderConnectModal } from '../components/ProviderConnectModal.js';
 import { PROVIDERS, PROVIDER_CONFIG, type Provider } from '../components/providers.js';
@@ -15,14 +15,25 @@ export function AiProviders(): JSX.Element {
     openai: null,
     google: null,
   });
+  const [locked, setLocked] = useState(false);
   const [modal, setModal] = useState<Provider | null>(null);
   const [disconnectConfirm, setDisconnectConfirm] = useState<Provider | null>(null);
 
   const loadKeys = useCallback(async (): Promise<void> => {
+    const unlocked = await window.api.secretsIsUnlocked();
+    if (!unlocked) {
+      setLocked(true);
+      return;
+    }
+    setLocked(false);
     const results = await Promise.all(
       PROVIDERS.map(async (p) => {
-        const value = await window.api.secretsGet(PROVIDER_CONFIG[p.id].secretKey);
-        return [p.id, value] as [Provider, string | null];
+        try {
+          const value = await window.api.secretsGet(PROVIDER_CONFIG[p.id].secretKey);
+          return [p.id, value] as [Provider, string | null];
+        } catch {
+          return [p.id, null] as [Provider, string | null];
+        }
       }),
     );
     setKeys(Object.fromEntries(results) as Record<Provider, string | null>);
@@ -47,6 +58,13 @@ export function AiProviders(): JSX.Element {
     <div>
       <h1 className="text-2xl font-bold">AI Providers</h1>
       <p className="mt-2 text-muted">Connect AI providers to power your agents.</p>
+
+      {locked && (
+        <div className="mt-4 flex items-center gap-2 rounded-lg border border-border bg-sidebar-bg px-4 py-3 text-sm text-muted">
+          <Lock size={16} className="shrink-0" />
+          <span>Secrets are locked. Unlock your secrets store to view provider status.</span>
+        </div>
+      )}
 
       <div className="mt-6 space-y-4">
         {PROVIDERS.map((p) => {
