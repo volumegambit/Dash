@@ -8,7 +8,9 @@ import { pipeline } from 'node:stream/promises';
 const OPENCODE_VERSION = '1.2.22';
 
 if (!/^\d+\.\d+\.\d+$/.test(OPENCODE_VERSION)) {
-  throw new Error(`Invalid OPENCODE_VERSION format: '${OPENCODE_VERSION}'. Expected MAJOR.MINOR.PATCH`);
+  throw new Error(
+    `Invalid OPENCODE_VERSION format: '${OPENCODE_VERSION}'. Expected MAJOR.MINOR.PATCH`,
+  );
 }
 
 const PLATFORM_MAP = {
@@ -50,7 +52,9 @@ await mkdir(outDir, { recursive: true });
 const zipPath = join(outDir, zipName);
 const response = await fetch(downloadUrl, { signal: AbortSignal.timeout(60_000) });
 if (!response.ok) {
-  throw new Error(`Download failed: ${response.status} ${response.statusText}\nURL: ${downloadUrl}`);
+  throw new Error(
+    `Download failed: ${response.status} ${response.statusText}\nURL: ${downloadUrl}`,
+  );
 }
 await pipeline(response.body, createWriteStream(zipPath));
 

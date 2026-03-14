@@ -69,9 +69,10 @@ describe('createAgentServer startup isolation', () => {
     MockBackend.mockImplementation(() => {
       callCount++;
       const instance = {
-        start: callCount === 1
-          ? vi.fn().mockRejectedValue(new Error('connection refused'))
-          : vi.fn().mockResolvedValue(undefined),
+        start:
+          callCount === 1
+            ? vi.fn().mockRejectedValue(new Error('connection refused'))
+            : vi.fn().mockResolvedValue(undefined),
         stop: vi.fn().mockResolvedValue(undefined),
       };
       return instance;

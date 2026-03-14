@@ -10,8 +10,8 @@ import {
   Settings,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
-import { HealthDot } from './HealthDot.js';
 import { useMessagingAppsStore } from '../stores/messaging-apps.js';
+import { HealthDot } from './HealthDot.js';
 
 const navItems: { to: string; label: string; icon: LucideIcon }[] = [
   { to: '/', label: 'Dashboard', icon: LayoutDashboard },
@@ -42,9 +42,7 @@ export function Sidebar(): JSX.Element {
           >
             <item.icon size={16} />
             {item.label}
-            {HEALTH_ROUTES.has(item.to) && (
-              <HealthDot health={worstHealth} className="ml-auto" />
-            )}
+            {HEALTH_ROUTES.has(item.to) && <HealthDot health={worstHealth} className="ml-auto" />}
           </Link>
         ))}
       </nav>

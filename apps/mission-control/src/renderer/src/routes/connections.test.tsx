@@ -64,9 +64,7 @@ describe('AiProviders page', () => {
     render(<AiProviders />);
     await waitFor(() => {
       expect(
-        screen.getByText(
-          'Secrets are locked. Unlock your secrets store to view provider status.',
-        ),
+        screen.getByText('Secrets are locked. Unlock your secrets store to view provider status.'),
       ).toBeInTheDocument();
     });
     expect(mockApi.secretsGet).not.toHaveBeenCalled();

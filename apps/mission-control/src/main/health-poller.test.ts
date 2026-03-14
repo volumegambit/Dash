@@ -18,9 +18,12 @@ describe('HealthPoller', () => {
     vi.useFakeTimers();
     poller = new HealthPoller();
     mockHealth = vi.fn();
-    MockedManagementClient.mockImplementation(() => ({
-      health: mockHealth,
-    }) as unknown as InstanceType<typeof ManagementClient>);
+    MockedManagementClient.mockImplementation(
+      () =>
+        ({
+          health: mockHealth,
+        }) as unknown as InstanceType<typeof ManagementClient>,
+    );
   });
 
   afterEach(() => {

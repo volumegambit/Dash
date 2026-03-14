@@ -3,8 +3,8 @@ import type { RuntimeStatus } from '@dash/mc';
 import { Link, createFileRoute, useNavigate } from '@tanstack/react-router';
 import { ArrowLeft, Circle, Loader, MessageSquare, Square, Trash2 } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ModelChainEditor } from '../../components/ModelChainEditor.js';
 import { HealthDot } from '../../components/HealthDot.js';
+import { ModelChainEditor } from '../../components/ModelChainEditor.js';
 import { useAvailableModels } from '../../hooks/useAvailableModels.js';
 import { useDeploymentsStore } from '../../stores/deployments';
 import { useMessagingAppsStore } from '../../stores/messaging-apps.js';
@@ -236,7 +236,8 @@ export function AgentDetail(): JSX.Element {
           <div className="space-y-2">
             {channelHealth.map((entry) => {
               const app = apps.find((a) => a.id === entry.appId);
-              const needsAction = entry.health === 'needs_reauth' || entry.health === 'disconnected';
+              const needsAction =
+                entry.health === 'needs_reauth' || entry.health === 'disconnected';
               return (
                 <div key={entry.appId} className="flex items-center justify-between text-sm">
                   <div className="flex items-center gap-2">

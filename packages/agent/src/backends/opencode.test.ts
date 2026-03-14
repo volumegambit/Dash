@@ -5,8 +5,8 @@ vi.mock('@opencode-ai/sdk/v2', () => ({
   createOpencodeClient: vi.fn(),
 }));
 
-import { OpenCodeBackend, extractSkillName } from './opencode.js';
 import type { AgentEvent } from '../types.js';
+import { OpenCodeBackend, extractSkillName } from './opencode.js';
 
 function makeBackend() {
   return new OpenCodeBackend(
@@ -191,16 +191,16 @@ describe('OpenCodeBackend.normalizeEvent', () => {
       {},
       mockLogger,
     );
-    const errorProps = { sessionID: 'sess-1', error: { message: 'API key invalid', code: 'AUTH_ERR' } };
+    const errorProps = {
+      sessionID: 'sess-1',
+      error: { message: 'API key invalid', code: 'AUTH_ERR' },
+    };
     backend.normalizeEvent(makeEvent('session.error', errorProps), 'sess-1');
-    expect(mockLogger.error).toHaveBeenCalledWith(
-      '[OpenCode] session.error: API key invalid',
-      {
-        sessionId: 'sess-1',
-        errorCode: 'AUTH_ERR',
-        rawProps: JSON.stringify(errorProps),
-      },
-    );
+    expect(mockLogger.error).toHaveBeenCalledWith('[OpenCode] session.error: API key invalid', {
+      sessionId: 'sess-1',
+      errorCode: 'AUTH_ERR',
+      rawProps: JSON.stringify(errorProps),
+    });
     await backend.stop();
   });
 
@@ -234,7 +234,10 @@ describe('OpenCodeBackend.normalizeEvent', () => {
     };
 
     const { createOpencodeServer, createOpencodeClient } = await import('@opencode-ai/sdk/v2');
-    vi.mocked(createOpencodeServer).mockResolvedValue({ url: 'http://localhost:9999', close: vi.fn() } as any);
+    vi.mocked(createOpencodeServer).mockResolvedValue({
+      url: 'http://localhost:9999',
+      close: vi.fn(),
+    } as any);
     vi.mocked(createOpencodeClient).mockReturnValue(mockSdk as any);
 
     const backend = new OpenCodeBackend(
@@ -267,21 +270,28 @@ describe('OpenCodeBackend.normalizeEvent', () => {
       events.push(ev);
     }
 
-    expect(mockLogger.warn).toHaveBeenCalledWith(
-      '[OpenCode] auto-approving permission: fs.write',
-      { patterns: JSON.stringify(['**/*.ts']), sessionId: 'sess-run' },
-    );
+    expect(mockLogger.warn).toHaveBeenCalledWith('[OpenCode] auto-approving permission: fs.write', {
+      patterns: JSON.stringify(['**/*.ts']),
+      sessionId: 'sess-run',
+    });
     await backend.stop();
   });
 });
 
 describe('OpenCodeBackend watchdog', () => {
   // Helper to set up a backend with a mock SDK and start it
-  async function makeStartedBackend(mockLogger?: { info: ReturnType<typeof vi.fn>; warn: ReturnType<typeof vi.fn>; error: ReturnType<typeof vi.fn> }) {
+  async function makeStartedBackend(mockLogger?: {
+    info: ReturnType<typeof vi.fn>;
+    warn: ReturnType<typeof vi.fn>;
+    error: ReturnType<typeof vi.fn>;
+  }) {
     const { createOpencodeServer, createOpencodeClient } = await import('@opencode-ai/sdk/v2');
 
     const mockClose = vi.fn();
-    vi.mocked(createOpencodeServer).mockResolvedValue({ url: 'http://localhost:9999', close: mockClose } as any);
+    vi.mocked(createOpencodeServer).mockResolvedValue({
+      url: 'http://localhost:9999',
+      close: mockClose,
+    } as any);
 
     const mockSdk = {
       auth: { set: vi.fn().mockResolvedValue({}) },
@@ -433,7 +443,10 @@ describe('OpenCodeBackend watchdog', () => {
     const { createOpencodeServer, createOpencodeClient } = await import('@opencode-ai/sdk/v2');
 
     const mockClose = vi.fn();
-    vi.mocked(createOpencodeServer).mockResolvedValue({ url: 'http://localhost:9999', close: mockClose } as any);
+    vi.mocked(createOpencodeServer).mockResolvedValue({
+      url: 'http://localhost:9999',
+      close: mockClose,
+    } as any);
 
     // Create a second mock SDK to represent the client created after restart
     const newMockSdk = {
@@ -443,7 +456,10 @@ describe('OpenCodeBackend watchdog', () => {
 
     // First call returns base SDK, second call (after restart) returns newMockSdk
     vi.mocked(createOpencodeClient)
-      .mockReturnValueOnce({ auth: { set: vi.fn().mockResolvedValue({}) }, app: { skills: vi.fn().mockResolvedValue({ data: [] }) } } as any)
+      .mockReturnValueOnce({
+        auth: { set: vi.fn().mockResolvedValue({}) },
+        app: { skills: vi.fn().mockResolvedValue({ data: [] }) },
+      } as any)
       .mockReturnValueOnce(newMockSdk as any);
 
     const backend = new OpenCodeBackend(

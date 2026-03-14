@@ -12,10 +12,7 @@ export class HealthPoller {
     onStatusChange: (status: string) => void,
   ): void {
     this.stop(id); // stop any existing poller for this id
-    const client = new ManagementClient(
-      `http://127.0.0.1:${managementPort}`,
-      managementToken,
-    );
+    const client = new ManagementClient(`http://127.0.0.1:${managementPort}`, managementToken);
     this.clients.set(id, client);
     const timer = setInterval(async () => {
       try {
