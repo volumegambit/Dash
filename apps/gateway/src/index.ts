@@ -36,6 +36,13 @@ async function main() {
     // Daemon mode — shared gateway with management API
     const managementPort = flags.managementPort ?? 9300;
     const startedAt = new Date().toISOString();
+
+    // Ensure data dir exists if specified
+    if (flags.dataDir) {
+      const { mkdir } = await import('node:fs/promises');
+      await mkdir(flags.dataDir, { recursive: true });
+    }
+
     const gateway = createDynamicGateway();
     const app = createGatewayManagementApp(gateway, startedAt, flags.token);
 

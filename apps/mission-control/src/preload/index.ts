@@ -139,6 +139,15 @@ const api: MissionControlAPI = {
   skillsUpdateConfig: (deploymentId, agentName, config) =>
     ipcRenderer.invoke('skills:updateConfig', deploymentId, agentName, config),
 
+  // Gateway
+  gatewayGetStatus: () => ipcRenderer.invoke('gateway:getStatus'),
+  gatewayOnStatus: (callback) => {
+    const listener = (_event: Electron.IpcRendererEvent, status: string) =>
+      callback(status as Parameters<typeof callback>[0]);
+    ipcRenderer.on('gateway:status', listener);
+    return () => ipcRenderer.removeListener('gateway:status', listener);
+  },
+
   // Updates
   onUpdateAvailable: (callback: (info: { version: string }) => void): (() => void) => {
     const handler = (_: Electron.IpcRendererEvent, info: { version: string }) => callback(info);

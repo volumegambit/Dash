@@ -9,19 +9,24 @@ import {
   ConversationStore,
   DeploymentStartupError,
   EncryptedSecretStore,
+  GatewayOptions,
   MessagingAppRegistry,
   ProcessRuntime,
   SettingsStore,
   defaultProcessSpawner,
+  getPlatformDataDir,
+  migrateLegacyDataDir,
 } from '@dash/mc';
 import type { MessagingApp, ProcessSpawner } from '@dash/mc';
 import { app, dialog, ipcMain, safeStorage, shell } from 'electron';
 import type { BrowserWindow } from 'electron';
 import type { DeployWithConfigOptions } from '../shared/ipc.js';
 import { ChatService } from './chat-service.js';
+import { GatewayPoller } from './gateway-poller.js';
 import { HealthPoller } from './health-poller.js';
 
-const DATA_DIR = process.env.MC_DATA_DIR || join(homedir(), '.mission-control');
+const DATA_DIR = process.env.MC_DATA_DIR || getPlatformDataDir('dash');
+const LEGACY_DATA_DIR = join(homedir(), '.mission-control');
 const SESSION_KEY_PATH = join(DATA_DIR, 'session.key');
 
 let chatService: ChatService | undefined;
@@ -29,6 +34,7 @@ let secretStore: EncryptedSecretStore | undefined;
 let registry: AgentRegistry | undefined;
 let runtime: ProcessRuntime | undefined;
 let messagingAppRegistry: MessagingAppRegistry | undefined;
+let gatewayPoller: GatewayPoller | undefined;
 const healthPoller = new HealthPoller();
 
 function getMessagingAppRegistry(): MessagingAppRegistry {
@@ -113,6 +119,11 @@ function getRuntime(): ProcessRuntime {
       resolveProjectRoot(),
       makePackagedSpawner(process.execPath, defaultProcessSpawner, app.isPackaged),
       getMessagingAppRegistry(),
+      undefined,
+      {
+        gatewayDataDir: DATA_DIR,
+        gatewayRuntimeDir: getPlatformDataDir('dash-gateway'),
+      },
     );
   }
   return runtime;
@@ -157,6 +168,37 @@ function clearCachedKey(): void {
 export async function registerIpcHandlers(
   getWindow: () => BrowserWindow | undefined,
 ): Promise<void> {
+  // One-time data migration from legacy ~/.mission-control
+  await migrateLegacyDataDir(LEGACY_DATA_DIR, DATA_DIR);
+
+  // Start shared gateway
+  const rt = getRuntime();
+  try {
+    await rt.ensureGateway();
+  } catch (err) {
+    console.error('Gateway startup failed on MC launch:', err);
+  }
+
+  // Start gateway health poller
+  const sendGatewayStatus = (status: string) => {
+    const win = getWindow();
+    if (win && !win.isDestroyed()) win.webContents.send('gateway:status', status);
+  };
+  gatewayPoller = new GatewayPoller(
+    () => rt.ensureGateway(),
+    async () => {
+      const deployments = await getRegistry().list();
+      for (const dep of deployments.filter((d) => d.status === 'running')) {
+        try {
+          await rt.registerWithGateway(dep.id);
+        } catch (err) {
+          console.error(`Failed to re-register deployment ${dep.id} after gateway restart:`, err);
+        }
+      }
+    },
+  );
+  gatewayPoller.start(sendGatewayStatus);
+
   // Auto-unlock from cached session key.
   // Validates the key before registering IPC handlers so the renderer never
   // sees isUnlocked=true with a stale key.
@@ -647,6 +689,10 @@ export async function registerIpcHandlers(
       await getSettingsStore().set(patch);
     },
   );
+
+  ipcMain.handle('gateway:getStatus', () => {
+    return gatewayPoller?.getCurrentStatus() ?? 'starting';
+  });
 
   app.on('before-quit', () => {
     healthPoller.stopAll();
