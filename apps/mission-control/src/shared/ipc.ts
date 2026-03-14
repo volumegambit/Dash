@@ -49,6 +49,8 @@ export interface ChannelHealthEntry {
   health: 'connected' | 'connecting' | 'disconnected' | 'needs_reauth';
 }
 
+export type GatewayStatus = 'starting' | 'healthy' | 'unhealthy' | 'restarting';
+
 export class RendererDeploymentError extends Error {
   constructor(
     message: string,
@@ -164,6 +166,10 @@ export interface MissionControlAPI {
   // Settings
   settingsGet(): Promise<AppSettings>;
   settingsSet(patch: Partial<AppSettings>): Promise<void>;
+
+  // Gateway
+  gatewayGetStatus(): Promise<GatewayStatus>;
+  gatewayOnStatus(callback: (status: GatewayStatus) => void): () => void;
 
   // Updates
   onUpdateAvailable(callback: (info: { version: string }) => void): () => void;
