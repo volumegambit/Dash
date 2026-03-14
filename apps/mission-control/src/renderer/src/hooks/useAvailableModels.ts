@@ -4,5 +4,5 @@ import { useSecretsStore } from '../stores/secrets.js';
 
 export function useAvailableModels(): ModelOption[] {
   const keys = useSecretsStore((state) => state.keys);
-  return AVAILABLE_MODELS.filter((m) => keys.includes(m.secretKey));
+  return AVAILABLE_MODELS.filter((m) => keys.some((k) => k.startsWith(`${m.secretKey}:`)));
 }

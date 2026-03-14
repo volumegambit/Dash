@@ -43,7 +43,7 @@ export const PROVIDERS: ProviderOption[] = [
 export const PROVIDER_CONFIG: Record<Provider, ProviderConfig> = {
   anthropic: {
     title: 'Connect to Claude',
-    secretKey: 'anthropic-api-key',
+    secretKey: 'anthropic-api-key:default',
     placeholder: 'sk-ant-...',
     consoleUrl: 'https://console.anthropic.com',
     apiKeysUrl: 'https://console.anthropic.com/settings/keys',
@@ -58,7 +58,7 @@ export const PROVIDER_CONFIG: Record<Provider, ProviderConfig> = {
   },
   openai: {
     title: 'Connect to OpenAI',
-    secretKey: 'openai-api-key',
+    secretKey: 'openai-api-key:default',
     placeholder: 'sk-...',
     consoleUrl: 'https://platform.openai.com',
     apiKeysUrl: 'https://platform.openai.com/api-keys',
@@ -73,7 +73,7 @@ export const PROVIDER_CONFIG: Record<Provider, ProviderConfig> = {
   },
   google: {
     title: 'Connect to Google Gemini',
-    secretKey: 'google-api-key',
+    secretKey: 'google-api-key:default',
     placeholder: 'AIza...',
     consoleUrl: 'https://aistudio.google.com',
     apiKeysUrl: 'https://aistudio.google.com/app/apikey',
