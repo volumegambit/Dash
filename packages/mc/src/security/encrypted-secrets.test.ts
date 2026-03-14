@@ -46,6 +46,20 @@ describe('EncryptedSecretStore', () => {
       await store.setup(password);
       expect(await store.needsSetup()).toBe(false);
     });
+
+    it('refuses to overwrite an existing encrypted store', async () => {
+      await store.setup(password);
+      await store.set('api-key', 'sk-abc123');
+      store.lock();
+
+      await expect(store.setup('new-password-123')).rejects.toThrow(
+        'Encrypted secrets store already exists',
+      );
+
+      // Verify original data is intact
+      await store.unlockWithPassword(password);
+      expect(await store.get('api-key')).toBe('sk-abc123');
+    });
   });
 
   describe('migration', () => {
