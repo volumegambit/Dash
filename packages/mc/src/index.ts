@@ -42,3 +42,6 @@ export type { MessagingApp, RoutingRule, RoutingCondition } from './types.js';
 export { MessagingAppRegistry } from './messaging-apps/registry.js';
 export { SettingsStore } from './settings-store.js';
 export type { AppSettings } from './settings-store.js';
+export { getPlatformDataDir } from './platform-paths.js';
+export type { GatewayOptions } from './runtime/process.js';
+export { migrateLegacyDataDir } from './migration.js';

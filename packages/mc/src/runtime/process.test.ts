@@ -724,6 +724,426 @@ describe('ProcessRuntime.deploy() startup watcher', () => {
   });
 });
 
+describe('ProcessRuntime.registerWithGateway', () => {
+  let tmpDir: string;
+
+  beforeEach(async () => {
+    tmpDir = await mkdtemp(join(tmpdir(), 'mc-rgw-'));
+  });
+
+  afterEach(async () => {
+    await rm(tmpDir, { recursive: true });
+  });
+
+  it('calls registerAgent for each agent in a running deployment', async () => {
+    const deploymentId = 'dep-abc123';
+    const chatPort = 8765;
+    const chatToken = 'test-chat-token';
+
+    const fakeDeployment = {
+      id: deploymentId,
+      name: 'test-agent',
+      target: 'local' as const,
+      status: 'running' as const,
+      createdAt: new Date().toISOString(),
+      chatPort,
+      chatToken,
+      config: {
+        target: 'local' as const,
+        agents: { 'test-agent': { name: 'test-agent', model: 'claude-3', systemPrompt: 'hi' } },
+        channels: {},
+      },
+    };
+
+    const fakeRegistry = {
+      get: async (id: string) => (id === deploymentId ? fakeDeployment : null),
+      list: async () => [fakeDeployment],
+      add: async () => {},
+      update: async () => {},
+      remove: async () => {},
+    };
+
+    const fakeSecrets: SecretStore = {
+      get: async () => null,
+      set: async () => {},
+      delete: async () => {},
+      list: async () => [],
+    };
+
+    const mockRegisterAgent = vi.fn().mockResolvedValue(undefined);
+    const mockGatewayClient = {
+      health: vi.fn().mockResolvedValue({ status: 'healthy', startedAt: '2026-01-01T00:00:00Z', agents: 0, channels: 0 }),
+      registerAgent: mockRegisterAgent,
+      registerChannel: vi.fn().mockResolvedValue(undefined),
+      deregisterDeployment: vi.fn().mockResolvedValue(undefined),
+    };
+
+    const { GatewayStateStore } = await import('./gateway-state.js');
+    const store = new GatewayStateStore(tmpDir);
+    await store.write({
+      pid: process.pid,
+      startedAt: '2026-01-01T00:00:00Z',
+      token: 'gw-tok',
+      port: 9300,
+    });
+
+    const runtime = new ProcessRuntime(
+      fakeRegistry as unknown as Parameters<typeof ProcessRuntime>[0],
+      fakeSecrets,
+      '/fake/root',
+      undefined,
+      undefined,
+      undefined,
+      {
+        gatewayDataDir: tmpDir,
+        makeGatewayClient: () => mockGatewayClient as unknown as GatewayManagementClient,
+      },
+    );
+
+    await runtime.registerWithGateway(deploymentId);
+
+    expect(mockRegisterAgent).toHaveBeenCalledOnce();
+    expect(mockRegisterAgent).toHaveBeenCalledWith(
+      deploymentId,
+      'test-agent',
+      `ws://localhost:${chatPort}/ws`,
+      chatToken,
+    );
+  });
+
+  it('skips silently if deployment is not found', async () => {
+    const fakeRegistry = {
+      get: async () => null,
+      list: async () => [],
+      add: async () => {},
+      update: async () => {},
+      remove: async () => {},
+    };
+
+    const fakeSecrets: SecretStore = {
+      get: async () => null,
+      set: async () => {},
+      delete: async () => {},
+      list: async () => [],
+    };
+
+    const mockRegisterAgent = vi.fn();
+    const { GatewayStateStore } = await import('./gateway-state.js');
+    const store = new GatewayStateStore(tmpDir);
+    await store.write({ pid: process.pid, startedAt: '2026-01-01T00:00:00Z', token: 'tok', port: 9300 });
+
+    const runtime = new ProcessRuntime(
+      fakeRegistry as unknown as Parameters<typeof ProcessRuntime>[0],
+      fakeSecrets,
+      '/fake/root',
+      undefined,
+      undefined,
+      undefined,
+      {
+        gatewayDataDir: tmpDir,
+        makeGatewayClient: () => ({ registerAgent: mockRegisterAgent } as unknown as GatewayManagementClient),
+      },
+    );
+
+    await runtime.registerWithGateway('nonexistent');
+    expect(mockRegisterAgent).not.toHaveBeenCalled();
+  });
+
+  it('skips silently if deployment is not running', async () => {
+    const deploymentId = 'dep-stopped';
+    const fakeDeployment = {
+      id: deploymentId,
+      name: 'agent',
+      target: 'local' as const,
+      status: 'stopped' as const,
+      createdAt: new Date().toISOString(),
+      chatPort: 8765,
+      chatToken: 'tok',
+      config: { target: 'local' as const, agents: { agent: {} }, channels: {} },
+    };
+
+    const fakeRegistry = {
+      get: async () => fakeDeployment,
+      list: async () => [fakeDeployment],
+      add: async () => {},
+      update: async () => {},
+      remove: async () => {},
+    };
+
+    const fakeSecrets: SecretStore = {
+      get: async () => null,
+      set: async () => {},
+      delete: async () => {},
+      list: async () => [],
+    };
+
+    const mockRegisterAgent = vi.fn();
+    const { GatewayStateStore } = await import('./gateway-state.js');
+    const store = new GatewayStateStore(tmpDir);
+    await store.write({ pid: process.pid, startedAt: '2026-01-01T00:00:00Z', token: 'tok', port: 9300 });
+
+    const runtime = new ProcessRuntime(
+      fakeRegistry as unknown as Parameters<typeof ProcessRuntime>[0],
+      fakeSecrets,
+      '/fake/root',
+      undefined,
+      undefined,
+      undefined,
+      {
+        gatewayDataDir: tmpDir,
+        makeGatewayClient: () => ({ registerAgent: mockRegisterAgent } as unknown as GatewayManagementClient),
+      },
+    );
+
+    await runtime.registerWithGateway(deploymentId);
+    expect(mockRegisterAgent).not.toHaveBeenCalled();
+  });
+
+  it('calls registerChannel for an enabled telegram messaging app', async () => {
+    const deploymentId = 'dep-tg-test';
+    const chatPort = 8766;
+    const chatToken = 'test-chat-token-tg';
+
+    const fakeApp: MessagingApp = {
+      id: 'app-tg-1',
+      name: 'My Telegram Bot',
+      type: 'telegram',
+      credentialsKey: 'messaging-app:app-tg-1:token',
+      enabled: true,
+      createdAt: new Date().toISOString(),
+      globalDenyList: [],
+      routing: [
+        {
+          condition: 'all',
+          targetAgentName: 'test-agent',
+          allowList: [],
+          denyList: [],
+        },
+      ],
+    };
+
+    const fakeDeployment = {
+      id: deploymentId,
+      name: 'test-agent',
+      target: 'local' as const,
+      status: 'running' as const,
+      createdAt: new Date().toISOString(),
+      chatPort,
+      chatToken,
+      config: {
+        target: 'local' as const,
+        agents: { 'test-agent': { name: 'test-agent', model: 'claude-3', systemPrompt: 'hi' } },
+        channels: {},
+      },
+    };
+
+    const fakeRegistry = {
+      get: async (id: string) => (id === deploymentId ? fakeDeployment : null),
+      list: async () => [fakeDeployment],
+      add: async () => {},
+      update: async () => {},
+      remove: async () => {},
+    };
+
+    const fakeSecrets: SecretStore = {
+      get: async (key: string) =>
+        key === fakeApp.credentialsKey ? 'tg-bot-token-123' : null,
+      set: async () => {},
+      delete: async () => {},
+      list: async () => [fakeApp.credentialsKey],
+    };
+
+    const mockRegisterAgent = vi.fn().mockResolvedValue(undefined);
+    const mockRegisterChannel = vi.fn().mockResolvedValue(undefined);
+    const mockGatewayClient = {
+      health: vi.fn().mockResolvedValue({ status: 'healthy', startedAt: '2026-01-01T00:00:00Z', agents: 0, channels: 0 }),
+      registerAgent: mockRegisterAgent,
+      registerChannel: mockRegisterChannel,
+      deregisterDeployment: vi.fn().mockResolvedValue(undefined),
+    };
+
+    const { GatewayStateStore } = await import('./gateway-state.js');
+    const store = new GatewayStateStore(tmpDir);
+    await store.write({
+      pid: process.pid,
+      startedAt: '2026-01-01T00:00:00Z',
+      token: 'gw-tok',
+      port: 9300,
+    });
+
+    const fakeMessagingApps = {
+      list: async () => [fakeApp],
+    };
+
+    const runtime = new ProcessRuntime(
+      fakeRegistry as unknown as Parameters<typeof ProcessRuntime>[0],
+      fakeSecrets,
+      '/fake/root',
+      undefined,
+      fakeMessagingApps as unknown as Parameters<typeof ProcessRuntime>[4],
+      undefined,
+      {
+        gatewayDataDir: tmpDir,
+        makeGatewayClient: () => mockGatewayClient as unknown as GatewayManagementClient,
+      },
+    );
+
+    await runtime.registerWithGateway(deploymentId);
+
+    expect(mockRegisterChannel).toHaveBeenCalledOnce();
+    expect(mockRegisterChannel).toHaveBeenCalledWith(
+      deploymentId,
+      `messaging-app-${fakeApp.id}`,
+      expect.objectContaining({
+        adapter: 'telegram',
+        token: 'tg-bot-token-123',
+      }),
+    );
+  });
+
+  it('calls registerChannel for an enabled whatsapp messaging app', async () => {
+    const deploymentId = 'dep-wa-test';
+    const chatPort = 8767;
+    const chatToken = 'test-chat-token-wa';
+
+    const fakeApp: MessagingApp = {
+      id: 'app-wa-1',
+      name: 'My WhatsApp Bot',
+      type: 'whatsapp',
+      credentialsKey: 'whatsapp-auth:app-wa-1',
+      enabled: true,
+      createdAt: new Date().toISOString(),
+      globalDenyList: [],
+      routing: [
+        {
+          condition: 'all',
+          targetAgentName: 'test-agent',
+          allowList: [],
+          denyList: [],
+        },
+      ],
+    };
+
+    const fakeDeployment = {
+      id: deploymentId,
+      name: 'test-agent',
+      target: 'local' as const,
+      status: 'running' as const,
+      createdAt: new Date().toISOString(),
+      chatPort,
+      chatToken,
+      config: {
+        target: 'local' as const,
+        agents: { 'test-agent': { name: 'test-agent', model: 'claude-3', systemPrompt: 'hi' } },
+        channels: {},
+      },
+    };
+
+    const fakeRegistry = {
+      get: async (id: string) => (id === deploymentId ? fakeDeployment : null),
+      list: async () => [fakeDeployment],
+      add: async () => {},
+      update: async () => {},
+      remove: async () => {},
+    };
+
+    const authKey = `${fakeApp.credentialsKey}:creds`;
+    const fakeSecrets: SecretStore = {
+      get: async (key: string) => (key === authKey ? 'some-creds' : null),
+      set: async () => {},
+      delete: async () => {},
+      list: async () => [authKey],
+    };
+
+    const mockRegisterAgent = vi.fn().mockResolvedValue(undefined);
+    const mockRegisterChannel = vi.fn().mockResolvedValue(undefined);
+    const mockGatewayClient = {
+      health: vi.fn().mockResolvedValue({ status: 'healthy', startedAt: '2026-01-01T00:00:00Z', agents: 0, channels: 0 }),
+      registerAgent: mockRegisterAgent,
+      registerChannel: mockRegisterChannel,
+      deregisterDeployment: vi.fn().mockResolvedValue(undefined),
+    };
+
+    const { GatewayStateStore } = await import('./gateway-state.js');
+    const store = new GatewayStateStore(tmpDir);
+    await store.write({
+      pid: process.pid,
+      startedAt: '2026-01-01T00:00:00Z',
+      token: 'gw-tok',
+      port: 9300,
+    });
+
+    const fakeMessagingApps = {
+      list: async () => [fakeApp],
+    };
+
+    const runtime = new ProcessRuntime(
+      fakeRegistry as unknown as Parameters<typeof ProcessRuntime>[0],
+      fakeSecrets,
+      '/fake/root',
+      undefined,
+      fakeMessagingApps as unknown as Parameters<typeof ProcessRuntime>[4],
+      undefined,
+      {
+        gatewayDataDir: tmpDir,
+        makeGatewayClient: () => mockGatewayClient as unknown as GatewayManagementClient,
+      },
+    );
+
+    await runtime.registerWithGateway(deploymentId);
+
+    expect(mockRegisterChannel).toHaveBeenCalledOnce();
+    expect(mockRegisterChannel).toHaveBeenCalledWith(
+      deploymentId,
+      `messaging-app-${fakeApp.id}`,
+      expect.objectContaining({
+        adapter: 'whatsapp',
+        authStateDir: expect.any(String),
+        whatsappAuth: expect.objectContaining({ creds: 'some-creds' }),
+      }),
+    );
+  });
+
+  it('skips silently if no gateway is configured', async () => {
+    const deploymentId = 'dep-abc';
+    const fakeDeployment = {
+      id: deploymentId,
+      name: 'agent',
+      target: 'local' as const,
+      status: 'running' as const,
+      createdAt: new Date().toISOString(),
+      chatPort: 8765,
+      chatToken: 'tok',
+      config: { target: 'local' as const, agents: { agent: {} }, channels: {} },
+    };
+
+    const fakeRegistry = {
+      get: async () => fakeDeployment,
+      list: async () => [fakeDeployment],
+      add: async () => {},
+      update: async () => {},
+      remove: async () => {},
+    };
+
+    const fakeSecrets: SecretStore = {
+      get: async () => null,
+      set: async () => {},
+      delete: async () => {},
+      list: async () => [],
+    };
+
+    // No gatewayOptions — getGatewayClient returns null
+    const runtime = new ProcessRuntime(
+      fakeRegistry as unknown as Parameters<typeof ProcessRuntime>[0],
+      fakeSecrets,
+      '/fake/root',
+    );
+
+    // Should not throw
+    await expect(runtime.registerWithGateway(deploymentId)).resolves.toBeUndefined();
+  });
+});
+
 describe('ProcessRuntime.ensureGatewayRunning', () => {
   let tmpDir: string;
   let configDir: string;
