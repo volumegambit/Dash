@@ -387,16 +387,14 @@ export function Chat(): JSX.Element {
 
       {/* Right panel: message thread */}
       <div className="flex flex-1 flex-col">
-        <div className="border-b border-border px-6 py-4">
-          <h1 className="text-2xl font-bold">Chat</h1>
-          <p className="mt-1 text-sm text-muted">
-            {!selectedConversationId
-              ? 'Select or create a conversation'
-              : isStreaming
-                ? 'Agent is responding…'
-                : 'Connected'}
-          </p>
-        </div>
+        {!selectedConversationId && (
+          <div className="border-b border-border px-6 py-4">
+            <h1 className="text-2xl font-bold">Chat</h1>
+            <p className="mt-1 text-sm text-muted">
+              Select or create a conversation
+            </p>
+          </div>
+        )}
 
         <div className="flex-1 overflow-y-auto px-6 py-4">
           {!selectedConversationId ? (
