@@ -30,12 +30,19 @@ export interface RedactedThinkingBlock {
   data: string;
 }
 
+export interface ImageBlock {
+  type: 'image';
+  mediaType: 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp';
+  data: string; // base64-encoded
+}
+
 export type ContentBlock =
   | TextBlock
   | ToolUseBlock
   | ToolResultBlock
   | ThinkingBlock
-  | RedactedThinkingBlock;
+  | RedactedThinkingBlock
+  | ImageBlock;
 
 export interface Message {
   role: 'user' | 'assistant' | 'system';
@@ -117,6 +124,7 @@ export interface AgentState {
   fallbackModels?: string[];
   tools?: string[];
   workspace?: string;
+  images?: ImageBlock[];
 }
 
 export interface RunOptions {

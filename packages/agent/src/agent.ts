@@ -4,7 +4,9 @@ import type {
   AgentBackend,
   AgentEvent,
   AgentState,
+  ContentBlock,
   DashAgentConfig,
+  ImageBlock,
   Message,
   RunOptions,
 } from './types.js';
@@ -32,7 +34,7 @@ export class DashAgent {
     channelId: string,
     conversationId: string,
     userMessage: string,
-    options: RunOptions = {},
+    options: RunOptions & { images?: ImageBlock[] } = {},
   ): AsyncGenerator<AgentEvent> {
     // Inject memory preamble if workspace configured
     let systemPrompt = this.config.systemPrompt;
@@ -46,12 +48,17 @@ export class DashAgent {
     const sessionStore = this.config.sessionStore;
     const session = sessionStore ? await sessionStore.load(channelId, conversationId) : null;
 
+    // Build user content (text-only or mixed text+images)
+    const userContent: string | ContentBlock[] = options.images?.length
+      ? [{ type: 'text' as const, text: userMessage }, ...options.images]
+      : userMessage;
+
     // Persist user message
     if (sessionStore) {
       await sessionStore.append(sessionId, {
         timestamp: new Date().toISOString(),
         type: 'message',
-        data: { role: 'user', content: userMessage },
+        data: { role: 'user', content: userContent },
       });
     }
 
@@ -64,6 +71,7 @@ export class DashAgent {
       systemPrompt,
       tools: this.config.tools,
       workspace: this.config.workspace,
+      images: options.images,
     };
 
     // Run backend, accumulate text response and tool content for compaction tracking
@@ -96,7 +104,7 @@ export class DashAgent {
           const contextWindow = this.config.modelContextWindow ?? 200000;
           const allMessages: Message[] = [
             ...(session?.messages ?? []),
-            { role: 'user', content: userMessage },
+            { role: 'user', content: userContent },
             { role: 'assistant', content: turnContent },
           ];
 

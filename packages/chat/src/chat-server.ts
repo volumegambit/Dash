@@ -12,12 +12,21 @@ function validateMessage(msg: unknown): msg is WsClientMessage {
   if (m.type === 'cancel') return true;
 
   if (m.type === 'message') {
-    return (
+    const valid =
       typeof m.agent === 'string' &&
       typeof m.channelId === 'string' &&
       typeof m.conversationId === 'string' &&
-      typeof m.text === 'string'
-    );
+      typeof m.text === 'string';
+    if (!valid) return false;
+    if (m.images !== undefined) {
+      if (!Array.isArray(m.images)) return false;
+      for (const img of m.images) {
+        if (typeof img !== 'object' || img === null) return false;
+        if (typeof (img as Record<string, unknown>).mediaType !== 'string') return false;
+        if (typeof (img as Record<string, unknown>).data !== 'string') return false;
+      }
+    }
+    return true;
   }
 
   return false;
@@ -103,7 +112,18 @@ export function createChatApp(options: ChatServerOptions) {
             activeStreams.set(msg.id, controller);
 
             (async () => {
-              const stream = agent.chat(msg.channelId, msg.conversationId, msg.text);
+              const images = msg.images?.map((img) => ({
+                type: 'image' as const,
+                mediaType: img.mediaType as
+                  | 'image/jpeg'
+                  | 'image/png'
+                  | 'image/gif'
+                  | 'image/webp',
+                data: img.data,
+              }));
+              const stream = agent.chat(msg.channelId, msg.conversationId, msg.text, {
+                images: images?.length ? images : undefined,
+              });
               try {
                 for await (const agentEvent of stream) {
                   if (controller.signal.aborted) break;
