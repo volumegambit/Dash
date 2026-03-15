@@ -150,6 +150,10 @@ const api: MissionControlAPI = {
     return () => ipcRenderer.removeListener('gateway:status', listener);
   },
 
+  // Models
+  modelsList: () => ipcRenderer.invoke('models:list'),
+  modelsRefresh: () => ipcRenderer.invoke('models:refresh'),
+
   // Credentials
   onCredentialsPushFailed: (callback: (failures: { deploymentId: string; name: string; error: string }[]) => void): (() => void) => {
     const handler = (_: Electron.IpcRendererEvent, failures: { deploymentId: string; name: string; error: string }[]) => callback(failures);
