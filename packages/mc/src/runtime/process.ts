@@ -885,14 +885,18 @@ export class ProcessRuntime implements DeploymentRuntime {
       await this.registry.update(id, { config: deployment.config });
     }
 
-    // 3. Push to running agent server so it takes effect without restart
+    // 3. Push to running agent server (best-effort — server may be unreachable)
     if (deployment.status === 'running' && deployment.managementPort && deployment.managementToken) {
-      const { ManagementClient } = await import('@dash/management');
-      const client = new ManagementClient(
-        `http://127.0.0.1:${deployment.managementPort}`,
-        deployment.managementToken,
-      );
-      await client.updateAgentConfig(agentName, patch);
+      try {
+        const { ManagementClient } = await import('@dash/management');
+        const client = new ManagementClient(
+          `http://127.0.0.1:${deployment.managementPort}`,
+          deployment.managementToken,
+        );
+        await client.updateAgentConfig(agentName, patch);
+      } catch {
+        // Config saved to disk and registry — will apply on next restart
+      }
     }
   }
 
