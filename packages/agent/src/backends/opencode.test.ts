@@ -75,6 +75,98 @@ describe('OpenCodeBackend.normalizeEvent', () => {
     expect(result).toEqual({ type: 'tool_use_start', id: 'call-1', name: 'bash' });
   });
 
+  it('returns tool_use_delta for running tool part', () => {
+    const backend = makeBackend();
+    const result = backend.normalizeEvent(
+      makeEvent('message.part.updated', {
+        part: {
+          type: 'tool',
+          sessionID: 'sess-1',
+          callID: 'call-1',
+          tool: 'bash',
+          state: { status: 'running', input: { command: 'ls -la' } },
+        },
+      }),
+      'sess-1',
+    );
+    expect(result).toEqual({
+      type: 'tool_use_delta',
+      partial_json: JSON.stringify({ command: 'ls -la' }),
+    });
+  });
+
+  it('deduplicates tool_use_delta — second running event for same callID returns null', () => {
+    const backend = makeBackend();
+    const runningEvent = makeEvent('message.part.updated', {
+      part: {
+        type: 'tool',
+        sessionID: 'sess-1',
+        callID: 'call-dup',
+        tool: 'bash',
+        state: { status: 'running', input: { command: 'echo hello' } },
+      },
+    });
+
+    const first = backend.normalizeEvent(runningEvent, 'sess-1');
+    expect(first).toEqual({
+      type: 'tool_use_delta',
+      partial_json: JSON.stringify({ command: 'echo hello' }),
+    });
+
+    const second = backend.normalizeEvent(runningEvent, 'sess-1');
+    expect(second).toBeNull();
+  });
+
+  it('clears dedup state after tool completes, allowing new calls with same ID', () => {
+    const backend = makeBackend();
+
+    // First running event for call-1
+    backend.normalizeEvent(
+      makeEvent('message.part.updated', {
+        part: {
+          type: 'tool',
+          sessionID: 'sess-1',
+          callID: 'call-1',
+          tool: 'bash',
+          state: { status: 'running', input: { command: 'ls' } },
+        },
+      }),
+      'sess-1',
+    );
+
+    // Complete the tool
+    backend.normalizeEvent(
+      makeEvent('message.part.updated', {
+        part: {
+          type: 'tool',
+          sessionID: 'sess-1',
+          callID: 'call-1',
+          tool: 'bash',
+          state: { status: 'completed', input: {}, output: 'done', title: 'bash', metadata: {}, time: { start: 0, end: 1 } },
+        },
+      }),
+      'sess-1',
+    );
+
+    // A new running event for the same callID should emit again
+    const result = backend.normalizeEvent(
+      makeEvent('message.part.updated', {
+        part: {
+          type: 'tool',
+          sessionID: 'sess-1',
+          callID: 'call-1',
+          tool: 'bash',
+          state: { status: 'running', input: { command: 'pwd' } },
+        },
+      }),
+      'sess-1',
+    );
+    expect(result).toEqual({
+      type: 'tool_use_delta',
+      partial_json: JSON.stringify({ command: 'pwd' }),
+    });
+  });
+
   it('returns tool_result for completed tool part', () => {
     const backend = makeBackend();
     const result = backend.normalizeEvent(
