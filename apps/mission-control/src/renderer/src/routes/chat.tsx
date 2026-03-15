@@ -16,6 +16,7 @@ import {
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { McAgentEvent } from '../../../shared/ipc.js';
 import { Markdown } from '../components/Markdown.js';
+import { ToolResult } from '../components/ToolResult.js';
 import { useChatStore } from '../stores/chat.js';
 import { useDeploymentsStore } from '../stores/deployments.js';
 import {
@@ -234,11 +235,7 @@ function ToolBlock({
                   ))}
                 </div>
               )}
-              <p
-                className={`whitespace-pre-wrap ${isError ? 'text-red-400' : 'text-green-400/80'}`}
-              >
-                {result}
-              </p>
+              <ToolResult name={name} result={result} isError={isError} />
             </>
           )}
         </div>
