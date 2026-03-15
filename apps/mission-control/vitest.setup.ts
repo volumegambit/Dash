@@ -57,7 +57,7 @@ function createMockApi(): Record<keyof MissionControlAPI, ReturnType<typeof vi.f
     deploymentsDeployWithConfig: vi.fn().mockResolvedValue('test-deployment-id'),
     deploymentsStop: vi.fn().mockResolvedValue(undefined),
     deploymentsRemove: vi.fn().mockResolvedValue(undefined),
-    deploymentsGetStatus: vi.fn().mockResolvedValue('stopped'),
+    deploymentsGetStatus: vi.fn().mockResolvedValue({ state: 'stopped' }),
     deploymentsLogsSubscribe: vi.fn().mockResolvedValue(undefined),
     deploymentsLogsUnsubscribe: vi.fn().mockResolvedValue(undefined),
     deploymentsUpdateConfig: vi.fn().mockResolvedValue(undefined),

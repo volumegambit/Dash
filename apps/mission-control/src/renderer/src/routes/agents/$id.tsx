@@ -187,7 +187,8 @@ export function AgentDetail(): JSX.Element {
     );
   }
 
-  const isRunning = deployment.status === 'running';
+  const resolvedStatus = status?.state ?? deployment.status;
+  const isRunning = resolvedStatus === 'running';
   const agentName = deployment.config?.agents
     ? (Object.keys(deployment.config.agents)[0] ?? '')
     : '';
@@ -209,7 +210,7 @@ export function AgentDetail(): JSX.Element {
           <div>
             <div className="flex items-center gap-2">
               <h1 className="text-2xl font-bold">{deployment.name}</h1>
-              <StatusBadge status={deployment.status} />
+              <StatusBadge status={resolvedStatus} />
             </div>
             <p className="text-sm text-muted">{deployment.id}</p>
           </div>
@@ -281,7 +282,7 @@ export function AgentDetail(): JSX.Element {
       )}
 
       <div className="mb-6 grid grid-cols-2 gap-4">
-        <InfoCard label="Status" value={status?.state ?? deployment.status} />
+        <InfoCard label="Status" value={resolvedStatus} />
         <InfoCard
           label="Management Port"
           value={status?.managementPort ?? deployment.managementPort ?? 'N/A'}
