@@ -34,6 +34,8 @@ import {
 function renderEvents(
   events: Record<string, unknown>[],
   navigateToLogs?: (timestamp: string) => void,
+  onAnswerQuestion?: (questionId: string, answer: string) => void,
+  answeredQuestions?: Record<string, string>,
 ): JSX.Element[] {
   const elements: JSX.Element[] = [];
   let blockCount = 0;
@@ -80,6 +82,26 @@ function renderEvents(
       );
       toolName = '';
       toolInputBuffer = '';
+    } else if (event.type === 'question') {
+      // Flush text before question
+      if (textBuffer) {
+        elements.push(
+          <div key={`text-${blockCount++}`}>
+            <Markdown>{textBuffer}</Markdown>
+          </div>,
+        );
+        textBuffer = '';
+      }
+      elements.push(
+        <QuestionBlock
+          key={`question-${blockCount++}`}
+          id={event.id}
+          question={event.question}
+          options={event.options ?? []}
+          answer={answeredQuestions?.[event.id]}
+          onAnswer={onAnswerQuestion}
+        />,
+      );
     } else if (event.type === 'error') {
       const msg =
         typeof event.error === 'string'
@@ -138,6 +160,79 @@ function ThinkingBlock({ text }: { text: string }): JSX.Element {
         💭 {open ? 'Hide' : 'Show'} thinking
       </button>
       {open && <p className="px-3 pb-2 text-xs text-muted whitespace-pre-wrap">{text}</p>}
+    </div>
+  );
+}
+
+function QuestionBlock({
+  id,
+  question,
+  options,
+  answer,
+  onAnswer,
+}: {
+  id: string;
+  question: string;
+  options: string[];
+  answer?: string;
+  onAnswer?: (questionId: string, answer: string) => void;
+}): JSX.Element {
+  const [inputValue, setInputValue] = useState('');
+  const answered = answer != null;
+
+  if (answered) {
+    return (
+      <div className="mb-2 rounded border border-border bg-sidebar-hover px-3 py-1.5 text-xs">
+        ❓ <span className="text-muted">Question</span>
+        <span className="ml-1 text-muted">→</span>
+        <span className="ml-1">{answer}</span>
+        <span className="ml-1">✓</span>
+      </div>
+    );
+  }
+
+  return (
+    <div className="mb-2 rounded border border-primary/50 bg-primary/5 px-3 py-2 text-sm">
+      <p className="mb-2">❓ {question}</p>
+      {options.length > 0 ? (
+        <div className="flex flex-wrap gap-2">
+          {options.map((opt) => (
+            <button
+              key={opt}
+              type="button"
+              onClick={() => onAnswer?.(id, opt)}
+              className="rounded-lg border border-border bg-sidebar-bg px-3 py-1.5 text-xs transition-colors hover:bg-sidebar-hover hover:border-primary"
+            >
+              {opt}
+            </button>
+          ))}
+        </div>
+      ) : (
+        <form
+          className="flex gap-2"
+          onSubmit={(e) => {
+            e.preventDefault();
+            const trimmed = inputValue.trim();
+            if (trimmed) onAnswer?.(id, trimmed);
+          }}
+        >
+          <input
+            type="text"
+            value={inputValue}
+            onChange={(e) => setInputValue(e.target.value)}
+            placeholder="Type your answer…"
+            className="flex-1 rounded-lg border border-border bg-sidebar-bg px-3 py-1.5 text-xs text-foreground placeholder:text-muted focus:border-primary focus:outline-none"
+            autoFocus
+          />
+          <button
+            type="submit"
+            disabled={!inputValue.trim()}
+            className="rounded-lg bg-primary px-3 py-1.5 text-xs text-white hover:bg-primary-hover disabled:opacity-50"
+          >
+            Reply
+          </button>
+        </form>
+      )}
     </div>
   );
 }
@@ -261,10 +356,14 @@ function MessageBubble({
   message,
   streamingEvents,
   navigateToLogs,
+  onAnswerQuestion,
+  answeredQuestions,
 }: {
   message?: McMessage;
   streamingEvents?: McAgentEvent[];
   navigateToLogs?: (timestamp: string) => void;
+  onAnswerQuestion?: (questionId: string, answer: string) => void;
+  answeredQuestions?: Record<string, string>;
 }): JSX.Element {
   const isUser = message?.role === 'user';
 
@@ -300,7 +399,7 @@ function MessageBubble({
   return (
     <div className="mb-4">
       <div className="max-w-[80%] px-4 py-2 text-sm text-foreground">
-        {renderEvents(events, navigateToLogs)}
+        {renderEvents(events, navigateToLogs, onAnswerQuestion, answeredQuestions)}
       </div>
       {usage && (
         <div className="mt-1 max-w-[80%] px-1 text-[10px] text-muted/60">
@@ -589,6 +688,7 @@ export function Chat(): JSX.Element {
   const [attachedImages, setAttachedImages] = useState<
     { id: string; preview: string; mediaType: string; data: string }[]
   >([]);
+  const [answeredQuestions, setAnsweredQuestions] = useState<Record<string, string>>({});
   const [imageError, setImageError] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -604,6 +704,19 @@ export function Chat(): JSX.Element {
       });
     },
     [selectedDeploymentId, navigate],
+  );
+
+  const handleAnswerQuestion = useCallback(
+    async (questionId: string, answer: string) => {
+      if (!selectedConversationId) return;
+      setAnsweredQuestions((prev) => ({ ...prev, [questionId]: answer }));
+      try {
+        await window.api.chatAnswerQuestion(selectedConversationId, questionId, answer);
+      } catch (err) {
+        console.error('[Chat] Failed to answer question:', err);
+      }
+    },
+    [selectedConversationId],
   );
 
   useEffect(() => {
@@ -824,6 +937,8 @@ export function Chat(): JSX.Element {
                   key={`${msg.role}-${i}`}
                   message={msg}
                   navigateToLogs={navigateToLogs}
+                  onAnswerQuestion={handleAnswerQuestion}
+                  answeredQuestions={answeredQuestions}
                 />
               ))}
               {isStreaming && liveEvents.length === 0 && (
@@ -833,7 +948,12 @@ export function Chat(): JSX.Element {
                 </div>
               )}
               {isStreaming && liveEvents.length > 0 && (
-                <MessageBubble streamingEvents={liveEvents} navigateToLogs={navigateToLogs} />
+                <MessageBubble
+                  streamingEvents={liveEvents}
+                  navigateToLogs={navigateToLogs}
+                  onAnswerQuestion={handleAnswerQuestion}
+                  answeredQuestions={answeredQuestions}
+                />
               )}
             </>
           )}
