@@ -27,7 +27,6 @@ const runningDeployment = {
   managementPort: 53891,
   chatPort: 53892,
   agentServerPid: 1,
-  gatewayPid: 2,
   config: {
     agents: { myAgent: { model: 'claude-sonnet-4-6', systemPrompt: '' } },
   },
