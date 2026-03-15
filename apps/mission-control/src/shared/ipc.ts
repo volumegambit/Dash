@@ -85,7 +85,11 @@ export interface MissionControlAPI {
   chatGetMessages(conversationId: string): Promise<McMessage[]>;
   chatRenameConversation(conversationId: string, title: string): Promise<void>;
   chatDeleteConversation(conversationId: string): Promise<void>;
-  chatSendMessage(conversationId: string, text: string): Promise<void>;
+  chatSendMessage(
+    conversationId: string,
+    text: string,
+    images?: { mediaType: string; data: string }[],
+  ): Promise<void>;
   chatCancel(conversationId: string): Promise<void>;
   chatOnEvent(callback: (conversationId: string, event: McAgentEvent) => void): () => void;
   chatOnDone(callback: (conversationId: string) => void): () => void;

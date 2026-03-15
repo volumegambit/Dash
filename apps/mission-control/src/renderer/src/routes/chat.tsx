@@ -5,6 +5,7 @@ import {
   ChevronDown,
   ChevronUp,
   Loader,
+  Paperclip,
   Pencil,
   Plus,
   Send,
@@ -270,12 +271,26 @@ function MessageBubble({
   const isUser = message?.role === 'user';
 
   if (isUser && message) {
+    const userImages = message.content.type === 'user' ? message.content.images : undefined;
     return (
       <div className="mb-4 flex justify-end">
         <div className="max-w-[80%] rounded-lg bg-primary px-4 py-2 text-sm text-white">
-          <p className="whitespace-pre-wrap">
-            {message.content.type === 'user' ? message.content.text : ''}
-          </p>
+          {message.content.type === 'user' && message.content.text && (
+            <p className="whitespace-pre-wrap">{message.content.text}</p>
+          )}
+          {userImages && userImages.length > 0 && (
+            <div className="mt-2 flex flex-wrap gap-2">
+              {/* biome-ignore lint/suspicious/noArrayIndexKey: images have no stable ID */}
+              {userImages.map((img, i) => (
+                <img
+                  key={`img-${i}`}
+                  src={`data:${img.mediaType};base64,${img.data}`}
+                  alt={`Attached ${i + 1}`}
+                  className="max-h-48 max-w-full rounded"
+                />
+              ))}
+            </div>
+          )}
         </div>
       </div>
     );
@@ -574,8 +589,13 @@ export function Chat(): JSX.Element {
   const [selectedDeploymentId, setSelectedDeploymentId] = useState(search.deploymentId || '');
   const [selectedAgentName, setSelectedAgentName] = useState(search.agentName || '');
   const [input, setInput] = useState('');
+  const [attachedImages, setAttachedImages] = useState<
+    { id: string; preview: string; mediaType: string; data: string }[]
+  >([]);
+  const [imageError, setImageError] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const navigateToLogs = useCallback(
     (timestamp: string) => {
@@ -645,20 +665,65 @@ export function Chat(): JSX.Element {
     ta.style.height = `${Math.min(ta.scrollHeight, 160)}px`;
   }, []);
 
+  const addImageFiles = useCallback((files: FileList | File[]) => {
+    const allowedTypes = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
+    const maxSize = 5 * 1024 * 1024;
+    setImageError(null);
+    const valid = Array.from(files).filter((f) => allowedTypes.includes(f.type));
+    if (valid.length === 0 && files.length > 0) {
+      setImageError('Unsupported image type. Use PNG, JPG, GIF, or WebP.');
+      return;
+    }
+    for (const file of valid) {
+      if (file.size > maxSize) {
+        setImageError('Image must be under 5MB.');
+        continue;
+      }
+      const reader = new FileReader();
+      reader.onload = () => {
+        const dataUrl = reader.result as string;
+        const base64 = dataUrl.split(',')[1];
+        setAttachedImages((prev) => {
+          if (prev.length >= 4) {
+            setImageError('Maximum 4 images per message.');
+            return prev;
+          }
+          return [
+            ...prev,
+            { id: crypto.randomUUID(), preview: dataUrl, mediaType: file.type, data: base64 },
+          ];
+        });
+      };
+      reader.readAsDataURL(file);
+    }
+  }, []);
+
+  const removeImage = useCallback((id: string) => {
+    setAttachedImages((prev) => prev.filter((img) => img.id !== id));
+    setImageError(null);
+  }, []);
+
   const handleSend = useCallback(async () => {
     const text = input.trim();
-    if (!text || !selectedConversationId || isStreaming) return;
+    if (!text && attachedImages.length === 0) return;
+    if (!selectedConversationId || isStreaming) return;
+    const images =
+      attachedImages.length > 0
+        ? attachedImages.map(({ mediaType, data }) => ({ mediaType, data }))
+        : undefined;
     setInput('');
+    setAttachedImages([]);
+    setImageError(null);
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto';
     }
     try {
-      await sendMessage(selectedConversationId, text);
+      await sendMessage(selectedConversationId, text, images);
     } catch (err) {
       console.error('[Chat] Failed to send message:', err);
       // Note: store already clears sending flag on error
     }
-  }, [input, selectedConversationId, isStreaming, sendMessage]);
+  }, [input, attachedImages, selectedConversationId, isStreaming, sendMessage]);
 
   const selectedDeployment = deployments.find((d) => d.id === selectedDeploymentId);
   const agentNames = selectedDeployment?.config.agents
@@ -784,12 +849,38 @@ export function Chat(): JSX.Element {
         })()}
 
         <div className="border-t border-border px-6 py-4">
+          {attachedImages.length > 0 && (
+            <div className="mb-2 flex gap-2">
+              {attachedImages.map((img) => (
+                <div key={img.id} className="relative">
+                  <img
+                    src={img.preview}
+                    alt="Attached"
+                    className="h-16 w-16 rounded border border-border object-cover"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => removeImage(img.id)}
+                    className="absolute -right-1.5 -top-1.5 flex h-4 w-4 items-center justify-center rounded-full bg-red-900 text-[10px] text-white hover:bg-red-700"
+                  >
+                    ×
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+          {imageError && <p className="mb-1 text-xs text-red-400">{imageError}</p>}
           <form
             className="flex gap-2"
             onSubmit={(e) => {
               e.preventDefault();
               handleSend();
             }}
+            onDrop={(e) => {
+              e.preventDefault();
+              if (e.dataTransfer.files.length > 0) addImageFiles(e.dataTransfer.files);
+            }}
+            onDragOver={(e) => e.preventDefault()}
           >
             <textarea
               ref={textareaRef}
@@ -805,12 +896,39 @@ export function Chat(): JSX.Element {
                   handleSend();
                 }
               }}
+              onPaste={(e) => {
+                const files = Array.from(e.clipboardData.items)
+                  .filter((item) => item.kind === 'file')
+                  .map((item) => item.getAsFile())
+                  .filter((f): f is File => f !== null);
+                if (files.length > 0) addImageFiles(files);
+              }}
               placeholder={
                 selectedConversationId ? 'Type a message…' : 'Select a conversation first'
               }
               disabled={!selectedConversationId || isStreaming}
               className="flex-1 resize-none rounded-lg border border-border bg-sidebar-bg px-4 py-2 text-sm text-foreground placeholder:text-muted focus:border-primary focus:outline-none disabled:opacity-50"
             />
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/png,image/jpeg,image/gif,image/webp"
+              multiple
+              className="hidden"
+              onChange={(e) => {
+                if (e.target.files) addImageFiles(e.target.files);
+                e.target.value = '';
+              }}
+            />
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={!selectedConversationId || isStreaming}
+              className="rounded-lg border border-border px-2 py-2 text-muted transition-colors hover:bg-sidebar-hover hover:text-foreground disabled:opacity-50"
+              title="Attach image"
+            >
+              <Paperclip size={16} />
+            </button>
             {isStreaming ? (
               <button
                 type="button"
@@ -822,7 +940,7 @@ export function Chat(): JSX.Element {
             ) : (
               <button
                 type="submit"
-                disabled={!input.trim() || !selectedConversationId}
+                disabled={(!input.trim() && attachedImages.length === 0) || !selectedConversationId}
                 className="rounded-lg bg-primary px-4 py-2 text-sm text-white transition-colors hover:bg-primary-hover disabled:opacity-50"
               >
                 <Send size={16} />
