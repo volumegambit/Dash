@@ -139,6 +139,17 @@ export class ManagementClient {
     await this.requestWithBody<{ success: boolean }>('POST', '/credentials', providerApiKeys);
   }
 
+  async updateAgentConfig(
+    agentName: string,
+    patch: { model?: string; fallbackModels?: string[]; tools?: string[] },
+  ): Promise<void> {
+    await this.requestWithBody<{ success: boolean }>(
+      'PATCH',
+      `/agents/${encodeURIComponent(agentName)}/config`,
+      patch,
+    );
+  }
+
   async *streamLogs(
     signal?: AbortSignal,
     opts?: { level?: 'info' | 'warn' | 'error' },

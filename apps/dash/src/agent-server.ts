@@ -31,6 +31,7 @@ export async function createAgentServer(config: DashConfig) {
   const clients = new Map<string, AgentClient>();
   const backends: OpenCodeBackend[] = [];
   const backendsByName = new Map<string, OpenCodeBackend>();
+  const agentsByName = new Map<string, DashAgent>();
 
   const failed: string[] = [];
 
@@ -73,6 +74,7 @@ export async function createAgentServer(config: DashConfig) {
         workspace,
       });
 
+      agentsByName.set(name, agent);
       clients.set(name, new LocalAgentClient(agent));
       log(
         `Agent "${name}" started (model: ${agentConfig.model}, tools: ${agentConfig.tools?.join(', ') ?? 'all'}, workspace: ${workspace ?? 'unrestricted'})`,
@@ -239,6 +241,26 @@ export async function createAgentServer(config: DashConfig) {
               await backend.updateCredentials(agentKeys);
             }
             log('Credentials update complete');
+          },
+          onUpdateAgentConfig: async (agentName, patch) => {
+            const agent = agentsByName.get(agentName);
+            if (!agent) throw new Error(`Agent "${agentName}" not found`);
+
+            agent.updateConfig(patch);
+
+            // Also update the in-memory config so /info reflects the change
+            const agentConfig = config.agents[agentName];
+            if (agentConfig) {
+              if (patch.model !== undefined) agentConfig.model = patch.model;
+              if (patch.fallbackModels !== undefined) agentConfig.fallbackModels = patch.fallbackModels;
+              if (patch.tools !== undefined) agentConfig.tools = patch.tools;
+            }
+
+            const changes = Object.entries(patch)
+              .filter(([, v]) => v !== undefined)
+              .map(([k, v]) => `${k}=${Array.isArray(v) ? v.join(',') : v}`)
+              .join(', ');
+            log(`Agent "${agentName}" config updated: ${changes}`);
           },
         });
         managementClose = close;

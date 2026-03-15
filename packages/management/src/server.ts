@@ -38,6 +38,10 @@ export interface ManagementServerOptions {
   logFilePath?: string;
   skills?: SkillsHandlers;
   onUpdateCredentials?: (providerApiKeys: Record<string, Record<string, string>>) => Promise<void>;
+  onUpdateAgentConfig?: (
+    agentName: string,
+    patch: { model?: string; fallbackModels?: string[]; tools?: string[] },
+  ) => Promise<void>;
 }
 
 export function createManagementApp(options: ManagementServerOptions): Hono {
@@ -218,6 +222,26 @@ export function createManagementApp(options: ManagementServerOptions): Hono {
     }
     try {
       await options.onUpdateCredentials(body);
+      return c.json({ success: true });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Internal server error';
+      return c.json({ error: message } satisfies ErrorResponse, 500);
+    }
+  });
+
+  app.patch('/agents/:agentName/config', async (c) => {
+    if (!options.onUpdateAgentConfig) {
+      return c.json({ error: 'Agent config updates not supported' } satisfies ErrorResponse, 501);
+    }
+    const { agentName } = c.req.param();
+    let body: { model?: string; fallbackModels?: string[]; tools?: string[] };
+    try {
+      body = await c.req.json<{ model?: string; fallbackModels?: string[]; tools?: string[] }>();
+    } catch {
+      return c.json({ error: 'Invalid request body' } satisfies ErrorResponse, 400);
+    }
+    try {
+      await options.onUpdateAgentConfig(agentName, body);
       return c.json({ success: true });
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Internal server error';
