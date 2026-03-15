@@ -222,7 +222,6 @@ function QuestionBlock({
             onChange={(e) => setInputValue(e.target.value)}
             placeholder="Type your answer…"
             className="flex-1 rounded-lg border border-border bg-sidebar-bg px-3 py-1.5 text-xs text-foreground placeholder:text-muted focus:border-primary focus:outline-none"
-            autoFocus
           />
           <button
             type="submit"
