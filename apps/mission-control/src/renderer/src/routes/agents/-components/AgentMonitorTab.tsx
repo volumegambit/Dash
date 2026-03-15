@@ -1,17 +1,65 @@
+import type { AgentDeployment, RuntimeStatus } from '@dash/mc';
 import { useEffect, useRef, useState } from 'react';
 
-interface AgentLogsTabProps {
+interface AgentMonitorTabProps {
+  deployment: AgentDeployment;
+  status: RuntimeStatus | null;
   logs: string[];
   initialLevel?: 'info' | 'warn' | 'error';
 }
 
-export function AgentLogsTab({ logs, initialLevel }: AgentLogsTabProps): JSX.Element {
+function formatUptime(ms: number): string {
+  const seconds = Math.floor(ms / 1000);
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ${seconds % 60}s`;
+  const hours = Math.floor(minutes / 60);
+  return `${hours}h ${minutes % 60}m`;
+}
+
+export function AgentMonitorTab({
+  deployment,
+  status,
+  logs,
+  initialLevel,
+}: AgentMonitorTabProps): JSX.Element {
   const [activeLevel, setActiveLevel] = useState<'all' | 'info' | 'warn' | 'error'>(
     initialLevel ?? 'all',
   );
 
   return (
     <div className="flex min-h-48 flex-1 flex-col">
+      {/* Runtime info */}
+      <div className="mb-4 flex flex-wrap items-center gap-x-5 gap-y-1 text-xs">
+        <span>
+          <span className="text-muted">Uptime</span>{' '}
+          <span className="font-medium">
+            {status?.uptime ? formatUptime(status.uptime) : 'N/A'}
+          </span>
+        </span>
+        <span>
+          <span className="text-muted">PID</span>{' '}
+          <span className="font-medium">
+            {status?.agentServerPid ?? deployment.agentServerPid ?? 'N/A'}
+          </span>
+        </span>
+        <span>
+          <span className="text-muted">Chat port</span>{' '}
+          <span className="font-medium">{status?.chatPort ?? deployment.chatPort ?? 'N/A'}</span>
+        </span>
+        <span>
+          <span className="text-muted">Mgmt port</span>{' '}
+          <span className="font-medium">
+            {status?.managementPort ?? deployment.managementPort ?? 'N/A'}
+          </span>
+        </span>
+        <span>
+          <span className="text-muted">Created</span>{' '}
+          <span className="font-medium">{new Date(deployment.createdAt).toLocaleString()}</span>
+        </span>
+      </div>
+
+      {/* Log level filters */}
       <div className="mb-2 flex gap-1">
         {(['all', 'info', 'warn', 'error'] as const).map((l) => (
           <button
