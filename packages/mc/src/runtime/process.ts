@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { existsSync, statSync } from 'node:fs';
 import { chmod, mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import net from 'node:net';
-import { homedir, tmpdir } from 'node:os';
+import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import type { AgentRegistry } from '../agents/registry.js';
 import type { MessagingAppRegistry } from '../messaging-apps/registry.js';
@@ -372,7 +372,7 @@ export class ProcessRuntime implements DeploymentRuntime {
     }
 
     if (this.messagingApps) {
-      const mcDataDir = process.env.MC_DATA_DIR || join(homedir(), '.mission-control');
+      const mcDataDir = process.env.MC_DATA_DIR || getPlatformDataDir('dash');
       const apps = await this.messagingApps.list();
       for (const app of apps) {
         if (!app.enabled) continue;
@@ -492,7 +492,7 @@ export class ProcessRuntime implements DeploymentRuntime {
 
     // Resolve workspace and OpenCode state dir for each agent,
     // then write back to the agent config JSON so the agent server picks them up.
-    const mcDataDir = process.env.MC_DATA_DIR || join(homedir(), '.mission-control');
+    const mcDataDir = process.env.MC_DATA_DIR || getPlatformDataDir('dash');
     const agentDataDir = getPlatformDataDir('dash-agent');
     for (const [name, cfg] of Object.entries(agentConfigs)) {
       if (!cfg.workspace) {
