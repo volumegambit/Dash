@@ -219,6 +219,76 @@ describe('Chat Server', () => {
     expect((messages[0] as { error: string }).error).toContain('missing required fields');
   });
 
+  it('forwards answer message to agent.answerQuestion', async () => {
+    // Create a question agent that yields a question event then waits
+    const answerSpy = vi.fn().mockResolvedValue(undefined);
+    const questionAgent: AgentClient = {
+      async *chat() {
+        yield { type: 'question' as const, id: 'q-1', question: 'Pick one', options: ['A', 'B'] };
+        // Wait a bit to keep stream alive for the answer to arrive
+        await new Promise((r) => setTimeout(r, 500));
+        yield { type: 'response' as const, content: 'done', usage: { inputTokens: 10, outputTokens: 5 } };
+      },
+      async answerQuestion(id: string, answers: string[][]) {
+        answerSpy(id, answers);
+      },
+    };
+
+    // Need a fresh server with this agent
+    await close();
+    const agents2 = new Map<string, AgentClient>();
+    agents2.set('default', questionAgent);
+    const result2 = startChatServer({ port: 0, token: CHAT_TOKEN, agents: agents2 });
+    server = result2.server;
+    close = result2.close;
+
+    await new Promise<void>((resolve) => {
+      if (server.listening) resolve();
+      else server.once('listening', resolve);
+    });
+    const addr = server.address();
+    port = typeof addr === 'object' && addr ? addr.port : 0;
+
+    const ws = new WebSocket(wsUrl());
+    await new Promise<void>((resolve) => ws.addEventListener('open', () => resolve()));
+
+    // Send initial message to start a stream
+    const chatMsg: WsClientMessage = {
+      type: 'message',
+      id: 'req-q',
+      agent: 'default',
+      channelId: 'test',
+      conversationId: 'conv-q',
+      text: 'ask me something',
+    };
+    ws.send(JSON.stringify(chatMsg));
+
+    // Wait for question event to arrive
+    await new Promise<void>((resolve) => {
+      ws.addEventListener('message', (event) => {
+        const msg = JSON.parse(String(event.data)) as WsServerMessage;
+        if (msg.type === 'event' && (msg.event as Record<string, unknown>).type === 'question') {
+          resolve();
+        }
+      });
+    });
+
+    // Send answer
+    const answerMsg: WsClientMessage = {
+      type: 'answer',
+      id: 'req-q',
+      questionId: 'q-1',
+      answer: 'A',
+    };
+    ws.send(JSON.stringify(answerMsg));
+
+    // Wait for processing
+    await new Promise((r) => setTimeout(r, 100));
+    ws.close();
+
+    expect(answerSpy).toHaveBeenCalledWith('q-1', [['A']]);
+  });
+
   it('calls logger.error when agent yields an error event', async () => {
     const mockLogger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
 

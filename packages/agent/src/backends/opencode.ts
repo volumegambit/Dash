@@ -129,6 +129,14 @@ export class OpenCodeBackend implements AgentBackend {
       process.env.XDG_STATE_HOME = join(this.opencodeStateDir, 'state');
       process.env.XDG_CACHE_HOME = join(this.opencodeStateDir, 'cache');
     }
+
+    // Disable default skill scanning (~/.claude/skills/, project .claude/skills/, etc.)
+    // so each agent only loads skills explicitly configured via config.skills.paths/urls.
+    process.env.OPENCODE_DISABLE_EXTERNAL_SKILLS = 'true';
+    // Disable Claude Code system prompt injection (agents have their own systemPrompt)
+    process.env.OPENCODE_DISABLE_CLAUDE_CODE_PROMPT = 'true';
+    // Disable project-level config files (agent config is authoritative)
+    process.env.OPENCODE_DISABLE_PROJECT_CONFIG = 'true';
   }
 
   async start(workspace: string): Promise<void> {
