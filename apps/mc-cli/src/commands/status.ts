@@ -15,7 +15,6 @@ export function registerStatusCommand(program: Command): void {
           if (status.managementPort) console.log(`  Management port: ${status.managementPort}`);
           if (status.chatPort) console.log(`  Chat port: ${status.chatPort}`);
           if (status.agentServerPid) console.log(`  Agent server PID: ${status.agentServerPid}`);
-          if (status.gatewayPid) console.log(`  Gateway PID: ${status.gatewayPid}`);
           if (status.uptime != null) {
             const secs = Math.floor(status.uptime / 1000);
             console.log(`  Uptime: ${secs}s`);

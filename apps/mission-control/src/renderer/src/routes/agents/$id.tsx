@@ -1,11 +1,20 @@
 import type { SkillContent, SkillInfo, SkillsConfig } from '@dash/management';
 import type { RuntimeStatus } from '@dash/mc';
 import { Link, createFileRoute, useNavigate } from '@tanstack/react-router';
-import { ArrowLeft, Circle, FolderOpen, Loader, MessageSquare, Play, RefreshCw, Square, Trash2 } from 'lucide-react';
+import {
+  ArrowLeft,
+  FolderOpen,
+  Loader,
+  MessageSquare,
+  Play,
+  RefreshCw,
+  Square,
+  Trash2,
+} from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { AVAILABLE_TOOLS } from '../../components/deploy-options.js';
 import { HealthDot } from '../../components/HealthDot.js';
 import { ModelChainEditor } from '../../components/ModelChainEditor.js';
+import { AVAILABLE_TOOLS } from '../../components/deploy-options.js';
 import { useAvailableModels } from '../../hooks/useAvailableModels.js';
 import { useDeploymentsStore } from '../../stores/deployments';
 import { useMessagingAppsStore } from '../../stores/messaging-apps.js';
@@ -40,9 +49,7 @@ export function AgentDetail(): JSX.Element {
   const apps = useMessagingAppsStore((s) => s.apps);
   const [bannerDismissed, setBannerDismissed] = useState(false);
 
-  const [modelKeys, setModelKeys] = useState<
-    Record<string, { label: string; masked: string }>
-  >({});
+  const [modelKeys, setModelKeys] = useState<Record<string, { label: string; masked: string }>>({});
   const search = Route.useSearch();
   const [activeLevel, setActiveLevel] = useState<'all' | 'info' | 'warn' | 'error'>(
     search.level ?? 'all',
@@ -247,11 +254,7 @@ export function AgentDetail(): JSX.Element {
               disabled={restarting}
               className="inline-flex items-center gap-2 rounded-lg bg-primary px-3 py-2 text-sm text-white transition-colors hover:bg-primary-hover disabled:opacity-50"
             >
-              {restarting ? (
-                <Loader size={14} className="animate-spin" />
-              ) : (
-                <Play size={14} />
-              )}
+              {restarting ? <Loader size={14} className="animate-spin" /> : <Play size={14} />}
               {restarting ? 'Starting...' : 'Start'}
             </button>
           )}
@@ -321,39 +324,49 @@ export function AgentDetail(): JSX.Element {
         </div>
       )}
 
-      <div className="mb-6 grid grid-cols-2 gap-4">
-        <InfoCard label="Status" value={resolvedStatus} />
-        <InfoCard
-          label="Management Port"
-          value={status?.managementPort ?? deployment.managementPort ?? 'N/A'}
-        />
-        <InfoCard label="Chat Port" value={status?.chatPort ?? deployment.chatPort ?? 'N/A'} />
-        <InfoCard
-          label="PID (Agent)"
-          value={status?.agentServerPid ?? deployment.agentServerPid ?? 'N/A'}
-        />
-        <InfoCard
-          label="PID (Gateway)"
-          value={status?.gatewayPid ?? deployment.gatewayPid ?? 'N/A'}
-        />
-        <InfoCard label="Uptime" value={status?.uptime ? formatUptime(status.uptime) : 'N/A'} />
-        <InfoCard label="Created" value={new Date(deployment.createdAt).toLocaleString()} />
+      <div className="mb-6 rounded-lg border border-border bg-sidebar-bg px-4 py-3">
+        <div className="flex flex-wrap items-center gap-x-5 gap-y-1 text-xs">
+          <span>
+            <span className="text-muted">PID</span>{' '}
+            <span className="font-medium">
+              {status?.agentServerPid ?? deployment.agentServerPid ?? 'N/A'}
+            </span>
+          </span>
+          <span>
+            <span className="text-muted">Chat</span>{' '}
+            <span className="font-medium">{status?.chatPort ?? deployment.chatPort ?? 'N/A'}</span>
+          </span>
+          <span>
+            <span className="text-muted">Mgmt</span>{' '}
+            <span className="font-medium">
+              {status?.managementPort ?? deployment.managementPort ?? 'N/A'}
+            </span>
+          </span>
+          <span>
+            <span className="text-muted">Uptime</span>{' '}
+            <span className="font-medium">
+              {status?.uptime ? formatUptime(status.uptime) : 'N/A'}
+            </span>
+          </span>
+          <span>
+            <span className="text-muted">Created</span>{' '}
+            <span className="font-medium">{new Date(deployment.createdAt).toLocaleString()}</span>
+          </span>
+        </div>
         {deployment.workspace && (
-          <div className="rounded-lg border border-border bg-sidebar-bg p-3">
-            <p className="text-xs text-muted">Workspace</p>
-            <div className="mt-0.5 flex items-center justify-between gap-2">
-              <p className="min-w-0 truncate text-sm font-medium" title={deployment.workspace}>
-                {deployment.workspace}
-              </p>
-              <button
-                type="button"
-                onClick={() => window.api.openPath(deployment.workspace!)}
-                className="shrink-0 rounded p-1 text-muted transition-colors hover:bg-sidebar-hover hover:text-foreground"
-                title="Open in Finder"
-              >
-                <FolderOpen size={14} />
-              </button>
-            </div>
+          <div className="mt-2 flex items-center gap-2 border-t border-border pt-2 text-xs">
+            <span className="text-muted">Workspace</span>
+            <span className="min-w-0 truncate font-mono font-medium" title={deployment.workspace}>
+              {deployment.workspace}
+            </span>
+            <button
+              type="button"
+              onClick={() => deployment.workspace && window.api.openPath(deployment.workspace)}
+              className="shrink-0 rounded p-0.5 text-muted transition-colors hover:text-foreground"
+              title="Open in Finder"
+            >
+              <FolderOpen size={12} />
+            </button>
           </div>
         )}
       </div>
@@ -693,15 +706,6 @@ function LogViewer({
           Scroll to bottom
         </button>
       )}
-    </div>
-  );
-}
-
-function InfoCard({ label, value }: { label: string; value: string | number }): JSX.Element {
-  return (
-    <div className="rounded-lg border border-border bg-sidebar-bg p-3">
-      <p className="text-xs text-muted">{label}</p>
-      <p className="mt-0.5 text-sm font-medium">{String(value)}</p>
     </div>
   );
 }
