@@ -765,19 +765,6 @@ export async function registerIpcHandlers(
     'deployments:updateConfig',
     async (_event, id: string, patch: { model?: string; fallbackModels?: string[]; tools?: string[] }) => {
       await getRuntime().updateAgentConfig(id, patch);
-
-      // Update the registry so the UI reflects the change immediately
-      const deployment = await getRegistry().get(id);
-      if (deployment?.config?.agents) {
-        const agentName = Object.keys(deployment.config.agents)[0];
-        if (agentName && deployment.config.agents[agentName]) {
-          const agentCfg = deployment.config.agents[agentName];
-          if (patch.model !== undefined) agentCfg.model = patch.model;
-          if (patch.fallbackModels !== undefined) agentCfg.fallbackModels = patch.fallbackModels;
-          if (patch.tools !== undefined) agentCfg.tools = patch.tools;
-          await getRegistry().update(id, { config: deployment.config });
-        }
-      }
     },
   );
 
