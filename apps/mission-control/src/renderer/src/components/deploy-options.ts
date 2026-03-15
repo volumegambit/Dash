@@ -44,10 +44,15 @@ export const AVAILABLE_MODELS: ModelOption[] = [
 ];
 
 export const AVAILABLE_TOOLS: ToolOption[] = [
-  { value: 'read_file', label: 'Read File' },
-  { value: 'write_file', label: 'Write File' },
-  { value: 'list_directory', label: 'List Directory' },
-  { value: 'execute_command', label: 'Execute Command' },
+  { value: 'bash', label: 'Bash' },
+  { value: 'read', label: 'Read' },
+  { value: 'write', label: 'Write' },
+  { value: 'edit', label: 'Edit' },
+  { value: 'ls', label: 'List Directory' },
+  { value: 'glob', label: 'Glob' },
+  { value: 'grep', label: 'Grep' },
   { value: 'web_search', label: 'Web Search' },
   { value: 'web_fetch', label: 'Web Fetch' },
+  { value: 'mcp', label: 'MCP' },
+  { value: 'skill', label: 'Skill' },
 ];
