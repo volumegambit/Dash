@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { AVAILABLE_TOOLS } from '../components/deploy-options.js';
+import { AVAILABLE_TOOLS, TOOL_DESCRIPTIONS } from '../components/deploy-options.js';
 import type { ToolOption } from '../components/deploy-options.js';
 
 /** Pretty-print a tool ID as a label (e.g. "web_fetch" → "Web Fetch") */
@@ -22,6 +22,7 @@ export function useAvailableTools(): ToolOption[] {
             cached.map((id) => ({
               value: id,
               label: toolLabel(id),
+              description: TOOL_DESCRIPTIONS[id],
             })),
           );
         }
