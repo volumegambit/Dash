@@ -64,6 +64,7 @@ export class OpenCodeBackend implements AgentBackend {
     private config: DashAgentConfig,
     private providerApiKeys: Record<string, string>,
     private logger?: Logger,
+    private opencodeStateDir?: string,
   ) {}
 
   /** Returns a redacted summary of provider keys for logging, e.g. "anthropic:sk-ant-***abcdefghij" */
@@ -110,7 +111,7 @@ export class OpenCodeBackend implements AgentBackend {
    * spawning the opencode server. createOpencodeServer spreads process.env,
    * so the binary needs these values there.
    */
-  private injectEnvForServer(workspace: string): void {
+  private injectEnvForServer(): void {
     // Provider API keys
     for (const [providerID, key] of Object.entries(this.providerApiKeys)) {
       const envVar = OpenCodeBackend.PROVIDER_ENV_VARS[providerID];
@@ -119,19 +120,19 @@ export class OpenCodeBackend implements AgentBackend {
       }
     }
 
-    // Isolate OpenCode state per-workspace via XDG directories.
-    // Without this, all OpenCode instances share ~/.local/share/opencode/opencode.db
-    // and auth.json, causing session collisions and credential overwrites.
-    const join = (a: string, b: string) => `${a}/${b}`;
-    const ocDir = join(workspace, '.opencode');
-    process.env.XDG_DATA_HOME = join(ocDir, 'data');
-    process.env.XDG_CONFIG_HOME = join(ocDir, 'config');
-    process.env.XDG_STATE_HOME = join(ocDir, 'state');
-    process.env.XDG_CACHE_HOME = join(ocDir, 'cache');
+    // Isolate OpenCode state via XDG directories so multiple deployments
+    // don't share a single global SQLite DB and auth.json.
+    if (this.opencodeStateDir) {
+      const join = (a: string, b: string) => `${a}/${b}`;
+      process.env.XDG_DATA_HOME = join(this.opencodeStateDir, 'data');
+      process.env.XDG_CONFIG_HOME = join(this.opencodeStateDir, 'config');
+      process.env.XDG_STATE_HOME = join(this.opencodeStateDir, 'state');
+      process.env.XDG_CACHE_HOME = join(this.opencodeStateDir, 'cache');
+    }
   }
 
   async start(workspace: string): Promise<void> {
-    this.injectEnvForServer(workspace);
+    this.injectEnvForServer();
     const port = await findFreePort();
     const server = await createOpencodeServer({
       port,
@@ -227,7 +228,7 @@ export class OpenCodeBackend implements AgentBackend {
       );
       await new Promise((resolve) => setTimeout(resolve, delay));
       try {
-        this.injectEnvForServer(this.workDir!);
+        this.injectEnvForServer();
         const port = await findFreePort();
         const server = await createOpencodeServer({
           port,
@@ -288,7 +289,14 @@ export class OpenCodeBackend implements AgentBackend {
       model: { providerID, modelID },
       system: state.systemPrompt,
       tools,
-      parts: [{ type: 'text', text: state.message }],
+      parts: [
+        { type: 'text', text: state.message },
+        ...(state.images?.map((img) => ({
+          type: 'image' as const,
+          mediaType: img.mediaType,
+          data: img.data,
+        })) ?? []),
+      ],
     });
 
     try {
