@@ -580,15 +580,20 @@ export function AgentDetail(): JSX.Element {
                 {availableTools.map((tool) => (
                   <label
                     key={tool.value}
-                    className="flex cursor-pointer items-center gap-2 rounded-lg border border-border px-3 py-2 text-xs transition-colors hover:bg-sidebar-hover"
+                    className="flex cursor-pointer items-start gap-2 rounded-lg border border-border px-3 py-2 text-xs transition-colors hover:bg-sidebar-hover"
                   >
                     <input
                       type="checkbox"
                       checked={toolsDraft.includes(tool.value)}
                       onChange={() => toggleDraftTool(tool.value)}
-                      className="accent-primary"
+                      className="mt-0.5 accent-primary"
                     />
-                    {tool.label}
+                    <span>
+                      {tool.label}
+                      {tool.description && (
+                        <span className="block text-[11px] text-muted">{tool.description}</span>
+                      )}
+                    </span>
                   </label>
                 ))}
               </div>
@@ -611,13 +616,23 @@ export function AgentDetail(): JSX.Element {
               </div>
             </div>
           ) : (
-            <div className="rounded-lg border border-border bg-sidebar-bg p-3 text-sm">
-              {(agentConfig.tools ?? []).length > 0
-                ? availableTools
+            <div className="rounded-lg border border-border bg-sidebar-bg p-3">
+              {(agentConfig.tools ?? []).length > 0 ? (
+                <div className="grid grid-cols-2 gap-x-4 gap-y-1.5">
+                  {availableTools
                     .filter((t) => (agentConfig.tools ?? []).includes(t.value))
-                    .map((t) => t.label)
-                    .join(', ')
-                : '(none)'}
+                    .map((t) => (
+                      <div key={t.value}>
+                        <span className="text-sm">{t.label}</span>
+                        {t.description && (
+                          <span className="ml-1.5 text-xs text-muted">{t.description}</span>
+                        )}
+                      </div>
+                    ))}
+                </div>
+              ) : (
+                <span className="text-sm text-muted">(none)</span>
+              )}
             </div>
           )}
         </div>
