@@ -91,7 +91,7 @@ describe('DeployWizard', () => {
     const user = userEvent.setup();
     render(<DeployWizard />);
 
-    const bashCheckbox = screen.getByRole('checkbox', { name: /^bash$/i });
+    const bashCheckbox = screen.getByRole('checkbox', { name: /^bash/i });
     expect(bashCheckbox).not.toBeChecked();
 
     await user.click(bashCheckbox);
