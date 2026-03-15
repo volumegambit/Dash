@@ -140,10 +140,9 @@ const api: MissionControlAPI = {
     return () => ipcRenderer.removeListener('gateway:status', listener);
   },
 
-  // Models & Tools
+  // Models
   modelsList: () => ipcRenderer.invoke('models:list'),
   modelsRefresh: () => ipcRenderer.invoke('models:refresh'),
-  toolsList: () => ipcRenderer.invoke('tools:list'),
 
   // Credentials
   onCredentialsPushFailed: (

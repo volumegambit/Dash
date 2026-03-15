@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { ALL_OPENCODE_TOOLS, buildToolsMap, parseModel } from './config-generator.js';
+import { ALL_TOOLS, buildToolsMap, parseModel } from './config-generator.js';
 
 describe('parseModel', () => {
   it('splits provider and model correctly', () => {
@@ -31,10 +31,10 @@ describe('parseModel', () => {
 describe('buildToolsMap', () => {
   it('enables all tools when undefined passed', () => {
     const map = buildToolsMap(undefined);
-    for (const tool of ALL_OPENCODE_TOOLS) {
+    for (const tool of ALL_TOOLS) {
       expect(map[tool]).toBe(true);
     }
-    expect(Object.keys(map)).toHaveLength(10);
+    expect(Object.keys(map)).toHaveLength(4);
   });
 
   it('enables only listed tools, disables others', () => {
@@ -42,13 +42,12 @@ describe('buildToolsMap', () => {
     expect(map.bash).toBe(true);
     expect(map.read).toBe(true);
     expect(map.edit).toBe(false);
-    expect(map.web_search).toBe(false);
-    expect(map.mcp).toBe(false);
+    expect(map.write).toBe(false);
   });
 
-  it('always includes all 10 tool keys regardless of input', () => {
+  it('always includes all 4 tool keys regardless of input', () => {
     const map = buildToolsMap(['bash']);
-    expect(Object.keys(map)).toHaveLength(10);
+    expect(Object.keys(map)).toHaveLength(4);
   });
 
   it('returns all false when empty array passed', () => {

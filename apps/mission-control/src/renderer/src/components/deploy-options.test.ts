@@ -58,12 +58,12 @@ describe('AVAILABLE_TOOLS', () => {
     }
   });
 
-  it('includes core OpenCode tools', () => {
+  it('includes core PiAgent tools', () => {
     const values = AVAILABLE_TOOLS.map((t) => t.value);
     expect(values).toContain('bash');
     expect(values).toContain('read');
     expect(values).toContain('write');
     expect(values).toContain('edit');
-    expect(values).toContain('ls');
+    expect(values).toHaveLength(4);
   });
 });

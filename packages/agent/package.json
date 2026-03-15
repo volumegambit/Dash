@@ -15,11 +15,16 @@
     "dev": "tsup --watch"
   },
   "dependencies": {
+    "@mariozechner/pi-coding-agent": "^0.58.1",
     "@opencode-ai/sdk": "^1.2.20"
   },
   "tsup": {
-    "entry": ["src/index.ts"],
-    "format": ["esm"],
+    "entry": [
+      "src/index.ts"
+    ],
+    "format": [
+      "esm"
+    ],
     "dts": true,
     "clean": true,
     "sourcemap": true

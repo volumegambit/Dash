@@ -20,17 +20,6 @@ export const TOOL_DESCRIPTIONS: Record<string, string> = {
   read: 'Read files from the project',
   write: 'Create new files in the project',
   edit: 'Make changes to existing files',
-  ls: 'See what files and folders exist',
-  glob: 'Find files by name or pattern',
-  grep: 'Search for text inside files',
-  web_search: 'Search the internet for information',
-  web_fetch: 'Download content from web pages',
-  mcp: 'Connect to external services and tools',
-  apply_patch: 'Apply code changes to files',
-  codesearch: 'Search across the entire codebase',
-  question: 'Ask the user for clarification',
-  task: 'Track and manage work progress',
-  todowrite: 'Create and manage to-do lists',
 };
 
 export const AVAILABLE_MODELS: ModelOption[] = [
@@ -77,10 +66,4 @@ export const AVAILABLE_TOOLS: ToolOption[] = [
   { value: 'read', label: 'Read', description: TOOL_DESCRIPTIONS.read },
   { value: 'write', label: 'Write', description: TOOL_DESCRIPTIONS.write },
   { value: 'edit', label: 'Edit', description: TOOL_DESCRIPTIONS.edit },
-  { value: 'ls', label: 'List Directory', description: TOOL_DESCRIPTIONS.ls },
-  { value: 'glob', label: 'Glob', description: TOOL_DESCRIPTIONS.glob },
-  { value: 'grep', label: 'Grep', description: TOOL_DESCRIPTIONS.grep },
-  { value: 'web_search', label: 'Web Search', description: TOOL_DESCRIPTIONS.web_search },
-  { value: 'web_fetch', label: 'Web Fetch', description: TOOL_DESCRIPTIONS.web_fetch },
-  { value: 'mcp', label: 'MCP', description: TOOL_DESCRIPTIONS.mcp },
 ];

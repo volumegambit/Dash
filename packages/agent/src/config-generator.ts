@@ -1,17 +1,6 @@
-export const ALL_OPENCODE_TOOLS = [
-  'bash',
-  'edit',
-  'write',
-  'read',
-  'glob',
-  'grep',
-  'ls',
-  'web_fetch',
-  'web_search',
-  'mcp',
-] as const;
+export const ALL_TOOLS = ['bash', 'edit', 'write', 'read'] as const;
 
-export type OpencodeTool = (typeof ALL_OPENCODE_TOOLS)[number];
+export type AgentTool = (typeof ALL_TOOLS)[number];
 
 export function parseModel(model: string): { providerID: string; modelID: string } {
   const slash = model.indexOf('/');
@@ -27,6 +16,6 @@ export function parseModel(model: string): { providerID: string; modelID: string
 }
 
 export function buildToolsMap(tools: string[] | undefined): Record<string, boolean> {
-  const allowList = tools ? new Set(tools) : new Set(ALL_OPENCODE_TOOLS);
-  return Object.fromEntries(ALL_OPENCODE_TOOLS.map((t) => [t, allowList.has(t)]));
+  const allowList = tools ? new Set(tools) : new Set(ALL_TOOLS);
+  return Object.fromEntries(ALL_TOOLS.map((t) => [t, allowList.has(t)]));
 }

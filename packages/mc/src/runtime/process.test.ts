@@ -772,7 +772,12 @@ describe('ProcessRuntime.registerWithGateway', () => {
 
     const mockRegisterAgent = vi.fn().mockResolvedValue(undefined);
     const mockGatewayClient = {
-      health: vi.fn().mockResolvedValue({ status: 'healthy', startedAt: '2026-01-01T00:00:00Z', agents: 0, channels: 0 }),
+      health: vi.fn().mockResolvedValue({
+        status: 'healthy',
+        startedAt: '2026-01-01T00:00:00Z',
+        agents: 0,
+        channels: 0,
+      }),
       registerAgent: mockRegisterAgent,
       registerChannel: vi.fn().mockResolvedValue(undefined),
       deregisterDeployment: vi.fn().mockResolvedValue(undefined),
@@ -830,7 +835,12 @@ describe('ProcessRuntime.registerWithGateway', () => {
     const mockRegisterAgent = vi.fn();
     const { GatewayStateStore } = await import('./gateway-state.js');
     const store = new GatewayStateStore(tmpDir);
-    await store.write({ pid: process.pid, startedAt: '2026-01-01T00:00:00Z', token: 'tok', port: 9300 });
+    await store.write({
+      pid: process.pid,
+      startedAt: '2026-01-01T00:00:00Z',
+      token: 'tok',
+      port: 9300,
+    });
 
     const runtime = new ProcessRuntime(
       fakeRegistry as unknown as Parameters<typeof ProcessRuntime>[0],
@@ -841,7 +851,8 @@ describe('ProcessRuntime.registerWithGateway', () => {
       undefined,
       {
         gatewayDataDir: tmpDir,
-        makeGatewayClient: () => ({ registerAgent: mockRegisterAgent } as unknown as GatewayManagementClient),
+        makeGatewayClient: () =>
+          ({ registerAgent: mockRegisterAgent }) as unknown as GatewayManagementClient,
       },
     );
 
@@ -880,7 +891,12 @@ describe('ProcessRuntime.registerWithGateway', () => {
     const mockRegisterAgent = vi.fn();
     const { GatewayStateStore } = await import('./gateway-state.js');
     const store = new GatewayStateStore(tmpDir);
-    await store.write({ pid: process.pid, startedAt: '2026-01-01T00:00:00Z', token: 'tok', port: 9300 });
+    await store.write({
+      pid: process.pid,
+      startedAt: '2026-01-01T00:00:00Z',
+      token: 'tok',
+      port: 9300,
+    });
 
     const runtime = new ProcessRuntime(
       fakeRegistry as unknown as Parameters<typeof ProcessRuntime>[0],
@@ -891,7 +907,8 @@ describe('ProcessRuntime.registerWithGateway', () => {
       undefined,
       {
         gatewayDataDir: tmpDir,
-        makeGatewayClient: () => ({ registerAgent: mockRegisterAgent } as unknown as GatewayManagementClient),
+        makeGatewayClient: () =>
+          ({ registerAgent: mockRegisterAgent }) as unknown as GatewayManagementClient,
       },
     );
 
@@ -946,8 +963,7 @@ describe('ProcessRuntime.registerWithGateway', () => {
     };
 
     const fakeSecrets: SecretStore = {
-      get: async (key: string) =>
-        key === fakeApp.credentialsKey ? 'tg-bot-token-123' : null,
+      get: async (key: string) => (key === fakeApp.credentialsKey ? 'tg-bot-token-123' : null),
       set: async () => {},
       delete: async () => {},
       list: async () => [fakeApp.credentialsKey],
@@ -956,7 +972,12 @@ describe('ProcessRuntime.registerWithGateway', () => {
     const mockRegisterAgent = vi.fn().mockResolvedValue(undefined);
     const mockRegisterChannel = vi.fn().mockResolvedValue(undefined);
     const mockGatewayClient = {
-      health: vi.fn().mockResolvedValue({ status: 'healthy', startedAt: '2026-01-01T00:00:00Z', agents: 0, channels: 0 }),
+      health: vi.fn().mockResolvedValue({
+        status: 'healthy',
+        startedAt: '2026-01-01T00:00:00Z',
+        agents: 0,
+        channels: 0,
+      }),
       registerAgent: mockRegisterAgent,
       registerChannel: mockRegisterChannel,
       deregisterDeployment: vi.fn().mockResolvedValue(undefined),
@@ -1058,7 +1079,12 @@ describe('ProcessRuntime.registerWithGateway', () => {
     const mockRegisterAgent = vi.fn().mockResolvedValue(undefined);
     const mockRegisterChannel = vi.fn().mockResolvedValue(undefined);
     const mockGatewayClient = {
-      health: vi.fn().mockResolvedValue({ status: 'healthy', startedAt: '2026-01-01T00:00:00Z', agents: 0, channels: 0 }),
+      health: vi.fn().mockResolvedValue({
+        status: 'healthy',
+        startedAt: '2026-01-01T00:00:00Z',
+        agents: 0,
+        channels: 0,
+      }),
       registerAgent: mockRegisterAgent,
       registerChannel: mockRegisterChannel,
       deregisterDeployment: vi.fn().mockResolvedValue(undefined),

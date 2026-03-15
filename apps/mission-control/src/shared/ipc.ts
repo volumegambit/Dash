@@ -164,7 +164,6 @@ export interface MissionControlAPI {
   // Models & Tools
   modelsList(): Promise<Array<{ value: string; label: string; provider: string }>>;
   modelsRefresh(): Promise<Array<{ value: string; label: string; provider: string }>>;
-  toolsList(): Promise<string[]>;
 
   // Updates
   onUpdateAvailable(callback: (info: { version: string }) => void): () => void;

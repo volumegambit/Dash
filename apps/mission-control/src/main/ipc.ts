@@ -822,10 +822,6 @@ export async function registerIpcHandlers(
     return getModelCache().refresh();
   });
 
-  ipcMain.handle('tools:list', async () => {
-    return getModelCache().loadTools();
-  });
-
   // Background model cache refresh on startup
   getModelCache()
     .refresh()

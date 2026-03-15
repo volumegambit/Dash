@@ -12,7 +12,7 @@ export class GatewayPoller {
   constructor(
     private ensureGateway: EnsureGateway,
     private onRestart: OnRestart,
-    private intervalMs: number = 5_000,
+    private intervalMs = 5_000,
   ) {}
 
   start(onStatusChange: (status: GatewayStatus) => void): void {

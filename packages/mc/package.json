@@ -15,11 +15,16 @@
     "dev": "tsup --watch"
   },
   "dependencies": {
-    "@dash/management": "*"
+    "@dash/management": "*",
+    "@mariozechner/pi-ai": "^0.58.1"
   },
   "tsup": {
-    "entry": ["src/index.ts"],
-    "format": ["esm"],
+    "entry": [
+      "src/index.ts"
+    ],
+    "format": [
+      "esm"
+    ],
     "dts": true,
     "clean": true,
     "sourcemap": true
