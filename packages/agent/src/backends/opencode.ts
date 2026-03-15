@@ -62,6 +62,34 @@ export class OpenCodeBackend implements AgentBackend {
     private logger?: Logger,
   ) {}
 
+  /** Returns a redacted summary of provider keys for logging, e.g. "anthropic:sk-ant-***abcdefghij" */
+  private static redactKeys(keys: Record<string, string>): string {
+    return Object.entries(keys)
+      .map(([provider, key]) => {
+        if (!key) return `${provider}:(empty)`;
+        const prefix = key.slice(0, 6);
+        const suffix = key.slice(-10);
+        const authType = OpenCodeBackend.isOAuthToken(key) ? 'oauth' : 'api';
+        return `${provider}:${prefix}***${suffix} (${authType})`;
+      })
+      .join(', ');
+  }
+
+  /** Detect OAuth access tokens (e.g. sk-ant-oat01-...) vs regular API keys (sk-ant-api...) */
+  private static isOAuthToken(key: string): boolean {
+    return key.startsWith('sk-ant-oat');
+  }
+
+  /** Build the correct auth payload for the OpenCode SDK based on key type */
+  private static buildAuth(key: string): { type: 'api'; key: string } | { type: 'oauth'; access: string; refresh: string; expires: number } {
+    if (OpenCodeBackend.isOAuthToken(key)) {
+      // OAuth access token — set a far-future expiry (1 year from now)
+      const oneYearMs = 365 * 24 * 60 * 60 * 1000;
+      return { type: 'oauth', access: key, refresh: '', expires: Date.now() + oneYearMs };
+    }
+    return { type: 'api', key };
+  }
+
   /** Maps provider IDs to environment variable names used by the opencode binary. */
   private static readonly PROVIDER_ENV_VARS: Record<string, string> = {
     anthropic: 'ANTHROPIC_API_KEY',
@@ -100,9 +128,15 @@ export class OpenCodeBackend implements AgentBackend {
     });
 
     // Register provider API keys
+    this.logger?.info(
+      `[OpenCode] Registering credentials via sdk.auth.set: ${OpenCodeBackend.redactKeys(this.providerApiKeys)}`,
+    );
     for (const [providerID, key] of Object.entries(this.providerApiKeys)) {
       if (key) {
-        await this.sdk.auth.set({ providerID, auth: { type: 'api', key } });
+        await this.sdk.auth.set({ providerID, auth: OpenCodeBackend.buildAuth(key) });
+        this.logger?.info(`[OpenCode] sdk.auth.set completed for provider: ${providerID}`);
+      } else {
+        this.logger?.warn(`[OpenCode] Skipping provider ${providerID}: empty key`);
       }
     }
 
@@ -193,7 +227,7 @@ export class OpenCodeBackend implements AgentBackend {
         // Re-register provider API keys
         for (const [providerID, key] of Object.entries(this.providerApiKeys)) {
           if (key) {
-            await newSdk.auth.set({ providerID, auth: { type: 'api', key } });
+            await newSdk.auth.set({ providerID, auth: OpenCodeBackend.buildAuth(key) });
           }
         }
 
@@ -413,6 +447,9 @@ export class OpenCodeBackend implements AgentBackend {
    * and updates process.env so watchdog restarts use the new keys.
    */
   async updateCredentials(providerApiKeys: Record<string, string>): Promise<void> {
+    this.logger?.info(
+      `[OpenCode] updateCredentials called: ${OpenCodeBackend.redactKeys(providerApiKeys)}`,
+    );
     this.providerApiKeys = providerApiKeys;
     // Update process.env for watchdog restarts
     for (const [providerID, key] of Object.entries(providerApiKeys)) {
@@ -425,9 +462,12 @@ export class OpenCodeBackend implements AgentBackend {
     if (this.sdk) {
       for (const [providerID, key] of Object.entries(providerApiKeys)) {
         if (key) {
-          await this.sdk.auth.set({ providerID, auth: { type: 'api', key } });
+          await this.sdk.auth.set({ providerID, auth: OpenCodeBackend.buildAuth(key) });
+          this.logger?.info(`[OpenCode] sdk.auth.set updated for provider: ${providerID}`);
         }
       }
+    } else {
+      this.logger?.warn('[OpenCode] updateCredentials: SDK not available, keys stored for next restart only');
     }
   }
 
