@@ -1,6 +1,17 @@
 import type { McMessage } from '@dash/mc';
 import { createFileRoute, useNavigate } from '@tanstack/react-router';
-import { ChevronDown, ChevronUp, Loader, Plus, Send, Square, Trash2 } from 'lucide-react';
+import {
+  Check,
+  ChevronDown,
+  ChevronUp,
+  Loader,
+  Pencil,
+  Plus,
+  Send,
+  Square,
+  Trash2,
+  X,
+} from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { McAgentEvent } from '../../../shared/ipc.js';
 import { Markdown } from '../components/Markdown.js';
@@ -413,6 +424,125 @@ function PinnedTodoPanel({ todos }: { todos: TodoItem[] }): JSX.Element {
   );
 }
 
+function ConversationItem({
+  conversation,
+  isSelected,
+  onSelect,
+  onRename,
+  onDelete,
+}: {
+  conversation: { id: string; title: string; agentName: string };
+  isSelected: boolean;
+  onSelect: () => void;
+  onRename: (title: string) => void;
+  onDelete: () => void;
+}): JSX.Element {
+  const [editing, setEditing] = useState(false);
+  const [editValue, setEditValue] = useState('');
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  const startRename = useCallback(() => {
+    setEditValue(conversation.title);
+    setEditing(true);
+    setConfirmingDelete(false);
+  }, [conversation.title]);
+
+  const commitRename = useCallback(() => {
+    const trimmed = editValue.trim();
+    if (trimmed && trimmed !== conversation.title) {
+      onRename(trimmed);
+    }
+    setEditing(false);
+  }, [editValue, conversation.title, onRename]);
+
+  useEffect(() => {
+    if (editing) inputRef.current?.focus();
+  }, [editing]);
+
+  if (editing) {
+    return (
+      <li className="px-4 py-2">
+        <input
+          ref={inputRef}
+          value={editValue}
+          onChange={(e) => setEditValue(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') commitRename();
+            if (e.key === 'Escape') setEditing(false);
+          }}
+          onBlur={commitRename}
+          className="w-full rounded border border-primary bg-sidebar-bg px-2 py-1 text-xs text-foreground focus:outline-none"
+        />
+      </li>
+    );
+  }
+
+  return (
+    <li
+      className={`group flex items-start justify-between transition-colors hover:bg-sidebar-hover ${
+        isSelected ? 'bg-sidebar-hover' : ''
+      }`}
+    >
+      <button
+        type="button"
+        onClick={onSelect}
+        onDoubleClick={startRename}
+        className={`min-w-0 flex-1 px-4 py-2 text-left text-xs ${
+          isSelected ? 'text-foreground' : 'text-muted'
+        }`}
+      >
+        <p className="truncate font-medium">{conversation.title}</p>
+        <p className="truncate text-muted/60">{conversation.agentName}</p>
+      </button>
+      <div className="mr-2 mt-2 flex shrink-0 items-center gap-0.5">
+        {confirmingDelete ? (
+          <>
+            <button
+              type="button"
+              onClick={() => {
+                setConfirmingDelete(false);
+                onDelete();
+              }}
+              className="rounded p-0.5 text-red-400 hover:bg-red-900/30"
+              aria-label="Confirm delete"
+            >
+              <Check size={10} />
+            </button>
+            <button
+              type="button"
+              onClick={() => setConfirmingDelete(false)}
+              className="rounded p-0.5 text-muted hover:bg-sidebar-hover"
+              aria-label="Cancel delete"
+            >
+              <X size={10} />
+            </button>
+          </>
+        ) : (
+          <>
+            <button
+              type="button"
+              onClick={startRename}
+              className="opacity-0 transition-opacity group-hover:opacity-100 rounded p-0.5 text-muted hover:text-foreground"
+              aria-label={`Rename conversation ${conversation.title}`}
+            >
+              <Pencil size={10} />
+            </button>
+            <button
+              type="button"
+              onClick={() => setConfirmingDelete(true)}
+              className="opacity-0 transition-opacity group-hover:opacity-100 rounded p-0.5 text-muted hover:text-red-400"
+              aria-label={`Delete conversation ${conversation.title}`}
+            >
+              <Trash2 size={10} />
+            </button>
+          </>
+        )}
+      </div>
+    </li>
+  );
+}
+
 function formatModelName(model: string): string {
   // Strip provider prefix (e.g. "anthropic/claude-sonnet-4-5" → "claude-sonnet-4-5")
   const name = model.includes('/') ? model.split('/').slice(1).join('/') : model;
@@ -433,6 +563,7 @@ export function Chat(): JSX.Element {
     loadConversations,
     selectConversation,
     createConversation,
+    renameConversation,
     deleteConversation,
     sendMessage,
     cancelMessage,
@@ -589,31 +720,14 @@ export function Chat(): JSX.Element {
             <li className="px-4 text-xs text-muted">No conversations yet.</li>
           ) : (
             conversations.map((conv) => (
-              <li
+              <ConversationItem
                 key={conv.id}
-                className={`group flex items-start justify-between transition-colors hover:bg-sidebar-hover ${
-                  conv.id === selectedConversationId ? 'bg-sidebar-hover' : ''
-                }`}
-              >
-                <button
-                  type="button"
-                  onClick={() => selectConversation(conv.id)}
-                  className={`min-w-0 flex-1 px-4 py-2 text-left text-xs ${
-                    conv.id === selectedConversationId ? 'text-foreground' : 'text-muted'
-                  }`}
-                >
-                  <p className="truncate font-medium">{conv.title}</p>
-                  <p className="truncate text-muted/60">{conv.agentName}</p>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => deleteConversation(conv.id)}
-                  className="mr-2 mt-2 shrink-0 opacity-0 transition-opacity group-hover:opacity-100"
-                  aria-label={`Delete conversation ${conv.title}`}
-                >
-                  <Trash2 size={10} />
-                </button>
-              </li>
+                conversation={conv}
+                isSelected={conv.id === selectedConversationId}
+                onSelect={() => selectConversation(conv.id)}
+                onRename={(title) => renameConversation(conv.id, title)}
+                onDelete={() => deleteConversation(conv.id)}
+              />
             ))
           )}
         </ul>

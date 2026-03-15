@@ -83,6 +83,7 @@ export interface MissionControlAPI {
   chatListConversations(deploymentId: string): Promise<McConversation[]>;
   chatCreateConversation(deploymentId: string, agentName: string): Promise<McConversation>;
   chatGetMessages(conversationId: string): Promise<McMessage[]>;
+  chatRenameConversation(conversationId: string, title: string): Promise<void>;
   chatDeleteConversation(conversationId: string): Promise<void>;
   chatSendMessage(conversationId: string, text: string): Promise<void>;
   chatCancel(conversationId: string): Promise<void>;

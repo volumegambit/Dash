@@ -26,6 +26,10 @@ export class ChatService {
     return this.store.getMessages(conversationId);
   }
 
+  async renameConversation(conversationId: string, title: string): Promise<void> {
+    return this.store.rename(conversationId, title);
+  }
+
   async deleteConversation(conversationId: string): Promise<void> {
     this.cancel(conversationId);
     return this.store.delete(conversationId);

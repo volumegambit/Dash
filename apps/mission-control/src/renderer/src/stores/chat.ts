@@ -12,6 +12,7 @@ interface ChatState {
   loadConversations(deploymentId: string): Promise<void>;
   selectConversation(id: string): Promise<void>;
   createConversation(deploymentId: string, agentName: string): Promise<McConversation>;
+  renameConversation(id: string, title: string): Promise<void>;
   deleteConversation(id: string): Promise<void>;
   sendMessage(conversationId: string, text: string): Promise<void>;
   cancelMessage(conversationId: string): void;
@@ -49,6 +50,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
       messages: { ...s.messages, [conversation.id]: [] },
     }));
     return conversation;
+  },
+
+  async renameConversation(id: string, title: string) {
+    await window.api.chatRenameConversation(id, title);
+    set((s) => ({
+      conversations: s.conversations.map((c) => (c.id === id ? { ...c, title } : c)),
+    }));
   },
 
   async deleteConversation(id: string) {
