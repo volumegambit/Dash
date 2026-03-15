@@ -64,6 +64,7 @@ const api: MissionControlAPI = {
   deploymentsDeployWithConfig: (options) =>
     ipcRenderer.invoke('deployments:deployWithConfig', options),
   deploymentsStop: (id: string) => ipcRenderer.invoke('deployments:stop', id),
+  deploymentsRestart: (id: string) => ipcRenderer.invoke('deployments:restart', id),
   deploymentsRemove: (id: string, deleteWorkspace?: boolean) =>
     ipcRenderer.invoke('deployments:remove', id, deleteWorkspace),
   deploymentsGetStatus: (id: string) => ipcRenderer.invoke('deployments:getStatus', id),

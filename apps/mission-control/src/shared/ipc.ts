@@ -108,6 +108,7 @@ export interface MissionControlAPI {
   deploymentsDeploy(configDir: string): Promise<string>;
   deploymentsDeployWithConfig(options: DeployWithConfigOptions): Promise<string>;
   deploymentsStop(id: string): Promise<void>;
+  deploymentsRestart(id: string): Promise<void>;
   deploymentsRemove(id: string, deleteWorkspace?: boolean): Promise<void>;
   deploymentsGetStatus(id: string): Promise<RuntimeStatus>;
   deploymentsUpdateConfig(
