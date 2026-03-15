@@ -75,12 +75,16 @@ export const useChatStore = create<ChatState>((set, get) => ({
     });
   },
 
-  async sendMessage(conversationId: string, text: string) {
+  async sendMessage(
+    conversationId: string,
+    text: string,
+    images?: { mediaType: string; data: string }[],
+  ) {
     // Optimistic user message for instant UI feedback
     const userMsg: McMessage = {
       id: crypto.randomUUID(),
       role: 'user',
-      content: { type: 'user', text },
+      content: { type: 'user', text, ...(images?.length ? { images } : {}) },
       timestamp: new Date().toISOString(),
     };
     set((s) => ({
@@ -92,7 +96,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       sending: { ...s.sending, [conversationId]: true },
     }));
     try {
-      await window.api.chatSendMessage(conversationId, text);
+      await window.api.chatSendMessage(conversationId, text, images);
     } catch (err) {
       // Optimistic user message is kept — user can see what they sent and retry
       set((s) => ({ sending: { ...s.sending, [conversationId]: false } }));

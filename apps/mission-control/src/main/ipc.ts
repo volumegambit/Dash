@@ -16,7 +16,6 @@ import {
   SettingsStore,
   defaultProcessSpawner,
   getPlatformDataDir,
-  migrateLegacyDataDir,
   parseProviderSecretKey,
 } from '@dash/mc';
 import type { MessagingApp, ProcessSpawner } from '@dash/mc';
@@ -28,7 +27,6 @@ import { GatewayPoller } from './gateway-poller.js';
 import { HealthPoller } from './health-poller.js';
 
 const DATA_DIR = process.env.MC_DATA_DIR || getPlatformDataDir('dash');
-const LEGACY_DATA_DIR = join(homedir(), '.mission-control');
 const SESSION_KEY_PATH = join(DATA_DIR, 'session.key');
 
 let chatService: ChatService | undefined;
@@ -235,9 +233,6 @@ async function pushCredentialsToRunningDeployments(): Promise<CredentialPushResu
 export async function registerIpcHandlers(
   getWindow: () => BrowserWindow | undefined,
 ): Promise<void> {
-  // One-time data migration from legacy ~/.mission-control
-  await migrateLegacyDataDir(LEGACY_DATA_DIR, DATA_DIR);
-
   // Start shared gateway
   const rt = getRuntime();
   try {
@@ -350,8 +345,14 @@ export async function registerIpcHandlers(
   ipcMain.handle('chat:deleteConversation', (_event, conversationId: string) =>
     getChatService(getWindow).deleteConversation(conversationId),
   );
-  ipcMain.handle('chat:sendMessage', (_event, conversationId: string, text: string) =>
-    getChatService(getWindow).sendMessage(conversationId, text),
+  ipcMain.handle(
+    'chat:sendMessage',
+    (
+      _event,
+      conversationId: string,
+      text: string,
+      images?: { mediaType: string; data: string }[],
+    ) => getChatService(getWindow).sendMessage(conversationId, text, images),
   );
   ipcMain.handle('chat:cancel', (_event, conversationId: string) => {
     getChatService(getWindow).cancel(conversationId);

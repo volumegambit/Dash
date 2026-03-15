@@ -22,8 +22,8 @@ const api: MissionControlAPI = {
     ipcRenderer.invoke('chat:renameConversation', conversationId, title),
   chatDeleteConversation: (conversationId) =>
     ipcRenderer.invoke('chat:deleteConversation', conversationId),
-  chatSendMessage: (conversationId, text) =>
-    ipcRenderer.invoke('chat:sendMessage', conversationId, text),
+  chatSendMessage: (conversationId, text, images) =>
+    ipcRenderer.invoke('chat:sendMessage', conversationId, text, images),
   chatCancel: (conversationId) => ipcRenderer.invoke('chat:cancel', conversationId),
   chatOnEvent: (callback) => {
     const listener = (

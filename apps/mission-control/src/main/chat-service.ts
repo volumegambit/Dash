@@ -35,7 +35,11 @@ export class ChatService {
     return this.store.delete(conversationId);
   }
 
-  async sendMessage(conversationId: string, text: string): Promise<void> {
+  async sendMessage(
+    conversationId: string,
+    text: string,
+    images?: { mediaType: string; data: string }[],
+  ): Promise<void> {
     const conversation = await this.store.get(conversationId);
     if (!conversation) throw new Error(`Conversation "${conversationId}" not found`);
 
@@ -52,7 +56,7 @@ export class ChatService {
     const userMessage: McMessage = {
       id: randomUUID(),
       role: 'user',
-      content: { type: 'user', text },
+      content: { type: 'user', text, ...(images?.length ? { images } : {}) },
       timestamp: new Date().toISOString(),
     };
     await this.store.appendMessage(conversationId, userMessage);
@@ -74,6 +78,7 @@ export class ChatService {
           channelId: 'mission-control',
           conversationId,
           text,
+          ...(images?.length ? { images } : {}),
         }),
       );
     });
