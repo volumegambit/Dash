@@ -49,7 +49,7 @@ export function DeployWizard(): JSX.Element {
   });
 
   useEffect(() => {
-    useSecretsStore.getState().loadKeys();
+    useSecretsStore.getState().checkStatus();
   }, []);
 
   // One-time: load settings and pick initial model
