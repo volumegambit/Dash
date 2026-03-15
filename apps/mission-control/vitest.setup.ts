@@ -26,6 +26,7 @@ function createMockApi(): Record<keyof MissionControlAPI, ReturnType<typeof vi.f
       updatedAt: new Date().toISOString(),
     }),
     chatGetMessages: vi.fn().mockResolvedValue([]),
+    chatRenameConversation: vi.fn().mockResolvedValue(undefined),
     chatDeleteConversation: vi.fn().mockResolvedValue(undefined),
     chatSendMessage: vi.fn().mockResolvedValue(undefined),
     chatCancel: vi.fn().mockResolvedValue(undefined),
@@ -95,9 +96,10 @@ function createMockApi(): Record<keyof MissionControlAPI, ReturnType<typeof vi.f
     // Credentials
     onCredentialsPushFailed: vi.fn().mockReturnValue(() => {}),
 
-    // Models
+    // Models & Tools
     modelsList: vi.fn().mockResolvedValue([]),
     modelsRefresh: vi.fn().mockResolvedValue([]),
+    toolsList: vi.fn().mockResolvedValue([]),
 
     // Updates
     onUpdateAvailable: vi.fn().mockReturnValue(() => {}),

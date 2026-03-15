@@ -14,8 +14,8 @@ import {
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { HealthDot } from '../../components/HealthDot.js';
 import { ModelChainEditor } from '../../components/ModelChainEditor.js';
-import { AVAILABLE_TOOLS } from '../../components/deploy-options.js';
 import { useAvailableModels } from '../../hooks/useAvailableModels.js';
+import { useAvailableTools } from '../../hooks/useAvailableTools.js';
 import { useDeploymentsStore } from '../../stores/deployments';
 import { useMessagingAppsStore } from '../../stores/messaging-apps.js';
 
@@ -36,6 +36,7 @@ export function AgentDetail(): JSX.Element {
   const [status, setStatus] = useState<RuntimeStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const availableModels = useAvailableModels();
+  const availableTools = useAvailableTools();
   const [editingChain, setEditingChain] = useState(false);
   const [chainModel, setChainModel] = useState('');
   const [chainFallbacks, setChainFallbacks] = useState<string[]>([]);
@@ -44,6 +45,9 @@ export function AgentDetail(): JSX.Element {
   const [toolsDraft, setToolsDraft] = useState<string[]>([]);
   const [toolsSaving, setToolsSaving] = useState(false);
   const [toolsRestartNeeded, setToolsRestartNeeded] = useState(false);
+  const [editingPrompt, setEditingPrompt] = useState(false);
+  const [promptDraft, setPromptDraft] = useState('');
+  const [promptSaving, setPromptSaving] = useState(false);
   const { apps: messagingApps, loadApps: loadMessagingApps } = useMessagingAppsStore();
   const channelHealth = useMessagingAppsStore((s) => s.channelHealth);
   const apps = useMessagingAppsStore((s) => s.apps);
@@ -175,6 +179,16 @@ export function AgentDetail(): JSX.Element {
       setToolsRestartNeeded(true);
     } finally {
       setToolsSaving(false);
+    }
+  };
+
+  const handleSavePrompt = async (): Promise<void> => {
+    setPromptSaving(true);
+    try {
+      await updateConfig(id, { systemPrompt: promptDraft });
+      setEditingPrompt(false);
+    } finally {
+      setPromptSaving(false);
     }
   };
 
@@ -324,52 +338,7 @@ export function AgentDetail(): JSX.Element {
         </div>
       )}
 
-      <div className="mb-6 rounded-lg border border-border bg-sidebar-bg px-4 py-3">
-        <div className="flex flex-wrap items-center gap-x-5 gap-y-1 text-xs">
-          <span>
-            <span className="text-muted">PID</span>{' '}
-            <span className="font-medium">
-              {status?.agentServerPid ?? deployment.agentServerPid ?? 'N/A'}
-            </span>
-          </span>
-          <span>
-            <span className="text-muted">Chat</span>{' '}
-            <span className="font-medium">{status?.chatPort ?? deployment.chatPort ?? 'N/A'}</span>
-          </span>
-          <span>
-            <span className="text-muted">Mgmt</span>{' '}
-            <span className="font-medium">
-              {status?.managementPort ?? deployment.managementPort ?? 'N/A'}
-            </span>
-          </span>
-          <span>
-            <span className="text-muted">Uptime</span>{' '}
-            <span className="font-medium">
-              {status?.uptime ? formatUptime(status.uptime) : 'N/A'}
-            </span>
-          </span>
-          <span>
-            <span className="text-muted">Created</span>{' '}
-            <span className="font-medium">{new Date(deployment.createdAt).toLocaleString()}</span>
-          </span>
-        </div>
-        {deployment.workspace && (
-          <div className="mt-2 flex items-center gap-2 border-t border-border pt-2 text-xs">
-            <span className="text-muted">Workspace</span>
-            <span className="min-w-0 truncate font-mono font-medium" title={deployment.workspace}>
-              {deployment.workspace}
-            </span>
-            <button
-              type="button"
-              onClick={() => deployment.workspace && window.api.openPath(deployment.workspace)}
-              className="shrink-0 rounded p-0.5 text-muted transition-colors hover:text-foreground"
-              title="Open in Finder"
-            >
-              <FolderOpen size={12} />
-            </button>
-          </div>
-        )}
-      </div>
+      <RuntimeInfoBar status={status} deployment={deployment} />
 
       {channelHealth.length > 0 && (
         <div className="mb-6 rounded-lg border border-border bg-sidebar-bg p-4">
@@ -508,12 +477,54 @@ export function AgentDetail(): JSX.Element {
         </div>
       )}
 
-      {agentConfig?.systemPrompt && (
+      {agentConfig && (
         <div className="mb-6">
-          <h2 className="mb-2 text-sm font-medium text-muted">System Prompt</h2>
-          <div className="rounded-lg border border-border bg-sidebar-bg p-3 text-sm whitespace-pre-wrap">
-            {agentConfig.systemPrompt}
+          <div className="mb-2 flex items-center justify-between">
+            <h2 className="text-sm font-medium text-muted">System Prompt</h2>
+            {!editingPrompt && (
+              <button
+                type="button"
+                onClick={() => {
+                  setPromptDraft(agentConfig.systemPrompt ?? '');
+                  setEditingPrompt(true);
+                }}
+                className="text-xs text-primary hover:underline"
+              >
+                Edit
+              </button>
+            )}
           </div>
+          {editingPrompt ? (
+            <div className="rounded-lg border border-border bg-sidebar-bg p-3">
+              <textarea
+                value={promptDraft}
+                onChange={(e) => setPromptDraft(e.target.value)}
+                rows={8}
+                className="w-full resize-y rounded border border-border bg-[#0d0d0d] p-3 text-sm leading-relaxed focus:border-primary focus:outline-none"
+              />
+              <div className="mt-3 flex gap-2">
+                <button
+                  type="button"
+                  onClick={handleSavePrompt}
+                  disabled={promptSaving}
+                  className="rounded-lg bg-primary px-3 py-1.5 text-xs text-white hover:bg-primary-hover disabled:opacity-50"
+                >
+                  {promptSaving ? 'Saving...' : 'Save'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setEditingPrompt(false)}
+                  className="rounded-lg border border-border px-3 py-1.5 text-xs text-muted hover:bg-sidebar-hover"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="rounded-lg border border-border bg-sidebar-bg p-3 text-sm whitespace-pre-wrap">
+              {agentConfig.systemPrompt || <span className="text-muted">(none)</span>}
+            </div>
+          )}
         </div>
       )}
 
@@ -545,17 +556,17 @@ export function AgentDetail(): JSX.Element {
                 <label className="flex cursor-pointer items-center gap-1.5 text-xs text-muted hover:text-foreground">
                   <input
                     type="checkbox"
-                    checked={toolsDraft.length === AVAILABLE_TOOLS.length}
+                    checked={toolsDraft.length === availableTools.length}
                     ref={(el) => {
                       if (el)
                         el.indeterminate =
-                          toolsDraft.length > 0 && toolsDraft.length < AVAILABLE_TOOLS.length;
+                          toolsDraft.length > 0 && toolsDraft.length < availableTools.length;
                     }}
                     onChange={() =>
                       setToolsDraft((prev) =>
-                        prev.length === AVAILABLE_TOOLS.length
+                        prev.length === availableTools.length
                           ? []
-                          : AVAILABLE_TOOLS.map((t) => t.value),
+                          : availableTools.map((t) => t.value),
                       )
                     }
                     className="accent-primary"
@@ -564,7 +575,7 @@ export function AgentDetail(): JSX.Element {
                 </label>
               </div>
               <div className="grid grid-cols-2 gap-2">
-                {AVAILABLE_TOOLS.map((tool) => (
+                {availableTools.map((tool) => (
                   <label
                     key={tool.value}
                     className="flex cursor-pointer items-center gap-2 rounded-lg border border-border px-3 py-2 text-xs transition-colors hover:bg-sidebar-hover"
@@ -600,7 +611,7 @@ export function AgentDetail(): JSX.Element {
           ) : (
             <div className="rounded-lg border border-border bg-sidebar-bg p-3 text-sm">
               {(agentConfig.tools ?? []).length > 0
-                ? AVAILABLE_TOOLS.filter((t) => (agentConfig.tools ?? []).includes(t.value))
+                ? availableTools.filter((t) => (agentConfig.tools ?? []).includes(t.value))
                     .map((t) => t.label)
                     .join(', ')
                 : '(none)'}

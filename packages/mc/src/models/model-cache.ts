@@ -12,6 +12,7 @@ export interface CachedModel {
 interface CacheFile {
   fetchedAt: string;
   models: CachedModel[];
+  tools?: string[];
 }
 
 export class ModelCacheService {
@@ -23,23 +24,33 @@ export class ModelCacheService {
   }
 
   async load(): Promise<CachedModel[]> {
-    if (!existsSync(this.cacheFilePath)) return [];
+    const cache = await this.loadCache();
+    return cache?.models ?? [];
+  }
+
+  async loadTools(): Promise<string[]> {
+    const cache = await this.loadCache();
+    return cache?.tools ?? [];
+  }
+
+  private async loadCache(): Promise<CacheFile | null> {
+    if (!existsSync(this.cacheFilePath)) return null;
     try {
       const raw = await readFile(this.cacheFilePath, 'utf-8');
-      const cache = JSON.parse(raw) as CacheFile;
-      return cache.models ?? [];
+      return JSON.parse(raw) as CacheFile;
     } catch {
-      // Corrupt cache — delete and return empty
       await unlink(this.cacheFilePath).catch(() => {});
-      return [];
+      return null;
     }
   }
 
-  async save(models: CachedModel[]): Promise<void> {
+  async save(models: CachedModel[], tools?: string[]): Promise<void> {
     const sorted = [...models].sort((a, b) => a.label.localeCompare(b.label));
+    const existing = await this.loadCache();
     const cache: CacheFile = {
       fetchedAt: new Date().toISOString(),
       models: sorted,
+      tools: tools ?? existing?.tools,
     };
     await writeFile(this.cacheFilePath, JSON.stringify(cache, null, 2));
   }
@@ -79,7 +90,18 @@ export class ModelCacheService {
         }
       }
 
-      await this.save(models);
+      // Fetch available tool IDs
+      let tools: string[] | undefined;
+      try {
+        const toolResponse = await client.tool.ids();
+        if (!toolResponse.error && toolResponse.data) {
+          tools = toolResponse.data.sort();
+        }
+      } catch {
+        // Tool query failed — keep existing cached tools
+      }
+
+      await this.save(models, tools);
       return models;
     } catch {
       // Refresh failed — return existing cache if available

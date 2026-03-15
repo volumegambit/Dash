@@ -11,8 +11,9 @@ import {
 import { useEffect, useState } from 'react';
 import { RendererDeploymentError } from '../../../shared/ipc';
 import { ModelChainEditor } from '../components/ModelChainEditor.js';
-import { AVAILABLE_MODELS, AVAILABLE_TOOLS } from '../components/deploy-options.js';
+import { AVAILABLE_MODELS } from '../components/deploy-options.js';
 import { useAvailableModels } from '../hooks/useAvailableModels.js';
+import { useAvailableTools } from '../hooks/useAvailableTools.js';
 import { useDeploymentsStore } from '../stores/deployments';
 import { useSecretsStore } from '../stores/secrets.js';
 
@@ -31,6 +32,7 @@ export function DeployWizard(): JSX.Element {
   const navigate = useNavigate();
   const { deployWithConfig } = useDeploymentsStore();
   const availableModels = useAvailableModels();
+  const availableTools = useAvailableTools();
   const [step, setStep] = useState<Step>('agent');
   const [deploying, setDeploying] = useState(false);
   const [deployError, setDeployError] = useState<string | null>(null);
@@ -179,19 +181,19 @@ export function DeployWizard(): JSX.Element {
               <label className="flex cursor-pointer items-center gap-1.5 text-xs text-muted hover:text-foreground">
                 <input
                   type="checkbox"
-                  checked={agent.tools.length === AVAILABLE_TOOLS.length}
+                  checked={agent.tools.length === availableTools.length}
                   ref={(el) => {
                     if (el)
                       el.indeterminate =
-                        agent.tools.length > 0 && agent.tools.length < AVAILABLE_TOOLS.length;
+                        agent.tools.length > 0 && agent.tools.length < availableTools.length;
                   }}
                   onChange={() =>
                     setAgent((prev) => ({
                       ...prev,
                       tools:
-                        prev.tools.length === AVAILABLE_TOOLS.length
+                        prev.tools.length === availableTools.length
                           ? []
-                          : AVAILABLE_TOOLS.map((t) => t.value),
+                          : availableTools.map((t) => t.value),
                     }))
                   }
                   className="accent-primary"
@@ -200,7 +202,7 @@ export function DeployWizard(): JSX.Element {
               </label>
             </div>
             <div className="grid grid-cols-2 gap-2">
-              {AVAILABLE_TOOLS.map((tool) => (
+              {availableTools.map((tool) => (
                 <label
                   key={tool.value}
                   className="flex cursor-pointer items-center gap-2 rounded-lg border border-border px-3 py-2 text-sm transition-colors hover:bg-sidebar-hover"

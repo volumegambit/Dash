@@ -833,7 +833,7 @@ export async function registerIpcHandlers(
     async (
       _event,
       id: string,
-      patch: { model?: string; fallbackModels?: string[]; tools?: string[] },
+      patch: { model?: string; fallbackModels?: string[]; tools?: string[]; systemPrompt?: string },
     ) => {
       await getRuntime().updateAgentConfig(id, patch);
     },
@@ -862,6 +862,10 @@ export async function registerIpcHandlers(
 
   ipcMain.handle('models:refresh', async () => {
     return getModelCache().refresh();
+  });
+
+  ipcMain.handle('tools:list', async () => {
+    return getModelCache().loadTools();
   });
 
   // Background model cache refresh on startup
