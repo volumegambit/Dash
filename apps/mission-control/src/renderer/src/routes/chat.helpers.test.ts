@@ -25,11 +25,20 @@ describe('summarize', () => {
     expect(summarize('bash', JSON.stringify({ command: 'ls -la' }))).toBe('ls -la');
   });
 
-  it('truncates command longer than 40 chars', () => {
-    const long = 'a'.repeat(50);
+  it('truncates command longer than 60 chars', () => {
+    const long = 'a'.repeat(70);
     const result = summarize('bash', JSON.stringify({ command: long }));
-    expect(result).toHaveLength(41); // 40 chars + ellipsis char
+    expect(result).toHaveLength(61); // 60 chars + ellipsis char
     expect(result.endsWith('…')).toBe(true);
+  });
+
+  it('uses middle-ellipsis for long file paths', () => {
+    const longPath = '/Users/gerry/Projects/claude-workspace/Projects/Dash/apps/mission-control/src/renderer/src/routes/deploy.tsx';
+    const result = summarize('read', JSON.stringify({ path: longPath }));
+    // Should preserve the filename at the end
+    expect(result).toContain('/deploy.tsx');
+    expect(result).toContain('…');
+    expect(result.length).toBeLessThanOrEqual(61);
   });
 
   it('extracts path for write_file', () => {

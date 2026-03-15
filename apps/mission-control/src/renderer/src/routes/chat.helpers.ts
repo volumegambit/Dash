@@ -1,12 +1,18 @@
 /** Normalize legacy tool names (read_file, write_file, etc.) to OpenCode names */
 function normalizeTool(name: string): string {
   switch (name) {
-    case 'read_file': return 'read';
-    case 'write_file': return 'write';
-    case 'list_directory': return 'ls';
-    case 'execute_command': return 'bash';
-    case 'TodoWrite': return 'todowrite';
-    default: return name;
+    case 'read_file':
+      return 'read';
+    case 'write_file':
+      return 'write';
+    case 'list_directory':
+      return 'ls';
+    case 'execute_command':
+      return 'bash';
+    case 'TodoWrite':
+      return 'todowrite';
+    default:
+      return name;
   }
 }
 
@@ -65,8 +71,20 @@ const PRIMARY_KEYS: Record<string, string[]> = {
   skill: ['name'],
 };
 
-function truncate(s: string, max = 40): string {
-  return s.length > max ? `${s.slice(0, max)}…` : s;
+function truncate(s: string, max = 60): string {
+  if (s.length <= max) return s;
+
+  // For file paths, use middle-ellipsis to preserve the filename
+  if (s.includes('/')) {
+    const lastSlash = s.lastIndexOf('/');
+    const filename = s.slice(lastSlash); // includes the leading /
+    const prefix = s.slice(0, max - filename.length - 1);
+    if (prefix.length > 3) {
+      return `${prefix}…${filename}`;
+    }
+  }
+
+  return `${s.slice(0, max)}…`;
 }
 
 export function summarize(name: string, input: string): string {
