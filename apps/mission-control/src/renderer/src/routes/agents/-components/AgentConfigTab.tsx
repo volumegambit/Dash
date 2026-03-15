@@ -1,5 +1,5 @@
 import type { AgentDeployAgentConfig } from '@dash/mc';
-import { ChevronDown, ChevronUp } from 'lucide-react';
+import { ChevronDown, ChevronUp, FolderOpen } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { ModelChainEditor } from '../../../components/ModelChainEditor.js';
 import { useAvailableModels } from '../../../hooks/useAvailableModels.js';
@@ -15,36 +15,33 @@ type ConfigPatch = {
 interface AgentConfigTabProps {
   deploymentId: string;
   agentConfig: AgentDeployAgentConfig | undefined;
+  workspace?: string;
   updateConfig: (id: string, patch: ConfigPatch) => Promise<void>;
 }
 
 export function AgentConfigTab({
   deploymentId,
   agentConfig,
+  workspace,
   updateConfig,
 }: AgentConfigTabProps): JSX.Element {
   const availableModels = useAvailableModels();
   const availableTools = useAvailableTools();
 
-  // Collapsible card state
-  const [modelsOpen, setModelsOpen] = useState(false);
-  const [promptOpen, setPromptOpen] = useState(false);
-  const [toolsOpen, setToolsOpen] = useState(false);
+  // Which card is open (null = all collapsed). Opening goes straight to edit mode.
+  const [openCard, setOpenCard] = useState<'models' | 'prompt' | 'tools' | null>(null);
 
   // Model chain editing state
-  const [editingChain, setEditingChain] = useState(false);
   const [chainModel, setChainModel] = useState('');
   const [chainFallbacks, setChainFallbacks] = useState<string[]>([]);
   const [chainSaving, setChainSaving] = useState(false);
 
   // Tools editing state
-  const [editingTools, setEditingTools] = useState(false);
   const [toolsDraft, setToolsDraft] = useState<string[]>([]);
   const [toolsSaving, setToolsSaving] = useState(false);
   const [toolsRestartNeeded, setToolsRestartNeeded] = useState(false);
 
   // System prompt editing state
-  const [editingPrompt, setEditingPrompt] = useState(false);
   const [promptDraft, setPromptDraft] = useState('');
   const [promptSaving, setPromptSaving] = useState(false);
 
@@ -112,7 +109,7 @@ export function AgentConfigTab({
     setChainSaving(true);
     try {
       await updateConfig(deploymentId, { model: chainModel, fallbackModels: chainFallbacks });
-      setEditingChain(false);
+      setOpenCard(null);
     } finally {
       setChainSaving(false);
     }
@@ -122,7 +119,7 @@ export function AgentConfigTab({
     setToolsSaving(true);
     try {
       await updateConfig(deploymentId, { tools: toolsDraft });
-      setEditingTools(false);
+      setOpenCard(null);
       setToolsRestartNeeded(true);
     } finally {
       setToolsSaving(false);
@@ -133,7 +130,7 @@ export function AgentConfigTab({
     setPromptSaving(true);
     try {
       await updateConfig(deploymentId, { systemPrompt: promptDraft });
-      setEditingPrompt(false);
+      setOpenCard(null);
     } finally {
       setPromptSaving(false);
     }
@@ -156,11 +153,11 @@ export function AgentConfigTab({
   }
 
   // Summaries for collapsed cards
-  const primaryLabel = availableModels.find((m) => m.value === chainModel)?.label ?? chainModel;
-  const fallbackCount = chainFallbacks.length;
+  const modelLabel = (id: string) => availableModels.find((m) => m.value === id)?.label ?? id;
+  const primaryLabel = modelLabel(chainModel);
   const modelsSummary =
-    fallbackCount > 0
-      ? `${primaryLabel} + ${fallbackCount} fallback${fallbackCount > 1 ? 's' : ''}`
+    chainFallbacks.length > 0
+      ? `${primaryLabel} → ${chainFallbacks.map(modelLabel).join(' → ')}`
       : primaryLabel;
 
   const promptText = agentConfig.systemPrompt ?? '';
@@ -176,100 +173,73 @@ export function AgentConfigTab({
 
   return (
     <div className="space-y-4">
+      {/* Workspace card (read-only) */}
+      {workspace && (
+        <div className="rounded-lg border border-border">
+          <div className="flex items-center justify-between p-4">
+            <div className="min-w-0">
+              <h3 className="text-sm font-medium">Workspace</h3>
+              <p className="mt-0.5 min-w-0 truncate font-mono text-xs text-muted" title={workspace}>
+                {workspace}
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => window.api.openPath(workspace)}
+              className="shrink-0 rounded p-1 text-muted transition-colors hover:text-foreground"
+              title="Open in Finder"
+            >
+              <FolderOpen size={14} />
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Models card */}
       <div className="rounded-lg border border-border">
         <button
           type="button"
-          onClick={() => setModelsOpen(!modelsOpen)}
+          onClick={() => setOpenCard(openCard === 'models' ? null : 'models')}
           className="flex w-full items-center justify-between p-4 text-left"
         >
           <div>
             <h3 className="text-sm font-medium">Models</h3>
             <p className="text-xs text-muted mt-0.5">{modelsSummary}</p>
           </div>
-          {modelsOpen ? (
+          {openCard === 'models' ? (
             <ChevronUp size={16} className="text-muted" />
           ) : (
             <ChevronDown size={16} className="text-muted" />
           )}
         </button>
-        {modelsOpen && (
+        {openCard === 'models' && (
           <div className="border-t border-border p-4">
-            <div className="mb-2 flex items-center justify-between">
-              <h2 className="text-sm font-medium text-muted">Model Chain</h2>
-              {!editingChain && (
-                <button
-                  type="button"
-                  onClick={() => setEditingChain(true)}
-                  className="text-xs text-primary hover:underline"
-                >
-                  Edit
-                </button>
-              )}
+            <ModelChainEditor
+              model={chainModel}
+              fallbackModels={chainFallbacks}
+              availableModels={availableModels}
+              onChange={(m, fb) => {
+                setChainModel(m);
+                setChainFallbacks(fb);
+              }}
+            />
+            <div className="mt-3 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={handleSaveChain}
+                disabled={chainSaving}
+                className="rounded-lg bg-primary px-3 py-1.5 text-xs text-white hover:bg-primary-hover disabled:opacity-50"
+              >
+                {chainSaving ? 'Saving...' : 'Save'}
+              </button>
+              <button
+                type="button"
+                onClick={() => setOpenCard(null)}
+                className="rounded-lg border border-border px-3 py-1.5 text-xs text-muted hover:bg-sidebar-hover"
+              >
+                Cancel
+              </button>
             </div>
-            {editingChain ? (
-              <div className="rounded-lg border border-border bg-sidebar-bg p-3">
-                <ModelChainEditor
-                  model={chainModel}
-                  fallbackModels={chainFallbacks}
-                  availableModels={availableModels}
-                  onChange={(m, fb) => {
-                    setChainModel(m);
-                    setChainFallbacks(fb);
-                  }}
-                />
-                <div className="mt-3 flex gap-2">
-                  <button
-                    type="button"
-                    onClick={handleSaveChain}
-                    disabled={chainSaving}
-                    className="rounded-lg bg-primary px-3 py-1.5 text-xs text-white hover:bg-primary-hover disabled:opacity-50"
-                  >
-                    {chainSaving ? 'Saving...' : 'Save'}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setEditingChain(false)}
-                    className="rounded-lg border border-border px-3 py-1.5 text-xs text-muted hover:bg-sidebar-hover"
-                  >
-                    Cancel
-                  </button>
-                </div>
-              </div>
-            ) : (
-              <div className="space-y-2">
-                {[chainModel, ...chainFallbacks].map((model, i) => {
-                  const label = availableModels.find((m) => m.value === model)?.label ?? model;
-                  const keyInfo = modelKeys[model];
-                  return (
-                    <div
-                      key={model}
-                      className="flex items-center justify-between rounded-lg border border-border bg-sidebar-bg px-3 py-2"
-                    >
-                      <div className="flex items-center gap-2">
-                        <span className="text-sm font-medium">{label}</span>
-                        {i === 0 && (
-                          <span className="rounded bg-primary/20 px-1.5 py-0.5 text-[10px] font-medium text-primary">
-                            primary
-                          </span>
-                        )}
-                        {i > 0 && (
-                          <span className="rounded bg-sidebar-hover px-1.5 py-0.5 text-[10px] font-medium text-muted">
-                            fallback {i}
-                          </span>
-                        )}
-                      </div>
-                      {keyInfo && (
-                        <div className="flex items-center gap-2 text-xs text-muted">
-                          <span className="font-medium">{keyInfo.label}</span>
-                          <span className="font-mono">{keyInfo.masked}</span>
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            )}
           </div>
         )}
       </div>
@@ -278,67 +248,47 @@ export function AgentConfigTab({
       <div className="rounded-lg border border-border">
         <button
           type="button"
-          onClick={() => setPromptOpen(!promptOpen)}
+          onClick={() => {
+            if (openCard !== 'prompt') setPromptDraft(agentConfig.systemPrompt ?? '');
+            setOpenCard(openCard === 'prompt' ? null : 'prompt');
+          }}
           className="flex w-full items-center justify-between p-4 text-left"
         >
           <div className="min-w-0 flex-1">
             <h3 className="text-sm font-medium">System Prompt</h3>
             <p className="text-xs text-muted mt-0.5 truncate">{promptSummary}</p>
           </div>
-          {promptOpen ? (
+          {openCard === 'prompt' ? (
             <ChevronUp size={16} className="ml-2 shrink-0 text-muted" />
           ) : (
             <ChevronDown size={16} className="ml-2 shrink-0 text-muted" />
           )}
         </button>
-        {promptOpen && (
+        {openCard === 'prompt' && (
           <div className="border-t border-border p-4">
-            <div className="mb-2 flex items-center justify-between">
-              <h2 className="text-sm font-medium text-muted">Prompt</h2>
-              {!editingPrompt && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    setPromptDraft(agentConfig.systemPrompt ?? '');
-                    setEditingPrompt(true);
-                  }}
-                  className="text-xs text-primary hover:underline"
-                >
-                  Edit
-                </button>
-              )}
+            <textarea
+              value={promptDraft}
+              onChange={(e) => setPromptDraft(e.target.value)}
+              rows={8}
+              className="w-full resize-y rounded border border-border bg-[#0d0d0d] p-3 text-sm leading-relaxed focus:border-primary focus:outline-none"
+            />
+            <div className="mt-3 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={handleSavePrompt}
+                disabled={promptSaving}
+                className="rounded-lg bg-primary px-3 py-1.5 text-xs text-white hover:bg-primary-hover disabled:opacity-50"
+              >
+                {promptSaving ? 'Saving...' : 'Save'}
+              </button>
+              <button
+                type="button"
+                onClick={() => setOpenCard(null)}
+                className="rounded-lg border border-border px-3 py-1.5 text-xs text-muted hover:bg-sidebar-hover"
+              >
+                Cancel
+              </button>
             </div>
-            {editingPrompt ? (
-              <div className="rounded-lg border border-border bg-sidebar-bg p-3">
-                <textarea
-                  value={promptDraft}
-                  onChange={(e) => setPromptDraft(e.target.value)}
-                  rows={8}
-                  className="w-full resize-y rounded border border-border bg-[#0d0d0d] p-3 text-sm leading-relaxed focus:border-primary focus:outline-none"
-                />
-                <div className="mt-3 flex gap-2">
-                  <button
-                    type="button"
-                    onClick={handleSavePrompt}
-                    disabled={promptSaving}
-                    className="rounded-lg bg-primary px-3 py-1.5 text-xs text-white hover:bg-primary-hover disabled:opacity-50"
-                  >
-                    {promptSaving ? 'Saving...' : 'Save'}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setEditingPrompt(false)}
-                    className="rounded-lg border border-border px-3 py-1.5 text-xs text-muted hover:bg-sidebar-hover"
-                  >
-                    Cancel
-                  </button>
-                </div>
-              </div>
-            ) : (
-              <div className="rounded-lg border border-border bg-sidebar-bg p-3 text-sm whitespace-pre-wrap">
-                {agentConfig.systemPrompt || <span className="text-muted">(none)</span>}
-              </div>
-            )}
           </div>
         )}
       </div>
@@ -347,124 +297,89 @@ export function AgentConfigTab({
       <div className="rounded-lg border border-border">
         <button
           type="button"
-          onClick={() => setToolsOpen(!toolsOpen)}
+          onClick={() => {
+            if (openCard !== 'tools') setToolsDraft(agentConfig.tools ?? []);
+            setOpenCard(openCard === 'tools' ? null : 'tools');
+          }}
           className="flex w-full items-center justify-between p-4 text-left"
         >
           <div>
             <h3 className="text-sm font-medium">Tools</h3>
             <p className="text-xs text-muted mt-0.5">{toolsSummary}</p>
           </div>
-          {toolsOpen ? (
+          {openCard === 'tools' ? (
             <ChevronUp size={16} className="text-muted" />
           ) : (
             <ChevronDown size={16} className="text-muted" />
           )}
         </button>
-        {toolsOpen && (
+        {openCard === 'tools' && (
           <div className="border-t border-border p-4">
-            <div className="mb-2 flex items-center justify-between">
-              <h2 className="text-sm font-medium text-muted">Enabled Tools</h2>
-              {!editingTools && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    setToolsDraft(agentConfig.tools ?? []);
-                    setEditingTools(true);
-                  }}
-                  className="text-xs text-primary hover:underline"
-                >
-                  Edit
-                </button>
-              )}
-            </div>
-            {toolsRestartNeeded && !editingTools && (
+            {toolsRestartNeeded && (
               <div className="mb-2 rounded-lg bg-yellow-900/20 px-3 py-2 text-xs text-yellow-400">
                 Tools updated — restart the agent to apply changes.
               </div>
             )}
-            {editingTools ? (
-              <div className="rounded-lg border border-border bg-sidebar-bg p-3">
-                <div className="mb-2 flex items-center justify-between">
-                  <label className="flex cursor-pointer items-center gap-1.5 text-xs text-muted hover:text-foreground">
-                    <input
-                      type="checkbox"
-                      checked={toolsDraft.length === availableTools.length}
-                      ref={(el) => {
-                        if (el)
-                          el.indeterminate =
-                            toolsDraft.length > 0 && toolsDraft.length < availableTools.length;
-                      }}
-                      onChange={() =>
-                        setToolsDraft((prev) =>
-                          prev.length === availableTools.length
-                            ? []
-                            : availableTools.map((t) => t.value),
-                        )
-                      }
-                      className="accent-primary"
-                    />
-                    Select all
-                  </label>
-                </div>
-                <div className="grid grid-cols-2 gap-2">
-                  {availableTools.map((tool) => (
-                    <label
-                      key={tool.value}
-                      className="flex cursor-pointer items-start gap-2 rounded-lg border border-border px-3 py-2 text-xs transition-colors hover:bg-sidebar-hover"
-                    >
-                      <input
-                        type="checkbox"
-                        checked={toolsDraft.includes(tool.value)}
-                        onChange={() => toggleDraftTool(tool.value)}
-                        className="mt-0.5 accent-primary"
-                      />
-                      <span>
-                        {tool.label}
-                        {tool.description && (
-                          <span className="block text-[11px] text-muted">{tool.description}</span>
-                        )}
-                      </span>
-                    </label>
-                  ))}
-                </div>
-                <div className="mt-3 flex gap-2">
-                  <button
-                    type="button"
-                    onClick={handleSaveTools}
-                    disabled={toolsSaving}
-                    className="rounded-lg bg-primary px-3 py-1.5 text-xs text-white hover:bg-primary-hover disabled:opacity-50"
-                  >
-                    {toolsSaving ? 'Saving...' : 'Save'}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setEditingTools(false)}
-                    className="rounded-lg border border-border px-3 py-1.5 text-xs text-muted hover:bg-sidebar-hover"
-                  >
-                    Cancel
-                  </button>
-                </div>
-              </div>
-            ) : (
-              <div className="rounded-lg border border-border bg-sidebar-bg p-3">
-                {(agentConfig.tools ?? []).length > 0 ? (
-                  <div className="grid grid-cols-2 gap-x-4 gap-y-1.5">
-                    {availableTools
-                      .filter((t) => (agentConfig.tools ?? []).includes(t.value))
-                      .map((t) => (
-                        <div key={t.value}>
-                          <span className="text-sm">{t.label}</span>
-                          {t.description && (
-                            <span className="ml-1.5 text-xs text-muted">{t.description}</span>
-                          )}
-                        </div>
-                      ))}
-                  </div>
-                ) : (
-                  <span className="text-sm text-muted">(none)</span>
-                )}
-              </div>
-            )}
+            <div className="mb-2 flex items-center justify-between">
+              <label className="flex cursor-pointer items-center gap-1.5 text-xs text-muted hover:text-foreground">
+                <input
+                  type="checkbox"
+                  checked={toolsDraft.length === availableTools.length}
+                  ref={(el) => {
+                    if (el)
+                      el.indeterminate =
+                        toolsDraft.length > 0 && toolsDraft.length < availableTools.length;
+                  }}
+                  onChange={() =>
+                    setToolsDraft((prev) =>
+                      prev.length === availableTools.length
+                        ? []
+                        : availableTools.map((t) => t.value),
+                    )
+                  }
+                  className="accent-primary"
+                />
+                Select all
+              </label>
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              {availableTools.map((tool) => (
+                <label
+                  key={tool.value}
+                  className="flex cursor-pointer items-start gap-2 rounded-lg border border-border px-3 py-2 text-xs transition-colors hover:bg-sidebar-hover"
+                >
+                  <input
+                    type="checkbox"
+                    checked={toolsDraft.includes(tool.value)}
+                    onChange={() => toggleDraftTool(tool.value)}
+                    className="mt-0.5 accent-primary"
+                  />
+                  <span>
+                    {tool.label}
+                    {tool.description && (
+                      <span className="block text-[11px] text-muted">{tool.description}</span>
+                    )}
+                  </span>
+                </label>
+              ))}
+            </div>
+            <div className="mt-3 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={handleSaveTools}
+                disabled={toolsSaving}
+                className="rounded-lg bg-primary px-3 py-1.5 text-xs text-white hover:bg-primary-hover disabled:opacity-50"
+              >
+                {toolsSaving ? 'Saving...' : 'Save'}
+              </button>
+              <button
+                type="button"
+                onClick={() => setOpenCard(null)}
+                className="rounded-lg border border-border px-3 py-1.5 text-xs text-muted hover:bg-sidebar-hover"
+              >
+                Cancel
+              </button>
+            </div>
           </div>
         )}
       </div>

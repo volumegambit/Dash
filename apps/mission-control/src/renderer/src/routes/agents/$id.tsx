@@ -1,32 +1,19 @@
-import type { AgentDeployment, RuntimeStatus } from '@dash/mc';
+import type { RuntimeStatus } from '@dash/mc';
 import { Link, createFileRoute, useNavigate } from '@tanstack/react-router';
-import {
-  ArrowLeft,
-  ChevronDown,
-  ChevronUp,
-  FolderOpen,
-  Loader,
-  MessageSquare,
-  Play,
-  RefreshCw,
-  Square,
-  Trash2,
-} from 'lucide-react';
+import { ArrowLeft, Loader, MessageSquare, Play, RefreshCw, Square, Trash2 } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
 import { useDeploymentsStore } from '../../stores/deployments';
 import { useMessagingAppsStore } from '../../stores/messaging-apps.js';
 import { AgentConfigTab } from './-components/AgentConfigTab.js';
-import { AgentLogsTab } from './-components/AgentLogsTab.js';
-import { AgentOverviewTab } from './-components/AgentOverviewTab.js';
+import { AgentMonitorTab } from './-components/AgentMonitorTab.js';
 import { AgentSkillsTab } from './-components/AgentSkillsTab.js';
 
-type TabId = 'overview' | 'configuration' | 'skills' | 'logs';
+type TabId = 'configuration' | 'skills' | 'monitor';
 
 const TABS: { id: TabId; label: string }[] = [
-  { id: 'overview', label: 'Overview' },
   { id: 'configuration', label: 'Configuration' },
   { id: 'skills', label: 'Skills' },
-  { id: 'logs', label: 'Logs' },
+  { id: 'monitor', label: 'Monitor' },
 ];
 
 export function AgentDetail(): JSX.Element {
@@ -46,12 +33,10 @@ export function AgentDetail(): JSX.Element {
   const [status, setStatus] = useState<RuntimeStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const { apps: messagingApps, loadApps: loadMessagingApps } = useMessagingAppsStore();
-  const channelHealth = useMessagingAppsStore((s) => s.channelHealth);
-  const apps = useMessagingAppsStore((s) => s.apps);
   const [bannerDismissed, setBannerDismissed] = useState(false);
 
   const search = Route.useSearch();
-  const [activeTab, setActiveTab] = useState<TabId>((search.tab as TabId) ?? 'overview');
+  const [activeTab, setActiveTab] = useState<TabId>((search.tab as TabId) ?? 'configuration');
 
   const deployment = deployments.find((d) => d.id === id);
   const logs = logLines[id] ?? [];
@@ -198,14 +183,16 @@ export function AgentDetail(): JSX.Element {
               Stop
             </button>
           )}
-          <button
-            type="button"
-            onClick={handleRemove}
-            className="inline-flex items-center gap-2 rounded-lg border border-red-900/50 px-3 py-2 text-sm text-red-400 transition-colors hover:bg-red-900/30"
-          >
-            <Trash2 size={14} />
-            Remove
-          </button>
+          {isStopped && (
+            <button
+              type="button"
+              onClick={handleRemove}
+              className="inline-flex items-center gap-2 rounded-lg border border-red-900/50 px-3 py-2 text-sm text-red-400 transition-colors hover:bg-red-900/30"
+            >
+              <Trash2 size={14} />
+              Remove
+            </button>
+          )}
         </div>
       </div>
 
@@ -242,8 +229,6 @@ export function AgentDetail(): JSX.Element {
           </button>
         </div>
       )}
-
-      <RuntimeInfoBar status={status} deployment={deployment} />
 
       {deployment.status === 'error' && (
         <div className="mb-6 space-y-2">
@@ -290,16 +275,13 @@ export function AgentDetail(): JSX.Element {
       </div>
 
       {/* Tab content */}
-      {activeTab === 'overview' && (
-        <AgentOverviewTab
-          deployment={deployment}
-          status={status}
-          channelHealth={channelHealth}
-          apps={apps}
-        />
-      )}
       {activeTab === 'configuration' && (
-        <AgentConfigTab deploymentId={id} agentConfig={agentConfig} updateConfig={updateConfig} />
+        <AgentConfigTab
+          deploymentId={id}
+          agentConfig={agentConfig}
+          workspace={deployment.workspace}
+          updateConfig={updateConfig}
+        />
       )}
       {activeTab === 'skills' && (
         <AgentSkillsTab
@@ -308,78 +290,13 @@ export function AgentDetail(): JSX.Element {
           isRunning={isRunning}
         />
       )}
-      {activeTab === 'logs' && <AgentLogsTab logs={logs} initialLevel={search.level} />}
-    </div>
-  );
-}
-
-function RuntimeInfoBar({
-  status,
-  deployment,
-}: { status: RuntimeStatus | null; deployment: AgentDeployment }): JSX.Element {
-  const [expanded, setExpanded] = useState(false);
-
-  return (
-    <div className="mb-6 rounded-lg border border-border bg-sidebar-bg px-4 py-2.5 text-xs">
-      <div className="flex items-center gap-x-5">
-        <span>
-          <span className="text-muted">Uptime</span>{' '}
-          <span className="font-medium">
-            {status?.uptime ? formatUptime(status.uptime) : 'N/A'}
-          </span>
-        </span>
-        {deployment.workspace && (
-          <span className="flex min-w-0 items-center gap-1.5">
-            <span className="text-muted">Workspace</span>
-            <span className="min-w-0 truncate font-mono font-medium" title={deployment.workspace}>
-              {deployment.workspace}
-            </span>
-            <button
-              type="button"
-              onClick={() => deployment.workspace && window.api.openPath(deployment.workspace)}
-              className="shrink-0 rounded p-0.5 text-muted transition-colors hover:text-foreground"
-              title="Open in Finder"
-            >
-              <FolderOpen size={12} />
-            </button>
-          </span>
-        )}
-        <button
-          type="button"
-          onClick={() => setExpanded((e) => !e)}
-          className="ml-auto flex items-center gap-1 text-muted hover:text-foreground"
-        >
-          Details
-          {expanded ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
-        </button>
-      </div>
-      {expanded && (
-        <div className="mt-2 flex flex-wrap items-center gap-x-5 gap-y-1 border-t border-border pt-2 text-muted">
-          <span>
-            PID{' '}
-            <span className="font-medium text-foreground">
-              {status?.agentServerPid ?? deployment.agentServerPid ?? 'N/A'}
-            </span>
-          </span>
-          <span>
-            Chat port{' '}
-            <span className="font-medium text-foreground">
-              {status?.chatPort ?? deployment.chatPort ?? 'N/A'}
-            </span>
-          </span>
-          <span>
-            Mgmt port{' '}
-            <span className="font-medium text-foreground">
-              {status?.managementPort ?? deployment.managementPort ?? 'N/A'}
-            </span>
-          </span>
-          <span>
-            Created{' '}
-            <span className="font-medium text-foreground">
-              {new Date(deployment.createdAt).toLocaleString()}
-            </span>
-          </span>
-        </div>
+      {activeTab === 'monitor' && (
+        <AgentMonitorTab
+          deployment={deployment}
+          status={status}
+          logs={logs}
+          initialLevel={search.level}
+        />
       )}
     </div>
   );
@@ -403,15 +320,6 @@ function StatusBadge({ status }: { status: string }): JSX.Element {
     );
   }
   return <span className="rounded px-2 py-0.5 text-xs bg-sidebar-hover text-muted">{status}</span>;
-}
-
-function formatUptime(ms: number): string {
-  const seconds = Math.floor(ms / 1000);
-  if (seconds < 60) return `${seconds}s`;
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes}m ${seconds % 60}s`;
-  const hours = Math.floor(minutes / 60);
-  return `${hours}h ${minutes % 60}m`;
 }
 
 export const Route = createFileRoute('/agents/$id')({
