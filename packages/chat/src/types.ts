@@ -15,7 +15,8 @@ export type WsClientMessage =
       text: string;
       images?: WsMessageImage[];
     }
-  | { type: 'cancel'; id: string };
+  | { type: 'cancel'; id: string }
+  | { type: 'answer'; id: string; questionId: string; answer: string };
 
 export type WsServerMessage =
   | { type: 'event'; id: string; event: AgentEvent }
