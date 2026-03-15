@@ -865,6 +865,7 @@ export class ProcessRuntime implements DeploymentRuntime {
     if (!jsonFile) throw new Error(`No agent config file found in ${agentsDir}`);
     const agentName = jsonFile.slice(0, -5);
 
+    // 1. Write to config file on disk (for crash recovery / restart)
     const filePath = join(agentsDir, jsonFile);
     const raw = await readFile(filePath, 'utf-8');
     const config = JSON.parse(raw) as Record<string, unknown>;
@@ -875,7 +876,16 @@ export class ProcessRuntime implements DeploymentRuntime {
 
     await writeFile(filePath, JSON.stringify(config, null, 2));
 
-    // Push config change to the running agent server
+    // 2. Update registry so the UI reflects the change immediately
+    if (deployment.config?.agents?.[agentName]) {
+      const agentCfg = deployment.config.agents[agentName];
+      if (patch.model !== undefined) agentCfg.model = patch.model;
+      if (patch.fallbackModels !== undefined) agentCfg.fallbackModels = patch.fallbackModels;
+      if (patch.tools !== undefined) agentCfg.tools = patch.tools;
+      await this.registry.update(id, { config: deployment.config });
+    }
+
+    // 3. Push to running agent server so it takes effect without restart
     if (deployment.status === 'running' && deployment.managementPort && deployment.managementToken) {
       const { ManagementClient } = await import('@dash/management');
       const client = new ManagementClient(
