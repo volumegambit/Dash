@@ -52,13 +52,18 @@ describe('AVAILABLE_TOOLS', () => {
     expect(new Set(values).size).toBe(values.length);
   });
 
-  it('tool values use snake_case', () => {
+  it('tool values use lowercase alphanumeric with underscores', () => {
     for (const tool of AVAILABLE_TOOLS) {
       expect(tool.value).toMatch(/^[a-z][a-z0-9_]*$/);
     }
   });
 
-  it('includes read_file', () => {
-    expect(AVAILABLE_TOOLS.some((t) => t.value === 'read_file')).toBe(true);
+  it('includes core OpenCode tools', () => {
+    const values = AVAILABLE_TOOLS.map((t) => t.value);
+    expect(values).toContain('bash');
+    expect(values).toContain('read');
+    expect(values).toContain('write');
+    expect(values).toContain('edit');
+    expect(values).toContain('ls');
   });
 });

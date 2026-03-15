@@ -16,7 +16,7 @@ describe('MissionControlAPI contract', () => {
       name: 'test-agent',
       model: 'claude-sonnet-4-20250514',
       systemPrompt: 'You are helpful.',
-      tools: ['read_file'],
+      tools: ['read'],
     };
     expect(options.name).toBe('test-agent');
     expect(options.model).toContain('claude');

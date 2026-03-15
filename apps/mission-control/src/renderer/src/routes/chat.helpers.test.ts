@@ -15,7 +15,8 @@ describe('toolIcon', () => {
   it('returns 📂 for list_directory', () => expect(toolIcon('list_directory')).toBe('📂'));
   it('returns 🌐 for web_search', () => expect(toolIcon('web_search')).toBe('🌐'));
   it('returns 🌐 for web_fetch', () => expect(toolIcon('web_fetch')).toBe('🌐'));
-  it('returns 🔧 for mcp', () => expect(toolIcon('mcp')).toBe('🔧'));
+  it('returns 🔌 for mcp', () => expect(toolIcon('mcp')).toBe('🔌'));
+  it('returns ⚡ for skill', () => expect(toolIcon('skill')).toBe('⚡'));
   it('returns 🔧 for totally unknown tool', () => expect(toolIcon('something_else')).toBe('🔧'));
 });
 
