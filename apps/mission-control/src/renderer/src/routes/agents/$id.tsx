@@ -1,7 +1,7 @@
 import type { SkillContent, SkillInfo, SkillsConfig } from '@dash/management';
 import type { RuntimeStatus } from '@dash/mc';
 import { Link, createFileRoute, useNavigate } from '@tanstack/react-router';
-import { ArrowLeft, Circle, FolderOpen, Loader, MessageSquare, RefreshCw, Square, Trash2 } from 'lucide-react';
+import { ArrowLeft, Circle, FolderOpen, Loader, MessageSquare, Play, RefreshCw, Square, Trash2 } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { AVAILABLE_TOOLS } from '../../components/deploy-options.js';
 import { HealthDot } from '../../components/HealthDot.js';
@@ -202,6 +202,7 @@ export function AgentDetail(): JSX.Element {
 
   const resolvedStatus = status?.state ?? deployment.status;
   const isRunning = resolvedStatus === 'running';
+  const isStopped = resolvedStatus === 'stopped' || resolvedStatus === 'error';
   const agentName = deployment.config?.agents
     ? (Object.keys(deployment.config.agents)[0] ?? '')
     : '';
@@ -237,6 +238,21 @@ export function AgentDetail(): JSX.Element {
             >
               <MessageSquare size={14} />
               Chat
+            </button>
+          )}
+          {isStopped && (
+            <button
+              type="button"
+              onClick={handleRestart}
+              disabled={restarting}
+              className="inline-flex items-center gap-2 rounded-lg bg-primary px-3 py-2 text-sm text-white transition-colors hover:bg-primary-hover disabled:opacity-50"
+            >
+              {restarting ? (
+                <Loader size={14} className="animate-spin" />
+              ) : (
+                <Play size={14} />
+              )}
+              {restarting ? 'Starting...' : 'Start'}
             </button>
           )}
           {isRunning && (
