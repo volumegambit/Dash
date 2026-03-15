@@ -216,7 +216,9 @@ async function pushCredentialsToRunningDeployments(): Promise<CredentialPushResu
       result.succeeded++;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      console.error(`[credentials] Failed to push to deployment "${dep.name}" (${dep.id}): ${message}`);
+      console.error(
+        `[credentials] Failed to push to deployment "${dep.name}" (${dep.id}): ${message}`,
+      );
       result.failed.push({ deploymentId: dep.id, name: dep.name, error: message });
     }
   }
@@ -342,6 +344,9 @@ export async function registerIpcHandlers(
   ipcMain.handle('chat:getMessages', (_event, conversationId: string) =>
     getChatService(getWindow).getMessages(conversationId),
   );
+  ipcMain.handle('chat:renameConversation', (_event, conversationId: string, title: string) =>
+    getChatService(getWindow).renameConversation(conversationId, title),
+  );
   ipcMain.handle('chat:deleteConversation', (_event, conversationId: string) =>
     getChatService(getWindow).deleteConversation(conversationId),
   );
@@ -406,7 +411,9 @@ export async function registerIpcHandlers(
         .catch((err) => {
           console.error('[credentials] Unexpected error during push:', err);
         });
-      getModelCache().refresh().catch(() => {});
+      getModelCache()
+        .refresh()
+        .catch(() => {});
     }
   });
 
@@ -426,7 +433,9 @@ export async function registerIpcHandlers(
         .catch((err) => {
           console.error('[credentials] Unexpected error during push:', err);
         });
-      getModelCache().refresh().catch(() => {});
+      getModelCache()
+        .refresh()
+        .catch(() => {});
     }
   });
 
@@ -441,9 +450,7 @@ export async function registerIpcHandlers(
         try {
           const rs = await getRuntime().getStatus(dep.id);
           const mapped = rs.state === 'starting' ? 'provisioning' : rs.state;
-          return mapped !== dep.status
-            ? { ...dep, status: mapped as typeof dep.status }
-            : dep;
+          return mapped !== dep.status ? { ...dep, status: mapped as typeof dep.status } : dep;
         } catch {
           return dep;
         }
@@ -823,7 +830,11 @@ export async function registerIpcHandlers(
   // Deployment config update
   ipcMain.handle(
     'deployments:updateConfig',
-    async (_event, id: string, patch: { model?: string; fallbackModels?: string[]; tools?: string[] }) => {
+    async (
+      _event,
+      id: string,
+      patch: { model?: string; fallbackModels?: string[]; tools?: string[] },
+    ) => {
       await getRuntime().updateAgentConfig(id, patch);
     },
   );
@@ -854,9 +865,14 @@ export async function registerIpcHandlers(
   });
 
   // Background model cache refresh on startup
-  getModelCache().refresh().catch((err) => {
-    console.warn('Background model cache refresh failed:', err instanceof Error ? err.message : err);
-  });
+  getModelCache()
+    .refresh()
+    .catch((err) => {
+      console.warn(
+        'Background model cache refresh failed:',
+        err instanceof Error ? err.message : err,
+      );
+    });
 
   app.on('before-quit', () => {
     healthPoller.stopAll();

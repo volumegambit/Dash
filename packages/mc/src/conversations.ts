@@ -72,6 +72,16 @@ export class ConversationStore {
     return conversations.find((c) => c.id === id) ?? null;
   }
 
+  async rename(id: string, title: string): Promise<void> {
+    const conversations = await this.loadIndex();
+    const idx = conversations.findIndex((c) => c.id === id);
+    if (idx !== -1) {
+      conversations[idx].title = title;
+      conversations[idx].updatedAt = new Date().toISOString();
+      await this.saveIndex(conversations);
+    }
+  }
+
   async delete(id: string): Promise<void> {
     const conversations = await this.loadIndex();
     await this.saveIndex(conversations.filter((c) => c.id !== id));
