@@ -40,7 +40,7 @@ export interface ManagementServerOptions {
   onUpdateCredentials?: (providerApiKeys: Record<string, Record<string, string>>) => Promise<void>;
   onUpdateAgentConfig?: (
     agentName: string,
-    patch: { model?: string; fallbackModels?: string[]; tools?: string[] },
+    patch: { model?: string; fallbackModels?: string[]; tools?: string[]; systemPrompt?: string },
   ) => Promise<void>;
 }
 
@@ -234,9 +234,9 @@ export function createManagementApp(options: ManagementServerOptions): Hono {
       return c.json({ error: 'Agent config updates not supported' } satisfies ErrorResponse, 501);
     }
     const { agentName } = c.req.param();
-    let body: { model?: string; fallbackModels?: string[]; tools?: string[] };
+    let body: { model?: string; fallbackModels?: string[]; tools?: string[]; systemPrompt?: string };
     try {
-      body = await c.req.json<{ model?: string; fallbackModels?: string[]; tools?: string[] }>();
+      body = await c.req.json<typeof body>();
     } catch {
       return c.json({ error: 'Invalid request body' } satisfies ErrorResponse, 400);
     }
