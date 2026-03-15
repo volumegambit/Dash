@@ -85,7 +85,11 @@ export class OpenCodeBackend implements AgentBackend {
   }
 
   /** Build the correct auth payload for the OpenCode SDK based on key type */
-  private static buildAuth(key: string): { type: 'api'; key: string } | { type: 'oauth'; access: string; refresh: string; expires: number } {
+  private static buildAuth(
+    key: string,
+  ):
+    | { type: 'api'; key: string }
+    | { type: 'oauth'; access: string; refresh: string; expires: number } {
     if (OpenCodeBackend.isOAuthToken(key)) {
       // OAuth access token — set a far-future expiry (1 year from now)
       const oneYearMs = 365 * 24 * 60 * 60 * 1000;
@@ -102,20 +106,32 @@ export class OpenCodeBackend implements AgentBackend {
   };
 
   /**
-   * Injects provider API keys into process.env before spawning the opencode server.
-   * createOpencodeServer spreads process.env, so the binary needs the keys there.
+   * Injects provider API keys and XDG isolation dirs into process.env before
+   * spawning the opencode server. createOpencodeServer spreads process.env,
+   * so the binary needs these values there.
    */
-  private injectApiKeysToEnv(): void {
+  private injectEnvForServer(workspace: string): void {
+    // Provider API keys
     for (const [providerID, key] of Object.entries(this.providerApiKeys)) {
       const envVar = OpenCodeBackend.PROVIDER_ENV_VARS[providerID];
       if (envVar && key) {
         process.env[envVar] = key;
       }
     }
+
+    // Isolate OpenCode state per-workspace via XDG directories.
+    // Without this, all OpenCode instances share ~/.local/share/opencode/opencode.db
+    // and auth.json, causing session collisions and credential overwrites.
+    const join = (a: string, b: string) => `${a}/${b}`;
+    const ocDir = join(workspace, '.opencode');
+    process.env.XDG_DATA_HOME = join(ocDir, 'data');
+    process.env.XDG_CONFIG_HOME = join(ocDir, 'config');
+    process.env.XDG_STATE_HOME = join(ocDir, 'state');
+    process.env.XDG_CACHE_HOME = join(ocDir, 'cache');
   }
 
   async start(workspace: string): Promise<void> {
-    this.injectApiKeysToEnv();
+    this.injectEnvForServer(workspace);
     const port = await findFreePort();
     const server = await createOpencodeServer({
       port,
@@ -211,7 +227,7 @@ export class OpenCodeBackend implements AgentBackend {
       );
       await new Promise((resolve) => setTimeout(resolve, delay));
       try {
-        this.injectApiKeysToEnv();
+        this.injectEnvForServer(this.workDir!);
         const port = await findFreePort();
         const server = await createOpencodeServer({
           port,
@@ -478,7 +494,9 @@ export class OpenCodeBackend implements AgentBackend {
         }
       }
     } else {
-      this.logger?.warn('[OpenCode] updateCredentials: SDK not available, keys stored for next restart only');
+      this.logger?.warn(
+        '[OpenCode] updateCredentials: SDK not available, keys stored for next restart only',
+      );
     }
   }
 
