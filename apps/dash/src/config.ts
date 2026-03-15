@@ -23,10 +23,6 @@ export interface DashJsonConfig {
   logging: { level: string };
 }
 
-export interface CredentialsConfig {
-  providerApiKeys?: Record<string, Record<string, string>>;
-}
-
 // --- Runtime config (merged JSON + env) ---
 
 export interface DashConfig {
@@ -105,23 +101,6 @@ async function loadFromConfigDir(
   // Load agents from agents/ subdirectory
   const agents = await loadAgentsFromDirectory(resolve(configDir, 'agents'));
   return { json, agents };
-}
-
-/** Search for config/credentials.json or credentials.json relative to project root */
-async function loadCredentials(projectRoot: string): Promise<CredentialsConfig> {
-  const candidates = [
-    resolve(projectRoot, 'config/credentials.json'),
-    resolve(projectRoot, 'credentials.json'),
-  ];
-
-  for (const path of candidates) {
-    if (existsSync(path)) {
-      const raw = await readFile(path, 'utf-8');
-      return JSON.parse(raw) as CredentialsConfig;
-    }
-  }
-
-  return {};
 }
 
 interface SecretsFile {
@@ -203,9 +182,6 @@ export async function loadConfig(options?: LoadConfigOptions): Promise<DashConfi
   // Load secrets file if provided (read + unlink)
   const secrets = options?.secretsPath ? await loadSecrets(options.secretsPath) : undefined;
 
-  // Load credentials from project (only if no explicit secrets file)
-  const credentials = secrets ? {} : await loadCredentials(projectRoot);
-
   const merged = deepMerge(DEFAULTS, jsonConfig);
 
   // agents/ directory overrides the agents key from dash.json
@@ -213,34 +189,14 @@ export async function loadConfig(options?: LoadConfigOptions): Promise<DashConfi
     merged.agents = directoryAgents;
   }
 
-  // Resolve provider API keys: credentials.json < secrets file < env vars
-  const credEnvMap: Record<string, string[]> = {
-    anthropic: ['ANTHROPIC_API_KEY'],
-    openai: ['OPENAI_API_KEY'],
-    google: ['GOOGLE_API_KEY', 'GEMINI_API_KEY'],
-  };
-
+  // Resolve provider API keys from secrets file only.
+  // No env vars, no credentials.json — the secrets store (via --secrets flag)
+  // is the single source of truth for API keys.
   const providerApiKeys: Record<string, Record<string, string>> = {};
 
-  // Start with credentials.json (lowest priority)
-  if (credentials.providerApiKeys) {
-    for (const [provider, keys] of Object.entries(credentials.providerApiKeys)) {
-      providerApiKeys[provider] = { ...keys };
-    }
-  }
-
-  // Merge secrets file (medium priority)
   if (secrets?.providerApiKeys) {
     for (const [provider, keys] of Object.entries(secrets.providerApiKeys)) {
-      providerApiKeys[provider] = { ...(providerApiKeys[provider] ?? {}), ...keys };
-    }
-  }
-
-  // Env vars populate the default slot (highest priority)
-  for (const [provider, envVars] of Object.entries(credEnvMap)) {
-    const val = envVars.map((v) => process.env[v]).find(Boolean);
-    if (val) {
-      providerApiKeys[provider] = { ...(providerApiKeys[provider] ?? {}), default: val };
+      providerApiKeys[provider] = { ...keys };
     }
   }
 

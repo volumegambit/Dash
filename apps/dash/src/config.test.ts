@@ -102,7 +102,7 @@ describe('loadConfig with --config and --secrets', () => {
     expect(existsSync(secretsPath)).toBe(false);
   });
 
-  it('env vars take precedence over secrets for provider API keys', async () => {
+  it('env vars do not override secrets file for provider API keys', async () => {
     const original = process.env.ANTHROPIC_API_KEY;
     process.env.ANTHROPIC_API_KEY = 'sk-from-env';
 
@@ -116,8 +116,8 @@ describe('loadConfig with --config and --secrets', () => {
       );
 
       const cfg = await loadConfig({ secretsPath });
-      // Resolution order: env vars > secrets > credentials
-      expect(cfg.providerApiKeys.anthropic?.default).toBe('sk-from-env');
+      // Secrets file wins — env vars are intentionally ignored for provider API keys
+      expect(cfg.providerApiKeys.anthropic?.default).toBe('sk-from-secrets');
     } finally {
       if (original !== undefined) {
         process.env.ANTHROPIC_API_KEY = original;
@@ -128,29 +128,12 @@ describe('loadConfig with --config and --secrets', () => {
     }
   });
 
-  it('returns empty providerApiKeys when no keys are available', async () => {
-    const origAnthropic = process.env.ANTHROPIC_API_KEY;
-    const origOpenAI = process.env.OPENAI_API_KEY;
-    const origGoogle = process.env.GOOGLE_API_KEY;
-    // biome-ignore lint/performance/noDelete: must actually remove env vars, not set to "undefined" string
-    delete process.env.ANTHROPIC_API_KEY;
-    // biome-ignore lint/performance/noDelete: must actually remove env vars, not set to "undefined" string
-    delete process.env.OPENAI_API_KEY;
-    // biome-ignore lint/performance/noDelete: must actually remove env vars, not set to "undefined" string
-    delete process.env.GOOGLE_API_KEY;
-
-    // Provide secrets file with no API keys — this bypasses project credentials loading
+  it('returns empty providerApiKeys when secrets file has no keys', async () => {
     const secretsPath = join(tmpDir, 'empty-secrets.json');
     await writeFile(secretsPath, JSON.stringify({}));
 
-    try {
-      const cfg = await loadConfig({ secretsPath });
-      expect(cfg.providerApiKeys).toEqual({});
-    } finally {
-      if (origAnthropic !== undefined) process.env.ANTHROPIC_API_KEY = origAnthropic;
-      if (origOpenAI !== undefined) process.env.OPENAI_API_KEY = origOpenAI;
-      if (origGoogle !== undefined) process.env.GOOGLE_API_KEY = origGoogle;
-    }
+    const cfg = await loadConfig({ secretsPath });
+    expect(cfg.providerApiKeys).toEqual({});
   });
 });
 
