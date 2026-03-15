@@ -489,13 +489,23 @@ export class ProcessRuntime implements DeploymentRuntime {
     const chatToken = generateToken();
     const id = randomUUID().slice(0, 8);
 
-    // Resolve workspace for each agent: use config value or auto-generate
+    // Resolve workspace for each agent: use config value or auto-generate,
+    // then write back to the agent config JSON so the agent server picks it up.
     const mcDataDir = process.env.MC_DATA_DIR || join(homedir(), '.mission-control');
     for (const [name, cfg] of Object.entries(agentConfigs)) {
       if (!cfg.workspace) {
         cfg.workspace = join(mcDataDir, 'workspaces', `${name}-${id}`);
       }
       await mkdir(cfg.workspace, { recursive: true, mode: 0o700 });
+
+      // Write resolved workspace back to the agent config file
+      const agentFile = join(absConfigDir, 'agents', `${name}.json`);
+      if (existsSync(agentFile)) {
+        const raw = await readFile(agentFile, 'utf-8');
+        const json = JSON.parse(raw) as Record<string, unknown>;
+        json.workspace = cfg.workspace;
+        await writeFile(agentFile, JSON.stringify(json, null, 2));
+      }
     }
 
     // Store tokens in secret store
