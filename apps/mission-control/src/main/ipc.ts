@@ -255,6 +255,10 @@ export async function registerIpcHandlers(
     await shell.openExternal(url);
   });
 
+  ipcMain.handle('openPath', async (_event, path: string) => {
+    await shell.openPath(path);
+  });
+
   ipcMain.handle('dialog:openDirectory', async () => {
     const result = await dialog.showOpenDialog({
       properties: ['openDirectory', 'createDirectory'],

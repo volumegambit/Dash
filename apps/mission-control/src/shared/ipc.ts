@@ -67,6 +67,7 @@ export interface MissionControlAPI {
 
   // Shell
   openExternal(url: string): Promise<void>;
+  openPath(path: string): Promise<void>;
   dialogOpenDirectory(): Promise<string | null>;
 
   // Setup
