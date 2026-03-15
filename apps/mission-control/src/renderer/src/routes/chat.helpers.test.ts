@@ -16,7 +16,6 @@ describe('toolIcon', () => {
   it('returns 🌐 for web_search', () => expect(toolIcon('web_search')).toBe('🌐'));
   it('returns 🌐 for web_fetch', () => expect(toolIcon('web_fetch')).toBe('🌐'));
   it('returns 🔌 for mcp', () => expect(toolIcon('mcp')).toBe('🔌'));
-  it('returns ⚡ for skill', () => expect(toolIcon('skill')).toBe('⚡'));
   it('returns 🔧 for totally unknown tool', () => expect(toolIcon('something_else')).toBe('🔧'));
 });
 
@@ -33,7 +32,8 @@ describe('summarize', () => {
   });
 
   it('uses middle-ellipsis for long file paths', () => {
-    const longPath = '/Users/gerry/Projects/claude-workspace/Projects/Dash/apps/mission-control/src/renderer/src/routes/deploy.tsx';
+    const longPath =
+      '/Users/gerry/Projects/claude-workspace/Projects/Dash/apps/mission-control/src/renderer/src/routes/deploy.tsx';
     const result = summarize('read', JSON.stringify({ path: longPath }));
     // Should preserve the filename at the end
     expect(result).toContain('/deploy.tsx');

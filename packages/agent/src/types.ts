@@ -97,8 +97,7 @@ export type AgentEvent =
   | { type: 'agent_spawned'; name: string }
   | { type: 'agent_retry'; attempt: number; reason: string }
   | { type: 'context_compacted'; overflow: boolean }
-  | { type: 'question'; id: string; question: string; options: string[] }
-  | { type: 'skill_loaded'; name: string };
+  | { type: 'question'; id: string; question: string; options: string[] };
 
 export interface DashAgentConfig {
   model: string; // "provider/model-id", e.g. "anthropic/claude-opus-4-5"
@@ -109,10 +108,6 @@ export interface DashAgentConfig {
   provider?: LlmProvider; // For compaction LLM calls
   sessionStore?: SessionStore; // For session persistence + compaction
   modelContextWindow?: number; // Compaction threshold (default: 200000 tokens)
-  skills?: {
-    paths?: string[]; // Local dirs to scan (supports ~/ and relative paths)
-    urls?: string[]; // Remote skill registries to fetch from
-  };
 }
 
 export interface AgentState {

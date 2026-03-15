@@ -54,7 +54,6 @@ const TOOL_LABELS: Record<string, string> = {
   web_search: 'Web Search',
   web_fetch: 'Web Fetch',
   mcp: 'MCP',
-  skill: 'Skill',
   todowrite: 'TodoWrite',
 };
 
@@ -72,7 +71,6 @@ export function toolIcon(name: string): string {
   if (n === 'glob' || n === 'grep') return '🔍';
   if (n === 'ls') return '📂';
   if (n === 'web_search' || n === 'web_fetch') return '🌐';
-  if (n === 'skill') return '⚡';
   if (n === 'mcp') return '🔌';
   if (n === 'todowrite') return '📋';
   return '🔧';
@@ -89,7 +87,6 @@ const PRIMARY_KEYS: Record<string, string[]> = {
   web_search: ['query'],
   web_fetch: ['url'],
   mcp: ['tool'],
-  skill: ['name'],
 };
 
 function truncate(s: string, max = 60): string {

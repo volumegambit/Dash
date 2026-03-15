@@ -1,21 +1,16 @@
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
-import { homedir } from 'node:os';
-import { basename, dirname, join, resolve } from 'node:path';
+import { mkdir } from 'node:fs/promises';
+import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DashAgent, FileLogger, LocalAgentClient, OpenCodeBackend } from '@dash/agent';
 import type { AgentClient } from '@dash/agent';
 import { startChatServer } from '@dash/chat';
 import { startManagementServer } from '@dash/management';
-import type { InfoResponse, SkillsHandlers } from '@dash/management';
+import type { InfoResponse } from '@dash/management';
 import { resolveAgentKeys } from './config.js';
 import type { DashConfig } from './config.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const projectRoot = resolve(__dirname, '../../..');
-
-function expandHome(p: string): string {
-  return p.startsWith('~/') ? join(homedir(), p.slice(2)) : p;
-}
 
 export async function createAgentServer(config: DashConfig) {
   let logger: FileLogger | undefined;
@@ -56,11 +51,9 @@ export async function createAgentServer(config: DashConfig) {
           systemPrompt: agentConfig.systemPrompt,
           tools: agentConfig.tools,
           workspace,
-          skills: agentConfig.skills,
         },
         agentKeys,
         logger,
-        agentConfig.opencodeStateDir,
       );
 
       await backend.start(workspace ?? projectRoot);
@@ -94,98 +87,6 @@ export async function createAgentServer(config: DashConfig) {
     log(`[warn] ${failed.length} agent(s) skipped due to startup failure: ${failed.join(', ')}`);
   }
 
-  const skillsHandlers: SkillsHandlers | undefined = config.managementToken
-    ? {
-        async list(agentName) {
-          const raw = (await backendsByName.get(agentName)?.listSkills()) ?? [];
-          return raw.map((s) => ({
-            name: s.name,
-            description: s.description,
-            location: s.location,
-            editable: !s.location.startsWith('http'),
-          }));
-        },
-
-        async get(agentName, skillName) {
-          const raw = (await backendsByName.get(agentName)?.listSkills()) ?? [];
-          const found = raw.find((s) => s.name === skillName);
-          if (!found) return null;
-          return {
-            name: found.name,
-            description: found.description,
-            location: found.location,
-            editable: !found.location.startsWith('http'),
-            content: found.content,
-          };
-        },
-
-        async updateContent(agentName, skillName, content) {
-          const raw = (await backendsByName.get(agentName)?.listSkills()) ?? [];
-          const found = raw.find((s) => s.name === skillName);
-          if (!found) throw new Error(`Skill "${skillName}" not found`);
-          if (found.location.startsWith('http'))
-            throw new Error('Skill is remote and not editable');
-          const resolvedLocation = resolve(found.location);
-          const paths = config.agents[agentName]?.skills?.paths ?? [];
-          const insideConfiguredPath = paths.some((p) => {
-            const resolvedPath = resolve(expandHome(p));
-            return (
-              resolvedLocation === resolvedPath || resolvedLocation.startsWith(`${resolvedPath}/`)
-            );
-          });
-          if (!insideConfiguredPath) {
-            throw new Error('Skill location is outside configured skill paths');
-          }
-          await writeFile(resolvedLocation, content, 'utf-8');
-        },
-
-        async create(agentName, skillName, description, content) {
-          const paths = config.agents[agentName]?.skills?.paths ?? [];
-          if (paths.length === 0)
-            throw new Error('No writable skill path configured for this agent');
-          const safeSkillName = basename(skillName);
-          if (!safeSkillName || safeSkillName === '.' || safeSkillName === '..') {
-            throw new Error('Invalid skill name');
-          }
-          const skillDir = join(expandHome(paths[0]), safeSkillName);
-          await mkdir(skillDir, { recursive: true });
-          const skillFile = join(skillDir, 'SKILL.md');
-          const fullContent = `---\nname: ${safeSkillName}\ndescription: ${description}\n---\n\n${content}`;
-          await writeFile(skillFile, fullContent, 'utf-8');
-          return {
-            name: safeSkillName,
-            description,
-            location: skillFile,
-            editable: true,
-            content: fullContent,
-          };
-        },
-
-        getConfig(agentName) {
-          return {
-            paths: config.agents[agentName]?.skills?.paths ?? [],
-            urls: config.agents[agentName]?.skills?.urls ?? [],
-          };
-        },
-
-        async updateConfig(agentName, skillsConfig) {
-          if (!config.configDir) {
-            throw new Error(
-              'Config directory not available — agent was not started with --config <dir>',
-            );
-          }
-          const dashJsonPath = join(config.configDir, 'dash.json');
-          const raw = await readFile(dashJsonPath, 'utf-8');
-          const json = JSON.parse(raw) as { agents?: Record<string, { skills?: unknown }> };
-          if (!json.agents?.[agentName]) {
-            throw new Error(`Agent '${agentName}' not found in config`);
-          }
-          json.agents[agentName].skills = skillsConfig;
-          await writeFile(dashJsonPath, JSON.stringify(json, null, 2), 'utf-8');
-        },
-      }
-    : undefined;
-
   let managementClose: (() => Promise<void>) | undefined;
   let chatClose: (() => Promise<void>) | undefined;
 
@@ -213,7 +114,6 @@ export async function createAgentServer(config: DashConfig) {
             process.exit(0);
           },
           logFilePath: config.logDir ? resolve(config.logDir, 'agent.log') : undefined,
-          skills: skillsHandlers,
           onUpdateCredentials: async (providerApiKeys) => {
             config.providerApiKeys = providerApiKeys;
             const providers = Object.keys(providerApiKeys);

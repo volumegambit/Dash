@@ -104,14 +104,8 @@ function createMockApi(): Record<keyof MissionControlAPI, ReturnType<typeof vi.f
     // Updates
     onUpdateAvailable: vi.fn().mockReturnValue(() => {}),
 
-    // Channel health & Skills
+    // Channel health
     deploymentsGetChannelHealth: vi.fn().mockResolvedValue([]),
-    skillsList: vi.fn().mockResolvedValue([]),
-    skillsGet: vi.fn().mockResolvedValue(null),
-    skillsUpdateContent: vi.fn().mockResolvedValue(undefined),
-    skillsCreate: vi.fn().mockResolvedValue(null),
-    skillsGetConfig: vi.fn().mockResolvedValue({ paths: [], urls: [] }),
-    skillsUpdateConfig: vi.fn().mockResolvedValue({ requiresRestart: false }),
   };
 }
 

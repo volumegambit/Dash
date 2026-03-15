@@ -3,7 +3,7 @@ import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { ManagementClient, type SkillsConfig } from '@dash/management';
+import { ManagementClient } from '@dash/management';
 import {
   AgentRegistry,
   ConversationStore,
@@ -139,14 +139,6 @@ function getRuntime(): ProcessRuntime {
 
 function getSettingsStore(): SettingsStore {
   return new SettingsStore(DATA_DIR);
-}
-
-async function getSkillsClient(deploymentId: string) {
-  const dep = await getRegistry().get(deploymentId);
-  if (!dep?.managementPort || !dep?.managementToken) {
-    throw new Error('Deployment not running or Management API not available');
-  }
-  return new ManagementClient(`http://127.0.0.1:${dep.managementPort}`, dep.managementToken);
 }
 
 function cacheKey(key: Buffer): void {
@@ -791,46 +783,6 @@ export async function registerIpcHandlers(
       await registry.add(created);
       return created;
     },
-  );
-
-  // Skills
-  ipcMain.handle('skills:list', async (_e, deploymentId: string, agentName: string) =>
-    (await getSkillsClient(deploymentId)).skills(agentName),
-  );
-  ipcMain.handle(
-    'skills:get',
-    async (_e, deploymentId: string, agentName: string, skillName: string) => {
-      try {
-        return await (await getSkillsClient(deploymentId)).skill(agentName, skillName);
-      } catch (err) {
-        if (err instanceof Error && err.message.includes('404')) return null;
-        throw err;
-      }
-    },
-  );
-  ipcMain.handle(
-    'skills:updateContent',
-    async (_e, deploymentId: string, agentName: string, skillName: string, content: string) =>
-      (await getSkillsClient(deploymentId)).updateSkillContent(agentName, skillName, content),
-  );
-  ipcMain.handle(
-    'skills:create',
-    async (
-      _e,
-      deploymentId: string,
-      agentName: string,
-      name: string,
-      description: string,
-      content: string,
-    ) => (await getSkillsClient(deploymentId)).createSkill(agentName, name, description, content),
-  );
-  ipcMain.handle('skills:getConfig', async (_e, deploymentId: string, agentName: string) =>
-    (await getSkillsClient(deploymentId)).skillsConfig(agentName),
-  );
-  ipcMain.handle(
-    'skills:updateConfig',
-    async (_e, deploymentId: string, agentName: string, config: SkillsConfig) =>
-      (await getSkillsClient(deploymentId)).updateSkillsConfig(agentName, config),
   );
 
   // Deployment config update

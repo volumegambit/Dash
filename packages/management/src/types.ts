@@ -26,22 +26,6 @@ export interface LogsResponse {
   lines: string[];
 }
 
-export interface SkillInfo {
-  name: string;
-  description: string;
-  location: string; // file path or URL
-  editable: boolean; // true for local file paths, false for URL-sourced
-}
-
-export interface SkillContent extends SkillInfo {
-  content: string; // full SKILL.md text
-}
-
-export interface SkillsConfig {
-  paths: string[];
-  urls: string[];
-}
-
 export interface ChannelHealthEntry {
   appId: string;
   type: 'whatsapp' | 'telegram' | string;

@@ -1,7 +1,6 @@
 import { existsSync } from 'node:fs';
 import { readFile, stat } from 'node:fs/promises';
 import type { Server } from 'node:http';
-import { basename } from 'node:path';
 import { serve } from '@hono/node-server';
 import { Hono } from 'hono';
 import type {
@@ -11,24 +10,7 @@ import type {
   InfoResponse,
   LogsResponse,
   ShutdownResponse,
-  SkillContent,
-  SkillInfo,
-  SkillsConfig,
 } from './types.js';
-
-export interface SkillsHandlers {
-  list(agentName: string): Promise<SkillInfo[]>;
-  get(agentName: string, skillName: string): Promise<SkillContent | null>;
-  updateContent(agentName: string, skillName: string, content: string): Promise<void>;
-  create(
-    agentName: string,
-    skillName: string,
-    description: string,
-    content: string,
-  ): Promise<SkillContent>;
-  getConfig(agentName: string): SkillsConfig;
-  updateConfig(agentName: string, config: SkillsConfig): Promise<void>;
-}
 
 export interface ManagementServerOptions {
   port: number;
@@ -36,7 +18,6 @@ export interface ManagementServerOptions {
   getInfo: () => InfoResponse;
   onShutdown: () => Promise<void>;
   logFilePath?: string;
-  skills?: SkillsHandlers;
   onUpdateCredentials?: (providerApiKeys: Record<string, Record<string, string>>) => Promise<void>;
   onUpdateAgentConfig?: (
     agentName: string,
@@ -234,7 +215,12 @@ export function createManagementApp(options: ManagementServerOptions): Hono {
       return c.json({ error: 'Agent config updates not supported' } satisfies ErrorResponse, 501);
     }
     const { agentName } = c.req.param();
-    let body: { model?: string; fallbackModels?: string[]; tools?: string[]; systemPrompt?: string };
+    let body: {
+      model?: string;
+      fallbackModels?: string[];
+      tools?: string[];
+      systemPrompt?: string;
+    };
     try {
       body = await c.req.json<typeof body>();
     } catch {
@@ -248,125 +234,6 @@ export function createManagementApp(options: ManagementServerOptions): Hono {
       return c.json({ error: message } satisfies ErrorResponse, 500);
     }
   });
-
-  if (options.skills) {
-    const h = options.skills;
-
-    app.get('/agents/:agentName/skills/config', (c) => {
-      const { agentName } = c.req.param();
-      return c.json(h.getConfig(agentName));
-    });
-
-    app.patch('/agents/:agentName/skills/config', async (c) => {
-      const { agentName } = c.req.param();
-      let body: Partial<SkillsConfig>;
-      try {
-        body = await c.req.json<Partial<SkillsConfig>>();
-      } catch {
-        return c.json({ error: 'Invalid request body' } satisfies ErrorResponse, 400);
-      }
-      try {
-        const current = h.getConfig(agentName);
-        await h.updateConfig(agentName, {
-          paths: body.paths ?? current.paths,
-          urls: body.urls ?? current.urls,
-        });
-      } catch (err) {
-        const message = err instanceof Error ? err.message : '';
-        if (message.toLowerCase().includes('not found')) {
-          return c.json({ error: message } satisfies ErrorResponse, 404);
-        }
-        return c.json({ error: message || 'Internal server error' } satisfies ErrorResponse, 500);
-      }
-      return c.json({ requiresRestart: true });
-    });
-
-    app.get('/agents/:agentName/skills', async (c) => {
-      const { agentName } = c.req.param();
-      try {
-        return c.json(await h.list(agentName));
-      } catch {
-        return c.json({ error: 'Failed to list skills' } satisfies ErrorResponse, 500);
-      }
-    });
-
-    app.post('/agents/:agentName/skills', async (c) => {
-      const { agentName } = c.req.param();
-      let body: { name: string; description: string; content: string };
-      try {
-        body = await c.req.json<{ name: string; description: string; content: string }>();
-      } catch {
-        return c.json({ error: 'Invalid request body' } satisfies ErrorResponse, 400);
-      }
-      if (!body.name || !body.description || typeof body.content !== 'string') {
-        return c.json(
-          { error: 'Missing required fields: name, description, content' } satisfies ErrorResponse,
-          400,
-        );
-      }
-      const safeSkillName = basename(body.name);
-      if (!safeSkillName || safeSkillName === '.' || safeSkillName === '..') {
-        return c.json({ error: 'Invalid skill name' } satisfies ErrorResponse, 400);
-      }
-      try {
-        const skill = await h.create(agentName, body.name, body.description, body.content);
-        return c.json(skill, 201);
-      } catch (err) {
-        const message = err instanceof Error ? err.message : '';
-        if (message.toLowerCase().includes('no writable')) {
-          return c.json({ error: message } satisfies ErrorResponse, 400);
-        }
-        return c.json({ error: message || 'Internal server error' } satisfies ErrorResponse, 500);
-      }
-    });
-
-    app.get('/agents/:agentName/skills/:skillName', async (c) => {
-      const { agentName, skillName } = c.req.param();
-      try {
-        const skill = await h.get(agentName, skillName);
-        if (!skill) return c.json({ error: 'Skill not found' } satisfies ErrorResponse, 404);
-        return c.json(skill);
-      } catch {
-        return c.json({ error: 'Failed to get skill' } satisfies ErrorResponse, 500);
-      }
-    });
-
-    app.put('/agents/:agentName/skills/:skillName', async (c) => {
-      const { agentName, skillName } = c.req.param();
-      let body: { content: string };
-      try {
-        body = await c.req.json<{ content: string }>();
-      } catch {
-        return c.json({ error: 'Invalid request body' } satisfies ErrorResponse, 400);
-      }
-      if (typeof body.content !== 'string') {
-        return c.json({ error: 'Missing required field: content' } satisfies ErrorResponse, 400);
-      }
-      try {
-        await h.updateContent(agentName, skillName, body.content);
-        return c.json({ success: true });
-      } catch (err) {
-        const message = err instanceof Error ? err.message : '';
-        if (message.toLowerCase().includes('not found')) {
-          return c.json({ error: message } satisfies ErrorResponse, 404);
-        }
-        if (message.toLowerCase().includes('not editable')) {
-          return c.json({ error: message } satisfies ErrorResponse, 403);
-        }
-        if (message.toLowerCase().includes('outside configured')) {
-          return c.json({ error: message } satisfies ErrorResponse, 403);
-        }
-        return c.json({ error: message || 'Internal server error' } satisfies ErrorResponse, 500);
-      }
-    });
-  } else {
-    app.all('/agents/:agentName/skills/*', (c) =>
-      c.json({ error: 'Skills management not configured' } satisfies ErrorResponse, 501),
-    );
-    app.all('/agents/:agentName/skills', (c) =>
-      c.json({ error: 'Skills management not configured' } satisfies ErrorResponse, 501),
-    );
-  }
 
   return app;
 }

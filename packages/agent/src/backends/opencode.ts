@@ -24,15 +24,6 @@ function findFreePort(): Promise<number> {
 
 type OcClient = ReturnType<typeof createOpencodeClient>;
 
-/** Extracts the skill name from a completed skill tool event. Returns null for all other events. */
-export function extractSkillName(event: { type: string; properties: unknown }): string | null {
-  // biome-ignore lint/suspicious/noExplicitAny: dynamic event shape
-  const part = (event.properties as any)?.part;
-  if (part?.type !== 'tool' || part.tool !== 'skill') return null;
-  if (part.state?.status !== 'completed') return null;
-  return part.state?.input?.name ?? null;
-}
-
 export class OpenCodeBackend implements AgentBackend {
   readonly name = 'opencode';
 
@@ -64,7 +55,6 @@ export class OpenCodeBackend implements AgentBackend {
     private config: DashAgentConfig,
     private providerApiKeys: Record<string, string>,
     private logger?: Logger,
-    private opencodeStateDir?: string,
   ) {}
 
   /** Returns a redacted summary of provider keys for logging, e.g. "anthropic:sk-ant-***abcdefghij" */
@@ -120,18 +110,7 @@ export class OpenCodeBackend implements AgentBackend {
       }
     }
 
-    // Isolate OpenCode state via XDG directories so multiple deployments
-    // don't share a single global SQLite DB and auth.json.
-    if (this.opencodeStateDir) {
-      const join = (a: string, b: string) => `${a}/${b}`;
-      process.env.XDG_DATA_HOME = join(this.opencodeStateDir, 'data');
-      process.env.XDG_CONFIG_HOME = join(this.opencodeStateDir, 'config');
-      process.env.XDG_STATE_HOME = join(this.opencodeStateDir, 'state');
-      process.env.XDG_CACHE_HOME = join(this.opencodeStateDir, 'cache');
-    }
-
     // Disable default skill scanning (~/.claude/skills/, project .claude/skills/, etc.)
-    // so each agent only loads skills explicitly configured via config.skills.paths/urls.
     process.env.OPENCODE_DISABLE_EXTERNAL_SKILLS = 'true';
     // Disable Claude Code system prompt injection (agents have their own systemPrompt)
     process.env.OPENCODE_DISABLE_CLAUDE_CODE_PROMPT = 'true';
@@ -146,7 +125,6 @@ export class OpenCodeBackend implements AgentBackend {
       port,
       config: {
         model: this.config.model,
-        ...(this.config.skills && { skills: this.config.skills }),
       },
     });
     this.serverClose = () => server.close();
@@ -242,7 +220,6 @@ export class OpenCodeBackend implements AgentBackend {
           port,
           config: {
             model: this.config.model,
-            ...(this.config.skills && { skills: this.config.skills }),
           },
         });
         this.serverClose?.();
@@ -340,12 +317,6 @@ export class OpenCodeBackend implements AgentBackend {
         const normalized = this.normalizeEvent(event, sessionId);
         if (normalized !== null) {
           yield normalized;
-          if (normalized.type === 'tool_result' && normalized.name === 'skill') {
-            const skillName = extractSkillName(event);
-            if (skillName) {
-              yield { type: 'skill_loaded', name: skillName };
-            }
-          }
         }
       }
     } finally {
@@ -525,14 +496,5 @@ export class OpenCodeBackend implements AgentBackend {
     this.serverClose?.();
     this.serverClose = null;
     this.sdk = null;
-  }
-
-  async listSkills(): Promise<
-    Array<{ name: string; description: string; location: string; content: string }>
-  > {
-    if (!this.sdk) return [];
-    const response = await this.sdk.app.skills();
-    if (response.error) throw new Error(`Failed to list skills: ${String(response.error)}`);
-    return response.data ?? [];
   }
 }

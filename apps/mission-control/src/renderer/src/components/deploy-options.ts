@@ -26,7 +26,6 @@ export const TOOL_DESCRIPTIONS: Record<string, string> = {
   web_search: 'Search the internet for information',
   web_fetch: 'Download content from web pages',
   mcp: 'Connect to external services and tools',
-  skill: 'Use specialized skill workflows',
   apply_patch: 'Apply code changes to files',
   codesearch: 'Search across the entire codebase',
   question: 'Ask the user for clarification',
@@ -84,5 +83,4 @@ export const AVAILABLE_TOOLS: ToolOption[] = [
   { value: 'web_search', label: 'Web Search', description: TOOL_DESCRIPTIONS.web_search },
   { value: 'web_fetch', label: 'Web Fetch', description: TOOL_DESCRIPTIONS.web_fetch },
   { value: 'mcp', label: 'MCP', description: TOOL_DESCRIPTIONS.mcp },
-  { value: 'skill', label: 'Skill', description: TOOL_DESCRIPTIONS.skill },
 ];

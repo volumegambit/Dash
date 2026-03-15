@@ -3,9 +3,6 @@ import type {
   HealthResponse,
   InfoResponse,
   ShutdownResponse,
-  SkillContent,
-  SkillInfo,
-  SkillsConfig,
 } from './types.js';
 
 export class ManagementClient {
@@ -79,60 +76,6 @@ export class ManagementClient {
     const path = query ? `/logs?${query}` : '/logs';
     const result = await this.request<{ lines: string[] }>('GET', path);
     return result.lines;
-  }
-
-  async skills(agentName: string): Promise<SkillInfo[]> {
-    return this.request<SkillInfo[]>('GET', `/agents/${encodeURIComponent(agentName)}/skills`);
-  }
-
-  async skill(agentName: string, skillName: string): Promise<SkillContent> {
-    return this.request<SkillContent>(
-      'GET',
-      `/agents/${encodeURIComponent(agentName)}/skills/${encodeURIComponent(skillName)}`,
-    );
-  }
-
-  async updateSkillContent(agentName: string, skillName: string, content: string): Promise<void> {
-    await this.requestWithBody<{ success: boolean }>(
-      'PUT',
-      `/agents/${encodeURIComponent(agentName)}/skills/${encodeURIComponent(skillName)}`,
-      { content },
-    );
-  }
-
-  async createSkill(
-    agentName: string,
-    skillName: string,
-    description: string,
-    content: string,
-  ): Promise<SkillContent> {
-    return this.requestWithBody<SkillContent>(
-      'POST',
-      `/agents/${encodeURIComponent(agentName)}/skills`,
-      {
-        name: skillName,
-        description,
-        content,
-      },
-    );
-  }
-
-  async skillsConfig(agentName: string): Promise<SkillsConfig> {
-    return this.request<SkillsConfig>(
-      'GET',
-      `/agents/${encodeURIComponent(agentName)}/skills/config`,
-    );
-  }
-
-  async updateSkillsConfig(
-    agentName: string,
-    config: SkillsConfig,
-  ): Promise<{ requiresRestart: boolean }> {
-    return this.requestWithBody<{ requiresRestart: boolean }>(
-      'PATCH',
-      `/agents/${encodeURIComponent(agentName)}/skills/config`,
-      config,
-    );
   }
 
   async updateCredentials(providerApiKeys: Record<string, Record<string, string>>): Promise<void> {

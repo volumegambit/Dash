@@ -34,7 +34,7 @@ describe('buildToolsMap', () => {
     for (const tool of ALL_OPENCODE_TOOLS) {
       expect(map[tool]).toBe(true);
     }
-    expect(Object.keys(map)).toHaveLength(11);
+    expect(Object.keys(map)).toHaveLength(10);
   });
 
   it('enables only listed tools, disables others', () => {
@@ -44,12 +44,11 @@ describe('buildToolsMap', () => {
     expect(map.edit).toBe(false);
     expect(map.web_search).toBe(false);
     expect(map.mcp).toBe(false);
-    expect(map.skill).toBe(false);
   });
 
-  it('always includes all 11 tool keys regardless of input', () => {
+  it('always includes all 10 tool keys regardless of input', () => {
     const map = buildToolsMap(['bash']);
-    expect(Object.keys(map)).toHaveLength(11);
+    expect(Object.keys(map)).toHaveLength(10);
   });
 
   it('returns all false when empty array passed', () => {

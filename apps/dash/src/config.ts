@@ -11,12 +11,7 @@ export interface AgentConfig {
   systemPrompt: string;
   tools?: string[];
   workspace?: string;
-  opencodeStateDir?: string; // isolated XDG base for this agent's OpenCode state
   credentialKeys?: Record<string, string>;
-  skills?: {
-    paths?: string[];
-    urls?: string[];
-  };
 }
 
 export interface DashJsonConfig {
