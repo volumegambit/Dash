@@ -103,7 +103,7 @@ export interface DashAgentConfig {
   model: string; // "provider/model-id", e.g. "anthropic/claude-opus-4-5"
   fallbackModels?: string[]; // ordered list of fallback "provider/model-id" strings
   systemPrompt: string;
-  tools?: string[]; // OpenCode tool names
+  tools?: string[]; // PiAgent tool names (bash, read, write, edit)
   workspace?: string;
   provider?: LlmProvider; // For compaction LLM calls
   sessionStore?: SessionStore; // For session persistence + compaction

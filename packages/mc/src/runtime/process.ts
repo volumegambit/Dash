@@ -428,7 +428,6 @@ export class ProcessRuntime implements DeploymentRuntime {
       systemPrompt: string;
       tools?: string[];
       workspace?: string;
-      opencodeStateDir?: string;
       credentialKeys?: Record<string, string>;
     }
     const agentConfigs: Record<string, AgentCfg> = {};
@@ -490,27 +489,21 @@ export class ProcessRuntime implements DeploymentRuntime {
     const chatToken = generateToken();
     const id = randomUUID().slice(0, 8);
 
-    // Resolve workspace and OpenCode state dir for each agent,
-    // then write back to the agent config JSON so the agent server picks them up.
+    // Resolve workspace for each agent,
+    // then write back to the agent config JSON so the agent server picks it up.
     const mcDataDir = process.env.MC_DATA_DIR || getPlatformDataDir('dash');
-    const agentDataDir = getPlatformDataDir('dash-agent');
     for (const [name, cfg] of Object.entries(agentConfigs)) {
       if (!cfg.workspace) {
         cfg.workspace = join(mcDataDir, 'workspaces', `${name}-${id}`);
       }
       await mkdir(cfg.workspace, { recursive: true, mode: 0o700 });
 
-      // Isolated OpenCode state per-deployment (DB, auth, sessions)
-      cfg.opencodeStateDir = join(agentDataDir, 'opencode', `${name}-${id}`);
-      await mkdir(cfg.opencodeStateDir, { recursive: true, mode: 0o700 });
-
-      // Write resolved paths back to the agent config file
+      // Write resolved workspace back to the agent config file
       const agentFile = join(absConfigDir, 'agents', `${name}.json`);
       if (existsSync(agentFile)) {
         const raw = await readFile(agentFile, 'utf-8');
         const json = JSON.parse(raw) as Record<string, unknown>;
         json.workspace = cfg.workspace;
-        json.opencodeStateDir = cfg.opencodeStateDir;
         await writeFile(agentFile, JSON.stringify(json, null, 2));
       }
     }
