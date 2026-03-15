@@ -14,6 +14,7 @@ interface DeploymentsState {
   deploy(configDir: string): Promise<string>;
   deployWithConfig(options: DeployWithConfigOptions): Promise<string>;
   stop(id: string): Promise<void>;
+  restart(id: string): Promise<void>;
   remove(id: string, deleteWorkspace?: boolean): Promise<void>;
   getStatus(id: string): Promise<RuntimeStatus>;
   updateConfig(id: string, patch: { model?: string; fallbackModels?: string[]; tools?: string[] }): Promise<void>;
@@ -90,6 +91,15 @@ export const useDeploymentsStore = create<DeploymentsState>((set, get) => ({
   async stop(id: string) {
     try {
       await window.api.deploymentsStop(id);
+      await get().loadDeployments();
+    } catch (err) {
+      set({ error: (err as Error).message });
+    }
+  },
+
+  async restart(id: string) {
+    try {
+      await window.api.deploymentsRestart(id);
       await get().loadDeployments();
     } catch (err) {
       set({ error: (err as Error).message });

@@ -742,8 +742,126 @@ export class ProcessRuntime implements DeploymentRuntime {
     return id;
   }
 
-  async start(_id: string): Promise<void> {
-    throw new Error('Re-starting stopped deployments is not yet supported. Use deploy instead.');
+  async start(id: string): Promise<void> {
+    const deployment = await this.registry.get(id);
+    if (!deployment) throw new Error(`Deployment "${id}" not found`);
+    if (!deployment.configDir) throw new Error(`Deployment "${id}" has no config directory`);
+
+    // Stop the old process if still running
+    if (deployment.status === 'running' || deployment.status === 'provisioning') {
+      await this.stop(id);
+    }
+
+    // Allocate fresh ports and tokens
+    const [managementPort, chatPort] = await Promise.all([
+      findAvailablePort(),
+      findAvailablePort(),
+    ]);
+    const managementToken = generateToken();
+    const chatToken = generateToken();
+
+    // Update stored tokens
+    await this.secrets.set(`agent-token:${id}`, managementToken);
+    await this.secrets.set(`chat-token:${id}`, chatToken);
+
+    // Read fresh provider API keys from secret store
+    const allSecretKeys = await this.secrets.list();
+    const providerApiKeys: Record<string, Record<string, string>> = {};
+    for (const secretKey of allSecretKeys) {
+      const parsed = parseProviderSecretKey(secretKey);
+      if (!parsed) continue;
+      const value = await this.secrets.get(secretKey);
+      if (!value) continue;
+      if (!providerApiKeys[parsed.provider]) {
+        providerApiKeys[parsed.provider] = {};
+      }
+      providerApiKeys[parsed.provider][parsed.keyName] = value;
+    }
+
+    if (Object.keys(providerApiKeys).length === 0) {
+      throw new Error(
+        'No provider API key configured. Add at least one API key in Mission Control Settings.',
+      );
+    }
+
+    // Write temp secrets file
+    const agentSecretsFile: AgentSecretsFile = {
+      providerApiKeys,
+      managementToken,
+      chatToken,
+    };
+    const agentSecretsPath = await writeSecretsFile(agentSecretsFile, 'agent-secrets');
+
+    // Update registry to provisioning
+    await this.registry.update(id, {
+      status: 'provisioning',
+      managementPort,
+      managementToken,
+      chatPort,
+      chatToken,
+      errorMessage: undefined,
+      startupLogs: undefined,
+    });
+
+    // Spawn agent-server
+    const agentServerBin = join(this.projectRoot, 'apps/dash/dist/index.js');
+    const agentServer = this.spawner.spawn(
+      'node',
+      [agentServerBin, '--config', deployment.configDir, '--secrets', agentSecretsPath],
+      {
+        env: {
+          ...process.env,
+          MANAGEMENT_API_PORT: String(managementPort),
+          CHAT_API_PORT: String(chatPort),
+        },
+        stdio: ['ignore', 'pipe', 'pipe'],
+        detached: false,
+      },
+    );
+
+    // Wait for startup
+    const startupResult = await this.startupWatcher(agentServer, managementPort);
+
+    if (!startupResult.success) {
+      if (agentServer.exitCode === null) agentServer.kill('SIGKILL');
+      (agentServer.stdout as { destroy?: () => void } | undefined)?.destroy?.();
+      (agentServer.stderr as { destroy?: () => void } | undefined)?.destroy?.();
+
+      await this.registry.update(id, {
+        status: 'error',
+        errorMessage: startupResult.reason,
+        startupLogs: startupResult.logs,
+      });
+
+      throw new DeploymentStartupError(id, startupResult.reason);
+    }
+
+    // Success
+    (agentServer as { unref?: () => void }).unref?.();
+    (agentServer.stdout as { destroy?: () => void } | undefined)?.destroy?.();
+    (agentServer.stderr as { destroy?: () => void } | undefined)?.destroy?.();
+
+    // Re-register with gateway
+    const gatewayClient = await this.ensureGateway();
+    if (gatewayClient) {
+      await this.registerWithGateway(id);
+    }
+
+    this.processes.set(id, { agentServer, startTime: Date.now() });
+
+    await this.registry.update(id, {
+      status: 'running',
+      agentServerPid: agentServer.pid,
+    });
+
+    agentServer.on('exit', async () => {
+      if (!this.processes.get(id)) return;
+      try {
+        await this.registry.update(id, { status: 'stopped' });
+      } catch {
+        // Registry update can fail if already removed
+      }
+    });
   }
 
   async stop(id: string): Promise<void> {

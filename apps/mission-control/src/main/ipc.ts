@@ -490,6 +490,24 @@ export async function registerIpcHandlers(
     }
   });
 
+  ipcMain.handle('deployments:restart', async (_event, id: string) => {
+    healthPoller.stop(id);
+    await getRuntime().start(id);
+    const dep = await getRegistry().get(id);
+    if (dep?.managementPort && dep?.managementToken) {
+      healthPoller.start(id, dep.managementPort, dep.managementToken, (status) => {
+        const win = getWindow();
+        if (win && !win.isDestroyed()) {
+          win.webContents.send('deployment:statusChange', id, status);
+        }
+      });
+    }
+    const win = getWindow();
+    if (win) {
+      win.webContents.send('deployment:statusChange', id, dep?.status ?? 'running');
+    }
+  });
+
   ipcMain.handle('deployments:remove', async (_event, id: string, deleteWorkspace?: boolean) => {
     healthPoller.stop(id);
 
