@@ -294,6 +294,7 @@ export function Chat(): JSX.Element {
   const [selectedAgentName, setSelectedAgentName] = useState(search.agentName || '');
   const [input, setInput] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const navigateToLogs = useCallback(
     (timestamp: string) => {
@@ -356,10 +357,20 @@ export function Chat(): JSX.Element {
     }
   }, [selectedDeploymentId, selectedAgentName, createConversation, selectConversation]);
 
+  const resizeTextarea = useCallback(() => {
+    const ta = textareaRef.current;
+    if (!ta) return;
+    ta.style.height = 'auto';
+    ta.style.height = `${Math.min(ta.scrollHeight, 160)}px`;
+  }, []);
+
   const handleSend = useCallback(async () => {
     const text = input.trim();
     if (!text || !selectedConversationId || isStreaming) return;
     setInput('');
+    if (textareaRef.current) {
+      textareaRef.current.style.height = 'auto';
+    }
     try {
       await sendMessage(selectedConversationId, text);
     } catch (err) {
@@ -502,15 +513,25 @@ export function Chat(): JSX.Element {
               handleSend();
             }}
           >
-            <input
-              type="text"
+            <textarea
+              ref={textareaRef}
+              rows={1}
               value={input}
-              onChange={(e) => setInput(e.target.value)}
+              onChange={(e) => {
+                setInput(e.target.value);
+                resizeTextarea();
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                  e.preventDefault();
+                  handleSend();
+                }
+              }}
               placeholder={
                 selectedConversationId ? 'Type a message…' : 'Select a conversation first'
               }
               disabled={!selectedConversationId || isStreaming}
-              className="flex-1 rounded-lg border border-border bg-sidebar-bg px-4 py-2 text-sm text-foreground placeholder:text-muted focus:border-primary focus:outline-none disabled:opacity-50"
+              className="flex-1 resize-none rounded-lg border border-border bg-sidebar-bg px-4 py-2 text-sm text-foreground placeholder:text-muted focus:border-primary focus:outline-none disabled:opacity-50"
             />
             {isStreaming ? (
               <button
