@@ -18,6 +18,8 @@ const api: MissionControlAPI = {
   chatCreateConversation: (deploymentId, agentName) =>
     ipcRenderer.invoke('chat:createConversation', deploymentId, agentName),
   chatGetMessages: (conversationId) => ipcRenderer.invoke('chat:getMessages', conversationId),
+  chatRenameConversation: (conversationId, title) =>
+    ipcRenderer.invoke('chat:renameConversation', conversationId, title),
   chatDeleteConversation: (conversationId) =>
     ipcRenderer.invoke('chat:deleteConversation', conversationId),
   chatSendMessage: (conversationId, text) =>
@@ -155,8 +157,13 @@ const api: MissionControlAPI = {
   modelsRefresh: () => ipcRenderer.invoke('models:refresh'),
 
   // Credentials
-  onCredentialsPushFailed: (callback: (failures: { deploymentId: string; name: string; error: string }[]) => void): (() => void) => {
-    const handler = (_: Electron.IpcRendererEvent, failures: { deploymentId: string; name: string; error: string }[]) => callback(failures);
+  onCredentialsPushFailed: (
+    callback: (failures: { deploymentId: string; name: string; error: string }[]) => void,
+  ): (() => void) => {
+    const handler = (
+      _: Electron.IpcRendererEvent,
+      failures: { deploymentId: string; name: string; error: string }[],
+    ) => callback(failures);
     ipcRenderer.on('credentials:pushFailed', handler);
     return () => ipcRenderer.removeListener('credentials:pushFailed', handler);
   },
