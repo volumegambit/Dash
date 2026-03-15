@@ -1,28 +1,39 @@
+/** Normalize legacy tool names (read_file, write_file, etc.) to OpenCode names */
+function normalizeTool(name: string): string {
+  switch (name) {
+    case 'read_file': return 'read';
+    case 'write_file': return 'write';
+    case 'list_directory': return 'ls';
+    case 'execute_command': return 'bash';
+    default: return name;
+  }
+}
+
 export function toolIcon(name: string): string {
-  if (name === 'bash' || name === 'execute_command') return '💻';
-  if (name === 'write' || name === 'write_file' || name === 'edit') return '📝';
-  if (name === 'read' || name === 'read_file') return '📖';
-  if (name === 'glob' || name === 'grep') return '🔍';
-  if (name === 'ls' || name === 'list_directory') return '📂';
-  if (name === 'web_search' || name === 'web_fetch') return '🌐';
+  const n = normalizeTool(name);
+  if (n === 'bash') return '💻';
+  if (n === 'write' || n === 'edit') return '📝';
+  if (n === 'read') return '📖';
+  if (n === 'glob' || n === 'grep') return '🔍';
+  if (n === 'ls') return '📂';
+  if (n === 'web_search' || n === 'web_fetch') return '🌐';
+  if (n === 'skill') return '⚡';
+  if (n === 'mcp') return '🔌';
   return '🔧';
 }
 
 const PRIMARY_KEYS: Record<string, string[]> = {
   bash: ['command'],
-  execute_command: ['command'],
   write: ['path'],
-  write_file: ['path'],
   edit: ['path'],
   read: ['path'],
-  read_file: ['path'],
   glob: ['pattern'],
   grep: ['pattern', 'query'],
   ls: ['path', 'directory'],
-  list_directory: ['path', 'directory'],
   web_search: ['query'],
   web_fetch: ['url'],
   mcp: ['tool'],
+  skill: ['name'],
 };
 
 function truncate(s: string, max = 40): string {
@@ -38,7 +49,7 @@ export function summarize(name: string, input: string): string {
     return '';
   }
 
-  const keys = PRIMARY_KEYS[name] ?? [];
+  const keys = PRIMARY_KEYS[normalizeTool(name)] ?? [];
   for (const key of keys) {
     const val = parsed[key];
     if (typeof val === 'string' && val) return truncate(val);

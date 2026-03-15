@@ -91,14 +91,14 @@ describe('DeployWizard', () => {
     const user = userEvent.setup();
     render(<DeployWizard />);
 
-    const readFileCheckbox = screen.getByRole('checkbox', { name: /read file/i });
-    expect(readFileCheckbox).not.toBeChecked();
+    const bashCheckbox = screen.getByRole('checkbox', { name: /^bash$/i });
+    expect(bashCheckbox).not.toBeChecked();
 
-    await user.click(readFileCheckbox);
-    expect(readFileCheckbox).toBeChecked();
+    await user.click(bashCheckbox);
+    expect(bashCheckbox).toBeChecked();
 
-    await user.click(readFileCheckbox);
-    expect(readFileCheckbox).not.toBeChecked();
+    await user.click(bashCheckbox);
+    expect(bashCheckbox).not.toBeChecked();
   });
 
   it('review step shows correct summary', async () => {
