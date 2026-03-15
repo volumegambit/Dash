@@ -158,4 +158,60 @@ describe('ChatService', () => {
 
     void serverWs; // suppress unused variable warning
   });
+
+  it('answerQuestion sends answer over active WebSocket', async () => {
+    await registry.add(makeDeployment(BASE_PORT + 500));
+
+    let receivedAnswer: Record<string, unknown> | undefined;
+    wss = new WebSocketServer({ port: BASE_PORT + 500 });
+    wss.on('connection', (ws) => {
+      ws.on('message', (raw) => {
+        const msg = JSON.parse(String(raw));
+        if (msg.type === 'message') {
+          // Send a question event, then hang (don't send done)
+          ws.send(
+            JSON.stringify({
+              type: 'event',
+              id: msg.id,
+              event: { type: 'question', id: 'q-1', question: 'Pick', options: ['A', 'B'] },
+            }),
+          );
+        } else if (msg.type === 'answer') {
+          receivedAnswer = msg;
+          // Now send done to complete the stream
+          ws.send(JSON.stringify({ type: 'done', id: msg.id }));
+        }
+      });
+    });
+    await new Promise<void>((r) => wss?.on('listening', r));
+
+    const conv = await service.createConversation('dep-1', 'myagent');
+    service.sendMessage(conv.id, 'hello').catch(() => {});
+
+    // Wait for question event to arrive
+    await vi.waitFor(() => {
+      expect(onEvent).toHaveBeenCalledWith(
+        conv.id,
+        expect.objectContaining({ type: 'question', id: 'q-1' }),
+      );
+    });
+
+    // Send answer
+    service.answerQuestion(conv.id, 'q-1', 'A');
+
+    // Wait for the answer to be received by the mock server
+    await vi.waitFor(() => {
+      expect(receivedAnswer).toBeDefined();
+    });
+
+    expect(receivedAnswer).toMatchObject({
+      type: 'answer',
+      questionId: 'q-1',
+      answer: 'A',
+    });
+  });
+
+  it('answerQuestion throws if no active stream', () => {
+    expect(() => service.answerQuestion('nonexistent', 'q-1', 'A')).toThrow('No active stream');
+  });
 });

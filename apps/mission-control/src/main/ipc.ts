@@ -357,6 +357,11 @@ export async function registerIpcHandlers(
   ipcMain.handle('chat:cancel', (_event, conversationId: string) => {
     getChatService(getWindow).cancel(conversationId);
   });
+  ipcMain.handle(
+    'chat:answer-question',
+    (_event, conversationId: string, questionId: string, answer: string) =>
+      getChatService(getWindow).answerQuestion(conversationId, questionId, answer),
+  );
 
   // Secrets handlers
   ipcMain.handle('secrets:needsSetup', async () => {

@@ -25,6 +25,8 @@ const api: MissionControlAPI = {
   chatSendMessage: (conversationId, text, images) =>
     ipcRenderer.invoke('chat:sendMessage', conversationId, text, images),
   chatCancel: (conversationId) => ipcRenderer.invoke('chat:cancel', conversationId),
+  chatAnswerQuestion: (conversationId: string, questionId: string, answer: string) =>
+    ipcRenderer.invoke('chat:answer-question', conversationId, questionId, answer),
   chatOnEvent: (callback) => {
     const listener = (
       _event: Electron.IpcRendererEvent,

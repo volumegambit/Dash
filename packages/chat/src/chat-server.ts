@@ -2,6 +2,7 @@ import type { Server } from 'node:http';
 import { serve } from '@hono/node-server';
 import { createNodeWebSocket } from '@hono/node-ws';
 import { Hono } from 'hono';
+import type { AgentClient } from '@dash/agent';
 import type { ChatServerOptions, WsClientMessage, WsServerMessage } from './types.js';
 
 function validateMessage(msg: unknown): msg is WsClientMessage {
@@ -10,6 +11,10 @@ function validateMessage(msg: unknown): msg is WsClientMessage {
   if (typeof m.id !== 'string' || typeof m.type !== 'string') return false;
 
   if (m.type === 'cancel') return true;
+
+  if (m.type === 'answer') {
+    return typeof m.questionId === 'string' && typeof m.answer === 'string';
+  }
 
   if (m.type === 'message') {
     const valid =
@@ -51,7 +56,7 @@ export function createChatApp(options: ChatServerOptions) {
       }
 
       // Track active streams so we can stop them on disconnect
-      const activeStreams = new Map<string, AbortController>();
+      const activeStreams = new Map<string, { controller: AbortController; agent: AgentClient }>();
 
       return {
         onMessage(event, ws) {
@@ -86,13 +91,23 @@ export function createChatApp(options: ChatServerOptions) {
           const msg = parsed;
 
           if (msg.type === 'cancel') {
-            const controller = activeStreams.get(msg.id);
-            if (controller) {
-              controller.abort();
+            const entry = activeStreams.get(msg.id);
+            if (entry) {
+              entry.controller.abort();
               activeStreams.delete(msg.id);
             }
             const ack: WsServerMessage = { type: 'done', id: msg.id };
             ws.send(JSON.stringify(ack));
+            return;
+          }
+
+          if (msg.type === 'answer') {
+            const entry = activeStreams.get(msg.id);
+            if (entry?.agent.answerQuestion) {
+              entry.agent.answerQuestion(msg.questionId, [[msg.answer]]).catch((err) => {
+                logger?.error(`[ChatServer] answerQuestion failed: ${err instanceof Error ? err.message : String(err)}`);
+              });
+            }
             return;
           }
 
@@ -109,7 +124,7 @@ export function createChatApp(options: ChatServerOptions) {
             }
 
             const controller = new AbortController();
-            activeStreams.set(msg.id, controller);
+            activeStreams.set(msg.id, { controller, agent });
 
             (async () => {
               const images = msg.images?.map((img) => ({
@@ -167,7 +182,7 @@ export function createChatApp(options: ChatServerOptions) {
 
         onClose() {
           // Abort all active streams when the client disconnects
-          for (const controller of activeStreams.values()) {
+          for (const { controller } of activeStreams.values()) {
             controller.abort();
           }
           activeStreams.clear();

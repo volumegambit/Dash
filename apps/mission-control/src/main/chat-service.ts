@@ -4,7 +4,7 @@ import WebSocket from 'ws';
 import type { McAgentEvent } from '../shared/ipc.js';
 
 export class ChatService {
-  private activeStreams = new Map<string, WebSocket>();
+  private activeStreams = new Map<string, { ws: WebSocket; msgId: string }>();
 
   constructor(
     private registry: AgentRegistry,
@@ -63,10 +63,10 @@ export class ChatService {
 
     const token = deployment.chatToken;
     const url = `ws://localhost:${deployment.chatPort}/ws${token ? `?token=${encodeURIComponent(token)}` : ''}`;
-    const ws = new WebSocket(url);
-    this.activeStreams.set(conversationId, ws);
-
     const msgId = randomUUID();
+    const ws = new WebSocket(url);
+    this.activeStreams.set(conversationId, { ws, msgId });
+
     const accumulatedEvents: McAgentEvent[] = [];
 
     ws.addEventListener('open', () => {
@@ -144,10 +144,25 @@ export class ChatService {
   }
 
   cancel(conversationId: string): void {
-    const ws = this.activeStreams.get(conversationId);
-    if (ws) {
+    const entry = this.activeStreams.get(conversationId);
+    if (entry) {
       this.activeStreams.delete(conversationId);
-      ws.close();
+      entry.ws.close();
     }
+  }
+
+  answerQuestion(conversationId: string, questionId: string, answer: string): void {
+    const entry = this.activeStreams.get(conversationId);
+    if (!entry) {
+      throw new Error(`No active stream for conversation "${conversationId}"`);
+    }
+    entry.ws.send(
+      JSON.stringify({
+        type: 'answer',
+        id: entry.msgId,
+        questionId,
+        answer,
+      }),
+    );
   }
 }

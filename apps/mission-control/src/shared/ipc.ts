@@ -15,6 +15,7 @@ export type McAgentEvent =
   | { type: 'tool_use_delta'; partial_json: string }
   | { type: 'tool_result'; id: string; name: string; content: string; isError?: boolean }
   | { type: 'response'; content: string; usage: Record<string, number> }
+  | { type: 'question'; id: string; question: string; options: string[] }
   | { type: 'error'; error: string; timestamp: string };
 
 export interface DeployWithConfigOptions {
@@ -91,6 +92,7 @@ export interface MissionControlAPI {
     images?: { mediaType: string; data: string }[],
   ): Promise<void>;
   chatCancel(conversationId: string): Promise<void>;
+  chatAnswerQuestion(conversationId: string, questionId: string, answer: string): Promise<void>;
   chatOnEvent(callback: (conversationId: string, event: McAgentEvent) => void): () => void;
   chatOnDone(callback: (conversationId: string) => void): () => void;
   chatOnError(callback: (conversationId: string, error: string) => void): () => void;

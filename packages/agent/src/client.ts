@@ -8,6 +8,7 @@ export interface AgentClient {
     text: string,
     options?: { images?: ImageBlock[] },
   ): AsyncGenerator<AgentEvent>;
+  answerQuestion?(id: string, answers: string[][]): Promise<void>;
 }
 
 export class LocalAgentClient implements AgentClient {
@@ -20,5 +21,9 @@ export class LocalAgentClient implements AgentClient {
     options?: { images?: ImageBlock[] },
   ): AsyncGenerator<AgentEvent> {
     yield* this.agent.chat(channelId, conversationId, text, options);
+  }
+
+  async answerQuestion(id: string, answers: string[][]): Promise<void> {
+    await this.agent.answerQuestion(id, answers);
   }
 }
