@@ -252,8 +252,10 @@ export async function createAgentServer(config: DashConfig) {
             const agentConfig = config.agents[agentName];
             if (agentConfig) {
               if (patch.model !== undefined) agentConfig.model = patch.model;
-              if (patch.fallbackModels !== undefined) agentConfig.fallbackModels = patch.fallbackModels;
+              if (patch.fallbackModels !== undefined)
+                agentConfig.fallbackModels = patch.fallbackModels;
               if (patch.tools !== undefined) agentConfig.tools = patch.tools;
+              if (patch.systemPrompt !== undefined) agentConfig.systemPrompt = patch.systemPrompt;
             }
 
             const changes = Object.entries(patch)

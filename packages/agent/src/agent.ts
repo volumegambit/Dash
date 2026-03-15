@@ -15,11 +15,17 @@ export class DashAgent {
     private config: DashAgentConfig,
   ) {}
 
-  /** Update agent config at runtime (e.g. model, fallbackModels, tools). */
-  updateConfig(patch: { model?: string; fallbackModels?: string[]; tools?: string[] }): void {
+  /** Update agent config at runtime (e.g. model, fallbackModels, tools, systemPrompt). */
+  updateConfig(patch: {
+    model?: string;
+    fallbackModels?: string[];
+    tools?: string[];
+    systemPrompt?: string;
+  }): void {
     if (patch.model !== undefined) this.config.model = patch.model;
     if (patch.fallbackModels !== undefined) this.config.fallbackModels = patch.fallbackModels;
     if (patch.tools !== undefined) this.config.tools = patch.tools;
+    if (patch.systemPrompt !== undefined) this.config.systemPrompt = patch.systemPrompt;
   }
 
   async *chat(

@@ -141,7 +141,7 @@ export class ManagementClient {
 
   async updateAgentConfig(
     agentName: string,
-    patch: { model?: string; fallbackModels?: string[]; tools?: string[] },
+    patch: { model?: string; fallbackModels?: string[]; tools?: string[]; systemPrompt?: string },
   ): Promise<void> {
     await this.requestWithBody<{ success: boolean }>(
       'PATCH',
