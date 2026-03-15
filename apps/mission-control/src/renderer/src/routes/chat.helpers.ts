@@ -43,6 +43,27 @@ export function parseTodos(input: string): TodoItem[] | null {
   }
 }
 
+const TOOL_LABELS: Record<string, string> = {
+  bash: 'Bash',
+  read: 'Read',
+  write: 'Write',
+  edit: 'Edit',
+  glob: 'Glob',
+  grep: 'Grep',
+  ls: 'List Directory',
+  web_search: 'Web Search',
+  web_fetch: 'Web Fetch',
+  mcp: 'MCP',
+  skill: 'Skill',
+  todowrite: 'TodoWrite',
+};
+
+/** Return a human-friendly label for a tool name */
+export function toolLabel(name: string): string {
+  const n = normalizeTool(name);
+  return TOOL_LABELS[n] ?? name.charAt(0).toUpperCase() + name.slice(1);
+}
+
 export function toolIcon(name: string): string {
   const n = normalizeTool(name);
   if (n === 'bash') return '💻';

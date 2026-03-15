@@ -25,6 +25,7 @@ import {
   parseTodos,
   summarize,
   toolIcon,
+  toolLabel,
 } from './chat.helpers.js';
 
 // --- Event rendering helpers ---
@@ -114,7 +115,7 @@ function renderEvents(
     const inProgressSummary = toolInputBuffer ? summarize(toolName, toolInputBuffer) : '';
     elements.push(
       <div key="tool-progress" className="mb-2 text-xs text-muted">
-        {toolIcon(toolName)} <span className="font-mono">{toolName}</span>
+        {toolIcon(toolName)} <span className="font-mono">{toolLabel(toolName)}</span>
         {inProgressSummary && <span className="ml-1">→ {inProgressSummary}</span>}
         {' …'}
       </div>,
@@ -204,7 +205,7 @@ function ToolBlock({
         onClick={() => setOpen((o) => !o)}
         className="w-full px-3 py-1.5 text-left hover:text-foreground"
       >
-        {icon} <span className="font-mono">{name}</span>
+        {icon} <span className="font-mono">{toolLabel(name)}</span>
         {summary && <span className="ml-1 text-muted">→ {summary}</span>}
         {isError ? ' ✗' : ' ✓'}
       </button>
@@ -280,10 +281,9 @@ function MessageBubble({
           )}
           {userImages && userImages.length > 0 && (
             <div className="mt-2 flex flex-wrap gap-2">
-              {/* biome-ignore lint/suspicious/noArrayIndexKey: images have no stable ID */}
               {userImages.map((img, i) => (
                 <img
-                  key={`img-${i}`}
+                  key={`img-${img.mediaType}-${img.data.slice(0, 16)}-${i}`}
                   src={`data:${img.mediaType};base64,${img.data}`}
                   alt={`Attached ${i + 1}`}
                   className="max-h-48 max-w-full rounded"
@@ -302,7 +302,7 @@ function MessageBubble({
 
   return (
     <div className="mb-4">
-      <div className="max-w-[80%] rounded-lg bg-sidebar-bg px-4 py-2 text-sm text-foreground">
+      <div className="max-w-[80%] px-4 py-2 text-sm text-foreground">
         {renderEvents(events, navigateToLogs)}
       </div>
       {usage && (
