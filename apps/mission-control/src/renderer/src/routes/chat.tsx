@@ -3,6 +3,7 @@ import { createFileRoute, useNavigate } from '@tanstack/react-router';
 import { Loader, Plus, Send, Square, Trash2 } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { McAgentEvent } from '../../../shared/ipc.js';
+import { Markdown } from '../components/Markdown.js';
 import { useChatStore } from '../stores/chat.js';
 import { useDeploymentsStore } from '../stores/deployments.js';
 import {
@@ -43,9 +44,9 @@ function renderEvents(
       // Flush text before tool
       if (textBuffer) {
         elements.push(
-          <p key={`text-${blockCount++}`} className="whitespace-pre-wrap">
-            {textBuffer}
-          </p>,
+          <div key={`text-${blockCount++}`}>
+            <Markdown>{textBuffer}</Markdown>
+          </div>,
         );
         textBuffer = '';
       }
@@ -92,9 +93,9 @@ function renderEvents(
   if (thinkingBuffer) elements.push(<ThinkingBlock key="think-final" text={thinkingBuffer} />);
   if (textBuffer)
     elements.push(
-      <p key="text-final" className="whitespace-pre-wrap">
-        {textBuffer}
-      </p>,
+      <div key="text-final">
+        <Markdown>{textBuffer}</Markdown>
+      </div>,
     );
   // Flush in-progress tool call (tool_use_start seen but no tool_result yet)
   if (toolName) {
@@ -154,9 +155,7 @@ function TodoListBlock({ todos }: { todos: TodoItem[] }): JSX.Element {
         return (
           <div key={todo.id ?? todo.content} className="flex items-start gap-2">
             <span className={`mt-px ${st.color}`}>{st.icon}</span>
-            <span
-              className={todo.status === 'completed' ? 'line-through text-muted' : ''}
-            >
+            <span className={todo.status === 'completed' ? 'line-through text-muted' : ''}>
               {todo.content}
             </span>
             {pr && (
@@ -209,9 +208,7 @@ function ToolBlock({
               >
                 {showRaw ? 'Hide raw' : 'Show raw'}
               </button>
-              {showRaw && (
-                <pre className="mt-1 whitespace-pre-wrap text-muted">{input}</pre>
-              )}
+              {showRaw && <pre className="mt-1 whitespace-pre-wrap text-muted">{input}</pre>}
             </>
           ) : (
             <>
@@ -463,9 +460,7 @@ export function Chat(): JSX.Element {
         {!selectedConversationId && (
           <div className="border-b border-border px-6 py-4">
             <h1 className="text-2xl font-bold">Chat</h1>
-            <p className="mt-1 text-sm text-muted">
-              Select or create a conversation
-            </p>
+            <p className="mt-1 text-sm text-muted">Select or create a conversation</p>
           </div>
         )}
 
