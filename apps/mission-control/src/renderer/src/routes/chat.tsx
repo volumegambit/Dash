@@ -269,6 +269,12 @@ function MessageBubble({
   );
 }
 
+function formatModelName(model: string): string {
+  // Strip provider prefix (e.g. "anthropic/claude-sonnet-4-5" → "claude-sonnet-4-5")
+  const name = model.includes('/') ? model.split('/').slice(1).join('/') : model;
+  return name;
+}
+
 // --- Main Chat component ---
 
 export function Chat(): JSX.Element {
@@ -383,6 +389,9 @@ export function Chat(): JSX.Element {
   const agentNames = selectedDeployment?.config.agents
     ? Object.keys(selectedDeployment.config.agents)
     : [];
+  const agentConfig = selectedDeployment?.config?.agents?.[selectedAgentName]
+    ?? selectedDeployment?.config?.agent;
+  const activeModel = agentConfig?.model;
 
   return (
     <div className="-m-8 flex flex-1 overflow-hidden">
@@ -472,6 +481,14 @@ export function Chat(): JSX.Element {
           <div className="border-b border-border px-6 py-4">
             <h1 className="text-2xl font-bold">Chat</h1>
             <p className="mt-1 text-sm text-muted">Select or create a conversation</p>
+          </div>
+        )}
+
+        {activeModel && (
+          <div className="flex items-center justify-between border-b border-border px-6 py-1.5">
+            <span className="text-xs text-muted">
+              {formatModelName(activeModel)}
+            </span>
           </div>
         )}
 
