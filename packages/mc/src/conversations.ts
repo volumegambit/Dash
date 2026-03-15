@@ -11,11 +11,16 @@ export interface McConversation {
   updatedAt: string;
 }
 
+export interface McMessageImage {
+  mediaType: string;
+  data: string; // base64-encoded
+}
+
 export interface McMessage {
   id: string;
   role: 'user' | 'assistant';
   content:
-    | { type: 'user'; text: string }
+    | { type: 'user'; text: string; images?: McMessageImage[] }
     | { type: 'assistant'; events: Record<string, unknown>[] };
   timestamp: string;
 }

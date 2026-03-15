@@ -2,6 +2,7 @@ export type {
   AgentBackend,
   AgentState,
   AgentEvent,
+  ImageBlock,
   RunOptions,
   DashAgentConfig,
 } from './types.js';
