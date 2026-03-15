@@ -12,6 +12,12 @@ export interface ToolOption {
 
 export const AVAILABLE_MODELS: ModelOption[] = [
   {
+    value: 'anthropic/claude-opus-4-20250514',
+    label: 'Claude Opus 4',
+    provider: 'anthropic',
+    secretKey: 'anthropic-api-key',
+  },
+  {
     value: 'anthropic/claude-sonnet-4-20250514',
     label: 'Claude Sonnet 4',
     provider: 'anthropic',

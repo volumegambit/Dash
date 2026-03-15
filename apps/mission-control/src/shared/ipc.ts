@@ -182,6 +182,10 @@ export interface MissionControlAPI {
   // Credentials
   onCredentialsPushFailed(callback: (failures: CredentialPushFailure[]) => void): () => void;
 
+  // Models
+  modelsList(): Promise<Array<{ value: string; label: string; provider: string }>>;
+  modelsRefresh(): Promise<Array<{ value: string; label: string; provider: string }>>;
+
   // Updates
   onUpdateAvailable(callback: (info: { version: string }) => void): () => void;
 }
