@@ -32,7 +32,7 @@ interface ProcessState {
 
 export interface GatewayOptions {
   gatewayDataDir: string;
-  gatewayRuntimeDir?: string;  // --data-dir passed to the gateway process
+  gatewayRuntimeDir?: string; // --data-dir passed to the gateway process
   makeGatewayClient?: (baseUrl: string, token: string) => GatewayManagementClient;
   managementPort?: number;
 }
@@ -297,11 +297,7 @@ export class ProcessRuntime implements DeploymentRuntime {
     // Spawn fresh gateway daemon
     const token = generateToken();
     const gatewayBin = join(this.projectRoot, 'apps/gateway/dist/index.js');
-    const spawnArgs = [
-      gatewayBin,
-      '--management-port', String(managementPort),
-      '--token', token,
-    ];
+    const spawnArgs = [gatewayBin, '--management-port', String(managementPort), '--token', token];
     if (opts.gatewayRuntimeDir) {
       spawnArgs.push('--data-dir', opts.gatewayRuntimeDir);
     }
@@ -359,7 +355,9 @@ export class ProcessRuntime implements DeploymentRuntime {
 
     const agentNames = Object.keys(deployment.config?.agents ?? {});
     if (!agentNames.length || !deployment.chatPort || !deployment.chatToken) {
-      console.warn(`registerWithGateway: deployment ${deploymentId} missing agents/ports, skipping`);
+      console.warn(
+        `registerWithGateway: deployment ${deploymentId} missing agents/ports, skipping`,
+      );
       return;
     }
 
@@ -380,7 +378,8 @@ export class ProcessRuntime implements DeploymentRuntime {
         const relevantRules = app.routing.filter((r) => agentNames.includes(r.targetAgentName));
         if (relevantRules.length === 0) continue;
 
-        const token = app.type !== 'whatsapp' ? await this.secrets.get(app.credentialsKey) : undefined;
+        const token =
+          app.type !== 'whatsapp' ? await this.secrets.get(app.credentialsKey) : undefined;
         if (app.type !== 'whatsapp' && !token) continue;
 
         const channelConfig: GatewayChannelConfig = {
@@ -726,7 +725,6 @@ export class ProcessRuntime implements DeploymentRuntime {
     await this.registry.update(id, {
       status: 'running',
       agentServerPid: agentServer.pid,
-      // No gatewayPid — shared gateway is not per-deployment
     });
 
     // Watch for process exit after successful startup
@@ -903,7 +901,6 @@ export class ProcessRuntime implements DeploymentRuntime {
       this.processes.delete(id);
     } else {
       // Process not tracked in memory — PID-based kill with SIGTERM → SIGKILL escalation
-      // Note: gatewayPid no longer in deployment — gateway is shared
       if (deployment.agentServerPid) await killPidWithEscalation(deployment.agentServerPid);
     }
 
@@ -969,7 +966,12 @@ export class ProcessRuntime implements DeploymentRuntime {
 
   async updateAgentConfig(
     id: string,
-    patch: { model?: string; fallbackModels?: string[]; tools?: string[] },
+    patch: {
+      model?: string;
+      fallbackModels?: string[];
+      tools?: string[];
+      systemPrompt?: string;
+    },
   ): Promise<void> {
     const deployment = await this.registry.get(id);
     if (!deployment) throw new Error(`Deployment "${id}" not found`);
@@ -991,6 +993,7 @@ export class ProcessRuntime implements DeploymentRuntime {
     if (patch.model !== undefined) config.model = patch.model;
     if (patch.fallbackModels !== undefined) config.fallbackModels = patch.fallbackModels;
     if (patch.tools !== undefined) config.tools = patch.tools;
+    if (patch.systemPrompt !== undefined) config.systemPrompt = patch.systemPrompt;
 
     await writeFile(filePath, JSON.stringify(config, null, 2));
 
@@ -1000,11 +1003,16 @@ export class ProcessRuntime implements DeploymentRuntime {
       if (patch.model !== undefined) agentCfg.model = patch.model;
       if (patch.fallbackModels !== undefined) agentCfg.fallbackModels = patch.fallbackModels;
       if (patch.tools !== undefined) agentCfg.tools = patch.tools;
+      if (patch.systemPrompt !== undefined) agentCfg.systemPrompt = patch.systemPrompt;
       await this.registry.update(id, { config: deployment.config });
     }
 
     // 3. Push to running agent server (best-effort — server may be unreachable)
-    if (deployment.status === 'running' && deployment.managementPort && deployment.managementToken) {
+    if (
+      deployment.status === 'running' &&
+      deployment.managementPort &&
+      deployment.managementToken
+    ) {
       try {
         const { ManagementClient } = await import('@dash/management');
         const client = new ManagementClient(

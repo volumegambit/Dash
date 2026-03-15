@@ -27,7 +27,6 @@ const dep1 = {
   managementPort: 53891,
   chatPort: 53892,
   agentServerPid: 1,
-  gatewayPid: 2,
   config: { agents: { myAgent: { model: 'claude-sonnet-4-6', systemPrompt: '' } } },
 };
 
@@ -39,7 +38,6 @@ const dep2 = {
   managementPort: 53893,
   chatPort: 53894,
   agentServerPid: 3,
-  gatewayPid: 4,
   config: { agents: { helper: { model: 'claude-sonnet-4-6', systemPrompt: '' } } },
 };
 
