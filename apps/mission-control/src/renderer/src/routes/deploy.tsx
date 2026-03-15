@@ -205,15 +205,20 @@ export function DeployWizard(): JSX.Element {
               {availableTools.map((tool) => (
                 <label
                   key={tool.value}
-                  className="flex cursor-pointer items-center gap-2 rounded-lg border border-border px-3 py-2 text-sm transition-colors hover:bg-sidebar-hover"
+                  className="flex cursor-pointer items-start gap-2 rounded-lg border border-border px-3 py-2 text-sm transition-colors hover:bg-sidebar-hover"
                 >
                   <input
                     type="checkbox"
                     checked={agent.tools.includes(tool.value)}
                     onChange={() => toggleTool(tool.value)}
-                    className="accent-primary"
+                    className="mt-0.5 accent-primary"
                   />
-                  {tool.label}
+                  <span>
+                    {tool.label}
+                    {tool.description && (
+                      <span className="block text-xs text-muted">{tool.description}</span>
+                    )}
+                  </span>
                 </label>
               ))}
             </div>
