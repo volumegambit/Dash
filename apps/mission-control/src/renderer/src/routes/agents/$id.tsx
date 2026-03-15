@@ -298,7 +298,7 @@ export function AgentDetail(): JSX.Element {
         <InfoCard label="Uptime" value={status?.uptime ? formatUptime(status.uptime) : 'N/A'} />
         <InfoCard label="Created" value={new Date(deployment.createdAt).toLocaleString()} />
         {deployment.workspace && (
-          <InfoCard label="Working Directory" value={deployment.workspace} />
+          <InfoCard label="Workspace" value={deployment.workspace} />
         )}
       </div>
 
