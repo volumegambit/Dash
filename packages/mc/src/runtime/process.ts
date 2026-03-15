@@ -863,6 +863,7 @@ export class ProcessRuntime implements DeploymentRuntime {
     const files = await readdir(agentsDir);
     const jsonFile = files.find((f) => f.endsWith('.json'));
     if (!jsonFile) throw new Error(`No agent config file found in ${agentsDir}`);
+    const agentName = jsonFile.slice(0, -5);
 
     const filePath = join(agentsDir, jsonFile);
     const raw = await readFile(filePath, 'utf-8');
@@ -873,6 +874,16 @@ export class ProcessRuntime implements DeploymentRuntime {
     if (patch.tools !== undefined) config.tools = patch.tools;
 
     await writeFile(filePath, JSON.stringify(config, null, 2));
+
+    // Push config change to the running agent server
+    if (deployment.status === 'running' && deployment.managementPort && deployment.managementToken) {
+      const { ManagementClient } = await import('@dash/management');
+      const client = new ManagementClient(
+        `http://127.0.0.1:${deployment.managementPort}`,
+        deployment.managementToken,
+      );
+      await client.updateAgentConfig(agentName, patch);
+    }
   }
 
   async *getLogs(id: string, signal?: AbortSignal): AsyncIterable<string> {
