@@ -1,7 +1,7 @@
 import type { SkillContent, SkillInfo, SkillsConfig } from '@dash/management';
 import type { RuntimeStatus } from '@dash/mc';
 import { Link, createFileRoute, useNavigate } from '@tanstack/react-router';
-import { ArrowLeft, Circle, FolderOpen, Loader, MessageSquare, Square, Trash2 } from 'lucide-react';
+import { ArrowLeft, Circle, FolderOpen, Loader, MessageSquare, RefreshCw, Square, Trash2 } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { AVAILABLE_TOOLS } from '../../components/deploy-options.js';
 import { HealthDot } from '../../components/HealthDot.js';
@@ -18,6 +18,7 @@ export function AgentDetail(): JSX.Element {
     logLines,
     loadDeployments,
     stop,
+    restart,
     remove,
     updateConfig,
     subscribeLogs,
@@ -132,6 +133,18 @@ export function AgentDetail(): JSX.Element {
     if (s) setStatus(s);
   }, [id, stop]);
 
+  const [restarting, setRestarting] = useState(false);
+  const handleRestart = useCallback(async () => {
+    setRestarting(true);
+    try {
+      await restart(id);
+      const s = await window.api.deploymentsGetStatus(id).catch(() => null);
+      if (s) setStatus(s);
+    } finally {
+      setRestarting(false);
+    }
+  }, [id, restart]);
+
   const handleRemove = useCallback(async () => {
     await remove(id);
     navigate({ to: '/agents' });
@@ -224,6 +237,17 @@ export function AgentDetail(): JSX.Element {
             >
               <MessageSquare size={14} />
               Chat
+            </button>
+          )}
+          {isRunning && (
+            <button
+              type="button"
+              onClick={handleRestart}
+              disabled={restarting}
+              className="inline-flex items-center gap-2 rounded-lg border border-border px-3 py-2 text-sm text-muted transition-colors hover:bg-sidebar-hover hover:text-foreground disabled:opacity-50"
+            >
+              <RefreshCw size={14} className={restarting ? 'animate-spin' : ''} />
+              {restarting ? 'Restarting...' : 'Restart'}
             </button>
           )}
           {isRunning && (
