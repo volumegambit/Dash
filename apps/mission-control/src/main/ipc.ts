@@ -166,9 +166,15 @@ function clearCachedKey(): void {
   }
 }
 
-async function pushCredentialsToRunningDeployments(): Promise<void> {
+interface CredentialPushResult {
+  total: number;
+  succeeded: number;
+  failed: { deploymentId: string; name: string; error: string }[];
+}
+
+async function pushCredentialsToRunningDeployments(): Promise<CredentialPushResult> {
   const store = getSecretStore();
-  if (!store.isUnlocked()) return;
+  if (!store.isUnlocked()) return { total: 0, succeeded: 0, failed: [] };
 
   const allKeys = await store.list();
   const providerApiKeys: Record<string, Record<string, string>> = {};
@@ -185,18 +191,34 @@ async function pushCredentialsToRunningDeployments(): Promise<void> {
 
   const reg = getRegistry();
   const deployments = await reg.list();
-  for (const dep of deployments) {
-    if (dep.status !== 'running' || !dep.managementPort || !dep.managementToken) continue;
+  const running = deployments.filter(
+    (dep) => dep.status === 'running' && dep.managementPort && dep.managementToken,
+  );
+
+  const result: CredentialPushResult = { total: running.length, succeeded: 0, failed: [] };
+
+  for (const dep of running) {
     try {
       const client = new ManagementClient(
         `http://127.0.0.1:${dep.managementPort}`,
-        dep.managementToken,
+        dep.managementToken!,
       );
       await client.updateCredentials(providerApiKeys);
-    } catch {
-      // Deployment may be unreachable — skip silently
+      result.succeeded++;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(`[credentials] Failed to push to deployment "${dep.name}" (${dep.id}): ${message}`);
+      result.failed.push({ deploymentId: dep.id, name: dep.name, error: message });
     }
   }
+
+  if (result.failed.length > 0) {
+    console.warn(
+      `[credentials] Push completed: ${result.succeeded}/${result.total} succeeded, ${result.failed.length} failed`,
+    );
+  }
+
+  return result;
 }
 
 export async function registerIpcHandlers(
@@ -349,7 +371,18 @@ export async function registerIpcHandlers(
     await getSecretStore().set(key, value);
     // Push updated credentials to running deployments if a provider key changed
     if (key.includes('-api-key:')) {
-      pushCredentialsToRunningDeployments().catch(() => {});
+      pushCredentialsToRunningDeployments()
+        .then((result) => {
+          if (result.failed.length > 0) {
+            const win = getWindow();
+            if (win && !win.isDestroyed()) {
+              win.webContents.send('credentials:pushFailed', result.failed);
+            }
+          }
+        })
+        .catch((err) => {
+          console.error('[credentials] Unexpected error during push:', err);
+        });
     }
   });
 
@@ -357,7 +390,18 @@ export async function registerIpcHandlers(
     await getSecretStore().delete(key);
     // Push updated credentials to running deployments if a provider key changed
     if (key.includes('-api-key:')) {
-      pushCredentialsToRunningDeployments().catch(() => {});
+      pushCredentialsToRunningDeployments()
+        .then((result) => {
+          if (result.failed.length > 0) {
+            const win = getWindow();
+            if (win && !win.isDestroyed()) {
+              win.webContents.send('credentials:pushFailed', result.failed);
+            }
+          }
+        })
+        .catch((err) => {
+          console.error('[credentials] Unexpected error during push:', err);
+        });
     }
   });
 
