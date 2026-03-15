@@ -1,8 +1,10 @@
 import type { SkillContent, SkillInfo, SkillsConfig } from '@dash/management';
-import type { RuntimeStatus } from '@dash/mc';
+import type { AgentDeployment, RuntimeStatus } from '@dash/mc';
 import { Link, createFileRoute, useNavigate } from '@tanstack/react-router';
 import {
   ArrowLeft,
+  ChevronDown,
+  ChevronUp,
   FolderOpen,
   Loader,
   MessageSquare,
@@ -611,7 +613,8 @@ export function AgentDetail(): JSX.Element {
           ) : (
             <div className="rounded-lg border border-border bg-sidebar-bg p-3 text-sm">
               {(agentConfig.tools ?? []).length > 0
-                ? availableTools.filter((t) => (agentConfig.tools ?? []).includes(t.value))
+                ? availableTools
+                    .filter((t) => (agentConfig.tools ?? []).includes(t.value))
                     .map((t) => t.label)
                     .join(', ')
                 : '(none)'}
@@ -716,6 +719,78 @@ function LogViewer({
         >
           Scroll to bottom
         </button>
+      )}
+    </div>
+  );
+}
+
+function RuntimeInfoBar({
+  status,
+  deployment,
+}: { status: RuntimeStatus | null; deployment: AgentDeployment }): JSX.Element {
+  const [expanded, setExpanded] = useState(false);
+
+  return (
+    <div className="mb-6 rounded-lg border border-border bg-sidebar-bg px-4 py-2.5 text-xs">
+      <div className="flex items-center gap-x-5">
+        <span>
+          <span className="text-muted">Uptime</span>{' '}
+          <span className="font-medium">
+            {status?.uptime ? formatUptime(status.uptime) : 'N/A'}
+          </span>
+        </span>
+        {deployment.workspace && (
+          <span className="flex min-w-0 items-center gap-1.5">
+            <span className="text-muted">Workspace</span>
+            <span className="min-w-0 truncate font-mono font-medium" title={deployment.workspace}>
+              {deployment.workspace}
+            </span>
+            <button
+              type="button"
+              onClick={() => deployment.workspace && window.api.openPath(deployment.workspace)}
+              className="shrink-0 rounded p-0.5 text-muted transition-colors hover:text-foreground"
+              title="Open in Finder"
+            >
+              <FolderOpen size={12} />
+            </button>
+          </span>
+        )}
+        <button
+          type="button"
+          onClick={() => setExpanded((e) => !e)}
+          className="ml-auto flex items-center gap-1 text-muted hover:text-foreground"
+        >
+          Details
+          {expanded ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+        </button>
+      </div>
+      {expanded && (
+        <div className="mt-2 flex flex-wrap items-center gap-x-5 gap-y-1 border-t border-border pt-2 text-muted">
+          <span>
+            PID{' '}
+            <span className="font-medium text-foreground">
+              {status?.agentServerPid ?? deployment.agentServerPid ?? 'N/A'}
+            </span>
+          </span>
+          <span>
+            Chat port{' '}
+            <span className="font-medium text-foreground">
+              {status?.chatPort ?? deployment.chatPort ?? 'N/A'}
+            </span>
+          </span>
+          <span>
+            Mgmt port{' '}
+            <span className="font-medium text-foreground">
+              {status?.managementPort ?? deployment.managementPort ?? 'N/A'}
+            </span>
+          </span>
+          <span>
+            Created{' '}
+            <span className="font-medium text-foreground">
+              {new Date(deployment.createdAt).toLocaleString()}
+            </span>
+          </span>
+        </div>
       )}
     </div>
   );
