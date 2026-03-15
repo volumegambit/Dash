@@ -68,10 +68,14 @@ export function DeployWizard(): JSX.Element {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []); // intentionally run once; availableModels already known at this point in practice
 
-  // When available models change (keys added/removed), ensure current model is still valid
+  // When available models change (keys added/removed), pick or validate the current model
   useEffect(() => {
     setAgent((prev) => {
-      if (!prev.model) return prev;
+      if (!prev.model) {
+        // No model selected yet — pick the first available
+        const first = availableModels[0]?.value ?? '';
+        return first ? { ...prev, model: first } : prev;
+      }
       const stillAvailable = availableModels.some((m) => m.value === prev.model);
       if (stillAvailable) return prev;
       // Current model no longer available — switch to first available or ''
