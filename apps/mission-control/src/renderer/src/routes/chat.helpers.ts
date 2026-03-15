@@ -5,7 +5,35 @@ function normalizeTool(name: string): string {
     case 'write_file': return 'write';
     case 'list_directory': return 'ls';
     case 'execute_command': return 'bash';
+    case 'TodoWrite': return 'todowrite';
     default: return name;
+  }
+}
+
+export interface TodoItem {
+  id: string;
+  content: string;
+  status: 'pending' | 'in_progress' | 'completed';
+  priority: 'high' | 'medium' | 'low';
+}
+
+/** Check if tool name is TodoWrite */
+export function isTodoWrite(name: string): boolean {
+  return normalizeTool(name) === 'todowrite';
+}
+
+/** Parse TodoWrite input JSON into structured todo items, or null if parsing fails */
+export function parseTodos(input: string): TodoItem[] | null {
+  try {
+    const parsed = JSON.parse(input) as Record<string, unknown>;
+    const todos = parsed.todos;
+    if (!Array.isArray(todos) || todos.length === 0) return null;
+    return todos.filter(
+      (t): t is TodoItem =>
+        typeof t === 'object' && t !== null && typeof (t as TodoItem).content === 'string',
+    );
+  } catch {
+    return null;
   }
 }
 
@@ -19,6 +47,7 @@ export function toolIcon(name: string): string {
   if (n === 'web_search' || n === 'web_fetch') return '🌐';
   if (n === 'skill') return '⚡';
   if (n === 'mcp') return '🔌';
+  if (n === 'todowrite') return '📋';
   return '🔧';
 }
 
@@ -47,6 +76,15 @@ export function summarize(name: string, input: string): string {
     parsed = JSON.parse(input) as Record<string, unknown>;
   } catch {
     return '';
+  }
+
+  // Custom summary for TodoWrite: show completion count
+  if (normalizeTool(name) === 'todowrite') {
+    const todos = parseTodos(input);
+    if (todos) {
+      const done = todos.filter((t) => t.status === 'completed').length;
+      return `${done}/${todos.length} done`;
+    }
   }
 
   const keys = PRIMARY_KEYS[normalizeTool(name)] ?? [];
