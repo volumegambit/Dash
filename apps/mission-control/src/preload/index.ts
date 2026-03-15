@@ -6,6 +6,7 @@ const api: MissionControlAPI = {
 
   // Shell
   openExternal: (url: string) => ipcRenderer.invoke('openExternal', url),
+  openPath: (path: string) => ipcRenderer.invoke('openPath', path),
   dialogOpenDirectory: () => ipcRenderer.invoke('dialog:openDirectory'),
 
   // Setup

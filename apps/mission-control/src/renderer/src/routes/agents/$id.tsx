@@ -1,7 +1,7 @@
 import type { SkillContent, SkillInfo, SkillsConfig } from '@dash/management';
 import type { RuntimeStatus } from '@dash/mc';
 import { Link, createFileRoute, useNavigate } from '@tanstack/react-router';
-import { ArrowLeft, Circle, Loader, MessageSquare, Square, Trash2 } from 'lucide-react';
+import { ArrowLeft, Circle, FolderOpen, Loader, MessageSquare, Square, Trash2 } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { AVAILABLE_TOOLS } from '../../components/deploy-options.js';
 import { HealthDot } from '../../components/HealthDot.js';
@@ -298,7 +298,22 @@ export function AgentDetail(): JSX.Element {
         <InfoCard label="Uptime" value={status?.uptime ? formatUptime(status.uptime) : 'N/A'} />
         <InfoCard label="Created" value={new Date(deployment.createdAt).toLocaleString()} />
         {deployment.workspace && (
-          <InfoCard label="Workspace" value={deployment.workspace} />
+          <div className="rounded-lg border border-border bg-sidebar-bg p-3">
+            <p className="text-xs text-muted">Workspace</p>
+            <div className="mt-0.5 flex items-center justify-between gap-2">
+              <p className="min-w-0 truncate text-sm font-medium" title={deployment.workspace}>
+                {deployment.workspace}
+              </p>
+              <button
+                type="button"
+                onClick={() => window.api.openPath(deployment.workspace!)}
+                className="shrink-0 rounded p-1 text-muted transition-colors hover:bg-sidebar-hover hover:text-foreground"
+                title="Open in Finder"
+              >
+                <FolderOpen size={14} />
+              </button>
+            </div>
+          </div>
         )}
       </div>
 
