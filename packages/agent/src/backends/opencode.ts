@@ -41,6 +41,10 @@ export class OpenCodeBackend implements AgentBackend {
   private sessionIdMap = new SessionIdMap();
   private currentSessionId: string | null = null;
 
+  // Track tool call IDs that have already emitted tool_use_delta to avoid
+  // duplicate full-JSON emissions (the SDK fires multiple 'running' updates)
+  private emittedToolDeltas = new Set<string>();
+
   // Watchdog state
   private watchdogInterval: NodeJS.Timeout | null = null;
   private watchdogHealthUrl = '';
@@ -345,9 +349,15 @@ export class OpenCodeBackend implements AgentBackend {
               return { type: 'tool_use_start', id: part.callID, name: part.tool };
             }
             if (state.status === 'running') {
+              // The SDK fires multiple 'running' updates per tool call; only emit the
+              // first one to avoid duplicating the full input JSON in the renderer's
+              // accumulation buffer.
+              if (this.emittedToolDeltas.has(part.callID)) return null;
+              this.emittedToolDeltas.add(part.callID);
               return { type: 'tool_use_delta', partial_json: JSON.stringify(state.input) };
             }
             if (state.status === 'completed') {
+              this.emittedToolDeltas.delete(part.callID);
               return {
                 type: 'tool_result',
                 id: part.callID,
@@ -356,6 +366,7 @@ export class OpenCodeBackend implements AgentBackend {
               };
             }
             if (state.status === 'error') {
+              this.emittedToolDeltas.delete(part.callID);
               return {
                 type: 'tool_result',
                 id: part.callID,
