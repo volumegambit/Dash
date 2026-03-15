@@ -5,7 +5,14 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { McAgentEvent } from '../../../shared/ipc.js';
 import { useChatStore } from '../stores/chat.js';
 import { useDeploymentsStore } from '../stores/deployments.js';
-import { formatDetails, summarize, toolIcon } from './chat.helpers.js';
+import {
+  type TodoItem,
+  formatDetails,
+  isTodoWrite,
+  parseTodos,
+  summarize,
+  toolIcon,
+} from './chat.helpers.js';
 
 // --- Event rendering helpers ---
 
@@ -120,6 +127,50 @@ function ThinkingBlock({ text }: { text: string }): JSX.Element {
   );
 }
 
+const STATUS_INDICATOR: Record<string, { icon: string; label: string; color: string }> = {
+  completed: { icon: '✓', label: 'Done', color: 'text-green-400' },
+  in_progress: { icon: '◉', label: 'In progress', color: 'text-blue-400' },
+  pending: { icon: '○', label: 'Pending', color: 'text-muted' },
+};
+
+const PRIORITY_BADGE: Record<string, { label: string; cls: string }> = {
+  high: { label: 'High', cls: 'bg-red-900/30 text-red-300' },
+  medium: { label: 'Med', cls: 'bg-yellow-900/30 text-yellow-300' },
+  low: { label: 'Low', cls: 'bg-zinc-700/40 text-zinc-400' },
+};
+
+function TodoListBlock({ todos }: { todos: TodoItem[] }): JSX.Element {
+  const counts = { completed: 0, total: todos.length };
+  for (const t of todos) if (t.status === 'completed') counts.completed++;
+
+  return (
+    <div className="space-y-1">
+      <p className="mb-1.5 text-muted">
+        {counts.completed}/{counts.total} completed
+      </p>
+      {todos.map((todo) => {
+        const st = STATUS_INDICATOR[todo.status] ?? STATUS_INDICATOR.pending;
+        const pr = todo.priority ? PRIORITY_BADGE[todo.priority] : undefined;
+        return (
+          <div key={todo.id ?? todo.content} className="flex items-start gap-2">
+            <span className={`mt-px ${st.color}`}>{st.icon}</span>
+            <span
+              className={todo.status === 'completed' ? 'line-through text-muted' : ''}
+            >
+              {todo.content}
+            </span>
+            {pr && (
+              <span className={`ml-auto shrink-0 rounded px-1.5 py-0.5 text-[10px] ${pr.cls}`}>
+                {pr.label}
+              </span>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function ToolBlock({
   name,
   input,
@@ -127,9 +178,11 @@ function ToolBlock({
   isError,
 }: { name: string; input: string; result: string; isError?: boolean }): JSX.Element {
   const [open, setOpen] = useState(false);
+  const [showRaw, setShowRaw] = useState(false);
   const icon = toolIcon(name);
   const summary = summarize(name, input);
   const details = formatDetails(input);
+  const todos = isTodoWrite(name) ? parseTodos(input) : null;
 
   return (
     <div
@@ -146,18 +199,38 @@ function ToolBlock({
       </button>
       {open && (
         <div className="border-t border-border px-3 pb-2 pt-1">
-          {input && (
-            <div className="mb-1 space-y-0.5">
-              {details.map(({ key, value }) => (
-                <p key={key} className="text-muted">
-                  <span className="capitalize">{key}:</span> {value}
-                </p>
-              ))}
-            </div>
+          {todos ? (
+            <>
+              <TodoListBlock todos={todos} />
+              <button
+                type="button"
+                onClick={() => setShowRaw((r) => !r)}
+                className="mt-2 text-[10px] text-muted hover:text-foreground"
+              >
+                {showRaw ? 'Hide raw' : 'Show raw'}
+              </button>
+              {showRaw && (
+                <pre className="mt-1 whitespace-pre-wrap text-muted">{input}</pre>
+              )}
+            </>
+          ) : (
+            <>
+              {input && (
+                <div className="mb-1 space-y-0.5">
+                  {details.map(({ key, value }) => (
+                    <p key={key} className="text-muted">
+                      <span className="capitalize">{key}:</span> {value}
+                    </p>
+                  ))}
+                </div>
+              )}
+              <p
+                className={`whitespace-pre-wrap ${isError ? 'text-red-400' : 'text-green-400/80'}`}
+              >
+                {result}
+              </p>
+            </>
           )}
-          <p className={`whitespace-pre-wrap ${isError ? 'text-red-400' : 'text-green-400/80'}`}>
-            {result}
-          </p>
         </div>
       )}
     </div>
