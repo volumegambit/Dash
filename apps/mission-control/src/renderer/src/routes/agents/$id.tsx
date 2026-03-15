@@ -14,12 +14,21 @@ import {
   Trash2,
 } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { HealthDot } from '../../components/HealthDot.js';
 import { ModelChainEditor } from '../../components/ModelChainEditor.js';
 import { useAvailableModels } from '../../hooks/useAvailableModels.js';
 import { useAvailableTools } from '../../hooks/useAvailableTools.js';
 import { useDeploymentsStore } from '../../stores/deployments';
 import { useMessagingAppsStore } from '../../stores/messaging-apps.js';
+import { AgentOverviewTab } from './-components/AgentOverviewTab.js';
+
+type TabId = 'overview' | 'configuration' | 'skills' | 'logs';
+
+const TABS: { id: TabId; label: string }[] = [
+  { id: 'overview', label: 'Overview' },
+  { id: 'configuration', label: 'Configuration' },
+  { id: 'skills', label: 'Skills' },
+  { id: 'logs', label: 'Logs' },
+];
 
 export function AgentDetail(): JSX.Element {
   const { id } = Route.useParams();
@@ -57,6 +66,7 @@ export function AgentDetail(): JSX.Element {
 
   const [modelKeys, setModelKeys] = useState<Record<string, { label: string; masked: string }>>({});
   const search = Route.useSearch();
+  const [activeTab, setActiveTab] = useState<TabId>((search.tab as TabId) ?? 'overview');
   const [activeLevel, setActiveLevel] = useState<'all' | 'info' | 'warn' | 'error'>(
     search.level ?? 'all',
   );
@@ -118,9 +128,9 @@ export function AgentDetail(): JSX.Element {
           const val = await window.api.secretsGet(secretKey);
           const masked =
             val && val.length > 17
-              ? `${val.slice(0, 10)}${'•'.repeat(6)}${val.slice(-7)}`
+              ? `${val.slice(0, 10)}${'*'.repeat(6)}${val.slice(-7)}`
               : val
-                ? '••••••••'
+                ? '********'
                 : 'N/A';
           result[model] = { label: credName, masked };
         } catch {
@@ -320,7 +330,7 @@ export function AgentDetail(): JSX.Element {
               >
                 Add Telegram
               </Link>
-              <span className="text-xs text-muted">·</span>
+              <span className="text-xs text-muted">&middot;</span>
               <Link
                 to="/messaging-apps/new-whatsapp"
                 className="text-xs text-primary hover:text-primary-hover"
@@ -335,43 +345,12 @@ export function AgentDetail(): JSX.Element {
             onClick={() => setBannerDismissed(true)}
             className="ml-4 shrink-0 rounded p-1 text-muted transition-colors hover:bg-sidebar-hover hover:text-foreground"
           >
-            ×
+            &times;
           </button>
         </div>
       )}
 
       <RuntimeInfoBar status={status} deployment={deployment} />
-
-      {channelHealth.length > 0 && (
-        <div className="mb-6 rounded-lg border border-border bg-sidebar-bg p-4">
-          <h3 className="mb-3 text-sm font-medium text-muted">Channel Connections</h3>
-          <div className="space-y-2">
-            {channelHealth.map((entry) => {
-              const app = apps.find((a) => a.id === entry.appId);
-              const needsAction =
-                entry.health === 'needs_reauth' || entry.health === 'disconnected';
-              return (
-                <div key={entry.appId} className="flex items-center justify-between text-sm">
-                  <div className="flex items-center gap-2">
-                    <HealthDot health={entry.health} />
-                    <span className="text-foreground">{app?.name ?? entry.appId}</span>
-                    <span className="text-xs text-muted capitalize">{entry.type}</span>
-                  </div>
-                  {needsAction && (
-                    <Link
-                      to="/messaging-apps/$id"
-                      params={{ id: entry.appId }}
-                      className="text-xs text-primary hover:underline"
-                    >
-                      Re-connect →
-                    </Link>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      )}
 
       {deployment.status === 'error' && (
         <div className="mb-6 space-y-2">
@@ -399,248 +378,273 @@ export function AgentDetail(): JSX.Element {
         </div>
       )}
 
-      {agentConfig && (
-        <div className="mb-6">
-          <div className="mb-2 flex items-center justify-between">
-            <h2 className="text-sm font-medium text-muted">Models</h2>
-            {!editingChain && (
-              <button
-                type="button"
-                onClick={() => setEditingChain(true)}
-                className="text-xs text-primary hover:underline"
-              >
-                Edit
-              </button>
-            )}
-          </div>
-          {editingChain ? (
-            <div className="rounded-lg border border-border bg-sidebar-bg p-3">
-              <ModelChainEditor
-                model={chainModel}
-                fallbackModels={chainFallbacks}
-                availableModels={availableModels}
-                onChange={(m, fb) => {
-                  setChainModel(m);
-                  setChainFallbacks(fb);
-                }}
-              />
-              <div className="mt-3 flex gap-2">
-                <button
-                  type="button"
-                  onClick={handleSaveChain}
-                  disabled={chainSaving}
-                  className="rounded-lg bg-primary px-3 py-1.5 text-xs text-white hover:bg-primary-hover disabled:opacity-50"
-                >
-                  {chainSaving ? 'Saving...' : 'Save'}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setEditingChain(false)}
-                  className="rounded-lg border border-border px-3 py-1.5 text-xs text-muted hover:bg-sidebar-hover"
-                >
-                  Cancel
-                </button>
-              </div>
-            </div>
-          ) : (
-            <div className="space-y-2">
-              {[chainModel, ...chainFallbacks].map((model, i) => {
-                const label = availableModels.find((m) => m.value === model)?.label ?? model;
-                const keyInfo = modelKeys[model];
-                return (
-                  <div
-                    key={model}
-                    className="flex items-center justify-between rounded-lg border border-border bg-sidebar-bg px-3 py-2"
-                  >
-                    <div className="flex items-center gap-2">
-                      <span className="text-sm font-medium">{label}</span>
-                      {i === 0 && (
-                        <span className="rounded bg-primary/20 px-1.5 py-0.5 text-[10px] font-medium text-primary">
-                          primary
-                        </span>
-                      )}
-                      {i > 0 && (
-                        <span className="rounded bg-sidebar-hover px-1.5 py-0.5 text-[10px] font-medium text-muted">
-                          fallback {i}
-                        </span>
-                      )}
-                    </div>
-                    {keyInfo && (
-                      <div className="flex items-center gap-2 text-xs text-muted">
-                        <span className="font-medium">{keyInfo.label}</span>
-                        <span className="font-mono">{keyInfo.masked}</span>
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </div>
+      {/* Tab bar */}
+      <div className="mb-6 flex gap-1 border-b border-border">
+        {TABS.map((tab) => (
+          <button
+            key={tab.id}
+            type="button"
+            onClick={() => setActiveTab(tab.id)}
+            className={`px-4 py-2 text-sm font-medium transition-colors ${
+              activeTab === tab.id
+                ? 'border-b-2 border-primary text-foreground'
+                : 'text-muted hover:text-foreground'
+            }`}
+          >
+            {tab.label}
+          </button>
+        ))}
+      </div>
+
+      {/* Tab content */}
+      {activeTab === 'overview' && (
+        <AgentOverviewTab
+          deployment={deployment}
+          status={status}
+          channelHealth={channelHealth}
+          apps={apps}
+        />
       )}
 
-      {agentConfig && (
-        <div className="mb-6">
-          <div className="mb-2 flex items-center justify-between">
-            <h2 className="text-sm font-medium text-muted">System Prompt</h2>
-            {!editingPrompt && (
-              <button
-                type="button"
-                onClick={() => {
-                  setPromptDraft(agentConfig.systemPrompt ?? '');
-                  setEditingPrompt(true);
-                }}
-                className="text-xs text-primary hover:underline"
-              >
-                Edit
-              </button>
-            )}
-          </div>
-          {editingPrompt ? (
-            <div className="rounded-lg border border-border bg-sidebar-bg p-3">
-              <textarea
-                value={promptDraft}
-                onChange={(e) => setPromptDraft(e.target.value)}
-                rows={8}
-                className="w-full resize-y rounded border border-border bg-[#0d0d0d] p-3 text-sm leading-relaxed focus:border-primary focus:outline-none"
-              />
-              <div className="mt-3 flex gap-2">
+      {activeTab === 'configuration' && agentConfig && (
+        <div>
+          <div className="mb-6">
+            <div className="mb-2 flex items-center justify-between">
+              <h2 className="text-sm font-medium text-muted">Models</h2>
+              {!editingChain && (
                 <button
                   type="button"
-                  onClick={handleSavePrompt}
-                  disabled={promptSaving}
-                  className="rounded-lg bg-primary px-3 py-1.5 text-xs text-white hover:bg-primary-hover disabled:opacity-50"
+                  onClick={() => setEditingChain(true)}
+                  className="text-xs text-primary hover:underline"
                 >
-                  {promptSaving ? 'Saving...' : 'Save'}
+                  Edit
                 </button>
-                <button
-                  type="button"
-                  onClick={() => setEditingPrompt(false)}
-                  className="rounded-lg border border-border px-3 py-1.5 text-xs text-muted hover:bg-sidebar-hover"
-                >
-                  Cancel
-                </button>
-              </div>
-            </div>
-          ) : (
-            <div className="rounded-lg border border-border bg-sidebar-bg p-3 text-sm whitespace-pre-wrap">
-              {agentConfig.systemPrompt || <span className="text-muted">(none)</span>}
-            </div>
-          )}
-        </div>
-      )}
-
-      {agentConfig && (
-        <div className="mb-6">
-          <div className="mb-2 flex items-center justify-between">
-            <h2 className="text-sm font-medium text-muted">Tools</h2>
-            {!editingTools && (
-              <button
-                type="button"
-                onClick={() => {
-                  setToolsDraft(agentConfig.tools ?? []);
-                  setEditingTools(true);
-                }}
-                className="text-xs text-primary hover:underline"
-              >
-                Edit
-              </button>
-            )}
-          </div>
-          {toolsRestartNeeded && !editingTools && (
-            <div className="mb-2 rounded-lg bg-yellow-900/20 px-3 py-2 text-xs text-yellow-400">
-              Tools updated — restart the agent to apply changes.
-            </div>
-          )}
-          {editingTools ? (
-            <div className="rounded-lg border border-border bg-sidebar-bg p-3">
-              <div className="mb-2 flex items-center justify-between">
-                <label className="flex cursor-pointer items-center gap-1.5 text-xs text-muted hover:text-foreground">
-                  <input
-                    type="checkbox"
-                    checked={toolsDraft.length === availableTools.length}
-                    ref={(el) => {
-                      if (el)
-                        el.indeterminate =
-                          toolsDraft.length > 0 && toolsDraft.length < availableTools.length;
-                    }}
-                    onChange={() =>
-                      setToolsDraft((prev) =>
-                        prev.length === availableTools.length
-                          ? []
-                          : availableTools.map((t) => t.value),
-                      )
-                    }
-                    className="accent-primary"
-                  />
-                  Select all
-                </label>
-              </div>
-              <div className="grid grid-cols-2 gap-2">
-                {availableTools.map((tool) => (
-                  <label
-                    key={tool.value}
-                    className="flex cursor-pointer items-start gap-2 rounded-lg border border-border px-3 py-2 text-xs transition-colors hover:bg-sidebar-hover"
-                  >
-                    <input
-                      type="checkbox"
-                      checked={toolsDraft.includes(tool.value)}
-                      onChange={() => toggleDraftTool(tool.value)}
-                      className="mt-0.5 accent-primary"
-                    />
-                    <span>
-                      {tool.label}
-                      {tool.description && (
-                        <span className="block text-[11px] text-muted">{tool.description}</span>
-                      )}
-                    </span>
-                  </label>
-                ))}
-              </div>
-              <div className="mt-3 flex gap-2">
-                <button
-                  type="button"
-                  onClick={handleSaveTools}
-                  disabled={toolsSaving}
-                  className="rounded-lg bg-primary px-3 py-1.5 text-xs text-white hover:bg-primary-hover disabled:opacity-50"
-                >
-                  {toolsSaving ? 'Saving...' : 'Save'}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setEditingTools(false)}
-                  className="rounded-lg border border-border px-3 py-1.5 text-xs text-muted hover:bg-sidebar-hover"
-                >
-                  Cancel
-                </button>
-              </div>
-            </div>
-          ) : (
-            <div className="rounded-lg border border-border bg-sidebar-bg p-3">
-              {(agentConfig.tools ?? []).length > 0 ? (
-                <div className="grid grid-cols-2 gap-x-4 gap-y-1.5">
-                  {availableTools
-                    .filter((t) => (agentConfig.tools ?? []).includes(t.value))
-                    .map((t) => (
-                      <div key={t.value}>
-                        <span className="text-sm">{t.label}</span>
-                        {t.description && (
-                          <span className="ml-1.5 text-xs text-muted">{t.description}</span>
-                        )}
-                      </div>
-                    ))}
-                </div>
-              ) : (
-                <span className="text-sm text-muted">(none)</span>
               )}
             </div>
-          )}
+            {editingChain ? (
+              <div className="rounded-lg border border-border bg-sidebar-bg p-3">
+                <ModelChainEditor
+                  model={chainModel}
+                  fallbackModels={chainFallbacks}
+                  availableModels={availableModels}
+                  onChange={(m, fb) => {
+                    setChainModel(m);
+                    setChainFallbacks(fb);
+                  }}
+                />
+                <div className="mt-3 flex gap-2">
+                  <button
+                    type="button"
+                    onClick={handleSaveChain}
+                    disabled={chainSaving}
+                    className="rounded-lg bg-primary px-3 py-1.5 text-xs text-white hover:bg-primary-hover disabled:opacity-50"
+                  >
+                    {chainSaving ? 'Saving...' : 'Save'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setEditingChain(false)}
+                    className="rounded-lg border border-border px-3 py-1.5 text-xs text-muted hover:bg-sidebar-hover"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {[chainModel, ...chainFallbacks].map((model, i) => {
+                  const label = availableModels.find((m) => m.value === model)?.label ?? model;
+                  const keyInfo = modelKeys[model];
+                  return (
+                    <div
+                      key={model}
+                      className="flex items-center justify-between rounded-lg border border-border bg-sidebar-bg px-3 py-2"
+                    >
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm font-medium">{label}</span>
+                        {i === 0 && (
+                          <span className="rounded bg-primary/20 px-1.5 py-0.5 text-[10px] font-medium text-primary">
+                            primary
+                          </span>
+                        )}
+                        {i > 0 && (
+                          <span className="rounded bg-sidebar-hover px-1.5 py-0.5 text-[10px] font-medium text-muted">
+                            fallback {i}
+                          </span>
+                        )}
+                      </div>
+                      {keyInfo && (
+                        <div className="flex items-center gap-2 text-xs text-muted">
+                          <span className="font-medium">{keyInfo.label}</span>
+                          <span className="font-mono">{keyInfo.masked}</span>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          <div className="mb-6">
+            <div className="mb-2 flex items-center justify-between">
+              <h2 className="text-sm font-medium text-muted">System Prompt</h2>
+              {!editingPrompt && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPromptDraft(agentConfig.systemPrompt ?? '');
+                    setEditingPrompt(true);
+                  }}
+                  className="text-xs text-primary hover:underline"
+                >
+                  Edit
+                </button>
+              )}
+            </div>
+            {editingPrompt ? (
+              <div className="rounded-lg border border-border bg-sidebar-bg p-3">
+                <textarea
+                  value={promptDraft}
+                  onChange={(e) => setPromptDraft(e.target.value)}
+                  rows={8}
+                  className="w-full resize-y rounded border border-border bg-[#0d0d0d] p-3 text-sm leading-relaxed focus:border-primary focus:outline-none"
+                />
+                <div className="mt-3 flex gap-2">
+                  <button
+                    type="button"
+                    onClick={handleSavePrompt}
+                    disabled={promptSaving}
+                    className="rounded-lg bg-primary px-3 py-1.5 text-xs text-white hover:bg-primary-hover disabled:opacity-50"
+                  >
+                    {promptSaving ? 'Saving...' : 'Save'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setEditingPrompt(false)}
+                    className="rounded-lg border border-border px-3 py-1.5 text-xs text-muted hover:bg-sidebar-hover"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="rounded-lg border border-border bg-sidebar-bg p-3 text-sm whitespace-pre-wrap">
+                {agentConfig.systemPrompt || <span className="text-muted">(none)</span>}
+              </div>
+            )}
+          </div>
+
+          <div className="mb-6">
+            <div className="mb-2 flex items-center justify-between">
+              <h2 className="text-sm font-medium text-muted">Tools</h2>
+              {!editingTools && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setToolsDraft(agentConfig.tools ?? []);
+                    setEditingTools(true);
+                  }}
+                  className="text-xs text-primary hover:underline"
+                >
+                  Edit
+                </button>
+              )}
+            </div>
+            {toolsRestartNeeded && !editingTools && (
+              <div className="mb-2 rounded-lg bg-yellow-900/20 px-3 py-2 text-xs text-yellow-400">
+                Tools updated — restart the agent to apply changes.
+              </div>
+            )}
+            {editingTools ? (
+              <div className="rounded-lg border border-border bg-sidebar-bg p-3">
+                <div className="mb-2 flex items-center justify-between">
+                  <label className="flex cursor-pointer items-center gap-1.5 text-xs text-muted hover:text-foreground">
+                    <input
+                      type="checkbox"
+                      checked={toolsDraft.length === availableTools.length}
+                      ref={(el) => {
+                        if (el)
+                          el.indeterminate =
+                            toolsDraft.length > 0 && toolsDraft.length < availableTools.length;
+                      }}
+                      onChange={() =>
+                        setToolsDraft((prev) =>
+                          prev.length === availableTools.length
+                            ? []
+                            : availableTools.map((t) => t.value),
+                        )
+                      }
+                      className="accent-primary"
+                    />
+                    Select all
+                  </label>
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  {availableTools.map((tool) => (
+                    <label
+                      key={tool.value}
+                      className="flex cursor-pointer items-start gap-2 rounded-lg border border-border px-3 py-2 text-xs transition-colors hover:bg-sidebar-hover"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={toolsDraft.includes(tool.value)}
+                        onChange={() => toggleDraftTool(tool.value)}
+                        className="mt-0.5 accent-primary"
+                      />
+                      <span>
+                        {tool.label}
+                        {tool.description && (
+                          <span className="block text-[11px] text-muted">{tool.description}</span>
+                        )}
+                      </span>
+                    </label>
+                  ))}
+                </div>
+                <div className="mt-3 flex gap-2">
+                  <button
+                    type="button"
+                    onClick={handleSaveTools}
+                    disabled={toolsSaving}
+                    className="rounded-lg bg-primary px-3 py-1.5 text-xs text-white hover:bg-primary-hover disabled:opacity-50"
+                  >
+                    {toolsSaving ? 'Saving...' : 'Save'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setEditingTools(false)}
+                    className="rounded-lg border border-border px-3 py-1.5 text-xs text-muted hover:bg-sidebar-hover"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="rounded-lg border border-border bg-sidebar-bg p-3">
+                {(agentConfig.tools ?? []).length > 0 ? (
+                  <div className="grid grid-cols-2 gap-x-4 gap-y-1.5">
+                    {availableTools
+                      .filter((t) => (agentConfig.tools ?? []).includes(t.value))
+                      .map((t) => (
+                        <div key={t.value}>
+                          <span className="text-sm">{t.label}</span>
+                          {t.description && (
+                            <span className="ml-1.5 text-xs text-muted">{t.description}</span>
+                          )}
+                        </div>
+                      ))}
+                  </div>
+                ) : (
+                  <span className="text-sm text-muted">(none)</span>
+                )}
+              </div>
+            )}
+          </div>
         </div>
       )}
 
-      {agentConfig && isRunning && (
+      {activeTab === 'skills' && agentConfig && isRunning && (
         <div className="mb-6">
-          <h2 className="mb-2 text-sm font-medium text-muted">Skills</h2>
           <SkillsSection
             deploymentId={id}
             agentName={agentName || (Object.keys(deployment.config?.agents ?? {})[0] ?? 'default')}
@@ -648,26 +652,27 @@ export function AgentDetail(): JSX.Element {
         </div>
       )}
 
-      <div className="flex min-h-48 flex-1 flex-col">
-        <h2 className="mb-2 text-sm font-medium text-muted">Logs</h2>
-        <div className="mb-2 flex gap-1">
-          {(['all', 'info', 'warn', 'error'] as const).map((l) => (
-            <button
-              key={l}
-              type="button"
-              onClick={() => setActiveLevel(l)}
-              className={`rounded px-2 py-0.5 text-xs capitalize transition-colors ${
-                activeLevel === l
-                  ? 'bg-primary text-white'
-                  : 'bg-sidebar-hover text-muted hover:text-foreground'
-              }`}
-            >
-              {l}
-            </button>
-          ))}
+      {activeTab === 'logs' && (
+        <div className="flex min-h-48 flex-1 flex-col">
+          <div className="mb-2 flex gap-1">
+            {(['all', 'info', 'warn', 'error'] as const).map((l) => (
+              <button
+                key={l}
+                type="button"
+                onClick={() => setActiveLevel(l)}
+                className={`rounded px-2 py-0.5 text-xs capitalize transition-colors ${
+                  activeLevel === l
+                    ? 'bg-primary text-white'
+                    : 'bg-sidebar-hover text-muted hover:text-foreground'
+                }`}
+              >
+                {l}
+              </button>
+            ))}
+          </div>
+          <LogViewer lines={logs} level={activeLevel} />
         </div>
-        <LogViewer lines={logs} level={activeLevel} />
-      </div>
+      )}
     </div>
   );
 }
@@ -987,7 +992,7 @@ function SkillsSection({
             onClick={() => setEditing(null)}
             className="text-xs text-primary hover:underline"
           >
-            ← Back
+            &larr; Back
           </button>
           <span className="text-xs font-medium">{editing.name}</span>
           {!editing.editable && (
