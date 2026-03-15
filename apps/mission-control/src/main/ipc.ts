@@ -255,6 +255,20 @@ export async function registerIpcHandlers(
   );
   gatewayPoller.start(sendGatewayStatus);
 
+  // Start health pollers for existing running deployments so status changes
+  // are detected after MC restart (pollers are normally only started at deploy time).
+  const existingDeployments = await getRegistry().list();
+  for (const dep of existingDeployments) {
+    if (dep.status === 'running' && dep.managementPort && dep.managementToken) {
+      healthPoller.start(dep.id, dep.managementPort, dep.managementToken, (status) => {
+        const win = getWindow();
+        if (win && !win.isDestroyed()) {
+          win.webContents.send('deployment:statusChange', dep.id, status);
+        }
+      });
+    }
+  }
+
   // Auto-unlock from cached session key.
   // Validates the key before registering IPC handlers so the renderer never
   // sees isUnlocked=true with a stale key.
@@ -407,7 +421,24 @@ export async function registerIpcHandlers(
 
   // Deployment handlers
   ipcMain.handle('deployments:list', async () => {
-    return getRegistry().list();
+    const deployments = await getRegistry().list();
+    // Resolve live runtime status for deployments that claim to be running,
+    // since the persisted status can be stale after MC restart or agent crash.
+    const resolved = await Promise.all(
+      deployments.map(async (dep) => {
+        if (dep.status !== 'running' && dep.status !== 'provisioning') return dep;
+        try {
+          const rs = await getRuntime().getStatus(dep.id);
+          const mapped = rs.state === 'starting' ? 'provisioning' : rs.state;
+          return mapped !== dep.status
+            ? { ...dep, status: mapped as typeof dep.status }
+            : dep;
+        } catch {
+          return dep;
+        }
+      }),
+    );
+    return resolved;
   });
 
   ipcMain.handle('deployments:get', async (_event, id: string) => {
