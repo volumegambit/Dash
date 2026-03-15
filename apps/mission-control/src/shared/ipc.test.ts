@@ -76,11 +76,12 @@ describe('MissionControlAPI contract', () => {
       'chatDeleteConversation',
       'chatSendMessage',
       'chatCancel',
+      'chatAnswerQuestion',
       'chatOnEvent',
       'chatOnDone',
       'chatOnError',
     ];
-    expect(methodNames).toHaveLength(9);
+    expect(methodNames).toHaveLength(10);
   });
 
   it('MissionControlAPI exposes all messaging apps methods', () => {
