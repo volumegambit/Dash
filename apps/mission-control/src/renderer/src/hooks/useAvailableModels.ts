@@ -19,14 +19,20 @@ export function useAvailableModels(): ModelOption[] {
       .modelsList()
       .then((cached) => {
         if (cached.length > 0) {
-          setAllModels(
-            cached.map((m) => ({
-              value: m.value,
-              label: m.label,
-              provider: m.provider as ModelOption['provider'],
-              secretKey: `${m.provider}-api-key`,
-            })),
-          );
+          const dynamic: ModelOption[] = cached.map((m) => ({
+            value: m.value,
+            label: m.label,
+            provider: m.provider as ModelOption['provider'],
+            secretKey: `${m.provider}-api-key`,
+          }));
+          // Merge with hardcoded models so known providers (anthropic, openai, google)
+          // always appear even if the cache only has unknown provider models.
+          const dynamicValues = new Set(dynamic.map((m) => m.value));
+          const merged = [
+            ...dynamic,
+            ...AVAILABLE_MODELS.filter((m) => !dynamicValues.has(m.value)),
+          ];
+          setAllModels(merged);
         }
       })
       .catch(() => {
