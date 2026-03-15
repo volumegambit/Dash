@@ -234,6 +234,19 @@ function ToolBlock({
   );
 }
 
+function formatTokens(n: number): string {
+  if (n >= 1000) return `${(n / 1000).toFixed(1)}k`;
+  return String(n);
+}
+
+function extractUsage(events: Record<string, unknown>[]): Record<string, number> | null {
+  for (let i = events.length - 1; i >= 0; i--) {
+    const e = events[i] as McAgentEvent;
+    if (e.type === 'response' && e.usage) return e.usage;
+  }
+  return null;
+}
+
 function MessageBubble({
   message,
   streamingEvents,
@@ -259,21 +272,26 @@ function MessageBubble({
 
   const events: Record<string, unknown>[] =
     streamingEvents ?? (message?.content.type === 'assistant' ? message.content.events : []);
+  const usage = extractUsage(events);
 
   return (
     <div className="mb-4">
       <div className="max-w-[80%] rounded-lg bg-sidebar-bg px-4 py-2 text-sm text-foreground">
         {renderEvents(events, navigateToLogs)}
       </div>
+      {usage && (
+        <div className="mt-1 max-w-[80%] px-1 text-[10px] text-muted/60">
+          {usage.input_tokens != null && <span>{formatTokens(usage.input_tokens)} in</span>}
+          {usage.input_tokens != null && usage.output_tokens != null && <span> · </span>}
+          {usage.output_tokens != null && <span>{formatTokens(usage.output_tokens)} out</span>}
+        </div>
+      )}
     </div>
   );
 }
 
 /** Extract the latest TodoWrite state from messages and live streaming events */
-function extractLatestTodos(
-  msgs: McMessage[],
-  liveEvents: McAgentEvent[],
-): TodoItem[] | null {
+function extractLatestTodos(msgs: McMessage[], liveEvents: McAgentEvent[]): TodoItem[] | null {
   let latest: TodoItem[] | null = null;
 
   // Scan persisted messages (newest last)
@@ -515,8 +533,8 @@ export function Chat(): JSX.Element {
   const agentNames = selectedDeployment?.config.agents
     ? Object.keys(selectedDeployment.config.agents)
     : [];
-  const agentConfig = selectedDeployment?.config?.agents?.[selectedAgentName]
-    ?? selectedDeployment?.config?.agent;
+  const agentConfig =
+    selectedDeployment?.config?.agents?.[selectedAgentName] ?? selectedDeployment?.config?.agent;
   const activeModel = agentConfig?.model;
 
   return (
@@ -612,9 +630,7 @@ export function Chat(): JSX.Element {
 
         {activeModel && (
           <div className="flex items-center justify-between border-b border-border px-6 py-1.5">
-            <span className="text-xs text-muted">
-              {formatModelName(activeModel)}
-            </span>
+            <span className="text-xs text-muted">{formatModelName(activeModel)}</span>
           </div>
         )}
 
