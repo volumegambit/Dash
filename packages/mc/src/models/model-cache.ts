@@ -36,9 +36,10 @@ export class ModelCacheService {
   }
 
   async save(models: CachedModel[]): Promise<void> {
+    const sorted = [...models].sort((a, b) => a.label.localeCompare(b.label));
     const cache: CacheFile = {
       fetchedAt: new Date().toISOString(),
-      models,
+      models: sorted,
     };
     await writeFile(this.cacheFilePath, JSON.stringify(cache, null, 2));
   }
