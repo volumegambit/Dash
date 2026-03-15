@@ -109,7 +109,7 @@ describe('DeployWizard', () => {
     await user.click(screen.getByRole('button', { name: /next/i }));
 
     expect(screen.getByText('my-cool-agent')).toBeInTheDocument();
-    expect(screen.getByText('Claude Sonnet 4')).toBeInTheDocument();
+    expect(screen.getByText('Claude Opus 4')).toBeInTheDocument();
   });
 
   it('deploy calls deploymentsDeployWithConfig with correct options', async () => {
@@ -122,7 +122,7 @@ describe('DeployWizard', () => {
 
     expect(mockApi.deploymentsDeployWithConfig).toHaveBeenCalledWith({
       name: 'deploy-test',
-      model: 'anthropic/claude-sonnet-4-20250514',
+      model: 'anthropic/claude-opus-4-20250514',
       fallbackModels: undefined,
       systemPrompt: '',
       tools: [],

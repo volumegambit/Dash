@@ -11,6 +11,7 @@ import {
   EncryptedSecretStore,
   GatewayOptions,
   MessagingAppRegistry,
+  ModelCacheService,
   ProcessRuntime,
   SettingsStore,
   defaultProcessSpawner,
@@ -36,7 +37,15 @@ let registry: AgentRegistry | undefined;
 let runtime: ProcessRuntime | undefined;
 let messagingAppRegistry: MessagingAppRegistry | undefined;
 let gatewayPoller: GatewayPoller | undefined;
+let modelCache: ModelCacheService | undefined;
 const healthPoller = new HealthPoller();
+
+function getModelCache(): ModelCacheService {
+  if (!modelCache) {
+    modelCache = new ModelCacheService(DATA_DIR);
+  }
+  return modelCache;
+}
 
 function getMessagingAppRegistry(): MessagingAppRegistry {
   if (!messagingAppRegistry) {
@@ -397,6 +406,7 @@ export async function registerIpcHandlers(
         .catch((err) => {
           console.error('[credentials] Unexpected error during push:', err);
         });
+      getModelCache().refresh().catch(() => {});
     }
   });
 
@@ -416,6 +426,7 @@ export async function registerIpcHandlers(
         .catch((err) => {
           console.error('[credentials] Unexpected error during push:', err);
         });
+      getModelCache().refresh().catch(() => {});
     }
   });
 
@@ -831,6 +842,20 @@ export async function registerIpcHandlers(
 
   ipcMain.handle('gateway:getStatus', () => {
     return gatewayPoller?.getCurrentStatus() ?? 'starting';
+  });
+
+  // Models
+  ipcMain.handle('models:list', async () => {
+    return getModelCache().load();
+  });
+
+  ipcMain.handle('models:refresh', async () => {
+    return getModelCache().refresh();
+  });
+
+  // Background model cache refresh on startup
+  getModelCache().refresh().catch((err) => {
+    console.warn('Background model cache refresh failed:', err instanceof Error ? err.message : err);
   });
 
   app.on('before-quit', () => {

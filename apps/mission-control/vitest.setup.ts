@@ -8,6 +8,7 @@ function createMockApi(): Record<keyof MissionControlAPI, ReturnType<typeof vi.f
 
     // Shell
     openExternal: vi.fn().mockResolvedValue(undefined),
+    openPath: vi.fn().mockResolvedValue(undefined),
 
     // Setup
     setupGetStatus: vi
@@ -56,6 +57,7 @@ function createMockApi(): Record<keyof MissionControlAPI, ReturnType<typeof vi.f
     deploymentsDeploy: vi.fn().mockResolvedValue('test-deployment-id'),
     deploymentsDeployWithConfig: vi.fn().mockResolvedValue('test-deployment-id'),
     deploymentsStop: vi.fn().mockResolvedValue(undefined),
+    deploymentsRestart: vi.fn().mockResolvedValue(undefined),
     deploymentsRemove: vi.fn().mockResolvedValue(undefined),
     deploymentsGetStatus: vi.fn().mockResolvedValue({ state: 'stopped' }),
     deploymentsLogsSubscribe: vi.fn().mockResolvedValue(undefined),
@@ -89,6 +91,13 @@ function createMockApi(): Record<keyof MissionControlAPI, ReturnType<typeof vi.f
     // Gateway
     gatewayGetStatus: vi.fn().mockResolvedValue('healthy'),
     gatewayOnStatus: vi.fn().mockReturnValue(() => {}),
+
+    // Credentials
+    onCredentialsPushFailed: vi.fn().mockReturnValue(() => {}),
+
+    // Models
+    modelsList: vi.fn().mockResolvedValue([]),
+    modelsRefresh: vi.fn().mockResolvedValue([]),
 
     // Updates
     onUpdateAvailable: vi.fn().mockReturnValue(() => {}),
