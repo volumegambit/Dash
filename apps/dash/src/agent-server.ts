@@ -60,6 +60,7 @@ export async function createAgentServer(config: DashConfig) {
         },
         agentKeys,
         logger,
+        agentConfig.opencodeStateDir,
       );
 
       await backend.start(workspace ?? projectRoot);
