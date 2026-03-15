@@ -37,6 +37,7 @@ describe('AgentDetail', () => {
   beforeEach(() => {
     mockNavigate.mockReset();
     mockApi.deploymentsList.mockResolvedValue([runningDeployment]);
+    mockApi.deploymentsGetStatus.mockResolvedValue({ state: 'running' });
     useDeploymentsStore.setState({
       deployments: [runningDeployment],
       loading: false,
@@ -63,6 +64,7 @@ describe('AgentDetail', () => {
   it('does not show Chat button when agent is stopped', async () => {
     const stoppedDeployment = { ...runningDeployment, status: 'stopped' as const };
     mockApi.deploymentsList.mockResolvedValue([stoppedDeployment]);
+    mockApi.deploymentsGetStatus.mockResolvedValue({ state: 'stopped' });
     useDeploymentsStore.setState({
       deployments: [stoppedDeployment],
       loading: false,
