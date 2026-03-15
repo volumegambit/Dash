@@ -1,5 +1,10 @@
 import type { AgentClient, AgentEvent, Logger } from '@dash/agent';
 
+export interface WsMessageImage {
+  mediaType: string;
+  data: string;
+}
+
 export type WsClientMessage =
   | {
       type: 'message';
@@ -8,6 +13,7 @@ export type WsClientMessage =
       channelId: string;
       conversationId: string;
       text: string;
+      images?: WsMessageImage[];
     }
   | { type: 'cancel'; id: string };
 
