@@ -1,6 +1,6 @@
 import type { McMessage } from '@dash/mc';
 import { createFileRoute, useNavigate } from '@tanstack/react-router';
-import { Loader, Plus, Send, Square, Trash2 } from 'lucide-react';
+import { ChevronDown, ChevronUp, Loader, Plus, Send, Square, Trash2 } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { McAgentEvent } from '../../../shared/ipc.js';
 import { Markdown } from '../components/Markdown.js';
@@ -269,6 +269,132 @@ function MessageBubble({
   );
 }
 
+/** Extract the latest TodoWrite state from messages and live streaming events */
+function extractLatestTodos(
+  msgs: McMessage[],
+  liveEvents: McAgentEvent[],
+): TodoItem[] | null {
+  let latest: TodoItem[] | null = null;
+
+  // Scan persisted messages (newest last)
+  for (const msg of msgs) {
+    if (msg.content.type !== 'assistant') continue;
+    let toolName = '';
+    let toolInput = '';
+    for (const event of msg.content.events as McAgentEvent[]) {
+      if (event.type === 'tool_use_start') {
+        toolName = event.name;
+        toolInput = '';
+      } else if (event.type === 'tool_use_delta') {
+        toolInput += event.partial_json;
+      } else if (event.type === 'tool_result') {
+        if (isTodoWrite(toolName || event.name)) {
+          const parsed = parseTodos(toolInput);
+          if (parsed) latest = parsed;
+        }
+        toolName = '';
+        toolInput = '';
+      }
+    }
+  }
+
+  // Check live streaming events (override if newer)
+  let liveName = '';
+  let liveInput = '';
+  for (const event of liveEvents) {
+    if (event.type === 'tool_use_start') {
+      liveName = event.name;
+      liveInput = '';
+    } else if (event.type === 'tool_use_delta') {
+      liveInput += event.partial_json;
+    } else if (event.type === 'tool_result') {
+      if (isTodoWrite(liveName || event.name)) {
+        const parsed = parseTodos(liveInput);
+        if (parsed) latest = parsed;
+      }
+      liveName = '';
+      liveInput = '';
+    }
+  }
+
+  // Also check in-progress todowrite (not yet completed)
+  if (isTodoWrite(liveName) && liveInput) {
+    const parsed = parseTodos(liveInput);
+    if (parsed) latest = parsed;
+  }
+
+  return latest;
+}
+
+function PinnedTodoPanel({ todos }: { todos: TodoItem[] }): JSX.Element {
+  const [collapsed, setCollapsed] = useState(false);
+  const completed = todos.filter((t) => t.status === 'completed').length;
+  const inProgress = todos.filter((t) => t.status === 'in_progress').length;
+  const progressPct = todos.length > 0 ? (completed / todos.length) * 100 : 0;
+
+  return (
+    <div className="border-t border-border bg-sidebar-bg">
+      <button
+        type="button"
+        onClick={() => setCollapsed((c) => !c)}
+        className="flex w-full items-center justify-between px-6 py-2 text-xs text-muted hover:text-foreground"
+      >
+        <span className="flex items-center gap-2">
+          <span>📋</span>
+          <span className="font-medium">
+            Tasks: {completed}/{todos.length} completed
+            {inProgress > 0 && ` · ${inProgress} in progress`}
+          </span>
+        </span>
+        {collapsed ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+      </button>
+
+      {!collapsed && (
+        <div className="px-6 pb-3">
+          {/* Progress bar */}
+          <div className="mb-2 h-1 rounded-full bg-border">
+            <div
+              className="h-1 rounded-full bg-green-500 transition-all"
+              style={{ width: `${progressPct}%` }}
+            />
+          </div>
+
+          <div className="max-h-40 space-y-1 overflow-y-auto text-xs">
+            {todos.map((todo) => {
+              const isActive = todo.status === 'in_progress';
+              const isDone = todo.status === 'completed';
+              const pr = todo.priority ? PRIORITY_BADGE[todo.priority] : undefined;
+
+              return (
+                <div
+                  key={todo.id ?? todo.content}
+                  className={`flex items-center gap-2 rounded px-2 py-1 ${
+                    isActive ? 'bg-blue-900/20 border border-blue-800/40' : ''
+                  }`}
+                >
+                  <span className={STATUS_INDICATOR[todo.status]?.color ?? 'text-muted'}>
+                    {STATUS_INDICATOR[todo.status]?.icon ?? '○'}
+                  </span>
+                  <span
+                    className={`flex-1 ${isDone ? 'line-through text-muted' : ''} ${isActive ? 'text-blue-300' : ''}`}
+                  >
+                    {todo.content}
+                  </span>
+                  {pr && (
+                    <span className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] ${pr.cls}`}>
+                      {pr.label}
+                    </span>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function formatModelName(model: string): string {
   // Strip provider prefix (e.g. "anthropic/claude-sonnet-4-5" → "claude-sonnet-4-5")
   const name = model.includes('/') ? model.split('/').slice(1).join('/') : model;
@@ -521,6 +647,11 @@ export function Chat(): JSX.Element {
           )}
           <div ref={messagesEndRef} />
         </div>
+
+        {(() => {
+          const todos = extractLatestTodos(selectedMessages, liveEvents);
+          return todos && todos.length > 0 ? <PinnedTodoPanel todos={todos} /> : null;
+        })()}
 
         <div className="border-t border-border px-6 py-4">
           <form
