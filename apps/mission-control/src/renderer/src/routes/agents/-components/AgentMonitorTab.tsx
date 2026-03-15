@@ -55,7 +55,19 @@ export function AgentMonitorTab({
         </span>
         <span>
           <span className="text-muted">Created</span>{' '}
-          <span className="font-medium">{new Date(deployment.createdAt).toLocaleString()}</span>
+          <span className="font-medium">
+            {new Date(deployment.createdAt).toLocaleDateString('en-GB', {
+              day: 'numeric',
+              month: 'short',
+              year: 'numeric',
+            })}
+            {', '}
+            {new Date(deployment.createdAt).toLocaleTimeString('en-GB', {
+              hour: '2-digit',
+              minute: '2-digit',
+              timeZoneName: 'short',
+            })}
+          </span>
         </span>
       </div>
 
