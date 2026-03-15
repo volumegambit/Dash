@@ -114,7 +114,7 @@ export interface MissionControlAPI {
   deploymentsGetStatus(id: string): Promise<RuntimeStatus>;
   deploymentsUpdateConfig(
     id: string,
-    patch: { model?: string; fallbackModels?: string[]; tools?: string[] },
+    patch: { model?: string; fallbackModels?: string[]; tools?: string[]; systemPrompt?: string },
   ): Promise<void>;
   deploymentsLogsSubscribe(id: string): Promise<void>;
   deploymentsLogsUnsubscribe(id: string): Promise<void>;
@@ -183,9 +183,10 @@ export interface MissionControlAPI {
   // Credentials
   onCredentialsPushFailed(callback: (failures: CredentialPushFailure[]) => void): () => void;
 
-  // Models
+  // Models & Tools
   modelsList(): Promise<Array<{ value: string; label: string; provider: string }>>;
   modelsRefresh(): Promise<Array<{ value: string; label: string; provider: string }>>;
+  toolsList(): Promise<string[]>;
 
   // Updates
   onUpdateAvailable(callback: (info: { version: string }) => void): () => void;
