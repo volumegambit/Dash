@@ -149,6 +149,13 @@ const api: MissionControlAPI = {
     return () => ipcRenderer.removeListener('gateway:status', listener);
   },
 
+  // Credentials
+  onCredentialsPushFailed: (callback: (failures: { deploymentId: string; name: string; error: string }[]) => void): (() => void) => {
+    const handler = (_: Electron.IpcRendererEvent, failures: { deploymentId: string; name: string; error: string }[]) => callback(failures);
+    ipcRenderer.on('credentials:pushFailed', handler);
+    return () => ipcRenderer.removeListener('credentials:pushFailed', handler);
+  },
+
   // Updates
   onUpdateAvailable: (callback: (info: { version: string }) => void): (() => void) => {
     const handler = (_: Electron.IpcRendererEvent, info: { version: string }) => callback(info);

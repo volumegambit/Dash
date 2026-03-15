@@ -62,6 +62,12 @@ export class RendererDeploymentError extends Error {
   }
 }
 
+export interface CredentialPushFailure {
+  deploymentId: string;
+  name: string;
+  error: string;
+}
+
 export interface MissionControlAPI {
   getVersion(): Promise<string>;
 
@@ -171,6 +177,9 @@ export interface MissionControlAPI {
   // Gateway
   gatewayGetStatus(): Promise<GatewayStatus>;
   gatewayOnStatus(callback: (status: GatewayStatus) => void): () => void;
+
+  // Credentials
+  onCredentialsPushFailed(callback: (failures: CredentialPushFailure[]) => void): () => void;
 
   // Updates
   onUpdateAvailable(callback: (info: { version: string }) => void): () => void;

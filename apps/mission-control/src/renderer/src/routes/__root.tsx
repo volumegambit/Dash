@@ -18,6 +18,7 @@ function RootLayout(): JSX.Element {
   const [needsUnlock, setNeedsUnlock] = useState(false);
   const [needsApiKey, setNeedsApiKey] = useState(false);
   const [updateVersion, setUpdateVersion] = useState<string | null>(null);
+  const [credentialErrors, setCredentialErrors] = useState<{ name: string; error: string }[]>([]);
 
   const deployments = useDeploymentsStore((s) => s.deployments);
   const pollHealth = useMessagingAppsStore((s) => s.pollHealth);
@@ -50,6 +51,12 @@ function RootLayout(): JSX.Element {
   useEffect(() => {
     return window.api.onUpdateAvailable((info) => {
       setUpdateVersion(info.version);
+    });
+  }, []);
+
+  useEffect(() => {
+    return window.api.onCredentialsPushFailed((failures) => {
+      setCredentialErrors(failures.map((f) => ({ name: f.name, error: f.error })));
     });
   }, []);
 
@@ -87,6 +94,21 @@ function RootLayout(): JSX.Element {
       {updateVersion && (
         <div className="flex items-center justify-center bg-primary px-4 py-2 text-sm text-primary-foreground">
           A new version ({updateVersion}) is available and will be installed on next restart.
+        </div>
+      )}
+      {credentialErrors.length > 0 && (
+        <div className="flex items-center justify-between bg-red-900/50 px-4 py-2 text-sm text-red-200">
+          <span>
+            Failed to push updated credentials to: {credentialErrors.map((e) => e.name).join(', ')}.
+            Restart the agent to apply.
+          </span>
+          <button
+            type="button"
+            onClick={() => setCredentialErrors([])}
+            className="ml-4 shrink-0 rounded px-2 py-0.5 text-red-300 hover:bg-red-900/50 hover:text-white"
+          >
+            Dismiss
+          </button>
         </div>
       )}
       <div className="flex flex-1 overflow-hidden">
