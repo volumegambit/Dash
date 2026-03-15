@@ -1,7 +1,7 @@
 import { mkdir } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { DashAgent, FileLogger, LocalAgentClient, OpenCodeBackend } from '@dash/agent';
+import { DashAgent, FileLogger, LocalAgentClient, PiAgentBackend } from '@dash/agent';
 import type { AgentClient } from '@dash/agent';
 import { startChatServer } from '@dash/chat';
 import { startManagementServer } from '@dash/management';
@@ -24,8 +24,8 @@ export async function createAgentServer(config: DashConfig) {
   };
 
   const clients = new Map<string, AgentClient>();
-  const backends: OpenCodeBackend[] = [];
-  const backendsByName = new Map<string, OpenCodeBackend>();
+  const backends: PiAgentBackend[] = [];
+  const backendsByName = new Map<string, PiAgentBackend>();
   const agentsByName = new Map<string, DashAgent>();
 
   const failed: string[] = [];
@@ -45,7 +45,7 @@ export async function createAgentServer(config: DashConfig) {
         log(`Agent "${name}" resolved key for provider "${provider}": ${prefix}***${suffix}`);
       }
 
-      const backend = new OpenCodeBackend(
+      const backend = new PiAgentBackend(
         {
           model: agentConfig.model,
           systemPrompt: agentConfig.systemPrompt,
