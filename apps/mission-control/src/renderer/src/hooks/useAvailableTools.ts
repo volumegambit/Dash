@@ -17,9 +17,11 @@ export function useAvailableTools(): ToolOption[] {
     window.api
       .toolsList()
       .then((cached) => {
-        if (cached.length > 0) {
+        // Filter out unknown tool IDs (e.g. "invalid" from the OpenCode SDK)
+        const known = cached.filter((id) => id in TOOL_DESCRIPTIONS);
+        if (known.length > 0) {
           setTools(
-            cached.map((id) => ({
+            known.map((id) => ({
               value: id,
               label: toolLabel(id),
               description: TOOL_DESCRIPTIONS[id],
