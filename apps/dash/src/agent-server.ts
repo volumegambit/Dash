@@ -43,6 +43,11 @@ export async function createAgentServer(config: DashConfig) {
       }
 
       const agentKeys = resolveAgentKeys(config.providerApiKeys, agentConfig.credentialKeys);
+      for (const [provider, key] of Object.entries(agentKeys)) {
+        const prefix = key.slice(0, 6);
+        const suffix = key.slice(-10);
+        log(`Agent "${name}" resolved key for provider "${provider}": ${prefix}***${suffix}`);
+      }
 
       const backend = new OpenCodeBackend(
         {
@@ -208,20 +213,32 @@ export async function createAgentServer(config: DashConfig) {
           skills: skillsHandlers,
           onUpdateCredentials: async (providerApiKeys) => {
             config.providerApiKeys = providerApiKeys;
-            for (const [name, agentConfig] of Object.entries(config.agents)) {
-              const backend = backendsByName.get(name);
-              if (!backend) continue;
-              const agentKeys = resolveAgentKeys(providerApiKeys, agentConfig.credentialKeys);
-              await backend.updateCredentials(agentKeys);
-            }
             const providers = Object.keys(providerApiKeys);
             const keyCount = providers.reduce(
               (sum, p) => sum + Object.keys(providerApiKeys[p]).length,
               0,
             );
             log(
-              `Credentials updated via Management API (${keyCount} key(s) across ${providers.join(', ')})`,
+              `Credentials update received via Management API: ${keyCount} key(s) across [${providers.join(', ')}]`,
             );
+            for (const [provider, keys] of Object.entries(providerApiKeys)) {
+              for (const [keyName, value] of Object.entries(keys)) {
+                const prefix = value.slice(0, 6);
+                const suffix = value.slice(-3);
+                log(`  Provider "${provider}" key "${keyName}": ${prefix}***${suffix}`);
+              }
+            }
+            for (const [name, agentConfig] of Object.entries(config.agents)) {
+              const backend = backendsByName.get(name);
+              if (!backend) {
+                log(`  Skipping agent "${name}": no backend found`);
+                continue;
+              }
+              const agentKeys = resolveAgentKeys(providerApiKeys, agentConfig.credentialKeys);
+              log(`  Pushing resolved keys to agent "${name}"`);
+              await backend.updateCredentials(agentKeys);
+            }
+            log('Credentials update complete');
           },
         });
         managementClose = close;
