@@ -17,9 +17,11 @@ interface CacheFile {
 
 export class ModelCacheService {
   private cacheFilePath: string;
+  private dataDir: string;
   private refreshing = false;
 
   constructor(dataDir: string) {
+    this.dataDir = dataDir;
     this.cacheFilePath = join(dataDir, 'models-cache.json');
   }
 
@@ -68,6 +70,13 @@ export class ModelCacheService {
     try {
       const { createOpencodeServer } = await import('@opencode-ai/sdk/v2');
       const { createOpencodeClient } = await import('@opencode-ai/sdk/v2');
+
+      // Isolate temp server's state from production deployments
+      const ocTmpDir = join(this.dataDir, '.opencode-discovery');
+      process.env.XDG_DATA_HOME = join(ocTmpDir, 'data');
+      process.env.XDG_CONFIG_HOME = join(ocTmpDir, 'config');
+      process.env.XDG_STATE_HOME = join(ocTmpDir, 'state');
+      process.env.XDG_CACHE_HOME = join(ocTmpDir, 'cache');
 
       const port = await findFreePort();
       const server = await createOpencodeServer({ port });
