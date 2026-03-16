@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -85,5 +85,15 @@ describe('MessagingAppRegistry', () => {
 
   it('returns null for non-existent id', async () => {
     expect(await registry.get('non-existent')).toBeNull();
+  });
+
+  it('returns empty list when file is empty', async () => {
+    await writeFile(join(tempDir, 'messaging-apps.json'), '');
+    expect(await registry.list()).toEqual([]);
+  });
+
+  it('returns empty list when file contains truncated JSON', async () => {
+    await writeFile(join(tempDir, 'messaging-apps.json'), '[{"id":"app-1"');
+    expect(await registry.list()).toEqual([]);
   });
 });

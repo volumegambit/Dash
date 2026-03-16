@@ -905,8 +905,8 @@ export class ProcessRuntime implements DeploymentRuntime {
         });
       };
 
-      await killProcess(state.agentServer);
       this.processes.delete(id);
+      await killProcess(state.agentServer);
     } else {
       // Process not tracked in memory — PID-based kill with SIGTERM → SIGKILL escalation
       if (deployment.agentServerPid) await killPidWithEscalation(deployment.agentServerPid);
