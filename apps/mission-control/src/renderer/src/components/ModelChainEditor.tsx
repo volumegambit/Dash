@@ -1,4 +1,4 @@
-import { X } from 'lucide-react';
+import { Loader, RefreshCw, X } from 'lucide-react';
 import type { ModelOption } from './deploy-options.js';
 
 interface ModelChainEditorProps {
@@ -6,6 +6,8 @@ interface ModelChainEditorProps {
   fallbackModels: string[];
   availableModels: ModelOption[];
   onChange: (model: string, fallbackModels: string[]) => void;
+  onRefresh?: () => void;
+  refreshing?: boolean;
 }
 
 export function ModelChainEditor({
@@ -13,6 +15,8 @@ export function ModelChainEditor({
   fallbackModels,
   availableModels,
   onChange,
+  onRefresh,
+  refreshing,
 }: ModelChainEditorProps): JSX.Element {
   if (availableModels.length === 0) {
     return (
@@ -54,19 +58,33 @@ export function ModelChainEditor({
         <label htmlFor="primary-model" className="mb-1 block text-xs font-medium text-muted">
           Primary model
         </label>
-        <select
-          id="primary-model"
-          aria-label="Primary model"
-          value={model}
-          onChange={(e) => handlePrimaryChange(e.target.value)}
-          className="w-full rounded-lg border border-border bg-sidebar-bg px-3 py-2 text-sm text-foreground focus:border-primary focus:outline-none"
-        >
-          {availableModels.map((m) => (
-            <option key={m.value} value={m.value}>
-              {m.label}
-            </option>
-          ))}
-        </select>
+        <div className="flex items-center gap-2">
+          <select
+            id="primary-model"
+            aria-label="Primary model"
+            value={model}
+            onChange={(e) => handlePrimaryChange(e.target.value)}
+            className="flex-1 rounded-lg border border-border bg-sidebar-bg px-3 py-2 text-sm text-foreground focus:border-primary focus:outline-none"
+          >
+            {availableModels.map((m) => (
+              <option key={m.value} value={m.value}>
+                {m.label}
+              </option>
+            ))}
+          </select>
+          {onRefresh && (
+            <button
+              type="button"
+              aria-label="Refresh models"
+              onClick={onRefresh}
+              disabled={refreshing}
+              className="shrink-0 rounded-lg border border-border p-2 text-muted transition-colors hover:bg-sidebar-hover hover:text-foreground disabled:opacity-50"
+              title="Refresh model list"
+            >
+              {refreshing ? <Loader size={14} className="animate-spin" /> : <RefreshCw size={14} />}
+            </button>
+          )}
+        </div>
       </div>
 
       {fallbackModels.length > 0 && (

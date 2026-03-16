@@ -10,14 +10,14 @@ describe('useAvailableModels', () => {
 
   it('returns no models when no keys are present', () => {
     const { result } = renderHook(() => useAvailableModels());
-    expect(result.current).toHaveLength(0);
+    expect(result.current.models).toHaveLength(0);
   });
 
   it('returns only anthropic models when only anthropic key is present', () => {
     useSecretsStore.setState({ keys: ['anthropic-api-key:default'] });
     const { result } = renderHook(() => useAvailableModels());
-    expect(result.current.every((m) => m.provider === 'anthropic')).toBe(true);
-    expect(result.current.length).toBeGreaterThan(0);
+    expect(result.current.models.every((m) => m.provider === 'anthropic')).toBe(true);
+    expect(result.current.models.length).toBeGreaterThan(0);
   });
 
   it('returns models from all providers when all keys are present', () => {
@@ -25,9 +25,16 @@ describe('useAvailableModels', () => {
       keys: ['anthropic-api-key:default', 'openai-api-key:default', 'google-api-key:default'],
     });
     const { result } = renderHook(() => useAvailableModels());
-    const providers = new Set(result.current.map((m) => m.provider));
+    const providers = new Set(result.current.models.map((m) => m.provider));
     expect(providers).toContain('anthropic');
     expect(providers).toContain('openai');
     expect(providers).toContain('google');
+  });
+
+  it('exposes refresh function and refreshing state', () => {
+    useSecretsStore.setState({ keys: ['anthropic-api-key:default'] });
+    const { result } = renderHook(() => useAvailableModels());
+    expect(typeof result.current.refresh).toBe('function');
+    expect(result.current.refreshing).toBe(false);
   });
 });

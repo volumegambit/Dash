@@ -25,7 +25,11 @@ export function AgentConfigTab({
   workspace,
   updateConfig,
 }: AgentConfigTabProps): JSX.Element {
-  const availableModels = useAvailableModels();
+  const {
+    models: availableModels,
+    refreshing: modelsRefreshing,
+    refresh: refreshModels,
+  } = useAvailableModels();
   const availableTools = useAvailableTools();
 
   // Which card is open (null = all collapsed). Opening goes straight to edit mode.
@@ -222,6 +226,8 @@ export function AgentConfigTab({
                 setChainModel(m);
                 setChainFallbacks(fb);
               }}
+              onRefresh={refreshModels}
+              refreshing={modelsRefreshing}
             />
             <div className="mt-3 flex justify-end gap-2">
               <button
