@@ -44,6 +44,7 @@ export interface AgentDeployAgentConfig {
     paths?: string[];
     urls?: string[];
   };
+  mcp?: Record<string, unknown>;
 }
 
 export interface ChannelDeployConfig {

@@ -17,6 +17,7 @@ export interface AgentConfig {
     paths?: string[];
     urls?: string[];
   };
+  mcp?: Record<string, unknown>;
 }
 
 export interface DashJsonConfig {
