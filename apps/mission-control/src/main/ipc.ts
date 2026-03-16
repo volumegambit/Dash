@@ -47,6 +47,25 @@ function getModelCache(): ModelCacheService {
   return modelCache;
 }
 
+async function getProviderApiKeys(): Promise<Record<string, string>> {
+  const store = getSecretStore();
+  const keys: Record<string, string> = {};
+  try {
+    const allKeys = await store.list();
+    for (const secretKey of allKeys) {
+      const parsed = parseProviderSecretKey(secretKey);
+      if (!parsed) continue;
+      // Only use the 'default' key per provider for discovery
+      if (parsed.keyName !== 'default') continue;
+      const value = await store.get(secretKey);
+      if (value) keys[parsed.provider] = value;
+    }
+  } catch {
+    // Secret store may be locked — return empty
+  }
+  return keys;
+}
+
 function getMessagingAppRegistry(): MessagingAppRegistry {
   if (!messagingAppRegistry) {
     messagingAppRegistry = new MessagingAppRegistry(DATA_DIR);
@@ -965,7 +984,8 @@ export async function registerIpcHandlers(
   });
 
   ipcMain.handle('models:refresh', async () => {
-    return getModelCache().refresh();
+    const apiKeys = await getProviderApiKeys();
+    return getModelCache().refresh(apiKeys);
   });
 
   ipcMain.handle('tools:list', async () => {
@@ -973,8 +993,8 @@ export async function registerIpcHandlers(
   });
 
   // Background model cache refresh on startup
-  getModelCache()
-    .refresh()
+  getProviderApiKeys()
+    .then((apiKeys) => getModelCache().refresh(apiKeys))
     .catch((err) => {
       console.warn(
         'Background model cache refresh failed:',
