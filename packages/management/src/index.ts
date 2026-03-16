@@ -10,6 +10,7 @@ export type {
   SkillsConfig,
   ChannelHealthEntry,
   ChannelHealthResponse,
+  McpServerInfo,
 } from './types.js';
 export { createManagementApp, startManagementServer } from './server.js';
 export type { ManagementServerOptions, SkillsHandlers } from './server.js';

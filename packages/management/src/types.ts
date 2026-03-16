@@ -8,6 +8,13 @@ export interface AgentInfo {
   name: string;
   model: string;
   tools: string[];
+  mcpServers?: string[];
+}
+
+export interface McpServerInfo {
+  name: string;
+  status: string;
+  error?: string;
 }
 
 export interface InfoResponse {
