@@ -16,6 +16,16 @@ describe('setupAutoUpdater', () => {
     expect(fakeUpdater.autoInstallOnAppQuit).toBe(true);
   });
 
+  it('does not crash when checkForUpdatesAndNotify rejects', async () => {
+    const fakeUpdater = {
+      checkForUpdatesAndNotify: vi.fn().mockRejectedValue(new Error('No published versions')),
+      autoDownload: false,
+      autoInstallOnAppQuit: false,
+    };
+
+    await expect(setupAutoUpdater(fakeUpdater as never, true)).resolves.toBeUndefined();
+  });
+
   it('does NOT check when not packaged', async () => {
     const fakeUpdater = {
       checkForUpdatesAndNotify: vi.fn().mockResolvedValue(null),
