@@ -112,10 +112,13 @@ export class OpenCodeBackend implements AgentBackend {
    * so the binary needs these values there.
    */
   private injectEnvForServer(): void {
-    // Provider API keys
+    // Provider API keys — only inject plain API keys into the environment.
+    // OAuth tokens (sk-ant-oat*) must flow exclusively through sdk.auth.set()
+    // because the OpenCode binary would treat an env-var key as a regular
+    // bearer token, which the Anthropic API rejects for OAuth tokens.
     for (const [providerID, key] of Object.entries(this.providerApiKeys)) {
       const envVar = OpenCodeBackend.PROVIDER_ENV_VARS[providerID];
-      if (envVar && key) {
+      if (envVar && key && !OpenCodeBackend.isOAuthToken(key)) {
         process.env[envVar] = key;
       }
     }
