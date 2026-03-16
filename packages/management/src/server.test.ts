@@ -539,6 +539,81 @@ describe('Management Server', () => {
     });
   });
 
+  describe('MCP endpoints', () => {
+    let mcpServer: Server;
+    let mcpClose: () => Promise<void>;
+    let mcpPort: number;
+    let mcpHandlers: {
+      list: ReturnType<typeof vi.fn>;
+      add: ReturnType<typeof vi.fn>;
+      remove: ReturnType<typeof vi.fn>;
+    };
+
+    beforeEach(async () => {
+      mcpHandlers = {
+        list: vi.fn().mockResolvedValue({ slack: { status: 'connected' } }),
+        add: vi.fn().mockResolvedValue(undefined),
+        remove: vi.fn().mockResolvedValue(undefined),
+      };
+      const result = startManagementServer({
+        port: 0,
+        token: TEST_TOKEN,
+        getInfo: () => ({ agents: [] }),
+        onShutdown: vi.fn().mockResolvedValue(undefined),
+        mcp: mcpHandlers,
+      });
+      mcpServer = result.server;
+      mcpClose = result.close;
+      await new Promise<void>((resolve) => {
+        if (mcpServer.listening) resolve();
+        else mcpServer.once('listening', resolve);
+      });
+      const addr = mcpServer.address();
+      mcpPort = typeof addr === 'object' && addr ? addr.port : 0;
+    });
+
+    afterEach(async () => {
+      await mcpClose();
+    });
+
+    function mcpUrl(path: string): string {
+      return `http://localhost:${mcpPort}${path}`;
+    }
+
+    it('GET /agents/:name/mcp returns server statuses', async () => {
+      const res = await fetch(mcpUrl('/agents/default/mcp'), { headers: authHeaders() });
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body).toEqual({ slack: { status: 'connected' } });
+      expect(mcpHandlers.list).toHaveBeenCalledWith('default');
+    });
+
+    it('POST /agents/:name/mcp adds a server', async () => {
+      const config = { type: 'local', command: ['npx', 'mcp-slack'] };
+      const res = await fetch(mcpUrl('/agents/default/mcp'), {
+        method: 'POST',
+        headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'slack', config }),
+      });
+      expect(res.status).toBe(200);
+      expect(mcpHandlers.add).toHaveBeenCalledWith('default', 'slack', config);
+    });
+
+    it('DELETE /agents/:name/mcp/:serverName removes a server', async () => {
+      const res = await fetch(mcpUrl('/agents/default/mcp/slack'), {
+        method: 'DELETE',
+        headers: authHeaders(),
+      });
+      expect(res.status).toBe(200);
+      expect(mcpHandlers.remove).toHaveBeenCalledWith('default', 'slack');
+    });
+
+    it('returns 501 when mcp handlers not configured', async () => {
+      const res = await fetch(url('/agents/default/mcp'), { headers: authHeaders() });
+      expect(res.status).toBe(501);
+    });
+  });
+
   describe('log endpoints', () => {
     let logDir: string;
     let logClose: () => Promise<void>;
