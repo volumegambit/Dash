@@ -21,11 +21,7 @@ const STATUS_COLORS: Record<string, string> = {
   needs_client_registration: 'bg-yellow-900/30 text-yellow-400',
 };
 
-export function AgentMcpTab({
-  deploymentId,
-  agentName,
-  isRunning,
-}: AgentMcpTabProps): JSX.Element {
+export function AgentMcpTab({ deploymentId, agentName, isRunning }: AgentMcpTabProps): JSX.Element {
   const [servers, setServers] = useState<Record<string, McpServerStatus>>({});
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
