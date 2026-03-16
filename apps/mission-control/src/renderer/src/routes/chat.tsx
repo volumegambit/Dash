@@ -470,26 +470,42 @@ function extractLatestTodos(msgs: McMessage[], liveEvents: McAgentEvent[]): Todo
 
 function PinnedTodoPanel({ todos }: { todos: TodoItem[] }): JSX.Element {
   const [collapsed, setCollapsed] = useState(false);
+  const [dismissed, setDismissed] = useState(false);
   const completed = todos.filter((t) => t.status === 'completed').length;
   const inProgress = todos.filter((t) => t.status === 'in_progress').length;
   const progressPct = todos.length > 0 ? (completed / todos.length) * 100 : 0;
+  const allDone = completed === todos.length;
+
+  if (dismissed) return <></>;
 
   return (
     <div className="border-t border-border bg-sidebar-bg">
-      <button
-        type="button"
-        onClick={() => setCollapsed((c) => !c)}
-        className="flex w-full items-center justify-between px-6 py-2 text-xs text-muted hover:text-foreground"
-      >
-        <span className="flex items-center gap-2">
-          <span>📋</span>
-          <span className="font-medium">
-            Tasks: {completed}/{todos.length} completed
-            {inProgress > 0 && ` · ${inProgress} in progress`}
+      <div className="flex w-full items-center justify-between px-6 py-2 text-xs text-muted">
+        <button
+          type="button"
+          onClick={() => setCollapsed((c) => !c)}
+          className="flex flex-1 items-center justify-between hover:text-foreground"
+        >
+          <span className="flex items-center gap-2">
+            <span>📋</span>
+            <span className="font-medium">
+              Tasks: {completed}/{todos.length} completed
+              {inProgress > 0 && ` · ${inProgress} in progress`}
+            </span>
           </span>
-        </span>
-        {collapsed ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
-      </button>
+          {collapsed ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+        </button>
+        {allDone && (
+          <button
+            type="button"
+            onClick={() => setDismissed(true)}
+            className="ml-2 rounded p-0.5 hover:bg-border hover:text-foreground"
+            title="Dismiss task list"
+          >
+            <X size={12} />
+          </button>
+        )}
+      </div>
 
       {!collapsed && (
         <div className="px-6 pb-3">
@@ -911,7 +927,14 @@ export function Chat(): JSX.Element {
       </div>
 
       {/* Right panel: message thread */}
-      <div className="flex flex-1 flex-col">
+      <div
+        className="flex flex-1 flex-col"
+        onDrop={(e) => {
+          e.preventDefault();
+          if (e.dataTransfer.files.length > 0) addImageFiles(e.dataTransfer.files);
+        }}
+        onDragOver={(e) => e.preventDefault()}
+      >
         {!selectedConversationId && (
           <div className="border-b border-border px-6 py-4">
             <h1 className="text-2xl font-bold">Chat</h1>
