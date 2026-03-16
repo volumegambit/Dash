@@ -1,5 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { GatewayManagementClient } from '@dash/mc';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { GatewayPoller } from './gateway-poller.js';
 
 describe('GatewayPoller', () => {
@@ -14,7 +14,9 @@ describe('GatewayPoller', () => {
 
   it('calls onStatusChange with healthy when ensureGateway resolves and health returns healthy', async () => {
     const mockClient = {
-      health: vi.fn().mockResolvedValue({ status: 'healthy', startedAt: 't', agents: 0, channels: 0 }),
+      health: vi
+        .fn()
+        .mockResolvedValue({ status: 'healthy', startedAt: 't', agents: 0, channels: 0 }),
     } as unknown as GatewayManagementClient;
     const mockEnsure = vi.fn().mockResolvedValue(mockClient);
     const onStatusChange = vi.fn();
@@ -47,7 +49,9 @@ describe('GatewayPoller', () => {
 
   it('does not call onStatusChange again if status has not changed', async () => {
     const mockClient = {
-      health: vi.fn().mockResolvedValue({ status: 'healthy', startedAt: 't', agents: 0, channels: 0 }),
+      health: vi
+        .fn()
+        .mockResolvedValue({ status: 'healthy', startedAt: 't', agents: 0, channels: 0 }),
     } as unknown as GatewayManagementClient;
     const mockEnsure = vi.fn().mockResolvedValue(mockClient);
     const onStatusChange = vi.fn();

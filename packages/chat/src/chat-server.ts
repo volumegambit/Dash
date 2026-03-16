@@ -1,8 +1,8 @@
 import type { Server } from 'node:http';
+import type { AgentClient } from '@dash/agent';
 import { serve } from '@hono/node-server';
 import { createNodeWebSocket } from '@hono/node-ws';
 import { Hono } from 'hono';
-import type { AgentClient } from '@dash/agent';
 import type { ChatServerOptions, WsClientMessage, WsServerMessage } from './types.js';
 
 function validateMessage(msg: unknown): msg is WsClientMessage {
@@ -105,7 +105,9 @@ export function createChatApp(options: ChatServerOptions) {
             const entry = activeStreams.get(msg.id);
             if (entry?.agent.answerQuestion) {
               entry.agent.answerQuestion(msg.questionId, [[msg.answer]]).catch((err) => {
-                logger?.error(`[ChatServer] answerQuestion failed: ${err instanceof Error ? err.message : String(err)}`);
+                logger?.error(
+                  `[ChatServer] answerQuestion failed: ${err instanceof Error ? err.message : String(err)}`,
+                );
               });
             }
             return;
@@ -129,11 +131,7 @@ export function createChatApp(options: ChatServerOptions) {
             (async () => {
               const images = msg.images?.map((img) => ({
                 type: 'image' as const,
-                mediaType: img.mediaType as
-                  | 'image/jpeg'
-                  | 'image/png'
-                  | 'image/gif'
-                  | 'image/webp',
+                mediaType: img.mediaType as 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp',
                 data: img.data,
               }));
               const stream = agent.chat(msg.channelId, msg.conversationId, msg.text, {
