@@ -30,6 +30,12 @@ export interface SkillsHandlers {
   updateConfig(agentName: string, config: SkillsConfig): Promise<void>;
 }
 
+export interface McpHandlers {
+  list(agentName: string): Promise<Record<string, { status: string; error?: string }>>;
+  add(agentName: string, serverName: string, config: unknown): Promise<void>;
+  remove(agentName: string, serverName: string): Promise<void>;
+}
+
 export interface ManagementServerOptions {
   port: number;
   token: string;
@@ -42,6 +48,7 @@ export interface ManagementServerOptions {
     agentName: string,
     patch: { model?: string; fallbackModels?: string[]; tools?: string[]; systemPrompt?: string },
   ) => Promise<void>;
+  mcp?: McpHandlers;
 }
 
 export function createManagementApp(options: ManagementServerOptions): Hono {
@@ -370,6 +377,62 @@ export function createManagementApp(options: ManagementServerOptions): Hono {
     );
     app.all('/agents/:agentName/skills', (c) =>
       c.json({ error: 'Skills management not configured' } satisfies ErrorResponse, 501),
+    );
+  }
+
+  if (options.mcp) {
+    const mh = options.mcp;
+
+    app.get('/agents/:agentName/mcp', async (c) => {
+      const { agentName } = c.req.param();
+      try {
+        const statuses = await mh.list(agentName);
+        return c.json(statuses);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Internal server error';
+        return c.json({ error: message } satisfies ErrorResponse, 500);
+      }
+    });
+
+    app.post('/agents/:agentName/mcp', async (c) => {
+      const { agentName } = c.req.param();
+      let body: { name: string; config: unknown };
+      try {
+        body = await c.req.json<{ name: string; config: unknown }>();
+      } catch {
+        return c.json({ error: 'Invalid request body' } satisfies ErrorResponse, 400);
+      }
+      if (!body.name || !body.config) {
+        return c.json(
+          { error: 'Missing required fields: name, config' } satisfies ErrorResponse,
+          400,
+        );
+      }
+      try {
+        await mh.add(agentName, body.name, body.config);
+        return c.json({ success: true });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Internal server error';
+        return c.json({ error: message } satisfies ErrorResponse, 500);
+      }
+    });
+
+    app.delete('/agents/:agentName/mcp/:serverName', async (c) => {
+      const { agentName, serverName } = c.req.param();
+      try {
+        await mh.remove(agentName, serverName);
+        return c.json({ success: true });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Internal server error';
+        return c.json({ error: message } satisfies ErrorResponse, 500);
+      }
+    });
+  } else {
+    app.all('/agents/:agentName/mcp', (c) =>
+      c.json({ error: 'MCP management not configured' } satisfies ErrorResponse, 501),
+    );
+    app.all('/agents/:agentName/mcp/*', (c) =>
+      c.json({ error: 'MCP management not configured' } satisfies ErrorResponse, 501),
     );
   }
 
