@@ -33,7 +33,8 @@ describe('summarize', () => {
   });
 
   it('uses middle-ellipsis for long file paths', () => {
-    const longPath = '/Users/gerry/Projects/claude-workspace/Projects/Dash/apps/mission-control/src/renderer/src/routes/deploy.tsx';
+    const longPath =
+      '/Users/gerry/Projects/claude-workspace/Projects/Dash/apps/mission-control/src/renderer/src/routes/deploy.tsx';
     const result = summarize('read', JSON.stringify({ path: longPath }));
     // Should preserve the filename at the end
     expect(result).toContain('/deploy.tsx');

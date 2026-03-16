@@ -234,7 +234,12 @@ export function createManagementApp(options: ManagementServerOptions): Hono {
       return c.json({ error: 'Agent config updates not supported' } satisfies ErrorResponse, 501);
     }
     const { agentName } = c.req.param();
-    let body: { model?: string; fallbackModels?: string[]; tools?: string[]; systemPrompt?: string };
+    let body: {
+      model?: string;
+      fallbackModels?: string[];
+      tools?: string[];
+      systemPrompt?: string;
+    };
     try {
       body = await c.req.json<typeof body>();
     } catch {

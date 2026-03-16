@@ -227,7 +227,11 @@ describe('Chat Server', () => {
         yield { type: 'question' as const, id: 'q-1', question: 'Pick one', options: ['A', 'B'] };
         // Wait a bit to keep stream alive for the answer to arrive
         await new Promise((r) => setTimeout(r, 500));
-        yield { type: 'response' as const, content: 'done', usage: { inputTokens: 10, outputTokens: 5 } };
+        yield {
+          type: 'response' as const,
+          content: 'done',
+          usage: { inputTokens: 10, outputTokens: 5 },
+        };
       },
       async answerQuestion(id: string, answers: string[][]) {
         answerSpy(id, answers);
