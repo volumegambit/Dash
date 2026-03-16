@@ -26,6 +26,7 @@ export interface DeployWithConfigOptions {
   tools: string[];
   workspace?: string;
   credentialKeys?: Record<string, string>;
+  mcp?: Record<string, unknown>;
 }
 
 export interface SetupStatus {
@@ -135,6 +136,17 @@ export interface MissionControlAPI {
     id: string,
     patch: { model?: string; fallbackModels?: string[]; tools?: string[]; systemPrompt?: string },
   ): Promise<void>;
+  deploymentsMcpList(
+    id: string,
+    agentName: string,
+  ): Promise<Record<string, { status: string; error?: string }>>;
+  deploymentsMcpAdd(
+    id: string,
+    agentName: string,
+    serverName: string,
+    config: unknown,
+  ): Promise<void>;
+  deploymentsMcpRemove(id: string, agentName: string, serverName: string): Promise<void>;
   deploymentsLogsSubscribe(id: string): Promise<void>;
   deploymentsLogsUnsubscribe(id: string): Promise<void>;
   deploymentsGetChannelHealth(deploymentId: string): Promise<ChannelHealthEntry[]>;
