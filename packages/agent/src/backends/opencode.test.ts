@@ -792,3 +792,98 @@ describe('OpenCodeBackend MCP config', () => {
     await backend.stop();
   });
 });
+
+describe('OpenCodeBackend runtime MCP management', () => {
+  function setupBackend(mcpConfig?: Record<string, any>) {
+    const mockServer = { url: 'http://localhost:9999', close: vi.fn() };
+    const mockSdk = {
+      auth: { set: vi.fn().mockResolvedValue({ data: true }) },
+      session: { list: vi.fn().mockResolvedValue({ data: [] }) },
+      event: { subscribe: vi.fn() },
+      mcp: {
+        status: vi.fn().mockResolvedValue({ data: {} }),
+        add: vi.fn().mockResolvedValue({ data: {} }),
+        connect: vi.fn().mockResolvedValue({ data: true }),
+        disconnect: vi.fn().mockResolvedValue({ data: true }),
+      },
+    };
+    vi.mocked(createOpencodeServer).mockResolvedValue(mockServer as any);
+    vi.mocked(createOpencodeClient).mockReturnValue(mockSdk as any);
+
+    const backend = new OpenCodeBackend(
+      { model: 'anthropic/claude-sonnet-4-20250514', systemPrompt: 'test', mcp: mcpConfig },
+      {},
+    );
+
+    // Stub sessionIdMap to avoid real SDK calls
+    (backend as any).sessionIdMap = {
+      init: vi.fn().mockResolvedValue(undefined),
+      getOrCreate: vi.fn().mockResolvedValue('sess-1'),
+    };
+
+    return { backend, mockSdk };
+  }
+
+  it('addMcpServer calls sdk.mcp.add then sdk.mcp.connect', async () => {
+    const { backend, mockSdk } = setupBackend();
+    await backend.start('/tmp/test');
+
+    const config = { type: 'local' as const, command: ['npx', 'mcp-slack'] };
+    await backend.addMcpServer('slack', config);
+
+    expect(mockSdk.mcp.add).toHaveBeenCalledWith({ name: 'slack', config });
+    expect(mockSdk.mcp.connect).toHaveBeenCalledWith({ name: 'slack' });
+
+    await backend.stop();
+  });
+
+  it('removeMcpServer calls sdk.mcp.disconnect', async () => {
+    const { backend, mockSdk } = setupBackend();
+    await backend.start('/tmp/test');
+
+    await backend.removeMcpServer('slack');
+
+    expect(mockSdk.mcp.disconnect).toHaveBeenCalledWith({ name: 'slack' });
+
+    await backend.stop();
+  });
+
+  it('listMcpServers calls sdk.mcp.status', async () => {
+    const { backend, mockSdk } = setupBackend();
+    await backend.start('/tmp/test');
+
+    mockSdk.mcp.status.mockResolvedValue({
+      data: { slack: { status: 'connected' }, linear: { status: 'failed', error: 'timeout' } },
+    });
+
+    const result = await backend.listMcpServers();
+    expect(result).toEqual({
+      slack: { status: 'connected' },
+      linear: { status: 'failed', error: 'timeout' },
+    });
+
+    await backend.stop();
+  });
+
+  it('listMcpServers returns empty when sdk not available', async () => {
+    const backend = new OpenCodeBackend(
+      { model: 'anthropic/claude-sonnet-4-20250514', systemPrompt: 'test' },
+      {},
+    );
+    const result = await backend.listMcpServers();
+    expect(result).toEqual({});
+  });
+
+  it('addMcpServer throws when sdk.mcp.add returns error', async () => {
+    const { backend, mockSdk } = setupBackend();
+    await backend.start('/tmp/test');
+
+    mockSdk.mcp.add.mockResolvedValue({ error: 'Invalid config' });
+
+    const config = { type: 'local' as const, command: ['bad-cmd'] };
+    await expect(backend.addMcpServer('bad', config)).rejects.toThrow('Failed to add MCP server');
+    expect(mockSdk.mcp.connect).not.toHaveBeenCalled();
+
+    await backend.stop();
+  });
+});

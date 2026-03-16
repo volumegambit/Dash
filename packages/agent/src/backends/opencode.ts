@@ -1,5 +1,6 @@
 import { createServer } from 'node:net';
 import { createOpencodeClient, createOpencodeServer } from '@opencode-ai/sdk/v2';
+import type { McpLocalConfig, McpRemoteConfig } from '@opencode-ai/sdk/v2';
 import { buildToolsMap, parseModel } from '../config-generator.js';
 import type { Logger } from '../logger.js';
 import { SessionIdMap } from '../session-id-map.js';
@@ -44,6 +45,7 @@ export class OpenCodeBackend implements AgentBackend {
   // Track tool call IDs that have already emitted tool_use_delta to avoid
   // duplicate full-JSON emissions (the SDK fires multiple 'running' updates)
   private emittedToolDeltas = new Set<string>();
+  private mcpServers: Map<string, McpLocalConfig | McpRemoteConfig>;
 
   // Watchdog state
   private watchdogInterval: NodeJS.Timeout | null = null;
@@ -65,7 +67,9 @@ export class OpenCodeBackend implements AgentBackend {
     private providerApiKeys: Record<string, string>,
     private logger?: Logger,
     private opencodeStateDir?: string,
-  ) {}
+  ) {
+    this.mcpServers = new Map(Object.entries(config.mcp ?? {}));
+  }
 
   /** Returns a redacted summary of provider keys for logging, e.g. "anthropic:sk-ant-***abcdefghij" */
   private static redactKeys(keys: Record<string, string>): string {
@@ -242,11 +246,14 @@ export class OpenCodeBackend implements AgentBackend {
       try {
         this.injectEnvForServer();
         const port = await findFreePort();
+        const mcpConfig =
+          this.mcpServers.size > 0 ? Object.fromEntries(this.mcpServers) : undefined;
         const server = await createOpencodeServer({
           port,
           config: {
             model: this.config.model,
             ...(this.config.skills && { skills: this.config.skills }),
+            ...(mcpConfig && { mcp: mcpConfig }),
           },
         });
         this.serverClose?.();
@@ -518,6 +525,32 @@ export class OpenCodeBackend implements AgentBackend {
         '[OpenCode] updateCredentials: SDK not available, keys stored for next restart only',
       );
     }
+  }
+
+  async addMcpServer(name: string, config: McpLocalConfig | McpRemoteConfig): Promise<void> {
+    if (!this.sdk) throw new Error('OpenCodeBackend not started');
+    const addResult = await this.sdk.mcp.add({ name, config });
+    if (addResult.error) throw new Error(`Failed to add MCP server "${name}": ${addResult.error}`);
+    const connectResult = await this.sdk.mcp.connect({ name });
+    if (connectResult.error)
+      this.logger?.warn(
+        `[OpenCode] MCP server "${name}" added but connect returned error: ${connectResult.error}`,
+      );
+    this.mcpServers.set(name, config);
+    this.logger?.info(`[OpenCode] MCP server "${name}" added and connected`);
+  }
+
+  async removeMcpServer(name: string): Promise<void> {
+    if (!this.sdk) throw new Error('OpenCodeBackend not started');
+    await this.sdk.mcp.disconnect({ name });
+    this.mcpServers.delete(name);
+    this.logger?.info(`[OpenCode] MCP server "${name}" disconnected and removed`);
+  }
+
+  async listMcpServers(): Promise<Record<string, { status: string; error?: string }>> {
+    if (!this.sdk) return {};
+    const response = await this.sdk.mcp.status();
+    return (response.data ?? {}) as Record<string, { status: string; error?: string }>;
   }
 
   async stop(): Promise<void> {
