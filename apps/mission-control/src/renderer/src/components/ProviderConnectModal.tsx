@@ -62,8 +62,8 @@ export function ProviderConnectModal({
         if (e.key === 'Escape') onClose();
       }}
     >
-      <dialog
-        open
+      <div
+        role="dialog"
         aria-modal="true"
         className="w-full max-w-md rounded-xl bg-background p-6 shadow-xl"
         onClick={(e) => e.stopPropagation()}
@@ -178,7 +178,7 @@ export function ProviderConnectModal({
             </button>
           </div>
         </form>
-      </dialog>
+      </div>
     </div>
   );
 }
