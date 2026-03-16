@@ -26,9 +26,7 @@ export function McpServerForm({ onSubmit, onCancel, initial }: McpServerFormProp
         command: Array.isArray(c.command) ? c.command.join(' ') : '',
         url: (c.url as string) ?? '',
         environment: Object.entries(
-          (c.environment as Record<string, string>) ??
-            (c.headers as Record<string, string>) ??
-            {},
+          (c.environment as Record<string, string>) ?? (c.headers as Record<string, string>) ?? {},
         ).map(([key, value]) => ({
           key,
           value: value as string,

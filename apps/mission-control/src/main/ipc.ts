@@ -373,7 +373,9 @@ export async function registerIpcHandlers(
           }
         })
         .catch((err) => console.error('[codex-auth] Credential push error:', err));
-      getModelCache().refresh().catch(() => {});
+      getModelCache()
+        .refresh()
+        .catch(() => {});
 
       return { success: true };
     } catch (err) {
@@ -435,7 +437,9 @@ export async function registerIpcHandlers(
             }
           })
           .catch((err) => console.error('[claude-auth] Credential push error:', err));
-        getModelCache().refresh().catch(() => {});
+        getModelCache()
+          .refresh()
+          .catch(() => {});
 
         return { success: true };
       } catch (err) {
@@ -964,13 +968,10 @@ export async function registerIpcHandlers(
   );
 
   // MCP server management
-  ipcMain.handle(
-    'deployments:mcpList',
-    async (_event, deploymentId: string, agentName: string) => {
-      const client = await getSkillsClient(deploymentId);
-      return client.listMcpServers(agentName);
-    },
-  );
+  ipcMain.handle('deployments:mcpList', async (_event, deploymentId: string, agentName: string) => {
+    const client = await getSkillsClient(deploymentId);
+    return client.listMcpServers(agentName);
+  });
 
   ipcMain.handle(
     'deployments:mcpAdd',
