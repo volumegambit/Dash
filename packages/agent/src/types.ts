@@ -1,3 +1,5 @@
+import type { McpLocalConfig, McpRemoteConfig } from '@opencode-ai/sdk/v2';
+
 // --- LLM provider types (formerly from @dash/llm) ---
 
 export interface TextBlock {
@@ -113,6 +115,7 @@ export interface DashAgentConfig {
     paths?: string[]; // Local dirs to scan (supports ~/ and relative paths)
     urls?: string[]; // Remote skill registries to fetch from
   };
+  mcp?: Record<string, McpLocalConfig | McpRemoteConfig>;
 }
 
 export interface AgentState {
