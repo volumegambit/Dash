@@ -150,6 +150,30 @@ export class ManagementClient {
     );
   }
 
+  async listMcpServers(
+    agentName: string,
+  ): Promise<Record<string, { status: string; error?: string }>> {
+    return this.request<Record<string, { status: string; error?: string }>>(
+      'GET',
+      `/agents/${encodeURIComponent(agentName)}/mcp`,
+    );
+  }
+
+  async addMcpServer(agentName: string, serverName: string, config: unknown): Promise<void> {
+    await this.requestWithBody<{ success: boolean }>(
+      'POST',
+      `/agents/${encodeURIComponent(agentName)}/mcp`,
+      { name: serverName, config },
+    );
+  }
+
+  async removeMcpServer(agentName: string, serverName: string): Promise<void> {
+    await this.request<{ success: boolean }>(
+      'DELETE',
+      `/agents/${encodeURIComponent(agentName)}/mcp/${encodeURIComponent(serverName)}`,
+    );
+  }
+
   async *streamLogs(
     signal?: AbortSignal,
     opts?: { level?: 'info' | 'warn' | 'error' },
