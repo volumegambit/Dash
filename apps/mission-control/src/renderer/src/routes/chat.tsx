@@ -60,7 +60,7 @@ function renderEvents(
       // Flush text before tool
       if (textBuffer) {
         elements.push(
-          <div key={`text-${blockCount++}`}>
+          <div key={`text-${blockCount++}`} className="mb-3">
             <Markdown>{textBuffer}</Markdown>
           </div>,
         );
@@ -86,7 +86,7 @@ function renderEvents(
       // Flush text before question
       if (textBuffer) {
         elements.push(
-          <div key={`text-${blockCount++}`}>
+          <div key={`text-${blockCount++}`} className="mb-3">
             <Markdown>{textBuffer}</Markdown>
           </div>,
         );
@@ -109,7 +109,7 @@ function renderEvents(
           : ((event.error as unknown as { message?: string })?.message ?? 'Unknown error');
       const timestamp = typeof event.timestamp === 'string' ? event.timestamp : undefined;
       elements.push(
-        <div key={`err-${blockCount++}`} className="flex items-center gap-2 text-red-400">
+        <div key={`err-${blockCount++}`} className="mb-3 flex items-center gap-2 text-red-400">
           <span>{msg}</span>
           {navigateToLogs && timestamp && (
             <button
@@ -129,7 +129,7 @@ function renderEvents(
   if (thinkingBuffer) elements.push(<ThinkingBlock key="think-final" text={thinkingBuffer} />);
   if (textBuffer)
     elements.push(
-      <div key="text-final">
+      <div key="text-final" className="mb-3">
         <Markdown>{textBuffer}</Markdown>
       </div>,
     );
@@ -137,10 +137,13 @@ function renderEvents(
   if (toolName) {
     const inProgressSummary = toolInputBuffer ? summarize(toolName, toolInputBuffer) : '';
     elements.push(
-      <div key="tool-progress" className="mb-2 text-xs text-muted">
+      <div
+        key="tool-progress"
+        className="mb-2 flex items-center gap-2 rounded border border-border bg-sidebar-hover px-3 py-1.5 text-xs text-muted"
+      >
+        <Loader size={12} className="animate-spin shrink-0" />
         {toolIcon(toolName)} <span className="font-mono">{toolLabel(toolName)}</span>
         {inProgressSummary && <span className="ml-1">→ {inProgressSummary}</span>}
-        {' …'}
       </div>,
     );
   }
@@ -293,7 +296,7 @@ function ToolBlock({
 
   return (
     <div
-      className={`mb-2 rounded border text-xs ${isError ? 'border-red-900/50 bg-red-900/10' : 'border-border bg-sidebar-hover'}`}
+      className={`mb-3 rounded border text-xs ${isError ? 'border-red-900/50 bg-red-900/10' : 'border-border bg-sidebar-hover'}`}
     >
       <button
         type="button"
@@ -369,7 +372,7 @@ function MessageBubble({
   if (isUser && message) {
     const userImages = message.content.type === 'user' ? message.content.images : undefined;
     return (
-      <div className="mb-4 flex justify-end">
+      <div className="mb-6 flex justify-end">
         <div className="max-w-[80%] rounded-lg bg-primary px-4 py-2 text-sm text-white">
           {message.content.type === 'user' && message.content.text && (
             <p className="whitespace-pre-wrap">{message.content.text}</p>
@@ -396,7 +399,7 @@ function MessageBubble({
   const usage = extractUsage(events);
 
   return (
-    <div className="mb-4">
+    <div className="mb-6">
       <div className="max-w-[80%] px-4 py-2 text-sm text-foreground">
         {renderEvents(events, navigateToLogs, onAnswerQuestion, answeredQuestions)}
       </div>
@@ -918,7 +921,7 @@ export function Chat(): JSX.Element {
 
         {activeModel && (
           <div className="flex items-center justify-between border-b border-border px-6 py-1.5">
-            <span className="text-xs text-muted">{formatModelName(activeModel)}</span>
+            <span className="text-xs text-foreground/70">{formatModelName(activeModel)}</span>
           </div>
         )}
 
