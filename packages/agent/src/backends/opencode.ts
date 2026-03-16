@@ -150,6 +150,7 @@ export class OpenCodeBackend implements AgentBackend {
       config: {
         model: this.config.model,
         ...(this.config.skills && { skills: this.config.skills }),
+        ...(this.config.mcp && { mcp: this.config.mcp }),
       },
     });
     this.serverClose = () => server.close();

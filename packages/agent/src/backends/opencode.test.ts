@@ -5,6 +5,7 @@ vi.mock('@opencode-ai/sdk/v2', () => ({
   createOpencodeClient: vi.fn(),
 }));
 
+import { createOpencodeClient, createOpencodeServer } from '@opencode-ai/sdk/v2';
 import type { AgentEvent } from '../types.js';
 import { OpenCodeBackend, extractSkillName } from './opencode.js';
 
@@ -717,5 +718,77 @@ describe('extractSkillName', () => {
       },
     };
     expect(extractSkillName(event)).toBeNull();
+  });
+});
+
+describe('OpenCodeBackend MCP config', () => {
+  it('passes mcp config to createOpencodeServer on start', async () => {
+    const mockServer = { url: 'http://localhost:9999', close: vi.fn() };
+    const mockSdk = {
+      auth: { set: vi.fn().mockResolvedValue({ data: true }) },
+      session: { list: vi.fn().mockResolvedValue({ data: [] }) },
+      event: { subscribe: vi.fn() },
+    };
+    vi.mocked(createOpencodeServer).mockResolvedValue(mockServer as any);
+    vi.mocked(createOpencodeClient).mockReturnValue(mockSdk as any);
+
+    const mcpConfig = {
+      slack: {
+        type: 'local' as const,
+        command: ['npx', '-y', '@anthropic/mcp-slack'],
+        environment: { SLACK_TOKEN: 'xoxb-test' },
+      },
+    };
+    const backend = new OpenCodeBackend(
+      { model: 'anthropic/claude-sonnet-4-20250514', systemPrompt: 'test', mcp: mcpConfig },
+      {},
+    );
+
+    // Stub sessionIdMap to avoid real SDK calls
+    (backend as any).sessionIdMap = {
+      init: vi.fn().mockResolvedValue(undefined),
+      getOrCreate: vi.fn().mockResolvedValue('sess-1'),
+    };
+
+    await backend.start('/tmp/test-workspace');
+
+    expect(createOpencodeServer).toHaveBeenCalledWith(
+      expect.objectContaining({
+        config: expect.objectContaining({
+          mcp: mcpConfig,
+        }),
+      }),
+    );
+
+    await backend.stop();
+  });
+
+  it('does not include mcp key when config has no mcp', async () => {
+    const mockServer = { url: 'http://localhost:9999', close: vi.fn() };
+    const mockSdk = {
+      auth: { set: vi.fn().mockResolvedValue({ data: true }) },
+      session: { list: vi.fn().mockResolvedValue({ data: [] }) },
+      event: { subscribe: vi.fn() },
+    };
+    vi.mocked(createOpencodeServer).mockResolvedValue(mockServer as any);
+    vi.mocked(createOpencodeClient).mockReturnValue(mockSdk as any);
+
+    const backend = new OpenCodeBackend(
+      { model: 'anthropic/claude-sonnet-4-20250514', systemPrompt: 'test' },
+      {},
+    );
+
+    // Stub sessionIdMap to avoid real SDK calls
+    (backend as any).sessionIdMap = {
+      init: vi.fn().mockResolvedValue(undefined),
+      getOrCreate: vi.fn().mockResolvedValue('sess-1'),
+    };
+
+    await backend.start('/tmp/test-workspace');
+
+    const callArgs = vi.mocked(createOpencodeServer).mock.calls[0][0] as any;
+    expect(callArgs.config).not.toHaveProperty('mcp');
+
+    await backend.stop();
   });
 });
