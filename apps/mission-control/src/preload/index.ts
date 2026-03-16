@@ -84,7 +84,14 @@ const api: MissionControlAPI = {
   deploymentsLogsSubscribe: (id: string) => ipcRenderer.invoke('deployments:logs:subscribe', id),
   deploymentsLogsUnsubscribe: (id: string) =>
     ipcRenderer.invoke('deployments:logs:unsubscribe', id),
-  deploymentsUpdateConfig: (id, patch) => ipcRenderer.invoke('deployments:updateConfig', id, patch),
+  deploymentsUpdateConfig: (id, patch) =>
+    ipcRenderer.invoke('deployments:updateConfig', id, patch),
+  deploymentsMcpList: (id: string, agentName: string) =>
+    ipcRenderer.invoke('deployments:mcpList', id, agentName),
+  deploymentsMcpAdd: (id: string, agentName: string, serverName: string, config: unknown) =>
+    ipcRenderer.invoke('deployments:mcpAdd', id, agentName, serverName, config),
+  deploymentsMcpRemove: (id: string, agentName: string, serverName: string) =>
+    ipcRenderer.invoke('deployments:mcpRemove', id, agentName, serverName),
   deploymentsGetChannelHealth: (id: string) =>
     ipcRenderer.invoke('deployments:getChannelHealth', id),
 

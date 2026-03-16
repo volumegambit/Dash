@@ -612,7 +612,7 @@ export async function registerIpcHandlers(
   ipcMain.handle(
     'deployments:deployWithConfig',
     async (_event, options: DeployWithConfigOptions) => {
-      const { name, model, fallbackModels, systemPrompt, tools, workspace } = options;
+      const { name, model, fallbackModels, systemPrompt, tools, workspace, mcp } = options;
 
       // Create a temp config directory with the agent and gateway config
       const configDir = join(tmpdir(), `mc-deploy-${Date.now()}`);
@@ -627,6 +627,7 @@ export async function registerIpcHandlers(
         systemPrompt,
         tools: tools.length > 0 ? tools : undefined,
         ...(workspace ? { workspace } : {}),
+        ...(mcp && Object.keys(mcp).length > 0 ? { mcp } : {}),
       };
       await writeFile(join(agentsDir, `${name}.json`), JSON.stringify(agentConfig, null, 2));
 
@@ -959,6 +960,37 @@ export async function registerIpcHandlers(
       patch: { model?: string; fallbackModels?: string[]; tools?: string[]; systemPrompt?: string },
     ) => {
       await getRuntime().updateAgentConfig(id, patch);
+    },
+  );
+
+  // MCP server management
+  ipcMain.handle(
+    'deployments:mcpList',
+    async (_event, deploymentId: string, agentName: string) => {
+      const client = await getSkillsClient(deploymentId);
+      return client.listMcpServers(agentName);
+    },
+  );
+
+  ipcMain.handle(
+    'deployments:mcpAdd',
+    async (
+      _event,
+      deploymentId: string,
+      agentName: string,
+      serverName: string,
+      config: unknown,
+    ) => {
+      const client = await getSkillsClient(deploymentId);
+      await client.addMcpServer(agentName, serverName, config);
+    },
+  );
+
+  ipcMain.handle(
+    'deployments:mcpRemove',
+    async (_event, deploymentId: string, agentName: string, serverName: string) => {
+      const client = await getSkillsClient(deploymentId);
+      await client.removeMcpServer(agentName, serverName);
     },
   );
 
