@@ -23,6 +23,8 @@ import { app, dialog, ipcMain, safeStorage, shell } from 'electron';
 import type { BrowserWindow } from 'electron';
 import type { DeployWithConfigOptions } from '../shared/ipc.js';
 import { ChatService } from './chat-service.js';
+import { completeClaudeOAuth, prepareClaudeOAuth } from './claude-auth.js';
+import { refreshCodexToken, startCodexOAuth } from './codex-auth.js';
 import { GatewayPoller } from './gateway-poller.js';
 import { HealthPoller } from './health-poller.js';
 
@@ -328,6 +330,102 @@ export async function registerIpcHandlers(
     );
     return { needsSetup: false, needsUnlock: false, needsApiKey: !hasAnyKey };
   });
+
+  // Codex OAuth handlers
+  ipcMain.handle('codex:startOAuth', async (_event, keyName: string) => {
+    try {
+      const result = await startCodexOAuth((url) => shell.openExternal(url));
+      if (!result) {
+        return { success: false, error: 'OAuth flow was cancelled or timed out' };
+      }
+      const store = getSecretStore();
+      await store.set(`openai-api-key:${keyName}`, result.accessToken);
+      await store.set(`openai-codex-refresh:${keyName}`, result.refreshToken);
+      await store.set(`openai-codex-expires:${keyName}`, String(result.expiresAt));
+
+      // Push credentials to running deployments
+      pushCredentialsToRunningDeployments()
+        .then((pushResult) => {
+          if (pushResult.failed.length > 0) {
+            const win = getWindow();
+            if (win && !win.isDestroyed()) {
+              win.webContents.send('credentials:pushFailed', pushResult.failed);
+            }
+          }
+        })
+        .catch((err) => console.error('[codex-auth] Credential push error:', err));
+      getModelCache().refresh().catch(() => {});
+
+      return { success: true };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error('[codex-auth] OAuth error:', message);
+      return { success: false, error: message };
+    }
+  });
+
+  ipcMain.handle('codex:refreshToken', async (_event, keyName: string) => {
+    try {
+      const store = getSecretStore();
+      const refreshToken = await store.get(`openai-codex-refresh:${keyName}`);
+      if (!refreshToken) {
+        return { success: false, error: 'No Codex refresh token found' };
+      }
+      const result = await refreshCodexToken(refreshToken);
+      if (!result) {
+        return { success: false, error: 'Token refresh failed' };
+      }
+      await store.set(`openai-api-key:${keyName}`, result.accessToken);
+      await store.set(`openai-codex-refresh:${keyName}`, result.refreshToken);
+      await store.set(`openai-codex-expires:${keyName}`, String(result.expiresAt));
+
+      pushCredentialsToRunningDeployments().catch(() => {});
+      return { success: true };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return { success: false, error: message };
+    }
+  });
+
+  // Claude OAuth handlers (two-step manual flow)
+  ipcMain.handle('claude:prepareOAuth', async () => {
+    const flow = await prepareClaudeOAuth();
+    await shell.openExternal(flow.authorizeUrl);
+    return flow;
+  });
+
+  ipcMain.handle(
+    'claude:completeOAuth',
+    async (_event, keyName: string, code: string, state: string, verifier: string) => {
+      try {
+        const apiKey = await completeClaudeOAuth(code, state, verifier);
+        if (!apiKey) {
+          return { success: false, error: 'Failed to create API key' };
+        }
+        const store = getSecretStore();
+        await store.set(`anthropic-api-key:${keyName}`, apiKey);
+        await store.set(`anthropic-oauth-marker:${keyName}`, '1');
+
+        pushCredentialsToRunningDeployments()
+          .then((pushResult) => {
+            if (pushResult.failed.length > 0) {
+              const win = getWindow();
+              if (win && !win.isDestroyed()) {
+                win.webContents.send('credentials:pushFailed', pushResult.failed);
+              }
+            }
+          })
+          .catch((err) => console.error('[claude-auth] Credential push error:', err));
+        getModelCache().refresh().catch(() => {});
+
+        return { success: true };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error('[claude-auth] OAuth error:', message);
+        return { success: false, error: message };
+      }
+    },
+  );
 
   // Chat handlers
   ipcMain.handle('chat:listConversations', (_event, deploymentId: string) =>
