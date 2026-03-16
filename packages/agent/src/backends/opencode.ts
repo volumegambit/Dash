@@ -301,11 +301,11 @@ export class OpenCodeBackend implements AgentBackend {
       system: state.systemPrompt,
       tools,
       parts: [
-        { type: 'text', text: state.message },
+        { type: 'text' as const, text: state.message },
         ...(state.images?.map((img) => ({
-          type: 'image' as const,
-          mediaType: img.mediaType,
-          data: img.data,
+          type: 'file' as const,
+          mime: img.mediaType,
+          url: `data:${img.mediaType};base64,${img.data}`,
         })) ?? []),
       ],
     });
