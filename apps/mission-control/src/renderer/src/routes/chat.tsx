@@ -699,7 +699,7 @@ export function Chat(): JSX.Element {
       navigate({
         to: '/agents/$id',
         params: { id: selectedDeploymentId },
-        search: { tab: 'logs', since: timestamp, level: 'error' },
+        search: { tab: 'monitor', since: timestamp, level: 'error' },
       });
     },
     [selectedDeploymentId, navigate],
