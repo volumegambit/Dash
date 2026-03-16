@@ -57,6 +57,7 @@ export async function createAgentServer(config: DashConfig) {
           tools: agentConfig.tools,
           workspace,
           skills: agentConfig.skills,
+          mcp: agentConfig.mcp,
         },
         agentKeys,
         logger,
@@ -77,8 +78,9 @@ export async function createAgentServer(config: DashConfig) {
 
       agentsByName.set(name, agent);
       clients.set(name, new LocalAgentClient(agent));
+      const mcpNames = agentConfig.mcp ? Object.keys(agentConfig.mcp).join(', ') : 'none';
       log(
-        `Agent "${name}" started (model: ${agentConfig.model}, tools: ${agentConfig.tools?.join(', ') ?? 'all'}, workspace: ${workspace ?? 'unrestricted'})`,
+        `Agent "${name}" started (model: ${agentConfig.model}, tools: ${agentConfig.tools?.join(', ') ?? 'all'}, mcp: ${mcpNames}, workspace: ${workspace ?? 'unrestricted'})`,
       );
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -197,6 +199,7 @@ export async function createAgentServer(config: DashConfig) {
             name,
             model: ac.model,
             tools: ac.tools ?? [],
+            mcpServers: ac.mcp ? Object.keys(ac.mcp) : undefined,
           })),
         });
 
@@ -264,6 +267,25 @@ export async function createAgentServer(config: DashConfig) {
               .map(([k, v]) => `${k}=${Array.isArray(v) ? v.join(',') : v}`)
               .join(', ');
             log(`Agent "${agentName}" config updated: ${changes}`);
+          },
+          mcp: {
+            async list(agentName) {
+              const backend = backendsByName.get(agentName);
+              if (!backend) throw new Error(`Agent "${agentName}" not found`);
+              return backend.listMcpServers();
+            },
+            async add(agentName, serverName, serverConfig) {
+              const backend = backendsByName.get(agentName);
+              if (!backend) throw new Error(`Agent "${agentName}" not found`);
+              await backend.addMcpServer(serverName, serverConfig as any);
+              log(`Agent "${agentName}" MCP server "${serverName}" added`);
+            },
+            async remove(agentName, serverName) {
+              const backend = backendsByName.get(agentName);
+              if (!backend) throw new Error(`Agent "${agentName}" not found`);
+              await backend.removeMcpServer(serverName);
+              log(`Agent "${agentName}" MCP server "${serverName}" removed`);
+            },
           },
         });
         managementClose = close;
