@@ -13,6 +13,7 @@ export class AgentRegistry {
   private async load(): Promise<AgentDeployment[]> {
     if (!existsSync(this.filePath)) return [];
     const raw = await readFile(this.filePath, 'utf-8');
+    if (!raw.trim()) return [];
     return JSON.parse(raw) as AgentDeployment[];
   }
 
