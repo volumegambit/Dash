@@ -1,4 +1,4 @@
-import { mkdir, rm } from 'node:fs/promises';
+import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -135,6 +135,20 @@ describe('ConversationStore', () => {
 
     const updated = await store.get(conv.id);
     expect(updated?.title).toBe('First message sets the title');
+  });
+
+  it('returns empty list when index file is empty', async () => {
+    const convDir = join(dataDir, 'conversations');
+    await mkdir(convDir, { recursive: true });
+    await writeFile(join(convDir, 'index.json'), '');
+    expect(await store.list('deploy-1')).toEqual([]);
+  });
+
+  it('returns empty list when index file contains truncated JSON', async () => {
+    const convDir = join(dataDir, 'conversations');
+    await mkdir(convDir, { recursive: true });
+    await writeFile(join(convDir, 'index.json'), '[{"id":"c1"');
+    expect(await store.list('deploy-1')).toEqual([]);
   });
 
   it('handles trailing blank line in JSONL gracefully', async () => {
