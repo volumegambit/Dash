@@ -922,7 +922,10 @@ export function Chat(): JSX.Element {
           </div>
         )}
 
-        <div className="flex-1 overflow-y-auto px-6 py-4">
+        <div
+          className="flex-1 overflow-y-auto px-6 py-4"
+          onClick={() => textareaRef.current?.focus()}
+        >
           {!selectedConversationId ? (
             <p className="text-center text-sm text-muted">
               {runningDeployments.length === 0
