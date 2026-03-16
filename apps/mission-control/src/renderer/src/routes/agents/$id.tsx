@@ -5,14 +5,16 @@ import { useCallback, useEffect, useState } from 'react';
 import { useDeploymentsStore } from '../../stores/deployments';
 import { useMessagingAppsStore } from '../../stores/messaging-apps.js';
 import { AgentConfigTab } from './-components/AgentConfigTab.js';
+import { AgentMcpTab } from './-components/AgentMcpTab.js';
 import { AgentMonitorTab } from './-components/AgentMonitorTab.js';
 import { AgentSkillsTab } from './-components/AgentSkillsTab.js';
 
-type TabId = 'configuration' | 'skills' | 'monitor';
+type TabId = 'configuration' | 'skills' | 'mcp' | 'monitor';
 
 const TABS: { id: TabId; label: string }[] = [
   { id: 'configuration', label: 'Configuration' },
   { id: 'skills', label: 'Skills' },
+  { id: 'mcp', label: 'MCP Servers' },
   { id: 'monitor', label: 'Monitor' },
 ];
 
@@ -285,6 +287,13 @@ export function AgentDetail(): JSX.Element {
       )}
       {activeTab === 'skills' && (
         <AgentSkillsTab
+          deploymentId={id}
+          agentName={agentName || (Object.keys(deployment.config?.agents ?? {})[0] ?? 'default')}
+          isRunning={isRunning}
+        />
+      )}
+      {activeTab === 'mcp' && (
+        <AgentMcpTab
           deploymentId={id}
           agentName={agentName || (Object.keys(deployment.config?.agents ?? {})[0] ?? 'default')}
           isRunning={isRunning}
