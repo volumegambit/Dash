@@ -7,9 +7,11 @@ import {
   ClipboardCheck,
   Loader,
   Rocket,
+  Trash2,
 } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { RendererDeploymentError } from '../../../shared/ipc';
+import { McpServerForm } from '../components/McpServerForm.js';
 import { ModelChainEditor } from '../components/ModelChainEditor.js';
 import { AVAILABLE_MODELS } from '../components/deploy-options.js';
 import { useAvailableModels } from '../hooks/useAvailableModels.js';
@@ -26,6 +28,7 @@ interface AgentConfig {
   systemPrompt: string;
   tools: string[];
   workspace: string; // '' means auto-generate
+  mcp: Record<string, Record<string, unknown>>;
 }
 
 export function DeployWizard(): JSX.Element {
@@ -50,7 +53,9 @@ export function DeployWizard(): JSX.Element {
     systemPrompt: '',
     tools: [],
     workspace: '',
+    mcp: {},
   });
+  const [showMcpForm, setShowMcpForm] = useState(false);
 
   useEffect(() => {
     useSecretsStore.getState().checkStatus();
@@ -104,6 +109,7 @@ export function DeployWizard(): JSX.Element {
         systemPrompt: agent.systemPrompt,
         tools: agent.tools,
         workspace: agent.workspace || undefined,
+        mcp: Object.keys(agent.mcp).length > 0 ? agent.mcp : undefined,
       });
       navigate({ to: '/agents/$id', params: { id } });
     } catch (err: unknown) {
@@ -262,6 +268,66 @@ export function DeployWizard(): JSX.Element {
             </p>
           </div>
 
+          <div>
+            <div className="mb-2 flex items-center justify-between">
+              <span className="text-sm font-medium">MCP Servers</span>
+              <button
+                type="button"
+                onClick={() => setShowMcpForm(true)}
+                className="text-xs text-primary hover:text-primary-hover"
+              >
+                + Add Server
+              </button>
+            </div>
+            {Object.keys(agent.mcp).length > 0 && (
+              <div className="space-y-2">
+                {Object.entries(agent.mcp).map(([name, config]) => (
+                  <div
+                    key={name}
+                    className="flex items-center justify-between rounded-lg border border-border px-3 py-2"
+                  >
+                    <div>
+                      <p className="text-sm font-medium">{name}</p>
+                      <p className="text-xs text-muted">
+                        {(config as Record<string, unknown>).type === 'local'
+                          ? ((config as Record<string, unknown>).command as string[])?.join(' ')
+                          : ((config as Record<string, unknown>).url as string)}
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setAgent((prev) => {
+                          const { [name]: _, ...rest } = prev.mcp;
+                          return { ...prev, mcp: rest };
+                        })
+                      }
+                      className="text-muted hover:text-red-400"
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+            {Object.keys(agent.mcp).length === 0 && !showMcpForm && (
+              <p className="text-xs text-muted">
+                No MCP servers configured. Add servers to connect the agent to external tools.
+              </p>
+            )}
+            {showMcpForm && (
+              <div className="mt-2 rounded-lg border border-border p-3">
+                <McpServerForm
+                  onSubmit={(name, config) => {
+                    setAgent((prev) => ({ ...prev, mcp: { ...prev.mcp, [name]: config } }));
+                    setShowMcpForm(false);
+                  }}
+                  onCancel={() => setShowMcpForm(false)}
+                />
+              </div>
+            )}
+          </div>
+
           <div className="flex justify-end">
             <button
               type="button"
@@ -292,6 +358,12 @@ export function DeployWizard(): JSX.Element {
               value={agent.tools.length > 0 ? agent.tools.join(', ') : '(none)'}
             />
             <ReviewRow label="Workspace" value={agent.workspace || 'Auto-generated'} />
+            <ReviewRow
+              label="MCP Servers"
+              value={
+                Object.keys(agent.mcp).length > 0 ? Object.keys(agent.mcp).join(', ') : '(none)'
+              }
+            />
           </div>
 
           {deployError && (
