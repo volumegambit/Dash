@@ -15,6 +15,12 @@ declare module '@tanstack/react-router' {
   }
 }
 
+// Prevent Electron from navigating to dropped files.
+// Component-level drop handlers call e.preventDefault() before this fires,
+// so they still receive the drop event normally.
+document.addEventListener('dragover', (e) => e.preventDefault());
+document.addEventListener('drop', (e) => e.preventDefault());
+
 const root = document.getElementById('root');
 if (!root) throw new Error('Root element not found');
 
