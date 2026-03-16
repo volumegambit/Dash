@@ -10,8 +10,8 @@ import {
   Settings,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
-import { useState, useEffect } from 'react';
-import type { GatewayStatus, ChannelHealthEntry } from '../../../shared/ipc.js';
+import { useEffect, useState } from 'react';
+import type { ChannelHealthEntry, GatewayStatus } from '../../../shared/ipc.js';
 import { useMessagingAppsStore } from '../stores/messaging-apps.js';
 import { HealthDot } from './HealthDot.js';
 
