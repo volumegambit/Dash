@@ -61,12 +61,16 @@ export class ModelCacheService {
    * Spawn a temporary OpenCode server, query all providers and their models,
    * save to cache, and shut down the server.
    * Returns the discovered models, or falls back to the existing cache on failure.
+   *
+   * @param apiKeys Optional map of provider API keys (e.g. { anthropic: "sk-..." })
+   *   to set as env vars so the discovery server can enumerate key-gated providers.
    */
-  async refresh(): Promise<CachedModel[]> {
+  async refresh(apiKeys?: Record<string, string>): Promise<CachedModel[]> {
     if (this.refreshing) return this.load();
     this.refreshing = true;
 
     let serverClose: (() => void) | null = null;
+    const savedEnv: Record<string, string | undefined> = {};
     try {
       const { createOpencodeServer } = await import('@opencode-ai/sdk/v2');
       const { createOpencodeClient } = await import('@opencode-ai/sdk/v2');
@@ -77,6 +81,15 @@ export class ModelCacheService {
       process.env.XDG_CONFIG_HOME = join(ocTmpDir, 'config');
       process.env.XDG_STATE_HOME = join(ocTmpDir, 'state');
       process.env.XDG_CACHE_HOME = join(ocTmpDir, 'cache');
+
+      // Set provider API keys as env vars so the discovery server can query them
+      if (apiKeys) {
+        for (const [provider, key] of Object.entries(apiKeys)) {
+          const envVar = `${provider.toUpperCase().replace(/-/g, '_')}_API_KEY`;
+          savedEnv[envVar] = process.env[envVar];
+          process.env[envVar] = key;
+        }
+      }
 
       const port = await findFreePort();
       const server = await createOpencodeServer({ port });
@@ -117,6 +130,14 @@ export class ModelCacheService {
       return this.load();
     } finally {
       serverClose?.();
+      // Restore original env vars
+      for (const [envVar, original] of Object.entries(savedEnv)) {
+        if (original === undefined) {
+          delete process.env[envVar];
+        } else {
+          process.env[envVar] = original;
+        }
+      }
       this.refreshing = false;
     }
   }

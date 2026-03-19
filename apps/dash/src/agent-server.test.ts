@@ -15,7 +15,9 @@ vi.mock('@dash/agent', () => {
     }),
   };
 
-  return { PooledAgentClient, FileLogger };
+  const generateFrontmatter = vi.fn().mockReturnValue('---\nname: test\n---\n\ncontent');
+
+  return { PooledAgentClient, FileLogger, generateFrontmatter };
 });
 
 vi.mock('@mariozechner/pi-coding-agent', () => ({

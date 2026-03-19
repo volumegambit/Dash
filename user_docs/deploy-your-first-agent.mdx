@@ -1,0 +1,87 @@
+---
+title: "Deploy Your First Agent"
+description: "Step-by-step guide to deploying an AI agent through Mission Control."
+---
+
+Ready to put your first AI agent to work? This guide walks you through deploying an agent using Mission Control — from opening the wizard to chatting with your new teammate.
+
+## Prerequisites
+
+Before you begin, make sure you have:
+
+- **Mission Control running** — either the desktop app (`npm run mc:dev`) or the CLI (`npm run mc-cli`). See [Getting Started](/getting-started) for setup instructions.
+- **At least one AI provider connected** — your agent needs an API key for the model it will use. If you haven't set one up yet, head to [AI Providers](/ai-providers) to configure one.
+
+## Deploy step by step
+
+<Steps>
+  <Step title="Open the Deploy wizard">
+    In Mission Control, click **Deploy** in the sidebar. This opens the deployment wizard where you'll configure your new agent.
+  </Step>
+
+  <Step title="Choose a name">
+    Give your agent a name. This is how you'll identify it in the agents list, in chat, and in logs. Pick something descriptive — like "code-reviewer" or "research-assistant".
+  </Step>
+
+  <Step title="Select a model">
+    Choose which AI model your agent will use. Dash supports models from Anthropic (Claude), OpenAI (GPT), and Google (Gemini). If you're not sure, `claude-sonnet-4-20250514` is a great default — it balances speed and capability.
+  </Step>
+
+  <Step title="Write a system prompt">
+    The system prompt tells your agent who it is and how to behave. Be specific about what you want it to do. For example:
+
+    ```
+    You are a code review assistant. When given code, analyze it for bugs,
+    security issues, and style problems. Suggest concrete improvements with
+    code examples.
+    ```
+
+    A clear system prompt makes a big difference in how well your agent performs.
+  </Step>
+
+  <Step title="Pick tools">
+    Select which tools your agent can use. Tools let your agent interact with the outside world — reading files, running shell commands, searching directories, and more. See [Tools](/tools) for the full list.
+
+    Common starter sets:
+    - **General assistant** — `bash`, `read_file`, `write_file`
+    - **Code-focused** — `bash`, `read_file`, `write_file`, `edit_file`, `glob`, `grep`
+    - **Read-only** — `read_file`, `glob`, `grep`
+  </Step>
+
+  <Step title="Add fallback models (optional)">
+    You can configure fallback models in case your primary model is unavailable. Fallbacks are tried in order — if the first model fails, Dash tries the next one. This is optional but useful for reliability.
+  </Step>
+
+  <Step title="Deploy">
+    Click **Deploy**. Mission Control creates a workspace directory for your agent, starts the agent process, and adds it to the agents list. You'll see a confirmation with the deployment details.
+  </Step>
+
+  <Step title="Verify it's running">
+    Open the agent detail page by clicking on your new agent in the sidebar. Check that:
+
+    - **Status** shows "running"
+    - The **Monitor** tab shows uptime and the agent's process ID (PID)
+
+    If the status shows "error", check the logs tab for details.
+  </Step>
+
+  <Step title="Chat with it">
+    Click **Chat** to open a conversation with your new agent. Type a message and hit Enter. You'll see the agent thinking, using tools, and responding in real time.
+
+    Congratulations — your first agent is deployed and ready to work!
+  </Step>
+</Steps>
+
+## What's next
+
+<CardGroup cols={3}>
+  <Card title="Agent configuration" icon="gear" href="/agents">
+    Learn more about agent settings, models, and advanced configuration.
+  </Card>
+  <Card title="Connect Telegram" icon="paper-plane" href="/messaging-apps">
+    Let your agent respond to messages on Telegram or WhatsApp.
+  </Card>
+  <Card title="Add skills" icon="book" href="/skills">
+    Give your agent reusable instructions for specific tasks.
+  </Card>
+</CardGroup>

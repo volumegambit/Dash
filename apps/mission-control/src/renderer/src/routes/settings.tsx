@@ -8,7 +8,11 @@ function Settings(): JSX.Element {
   const [version, setVersion] = useState<string>('...');
   const [settings, setSettings] = useState<AppSettings>({});
   const [saving, setSaving] = useState(false);
-  const availableModels = useAvailableModels();
+  const {
+    models: availableModels,
+    refreshing: modelsRefreshing,
+    refresh: refreshModels,
+  } = useAvailableModels();
 
   useEffect(() => {
     window.api.getVersion().then(setVersion);
@@ -45,6 +49,8 @@ function Settings(): JSX.Element {
           fallbackModels={settings.defaultFallbackModels ?? []}
           availableModels={availableModels}
           onChange={handleChainChange}
+          onRefresh={refreshModels}
+          refreshing={modelsRefreshing}
         />
       </div>
 

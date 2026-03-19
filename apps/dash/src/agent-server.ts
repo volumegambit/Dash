@@ -2,7 +2,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { FileLogger, PooledAgentClient } from '@dash/agent';
+import { FileLogger, PooledAgentClient, generateFrontmatter } from '@dash/agent';
 import type { AgentClient } from '@dash/agent';
 import { startChatServer } from '@dash/chat';
 import { startManagementServer } from '@dash/management';
@@ -84,8 +84,9 @@ export async function createAgentServer(config: DashConfig) {
           return allSkills.map((s) => ({
             name: s.name,
             description: s.description,
-            location: s.filePath,
-            editable: !s.filePath.startsWith('http'),
+            location: s.location,
+            editable: !s.location.startsWith('http'),
+            source: s.source,
           }));
         },
 
@@ -133,23 +134,29 @@ export async function createAgentServer(config: DashConfig) {
         },
 
         async create(agentName, skillName, description, content) {
+          // Prefer managed dir, fall back to first configured path
+          const managedDir = config.configDir
+            ? join(resolve(config.configDir, '..'), 'skills', agentName)
+            : null;
           const paths = config.agents[agentName]?.skills?.paths ?? [];
-          if (paths.length === 0)
-            throw new Error('No writable skill path configured for this agent');
+          const targetDir = managedDir ?? (paths.length > 0 ? expandHome(paths[0]) : null);
+          if (!targetDir) throw new Error('No writable skill path configured for this agent');
+
           const safeSkillName = basename(skillName);
           if (!safeSkillName || safeSkillName === '.' || safeSkillName === '..') {
             throw new Error('Invalid skill name');
           }
-          const skillDir = join(expandHome(paths[0]), safeSkillName);
+          const skillDir = join(targetDir, safeSkillName);
           await mkdir(skillDir, { recursive: true });
           const skillFile = join(skillDir, 'SKILL.md');
-          const fullContent = `---\nname: ${safeSkillName}\ndescription: ${description}\n---\n\n${content}`;
+          const fullContent = generateFrontmatter({ name: safeSkillName, description }, content);
           await writeFile(skillFile, fullContent, 'utf-8');
           return {
             name: safeSkillName,
             description,
             location: skillFile,
             editable: true,
+            source: 'managed' as const,
             content: fullContent,
           };
         },

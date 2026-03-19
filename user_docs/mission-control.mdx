@@ -1,0 +1,197 @@
+---
+title: "Mission Control"
+description: "Manage your AI agent team from a desktop app or the command line."
+---
+
+Mission Control is your command center for DashSquad. Deploy new agents, monitor running ones, chat with them directly, and connect them to messaging platforms — all from one place.
+
+It comes in two forms: a **desktop app** for visual management and a **CLI** for terminal users and automation. Both share the same encrypted secret store and deployment records.
+
+## Desktop app
+
+The desktop app gives you a visual overview of your entire agent team.
+
+### Agents
+
+The main page shows all your deployed agents with their current status. At a glance, you can see which agents are running, stopped, or in an error state. Click any agent to manage it.
+
+From the agent list, you can:
+
+- **Start** a stopped agent
+- **Stop** a running agent
+- **Restart** an agent to pick up config changes
+- **Remove** an agent and clean up its resources
+
+### Agent detail
+
+Click an agent to see everything about it. The detail view has three tabs:
+
+<Tabs>
+  <Tab title="Configuration">
+    See and edit the agent's setup:
+    - **Model** — which AI model the agent uses, plus any fallback models
+    - **System prompt** — the instructions that shape the agent's behavior
+    - **Tools** — which capabilities are enabled (bash, file tools, web search, etc.)
+    - **Workspace** — the directory where the agent operates
+    - **Max tokens** — the maximum response length
+  </Tab>
+  <Tab title="Skills">
+    Manage the agent's skills — reusable workflows it can discover and use. Add skill paths or URLs, and see which skills the agent has loaded.
+  </Tab>
+  <Tab title="Monitor">
+    Live operational data for the running agent:
+    - **Uptime** — how long the agent has been running
+    - **PID** — the process ID for the agent server
+    - **Ports** — which ports the Management API and Chat API are listening on
+    - **Logs** — streaming stdout/stderr from the agent process
+  </Tab>
+</Tabs>
+
+### Chat
+
+Talk to any running agent directly from Mission Control. The built-in chat interface streams responses in real time — you see the agent thinking, using tools, and building its answer as it goes.
+
+Select which agent to chat with, start a conversation, and messages are routed through the Gateway automatically. Conversations persist as sessions, so you can pick up where you left off.
+
+### Messaging Apps
+
+Connect your agents to external chat platforms like Telegram and WhatsApp. From this page you can:
+
+- Add a new messaging app connection
+- Enter bot credentials
+- Configure routing rules that determine which agent receives messages
+- Enable or disable connections
+- Manage allow lists and deny lists for access control
+
+See [Messaging Apps](/messaging-apps) for setup guides.
+
+### Connections
+
+Set up API credentials for your AI providers. DashSquad supports three providers:
+
+<CardGroup cols={3}>
+  <Card title="Anthropic" icon="key">
+    For Claude models
+  </Card>
+  <Card title="OpenAI" icon="key">
+    For GPT and o-series models
+  </Card>
+  <Card title="Google" icon="key">
+    For Gemini models
+  </Card>
+</CardGroup>
+
+Enter your API key once and all agents that use that provider share it. Keys are stored in the encrypted secret store.
+
+### Secrets
+
+View and manage the encrypted secret store. See which secrets are saved, add new ones, or delete old ones. All secrets are encrypted with AES-256-GCM and the encryption key is cached in your OS keychain.
+
+See [Secrets](/secrets) for how encryption works.
+
+### Deploy
+
+A step-by-step wizard to deploy a new agent. Walk through:
+
+<Steps>
+  <Step title="Name your agent">
+    Give it a name that describes what it does.
+  </Step>
+  <Step title="Choose a model">
+    Pick a primary model and optionally add fallback models.
+  </Step>
+  <Step title="Write a system prompt">
+    Tell the agent who it is and how to behave.
+  </Step>
+  <Step title="Select tools">
+    Choose which capabilities the agent needs.
+  </Step>
+  <Step title="Deploy">
+    Mission Control starts the agent as a background process with its own workspace, ports, and log stream.
+  </Step>
+</Steps>
+
+## CLI
+
+Prefer the terminal? The Mission Control CLI gives you the same capabilities from the command line. It is ideal for automation, scripting, and remote management.
+
+### Key commands
+
+```bash
+mc deploy <config-dir>     # Deploy a new agent from a config directory
+mc status                  # List all deployments
+mc status <id>             # Detailed status for one deployment
+mc stop <id>               # Stop a running deployment
+mc remove <id>             # Remove a deployment and clean up secrets
+mc logs <id>               # Stream logs from a running deployment
+mc health <id>             # Check agent server health
+mc info <id>               # Get agent configuration from a running server
+```
+
+### Secret management
+
+```bash
+mc secrets list            # List stored secret names
+mc secrets set <key>       # Store a secret (prompts for value)
+mc secrets get <key>       # Show a masked secret value
+mc secrets delete <key>    # Remove a secret
+mc unlock                  # Cache encryption key in OS keychain
+mc lock                    # Clear cached encryption key
+```
+
+See [CLI Reference](/cli-reference) for the full command reference with all flags and output examples.
+
+## Running Mission Control
+
+<Tabs>
+  <Tab title="Desktop app (dev mode)">
+    ```bash
+    npm run mc:dev
+    ```
+    Launches the Electron app in development mode with hot reload.
+  </Tab>
+  <Tab title="Desktop app (production)">
+    ```bash
+    npm run mc:build
+    ```
+    Builds a production version of the desktop app.
+  </Tab>
+  <Tab title="CLI">
+    ```bash
+    npm run mc-cli -- <command>
+    ```
+    Run any CLI command. The `--` separates npm flags from the command arguments.
+  </Tab>
+</Tabs>
+
+## How it connects
+
+Mission Control communicates with your agents through two channels:
+
+| Connection | Protocol | Default port | Purpose |
+|-----------|----------|-------------|---------|
+| Management API | HTTP | 9100 | Health checks, server info, start/stop/restart |
+| Gateway | WebSocket | 9200 | Chat messages to and from agents |
+
+The desktop app connects to these automatically for local deployments. For remote agents, you point Mission Control at the agent's management URL.
+
+<Warning>
+  Mission Control stores deployment records and secrets locally on your machine at `~/.mission-control/`. Back up this directory if you want to preserve your configuration across machines.
+</Warning>
+
+## What's next
+
+<CardGroup cols={2}>
+  <Card title="Agents" icon="robot" href="/agents">
+    Learn how agents are configured and how they work.
+  </Card>
+  <Card title="CLI Reference" icon="terminal" href="/cli-reference">
+    Full command reference for the mc CLI.
+  </Card>
+  <Card title="Messaging Apps" icon="comments" href="/messaging-apps">
+    Connect agents to Telegram, WhatsApp, and more.
+  </Card>
+  <Card title="Secrets" icon="lock" href="/secrets">
+    How encrypted secret storage works.
+  </Card>
+</CardGroup>

@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { mkdir, readFile, unlink, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 export interface McConversation {
@@ -43,12 +43,19 @@ export class ConversationStore {
       if (e.code === 'ENOENT') return '[]';
       throw e;
     });
-    return JSON.parse(raw) as McConversation[];
+    try {
+      if (!raw.trim()) return [];
+      return JSON.parse(raw) as McConversation[];
+    } catch {
+      return [];
+    }
   }
 
   private async saveIndex(conversations: McConversation[]): Promise<void> {
     await mkdir(this.dir, { recursive: true });
-    await writeFile(this.indexPath, JSON.stringify(conversations, null, 2));
+    const tmpPath = `${this.indexPath}.tmp`;
+    await writeFile(tmpPath, JSON.stringify(conversations, null, 2));
+    await rename(tmpPath, this.indexPath);
   }
 
   async create(deploymentId: string, agentName: string): Promise<McConversation> {
