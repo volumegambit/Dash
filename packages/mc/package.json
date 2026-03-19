@@ -18,12 +18,5 @@
     "@dash/agent": "*",
     "@dash/management": "*",
     "@opencode-ai/sdk": "^1.2.20"
-  },
-  "tsup": {
-    "entry": ["src/index.ts"],
-    "format": ["esm"],
-    "dts": true,
-    "clean": true,
-    "sourcemap": true
   }
 }

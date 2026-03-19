@@ -17,12 +17,5 @@
   "dependencies": {
     "hono": "^4",
     "@hono/node-server": "^1"
-  },
-  "tsup": {
-    "entry": ["src/index.ts"],
-    "format": ["esm"],
-    "dts": true,
-    "clean": true,
-    "sourcemap": true
   }
 }

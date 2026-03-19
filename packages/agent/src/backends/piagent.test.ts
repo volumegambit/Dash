@@ -80,11 +80,13 @@ describe('PiAgentBackend.normalizeEvent', () => {
     const backend = makeBackend();
     const result = backend.normalizeEvent({
       type: 'message_update',
+      // biome-ignore lint/suspicious/noExplicitAny: test mock
       message: {} as any,
       assistantMessageEvent: {
         type: 'text_delta',
         contentIndex: 0,
         delta: 'Hello',
+        // biome-ignore lint/suspicious/noExplicitAny: test mock
         partial: {} as any,
       },
     });
@@ -95,11 +97,13 @@ describe('PiAgentBackend.normalizeEvent', () => {
     const backend = makeBackend();
     const result = backend.normalizeEvent({
       type: 'message_update',
+      // biome-ignore lint/suspicious/noExplicitAny: test mock
       message: {} as any,
       assistantMessageEvent: {
         type: 'thinking_delta',
         contentIndex: 0,
         delta: 'Thinking...',
+        // biome-ignore lint/suspicious/noExplicitAny: test mock
         partial: {} as any,
       },
     });
@@ -110,6 +114,7 @@ describe('PiAgentBackend.normalizeEvent', () => {
     const backend = makeBackend();
     const result = backend.normalizeEvent({
       type: 'message_update',
+      // biome-ignore lint/suspicious/noExplicitAny: test mock
       message: {} as any,
       assistantMessageEvent: {
         type: 'error',
@@ -120,6 +125,7 @@ describe('PiAgentBackend.normalizeEvent', () => {
           api: 'anthropic-messages',
           provider: 'anthropic',
           model: 'test',
+          // biome-ignore lint/suspicious/noExplicitAny: test mock
           usage: {} as any,
           stopReason: 'error',
           errorMessage: 'API key invalid',
@@ -137,6 +143,7 @@ describe('PiAgentBackend.normalizeEvent', () => {
       toolCallId: 'call-1',
       toolName: 'bash',
       args: { command: 'ls' },
+      // biome-ignore lint/suspicious/noExplicitAny: test mock for partial event object
     } as any);
     expect(result).toEqual({
       type: 'tool_use_start',
@@ -154,6 +161,7 @@ describe('PiAgentBackend.normalizeEvent', () => {
       toolName: 'bash',
       args: {},
       partialResult: { content: [{ type: 'text', text: 'partial' }], details: {} },
+      // biome-ignore lint/suspicious/noExplicitAny: test mock for partial event object
     } as any);
     expect(result).toEqual({
       type: 'tool_use_delta',
@@ -169,6 +177,7 @@ describe('PiAgentBackend.normalizeEvent', () => {
       toolName: 'bash',
       result: { content: [{ type: 'text', text: 'done' }], details: {} },
       isError: false,
+      // biome-ignore lint/suspicious/noExplicitAny: test mock for partial event object
     } as any);
     expect(result).toEqual({
       type: 'tool_result',
@@ -187,6 +196,7 @@ describe('PiAgentBackend.normalizeEvent', () => {
       toolName: 'bash',
       result: { content: [{ type: 'text', text: 'command not found' }], details: {} },
       isError: true,
+      // biome-ignore lint/suspicious/noExplicitAny: test mock for partial event object
     } as any);
     expect(result).toEqual({
       type: 'tool_result',
@@ -202,11 +212,13 @@ describe('PiAgentBackend.normalizeEvent', () => {
     // Accumulate some text first
     backend.normalizeEvent({
       type: 'message_update',
+      // biome-ignore lint/suspicious/noExplicitAny: test mock
       message: {} as any,
       assistantMessageEvent: {
         type: 'text_delta',
         contentIndex: 0,
         delta: 'Hello world',
+        // biome-ignore lint/suspicious/noExplicitAny: test mock
         partial: {} as any,
       },
     });
@@ -224,6 +236,7 @@ describe('PiAgentBackend.normalizeEvent', () => {
           cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
         },
       },
+      // biome-ignore lint/suspicious/noExplicitAny: test mock for partial event object
     } as any);
 
     expect(result).toEqual({
@@ -241,24 +254,28 @@ describe('PiAgentBackend.normalizeEvent', () => {
   it('returns context_compacted for auto_compaction_end', () => {
     const backend = makeBackend();
     // Simulate auto_compaction_start with overflow reason
+    // biome-ignore lint/suspicious/noExplicitAny: test mock for partial event object
     backend.normalizeEvent({ type: 'auto_compaction_start', reason: 'overflow' } as any);
     const result = backend.normalizeEvent({
       type: 'auto_compaction_end',
       result: undefined,
       aborted: false,
       willRetry: false,
+      // biome-ignore lint/suspicious/noExplicitAny: test mock for partial event object
     } as any);
     expect(result).toEqual({ type: 'context_compacted', overflow: true });
   });
 
   it('returns context_compacted with overflow=false for threshold reason', () => {
     const backend = makeBackend();
+    // biome-ignore lint/suspicious/noExplicitAny: test mock for partial event object
     backend.normalizeEvent({ type: 'auto_compaction_start', reason: 'threshold' } as any);
     const result = backend.normalizeEvent({
       type: 'auto_compaction_end',
       result: undefined,
       aborted: false,
       willRetry: false,
+      // biome-ignore lint/suspicious/noExplicitAny: test mock for partial event object
     } as any);
     expect(result).toEqual({ type: 'context_compacted', overflow: false });
   });
@@ -271,12 +288,14 @@ describe('PiAgentBackend.normalizeEvent', () => {
       maxAttempts: 3,
       delayMs: 1000,
       errorMessage: 'Rate limit',
+      // biome-ignore lint/suspicious/noExplicitAny: test mock for partial event object
     } as any);
     expect(result).toEqual({ type: 'agent_retry', attempt: 2, reason: 'Rate limit' });
   });
 
   it('returns null for unknown event type', () => {
     const backend = makeBackend();
+    // biome-ignore lint/suspicious/noExplicitAny: test mock for partial event object
     const result = backend.normalizeEvent({ type: 'agent_start' } as any);
     expect(result).toBeNull();
   });
@@ -285,11 +304,13 @@ describe('PiAgentBackend.normalizeEvent', () => {
     const backend = makeBackend();
     const result = backend.normalizeEvent({
       type: 'message_update',
+      // biome-ignore lint/suspicious/noExplicitAny: test mock
       message: {} as any,
       assistantMessageEvent: {
         type: 'toolcall_delta',
         contentIndex: 0,
         delta: '...',
+        // biome-ignore lint/suspicious/noExplicitAny: test mock
         partial: {} as any,
       },
     });
@@ -311,7 +332,9 @@ describe('PiAgentBackend lifecycle', () => {
         abort: vi.fn(),
         setModel: mockSetModel,
         agent: mockAgent,
+        // biome-ignore lint/suspicious/noExplicitAny: test mock for partial session object
       } as any,
+      // biome-ignore lint/suspicious/noExplicitAny: test mock
       extensionsResult: {} as any,
     });
 
@@ -330,22 +353,24 @@ describe('PiAgentBackend lifecycle', () => {
   it('run() yields events from session and completes on agent_end', async () => {
     const { createAgentSession } = await import('@mariozechner/pi-coding-agent');
 
+    // biome-ignore lint/suspicious/noExplicitAny: test mock callback type
     let subscribeCb: ((event: any) => void) | null = null;
     const mockAgent = { setSystemPrompt: vi.fn() };
     const mockSession = {
       dispose: vi.fn(),
+      // biome-ignore lint/suspicious/noExplicitAny: test mock callback type
       subscribe: vi.fn((cb: any) => {
         subscribeCb = cb;
         return vi.fn(); // unsubscribe
       }),
       prompt: vi.fn(async () => {
         // Simulate events from the agent
-        subscribeCb!({
+        subscribeCb?.({
           type: 'message_update',
           message: {},
           assistantMessageEvent: { type: 'text_delta', contentIndex: 0, delta: 'Hi', partial: {} },
         });
-        subscribeCb!({
+        subscribeCb?.({
           type: 'message_end',
           message: {
             role: 'assistant',
@@ -359,7 +384,7 @@ describe('PiAgentBackend lifecycle', () => {
             },
           },
         });
-        subscribeCb!({ type: 'agent_end', messages: [] });
+        subscribeCb?.({ type: 'agent_end', messages: [] });
       }),
       abort: vi.fn(),
       setModel: vi.fn().mockResolvedValue(undefined),
@@ -367,7 +392,9 @@ describe('PiAgentBackend lifecycle', () => {
     };
 
     vi.mocked(createAgentSession).mockResolvedValueOnce({
+      // biome-ignore lint/suspicious/noExplicitAny: test mock for partial session object
       session: mockSession as any,
+      // biome-ignore lint/suspicious/noExplicitAny: test mock
       extensionsResult: {} as any,
     });
 
@@ -427,7 +454,9 @@ describe('PiAgentBackend sessionDir', () => {
         abort: vi.fn(),
         setModel: vi.fn(),
         agent: { setSystemPrompt: vi.fn() },
+        // biome-ignore lint/suspicious/noExplicitAny: test mock for partial session object
       } as any,
+      // biome-ignore lint/suspicious/noExplicitAny: test mock
       extensionsResult: {} as any,
     });
 
@@ -455,7 +484,9 @@ describe('PiAgentBackend sessionDir', () => {
         abort: vi.fn(),
         setModel: vi.fn(),
         agent: { setSystemPrompt: vi.fn() },
+        // biome-ignore lint/suspicious/noExplicitAny: test mock for partial session object
       } as any,
+      // biome-ignore lint/suspicious/noExplicitAny: test mock
       extensionsResult: {} as any,
     });
 
