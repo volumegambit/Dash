@@ -14,3 +14,4 @@ export { interpolateEnvVars, interpolateConfigEnvVars } from './env.js';
 export { wrapMcpTool } from './tools.js';
 export type { McpToolDefinition } from './tools.js';
 export { McpClient } from './client.js';
+export { McpManager } from './manager.js';
