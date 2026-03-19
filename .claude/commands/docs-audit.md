@@ -32,11 +32,10 @@ Flag awkward phrasing, jargon in user-facing pages, or inconsistent tone.
 
 ## How to run
 
-Use 4 parallel Explore agents to review all pages concurrently:
-- Agent 1: Getting Started group (introduction, how-dashsquad-works, getting-started)
-- Agent 2: Core Concepts group (agents, mission-control, messaging-apps, ai-providers)
-- Agent 3: Core Concepts continued (skills, tools, secrets)
-- Agent 4: Guides + Reference + Help (deploy-your-first-agent, chat-with-your-agent, example-agents, extended-thinking, configuration, cli-reference, api-reference, architecture, troubleshooting)
+1. List all `.mdx` files in `user_docs/` to discover every page dynamically
+2. Read `user_docs/docs.json` to get the navigation structure and groups
+3. Split the discovered pages into ~4 equal batches
+4. Dispatch 4 parallel Explore agents, one per batch, each reviewing its assigned pages against the checks above
 
 ## Output
 
