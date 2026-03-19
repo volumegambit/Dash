@@ -100,7 +100,7 @@ Something not working? Here are the most common issues and how to fix them.
     Error: path "../../etc/passwd" escapes the workspace directory
     ```
 
-    The `read_file` tool blocks paths that resolve outside the workspace. This is intentional — use absolute paths or paths relative to the workspace root.
+    The `read` tool blocks paths that resolve outside the workspace. This is intentional — use absolute paths or paths relative to the workspace root.
   </Accordion>
 
   <Accordion title="Command timeout">
@@ -113,7 +113,7 @@ Something not working? Here are the most common issues and how to fix them.
   </Accordion>
 
   <Accordion title="Output truncation">
-    The `bash` tool limits output to 100 KB. If a command produces more output, pipe it through `head`, `tail`, or redirect to a file and use `read_file` to retrieve specific sections.
+    The `bash` tool limits output to 100 KB. If a command produces more output, pipe it through `head`, `tail`, or redirect to a file and use `read` to retrieve specific sections.
   </Accordion>
 </AccordionGroup>
 

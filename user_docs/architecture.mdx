@@ -42,7 +42,7 @@ Dash is flexible about where each piece runs.
 
 <AccordionGroup>
   <Accordion title="LLM layer" icon="microchip">
-    Abstraction over LLM provider APIs. Currently supports Anthropic (Claude). Handles streaming responses, extended thinking blocks, and tool use blocks. Model names are resolved to providers automatically — any model starting with `claude-` routes to Anthropic.
+    Abstraction over LLM provider APIs. Supports Anthropic (Claude), OpenAI (GPT), and Google (Gemini). Handles streaming responses, extended thinking blocks, and tool use blocks. Models use `provider/model` format (e.g. `anthropic/claude-sonnet-4-20250514`, `openai/gpt-4o`, `google/gemini-2.0-flash`) for automatic provider routing.
   </Accordion>
   <Accordion title="Agent" icon="robot">
     The core runtime. An agent manages conversations: it loads session history, sends messages to the LLM, executes tools when the model requests them, and persists everything to disk. Agents loop automatically — if the model asks to run a tool, the agent executes it and sends the result back until the model produces a final response (up to 25 rounds).

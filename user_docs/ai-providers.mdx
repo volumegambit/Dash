@@ -7,15 +7,15 @@ Each agent in your team can use a different AI provider and model. Mix and match
 
 ## Provider routing
 
-Model names are matched by prefix:
+Model names use a `provider/model` format. The prefix before the slash tells Dash which provider to use:
 
-| Model prefix | Provider |
-|-------------|----------|
-| `claude-*` | Anthropic |
-| `gpt-*`, `o1*`, `o3*`, `o4*` | OpenAI |
-| `gemini-*` | Google |
+| Prefix | Provider |
+|--------|----------|
+| `anthropic/` | Anthropic |
+| `openai/` | OpenAI |
+| `google/` | Google |
 
-If the model prefix doesn't match any provider, Dash falls back to the first registered provider.
+For example, `anthropic/claude-sonnet-4-20250514` routes to Anthropic and `openai/gpt-4o` routes to OpenAI.
 
 ## Configuring credentials
 
@@ -54,8 +54,8 @@ Environment variables take precedence over `credentials.json`.
 Sign up at [console.anthropic.com](https://console.anthropic.com) to get an API key.
 
 **Example models:**
-- `claude-sonnet-4-20250514` — balanced performance and speed
-- `claude-opus-4-20250514` — highest capability
+- `anthropic/claude-sonnet-4-20250514` — balanced performance and speed
+- `anthropic/claude-opus-4-20250514` — highest capability
 
 **Configuration:**
 
@@ -74,8 +74,8 @@ or in `credentials.json`:
 Sign up at [platform.openai.com](https://platform.openai.com) to get an API key.
 
 **Example models:**
-- `gpt-4o` — multimodal, fast
-- `o3` — advanced reasoning
+- `openai/gpt-4o` — multimodal, fast
+- `openai/o3` — advanced reasoning
 
 **Configuration:**
 
@@ -94,8 +94,8 @@ or in `credentials.json`:
 Sign up at [aistudio.google.com](https://aistudio.google.com) to get an API key.
 
 **Example models:**
-- `gemini-2.0-flash` — fast, efficient
-- `gemini-2.5-pro` — highest capability
+- `google/gemini-2.0-flash` — fast, efficient
+- `google/gemini-2.5-pro` — highest capability
 
 **Configuration:**
 
@@ -111,28 +111,28 @@ or in `credentials.json`:
 
 ## Using a provider in an agent
 
-Set the `model` field in your agent config to any model from the provider:
+Set the `model` field in your agent config using the `provider/model` format:
 
 ```json
 {
   "agents": {
     "default": {
-      "model": "claude-sonnet-4-20250514",
+      "model": "anthropic/claude-sonnet-4-20250514",
       "systemPrompt": "You are a helpful assistant.",
-      "tools": ["bash", "read_file"]
+      "tools": ["bash", "read"]
     },
     "gpt-agent": {
-      "model": "gpt-4o",
+      "model": "openai/gpt-4o",
       "systemPrompt": "You are a helpful assistant.",
-      "tools": ["bash", "read_file"]
+      "tools": ["bash", "read"]
     },
     "gemini-agent": {
-      "model": "gemini-2.0-flash",
+      "model": "google/gemini-2.0-flash",
       "systemPrompt": "You are a helpful assistant.",
-      "tools": ["bash", "read_file"]
+      "tools": ["bash", "read"]
     }
   }
 }
 ```
 
-Dash will use the corresponding provider for each agent automatically.
+The provider prefix tells Dash which API to call for each agent.
