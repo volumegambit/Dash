@@ -1,3 +1,6 @@
+import type { AgentEvent as PiAgentEvent } from '@mariozechner/pi-agent-core';
+import { getModel } from '@mariozechner/pi-ai';
+import type { AssistantMessage, ImageContent, Model, Usage } from '@mariozechner/pi-ai';
 import {
   AuthStorage,
   SessionManager,
@@ -10,13 +13,7 @@ import {
   createReadTool,
   createWriteTool,
 } from '@mariozechner/pi-coding-agent';
-import type {
-  AgentSession,
-  AgentSessionEvent,
-} from '@mariozechner/pi-coding-agent';
-import type { AgentEvent as PiAgentEvent } from '@mariozechner/pi-agent-core';
-import { getModel } from '@mariozechner/pi-ai';
-import type { AssistantMessage, ImageContent, Model, Usage } from '@mariozechner/pi-ai';
+import type { AgentSession, AgentSessionEvent } from '@mariozechner/pi-coding-agent';
 
 import type { Logger } from '../logger.js';
 import type {
@@ -134,9 +131,7 @@ export class PiAgentBackend implements AgentBackend {
    * If no tools specified, uses all coding tools.
    */
   private buildTools(workspace: string) {
-    const allowedNames = this.config.tools
-      ? new Set(this.config.tools)
-      : new Set(ALL_TOOL_NAMES);
+    const allowedNames = this.config.tools ? new Set(this.config.tools) : new Set(ALL_TOOL_NAMES);
 
     const toolBuilders: Record<string, () => any> = {
       read: () => createReadTool(workspace),
@@ -210,7 +205,11 @@ export class PiAgentBackend implements AgentBackend {
     this.session.agent.setSystemPrompt(state.systemPrompt);
 
     // Event queue for bridging subscribe callback to async generator
-    const queue: (AgentSessionEvent | { type: '__done__' } | { type: '__error__'; error: Error })[] = [];
+    const queue: (
+      | AgentSessionEvent
+      | { type: '__done__' }
+      | { type: '__error__'; error: Error }
+    )[] = [];
     let resolve: (() => void) | null = null;
 
     const waitForEvent = (): Promise<void> =>
@@ -222,7 +221,9 @@ export class PiAgentBackend implements AgentBackend {
         }
       });
 
-    const pushEvent = (event: AgentSessionEvent | { type: '__done__' } | { type: '__error__'; error: Error }) => {
+    const pushEvent = (
+      event: AgentSessionEvent | { type: '__done__' } | { type: '__error__'; error: Error },
+    ) => {
       queue.push(event);
       if (resolve) {
         const r = resolve;
@@ -247,11 +248,9 @@ export class PiAgentBackend implements AgentBackend {
     }));
 
     // Fire prompt (runs concurrently with event consumption)
-    const promptPromise = this.session
-      .prompt(state.message, { images })
-      .catch((err) => {
-        pushEvent({ type: '__error__', error: err instanceof Error ? err : new Error(String(err)) });
-      });
+    const promptPromise = this.session.prompt(state.message, { images }).catch((err) => {
+      pushEvent({ type: '__error__', error: err instanceof Error ? err : new Error(String(err)) });
+    });
 
     try {
       while (true) {
@@ -317,9 +316,8 @@ export class PiAgentBackend implements AgentBackend {
         const e = event as Extract<PiAgentEvent, { type: 'tool_execution_update' }>;
         return {
           type: 'tool_use_delta',
-          partial_json: typeof e.partialResult === 'string'
-            ? e.partialResult
-            : JSON.stringify(e.partialResult),
+          partial_json:
+            typeof e.partialResult === 'string' ? e.partialResult : JSON.stringify(e.partialResult),
         };
       }
 

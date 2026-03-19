@@ -123,8 +123,7 @@ export async function createAgentServer(config: DashConfig) {
           const insideConfiguredPath = paths.some((p) => {
             const resolvedPath = resolve(expandHome(p));
             return (
-              resolvedLocation === resolvedPath ||
-              resolvedLocation.startsWith(`${resolvedPath}/`)
+              resolvedLocation === resolvedPath || resolvedLocation.startsWith(`${resolvedPath}/`)
             );
           });
           if (!insideConfiguredPath) {
