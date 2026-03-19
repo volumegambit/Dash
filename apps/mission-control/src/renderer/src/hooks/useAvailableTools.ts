@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { AVAILABLE_TOOLS, TOOL_DESCRIPTIONS } from '../components/deploy-options.js';
+import { ALWAYS_ENABLED_TOOLS, AVAILABLE_TOOLS, TOOL_DESCRIPTIONS } from '../components/deploy-options.js';
 import type { ToolOption } from '../components/deploy-options.js';
 
 /** Pretty-print a tool ID as a label (e.g. "web_fetch" → "Web Fetch") */
@@ -17,8 +17,8 @@ export function useAvailableTools(): ToolOption[] {
     window.api
       .toolsList()
       .then((cached) => {
-        // Filter out unknown tool IDs (e.g. "invalid" from the OpenCode SDK)
-        const known = cached.filter((id) => id in TOOL_DESCRIPTIONS);
+        // Filter out unknown tool IDs and always-enabled internal tools
+        const known = cached.filter((id) => id in TOOL_DESCRIPTIONS && !ALWAYS_ENABLED_TOOLS.has(id));
         if (known.length > 0) {
           setTools(
             known.map((id) => ({
