@@ -24,12 +24,5 @@
   },
   "devDependencies": {
     "tsx": "^4.19.0"
-  },
-  "tsup": {
-    "entry": ["src/index.ts"],
-    "format": ["esm"],
-    "dts": true,
-    "clean": true,
-    "sourcemap": true
   }
 }
