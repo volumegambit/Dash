@@ -19,7 +19,6 @@ import type { AgentSession, AgentSessionEvent } from '@mariozechner/pi-coding-ag
 import type { Logger } from '../logger.js';
 import { createCreateSkillTool, createLoadSkillTool, scanSkillsDirectory } from '../skills/index.js';
 import { BraveSearchProvider } from '../tools/search-providers/brave.js';
-import { createTaskTool } from '../tools/task.js';
 import { createTodoWriteTool } from '../tools/todowrite.js';
 import { createWebFetchTool } from '../tools/web-fetch.js';
 import { createWebSearchTool } from '../tools/web-search.js';
@@ -171,9 +170,6 @@ export class PiAgentBackend implements AgentBackend {
 
     // Task tracking tools
     if (allowedNames.has('task')) {
-      tools.push(createTaskTool());
-    }
-    if (allowedNames.has('todowrite')) {
       tools.push(createTodoWriteTool());
     }
 

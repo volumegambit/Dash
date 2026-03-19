@@ -87,18 +87,18 @@ describe('DeployWizard', () => {
     expect(selectAll).toBeChecked();
   });
 
-  it('tool toggle adds and removes a tool', async () => {
+  it('tool toggle adds and removes a tool group', async () => {
     const user = userEvent.setup();
     render(<DeployWizard />);
 
-    const bashCheckbox = screen.getByRole('checkbox', { name: /^bash/i });
-    expect(bashCheckbox).not.toBeChecked();
+    const shellCheckbox = screen.getByRole('checkbox', { name: /^shell/i });
+    expect(shellCheckbox).not.toBeChecked();
 
-    await user.click(bashCheckbox);
-    expect(bashCheckbox).toBeChecked();
+    await user.click(shellCheckbox);
+    expect(shellCheckbox).toBeChecked();
 
-    await user.click(bashCheckbox);
-    expect(bashCheckbox).not.toBeChecked();
+    await user.click(shellCheckbox);
+    expect(shellCheckbox).not.toBeChecked();
   });
 
   it('review step shows correct summary', async () => {
