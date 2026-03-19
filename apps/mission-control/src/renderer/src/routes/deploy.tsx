@@ -234,9 +234,6 @@ export function DeployWizard(): JSX.Element {
                     />
                     <span>
                       <span className="font-medium">{group.name}</span>
-                      <span className="ml-1.5 text-xs text-muted">
-                        ({group.tools.length} tools)
-                      </span>
                       <span className="block text-xs text-muted">{group.description}</span>
                     </span>
                   </label>

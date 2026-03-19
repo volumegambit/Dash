@@ -373,9 +373,6 @@ export function AgentConfigTab({
                     />
                     <span>
                       <span className="font-medium">{group.name}</span>
-                      <span className="ml-1.5 text-[11px] text-muted">
-                        ({group.tools.length} tools)
-                      </span>
                       <span className="block text-[11px] text-muted">{group.description}</span>
                     </span>
                   </label>
