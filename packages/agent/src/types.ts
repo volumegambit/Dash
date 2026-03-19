@@ -98,7 +98,8 @@ export type AgentEvent =
   | { type: 'agent_retry'; attempt: number; reason: string }
   | { type: 'context_compacted'; overflow: boolean }
   | { type: 'question'; id: string; question: string; options: string[] }
-  | { type: 'skill_loaded'; name: string };
+  | { type: 'skill_loaded'; name: string }
+  | { type: 'skill_created'; name: string; description: string };
 
 export interface DashAgentConfig {
   model: string; // "provider/model-id", e.g. "anthropic/claude-opus-4-5"
@@ -136,6 +137,7 @@ export interface AgentBackend {
   run(state: AgentState, options: RunOptions): AsyncGenerator<AgentEvent>;
   abort(): void;
   answerQuestion?(id: string, answers: string[][]): Promise<void>;
+  listSkills?(): Promise<import('./skills/types.js').SkillDiscoveryResult[]>;
 }
 
 // --- Session interfaces ---
