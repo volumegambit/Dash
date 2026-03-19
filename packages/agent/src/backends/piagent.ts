@@ -1,7 +1,7 @@
 import { homedir } from 'node:os';
 import type { AgentEvent as PiAgentEvent } from '@mariozechner/pi-agent-core';
 import { getModel } from '@mariozechner/pi-ai';
-import type { AssistantMessage, ImageContent, Model, Usage } from '@mariozechner/pi-ai';
+import type { Api, AssistantMessage, ImageContent, Model, Usage } from '@mariozechner/pi-ai';
 import {
   AuthStorage,
   SessionManager,
@@ -126,7 +126,7 @@ export class PiAgentBackend implements AgentBackend {
   /**
    * Resolve the model from "provider/model-id" format.
    */
-  private resolveModel(modelStr: string): Model<any> {
+  private resolveModel(modelStr: string): Model<Api> {
     const slash = modelStr.indexOf('/');
     if (slash === -1) {
       throw new Error(
@@ -135,6 +135,7 @@ export class PiAgentBackend implements AgentBackend {
     }
     const provider = modelStr.slice(0, slash);
     const modelId = modelStr.slice(slash + 1);
+    // biome-ignore lint/suspicious/noExplicitAny: getModel requires generic provider/modelId that are not statically known
     return getModel(provider as any, modelId as any);
   }
 
@@ -145,6 +146,7 @@ export class PiAgentBackend implements AgentBackend {
   private buildBuiltinTools(workspace: string) {
     const allowedNames = this.config.tools ? new Set(this.config.tools) : new Set(ALL_TOOL_NAMES);
 
+    // biome-ignore lint/suspicious/noExplicitAny: Tool type not exported from pi-coding-agent top-level
     const toolBuilders: Record<string, () => any> = {
       read: () => createReadTool(workspace),
       bash: () => createBashTool(workspace),
@@ -170,10 +172,13 @@ export class PiAgentBackend implements AgentBackend {
    * These go in createAgentSession({ customTools }) — registered via the extension system.
    * AgentTool instances are wrapped as ToolDefinition (adds unused ctx parameter).
    */
+  // biome-ignore lint/suspicious/noExplicitAny: tool types from pi-coding-agent SDK lack exported interfaces
   private buildCustomTools(): any[] {
     const allowedNames = this.config.tools ? new Set(this.config.tools) : new Set(ALL_TOOL_NAMES);
+    // biome-ignore lint/suspicious/noExplicitAny: tool types from pi-coding-agent SDK lack exported interfaces
     const customs: any[] = [];
 
+    // biome-ignore lint/suspicious/noExplicitAny: tool types from pi-coding-agent SDK lack exported interfaces
     const wrap = (tool: any) => ({
       name: tool.name,
       label: tool.label,
@@ -181,9 +186,12 @@ export class PiAgentBackend implements AgentBackend {
       parameters: tool.parameters,
       execute: (
         toolCallId: string,
+        // biome-ignore lint/suspicious/noExplicitAny: tool param types from SDK are not exported
         params: any,
         signal?: AbortSignal,
+        // biome-ignore lint/suspicious/noExplicitAny: onUpdate callback type from SDK is not exported
         onUpdate?: any,
+        // biome-ignore lint/suspicious/noExplicitAny: ctx type from SDK is not exported
         _ctx?: any,
       ) => tool.execute(toolCallId, params, signal, onUpdate),
     });
@@ -203,7 +211,7 @@ export class PiAgentBackend implements AgentBackend {
       customs.push(wrap(createWebFetchTool()));
     }
     if (allowedNames.has('web_search')) {
-      const braveKey = this.providerApiKeys['brave'] ?? this.providerApiKeys['brave-api-key'];
+      const braveKey = this.providerApiKeys.brave ?? this.providerApiKeys['brave-api-key'];
       const provider = braveKey ? new BraveSearchProvider(braveKey) : null;
       customs.push(wrap(createWebSearchTool(provider)));
     }
@@ -229,10 +237,10 @@ export class PiAgentBackend implements AgentBackend {
     const builtinTools = this.buildBuiltinTools(workspace);
     const customTools = this.buildCustomTools();
     this.logger?.info(
-      `[PiAgent] Registering ${builtinTools.length} built-in tools: ${builtinTools.map((t: any) => t.name).join(', ')}`,
+      `[PiAgent] Registering ${builtinTools.length} built-in tools: ${builtinTools.map((t: { name: string }) => t.name).join(', ')}`,
     );
     this.logger?.info(
-      `[PiAgent] Registering ${customTools.length} custom tools: ${customTools.map((t: any) => t.name).join(', ')}`,
+      `[PiAgent] Registering ${customTools.length} custom tools: ${customTools.map((t: { name: string }) => t.name).join(', ')}`,
     );
 
     const { session } = await createAgentSession({
@@ -330,14 +338,15 @@ export class PiAgentBackend implements AgentBackend {
         await waitForEvent();
 
         while (queue.length > 0) {
-          const event = queue.shift()!;
+          const event = queue.shift();
+          if (!event) break;
 
           if (event.type === '__done__') {
             return;
           }
 
           if (event.type === '__error__') {
-            yield { type: 'error', error: (event as any).error };
+            yield { type: 'error', error: (event as { type: '__error__'; error: Error }).error };
             return;
           }
 
@@ -360,7 +369,8 @@ export class PiAgentBackend implements AgentBackend {
   normalizeEvent(event: AgentSessionEvent): AgentEvent | null {
     switch (event.type) {
       case 'message_update': {
-        const ame = (event as any).assistantMessageEvent;
+        const ame = (event as Extract<AgentSessionEvent, { type: 'message_update' }>)
+          .assistantMessageEvent;
         if (!ame) return null;
 
         switch (ame.type) {
@@ -370,7 +380,7 @@ export class PiAgentBackend implements AgentBackend {
           case 'thinking_delta':
             return { type: 'thinking_delta', text: ame.delta };
           case 'error': {
-            const errorMsg = ame.error?.errorMessage ?? ame.error?.message ?? 'Unknown error';
+            const errorMsg = ame.error?.errorMessage ?? 'Unknown error';
             return { type: 'error', error: new Error(errorMsg) };
           }
           default:
@@ -401,9 +411,9 @@ export class PiAgentBackend implements AgentBackend {
         // Extract text content from the result
         let content: string;
         if (e.result && typeof e.result === 'object' && Array.isArray(e.result.content)) {
-          content = e.result.content
-            .filter((c: any) => c.type === 'text')
-            .map((c: any) => c.text)
+          content = (e.result.content as { type: string; text: string }[])
+            .filter((c) => c.type === 'text')
+            .map((c) => c.text)
             .join('\n');
         } else {
           content = String(e.result ?? '');
@@ -419,7 +429,8 @@ export class PiAgentBackend implements AgentBackend {
 
       case 'message_end': {
         // Emit a response event with accumulated text and usage
-        const msg = (event as any).message as AssistantMessage | undefined;
+        const endEvent = event as Extract<AgentSessionEvent, { type: 'message_end' }>;
+        const msg = endEvent.message as AssistantMessage | undefined;
         const usage: Usage | undefined = msg?.usage;
         return {
           type: 'response',
@@ -434,7 +445,7 @@ export class PiAgentBackend implements AgentBackend {
       }
 
       case 'auto_compaction_start': {
-        const e = event as any;
+        const e = event as Extract<AgentSessionEvent, { type: 'auto_compaction_start' }>;
         this.lastCompactionReason = e.reason ?? 'threshold';
         return null;
       }
@@ -447,7 +458,7 @@ export class PiAgentBackend implements AgentBackend {
       }
 
       case 'auto_retry_start': {
-        const e = event as any;
+        const e = event as Extract<AgentSessionEvent, { type: 'auto_retry_start' }>;
         return {
           type: 'agent_retry',
           attempt: e.attempt ?? 1,

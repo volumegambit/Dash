@@ -27,6 +27,7 @@ describe('TelegramAdapter health', () => {
     const changes: string[] = [];
     adapter.onHealthChange((h) => changes.push(h));
 
+    // biome-ignore lint/suspicious/noExplicitAny: accessing private method for test
     (adapter as any).setHealth('connected');
 
     expect(changes).toContain('connected');
@@ -37,6 +38,7 @@ describe('TelegramAdapter health', () => {
     const changes: string[] = [];
     adapter.onHealthChange((h) => changes.push(h));
 
+    // biome-ignore lint/suspicious/noExplicitAny: accessing private method for test
     (adapter as any).setHealth('connecting'); // same as initial
 
     expect(changes).toHaveLength(0);

@@ -55,6 +55,7 @@ export function DeployWizard(): JSX.Element {
   }, []);
 
   // One-time: load settings and pick initial model
+  // biome-ignore lint/correctness/useExhaustiveDependencies: intentionally runs once on mount; availableModels is stable at this point
   useEffect(() => {
     window.api
       .settingsGet()
@@ -69,7 +70,6 @@ export function DeployWizard(): JSX.Element {
         });
       })
       .catch(() => {});
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []); // intentionally run once; availableModels already known at this point in practice
 
   // When available models change (keys added/removed), pick or validate the current model

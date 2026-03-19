@@ -64,7 +64,6 @@ export function toolLabel(name: string): string {
   return TOOL_LABELS[n] ?? name.charAt(0).toUpperCase() + name.slice(1);
 }
 
-
 const PRIMARY_KEYS: Record<string, string[]> = {
   bash: ['command'],
   write: ['path'],

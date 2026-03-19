@@ -18,6 +18,14 @@
     }
   },
   "files": {
-    "ignore": ["**/dist/**", "**/out/**", "**/node_modules/**", "data/**", "**/*.gen.ts"]
+    "ignore": [
+      "**/dist/**",
+      "**/out/**",
+      "**/node_modules/**",
+      "data/**",
+      "**/*.gen.ts",
+      ".claude/worktrees/**",
+      ".worktrees/**"
+    ]
   }
 }

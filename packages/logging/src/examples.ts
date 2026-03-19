@@ -184,7 +184,9 @@ function createCustomCorrelationMiddleware() {
 function createExampleStreamingHandler() {
   const { upgradeWebSocket } = createNodeWebSocket({ app: new Hono() });
 
+  // biome-ignore lint/suspicious/noExplicitAny: upgradeWebSocket callback types are not exported from @hono/node-ws
   return upgradeWebSocket((c: any) => ({
+    // biome-ignore lint/suspicious/noExplicitAny: WebSocket event and ws types from @hono/node-ws are not exported
     onMessage(event: any, ws: any) {
       const message = JSON.parse(event.data as string);
 
