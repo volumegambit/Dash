@@ -42,7 +42,8 @@ function renderEvents(
   let textBuffer = '';
   let thinkingBuffer = '';
   let toolName = '';
-  let toolInputBuffer = '';
+  let toolInput: Record<string, unknown> | undefined;
+  let toolOutputBuffer = '';
 
   for (let i = 0; i < events.length; i++) {
     const event = events[i] as McAgentEvent;
@@ -67,21 +68,24 @@ function renderEvents(
         textBuffer = '';
       }
       toolName = event.name;
-      toolInputBuffer = '';
+      toolInput = event.input;
+      toolOutputBuffer = '';
     } else if (event.type === 'tool_use_delta') {
-      toolInputBuffer += event.partial_json;
+      toolOutputBuffer += event.partial_json;
     } else if (event.type === 'tool_result') {
+      const inputJson = toolInput ? JSON.stringify(toolInput) : '';
       elements.push(
         <ToolBlock
           key={`tool-${blockCount++}`}
           name={toolName || event.name}
-          input={toolInputBuffer}
+          input={inputJson}
           result={event.content}
           isError={event.isError}
         />,
       );
       toolName = '';
-      toolInputBuffer = '';
+      toolInput = undefined;
+      toolOutputBuffer = '';
     } else if (event.type === 'question') {
       // Flush text before question
       if (textBuffer) {
@@ -135,7 +139,7 @@ function renderEvents(
     );
   // Flush in-progress tool call (tool_use_start seen but no tool_result yet)
   if (toolName) {
-    const inProgressSummary = toolInputBuffer ? summarize(toolName, toolInputBuffer) : '';
+    const inProgressSummary = toolInput ? summarize(toolName, JSON.stringify(toolInput)) : '';
     elements.push(
       <div
         key="tool-progress"
@@ -149,6 +153,29 @@ function renderEvents(
   }
 
   return elements;
+}
+
+function ThinkingIndicator(): JSX.Element {
+  return (
+    <div className="mb-4 flex items-center gap-1.5 py-2">
+      {[0, 1, 2].map((i) => (
+        <span
+          key={i}
+          className="inline-block h-2 w-2 rounded-full bg-muted"
+          style={{
+            animation: 'thinking-bounce 1.4s ease-in-out infinite',
+            animationDelay: `${i * 0.16}s`,
+          }}
+        />
+      ))}
+      <style>
+        {`@keyframes thinking-bounce {
+          0%, 80%, 100% { opacity: 0.3; transform: scale(0.8); }
+          40% { opacity: 1; transform: scale(1); }
+        }`}
+      </style>
+    </div>
+  );
 }
 
 function ThinkingBlock({ text }: { text: string }): JSX.Element {
@@ -422,46 +449,42 @@ function extractLatestTodos(msgs: McMessage[], liveEvents: McAgentEvent[]): Todo
   for (const msg of msgs) {
     if (msg.content.type !== 'assistant') continue;
     let toolName = '';
-    let toolInput = '';
+    let toolInputJson = '';
     for (const event of msg.content.events as McAgentEvent[]) {
       if (event.type === 'tool_use_start') {
         toolName = event.name;
-        toolInput = '';
-      } else if (event.type === 'tool_use_delta') {
-        toolInput += event.partial_json;
+        toolInputJson = event.input ? JSON.stringify(event.input) : '';
       } else if (event.type === 'tool_result') {
         if (isTodoWrite(toolName || event.name)) {
-          const parsed = parseTodos(toolInput);
+          const parsed = parseTodos(toolInputJson);
           if (parsed) latest = parsed;
         }
         toolName = '';
-        toolInput = '';
+        toolInputJson = '';
       }
     }
   }
 
   // Check live streaming events (override if newer)
   let liveName = '';
-  let liveInput = '';
+  let liveInputJson = '';
   for (const event of liveEvents) {
     if (event.type === 'tool_use_start') {
       liveName = event.name;
-      liveInput = '';
-    } else if (event.type === 'tool_use_delta') {
-      liveInput += event.partial_json;
+      liveInputJson = event.input ? JSON.stringify(event.input) : '';
     } else if (event.type === 'tool_result') {
       if (isTodoWrite(liveName || event.name)) {
-        const parsed = parseTodos(liveInput);
+        const parsed = parseTodos(liveInputJson);
         if (parsed) latest = parsed;
       }
       liveName = '';
-      liveInput = '';
+      liveInputJson = '';
     }
   }
 
   // Also check in-progress todowrite (not yet completed)
-  if (isTodoWrite(liveName) && liveInput) {
-    const parsed = parseTodos(liveInput);
+  if (isTodoWrite(liveName) && liveInputJson) {
+    const parsed = parseTodos(liveInputJson);
     if (parsed) latest = parsed;
   }
 
@@ -969,12 +992,7 @@ export function Chat(): JSX.Element {
                   answeredQuestions={answeredQuestions}
                 />
               ))}
-              {isStreaming && liveEvents.length === 0 && (
-                <div className="mb-4 flex items-center gap-2 text-sm text-muted">
-                  <Loader size={14} className="animate-spin" />
-                  Thinking…
-                </div>
-              )}
+              {isStreaming && liveEvents.length === 0 && <ThinkingIndicator />}
               {isStreaming && liveEvents.length > 0 && (
                 <MessageBubble
                   streamingEvents={liveEvents}
