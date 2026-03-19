@@ -36,7 +36,6 @@ export const AGENT_TOOL_NAMES = [
   'web_fetch',
   // Task tracking
   'task',
-  'todowrite',
   // Skill tools
   'load_skill',
   'create_skill',

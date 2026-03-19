@@ -25,7 +25,8 @@ export interface TodoItem {
 
 /** Check if tool name is TodoWrite */
 export function isTodoWrite(name: string): boolean {
-  return normalizeTool(name) === 'todowrite';
+  const n = normalizeTool(name);
+  return n === 'task' || n === 'todowrite';
 }
 
 /** Parse TodoWrite input JSON into structured todo items, or null if parsing fails */
@@ -54,7 +55,6 @@ const TOOL_LABELS: Record<string, string> = {
   web_search: 'Web Search',
   web_fetch: 'Web Fetch',
   task: 'Task',
-  todowrite: 'TodoWrite',
   load_skill: 'Load Skill',
   create_skill: 'Create Skill',
 };
@@ -73,9 +73,8 @@ export function toolIcon(name: string): string {
   if (n === 'find' || n === 'grep') return '🔍';
   if (n === 'ls') return '📂';
   if (n === 'web_search' || n === 'web_fetch') return '🌐';
-  if (n === 'task') return '📋';
+  if (n === 'task' || n === 'todowrite') return '📋';
   if (n === 'load_skill' || n === 'create_skill') return '⚡';
-  if (n === 'todowrite') return '📋';
   return '🔧';
 }
 
@@ -89,10 +88,9 @@ const PRIMARY_KEYS: Record<string, string[]> = {
   ls: ['path', 'directory'],
   web_search: ['query'],
   web_fetch: ['url'],
-  task: ['action', 'subject'],
+  task: ['todos'],
   load_skill: ['name'],
   create_skill: ['name'],
-  todowrite: ['todos'],
 };
 
 function truncate(s: string, max = 60): string {
@@ -121,7 +119,7 @@ export function summarize(name: string, input: string): string {
   }
 
   // Custom summary for TodoWrite: show completion count
-  if (normalizeTool(name) === 'todowrite') {
+  if (isTodoWrite(name)) {
     const todos = parseTodos(input);
     if (todos) {
       const done = todos.filter((t) => t.status === 'completed').length;

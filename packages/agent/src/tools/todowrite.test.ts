@@ -4,8 +4,8 @@ describe('createTodoWriteTool', () => {
   const tool = createTodoWriteTool();
 
   it('has the correct name, label, and description', () => {
-    expect(tool.name).toBe('todowrite');
-    expect(tool.label).toBe('Todo List');
+    expect(tool.name).toBe('task');
+    expect(tool.label).toBe('Task');
     expect(tool.description).toContain('replaces the previous state');
   });
 

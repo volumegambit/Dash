@@ -33,10 +33,10 @@ const STATUS_ICONS: Record<string, string> = {
  */
 export function createTodoWriteTool(): AgentTool<typeof todoSchema> {
   return {
-    name: 'todowrite',
-    label: 'Todo List',
+    name: 'task',
+    label: 'Task',
     description:
-      'Write a structured to-do list. Send the complete list each time — this replaces the previous state.',
+      'Track and manage work with a structured task list. Send the complete list each time — this replaces the previous state.',
     parameters: todoSchema,
     execute: async (
       _toolCallId: string,
