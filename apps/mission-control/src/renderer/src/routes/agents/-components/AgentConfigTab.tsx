@@ -3,6 +3,7 @@ import { ChevronDown, ChevronUp, FolderOpen } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { ModelChainEditor } from '../../../components/ModelChainEditor.js';
 import { useAvailableModels } from '../../../hooks/useAvailableModels.js';
+import { ALWAYS_ENABLED_TOOLS } from '../../../components/deploy-options.js';
 import { useAvailableTools } from '../../../hooks/useAvailableTools.js';
 
 type ConfigPatch = {
@@ -122,7 +123,7 @@ export function AgentConfigTab({
   const handleSaveTools = async (): Promise<void> => {
     setToolsSaving(true);
     try {
-      await updateConfig(deploymentId, { tools: toolsDraft });
+      await updateConfig(deploymentId, { tools: [...toolsDraft, ...ALWAYS_ENABLED_TOOLS] });
       setOpenCard(null);
       setToolsRestartNeeded(true);
     } finally {
@@ -304,7 +305,7 @@ export function AgentConfigTab({
         <button
           type="button"
           onClick={() => {
-            if (openCard !== 'tools') setToolsDraft(agentConfig.tools ?? []);
+            if (openCard !== 'tools') setToolsDraft((agentConfig.tools ?? []).filter((t) => !ALWAYS_ENABLED_TOOLS.has(t)));
             setOpenCard(openCard === 'tools' ? null : 'tools');
           }}
           className="flex w-full items-center justify-between p-4 text-left"

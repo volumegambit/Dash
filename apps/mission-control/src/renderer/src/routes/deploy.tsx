@@ -11,7 +11,7 @@ import {
 import { useEffect, useState } from 'react';
 import { RendererDeploymentError } from '../../../shared/ipc';
 import { ModelChainEditor } from '../components/ModelChainEditor.js';
-import { AVAILABLE_MODELS } from '../components/deploy-options.js';
+import { ALWAYS_ENABLED_TOOLS, AVAILABLE_MODELS } from '../components/deploy-options.js';
 import { useAvailableModels } from '../hooks/useAvailableModels.js';
 import { useAvailableTools } from '../hooks/useAvailableTools.js';
 import { useDeploymentsStore } from '../stores/deployments';
@@ -102,7 +102,7 @@ export function DeployWizard(): JSX.Element {
         model: agent.model,
         fallbackModels: agent.fallbackModels.length > 0 ? agent.fallbackModels : undefined,
         systemPrompt: agent.systemPrompt,
-        tools: agent.tools,
+        tools: [...agent.tools, ...ALWAYS_ENABLED_TOOLS],
         workspace: agent.workspace || undefined,
       });
       navigate({ to: '/agents/$id', params: { id } });
