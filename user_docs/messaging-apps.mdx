@@ -91,7 +91,7 @@ More platforms are planned. The Gateway uses an adapter pattern, so adding a new
   npm run gateway -- --config gateway.json --secrets secrets.json
   ```
 
-  See [Channels](/channels#gateway) for the full configuration reference.
+  See [Architecture](/architecture) for the full gateway configuration reference.
 </Accordion>
 
 ## Setting up WhatsApp
@@ -206,7 +206,7 @@ The Gateway is a client of the agent server — it connects to the Chat API (Web
     npm run gateway -- --config gateway.json --secrets secrets.json
     ```
 
-    The secrets file is read once and deleted immediately. See [Channels](/channels#secrets) for the secrets file format.
+    The secrets file is read once and deleted immediately. See [Secrets](/secrets) for the secrets file format.
   </Accordion>
   <Accordion title="Mission Control integration">
     When you deploy agents through Mission Control, the Gateway is managed automatically. Mission Control:
@@ -226,8 +226,8 @@ The Gateway is a client of the agent server — it connects to the Chat API (Web
   <Card title="Agents" icon="robot" href="/agents">
     Learn how agents are configured and how they process messages.
   </Card>
-  <Card title="Channels" icon="messages" href="/channels">
-    Full reference for the Gateway config, adapters, and Chat API protocol.
+  <Card title="Chat" icon="messages" href="/chat-with-your-agent">
+    Talk to agents via Mission Control, Telegram, or WebSocket API.
   </Card>
   <Card title="Mission Control" icon="grid-2" href="/mission-control">
     Deploy agents and manage messaging apps from the desktop app.
