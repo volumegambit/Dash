@@ -33,9 +33,9 @@ function Settings(): JSX.Element {
 
   // Load masked Brave key when keys are available
   useEffect(() => {
-    const hasBrave = keys.some((k) => k.startsWith('brave-api-key'));
+    const hasBrave = keys.some((k) => k.startsWith('brave-api-key:default'));
     if (hasBrave) {
-      getSecret('brave-api-key').then((val) => {
+      getSecret('brave-api-key:default').then((val) => {
         if (val) {
           setBraveKeyMasked(`${val.slice(0, 6)}${'•'.repeat(6)}${val.slice(-4)}`);
         }
@@ -63,7 +63,7 @@ function Settings(): JSX.Element {
       if (!trimmed) return;
       setBraveKeySaving(true);
       try {
-        await setSecret('brave-api-key', trimmed);
+        await setSecret('brave-api-key:default', trimmed);
         setBraveKeyMasked(`${trimmed.slice(0, 6)}${'•'.repeat(6)}${trimmed.slice(-4)}`);
         setBraveKeyInput('');
       } finally {
@@ -74,7 +74,7 @@ function Settings(): JSX.Element {
   );
 
   const handleRemoveBraveKey = useCallback(async () => {
-    await deleteSecret('brave-api-key');
+    await deleteSecret('brave-api-key:default');
     setBraveKeyMasked(null);
     setBraveKeyInput('');
   }, [deleteSecret]);
