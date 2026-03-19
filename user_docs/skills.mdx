@@ -1,0 +1,163 @@
+---
+title: "Skills"
+description: "Reusable instructions that agents discover and load on demand."
+---
+
+Skills are reusable instructions that persist across conversations. An agent can load a skill when it recognizes a matching task, giving it step-by-step guidance without you repeating yourself every time.
+
+## How skills work
+
+Each skill is a directory containing a `SKILL.md` file with metadata (frontmatter) and instructions (content). When an agent starts processing a message, it sees a compact index of available skills in its system prompt — just names and descriptions. When it identifies a relevant skill, it loads the full instructions on demand.
+
+```
+my-skill/
+  SKILL.md     ← metadata + instructions
+```
+
+This two-phase approach keeps token usage low: the agent always sees *what's available* but only loads *what's needed*.
+
+## System prompt structure
+
+When an agent processes a message, its system prompt is assembled from multiple sources in this order:
+
+1. **Memory preamble** — if the agent has a workspace, any memory files (like `CLAUDE.md`) are loaded and prepended
+2. **Your system prompt** — the prompt you configured when deploying the agent
+3. **Skill index** — a compact listing of available skills with names, descriptions, and triggers
+
+The skill index looks like this in the system prompt:
+
+```
+## Available Skills
+- **deploy-staging**: Use when deploying to staging (trigger: user mentions staging deploy)
+- **db-migration**: Use when running database migrations (trigger: working with schema changes)
+
+Use the load_skill tool to load a skill's full instructions when a task matches one of these skills.
+```
+
+The agent uses the `load_skill` tool to fetch full instructions when it decides a skill is relevant.
+
+## Skill format
+
+A `SKILL.md` file has YAML frontmatter followed by markdown content:
+
+```yaml
+---
+name: deploy-staging
+description: Use when deploying to the staging environment via AWS
+trigger: when user mentions staging deploy or asks to push to staging
+tools: [bash, read]
+tags: [deployment, aws]
+---
+
+## Deploy to Staging
+
+1. Verify the current branch is clean: `git status`
+2. Run the deploy script: `./scripts/deploy-staging.sh`
+3. Check the deployment dashboard at https://staging.example.com
+4. Report the deployment status back to the user
+```
+
+### Frontmatter fields
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `name` | Yes | Skill identifier (lowercase, hyphens). Becomes the directory name. |
+| `description` | Yes | When to use this skill. Shown in the skill index — write it for discovery. |
+| `trigger` | No | Specific phrases or contexts that should activate this skill. Shown in the index alongside the description. |
+| `tools` | No | Tools this skill needs (e.g. `[bash, read]`). Informational in v1. |
+| `tags` | No | Categories for organizing skills in Mission Control. |
+| `model` | No | Model override for this skill. Stored but not acted on in v1. |
+| `context` | No | Set to `fork` for subagent execution. Stored but not acted on in v1. |
+| `allowed-tools` | No | Restrict tools during skill execution. Stored but not acted on in v1. |
+| `dependencies` | No | Other skills to load alongside this one. Stored but not acted on in v1. |
+
+<Tip>
+Write the `description` as if answering "when should an agent use this?" — it's what the agent reads to decide whether to load the skill. Be specific: "Use when deploying to staging via AWS" is better than "Deployment helper".
+</Tip>
+
+## Skill storage
+
+Skills are discovered from two locations:
+
+### Managed directory
+
+Each agent has a managed skills directory outside its workspace:
+
+```
+{data-dir}/skills/{agent-name}/
+```
+
+This directory is created automatically. Skills here are managed through Mission Control or created by the agent itself (if allowed). The agent's file tools cannot reach this directory — it's outside the workspace sandbox.
+
+### Additional paths
+
+You can add extra directories to scan via the `skills.paths` config:
+
+```json
+{
+  "agents": {
+    "default": {
+      "skills": {
+        "paths": ["~/my-skills", "./workspace/skills"]
+      }
+    }
+  }
+}
+```
+
+If a path is inside the agent's workspace, the agent's file tools can read and write to it. This is an opt-in choice for power users who want to manage skills alongside project files.
+
+## Agent skill creation
+
+Agents can create their own skills when given the `create_skill` tool. This is opt-in — include `create_skill` in the agent's tool list when deploying.
+
+When a user says something like "remember how to deploy to staging", the agent uses `create_skill` to write a `SKILL.md` to the managed directory. The skill is available in future conversations.
+
+Agent-created skills:
+- Are saved to the managed directory (outside the workspace)
+- Are labeled "Agent" in Mission Control so you can distinguish them from skills you pushed
+- Cannot overwrite existing skills — the agent can only create new ones
+- Can be reviewed, edited, or deleted by the operator through Mission Control
+
+<Warning>
+The `create_skill` tool lets the agent write persistent instructions that affect its own future behavior. Only enable it for agents you trust to self-modify responsibly.
+</Warning>
+
+## Managing skills in Mission Control
+
+The Skills tab on the agent detail page lets you:
+
+- **View** all discovered skills with their source (Managed / Agent / Remote)
+- **Edit** local skill content inline
+- **Create** new skills with a name, description, and content
+- **Configure** discovery paths and remote URLs
+- **Delete** skills you no longer need
+
+Changes take effect on the agent's next message — no restart needed.
+
+## Skill tools reference
+
+### `load_skill`
+
+Loads a skill's full instructions into the conversation. Always available when skills are configured. The agent calls this automatically when it identifies a matching task from the skill index.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `name` | `string` | Yes | The skill name to load |
+
+### `create_skill`
+
+Creates a new skill in the managed directory. Only available when included in the agent's tool list.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `name` | `string` | Yes | Skill identifier (lowercase, hyphens, max 64 chars) |
+| `description` | `string` | Yes | When to use this skill |
+| `content` | `string` | Yes | Full skill instructions |
+| `trigger` | `string` | No | Activation phrases or contexts |
+| `tools` | `string[]` | No | Required tools |
+| `tags` | `string[]` | No | Categories |
+| `model` | `string` | No | Model override |
+| `context` | `string` | No | `"fork"` for subagent execution |
+| `allowed_tools` | `string[]` | No | Tool restrictions |
+| `dependencies` | `string[]` | No | Related skills to load together |

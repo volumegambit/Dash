@@ -23,6 +23,27 @@ interface ChatState {
   setMessageError(conversationId: string, error: string): void;
 }
 
+// Streaming event buffer — accumulates events between flushes to reduce re-renders
+const eventBuffer = new Map<string, McAgentEvent[]>();
+let flushTimer: ReturnType<typeof setTimeout> | null = null;
+
+function flushEventBuffer(set: (fn: (s: ChatState) => Partial<ChatState>) => void): void {
+  if (flushTimer) {
+    clearTimeout(flushTimer);
+    flushTimer = null;
+  }
+  if (eventBuffer.size === 0) return;
+  const entries = Array.from(eventBuffer.entries());
+  eventBuffer.clear();
+  set((s) => {
+    const updated = { ...s.streamingEvents };
+    for (const [id, buffered] of entries) {
+      updated[id] = [...(updated[id] ?? []), ...buffered];
+    }
+    return { streamingEvents: updated };
+  });
+}
+
 export const useChatStore = create<ChatState>((set, get) => ({
   conversations: [],
   selectedConversationId: null,
@@ -110,15 +131,23 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   appendStreamingEvent(conversationId: string, event: McAgentEvent) {
-    set((s) => ({
-      streamingEvents: {
-        ...s.streamingEvents,
-        [conversationId]: [...(s.streamingEvents[conversationId] ?? []), event],
-      },
-    }));
+    // Buffer events and flush every ~100ms to avoid per-character re-renders
+    if (!eventBuffer.has(conversationId)) {
+      eventBuffer.set(conversationId, []);
+    }
+    eventBuffer.get(conversationId)!.push(event);
+
+    if (!flushTimer) {
+      flushTimer = window.setTimeout(() => {
+        flushTimer = null;
+        flushEventBuffer(set);
+      }, 100);
+    }
   },
 
   finalizeMessage(conversationId: string) {
+    // Flush any buffered events before finalizing
+    flushEventBuffer(set);
     const events = get().streamingEvents[conversationId] ?? [];
     const assistantMsg: McMessage = {
       id: crypto.randomUUID(),

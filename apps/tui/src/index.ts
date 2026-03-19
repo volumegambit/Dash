@@ -3,7 +3,7 @@ import { mkdir, readFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
-import { DashAgent, OpenCodeBackend } from '@dash/agent';
+import { DashAgent, PiAgentBackend } from '@dash/agent';
 import { config } from 'dotenv';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -289,7 +289,7 @@ async function main() {
     await mkdir(workspace, { recursive: true });
   }
 
-  const backend = new OpenCodeBackend(
+  const backend = new PiAgentBackend(
     {
       model: agentConfig.model,
       systemPrompt: agentConfig.systemPrompt,

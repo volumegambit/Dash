@@ -65,8 +65,14 @@ export class EncryptedSecretStore implements LockableSecretStore {
     // Migrate existing plaintext secrets if present
     let secrets: Record<string, string> = {};
     if (existsSync(this.plainPath)) {
-      const raw = await readFile(this.plainPath, 'utf-8');
-      secrets = JSON.parse(raw) as Record<string, string>;
+      try {
+        const raw = await readFile(this.plainPath, 'utf-8');
+        if (raw.trim()) {
+          secrets = JSON.parse(raw) as Record<string, string>;
+        }
+      } catch {
+        // Plaintext file is corrupt — start fresh
+      }
     }
 
     this.key = key;
@@ -161,6 +167,7 @@ export class EncryptedSecretStore implements LockableSecretStore {
   private async load(): Promise<Record<string, string>> {
     if (!existsSync(this.encPath)) return {};
     const raw = await readFile(this.encPath, 'utf-8');
+    if (!raw.trim()) return {};
     const payload = JSON.parse(raw) as EncryptedPayload;
     // Ensure salt is loaded for unlock() callers who only have the key
     if (!this.salt) {

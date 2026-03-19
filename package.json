@@ -21,6 +21,8 @@
     "mc:dev": "npm run dev --workspace=apps/mission-control",
     "mc:dev:debug": "npm run dev:debug --workspace=apps/mission-control",
     "mc:build": "npm run build --workspace=apps/mission-control",
+    "mc:preview": "npm run build --workspace=apps/mission-control && npm run preview --workspace=apps/mission-control",
+    "mc:package": "npm run build --workspace=apps/mission-control && npm run package --workspace=apps/mission-control",
     "homepage:dev": "npm run dev --workspace=apps/homepage",
     "homepage:build": "npm run build --workspace=apps/homepage",
     "test": "vitest run",

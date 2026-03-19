@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import type { MessagingApp } from '../types.js';
 
@@ -12,13 +12,20 @@ export class MessagingAppRegistry {
 
   private async load(): Promise<MessagingApp[]> {
     if (!existsSync(this.filePath)) return [];
-    const raw = await readFile(this.filePath, 'utf-8');
-    return JSON.parse(raw) as MessagingApp[];
+    try {
+      const raw = await readFile(this.filePath, 'utf-8');
+      if (!raw.trim()) return [];
+      return JSON.parse(raw) as MessagingApp[];
+    } catch {
+      return [];
+    }
   }
 
   private async save(apps: MessagingApp[]): Promise<void> {
     await mkdir(dirname(this.filePath), { recursive: true });
-    await writeFile(this.filePath, JSON.stringify(apps, null, 2));
+    const tmpPath = `${this.filePath}.tmp`;
+    await writeFile(tmpPath, JSON.stringify(apps, null, 2));
+    await rename(tmpPath, this.filePath);
   }
 
   async list(): Promise<MessagingApp[]> {

@@ -32,6 +32,8 @@ export const TOOL_DESCRIPTIONS: Record<string, string> = {
   question: 'Ask the user for clarification',
   task: 'Track and manage work progress',
   todowrite: 'Create and manage to-do lists',
+  load_skill: 'Load a reusable skill into the conversation',
+  create_skill: 'Create reusable skills the agent remembers across conversations',
 };
 
 export const AVAILABLE_MODELS: ModelOption[] = [
