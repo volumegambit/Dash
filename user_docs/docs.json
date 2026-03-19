@@ -1,37 +1,60 @@
 {
-  "$schema": "https://mintlify.com/docs.json",
+  "$schema": "https://mintlify.com/docs/mint-schema.json",
   "theme": "maple",
   "name": "Dash",
   "colors": {
-    "primary": "#3B82F6",
-    "light": "#60A5FA",
-    "dark": "#2563EB"
+    "primary": "#3B82F6"
   },
   "navigation": {
-    "groups": [
+    "tabs": [
       {
-        "group": "Getting started",
-        "pages": ["introduction", "getting-started"]
-      },
-      {
-        "group": "Guides",
-        "pages": ["example-agents", "channels", "skills", "extended-thinking"]
-      },
-      {
-        "group": "Reference",
-        "pages": [
-          "configuration",
-          "secrets",
-          "providers",
-          "tools",
-          "architecture",
-          "api-reference",
-          "cli-reference"
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Getting Started",
+            "pages": [
+              "introduction",
+              "how-dashsquad-works",
+              "getting-started"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "agents",
+              "mission-control",
+              "messaging-apps",
+              "ai-providers",
+              "skills",
+              "tools",
+              "secrets"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "deploy-your-first-agent",
+              "chat-with-your-agent",
+              "example-agents",
+              "extended-thinking"
+            ]
+          },
+          {
+            "group": "Reference",
+            "pages": [
+              "configuration",
+              "cli-reference",
+              "api-reference",
+              "architecture"
+            ]
+          },
+          {
+            "group": "Help",
+            "pages": [
+              "troubleshooting"
+            ]
+          }
         ]
-      },
-      {
-        "group": "Help",
-        "pages": ["troubleshooting"]
       }
     ]
   },
