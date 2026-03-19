@@ -1,10 +1,5 @@
 // --- LLM provider types (formerly from @dash/llm) ---
 
-export interface TextBlock {
-  type: 'text';
-  text: string;
-}
-
 export interface ToolUseBlock {
   type: 'tool_use';
   id: string;
@@ -36,44 +31,6 @@ export interface ImageBlock {
   data: string; // base64-encoded
 }
 
-export type ContentBlock =
-  | TextBlock
-  | ToolUseBlock
-  | ToolResultBlock
-  | ThinkingBlock
-  | RedactedThinkingBlock
-  | ImageBlock;
-
-export interface Message {
-  role: 'user' | 'assistant' | 'system';
-  content: string | ContentBlock[];
-}
-
-export interface CompletionRequest {
-  model: string;
-  messages: Message[];
-  systemPrompt?: string;
-  maxTokens?: number;
-  temperature?: number;
-  stopSequences?: string[];
-  thinking?: { type: 'enabled'; budgetTokens: number };
-}
-
-export interface CompletionResponse {
-  content: string | ContentBlock[];
-  model: string;
-  usage: {
-    inputTokens: number;
-    outputTokens: number;
-  };
-  stopReason: 'end_turn' | 'max_tokens' | 'stop_sequence' | 'tool_use';
-}
-
-export interface LlmProvider {
-  readonly name: string;
-  complete(request: CompletionRequest): Promise<CompletionResponse>;
-}
-
 // --- Agent types ---
 
 export type AgentEvent =
@@ -101,17 +58,14 @@ export type AgentEvent =
   | { type: 'skill_loaded'; name: string };
 
 export interface DashAgentConfig {
-  model: string; // "provider/model-id", e.g. "anthropic/claude-opus-4-5"
-  fallbackModels?: string[]; // ordered list of fallback "provider/model-id" strings
+  model: string;
+  fallbackModels?: string[];
   systemPrompt: string;
-  tools?: string[]; // OpenCode tool names
+  tools?: string[];
   workspace?: string;
-  provider?: LlmProvider; // For compaction LLM calls
-  sessionStore?: SessionStore; // For session persistence + compaction
-  modelContextWindow?: number; // Compaction threshold (default: 200000 tokens)
   skills?: {
-    paths?: string[]; // Local dirs to scan (supports ~/ and relative paths)
-    urls?: string[]; // Remote skill registries to fetch from
+    paths?: string[];
+    urls?: string[];
   };
 }
 
@@ -136,26 +90,4 @@ export interface AgentBackend {
   run(state: AgentState, options: RunOptions): AsyncGenerator<AgentEvent>;
   abort(): void;
   answerQuestion?(id: string, answers: string[][]): Promise<void>;
-}
-
-// --- Session interfaces ---
-
-export interface SessionEntry {
-  timestamp: string;
-  type: 'message' | 'response' | 'tool_call' | 'tool_result' | 'error' | 'compaction';
-  data: Record<string, unknown>;
-}
-
-export interface Session {
-  id: string;
-  channelId: string;
-  conversationId: string;
-  createdAt: string;
-  messages: Message[];
-}
-
-export interface SessionStore {
-  load(channelId: string, conversationId: string): Promise<Session | null>;
-  save(session: Session): Promise<void>;
-  append(sessionId: string, entry: SessionEntry): Promise<void>;
 }
