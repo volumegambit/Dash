@@ -15,7 +15,9 @@
     "dev": "tsup --watch"
   },
   "dependencies": {
-    "@dash/management": "*"
+    "@dash/agent": "*",
+    "@dash/management": "*",
+    "@opencode-ai/sdk": "^1.2.20"
   },
   "tsup": {
     "entry": ["src/index.ts"],

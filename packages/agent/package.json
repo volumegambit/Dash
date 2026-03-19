@@ -15,6 +15,9 @@
     "dev": "tsup --watch"
   },
   "dependencies": {
-    "@opencode-ai/sdk": "^1.2.20"
+    "@mariozechner/pi-agent-core": "^0.58.3",
+    "@mariozechner/pi-ai": "^0.58.3",
+    "@mariozechner/pi-coding-agent": "^0.58.3",
+    "@sinclair/typebox": "^0.34.0"
   }
 }
