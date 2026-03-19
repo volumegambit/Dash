@@ -16,3 +16,6 @@ export { buildMemoryPreamble } from './memory.js';
 export { estimateTokens, shouldCompact, compactSession } from './compaction.js';
 export type { Session, SessionEntry, SessionStore } from './types.js';
 export { JsonlSessionStore } from './session.js';
+export type { SkillDiscoveryResult, SkillFrontmatter } from './skills/index.js';
+export { parseFrontmatter, generateFrontmatter, scanSkillsDirectory } from './skills/index.js';
+export type { ParsedSkill } from './skills/index.js';
