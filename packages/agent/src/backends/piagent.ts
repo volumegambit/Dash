@@ -168,10 +168,8 @@ export class PiAgentBackend implements AgentBackend {
       tools.push(createWebSearchTool(provider));
     }
 
-    // Task tracking tools
-    if (allowedNames.has('task')) {
-      tools.push(createTodoWriteTool());
-    }
+    // Task tool — always registered, not user-configurable
+    tools.push(createTodoWriteTool());
 
     // Skill tools
     const hasSkillPaths = this.config.skills?.paths && this.config.skills.paths.length > 0;

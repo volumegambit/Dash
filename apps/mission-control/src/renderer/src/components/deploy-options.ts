@@ -111,5 +111,4 @@ export const AVAILABLE_TOOLS: ToolOption[] = [
   { value: 'grep', label: 'Grep', description: TOOL_DESCRIPTIONS.grep },
   { value: 'web_search', label: 'Web Search', description: TOOL_DESCRIPTIONS.web_search },
   { value: 'web_fetch', label: 'Web Fetch', description: TOOL_DESCRIPTIONS.web_fetch },
-  { value: 'task', label: 'Task', description: TOOL_DESCRIPTIONS.task },
 ];

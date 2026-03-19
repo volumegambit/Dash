@@ -78,9 +78,13 @@ describe('TOOL_DESCRIPTIONS sync with AGENT_TOOL_NAMES', () => {
     }
   });
 
-  it('TOOL_DESCRIPTIONS has no entries missing from AGENT_TOOL_NAMES', () => {
+  it('TOOL_DESCRIPTIONS has no entries missing from AGENT_TOOL_NAMES (except auto-registered tools)', () => {
+    // Tools that are auto-registered by the backend and not user-configurable.
+    // They have descriptions for chat display but are not in AGENT_TOOL_NAMES.
+    const autoRegistered = new Set(['task', 'load_skill']);
     const agentTools = new Set<string>(AGENT_TOOL_NAMES);
     for (const name of Object.keys(TOOL_DESCRIPTIONS)) {
+      if (autoRegistered.has(name)) continue;
       expect(agentTools.has(name), `TOOL_DESCRIPTIONS has "${name}" but it's not in AGENT_TOOL_NAMES`).toBe(true);
     }
   });

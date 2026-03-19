@@ -18,9 +18,12 @@ export { parseFrontmatter, generateFrontmatter, scanSkillsDirectory } from './sk
 export type { ParsedSkill } from './skills/index.js';
 
 /**
- * Canonical list of all tool names supported by PiAgentBackend.
+ * Canonical list of user-configurable tool names supported by PiAgentBackend.
  * This is the single source of truth — import this in MC and model-cache
  * instead of maintaining separate lists.
+ *
+ * Note: `task` and `load_skill` are auto-registered by the backend and not
+ * included here (they are not user-toggleable).
  */
 export const AGENT_TOOL_NAMES = [
   // Built-in PiAgent tools
@@ -34,9 +37,6 @@ export const AGENT_TOOL_NAMES = [
   // Web tools
   'web_search',
   'web_fetch',
-  // Task tracking
-  'task',
   // Skill tools
-  'load_skill',
   'create_skill',
 ] as const;
