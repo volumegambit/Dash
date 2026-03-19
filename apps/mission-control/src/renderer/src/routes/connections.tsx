@@ -1,3 +1,4 @@
+import { providerSecretKey } from '@dash/mc';
 import { createFileRoute } from '@tanstack/react-router';
 import { CheckCircle, Circle, Loader, Lock, LogIn, Plus } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
@@ -104,7 +105,7 @@ export function AiProviders(): JSX.Element {
   };
 
   const handleDisconnect = async (provider: Provider, keyName: string): Promise<void> => {
-    await window.api.secretsDelete(`${provider}-api-key:${keyName}`);
+    await window.api.secretsDelete(providerSecretKey(provider, keyName));
     // Clean up OAuth metadata
     await window.api.secretsDelete(`openai-codex-refresh:${keyName}`).catch(() => {});
     await window.api.secretsDelete(`openai-codex-expires:${keyName}`).catch(() => {});
@@ -261,6 +262,7 @@ export function AiProviders(): JSX.Element {
                       if (e.key === 'Escape') setOauthNamePrompt(null);
                     }}
                     placeholder="Key name (e.g. default, personal, work)"
+                    // biome-ignore lint/a11y/noAutofocus: focus newly revealed input for UX
                     autoFocus
                     className="flex-1 rounded-lg border border-border bg-background px-3 py-1.5 text-xs text-foreground placeholder:text-muted focus:border-primary focus:outline-none"
                   />
@@ -301,6 +303,7 @@ export function AiProviders(): JSX.Element {
                         }
                       }}
                       placeholder="Paste authorization code here"
+                      // biome-ignore lint/a11y/noAutofocus: focus newly revealed input for UX
                       autoFocus
                       className="flex-1 rounded-lg border border-border bg-background px-3 py-1.5 text-xs text-foreground placeholder:text-muted focus:border-primary focus:outline-none"
                     />

@@ -26,6 +26,7 @@ export {
   defaultStartupWatcher,
   DeploymentStartupError,
   parseProviderSecretKey,
+  providerSecretKey,
 } from './runtime/process.js';
 export type {
   ProcessSpawner,

@@ -1,4 +1,4 @@
-import type { AgentDeployAgentConfig } from '@dash/mc';
+import { type AgentDeployAgentConfig, providerSecretKey } from '@dash/mc';
 import { ChevronDown, ChevronUp, FolderOpen } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { ModelChainEditor } from '../../../components/ModelChainEditor.js';
@@ -82,7 +82,7 @@ export function AgentConfigTab({
         }
         seen.add(provider);
         const credName = credentialKeys?.[provider] ?? 'default';
-        const secretKey = `${provider}-api-key:${credName}`;
+        const secretKey = providerSecretKey(provider, credName);
         try {
           const val = await window.api.secretsGet(secretKey);
           const masked =
