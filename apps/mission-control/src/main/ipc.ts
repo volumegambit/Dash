@@ -631,7 +631,7 @@ export async function registerIpcHandlers(
   ipcMain.handle(
     'deployments:deployWithConfig',
     async (_event, options: DeployWithConfigOptions) => {
-      const { name, model, fallbackModels, systemPrompt, tools, workspace } = options;
+      const { name, model, fallbackModels, systemPrompt, tools, workspace, mcpServers } = options;
 
       // Create a temp config directory with the agent and gateway config
       const configDir = join(tmpdir(), `mc-deploy-${Date.now()}`);
@@ -646,6 +646,7 @@ export async function registerIpcHandlers(
         systemPrompt,
         tools: tools.length > 0 ? tools : undefined,
         ...(workspace ? { workspace } : {}),
+        ...(mcpServers && mcpServers.length > 0 ? { mcpServers } : {}),
       };
       await writeFile(join(agentsDir, `${name}.json`), JSON.stringify(agentConfig, null, 2));
 
