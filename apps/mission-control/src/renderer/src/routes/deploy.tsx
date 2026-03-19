@@ -301,7 +301,13 @@ export function DeployWizard(): JSX.Element {
             <ReviewRow label="System Prompt" value={agent.systemPrompt || '(default)'} multiline />
             <ReviewRow
               label="Tools"
-              value={agent.tools.length > 0 ? agent.tools.join(', ') : '(none)'}
+              value={
+                agent.tools.length > 0
+                  ? TOOL_GROUPS.filter((g) => g.tools.some((t) => agent.tools.includes(t)))
+                      .map((g) => g.name)
+                      .join(', ') || agent.tools.join(', ')
+                  : '(none)'
+              }
             />
             <ReviewRow label="Workspace" value={agent.workspace || 'Auto-generated'} />
           </div>
