@@ -1,25 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { formatDetails, summarize, toolIcon } from './chat.helpers.js';
-
-describe('toolIcon', () => {
-  it('returns 💻 for bash', () => expect(toolIcon('bash')).toBe('💻'));
-  it('returns 💻 for execute_command', () => expect(toolIcon('execute_command')).toBe('💻'));
-  it('returns 📝 for write', () => expect(toolIcon('write')).toBe('📝'));
-  it('returns 📝 for write_file', () => expect(toolIcon('write_file')).toBe('📝'));
-  it('returns 📝 for edit', () => expect(toolIcon('edit')).toBe('📝'));
-  it('returns 📖 for read', () => expect(toolIcon('read')).toBe('📖'));
-  it('returns 📖 for read_file', () => expect(toolIcon('read_file')).toBe('📖'));
-  it('returns 🔍 for find', () => expect(toolIcon('find')).toBe('🔍'));
-  it('returns 🔍 for grep', () => expect(toolIcon('grep')).toBe('🔍'));
-  it('returns 📂 for ls', () => expect(toolIcon('ls')).toBe('📂'));
-  it('returns 📂 for list_directory', () => expect(toolIcon('list_directory')).toBe('📂'));
-  it('returns 🌐 for web_search', () => expect(toolIcon('web_search')).toBe('🌐'));
-  it('returns 🌐 for web_fetch', () => expect(toolIcon('web_fetch')).toBe('🌐'));
-  it('returns 📋 for task', () => expect(toolIcon('task')).toBe('📋'));
-  it('returns ⚡ for load_skill', () => expect(toolIcon('load_skill')).toBe('⚡'));
-  it('returns ⚡ for create_skill', () => expect(toolIcon('create_skill')).toBe('⚡'));
-  it('returns 🔧 for totally unknown tool', () => expect(toolIcon('something_else')).toBe('🔧'));
-});
+import { formatDetails, summarize } from './chat.helpers.js';
 
 describe('summarize', () => {
   it('extracts command for bash', () => {

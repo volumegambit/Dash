@@ -64,18 +64,6 @@ export function toolLabel(name: string): string {
   return TOOL_LABELS[n] ?? name.charAt(0).toUpperCase() + name.slice(1);
 }
 
-export function toolIcon(name: string): string {
-  const n = normalizeTool(name);
-  if (n === 'bash') return '💻';
-  if (n === 'write' || n === 'edit') return '📝';
-  if (n === 'read') return '📖';
-  if (n === 'find' || n === 'grep') return '🔍';
-  if (n === 'ls') return '📂';
-  if (n === 'web_search' || n === 'web_fetch') return '🌐';
-  if (n === 'task' || n === 'todowrite') return '📋';
-  if (n === 'load_skill' || n === 'create_skill') return '⚡';
-  return '🔧';
-}
 
 const PRIMARY_KEYS: Record<string, string[]> = {
   bash: ['command'],
