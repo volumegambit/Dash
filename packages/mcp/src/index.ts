@@ -15,3 +15,5 @@ export { wrapMcpTool } from './tools.js';
 export type { McpToolDefinition } from './tools.js';
 export { McpClient } from './client.js';
 export { McpManager } from './manager.js';
+export { DashOAuthClientProvider } from './auth.js';
+export type { DashOAuthClientProviderOptions } from './auth.js';
