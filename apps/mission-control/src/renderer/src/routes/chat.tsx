@@ -515,7 +515,14 @@ function PinnedTodoPanel({ todos }: { todos: TodoItem[] }): JSX.Element {
               Tasks: {completed}/{todos.length} completed
               {inProgress > 0 && ` · ${inProgress} in progress`}
             </span>
-          </span>
+            {collapsed && (() => {
+              const active = todos.find((t) => t.status === 'in_progress');
+              return active ? (
+                <span className="ml-1 text-blue-400 font-normal truncate max-w-[300px]">
+                  — {active.content}
+                </span>
+              ) : null;
+            })()}
           {collapsed ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
         </button>
         {allDone && (
