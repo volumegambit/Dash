@@ -2,8 +2,8 @@ import type { AgentDeployAgentConfig } from '@dash/mc';
 import { ChevronDown, ChevronUp, FolderOpen } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { ModelChainEditor } from '../../../components/ModelChainEditor.js';
+import { ALL_TOOL_IDS, TOOL_GROUPS } from '../../../components/deploy-options.js';
 import { useAvailableModels } from '../../../hooks/useAvailableModels.js';
-import { useAvailableTools } from '../../../hooks/useAvailableTools.js';
 
 type ConfigPatch = {
   model?: string;
@@ -30,7 +30,7 @@ export function AgentConfigTab({
     refreshing: modelsRefreshing,
     refresh: refreshModels,
   } = useAvailableModels();
-  const availableTools = useAvailableTools();
+
 
   // Which card is open (null = all collapsed). Opening goes straight to edit mode.
   const [openCard, setOpenCard] = useState<'models' | 'prompt' | 'tools' | null>(null);
@@ -171,9 +171,10 @@ export function AgentConfigTab({
       : promptText
     : '(none)';
 
-  const enabledToolCount = (agentConfig.tools ?? []).length;
-  const totalToolCount = availableTools.length;
-  const toolsSummary = `${enabledToolCount} of ${totalToolCount} tools enabled`;
+  const enabledTools = new Set(agentConfig.tools ?? []);
+  const enabledGroupCount = TOOL_GROUPS.filter((g) => g.tools.every((t) => enabledTools.has(t)))
+    .length;
+  const toolsSummary = `${enabledGroupCount} of ${TOOL_GROUPS.length} groups enabled`;
 
   return (
     <div className="space-y-4">
@@ -326,21 +327,19 @@ export function AgentConfigTab({
                 Tools updated — restart the agent to apply changes.
               </div>
             )}
-            <div className="mb-2 flex items-center justify-between">
+            <div className="mb-3 flex items-center justify-between">
               <label className="flex cursor-pointer items-center gap-1.5 text-xs text-muted hover:text-foreground">
                 <input
                   type="checkbox"
-                  checked={toolsDraft.length === availableTools.length}
+                  checked={toolsDraft.length === ALL_TOOL_IDS.length}
                   ref={(el) => {
                     if (el)
                       el.indeterminate =
-                        toolsDraft.length > 0 && toolsDraft.length < availableTools.length;
+                        toolsDraft.length > 0 && toolsDraft.length < ALL_TOOL_IDS.length;
                   }}
                   onChange={() =>
                     setToolsDraft((prev) =>
-                      prev.length === availableTools.length
-                        ? []
-                        : availableTools.map((t) => t.value),
+                      prev.length === ALL_TOOL_IDS.length ? [] : [...ALL_TOOL_IDS],
                     )
                   }
                   className="accent-primary"
@@ -348,26 +347,40 @@ export function AgentConfigTab({
                 Select all
               </label>
             </div>
-            <div className="grid grid-cols-2 gap-2">
-              {availableTools.map((tool) => (
-                <label
-                  key={tool.value}
-                  className="flex cursor-pointer items-start gap-2 rounded-lg border border-border px-3 py-2 text-xs transition-colors hover:bg-sidebar-hover"
-                >
-                  <input
-                    type="checkbox"
-                    checked={toolsDraft.includes(tool.value)}
-                    onChange={() => toggleDraftTool(tool.value)}
-                    className="mt-0.5 accent-primary"
-                  />
-                  <span>
-                    {tool.label}
-                    {tool.description && (
-                      <span className="block text-[11px] text-muted">{tool.description}</span>
-                    )}
-                  </span>
-                </label>
-              ))}
+            <div className="space-y-2">
+              {TOOL_GROUPS.map((group) => {
+                const allEnabled = group.tools.every((t) => toolsDraft.includes(t));
+                const someEnabled =
+                  !allEnabled && group.tools.some((t) => toolsDraft.includes(t));
+                return (
+                  <label
+                    key={group.name}
+                    className="flex cursor-pointer items-start gap-3 rounded-lg border border-border px-3 py-2.5 text-xs transition-colors hover:bg-sidebar-hover"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={allEnabled}
+                      ref={(el) => {
+                        if (el) el.indeterminate = someEnabled;
+                      }}
+                      onChange={() =>
+                        setToolsDraft((prev) => {
+                          const without = prev.filter((t) => !group.tools.includes(t));
+                          return allEnabled ? without : [...without, ...group.tools];
+                        })
+                      }
+                      className="mt-0.5 accent-primary"
+                    />
+                    <span>
+                      <span className="font-medium">{group.name}</span>
+                      <span className="ml-1.5 text-[11px] text-muted">
+                        ({group.tools.length} tools)
+                      </span>
+                      <span className="block text-[11px] text-muted">{group.description}</span>
+                    </span>
+                  </label>
+                );
+              })}
             </div>
             <div className="mt-3 flex justify-end gap-2">
               <button
