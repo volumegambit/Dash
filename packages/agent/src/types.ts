@@ -36,7 +36,7 @@ export interface ImageBlock {
 export type AgentEvent =
   | { type: 'text_delta'; text: string }
   | { type: 'thinking_delta'; text: string }
-  | { type: 'tool_use_start'; id: string; name: string }
+  | { type: 'tool_use_start'; id: string; name: string; input?: Record<string, unknown> }
   | { type: 'tool_use_delta'; partial_json: string }
   | { type: 'tool_result'; id: string; name: string; content: string; isError?: boolean }
   | {
