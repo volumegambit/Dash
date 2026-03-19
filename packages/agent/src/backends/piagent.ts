@@ -135,10 +135,10 @@ export class PiAgentBackend implements AgentBackend {
   }
 
   /**
-   * Build the list of tools based on the config's tool names.
-   * If no tools specified, uses all coding tools.
+   * Build the built-in PiAgent tools based on the config's tool names.
+   * These go in createAgentSession({ tools }) — PiAgent recognizes them by name.
    */
-  private buildTools(workspace: string) {
+  private buildBuiltinTools(workspace: string) {
     const allowedNames = this.config.tools ? new Set(this.config.tools) : new Set(ALL_TOOL_NAMES);
 
     const toolBuilders: Record<string, () => any> = {
@@ -158,29 +158,53 @@ export class PiAgentBackend implements AgentBackend {
       }
     }
 
-    // Web tools
+    return tools;
+  }
+
+  /**
+   * Build custom tools (web, task, skills).
+   * These go in createAgentSession({ customTools }) — registered via the extension system.
+   * AgentTool instances are wrapped as ToolDefinition (adds unused ctx parameter).
+   */
+  private buildCustomTools(): any[] {
+    const allowedNames = this.config.tools ? new Set(this.config.tools) : new Set(ALL_TOOL_NAMES);
+    const customs: any[] = [];
+
+    const wrap = (tool: any) => ({
+      name: tool.name,
+      label: tool.label,
+      description: tool.description,
+      parameters: tool.parameters,
+      execute: (toolCallId: string, params: any, signal?: AbortSignal, onUpdate?: any, _ctx?: any) =>
+        tool.execute(toolCallId, params, signal, onUpdate),
+    });
+
+    // ── Core tools (always registered, not user-configurable) ──────────
+    // These are essential agent capabilities that are always available
+    // regardless of the operator's tool selection.
+    customs.push(wrap(createTodoWriteTool())); // task tracking
+
+    const hasSkillPaths = this.config.skills?.paths && this.config.skills.paths.length > 0;
+    if (hasSkillPaths || this.managedSkillsDir) {
+      customs.push(wrap(createLoadSkillTool(() => this.listSkills()))); // skill loading
+    }
+
+    // ── User-configurable tools (gated by allowedNames) ──────────────
     if (allowedNames.has('web_fetch')) {
-      tools.push(createWebFetchTool());
+      customs.push(wrap(createWebFetchTool()));
     }
     if (allowedNames.has('web_search')) {
       const braveKey = this.providerApiKeys['brave'] ?? this.providerApiKeys['brave-api-key'];
       const provider = braveKey ? new BraveSearchProvider(braveKey) : null;
-      tools.push(createWebSearchTool(provider));
+      customs.push(wrap(createWebSearchTool(provider)));
     }
 
-    // Task tool — always registered, not user-configurable
-    tools.push(createTodoWriteTool());
-
-    // Skill tools
-    const hasSkillPaths = this.config.skills?.paths && this.config.skills.paths.length > 0;
-    if (hasSkillPaths || this.managedSkillsDir) {
-      tools.push(createLoadSkillTool(() => this.listSkills()));
-    }
+    // Skill creation (opt-in)
     if (allowedNames.has('create_skill') && this.managedSkillsDir) {
-      tools.push(createCreateSkillTool(this.managedSkillsDir));
+      customs.push(wrap(createCreateSkillTool(this.managedSkillsDir)));
     }
 
-    return tools;
+    return customs;
   }
 
   /**
@@ -193,14 +217,21 @@ export class PiAgentBackend implements AgentBackend {
 
     this.auth = this.setupAuth();
     const model = this.resolveModel(this.config.model);
-    const tools = this.buildTools(workspace);
-    this.logger?.info(`[PiAgent] Registering ${tools.length} tools: ${tools.map((t) => t.name).join(', ')}`);
+    const builtinTools = this.buildBuiltinTools(workspace);
+    const customTools = this.buildCustomTools();
+    this.logger?.info(
+      `[PiAgent] Registering ${builtinTools.length} built-in tools: ${builtinTools.map((t: any) => t.name).join(', ')}`,
+    );
+    this.logger?.info(
+      `[PiAgent] Registering ${customTools.length} custom tools: ${customTools.map((t: any) => t.name).join(', ')}`,
+    );
 
     const { session } = await createAgentSession({
       cwd: workspace,
       authStorage: this.auth,
       model,
-      tools,
+      tools: builtinTools,
+      customTools,
       sessionManager: this.sessionDir
         ? SessionManager.continueRecent(workspace, this.sessionDir)
         : SessionManager.inMemory(),
