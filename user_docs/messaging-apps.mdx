@@ -1,0 +1,238 @@
+---
+title: "Messaging Apps"
+description: "Connect your agents to Telegram, WhatsApp, and other messaging platforms."
+---
+
+Messaging apps let your agents talk to people on platforms they already use. Connect a Telegram bot or WhatsApp number, set up routing rules, and your agents start responding to messages automatically.
+
+## How it works
+
+Messages flow through a simple chain:
+
+```mermaid
+graph LR
+    P["Messaging Platform<br/><small>Telegram, WhatsApp</small>"] -->|Bot API| GW["Gateway"]
+    GW -->|routes to| AS["Agent Server"]
+    AS --- A["Agent"]
+    A -->|response| AS
+    AS -->|response| GW
+    GW -->|Bot API| P
+```
+
+1. A user sends a message on Telegram (or WhatsApp)
+2. The **Gateway** receives it through the platform's bot API
+3. Routing rules determine which **agent** should handle it
+4. The agent processes the message — thinking, using tools, and building a response
+5. The response flows back through the Gateway to the messaging platform
+
+The user sees a normal chat conversation. Behind the scenes, your agent is doing all the work.
+
+## Supported platforms
+
+<CardGroup cols={2}>
+  <Card title="Telegram" icon="paper-plane">
+    Connect a Telegram bot to your agents. Supports individual and group chats, user allow lists, and per-sender routing.
+  </Card>
+  <Card title="WhatsApp" icon="phone">
+    Connect a WhatsApp number to your agents. Same routing and access control features as Telegram.
+  </Card>
+</CardGroup>
+
+More platforms are planned. The Gateway uses an adapter pattern, so adding a new platform does not change how routing or agent interaction works.
+
+## Setting up Telegram
+
+<Steps>
+  <Step title="Create a bot with BotFather">
+    Open Telegram and search for **@BotFather**. Send `/newbot`, follow the prompts, and copy the bot token it gives you. The token looks like `123456789:ABCdefGhIjKlmNoPqRsTuVwXyZ`.
+  </Step>
+  <Step title="Add the bot in Mission Control">
+    Open Mission Control's **Messaging Apps** page and click to add a new Telegram connection. Give it a name (e.g. "Support Bot") and paste your bot token. The token is stored in the encrypted secret store.
+  </Step>
+  <Step title="Configure routing rules">
+    Set up rules that tell the Gateway which agent should receive messages from this bot. You can route all messages to a single agent, or create more specific rules based on sender or group.
+  </Step>
+  <Step title="Enable the connection">
+    Toggle the connection on. The Gateway connects to Telegram's bot API and starts listening for messages. Your agent is now reachable on Telegram.
+  </Step>
+</Steps>
+
+<Accordion title="Manual setup (without Mission Control)">
+  If you prefer to configure the Gateway directly, create a `gateway.json` file:
+
+  ```json
+  {
+    "channels": {
+      "my-telegram-bot": {
+        "adapter": "telegram",
+        "token": "your-telegram-bot-token",
+        "allowedUsers": ["@yourusername"],
+        "agent": "default"
+      }
+    },
+    "agents": {
+      "default": {
+        "url": "ws://localhost:9101/ws",
+        "token": "your-chat-api-token"
+      }
+    }
+  }
+  ```
+
+  Then start the Gateway:
+
+  ```bash
+  npm run gateway -- --config gateway.json
+  ```
+
+  For secure token handling, use the `--secrets` flag:
+
+  ```bash
+  npm run gateway -- --config gateway.json --secrets secrets.json
+  ```
+
+  See [Channels](/channels#gateway) for the full configuration reference.
+</Accordion>
+
+## Setting up WhatsApp
+
+<Steps>
+  <Step title="Get your WhatsApp credentials">
+    Set up a WhatsApp Business API account and obtain your access credentials.
+  </Step>
+  <Step title="Add the connection in Mission Control">
+    Open the **Messaging Apps** page, add a new WhatsApp connection, and enter your credentials. They are encrypted and stored securely.
+  </Step>
+  <Step title="Configure routing rules">
+    Just like Telegram — define which agent handles incoming messages.
+  </Step>
+  <Step title="Enable the connection">
+    Turn it on and your agent starts responding to WhatsApp messages.
+  </Step>
+</Steps>
+
+## Routing rules
+
+Routing rules control which agent receives messages from each messaging app. Rules are evaluated in order — the first match wins.
+
+### Rule types
+
+| Type | What it matches | Example |
+|------|----------------|---------|
+| **Default** | All messages that do not match another rule | Route everything to the general assistant |
+| **Sender** | Messages from specific user IDs | Route messages from `@alice` to the research agent |
+| **Group** | Messages from specific group chats | Route messages in the "Engineering" group to the coder agent |
+
+### How rules work together
+
+Rules are checked top to bottom. The first rule that matches determines which agent gets the message. A **default** rule at the bottom acts as a catch-all.
+
+```
+Rule 1: Messages from @alice → research-agent
+Rule 2: Messages from Engineering group → coder-agent
+Rule 3: Default → general-assistant
+```
+
+In this example, Alice always talks to the research agent. Messages in the Engineering group go to the coder. Everyone else reaches the general assistant.
+
+### Access control
+
+Each messaging app also has access control lists:
+
+- **Global deny list** — Block specific users from reaching any agent through this messaging app. Evaluated before any routing rules.
+- **Per-rule allow list** — Restrict a routing rule to specific senders. If set, only listed senders can reach the agent through that rule.
+- **Per-rule deny list** — Block specific senders from a routing rule, even if they would otherwise match.
+
+<Warning>
+  The global deny list is checked first. If a sender is on the deny list, their messages are ignored regardless of routing rules.
+</Warning>
+
+## The Gateway
+
+The Gateway is a separate process that handles all messaging platform connections. It runs alongside your agent server and takes care of:
+
+- Connecting to each platform's bot API
+- Receiving incoming messages
+- Evaluating routing rules
+- Forwarding messages to the correct agent via the Chat API
+- Sending agent responses back to the platform
+
+The Gateway is a client of the agent server — it connects to the Chat API (WebSocket, port 9101) just like any other client. Mission Control's built-in chat also connects through the Gateway using the same mechanism (WebSocket, port 9200).
+
+<AccordionGroup>
+  <Accordion title="Gateway configuration">
+    The Gateway reads a JSON config file that maps channels to agents:
+
+    ```json
+    {
+      "channels": {
+        "telegram-support": {
+          "adapter": "telegram",
+          "token": "bot-token-here",
+          "allowedUsers": ["@admin"],
+          "agent": "support-agent"
+        },
+        "mission-control": {
+          "adapter": "mission-control",
+          "port": 9200,
+          "agent": "default"
+        }
+      },
+      "agents": {
+        "support-agent": {
+          "url": "ws://localhost:9101/ws",
+          "token": "chat-api-token"
+        },
+        "default": {
+          "url": "ws://localhost:9101/ws",
+          "token": "chat-api-token"
+        }
+      }
+    }
+    ```
+
+    Each channel specifies an adapter type and which agent to route to. The `agents` section defines WebSocket connection details for each agent server.
+  </Accordion>
+  <Accordion title="Running the Gateway manually">
+    ```bash
+    npm run gateway -- --config gateway.json
+    ```
+
+    The Gateway starts, connects to each configured platform, and begins routing messages. It runs until stopped.
+
+    For secure deployments, pass tokens via a temporary secrets file:
+
+    ```bash
+    npm run gateway -- --config gateway.json --secrets secrets.json
+    ```
+
+    The secrets file is read once and deleted immediately. See [Channels](/channels#secrets) for the secrets file format.
+  </Accordion>
+  <Accordion title="Mission Control integration">
+    When you deploy agents through Mission Control, the Gateway is managed automatically. Mission Control:
+
+    1. Generates the Gateway config from your messaging app settings
+    2. Injects tokens from the encrypted secret store
+    3. Starts the Gateway process alongside the agent server
+    4. Routes Mission Control's built-in chat through the Gateway
+
+    You do not need to create or edit `gateway.json` manually when using Mission Control.
+  </Accordion>
+</AccordionGroup>
+
+## What's next
+
+<CardGroup cols={2}>
+  <Card title="Agents" icon="robot" href="/agents">
+    Learn how agents are configured and how they process messages.
+  </Card>
+  <Card title="Channels" icon="messages" href="/channels">
+    Full reference for the Gateway config, adapters, and Chat API protocol.
+  </Card>
+  <Card title="Mission Control" icon="grid-2" href="/mission-control">
+    Deploy agents and manage messaging apps from the desktop app.
+  </Card>
+  <Card title="Architecture" icon="sitemap" href="/architecture">
+    How the Agent Server, Gateway, and Mission Control fit together.
+  </Card>
+</CardGroup>
