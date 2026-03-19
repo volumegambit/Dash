@@ -16,6 +16,7 @@ export type McAgentEvent =
   | { type: 'tool_result'; id: string; name: string; content: string; isError?: boolean }
   | { type: 'response'; content: string; usage: Record<string, number> }
   | { type: 'question'; id: string; question: string; options: string[] }
+  | { type: 'skill_created'; name: string; description: string }
   | { type: 'error'; error: string; timestamp: string };
 
 export interface DeployWithConfigOptions {

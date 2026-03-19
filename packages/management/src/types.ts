@@ -31,6 +31,7 @@ export interface SkillInfo {
   description: string;
   location: string; // file path or URL
   editable: boolean; // true for local file paths, false for URL-sourced
+  source?: 'managed' | 'agent' | 'remote';
 }
 
 export interface SkillContent extends SkillInfo {
