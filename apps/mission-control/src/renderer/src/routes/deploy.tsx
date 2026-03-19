@@ -6,7 +6,10 @@ import {
   Clipboard,
   ClipboardCheck,
   Loader,
+  Plus,
   Rocket,
+  Server,
+  Trash2,
 } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { RendererDeploymentError } from '../../../shared/ipc';
@@ -18,6 +21,15 @@ import { useSecretsStore } from '../stores/secrets.js';
 
 type Step = 'agent' | 'review';
 
+interface McpServerEntry {
+  name: string;
+  transportType: 'stdio' | 'sse' | 'streamable-http';
+  command?: string;
+  args?: string;
+  url?: string;
+  env?: Record<string, string>;
+}
+
 interface AgentConfig {
   name: string;
   model: string;
@@ -25,6 +37,7 @@ interface AgentConfig {
   systemPrompt: string;
   tools: string[];
   workspace: string; // '' means auto-generate
+  mcpServers: McpServerEntry[];
 }
 
 export function DeployWizard(): JSX.Element {
@@ -48,6 +61,7 @@ export function DeployWizard(): JSX.Element {
     systemPrompt: '',
     tools: [],
     workspace: '',
+    mcpServers: [],
   });
 
   useEffect(() => {
@@ -95,6 +109,18 @@ export function DeployWizard(): JSX.Element {
     setDeployError(null);
     setDeployStartupLogs([]);
     try {
+      const mcpServers = agent.mcpServers.map((s) => ({
+        name: s.name,
+        transport:
+          s.transportType === 'stdio'
+            ? {
+                type: 'stdio' as const,
+                command: s.command ?? '',
+                args: s.args?.split(' ').filter(Boolean),
+              }
+            : { type: s.transportType as 'sse' | 'streamable-http', url: s.url ?? '' },
+        env: s.env && Object.keys(s.env).length > 0 ? s.env : undefined,
+      }));
       const id = await deployWithConfig({
         name: agent.name.trim(),
         model: agent.model,
@@ -102,6 +128,7 @@ export function DeployWizard(): JSX.Element {
         systemPrompt: agent.systemPrompt,
         tools: agent.tools,
         workspace: agent.workspace || undefined,
+        mcpServers: mcpServers.length > 0 ? mcpServers : undefined,
       });
       navigate({ to: '/agents/$id', params: { id } });
     } catch (err: unknown) {
@@ -124,6 +151,34 @@ export function DeployWizard(): JSX.Element {
       tools: prev.tools.includes(tool)
         ? prev.tools.filter((t) => t !== tool)
         : [...prev.tools, tool],
+    }));
+  };
+
+  const [addingMcp, setAddingMcp] = useState(false);
+  const [mcpForm, setMcpForm] = useState<McpServerEntry>({
+    name: '',
+    transportType: 'stdio',
+    command: '',
+    args: '',
+    url: '',
+    env: {},
+  });
+  const [mcpEnvKey, setMcpEnvKey] = useState('');
+  const [mcpEnvValue, setMcpEnvValue] = useState('');
+
+  const addMcpServer = (): void => {
+    if (!mcpForm.name.trim()) return;
+    setAgent((prev) => ({ ...prev, mcpServers: [...prev.mcpServers, { ...mcpForm }] }));
+    setMcpForm({ name: '', transportType: 'stdio', command: '', args: '', url: '', env: {} });
+    setMcpEnvKey('');
+    setMcpEnvValue('');
+    setAddingMcp(false);
+  };
+
+  const removeMcpServer = (index: number): void => {
+    setAgent((prev) => ({
+      ...prev,
+      mcpServers: prev.mcpServers.filter((_, i) => i !== index),
     }));
   };
 
@@ -239,6 +294,191 @@ export function DeployWizard(): JSX.Element {
           </div>
 
           <div>
+            <div className="mb-2 flex items-center justify-between">
+              <span className="text-sm font-medium">MCP Servers</span>
+              {!addingMcp && (
+                <button
+                  type="button"
+                  onClick={() => setAddingMcp(true)}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs text-muted transition-colors hover:bg-sidebar-hover hover:text-foreground"
+                >
+                  <Plus size={12} />
+                  Add MCP Server
+                </button>
+              )}
+            </div>
+
+            {agent.mcpServers.length > 0 && (
+              <div className="mb-2 space-y-1.5">
+                {agent.mcpServers.map((s, i) => (
+                  <div
+                    key={s.name}
+                    className="flex items-center justify-between rounded-lg border border-border px-3 py-2 text-sm"
+                  >
+                    <div className="flex items-center gap-2 text-foreground">
+                      <Server size={14} className="text-muted" />
+                      <span>{s.name}</span>
+                      <span className="text-xs text-muted">({s.transportType})</span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => removeMcpServer(i)}
+                      className="text-muted transition-colors hover:text-red-400"
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {addingMcp && (
+              <div className="space-y-3 rounded-lg border border-border p-3">
+                <div className="grid grid-cols-2 gap-2">
+                  <label className="block">
+                    <span className="mb-1 block text-xs text-muted">Name</span>
+                    <input
+                      type="text"
+                      value={mcpForm.name}
+                      onChange={(e) => setMcpForm((prev) => ({ ...prev, name: e.target.value }))}
+                      placeholder="my-server"
+                      className="w-full rounded-lg border border-border bg-sidebar-bg px-3 py-1.5 text-sm text-foreground placeholder:text-muted focus:border-primary focus:outline-none"
+                    />
+                  </label>
+                  <label className="block">
+                    <span className="mb-1 block text-xs text-muted">Transport</span>
+                    <select
+                      value={mcpForm.transportType}
+                      onChange={(e) =>
+                        setMcpForm((prev) => ({
+                          ...prev,
+                          transportType: e.target.value as McpServerEntry['transportType'],
+                        }))
+                      }
+                      className="w-full rounded-lg border border-border bg-sidebar-bg px-3 py-1.5 text-sm text-foreground focus:border-primary focus:outline-none"
+                    >
+                      <option value="stdio">stdio</option>
+                      <option value="sse">SSE</option>
+                      <option value="streamable-http">Streamable HTTP</option>
+                    </select>
+                  </label>
+                </div>
+
+                {mcpForm.transportType === 'stdio' ? (
+                  <div className="space-y-2">
+                    <label className="block">
+                      <span className="mb-1 block text-xs text-muted">Command</span>
+                      <input
+                        type="text"
+                        value={mcpForm.command}
+                        onChange={(e) =>
+                          setMcpForm((prev) => ({ ...prev, command: e.target.value }))
+                        }
+                        placeholder="npx"
+                        className="w-full rounded-lg border border-border bg-sidebar-bg px-3 py-1.5 text-sm text-foreground placeholder:text-muted focus:border-primary focus:outline-none"
+                      />
+                    </label>
+                    <label className="block">
+                      <span className="mb-1 block text-xs text-muted">Args (space-separated)</span>
+                      <input
+                        type="text"
+                        value={mcpForm.args}
+                        onChange={(e) => setMcpForm((prev) => ({ ...prev, args: e.target.value }))}
+                        placeholder="-y @modelcontextprotocol/server-filesystem /path"
+                        className="w-full rounded-lg border border-border bg-sidebar-bg px-3 py-1.5 text-sm text-foreground placeholder:text-muted focus:border-primary focus:outline-none"
+                      />
+                    </label>
+                    <div>
+                      <span className="mb-1 block text-xs text-muted">Environment Variables</span>
+                      {Object.entries(mcpForm.env ?? {}).map(([k, v]) => (
+                        <div key={k} className="mb-1 flex items-center gap-1.5 text-xs">
+                          <span className="flex-1 rounded border border-border bg-sidebar-bg px-2 py-1 font-mono text-foreground">
+                            {k}={v}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setMcpForm((prev) => {
+                                const env = { ...prev.env };
+                                delete env[k];
+                                return { ...prev, env };
+                              })
+                            }
+                            className="text-muted hover:text-red-400"
+                          >
+                            <Trash2 size={12} />
+                          </button>
+                        </div>
+                      ))}
+                      <div className="flex items-center gap-1.5">
+                        <input
+                          type="text"
+                          value={mcpEnvKey}
+                          onChange={(e) => setMcpEnvKey(e.target.value)}
+                          placeholder="KEY"
+                          className="w-28 rounded-lg border border-border bg-sidebar-bg px-2 py-1 text-xs text-foreground placeholder:text-muted focus:border-primary focus:outline-none"
+                        />
+                        <span className="text-muted">=</span>
+                        <input
+                          type="text"
+                          value={mcpEnvValue}
+                          onChange={(e) => setMcpEnvValue(e.target.value)}
+                          placeholder="value"
+                          className="flex-1 rounded-lg border border-border bg-sidebar-bg px-2 py-1 text-xs text-foreground placeholder:text-muted focus:border-primary focus:outline-none"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (!mcpEnvKey.trim()) return;
+                            setMcpForm((prev) => ({
+                              ...prev,
+                              env: { ...prev.env, [mcpEnvKey.trim()]: mcpEnvValue },
+                            }));
+                            setMcpEnvKey('');
+                            setMcpEnvValue('');
+                          }}
+                          className="rounded-lg border border-border px-2 py-1 text-xs text-muted transition-colors hover:bg-sidebar-hover hover:text-foreground"
+                        >
+                          <Plus size={12} />
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <label className="block">
+                    <span className="mb-1 block text-xs text-muted">URL</span>
+                    <input
+                      type="text"
+                      value={mcpForm.url}
+                      onChange={(e) => setMcpForm((prev) => ({ ...prev, url: e.target.value }))}
+                      placeholder="https://example.com/mcp"
+                      className="w-full rounded-lg border border-border bg-sidebar-bg px-3 py-1.5 text-sm text-foreground placeholder:text-muted focus:border-primary focus:outline-none"
+                    />
+                  </label>
+                )}
+
+                <div className="flex justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setAddingMcp(false)}
+                    className="rounded-lg border border-border px-3 py-1.5 text-xs text-muted transition-colors hover:bg-sidebar-hover hover:text-foreground"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={addMcpServer}
+                    disabled={!mcpForm.name.trim()}
+                    className="rounded-lg bg-primary px-3 py-1.5 text-xs text-white transition-colors hover:bg-primary-hover disabled:opacity-50"
+                  >
+                    Save
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+
+          <div>
             <span className="mb-1 block text-sm font-medium">Workspace</span>
             <div className="flex items-center gap-2">
               <input
@@ -302,6 +542,14 @@ export function DeployWizard(): JSX.Element {
                   ? TOOL_GROUPS.filter((g) => g.tools.some((t) => agent.tools.includes(t)))
                       .map((g) => g.name)
                       .join(', ') || agent.tools.join(', ')
+                  : '(none)'
+              }
+            />
+            <ReviewRow
+              label="MCP Servers"
+              value={
+                agent.mcpServers.length > 0
+                  ? agent.mcpServers.map((s) => `${s.name} (${s.transportType})`).join(', ')
                   : '(none)'
               }
             />
