@@ -12,9 +12,6 @@ const todoSchema = Type.Object({
         Type.Literal('in_progress'),
         Type.Literal('completed'),
       ]),
-      priority: Type.Optional(
-        Type.Union([Type.Literal('high'), Type.Literal('medium'), Type.Literal('low')]),
-      ),
     }),
   ),
 });
@@ -28,15 +25,17 @@ const STATUS_ICONS: Record<string, string> = {
 };
 
 /**
- * Create the todowrite tool.
- * Accepts a structured todo list and returns a formatted text summary.
+ * Create the task tool.
+ * Accepts a structured task list and returns a formatted text summary.
+ * The agent sends the complete list each time — this replaces the previous state.
+ * This is a core tool, always registered by the backend.
  */
 export function createTodoWriteTool(): AgentTool<typeof todoSchema> {
   return {
     name: 'task',
     label: 'Task',
     description:
-      'Track and manage work with a structured task list. Send the complete list each time — this replaces the previous state.',
+      'Track and manage work with a structured task list. Send the complete list each time — this replaces the previous state. Use this to track progress on multi-step work.',
     parameters: todoSchema,
     execute: async (
       _toolCallId: string,
@@ -58,8 +57,7 @@ export function createTodoWriteTool(): AgentTool<typeof todoSchema> {
 
       for (const todo of todos) {
         const icon = STATUS_ICONS[todo.status] ?? '○';
-        const priorityLabel = todo.priority ? ` [${todo.priority}]` : '';
-        lines.push(`${icon} ${todo.content}${priorityLabel}`);
+        lines.push(`${icon} ${todo.content}`);
       }
 
       return {

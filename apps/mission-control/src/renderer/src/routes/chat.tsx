@@ -272,12 +272,6 @@ const STATUS_INDICATOR: Record<string, { icon: string; label: string; color: str
   pending: { icon: '○', label: 'Pending', color: 'text-muted' },
 };
 
-const PRIORITY_BADGE: Record<string, { label: string; cls: string }> = {
-  high: { label: 'High', cls: 'bg-red-900/30 text-red-300' },
-  medium: { label: 'Med', cls: 'bg-yellow-900/30 text-yellow-300' },
-  low: { label: 'Low', cls: 'bg-zinc-700/40 text-zinc-400' },
-};
-
 function TodoListBlock({ todos }: { todos: TodoItem[] }): JSX.Element {
   const counts = { completed: 0, total: todos.length };
   for (const t of todos) if (t.status === 'completed') counts.completed++;
@@ -289,18 +283,12 @@ function TodoListBlock({ todos }: { todos: TodoItem[] }): JSX.Element {
       </p>
       {todos.map((todo) => {
         const st = STATUS_INDICATOR[todo.status] ?? STATUS_INDICATOR.pending;
-        const pr = todo.priority ? PRIORITY_BADGE[todo.priority] : undefined;
         return (
           <div key={todo.id ?? todo.content} className="flex items-start gap-2">
             <span className={`mt-px ${st.color}`}>{st.icon}</span>
             <span className={todo.status === 'completed' ? 'line-through text-muted' : ''}>
               {todo.content}
             </span>
-            {pr && (
-              <span className={`ml-auto shrink-0 rounded px-1.5 py-0.5 text-[10px] ${pr.cls}`}>
-                {pr.label}
-              </span>
-            )}
           </div>
         );
       })}
@@ -509,7 +497,7 @@ function PinnedTodoPanel({ todos }: { todos: TodoItem[] }): JSX.Element {
           onClick={() => setCollapsed((c) => !c)}
           className="flex flex-1 items-center justify-between hover:text-foreground"
         >
-          <span className="flex items-center gap-2">
+          <span className="flex items-center gap-2 min-w-0">
             <span>📋</span>
             <span className="font-medium">
               Tasks: {completed}/{todos.length} completed
@@ -518,11 +506,12 @@ function PinnedTodoPanel({ todos }: { todos: TodoItem[] }): JSX.Element {
             {collapsed && (() => {
               const active = todos.find((t) => t.status === 'in_progress');
               return active ? (
-                <span className="ml-1 text-blue-400 font-normal truncate max-w-[300px]">
+                <span className="text-blue-400 font-normal truncate">
                   — {active.content}
                 </span>
               ) : null;
             })()}
+          </span>
           {collapsed ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
         </button>
         {allDone && (
@@ -551,7 +540,6 @@ function PinnedTodoPanel({ todos }: { todos: TodoItem[] }): JSX.Element {
             {todos.map((todo) => {
               const isActive = todo.status === 'in_progress';
               const isDone = todo.status === 'completed';
-              const pr = todo.priority ? PRIORITY_BADGE[todo.priority] : undefined;
 
               return (
                 <div
@@ -568,11 +556,6 @@ function PinnedTodoPanel({ todos }: { todos: TodoItem[] }): JSX.Element {
                   >
                     {todo.content}
                   </span>
-                  {pr && (
-                    <span className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] ${pr.cls}`}>
-                      {pr.label}
-                    </span>
-                  )}
                 </div>
               );
             })}
