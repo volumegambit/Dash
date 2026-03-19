@@ -1,4 +1,4 @@
-import { parseProviderSecretKey, providerSecretKey } from './process.js';
+import { parseProviderSecretKey, providerSecretKey } from './provider-keys.js';
 
 describe('providerSecretKey', () => {
   it('builds a key with default keyName', () => {
