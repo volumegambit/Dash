@@ -15,6 +15,17 @@ export interface ToolOption {
  * Plain-language descriptions for tools, written for non-technical users.
  * Used to enrich both the hardcoded fallback list and dynamically loaded tool IDs.
  */
+/**
+ * Tools that are always enabled and hidden from the user-facing tool selection UI.
+ * These are internal framework tools the agent needs to function.
+ */
+export const ALWAYS_ENABLED_TOOLS = new Set([
+  'question',
+  'task',
+  'todowrite',
+  'skill',
+]);
+
 export const TOOL_DESCRIPTIONS: Record<string, string> = {
   bash: 'Run terminal commands on the system',
   read: 'Read files from the project',
