@@ -25,9 +25,6 @@ export const TOOL_DESCRIPTIONS: Record<string, string> = {
   grep: 'Search for text inside files',
   web_search: 'Search the internet for information',
   web_fetch: 'Download content from web pages',
-  task: 'Track and manage work with a structured task list',
-  load_skill: 'Load a reusable skill into the conversation',
-  create_skill: 'Create reusable skills the agent remembers across conversations',
 };
 
 export const AVAILABLE_MODELS: ModelOption[] = [
@@ -79,7 +76,7 @@ export const TOOL_GROUPS: ToolGroup[] = [
   {
     name: 'Read & Search',
     description: 'Browse and search the project',
-    tools: ['read', 'ls', 'find', 'glob', 'grep'],
+    tools: ['read', 'ls', 'find', 'grep'],
   },
   {
     name: 'Modify Files',
