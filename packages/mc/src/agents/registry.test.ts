@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -99,5 +99,20 @@ describe('AgentRegistry', () => {
   it('returns null for non-existent id', async () => {
     const result = await registry.get('non-existent');
     expect(result).toBeNull();
+  });
+
+  it('returns empty list when file is empty', async () => {
+    await writeFile(join(tempDir, 'agents.json'), '');
+    expect(await registry.list()).toEqual([]);
+  });
+
+  it('returns empty list when file contains truncated JSON', async () => {
+    await writeFile(join(tempDir, 'agents.json'), '[{"id":"test-1"');
+    expect(await registry.list()).toEqual([]);
+  });
+
+  it('returns empty list when file contains non-JSON content', async () => {
+    await writeFile(join(tempDir, 'agents.json'), 'not json at all');
+    expect(await registry.list()).toEqual([]);
   });
 });

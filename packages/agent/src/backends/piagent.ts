@@ -1,3 +1,4 @@
+import { homedir } from 'node:os';
 import type { AgentEvent as PiAgentEvent } from '@mariozechner/pi-agent-core';
 import { getModel } from '@mariozechner/pi-ai';
 import type { AssistantMessage, ImageContent, Model, Usage } from '@mariozechner/pi-ai';
@@ -16,6 +17,8 @@ import {
 import type { AgentSession, AgentSessionEvent } from '@mariozechner/pi-coding-agent';
 
 import type { Logger } from '../logger.js';
+import { createCreateSkillTool, createLoadSkillTool, scanSkillsDirectory } from '../skills/index.js';
+import type { SkillDiscoveryResult } from '../skills/types.js';
 import type {
   AgentBackend,
   AgentEvent,
@@ -57,6 +60,7 @@ export class PiAgentBackend implements AgentBackend {
     private providerApiKeys: Record<string, string>,
     private logger?: Logger,
     private sessionDir?: string,
+    private managedSkillsDir?: string,
   ) {}
 
   /** Detect OAuth access tokens (e.g. sk-ant-oat01-...) vs regular API keys */
@@ -148,6 +152,15 @@ export class PiAgentBackend implements AgentBackend {
       if (allowedNames.has(name) && toolBuilders[name]) {
         tools.push(toolBuilders[name]());
       }
+    }
+
+    // Skill tools
+    const hasSkillPaths = this.config.skills?.paths && this.config.skills.paths.length > 0;
+    if (hasSkillPaths || this.managedSkillsDir) {
+      tools.push(createLoadSkillTool(() => this.listSkills()));
+    }
+    if (allowedNames.has('create_skill') && this.managedSkillsDir) {
+      tools.push(createCreateSkillTool(this.managedSkillsDir));
     }
 
     return tools;
@@ -438,5 +451,34 @@ export class PiAgentBackend implements AgentBackend {
     }
     this.auth = null;
     this.logger?.info('[PiAgent] Stopped');
+  }
+
+  /**
+   * Discover skills from the managed directory and configured paths.
+   */
+  async listSkills(): Promise<SkillDiscoveryResult[]> {
+    const results: SkillDiscoveryResult[] = [];
+
+    // Scan managed directory
+    if (this.managedSkillsDir) {
+      const managed = await scanSkillsDirectory(this.managedSkillsDir, 'managed');
+      results.push(...managed);
+    }
+
+    // Scan configured paths
+    const paths = this.config.skills?.paths ?? [];
+    const existingNames = new Set(results.map((r) => r.name));
+    for (const p of paths) {
+      const expanded = p.startsWith('~/') ? p.replace('~', homedir()) : p;
+      const scanned = await scanSkillsDirectory(expanded, 'managed');
+      for (const skill of scanned) {
+        if (!existingNames.has(skill.name)) {
+          results.push(skill);
+          existingNames.add(skill.name);
+        }
+      }
+    }
+
+    return results;
   }
 }

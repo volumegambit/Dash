@@ -13,3 +13,6 @@ export { LocalAgentClient, PooledAgentClient } from './client.js';
 export { FileLogger } from './logger.js';
 export type { LogLevel, Logger } from './logger.js';
 export { buildMemoryPreamble } from './memory.js';
+export type { SkillDiscoveryResult, SkillFrontmatter } from './skills/index.js';
+export { parseFrontmatter, generateFrontmatter, scanSkillsDirectory } from './skills/index.js';
+export type { ParsedSkill } from './skills/index.js';

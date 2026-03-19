@@ -16,8 +16,13 @@ export class SettingsStore {
 
   async get(): Promise<AppSettings> {
     if (!existsSync(this.filePath)) return {};
-    const raw = await readFile(this.filePath, 'utf-8');
-    return JSON.parse(raw) as AppSettings;
+    try {
+      const raw = await readFile(this.filePath, 'utf-8');
+      if (!raw.trim()) return {};
+      return JSON.parse(raw) as AppSettings;
+    } catch {
+      return {};
+    }
   }
 
   async set(patch: Partial<AppSettings>): Promise<void> {

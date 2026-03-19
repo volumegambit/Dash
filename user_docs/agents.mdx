@@ -1,0 +1,209 @@
+---
+title: "Agents"
+description: "What an agent is, how to configure one, and how agents work in DashSquad."
+---
+
+An agent is a member of your AI team. It has a model to think with, instructions to follow, and tools to get work done. You tell it what to do, and it figures out how.
+
+## What is an agent?
+
+An agent combines four things:
+
+1. **A model** — the AI brain (Claude, GPT, Gemini, etc.)
+2. **A system prompt** — instructions that shape the agent's personality and behavior
+3. **Tools** — capabilities like running commands, reading files, or searching the web
+4. **Skills** — reusable workflows the agent can discover and use on demand
+
+When you send a message, the agent reads it, reasons about what to do, uses tools if needed, and responds. It does this autonomously — no hand-holding required.
+
+## Agent configuration
+
+Each agent is defined in your config with a few key fields.
+
+```json
+{
+  "agents": {
+    "assistant": {
+      "model": "claude-sonnet-4-20250514",
+      "systemPrompt": "You are a helpful assistant that specializes in research.",
+      "tools": ["bash", "read", "write", "edit", "grep", "glob", "web_search"],
+      "maxTokens": 4096,
+      "workspace": "./data/assistant-workspace",
+      "fallbackModels": ["gpt-4o", "gemini-2.0-flash"],
+      "skills": {
+        "paths": ["./skills"],
+        "urls": ["https://example.com/skills"]
+      }
+    }
+  }
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `model` | `string` | yes | The AI model to use (e.g. `claude-sonnet-4-20250514`, `gpt-4o`, `gemini-2.0-flash`) |
+| `systemPrompt` | `string` | yes | Instructions that tell the agent who it is and how to behave |
+| `tools` | `string[]` | no | Which tools the agent can use. See [Tools](/tools) for the full list |
+| `maxTokens` | `number` | no | Maximum response length in tokens (default: `4096`) |
+| `workspace` | `string` | no | Directory where the agent operates, resolved relative to the project root |
+| `fallbackModels` | `string[]` | no | Backup models to try if the primary model fails |
+| `skills` | `object` | no | Local paths and/or remote URLs where the agent discovers skills |
+
+## Available models
+
+DashSquad supports models from three providers. Set the `model` field to any of these:
+
+<CardGroup cols={3}>
+  <Card title="Anthropic" icon="microchip">
+    - Claude Opus 4
+    - Claude Sonnet 4
+    - Claude Haiku 4.5
+  </Card>
+  <Card title="OpenAI" icon="microchip">
+    - GPT-4o
+    - o3 mini
+  </Card>
+  <Card title="Google" icon="microchip">
+    - Gemini 2.0 Flash
+  </Card>
+</CardGroup>
+
+See [AI Providers](/ai-providers) for credentials setup and model routing details.
+
+## Available tools
+
+Pick the tools your agent needs. Each tool gives a specific capability:
+
+| Tool | What it does |
+|------|-------------|
+| `bash` | Run terminal commands on the system |
+| `read` | Read files from the project |
+| `write` | Create new files in the project |
+| `edit` | Make changes to existing files |
+| `ls` | See what files and folders exist |
+| `glob` | Find files by name or pattern |
+| `grep` | Search for text inside files |
+| `web_search` | Search the internet for information |
+| `web_fetch` | Download content from web pages |
+| `mcp` | Connect to external services and tools |
+| `skill` | Use specialized skill workflows |
+
+See [Tools](/tools) for detailed descriptions and sandboxing behavior.
+
+## Fallback models
+
+If your primary model is unavailable or hits a rate limit, the agent automatically tries the next model in the chain.
+
+```json
+{
+  "model": "claude-sonnet-4-20250514",
+  "fallbackModels": ["gpt-4o", "gemini-2.0-flash"]
+}
+```
+
+The agent tries models in order: primary first, then each fallback. This keeps your agent running even if one provider has an outage. Each model can be from a different provider — just make sure you have the right API keys set up.
+
+## Workspace
+
+Every agent gets its own workspace directory. This is where tool operations happen.
+
+```json
+{
+  "workspace": "./data/my-agent-workspace"
+}
+```
+
+The workspace directory is created automatically if it does not exist. Tools operate within this directory:
+
+- **bash** uses the workspace as its working directory
+- **read**, **write**, **edit** resolve file paths relative to the workspace
+- **File tools** are sandboxed — they cannot access files outside the workspace boundary
+
+<Warning>
+  If no workspace is configured, tools operate without path restrictions. Always set a workspace for agents that use file or shell tools.
+</Warning>
+
+## Lifecycle
+
+Agents are deployed as background processes. Each agent goes through these states:
+
+| State | Meaning |
+|-------|---------|
+| `provisioning` | The agent is starting up |
+| `running` | The agent is live and accepting messages |
+| `stopped` | The agent has been stopped (manually or by the system) |
+| `error` | Something went wrong during startup or runtime |
+
+You can **start**, **stop**, **restart**, and **remove** agents at any time through Mission Control or the CLI.
+
+<Tabs>
+  <Tab title="Mission Control (desktop)">
+    Use the Agents page to see all your agents and their status. Click an agent to start, stop, or restart it.
+  </Tab>
+  <Tab title="CLI">
+    ```bash
+    mc status              # List all deployments and their states
+    mc status <id>         # Detailed status for one deployment
+    mc stop <id>           # Stop a running agent
+    mc remove <id>         # Remove an agent entirely
+    ```
+    See [CLI Reference](/cli-reference) for all commands.
+  </Tab>
+</Tabs>
+
+## Sessions
+
+Every conversation with an agent is saved as a session. Sessions are stored as JSONL files (one event per line) so they are easy to inspect and crash-safe.
+
+```
+data/sessions/{channelId}/{conversationId}/session.jsonl
+```
+
+When you send a new message, the agent loads the session history first. This means it remembers everything from the conversation — previous messages, tool results, and its own responses. Context carries across messages automatically.
+
+## Multiple agents
+
+You can run as many agents as you need. Each one is independent — different model, different instructions, different tools.
+
+```json
+{
+  "agents": {
+    "researcher": {
+      "model": "claude-sonnet-4-20250514",
+      "systemPrompt": "You are a research assistant. Find information and summarize it clearly.",
+      "tools": ["web_search", "web_fetch", "read", "write"]
+    },
+    "coder": {
+      "model": "claude-opus-4-20250514",
+      "systemPrompt": "You are a senior software engineer. Write clean, tested code.",
+      "tools": ["bash", "read", "write", "edit", "glob", "grep"],
+      "workspace": "./data/coder-workspace"
+    },
+    "ops": {
+      "model": "gpt-4o",
+      "systemPrompt": "You manage infrastructure and deployments.",
+      "tools": ["bash", "read"],
+      "workspace": "./data/ops-workspace"
+    }
+  }
+}
+```
+
+Each agent gets its own workspace, session history, and set of tools. Route messages to the right agent through [Messaging Apps](/messaging-apps) or by name in the [Chat API](/chat-with-your-agent).
+
+## What's next
+
+<CardGroup cols={2}>
+  <Card title="Tools" icon="wrench" href="/tools">
+    Learn about each tool and how workspace sandboxing works.
+  </Card>
+  <Card title="AI Providers" icon="microchip" href="/ai-providers">
+    Set up API keys for Anthropic, OpenAI, and Google.
+  </Card>
+  <Card title="Mission Control" icon="grid-2" href="/mission-control">
+    Deploy and manage agents from the desktop app or CLI.
+  </Card>
+  <Card title="Configuration" icon="gear" href="/configuration">
+    Full config schema, environment variables, and CLI flags.
+  </Card>
+</CardGroup>

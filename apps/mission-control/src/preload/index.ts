@@ -49,6 +49,15 @@ const api: MissionControlAPI = {
     return () => ipcRenderer.removeListener('chat:error', listener);
   },
 
+  // Codex OAuth (OpenAI)
+  codexStartOAuth: (keyName: string) => ipcRenderer.invoke('codex:startOAuth', keyName),
+  codexRefreshToken: (keyName: string) => ipcRenderer.invoke('codex:refreshToken', keyName),
+
+  // Claude OAuth (Anthropic)
+  claudePrepareOAuth: () => ipcRenderer.invoke('claude:prepareOAuth'),
+  claudeCompleteOAuth: (keyName: string, code: string, state: string, verifier: string) =>
+    ipcRenderer.invoke('claude:completeOAuth', keyName, code, state, verifier),
+
   // Secrets
   secretsNeedsSetup: () => ipcRenderer.invoke('secrets:needsSetup'),
   secretsNeedsMigration: () => ipcRenderer.invoke('secrets:needsMigration'),

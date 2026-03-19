@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs';
-import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 
 export interface SecretStore {
@@ -22,15 +22,21 @@ export class FileSecretStore implements SecretStore {
 
   private async load(): Promise<Record<string, string>> {
     if (!existsSync(this.filePath)) return {};
-    const raw = await readFile(this.filePath, 'utf-8');
-    return JSON.parse(raw) as Record<string, string>;
+    try {
+      const raw = await readFile(this.filePath, 'utf-8');
+      if (!raw.trim()) return {};
+      return JSON.parse(raw) as Record<string, string>;
+    } catch {
+      return {};
+    }
   }
 
   private async save(secrets: Record<string, string>): Promise<void> {
     await mkdir(dirname(this.filePath), { recursive: true });
-    await writeFile(this.filePath, JSON.stringify(secrets, null, 2), { mode: 0o600 });
-    // Ensure permissions even if the file already existed
-    await chmod(this.filePath, 0o600);
+    const tmpPath = `${this.filePath}.tmp`;
+    await writeFile(tmpPath, JSON.stringify(secrets, null, 2), { mode: 0o600 });
+    await chmod(tmpPath, 0o600);
+    await rename(tmpPath, this.filePath);
   }
 
   async get(key: string): Promise<string | null> {

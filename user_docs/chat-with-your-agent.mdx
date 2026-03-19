@@ -1,0 +1,108 @@
+---
+title: "Chat with Your Agent"
+description: "Talk to your agents through Mission Control, Telegram, or the WebSocket API."
+---
+
+Once your agent is deployed, there are three ways to talk to it: the built-in Mission Control chat, messaging apps like Telegram, or the WebSocket API for programmatic access.
+
+## Three ways to chat
+
+| Method | Best for | Setup required |
+|--------|----------|----------------|
+| **Mission Control** | Day-to-day interaction, debugging, monitoring | None — built in |
+| **Messaging apps** | Reaching your agent from Telegram or WhatsApp | Connect a messaging app |
+| **WebSocket API** | Building integrations, automation, custom UIs | Developer setup |
+
+## Mission Control chat
+
+The fastest way to talk to your agent. Open a chat from the agent detail page or the chat section in the sidebar.
+
+**What you see while chatting:**
+
+- **Real-time streaming** — responses appear token by token as the agent generates them
+- **Thinking indicators** — see when the agent is reasoning through a problem
+- **Tool use** — watch the agent call tools, see the inputs it sends, and the results it gets back
+- **Image support** — send images to your agent for analysis or discussion
+
+Every conversation is automatically saved. Come back later and pick up where you left off.
+
+## Telegram and WhatsApp
+
+Connect your agent to a messaging app and chat with it just like you would with a friend. Send a message to your bot on Telegram and the agent responds in the same thread.
+
+Setting this up takes a few minutes:
+
+1. Create a bot on the messaging platform
+2. Add the bot token to Mission Control
+3. Configure which agent handles messages from that bot
+
+Once connected, your agent is always reachable — from your phone, desktop, or anywhere the messaging app runs.
+
+<Card title="Connect a messaging app" icon="paper-plane" href="/messaging-apps">
+  Step-by-step setup for Telegram, WhatsApp, and more.
+</Card>
+
+## WebSocket API
+
+For developers who want to integrate agents into their own applications, the WebSocket API gives you full programmatic access.
+
+### Connecting
+
+```
+ws://localhost:9101/ws?token=<your-chat-token>
+```
+
+Authenticate with a token in the query string. See [API Reference](/api-reference) for full connection details.
+
+### Message flow
+
+The protocol uses a simple request-response pattern over WebSocket:
+
+1. **Send a message** — include the agent name, a conversation ID, and your text
+2. **Receive streaming events** — the server sends events as the agent works (`text_delta`, `tool_use_start`, `tool_result`, etc.)
+3. **Receive done** — a `done` message signals the response is complete
+
+```json
+// Send a message
+{
+  "type": "message",
+  "id": "req-1",
+  "agent": "default",
+  "channelId": "my-app",
+  "conversationId": "conv-1",
+  "text": "Summarize the latest logs"
+}
+
+// Receive streaming events
+{ "type": "event", "id": "req-1", "event": { "type": "text_delta", "text": "Looking" } }
+{ "type": "event", "id": "req-1", "event": { "type": "text_delta", "text": " at the" } }
+{ "type": "event", "id": "req-1", "event": { "type": "text_delta", "text": " logs..." } }
+
+// Stream complete
+{ "type": "done", "id": "req-1" }
+```
+
+You can also **cancel** an in-flight request by sending `{ "type": "cancel", "id": "req-1" }` and handle **errors** via `{ "type": "error" }` messages.
+
+<Card title="Full API Reference" icon="code" href="/api-reference">
+  Complete WebSocket protocol spec, message types, and authentication details.
+</Card>
+
+## Sessions
+
+Every conversation is persisted as a session. When you send a message to an agent, it sees the full history of that conversation — so it maintains context across messages without you repeating yourself.
+
+Sessions are stored as append-only JSONL files. Each message, tool call, and response is recorded in order. This means your conversation history is durable and can be inspected if needed.
+
+Sessions are scoped by channel and conversation ID. A chat in Mission Control and a chat on Telegram are separate sessions, even if they're with the same agent.
+
+## Streaming
+
+Responses arrive in real time as the agent works. You don't wait for the full response to be generated — you see progress as it happens:
+
+- **Text chunks** appear word by word as the model generates them
+- **Tool use** shows up when the agent decides to call a tool, with the tool name and input
+- **Tool results** appear when the tool finishes, showing what the agent learned
+- **Thinking** (when enabled) lets you see the agent's internal reasoning process
+
+This streaming experience works across all three chat methods — Mission Control, messaging apps, and the WebSocket API.
