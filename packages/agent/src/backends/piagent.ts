@@ -201,6 +201,7 @@ export class PiAgentBackend implements AgentBackend {
     // regardless of the operator's tool selection.
     customs.push(wrap(createTodoWriteTool())); // task tracking
 
+
     const hasSkillPaths = this.config.skills?.paths && this.config.skills.paths.length > 0;
     if (hasSkillPaths || this.managedSkillsDir) {
       customs.push(wrap(createLoadSkillTool(() => this.listSkills()))); // skill loading
