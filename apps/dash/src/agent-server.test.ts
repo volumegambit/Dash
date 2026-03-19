@@ -2,13 +2,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Mock all external modules before importing the module under test
 vi.mock('@dash/agent', () => {
-  const PiAgentBackend = vi.fn();
-  PiAgentBackend.prototype.start = vi.fn().mockResolvedValue(undefined);
-  PiAgentBackend.prototype.stop = vi.fn().mockResolvedValue(undefined);
-
-  const DashAgent = vi.fn();
-
-  const LocalAgentClient = vi.fn().mockImplementation((agent) => ({ agent }));
+  const PooledAgentClient = vi.fn().mockImplementation(() => ({
+    stop: vi.fn().mockResolvedValue(undefined),
+    updateCredentials: vi.fn().mockResolvedValue(undefined),
+    updateConfig: vi.fn(),
+  }));
 
   const FileLogger = {
     create: vi.fn().mockResolvedValue({
@@ -19,8 +17,12 @@ vi.mock('@dash/agent', () => {
 
   const generateFrontmatter = vi.fn().mockReturnValue('---\nname: test\n---\n\ncontent');
 
-  return { PiAgentBackend, DashAgent, LocalAgentClient, FileLogger, generateFrontmatter };
+  return { PooledAgentClient, FileLogger, generateFrontmatter };
 });
+
+vi.mock('@mariozechner/pi-coding-agent', () => ({
+  loadSkillsFromDir: vi.fn().mockReturnValue({ skills: [], diagnostics: [] }),
+}));
 
 vi.mock('@dash/chat', () => ({
   startChatServer: vi.fn().mockReturnValue({ close: vi.fn().mockResolvedValue(undefined) }),
@@ -36,7 +38,7 @@ vi.mock('node:fs/promises', () => ({
   writeFile: vi.fn().mockResolvedValue(undefined),
 }));
 
-import { LocalAgentClient, PiAgentBackend } from '@dash/agent';
+import { PooledAgentClient } from '@dash/agent';
 import { createAgentServer } from './agent-server.js';
 import type { DashConfig } from './config.js';
 
@@ -49,10 +51,10 @@ function makeConfig(agents: DashConfig['agents']): DashConfig {
   } as unknown as DashConfig;
 }
 
-describe('createAgentServer startup isolation', () => {
+describe('createAgentServer startup', () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it('starts successfully when all agents succeed', async () => {
+  it('registers all agents as PooledAgentClients', async () => {
     const config = makeConfig({
       alpha: { model: 'claude-test', systemPrompt: 'Alpha' },
       beta: { model: 'claude-test', systemPrompt: 'Beta' },
@@ -62,53 +64,36 @@ describe('createAgentServer startup isolation', () => {
     expect(server).toBeDefined();
     expect(typeof server.start).toBe('function');
     expect(typeof server.stop).toBe('function');
+
+    // One PooledAgentClient per agent
+    const MockPooledClient = PooledAgentClient as unknown as ReturnType<typeof vi.fn>;
+    expect(MockPooledClient).toHaveBeenCalledTimes(2);
   });
 
-  it('starts with remaining agent when one of two agents fails to start', async () => {
-    const MockBackend = PiAgentBackend as unknown as ReturnType<typeof vi.fn>;
-
-    let callCount = 0;
-    MockBackend.mockImplementation(() => {
-      callCount++;
-      const instance = {
-        start:
-          callCount === 1
-            ? vi.fn().mockRejectedValue(new Error('connection refused'))
-            : vi.fn().mockResolvedValue(undefined),
-        stop: vi.fn().mockResolvedValue(undefined),
-      };
-      return instance;
-    });
-
-    const config = makeConfig({
-      failing: { model: 'claude-test', systemPrompt: 'Fails' },
-      working: { model: 'claude-test', systemPrompt: 'Works' },
-    });
-
-    // Should not throw
-    const server = await createAgentServer(config);
-    expect(server).toBeDefined();
-
-    // Only the surviving (working) agent should have a client registered
-    const MockLocalAgentClient = LocalAgentClient as unknown as ReturnType<typeof vi.fn>;
-    expect(MockLocalAgentClient).toHaveBeenCalledTimes(1);
-  });
-
-  it('throws when all agents fail to start', async () => {
-    const MockBackend = PiAgentBackend as unknown as ReturnType<typeof vi.fn>;
-
-    MockBackend.mockImplementation(() => ({
-      start: vi.fn().mockRejectedValue(new Error('startup error')),
-      stop: vi.fn().mockResolvedValue(undefined),
-    }));
-
+  it('does not fail at startup since backends are created lazily', async () => {
+    // With PooledAgentClient, nothing starts eagerly — no startup failures possible
     const config = makeConfig({
       agentA: { model: 'claude-test', systemPrompt: 'A' },
       agentB: { model: 'claude-test', systemPrompt: 'B' },
     });
 
-    await expect(createAgentServer(config)).rejects.toThrow(
-      'All agents failed to start: agentA, agentB',
-    );
+    const server = await createAgentServer(config);
+    expect(server).toBeDefined();
+
+    const MockPooledClient = PooledAgentClient as unknown as ReturnType<typeof vi.fn>;
+    expect(MockPooledClient).toHaveBeenCalledTimes(2);
+  });
+
+  it('calls stop on all pooled clients when server is stopped', async () => {
+    const config = makeConfig({
+      alpha: { model: 'claude-test', systemPrompt: 'Alpha' },
+    });
+
+    const server = await createAgentServer(config);
+    await server.stop();
+
+    const MockPooledClient = PooledAgentClient as unknown as ReturnType<typeof vi.fn>;
+    const instance = MockPooledClient.mock.results[0].value;
+    expect(instance.stop).toHaveBeenCalledTimes(1);
   });
 });

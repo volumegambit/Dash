@@ -136,6 +136,7 @@ export function createChatApp(options: ChatServerOptions) {
               }));
               const stream = agent.chat(msg.channelId, msg.conversationId, msg.text, {
                 images: images?.length ? images : undefined,
+                signal: controller.signal,
               });
               try {
                 for await (const agentEvent of stream) {

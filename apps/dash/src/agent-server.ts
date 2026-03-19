@@ -2,11 +2,12 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { DashAgent, FileLogger, LocalAgentClient, PiAgentBackend, generateFrontmatter } from '@dash/agent';
+import { FileLogger, PooledAgentClient, generateFrontmatter } from '@dash/agent';
 import type { AgentClient } from '@dash/agent';
 import { startChatServer } from '@dash/chat';
 import { startManagementServer } from '@dash/management';
 import type { InfoResponse, SkillsHandlers } from '@dash/management';
+import { loadSkillsFromDir } from '@mariozechner/pi-coding-agent';
 import { resolveAgentKeys } from './config.js';
 import type { DashConfig } from './config.js';
 
@@ -29,80 +30,58 @@ export async function createAgentServer(config: DashConfig) {
   };
 
   const clients = new Map<string, AgentClient>();
-  const backends: PiAgentBackend[] = [];
-  const backendsByName = new Map<string, PiAgentBackend>();
-  const agentsByName = new Map<string, DashAgent>();
+  const pooledClients = new Map<string, PooledAgentClient>();
 
-  const failed: string[] = [];
+  const sessionBaseDir = config.configDir
+    ? join(config.configDir, 'data', 'sessions')
+    : join(projectRoot, 'data', 'sessions');
 
   for (const [name, agentConfig] of Object.entries(config.agents)) {
-    try {
-      let workspace: string | undefined;
-      if (agentConfig.workspace) {
-        workspace = resolve(projectRoot, agentConfig.workspace);
-        await mkdir(workspace, { recursive: true });
-      }
+    let workspace: string | undefined;
+    if (agentConfig.workspace) {
+      workspace = resolve(projectRoot, agentConfig.workspace);
+      await mkdir(workspace, { recursive: true });
+    }
 
-      const agentKeys = resolveAgentKeys(config.providerApiKeys, agentConfig.credentialKeys);
-      for (const [provider, key] of Object.entries(agentKeys)) {
-        const prefix = key.slice(0, 6);
-        const suffix = key.slice(-10);
-        log(`Agent "${name}" resolved key for provider "${provider}": ${prefix}***${suffix}`);
-      }
+    const agentKeys = resolveAgentKeys(config.providerApiKeys, agentConfig.credentialKeys);
+    for (const [provider, key] of Object.entries(agentKeys)) {
+      const prefix = key.slice(0, 6);
+      const suffix = key.slice(-10);
+      log(`Agent "${name}" resolved key for provider "${provider}": ${prefix}***${suffix}`);
+    }
 
-      const managedSkillsDir = config.configDir
-        ? join(resolve(config.configDir, '..'), 'skills', name)
-        : undefined;
-
-      const backend = new PiAgentBackend(
-        {
-          model: agentConfig.model,
-          systemPrompt: agentConfig.systemPrompt,
-          tools: agentConfig.tools,
-          workspace,
-          skills: agentConfig.skills,
-        },
-        agentKeys,
-        logger,
-        managedSkillsDir,
-      );
-
-      await backend.start(workspace ?? projectRoot);
-      backends.push(backend);
-      backendsByName.set(name, backend);
-
-      const agent = new DashAgent(backend, {
+    const client = new PooledAgentClient(
+      name,
+      {
         model: agentConfig.model,
         fallbackModels: agentConfig.fallbackModels,
         systemPrompt: agentConfig.systemPrompt,
         tools: agentConfig.tools,
         workspace,
-      });
-
-      agentsByName.set(name, agent);
-      clients.set(name, new LocalAgentClient(agent));
-      log(
-        `Agent "${name}" started (model: ${agentConfig.model}, tools: ${agentConfig.tools?.join(', ') ?? 'all'}, workspace: ${workspace ?? 'unrestricted'})`,
-      );
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      log(`[error] Agent "${name}" failed to start: ${msg}`);
-      failed.push(name);
-    }
-  }
-
-  if (failed.length === Object.keys(config.agents).length) {
-    throw new Error(`All agents failed to start: ${failed.join(', ')}`);
-  }
-  if (failed.length > 0) {
-    log(`[warn] ${failed.length} agent(s) skipped due to startup failure: ${failed.join(', ')}`);
+        skills: agentConfig.skills,
+      },
+      agentKeys,
+      join(sessionBaseDir, name),
+      workspace ?? projectRoot,
+      logger,
+    );
+    pooledClients.set(name, client);
+    clients.set(name, client);
+    log(
+      `Agent "${name}" registered (model: ${agentConfig.model}, tools: ${agentConfig.tools?.join(', ') ?? 'all'}, workspace: ${workspace ?? 'unrestricted'})`,
+    );
   }
 
   const skillsHandlers: SkillsHandlers | undefined = config.managementToken
     ? {
         async list(agentName) {
-          const raw = (await backendsByName.get(agentName)?.listSkills()) ?? [];
-          return raw.map((s) => ({
+          const paths = config.agents[agentName]?.skills?.paths ?? [];
+          const allSkills = [];
+          for (const p of paths) {
+            const { skills } = loadSkillsFromDir({ dir: expandHome(p), source: 'path' });
+            allSkills.push(...skills);
+          }
+          return allSkills.map((s) => ({
             name: s.name,
             description: s.description,
             location: s.location,
@@ -112,26 +91,36 @@ export async function createAgentServer(config: DashConfig) {
         },
 
         async get(agentName, skillName) {
-          const raw = (await backendsByName.get(agentName)?.listSkills()) ?? [];
-          const found = raw.find((s) => s.name === skillName);
+          const paths = config.agents[agentName]?.skills?.paths ?? [];
+          const allSkills = [];
+          for (const p of paths) {
+            const { skills } = loadSkillsFromDir({ dir: expandHome(p), source: 'path' });
+            allSkills.push(...skills);
+          }
+          const found = allSkills.find((s) => s.name === skillName);
           if (!found) return null;
+          const content = await readFile(found.filePath, 'utf-8');
           return {
             name: found.name,
             description: found.description,
-            location: found.location,
-            editable: !found.location.startsWith('http'),
-            content: found.content,
+            location: found.filePath,
+            editable: !found.filePath.startsWith('http'),
+            content,
           };
         },
 
         async updateContent(agentName, skillName, content) {
-          const raw = (await backendsByName.get(agentName)?.listSkills()) ?? [];
-          const found = raw.find((s) => s.name === skillName);
-          if (!found) throw new Error(`Skill "${skillName}" not found`);
-          if (found.location.startsWith('http'))
-            throw new Error('Skill is remote and not editable');
-          const resolvedLocation = resolve(found.location);
           const paths = config.agents[agentName]?.skills?.paths ?? [];
+          const allSkills = [];
+          for (const p of paths) {
+            const { skills } = loadSkillsFromDir({ dir: expandHome(p), source: 'path' });
+            allSkills.push(...skills);
+          }
+          const found = allSkills.find((s) => s.name === skillName);
+          if (!found) throw new Error(`Skill "${skillName}" not found`);
+          if (found.filePath.startsWith('http'))
+            throw new Error('Skill is remote and not editable');
+          const resolvedLocation = resolve(found.filePath);
           const insideConfiguredPath = paths.some((p) => {
             const resolvedPath = resolve(expandHome(p));
             return (
@@ -218,7 +207,7 @@ export async function createAgentServer(config: DashConfig) {
           onShutdown: async () => {
             if (chatClose) await chatClose();
             if (managementClose) await managementClose();
-            for (const backend of backends) await backend.stop();
+            for (const client of pooledClients.values()) await client.stop();
             log('Dash agent server stopped via management API');
             if (logger) await logger.close();
             process.exit(0);
@@ -243,22 +232,22 @@ export async function createAgentServer(config: DashConfig) {
               }
             }
             for (const [name, agentConfig] of Object.entries(config.agents)) {
-              const backend = backendsByName.get(name);
-              if (!backend) {
-                log(`  Skipping agent "${name}": no backend found`);
+              const client = pooledClients.get(name);
+              if (!client) {
+                log(`  Skipping agent "${name}": no client found`);
                 continue;
               }
               const agentKeys = resolveAgentKeys(providerApiKeys, agentConfig.credentialKeys);
               log(`  Pushing resolved keys to agent "${name}"`);
-              await backend.updateCredentials(agentKeys);
+              await client.updateCredentials(agentKeys);
             }
             log('Credentials update complete');
           },
           onUpdateAgentConfig: async (agentName, patch) => {
-            const agent = agentsByName.get(agentName);
-            if (!agent) throw new Error(`Agent "${agentName}" not found`);
+            const client = pooledClients.get(agentName);
+            if (!client) throw new Error(`Agent "${agentName}" not found`);
 
-            agent.updateConfig(patch);
+            client.updateConfig(patch);
 
             // Also update the in-memory config so /info reflects the change
             const agentConfig = config.agents[agentName];
@@ -297,7 +286,7 @@ export async function createAgentServer(config: DashConfig) {
     async stop() {
       if (chatClose) await chatClose();
       if (managementClose) await managementClose();
-      for (const backend of backends) await backend.stop();
+      for (const client of pooledClients.values()) await client.stop();
       log('Dash agent server stopped');
       if (logger) await logger.close();
     },
