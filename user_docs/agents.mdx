@@ -24,12 +24,12 @@ Each agent is defined in your config with a few key fields.
 {
   "agents": {
     "assistant": {
-      "model": "claude-sonnet-4-20250514",
+      "model": "anthropic/claude-sonnet-4-20250514",
       "systemPrompt": "You are a helpful assistant that specializes in research.",
       "tools": ["bash", "read", "write", "edit", "grep", "glob", "web_search"],
       "maxTokens": 4096,
       "workspace": "./data/assistant-workspace",
-      "fallbackModels": ["gpt-4o", "gemini-2.0-flash"],
+      "fallbackModels": ["openai/gpt-4o", "google/gemini-2.0-flash"],
       "skills": {
         "paths": ["./skills"],
         "urls": ["https://example.com/skills"]
@@ -41,7 +41,7 @@ Each agent is defined in your config with a few key fields.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `model` | `string` | yes | The AI model to use (e.g. `claude-sonnet-4-20250514`, `gpt-4o`, `gemini-2.0-flash`) |
+| `model` | `string` | yes | The AI model to use (e.g. `anthropic/claude-sonnet-4-20250514`, `openai/gpt-4o`, `google/gemini-2.0-flash`) |
 | `systemPrompt` | `string` | yes | Instructions that tell the agent who it is and how to behave |
 | `tools` | `string[]` | no | Which tools the agent can use. See [Tools](/tools) for the full list |
 | `maxTokens` | `number` | no | Maximum response length in tokens (default: `4096`) |
@@ -96,8 +96,8 @@ If your primary model is unavailable or hits a rate limit, the agent automatical
 
 ```json
 {
-  "model": "claude-sonnet-4-20250514",
-  "fallbackModels": ["gpt-4o", "gemini-2.0-flash"]
+  "model": "anthropic/claude-sonnet-4-20250514",
+  "fallbackModels": ["openai/gpt-4o", "google/gemini-2.0-flash"]
 }
 ```
 
@@ -169,18 +169,18 @@ You can run as many agents as you need. Each one is independent — different mo
 {
   "agents": {
     "researcher": {
-      "model": "claude-sonnet-4-20250514",
+      "model": "anthropic/claude-sonnet-4-20250514",
       "systemPrompt": "You are a research assistant. Find information and summarize it clearly.",
       "tools": ["web_search", "web_fetch", "read", "write"]
     },
     "coder": {
-      "model": "claude-opus-4-20250514",
+      "model": "anthropic/claude-opus-4-20250514",
       "systemPrompt": "You are a senior software engineer. Write clean, tested code.",
       "tools": ["bash", "read", "write", "edit", "glob", "grep"],
       "workspace": "./data/coder-workspace"
     },
     "ops": {
-      "model": "gpt-4o",
+      "model": "openai/gpt-4o",
       "systemPrompt": "You manage infrastructure and deployments.",
       "tools": ["bash", "read"],
       "workspace": "./data/ops-workspace"

@@ -24,7 +24,7 @@ Before you begin, make sure you have:
   </Step>
 
   <Step title="Select a model">
-    Choose which AI model your agent will use. Dash supports models from Anthropic (Claude), OpenAI (GPT), and Google (Gemini). If you're not sure, `claude-sonnet-4-20250514` is a great default — it balances speed and capability.
+    Choose which AI model your agent will use. Dash supports models from Anthropic (Claude), OpenAI (GPT), and Google (Gemini). If you're not sure, `anthropic/claude-sonnet-4-20250514` is a great default — it balances speed and capability.
   </Step>
 
   <Step title="Write a system prompt">
@@ -43,9 +43,9 @@ Before you begin, make sure you have:
     Select which tools your agent can use. Tools let your agent interact with the outside world — reading files, running shell commands, searching directories, and more. See [Tools](/tools) for the full list.
 
     Common starter sets:
-    - **General assistant** — `bash`, `read_file`, `write_file`
-    - **Code-focused** — `bash`, `read_file`, `write_file`, `edit_file`, `glob`, `grep`
-    - **Read-only** — `read_file`, `glob`, `grep`
+    - **General assistant** — `bash`, `read`, `write`
+    - **Code-focused** — `bash`, `read`, `write`, `edit`, `glob`, `grep`
+    - **Read-only** — `read`, `glob`, `grep`
   </Step>
 
   <Step title="Add fallback models (optional)">
