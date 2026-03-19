@@ -25,7 +25,6 @@ export const TOOL_DESCRIPTIONS: Record<string, string> = {
   grep: 'Search for text inside files',
   web_search: 'Search the internet for information',
   web_fetch: 'Download content from web pages',
-  task: 'Track and manage work with a structured task list',
   load_skill: 'Load a reusable skill into the conversation',
   create_skill: 'Create reusable skills the agent remembers across conversations',
 };
@@ -96,11 +95,6 @@ export const TOOL_GROUPS: ToolGroup[] = [
     description: 'Search the internet and fetch pages',
     tools: ['web_search', 'web_fetch'],
   },
-  {
-    name: 'Task Management',
-    description: 'Track work and manage to-do lists',
-    tools: ['task'],
-  },
 ];
 
 /** All tool IDs across all groups, in group order. */
@@ -116,5 +110,4 @@ export const AVAILABLE_TOOLS: ToolOption[] = [
   { value: 'grep', label: 'Grep', description: TOOL_DESCRIPTIONS.grep },
   { value: 'web_search', label: 'Web Search', description: TOOL_DESCRIPTIONS.web_search },
   { value: 'web_fetch', label: 'Web Fetch', description: TOOL_DESCRIPTIONS.web_fetch },
-  { value: 'task', label: 'Task', description: TOOL_DESCRIPTIONS.task },
 ];
