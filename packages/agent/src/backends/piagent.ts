@@ -18,6 +18,11 @@ import type { AgentSession, AgentSessionEvent } from '@mariozechner/pi-coding-ag
 
 import type { Logger } from '../logger.js';
 import { createCreateSkillTool, createLoadSkillTool, scanSkillsDirectory } from '../skills/index.js';
+import { BraveSearchProvider } from '../tools/search-providers/brave.js';
+import { createTaskTool } from '../tools/task.js';
+import { createTodoWriteTool } from '../tools/todowrite.js';
+import { createWebFetchTool } from '../tools/web-fetch.js';
+import { createWebSearchTool } from '../tools/web-search.js';
 import type { SkillDiscoveryResult } from '../skills/types.js';
 import type {
   AgentBackend,
@@ -152,6 +157,24 @@ export class PiAgentBackend implements AgentBackend {
       if (allowedNames.has(name) && toolBuilders[name]) {
         tools.push(toolBuilders[name]());
       }
+    }
+
+    // Web tools
+    if (allowedNames.has('web_fetch')) {
+      tools.push(createWebFetchTool());
+    }
+    if (allowedNames.has('web_search')) {
+      const braveKey = this.providerApiKeys['brave'] ?? this.providerApiKeys['brave-api-key'];
+      const provider = braveKey ? new BraveSearchProvider(braveKey) : null;
+      tools.push(createWebSearchTool(provider));
+    }
+
+    // Task tracking tools
+    if (allowedNames.has('task')) {
+      tools.push(createTaskTool());
+    }
+    if (allowedNames.has('todowrite')) {
+      tools.push(createTodoWriteTool());
     }
 
     // Skill tools
@@ -322,7 +345,11 @@ export class PiAgentBackend implements AgentBackend {
 
       case 'tool_execution_start': {
         const e = event as Extract<PiAgentEvent, { type: 'tool_execution_start' }>;
-        return { type: 'tool_use_start', id: e.toolCallId, name: e.toolName };
+        const input =
+          e.args && typeof e.args === 'object' && !Array.isArray(e.args)
+            ? (e.args as Record<string, unknown>)
+            : undefined;
+        return { type: 'tool_use_start', id: e.toolCallId, name: e.toolName, input };
       }
 
       case 'tool_execution_update': {
