@@ -43,6 +43,28 @@ export class DashAgent {
       systemPrompt = `${preamble}\n\n${systemPrompt}`;
     }
 
+    // Inject skill index if backend supports skills
+    if (this.backend.listSkills) {
+      try {
+        const skills = await this.backend.listSkills();
+        if (skills.length > 0) {
+          const index = skills
+            .map((s) => {
+              const trigger = s.trigger ? ` (trigger: ${s.trigger})` : '';
+              return `- **${s.name}**: ${s.description}${trigger}`;
+            })
+            .join('\n');
+          const hasCreateSkill = this.config.tools?.includes('create_skill');
+          const createHint = hasCreateSkill
+            ? '\nWhen the user asks you to remember a process, save a workflow, or create reusable instructions, use the create_skill tool.'
+            : '';
+          systemPrompt = `${systemPrompt}\n\n## Available Skills\n${index}\n\nUse the load_skill tool to load a skill's full instructions when a task matches one of these skills.${createHint}`;
+        }
+      } catch {
+        // Skill discovery failed — proceed without skills
+      }
+    }
+
     // Load session for compaction context tracking
     const sessionId = `${channelId}:${conversationId}`;
     const sessionStore = this.config.sessionStore;
