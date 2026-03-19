@@ -2,9 +2,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Mock all external modules before importing the module under test
 vi.mock('@dash/agent', () => {
-  const OpenCodeBackend = vi.fn();
-  OpenCodeBackend.prototype.start = vi.fn().mockResolvedValue(undefined);
-  OpenCodeBackend.prototype.stop = vi.fn().mockResolvedValue(undefined);
+  const PiAgentBackend = vi.fn();
+  PiAgentBackend.prototype.start = vi.fn().mockResolvedValue(undefined);
+  PiAgentBackend.prototype.stop = vi.fn().mockResolvedValue(undefined);
 
   const DashAgent = vi.fn();
 
@@ -17,7 +17,9 @@ vi.mock('@dash/agent', () => {
     }),
   };
 
-  return { OpenCodeBackend, DashAgent, LocalAgentClient, FileLogger };
+  const generateFrontmatter = vi.fn().mockReturnValue('---\nname: test\n---\n\ncontent');
+
+  return { PiAgentBackend, DashAgent, LocalAgentClient, FileLogger, generateFrontmatter };
 });
 
 vi.mock('@dash/chat', () => ({
@@ -34,7 +36,7 @@ vi.mock('node:fs/promises', () => ({
   writeFile: vi.fn().mockResolvedValue(undefined),
 }));
 
-import { LocalAgentClient, OpenCodeBackend } from '@dash/agent';
+import { LocalAgentClient, PiAgentBackend } from '@dash/agent';
 import { createAgentServer } from './agent-server.js';
 import type { DashConfig } from './config.js';
 
@@ -63,7 +65,7 @@ describe('createAgentServer startup isolation', () => {
   });
 
   it('starts with remaining agent when one of two agents fails to start', async () => {
-    const MockBackend = OpenCodeBackend as unknown as ReturnType<typeof vi.fn>;
+    const MockBackend = PiAgentBackend as unknown as ReturnType<typeof vi.fn>;
 
     let callCount = 0;
     MockBackend.mockImplementation(() => {
@@ -93,7 +95,7 @@ describe('createAgentServer startup isolation', () => {
   });
 
   it('throws when all agents fail to start', async () => {
-    const MockBackend = OpenCodeBackend as unknown as ReturnType<typeof vi.fn>;
+    const MockBackend = PiAgentBackend as unknown as ReturnType<typeof vi.fn>;
 
     MockBackend.mockImplementation(() => ({
       start: vi.fn().mockRejectedValue(new Error('startup error')),
