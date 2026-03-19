@@ -194,6 +194,7 @@ export class PiAgentBackend implements AgentBackend {
     this.auth = this.setupAuth();
     const model = this.resolveModel(this.config.model);
     const tools = this.buildTools(workspace);
+    this.logger?.info(`[PiAgent] Registering ${tools.length} tools: ${tools.map((t) => t.name).join(', ')}`);
 
     const { session } = await createAgentSession({
       cwd: workspace,
