@@ -32,7 +32,7 @@ export function wrapMcpTool(
     parameters: (def.inputSchema ?? { type: 'object', properties: {} }) as TSchema,
     execute: async (
       _toolCallId: string,
-      params: Record<string, unknown>,
+      params: unknown,
       _signal?: AbortSignal,
     ): Promise<AgentToolResult<McpToolDetails>> => {
       try {
@@ -40,7 +40,7 @@ export function wrapMcpTool(
         const timeoutId = setTimeout(() => timeoutController.abort(), toolTimeout);
 
         try {
-          const result = await callTool(def.name, params);
+          const result = await callTool(def.name, (params ?? {}) as Record<string, unknown>);
           clearTimeout(timeoutId);
 
           const content = (result.content ?? []).map((c) => ({
