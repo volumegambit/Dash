@@ -15,7 +15,10 @@ function parseValue(raw: string): string | string[] {
   if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
     const inner = trimmed.slice(1, -1);
     if (inner.trim() === '') return [];
-    return inner.split(',').map((s) => s.trim()).filter((s) => s !== '');
+    return inner
+      .split(',')
+      .map((s) => s.trim())
+      .filter((s) => s !== '');
   }
 
   return trimmed;

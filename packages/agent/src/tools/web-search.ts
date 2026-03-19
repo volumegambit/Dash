@@ -21,16 +21,12 @@ type WebSearchInput = Static<typeof webSearchSchema>;
 /**
  * Format an array of search results as a numbered markdown list.
  */
-function formatResults(
-  results: Awaited<ReturnType<SearchProvider['search']>>,
-): string {
+function formatResults(results: Awaited<ReturnType<SearchProvider['search']>>): string {
   if (results.length === 0) {
     return 'No results found.';
   }
 
-  return results
-    .map((r, i) => `${i + 1}. [${r.title}](${r.url})\n   ${r.snippet}`)
-    .join('\n\n');
+  return results.map((r, i) => `${i + 1}. [${r.title}](${r.url})\n   ${r.snippet}`).join('\n\n');
 }
 
 /**

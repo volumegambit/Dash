@@ -17,12 +17,16 @@ import {
 import type { AgentSession, AgentSessionEvent } from '@mariozechner/pi-coding-agent';
 
 import type { Logger } from '../logger.js';
-import { createCreateSkillTool, createLoadSkillTool, scanSkillsDirectory } from '../skills/index.js';
+import {
+  createCreateSkillTool,
+  createLoadSkillTool,
+  scanSkillsDirectory,
+} from '../skills/index.js';
+import type { SkillDiscoveryResult } from '../skills/types.js';
 import { BraveSearchProvider } from '../tools/search-providers/brave.js';
 import { createTodoWriteTool } from '../tools/todowrite.js';
 import { createWebFetchTool } from '../tools/web-fetch.js';
 import { createWebSearchTool } from '../tools/web-search.js';
-import type { SkillDiscoveryResult } from '../skills/types.js';
 import type {
   AgentBackend,
   AgentEvent,
@@ -175,8 +179,13 @@ export class PiAgentBackend implements AgentBackend {
       label: tool.label,
       description: tool.description,
       parameters: tool.parameters,
-      execute: (toolCallId: string, params: any, signal?: AbortSignal, onUpdate?: any, _ctx?: any) =>
-        tool.execute(toolCallId, params, signal, onUpdate),
+      execute: (
+        toolCallId: string,
+        params: any,
+        signal?: AbortSignal,
+        onUpdate?: any,
+        _ctx?: any,
+      ) => tool.execute(toolCallId, params, signal, onUpdate),
     });
 
     // ── Core tools (always registered, not user-configurable) ──────────

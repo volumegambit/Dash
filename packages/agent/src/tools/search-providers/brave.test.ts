@@ -34,8 +34,7 @@ describe('BraveSearchProvider', () => {
     };
 
     const originalFetch = globalThis.fetch;
-    globalThis.fetch = async () =>
-      new Response(JSON.stringify(mockResponse), { status: 200 });
+    globalThis.fetch = async () => new Response(JSON.stringify(mockResponse), { status: 200 });
 
     try {
       const results = await provider.search('test query');
@@ -71,8 +70,7 @@ describe('BraveSearchProvider', () => {
     };
 
     const originalFetch = globalThis.fetch;
-    globalThis.fetch = async () =>
-      new Response(JSON.stringify(mockResponse), { status: 200 });
+    globalThis.fetch = async () => new Response(JSON.stringify(mockResponse), { status: 200 });
 
     try {
       const results = await provider.search('test');
@@ -86,8 +84,7 @@ describe('BraveSearchProvider', () => {
     const provider = new BraveSearchProvider('valid-key');
 
     const originalFetch = globalThis.fetch;
-    globalThis.fetch = async () =>
-      new Response(JSON.stringify({}), { status: 200 });
+    globalThis.fetch = async () => new Response(JSON.stringify({}), { status: 200 });
 
     try {
       const results = await provider.search('nothing');

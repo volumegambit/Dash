@@ -85,7 +85,10 @@ describe('TOOL_DESCRIPTIONS sync with AGENT_TOOL_NAMES', () => {
     const agentTools = new Set<string>(AGENT_TOOL_NAMES);
     for (const name of Object.keys(TOOL_DESCRIPTIONS)) {
       if (autoRegistered.has(name)) continue;
-      expect(agentTools.has(name), `TOOL_DESCRIPTIONS has "${name}" but it's not in AGENT_TOOL_NAMES`).toBe(true);
+      expect(
+        agentTools.has(name),
+        `TOOL_DESCRIPTIONS has "${name}" but it's not in AGENT_TOOL_NAMES`,
+      ).toBe(true);
     }
   });
 });

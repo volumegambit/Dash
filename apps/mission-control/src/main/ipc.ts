@@ -373,7 +373,9 @@ export async function registerIpcHandlers(
           }
         })
         .catch((err) => console.error('[codex-auth] Credential push error:', err));
-      getModelCache().refresh().catch(() => {});
+      getModelCache()
+        .refresh()
+        .catch(() => {});
 
       return { success: true };
     } catch (err) {
@@ -435,7 +437,9 @@ export async function registerIpcHandlers(
             }
           })
           .catch((err) => console.error('[claude-auth] Credential push error:', err));
-        getModelCache().refresh().catch(() => {});
+        getModelCache()
+          .refresh()
+          .catch(() => {});
 
         return { success: true };
       } catch (err) {

@@ -194,8 +194,7 @@ export function DeployWizard(): JSX.Element {
                   onChange={() =>
                     setAgent((prev) => ({
                       ...prev,
-                      tools:
-                        prev.tools.length === ALL_TOOL_IDS.length ? [] : [...ALL_TOOL_IDS],
+                      tools: prev.tools.length === ALL_TOOL_IDS.length ? [] : [...ALL_TOOL_IDS],
                     }))
                   }
                   className="accent-primary"
@@ -206,8 +205,7 @@ export function DeployWizard(): JSX.Element {
             <div className="space-y-2">
               {TOOL_GROUPS.map((group) => {
                 const allEnabled = group.tools.every((t) => agent.tools.includes(t));
-                const someEnabled =
-                  !allEnabled && group.tools.some((t) => agent.tools.includes(t));
+                const someEnabled = !allEnabled && group.tools.some((t) => agent.tools.includes(t));
                 return (
                   <label
                     key={group.name}
@@ -221,9 +219,7 @@ export function DeployWizard(): JSX.Element {
                       }}
                       onChange={() =>
                         setAgent((prev) => {
-                          const without = prev.tools.filter(
-                            (t) => !group.tools.includes(t),
-                          );
+                          const without = prev.tools.filter((t) => !group.tools.includes(t));
                           return {
                             ...prev,
                             tools: allEnabled ? without : [...without, ...group.tools],
