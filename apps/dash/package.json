@@ -19,6 +19,7 @@
     "@dash/agent": "*",
     "@dash/chat": "*",
     "@dash/management": "*",
+    "@dash/mcp": "*",
     "dotenv": "^16.4.0",
     "pino": "^9.6.0"
   },
