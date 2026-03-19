@@ -20,7 +20,7 @@ import { getModel } from '@mariozechner/pi-ai';
 import type { AssistantMessage, ImageContent, Model, Usage } from '@mariozechner/pi-ai';
 
 import type { Logger } from '../logger.js';
-import { scanSkillsDirectory } from '../skills/index.js';
+import { createCreateSkillTool, createLoadSkillTool, scanSkillsDirectory } from '../skills/index.js';
 import type { SkillDiscoveryResult } from '../skills/types.js';
 import type {
   AgentBackend,
@@ -154,6 +154,15 @@ export class PiAgentBackend implements AgentBackend {
       if (allowedNames.has(name) && toolBuilders[name]) {
         tools.push(toolBuilders[name]());
       }
+    }
+
+    // Skill tools
+    const hasSkillPaths = this.config.skills?.paths && this.config.skills.paths.length > 0;
+    if (hasSkillPaths || this.managedSkillsDir) {
+      tools.push(createLoadSkillTool(() => this.listSkills()));
+    }
+    if (allowedNames.has('create_skill') && this.managedSkillsDir) {
+      tools.push(createCreateSkillTool(this.managedSkillsDir));
     }
 
     return tools;
