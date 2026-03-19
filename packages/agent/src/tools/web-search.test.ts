@@ -1,5 +1,5 @@
-import { createWebSearchTool } from './web-search.js';
 import type { SearchProvider, SearchResult } from './search-providers/types.js';
+import { createWebSearchTool } from './web-search.js';
 
 function makeProvider(results: SearchResult[], error?: Error): SearchProvider {
   return {

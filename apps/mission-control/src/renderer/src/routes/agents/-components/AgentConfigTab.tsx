@@ -31,7 +31,6 @@ export function AgentConfigTab({
     refresh: refreshModels,
   } = useAvailableModels();
 
-
   // Which card is open (null = all collapsed). Opening goes straight to edit mode.
   const [openCard, setOpenCard] = useState<'models' | 'prompt' | 'tools' | null>(null);
 
@@ -172,8 +171,9 @@ export function AgentConfigTab({
     : '(none)';
 
   const enabledTools = new Set(agentConfig.tools ?? []);
-  const enabledGroupCount = TOOL_GROUPS.filter((g) => g.tools.every((t) => enabledTools.has(t)))
-    .length;
+  const enabledGroupCount = TOOL_GROUPS.filter((g) =>
+    g.tools.every((t) => enabledTools.has(t)),
+  ).length;
   const toolsSummary = `${enabledGroupCount} of ${TOOL_GROUPS.length} groups enabled`;
 
   return (
@@ -350,8 +350,7 @@ export function AgentConfigTab({
             <div className="space-y-2">
               {TOOL_GROUPS.map((group) => {
                 const allEnabled = group.tools.every((t) => toolsDraft.includes(t));
-                const someEnabled =
-                  !allEnabled && group.tools.some((t) => toolsDraft.includes(t));
+                const someEnabled = !allEnabled && group.tools.some((t) => toolsDraft.includes(t));
                 return (
                   <label
                     key={group.name}

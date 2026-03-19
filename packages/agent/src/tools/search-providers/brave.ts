@@ -28,16 +28,14 @@ export class BraveSearchProvider implements SearchProvider {
 
     const response = await fetch(url, {
       headers: {
-        'Accept': 'application/json',
+        Accept: 'application/json',
         'Accept-Encoding': 'gzip',
         'X-Subscription-Token': this.apiKey,
       },
     });
 
     if (!response.ok) {
-      throw new Error(
-        `Brave Search API error: ${response.status} ${response.statusText}`,
-      );
+      throw new Error(`Brave Search API error: ${response.status} ${response.statusText}`);
     }
 
     const data = (await response.json()) as BraveSearchResponse;

@@ -269,9 +269,7 @@ export function resolveAgentKeys(
       const available = Object.keys(keys);
       const firstKey = available[0];
       if (!firstKey || !keys[firstKey]) {
-        throw new Error(
-          `No API keys available for provider "${provider}".`,
-        );
+        throw new Error(`No API keys available for provider "${provider}".`);
       }
       resolved[provider] = keys[firstKey];
     }

@@ -138,7 +138,12 @@ describe('PiAgentBackend.normalizeEvent', () => {
       toolName: 'bash',
       args: { command: 'ls' },
     } as any);
-    expect(result).toEqual({ type: 'tool_use_start', id: 'call-1', name: 'bash' });
+    expect(result).toEqual({
+      type: 'tool_use_start',
+      id: 'call-1',
+      name: 'bash',
+      input: { command: 'ls' },
+    });
   });
 
   it('returns tool_use_delta for tool_execution_update', () => {

@@ -25,7 +25,6 @@ import {
   isTodoWrite,
   parseTodos,
   summarize,
-  toolIcon,
   toolLabel,
 } from './chat.helpers.js';
 
@@ -146,8 +145,8 @@ function renderEvents(
         className="mb-2 flex items-center gap-2 rounded border border-border bg-sidebar-hover px-3 py-1.5 text-xs text-muted"
       >
         <Loader size={12} className="animate-spin shrink-0" />
-        {toolIcon(toolName)} <span className="font-mono">{toolLabel(toolName)}</span>
-        {inProgressSummary && <span className="ml-1">→ {inProgressSummary}</span>}
+        <span className="font-mono">{toolLabel(toolName)}</span>
+        {inProgressSummary && <span className="ml-1 text-muted">{inProgressSummary}</span>}
       </div>,
     );
   }
@@ -187,7 +186,7 @@ function ThinkingBlock({ text }: { text: string }): JSX.Element {
         onClick={() => setOpen((o) => !o)}
         className="w-full px-3 py-1.5 text-left text-xs text-muted hover:text-foreground"
       >
-        💭 {open ? 'Hide' : 'Show'} thinking
+        {open ? 'Hide' : 'Show'} thinking
       </button>
       {open && <p className="px-3 pb-2 text-xs text-muted whitespace-pre-wrap">{text}</p>}
     </div>
@@ -213,10 +212,9 @@ function QuestionBlock({
   if (answered) {
     return (
       <div className="mb-2 rounded border border-border bg-sidebar-hover px-3 py-1.5 text-xs">
-        ❓ <span className="text-muted">Question</span>
-        <span className="ml-1 text-muted">→</span>
+        <span className="text-muted">Question</span>
         <span className="ml-1">{answer}</span>
-        <span className="ml-1">✓</span>
+        <span className="ml-1 text-green-400">✓</span>
       </div>
     );
   }
@@ -304,7 +302,6 @@ function ToolBlock({
 }: { name: string; input: string; result: string; isError?: boolean }): JSX.Element {
   const [open, setOpen] = useState(false);
   const [showRaw, setShowRaw] = useState(false);
-  const icon = toolIcon(name);
   const summary = summarize(name, input);
   const details = formatDetails(input);
   const todos = isTodoWrite(name) ? parseTodos(input) : null;
@@ -318,9 +315,11 @@ function ToolBlock({
         onClick={() => setOpen((o) => !o)}
         className="w-full px-3 py-1.5 text-left hover:text-foreground"
       >
-        {icon} <span className="font-mono">{toolLabel(name)}</span>
-        {summary && <span className="ml-1 text-muted">→ {summary}</span>}
-        {isError ? ' ✗' : ' ✓'}
+        <span className="font-mono">{toolLabel(name)}</span>
+        {summary && <span className="ml-1 text-muted">{summary}</span>}
+        <span className={`ml-1 ${isError ? 'text-red-400' : 'text-green-400'}`}>
+          {isError ? '✗' : '✓'}
+        </span>
       </button>
       {open && (
         <div className="border-t border-border px-3 pb-2 pt-1">
@@ -498,19 +497,18 @@ function PinnedTodoPanel({ todos }: { todos: TodoItem[] }): JSX.Element {
           className="flex flex-1 items-center justify-between hover:text-foreground"
         >
           <span className="flex items-center gap-2 min-w-0">
-            <span>📋</span>
+            <span className="text-muted">Tasks</span>
             <span className="font-medium">
               Tasks: {completed}/{todos.length} completed
               {inProgress > 0 && ` · ${inProgress} in progress`}
             </span>
-            {collapsed && (() => {
-              const active = todos.find((t) => t.status === 'in_progress');
-              return active ? (
-                <span className="text-blue-400 font-normal truncate">
-                  — {active.content}
-                </span>
-              ) : null;
-            })()}
+            {collapsed &&
+              (() => {
+                const active = todos.find((t) => t.status === 'in_progress');
+                return active ? (
+                  <span className="text-blue-400 font-normal truncate">— {active.content}</span>
+                ) : null;
+              })()}
           </span>
           {collapsed ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
         </button>

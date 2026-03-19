@@ -371,9 +371,7 @@ export function AiProviders(): JSX.Element {
                               ) : (
                                 <button
                                   type="button"
-                                  onClick={() =>
-                                    setModal({ provider: p.id, keyName: entry.name })
-                                  }
+                                  onClick={() => setModal({ provider: p.id, keyName: entry.name })}
                                   className="text-xs text-primary hover:underline"
                                 >
                                   Update
