@@ -1,6 +1,6 @@
 ---
 title: "Getting started"
-description: "Install Dash, configure credentials, and run your first agent on your own machine."
+description: "Install Dash, launch Mission Control, and deploy your first AI agent."
 ---
 
 Get your first AI agent teammate up and running in minutes. No coding required.
@@ -12,7 +12,7 @@ Get your first AI agent teammate up and running in minutes. No coding required.
 
 ## Getting Your Anthropic API Key
 
-Dash uses the Claude AI model from Anthropic. To use it, you need an Anthropic account and an API key.
+Dash works with Claude from Anthropic out of the box. To use it, you need an Anthropic account and an API key.
 
 **Step 1:** Go to [console.anthropic.com](https://console.anthropic.com) and create an account.
 
@@ -43,132 +43,92 @@ Dash uses the Claude AI model from Anthropic. To use it, you need an Anthropic a
   </Step>
 </Steps>
 
-## Set up credentials
+## Launch Mission Control
 
-Your agents need access to an AI provider. Set that up once and all your agents share it.
-
-<Tabs>
-  <Tab title="Mission Control (recommended)">
-    When using Mission Control (desktop app or CLI), secrets are stored in an encrypted file at `~/.mission-control/secrets.enc`. The first time you run a command, you'll be prompted to create an encryption password:
-
-    ```bash
-    npm run mc-cli -- secrets set anthropic-api-key
-    # Create encryption password: ********
-    # Confirm password: ********
-    # Value for 'anthropic-api-key': sk-ant-...
-    # Secret 'anthropic-api-key' stored.
-    ```
-
-    Your password-derived key is cached in the OS keychain (macOS Keychain / Linux secret-tool), so subsequent commands don't prompt again. Use `mc lock` to clear the cache.
-  </Tab>
-  <Tab title="Environment variables">
-    For the agent server and TUI, set your key in a `.env` file:
-
-    ```bash
-    cp .env.example .env
-    ```
-
-    Edit `.env`:
-
-    ```env
-    ANTHROPIC_API_KEY=sk-ant-...
-    LOG_LEVEL=info
-    ```
-  </Tab>
-  <Tab title="Credentials file">
-    Copy the example credentials file:
-
-    ```bash
-    cp config.example/credentials.json config/credentials.json
-    ```
-
-    Edit `config/credentials.json`:
-
-    ```json
-    {
-      "anthropic": {
-        "apiKey": "sk-ant-..."
-      }
-    }
-    ```
-  </Tab>
-</Tabs>
-
-<Note>
-  For the agent server: environment variables take precedence over `credentials.json`. For Mission Control deployments: the encrypted secret store is the primary source, and secrets are injected into agents via temporary read-then-delete files.
-</Note>
-
-### Agent configuration
-
-Copy the example config:
+Mission Control is the recommended way to manage your agents. It gives you a desktop app where you can deploy agents, chat with them, and connect them to messaging platforms.
 
 ```bash
-cp config.example/dash.json config/dash.json
+npm run mc:dev
 ```
 
-See [configuration](/configuration) for the full schema.
+The app opens automatically. From here, you will connect an AI provider and deploy your first agent.
 
-## Launch your team
+## Connect your AI provider
 
-Choose how you want to manage your agent team.
+Before deploying an agent, you need to connect at least one AI provider. Mission Control stores your API key in an encrypted file on your machine.
 
-<Tabs>
-  <Tab title="Mission Control (recommended)">
-    Use Mission Control to deploy and chat with your agents from a desktop app. Recommended for most users.
+<Steps>
+  <Step title="Open Connections">
+    In the Mission Control sidebar, click **Connections**.
+  </Step>
+  <Step title="Add your API key">
+    Select your provider (Anthropic, OpenAI, or Google) and paste your API key. If this is your first time, you will be asked to create an encryption password. This password protects all your stored secrets.
+  </Step>
+  <Step title="Verify">
+    Once saved, the provider shows a connected status. All agents that use this provider will share the key automatically.
+  </Step>
+</Steps>
 
-    ```bash
-    npm run mc:dev
+Dash also supports OpenAI and Google models. See [AI Providers](/ai-providers) for details on connecting additional providers.
+
+## Deploy your first agent
+
+Now that your provider is connected, you can deploy an agent.
+
+<Steps>
+  <Step title="Open the Deploy wizard">
+    Click **Deploy** in the sidebar. This opens the deployment wizard.
+  </Step>
+  <Step title="Choose a name">
+    Give your agent a descriptive name, like "assistant" or "code-reviewer".
+  </Step>
+  <Step title="Select a model">
+    Pick the model your agent will use. If you are not sure, Claude Sonnet 4 is a great starting point — it balances speed and capability.
+  </Step>
+  <Step title="Write a system prompt">
+    Tell your agent who it is and how to behave. For example:
+
     ```
-  </Tab>
-  <Tab title="TUI">
-    A terminal interface for managing and chatting with agents directly. Great for quick interactions.
-
-    ```bash
-    npm run tui
+    You are a helpful assistant. You help with research, writing,
+    and general tasks. Be concise but thorough.
     ```
+  </Step>
+  <Step title="Pick tools">
+    Select which tools your agent can use. A good starter set is **bash**, **read**, and **write**. See [Tools](/tools) for the full list.
+  </Step>
+  <Step title="Deploy">
+    Click **Deploy**. Mission Control starts your agent as a background process with its own workspace and ports.
+  </Step>
+</Steps>
 
-    You'll see a header showing the active agent, model, tools, and workspace path. Type a message and press Enter.
-  </Tab>
-  <Tab title="Agent Server">
-    Run the agent server headlessly — ideal for automated workflows or server deployments.
+Your agent appears in the sidebar. Click it to check that the status shows "running".
 
-    ```bash
-    npm run dev
-    ```
+## Chat with your agent
 
-    To enable the APIs, set tokens in your `.env`:
+Click **Chat** in the sidebar, select your agent, and type a message. You will see the agent thinking, using tools, and responding in real time.
 
-    ```env
-    MANAGEMENT_API_TOKEN=your-management-token
-    CHAT_API_TOKEN=your-chat-token
-    ```
+That is it — your first agent is deployed and ready to work.
 
-    The Management API listens on port 9100 and the Chat API on port 9101. Connect via WebSocket to interact with agents.
-  </Tab>
-  <Tab title="Docker">
-    Deploy your agent team in a container. Useful for consistent, portable setups.
+## Other ways to run Dash
 
-    ```bash
-    docker compose up --build
-    ```
+Mission Control is the recommended approach, but Dash also supports other interfaces for specific use cases.
 
-    Session data is persisted via a volume mount at `./data/sessions`. Config is mounted read-only from `./config`.
-  </Tab>
-</Tabs>
+- **TUI** — a terminal interface for quick interactions: `npm run tui`
+- **Agent Server** — run agents headlessly for automation: `npm run dev`
+- **CLI** — manage deployments from the terminal: `npm run mc-cli -- <command>`
+
+See [Mission Control](/mission-control) and [CLI Reference](/cli-reference) for details.
 
 ## Next steps
 
-<CardGroup cols={2}>
-  <Card title="Configuration" icon="gear" href="/configuration">
-    Full config schema, env vars, and CLI flags
+<CardGroup cols={3}>
+  <Card title="Agents" icon="robot" href="/agents">
+    Learn how agents work and how to configure them.
   </Card>
-  <Card title="Chat" icon="messages" href="/chat-with-your-agent">
-    Talk to agents via Mission Control, Telegram, or WebSocket
+  <Card title="Deploy Your First Agent" icon="rocket" href="/deploy-your-first-agent">
+    Detailed walkthrough of the deploy wizard.
   </Card>
-  <Card title="Tools" icon="wrench" href="/tools">
-    Built-in tools and workspace sandboxing
-  </Card>
-  <Card title="Extended thinking" icon="brain" href="/extended-thinking">
-    Enable deeper reasoning
+  <Card title="Messaging Apps" icon="comments" href="/messaging-apps">
+    Connect your agents to Telegram, WhatsApp, and more.
   </Card>
 </CardGroup>

@@ -9,6 +9,8 @@
 [![Docker](https://img.shields.io/badge/Docker-ready-2496ED?logo=docker&logoColor=white)](https://www.docker.com)
 [![License](https://img.shields.io/badge/license-private-red)]()
 
+> **⚠️ Alpha Software** — Dash is under heavy development. APIs, configuration, and features may change without notice. Use at your own risk and expect rough edges.
+
 DashSquad.ai (Dash) lets anyone run a team of AI agents that work autonomously — handling tasks, making decisions, and getting things done — so you don't have to.
 
 Whether you're a solo operator or managing a team, Dash puts a crew of AI agents to work for you. Define what they do, set them loose, and check back on results.

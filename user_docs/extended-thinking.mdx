@@ -13,9 +13,9 @@ Add a `thinking` block to an agent's configuration in `config/dash.json`:
 {
   "agents": {
     "coder": {
-      "model": "claude-sonnet-4-20250514",
+      "model": "anthropic/claude-sonnet-4-20250514",
       "systemPrompt": "You are a software engineering assistant.",
-      "tools": ["bash", "read_file"],
+      "tools": ["bash", "read"],
       "maxTokens": 16000,
       "thinking": {
         "budgetTokens": 10000

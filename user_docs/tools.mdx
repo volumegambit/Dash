@@ -1,15 +1,77 @@
 ---
 title: "Tools"
-description: "Built-in tools for shell command execution and file reading, with workspace sandboxing."
+description: "Built-in tools for file operations, shell commands, web access, skills, and integrations — with workspace sandboxing."
 ---
 
-Tools are what your agents can *do*. Each tool gives an agent a real-world capability — running commands, reading files, and more. Tools are enabled per-agent via the `tools` array in `config/dash.json`.
+Tools are what your agents can *do*. Each tool gives an agent a real-world capability — reading files, running commands, searching the web, and more. Tools are enabled per-agent via the `tools` array in your config.
 
-## Available tools
+## File tools
+
+<Tabs>
+  <Tab title="read">
+    Read the contents of a file and return it as text.
+
+    | Parameter | Type | Required | Description |
+    |-----------|------|----------|-------------|
+    | `path` | `string` | yes | File path to read |
+
+    Paths are resolved relative to the workspace when configured. Path traversal outside the workspace is blocked.
+  </Tab>
+  <Tab title="write">
+    Create a new file or overwrite an existing file.
+
+    | Parameter | Type | Required | Description |
+    |-----------|------|----------|-------------|
+    | `path` | `string` | yes | File path to write |
+    | `content` | `string` | yes | Content to write |
+
+    Paths are resolved relative to the workspace when configured.
+  </Tab>
+  <Tab title="edit">
+    Make targeted changes to an existing file (find-and-replace).
+
+    | Parameter | Type | Required | Description |
+    |-----------|------|----------|-------------|
+    | `path` | `string` | yes | File path to edit |
+    | `old_string` | `string` | yes | Text to find |
+    | `new_string` | `string` | yes | Replacement text |
+
+    Paths are resolved relative to the workspace when configured.
+  </Tab>
+  <Tab title="ls">
+    List files and directories at a given path.
+
+    | Parameter | Type | Required | Description |
+    |-----------|------|----------|-------------|
+    | `path` | `string` | yes | Directory path to list |
+
+    Paths are resolved relative to the workspace when configured.
+  </Tab>
+  <Tab title="glob">
+    Find files by name or pattern (e.g. `**/*.ts`).
+
+    | Parameter | Type | Required | Description |
+    |-----------|------|----------|-------------|
+    | `pattern` | `string` | yes | Glob pattern to match |
+
+    Searches within the workspace when configured.
+  </Tab>
+  <Tab title="grep">
+    Search for text or patterns inside files.
+
+    | Parameter | Type | Required | Description |
+    |-----------|------|----------|-------------|
+    | `pattern` | `string` | yes | Text or regex to search for |
+
+    Searches within the workspace when configured.
+  </Tab>
+</Tabs>
+
+## Shell
 
 <Tabs>
   <Tab title="bash">
-    Executes a shell command and returns its output.
+    Execute a shell command and return its output.
 
     | Parameter | Type | Required | Description |
     |-----------|------|----------|-------------|
@@ -21,29 +83,69 @@ Tools are what your agents can *do*. Each tool gives an agent a real-world capab
     - **Output size**: 100 KB — output beyond this limit is truncated
 
     When a workspace is configured, `bash` sets its working directory (`cwd`) to the workspace path. Commands still have access to the full system; the workspace only sets the starting directory.
-
-    **Example interaction:**
-
-    ```
-    User: List the files in the workspace
-    Agent: [bash] ls -la
-    → total 24
-      drwxr-xr-x  4 user  staff  128 Jan 15 10:00 .
-      -rw-r--r--  1 user  staff  256 Jan 15 10:00 notes.md
-    ```
   </Tab>
-  <Tab title="read_file">
-    Reads the contents of a file and returns it as text.
+</Tabs>
+
+## Web
+
+<Tabs>
+  <Tab title="web_search">
+    Search the internet for information and return results.
 
     | Parameter | Type | Required | Description |
     |-----------|------|----------|-------------|
-    | `path` | `string` | yes | File path to read |
+    | `query` | `string` | yes | Search query |
 
-    **Limits:**
+    Not affected by workspace sandboxing.
+  </Tab>
+  <Tab title="web_fetch">
+    Download content from a URL and return it as text.
 
-    - **File size**: 500 KB — files larger than this are truncated with a `(truncated at 500KB)` notice
+    | Parameter | Type | Required | Description |
+    |-----------|------|----------|-------------|
+    | `url` | `string` | yes | URL to fetch |
 
-    When a workspace is configured, paths are resolved relative to the workspace directory. Path traversal outside the workspace (e.g. `../../etc/passwd`) is blocked — the tool validates that the resolved real path stays within the workspace boundary.
+    Not affected by workspace sandboxing.
+  </Tab>
+</Tabs>
+
+## Skills
+
+<Tabs>
+  <Tab title="load_skill">
+    Load a reusable skill into the current conversation context.
+
+    | Parameter | Type | Required | Description |
+    |-----------|------|----------|-------------|
+    | `name` | `string` | yes | The skill name to load |
+
+    The agent uses this tool when it identifies that a task matches one of its available skills. Returns the full skill instructions so the agent can follow them.
+  </Tab>
+  <Tab title="create_skill">
+    Create a reusable skill that persists across conversations.
+
+    | Parameter | Type | Required | Description |
+    |-----------|------|----------|-------------|
+    | `name` | `string` | yes | Skill name (lowercase alphanumeric and hyphens, max 64 chars) |
+    | `description` | `string` | yes | When to use this skill — powers automatic discovery |
+    | `content` | `string` | yes | Full skill instructions as markdown |
+    | `trigger` | `string` | no | Trigger keyword or phrase for automatic activation |
+    | `tools` | `string[]` | no | Tool names this skill uses |
+    | `tags` | `string[]` | no | Tags for categorization |
+
+    The agent creates skills when the user asks it to remember a process, save a workflow, or build reusable instructions. Skills are persisted to the managed skills directory and available in future conversations.
+  </Tab>
+</Tabs>
+
+## Integrations
+
+<Tabs>
+  <Tab title="mcp">
+    Connect to external services and tools via the Model Context Protocol (MCP).
+
+    MCP lets agents access third-party tools and data sources through a standardized interface. When enabled, the agent can discover and call tools provided by MCP servers.
+
+    Not affected by workspace sandboxing.
   </Tab>
 </Tabs>
 
@@ -68,30 +170,16 @@ The workspace path is resolved relative to the project root. The directory is cr
 | Tool | Behavior |
 |------|----------|
 | `bash` | Workspace is set as the working directory (`cwd`). The command itself is not sandboxed — it can still access other paths if given absolute paths. |
-| `read_file` | Paths are resolved relative to the workspace. Uses `realpath()` to verify the final resolved path stays within the workspace. Symlinks that escape the workspace are blocked. |
+| `read` | Paths are resolved relative to the workspace. Uses `realpath()` to verify the final resolved path stays within the workspace. Symlinks that escape the workspace are blocked. |
+| `write` | Paths are resolved relative to the workspace. Path traversal outside the workspace is blocked. |
+| `edit` | Paths are resolved relative to the workspace. Path traversal outside the workspace is blocked. |
+| `ls` | Paths are resolved relative to the workspace. |
+| `glob` | Searches within the workspace directory. |
+| `grep` | Searches within the workspace directory. |
+| `web_search` | Not affected — operates independently of the workspace. |
+| `web_fetch` | Not affected — operates independently of the workspace. |
+| `mcp` | Not affected — operates independently of the workspace. |
 
 <Note>
-  If no workspace is configured, tools operate without path restrictions — `bash` runs in the default directory and `read_file` accepts any absolute path.
+  If no workspace is configured, file tools operate without path restrictions and `bash` runs in the default directory.
 </Note>
-
-## Tool registration
-
-Tools are registered via a factory map in `packages/agent/src/tools/index.ts`. The `resolveTools()` function maps tool name strings from the config to `Tool` instances:
-
-```
-config: ["bash", "read_file"]
-  → resolveTools(names, workspace)
-  → [BashTool, ReadFileTool]
-```
-
-Each tool implements the `Tool` interface:
-
-```typescript
-interface Tool {
-  name: string;
-  definition: ToolDefinition;  // JSON schema for the LLM
-  execute(input: Record<string, unknown>): Promise<ToolExecutionResult>;
-}
-```
-
-An unknown tool name in the config causes a startup error listing the available tools.
