@@ -10,3 +10,4 @@ export type {
   TokenStore,
 } from './types.js';
 export { InMemoryTokenStore, SERVER_NAME_PATTERN, NAMESPACE_SEPARATOR } from './types.js';
+export { interpolateEnvVars, interpolateConfigEnvVars } from './env.js';
