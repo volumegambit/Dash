@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@mariozechner/pi-coding-agent', () => ({
   AuthStorage: {
@@ -10,6 +10,7 @@ vi.mock('@mariozechner/pi-coding-agent', () => ({
   },
   SessionManager: {
     inMemory: vi.fn(() => ({})),
+    continueRecent: vi.fn(() => ({})),
   },
   createAgentSession: vi.fn(),
   createBashTool: vi.fn(() => ({ name: 'bash' })),
@@ -38,6 +39,10 @@ function makeBackend() {
     {},
   );
 }
+
+beforeEach(() => {
+  vi.clearAllMocks();
+});
 
 describe('PiAgentBackend', () => {
   it('has name "piagent"', () => {
@@ -109,7 +114,17 @@ describe('PiAgentBackend.normalizeEvent', () => {
       assistantMessageEvent: {
         type: 'error',
         reason: 'error',
-        error: { role: 'assistant', content: [], api: 'anthropic-messages', provider: 'anthropic', model: 'test', usage: {} as any, stopReason: 'error', errorMessage: 'API key invalid', timestamp: 0 },
+        error: {
+          role: 'assistant',
+          content: [],
+          api: 'anthropic-messages',
+          provider: 'anthropic',
+          model: 'test',
+          usage: {} as any,
+          stopReason: 'error',
+          errorMessage: 'API key invalid',
+          timestamp: 0,
+        },
       },
     });
     expect(result).toEqual({ type: 'error', error: new Error('API key invalid') });
@@ -327,7 +342,17 @@ describe('PiAgentBackend lifecycle', () => {
         });
         subscribeCb!({
           type: 'message_end',
-          message: { role: 'assistant', usage: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0, totalTokens: 15, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } },
+          message: {
+            role: 'assistant',
+            usage: {
+              input: 10,
+              output: 5,
+              cacheRead: 0,
+              cacheWrite: 0,
+              totalTokens: 15,
+              cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+            },
+          },
         });
         subscribeCb!({ type: 'agent_end', messages: [] });
       }),
@@ -372,5 +397,69 @@ describe('PiAgentBackend lifecycle', () => {
     ]);
 
     await backend.stop();
+  });
+});
+
+describe('PiAgentBackend sessionDir', () => {
+  it('accepts optional sessionDir parameter', () => {
+    const backend = new PiAgentBackend(
+      { model: 'anthropic/claude-sonnet-4-5', systemPrompt: 'test' },
+      { anthropic: 'sk-test-key' },
+      undefined,
+      '/tmp/test-session-dir',
+    );
+    expect(backend).toBeDefined();
+    expect(backend.name).toBe('piagent');
+  });
+
+  it('uses SessionManager.continueRecent when sessionDir is provided', async () => {
+    const { SessionManager, createAgentSession } = await import('@mariozechner/pi-coding-agent');
+    vi.mocked(createAgentSession).mockResolvedValueOnce({
+      session: {
+        dispose: vi.fn(),
+        subscribe: vi.fn(),
+        prompt: vi.fn(),
+        abort: vi.fn(),
+        setModel: vi.fn(),
+        agent: { setSystemPrompt: vi.fn() },
+      } as any,
+      extensionsResult: {} as any,
+    });
+
+    const backend = new PiAgentBackend(
+      { model: 'anthropic/claude-sonnet-4-5', systemPrompt: 'test' },
+      { anthropic: 'sk-test-key' },
+      undefined,
+      '/tmp/test-session-dir',
+    );
+    await backend.start('/tmp/workspace');
+    expect(SessionManager.continueRecent).toHaveBeenCalledWith(
+      '/tmp/workspace',
+      '/tmp/test-session-dir',
+    );
+    expect(SessionManager.inMemory).not.toHaveBeenCalled();
+  });
+
+  it('uses SessionManager.inMemory when no sessionDir is provided', async () => {
+    const { SessionManager, createAgentSession } = await import('@mariozechner/pi-coding-agent');
+    vi.mocked(createAgentSession).mockResolvedValueOnce({
+      session: {
+        dispose: vi.fn(),
+        subscribe: vi.fn(),
+        prompt: vi.fn(),
+        abort: vi.fn(),
+        setModel: vi.fn(),
+        agent: { setSystemPrompt: vi.fn() },
+      } as any,
+      extensionsResult: {} as any,
+    });
+
+    const backend = new PiAgentBackend(
+      { model: 'anthropic/claude-sonnet-4-5', systemPrompt: 'test' },
+      { anthropic: 'sk-test-key' },
+    );
+    await backend.start('/tmp/workspace');
+    expect(SessionManager.inMemory).toHaveBeenCalled();
+    expect(SessionManager.continueRecent).not.toHaveBeenCalled();
   });
 });
