@@ -2,7 +2,7 @@ import { join } from 'node:path';
 import { DashAgent } from './agent.js';
 import { PiAgentBackend } from './backends/piagent.js';
 import type { Logger } from './logger.js';
-import type { AgentEvent, DashAgentConfig, ImageBlock, RunOptions } from './types.js';
+import type { AgentBackend, AgentEvent, DashAgentConfig, ImageBlock, RunOptions } from './types.js';
 
 export interface AgentClient {
   chat(
@@ -55,7 +55,7 @@ export class PooledAgentClient implements AgentClient {
 
   async answerQuestion(id: string, answers: string[][]): Promise<void> {
     for (const { backend } of this.pool.values()) {
-      await backend.answerQuestion?.(id, answers);
+      await (backend as AgentBackend).answerQuestion?.(id, answers);
     }
   }
 
