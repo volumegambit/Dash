@@ -25,8 +25,7 @@ export const TOOL_DESCRIPTIONS: Record<string, string> = {
   grep: 'Search for text inside files',
   web_search: 'Search the internet for information',
   web_fetch: 'Download content from web pages',
-  task: 'Track and manage work progress',
-  todowrite: 'Create and manage to-do lists',
+  task: 'Track and manage work with a structured task list',
   load_skill: 'Load a reusable skill into the conversation',
   create_skill: 'Create reusable skills the agent remembers across conversations',
 };
@@ -70,6 +69,43 @@ export const AVAILABLE_MODELS: ModelOption[] = [
   },
 ];
 
+export interface ToolGroup {
+  name: string;
+  description: string;
+  tools: string[];
+}
+
+export const TOOL_GROUPS: ToolGroup[] = [
+  {
+    name: 'Read & Search',
+    description: 'Browse and search the project',
+    tools: ['read', 'ls', 'find', 'glob', 'grep'],
+  },
+  {
+    name: 'Modify Files',
+    description: 'Create and change files',
+    tools: ['write', 'edit'],
+  },
+  {
+    name: 'Shell',
+    description: 'Run terminal commands',
+    tools: ['bash'],
+  },
+  {
+    name: 'Web',
+    description: 'Search the internet and fetch pages',
+    tools: ['web_search', 'web_fetch'],
+  },
+  {
+    name: 'Task Management',
+    description: 'Track work and manage to-do lists',
+    tools: ['task'],
+  },
+];
+
+/** All tool IDs across all groups, in group order. */
+export const ALL_TOOL_IDS: string[] = TOOL_GROUPS.flatMap((g) => g.tools);
+
 export const AVAILABLE_TOOLS: ToolOption[] = [
   { value: 'bash', label: 'Bash', description: TOOL_DESCRIPTIONS.bash },
   { value: 'read', label: 'Read', description: TOOL_DESCRIPTIONS.read },
@@ -81,5 +117,4 @@ export const AVAILABLE_TOOLS: ToolOption[] = [
   { value: 'web_search', label: 'Web Search', description: TOOL_DESCRIPTIONS.web_search },
   { value: 'web_fetch', label: 'Web Fetch', description: TOOL_DESCRIPTIONS.web_fetch },
   { value: 'task', label: 'Task', description: TOOL_DESCRIPTIONS.task },
-  { value: 'todowrite', label: 'Todo List', description: TOOL_DESCRIPTIONS.todowrite },
 ];
