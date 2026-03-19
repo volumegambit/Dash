@@ -114,7 +114,17 @@ describe('PiAgentBackend.normalizeEvent', () => {
       assistantMessageEvent: {
         type: 'error',
         reason: 'error',
-        error: { role: 'assistant', content: [], api: 'anthropic-messages', provider: 'anthropic', model: 'test', usage: {} as any, stopReason: 'error', errorMessage: 'API key invalid', timestamp: 0 },
+        error: {
+          role: 'assistant',
+          content: [],
+          api: 'anthropic-messages',
+          provider: 'anthropic',
+          model: 'test',
+          usage: {} as any,
+          stopReason: 'error',
+          errorMessage: 'API key invalid',
+          timestamp: 0,
+        },
       },
     });
     expect(result).toEqual({ type: 'error', error: new Error('API key invalid') });
@@ -332,7 +342,17 @@ describe('PiAgentBackend lifecycle', () => {
         });
         subscribeCb!({
           type: 'message_end',
-          message: { role: 'assistant', usage: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0, totalTokens: 15, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } },
+          message: {
+            role: 'assistant',
+            usage: {
+              input: 10,
+              output: 5,
+              cacheRead: 0,
+              cacheWrite: 0,
+              totalTokens: 15,
+              cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+            },
+          },
         });
         subscribeCb!({ type: 'agent_end', messages: [] });
       }),
@@ -393,9 +413,7 @@ describe('PiAgentBackend sessionDir', () => {
   });
 
   it('uses SessionManager.continueRecent when sessionDir is provided', async () => {
-    const { SessionManager, createAgentSession } = await import(
-      '@mariozechner/pi-coding-agent'
-    );
+    const { SessionManager, createAgentSession } = await import('@mariozechner/pi-coding-agent');
     vi.mocked(createAgentSession).mockResolvedValueOnce({
       session: {
         dispose: vi.fn(),
@@ -423,9 +441,7 @@ describe('PiAgentBackend sessionDir', () => {
   });
 
   it('uses SessionManager.inMemory when no sessionDir is provided', async () => {
-    const { SessionManager, createAgentSession } = await import(
-      '@mariozechner/pi-coding-agent'
-    );
+    const { SessionManager, createAgentSession } = await import('@mariozechner/pi-coding-agent');
     vi.mocked(createAgentSession).mockResolvedValueOnce({
       session: {
         dispose: vi.fn(),
