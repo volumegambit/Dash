@@ -13,6 +13,3 @@ export { LocalAgentClient } from './client.js';
 export { FileLogger } from './logger.js';
 export type { LogLevel, Logger } from './logger.js';
 export { buildMemoryPreamble } from './memory.js';
-export { estimateTokens, shouldCompact, compactSession } from './compaction.js';
-export type { Session, SessionEntry, SessionStore } from './types.js';
-export { JsonlSessionStore } from './session.js';
