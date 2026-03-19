@@ -36,7 +36,9 @@ const ALL_TOOL_NAMES = ['read', 'bash', 'edit', 'write', 'grep', 'find', 'ls'] a
  *
  * Key design:
  * - Uses in-memory auth (no filesystem credential storage)
- * - Uses in-memory session management (no filesystem session persistence)
+ * - Session management: in-memory by default, or persistent when `sessionDir` is provided.
+ *   When `sessionDir` is set, uses `SessionManager.continueRecent()` to resume the most
+ *   recent session from disk (or create a new one if none exists).
  * - Event queue pattern: subscribe() pushes events, run() yields from queue
  * - One AgentSession per backend instance (created in start())
  */
@@ -57,6 +59,7 @@ export class PiAgentBackend implements AgentBackend {
     private config: DashAgentConfig,
     private providerApiKeys: Record<string, string>,
     private logger?: Logger,
+    private sessionDir?: string,
   ) {}
 
   /** Detect OAuth access tokens (e.g. sk-ant-oat01-...) vs regular API keys */
@@ -172,7 +175,9 @@ export class PiAgentBackend implements AgentBackend {
       authStorage: this.auth,
       model,
       tools,
-      sessionManager: SessionManager.inMemory(),
+      sessionManager: this.sessionDir
+        ? SessionManager.continueRecent(workspace, this.sessionDir)
+        : SessionManager.inMemory(),
     });
 
     this.session = session;
