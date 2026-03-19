@@ -98,6 +98,19 @@ export interface MissionControlAPI {
   chatOnDone(callback: (conversationId: string) => void): () => void;
   chatOnError(callback: (conversationId: string, error: string) => void): () => void;
 
+  // Codex OAuth (OpenAI)
+  codexStartOAuth(keyName: string): Promise<{ success: boolean; error?: string }>;
+  codexRefreshToken(keyName: string): Promise<{ success: boolean; error?: string }>;
+
+  // Claude OAuth (Anthropic) — two-step manual flow
+  claudePrepareOAuth(): Promise<{ authorizeUrl: string; state: string; verifier: string }>;
+  claudeCompleteOAuth(
+    keyName: string,
+    code: string,
+    state: string,
+    verifier: string,
+  ): Promise<{ success: boolean; error?: string }>;
+
   // Secrets
   secretsNeedsSetup(): Promise<boolean>;
   secretsNeedsMigration(): Promise<boolean>;

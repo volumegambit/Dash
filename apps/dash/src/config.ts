@@ -262,13 +262,19 @@ export function resolveAgentKeys(
   for (const [provider, keys] of Object.entries(allKeys)) {
     const keyName = credentialKeys?.[provider] ?? 'default';
     const value = keys[keyName];
-    if (!value) {
-      throw new Error(
-        `No API key named "${keyName}" for provider "${provider}". ` +
-          `Available keys: ${Object.keys(keys).join(', ')}`,
-      );
+    if (value) {
+      resolved[provider] = value;
+    } else {
+      // Fall back to the first available key for this provider
+      const available = Object.keys(keys);
+      const firstKey = available[0];
+      if (!firstKey || !keys[firstKey]) {
+        throw new Error(
+          `No API keys available for provider "${provider}".`,
+        );
+      }
+      resolved[provider] = keys[firstKey];
     }
-    resolved[provider] = value;
   }
   return resolved;
 }

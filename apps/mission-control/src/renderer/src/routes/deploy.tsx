@@ -31,7 +31,11 @@ interface AgentConfig {
 export function DeployWizard(): JSX.Element {
   const navigate = useNavigate();
   const { deployWithConfig } = useDeploymentsStore();
-  const availableModels = useAvailableModels();
+  const {
+    models: availableModels,
+    refreshing: modelsRefreshing,
+    refresh: refreshModels,
+  } = useAvailableModels();
   const availableTools = useAvailableTools();
   const [step, setStep] = useState<Step>('agent');
   const [deploying, setDeploying] = useState(false);
@@ -156,6 +160,8 @@ export function DeployWizard(): JSX.Element {
               onChange={(model, fallbackModels) =>
                 setAgent((prev) => ({ ...prev, model, fallbackModels }))
               }
+              onRefresh={refreshModels}
+              refreshing={modelsRefreshing}
             />
             {agent.model && !modelHasKey && (
               <p className="mt-1 text-xs text-red-400">
