@@ -48,14 +48,15 @@ const TOOL_LABELS: Record<string, string> = {
   read: 'Read',
   write: 'Write',
   edit: 'Edit',
-  glob: 'Glob',
+  find: 'Find',
   grep: 'Grep',
   ls: 'List Directory',
   web_search: 'Web Search',
   web_fetch: 'Web Fetch',
-  mcp: 'MCP',
-  skill: 'Skill',
+  task: 'Task',
   todowrite: 'TodoWrite',
+  load_skill: 'Load Skill',
+  create_skill: 'Create Skill',
 };
 
 /** Return a human-friendly label for a tool name */
@@ -69,11 +70,11 @@ export function toolIcon(name: string): string {
   if (n === 'bash') return '💻';
   if (n === 'write' || n === 'edit') return '📝';
   if (n === 'read') return '📖';
-  if (n === 'glob' || n === 'grep') return '🔍';
+  if (n === 'find' || n === 'grep') return '🔍';
   if (n === 'ls') return '📂';
   if (n === 'web_search' || n === 'web_fetch') return '🌐';
-  if (n === 'skill') return '⚡';
-  if (n === 'mcp') return '🔌';
+  if (n === 'task') return '📋';
+  if (n === 'load_skill' || n === 'create_skill') return '⚡';
   if (n === 'todowrite') return '📋';
   return '🔧';
 }
@@ -83,13 +84,15 @@ const PRIMARY_KEYS: Record<string, string[]> = {
   write: ['path'],
   edit: ['path'],
   read: ['path'],
-  glob: ['pattern'],
+  find: ['pattern'],
   grep: ['pattern', 'query'],
   ls: ['path', 'directory'],
   web_search: ['query'],
   web_fetch: ['url'],
-  mcp: ['tool'],
-  skill: ['name'],
+  task: ['action', 'subject'],
+  load_skill: ['name'],
+  create_skill: ['name'],
+  todowrite: ['todos'],
 };
 
 function truncate(s: string, max = 60): string {

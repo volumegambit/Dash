@@ -125,7 +125,7 @@ describe('DeployWizard', () => {
       model: 'anthropic/claude-opus-4-20250514',
       fallbackModels: undefined,
       systemPrompt: '',
-      tools: expect.arrayContaining(['question', 'task', 'todowrite', 'skill']),
+      tools: [],
       workspace: undefined,
     });
   });

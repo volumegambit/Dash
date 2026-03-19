@@ -9,14 +9,15 @@ describe('toolIcon', () => {
   it('returns 📝 for edit', () => expect(toolIcon('edit')).toBe('📝'));
   it('returns 📖 for read', () => expect(toolIcon('read')).toBe('📖'));
   it('returns 📖 for read_file', () => expect(toolIcon('read_file')).toBe('📖'));
-  it('returns 🔍 for glob', () => expect(toolIcon('glob')).toBe('🔍'));
+  it('returns 🔍 for find', () => expect(toolIcon('find')).toBe('🔍'));
   it('returns 🔍 for grep', () => expect(toolIcon('grep')).toBe('🔍'));
   it('returns 📂 for ls', () => expect(toolIcon('ls')).toBe('📂'));
   it('returns 📂 for list_directory', () => expect(toolIcon('list_directory')).toBe('📂'));
   it('returns 🌐 for web_search', () => expect(toolIcon('web_search')).toBe('🌐'));
   it('returns 🌐 for web_fetch', () => expect(toolIcon('web_fetch')).toBe('🌐'));
-  it('returns 🔌 for mcp', () => expect(toolIcon('mcp')).toBe('🔌'));
-  it('returns ⚡ for skill', () => expect(toolIcon('skill')).toBe('⚡'));
+  it('returns 📋 for task', () => expect(toolIcon('task')).toBe('📋'));
+  it('returns ⚡ for load_skill', () => expect(toolIcon('load_skill')).toBe('⚡'));
+  it('returns ⚡ for create_skill', () => expect(toolIcon('create_skill')).toBe('⚡'));
   it('returns 🔧 for totally unknown tool', () => expect(toolIcon('something_else')).toBe('🔧'));
 });
 
