@@ -340,12 +340,7 @@ export async function registerIpcHandlers(
       return { needsSetup: false, needsUnlock: true, needsApiKey: false };
     }
     const allKeys = await store.list();
-    const hasAnyKey = allKeys.some(
-      (k) =>
-        k.startsWith('anthropic-api-key:') ||
-        k.startsWith('openai-api-key:') ||
-        k.startsWith('google-api-key:'),
-    );
+    const hasAnyKey = allKeys.some((k) => parseProviderSecretKey(k) !== null);
     return { needsSetup: false, needsUnlock: false, needsApiKey: !hasAnyKey };
   });
 
