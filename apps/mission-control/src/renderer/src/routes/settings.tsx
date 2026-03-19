@@ -1,3 +1,4 @@
+import { providerSecretKey } from '@dash/mc';
 import { createFileRoute } from '@tanstack/react-router';
 import { useCallback, useEffect, useState } from 'react';
 import type { AppSettings } from '../../../shared/ipc.js';
@@ -33,9 +34,9 @@ function Settings(): JSX.Element {
 
   // Load masked Brave key when keys are available
   useEffect(() => {
-    const hasBrave = keys.some((k) => k.startsWith('brave-api-key:default'));
+    const hasBrave = keys.some((k) => k.startsWith(providerSecretKey('brave')));
     if (hasBrave) {
-      getSecret('brave-api-key:default').then((val) => {
+      getSecret(providerSecretKey('brave')).then((val) => {
         if (val) {
           setBraveKeyMasked(`${val.slice(0, 6)}${'•'.repeat(6)}${val.slice(-4)}`);
         }
@@ -63,7 +64,7 @@ function Settings(): JSX.Element {
       if (!trimmed) return;
       setBraveKeySaving(true);
       try {
-        await setSecret('brave-api-key:default', trimmed);
+        await setSecret(providerSecretKey('brave'), trimmed);
         setBraveKeyMasked(`${trimmed.slice(0, 6)}${'•'.repeat(6)}${trimmed.slice(-4)}`);
         setBraveKeyInput('');
       } finally {
@@ -74,7 +75,7 @@ function Settings(): JSX.Element {
   );
 
   const handleRemoveBraveKey = useCallback(async () => {
-    await deleteSecret('brave-api-key:default');
+    await deleteSecret(providerSecretKey('brave'));
     setBraveKeyMasked(null);
     setBraveKeyInput('');
   }, [deleteSecret]);
