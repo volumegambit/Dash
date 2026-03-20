@@ -31,6 +31,9 @@ function validateMessage(msg: unknown): msg is WsClientMessage {
         if (typeof (img as Record<string, unknown>).data !== 'string') return false;
       }
     }
+    if (m.streamingBehavior !== undefined) {
+      if (m.streamingBehavior !== 'steer' && m.streamingBehavior !== 'followUp') return false;
+    }
     return true;
   }
 
@@ -57,6 +60,7 @@ export function createChatApp(options: ChatServerOptions) {
 
       // Track active streams so we can stop them on disconnect
       const activeStreams = new Map<string, { controller: AbortController; agent: AgentClient }>();
+      const activeStreamByConversation = new Map<string, string>(); // conversationId → msgId
 
       return {
         onMessage(event, ws) {
@@ -95,6 +99,13 @@ export function createChatApp(options: ChatServerOptions) {
             if (entry) {
               entry.controller.abort();
               activeStreams.delete(msg.id);
+              // Clean up secondary index
+              for (const [convId, streamId] of activeStreamByConversation) {
+                if (streamId === msg.id) {
+                  activeStreamByConversation.delete(convId);
+                  break;
+                }
+              }
             }
             const ack: WsServerMessage = { type: 'done', id: msg.id };
             ws.send(JSON.stringify(ack));
@@ -114,6 +125,62 @@ export function createChatApp(options: ChatServerOptions) {
           }
 
           if (msg.type === 'message') {
+            // Check for active stream on this conversation
+            const activeMsgId = activeStreamByConversation.get(msg.conversationId);
+            if (activeMsgId && msg.streamingBehavior) {
+              const activeEntry = activeStreams.get(activeMsgId);
+              if (activeEntry) {
+                const images = msg.images?.map((img) => ({
+                  type: 'image' as const,
+                  mediaType: img.mediaType as
+                    | 'image/jpeg'
+                    | 'image/png'
+                    | 'image/gif'
+                    | 'image/webp',
+                  data: img.data,
+                }));
+                (async () => {
+                  try {
+                    if (msg.streamingBehavior === 'steer') {
+                      await activeEntry.agent.steer?.(
+                        msg.conversationId,
+                        msg.text,
+                        images?.length ? images : undefined,
+                      );
+                      // Do NOT update activeStreamByConversation — it must always point
+                      // to the original stream's msgId (which is the key in activeStreams).
+                    } else {
+                      await activeEntry.agent.followUp?.(
+                        msg.conversationId,
+                        msg.text,
+                        images?.length ? images : undefined,
+                      );
+                    }
+                  } catch (err) {
+                    const errMsg: WsServerMessage = {
+                      type: 'error',
+                      id: msg.id,
+                      error: err instanceof Error ? err.message : String(err),
+                    };
+                    ws.send(JSON.stringify(errMsg));
+                  }
+                })();
+                return;
+              }
+            }
+
+            // Reject if active stream exists but no streamingBehavior specified
+            if (activeMsgId) {
+              const errMsg: WsServerMessage = {
+                type: 'error',
+                id: msg.id,
+                error:
+                  "Agent is already processing. Specify streamingBehavior ('steer' or 'followUp') to queue the message.",
+              };
+              ws.send(JSON.stringify(errMsg));
+              return;
+            }
+
             const agent = options.agents.get(msg.agent);
             if (!agent) {
               const errMsg: WsServerMessage = {
@@ -127,6 +194,7 @@ export function createChatApp(options: ChatServerOptions) {
 
             const controller = new AbortController();
             activeStreams.set(msg.id, { controller, agent });
+            activeStreamByConversation.set(msg.conversationId, msg.id);
 
             (async () => {
               const images = msg.images?.map((img) => ({
@@ -173,6 +241,7 @@ export function createChatApp(options: ChatServerOptions) {
                 }
               } finally {
                 activeStreams.delete(msg.id);
+                activeStreamByConversation.delete(msg.conversationId);
                 await stream.return(undefined);
               }
             })();
@@ -185,6 +254,7 @@ export function createChatApp(options: ChatServerOptions) {
             controller.abort();
           }
           activeStreams.clear();
+          activeStreamByConversation.clear();
         },
       };
     }),
