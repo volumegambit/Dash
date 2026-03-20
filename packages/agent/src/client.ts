@@ -41,6 +41,7 @@ export class PooledAgentClient implements AgentClient {
     private sessionBaseDir: string,
     private workspace?: string,
     private logger?: Logger,
+    private managedSkillsDir?: string,
   ) {}
 
   async *chat(
@@ -98,6 +99,7 @@ export class PooledAgentClient implements AgentClient {
       this.agentKeys,
       this.logger,
       sessionDir,
+      this.managedSkillsDir,
     );
     await backend.start(this.workspace ?? process.cwd());
 
