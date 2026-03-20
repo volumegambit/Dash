@@ -12,6 +12,8 @@ const mockStart = vi.fn().mockResolvedValue(undefined);
 const mockStop = vi.fn().mockResolvedValue(undefined);
 const mockUpdateCredentials = vi.fn().mockResolvedValue(undefined);
 const mockAnswerQuestion = vi.fn().mockResolvedValue(undefined);
+const mockSteer = vi.fn().mockResolvedValue(undefined);
+const mockFollowUp = vi.fn().mockResolvedValue(undefined);
 
 function createMockBackend(): AgentBackend {
   return {
@@ -22,6 +24,8 @@ function createMockBackend(): AgentBackend {
     abort: vi.fn(),
     updateCredentials: mockUpdateCredentials,
     answerQuestion: mockAnswerQuestion,
+    steer: mockSteer,
+    followUp: mockFollowUp,
   };
 }
 
@@ -263,5 +267,65 @@ describe('PooledAgentClient', () => {
     }
 
     expect(mockStart).toHaveBeenCalledWith(process.cwd());
+  });
+
+  describe('steer / followUp', () => {
+    it('steer() delegates to backend for existing conversation', async () => {
+      const client = new PooledAgentClient(
+        { ...agentConfig },
+        { anthropic: 'sk-test-key' },
+        tmpDir,
+        mockFactory,
+      );
+      const stream = client.chat('ch', 'conv-1', 'hello');
+      for await (const _ of stream) { /* drain */ }
+
+      await client.steer('conv-1', 'new direction');
+      const entry = (client as any).pool.get('conv-1');
+      expect(entry.backend.steer).toHaveBeenCalledWith('new direction', undefined);
+    });
+
+    it('steer() throws if conversation not found', async () => {
+      const client = new PooledAgentClient(
+        { ...agentConfig },
+        { anthropic: 'sk-test-key' },
+        tmpDir,
+        mockFactory,
+      );
+      await expect(client.steer('nonexistent', 'text')).rejects.toThrow('No active conversation');
+    });
+
+    it('steer() throws if backend does not support steering', async () => {
+      const noSteerFactory: BackendFactory = (_config, _keys, _sessionDir) => {
+        const backend = createMockBackend();
+        delete (backend as any).steer;
+        delete (backend as any).followUp;
+        return backend;
+      };
+      const client = new PooledAgentClient(
+        { ...agentConfig },
+        { anthropic: 'sk-test-key' },
+        tmpDir,
+        noSteerFactory,
+      );
+      const stream = client.chat('ch', 'conv-1', 'hello');
+      for await (const _ of stream) { /* drain */ }
+      await expect(client.steer('conv-1', 'text')).rejects.toThrow('does not support');
+    });
+
+    it('followUp() delegates to backend for existing conversation', async () => {
+      const client = new PooledAgentClient(
+        { ...agentConfig },
+        { anthropic: 'sk-test-key' },
+        tmpDir,
+        mockFactory,
+      );
+      const stream = client.chat('ch', 'conv-1', 'hello');
+      for await (const _ of stream) { /* drain */ }
+
+      await client.followUp('conv-1', 'follow up text');
+      const entry = (client as any).pool.get('conv-1');
+      expect(entry.backend.followUp).toHaveBeenCalledWith('follow up text', undefined);
+    });
   });
 });

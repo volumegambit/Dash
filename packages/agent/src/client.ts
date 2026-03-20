@@ -21,6 +21,8 @@ export interface AgentClient {
     options?: RunOptions & { images?: ImageBlock[] },
   ): AsyncGenerator<AgentEvent>;
   answerQuestion?(id: string, answers: string[][]): Promise<void>;
+  steer?(conversationId: string, text: string, images?: ImageBlock[]): Promise<void>;
+  followUp?(conversationId: string, text: string, images?: ImageBlock[]): Promise<void>;
 }
 
 export class PooledAgentClient implements AgentClient {
@@ -48,6 +50,24 @@ export class PooledAgentClient implements AgentClient {
     for (const { backend } of this.pool.values()) {
       await backend.answerQuestion?.(id, answers);
     }
+  }
+
+  async steer(conversationId: string, text: string, images?: ImageBlock[]): Promise<void> {
+    const entry = this.pool.get(conversationId);
+    if (!entry) throw new Error(`No active conversation "${conversationId}"`);
+    if (!entry.backend.steer) {
+      throw new Error('Backend does not support conversation steering');
+    }
+    await entry.backend.steer(text, images);
+  }
+
+  async followUp(conversationId: string, text: string, images?: ImageBlock[]): Promise<void> {
+    const entry = this.pool.get(conversationId);
+    if (!entry) throw new Error(`No active conversation "${conversationId}"`);
+    if (!entry.backend.followUp) {
+      throw new Error('Backend does not support conversation steering');
+    }
+    await entry.backend.followUp(text, images);
   }
 
   async updateCredentials(keys: Record<string, string>): Promise<void> {
