@@ -39,12 +39,40 @@ export class ChatService {
     conversationId: string,
     text: string,
     images?: { mediaType: string; data: string }[],
+    streamingBehavior?: 'steer' | 'followUp',
   ): Promise<void> {
     const conversation = await this.store.get(conversationId);
     if (!conversation) throw new Error(`Conversation "${conversationId}" not found`);
 
-    if (this.activeStreams.has(conversationId)) {
-      throw new Error(`Conversation "${conversationId}" already has an active stream`);
+    // If there's an active stream, route steer/followUp over existing WebSocket
+    const existingStream = this.activeStreams.get(conversationId);
+    if (existingStream) {
+      if (!streamingBehavior) {
+        throw new Error(`Conversation "${conversationId}" already has an active stream`);
+      }
+      // Send steering message over the existing WebSocket
+      const steerMsgId = randomUUID();
+      existingStream.ws.send(
+        JSON.stringify({
+          id: steerMsgId,
+          type: 'message',
+          agent: (await this.store.get(conversationId))?.agentName,
+          channelId: 'mission-control',
+          conversationId,
+          text,
+          ...(images?.length ? { images } : {}),
+          streamingBehavior,
+        }),
+      );
+      // Persist the user message for steer/followUp
+      const userMessage: McMessage = {
+        id: randomUUID(),
+        role: 'user',
+        content: { type: 'user', text, ...(images?.length ? { images } : {}) },
+        timestamp: new Date().toISOString(),
+      };
+      await this.store.appendMessage(conversationId, userMessage);
+      return;
     }
 
     const deployment = await this.registry.get(conversation.deploymentId);
@@ -94,8 +122,28 @@ export class ChatService {
       if (msg.id !== msgId) return;
 
       if (msg.type === 'event' && msg.event) {
-        accumulatedEvents.push(msg.event);
-        this.onEvent(conversationId, msg.event);
+        // When an interrupted event arrives, save the partial response
+        if (msg.event.type === 'interrupted') {
+          if (accumulatedEvents.length > 0) {
+            const partialMessage: McMessage = {
+              id: randomUUID(),
+              role: 'assistant',
+              content: { type: 'assistant', events: accumulatedEvents.slice() },
+              timestamp: new Date().toISOString(),
+              interrupted: true,
+            };
+            this.store.appendMessage(conversationId, partialMessage).catch((err) => {
+              console.error('[ChatService] Failed to save interrupted message:', err);
+            });
+            accumulatedEvents.length = 0; // Reset for the steer response
+          }
+          // Forward the interrupted event to the renderer but do NOT push it
+          // into accumulatedEvents — it's a transport signal, not response content.
+          this.onEvent(conversationId, msg.event);
+        } else {
+          accumulatedEvents.push(msg.event);
+          this.onEvent(conversationId, msg.event);
+        }
       } else if (msg.type === 'done') {
         this.activeStreams.delete(conversationId);
         ws.close();
