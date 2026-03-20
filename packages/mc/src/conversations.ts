@@ -23,6 +23,7 @@ export interface McMessage {
     | { type: 'user'; text: string; images?: McMessageImage[] }
     | { type: 'assistant'; events: Record<string, unknown>[] };
   timestamp: string;
+  interrupted?: boolean;
 }
 
 /**

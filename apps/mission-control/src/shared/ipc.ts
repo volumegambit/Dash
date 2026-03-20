@@ -17,6 +17,7 @@ export type McAgentEvent =
   | { type: 'response'; content: string; usage: Record<string, number> }
   | { type: 'question'; id: string; question: string; options: string[] }
   | { type: 'skill_created'; name: string; description: string }
+  | { type: 'interrupted' }
   | { type: 'error'; error: string; timestamp: string };
 
 export interface DeployWithConfigOptions {
