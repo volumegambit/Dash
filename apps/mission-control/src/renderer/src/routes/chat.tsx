@@ -382,6 +382,8 @@ function MessageBubble({
   answeredQuestions?: Record<string, string>;
 }): JSX.Element {
   const isUser = message?.role === 'user';
+  const queuedIds = useChatStore((s) => s.queuedMessageIds);
+  const isQueued = message ? queuedIds.has(message.id) : false;
 
   if (isUser && message) {
     const userImages = message.content.type === 'user' ? message.content.images : undefined;
@@ -403,6 +405,9 @@ function MessageBubble({
               ))}
             </div>
           )}
+          {isQueued && (
+            <span className="mt-1 block text-xs text-white/60">queued</span>
+          )}
         </div>
       </div>
     );
@@ -411,6 +416,22 @@ function MessageBubble({
   const events: Record<string, unknown>[] =
     streamingEvents ?? (message?.content.type === 'assistant' ? message.content.events : []);
   const usage = extractUsage(events);
+
+  // Interrupted messages: collapsed and dimmed
+  if (message?.interrupted) {
+    return (
+      <div className="mb-6">
+        <details className="max-w-[80%]">
+          <summary className="cursor-pointer px-4 py-1 text-xs text-muted-foreground opacity-60 hover:opacity-100">
+            Show interrupted response
+          </summary>
+          <div className="px-4 py-2 text-sm text-foreground opacity-50">
+            {renderEvents(events, navigateToLogs, onAnswerQuestion, answeredQuestions)}
+          </div>
+        </details>
+      </div>
+    );
+  }
 
   return (
     <div className="mb-6">
@@ -842,27 +863,31 @@ export function Chat(): JSX.Element {
     setImageError(null);
   }, []);
 
-  const handleSend = useCallback(async () => {
-    const text = input.trim();
-    if (!text && attachedImages.length === 0) return;
-    if (!selectedConversationId || isStreaming) return;
-    const images =
-      attachedImages.length > 0
-        ? attachedImages.map(({ mediaType, data }) => ({ mediaType, data }))
-        : undefined;
-    setInput('');
-    setAttachedImages([]);
-    setImageError(null);
-    if (textareaRef.current) {
-      textareaRef.current.style.height = 'auto';
-    }
-    try {
-      await sendMessage(selectedConversationId, text, images);
-    } catch (err) {
-      console.error('[Chat] Failed to send message:', err);
-      // Note: store already clears sending flag on error
-    }
-  }, [input, attachedImages, selectedConversationId, isStreaming, sendMessage]);
+  const handleSend = useCallback(
+    async (streamingBehavior?: 'steer' | 'followUp') => {
+      const text = input.trim();
+      if (!text && attachedImages.length === 0) return;
+      if (!selectedConversationId) return;
+      // Allow sending during streaming only with a streamingBehavior
+      if (isStreaming && !streamingBehavior) return;
+      const images =
+        attachedImages.length > 0
+          ? attachedImages.map(({ mediaType, data }) => ({ mediaType, data }))
+          : undefined;
+      setInput('');
+      setAttachedImages([]);
+      setImageError(null);
+      if (textareaRef.current) {
+        textareaRef.current.style.height = 'auto';
+      }
+      try {
+        await sendMessage(selectedConversationId, text, images, streamingBehavior);
+      } catch (err) {
+        console.error('[Chat] Failed to send message:', err);
+      }
+    },
+    [input, attachedImages, selectedConversationId, isStreaming, sendMessage],
+  );
 
   const selectedDeployment = deployments.find((d) => d.id === selectedDeploymentId);
   const agentNames = selectedDeployment?.config.agents
@@ -1026,7 +1051,11 @@ export function Chat(): JSX.Element {
             className="flex gap-2"
             onSubmit={(e) => {
               e.preventDefault();
-              handleSend();
+              if (isStreaming) {
+                handleSend('steer');
+              } else {
+                handleSend();
+              }
             }}
             onDrop={(e) => {
               e.preventDefault();
@@ -1043,9 +1072,24 @@ export function Chat(): JSX.Element {
                 resizeTextarea();
               }}
               onKeyDown={(e) => {
+                // Ctrl/Cmd+Enter = followUp (queue after current response)
+                if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && !e.shiftKey) {
+                  e.preventDefault();
+                  if (isStreaming) {
+                    handleSend('followUp');
+                  } else {
+                    handleSend();
+                  }
+                  return;
+                }
+                // Enter = send (steer if streaming)
                 if (e.key === 'Enter' && !e.shiftKey) {
                   e.preventDefault();
-                  handleSend();
+                  if (isStreaming) {
+                    handleSend('steer');
+                  } else {
+                    handleSend();
+                  }
                 }
               }}
               onPaste={(e) => {
@@ -1058,7 +1102,7 @@ export function Chat(): JSX.Element {
               placeholder={
                 selectedConversationId ? 'Type a message…' : 'Select a conversation first'
               }
-              disabled={!selectedConversationId || isStreaming}
+              disabled={!selectedConversationId}
               className="flex-1 resize-none rounded-lg border border-border bg-sidebar-bg px-4 py-2 text-sm text-foreground placeholder:text-muted focus:border-primary focus:outline-none disabled:opacity-50"
             />
             <input
@@ -1075,7 +1119,7 @@ export function Chat(): JSX.Element {
             <button
               type="button"
               onClick={() => fileInputRef.current?.click()}
-              disabled={!selectedConversationId || isStreaming}
+              disabled={!selectedConversationId}
               className="rounded-lg border border-border px-2 py-2 text-muted transition-colors hover:bg-sidebar-hover hover:text-foreground disabled:opacity-50"
               title="Attach image"
             >
