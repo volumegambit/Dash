@@ -10,7 +10,7 @@ import { defineConfig } from 'tsup';
 const builtinPattern = new RegExp(`from "((?:${builtinModules.join('|')})(?:/[^"]*)?)"`, 'g');
 
 export default defineConfig({
-  entry: ['src/index.ts'],
+  entry: ['src/index.ts', 'src/runtime/provider-keys.ts'],
   format: ['esm'],
   dts: true,
   clean: true,

@@ -1,4 +1,4 @@
-import { providerSecretKey } from '@dash/mc';
+import { providerSecretKey } from '@dash/mc/provider-keys';
 import { ExternalLink, KeyRound, X } from 'lucide-react';
 import { useState } from 'react';
 import { PROVIDER_CONFIG, type Provider } from './providers.js';

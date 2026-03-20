@@ -6,6 +6,7 @@ export default defineConfig({
     alias: {
       // Ensure tests resolve @dash/mc and @dash/channels from
       // the worktree's own built dist (not the main-branch copy in the root node_modules).
+      '@dash/mc/provider-keys': resolve(__dirname, 'packages/mc/dist/runtime/provider-keys.js'),
       '@dash/mc': resolve(__dirname, 'packages/mc/dist/index.js'),
       '@dash/channels': resolve(__dirname, 'packages/channels/dist/index.js'),
       '@dash/management': resolve(__dirname, 'packages/management/src/index.ts'),

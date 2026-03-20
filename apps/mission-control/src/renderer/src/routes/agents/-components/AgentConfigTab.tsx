@@ -1,5 +1,5 @@
 import type { AgentDeployAgentConfig } from '@dash/mc';
-import { providerSecretKey } from '@dash/mc';
+import { providerSecretKey } from '@dash/mc/provider-keys';
 import { ChevronDown, ChevronUp, FolderOpen } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { ModelChainEditor } from '../../../components/ModelChainEditor.js';
