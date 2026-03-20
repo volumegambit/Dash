@@ -155,6 +155,7 @@ describe('PooledAgentClient', () => {
       { anthropic: 'sk-test-key' },
       undefined, // logger
       join(tmpDir, 'conv-1'),
+      undefined, // managedSkillsDir
     );
     expect(mockStart).toHaveBeenCalledWith('/tmp/workspace');
     expect(MockedDashAgent).toHaveBeenCalledOnce();
@@ -266,6 +267,7 @@ describe('PooledAgentClient', () => {
       expect.any(Object),
       undefined,
       join(tmpDir, 'conv-new'),
+      undefined, // managedSkillsDir
     );
   });
 
@@ -284,6 +286,30 @@ describe('PooledAgentClient', () => {
 
     expect(mockAnswerQuestion).toHaveBeenCalledTimes(2);
     expect(mockAnswerQuestion).toHaveBeenCalledWith('q-1', [['yes']]);
+  });
+
+  it('passes managedSkillsDir to PiAgentBackend when provided', async () => {
+    const client = new PooledAgentClient(
+      'test-agent',
+      { ...agentConfig },
+      { anthropic: 'sk-test-key' },
+      tmpDir,
+      '/tmp/workspace',
+      undefined, // logger
+      '/tmp/skills',
+    );
+
+    for await (const _ of client.chat('ch-1', 'conv-1', 'hi')) {
+      // consume
+    }
+
+    expect(MockedPiAgentBackend).toHaveBeenCalledWith(
+      expect.objectContaining({ model: agentConfig.model }),
+      { anthropic: 'sk-test-key' },
+      undefined,
+      join(tmpDir, 'conv-1'),
+      '/tmp/skills',
+    );
   });
 
   it('uses process.cwd() when workspace is not provided', async () => {
