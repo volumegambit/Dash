@@ -14,6 +14,7 @@ export type WsClientMessage =
       conversationId: string;
       text: string;
       images?: WsMessageImage[];
+      streamingBehavior?: 'steer' | 'followUp';
     }
   | { type: 'cancel'; id: string }
   | { type: 'answer'; id: string; questionId: string; answer: string };
