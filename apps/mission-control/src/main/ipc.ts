@@ -467,7 +467,8 @@ export async function registerIpcHandlers(
       conversationId: string,
       text: string,
       images?: { mediaType: string; data: string }[],
-    ) => getChatService(getWindow).sendMessage(conversationId, text, images),
+      streamingBehavior?: 'steer' | 'followUp',
+    ) => getChatService(getWindow).sendMessage(conversationId, text, images, streamingBehavior),
   );
   ipcMain.handle('chat:cancel', (_event, conversationId: string) => {
     getChatService(getWindow).cancel(conversationId);

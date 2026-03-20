@@ -92,6 +92,7 @@ export interface MissionControlAPI {
     conversationId: string,
     text: string,
     images?: { mediaType: string; data: string }[],
+    streamingBehavior?: 'steer' | 'followUp',
   ): Promise<void>;
   chatCancel(conversationId: string): Promise<void>;
   chatAnswerQuestion(conversationId: string, questionId: string, answer: string): Promise<void>;
