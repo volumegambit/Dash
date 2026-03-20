@@ -1,4 +1,4 @@
-import { providerSecretKey } from '@dash/mc';
+import { providerSecretKey } from '@dash/mc/provider-keys';
 import { createFileRoute } from '@tanstack/react-router';
 import { CheckCircle, Circle, Loader, Lock, LogIn, Plus } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';

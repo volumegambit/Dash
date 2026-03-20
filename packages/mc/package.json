@@ -8,6 +8,10 @@
     ".": {
       "import": "./dist/index.js",
       "types": "./dist/index.d.ts"
+    },
+    "./provider-keys": {
+      "import": "./dist/runtime/provider-keys.js",
+      "types": "./dist/runtime/provider-keys.d.ts"
     }
   },
   "scripts": {

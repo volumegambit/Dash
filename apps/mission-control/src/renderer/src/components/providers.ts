@@ -1,4 +1,4 @@
-import { providerSecretKey } from '@dash/mc';
+import { providerSecretKey } from '@dash/mc/provider-keys';
 
 export type Provider = 'anthropic' | 'openai' | 'google';
 
