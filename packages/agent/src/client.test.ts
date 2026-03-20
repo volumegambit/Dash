@@ -4,23 +4,35 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { DashAgent } from './agent.js';
 import { LocalAgentClient, PooledAgentClient } from './client.js';
-import type { AgentEvent, DashAgentConfig } from './types.js';
+import type { BackendFactory } from './client.js';
+import type { AgentBackend, AgentEvent, DashAgentConfig } from './types.js';
 
-// --- Mock PiAgentBackend ---
+// --- Mock backend factory ---
 
 const mockStart = vi.fn().mockResolvedValue(undefined);
 const mockStop = vi.fn().mockResolvedValue(undefined);
 const mockUpdateCredentials = vi.fn().mockResolvedValue(undefined);
 const mockAnswerQuestion = vi.fn().mockResolvedValue(undefined);
 
-vi.mock('./backends/piagent.js', () => ({
-  PiAgentBackend: vi.fn().mockImplementation(() => ({
+function createMockBackend(): AgentBackend {
+  return {
+    name: 'mock',
     start: mockStart,
     stop: mockStop,
+    run: vi.fn(),
+    abort: vi.fn(),
     updateCredentials: mockUpdateCredentials,
     answerQuestion: mockAnswerQuestion,
-  })),
-}));
+  };
+}
+
+/** Tracks all calls to the factory: [config, keys, sessionDir] */
+const factoryCalls: [DashAgentConfig, Record<string, string>, string][] = [];
+
+const mockFactory: BackendFactory = (config, keys, sessionDir) => {
+  factoryCalls.push([config, keys, sessionDir]);
+  return createMockBackend();
+};
 
 // --- Mock DashAgent ---
 
@@ -47,9 +59,8 @@ vi.mock('./agent.js', () => ({
   })),
 }));
 
-// Import mocked constructors for assertions
+// Import mocked constructor for assertions
 import { DashAgent as MockedDashAgent } from './agent.js';
-import { PiAgentBackend as MockedPiAgentBackend } from './backends/piagent.js';
 
 // --- LocalAgentClient tests ---
 
@@ -125,6 +136,7 @@ describe('PooledAgentClient', () => {
   beforeEach(async () => {
     tmpDir = await mkdtemp(join(tmpdir(), 'pooled-client-test-'));
     vi.clearAllMocks();
+    factoryCalls.length = 0;
   });
 
   afterEach(async () => {
@@ -133,10 +145,10 @@ describe('PooledAgentClient', () => {
 
   function createClient(workspace?: string) {
     return new PooledAgentClient(
-      'test-agent',
       { ...agentConfig },
       { anthropic: 'sk-test-key' },
       tmpDir,
+      mockFactory,
       workspace ?? '/tmp/workspace',
     );
   }
@@ -149,14 +161,10 @@ describe('PooledAgentClient', () => {
       events.push(event);
     }
 
-    expect(MockedPiAgentBackend).toHaveBeenCalledOnce();
-    expect(MockedPiAgentBackend).toHaveBeenCalledWith(
-      expect.objectContaining({ model: agentConfig.model }),
-      { anthropic: 'sk-test-key' },
-      undefined, // logger
-      join(tmpDir, 'conv-1'),
-      undefined, // managedSkillsDir
-    );
+    expect(factoryCalls).toHaveLength(1);
+    expect(factoryCalls[0][0]).toEqual(expect.objectContaining({ model: agentConfig.model }));
+    expect(factoryCalls[0][1]).toEqual({ anthropic: 'sk-test-key' });
+    expect(factoryCalls[0][2]).toBe(join(tmpDir, 'conv-1'));
     expect(mockStart).toHaveBeenCalledWith('/tmp/workspace');
     expect(MockedDashAgent).toHaveBeenCalledOnce();
     expect(events).toEqual(mockChatEvents);
@@ -176,7 +184,7 @@ describe('PooledAgentClient', () => {
     }
 
     // Backend + Agent should only be created once
-    expect(MockedPiAgentBackend).toHaveBeenCalledOnce();
+    expect(factoryCalls).toHaveLength(1);
     expect(MockedDashAgent).toHaveBeenCalledOnce();
     expect(mockStart).toHaveBeenCalledOnce();
   });
@@ -191,13 +199,12 @@ describe('PooledAgentClient', () => {
       // consume
     }
 
-    expect(MockedPiAgentBackend).toHaveBeenCalledTimes(2);
+    expect(factoryCalls).toHaveLength(2);
     expect(MockedDashAgent).toHaveBeenCalledTimes(2);
 
     // Verify different session directories
-    const calls = vi.mocked(MockedPiAgentBackend).mock.calls;
-    expect(calls[0][3]).toBe(join(tmpDir, 'conv-A'));
-    expect(calls[1][3]).toBe(join(tmpDir, 'conv-B'));
+    expect(factoryCalls[0][2]).toBe(join(tmpDir, 'conv-A'));
+    expect(factoryCalls[1][2]).toBe(join(tmpDir, 'conv-B'));
   });
 
   it('stop() disposes all backends and clears pool', async () => {
@@ -216,11 +223,12 @@ describe('PooledAgentClient', () => {
     expect(mockStop).toHaveBeenCalledTimes(2);
 
     // After stop, next chat should create a fresh backend
+    factoryCalls.length = 0;
     vi.clearAllMocks();
     for await (const _ of client.chat('ch-1', 'conv-1', 'hi again')) {
       // consume
     }
-    expect(MockedPiAgentBackend).toHaveBeenCalledOnce();
+    expect(factoryCalls).toHaveLength(1);
   });
 
   it('updateCredentials() propagates to all existing backends', async () => {
@@ -256,18 +264,16 @@ describe('PooledAgentClient', () => {
     expect(mockUpdateConfig).toHaveBeenCalledWith(patch);
 
     // New backend should use the updated model
+    factoryCalls.length = 0;
     vi.clearAllMocks();
     for await (const _ of client.chat('ch-1', 'conv-new', 'hi')) {
       // consume
     }
 
-    // The PiAgentBackend constructor should receive the updated config
-    expect(MockedPiAgentBackend).toHaveBeenCalledWith(
+    // The factory should receive the updated config
+    expect(factoryCalls).toHaveLength(1);
+    expect(factoryCalls[0][0]).toEqual(
       expect.objectContaining({ model: 'anthropic/claude-haiku-3-20250714' }),
-      expect.any(Object),
-      undefined,
-      join(tmpDir, 'conv-new'),
-      undefined, // managedSkillsDir
     );
   });
 
@@ -288,36 +294,30 @@ describe('PooledAgentClient', () => {
     expect(mockAnswerQuestion).toHaveBeenCalledWith('q-1', [['yes']]);
   });
 
-  it('passes managedSkillsDir to PiAgentBackend when provided', async () => {
-    const client = new PooledAgentClient(
-      'test-agent',
-      { ...agentConfig },
-      { anthropic: 'sk-test-key' },
-      tmpDir,
-      '/tmp/workspace',
-      undefined, // logger
-      '/tmp/skills',
-    );
+  it('passes current keys to factory for each new conversation', async () => {
+    const client = createClient();
 
     for await (const _ of client.chat('ch-1', 'conv-1', 'hi')) {
       // consume
     }
 
-    expect(MockedPiAgentBackend).toHaveBeenCalledWith(
-      expect.objectContaining({ model: agentConfig.model }),
-      { anthropic: 'sk-test-key' },
-      undefined,
-      join(tmpDir, 'conv-1'),
-      '/tmp/skills',
-    );
+    expect(factoryCalls[0][1]).toEqual({ anthropic: 'sk-test-key' });
+
+    // Update keys, then create a new conversation
+    await client.updateCredentials({ anthropic: 'sk-new-key' });
+    for await (const _ of client.chat('ch-1', 'conv-2', 'hi')) {
+      // consume
+    }
+
+    expect(factoryCalls[1][1]).toEqual({ anthropic: 'sk-new-key' });
   });
 
   it('uses process.cwd() when workspace is not provided', async () => {
     const client = new PooledAgentClient(
-      'test-agent',
       { ...agentConfig },
       { anthropic: 'sk-test-key' },
       tmpDir,
+      mockFactory,
     );
 
     for await (const _ of client.chat('ch-1', 'conv-1', 'hi')) {

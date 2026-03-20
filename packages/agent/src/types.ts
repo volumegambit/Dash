@@ -88,8 +88,11 @@ export interface RunOptions {
 
 export interface AgentBackend {
   readonly name: string;
+  start(workspace: string): Promise<void>;
+  stop(): Promise<void>;
   run(state: AgentState, options: RunOptions): AsyncGenerator<AgentEvent>;
   abort(): void;
+  updateCredentials(providerApiKeys: Record<string, string>): Promise<void>;
   answerQuestion?(id: string, answers: string[][]): Promise<void>;
   listSkills?(): Promise<import('./skills/types.js').SkillDiscoveryResult[]>;
 }
