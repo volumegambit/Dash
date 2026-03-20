@@ -101,11 +101,7 @@ export class PooledAgentClient implements AgentClient {
     if (entry) return entry;
 
     const sessionDir = join(this.sessionBaseDir, conversationId);
-    const backend = this.createBackend(
-      { ...this.agentConfig },
-      this.agentKeys,
-      sessionDir,
-    );
+    const backend = this.createBackend({ ...this.agentConfig }, this.agentKeys, sessionDir);
     await backend.start(this.workspace ?? process.cwd());
 
     const agent = new DashAgent(backend, { ...this.agentConfig });
