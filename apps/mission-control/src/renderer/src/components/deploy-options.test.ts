@@ -1,6 +1,11 @@
 import { AGENT_TOOL_NAMES } from '@dash/agent';
 import { describe, expect, it } from 'vitest';
-import { AVAILABLE_MODELS, AVAILABLE_TOOLS, TOOL_DESCRIPTIONS, TOOL_GROUPS } from './deploy-options.js';
+import {
+  AVAILABLE_MODELS,
+  AVAILABLE_TOOLS,
+  TOOL_DESCRIPTIONS,
+  TOOL_GROUPS,
+} from './deploy-options.js';
 
 describe('AVAILABLE_MODELS', () => {
   it('all models use provider/model-id format', () => {
