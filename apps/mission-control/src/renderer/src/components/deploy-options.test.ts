@@ -1,6 +1,6 @@
 import { AGENT_TOOL_NAMES } from '@dash/agent';
 import { describe, expect, it } from 'vitest';
-import { AVAILABLE_MODELS, AVAILABLE_TOOLS, TOOL_DESCRIPTIONS } from './deploy-options.js';
+import { AVAILABLE_MODELS, AVAILABLE_TOOLS, TOOL_DESCRIPTIONS, TOOL_GROUPS } from './deploy-options.js';
 
 describe('AVAILABLE_MODELS', () => {
   it('all models use provider/model-id format', () => {
@@ -66,6 +66,16 @@ describe('AVAILABLE_TOOLS', () => {
     expect(values).toContain('write');
     expect(values).toContain('edit');
     expect(values).toContain('ls');
+  });
+
+  it('includes create_skill in a tool group', () => {
+    const allGroupTools = TOOL_GROUPS.flatMap((g) => g.tools);
+    expect(allGroupTools).toContain('create_skill');
+  });
+
+  it('includes create_skill in AVAILABLE_TOOLS', () => {
+    const values = AVAILABLE_TOOLS.map((t) => t.value);
+    expect(values).toContain('create_skill');
   });
 });
 

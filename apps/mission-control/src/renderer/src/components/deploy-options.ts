@@ -94,6 +94,11 @@ export const TOOL_GROUPS: ToolGroup[] = [
     description: 'Search the internet and fetch pages',
     tools: ['web_search', 'web_fetch'],
   },
+  {
+    name: 'Skills',
+    description: 'Create and manage reusable agent skills',
+    tools: ['create_skill'],
+  },
 ];
 
 /** All tool IDs across all groups, in group order. */
@@ -109,4 +114,5 @@ export const AVAILABLE_TOOLS: ToolOption[] = [
   { value: 'grep', label: 'Grep', description: TOOL_DESCRIPTIONS.grep },
   { value: 'web_search', label: 'Web Search', description: TOOL_DESCRIPTIONS.web_search },
   { value: 'web_fetch', label: 'Web Fetch', description: TOOL_DESCRIPTIONS.web_fetch },
+  { value: 'create_skill', label: 'Create Skill', description: TOOL_DESCRIPTIONS.create_skill },
 ];
