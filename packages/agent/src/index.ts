@@ -8,7 +8,7 @@ export type {
 } from './types.js';
 export { DashAgent } from './agent.js';
 export { PiAgentBackend } from './backends/piagent.js';
-export type { AgentClient } from './client.js';
+export type { AgentClient, BackendFactory } from './client.js';
 export { LocalAgentClient, PooledAgentClient } from './client.js';
 export { FileLogger } from './logger.js';
 export type { LogLevel, Logger } from './logger.js';
