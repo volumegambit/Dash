@@ -15,35 +15,16 @@ export interface ToolOption {
  * Plain-language descriptions for tools, written for non-technical users.
  * Used to enrich both the hardcoded fallback list and dynamically loaded tool IDs.
  */
-/**
- * Tools that are always enabled and hidden from the user-facing tool selection UI.
- * These are internal framework tools the agent needs to function.
- */
-export const ALWAYS_ENABLED_TOOLS = new Set([
-  'question',
-  'task',
-  'todowrite',
-  'skill',
-]);
-
 export const TOOL_DESCRIPTIONS: Record<string, string> = {
   bash: 'Run terminal commands on the system',
   read: 'Read files from the project',
   write: 'Create new files in the project',
   edit: 'Make changes to existing files',
+  find: 'Find files by name or pattern',
   ls: 'See what files and folders exist',
-  glob: 'Find files by name or pattern',
   grep: 'Search for text inside files',
   web_search: 'Search the internet for information',
   web_fetch: 'Download content from web pages',
-  mcp: 'Connect to external services and tools',
-  skill: 'Use specialized skill workflows',
-  apply_patch: 'Apply code changes to files',
-  codesearch: 'Search across the entire codebase',
-  question: 'Ask the user for clarification',
-  task: 'Track and manage work progress',
-  todowrite: 'Create and manage to-do lists',
-  load_skill: 'Load a reusable skill into the conversation',
   create_skill: 'Create reusable skills the agent remembers across conversations',
 };
 
@@ -86,16 +67,52 @@ export const AVAILABLE_MODELS: ModelOption[] = [
   },
 ];
 
+export interface ToolGroup {
+  name: string;
+  description: string;
+  tools: string[];
+}
+
+export const TOOL_GROUPS: ToolGroup[] = [
+  {
+    name: 'Read & Search',
+    description: 'Browse and search the project',
+    tools: ['read', 'ls', 'find', 'grep'],
+  },
+  {
+    name: 'Modify Files',
+    description: 'Create and change files',
+    tools: ['write', 'edit'],
+  },
+  {
+    name: 'Shell',
+    description: 'Run terminal commands',
+    tools: ['bash'],
+  },
+  {
+    name: 'Web',
+    description: 'Search the internet and fetch pages',
+    tools: ['web_search', 'web_fetch'],
+  },
+  {
+    name: 'Skills',
+    description: 'Create and manage reusable agent skills',
+    tools: ['create_skill'],
+  },
+];
+
+/** All tool IDs across all groups, in group order. */
+export const ALL_TOOL_IDS: string[] = TOOL_GROUPS.flatMap((g) => g.tools);
+
 export const AVAILABLE_TOOLS: ToolOption[] = [
   { value: 'bash', label: 'Bash', description: TOOL_DESCRIPTIONS.bash },
   { value: 'read', label: 'Read', description: TOOL_DESCRIPTIONS.read },
   { value: 'write', label: 'Write', description: TOOL_DESCRIPTIONS.write },
   { value: 'edit', label: 'Edit', description: TOOL_DESCRIPTIONS.edit },
+  { value: 'find', label: 'Find', description: TOOL_DESCRIPTIONS.find },
   { value: 'ls', label: 'List Directory', description: TOOL_DESCRIPTIONS.ls },
-  { value: 'glob', label: 'Glob', description: TOOL_DESCRIPTIONS.glob },
   { value: 'grep', label: 'Grep', description: TOOL_DESCRIPTIONS.grep },
   { value: 'web_search', label: 'Web Search', description: TOOL_DESCRIPTIONS.web_search },
   { value: 'web_fetch', label: 'Web Fetch', description: TOOL_DESCRIPTIONS.web_fetch },
-  { value: 'mcp', label: 'MCP', description: TOOL_DESCRIPTIONS.mcp },
-  { value: 'skill', label: 'Skill', description: TOOL_DESCRIPTIONS.skill },
+  { value: 'create_skill', label: 'Create Skill', description: TOOL_DESCRIPTIONS.create_skill },
 ];

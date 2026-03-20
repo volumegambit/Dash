@@ -12,11 +12,7 @@
         "groups": [
           {
             "group": "Getting Started",
-            "pages": [
-              "introduction",
-              "how-dashsquad-works",
-              "getting-started"
-            ]
+            "pages": ["introduction", "how-dashsquad-works", "getting-started"]
           },
           {
             "group": "Core Concepts",
@@ -41,18 +37,11 @@
           },
           {
             "group": "Reference",
-            "pages": [
-              "configuration",
-              "cli-reference",
-              "api-reference",
-              "architecture"
-            ]
+            "pages": ["configuration", "cli-reference", "api-reference", "architecture"]
           },
           {
             "group": "Help",
-            "pages": [
-              "troubleshooting"
-            ]
+            "pages": ["troubleshooting"]
           }
         ]
       }

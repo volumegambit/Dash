@@ -15,6 +15,7 @@
     "@dash/channels": "*",
     "@dash/management": "*",
     "@dash/mc": "*",
+    "bufferutil": "^4.1.0",
     "electron-updater": "^6.8.3",
     "qrcode": "^1.5.4",
     "ws": "*"

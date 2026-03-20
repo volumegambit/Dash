@@ -17,6 +17,7 @@ import {
   defaultProcessSpawner,
   getPlatformDataDir,
   parseProviderSecretKey,
+  providerSecretKey,
 } from '@dash/mc';
 import type { MessagingApp, ProcessSpawner } from '@dash/mc';
 import { app, dialog, ipcMain, safeStorage, shell } from 'electron';
@@ -227,10 +228,8 @@ async function pushCredentialsToRunningDeployments(): Promise<CredentialPushResu
 
   for (const dep of running) {
     try {
-      const client = new ManagementClient(
-        `http://127.0.0.1:${dep.managementPort}`,
-        dep.managementToken!,
-      );
+      const token = dep.managementToken ?? '';
+      const client = new ManagementClient(`http://127.0.0.1:${dep.managementPort}`, token);
       await client.updateCredentials(providerApiKeys);
       result.succeeded++;
     } catch (err) {
@@ -341,12 +340,7 @@ export async function registerIpcHandlers(
       return { needsSetup: false, needsUnlock: true, needsApiKey: false };
     }
     const allKeys = await store.list();
-    const hasAnyKey = allKeys.some(
-      (k) =>
-        k.startsWith('anthropic-api-key:') ||
-        k.startsWith('openai-api-key:') ||
-        k.startsWith('google-api-key:'),
-    );
+    const hasAnyKey = allKeys.some((k) => parseProviderSecretKey(k) !== null);
     return { needsSetup: false, needsUnlock: false, needsApiKey: !hasAnyKey };
   });
 
@@ -358,7 +352,7 @@ export async function registerIpcHandlers(
         return { success: false, error: 'OAuth flow was cancelled or timed out' };
       }
       const store = getSecretStore();
-      await store.set(`openai-api-key:${keyName}`, result.accessToken);
+      await store.set(providerSecretKey('openai', keyName), result.accessToken);
       await store.set(`openai-codex-refresh:${keyName}`, result.refreshToken);
       await store.set(`openai-codex-expires:${keyName}`, String(result.expiresAt));
 
@@ -373,7 +367,9 @@ export async function registerIpcHandlers(
           }
         })
         .catch((err) => console.error('[codex-auth] Credential push error:', err));
-      getModelCache().refresh().catch(() => {});
+      getModelCache()
+        .refresh()
+        .catch(() => {});
 
       return { success: true };
     } catch (err) {
@@ -394,7 +390,7 @@ export async function registerIpcHandlers(
       if (!result) {
         return { success: false, error: 'Token refresh failed' };
       }
-      await store.set(`openai-api-key:${keyName}`, result.accessToken);
+      await store.set(providerSecretKey('openai', keyName), result.accessToken);
       await store.set(`openai-codex-refresh:${keyName}`, result.refreshToken);
       await store.set(`openai-codex-expires:${keyName}`, String(result.expiresAt));
 
@@ -422,7 +418,7 @@ export async function registerIpcHandlers(
           return { success: false, error: 'Failed to create API key' };
         }
         const store = getSecretStore();
-        await store.set(`anthropic-api-key:${keyName}`, apiKey);
+        await store.set(providerSecretKey('anthropic', keyName), apiKey);
         await store.set(`anthropic-oauth-marker:${keyName}`, '1');
 
         pushCredentialsToRunningDeployments()
@@ -435,7 +431,9 @@ export async function registerIpcHandlers(
             }
           })
           .catch((err) => console.error('[claude-auth] Credential push error:', err));
-        getModelCache().refresh().catch(() => {});
+        getModelCache()
+          .refresh()
+          .catch(() => {});
 
         return { success: true };
       } catch (err) {
