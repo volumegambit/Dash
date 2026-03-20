@@ -52,10 +52,10 @@ export async function createAgentServer(config: DashConfig) {
 
     const managedDir = config.configDir
       ? join(resolve(config.configDir, '..'), 'skills', name)
-      : null;
+      : join(projectRoot, 'data', 'skills', name);
 
     const createBackend: BackendFactory = (cfg, keys, sessionDir) =>
-      new PiAgentBackend(cfg, keys, logger, sessionDir, managedDir ?? undefined);
+      new PiAgentBackend(cfg, keys, logger, sessionDir, managedDir);
 
     const client = new PooledAgentClient(
       {
@@ -140,13 +140,15 @@ export async function createAgentServer(config: DashConfig) {
         },
 
         async create(agentName, skillName, description, content) {
-          // Prefer managed dir, fall back to first configured path
+          // Prefer managed dir, fall back to first configured path, then default
           const managedDir = config.configDir
             ? join(resolve(config.configDir, '..'), 'skills', agentName)
             : null;
           const paths = config.agents[agentName]?.skills?.paths ?? [];
-          const targetDir = managedDir ?? (paths.length > 0 ? expandHome(paths[0]) : null);
-          if (!targetDir) throw new Error('No writable skill path configured for this agent');
+          const targetDir =
+            managedDir
+            ?? (paths.length > 0 ? expandHome(paths[0]) : null)
+            ?? join(projectRoot, 'data', 'skills', agentName);
 
           const safeSkillName = basename(skillName);
           if (!safeSkillName || safeSkillName === '.' || safeSkillName === '..') {
