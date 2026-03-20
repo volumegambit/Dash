@@ -50,6 +50,10 @@ export async function createAgentServer(config: DashConfig) {
       log(`Agent "${name}" resolved key for provider "${provider}": ${prefix}***${suffix}`);
     }
 
+    const managedDir = config.configDir
+      ? join(resolve(config.configDir, '..'), 'skills', name)
+      : null;
+
     const client = new PooledAgentClient(
       name,
       {
@@ -64,6 +68,7 @@ export async function createAgentServer(config: DashConfig) {
       join(sessionBaseDir, name),
       workspace ?? projectRoot,
       logger,
+      managedDir ?? undefined,
     );
     pooledClients.set(name, client);
     clients.set(name, client);
