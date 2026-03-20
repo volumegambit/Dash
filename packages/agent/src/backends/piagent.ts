@@ -349,7 +349,10 @@ export class PiAgentBackend implements AgentBackend {
           if (event.type === '__done__') {
             // If there are pending steer/followUp messages, yield an interrupted
             // event and keep the generator alive for the next turn.
-            if (this.session && (this.session.pendingMessageCount > 0 || this.session.isStreaming)) {
+            if (
+              this.session &&
+              (this.session.pendingMessageCount > 0 || this.session.isStreaming)
+            ) {
               this.fullText = '';
               yield { type: 'interrupted' as const };
               continue;

@@ -278,9 +278,12 @@ describe('PooledAgentClient', () => {
         mockFactory,
       );
       const stream = client.chat('ch', 'conv-1', 'hello');
-      for await (const _ of stream) { /* drain */ }
+      for await (const _ of stream) {
+        /* drain */
+      }
 
       await client.steer('conv-1', 'new direction');
+      // biome-ignore lint/suspicious/noExplicitAny: accessing private pool for test verification
       const entry = (client as any).pool.get('conv-1');
       expect(entry.backend.steer).toHaveBeenCalledWith('new direction', undefined);
     });
@@ -298,8 +301,10 @@ describe('PooledAgentClient', () => {
     it('steer() throws if backend does not support steering', async () => {
       const noSteerFactory: BackendFactory = (_config, _keys, _sessionDir) => {
         const backend = createMockBackend();
-        delete (backend as any).steer;
-        delete (backend as any).followUp;
+        // biome-ignore lint/suspicious/noExplicitAny: removing optional methods for test
+        (backend as any).steer = undefined;
+        // biome-ignore lint/suspicious/noExplicitAny: removing optional methods for test
+        (backend as any).followUp = undefined;
         return backend;
       };
       const client = new PooledAgentClient(
@@ -309,7 +314,9 @@ describe('PooledAgentClient', () => {
         noSteerFactory,
       );
       const stream = client.chat('ch', 'conv-1', 'hello');
-      for await (const _ of stream) { /* drain */ }
+      for await (const _ of stream) {
+        /* drain */
+      }
       await expect(client.steer('conv-1', 'text')).rejects.toThrow('does not support');
     });
 
@@ -321,9 +328,12 @@ describe('PooledAgentClient', () => {
         mockFactory,
       );
       const stream = client.chat('ch', 'conv-1', 'hello');
-      for await (const _ of stream) { /* drain */ }
+      for await (const _ of stream) {
+        /* drain */
+      }
 
       await client.followUp('conv-1', 'follow up text');
+      // biome-ignore lint/suspicious/noExplicitAny: accessing private pool for test verification
       const entry = (client as any).pool.get('conv-1');
       expect(entry.backend.followUp).toHaveBeenCalledWith('follow up text', undefined);
     });

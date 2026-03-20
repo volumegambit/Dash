@@ -405,9 +405,7 @@ function MessageBubble({
               ))}
             </div>
           )}
-          {isQueued && (
-            <span className="mt-1 block text-xs text-white/60">queued</span>
-          )}
+          {isQueued && <span className="mt-1 block text-xs text-white/60">queued</span>}
         </div>
       </div>
     );
