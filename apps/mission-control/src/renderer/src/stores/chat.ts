@@ -135,7 +135,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     if (!eventBuffer.has(conversationId)) {
       eventBuffer.set(conversationId, []);
     }
-    eventBuffer.get(conversationId)!.push(event);
+    eventBuffer.get(conversationId)?.push(event);
 
     if (!flushTimer) {
       flushTimer = window.setTimeout(() => {

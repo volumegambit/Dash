@@ -1,8 +1,17 @@
 import { join } from 'node:path';
 import { DashAgent } from './agent.js';
-import { PiAgentBackend } from './backends/piagent.js';
-import type { Logger } from './logger.js';
 import type { AgentBackend, AgentEvent, DashAgentConfig, ImageBlock, RunOptions } from './types.js';
+
+/**
+ * Factory function that creates an AgentBackend for a given conversation.
+ * Captures backend-specific dependencies (logger, managedSkillsDir, etc.)
+ * in the closure, keeping PooledAgentClient decoupled from any concrete backend.
+ */
+export type BackendFactory = (
+  config: DashAgentConfig,
+  keys: Record<string, string>,
+  sessionDir: string,
+) => AgentBackend;
 
 export interface AgentClient {
   chat(
@@ -32,15 +41,14 @@ export class LocalAgentClient implements AgentClient {
 }
 
 export class PooledAgentClient implements AgentClient {
-  private pool = new Map<string, { backend: PiAgentBackend; agent: DashAgent }>();
+  private pool = new Map<string, { backend: AgentBackend; agent: DashAgent }>();
 
   constructor(
-    private agentName: string,
     private agentConfig: DashAgentConfig,
     private agentKeys: Record<string, string>,
     private sessionBaseDir: string,
+    private createBackend: BackendFactory,
     private workspace?: string,
-    private logger?: Logger,
   ) {}
 
   async *chat(
@@ -55,7 +63,7 @@ export class PooledAgentClient implements AgentClient {
 
   async answerQuestion(id: string, answers: string[][]): Promise<void> {
     for (const { backend } of this.pool.values()) {
-      await (backend as AgentBackend).answerQuestion?.(id, answers);
+      await backend.answerQuestion?.(id, answers);
     }
   }
 
@@ -93,12 +101,7 @@ export class PooledAgentClient implements AgentClient {
     if (entry) return entry;
 
     const sessionDir = join(this.sessionBaseDir, conversationId);
-    const backend = new PiAgentBackend(
-      { ...this.agentConfig },
-      this.agentKeys,
-      this.logger,
-      sessionDir,
-    );
+    const backend = this.createBackend({ ...this.agentConfig }, this.agentKeys, sessionDir);
     await backend.start(this.workspace ?? process.cwd());
 
     const agent = new DashAgent(backend, { ...this.agentConfig });

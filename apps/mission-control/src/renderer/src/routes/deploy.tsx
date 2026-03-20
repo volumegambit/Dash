@@ -11,9 +11,8 @@ import {
 import { useEffect, useState } from 'react';
 import { RendererDeploymentError } from '../../../shared/ipc';
 import { ModelChainEditor } from '../components/ModelChainEditor.js';
-import { ALWAYS_ENABLED_TOOLS, AVAILABLE_MODELS } from '../components/deploy-options.js';
+import { ALL_TOOL_IDS, AVAILABLE_MODELS, TOOL_GROUPS } from '../components/deploy-options.js';
 import { useAvailableModels } from '../hooks/useAvailableModels.js';
-import { useAvailableTools } from '../hooks/useAvailableTools.js';
 import { useDeploymentsStore } from '../stores/deployments';
 import { useSecretsStore } from '../stores/secrets.js';
 
@@ -36,7 +35,6 @@ export function DeployWizard(): JSX.Element {
     refreshing: modelsRefreshing,
     refresh: refreshModels,
   } = useAvailableModels();
-  const availableTools = useAvailableTools();
   const [step, setStep] = useState<Step>('agent');
   const [deploying, setDeploying] = useState(false);
   const [deployError, setDeployError] = useState<string | null>(null);
@@ -57,6 +55,7 @@ export function DeployWizard(): JSX.Element {
   }, []);
 
   // One-time: load settings and pick initial model
+  // biome-ignore lint/correctness/useExhaustiveDependencies: intentionally runs once on mount; availableModels is stable at this point
   useEffect(() => {
     window.api
       .settingsGet()
@@ -71,7 +70,6 @@ export function DeployWizard(): JSX.Element {
         });
       })
       .catch(() => {});
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []); // intentionally run once; availableModels already known at this point in practice
 
   // When available models change (keys added/removed), pick or validate the current model
@@ -102,7 +100,7 @@ export function DeployWizard(): JSX.Element {
         model: agent.model,
         fallbackModels: agent.fallbackModels.length > 0 ? agent.fallbackModels : undefined,
         systemPrompt: agent.systemPrompt,
-        tools: [...agent.tools, ...ALWAYS_ENABLED_TOOLS],
+        tools: agent.tools,
         workspace: agent.workspace || undefined,
       });
       navigate({ to: '/agents/$id', params: { id } });
@@ -187,19 +185,16 @@ export function DeployWizard(): JSX.Element {
               <label className="flex cursor-pointer items-center gap-1.5 text-xs text-muted hover:text-foreground">
                 <input
                   type="checkbox"
-                  checked={agent.tools.length === availableTools.length}
+                  checked={agent.tools.length === ALL_TOOL_IDS.length}
                   ref={(el) => {
                     if (el)
                       el.indeterminate =
-                        agent.tools.length > 0 && agent.tools.length < availableTools.length;
+                        agent.tools.length > 0 && agent.tools.length < ALL_TOOL_IDS.length;
                   }}
                   onChange={() =>
                     setAgent((prev) => ({
                       ...prev,
-                      tools:
-                        prev.tools.length === availableTools.length
-                          ? []
-                          : availableTools.map((t) => t.value),
+                      tools: prev.tools.length === ALL_TOOL_IDS.length ? [] : [...ALL_TOOL_IDS],
                     }))
                   }
                   className="accent-primary"
@@ -207,26 +202,39 @@ export function DeployWizard(): JSX.Element {
                 Select all
               </label>
             </div>
-            <div className="grid grid-cols-2 gap-2">
-              {availableTools.map((tool) => (
-                <label
-                  key={tool.value}
-                  className="flex cursor-pointer items-start gap-2 rounded-lg border border-border px-3 py-2 text-sm transition-colors hover:bg-sidebar-hover"
-                >
-                  <input
-                    type="checkbox"
-                    checked={agent.tools.includes(tool.value)}
-                    onChange={() => toggleTool(tool.value)}
-                    className="mt-0.5 accent-primary"
-                  />
-                  <span>
-                    {tool.label}
-                    {tool.description && (
-                      <span className="block text-xs text-muted">{tool.description}</span>
-                    )}
-                  </span>
-                </label>
-              ))}
+            <div className="space-y-2">
+              {TOOL_GROUPS.map((group) => {
+                const allEnabled = group.tools.every((t) => agent.tools.includes(t));
+                const someEnabled = !allEnabled && group.tools.some((t) => agent.tools.includes(t));
+                return (
+                  <label
+                    key={group.name}
+                    className="flex cursor-pointer items-start gap-3 rounded-lg border border-border px-3 py-2.5 text-sm transition-colors hover:bg-sidebar-hover"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={allEnabled}
+                      ref={(el) => {
+                        if (el) el.indeterminate = someEnabled;
+                      }}
+                      onChange={() =>
+                        setAgent((prev) => {
+                          const without = prev.tools.filter((t) => !group.tools.includes(t));
+                          return {
+                            ...prev,
+                            tools: allEnabled ? without : [...without, ...group.tools],
+                          };
+                        })
+                      }
+                      className="mt-0.5 accent-primary"
+                    />
+                    <span>
+                      <span className="font-medium">{group.name}</span>
+                      <span className="block text-xs text-muted">{group.description}</span>
+                    </span>
+                  </label>
+                );
+              })}
             </div>
           </div>
 
@@ -289,7 +297,13 @@ export function DeployWizard(): JSX.Element {
             <ReviewRow label="System Prompt" value={agent.systemPrompt || '(default)'} multiline />
             <ReviewRow
               label="Tools"
-              value={agent.tools.length > 0 ? agent.tools.join(', ') : '(none)'}
+              value={
+                agent.tools.length > 0
+                  ? TOOL_GROUPS.filter((g) => g.tools.some((t) => agent.tools.includes(t)))
+                      .map((g) => g.name)
+                      .join(', ') || agent.tools.join(', ')
+                  : '(none)'
+              }
             />
             <ReviewRow label="Workspace" value={agent.workspace || 'Auto-generated'} />
           </div>

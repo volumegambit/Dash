@@ -234,7 +234,7 @@ describe('WhatsAppAdapter health', () => {
     const changes: string[] = [];
     adapter.onHealthChange((h) => changes.push(h));
 
-    // Access private method for testing
+    // biome-ignore lint/suspicious/noExplicitAny: accessing private method for test
     (adapter as any).setHealth('needs_reauth');
 
     expect(changes).toContain('needs_reauth');
@@ -245,6 +245,7 @@ describe('WhatsAppAdapter health', () => {
     const changes: string[] = [];
     adapter.onHealthChange((h) => changes.push(h));
 
+    // biome-ignore lint/suspicious/noExplicitAny: accessing private method for test
     (adapter as any).setHealth('connecting'); // same as initial
 
     expect(changes).toHaveLength(0);

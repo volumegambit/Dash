@@ -201,8 +201,8 @@ describe('WebSocket Correlation', () => {
     });
 
     expect(correlationIds).toHaveLength(4);
-    correlationIds.forEach((id) => {
+    for (const id of correlationIds) {
       expect(id).toBe('async-test-123');
-    });
+    }
   });
 });

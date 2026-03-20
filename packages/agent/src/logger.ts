@@ -38,7 +38,7 @@ export class FileLogger implements Logger {
     const timestamp = new Date().toISOString();
     let line: string;
     if (context !== undefined) {
-      line = JSON.stringify({ ...context, ts: timestamp, level, msg: message }) + '\n';
+      line = `${JSON.stringify({ ...context, ts: timestamp, level, msg: message })}\n`;
     } else {
       line = `${timestamp} [${level}] ${message}\n`;
     }

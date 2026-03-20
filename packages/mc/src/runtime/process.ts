@@ -20,11 +20,8 @@ import { GatewayStateStore } from './gateway-state.js';
 import { type ProcessSnapshot, resolveRuntimeStatus } from './status.js';
 import type { DeploymentRuntime, RuntimeStatus } from './types.js';
 
-export function parseProviderSecretKey(key: string): { provider: string; keyName: string } | null {
-  const match = key.match(/^(.+)-api-key:(.+)$/);
-  if (!match) return null;
-  return { provider: match[1], keyName: match[2] };
-}
+import { parseProviderSecretKey } from './provider-keys.js';
+export { providerSecretKey, parseProviderSecretKey } from './provider-keys.js';
 
 interface ProcessState {
   agentServer: SpawnedProcess;
