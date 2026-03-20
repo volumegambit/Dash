@@ -56,7 +56,8 @@ export type AgentEvent =
   | { type: 'context_compacted'; overflow: boolean }
   | { type: 'question'; id: string; question: string; options: string[] }
   | { type: 'skill_loaded'; name: string }
-  | { type: 'skill_created'; name: string; description: string };
+  | { type: 'skill_created'; name: string; description: string }
+  | { type: 'interrupted' };
 
 export interface DashAgentConfig {
   model: string;
@@ -95,4 +96,10 @@ export interface AgentBackend {
   updateCredentials(providerApiKeys: Record<string, string>): Promise<void>;
   answerQuestion?(id: string, answers: string[][]): Promise<void>;
   listSkills?(): Promise<import('./skills/types.js').SkillDiscoveryResult[]>;
+  /** Whether the backend is currently streaming a response */
+  readonly isStreaming?: boolean;
+  /** Interrupt current response and process this message instead */
+  steer?(text: string, images?: ImageBlock[]): Promise<void>;
+  /** Queue message to process after current response completes */
+  followUp?(text: string, images?: ImageBlock[]): Promise<void>;
 }
