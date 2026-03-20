@@ -8,13 +8,19 @@ interface ChatState {
   messages: Record<string, McMessage[]>;
   streamingEvents: Record<string, McAgentEvent[]>;
   sending: Record<string, boolean>;
+  queuedMessageIds: Set<string>;
 
   loadConversations(deploymentId: string): Promise<void>;
   selectConversation(id: string): Promise<void>;
   createConversation(deploymentId: string, agentName: string): Promise<McConversation>;
   renameConversation(id: string, title: string): Promise<void>;
   deleteConversation(id: string): Promise<void>;
-  sendMessage(conversationId: string, text: string): Promise<void>;
+  sendMessage(
+    conversationId: string,
+    text: string,
+    images?: { mediaType: string; data: string }[],
+    streamingBehavior?: 'steer' | 'followUp',
+  ): Promise<void>;
   cancelMessage(conversationId: string): void;
 
   // Called by IPC event listeners
@@ -50,6 +56,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   messages: {},
   streamingEvents: {},
   sending: {},
+  queuedMessageIds: new Set(),
 
   async loadConversations(deploymentId: string) {
     const conversations = await window.api.chatListConversations(deploymentId);
@@ -100,26 +107,42 @@ export const useChatStore = create<ChatState>((set, get) => ({
     conversationId: string,
     text: string,
     images?: { mediaType: string; data: string }[],
+    streamingBehavior?: 'steer' | 'followUp',
   ) {
-    // Optimistic user message for instant UI feedback
     const userMsg: McMessage = {
       id: crypto.randomUUID(),
       role: 'user',
       content: { type: 'user', text, ...(images?.length ? { images } : {}) },
       timestamp: new Date().toISOString(),
     };
-    set((s) => ({
-      messages: {
-        ...s.messages,
-        [conversationId]: [...(s.messages[conversationId] ?? []), userMsg],
-      },
-      streamingEvents: { ...s.streamingEvents, [conversationId]: [] },
-      sending: { ...s.sending, [conversationId]: true },
-    }));
+
+    set((s) => {
+      const updates: Partial<ChatState> = {
+        messages: {
+          ...s.messages,
+          [conversationId]: [...(s.messages[conversationId] ?? []), userMsg],
+        },
+        sending: { ...s.sending, [conversationId]: true },
+      };
+
+      // Only reset streaming events for new conversations (not steer/followUp)
+      if (!streamingBehavior) {
+        updates.streamingEvents = { ...s.streamingEvents, [conversationId]: [] };
+      }
+
+      // Track followUp messages as queued
+      if (streamingBehavior === 'followUp') {
+        const newQueued = new Set(s.queuedMessageIds);
+        newQueued.add(userMsg.id);
+        updates.queuedMessageIds = newQueued;
+      }
+
+      return updates;
+    });
+
     try {
-      await window.api.chatSendMessage(conversationId, text, images);
+      await window.api.chatSendMessage(conversationId, text, images, streamingBehavior);
     } catch (err) {
-      // Optimistic user message is kept — user can see what they sent and retry
       set((s) => ({ sending: { ...s.sending, [conversationId]: false } }));
       throw err;
     }
@@ -131,6 +154,41 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   appendStreamingEvent(conversationId: string, event: McAgentEvent) {
+    // Handle interrupted: finalize current streaming as interrupted message
+    if (event.type === 'interrupted') {
+      flushEventBuffer(set);
+      const events = get().streamingEvents[conversationId] ?? [];
+      if (events.length > 0) {
+        const interruptedMsg: McMessage = {
+          id: crypto.randomUUID(),
+          role: 'assistant',
+          content: { type: 'assistant', events: events as Record<string, unknown>[] },
+          timestamp: new Date().toISOString(),
+          interrupted: true,
+        };
+        set((s) => ({
+          messages: {
+            ...s.messages,
+            [conversationId]: [...(s.messages[conversationId] ?? []), interruptedMsg],
+          },
+          streamingEvents: { ...s.streamingEvents, [conversationId]: [] },
+        }));
+      }
+      // Clear oldest queued message (FIFO — followUp being delivered)
+      set((s) => {
+        const newQueued = new Set(s.queuedMessageIds);
+        const msgs = s.messages[conversationId] ?? [];
+        for (const msg of msgs) {
+          if (newQueued.has(msg.id)) {
+            newQueued.delete(msg.id);
+            break;
+          }
+        }
+        return { queuedMessageIds: newQueued };
+      });
+      return;
+    }
+
     // Buffer events and flush every ~100ms to avoid per-character re-renders
     if (!eventBuffer.has(conversationId)) {
       eventBuffer.set(conversationId, []);
@@ -146,7 +204,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   finalizeMessage(conversationId: string) {
-    // Flush any buffered events before finalizing
     flushEventBuffer(set);
     const events = get().streamingEvents[conversationId] ?? [];
     const assistantMsg: McMessage = {
@@ -155,14 +212,23 @@ export const useChatStore = create<ChatState>((set, get) => ({
       content: { type: 'assistant', events: events as Record<string, unknown>[] },
       timestamp: new Date().toISOString(),
     };
-    set((s) => ({
-      messages: {
-        ...s.messages,
-        [conversationId]: [...(s.messages[conversationId] ?? []), assistantMsg],
-      },
-      streamingEvents: { ...s.streamingEvents, [conversationId]: [] },
-      sending: { ...s.sending, [conversationId]: false },
-    }));
+    set((s) => {
+      // Clear any remaining queued message IDs for this conversation
+      const newQueued = new Set(s.queuedMessageIds);
+      const msgs = s.messages[conversationId] ?? [];
+      for (const msg of msgs) {
+        newQueued.delete(msg.id);
+      }
+      return {
+        messages: {
+          ...s.messages,
+          [conversationId]: [...(s.messages[conversationId] ?? []), assistantMsg],
+        },
+        streamingEvents: { ...s.streamingEvents, [conversationId]: [] },
+        sending: { ...s.sending, [conversationId]: false },
+        queuedMessageIds: newQueued,
+      };
+    });
   },
 
   setMessageError(conversationId: string, error: string) {
