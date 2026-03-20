@@ -1,3 +1,4 @@
+import { providerSecretKey } from '@dash/mc/provider-keys';
 import { ExternalLink, KeyRound, X } from 'lucide-react';
 import { useState } from 'react';
 import { PROVIDER_CONFIG, type Provider } from './providers.js';
@@ -36,7 +37,7 @@ export function ProviderConnectModal({
     setSaving(true);
     setError(null);
     try {
-      await window.api.secretsSet(`${provider}-api-key:${trimmedName}`, trimmedKey);
+      await window.api.secretsSet(providerSecretKey(provider, trimmedName), trimmedKey);
       setSaving(false);
       onSaved();
     } catch (err) {
@@ -62,6 +63,7 @@ export function ProviderConnectModal({
         if (e.key === 'Escape') onClose();
       }}
     >
+      {/* biome-ignore lint/a11y/useSemanticElements: custom modal uses div for flexible Tailwind styling */}
       <div
         role="dialog"
         aria-modal="true"

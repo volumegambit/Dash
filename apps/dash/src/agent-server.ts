@@ -2,8 +2,8 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { FileLogger, PooledAgentClient, generateFrontmatter } from '@dash/agent';
-import type { AgentClient } from '@dash/agent';
+import { FileLogger, PiAgentBackend, PooledAgentClient, generateFrontmatter } from '@dash/agent';
+import type { AgentClient, BackendFactory } from '@dash/agent';
 import { startChatServer } from '@dash/chat';
 import { startManagementServer } from '@dash/management';
 import type { InfoResponse, SkillsHandlers } from '@dash/management';
@@ -50,8 +50,14 @@ export async function createAgentServer(config: DashConfig) {
       log(`Agent "${name}" resolved key for provider "${provider}": ${prefix}***${suffix}`);
     }
 
+    const managedDir = config.configDir
+      ? join(resolve(config.configDir, '..'), 'skills', name)
+      : null;
+
+    const createBackend: BackendFactory = (cfg, keys, sessionDir) =>
+      new PiAgentBackend(cfg, keys, logger, sessionDir, managedDir ?? undefined);
+
     const client = new PooledAgentClient(
-      name,
       {
         model: agentConfig.model,
         fallbackModels: agentConfig.fallbackModels,
@@ -62,8 +68,8 @@ export async function createAgentServer(config: DashConfig) {
       },
       agentKeys,
       join(sessionBaseDir, name),
+      createBackend,
       workspace ?? projectRoot,
-      logger,
     );
     pooledClients.set(name, client);
     clients.set(name, client);

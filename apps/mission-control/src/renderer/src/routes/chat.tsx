@@ -25,7 +25,6 @@ import {
   isTodoWrite,
   parseTodos,
   summarize,
-  toolIcon,
   toolLabel,
 } from './chat.helpers.js';
 
@@ -146,8 +145,8 @@ function renderEvents(
         className="mb-2 flex items-center gap-2 rounded border border-border bg-sidebar-hover px-3 py-1.5 text-xs text-muted"
       >
         <Loader size={12} className="animate-spin shrink-0" />
-        {toolIcon(toolName)} <span className="font-mono">{toolLabel(toolName)}</span>
-        {inProgressSummary && <span className="ml-1">→ {inProgressSummary}</span>}
+        <span className="font-mono">{toolLabel(toolName)}</span>
+        {inProgressSummary && <span className="ml-1 text-muted">{inProgressSummary}</span>}
       </div>,
     );
   }
@@ -187,7 +186,7 @@ function ThinkingBlock({ text }: { text: string }): JSX.Element {
         onClick={() => setOpen((o) => !o)}
         className="w-full px-3 py-1.5 text-left text-xs text-muted hover:text-foreground"
       >
-        💭 {open ? 'Hide' : 'Show'} thinking
+        {open ? 'Hide' : 'Show'} thinking
       </button>
       {open && <p className="px-3 pb-2 text-xs text-muted whitespace-pre-wrap">{text}</p>}
     </div>
@@ -213,10 +212,9 @@ function QuestionBlock({
   if (answered) {
     return (
       <div className="mb-2 rounded border border-border bg-sidebar-hover px-3 py-1.5 text-xs">
-        ❓ <span className="text-muted">Question</span>
-        <span className="ml-1 text-muted">→</span>
+        <span className="text-muted">Question</span>
         <span className="ml-1">{answer}</span>
-        <span className="ml-1">✓</span>
+        <span className="ml-1 text-green-400">✓</span>
       </div>
     );
   }
@@ -272,12 +270,6 @@ const STATUS_INDICATOR: Record<string, { icon: string; label: string; color: str
   pending: { icon: '○', label: 'Pending', color: 'text-muted' },
 };
 
-const PRIORITY_BADGE: Record<string, { label: string; cls: string }> = {
-  high: { label: 'High', cls: 'bg-red-900/30 text-red-300' },
-  medium: { label: 'Med', cls: 'bg-yellow-900/30 text-yellow-300' },
-  low: { label: 'Low', cls: 'bg-zinc-700/40 text-zinc-400' },
-};
-
 function TodoListBlock({ todos }: { todos: TodoItem[] }): JSX.Element {
   const counts = { completed: 0, total: todos.length };
   for (const t of todos) if (t.status === 'completed') counts.completed++;
@@ -289,18 +281,12 @@ function TodoListBlock({ todos }: { todos: TodoItem[] }): JSX.Element {
       </p>
       {todos.map((todo) => {
         const st = STATUS_INDICATOR[todo.status] ?? STATUS_INDICATOR.pending;
-        const pr = todo.priority ? PRIORITY_BADGE[todo.priority] : undefined;
         return (
           <div key={todo.id ?? todo.content} className="flex items-start gap-2">
             <span className={`mt-px ${st.color}`}>{st.icon}</span>
             <span className={todo.status === 'completed' ? 'line-through text-muted' : ''}>
               {todo.content}
             </span>
-            {pr && (
-              <span className={`ml-auto shrink-0 rounded px-1.5 py-0.5 text-[10px] ${pr.cls}`}>
-                {pr.label}
-              </span>
-            )}
           </div>
         );
       })}
@@ -316,7 +302,6 @@ function ToolBlock({
 }: { name: string; input: string; result: string; isError?: boolean }): JSX.Element {
   const [open, setOpen] = useState(false);
   const [showRaw, setShowRaw] = useState(false);
-  const icon = toolIcon(name);
   const summary = summarize(name, input);
   const details = formatDetails(input);
   const todos = isTodoWrite(name) ? parseTodos(input) : null;
@@ -330,9 +315,11 @@ function ToolBlock({
         onClick={() => setOpen((o) => !o)}
         className="w-full px-3 py-1.5 text-left hover:text-foreground"
       >
-        {icon} <span className="font-mono">{toolLabel(name)}</span>
-        {summary && <span className="ml-1 text-muted">→ {summary}</span>}
-        {isError ? ' ✗' : ' ✓'}
+        <span className="font-mono">{toolLabel(name)}</span>
+        {summary && <span className="ml-1 text-muted">{summary}</span>}
+        <span className={`ml-1 ${isError ? 'text-red-400' : 'text-green-400'}`}>
+          {isError ? '✗' : '✓'}
+        </span>
       </button>
       {open && (
         <div className="border-t border-border px-3 pb-2 pt-1">
@@ -509,12 +496,19 @@ function PinnedTodoPanel({ todos }: { todos: TodoItem[] }): JSX.Element {
           onClick={() => setCollapsed((c) => !c)}
           className="flex flex-1 items-center justify-between hover:text-foreground"
         >
-          <span className="flex items-center gap-2">
-            <span>📋</span>
+          <span className="flex items-center gap-2 min-w-0">
+            <span className="text-muted">Tasks</span>
             <span className="font-medium">
               Tasks: {completed}/{todos.length} completed
               {inProgress > 0 && ` · ${inProgress} in progress`}
             </span>
+            {collapsed &&
+              (() => {
+                const active = todos.find((t) => t.status === 'in_progress');
+                return active ? (
+                  <span className="text-blue-400 font-normal truncate">— {active.content}</span>
+                ) : null;
+              })()}
           </span>
           {collapsed ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
         </button>
@@ -544,7 +538,6 @@ function PinnedTodoPanel({ todos }: { todos: TodoItem[] }): JSX.Element {
             {todos.map((todo) => {
               const isActive = todo.status === 'in_progress';
               const isDone = todo.status === 'completed';
-              const pr = todo.priority ? PRIORITY_BADGE[todo.priority] : undefined;
 
               return (
                 <div
@@ -561,11 +554,6 @@ function PinnedTodoPanel({ todos }: { todos: TodoItem[] }): JSX.Element {
                   >
                     {todo.content}
                   </span>
-                  {pr && (
-                    <span className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] ${pr.cls}`}>
-                      {pr.label}
-                    </span>
-                  )}
                 </div>
               );
             })}
@@ -971,6 +959,7 @@ export function Chat(): JSX.Element {
           </div>
         )}
 
+        {/* biome-ignore lint/a11y/useKeyWithClickEvents: click-to-focus convenience for sighted users, not a keyboard-navigable action */}
         <div
           className="flex-1 overflow-y-auto px-6 py-4"
           onClick={() => textareaRef.current?.focus()}

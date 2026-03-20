@@ -15,7 +15,10 @@ function parseValue(raw: string): string | string[] {
   if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
     const inner = trimmed.slice(1, -1);
     if (inner.trim() === '') return [];
-    return inner.split(',').map((s) => s.trim()).filter((s) => s !== '');
+    return inner
+      .split(',')
+      .map((s) => s.trim())
+      .filter((s) => s !== '');
   }
 
   return trimmed;
@@ -99,35 +102,35 @@ export function parseFrontmatter(raw: string): ParsedSkill | null {
   }
 
   // Validate required fields
-  const name = typeof fm['name'] === 'string' ? fm['name'] : '';
+  const name = typeof fm.name === 'string' ? fm.name : '';
   if (!name) {
     return null;
   }
 
-  const description = typeof fm['description'] === 'string' ? fm['description'] : '';
+  const description = typeof fm.description === 'string' ? fm.description : '';
 
   const frontmatter: SkillFrontmatter = { name, description };
 
-  if (typeof fm['trigger'] === 'string' && fm['trigger']) {
-    frontmatter.trigger = fm['trigger'];
+  if (typeof fm.trigger === 'string' && fm.trigger) {
+    frontmatter.trigger = fm.trigger;
   }
-  if (Array.isArray(fm['tools'])) {
-    frontmatter.tools = fm['tools'];
+  if (Array.isArray(fm.tools)) {
+    frontmatter.tools = fm.tools;
   }
-  if (Array.isArray(fm['tags'])) {
-    frontmatter.tags = fm['tags'];
+  if (Array.isArray(fm.tags)) {
+    frontmatter.tags = fm.tags;
   }
-  if (typeof fm['model'] === 'string' && fm['model']) {
-    frontmatter.model = fm['model'];
+  if (typeof fm.model === 'string' && fm.model) {
+    frontmatter.model = fm.model;
   }
-  if (fm['context'] === 'fork') {
+  if (fm.context === 'fork') {
     frontmatter.context = 'fork';
   }
   if (Array.isArray(fm['allowed-tools'])) {
     frontmatter['allowed-tools'] = fm['allowed-tools'];
   }
-  if (Array.isArray(fm['dependencies'])) {
-    frontmatter.dependencies = fm['dependencies'];
+  if (Array.isArray(fm.dependencies)) {
+    frontmatter.dependencies = fm.dependencies;
   }
 
   const content = rest.trimStart().trimEnd();

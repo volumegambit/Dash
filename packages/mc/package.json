@@ -8,6 +8,10 @@
     ".": {
       "import": "./dist/index.js",
       "types": "./dist/index.d.ts"
+    },
+    "./provider-keys": {
+      "import": "./dist/runtime/provider-keys.js",
+      "types": "./dist/runtime/provider-keys.d.ts"
     }
   },
   "scripts": {
@@ -15,13 +19,8 @@
     "dev": "tsup --watch"
   },
   "dependencies": {
-    "@dash/management": "*"
-  },
-  "tsup": {
-    "entry": ["src/index.ts"],
-    "format": ["esm"],
-    "dts": true,
-    "clean": true,
-    "sourcemap": true
+    "@dash/agent": "*",
+    "@dash/management": "*",
+    "@opencode-ai/sdk": "^1.2.20"
   }
 }

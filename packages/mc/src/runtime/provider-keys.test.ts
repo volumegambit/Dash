@@ -1,4 +1,26 @@
-import { parseProviderSecretKey } from './process.js';
+import { parseProviderSecretKey, providerSecretKey } from './provider-keys.js';
+
+describe('providerSecretKey', () => {
+  it('builds a key with default keyName', () => {
+    expect(providerSecretKey('anthropic')).toBe('anthropic-api-key:default');
+  });
+
+  it('builds a key with custom keyName', () => {
+    expect(providerSecretKey('openai', 'high-volume')).toBe('openai-api-key:high-volume');
+  });
+
+  it('roundtrips with parseProviderSecretKey', () => {
+    const key = providerSecretKey('brave');
+    const parsed = parseProviderSecretKey(key);
+    expect(parsed).toEqual({ provider: 'brave', keyName: 'default' });
+  });
+
+  it('roundtrips with custom keyName', () => {
+    const key = providerSecretKey('google', 'prod');
+    const parsed = parseProviderSecretKey(key);
+    expect(parsed).toEqual({ provider: 'google', keyName: 'prod' });
+  });
+});
 
 describe('parseProviderSecretKey', () => {
   it('parses a valid provider secret key', () => {

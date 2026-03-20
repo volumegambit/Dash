@@ -36,7 +36,7 @@ export interface ImageBlock {
 export type AgentEvent =
   | { type: 'text_delta'; text: string }
   | { type: 'thinking_delta'; text: string }
-  | { type: 'tool_use_start'; id: string; name: string }
+  | { type: 'tool_use_start'; id: string; name: string; input?: Record<string, unknown> }
   | { type: 'tool_use_delta'; partial_json: string }
   | { type: 'tool_result'; id: string; name: string; content: string; isError?: boolean }
   | {
@@ -88,8 +88,11 @@ export interface RunOptions {
 
 export interface AgentBackend {
   readonly name: string;
+  start(workspace: string): Promise<void>;
+  stop(): Promise<void>;
   run(state: AgentState, options: RunOptions): AsyncGenerator<AgentEvent>;
   abort(): void;
+  updateCredentials(providerApiKeys: Record<string, string>): Promise<void>;
   answerQuestion?(id: string, answers: string[][]): Promise<void>;
   listSkills?(): Promise<import('./skills/types.js').SkillDiscoveryResult[]>;
 }

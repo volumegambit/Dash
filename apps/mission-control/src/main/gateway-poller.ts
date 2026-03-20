@@ -2,7 +2,7 @@ import type { GatewayManagementClient } from '@dash/mc';
 
 export type GatewayStatus = 'starting' | 'healthy' | 'unhealthy' | 'restarting';
 
-type EnsureGateway = () => Promise<GatewayManagementClient>;
+type EnsureGateway = () => Promise<GatewayManagementClient | null>;
 type OnRestart = () => Promise<void>;
 
 export class GatewayPoller {
@@ -20,6 +20,7 @@ export class GatewayPoller {
     this.timer = setInterval(async () => {
       try {
         const client = await this.ensureGateway();
+        if (!client) return;
         const health = await client.health();
         const newStatus: GatewayStatus = health.status === 'healthy' ? 'healthy' : 'unhealthy';
         if (newStatus !== this.currentStatus) {

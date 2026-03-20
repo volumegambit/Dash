@@ -1,5 +1,5 @@
-import { createServer, type Server } from 'node:http';
 import { randomBytes } from 'node:crypto';
+import { type Server, createServer } from 'node:http';
 
 const CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann';
 const AUTHORIZE_URL = 'https://auth.openai.com/oauth/authorize';
@@ -47,10 +47,7 @@ function buildAuthorizeUrl(pkce: PKCEPair, state: string): string {
   return url.toString();
 }
 
-async function exchangeCode(
-  code: string,
-  verifier: string,
-): Promise<CodexTokenResult | null> {
+async function exchangeCode(code: string, verifier: string): Promise<CodexTokenResult | null> {
   const res = await fetch(TOKEN_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -63,7 +60,11 @@ async function exchangeCode(
     }),
   });
   if (!res.ok) {
-    console.error('[codex-auth] Token exchange failed:', res.status, await res.text().catch(() => ''));
+    console.error(
+      '[codex-auth] Token exchange failed:',
+      res.status,
+      await res.text().catch(() => ''),
+    );
     return null;
   }
   const json = (await res.json()) as {

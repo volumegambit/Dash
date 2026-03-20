@@ -14,9 +14,9 @@ This is the skill content.`;
 
     const result = parseFrontmatter(raw);
     expect(result).not.toBeNull();
-    expect(result!.frontmatter.name).toBe('my-skill');
-    expect(result!.frontmatter.description).toBe('Does something useful');
-    expect(result!.content).toBe('# My Skill\n\nThis is the skill content.');
+    expect(result?.frontmatter.name).toBe('my-skill');
+    expect(result?.frontmatter.description).toBe('Does something useful');
+    expect(result?.content).toBe('# My Skill\n\nThis is the skill content.');
   });
 
   it('parses all optional fields', () => {
@@ -42,7 +42,7 @@ Skill body here.`;
 
     const result = parseFrontmatter(raw);
     expect(result).not.toBeNull();
-    const fm = result!.frontmatter;
+    const fm = result?.frontmatter;
     expect(fm.name).toBe('full-skill');
     expect(fm.description).toBe('A fully featured skill');
     expect(fm.trigger).toBe('/full');
@@ -52,7 +52,7 @@ Skill body here.`;
     expect(fm.tags).toEqual(['utility', 'advanced']);
     expect(fm['allowed-tools']).toEqual(['bash']);
     expect(fm.dependencies).toEqual(['other-skill']);
-    expect(result!.content).toBe('Skill body here.');
+    expect(result?.content).toBe('Skill body here.');
   });
 
   it('parses inline arrays', () => {
@@ -67,8 +67,8 @@ Content here.`;
 
     const result = parseFrontmatter(raw);
     expect(result).not.toBeNull();
-    expect(result!.frontmatter.tools).toEqual(['bash', 'read', 'write']);
-    expect(result!.frontmatter.tags).toEqual(['utility']);
+    expect(result?.frontmatter.tools).toEqual(['bash', 'read', 'write']);
+    expect(result?.frontmatter.tags).toEqual(['utility']);
   });
 
   it('returns null for missing frontmatter', () => {
@@ -122,7 +122,7 @@ description: Content gets trimmed
 
     const result = parseFrontmatter(raw);
     expect(result).not.toBeNull();
-    expect(result!.content).toBe('Leading and trailing whitespace');
+    expect(result?.content).toBe('Leading and trailing whitespace');
   });
 
   it('handles empty content after frontmatter', () => {
@@ -134,7 +134,7 @@ description: Skill with no body
 
     const result = parseFrontmatter(raw);
     expect(result).not.toBeNull();
-    expect(result!.content).toBe('');
+    expect(result?.content).toBe('');
   });
 
   it('handles empty optional arrays gracefully', () => {
@@ -153,8 +153,8 @@ Content.`;
     // only sets them if present — since [] is empty, we check they're not set
     // (the implementation filters out empty inline arrays via the parseValue path;
     //  however SkillFrontmatter allows optional arrays, so presence is optional)
-    expect(result!.frontmatter.tools).toEqual([]);
-    expect(result!.frontmatter.tags).toEqual([]);
+    expect(result?.frontmatter.tools).toEqual([]);
+    expect(result?.frontmatter.tags).toEqual([]);
   });
 
   it('handles description with colons in it', () => {
@@ -167,7 +167,7 @@ Content.`;
 
     const result = parseFrontmatter(raw);
     expect(result).not.toBeNull();
-    expect(result!.frontmatter.description).toBe('Does something: with a colon');
+    expect(result?.frontmatter.description).toBe('Does something: with a colon');
   });
 });
 
@@ -246,9 +246,9 @@ describe('round-trip (generate then parse)', () => {
     const parsed = parseFrontmatter(generated);
 
     expect(parsed).not.toBeNull();
-    expect(parsed!.frontmatter.name).toBe(fm.name);
-    expect(parsed!.frontmatter.description).toBe(fm.description);
-    expect(parsed!.content).toBe(content);
+    expect(parsed?.frontmatter.name).toBe(fm.name);
+    expect(parsed?.frontmatter.description).toBe(fm.description);
+    expect(parsed?.content).toBe(content);
   });
 
   it('produces the same result after generate then parse — all optional fields', () => {
@@ -269,7 +269,7 @@ describe('round-trip (generate then parse)', () => {
     const parsed = parseFrontmatter(generated);
 
     expect(parsed).not.toBeNull();
-    expect(parsed!.frontmatter).toEqual(fm);
-    expect(parsed!.content).toBe(content);
+    expect(parsed?.frontmatter).toEqual(fm);
+    expect(parsed?.content).toBe(content);
   });
 });

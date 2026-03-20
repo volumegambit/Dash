@@ -2,6 +2,7 @@ import { existsSync } from 'node:fs';
 import { readFile, unlink, writeFile } from 'node:fs/promises';
 import net from 'node:net';
 import { join } from 'node:path';
+import { AGENT_TOOL_NAMES } from '@dash/agent';
 
 export interface CachedModel {
   value: string; // "provider/model-id"
@@ -31,8 +32,7 @@ export class ModelCacheService {
   }
 
   async loadTools(): Promise<string[]> {
-    const cache = await this.loadCache();
-    return cache?.tools ?? [];
+    return [...AGENT_TOOL_NAMES];
   }
 
   private async loadCache(): Promise<CacheFile | null> {
@@ -112,18 +112,8 @@ export class ModelCacheService {
         }
       }
 
-      // Fetch available tool IDs
-      let tools: string[] | undefined;
-      try {
-        const toolResponse = await client.tool.ids();
-        if (!toolResponse.error && toolResponse.data) {
-          tools = toolResponse.data.sort();
-        }
-      } catch {
-        // Tool query failed — keep existing cached tools
-      }
-
-      await this.save(models, tools);
+      // Tools are no longer discovered dynamically — KNOWN_TOOLS is the source of truth.
+      await this.save(models);
       return models;
     } catch {
       // Refresh failed — return existing cache if available

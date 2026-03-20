@@ -1,3 +1,5 @@
+import { providerSecretKey } from '@dash/mc/provider-keys';
+
 export type Provider = 'anthropic' | 'openai' | 'google';
 
 export interface ProviderOption {
@@ -43,7 +45,7 @@ export const PROVIDERS: ProviderOption[] = [
 export const PROVIDER_CONFIG: Record<Provider, ProviderConfig> = {
   anthropic: {
     title: 'Connect to Claude',
-    secretKey: 'anthropic-api-key:default',
+    secretKey: providerSecretKey('anthropic'),
     placeholder: 'sk-ant-...',
     consoleUrl: 'https://console.anthropic.com',
     apiKeysUrl: 'https://console.anthropic.com/settings/keys',
@@ -58,7 +60,7 @@ export const PROVIDER_CONFIG: Record<Provider, ProviderConfig> = {
   },
   openai: {
     title: 'Connect to OpenAI',
-    secretKey: 'openai-api-key:default',
+    secretKey: providerSecretKey('openai'),
     placeholder: 'sk-...',
     consoleUrl: 'https://platform.openai.com',
     apiKeysUrl: 'https://platform.openai.com/api-keys',
@@ -73,7 +75,7 @@ export const PROVIDER_CONFIG: Record<Provider, ProviderConfig> = {
   },
   google: {
     title: 'Connect to Google Gemini',
-    secretKey: 'google-api-key:default',
+    secretKey: providerSecretKey('google'),
     placeholder: 'AIza...',
     consoleUrl: 'https://aistudio.google.com',
     apiKeysUrl: 'https://aistudio.google.com/app/apikey',

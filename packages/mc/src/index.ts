@@ -16,6 +16,7 @@ export { generateToken } from './security/keygen.js';
 export { AgentRegistry } from './agents/registry.js';
 export { AgentConnector } from './agents/connector.js';
 export type { DeploymentRuntime, RuntimeStatus } from './runtime/types.js';
+export { providerSecretKey, parseProviderSecretKey } from './runtime/provider-keys.js';
 export {
   ProcessRuntime,
   findAvailablePort,
@@ -25,7 +26,6 @@ export {
   defaultHealthChecker,
   defaultStartupWatcher,
   DeploymentStartupError,
-  parseProviderSecretKey,
 } from './runtime/process.js';
 export type {
   ProcessSpawner,
@@ -47,3 +47,9 @@ export { getPlatformDataDir } from './platform-paths.js';
 export type { GatewayOptions } from './runtime/process.js';
 export { ModelCacheService } from './models/model-cache.js';
 export type { CachedModel } from './models/model-cache.js';
+export { GatewayManagementClient } from './runtime/gateway-client.js';
+export type {
+  GatewayChannelRoutingRule,
+  GatewayChannelConfig,
+  GatewayHealthResponse,
+} from './runtime/gateway-client.js';
