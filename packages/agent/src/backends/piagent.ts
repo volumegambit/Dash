@@ -32,6 +32,7 @@ import type {
   AgentEvent,
   AgentState,
   DashAgentConfig,
+  ImageBlock,
   RunOptions,
 } from '../types.js';
 
@@ -59,6 +60,10 @@ export class PiAgentBackend implements AgentBackend {
 
   /** Accumulated full text during a response, for the `response` event */
   private fullText = '';
+
+  get isStreaming(): boolean {
+    return this.session?.isStreaming ?? false;
+  }
 
   /** Track the compaction reason from auto_compaction_start for use in auto_compaction_end */
   private lastCompactionReason: 'threshold' | 'overflow' = 'threshold';
@@ -342,6 +347,13 @@ export class PiAgentBackend implements AgentBackend {
           if (!event) break;
 
           if (event.type === '__done__') {
+            // If there are pending steer/followUp messages, yield an interrupted
+            // event and keep the generator alive for the next turn.
+            if (this.session && (this.session.pendingMessageCount > 0 || this.session.isStreaming)) {
+              this.fullText = '';
+              yield { type: 'interrupted' as const };
+              continue;
+            }
             return;
           }
 
@@ -480,6 +492,30 @@ export class PiAgentBackend implements AgentBackend {
       // session.abort() returns a promise but we fire-and-forget
       this.session.abort().catch(() => {});
     }
+  }
+
+  async steer(text: string, images?: ImageBlock[]): Promise<void> {
+    if (!this.session) {
+      throw new Error('PiAgentBackend not started. Call start() first.');
+    }
+    const converted: ImageContent[] | undefined = images?.map((img) => ({
+      type: 'image' as const,
+      data: img.data,
+      mimeType: img.mediaType,
+    }));
+    await this.session.steer(text, converted);
+  }
+
+  async followUp(text: string, images?: ImageBlock[]): Promise<void> {
+    if (!this.session) {
+      throw new Error('PiAgentBackend not started. Call start() first.');
+    }
+    const converted: ImageContent[] | undefined = images?.map((img) => ({
+      type: 'image' as const,
+      data: img.data,
+      mimeType: img.mediaType,
+    }));
+    await this.session.followUp(text, converted);
   }
 
   /**
