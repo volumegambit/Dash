@@ -690,6 +690,114 @@ function formatModelName(model: string): string {
   return name;
 }
 
+// --- Agent Selection Modal ---
+
+function AgentSelectionModal({
+  agents,
+  onSelect,
+  onClose,
+}: {
+  agents: { deploymentId: string; deploymentName: string; agentName: string }[];
+  onSelect: (deploymentId: string, agentName: string) => void;
+  onClose: () => void;
+}): JSX.Element {
+  const [selectedIndex, setSelectedIndex] = useState(0);
+  const [searchTerm, setSearchTerm] = useState('');
+  const searchInputRef = useRef<HTMLInputElement>(null);
+
+  const filtered = searchTerm.trim()
+    ? agents.filter(
+        (a) =>
+          a.agentName.toLowerCase().includes(searchTerm.toLowerCase()) ||
+          a.deploymentName.toLowerCase().includes(searchTerm.toLowerCase()),
+      )
+    : agents;
+
+  // Focus search input on mount
+  useEffect(() => {
+    searchInputRef.current?.focus();
+  }, []);
+
+  // Reset selection when filter changes
+  useEffect(() => {
+    setSelectedIndex(0);
+  }, [searchTerm]);
+
+  const handleKeyDown = useCallback(
+    (e: React.KeyboardEvent) => {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        setSelectedIndex((i) => Math.min(i + 1, filtered.length - 1));
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        setSelectedIndex((i) => Math.max(i - 1, 0));
+      } else if (e.key === 'Enter') {
+        e.preventDefault();
+        if (filtered[selectedIndex]) {
+          onSelect(filtered[selectedIndex].deploymentId, filtered[selectedIndex].agentName);
+        }
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        onClose();
+      }
+    },
+    [filtered, selectedIndex, onSelect, onClose],
+  );
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-start justify-center pt-[20vh]">
+      {/* biome-ignore lint/a11y/useKeyWithClickEvents: backdrop click to close */}
+      <div className="absolute inset-0 bg-black/50" onClick={onClose} />
+      {/* biome-ignore lint/a11y/noNoninteractiveElementToFocusEvents: modal container needs key handling */}
+      <div
+        className="relative z-10 w-[400px] rounded-xl border border-border bg-surface shadow-2xl"
+        onKeyDown={handleKeyDown}
+      >
+        <div className="border-b border-border px-4 py-3">
+          <p className="mb-2 text-sm font-medium text-foreground">Select an agent</p>
+          <div className="flex items-center gap-2 bg-card-bg border border-border rounded-lg px-3 py-2">
+            <Search size={14} className="text-muted shrink-0" />
+            <input
+              ref={searchInputRef}
+              type="text"
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              placeholder="Search agents…"
+              className="flex-1 bg-transparent text-sm text-foreground placeholder:text-muted focus:outline-none"
+            />
+          </div>
+          <p className="mt-2 text-[10px] text-muted">
+            ↑↓ to navigate · Enter to select · Esc to cancel
+          </p>
+        </div>
+        <ul className="max-h-[300px] overflow-y-auto py-1">
+          {filtered.length === 0 ? (
+            <li className="px-4 py-3 text-xs text-muted">No agents found.</li>
+          ) : (
+            filtered.map((agent, i) => (
+              <li key={`${agent.deploymentId}-${agent.agentName}`}>
+                <button
+                  type="button"
+                  onClick={() => onSelect(agent.deploymentId, agent.agentName)}
+                  onMouseEnter={() => setSelectedIndex(i)}
+                  className={`w-full text-left px-4 py-2.5 transition-colors ${
+                    i === selectedIndex
+                      ? 'bg-accent/20 text-foreground'
+                      : 'text-muted hover:bg-sidebar-hover'
+                  }`}
+                >
+                  <p className="text-sm font-medium text-foreground">{agent.agentName}</p>
+                  <p className="text-[10px] text-muted">{agent.deploymentName}</p>
+                </button>
+              </li>
+            ))
+          )}
+        </ul>
+      </div>
+    </div>
+  );
+}
+
 // --- Main Chat component ---
 
 export function Chat(): JSX.Element {
@@ -701,7 +809,7 @@ export function Chat(): JSX.Element {
     messages,
     streamingEvents,
     sending,
-    loadConversations,
+    loadAllConversations,
     selectConversation,
     createConversation,
     renameConversation,
@@ -712,8 +820,6 @@ export function Chat(): JSX.Element {
 
   const navigate = useNavigate();
   const runningDeployments = deployments.filter((d) => d.status === 'running');
-  const [selectedDeploymentId, setSelectedDeploymentId] = useState(search.deploymentId || '');
-  const [selectedAgentName, setSelectedAgentName] = useState(search.agentName || '');
   const [input, setInput] = useState('');
   const [attachedImages, setAttachedImages] = useState<
     { id: string; preview: string; mediaType: string; data: string }[]
@@ -721,9 +827,16 @@ export function Chat(): JSX.Element {
   const [answeredQuestions, setAnsweredQuestions] = useState<Record<string, string>>({});
   const [imageError, setImageError] = useState<string | null>(null);
   const [conversationSearch, setConversationSearch] = useState('');
+  const [showAgentModal, setShowAgentModal] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Resolve the deployment for the selected conversation
+  const selectedConversation = selectedConversationId
+    ? conversations.find((c) => c.id === selectedConversationId)
+    : null;
+  const selectedDeploymentId = selectedConversation?.deploymentId ?? '';
 
   const navigateToLogs = useCallback(
     (timestamp: string) => {
@@ -754,30 +867,10 @@ export function Chat(): JSX.Element {
     loadDeployments();
   }, [loadDeployments]);
 
-  // Auto-select first running deployment
+  // Load all conversations on mount
   useEffect(() => {
-    if (!selectedDeploymentId && runningDeployments.length > 0) {
-      setSelectedDeploymentId(runningDeployments[0].id);
-    }
-  }, [selectedDeploymentId, runningDeployments]);
-
-  // Load conversations when deployment changes
-  useEffect(() => {
-    if (!selectedDeploymentId) return;
-    loadConversations(selectedDeploymentId);
-  }, [selectedDeploymentId, loadConversations]);
-
-  // Auto-select first agent when deployment changes
-  useEffect(() => {
-    if (!selectedDeploymentId) return;
-    const dep = deployments.find((d) => d.id === selectedDeploymentId);
-    if (dep?.config.agents) {
-      const agentNames = Object.keys(dep.config.agents);
-      if (agentNames.length > 0 && !selectedAgentName) {
-        setSelectedAgentName(agentNames[0]);
-      }
-    }
-  }, [selectedDeploymentId, deployments, selectedAgentName]);
+    loadAllConversations();
+  }, [loadAllConversations]);
 
   // Scroll to bottom on new messages
   const selectedMessages = selectedConversationId ? (messages[selectedConversationId] ?? []) : [];
@@ -789,15 +882,64 @@ export function Chat(): JSX.Element {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [selectedMessages.length, liveEvents.length]);
 
-  const handleNewConversation = useCallback(async () => {
-    if (!selectedDeploymentId || !selectedAgentName) return;
-    try {
-      const conv = await createConversation(selectedDeploymentId, selectedAgentName);
-      await selectConversation(conv.id);
-    } catch (err) {
-      console.error('[Chat] Failed to create conversation:', err);
+  // Build available agents list from running deployments
+  const availableAgents = runningDeployments.flatMap((dep) => {
+    const agentNames = dep.config.agents ? Object.keys(dep.config.agents) : [];
+    return agentNames.map((name) => ({
+      deploymentId: dep.id,
+      deploymentName: dep.name,
+      agentName: name,
+    }));
+  });
+
+  const handleNewConversation = useCallback(() => {
+    if (availableAgents.length === 0) return;
+    // If only one agent, create immediately
+    if (availableAgents.length === 1) {
+      const agent = availableAgents[0];
+      createConversation(agent.deploymentId, agent.agentName)
+        .then((conv) => selectConversation(conv.id))
+        .catch((err) => console.error('[Chat] Failed to create conversation:', err));
+      return;
     }
-  }, [selectedDeploymentId, selectedAgentName, createConversation, selectConversation]);
+    setShowAgentModal(true);
+  }, [availableAgents, createConversation, selectConversation]);
+
+  const handleAgentSelected = useCallback(
+    async (deploymentId: string, agentName: string) => {
+      setShowAgentModal(false);
+      try {
+        const conv = await createConversation(deploymentId, agentName);
+        await selectConversation(conv.id);
+      } catch (err) {
+        console.error('[Chat] Failed to create conversation:', err);
+      }
+    },
+    [createConversation, selectConversation],
+  );
+
+  // Keyboard shortcut: Cmd+N / Ctrl+N for new conversation
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === 'n') {
+        e.preventDefault();
+        handleNewConversation();
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [handleNewConversation]);
+
+  // If navigated with search params, auto-create conversation
+  useEffect(() => {
+    if (search.deploymentId && search.agentName) {
+      createConversation(search.deploymentId, search.agentName)
+        .then((conv) => selectConversation(conv.id))
+        .catch((err) => console.error('[Chat] Failed to create conversation from search:', err));
+    }
+    // Only run once on mount
+    // biome-ignore lint/correctness/useExhaustiveDependencies: intentionally run once
+  }, []);
 
   const resizeTextarea = useCallback(() => {
     const ta = textareaRef.current;
@@ -866,12 +1008,12 @@ export function Chat(): JSX.Element {
     }
   }, [input, attachedImages, selectedConversationId, isStreaming, sendMessage]);
 
+  // Resolve model for the selected conversation's agent
   const selectedDeployment = deployments.find((d) => d.id === selectedDeploymentId);
-  const agentNames = selectedDeployment?.config.agents
-    ? Object.keys(selectedDeployment.config.agents)
-    : [];
-  const agentConfig =
-    selectedDeployment?.config?.agents?.[selectedAgentName] ?? selectedDeployment?.config?.agent;
+  const agentConfig = selectedConversation
+    ? (selectedDeployment?.config?.agents?.[selectedConversation.agentName] ??
+      selectedDeployment?.config?.agent)
+    : undefined;
   const activeModel = agentConfig?.model;
 
   const filteredConversations = conversationSearch.trim()
@@ -890,48 +1032,26 @@ export function Chat(): JSX.Element {
           Chat
         </h1>
         <div className="flex gap-3">
-          {/* Deployment picker */}
-          {runningDeployments.length > 1 && (
-            <select
-              value={selectedDeploymentId}
-              onChange={(e) => {
-                setSelectedDeploymentId(e.target.value);
-                setSelectedAgentName('');
-              }}
-              className="rounded-lg border border-border bg-card-bg px-3 py-1.5 text-xs text-foreground focus:outline-none focus:border-accent"
-            >
-              {runningDeployments.map((d) => (
-                <option key={d.id} value={d.id}>
-                  {d.name}
-                </option>
-              ))}
-            </select>
-          )}
-          {/* Agent picker */}
-          {agentNames.length > 1 && (
-            <select
-              value={selectedAgentName}
-              onChange={(e) => setSelectedAgentName(e.target.value)}
-              className="rounded-lg border border-border bg-card-bg px-3 py-1.5 text-xs text-foreground focus:outline-none focus:border-accent"
-            >
-              {agentNames.map((name) => (
-                <option key={name} value={name}>
-                  {name}
-                </option>
-              ))}
-            </select>
-          )}
           <button
             type="button"
             onClick={handleNewConversation}
-            disabled={!selectedDeploymentId || !selectedAgentName}
+            disabled={availableAgents.length === 0}
             className="flex items-center gap-1.5 rounded-lg border border-border bg-card-bg px-3 py-1.5 text-xs text-muted transition-colors hover:bg-sidebar-hover hover:text-foreground disabled:opacity-40"
+            title="New conversation (⌘N)"
           >
             <Plus size={12} />
             New conversation
           </button>
         </div>
       </div>
+
+      {showAgentModal && (
+        <AgentSelectionModal
+          agents={availableAgents}
+          onSelect={handleAgentSelected}
+          onClose={() => setShowAgentModal(false)}
+        />
+      )}
 
       <div className="flex flex-1 min-h-0">
         {/* Left: Conversation List */}
@@ -980,9 +1100,16 @@ export function Chat(): JSX.Element {
           }}
           onDragOver={(e) => e.preventDefault()}
         >
-          {activeModel && (
-            <div className="flex items-center justify-between border-b border-border px-6 py-1.5 shrink-0">
-              <span className="text-xs text-foreground/70">{formatModelName(activeModel)}</span>
+          {(activeModel || selectedConversation) && (
+            <div className="flex items-center gap-3 border-b border-border px-6 py-1.5 shrink-0">
+              {selectedConversation && (
+                <span className="text-xs font-medium text-accent">
+                  {selectedConversation.agentName}
+                </span>
+              )}
+              {activeModel && (
+                <span className="text-xs text-foreground/70">{formatModelName(activeModel)}</span>
+              )}
             </div>
           )}
 
@@ -995,7 +1122,7 @@ export function Chat(): JSX.Element {
               <p className="text-center text-sm text-muted mt-8">
                 {runningDeployments.length === 0
                   ? 'Deploy an agent first, then come back to chat.'
-                  : 'Select a conversation or create a new one.'}
+                  : 'Select a conversation or press ⌘N to start a new one.'}
               </p>
             ) : (
               <>

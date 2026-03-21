@@ -79,6 +79,10 @@ export class ConversationStore {
     return conversations.filter((c) => c.deploymentId === deploymentId);
   }
 
+  async listAll(): Promise<McConversation[]> {
+    return this.loadIndex();
+  }
+
   async get(id: string): Promise<McConversation | null> {
     const conversations = await this.loadIndex();
     return conversations.find((c) => c.id === id) ?? null;

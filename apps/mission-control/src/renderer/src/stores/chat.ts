@@ -10,6 +10,7 @@ interface ChatState {
   sending: Record<string, boolean>;
 
   loadConversations(deploymentId: string): Promise<void>;
+  loadAllConversations(): Promise<void>;
   selectConversation(id: string): Promise<void>;
   createConversation(deploymentId: string, agentName: string): Promise<McConversation>;
   renameConversation(id: string, title: string): Promise<void>;
@@ -53,6 +54,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   async loadConversations(deploymentId: string) {
     const conversations = await window.api.chatListConversations(deploymentId);
+    conversations.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+    set({ conversations });
+  },
+
+  async loadAllConversations() {
+    const conversations = await window.api.chatListAllConversations();
+    conversations.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
     set({ conversations });
   },
 
@@ -67,7 +75,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   async createConversation(deploymentId: string, agentName: string) {
     const conversation = await window.api.chatCreateConversation(deploymentId, agentName);
     set((s) => ({
-      conversations: [...s.conversations, conversation],
+      conversations: [conversation, ...s.conversations],
       messages: { ...s.messages, [conversation.id]: [] },
     }));
     return conversation;
