@@ -64,7 +64,12 @@ export class ConversationPool {
     conversationId: string,
   ): Promise<PoolEntry> {
     if (this.pool.size >= this.maxSize) {
-      await this.evictLRU();
+      const evicted = await this.evictLRU();
+      if (!evicted) {
+        throw new Error(
+          `Pool is full (${this.maxSize} entries, all pinned). Cannot create new conversation.`,
+        );
+      }
     }
 
     const { backend, agent } = await this.backendFactory(agentName, conversationId);
@@ -78,7 +83,7 @@ export class ConversationPool {
     return entry;
   }
 
-  private async evictLRU(): Promise<void> {
+  private async evictLRU(): Promise<boolean> {
     let oldest: { key: string; time: number } | null = null;
     for (const [key, entry] of this.pool) {
       if (entry.pinned) continue;
@@ -91,8 +96,10 @@ export class ConversationPool {
       if (entry) {
         await entry.backend.stop();
         this.pool.delete(oldest.key);
+        return true;
       }
     }
+    return false;
   }
 
   pin(agentName: string, conversationId: string): void {
