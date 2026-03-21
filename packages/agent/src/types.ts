@@ -56,7 +56,8 @@ export type AgentEvent =
   | { type: 'context_compacted'; overflow: boolean }
   | { type: 'question'; id: string; question: string; options: string[] }
   | { type: 'skill_loaded'; name: string }
-  | { type: 'skill_created'; name: string; description: string };
+  | { type: 'skill_created'; name: string; description: string }
+  | { type: 'mcp_server_error'; server: string; error: string };
 
 export interface DashAgentConfig {
   model: string;
@@ -68,6 +69,7 @@ export interface DashAgentConfig {
     paths?: string[];
     urls?: string[];
   };
+  mcpServers?: import('@dash/mcp').McpServerConfig[];
 }
 
 export interface AgentState {

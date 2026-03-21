@@ -1,5 +1,5 @@
 {
-  "name": "@dash/agent",
+  "name": "@dash/mcp",
   "version": "0.1.0",
   "type": "module",
   "main": "dist/index.js",
@@ -15,10 +15,15 @@
     "dev": "tsup --watch"
   },
   "dependencies": {
-    "@dash/mcp": "*",
     "@mariozechner/pi-agent-core": "^0.58.3",
-    "@mariozechner/pi-ai": "^0.58.3",
-    "@mariozechner/pi-coding-agent": "^0.58.3",
+    "@modelcontextprotocol/sdk": "^1.27.0",
     "@sinclair/typebox": "^0.34.0"
+  },
+  "tsup": {
+    "entry": ["src/index.ts"],
+    "format": ["esm"],
+    "dts": true,
+    "clean": true,
+    "sourcemap": true
   }
 }
