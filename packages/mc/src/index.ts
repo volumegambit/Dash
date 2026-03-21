@@ -46,3 +46,5 @@ export type {
   GatewayChannelConfig,
   GatewayHealthResponse,
 } from './runtime/gateway-client.js';
+export { GatewayStateStore } from './runtime/gateway-state.js';
+export type { GatewayState } from './runtime/gateway-state.js';
