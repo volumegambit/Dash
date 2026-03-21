@@ -1,36 +1,32 @@
-import { Github } from 'lucide-react';
-import Link from 'next/link';
+import { Button } from '@/components/ui/button';
 
 export function Nav() {
   return (
-    <nav className="sticky top-0 z-50 border-b border-[#262626] bg-[#0a0a0a]/90 backdrop-blur-sm">
-      <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-4">
-        <span className="font-mono text-lg font-semibold tracking-tight text-white">Dash</span>
-        <div className="flex items-center gap-6">
-          <Link
-            href="https://docs.dashsquad.ai"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="text-sm text-[#a3a3a3] transition-colors hover:text-white"
-          >
-            Docs
-          </Link>
-          <Link
-            href="https://github.com/volumegambit/Dash"
-            target="_blank"
-            rel="noopener noreferrer"
-            aria-label="GitHub"
-            className="text-[#a3a3a3] transition-colors hover:text-white"
-          >
-            <Github size={18} />
-          </Link>
-          <Link
-            href="#download"
-            className="rounded-md bg-[#3b82f6] px-4 py-1.5 text-sm font-medium text-white transition-colors hover:bg-[#2563eb]"
-          >
-            Download
-          </Link>
-        </div>
+    <nav className="flex flex-row items-center justify-between py-5 px-8 lg:px-20">
+      {/* Left: logo + wordmark */}
+      <a href="#" className="flex items-center gap-3">
+        <span className="shadow-[0_0_16px_rgba(255,85,0,0.25)] rounded-md">
+          <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
+            <rect width="28" height="28" rx="6" fill="#FF5500" />
+            <path d="M17.5 11L21 14L17.5 17" stroke="white" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+            <path d="M11 8L15 11L11 14" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+            <path d="M11 14L15 17L11 20" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+        </span>
+        <span className="font-outfit text-xl font-extrabold text-white tracking-tight">dashsquad</span>
+      </a>
+
+      {/* Right: nav links + CTA */}
+      <div className="flex items-center gap-6">
+        <a href="#about" className="text-[15px] text-text-secondary hover:text-white transition-colors">
+          About
+        </a>
+        <a href="#early-access" className="text-[15px] text-text-secondary hover:text-white transition-colors">
+          Early Access
+        </a>
+        <a href="#waitlist">
+          <Button size="pill" variant="default">Join the Alpha</Button>
+        </a>
       </div>
     </nav>
   );
