@@ -25,6 +25,8 @@
     "mc:package": "npm run build --workspace=apps/mission-control && npm run package --workspace=apps/mission-control",
     "website:dev": "npm run dev --workspace=apps/website",
     "website:build": "npm run build --workspace=apps/website",
+    "waitlist:dev": "npm run dev --workspace=apps/waitlist",
+    "waitlist:build": "npm run build --workspace=apps/waitlist",
     "test": "vitest run",
     "lint": "biome check . && npm run typecheck --workspace=apps/mission-control",
     "lint:fix": "biome check --write .",

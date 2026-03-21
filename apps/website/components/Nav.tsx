@@ -18,10 +18,10 @@ export function Nav() {
 
       {/* Right: nav links + CTA */}
       <div className="flex items-center gap-6">
-        <a href="#about" className="text-[15px] text-text-secondary hover:text-white transition-colors">
+        <a href="#about" className="hidden md:block text-[15px] text-text-secondary hover:text-white transition-colors">
           About
         </a>
-        <a href="#early-access" className="text-[15px] text-text-secondary hover:text-white transition-colors">
+        <a href="#early-access" className="hidden md:block text-[15px] text-text-secondary hover:text-white transition-colors">
           Early Access
         </a>
         <a href="#waitlist">

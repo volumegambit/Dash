@@ -66,7 +66,7 @@ export function HowItWorks() {
                 {i + 1}
               </div>
               {step.hasConnector && (
-                <div className="absolute h-px bg-surface-border top-1/2 left-[calc(50%+18px)] right-0" />
+                <div className="hidden md:block absolute h-px bg-surface-border top-1/2 left-[calc(50%+18px)] right-0" />
               )}
             </div>
 
