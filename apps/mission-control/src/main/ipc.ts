@@ -981,7 +981,17 @@ export async function registerIpcHandlers(
       );
     });
 
-  app.on('before-quit', () => {
+  app.on('before-quit', async () => {
     gatewayPoller?.stop();
+    // Kill gateway so next MC launch spawns a fresh one (picks up code changes)
+    const gatewayState = await new GatewayStateStore(DATA_DIR).read();
+    if (gatewayState) {
+      try {
+        process.kill(gatewayState.pid, 'SIGTERM');
+      } catch {
+        // Already dead
+      }
+      await new GatewayStateStore(DATA_DIR).clear();
+    }
   });
 }
