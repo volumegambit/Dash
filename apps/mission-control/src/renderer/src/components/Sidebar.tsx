@@ -3,11 +3,12 @@ import {
   Bot,
   KeyRound,
   LayoutDashboard,
+  LifeBuoy,
   MessageCircle,
   MessageSquare,
-  MessageSquarePlus,
   Plug,
   Settings,
+  Zap,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { useEffect, useState } from 'react';
@@ -17,17 +18,43 @@ import { HealthDot } from './HealthDot.js';
 
 type ChannelHealth = ChannelHealthEntry['health'];
 
-const navItems: { to: string; label: string; icon: LucideIcon }[] = [
-  { to: '/', label: 'Dashboard', icon: LayoutDashboard },
-  { to: '/chat', label: 'Chat', icon: MessageCircle },
-  { to: '/agents', label: 'Agents', icon: Bot },
-  { to: '/messaging-apps', label: 'Messaging Apps', icon: MessageSquare },
-  { to: '/connections', label: 'AI Providers', icon: Plug },
-  { to: '/secrets', label: 'Secrets', icon: KeyRound },
-  { to: '/settings', label: 'Settings', icon: Settings },
-];
-
 const HEALTH_ROUTES = new Set(['/agents', '/messaging-apps']);
+
+interface NavItemDef {
+  to: string;
+  label: string;
+  icon: LucideIcon;
+}
+
+interface NavSection {
+  label: string;
+  items: NavItemDef[];
+}
+
+const sections: NavSection[] = [
+  {
+    label: 'CORE',
+    items: [
+      { to: '/', label: 'Dashboard', icon: LayoutDashboard },
+      { to: '/chat', label: 'Chat', icon: MessageCircle },
+    ],
+  },
+  {
+    label: 'MANAGE',
+    items: [
+      { to: '/agents', label: 'Agents', icon: Bot },
+      { to: '/messaging-apps', label: 'Messaging Apps', icon: MessageSquare },
+    ],
+  },
+  {
+    label: 'CONFIGURE',
+    items: [
+      { to: '/connections', label: 'AI Providers', icon: Plug },
+      { to: '/secrets', label: 'Secrets', icon: KeyRound },
+      { to: '/settings', label: 'Settings', icon: Settings },
+    ],
+  },
+];
 
 export function Sidebar(): JSX.Element {
   const worstHealth = useMessagingAppsStore((s) => s.getWorstHealth());
@@ -46,32 +73,53 @@ export function Sidebar(): JSX.Element {
         : 'connecting';
 
   return (
-    <aside className="flex h-screen w-56 shrink-0 flex-col border-r border-border bg-sidebar-bg">
-      <div className="flex h-14 items-center justify-between border-b border-border px-4">
-        <span className="text-sm font-semibold tracking-wide text-foreground">Mission Control</span>
+    <aside className="flex h-full w-56 shrink-0 flex-col border-r border-border bg-sidebar-bg p-3.5">
+      {/* Header */}
+      <div className="flex items-center justify-between border-b border-border px-1 pb-4 pt-3">
+        <div className="flex items-center gap-2">
+          <Zap size={18} className="text-accent" />
+          <span className="font-[family-name:var(--font-display)] text-[13px] font-bold tracking-wide text-foreground">
+            Mission Control
+          </span>
+        </div>
         <HealthDot health={gatewayHealth} />
       </div>
-      <nav className="flex flex-1 flex-col gap-1 p-2">
-        {navItems.map((item) => (
-          <Link
-            key={item.to}
-            to={item.to}
-            className="flex items-center gap-3 rounded-md px-3 py-2 text-sm text-muted transition-colors hover:bg-sidebar-hover hover:text-foreground [&.active]:bg-sidebar-active [&.active]:text-foreground"
-          >
-            <item.icon size={16} />
-            {item.label}
-            {HEALTH_ROUTES.has(item.to) && <HealthDot health={worstHealth} className="ml-auto" />}
-          </Link>
+
+      {/* Nav */}
+      <nav className="flex flex-1 flex-col gap-0.5 overflow-y-auto py-2">
+        {sections.map((section, sectionIndex) => (
+          <div key={section.label}>
+            <span
+              className={`block font-[family-name:var(--font-mono)] text-[9px] font-semibold uppercase tracking-[3px] text-accent px-3 py-1.5${sectionIndex > 0 ? ' pt-4' : ''}`}
+            >
+              {section.label}
+            </span>
+            {section.items.map((item) => (
+              <Link
+                key={item.to}
+                to={item.to}
+                className="flex items-center gap-2.5 h-9 px-3 text-sm text-muted hover:bg-sidebar-hover hover:text-foreground transition-colors [&.active]:bg-sidebar-active [&.active]:text-foreground [&.active]:font-semibold [&.active]:border-l-[3px] [&.active]:border-accent"
+              >
+                <item.icon size={16} />
+                {item.label}
+                {HEALTH_ROUTES.has(item.to) && (
+                  <HealthDot health={worstHealth} className="ml-auto" />
+                )}
+              </Link>
+            ))}
+          </div>
         ))}
       </nav>
-      <div className="border-t border-border p-2">
+
+      {/* Footer */}
+      <div className="flex items-center gap-2 px-3 py-3">
+        <LifeBuoy size={14} className="text-muted" />
         <button
           type="button"
           onClick={() => window.api.openExternal('https://discord.gg/REPLACE_WITH_REAL_INVITE')}
-          className="flex w-full items-center gap-3 rounded-md px-3 py-2 text-sm text-muted transition-colors hover:bg-sidebar-hover hover:text-foreground"
+          className="font-[family-name:var(--font-mono)] text-[11px] text-muted tracking-wide hover:text-foreground transition-colors"
         >
-          <MessageSquarePlus size={16} />
-          Send Feedback
+          Feedback
         </button>
       </div>
     </aside>

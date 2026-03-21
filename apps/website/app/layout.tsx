@@ -1,18 +1,30 @@
-import { GeistMono } from 'geist/font/mono';
+import { Outfit, JetBrains_Mono } from 'next/font/google';
 import type { Metadata } from 'next';
 import './globals.css';
 
+const outfit = Outfit({
+  subsets: ['latin'],
+  variable: '--font-outfit',
+  display: 'swap',
+});
+
+const jetbrainsMono = JetBrains_Mono({
+  subsets: ['latin'],
+  variable: '--font-mono',
+  display: 'swap',
+});
+
 export const metadata: Metadata = {
   metadataBase: new URL('https://dashsquad.ai'),
-  title: 'Dash — Your AI Team, Always On',
+  title: 'DashSquad — Your AI Team, Always On',
   description:
-    'Run autonomous AI agents on your computer. Dash lets you deploy, monitor, and chat with AI agents from a desktop app or CLI.',
+    'DashSquad lets you create AI agents — each with its own role. They work on their own, around the clock, even when you\'re not watching.',
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en" className={GeistMono.variable}>
-      <body>{children}</body>
+    <html lang="en" className={`${outfit.variable} ${jetbrainsMono.variable}`}>
+      <body className="font-outfit">{children}</body>
     </html>
   );
 }

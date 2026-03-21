@@ -181,7 +181,7 @@ export function AgentConfigTab({
     <div className="space-y-4">
       {/* Workspace card (read-only) */}
       {workspace && (
-        <div className="rounded-lg border border-border">
+        <div className="rounded-lg border border-border bg-card-bg">
           <div className="flex items-center justify-between p-4">
             <div className="min-w-0">
               <h3 className="text-sm font-medium">Workspace</h3>
@@ -202,7 +202,7 @@ export function AgentConfigTab({
       )}
 
       {/* Models card */}
-      <div className="rounded-lg border border-border">
+      <div className="rounded-lg border border-border bg-card-bg">
         <button
           type="button"
           onClick={() => setOpenCard(openCard === 'models' ? null : 'models')}
@@ -236,14 +236,14 @@ export function AgentConfigTab({
                 type="button"
                 onClick={handleSaveChain}
                 disabled={chainSaving}
-                className="rounded-lg bg-primary px-3 py-1.5 text-xs text-white hover:bg-primary-hover disabled:opacity-50"
+                className="rounded-lg bg-accent px-3 py-1.5 text-xs text-white hover:bg-primary-hover disabled:opacity-50"
               >
                 {chainSaving ? 'Saving...' : 'Save'}
               </button>
               <button
                 type="button"
                 onClick={() => setOpenCard(null)}
-                className="rounded-lg border border-border px-3 py-1.5 text-xs text-muted hover:bg-sidebar-hover"
+                className="rounded-lg border border-border px-3 py-1.5 text-xs text-muted hover:text-foreground"
               >
                 Cancel
               </button>
@@ -253,7 +253,7 @@ export function AgentConfigTab({
       </div>
 
       {/* System Prompt card */}
-      <div className="rounded-lg border border-border">
+      <div className="rounded-lg border border-border bg-card-bg">
         <button
           type="button"
           onClick={() => {
@@ -278,21 +278,21 @@ export function AgentConfigTab({
               value={promptDraft}
               onChange={(e) => setPromptDraft(e.target.value)}
               rows={8}
-              className="w-full resize-y rounded border border-border bg-[#0d0d0d] p-3 text-sm leading-relaxed focus:border-primary focus:outline-none"
+              className="w-full resize-y rounded border border-border bg-card-bg p-3 text-sm leading-relaxed focus:border-accent focus:outline-none"
             />
             <div className="mt-3 flex justify-end gap-2">
               <button
                 type="button"
                 onClick={handleSavePrompt}
                 disabled={promptSaving}
-                className="rounded-lg bg-primary px-3 py-1.5 text-xs text-white hover:bg-primary-hover disabled:opacity-50"
+                className="rounded-lg bg-accent px-3 py-1.5 text-xs text-white hover:bg-primary-hover disabled:opacity-50"
               >
                 {promptSaving ? 'Saving...' : 'Save'}
               </button>
               <button
                 type="button"
                 onClick={() => setOpenCard(null)}
-                className="rounded-lg border border-border px-3 py-1.5 text-xs text-muted hover:bg-sidebar-hover"
+                className="rounded-lg border border-border px-3 py-1.5 text-xs text-muted hover:text-foreground"
               >
                 Cancel
               </button>
@@ -302,7 +302,7 @@ export function AgentConfigTab({
       </div>
 
       {/* Tools card */}
-      <div className="rounded-lg border border-border">
+      <div className="rounded-lg border border-border bg-card-bg">
         <button
           type="button"
           onClick={() => {
@@ -324,7 +324,7 @@ export function AgentConfigTab({
         {openCard === 'tools' && (
           <div className="border-t border-border p-4">
             {toolsRestartNeeded && (
-              <div className="mb-2 rounded-lg bg-yellow-900/20 px-3 py-2 text-xs text-yellow-400">
+              <div className="mb-2 rounded-lg bg-yellow-900/20 px-3 py-2 text-xs text-yellow">
                 Tools updated — restart the agent to apply changes.
               </div>
             )}
@@ -343,7 +343,7 @@ export function AgentConfigTab({
                       prev.length === ALL_TOOL_IDS.length ? [] : [...ALL_TOOL_IDS],
                     )
                   }
-                  className="accent-primary"
+                  className="accent-accent"
                 />
                 Select all
               </label>
@@ -355,7 +355,7 @@ export function AgentConfigTab({
                 return (
                   <label
                     key={group.name}
-                    className="flex cursor-pointer items-start gap-3 rounded-lg border border-border px-3 py-2.5 text-xs transition-colors hover:bg-sidebar-hover"
+                    className="flex cursor-pointer items-start gap-3 rounded-lg border border-border px-3 py-2.5 text-xs transition-colors hover:bg-card-bg"
                   >
                     <input
                       type="checkbox"
@@ -369,7 +369,7 @@ export function AgentConfigTab({
                           return allEnabled ? without : [...without, ...group.tools];
                         })
                       }
-                      className="mt-0.5 accent-primary"
+                      className="mt-0.5 accent-accent"
                     />
                     <span>
                       <span className="font-medium">{group.name}</span>
@@ -384,14 +384,14 @@ export function AgentConfigTab({
                 type="button"
                 onClick={handleSaveTools}
                 disabled={toolsSaving}
-                className="rounded-lg bg-primary px-3 py-1.5 text-xs text-white hover:bg-primary-hover disabled:opacity-50"
+                className="rounded-lg bg-accent px-3 py-1.5 text-xs text-white hover:bg-primary-hover disabled:opacity-50"
               >
                 {toolsSaving ? 'Saving...' : 'Save'}
               </button>
               <button
                 type="button"
                 onClick={() => setOpenCard(null)}
-                className="rounded-lg border border-border px-3 py-1.5 text-xs text-muted hover:bg-sidebar-hover"
+                className="rounded-lg border border-border px-3 py-1.5 text-xs text-muted hover:text-foreground"
               >
                 Cancel
               </button>
