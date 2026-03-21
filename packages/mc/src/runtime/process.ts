@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { existsSync, statSync } from 'node:fs';
-import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import type { AgentRegistry } from '../agents/registry.js';
 import type { MessagingAppRegistry } from '../messaging-apps/registry.js';
@@ -794,6 +794,7 @@ export class ProcessRuntime implements DeploymentRuntime {
   async updateAgentConfig(
     id: string,
     patch: {
+      name?: string;
       model?: string;
       fallbackModels?: string[];
       tools?: string[];
@@ -812,6 +813,10 @@ export class ProcessRuntime implements DeploymentRuntime {
     if (!jsonFile) throw new Error(`No agent config file found in ${agentsDir}`);
     const agentName = jsonFile.slice(0, -5);
 
+    // Handle rename if name is provided and different
+    const newName = patch.name?.trim();
+    const isRename = newName && newName !== agentName && newName !== deployment.name;
+
     // 1. Write to config file on disk (for crash recovery / restart)
     const filePath = join(agentsDir, jsonFile);
     const raw = await readFile(filePath, 'utf-8');
@@ -821,8 +826,16 @@ export class ProcessRuntime implements DeploymentRuntime {
     if (patch.fallbackModels !== undefined) config.fallbackModels = patch.fallbackModels;
     if (patch.tools !== undefined) config.tools = patch.tools;
     if (patch.systemPrompt !== undefined) config.systemPrompt = patch.systemPrompt;
+    if (newName) config.name = newName;
 
-    await writeFile(filePath, JSON.stringify(config, null, 2));
+    // If renaming, write to new file and delete old one
+    if (isRename) {
+      const newFilePath = join(agentsDir, `${newName}.json`);
+      await writeFile(newFilePath, JSON.stringify(config, null, 2));
+      await rm(filePath);
+    } else {
+      await writeFile(filePath, JSON.stringify(config, null, 2));
+    }
 
     // 2. Update registry so the UI reflects the change immediately
     if (deployment.config?.agents?.[agentName]) {
@@ -831,11 +844,24 @@ export class ProcessRuntime implements DeploymentRuntime {
       if (patch.fallbackModels !== undefined) agentCfg.fallbackModels = patch.fallbackModels;
       if (patch.tools !== undefined) agentCfg.tools = patch.tools;
       if (patch.systemPrompt !== undefined) agentCfg.systemPrompt = patch.systemPrompt;
-      await this.registry.update(id, { config: deployment.config });
+
+      // If renaming, update the agents dict key and deployment name
+      if (isRename) {
+        agentCfg.name = newName;
+        delete deployment.config.agents[agentName];
+        deployment.config.agents[newName] = agentCfg;
+        await this.registry.update(id, { name: newName, config: deployment.config });
+      } else {
+        await this.registry.update(id, { config: deployment.config });
+      }
+    } else if (isRename) {
+      // No agents config but still update deployment name
+      await this.registry.update(id, { name: newName });
     }
 
     // 3. Push to running agent via gateway runtime API (best-effort)
-    if (deployment.status === 'running') {
+    // Note: name changes require restart to take effect in gateway
+    if (deployment.status === 'running' && !isRename) {
       const gatewayClient = await this.getGatewayClient();
       if (gatewayClient) {
         try {
