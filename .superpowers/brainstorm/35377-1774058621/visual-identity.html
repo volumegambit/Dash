@@ -1,0 +1,282 @@
+<style>
+  .system-section { margin-bottom: 48px; }
+  .system-section h3 { color: #fff; margin-bottom: 8px; }
+  .system-section .subtitle { margin-bottom: 24px; }
+
+  /* Color System */
+  .color-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-bottom: 16px; }
+  .color-card { border-radius: 12px; overflow: hidden; border: 1px solid #333; }
+  .color-swatch { height: 80px; display: flex; align-items: flex-end; padding: 10px 14px; }
+  .color-swatch span { font-size: 12px; font-weight: 600; border-radius: 4px; padding: 2px 8px; }
+  .color-info { padding: 12px 14px; background: #111; }
+  .color-name { font-size: 14px; font-weight: 700; color: #fff; }
+  .color-hex { font-size: 12px; color: #888; font-family: 'JetBrains Mono', monospace; }
+  .color-use { font-size: 11px; color: #666; margin-top: 4px; }
+
+  /* Typography */
+  .type-sample { background: #111; border: 1px solid #222; border-radius: 12px; padding: 32px; margin-bottom: 16px; }
+  .type-label { font-size: 11px; text-transform: uppercase; letter-spacing: 2px; color: #555; margin-bottom: 12px; }
+  .type-meta { font-size: 12px; color: #666; margin-top: 8px; font-family: monospace; }
+
+  /* Animal characters */
+  .character-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; }
+  .character-card { background: #111; border: 1px solid #222; border-radius: 12px; padding: 20px; text-align: center; }
+  .character-icon { font-size: 48px; margin-bottom: 12px; }
+  .character-name { font-size: 16px; font-weight: 700; color: #FF6B00; }
+  .character-role { font-size: 12px; color: #888; margin-top: 4px; }
+  .character-trait { font-size: 11px; color: #555; margin-top: 8px; font-style: italic; }
+
+  /* Logo architecture */
+  .logo-row { display: flex; gap: 32px; align-items: center; margin: 24px 0; }
+  .logo-mock { background: #111; border: 1px solid #222; border-radius: 12px; padding: 32px 48px; display: flex; align-items: center; gap: 14px; }
+  .logo-icon-box { width: 40px; height: 40px; background: #FF6B00; border-radius: 8px; display: flex; align-items: center; justify-content: center; font-size: 20px; }
+  .logo-wordmark { font-size: 26px; font-weight: 800; color: #fff; letter-spacing: -1px; }
+  .logo-context { font-size: 13px; color: #666; max-width: 240px; }
+
+  /* Graphic elements */
+  .element-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+  .element-card { background: #111; border: 1px solid #222; border-radius: 12px; padding: 24px; }
+  .element-card h4 { color: #fff; font-size: 14px; margin-bottom: 8px; }
+  .element-card p { color: #888; font-size: 13px; line-height: 1.5; }
+  .element-preview { height: 60px; margin-bottom: 16px; display: flex; align-items: center; justify-content: center; }
+
+  .stroke-demo { width: 100%; height: 48px; border: 2px solid #0A0A0A; background: #F5F2EB; border-radius: 0; }
+  .badge-demo { display: inline-flex; align-items: center; gap: 8px; background: #0A0A0A; padding: 6px 16px; border-radius: 0; }
+  .badge-dot { width: 8px; height: 8px; border-radius: 50%; background: #00CC66; }
+  .badge-text { font-size: 10px; font-weight: 600; color: #fff; letter-spacing: 2px; font-family: 'JetBrains Mono', monospace; }
+  .mono-label-demo { font-family: 'JetBrains Mono', monospace; font-size: 11px; font-weight: 600; letter-spacing: 3px; color: #FF6B00; text-transform: uppercase; }
+</style>
+
+<h2>DashSquad — Visual Identity System</h2>
+<p class="subtitle">The Bold Ally: empowering, distinctive, technically credible</p>
+
+<!-- COLOR SYSTEM -->
+<div class="system-section">
+  <h3>Color System</h3>
+  <p class="subtitle">A warm, high-contrast palette. Orange leads, black anchors, cream softens.</p>
+
+  <div class="color-grid">
+    <div class="color-card">
+      <div class="color-swatch" style="background: #FF6B00;"><span style="background:#00000044;color:#fff;">Primary</span></div>
+      <div class="color-info">
+        <div class="color-name">Power Orange</div>
+        <div class="color-hex">#FF6B00</div>
+        <div class="color-use">CTAs, accents, brand mark, section labels</div>
+      </div>
+    </div>
+    <div class="color-card">
+      <div class="color-swatch" style="background: #0A0A0A;"><span style="background:#ffffff22;color:#fff;">Foundation</span></div>
+      <div class="color-info">
+        <div class="color-name">Command Black</div>
+        <div class="color-hex">#0A0A0A</div>
+        <div class="color-use">Headlines, strokes, dark sections, footer</div>
+      </div>
+    </div>
+    <div class="color-card">
+      <div class="color-swatch" style="background: #F5F2EB;"><span style="background:#0A0A0A44;color:#0A0A0A;">Surface</span></div>
+      <div class="color-info">
+        <div class="color-name">Warm Cream</div>
+        <div class="color-hex">#F5F2EB</div>
+        <div class="color-use">Backgrounds, light sections, warmth</div>
+      </div>
+    </div>
+    <div class="color-card">
+      <div class="color-swatch" style="background: #FFB800;"><span style="background:#0A0A0A44;color:#0A0A0A;">Accent</span></div>
+      <div class="color-info">
+        <div class="color-name">Ambition Gold</div>
+        <div class="color-hex">#FFB800</div>
+        <div class="color-use">Premium tiers, highlights, achievement states</div>
+      </div>
+    </div>
+    <div class="color-card">
+      <div class="color-swatch" style="background: #00CC66;"><span style="background:#0A0A0A44;color:#fff;">Status</span></div>
+      <div class="color-info">
+        <div class="color-name">Go Green</div>
+        <div class="color-hex">#00CC66</div>
+        <div class="color-use">Active states, success, "agent online" indicators</div>
+      </div>
+    </div>
+    <div class="color-card">
+      <div class="color-swatch" style="background: #FFFFFF; border-bottom: 1px solid #222;"><span style="background:#0A0A0A22;color:#0A0A0A;">Card</span></div>
+      <div class="color-info">
+        <div class="color-name">Clean White</div>
+        <div class="color-hex">#FFFFFF</div>
+        <div class="color-use">Cards, inputs, content areas</div>
+      </div>
+    </div>
+  </div>
+
+  <p style="color: #888; font-size: 13px;">
+    <strong style="color:#ccc;">Text hierarchy:</strong> #0A0A0A (headlines) → #666666 (body) → #888888 (secondary) → #AAAAAA (tertiary)
+  </p>
+</div>
+
+<!-- TYPOGRAPHY -->
+<div class="system-section">
+  <h3>Typography</h3>
+  <p class="subtitle">Outfit for warmth and boldness. JetBrains Mono for technical credibility.</p>
+
+  <div class="type-sample">
+    <div class="type-label">Display / Hero Headlines</div>
+    <div style="font-family: 'Outfit', sans-serif; font-size: 56px; font-weight: 800; color: #fff; letter-spacing: -3px; line-height: 0.95;">
+      You bring the ambition.<br>We bring the squad.
+    </div>
+    <div class="type-meta">Outfit ExtraBold 800 · 56-72px · -3px tracking · 0.95 line-height</div>
+  </div>
+
+  <div class="type-sample">
+    <div class="type-label">Section Headlines</div>
+    <div style="font-family: 'Outfit', sans-serif; font-size: 44px; font-weight: 800; color: #fff; letter-spacing: -2px;">
+      Built for Builders
+    </div>
+    <div class="type-meta">Outfit ExtraBold 800 · 36-44px · -2px tracking</div>
+  </div>
+
+  <div class="type-sample">
+    <div class="type-label">Section Labels</div>
+    <div style="font-family: 'JetBrains Mono', monospace; font-size: 11px; font-weight: 600; color: #FF6B00; letter-spacing: 3px; text-transform: uppercase;">
+      FEATURES
+    </div>
+    <div class="type-meta">JetBrains Mono SemiBold · 11px · +3px tracking · ALL CAPS · Power Orange</div>
+  </div>
+
+  <div class="type-sample">
+    <div class="type-label">Card Titles</div>
+    <div style="font-family: 'Outfit', sans-serif; font-size: 22px; font-weight: 800; color: #fff; letter-spacing: -1px;">
+      Pack Intelligence
+    </div>
+    <div class="type-meta">Outfit ExtraBold 800 · 20-22px · -1px tracking</div>
+  </div>
+
+  <div class="type-sample">
+    <div class="type-label">Body Text</div>
+    <div style="font-family: 'Outfit', sans-serif; font-size: 15px; color: #999; line-height: 1.6;">
+      Agents coordinate like a wolf pack — sharing context, dividing work, and converging on solutions together. Your squad gets smarter the longer you work together.
+    </div>
+    <div class="type-meta">Outfit Regular · 15-18px · 1.5-1.6 line-height · #666666</div>
+  </div>
+
+  <div class="type-sample">
+    <div class="type-label">Monospace Details</div>
+    <div style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: #888; letter-spacing: 1px;">
+      // no credit card · cancel anytime · your infrastructure
+    </div>
+    <div class="type-meta">JetBrains Mono · 11px · +1px tracking · trust lines, metadata, nav items</div>
+  </div>
+</div>
+
+<!-- LOGO ARCHITECTURE -->
+<div class="system-section">
+  <h3>Logo Architecture</h3>
+  <p class="subtitle">Flexible mark system: icon + wordmark, separable for different contexts.</p>
+
+  <div class="logo-row">
+    <div class="logo-mock">
+      <div class="logo-icon-box">⚡</div>
+      <div class="logo-wordmark">dashsquad</div>
+    </div>
+    <div class="logo-context">
+      <strong style="color: #fff;">Primary lockup</strong><br>
+      Icon + lowercase wordmark. Used on homepage, marketing, docs. The icon should be a custom mark (not literally a lightning bolt — placeholder here).
+    </div>
+  </div>
+
+  <div class="logo-row">
+    <div class="logo-mock" style="padding: 24px 32px;">
+      <div class="logo-icon-box" style="width: 32px; height: 32px; font-size: 16px;">⚡</div>
+      <div class="logo-wordmark" style="font-size: 20px;">dashsquad</div>
+    </div>
+    <div class="logo-context">
+      <strong style="color: #fff;">Compact</strong><br>
+      Navbar, app header, small spaces. Same lockup, scaled down.
+    </div>
+  </div>
+
+  <div class="logo-row">
+    <div class="logo-mock" style="padding: 24px 36px;">
+      <div class="logo-icon-box" style="width: 48px; height: 48px; font-size: 24px;">⚡</div>
+    </div>
+    <div class="logo-context">
+      <strong style="color: #fff;">Icon only</strong><br>
+      Favicon, app icon, social avatars, loading states. Must be recognizable at 16×16.
+    </div>
+  </div>
+
+  <p style="color: #888; font-size: 13px; margin-top: 16px;">
+    <strong style="color:#ccc;">Naming:</strong> "dashsquad" — all lowercase, one word. Never "Dash Squad" or "DashSquad" in the wordmark. Legal entity: Dash AI Labs.
+  </p>
+</div>
+
+<!-- ANIMAL CHARACTERS -->
+<div class="system-section">
+  <h3>The Squad — Brand Characters</h3>
+  <p class="subtitle">Not mascots — characters with personality. Each represents an agent archetype. Used in product, marketing, and storytelling. Pixel art style.</p>
+
+  <div class="character-grid">
+    <div class="character-card">
+      <div class="character-icon">🐺</div>
+      <div class="character-name">Wolf</div>
+      <div class="character-role">The Coordinator</div>
+      <div class="character-trait">"Sees the whole hunt"</div>
+    </div>
+    <div class="character-card">
+      <div class="character-icon">🦅</div>
+      <div class="character-name">Hawk</div>
+      <div class="character-role">The Monitor</div>
+      <div class="character-trait">"Nothing escapes the view"</div>
+    </div>
+    <div class="character-card">
+      <div class="character-icon">🐻</div>
+      <div class="character-name">Bear</div>
+      <div class="character-role">The Guardian</div>
+      <div class="character-trait">"Unbreakable security"</div>
+    </div>
+    <div class="character-card">
+      <div class="character-icon">🐉</div>
+      <div class="character-name">Dragon</div>
+      <div class="character-role">The Powerhouse</div>
+      <div class="character-trait">"Raw computational fire"</div>
+    </div>
+  </div>
+
+  <p style="color: #888; font-size: 13px; margin-top: 16px;">
+    Characters appear in: feature cards, onboarding, empty states, error pages, achievement celebrations, and marketing illustrations. Always pixel art. Never photorealistic, never cartoonish — somewhere between retro gaming and modern icon design.
+  </p>
+</div>
+
+<!-- GRAPHIC SIGNATURES -->
+<div class="system-section">
+  <h3>Graphic Signatures</h3>
+  <p class="subtitle">Recurring visual patterns that make DashSquad instantly recognizable.</p>
+
+  <div class="element-grid">
+    <div class="element-card">
+      <div class="element-preview">
+        <div class="stroke-demo"></div>
+      </div>
+      <h4>Bold 2px Strokes</h4>
+      <p>Hard black borders on cards, inputs, and images. No soft shadows, no gradients on containers. Confident and graphic.</p>
+    </div>
+    <div class="element-card">
+      <div class="element-preview">
+        <div class="badge-demo">
+          <div class="badge-dot"></div>
+          <div class="badge-text">NOW IN ALPHA</div>
+        </div>
+      </div>
+      <h4>Status Badges</h4>
+      <p>Black pill badges with green status dot and mono text. Used for status indicators, announcements, tags.</p>
+    </div>
+    <div class="element-card">
+      <div class="element-preview">
+        <div class="mono-label-demo">FEATURES</div>
+      </div>
+      <h4>Mono Section Labels</h4>
+      <p>JetBrains Mono, all-caps, wide tracking, Power Orange. Precedes every section headline. Technical rhythm.</p>
+    </div>
+  </div>
+
+  <p style="color: #888; font-size: 13px; margin-top: 16px;">
+    <strong style="color:#ccc;">Design principle:</strong> Square corners on functional elements (cards, inputs, badges). No border-radius except the logo icon. This creates a graphic, editorial feel that separates DashSquad from the rounded-corner SaaS crowd.
+  </p>
+</div>

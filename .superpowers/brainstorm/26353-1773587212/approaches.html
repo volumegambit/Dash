@@ -1,0 +1,40 @@
+<h2>Three Approaches to Reorganize AgentDetail</h2>
+<p class="subtitle">Click the one that feels closest to what you want. We can mix and match ideas too.</p>
+
+<div class="options">
+  <div class="option" data-choice="a" onclick="toggleSelect(this)">
+    <div class="letter">A</div>
+    <div class="content">
+      <h3>Tabbed Interface</h3>
+      <p>Header + status always visible. Content split into <strong>Overview | Config | Skills | Logs</strong> tabs. Matches the pattern already used on the Messaging Apps page.</p>
+      <div class="pros-cons" style="margin-top: 12px;">
+        <div class="pros"><h4>Pros</h4><ul><li>Near-zero scrolling per tab</li><li>Existing pattern in the codebase</li><li>Clear grouping — status vs config vs logs</li><li>Skills gets dedicated space</li></ul></div>
+        <div class="cons"><h4>Cons</h4><ul><li>Can't see logs while editing config</li><li>Extra click to switch contexts</li></ul></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="option" data-choice="b" onclick="toggleSelect(this)">
+    <div class="letter">B</div>
+    <div class="content">
+      <h3>Collapsible Accordion</h3>
+      <p>Keep single-page layout but make every section collapsible. Sticky header at top. <strong>Only status open by default</strong>, everything else collapsed with a 1-line summary.</p>
+      <div class="pros-cons" style="margin-top: 12px;">
+        <div class="pros"><h4>Pros</h4><ul><li>Everything on one page</li><li>User controls what's visible</li><li>Minimal code changes</li></ul></div>
+        <div class="cons"><h4>Cons</h4><ul><li>Still a long page when multiple sections open</li><li>Doesn't solve the "equal weight" problem deeply</li><li>Skills section still complex when expanded</li></ul></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="option" data-choice="c" onclick="toggleSelect(this)">
+    <div class="letter">C</div>
+    <div class="content">
+      <h3>Summary Cards + Drawer Editing</h3>
+      <p>Compact dashboard of <strong>summary cards</strong> showing config at a glance (model name, tool count, prompt preview). Click a card to open a <strong>side drawer</strong> for editing. Logs in a toggleable bottom panel.</p>
+      <div class="pros-cons" style="margin-top: 12px;">
+        <div class="pros"><h4>Pros</h4><ul><li>Entire page visible without scrolling</li><li>Edit mode doesn't disrupt layout</li><li>Most modern/polished feel</li></ul></div>
+        <div class="cons"><h4>Cons</h4><ul><li>Most code to build (drawers, cards)</li><li>No existing drawer pattern in codebase</li><li>Mobile/narrow viewports need fallback</li></ul></div>
+      </div>
+    </div>
+  </div>
+</div>

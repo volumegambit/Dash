@@ -105,7 +105,7 @@ function NewWhatsAppWizard(): JSX.Element {
         {STEPS.filter((s) => s !== 'done').map((s, i) => (
           <div
             key={s}
-            className={`h-1 flex-1 rounded-full transition-colors ${i <= stepIndex ? 'bg-primary' : 'bg-sidebar-hover'}`}
+            className={`h-1 flex-1 rounded-full transition-colors ${i <= stepIndex ? 'bg-accent' : 'bg-card-hover'}`}
           />
         ))}
       </div>
@@ -126,7 +126,7 @@ function NewWhatsAppWizard(): JSX.Element {
               This uses WhatsApp's <strong>Linked Devices</strong> feature — the same way WhatsApp
               Web works. No business account needed.
             </p>
-            <div className="mt-5 rounded-lg border border-border bg-sidebar-bg p-4 text-sm">
+            <div className="mt-5 rounded-lg border border-border bg-card-bg p-4 text-sm">
               <p className="font-medium">What you'll need:</p>
               <ul className="mt-2 space-y-1 text-muted">
                 <li>• WhatsApp installed on your phone</li>
@@ -151,14 +151,14 @@ function NewWhatsAppWizard(): JSX.Element {
                 </p>
                 <div className="mt-6 flex flex-col items-center">
                   {pairingError ? (
-                    <div className="rounded-lg border border-red-600/40 bg-red-900/10 p-4 text-sm text-red-400">
-                      ❌ {pairingError}
+                    <div className="rounded-lg border border-border bg-red-tint p-4 text-sm text-red">
+                      Error: {pairingError}
                       <button
                         type="button"
                         onClick={() => {
                           setPairingAttempt((prev) => prev + 1);
                         }}
-                        className="mt-3 block rounded-lg bg-primary px-4 py-2 text-white hover:bg-primary-hover"
+                        className="mt-3 block rounded-lg bg-accent px-4 py-2 text-white hover:opacity-90"
                       >
                         Try again
                       </button>
@@ -180,7 +180,7 @@ function NewWhatsAppWizard(): JSX.Element {
             )}
             {linked && (
               <div className="flex flex-col items-center py-8">
-                <CheckCircle size={48} className="text-green-400" />
+                <CheckCircle size={48} className="text-green" />
                 <p className="mt-4 text-base font-medium">WhatsApp linked!</p>
                 <p className="mt-1 text-sm text-muted">Click Continue to name this connection.</p>
               </div>
@@ -198,12 +198,19 @@ function NewWhatsAppWizard(): JSX.Element {
               Give this connection a name so you can recognise it later.
             </p>
             <div className="mt-5">
+              <label
+                htmlFor="connection-name"
+                className="block font-[family-name:var(--font-mono)] text-xs uppercase tracking-wider text-muted mb-1"
+              >
+                Connection Name
+              </label>
               <input
+                id="connection-name"
                 type="text"
                 value={connectionName}
                 onChange={(e) => setConnectionName(e.target.value)}
                 placeholder='e.g. "Personal WhatsApp"'
-                className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm focus:border-primary focus:outline-none"
+                className="w-full rounded-lg border border-border bg-card-bg px-3 py-2 text-sm focus:border-accent focus:outline-none"
               />
             </div>
           </WizardStep>
@@ -215,7 +222,7 @@ function NewWhatsAppWizard(): JSX.Element {
               Which AI assistant should handle WhatsApp messages?
             </p>
             {availableAgents.length === 0 ? (
-              <div className="mt-4 rounded-lg border border-border bg-sidebar-bg p-4 text-sm text-muted">
+              <div className="mt-4 rounded-lg border border-border bg-card-bg p-4 text-sm text-muted">
                 No agents are running. Deploy an agent first, then come back here.
               </div>
             ) : (
@@ -230,8 +237,8 @@ function NewWhatsAppWizard(): JSX.Element {
                     className={`rounded-lg border-2 px-4 py-3 text-left text-sm transition-colors ${
                       selectedAgent?.agentName === a.agentName &&
                       selectedAgent?.deploymentId === a.deploymentId
-                        ? 'border-primary bg-primary/10'
-                        : 'border-border hover:border-primary/50'
+                        ? 'border-accent bg-accent/10'
+                        : 'border-border hover:border-accent/50 hover:bg-card-hover'
                     }`}
                   >
                     {a.label}
@@ -244,20 +251,22 @@ function NewWhatsAppWizard(): JSX.Element {
                 type="button"
                 onClick={handleSave}
                 disabled={saving}
-                className="mt-5 inline-flex items-center gap-2 rounded-lg bg-primary px-5 py-2 text-sm text-white hover:bg-primary-hover disabled:opacity-50"
+                className="mt-5 inline-flex items-center gap-2 rounded-lg bg-accent px-5 py-2 text-sm text-white hover:opacity-90 disabled:opacity-50"
               >
                 {saving ? <Loader size={14} className="animate-spin" /> : <Check size={14} />}
                 {saving ? 'Connecting…' : 'Connect WhatsApp'}
               </button>
             )}
-            {saveError && <p className="mt-3 text-sm text-red-400">❌ {saveError}</p>}
+            {saveError && <p className="mt-3 text-sm text-red">Error: {saveError}</p>}
           </WizardStep>
         )}
 
         {stepId === 'done' && (
           <div className="flex flex-col items-center py-12 text-center">
-            <CheckCircle size={64} className="text-green-400" />
-            <h2 className="mt-6 text-2xl font-bold">WhatsApp connected!</h2>
+            <CheckCircle size={64} className="text-green" />
+            <h2 className="mt-6 text-2xl font-bold font-[family-name:var(--font-display)]">
+              WhatsApp connected!
+            </h2>
             <p className="mt-3 text-base text-muted">
               Your assistant will now receive and reply to WhatsApp messages. Make sure your
               deployment is running.
@@ -265,7 +274,7 @@ function NewWhatsAppWizard(): JSX.Element {
             <button
               type="button"
               onClick={() => navigate({ to: '/messaging-apps' })}
-              className="mt-6 rounded-lg bg-primary px-6 py-2 text-sm text-white hover:bg-primary-hover"
+              className="mt-6 rounded-lg bg-accent px-6 py-2 text-sm text-white hover:opacity-90"
             >
               Done
             </button>
@@ -293,13 +302,13 @@ function WizardStep({
 }): JSX.Element {
   return (
     <div>
-      <h2 className="text-xl font-bold">{title}</h2>
+      <h2 className="text-xl font-bold font-[family-name:var(--font-display)]">{title}</h2>
       <div className="mt-4">{children}</div>
       <div className="mt-8 flex items-center justify-between">
         <button
           type="button"
           onClick={onBack}
-          className="inline-flex items-center gap-2 rounded-lg border border-border px-4 py-2 text-sm text-muted transition-colors hover:bg-sidebar-hover hover:text-foreground"
+          className="inline-flex items-center gap-2 rounded-lg border border-border px-4 py-2 text-sm text-muted transition-colors hover:bg-card-hover hover:text-foreground"
         >
           <ArrowLeft size={14} />
           {backLabel}
@@ -308,7 +317,7 @@ function WizardStep({
           <button
             type="button"
             onClick={onNext}
-            className="inline-flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm text-white transition-colors hover:bg-primary-hover"
+            className="inline-flex items-center gap-2 rounded-lg bg-accent px-4 py-2 text-sm text-white transition-colors hover:opacity-90"
           >
             {nextLabel}
             <ArrowRight size={14} />

@@ -1,0 +1,207 @@
+<style>
+  .color-option { border: 1px solid #333; border-radius: 12px; padding: 0; margin-bottom: 24px; cursor: pointer; transition: all 0.2s; overflow: hidden; }
+  .color-option:hover { border-color: #666; }
+  .color-option.selected { border-color: #fff; }
+  .color-banner { height: 100px; display: flex; align-items: flex-end; padding: 16px 24px; position: relative; }
+  .color-banner .letter { position: absolute; top: 16px; left: 20px; font-size: 13px; font-weight: 700; background: #00000033; color: #fff; width: 28px; height: 28px; border-radius: 50%; display: flex; align-items: center; justify-content: center; }
+  .color-banner .hex { font-family: 'JetBrains Mono', monospace; font-size: 13px; color: #fff; background: #00000044; padding: 3px 10px; border-radius: 4px; }
+  .color-body { padding: 24px; background: #0a0a0a; }
+  .color-body h3 { color: #fff; font-size: 18px; margin-bottom: 4px; }
+  .color-body .rationale { color: #999; font-size: 14px; line-height: 1.6; margin-bottom: 16px; }
+
+  .demo-row { display: flex; gap: 16px; margin-bottom: 16px; align-items: center; }
+  .demo-badge { display: inline-flex; align-items: center; gap: 8px; background: #0A0A0A; padding: 6px 16px; border: 1px solid #222; }
+  .demo-badge .dot { width: 8px; height: 8px; border-radius: 50%; background: #00CC66; }
+  .demo-badge .text { font-size: 10px; font-weight: 600; color: #fff; letter-spacing: 2px; font-family: monospace; }
+  .demo-btn { padding: 12px 24px; font-family: 'JetBrains Mono', monospace; font-size: 11px; font-weight: 600; color: #fff; letter-spacing: 2px; border: none; cursor: pointer; }
+  .demo-label { font-family: 'JetBrains Mono', monospace; font-size: 11px; font-weight: 600; letter-spacing: 3px; text-transform: uppercase; }
+  .demo-headline { font-family: 'Outfit', sans-serif; font-size: 32px; font-weight: 800; color: #fff; letter-spacing: -2px; }
+
+  .demo-card { background: #F5F2EB; border: 2px solid #0A0A0A; padding: 20px; flex: 1; }
+  .demo-card .card-title { font-family: 'Outfit', sans-serif; font-size: 16px; font-weight: 800; color: #0A0A0A; letter-spacing: -0.5px; }
+  .demo-card .card-desc { font-family: 'Outfit', sans-serif; font-size: 12px; color: #666; margin-top: 4px; line-height: 1.4; }
+
+  .palette-row { display: flex; gap: 6px; margin-top: 16px; }
+  .palette-dot { width: 24px; height: 24px; border-radius: 6px; border: 1px solid #333; }
+
+  .current-tag { font-size: 10px; font-weight: 600; background: #333; color: #aaa; padding: 2px 8px; border-radius: 4px; margin-left: 8px; text-transform: uppercase; letter-spacing: 1px; }
+  .rec-tag { font-size: 10px; font-weight: 600; background: #FF6B00; color: #000; padding: 2px 8px; border-radius: 4px; margin-left: 8px; text-transform: uppercase; letter-spacing: 1px; }
+</style>
+
+<h2>Primary Brand Color — Alternatives</h2>
+<p class="subtitle">Each meets the same goal: bold, empowering, warm, high-energy. Shown in context with the DashSquad visual system.</p>
+
+<!-- A: Current Orange -->
+<div class="color-option" data-choice="a" onclick="toggleSelect(this)">
+  <div class="color-banner" style="background: linear-gradient(135deg, #FF6B00, #FF8C33);">
+    <div class="letter">A</div>
+    <div class="hex">#FF6B00</div>
+  </div>
+  <div class="color-body">
+    <h3>Power Orange <span class="current-tag">Current</span></h3>
+    <div class="rationale">The incumbent. High energy, warmth, urgency. Distinctive in the AI space where blue/purple/green dominate. Risks feeling like a construction or food brand if not handled carefully.</div>
+    <div class="demo-row">
+      <div class="demo-label" style="color: #FF6B00;">FEATURES</div>
+      <div class="demo-btn" style="background: #FF6B00;">GET EARLY ACCESS</div>
+    </div>
+    <div class="demo-row">
+      <div class="demo-card">
+        <div style="width: 40px; height: 40px; background: #FF6B00; margin-bottom: 12px;"></div>
+        <div class="card-title">Pack Intelligence</div>
+        <div class="card-desc">Agents coordinate like a wolf pack</div>
+      </div>
+      <div class="demo-card">
+        <div style="width: 40px; height: 40px; background: #FF6B00; margin-bottom: 12px;"></div>
+        <div class="card-title">Hawk-Eye Monitoring</div>
+        <div class="card-desc">Nothing escapes your view</div>
+      </div>
+    </div>
+    <div class="palette-row">
+      <div class="palette-dot" style="background: #FF6B00;"></div>
+      <div class="palette-dot" style="background: #0A0A0A;"></div>
+      <div class="palette-dot" style="background: #F5F2EB;"></div>
+      <div class="palette-dot" style="background: #FFB800;"></div>
+      <div class="palette-dot" style="background: #00CC66;"></div>
+    </div>
+  </div>
+</div>
+
+<!-- B: Electric Vermillion -->
+<div class="color-option" data-choice="b" onclick="toggleSelect(this)">
+  <div class="color-banner" style="background: linear-gradient(135deg, #FF4D2A, #FF6B47);">
+    <div class="letter">B</div>
+    <div class="hex">#FF4D2A</div>
+  </div>
+  <div class="color-body">
+    <h3>Electric Vermillion</h3>
+    <div class="rationale">Hotter, more urgent than orange. The red undertone adds intensity and ambition without going full red (which reads "danger"). Think Y Combinator's energy. Feels like action, not caution.</div>
+    <div class="demo-row">
+      <div class="demo-label" style="color: #FF4D2A;">FEATURES</div>
+      <div class="demo-btn" style="background: #FF4D2A;">GET EARLY ACCESS</div>
+    </div>
+    <div class="demo-row">
+      <div class="demo-card">
+        <div style="width: 40px; height: 40px; background: #FF4D2A; margin-bottom: 12px;"></div>
+        <div class="card-title">Pack Intelligence</div>
+        <div class="card-desc">Agents coordinate like a wolf pack</div>
+      </div>
+      <div class="demo-card">
+        <div style="width: 40px; height: 40px; background: #FF4D2A; margin-bottom: 12px;"></div>
+        <div class="card-title">Hawk-Eye Monitoring</div>
+        <div class="card-desc">Nothing escapes your view</div>
+      </div>
+    </div>
+    <div class="palette-row">
+      <div class="palette-dot" style="background: #FF4D2A;"></div>
+      <div class="palette-dot" style="background: #0A0A0A;"></div>
+      <div class="palette-dot" style="background: #F5F2EB;"></div>
+      <div class="palette-dot" style="background: #FFB800;"></div>
+      <div class="palette-dot" style="background: #00CC66;"></div>
+    </div>
+  </div>
+</div>
+
+<!-- C: Ember Coral -->
+<div class="color-option" data-choice="c" onclick="toggleSelect(this)">
+  <div class="color-banner" style="background: linear-gradient(135deg, #F05E3B, #F47A5C);">
+    <div class="letter">C</div>
+    <div class="hex">#F05E3B</div>
+  </div>
+  <div class="color-body">
+    <h3>Ember Coral</h3>
+    <div class="rationale">Warmer and more approachable than pure orange or vermillion. The coral undertone makes it feel human and inviting — closer to HaiDiLao's warmth — while still reading as energetic. Ages well, looks premium.</div>
+    <div class="demo-row">
+      <div class="demo-label" style="color: #F05E3B;">FEATURES</div>
+      <div class="demo-btn" style="background: #F05E3B;">GET EARLY ACCESS</div>
+    </div>
+    <div class="demo-row">
+      <div class="demo-card">
+        <div style="width: 40px; height: 40px; background: #F05E3B; margin-bottom: 12px;"></div>
+        <div class="card-title">Pack Intelligence</div>
+        <div class="card-desc">Agents coordinate like a wolf pack</div>
+      </div>
+      <div class="demo-card">
+        <div style="width: 40px; height: 40px; background: #F05E3B; margin-bottom: 12px;"></div>
+        <div class="card-title">Hawk-Eye Monitoring</div>
+        <div class="card-desc">Nothing escapes your view</div>
+      </div>
+    </div>
+    <div class="palette-row">
+      <div class="palette-dot" style="background: #F05E3B;"></div>
+      <div class="palette-dot" style="background: #0A0A0A;"></div>
+      <div class="palette-dot" style="background: #F5F2EB;"></div>
+      <div class="palette-dot" style="background: #FFB800;"></div>
+      <div class="palette-dot" style="background: #00CC66;"></div>
+    </div>
+  </div>
+</div>
+
+<!-- D: Volt Amber -->
+<div class="color-option" data-choice="d" onclick="toggleSelect(this)">
+  <div class="color-banner" style="background: linear-gradient(135deg, #F5A623, #F7BC4D);">
+    <div class="letter">D</div>
+    <div class="hex">#F5A623</div>
+  </div>
+  <div class="color-body">
+    <h3>Volt Amber</h3>
+    <div class="rationale">Shifts the energy from "fire" to "electric." Golden-amber reads as premium, ambitious, and optimistic. Pairs exceptionally well with the warm cream background. Risk: can feel passive compared to orange/red.</div>
+    <div class="demo-row">
+      <div class="demo-label" style="color: #F5A623;">FEATURES</div>
+      <div class="demo-btn" style="background: #F5A623; color: #0A0A0A;">GET EARLY ACCESS</div>
+    </div>
+    <div class="demo-row">
+      <div class="demo-card">
+        <div style="width: 40px; height: 40px; background: #F5A623; margin-bottom: 12px;"></div>
+        <div class="card-title">Pack Intelligence</div>
+        <div class="card-desc">Agents coordinate like a wolf pack</div>
+      </div>
+      <div class="demo-card">
+        <div style="width: 40px; height: 40px; background: #F5A623; margin-bottom: 12px;"></div>
+        <div class="card-title">Hawk-Eye Monitoring</div>
+        <div class="card-desc">Nothing escapes your view</div>
+      </div>
+    </div>
+    <div class="palette-row">
+      <div class="palette-dot" style="background: #F5A623;"></div>
+      <div class="palette-dot" style="background: #0A0A0A;"></div>
+      <div class="palette-dot" style="background: #F5F2EB;"></div>
+      <div class="palette-dot" style="background: #FF6B00;"></div>
+      <div class="palette-dot" style="background: #00CC66;"></div>
+    </div>
+  </div>
+</div>
+
+<!-- E: Signal Crimson -->
+<div class="color-option" data-choice="e" onclick="toggleSelect(this)">
+  <div class="color-banner" style="background: linear-gradient(135deg, #E8364F, #EE5A6E);">
+    <div class="letter">E</div>
+    <div class="hex">#E8364F</div>
+  </div>
+  <div class="color-body">
+    <h3>Signal Crimson</h3>
+    <div class="rationale">Bold and unapologetic. Red signals power, urgency, and importance. Linear uses a similar hue as an accent. The risk is "alarm" associations — but paired with warm cream and black, it reads as confident and premium, not dangerous.</div>
+    <div class="demo-row">
+      <div class="demo-label" style="color: #E8364F;">FEATURES</div>
+      <div class="demo-btn" style="background: #E8364F;">GET EARLY ACCESS</div>
+    </div>
+    <div class="demo-row">
+      <div class="demo-card">
+        <div style="width: 40px; height: 40px; background: #E8364F; margin-bottom: 12px;"></div>
+        <div class="card-title">Pack Intelligence</div>
+        <div class="card-desc">Agents coordinate like a wolf pack</div>
+      </div>
+      <div class="demo-card">
+        <div style="width: 40px; height: 40px; background: #E8364F; margin-bottom: 12px;"></div>
+        <div class="card-title">Hawk-Eye Monitoring</div>
+        <div class="card-desc">Nothing escapes your view</div>
+      </div>
+    </div>
+    <div class="palette-row">
+      <div class="palette-dot" style="background: #E8364F;"></div>
+      <div class="palette-dot" style="background: #0A0A0A;"></div>
+      <div class="palette-dot" style="background: #F5F2EB;"></div>
+      <div class="palette-dot" style="background: #FFB800;"></div>
+      <div class="palette-dot" style="background: #00CC66;"></div>
+    </div>
+  </div>
+</div>

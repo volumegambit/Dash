@@ -1,0 +1,142 @@
+<style>
+  .direction { border: 1px solid #333; border-radius: 12px; padding: 32px; margin-bottom: 24px; cursor: pointer; transition: all 0.2s; }
+  .direction:hover { border-color: #666; }
+  .direction.selected { border-color: #fff; background: #1a1a1a; }
+  .direction-header { display: flex; align-items: center; gap: 16px; margin-bottom: 20px; }
+  .direction-letter { font-size: 14px; font-weight: 700; background: #333; color: #fff; width: 32px; height: 32px; border-radius: 50%; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+  .direction-name { font-size: 22px; font-weight: 700; color: #fff; }
+  .direction-tagline { font-size: 15px; color: #aaa; font-style: italic; margin-bottom: 16px; }
+  .palette { display: flex; gap: 8px; margin: 16px 0; }
+  .swatch { width: 40px; height: 40px; border-radius: 8px; border: 1px solid #333; }
+  .brand-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 16px 0; }
+  .brand-attr { background: #111; padding: 10px 14px; border-radius: 8px; font-size: 13px; }
+  .brand-attr .label { color: #666; font-size: 11px; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 4px; }
+  .brand-attr .value { color: #ddd; }
+  .analogy { color: #888; font-size: 14px; margin-top: 12px; }
+  .section-label { font-size: 11px; text-transform: uppercase; letter-spacing: 2px; color: #555; margin-bottom: 6px; }
+  .pros-inline { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+  .pro-tag { background: #0a2a1a; color: #4ade80; font-size: 12px; padding: 4px 10px; border-radius: 100px; }
+  .con-tag { background: #2a0a0a; color: #f87171; font-size: 12px; padding: 4px 10px; border-radius: 100px; }
+  .rec { background: linear-gradient(135deg, #1a0a00, #0a0a00); border-color: #FF6B00 !important; }
+  .rec-badge { background: #FF6B00; color: #000; font-size: 11px; font-weight: 700; padding: 3px 10px; border-radius: 100px; text-transform: uppercase; letter-spacing: 1px; }
+</style>
+
+<h2>Three Brand Directions for DashSquad</h2>
+<p class="subtitle">Each approach balances craft, warmth, ambition, and the organizational memory moat differently. Click the one that resonates.</p>
+
+<div class="direction rec" data-choice="a" onclick="toggleSelect(this)">
+  <div class="direction-header">
+    <div class="direction-letter">A</div>
+    <div class="direction-name">The Quiet Engine</div>
+    <span class="rec-badge">Recommended</span>
+  </div>
+  <div class="direction-tagline">"Your team gets better every day. You just don't notice when."</div>
+  <p style="color: #ccc; font-size: 14px; line-height: 1.7;">
+    Understated confidence. The brand doesn't shout — it demonstrates. Linear's restraint meets HaiDiLao's "we thought of everything before you asked." The product feels alive, learning, anticipating. The brand voice is warm but precise — like a brilliant colleague who remembers everything and never needs to be told twice.
+  </p>
+
+  <div class="section-label" style="margin-top: 20px;">Palette</div>
+  <div class="palette">
+    <div class="swatch" style="background: #F5F0E8;" title="Warm Cream"></div>
+    <div class="swatch" style="background: #0A0A0A;" title="Ink Black"></div>
+    <div class="swatch" style="background: #FF6B00;" title="Signal Orange"></div>
+    <div class="swatch" style="background: #1A1A1A;" title="Deep Charcoal"></div>
+    <div class="swatch" style="background: #00AA55;" title="Alive Green"></div>
+  </div>
+
+  <div class="brand-grid">
+    <div class="brand-attr"><div class="label">Voice</div><div class="value">Warm, precise, quietly confident</div></div>
+    <div class="brand-attr"><div class="label">Feeling</div><div class="value">"This tool understands me"</div></div>
+    <div class="brand-attr"><div class="label">Headlines</div><div class="value">Outfit Bold — punchy, human</div></div>
+    <div class="brand-attr"><div class="label">Body</div><div class="value">Inter / System — clean, invisible</div></div>
+    <div class="brand-attr"><div class="label">Memory Narrative</div><div class="value">"Gets smarter the longer you work together"</div></div>
+    <div class="brand-attr"><div class="label">Animal Role</div><div class="value">Subtle mascots — onboarding, empty states, celebrations</div></div>
+  </div>
+
+  <div class="analogy">Think: Linear × Notion × a really good executive assistant</div>
+
+  <div class="pros-inline">
+    <span class="pro-tag">Scales to enterprise</span>
+    <span class="pro-tag">Memory moat front & center</span>
+    <span class="pro-tag">Appeals to founders AND operators</span>
+    <span class="con-tag">Less visually distinctive at first glance</span>
+  </div>
+</div>
+
+<div class="direction" data-choice="b" onclick="toggleSelect(this)">
+  <div class="direction-header">
+    <div class="direction-letter">B</div>
+    <div class="direction-name">The Bold Ally</div>
+  </div>
+  <div class="direction-tagline">"You bring the ambition. We bring the squad."</div>
+  <p style="color: #ccc; font-size: 14px; line-height: 1.7;">
+    The user is the hero, DashSquad is the weapon. Nike's empowerment energy — bold, declarative, makes you feel unstoppable. Strong visual identity with the orange as a signature. Animals are prominent brand characters (not mascots — characters with personality). The brand says "we're building something massive" without being arrogant, because the massiveness is what YOU can do with it.
+  </p>
+
+  <div class="section-label" style="margin-top: 20px;">Palette</div>
+  <div class="palette">
+    <div class="swatch" style="background: #FF6B00;" title="Power Orange"></div>
+    <div class="swatch" style="background: #0A0A0A;" title="Command Black"></div>
+    <div class="swatch" style="background: #F5F2EB;" title="Warm Cream"></div>
+    <div class="swatch" style="background: #FFB800;" title="Ambition Gold"></div>
+    <div class="swatch" style="background: #00CC66;" title="Go Green"></div>
+  </div>
+
+  <div class="brand-grid">
+    <div class="brand-attr"><div class="label">Voice</div><div class="value">Bold, empowering, direct</div></div>
+    <div class="brand-attr"><div class="label">Feeling</div><div class="value">"I can do anything with this"</div></div>
+    <div class="brand-attr"><div class="label">Headlines</div><div class="value">Outfit Extra Bold — commanding</div></div>
+    <div class="brand-attr"><div class="label">Body</div><div class="value">JetBrains Mono — technical credibility</div></div>
+    <div class="brand-attr"><div class="label">Memory Narrative</div><div class="value">"Your squad never forgets a lesson"</div></div>
+    <div class="brand-attr"><div class="label">Animal Role</div><div class="value">Prominent brand characters with personalities & specialties</div></div>
+  </div>
+
+  <div class="analogy">Think: Nike × Shopify "arm the rebels" × V5's energy refined</div>
+
+  <div class="pros-inline">
+    <span class="pro-tag">Visually distinctive & memorable</span>
+    <span class="pro-tag">Strong emotional connection</span>
+    <span class="pro-tag">Builds on V5's strongest elements</span>
+    <span class="con-tag">May feel too consumer for enterprise</span>
+    <span class="con-tag">Animals risk feeling gimmicky at scale</span>
+  </div>
+</div>
+
+<div class="direction" data-choice="c" onclick="toggleSelect(this)">
+  <div class="direction-header">
+    <div class="direction-letter">C</div>
+    <div class="direction-name">The Living System</div>
+  </div>
+  <div class="direction-tagline">"AI that grows with you."</div>
+  <p style="color: #ccc; font-size: 14px; line-height: 1.7;">
+    The brand IS the memory moat — literally. Everything in the visual identity reinforces the idea of a living, growing, learning system. Organic shapes, subtle animations, a color palette that evolves. The brand feels more biological than mechanical — your AI squad is an organism that adapts to your organization. Animals aren't mascots, they're a metaphor for the product's adaptive nature.
+  </p>
+
+  <div class="section-label" style="margin-top: 20px;">Palette</div>
+  <div class="palette">
+    <div class="swatch" style="background: #0D1117;" title="Deep Space"></div>
+    <div class="swatch" style="background: #FF6B00;" title="Neural Orange"></div>
+    <div class="swatch" style="background: #7C3AED;" title="Synapse Purple"></div>
+    <div class="swatch" style="background: #06B6D4;" title="Signal Cyan"></div>
+    <div class="swatch" style="background: #10B981;" title="Growth Green"></div>
+  </div>
+
+  <div class="brand-grid">
+    <div class="brand-attr"><div class="label">Voice</div><div class="value">Intelligent, forward-looking, alive</div></div>
+    <div class="brand-attr"><div class="label">Feeling</div><div class="value">"This system is evolving with me"</div></div>
+    <div class="brand-attr"><div class="label">Headlines</div><div class="value">Instrument Serif — organic elegance</div></div>
+    <div class="brand-attr"><div class="label">Body</div><div class="value">Inter — clean, modern</div></div>
+    <div class="brand-attr"><div class="label">Memory Narrative</div><div class="value">"A living system that adapts to how you work"</div></div>
+    <div class="brand-attr"><div class="label">Animal Role</div><div class="value">Metaphorical — adaptive, evolutionary, not literal characters</div></div>
+  </div>
+
+  <div class="analogy">Think: Stripe's intelligence × Calm's organic feel × nature documentary</div>
+
+  <div class="pros-inline">
+    <span class="pro-tag">Memory moat IS the brand story</span>
+    <span class="pro-tag">Feels genuinely different from competitors</span>
+    <span class="con-tag">Harder to execute well</span>
+    <span class="con-tag">Risk of feeling abstract or vague</span>
+    <span class="con-tag">Loses V5's warmth and boldness</span>
+  </div>
+</div>

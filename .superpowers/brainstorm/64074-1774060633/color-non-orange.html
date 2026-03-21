@@ -1,0 +1,238 @@
+<style>
+  .color-option { border: 1px solid #333; border-radius: 12px; padding: 0; margin-bottom: 24px; cursor: pointer; transition: all 0.2s; overflow: hidden; }
+  .color-option:hover { border-color: #666; }
+  .color-option.selected { border-color: #fff; }
+  .color-banner { height: 100px; display: flex; align-items: flex-end; padding: 16px 24px; position: relative; }
+  .color-banner .letter { position: absolute; top: 16px; left: 20px; font-size: 13px; font-weight: 700; background: #00000033; color: #fff; width: 28px; height: 28px; border-radius: 50%; display: flex; align-items: center; justify-content: center; }
+  .color-banner .hex { font-family: 'JetBrains Mono', monospace; font-size: 13px; color: #fff; background: #00000044; padding: 3px 10px; border-radius: 4px; }
+  .color-body { padding: 24px; background: #0a0a0a; }
+  .color-body h3 { color: #fff; font-size: 18px; margin-bottom: 4px; }
+  .color-body .rationale { color: #999; font-size: 14px; line-height: 1.6; margin-bottom: 16px; }
+
+  .demo-row { display: flex; gap: 16px; margin-bottom: 16px; align-items: center; }
+  .demo-label { font-family: 'JetBrains Mono', monospace; font-size: 11px; font-weight: 600; letter-spacing: 3px; text-transform: uppercase; }
+  .demo-btn { padding: 12px 24px; font-family: 'JetBrains Mono', monospace; font-size: 11px; font-weight: 600; color: #fff; letter-spacing: 2px; border: none; cursor: pointer; }
+
+  .demo-card { background: #F5F2EB; border: 2px solid #0A0A0A; padding: 20px; flex: 1; }
+  .demo-card .card-icon { width: 40px; height: 40px; margin-bottom: 12px; }
+  .demo-card .card-title { font-family: 'Outfit', sans-serif; font-size: 16px; font-weight: 800; color: #0A0A0A; letter-spacing: -0.5px; }
+  .demo-card .card-desc { font-family: 'Outfit', sans-serif; font-size: 12px; color: #666; margin-top: 4px; line-height: 1.4; }
+
+  /* Mini hero preview */
+  .hero-preview { background: #F5F2EB; border: 1px solid #333; border-radius: 8px; padding: 32px; text-align: center; margin: 16px 0; }
+  .hero-preview .hero-label { font-family: 'JetBrains Mono', monospace; font-size: 10px; font-weight: 600; letter-spacing: 3px; text-transform: uppercase; margin-bottom: 12px; }
+  .hero-preview .hero-headline { font-family: 'Outfit', sans-serif; font-size: 28px; font-weight: 800; color: #0A0A0A; letter-spacing: -2px; line-height: 1; margin-bottom: 8px; }
+  .hero-preview .hero-sub { font-family: 'Outfit', sans-serif; font-size: 13px; color: #666; margin-bottom: 16px; }
+  .hero-preview .hero-btn { display: inline-block; padding: 10px 20px; font-family: 'JetBrains Mono', monospace; font-size: 10px; font-weight: 600; color: #fff; letter-spacing: 2px; }
+
+  .palette-row { display: flex; gap: 6px; margin-top: 16px; }
+  .palette-dot { width: 24px; height: 24px; border-radius: 6px; border: 1px solid #333; }
+</style>
+
+<h2>Beyond Orange — Bold Alternatives</h2>
+<p class="subtitle">Each still hits: bold, empowering, warm, high-energy. None are in the orange/red/amber family. Shown on the warm cream system.</p>
+
+<!-- A: Electric Violet -->
+<div class="color-option" data-choice="a" onclick="toggleSelect(this)">
+  <div class="color-banner" style="background: linear-gradient(135deg, #7C5CFC, #9B7FFF);">
+    <div class="letter">A</div>
+    <div class="hex">#7C5CFC</div>
+  </div>
+  <div class="color-body">
+    <h3>Electric Violet</h3>
+    <div class="rationale">Ambition in its purest form. Purple reads as premium, creative, and powerful. It's the color of royalty and vision. Distinctive — most AI companies avoid saturated purple. Warm enough to work with cream, cool enough to feel intelligent.</div>
+    <div class="hero-preview">
+      <div class="hero-label" style="color: #7C5CFC;">NOW IN ALPHA</div>
+      <div class="hero-headline">Your AI Squad,<br>Always Hunting.</div>
+      <div class="hero-sub">Deploy autonomous agents that work as a pack.</div>
+      <div class="hero-btn" style="background: #7C5CFC;">GET EARLY ACCESS</div>
+    </div>
+    <div class="demo-row">
+      <div class="demo-label" style="color: #7C5CFC;">FEATURES</div>
+      <div class="demo-btn" style="background: #7C5CFC;">JOIN THE PACK</div>
+    </div>
+    <div class="demo-row">
+      <div class="demo-card">
+        <div class="card-icon" style="background: #7C5CFC;"></div>
+        <div class="card-title">Pack Intelligence</div>
+        <div class="card-desc">Agents coordinate like a wolf pack</div>
+      </div>
+      <div class="demo-card">
+        <div class="card-icon" style="background: #7C5CFC;"></div>
+        <div class="card-title">Hawk-Eye Monitoring</div>
+        <div class="card-desc">Nothing escapes your view</div>
+      </div>
+    </div>
+    <div class="palette-row">
+      <div class="palette-dot" style="background: #7C5CFC;"></div>
+      <div class="palette-dot" style="background: #0A0A0A;"></div>
+      <div class="palette-dot" style="background: #F5F2EB;"></div>
+      <div class="palette-dot" style="background: #FFB800;"></div>
+      <div class="palette-dot" style="background: #00CC66;"></div>
+    </div>
+  </div>
+</div>
+
+<!-- B: Hot Magenta -->
+<div class="color-option" data-choice="b" onclick="toggleSelect(this)">
+  <div class="color-banner" style="background: linear-gradient(135deg, #E91E8C, #F04DA2);">
+    <div class="letter">B</div>
+    <div class="hex">#E91E8C</div>
+  </div>
+  <div class="color-body">
+    <h3>Hot Magenta</h3>
+    <div class="rationale">Impossible to ignore. No AI company uses hot pink — instant differentiation. Reads as bold, modern, and unafraid. The warm undertone keeps it from feeling cold. T-Mobile proved a huge brand can own pink. Risk: some audiences associate it with "playful" over "serious."</div>
+    <div class="hero-preview">
+      <div class="hero-label" style="color: #E91E8C;">NOW IN ALPHA</div>
+      <div class="hero-headline">Your AI Squad,<br>Always Hunting.</div>
+      <div class="hero-sub">Deploy autonomous agents that work as a pack.</div>
+      <div class="hero-btn" style="background: #E91E8C;">GET EARLY ACCESS</div>
+    </div>
+    <div class="demo-row">
+      <div class="demo-label" style="color: #E91E8C;">FEATURES</div>
+      <div class="demo-btn" style="background: #E91E8C;">JOIN THE PACK</div>
+    </div>
+    <div class="demo-row">
+      <div class="demo-card">
+        <div class="card-icon" style="background: #E91E8C;"></div>
+        <div class="card-title">Pack Intelligence</div>
+        <div class="card-desc">Agents coordinate like a wolf pack</div>
+      </div>
+      <div class="demo-card">
+        <div class="card-icon" style="background: #E91E8C;"></div>
+        <div class="card-title">Hawk-Eye Monitoring</div>
+        <div class="card-desc">Nothing escapes your view</div>
+      </div>
+    </div>
+    <div class="palette-row">
+      <div class="palette-dot" style="background: #E91E8C;"></div>
+      <div class="palette-dot" style="background: #0A0A0A;"></div>
+      <div class="palette-dot" style="background: #F5F2EB;"></div>
+      <div class="palette-dot" style="background: #FFB800;"></div>
+      <div class="palette-dot" style="background: #00CC66;"></div>
+    </div>
+  </div>
+</div>
+
+<!-- C: Acid Chartreuse -->
+<div class="color-option" data-choice="c" onclick="toggleSelect(this)">
+  <div class="color-banner" style="background: linear-gradient(135deg, #B4E33D, #C8F052);">
+    <div class="letter">C</div>
+    <div class="hex">#B4E33D</div>
+  </div>
+  <div class="color-body">
+    <h3>Acid Chartreuse</h3>
+    <div class="rationale">Electric, insurgent, high-voltage. This is the "we're not like other AI companies" color. Reads as energetic, alive, and slightly dangerous — like your agents are crackling with potential. Works brilliantly on dark backgrounds, needs care on cream. Figma and Sublime use similar energy.</div>
+    <div class="hero-preview">
+      <div class="hero-label" style="color: #8AB020;">NOW IN ALPHA</div>
+      <div class="hero-headline">Your AI Squad,<br>Always Hunting.</div>
+      <div class="hero-sub">Deploy autonomous agents that work as a pack.</div>
+      <div class="hero-btn" style="background: #8AB020; color: #fff;">GET EARLY ACCESS</div>
+    </div>
+    <div class="demo-row">
+      <div class="demo-label" style="color: #8AB020;">FEATURES</div>
+      <div class="demo-btn" style="background: #8AB020; color: #fff;">JOIN THE PACK</div>
+    </div>
+    <div class="demo-row">
+      <div class="demo-card">
+        <div class="card-icon" style="background: #B4E33D;"></div>
+        <div class="card-title">Pack Intelligence</div>
+        <div class="card-desc">Agents coordinate like a wolf pack</div>
+      </div>
+      <div class="demo-card">
+        <div class="card-icon" style="background: #B4E33D;"></div>
+        <div class="card-title">Hawk-Eye Monitoring</div>
+        <div class="card-desc">Nothing escapes your view</div>
+      </div>
+    </div>
+    <div class="palette-row">
+      <div class="palette-dot" style="background: #B4E33D;"></div>
+      <div class="palette-dot" style="background: #0A0A0A;"></div>
+      <div class="palette-dot" style="background: #F5F2EB;"></div>
+      <div class="palette-dot" style="background: #FF6B00;"></div>
+      <div class="palette-dot" style="background: #00CC66;"></div>
+    </div>
+  </div>
+</div>
+
+<!-- D: Deep Teal -->
+<div class="color-option" data-choice="d" onclick="toggleSelect(this)">
+  <div class="color-banner" style="background: linear-gradient(135deg, #00A88F, #00C9AB);">
+    <div class="letter">D</div>
+    <div class="hex">#00A88F</div>
+  </div>
+  <div class="color-body">
+    <h3>Living Teal</h3>
+    <div class="rationale">Growth, life, intelligence. Teal bridges warm and cool — it feels alive without being aggressive. Reinforces the "living system / organizational memory" narrative. Pairs beautifully with warm cream. Risk: can feel calm rather than bold. Needs the black strokes and bold type to add edge.</div>
+    <div class="hero-preview">
+      <div class="hero-label" style="color: #00A88F;">NOW IN ALPHA</div>
+      <div class="hero-headline">Your AI Squad,<br>Always Hunting.</div>
+      <div class="hero-sub">Deploy autonomous agents that work as a pack.</div>
+      <div class="hero-btn" style="background: #00A88F;">GET EARLY ACCESS</div>
+    </div>
+    <div class="demo-row">
+      <div class="demo-label" style="color: #00A88F;">FEATURES</div>
+      <div class="demo-btn" style="background: #00A88F;">JOIN THE PACK</div>
+    </div>
+    <div class="demo-row">
+      <div class="demo-card">
+        <div class="card-icon" style="background: #00A88F;"></div>
+        <div class="card-title">Pack Intelligence</div>
+        <div class="card-desc">Agents coordinate like a wolf pack</div>
+      </div>
+      <div class="demo-card">
+        <div class="card-icon" style="background: #00A88F;"></div>
+        <div class="card-title">Hawk-Eye Monitoring</div>
+        <div class="card-desc">Nothing escapes your view</div>
+      </div>
+    </div>
+    <div class="palette-row">
+      <div class="palette-dot" style="background: #00A88F;"></div>
+      <div class="palette-dot" style="background: #0A0A0A;"></div>
+      <div class="palette-dot" style="background: #F5F2EB;"></div>
+      <div class="palette-dot" style="background: #FFB800;"></div>
+      <div class="palette-dot" style="background: #7C5CFC;"></div>
+    </div>
+  </div>
+</div>
+
+<!-- E: Cobalt -->
+<div class="color-option" data-choice="e" onclick="toggleSelect(this)">
+  <div class="color-banner" style="background: linear-gradient(135deg, #2563EB, #4580F0);">
+    <div class="letter">E</div>
+    <div class="hex">#2563EB</div>
+  </div>
+  <div class="color-body">
+    <h3>Cobalt Blue</h3>
+    <div class="rationale">Trust, intelligence, authority. The "safe" choice — but safe for a reason. Blue is the most universally trusted color. This particular cobalt is saturated enough to feel bold rather than corporate. Risk: you look like every other SaaS/AI company. Could feel generic without the animal characters and bold typography doing heavy differentiation.</div>
+    <div class="hero-preview">
+      <div class="hero-label" style="color: #2563EB;">NOW IN ALPHA</div>
+      <div class="hero-headline">Your AI Squad,<br>Always Hunting.</div>
+      <div class="hero-sub">Deploy autonomous agents that work as a pack.</div>
+      <div class="hero-btn" style="background: #2563EB;">GET EARLY ACCESS</div>
+    </div>
+    <div class="demo-row">
+      <div class="demo-label" style="color: #2563EB;">FEATURES</div>
+      <div class="demo-btn" style="background: #2563EB;">JOIN THE PACK</div>
+    </div>
+    <div class="demo-row">
+      <div class="demo-card">
+        <div class="card-icon" style="background: #2563EB;"></div>
+        <div class="card-title">Pack Intelligence</div>
+        <div class="card-desc">Agents coordinate like a wolf pack</div>
+      </div>
+      <div class="demo-card">
+        <div class="card-icon" style="background: #2563EB;"></div>
+        <div class="card-title">Hawk-Eye Monitoring</div>
+        <div class="card-desc">Nothing escapes your view</div>
+      </div>
+    </div>
+    <div class="palette-row">
+      <div class="palette-dot" style="background: #2563EB;"></div>
+      <div class="palette-dot" style="background: #0A0A0A;"></div>
+      <div class="palette-dot" style="background: #F5F2EB;"></div>
+      <div class="palette-dot" style="background: #FFB800;"></div>
+      <div class="palette-dot" style="background: #00CC66;"></div>
+    </div>
+  </div>
+</div>

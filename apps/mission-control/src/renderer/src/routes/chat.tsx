@@ -8,6 +8,7 @@ import {
   Paperclip,
   Pencil,
   Plus,
+  Search,
   Send,
   Square,
   Trash2,
@@ -112,7 +113,7 @@ function renderEvents(
           : ((event.error as unknown as { message?: string })?.message ?? 'Unknown error');
       const timestamp = typeof event.timestamp === 'string' ? event.timestamp : undefined;
       elements.push(
-        <div key={`err-${blockCount++}`} className="mb-3 flex items-center gap-2 text-red-400">
+        <div key={`err-${blockCount++}`} className="mb-3 flex items-center gap-2 text-red">
           <span>{msg}</span>
           {navigateToLogs && timestamp && (
             <button
@@ -214,13 +215,13 @@ function QuestionBlock({
       <div className="mb-2 rounded border border-border bg-sidebar-hover px-3 py-1.5 text-xs">
         <span className="text-muted">Question</span>
         <span className="ml-1">{answer}</span>
-        <span className="ml-1 text-green-400">✓</span>
+        <span className="ml-1 text-green">✓</span>
       </div>
     );
   }
 
   return (
-    <div className="mb-2 rounded border border-primary/50 bg-primary/5 px-3 py-2 text-sm">
+    <div className="mb-2 rounded border border-accent/50 bg-accent/5 px-3 py-2 text-sm">
       <p className="mb-2">❓ {question}</p>
       {options.length > 0 ? (
         <div className="flex flex-wrap gap-2">
@@ -229,7 +230,7 @@ function QuestionBlock({
               key={opt}
               type="button"
               onClick={() => onAnswer?.(id, opt)}
-              className="rounded-lg border border-border bg-sidebar-bg px-3 py-1.5 text-xs transition-colors hover:bg-sidebar-hover hover:border-primary"
+              className="rounded-lg border border-border bg-card-bg px-3 py-1.5 text-xs transition-colors hover:bg-card-hover hover:border-accent"
             >
               {opt}
             </button>
@@ -249,12 +250,12 @@ function QuestionBlock({
             value={inputValue}
             onChange={(e) => setInputValue(e.target.value)}
             placeholder="Type your answer…"
-            className="flex-1 rounded-lg border border-border bg-sidebar-bg px-3 py-1.5 text-xs text-foreground placeholder:text-muted focus:border-primary focus:outline-none"
+            className="flex-1 rounded-lg border border-border bg-card-bg px-3 py-1.5 text-xs text-foreground placeholder:text-muted focus:border-accent focus:outline-none"
           />
           <button
             type="submit"
             disabled={!inputValue.trim()}
-            className="rounded-lg bg-primary px-3 py-1.5 text-xs text-white hover:bg-primary-hover disabled:opacity-50"
+            className="rounded-lg bg-accent px-3 py-1.5 text-xs text-white hover:bg-primary-hover disabled:opacity-50"
           >
             Reply
           </button>
@@ -265,8 +266,8 @@ function QuestionBlock({
 }
 
 const STATUS_INDICATOR: Record<string, { icon: string; label: string; color: string }> = {
-  completed: { icon: '✓', label: 'Done', color: 'text-green-400' },
-  in_progress: { icon: '◉', label: 'In progress', color: 'text-blue-400' },
+  completed: { icon: '✓', label: 'Done', color: 'text-green' },
+  in_progress: { icon: '◉', label: 'In progress', color: 'text-accent' },
   pending: { icon: '○', label: 'Pending', color: 'text-muted' },
 };
 
@@ -317,9 +318,7 @@ function ToolBlock({
       >
         <span className="font-mono">{toolLabel(name)}</span>
         {summary && <span className="ml-1 text-muted">{summary}</span>}
-        <span className={`ml-1 ${isError ? 'text-red-400' : 'text-green-400'}`}>
-          {isError ? '✗' : '✓'}
-        </span>
+        <span className={`ml-1 ${isError ? 'text-red' : 'text-green'}`}>{isError ? '✗' : '✓'}</span>
       </button>
       {open && (
         <div className="border-t border-border px-3 pb-2 pt-1">
@@ -387,7 +386,7 @@ function MessageBubble({
     const userImages = message.content.type === 'user' ? message.content.images : undefined;
     return (
       <div className="mb-6 flex justify-end">
-        <div className="max-w-[80%] rounded-lg bg-primary px-4 py-2 text-sm text-white">
+        <div className="bg-accent text-white rounded-lg p-4 max-w-[70%] ml-auto text-sm">
           {message.content.type === 'user' && message.content.text && (
             <p className="whitespace-pre-wrap">{message.content.text}</p>
           )}
@@ -414,7 +413,7 @@ function MessageBubble({
 
   return (
     <div className="mb-6">
-      <div className="max-w-[80%] px-4 py-2 text-sm text-foreground">
+      <div className="bg-card-bg rounded-lg p-4 max-w-[70%] text-sm text-foreground">
         {renderEvents(events, navigateToLogs, onAnswerQuestion, answeredQuestions)}
       </div>
       {usage && (
@@ -489,7 +488,7 @@ function PinnedTodoPanel({ todos }: { todos: TodoItem[] }): JSX.Element {
   if (dismissed) return <></>;
 
   return (
-    <div className="border-t border-border bg-sidebar-bg">
+    <div className="border-t border-border bg-card-bg">
       <div className="flex w-full items-center justify-between px-6 py-2 text-xs text-muted">
         <button
           type="button"
@@ -506,7 +505,7 @@ function PinnedTodoPanel({ todos }: { todos: TodoItem[] }): JSX.Element {
               (() => {
                 const active = todos.find((t) => t.status === 'in_progress');
                 return active ? (
-                  <span className="text-blue-400 font-normal truncate">— {active.content}</span>
+                  <span className="text-accent font-normal truncate">— {active.content}</span>
                 ) : null;
               })()}
           </span>
@@ -543,14 +542,14 @@ function PinnedTodoPanel({ todos }: { todos: TodoItem[] }): JSX.Element {
                 <div
                   key={todo.id ?? todo.content}
                   className={`flex items-center gap-2 rounded px-2 py-1 ${
-                    isActive ? 'bg-blue-900/20 border border-blue-800/40' : ''
+                    isActive ? 'bg-accent/10 border border-accent/30' : ''
                   }`}
                 >
                   <span className={STATUS_INDICATOR[todo.status]?.color ?? 'text-muted'}>
                     {STATUS_INDICATOR[todo.status]?.icon ?? '○'}
                   </span>
                   <span
-                    className={`flex-1 ${isDone ? 'line-through text-muted' : ''} ${isActive ? 'text-blue-300' : ''}`}
+                    className={`flex-1 ${isDone ? 'line-through text-muted' : ''} ${isActive ? 'text-accent' : ''}`}
                   >
                     {todo.content}
                   </span>
@@ -612,7 +611,7 @@ function ConversationItem({
             if (e.key === 'Escape') setEditing(false);
           }}
           onBlur={commitRename}
-          className="w-full rounded border border-primary bg-sidebar-bg px-2 py-1 text-xs text-foreground focus:outline-none"
+          className="w-full rounded border border-accent bg-card-bg px-2 py-1 text-xs text-foreground focus:outline-none"
         />
       </li>
     );
@@ -620,20 +619,22 @@ function ConversationItem({
 
   return (
     <li
-      className={`group flex items-start justify-between transition-colors hover:bg-sidebar-hover ${
-        isSelected ? 'bg-sidebar-hover' : ''
+      className={`group flex items-start justify-between border-b border-border transition-colors hover:bg-sidebar-hover cursor-pointer ${
+        isSelected ? 'bg-card-bg border-l-[3px] border-accent' : ''
       }`}
     >
       <button
         type="button"
         onClick={onSelect}
         onDoubleClick={startRename}
-        className={`min-w-0 flex-1 px-4 py-2 text-left text-xs ${
+        className={`min-w-0 flex-1 px-4 py-3.5 text-left ${
           isSelected ? 'text-foreground' : 'text-muted'
         }`}
       >
-        <p className="truncate font-medium">{conversation.title}</p>
-        <p className="truncate text-muted/60">{conversation.agentName}</p>
+        <p className="truncate font-semibold text-sm text-foreground">{conversation.title}</p>
+        <p className="truncate font-[family-name:var(--font-mono)] text-[10px] text-accent">
+          {conversation.agentName}
+        </p>
       </button>
       <div className="mr-2 mt-2 flex shrink-0 items-center gap-0.5">
         {confirmingDelete ? (
@@ -644,7 +645,7 @@ function ConversationItem({
                 setConfirmingDelete(false);
                 onDelete();
               }}
-              className="rounded p-0.5 text-red-400 hover:bg-red-900/30"
+              className="rounded p-0.5 text-red hover:bg-red-900/30"
               aria-label="Confirm delete"
             >
               <Check size={10} />
@@ -671,7 +672,7 @@ function ConversationItem({
             <button
               type="button"
               onClick={() => setConfirmingDelete(true)}
-              className="opacity-0 transition-opacity group-hover:opacity-100 rounded p-0.5 text-muted hover:text-red-400"
+              className="opacity-0 transition-opacity group-hover:opacity-100 rounded p-0.5 text-muted hover:text-red"
               aria-label={`Delete conversation ${conversation.title}`}
             >
               <Trash2 size={10} />
@@ -719,6 +720,7 @@ export function Chat(): JSX.Element {
   >([]);
   const [answeredQuestions, setAnsweredQuestions] = useState<Record<string, string>>({});
   const [imageError, setImageError] = useState<string | null>(null);
+  const [conversationSearch, setConversationSearch] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -872,11 +874,22 @@ export function Chat(): JSX.Element {
     selectedDeployment?.config?.agents?.[selectedAgentName] ?? selectedDeployment?.config?.agent;
   const activeModel = agentConfig?.model;
 
+  const filteredConversations = conversationSearch.trim()
+    ? conversations.filter(
+        (c) =>
+          c.title.toLowerCase().includes(conversationSearch.toLowerCase()) ||
+          c.agentName.toLowerCase().includes(conversationSearch.toLowerCase()),
+      )
+    : conversations;
+
   return (
-    <div className="-m-8 flex flex-1 overflow-hidden">
-      {/* Left panel: conversation list */}
-      <div className="flex w-64 flex-col border-r border-border">
-        <div className="border-b border-border px-4 py-3">
+    <div className="-m-8 flex flex-col h-full overflow-hidden">
+      {/* Page Header */}
+      <div className="bg-surface px-8 py-4 border-b border-border flex justify-between items-center shrink-0">
+        <h1 className="font-[family-name:var(--font-display)] text-[22px] font-semibold text-foreground">
+          Chat
+        </h1>
+        <div className="flex gap-3">
           {/* Deployment picker */}
           {runningDeployments.length > 1 && (
             <select
@@ -885,7 +898,7 @@ export function Chat(): JSX.Element {
                 setSelectedDeploymentId(e.target.value);
                 setSelectedAgentName('');
               }}
-              className="mb-2 w-full rounded border border-border bg-sidebar-bg px-2 py-1 text-xs text-foreground focus:outline-none"
+              className="rounded-lg border border-border bg-card-bg px-3 py-1.5 text-xs text-foreground focus:outline-none focus:border-accent"
             >
               {runningDeployments.map((d) => (
                 <option key={d.id} value={d.id}>
@@ -899,7 +912,7 @@ export function Chat(): JSX.Element {
             <select
               value={selectedAgentName}
               onChange={(e) => setSelectedAgentName(e.target.value)}
-              className="mb-2 w-full rounded border border-border bg-sidebar-bg px-2 py-1 text-xs text-foreground focus:outline-none"
+              className="rounded-lg border border-border bg-card-bg px-3 py-1.5 text-xs text-foreground focus:outline-none focus:border-accent"
             >
               {agentNames.map((name) => (
                 <option key={name} value={name}>
@@ -912,193 +925,213 @@ export function Chat(): JSX.Element {
             type="button"
             onClick={handleNewConversation}
             disabled={!selectedDeploymentId || !selectedAgentName}
-            className="flex w-full items-center gap-1.5 rounded px-2 py-1.5 text-xs text-muted transition-colors hover:bg-sidebar-hover hover:text-foreground disabled:opacity-40"
+            className="flex items-center gap-1.5 rounded-lg border border-border bg-card-bg px-3 py-1.5 text-xs text-muted transition-colors hover:bg-sidebar-hover hover:text-foreground disabled:opacity-40"
           >
             <Plus size={12} />
             New conversation
           </button>
         </div>
-
-        <ul className="flex-1 overflow-y-auto py-2">
-          {conversations.length === 0 ? (
-            <li className="px-4 text-xs text-muted">No conversations yet.</li>
-          ) : (
-            conversations.map((conv) => (
-              <ConversationItem
-                key={conv.id}
-                conversation={conv}
-                isSelected={conv.id === selectedConversationId}
-                onSelect={() => selectConversation(conv.id)}
-                onRename={(title) => renameConversation(conv.id, title)}
-                onDelete={() => deleteConversation(conv.id)}
-              />
-            ))
-          )}
-        </ul>
       </div>
 
-      {/* Right panel: message thread */}
-      <div
-        className="flex flex-1 flex-col"
-        onDrop={(e) => {
-          e.preventDefault();
-          if (e.dataTransfer.files.length > 0) addImageFiles(e.dataTransfer.files);
-        }}
-        onDragOver={(e) => e.preventDefault()}
-      >
-        {!selectedConversationId && (
-          <div className="border-b border-border px-6 py-4">
-            <h1 className="text-2xl font-bold">Chat</h1>
-            <p className="mt-1 text-sm text-muted">Select or create a conversation</p>
+      <div className="flex flex-1 min-h-0">
+        {/* Left: Conversation List */}
+        <div className="w-[300px] bg-surface border-r border-border flex flex-col shrink-0">
+          {/* Search bar */}
+          <div className="px-4 py-3 border-b border-border">
+            <div className="flex items-center gap-2 bg-card-bg border border-border rounded-lg px-3 py-2">
+              <Search size={14} className="text-muted shrink-0" />
+              <input
+                type="text"
+                value={conversationSearch}
+                onChange={(e) => setConversationSearch(e.target.value)}
+                placeholder="Search conversations…"
+                className="flex-1 bg-transparent text-sm text-foreground placeholder:text-muted focus:outline-none"
+              />
+            </div>
           </div>
-        )}
 
-        {activeModel && (
-          <div className="flex items-center justify-between border-b border-border px-6 py-1.5">
-            <span className="text-xs text-foreground/70">{formatModelName(activeModel)}</span>
-          </div>
-        )}
-
-        {/* biome-ignore lint/a11y/useKeyWithClickEvents: click-to-focus convenience for sighted users, not a keyboard-navigable action */}
-        <div
-          className="flex-1 overflow-y-auto px-6 py-4"
-          onClick={() => textareaRef.current?.focus()}
-        >
-          {!selectedConversationId ? (
-            <p className="text-center text-sm text-muted">
-              {runningDeployments.length === 0
-                ? 'Deploy an agent first, then come back to chat.'
-                : 'Select a conversation or create a new one.'}
-            </p>
-          ) : (
-            <>
-              {selectedMessages.map((msg, i) => (
-                <MessageBubble
-                  key={`${msg.role}-${i}`}
-                  message={msg}
-                  navigateToLogs={navigateToLogs}
-                  onAnswerQuestion={handleAnswerQuestion}
-                  answeredQuestions={answeredQuestions}
+          {/* Conversation list */}
+          <ul className="flex-1 overflow-y-auto">
+            {filteredConversations.length === 0 ? (
+              <li className="px-4 py-3.5 text-xs text-muted">
+                {conversations.length === 0 ? 'No conversations yet.' : 'No results.'}
+              </li>
+            ) : (
+              filteredConversations.map((conv) => (
+                <ConversationItem
+                  key={conv.id}
+                  conversation={conv}
+                  isSelected={conv.id === selectedConversationId}
+                  onSelect={() => selectConversation(conv.id)}
+                  onRename={(title) => renameConversation(conv.id, title)}
+                  onDelete={() => deleteConversation(conv.id)}
                 />
-              ))}
-              {isStreaming && liveEvents.length === 0 && <ThinkingIndicator />}
-              {isStreaming && liveEvents.length > 0 && (
-                <MessageBubble
-                  streamingEvents={liveEvents}
-                  navigateToLogs={navigateToLogs}
-                  onAnswerQuestion={handleAnswerQuestion}
-                  answeredQuestions={answeredQuestions}
-                />
-              )}
-            </>
-          )}
-          <div ref={messagesEndRef} />
+              ))
+            )}
+          </ul>
         </div>
 
-        {(() => {
-          const todos = extractLatestTodos(selectedMessages, liveEvents);
-          return todos && todos.length > 0 ? <PinnedTodoPanel todos={todos} /> : null;
-        })()}
-
-        <div className="border-t border-border px-6 py-4">
-          {attachedImages.length > 0 && (
-            <div className="mb-2 flex gap-2">
-              {attachedImages.map((img) => (
-                <div key={img.id} className="relative">
-                  <img
-                    src={img.preview}
-                    alt="Attached"
-                    className="h-16 w-16 rounded border border-border object-cover"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => removeImage(img.id)}
-                    className="absolute -right-1.5 -top-1.5 flex h-4 w-4 items-center justify-center rounded-full bg-red-900 text-[10px] text-white hover:bg-red-700"
-                  >
-                    ×
-                  </button>
-                </div>
-              ))}
+        {/* Right: Chat Panel */}
+        <div
+          className="flex flex-1 flex-col min-h-0"
+          onDrop={(e) => {
+            e.preventDefault();
+            if (e.dataTransfer.files.length > 0) addImageFiles(e.dataTransfer.files);
+          }}
+          onDragOver={(e) => e.preventDefault()}
+        >
+          {activeModel && (
+            <div className="flex items-center justify-between border-b border-border px-6 py-1.5 shrink-0">
+              <span className="text-xs text-foreground/70">{formatModelName(activeModel)}</span>
             </div>
           )}
-          {imageError && <p className="mb-1 text-xs text-red-400">{imageError}</p>}
-          <form
-            className="flex gap-2"
-            onSubmit={(e) => {
-              e.preventDefault();
-              handleSend();
-            }}
-            onDrop={(e) => {
-              e.preventDefault();
-              if (e.dataTransfer.files.length > 0) addImageFiles(e.dataTransfer.files);
-            }}
-            onDragOver={(e) => e.preventDefault()}
+
+          {/* biome-ignore lint/a11y/useKeyWithClickEvents: click-to-focus convenience for sighted users, not a keyboard-navigable action */}
+          <div
+            className="flex-1 overflow-y-auto px-6 py-4"
+            onClick={() => textareaRef.current?.focus()}
           >
-            <textarea
-              ref={textareaRef}
-              rows={1}
-              value={input}
-              onChange={(e) => {
-                setInput(e.target.value);
-                resizeTextarea();
-              }}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' && !e.shiftKey) {
+            {!selectedConversationId ? (
+              <p className="text-center text-sm text-muted mt-8">
+                {runningDeployments.length === 0
+                  ? 'Deploy an agent first, then come back to chat.'
+                  : 'Select a conversation or create a new one.'}
+              </p>
+            ) : (
+              <>
+                {selectedMessages.map((msg, i) => (
+                  <MessageBubble
+                    key={`${msg.role}-${i}`}
+                    message={msg}
+                    navigateToLogs={navigateToLogs}
+                    onAnswerQuestion={handleAnswerQuestion}
+                    answeredQuestions={answeredQuestions}
+                  />
+                ))}
+                {isStreaming && liveEvents.length === 0 && <ThinkingIndicator />}
+                {isStreaming && liveEvents.length > 0 && (
+                  <MessageBubble
+                    streamingEvents={liveEvents}
+                    navigateToLogs={navigateToLogs}
+                    onAnswerQuestion={handleAnswerQuestion}
+                    answeredQuestions={answeredQuestions}
+                  />
+                )}
+              </>
+            )}
+            <div ref={messagesEndRef} />
+          </div>
+
+          {(() => {
+            const todos = extractLatestTodos(selectedMessages, liveEvents);
+            return todos && todos.length > 0 ? <PinnedTodoPanel todos={todos} /> : null;
+          })()}
+
+          {/* Input bar */}
+          <div className="bg-surface border-t border-border px-6 py-4 flex items-center gap-3 shrink-0">
+            <div className="flex-1 flex flex-col gap-2">
+              {attachedImages.length > 0 && (
+                <div className="flex gap-2">
+                  {attachedImages.map((img) => (
+                    <div key={img.id} className="relative">
+                      <img
+                        src={img.preview}
+                        alt="Attached"
+                        className="h-16 w-16 rounded border border-border object-cover"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => removeImage(img.id)}
+                        className="absolute -right-1.5 -top-1.5 flex h-4 w-4 items-center justify-center rounded-full bg-red-900 text-[10px] text-white hover:bg-red-700"
+                      >
+                        ×
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {imageError && <p className="text-xs text-red">{imageError}</p>}
+              <form
+                className="flex items-center gap-3"
+                onSubmit={(e) => {
                   e.preventDefault();
                   handleSend();
-                }
-              }}
-              onPaste={(e) => {
-                const files = Array.from(e.clipboardData.items)
-                  .filter((item) => item.kind === 'file')
-                  .map((item) => item.getAsFile())
-                  .filter((f): f is File => f !== null);
-                if (files.length > 0) addImageFiles(files);
-              }}
-              placeholder={
-                selectedConversationId ? 'Type a message…' : 'Select a conversation first'
-              }
-              disabled={!selectedConversationId || isStreaming}
-              className="flex-1 resize-none rounded-lg border border-border bg-sidebar-bg px-4 py-2 text-sm text-foreground placeholder:text-muted focus:border-primary focus:outline-none disabled:opacity-50"
-            />
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept="image/png,image/jpeg,image/gif,image/webp"
-              multiple
-              className="hidden"
-              onChange={(e) => {
-                if (e.target.files) addImageFiles(e.target.files);
-                e.target.value = '';
-              }}
-            />
-            <button
-              type="button"
-              onClick={() => fileInputRef.current?.click()}
-              disabled={!selectedConversationId || isStreaming}
-              className="rounded-lg border border-border px-2 py-2 text-muted transition-colors hover:bg-sidebar-hover hover:text-foreground disabled:opacity-50"
-              title="Attach image"
-            >
-              <Paperclip size={16} />
-            </button>
-            {isStreaming ? (
-              <button
-                type="button"
-                onClick={() => selectedConversationId && cancelMessage(selectedConversationId)}
-                className="rounded-lg bg-red-900/50 px-4 py-2 text-sm text-red-400 transition-colors hover:bg-red-900/70"
+                }}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  if (e.dataTransfer.files.length > 0) addImageFiles(e.dataTransfer.files);
+                }}
+                onDragOver={(e) => e.preventDefault()}
               >
-                <Square size={16} />
-              </button>
-            ) : (
-              <button
-                type="submit"
-                disabled={(!input.trim() && attachedImages.length === 0) || !selectedConversationId}
-                className="rounded-lg bg-primary px-4 py-2 text-sm text-white transition-colors hover:bg-primary-hover disabled:opacity-50"
-              >
-                <Send size={16} />
-              </button>
-            )}
-          </form>
+                <textarea
+                  ref={textareaRef}
+                  rows={1}
+                  value={input}
+                  onChange={(e) => {
+                    setInput(e.target.value);
+                    resizeTextarea();
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && !e.shiftKey) {
+                      e.preventDefault();
+                      handleSend();
+                    }
+                  }}
+                  onPaste={(e) => {
+                    const files = Array.from(e.clipboardData.items)
+                      .filter((item) => item.kind === 'file')
+                      .map((item) => item.getAsFile())
+                      .filter((f): f is File => f !== null);
+                    if (files.length > 0) addImageFiles(files);
+                  }}
+                  placeholder={
+                    selectedConversationId ? 'Type a message…' : 'Select a conversation first'
+                  }
+                  disabled={!selectedConversationId || isStreaming}
+                  className="flex-1 bg-card-bg border border-border rounded-lg px-4 py-3 text-sm text-foreground placeholder:text-muted focus:border-accent focus:outline-none disabled:opacity-50 resize-none"
+                />
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="image/png,image/jpeg,image/gif,image/webp"
+                  multiple
+                  className="hidden"
+                  onChange={(e) => {
+                    if (e.target.files) addImageFiles(e.target.files);
+                    e.target.value = '';
+                  }}
+                />
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={!selectedConversationId || isStreaming}
+                  className="rounded-lg border border-border p-2.5 text-muted transition-colors hover:bg-sidebar-hover hover:text-foreground disabled:opacity-50 shrink-0"
+                  title="Attach image"
+                >
+                  <Paperclip size={16} />
+                </button>
+                {isStreaming ? (
+                  <button
+                    type="button"
+                    onClick={() => selectedConversationId && cancelMessage(selectedConversationId)}
+                    className="rounded-lg bg-red-900/50 p-2.5 text-red transition-colors hover:bg-red-900/70 shrink-0"
+                  >
+                    <Square size={16} />
+                  </button>
+                ) : (
+                  <button
+                    type="submit"
+                    disabled={
+                      (!input.trim() && attachedImages.length === 0) || !selectedConversationId
+                    }
+                    className="bg-accent text-white rounded-lg p-2.5 hover:bg-primary-hover disabled:opacity-50 transition-colors shrink-0"
+                  >
+                    <Send size={16} />
+                  </button>
+                )}
+              </form>
+            </div>
+          </div>
         </div>
       </div>
     </div>

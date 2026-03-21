@@ -1,0 +1,136 @@
+<h2>Tabbed AgentDetail — Layout Structure</h2>
+<p class="subtitle">Header stays fixed above tabs. Each tab gets its own focused content area. Does this structure feel right?</p>
+
+<div class="mockup" style="max-width: 800px; margin: 24px auto;">
+  <div class="mockup-header">AgentDetail — Proposed Layout</div>
+  <div class="mockup-body" style="padding: 0; font-size: 13px; line-height: 1.5;">
+
+    <!-- Header area -->
+    <div style="padding: 16px 20px; border-bottom: 1px solid #333;">
+      <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px;">
+        <div style="display: flex; align-items: center; gap: 12px;">
+          <span style="color: #666;">← Agents</span>
+          <span style="font-size: 18px; font-weight: 600; color: #eee;">my-agent</span>
+          <span style="background: #166534; color: #4ade80; padding: 2px 8px; border-radius: 4px; font-size: 11px;">Running</span>
+        </div>
+        <div style="display: flex; gap: 8px;">
+          <span style="background: #2563eb; color: white; padding: 4px 12px; border-radius: 6px; font-size: 12px;">💬 Chat</span>
+          <span style="background: #222; color: #ccc; padding: 4px 12px; border-radius: 6px; font-size: 12px;">Restart</span>
+          <span style="background: #222; color: #ccc; padding: 4px 12px; border-radius: 6px; font-size: 12px;">Stop</span>
+          <span style="background: #222; color: #f87171; padding: 4px 12px; border-radius: 6px; font-size: 12px;">Remove</span>
+        </div>
+      </div>
+      <div style="display: flex; align-items: center; gap: 16px; color: #888; font-size: 12px;">
+        <span>⏱ Uptime: 2h 14m</span>
+        <span style="color: #444;">·</span>
+        <span>📁 ~/workspace/my-agent <span style="color: #3b82f6; cursor: pointer;">Open</span></span>
+        <span style="color: #444;">·</span>
+        <span><span style="display: inline-block; width: 8px; height: 8px; background: #4ade80; border-radius: 50%;"></span> Telegram</span>
+        <span><span style="display: inline-block; width: 8px; height: 8px; background: #facc15; border-radius: 50%;"></span> WhatsApp</span>
+      </div>
+    </div>
+
+    <!-- Conditional banners -->
+    <div style="padding: 8px 20px; background: #1e293b; border-bottom: 1px solid #333; color: #93c5fd; font-size: 12px;">
+      ℹ️ Connect to a messaging app: <span style="text-decoration: underline; cursor: pointer;">Telegram</span> · <span style="text-decoration: underline; cursor: pointer;">WhatsApp</span>
+    </div>
+
+    <!-- Tab bar -->
+    <div style="display: flex; gap: 0; border-bottom: 1px solid #333; padding: 0 20px;">
+      <span style="padding: 10px 16px; font-size: 13px; color: #eee; border-bottom: 2px solid #3b82f6;">Overview</span>
+      <span style="padding: 10px 16px; font-size: 13px; color: #888;">Configuration</span>
+      <span style="padding: 10px 16px; font-size: 13px; color: #888;">Skills</span>
+      <span style="padding: 10px 16px; font-size: 13px; color: #888;">Logs</span>
+    </div>
+
+    <!-- Tab content area -->
+    <div style="padding: 20px; min-height: 300px;">
+      <div style="color: #888; font-size: 12px; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 12px;">Overview Tab Content</div>
+
+      <!-- Runtime details -->
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 20px;">
+        <div style="background: #1a1a1a; border: 1px solid #333; border-radius: 8px; padding: 12px;">
+          <div style="color: #666; font-size: 11px; margin-bottom: 4px;">PID</div>
+          <div style="color: #ccc;">48291</div>
+        </div>
+        <div style="background: #1a1a1a; border: 1px solid #333; border-radius: 8px; padding: 12px;">
+          <div style="color: #666; font-size: 11px; margin-bottom: 4px;">Created</div>
+          <div style="color: #ccc;">Mar 15, 2026</div>
+        </div>
+        <div style="background: #1a1a1a; border: 1px solid #333; border-radius: 8px; padding: 12px;">
+          <div style="color: #666; font-size: 11px; margin-bottom: 4px;">Chat Port</div>
+          <div style="color: #ccc;">9101</div>
+        </div>
+        <div style="background: #1a1a1a; border: 1px solid #333; border-radius: 8px; padding: 12px;">
+          <div style="color: #666; font-size: 11px; margin-bottom: 4px;">Management Port</div>
+          <div style="color: #ccc;">9100</div>
+        </div>
+      </div>
+
+      <!-- Channel connections -->
+      <div style="color: #eee; font-size: 14px; font-weight: 500; margin-bottom: 8px;">Channel Connections</div>
+      <div style="background: #1a1a1a; border: 1px solid #333; border-radius: 8px; padding: 12px;">
+        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px;">
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <span style="display: inline-block; width: 8px; height: 8px; background: #4ade80; border-radius: 50%;"></span>
+            <span style="color: #ccc;">My Telegram Bot</span>
+            <span style="color: #666; font-size: 11px;">telegram</span>
+          </div>
+        </div>
+        <div style="display: flex; align-items: center; justify-content: space-between;">
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <span style="display: inline-block; width: 8px; height: 8px; background: #facc15; border-radius: 50%;"></span>
+            <span style="color: #ccc;">Support WhatsApp</span>
+            <span style="color: #666; font-size: 11px;">whatsapp</span>
+          </div>
+          <span style="color: #3b82f6; font-size: 12px; cursor: pointer;">Re-connect</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div style="max-width: 800px; margin: 0 auto;">
+  <h3>What goes where</h3>
+  <table style="width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 8px;">
+    <thead>
+      <tr style="border-bottom: 1px solid #444;">
+        <th style="text-align: left; padding: 8px; color: #aaa;">Area</th>
+        <th style="text-align: left; padding: 8px; color: #aaa;">Contents</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr style="border-bottom: 1px solid #333;">
+        <td style="padding: 8px; color: #eee; font-weight: 500;">Header (always visible)</td>
+        <td style="padding: 8px; color: #ccc;">Name, status badge, action buttons, uptime, workspace, channel health dots, connect banner, startup errors</td>
+      </tr>
+      <tr style="border-bottom: 1px solid #333;">
+        <td style="padding: 8px; color: #eee; font-weight: 500;">Overview tab</td>
+        <td style="padding: 8px; color: #ccc;">Runtime details (PID, ports, created date), channel connections list</td>
+      </tr>
+      <tr style="border-bottom: 1px solid #333;">
+        <td style="padding: 8px; color: #eee; font-weight: 500;">Configuration tab</td>
+        <td style="padding: 8px; color: #ccc;">Models (with edit), System Prompt (with edit), Tools (with edit) — each as a collapsible card</td>
+      </tr>
+      <tr style="border-bottom: 1px solid #333;">
+        <td style="padding: 8px; color: #eee; font-weight: 500;">Skills tab</td>
+        <td style="padding: 8px; color: #ccc;">Skills list, inline editor, discovery paths, remote URLs, create new skill</td>
+      </tr>
+      <tr>
+        <td style="padding: 8px; color: #eee; font-weight: 500;">Logs tab</td>
+        <td style="padding: 8px; color: #ccc;">Level filter buttons + full-height LogViewer</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<div style="max-width: 800px; margin: 20px auto 0;">
+  <h3>Key design decisions</h3>
+  <ul style="color: #ccc; font-size: 13px; line-height: 1.8;">
+    <li><strong>Channel health dots in header</strong> — you see connection status at a glance without switching to Overview</li>
+    <li><strong>Config sections as collapsible cards</strong> — within the Config tab, each section (models/prompt/tools) is a card that expands for editing</li>
+    <li><strong>Skills gets its own tab</strong> — it's complex enough to warrant dedicated space rather than being crammed alongside models/tools</li>
+    <li><strong>Logs tab uses full available height</strong> — no content above or below the log viewer to maximize visible lines</li>
+    <li><strong>Startup errors show above tabs</strong> — critical errors are always visible, not hidden in a tab</li>
+  </ul>
+</div>
