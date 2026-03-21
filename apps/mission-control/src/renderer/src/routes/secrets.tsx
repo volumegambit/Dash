@@ -57,7 +57,7 @@ function PasswordForm({
               className="w-full rounded-lg border border-border bg-card-bg px-4 py-2 text-sm text-foreground placeholder:text-muted focus:border-accent focus:outline-none"
             />
           )}
-          {(localError || error) && <p className="text-sm text-red-400">{localError || error}</p>}
+          {(localError || error) && <p className="text-sm text-red">{localError || error}</p>}
           <button
             type="submit"
             disabled={loading || !password}
@@ -191,7 +191,7 @@ function SecretsTable(): JSX.Element {
                 <button
                   type="button"
                   onClick={() => deleteSecret(key)}
-                  className="rounded p-1 text-muted transition-colors hover:bg-red-900/30 hover:text-red-400"
+                  className="rounded p-1 text-muted transition-colors hover:bg-red-900/30 hover:text-red"
                 >
                   <Trash2 size={14} />
                 </button>

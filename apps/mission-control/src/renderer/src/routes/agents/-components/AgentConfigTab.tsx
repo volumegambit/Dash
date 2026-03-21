@@ -324,7 +324,7 @@ export function AgentConfigTab({
         {openCard === 'tools' && (
           <div className="border-t border-border p-4">
             {toolsRestartNeeded && (
-              <div className="mb-2 rounded-lg bg-yellow-900/20 px-3 py-2 text-xs text-yellow-400">
+              <div className="mb-2 rounded-lg bg-yellow-900/20 px-3 py-2 text-xs text-yellow">
                 Tools updated — restart the agent to apply changes.
               </div>
             )}

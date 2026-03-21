@@ -229,9 +229,7 @@ export function AiProviders(): JSX.Element {
                   <div className="flex-1 min-w-0">
                     <p className="font-semibold text-foreground">{p.name}</p>
                     <p className="font-[family-name:var(--font-mono)] text-xs text-muted mt-0.5">
-                      {hasKeys
-                        ? keys.map((k) => k.name).join(', ')
-                        : 'API key configured'}
+                      {hasKeys ? keys.map((k) => k.name).join(', ') : 'API key configured'}
                     </p>
                   </div>
 
@@ -257,7 +255,7 @@ export function AiProviders(): JSX.Element {
                           setOauthNamePrompt(p.id);
                         }}
                         disabled={isAnyOAuthLoading}
-                        className="inline-flex items-center gap-1 rounded-lg border border-green-700 bg-green-900/20 px-3 py-1.5 text-xs font-medium text-green-400 hover:bg-green-900/40 disabled:opacity-50"
+                        className="inline-flex items-center gap-1 rounded-lg border border-green-700 bg-green-900/20 px-3 py-1.5 text-xs font-medium text-green hover:bg-green-900/40 disabled:opacity-50"
                       >
                         {isThisOAuthLoading ? (
                           <Loader size={14} className="animate-spin" />
@@ -384,7 +382,7 @@ export function AiProviders(): JSX.Element {
 
                 {/* OAuth error */}
                 {oauthError?.provider === p.id && (
-                  <div className="mx-5 mb-4 rounded border border-red-900/50 bg-red-900/20 px-3 py-2 text-xs text-red-400">
+                  <div className="mx-5 mb-4 rounded border border-red-900/50 bg-red-900/20 px-3 py-2 text-xs text-red">
                     {oauthError.message}
                   </div>
                 )}
@@ -397,7 +395,9 @@ export function AiProviders(): JSX.Element {
                         disconnectConfirm?.provider === p.id &&
                         disconnectConfirm?.keyName === entry.name;
                       const oauthConfigForEntry =
-                        oauthSupported && entry.isOAuth ? OAUTH_CONFIG[p.id as OAuthProvider] : null;
+                        oauthSupported && entry.isOAuth
+                          ? OAUTH_CONFIG[p.id as OAuthProvider]
+                          : null;
 
                       return (
                         <div
@@ -409,7 +409,7 @@ export function AiProviders(): JSX.Element {
                               {entry.name}
                             </span>
                             {entry.isOAuth && oauthConfigForEntry && (
-                              <span className="rounded bg-green-900/30 px-1.5 py-0.5 text-[10px] font-medium text-green-400">
+                              <span className="rounded bg-green-900/30 px-1.5 py-0.5 text-[10px] font-medium text-green">
                                 {oauthConfigForEntry.badgeLabel}
                               </span>
                             )}
@@ -458,7 +458,7 @@ export function AiProviders(): JSX.Element {
                                 <button
                                   type="button"
                                   onClick={() => handleDisconnect(p.id, entry.name)}
-                                  className="text-xs text-red-400 hover:underline"
+                                  className="text-xs text-red hover:underline"
                                 >
                                   Yes, remove
                                 </button>

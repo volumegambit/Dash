@@ -174,7 +174,7 @@ export function ProviderConnectModal({
               className="w-full rounded-lg border border-border bg-card-bg px-4 py-3 text-sm font-mono text-foreground placeholder:text-muted focus:border-accent focus:outline-none"
             />
           </div>
-          {error && <p className="text-sm text-red-400">{error}</p>}
+          {error && <p className="text-sm text-red">{error}</p>}
           <div className="flex gap-2 pt-1">
             <button
               type="button"
