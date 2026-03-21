@@ -249,7 +249,7 @@ function AgentRow({ deployment, onNavigate, onStop, onRemove }: AgentRowProps): 
   return (
     <button
       type="button"
-      className="w-full border-b border-border flex items-center px-5 py-3.5 hover:bg-card-hover cursor-pointer transition-colors group last:border-b-0"
+      className="w-full border-b border-border flex items-center px-5 py-3.5 hover:bg-card-hover cursor-pointer transition-colors group last:border-b-0 text-left"
       onClick={onNavigate}
     >
       {/* Status */}
@@ -260,14 +260,14 @@ function AgentRow({ deployment, onNavigate, onStop, onRemove }: AgentRowProps): 
       </div>
 
       {/* Name */}
-      <div className="flex-1 min-w-0">
+      <div className="flex-1 min-w-0 text-left">
         <span className="font-[family-name:var(--font-display)] font-semibold text-sm text-foreground">
           {deployment.name}
         </span>
       </div>
 
       {/* Model */}
-      <div className="w-48">
+      <div className="w-48 text-left">
         <span className="font-[family-name:var(--font-mono)] text-xs text-muted">
           {truncateModel(model)}
         </span>
