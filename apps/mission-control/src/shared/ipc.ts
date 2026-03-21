@@ -93,6 +93,7 @@ export interface MissionControlAPI {
 
   // Chat
   chatListConversations(deploymentId: string): Promise<McConversation[]>;
+  chatListAllConversations(): Promise<McConversation[]>;
   chatCreateConversation(deploymentId: string, agentName: string): Promise<McConversation>;
   chatGetMessages(conversationId: string): Promise<McMessage[]>;
   chatRenameConversation(conversationId: string, title: string): Promise<void>;
@@ -144,7 +145,13 @@ export interface MissionControlAPI {
   deploymentsGetStatus(id: string): Promise<RuntimeStatus>;
   deploymentsUpdateConfig(
     id: string,
-    patch: { model?: string; fallbackModels?: string[]; tools?: string[]; systemPrompt?: string },
+    patch: {
+      name?: string;
+      model?: string;
+      fallbackModels?: string[];
+      tools?: string[];
+      systemPrompt?: string;
+    },
   ): Promise<void>;
   deploymentsLogsSubscribe(id: string): Promise<void>;
   deploymentsLogsUnsubscribe(id: string): Promise<void>;

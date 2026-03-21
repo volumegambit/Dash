@@ -469,6 +469,9 @@ export async function registerIpcHandlers(
   ipcMain.handle('chat:listConversations', (_event, deploymentId: string) =>
     getChatService(getWindow).listConversations(deploymentId),
   );
+  ipcMain.handle('chat:listAllConversations', () =>
+    getChatService(getWindow).listAllConversations(),
+  );
   ipcMain.handle('chat:createConversation', (_event, deploymentId: string, agentName: string) =>
     getChatService(getWindow).createConversation(deploymentId, agentName),
   );
@@ -948,7 +951,13 @@ export async function registerIpcHandlers(
     async (
       _event,
       id: string,
-      patch: { model?: string; fallbackModels?: string[]; tools?: string[]; systemPrompt?: string },
+      patch: {
+        name?: string;
+        model?: string;
+        fallbackModels?: string[];
+        tools?: string[];
+        systemPrompt?: string;
+      },
     ) => {
       await getRuntime().updateAgentConfig(id, patch);
     },

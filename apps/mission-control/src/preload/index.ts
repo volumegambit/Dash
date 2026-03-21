@@ -15,6 +15,7 @@ const api: MissionControlAPI = {
   // Chat
   chatListConversations: (deploymentId) =>
     ipcRenderer.invoke('chat:listConversations', deploymentId),
+  chatListAllConversations: () => ipcRenderer.invoke('chat:listAllConversations'),
   chatCreateConversation: (deploymentId, agentName) =>
     ipcRenderer.invoke('chat:createConversation', deploymentId, agentName),
   chatGetMessages: (conversationId) => ipcRenderer.invoke('chat:getMessages', conversationId),
