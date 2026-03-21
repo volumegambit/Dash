@@ -50,7 +50,7 @@ describe('AgentConnector', () => {
     await expect(connector.getClient('missing')).rejects.toThrow('not found');
   });
 
-  it('uses managementToken from deployment record', async () => {
+  it('uses token from secrets store', async () => {
     await registry.add({
       id: 'local-1',
       name: 'test',
@@ -58,32 +58,14 @@ describe('AgentConnector', () => {
       status: 'running',
       config: baseConfig,
       createdAt: '2026-03-01T00:00:00Z',
-      managementPort: 9200,
-      managementToken: 'inline-token',
     });
 
-    const connector = new AgentConnector(registry, createFakeSecrets());
+    const secrets = createFakeSecrets({ 'agent-token:local-1': 'secret-token' });
+    const connector = new AgentConnector(registry, secrets);
     const client = await connector.getClient('local-1');
     // Verify the client was created (it's a ManagementClient instance)
     expect(client).toBeDefined();
     expect(client.health).toBeTypeOf('function');
-  });
-
-  it('falls back to secrets store when no managementToken', async () => {
-    await registry.add({
-      id: 'local-2',
-      name: 'test',
-      target: 'local',
-      status: 'running',
-      config: baseConfig,
-      createdAt: '2026-03-01T00:00:00Z',
-      managementPort: 9200,
-    });
-
-    const secrets = createFakeSecrets({ 'agent-token:local-2': 'secret-token' });
-    const connector = new AgentConnector(registry, secrets);
-    const client = await connector.getClient('local-2');
-    expect(client).toBeDefined();
   });
 
   it('throws when no token available anywhere', async () => {
@@ -100,22 +82,6 @@ describe('AgentConnector', () => {
     await expect(connector.getClient('local-3')).rejects.toThrow('No management token');
   });
 
-  it('uses default port 9100 for local deployments without port', async () => {
-    await registry.add({
-      id: 'local-4',
-      name: 'test',
-      target: 'local',
-      status: 'running',
-      config: baseConfig,
-      createdAt: '2026-03-01T00:00:00Z',
-      managementToken: 'tok',
-    });
-
-    const connector = new AgentConnector(registry, createFakeSecrets());
-    const client = await connector.getClient('local-4');
-    expect(client).toBeDefined();
-  });
-
   it('throws for cloud deployment without IP', async () => {
     await registry.add({
       id: 'cloud-1',
@@ -124,10 +90,10 @@ describe('AgentConnector', () => {
       status: 'running',
       config: { ...baseConfig, target: 'digitalocean' },
       createdAt: '2026-03-01T00:00:00Z',
-      managementToken: 'tok',
     });
 
-    const connector = new AgentConnector(registry, createFakeSecrets());
+    const secrets = createFakeSecrets({ 'agent-token:cloud-1': 'tok' });
+    const connector = new AgentConnector(registry, secrets);
     await expect(connector.getClient('cloud-1')).rejects.toThrow('No IP address');
   });
 
@@ -139,12 +105,11 @@ describe('AgentConnector', () => {
       status: 'running',
       config: { ...baseConfig, target: 'digitalocean' },
       createdAt: '2026-03-01T00:00:00Z',
-      managementToken: 'tok',
       dropletIp: '10.0.0.1',
-      managementPort: 9300,
     });
 
-    const connector = new AgentConnector(registry, createFakeSecrets());
+    const secrets = createFakeSecrets({ 'agent-token:cloud-2': 'tok' });
+    const connector = new AgentConnector(registry, secrets);
     const client = await connector.getClient('cloud-2');
     expect(client).toBeDefined();
   });

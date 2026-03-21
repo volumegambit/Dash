@@ -7,6 +7,8 @@ export interface GatewayState {
   startedAt: string;
   token: string;
   port: number;
+  channelPort: number;
+  chatToken?: string;
 }
 
 export class GatewayStateStore {
