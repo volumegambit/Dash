@@ -113,7 +113,7 @@ function RootLayout(): JSX.Element {
       )}
       <div className="flex flex-1 overflow-hidden">
         <Sidebar />
-        <main className="flex flex-1 flex-col overflow-auto p-8">
+        <main className="flex flex-1 flex-col overflow-auto">
           <Outlet />
         </main>
       </div>

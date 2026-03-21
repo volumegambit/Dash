@@ -6,10 +6,7 @@ import {
   Clipboard,
   ClipboardCheck,
   Loader,
-  Plus,
   Rocket,
-  Server,
-  Trash2,
 } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { RendererDeploymentError } from '../../../shared/ipc';
@@ -21,15 +18,6 @@ import { useSecretsStore } from '../stores/secrets.js';
 
 type Step = 'agent' | 'review';
 
-interface McpServerEntry {
-  name: string;
-  transportType: 'stdio' | 'sse' | 'streamable-http';
-  command?: string;
-  args?: string;
-  url?: string;
-  env?: Record<string, string>;
-}
-
 interface AgentConfig {
   name: string;
   model: string;
@@ -37,7 +25,6 @@ interface AgentConfig {
   systemPrompt: string;
   tools: string[];
   workspace: string; // '' means auto-generate
-  mcpServers: McpServerEntry[];
 }
 
 export function DeployWizard(): JSX.Element {
@@ -61,7 +48,6 @@ export function DeployWizard(): JSX.Element {
     systemPrompt: '',
     tools: [],
     workspace: '',
-    mcpServers: [],
   });
 
   useEffect(() => {
@@ -109,18 +95,6 @@ export function DeployWizard(): JSX.Element {
     setDeployError(null);
     setDeployStartupLogs([]);
     try {
-      const mcpServers = agent.mcpServers.map((s) => ({
-        name: s.name,
-        transport:
-          s.transportType === 'stdio'
-            ? {
-                type: 'stdio' as const,
-                command: s.command ?? '',
-                args: s.args?.split(' ').filter(Boolean),
-              }
-            : { type: s.transportType as 'sse' | 'streamable-http', url: s.url ?? '' },
-        env: s.env && Object.keys(s.env).length > 0 ? s.env : undefined,
-      }));
       const id = await deployWithConfig({
         name: agent.name.trim(),
         model: agent.model,
@@ -128,7 +102,6 @@ export function DeployWizard(): JSX.Element {
         systemPrompt: agent.systemPrompt,
         tools: agent.tools,
         workspace: agent.workspace || undefined,
-        mcpServers: mcpServers.length > 0 ? mcpServers : undefined,
       });
       navigate({ to: '/agents/$id', params: { id } });
     } catch (err: unknown) {
@@ -154,34 +127,6 @@ export function DeployWizard(): JSX.Element {
     }));
   };
 
-  const [addingMcp, setAddingMcp] = useState(false);
-  const [mcpForm, setMcpForm] = useState<McpServerEntry>({
-    name: '',
-    transportType: 'stdio',
-    command: '',
-    args: '',
-    url: '',
-    env: {},
-  });
-  const [mcpEnvKey, setMcpEnvKey] = useState('');
-  const [mcpEnvValue, setMcpEnvValue] = useState('');
-
-  const addMcpServer = (): void => {
-    if (!mcpForm.name.trim()) return;
-    setAgent((prev) => ({ ...prev, mcpServers: [...prev.mcpServers, { ...mcpForm }] }));
-    setMcpForm({ name: '', transportType: 'stdio', command: '', args: '', url: '', env: {} });
-    setMcpEnvKey('');
-    setMcpEnvValue('');
-    setAddingMcp(false);
-  };
-
-  const removeMcpServer = (index: number): void => {
-    setAgent((prev) => ({
-      ...prev,
-      mcpServers: prev.mcpServers.filter((_, i) => i !== index),
-    }));
-  };
-
   return (
     <div className="mx-auto max-w-2xl">
       <div className="mb-8">
@@ -194,18 +139,22 @@ export function DeployWizard(): JSX.Element {
       {step === 'agent' && (
         <div className="space-y-6">
           <label className="block">
-            <span className="mb-1 block text-sm font-medium">Agent Name</span>
+            <span className="mb-1 block font-[family-name:var(--font-mono)] text-[11px] uppercase tracking-[2px] text-muted">
+              Agent Name
+            </span>
             <input
               type="text"
               value={agent.name}
               onChange={(e) => setAgent((prev) => ({ ...prev, name: e.target.value }))}
               placeholder="my-agent"
-              className="w-full rounded-lg border border-border bg-sidebar-bg px-4 py-2 text-sm text-foreground placeholder:text-muted focus:border-primary focus:outline-none"
+              className="w-full rounded-lg border border-border bg-card-bg px-4 py-2 text-sm text-foreground placeholder:text-muted focus:border-accent focus:outline-none"
             />
           </label>
 
           <div>
-            <span className="mb-1 block text-sm font-medium">Model</span>
+            <span className="mb-1 block font-[family-name:var(--font-mono)] text-[11px] uppercase tracking-[2px] text-muted">
+              Model
+            </span>
             <ModelChainEditor
               model={agent.model}
               fallbackModels={agent.fallbackModels}
@@ -217,26 +166,30 @@ export function DeployWizard(): JSX.Element {
               refreshing={modelsRefreshing}
             />
             {agent.model && !modelHasKey && (
-              <p className="mt-1 text-xs text-red-400">
+              <p className="mt-1 text-xs text-red">
                 Add an API key in Settings → AI Providers to use this model.
               </p>
             )}
           </div>
 
           <label className="block">
-            <span className="mb-1 block text-sm font-medium">System Prompt</span>
+            <span className="mb-1 block font-[family-name:var(--font-mono)] text-[11px] uppercase tracking-[2px] text-muted">
+              System Prompt
+            </span>
             <textarea
               value={agent.systemPrompt}
               onChange={(e) => setAgent((prev) => ({ ...prev, systemPrompt: e.target.value }))}
               placeholder="You are a helpful assistant..."
               rows={4}
-              className="w-full rounded-lg border border-border bg-sidebar-bg px-4 py-2 text-sm text-foreground placeholder:text-muted focus:border-primary focus:outline-none"
+              className="w-full rounded-lg border border-border bg-card-bg px-4 py-2 text-sm text-foreground placeholder:text-muted focus:border-accent focus:outline-none"
             />
           </label>
 
           <div>
             <div className="mb-2 flex items-center justify-between">
-              <span className="text-sm font-medium">Tools</span>
+              <span className="font-[family-name:var(--font-mono)] text-[11px] uppercase tracking-[2px] text-muted">
+                Tools
+              </span>
               <label className="flex cursor-pointer items-center gap-1.5 text-xs text-muted hover:text-foreground">
                 <input
                   type="checkbox"
@@ -252,7 +205,7 @@ export function DeployWizard(): JSX.Element {
                       tools: prev.tools.length === ALL_TOOL_IDS.length ? [] : [...ALL_TOOL_IDS],
                     }))
                   }
-                  className="accent-primary"
+                  className="accent-accent"
                 />
                 Select all
               </label>
@@ -261,10 +214,15 @@ export function DeployWizard(): JSX.Element {
               {TOOL_GROUPS.map((group) => {
                 const allEnabled = group.tools.every((t) => agent.tools.includes(t));
                 const someEnabled = !allEnabled && group.tools.some((t) => agent.tools.includes(t));
+                const anySelected = group.tools.some((t) => agent.tools.includes(t));
                 return (
                   <label
                     key={group.name}
-                    className="flex cursor-pointer items-start gap-3 rounded-lg border border-border px-3 py-2.5 text-sm transition-colors hover:bg-sidebar-hover"
+                    className={`flex cursor-pointer items-start gap-3 rounded-lg border px-3 py-2.5 text-sm transition-colors ${
+                      anySelected
+                        ? 'border-accent bg-accent-tint'
+                        : 'border-border hover:bg-sidebar-hover'
+                    }`}
                   >
                     <input
                       type="checkbox"
@@ -281,7 +239,7 @@ export function DeployWizard(): JSX.Element {
                           };
                         })
                       }
-                      className="mt-0.5 accent-primary"
+                      className="mt-0.5 accent-accent"
                     />
                     <span>
                       <span className="font-medium">{group.name}</span>
@@ -294,199 +252,16 @@ export function DeployWizard(): JSX.Element {
           </div>
 
           <div>
-            <div className="mb-2 flex items-center justify-between">
-              <span className="text-sm font-medium">MCP Servers</span>
-              {!addingMcp && (
-                <button
-                  type="button"
-                  onClick={() => setAddingMcp(true)}
-                  className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs text-muted transition-colors hover:bg-sidebar-hover hover:text-foreground"
-                >
-                  <Plus size={12} />
-                  Add MCP Server
-                </button>
-              )}
-            </div>
-
-            {agent.mcpServers.length > 0 && (
-              <div className="mb-2 space-y-1.5">
-                {agent.mcpServers.map((s, i) => (
-                  <div
-                    key={s.name}
-                    className="flex items-center justify-between rounded-lg border border-border px-3 py-2 text-sm"
-                  >
-                    <div className="flex items-center gap-2 text-foreground">
-                      <Server size={14} className="text-muted" />
-                      <span>{s.name}</span>
-                      <span className="text-xs text-muted">({s.transportType})</span>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => removeMcpServer(i)}
-                      className="text-muted transition-colors hover:text-red-400"
-                    >
-                      <Trash2 size={14} />
-                    </button>
-                  </div>
-                ))}
-              </div>
-            )}
-
-            {addingMcp && (
-              <div className="space-y-3 rounded-lg border border-border p-3">
-                <div className="grid grid-cols-2 gap-2">
-                  <label className="block">
-                    <span className="mb-1 block text-xs text-muted">Name</span>
-                    <input
-                      type="text"
-                      value={mcpForm.name}
-                      onChange={(e) => setMcpForm((prev) => ({ ...prev, name: e.target.value }))}
-                      placeholder="my-server"
-                      className="w-full rounded-lg border border-border bg-sidebar-bg px-3 py-1.5 text-sm text-foreground placeholder:text-muted focus:border-primary focus:outline-none"
-                    />
-                  </label>
-                  <label className="block">
-                    <span className="mb-1 block text-xs text-muted">Transport</span>
-                    <select
-                      value={mcpForm.transportType}
-                      onChange={(e) =>
-                        setMcpForm((prev) => ({
-                          ...prev,
-                          transportType: e.target.value as McpServerEntry['transportType'],
-                        }))
-                      }
-                      className="w-full rounded-lg border border-border bg-sidebar-bg px-3 py-1.5 text-sm text-foreground focus:border-primary focus:outline-none"
-                    >
-                      <option value="stdio">stdio</option>
-                      <option value="sse">SSE</option>
-                      <option value="streamable-http">Streamable HTTP</option>
-                    </select>
-                  </label>
-                </div>
-
-                {mcpForm.transportType === 'stdio' ? (
-                  <div className="space-y-2">
-                    <label className="block">
-                      <span className="mb-1 block text-xs text-muted">Command</span>
-                      <input
-                        type="text"
-                        value={mcpForm.command}
-                        onChange={(e) =>
-                          setMcpForm((prev) => ({ ...prev, command: e.target.value }))
-                        }
-                        placeholder="npx"
-                        className="w-full rounded-lg border border-border bg-sidebar-bg px-3 py-1.5 text-sm text-foreground placeholder:text-muted focus:border-primary focus:outline-none"
-                      />
-                    </label>
-                    <label className="block">
-                      <span className="mb-1 block text-xs text-muted">Args (space-separated)</span>
-                      <input
-                        type="text"
-                        value={mcpForm.args}
-                        onChange={(e) => setMcpForm((prev) => ({ ...prev, args: e.target.value }))}
-                        placeholder="-y @modelcontextprotocol/server-filesystem /path"
-                        className="w-full rounded-lg border border-border bg-sidebar-bg px-3 py-1.5 text-sm text-foreground placeholder:text-muted focus:border-primary focus:outline-none"
-                      />
-                    </label>
-                    <div>
-                      <span className="mb-1 block text-xs text-muted">Environment Variables</span>
-                      {Object.entries(mcpForm.env ?? {}).map(([k, v]) => (
-                        <div key={k} className="mb-1 flex items-center gap-1.5 text-xs">
-                          <span className="flex-1 rounded border border-border bg-sidebar-bg px-2 py-1 font-mono text-foreground">
-                            {k}={v}
-                          </span>
-                          <button
-                            type="button"
-                            onClick={() =>
-                              setMcpForm((prev) => {
-                                const env = { ...prev.env };
-                                delete env[k];
-                                return { ...prev, env };
-                              })
-                            }
-                            className="text-muted hover:text-red-400"
-                          >
-                            <Trash2 size={12} />
-                          </button>
-                        </div>
-                      ))}
-                      <div className="flex items-center gap-1.5">
-                        <input
-                          type="text"
-                          value={mcpEnvKey}
-                          onChange={(e) => setMcpEnvKey(e.target.value)}
-                          placeholder="KEY"
-                          className="w-28 rounded-lg border border-border bg-sidebar-bg px-2 py-1 text-xs text-foreground placeholder:text-muted focus:border-primary focus:outline-none"
-                        />
-                        <span className="text-muted">=</span>
-                        <input
-                          type="text"
-                          value={mcpEnvValue}
-                          onChange={(e) => setMcpEnvValue(e.target.value)}
-                          placeholder="value"
-                          className="flex-1 rounded-lg border border-border bg-sidebar-bg px-2 py-1 text-xs text-foreground placeholder:text-muted focus:border-primary focus:outline-none"
-                        />
-                        <button
-                          type="button"
-                          onClick={() => {
-                            if (!mcpEnvKey.trim()) return;
-                            setMcpForm((prev) => ({
-                              ...prev,
-                              env: { ...prev.env, [mcpEnvKey.trim()]: mcpEnvValue },
-                            }));
-                            setMcpEnvKey('');
-                            setMcpEnvValue('');
-                          }}
-                          className="rounded-lg border border-border px-2 py-1 text-xs text-muted transition-colors hover:bg-sidebar-hover hover:text-foreground"
-                        >
-                          <Plus size={12} />
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                ) : (
-                  <label className="block">
-                    <span className="mb-1 block text-xs text-muted">URL</span>
-                    <input
-                      type="text"
-                      value={mcpForm.url}
-                      onChange={(e) => setMcpForm((prev) => ({ ...prev, url: e.target.value }))}
-                      placeholder="https://example.com/mcp"
-                      className="w-full rounded-lg border border-border bg-sidebar-bg px-3 py-1.5 text-sm text-foreground placeholder:text-muted focus:border-primary focus:outline-none"
-                    />
-                  </label>
-                )}
-
-                <div className="flex justify-end gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setAddingMcp(false)}
-                    className="rounded-lg border border-border px-3 py-1.5 text-xs text-muted transition-colors hover:bg-sidebar-hover hover:text-foreground"
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    type="button"
-                    onClick={addMcpServer}
-                    disabled={!mcpForm.name.trim()}
-                    className="rounded-lg bg-primary px-3 py-1.5 text-xs text-white transition-colors hover:bg-primary-hover disabled:opacity-50"
-                  >
-                    Save
-                  </button>
-                </div>
-              </div>
-            )}
-          </div>
-
-          <div>
-            <span className="mb-1 block text-sm font-medium">Workspace</span>
+            <span className="mb-1 block font-[family-name:var(--font-mono)] text-[11px] uppercase tracking-[2px] text-muted">
+              Workspace
+            </span>
             <div className="flex items-center gap-2">
               <input
                 type="text"
                 readOnly
                 value={agent.workspace}
                 placeholder="Auto-generated"
-                className="flex-1 rounded-lg border border-border bg-sidebar-bg px-4 py-2 text-sm text-foreground placeholder:text-muted focus:outline-none"
+                className="flex-1 rounded-lg border border-border bg-card-bg px-4 py-2 text-sm text-foreground placeholder:text-muted focus:outline-none"
               />
               {agent.workspace && (
                 <button
@@ -515,7 +290,7 @@ export function DeployWizard(): JSX.Element {
               type="button"
               disabled={!canAdvanceAgent}
               onClick={() => setStep('review')}
-              className="inline-flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm text-white transition-colors hover:bg-primary-hover disabled:opacity-50"
+              className="inline-flex items-center gap-2 rounded-lg bg-accent px-4 py-2 text-sm text-white transition-colors hover:bg-primary-hover disabled:opacity-50"
             >
               Next
               <ArrowRight size={16} />
@@ -526,7 +301,7 @@ export function DeployWizard(): JSX.Element {
 
       {step === 'review' && (
         <div className="space-y-6">
-          <div className="rounded-lg border border-border bg-sidebar-bg p-4 space-y-3">
+          <div className="rounded-lg border border-border bg-card-bg p-4 space-y-3">
             <ReviewRow label="Name" value={agent.name} />
             <ReviewRow
               label="Model"
@@ -545,25 +320,17 @@ export function DeployWizard(): JSX.Element {
                   : '(none)'
               }
             />
-            <ReviewRow
-              label="MCP Servers"
-              value={
-                agent.mcpServers.length > 0
-                  ? agent.mcpServers.map((s) => `${s.name} (${s.transportType})`).join(', ')
-                  : '(none)'
-              }
-            />
             <ReviewRow label="Workspace" value={agent.workspace || 'Auto-generated'} />
           </div>
 
           {deployError && (
             <div className="space-y-2">
-              <div className="rounded-lg bg-red-900/30 px-4 py-3 text-sm text-red-400">
+              <div className="rounded-lg bg-red-900/30 px-4 py-3 text-sm text-red">
                 {deployError}
               </div>
               {deployStartupLogs.length > 0 && (
                 <details className="rounded-lg border border-red-900/30">
-                  <summary className="cursor-pointer px-4 py-2 text-xs text-red-400/70 hover:text-red-400">
+                  <summary className="cursor-pointer px-4 py-2 text-xs text-red/70 hover:text-red">
                     <span className="inline-flex items-center justify-between w-[calc(100%-1rem)]">
                       <span>Startup logs ({deployStartupLogs.length} lines)</span>
                       <button
@@ -574,7 +341,7 @@ export function DeployWizard(): JSX.Element {
                           setLogsCopied(true);
                           setTimeout(() => setLogsCopied(false), 2000);
                         }}
-                        className="ml-2 inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-red-400/70 hover:bg-red-900/20 hover:text-red-400"
+                        className="ml-2 inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-red/70 hover:bg-red-900/20 hover:text-red"
                       >
                         {logsCopied ? <ClipboardCheck size={12} /> : <Clipboard size={12} />}
                         {logsCopied ? 'Copied' : 'Copy'}
@@ -608,7 +375,7 @@ export function DeployWizard(): JSX.Element {
               type="button"
               onClick={handleDeploy}
               disabled={deploying}
-              className="inline-flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm text-white transition-colors hover:bg-primary-hover disabled:opacity-50"
+              className="inline-flex items-center gap-2 rounded-lg bg-accent px-4 py-2 text-sm text-white transition-colors hover:bg-primary-hover disabled:opacity-50"
             >
               {deploying ? (
                 <>
@@ -645,7 +412,7 @@ function StepIndicator({ current }: { current: Step }): JSX.Element {
           <div className="flex items-center gap-2">
             <div
               className={`flex h-6 w-6 items-center justify-center rounded-full text-xs ${
-                i <= currentIndex ? 'bg-primary text-white' : 'bg-border text-muted'
+                i <= currentIndex ? 'bg-accent text-white' : 'bg-border text-muted'
               }`}
             >
               {i < currentIndex ? <Check size={12} /> : i + 1}
@@ -667,7 +434,9 @@ function ReviewRow({
 }: { label: string; value: string; multiline?: boolean }): JSX.Element {
   return (
     <div>
-      <p className="text-xs text-muted">{label}</p>
+      <p className="font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-widest text-muted">
+        {label}
+      </p>
       <p className={`mt-0.5 text-sm ${multiline ? 'whitespace-pre-wrap' : ''}`}>{value}</p>
     </div>
   );

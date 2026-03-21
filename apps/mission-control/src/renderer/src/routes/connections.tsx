@@ -1,6 +1,6 @@
 import { providerSecretKey } from '@dash/mc/provider-keys';
 import { createFileRoute } from '@tanstack/react-router';
-import { CheckCircle, Circle, Loader, Lock, LogIn, Plus } from 'lucide-react';
+import { Loader, Lock, LogIn, Pencil, Plus, Trash2 } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
 import { ProviderConnectModal } from '../components/ProviderConnectModal.js';
 import { PROVIDERS, type Provider } from '../components/providers.js';
@@ -181,247 +181,306 @@ export function AiProviders(): JSX.Element {
   };
 
   return (
-    <div>
-      <h1 className="text-2xl font-bold">AI Providers</h1>
-      <p className="mt-2 text-muted">Connect AI providers to power your agents.</p>
-
-      {locked && (
-        <div className="mt-4 flex items-center gap-2 rounded-lg border border-border bg-sidebar-bg px-4 py-3 text-sm text-muted">
-          <Lock size={16} className="shrink-0" />
-          <span>Secrets are locked. Unlock your secrets store to view provider status.</span>
+    <div className="flex h-full flex-col">
+      {/* Header */}
+      <div className="bg-surface border-b border-border flex justify-between items-center px-8 py-4">
+        <div>
+          <h1 className="font-[family-name:var(--font-display)] text-[22px] font-semibold text-foreground">
+            AI Providers
+          </h1>
+          <p className="text-sm text-muted">Configure API keys for LLM providers</p>
         </div>
-      )}
+        <button
+          type="button"
+          onClick={() => setModal({ provider: PROVIDERS[0].id, keyName: 'default' })}
+          className="inline-flex items-center gap-1.5 rounded-lg bg-accent px-4 py-2 text-sm font-medium text-white hover:bg-accent/90 transition-colors"
+        >
+          <Plus size={16} />
+          Add Provider
+        </button>
+      </div>
 
-      <div className="mt-6 space-y-6">
-        {PROVIDERS.map((p) => {
-          const keys = providerKeys[p.id] ?? [];
-          const hasKeys = keys.length > 0;
-          const oauthSupported = hasOAuthSupport(p.id);
-          const oauthConfig = oauthSupported ? OAUTH_CONFIG[p.id] : null;
-          const isThisOAuthLoading = oauthLoading === p.id;
-          const isAnyOAuthLoading = oauthLoading !== null;
+      {/* Body */}
+      <div className="p-8 flex-1 overflow-auto">
+        {locked && (
+          <div className="mb-6 flex items-center gap-2 rounded-lg border border-border bg-card-bg px-4 py-3 text-sm text-muted">
+            <Lock size={16} className="shrink-0" />
+            <span>Secrets are locked. Unlock your secrets store to view provider status.</span>
+          </div>
+        )}
 
-          return (
-            <div key={p.id} className="rounded-lg border border-border bg-sidebar-bg p-4">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-3">
-                  {hasKeys ? (
-                    <CheckCircle size={18} className="shrink-0 text-green-500" />
-                  ) : (
-                    <Circle size={18} className="shrink-0 text-muted" />
-                  )}
-                  <div>
-                    <p className="text-sm font-semibold">{p.name}</p>
-                    <p className="text-xs text-muted">{p.description}</p>
+        <p className="font-[family-name:var(--font-mono)] text-[11px] uppercase tracking-[2px] text-accent">
+          Configured Providers
+        </p>
+
+        <div className="flex flex-col gap-3 mt-4">
+          {PROVIDERS.map((p) => {
+            const keys = providerKeys[p.id] ?? [];
+            const hasKeys = keys.length > 0;
+            const oauthSupported = hasOAuthSupport(p.id);
+            const oauthConfig = oauthSupported ? OAUTH_CONFIG[p.id] : null;
+            const isThisOAuthLoading = oauthLoading === p.id;
+            const isAnyOAuthLoading = oauthLoading !== null;
+
+            return (
+              <div key={p.id} className="bg-card-bg border border-border">
+                {/* Provider row */}
+                <div className="px-5 py-4 flex items-center gap-4 hover:bg-card-hover transition-colors">
+                  <div className="flex-1 min-w-0">
+                    <p className="font-semibold text-foreground">{p.name}</p>
+                    <p className="font-[family-name:var(--font-mono)] text-xs text-muted mt-0.5">
+                      {hasKeys ? keys.map((k) => k.name).join(', ') : 'API key configured'}
+                    </p>
                   </div>
-                </div>
-                <div className="flex items-center gap-2">
-                  {oauthSupported && oauthConfig && (
+
+                  <div className="flex items-center gap-3">
+                    {/* Status badge */}
+                    {hasKeys ? (
+                      <span className="bg-green-tint text-green rounded px-2 py-0.5 text-[10px] font-[family-name:var(--font-mono)] font-semibold">
+                        Active
+                      </span>
+                    ) : (
+                      <span className="bg-red-tint text-red rounded px-2 py-0.5 text-[10px] font-[family-name:var(--font-mono)] font-semibold">
+                        Disabled
+                      </span>
+                    )}
+
+                    {/* OAuth button */}
+                    {oauthSupported && oauthConfig && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setOauthNameInput('');
+                          setOauthError(null);
+                          setOauthNamePrompt(p.id);
+                        }}
+                        disabled={isAnyOAuthLoading}
+                        className="inline-flex items-center gap-1 rounded-lg border border-green-700 bg-green-900/20 px-3 py-1.5 text-xs font-medium text-green hover:bg-green-900/40 disabled:opacity-50"
+                      >
+                        {isThisOAuthLoading ? (
+                          <Loader size={14} className="animate-spin" />
+                        ) : (
+                          <LogIn size={14} />
+                        )}
+                        {isThisOAuthLoading ? 'Logging in...' : oauthConfig.label}
+                      </button>
+                    )}
+
+                    {/* Edit button */}
                     <button
                       type="button"
-                      onClick={() => {
-                        setOauthNameInput('');
-                        setOauthError(null);
-                        setOauthNamePrompt(p.id);
-                      }}
-                      disabled={isAnyOAuthLoading}
-                      className="inline-flex items-center gap-1 rounded-lg border border-green-700 bg-green-900/20 px-3 py-1.5 text-xs font-medium text-green-400 hover:bg-green-900/40 disabled:opacity-50"
+                      onClick={() =>
+                        setModal({
+                          provider: p.id,
+                          keyName: hasKeys ? undefined : 'default',
+                        })
+                      }
+                      className="text-muted hover:text-foreground transition-colors"
+                      aria-label={`Edit ${p.name}`}
                     >
-                      {isThisOAuthLoading ? (
-                        <Loader size={14} className="animate-spin" />
-                      ) : (
-                        <LogIn size={14} />
-                      )}
-                      {isThisOAuthLoading ? 'Logging in...' : oauthConfig.label}
+                      <Pencil size={15} />
                     </button>
-                  )}
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setModal({
-                        provider: p.id,
-                        keyName: hasKeys ? undefined : 'default',
-                      })
-                    }
-                    className="inline-flex items-center gap-1 rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-white hover:bg-primary-hover"
-                  >
-                    <Plus size={14} />
-                    Add Key
-                  </button>
-                </div>
-              </div>
 
-              {oauthSupported && oauthNamePrompt === p.id && !isAnyOAuthLoading && (
-                <div className="mt-3 flex items-center gap-2">
-                  <input
-                    type="text"
-                    value={oauthNameInput}
-                    onChange={(e) => setOauthNameInput(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter') handleOAuthNameSubmit(p.id);
-                      if (e.key === 'Escape') setOauthNamePrompt(null);
-                    }}
-                    placeholder="Key name (e.g. default, personal, work)"
-                    // biome-ignore lint/a11y/noAutofocus: focus newly revealed input for UX
-                    autoFocus
-                    className="flex-1 rounded-lg border border-border bg-background px-3 py-1.5 text-xs text-foreground placeholder:text-muted focus:border-primary focus:outline-none"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => handleOAuthNameSubmit(p.id)}
-                    disabled={!oauthNameInput.trim()}
-                    className="rounded-lg bg-green-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-green-600 disabled:opacity-50"
-                  >
-                    Login
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setOauthNamePrompt(null)}
-                    className="rounded-lg border border-border px-3 py-1.5 text-xs text-muted hover:text-foreground"
-                  >
-                    Cancel
-                  </button>
+                    {/* Delete button */}
+                    {hasKeys && keys.length === 1 && (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setDisconnectConfirm({ provider: p.id, keyName: keys[0].name })
+                        }
+                        className="text-muted hover:text-foreground transition-colors"
+                        aria-label={`Remove ${p.name}`}
+                      >
+                        <Trash2 size={15} />
+                      </button>
+                    )}
+                  </div>
                 </div>
-              )}
 
-              {p.id === 'anthropic' && claudeCodePrompt && (
-                <div className="mt-3 space-y-2">
-                  <p className="text-xs text-muted">
-                    A browser window has opened. Sign in to Claude and copy the authorization code,
-                    then paste it below.
-                  </p>
-                  <div className="flex items-center gap-2">
+                {/* OAuth name prompt */}
+                {oauthSupported && oauthNamePrompt === p.id && !isAnyOAuthLoading && (
+                  <div className="px-5 pb-4 flex items-center gap-2">
                     <input
                       type="text"
-                      value={claudeCodeInput}
-                      onChange={(e) => setClaudeCodeInput(e.target.value)}
+                      value={oauthNameInput}
+                      onChange={(e) => setOauthNameInput(e.target.value)}
                       onKeyDown={(e) => {
-                        if (e.key === 'Enter') handleClaudeCodeSubmit();
-                        if (e.key === 'Escape') {
-                          setClaudeCodePrompt(null);
-                          setClaudeCodeInput('');
-                        }
+                        if (e.key === 'Enter') handleOAuthNameSubmit(p.id);
+                        if (e.key === 'Escape') setOauthNamePrompt(null);
                       }}
-                      placeholder="Paste authorization code here"
+                      placeholder="Key name (e.g. default, personal, work)"
                       // biome-ignore lint/a11y/noAutofocus: focus newly revealed input for UX
                       autoFocus
-                      className="flex-1 rounded-lg border border-border bg-background px-3 py-1.5 text-xs text-foreground placeholder:text-muted focus:border-primary focus:outline-none"
+                      className="flex-1 rounded-lg border border-border bg-card-bg px-3 py-1.5 text-xs text-foreground placeholder:text-muted focus:border-accent focus:outline-none"
                     />
                     <button
                       type="button"
-                      onClick={handleClaudeCodeSubmit}
-                      disabled={!claudeCodeInput.trim() || oauthLoading === 'anthropic'}
-                      className="inline-flex items-center gap-1 rounded-lg bg-green-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-green-600 disabled:opacity-50"
+                      onClick={() => handleOAuthNameSubmit(p.id)}
+                      disabled={!oauthNameInput.trim()}
+                      className="rounded-lg bg-green-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-green-600 disabled:opacity-50"
                     >
-                      {oauthLoading === 'anthropic' && (
-                        <Loader size={12} className="animate-spin" />
-                      )}
-                      {oauthLoading === 'anthropic' ? 'Verifying...' : 'Submit'}
+                      Login
                     </button>
                     <button
                       type="button"
-                      onClick={() => {
-                        setClaudeCodePrompt(null);
-                        setClaudeCodeInput('');
-                      }}
+                      onClick={() => setOauthNamePrompt(null)}
                       className="rounded-lg border border-border px-3 py-1.5 text-xs text-muted hover:text-foreground"
                     >
                       Cancel
                     </button>
                   </div>
-                </div>
-              )}
+                )}
 
-              {oauthError?.provider === p.id && (
-                <div className="mt-2 rounded border border-red-900/50 bg-red-900/20 px-3 py-2 text-xs text-red-400">
-                  {oauthError.message}
-                </div>
-              )}
-
-              {keys.length > 0 && (
-                <div className="mt-3 space-y-2">
-                  {keys.map((entry) => {
-                    const isConfirming =
-                      disconnectConfirm?.provider === p.id &&
-                      disconnectConfirm?.keyName === entry.name;
-
-                    return (
-                      <div
-                        key={entry.name}
-                        className="flex items-center justify-between rounded border border-border bg-background px-3 py-2"
+                {/* Claude OAuth code prompt */}
+                {p.id === 'anthropic' && claudeCodePrompt && (
+                  <div className="px-5 pb-4 space-y-2">
+                    <p className="text-xs text-muted">
+                      A browser window has opened. Sign in to Claude and copy the authorization
+                      code, then paste it below.
+                    </p>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="text"
+                        value={claudeCodeInput}
+                        onChange={(e) => setClaudeCodeInput(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') handleClaudeCodeSubmit();
+                          if (e.key === 'Escape') {
+                            setClaudeCodePrompt(null);
+                            setClaudeCodeInput('');
+                          }
+                        }}
+                        placeholder="Paste authorization code here"
+                        // biome-ignore lint/a11y/noAutofocus: focus newly revealed input for UX
+                        autoFocus
+                        className="flex-1 rounded-lg border border-border bg-card-bg px-3 py-1.5 text-xs text-foreground placeholder:text-muted focus:border-accent focus:outline-none"
+                      />
+                      <button
+                        type="button"
+                        onClick={handleClaudeCodeSubmit}
+                        disabled={!claudeCodeInput.trim() || oauthLoading === 'anthropic'}
+                        className="inline-flex items-center gap-1 rounded-lg bg-green-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-green-600 disabled:opacity-50"
                       >
-                        <div className="flex items-center gap-2">
-                          <span className="text-xs font-medium text-foreground">{entry.name}</span>
-                          {entry.isOAuth && oauthConfig && (
-                            <span className="rounded bg-green-900/30 px-1.5 py-0.5 text-[10px] font-medium text-green-400">
-                              {oauthConfig.badgeLabel}
+                        {oauthLoading === 'anthropic' && (
+                          <Loader size={12} className="animate-spin" />
+                        )}
+                        {oauthLoading === 'anthropic' ? 'Verifying...' : 'Submit'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setClaudeCodePrompt(null);
+                          setClaudeCodeInput('');
+                        }}
+                        className="rounded-lg border border-border px-3 py-1.5 text-xs text-muted hover:text-foreground"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {/* OAuth error */}
+                {oauthError?.provider === p.id && (
+                  <div className="mx-5 mb-4 rounded border border-red-900/50 bg-red-900/20 px-3 py-2 text-xs text-red">
+                    {oauthError.message}
+                  </div>
+                )}
+
+                {/* Key entries */}
+                {keys.length > 0 && (
+                  <div className="px-5 pb-4 space-y-2">
+                    {keys.map((entry) => {
+                      const isConfirming =
+                        disconnectConfirm?.provider === p.id &&
+                        disconnectConfirm?.keyName === entry.name;
+                      const oauthConfigForEntry =
+                        oauthSupported && entry.isOAuth
+                          ? OAUTH_CONFIG[p.id as OAuthProvider]
+                          : null;
+
+                      return (
+                        <div
+                          key={entry.name}
+                          className="flex items-center justify-between rounded border border-border bg-background px-3 py-2"
+                        >
+                          <div className="flex items-center gap-2">
+                            <span className="text-xs font-medium text-foreground">
+                              {entry.name}
                             </span>
-                          )}
-                          <span className="text-xs text-muted">{maskKey(entry.value)}</span>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          {!isConfirming && (
-                            <>
-                              {entry.isOAuth && oauthSupported ? (
+                            {entry.isOAuth && oauthConfigForEntry && (
+                              <span className="rounded bg-green-900/30 px-1.5 py-0.5 text-[10px] font-medium text-green">
+                                {oauthConfigForEntry.badgeLabel}
+                              </span>
+                            )}
+                            <span className="text-xs text-muted">{maskKey(entry.value)}</span>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            {!isConfirming && (
+                              <>
+                                {entry.isOAuth && oauthSupported ? (
+                                  <button
+                                    type="button"
+                                    onClick={() => handleOAuthLogin(p.id, entry.name)}
+                                    disabled={isAnyOAuthLoading}
+                                    className="text-xs text-accent hover:underline disabled:opacity-50"
+                                  >
+                                    Re-login
+                                  </button>
+                                ) : (
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      setModal({ provider: p.id, keyName: entry.name })
+                                    }
+                                    className="text-xs text-accent hover:underline"
+                                  >
+                                    Update
+                                  </button>
+                                )}
                                 <button
                                   type="button"
-                                  onClick={() => handleOAuthLogin(p.id, entry.name)}
-                                  disabled={isAnyOAuthLoading}
-                                  className="text-xs text-primary hover:underline disabled:opacity-50"
+                                  onClick={() =>
+                                    setDisconnectConfirm({
+                                      provider: p.id,
+                                      keyName: entry.name,
+                                    })
+                                  }
+                                  className="text-xs text-muted hover:text-foreground"
                                 >
-                                  Re-login
+                                  Remove
                                 </button>
-                              ) : (
+                              </>
+                            )}
+                            {isConfirming && (
+                              <div className="flex items-center gap-2">
+                                <span className="text-xs text-muted">Remove key?</span>
                                 <button
                                   type="button"
-                                  onClick={() => setModal({ provider: p.id, keyName: entry.name })}
-                                  className="text-xs text-primary hover:underline"
+                                  onClick={() => handleDisconnect(p.id, entry.name)}
+                                  className="text-xs text-red hover:underline"
                                 >
-                                  Update
+                                  Yes, remove
                                 </button>
-                              )}
-                              <button
-                                type="button"
-                                onClick={() =>
-                                  setDisconnectConfirm({
-                                    provider: p.id,
-                                    keyName: entry.name,
-                                  })
-                                }
-                                className="text-xs text-muted hover:text-foreground"
-                              >
-                                Remove
-                              </button>
-                            </>
-                          )}
-                          {isConfirming && (
-                            <div className="flex items-center gap-2">
-                              <span className="text-xs text-muted">Remove key?</span>
-                              <button
-                                type="button"
-                                onClick={() => handleDisconnect(p.id, entry.name)}
-                                className="text-xs text-red-400 hover:underline"
-                              >
-                                Yes, remove
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => setDisconnectConfirm(null)}
-                                className="text-xs text-muted hover:text-foreground"
-                              >
-                                Cancel
-                              </button>
-                            </div>
-                          )}
+                                <button
+                                  type="button"
+                                  onClick={() => setDisconnectConfirm(null)}
+                                  className="text-xs text-muted hover:text-foreground"
+                                >
+                                  Cancel
+                                </button>
+                              </div>
+                            )}
+                          </div>
                         </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-          );
-        })}
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
       </div>
 
       {modal && (

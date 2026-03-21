@@ -55,7 +55,10 @@ export function ModelChainEditor({
   return (
     <div className="space-y-3">
       <div>
-        <label htmlFor="primary-model" className="mb-1 block text-xs font-medium text-muted">
+        <label
+          htmlFor="primary-model"
+          className="mb-1 block font-[family-name:var(--font-mono)] text-xs text-muted"
+        >
           Primary model
         </label>
         <div className="flex items-center gap-2">
@@ -64,7 +67,7 @@ export function ModelChainEditor({
             aria-label="Primary model"
             value={model}
             onChange={(e) => handlePrimaryChange(e.target.value)}
-            className="flex-1 rounded-lg border border-border bg-sidebar-bg px-3 py-2 text-sm text-foreground focus:border-primary focus:outline-none"
+            className="flex-1 rounded-lg border border-border bg-card-bg px-3 py-2 text-sm text-foreground focus:border-accent focus:outline-none"
           >
             {availableModels.map((m) => (
               <option key={m.value} value={m.value}>
@@ -89,7 +92,9 @@ export function ModelChainEditor({
 
       {fallbackModels.length > 0 && (
         <div className="space-y-2">
-          <p className="text-xs font-medium text-muted">Fallback models (in order)</p>
+          <p className="font-[family-name:var(--font-mono)] text-xs text-muted">
+            Fallback models (in order)
+          </p>
           {fallbackModels.map((fb, i) => {
             const optionsForRow = availableModels.filter(
               (m) =>
@@ -97,11 +102,13 @@ export function ModelChainEditor({
             );
             return (
               <div key={fb} className="flex items-center gap-2">
-                <span className="text-xs text-muted w-4">{i + 1}.</span>
+                <span className="font-[family-name:var(--font-mono)] text-xs text-muted w-4">
+                  {i + 1}.
+                </span>
                 <select
                   value={fb}
                   onChange={(e) => handleFallbackChange(i, e.target.value)}
-                  className="flex-1 rounded-lg border border-border bg-sidebar-bg px-3 py-2 text-sm text-foreground focus:border-primary focus:outline-none"
+                  className="flex-1 rounded-lg border border-border bg-card-bg px-3 py-2 text-sm text-foreground focus:border-accent focus:outline-none"
                 >
                   {optionsForRow.map((m) => (
                     <option key={m.value} value={m.value}>
@@ -113,7 +120,7 @@ export function ModelChainEditor({
                   type="button"
                   aria-label="Remove fallback"
                   onClick={() => handleRemoveFallback(i)}
-                  className="rounded p-1 text-muted hover:text-foreground"
+                  className="rounded p-1 text-red hover:text-red/80"
                 >
                   <X size={14} />
                 </button>
@@ -127,7 +134,7 @@ export function ModelChainEditor({
         <button
           type="button"
           onClick={handleAddFallback}
-          className="text-xs text-primary hover:underline"
+          className="text-xs text-accent hover:text-accent/80"
         >
           + Add fallback
         </button>
