@@ -262,19 +262,10 @@ async function pushCredentialsToRunningDeployments(): Promise<CredentialPushResu
 export async function registerIpcHandlers(
   getWindow: () => BrowserWindow | undefined,
 ): Promise<void> {
-  // Start shared gateway and register existing deployments
+  // Start shared gateway
   const rt = getRuntime();
   try {
     await rt.ensureGateway();
-    // Re-register any running deployments with the fresh gateway
-    const deployments = await getRegistry().list();
-    for (const dep of deployments.filter((d) => d.status === 'running')) {
-      try {
-        await rt.registerWithGateway(dep.id);
-      } catch (err) {
-        console.error(`Failed to register deployment ${dep.id} on startup:`, err);
-      }
-    }
   } catch (err) {
     console.error('Gateway startup failed on MC launch:', err);
   }
@@ -325,6 +316,18 @@ export async function registerIpcHandlers(
     } catch {
       store.lock();
       clearCachedKey();
+    }
+  }
+
+  // Register existing running deployments with gateway (after secrets are available)
+  if (getSecretStore().isUnlocked()) {
+    const deployments = await getRegistry().list();
+    for (const dep of deployments.filter((d) => d.status === 'running')) {
+      try {
+        await rt.registerWithGateway(dep.id);
+      } catch (err) {
+        console.error(`Failed to register deployment ${dep.id} on startup:`, err);
+      }
     }
   }
 
@@ -519,6 +522,15 @@ export async function registerIpcHandlers(
     const store = getSecretStore();
     const key = await store.unlockWithPassword(password);
     cacheKey(key);
+    // Register running deployments now that secrets are available
+    const deployments = await getRegistry().list();
+    for (const dep of deployments.filter((d) => d.status === 'running')) {
+      try {
+        await rt.registerWithGateway(dep.id);
+      } catch (err) {
+        console.error(`Failed to register deployment ${dep.id} after unlock:`, err);
+      }
+    }
   });
 
   ipcMain.handle('secrets:lock', () => {
