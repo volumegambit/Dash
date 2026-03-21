@@ -99,6 +99,8 @@ function NewWhatsAppWizard(): JSX.Element {
   }
 
   return (
+    <div className="h-full flex flex-col overflow-hidden">
+    <div className="flex-1 overflow-y-auto p-8">
     <div className="mx-auto max-w-2xl">
       {/* Progress bar */}
       <div className="mb-8 flex gap-1">
@@ -281,6 +283,8 @@ function NewWhatsAppWizard(): JSX.Element {
           </div>
         )}
       </div>
+    </div>
+    </div>
     </div>
   );
 }

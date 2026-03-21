@@ -16,7 +16,7 @@ function Dashboard(): JSX.Element {
   return (
     <div className="flex flex-col flex-1 overflow-hidden">
       {/* Page header */}
-      <div className="bg-surface px-8 py-6 border-b border-border flex justify-between items-center">
+      <div className="bg-surface px-8 py-6 border-b border-border flex justify-between items-center shrink-0">
         <h1 className="font-[family-name:var(--font-display)] text-[22px] font-semibold text-foreground">
           Dashboard
         </h1>

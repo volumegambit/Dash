@@ -81,14 +81,18 @@ function Settings(): JSX.Element {
   }, [deleteSecret]);
 
   return (
-    <div>
+    <div className="h-full flex flex-col overflow-hidden">
       {/* Page header */}
-      <div className="mb-6">
-        <h1 className="text-2xl font-bold">Settings</h1>
-        <p className="mt-2 text-muted">Application settings and configuration.</p>
+      <div className="bg-surface px-8 py-4 border-b border-border flex items-center justify-between shrink-0">
+        <div>
+          <h1 className="font-[family-name:var(--font-display)] text-[22px] font-semibold text-foreground">Settings</h1>
+          <p className="mt-1 text-sm text-muted">Application settings and configuration.</p>
+        </div>
       </div>
 
-      <div className="mt-6 rounded-lg border border-border bg-card-bg p-4">
+      {/* Body */}
+      <div className="flex-1 overflow-y-auto p-8">
+      <div className="rounded-lg border border-border bg-card-bg p-4">
         <h2 className="mb-1 font-[family-name:var(--font-mono)] text-[11px] uppercase tracking-[2px] text-accent">
           Default Model Chain
         </h2>
@@ -153,6 +157,7 @@ function Settings(): JSX.Element {
         <p className="mt-2 text-sm text-muted">
           Mission Control v<span className="text-foreground">{version}</span>
         </p>
+      </div>
       </div>
     </div>
   );

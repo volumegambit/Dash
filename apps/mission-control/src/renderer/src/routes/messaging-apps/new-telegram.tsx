@@ -146,6 +146,8 @@ function NewTelegramWizard(): JSX.Element {
   }
 
   return (
+    <div className="h-full flex flex-col overflow-hidden">
+    <div className="flex-1 overflow-y-auto p-8">
     <div className="mx-auto max-w-2xl">
       {/* Progress bar — only shown once a path is chosen */}
       {path && (
@@ -502,6 +504,8 @@ function NewTelegramWizard(): JSX.Element {
           </div>
         )}
       </div>
+    </div>
+    </div>
     </div>
   );
 }

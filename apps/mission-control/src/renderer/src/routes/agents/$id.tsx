@@ -124,7 +124,7 @@ export function AgentDetail(): JSX.Element {
   return (
     <div className="flex h-full flex-col overflow-hidden">
       {/* Header */}
-      <div className="bg-surface px-8 py-4 border-b border-border flex items-center gap-4 ">
+      <div className="bg-surface px-8 py-4 border-b border-border flex items-center gap-4 shrink-0">
         <ArrowLeft
           size={20}
           className="text-muted cursor-pointer hover:text-foreground shrink-0"
@@ -191,7 +191,7 @@ export function AgentDetail(): JSX.Element {
       </div>
 
       {deployment.status === 'error' && (
-        <div className="mt-6 mb-2 space-y-2">
+        <div className="px-8 pt-4 pb-2 space-y-2 shrink-0">
           <div className="rounded-lg bg-red-900/30 px-4 py-3 text-sm text-red">
             <p className="font-medium">Startup failed</p>
             {deployment.errorMessage && (
@@ -217,7 +217,7 @@ export function AgentDetail(): JSX.Element {
       )}
 
       {/* Tab bar */}
-      <div className="bg-surface px-8 border-b border-border flex">
+      <div className="bg-surface px-8 border-b border-border flex shrink-0">
         {TABS.map((tab) => (
           <button
             key={tab.id}
@@ -306,7 +306,7 @@ function OverviewTab({
       : 'N/A';
 
   return (
-    <div className="flex gap-6 px-8">
+    <div className="flex gap-6">
       {/* Left column */}
       <div className="w-[360px] flex flex-col gap-5 shrink-0">
         {/* Agent Info card */}
@@ -415,7 +415,7 @@ function ChannelsTab({
 }: { connectedChannels: import('@dash/mc').MessagingApp[] }): JSX.Element {
   if (connectedChannels.length === 0) {
     return (
-      <div className="px-8 py-12 flex flex-col items-center gap-3 text-center">
+      <div className="py-12 flex flex-col items-center gap-3 text-center">
         <p className="text-sm text-muted">No channels connected.</p>
         <p className="text-xs text-muted">
           Connect messaging apps from the{' '}
@@ -429,7 +429,7 @@ function ChannelsTab({
   }
 
   return (
-    <div className="px-8 space-y-3">
+    <div className="space-y-3">
       {connectedChannels.map((app) => (
         <div
           key={app.id}

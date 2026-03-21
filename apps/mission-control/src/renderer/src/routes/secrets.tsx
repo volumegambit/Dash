@@ -124,9 +124,9 @@ function SecretsTable(): JSX.Element {
   const { keys, setSecret, deleteSecret, lock } = useSecretsStore();
 
   return (
-    <div>
+    <div className="h-full flex flex-col overflow-hidden">
       {/* Page header */}
-      <div className="mb-6 flex items-center justify-between">
+      <div className="bg-surface px-8 py-4 border-b border-border flex items-center justify-between shrink-0">
         <div>
           <h1 className="text-2xl font-bold">Secrets</h1>
           <p className="mt-1 text-sm text-muted">
@@ -145,61 +145,64 @@ function SecretsTable(): JSX.Element {
         </div>
       </div>
 
-      {/* Info banner */}
-      <div className="mb-6 bg-accent-tint border border-accent/30 rounded px-4 py-3 flex items-center gap-3">
-        <ShieldCheck size={16} className="text-accent shrink-0" />
-        <p className="text-sm text-muted">
-          Secrets are encrypted with AES-256-GCM. Encryption key is stored in your OS keychain.
-        </p>
-      </div>
-
-      <div className="mb-6">
-        <AddSecretForm onAdd={(key, value) => setSecret(key, value)} />
-      </div>
-
-      {keys.length === 0 ? (
-        <div className="rounded-lg border border-border bg-card-bg p-8 text-center">
-          <KeyRound size={24} className="mx-auto mb-2 text-muted" />
-          <p className="text-sm text-muted">No secrets stored yet.</p>
+      {/* Body */}
+      <div className="flex-1 overflow-y-auto p-8">
+        {/* Info banner */}
+        <div className="mb-6 bg-accent-tint border border-accent/30 rounded px-4 py-3 flex items-center gap-3">
+          <ShieldCheck size={16} className="text-accent shrink-0" />
+          <p className="text-sm text-muted">
+            Secrets are encrypted with AES-256-GCM. Encryption key is stored in your OS keychain.
+          </p>
         </div>
-      ) : (
-        <div className="rounded-lg border border-border bg-card-bg">
-          {/* Table header */}
-          <div className="flex items-center justify-between border-b border-border px-4 py-2">
-            <span className="font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-widest text-muted">
-              Key
-            </span>
-            <span className="font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-widest text-muted">
-              Value
-            </span>
+
+        <div className="mb-6">
+          <AddSecretForm onAdd={(key, value) => setSecret(key, value)} />
+        </div>
+
+        {keys.length === 0 ? (
+          <div className="rounded-lg border border-border bg-card-bg p-8 text-center">
+            <KeyRound size={24} className="mx-auto mb-2 text-muted" />
+            <p className="text-sm text-muted">No secrets stored yet.</p>
           </div>
-          {keys.map((key, i) => (
-            <div
-              key={key}
-              className={`flex items-center justify-between px-4 py-3 ${i > 0 ? 'border-t border-border' : ''}`}
-            >
-              <div className="flex items-center gap-3">
-                <KeyRound size={14} className="text-muted" />
-                <span className="font-[family-name:var(--font-mono)] text-sm text-foreground">
-                  {key}
-                </span>
-              </div>
-              <div className="flex items-center gap-3">
-                <span className="font-[family-name:var(--font-mono)] text-sm text-muted">
-                  ••••••••
-                </span>
-                <button
-                  type="button"
-                  onClick={() => deleteSecret(key)}
-                  className="rounded p-1 text-muted transition-colors hover:bg-red-900/30 hover:text-red"
-                >
-                  <Trash2 size={14} />
-                </button>
-              </div>
+        ) : (
+          <div className="rounded-lg border border-border bg-card-bg">
+            {/* Table header */}
+            <div className="flex items-center justify-between border-b border-border px-4 py-2">
+              <span className="font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-widest text-muted">
+                Key
+              </span>
+              <span className="font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-widest text-muted">
+                Value
+              </span>
             </div>
-          ))}
-        </div>
-      )}
+            {keys.map((key, i) => (
+              <div
+                key={key}
+                className={`flex items-center justify-between px-4 py-3 ${i > 0 ? 'border-t border-border' : ''}`}
+              >
+                <div className="flex items-center gap-3">
+                  <KeyRound size={14} className="text-muted" />
+                  <span className="font-[family-name:var(--font-mono)] text-sm text-foreground">
+                    {key}
+                  </span>
+                </div>
+                <div className="flex items-center gap-3">
+                  <span className="font-[family-name:var(--font-mono)] text-sm text-muted">
+                    ••••••••
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => deleteSecret(key)}
+                    className="rounded p-1 text-muted transition-colors hover:bg-red-900/30 hover:text-red"
+                  >
+                    <Trash2 size={14} />
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
     </div>
   );
 }

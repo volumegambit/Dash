@@ -181,9 +181,9 @@ export function AiProviders(): JSX.Element {
   };
 
   return (
-    <div className="flex h-full flex-col">
+    <div className="flex h-full flex-col overflow-hidden">
       {/* Header */}
-      <div className="bg-surface border-b border-border flex justify-between items-center px-8 py-4">
+      <div className="bg-surface border-b border-border flex justify-between items-center px-8 py-4 shrink-0">
         <div>
           <h1 className="font-[family-name:var(--font-display)] text-[22px] font-semibold text-foreground">
             AI Providers
@@ -201,7 +201,7 @@ export function AiProviders(): JSX.Element {
       </div>
 
       {/* Body */}
-      <div className="p-8 flex-1 overflow-auto">
+      <div className="p-8 flex-1 overflow-y-auto">
         {locked && (
           <div className="mb-6 flex items-center gap-2 rounded-lg border border-border bg-card-bg px-4 py-3 text-sm text-muted">
             <Lock size={16} className="shrink-0" />
