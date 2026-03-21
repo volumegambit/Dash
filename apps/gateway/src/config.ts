@@ -46,7 +46,9 @@ export interface LoadConfigOptions {
   configPath?: string;
   secretsPath?: string;
   managementPort?: number;
+  channelPort?: number;
   token?: string;
+  chatToken?: string;
   dataDir?: string;
 }
 
@@ -68,6 +70,12 @@ export function parseFlags(argv: string[]): LoadConfigOptions {
       i++;
     } else if (argv[i] === '--data-dir' && argv[i + 1]) {
       options.dataDir = argv[i + 1];
+      i++;
+    } else if (argv[i] === '--channel-port' && argv[i + 1]) {
+      options.channelPort = Number(argv[i + 1]);
+      i++;
+    } else if (argv[i] === '--chat-token' && argv[i + 1]) {
+      options.chatToken = argv[i + 1];
       i++;
     }
   }

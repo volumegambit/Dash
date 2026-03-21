@@ -7,13 +7,7 @@ export interface AgentDeployment {
   createdAt: string;
   // Local-specific
   containerId?: string;
-  managementPort?: number;
-  managementToken?: string;
-  // Process-based deployment
   configDir?: string;
-  agentServerPid?: number;
-  chatPort?: number;
-  chatToken?: string;
   workspace?: string;
   // Startup diagnostics
   startupLogs?: string[]; // captured stdout/stderr from a failed startup
