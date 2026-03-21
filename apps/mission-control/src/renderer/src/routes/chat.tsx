@@ -883,7 +883,7 @@ export function Chat(): JSX.Element {
     : conversations;
 
   return (
-    <div className="-m-8 flex flex-col h-full overflow-hidden">
+    <div className="flex flex-col h-full overflow-hidden">
       {/* Page Header */}
       <div className="bg-surface px-8 py-4 border-b border-border flex justify-between items-center shrink-0">
         <h1 className="font-[family-name:var(--font-display)] text-[22px] font-semibold text-foreground">
