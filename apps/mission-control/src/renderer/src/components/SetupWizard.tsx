@@ -7,6 +7,7 @@ import {
   KeyRound,
   Lock,
   Rocket,
+  Zap,
 } from 'lucide-react';
 import { useState } from 'react';
 import { PROVIDERS, PROVIDER_CONFIG, type Provider } from './providers.js';
@@ -92,7 +93,7 @@ function BackButton({ onClick }: { onClick: () => void }): JSX.Element {
 function WelcomeStep({ onNext }: { onNext: () => void }): JSX.Element {
   return (
     <div className="text-center">
-      <Rocket size={48} className="mx-auto mb-6 text-primary" />
+      <Zap size={48} className="mx-auto mb-6 text-accent" />
       <h1 className="text-3xl font-bold">Welcome to Mission Control</h1>
       <p className="mt-3 text-muted">
         Deploy, manage, and monitor your Dash AI agents from a single dashboard. Let's get you set
@@ -101,7 +102,7 @@ function WelcomeStep({ onNext }: { onNext: () => void }): JSX.Element {
       <button
         type="button"
         onClick={onNext}
-        className="mt-8 inline-flex items-center gap-2 rounded-lg bg-primary px-6 py-3 text-sm font-medium text-white transition-colors hover:bg-primary-hover"
+        className="mt-8 inline-flex items-center gap-2 rounded-lg bg-accent px-6 py-3 text-sm font-medium text-white transition-colors hover:bg-primary-hover"
       >
         Get Started
         <ArrowRight size={16} />
@@ -164,7 +165,7 @@ function PasswordStep({
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             placeholder="Password"
-            className="w-full rounded-lg border border-border bg-sidebar-bg px-4 py-2 text-sm text-foreground placeholder:text-muted focus:border-primary focus:outline-none"
+            className="w-full rounded-lg border border-border bg-card-bg px-4 py-2 text-sm text-foreground placeholder:text-muted focus:border-accent focus:outline-none"
           />
           {isCreate && (
             <input
@@ -172,14 +173,14 @@ function PasswordStep({
               value={confirm}
               onChange={(e) => setConfirm(e.target.value)}
               placeholder="Confirm password"
-              className="w-full rounded-lg border border-border bg-sidebar-bg px-4 py-2 text-sm text-foreground placeholder:text-muted focus:border-primary focus:outline-none"
+              className="w-full rounded-lg border border-border bg-card-bg px-4 py-2 text-sm text-foreground placeholder:text-muted focus:border-accent focus:outline-none"
             />
           )}
           {error && <p className="text-sm text-red-400">{error}</p>}
           <button
             type="submit"
             disabled={loading || !password}
-            className="w-full rounded-lg bg-primary px-4 py-2 text-sm text-white transition-colors hover:bg-primary-hover disabled:opacity-50"
+            className="w-full rounded-lg bg-accent px-4 py-2 text-sm text-white transition-colors hover:bg-primary-hover disabled:opacity-50"
           >
             {loading ? 'Processing...' : isCreate ? 'Create Password' : 'Unlock'}
           </button>
@@ -220,13 +221,13 @@ function ProviderStep({
               onClick={() => onSelect(p.id)}
               className={`w-full rounded-lg border-2 px-4 py-4 text-left transition-colors ${
                 selected === p.id
-                  ? 'border-primary bg-primary/10'
-                  : 'border-border bg-sidebar-bg hover:border-muted'
+                  ? 'border-accent bg-accent-tint'
+                  : 'border-border bg-card-bg hover:border-muted'
               } ${!p.available ? 'cursor-not-allowed opacity-40' : ''}`}
             >
               <div className="flex items-center justify-between">
                 <span className="text-sm font-semibold text-foreground">{p.name}</span>
-                {selected === p.id && <CheckCircle size={18} className="text-primary" />}
+                {selected === p.id && <CheckCircle size={18} className="text-accent" />}
                 {!p.available && (
                   <span className="rounded-full bg-border px-2 py-0.5 text-[10px] font-medium text-muted">
                     Coming soon
@@ -241,7 +242,7 @@ function ProviderStep({
         <button
           type="button"
           onClick={onNext}
-          className="mt-6 inline-flex w-full items-center justify-center gap-2 rounded-lg bg-primary px-6 py-3 text-sm font-medium text-white transition-colors hover:bg-primary-hover"
+          className="mt-6 inline-flex w-full items-center justify-center gap-2 rounded-lg bg-accent px-6 py-3 text-sm font-medium text-white transition-colors hover:bg-primary-hover"
         >
           Continue with {PROVIDERS.find((p) => p.id === selected)?.name ?? 'selected provider'}
           <ArrowRight size={16} />
@@ -296,13 +297,13 @@ function ApiKeyStep({
         <h1 className="text-2xl font-bold">{config.title}</h1>
         <p className="mt-2 text-sm text-muted">{config.explanation}</p>
 
-        <div className="mt-4 rounded-lg border border-border bg-sidebar-bg p-4 text-left">
-          <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-muted">
+        <div className="mt-4 rounded-lg border border-border bg-card-bg p-4 text-left">
+          <p className="mb-3 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-widest text-muted">
             How to get your key
           </p>
           <ol className="space-y-2">
             <li className="flex gap-2 text-xs text-muted">
-              <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-primary/20 text-[10px] font-bold text-primary">
+              <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-accent/20 text-[10px] font-bold text-accent">
                 1
               </span>
               <span className="pt-0.5">
@@ -310,7 +311,7 @@ function ApiKeyStep({
                 <button
                   type="button"
                   onClick={() => handleOpenUrl(config.consoleUrl)}
-                  className="inline-flex items-center gap-0.5 font-medium text-primary hover:underline"
+                  className="inline-flex items-center gap-0.5 font-medium text-accent hover:underline"
                 >
                   {consoleDomain}
                   <ExternalLink size={10} />
@@ -319,7 +320,7 @@ function ApiKeyStep({
               </span>
             </li>
             <li className="flex gap-2 text-xs text-muted">
-              <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-primary/20 text-[10px] font-bold text-primary">
+              <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-accent/20 text-[10px] font-bold text-accent">
                 2
               </span>
               <span className="pt-0.5">
@@ -327,7 +328,7 @@ function ApiKeyStep({
                 <button
                   type="button"
                   onClick={() => handleOpenUrl(config.apiKeysUrl)}
-                  className="inline-flex items-center gap-0.5 font-medium text-primary hover:underline"
+                  className="inline-flex items-center gap-0.5 font-medium text-accent hover:underline"
                 >
                   API Keys
                   <ExternalLink size={10} />
@@ -337,7 +338,7 @@ function ApiKeyStep({
             </li>
             {config.steps.map((step, i) => (
               <li key={step} className="flex gap-2 text-xs text-muted">
-                <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-primary/20 text-[10px] font-bold text-primary">
+                <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-accent/20 text-[10px] font-bold text-accent">
                   {i + 3}
                 </span>
                 <span className="pt-0.5">{step}</span>
@@ -347,7 +348,7 @@ function ApiKeyStep({
           <button
             type="button"
             onClick={() => handleOpenUrl(config.helpUrl)}
-            className="mt-3 inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline"
+            className="mt-3 inline-flex items-center gap-1 text-xs font-medium text-accent hover:underline"
           >
             <ExternalLink size={12} />
             {config.helpLabel}
@@ -360,13 +361,13 @@ function ApiKeyStep({
             value={apiKey}
             onChange={(e) => setApiKey(e.target.value)}
             placeholder={config.placeholder}
-            className="w-full rounded-lg border border-border bg-sidebar-bg px-4 py-2 text-sm font-mono text-foreground placeholder:text-muted focus:border-primary focus:outline-none"
+            className="w-full rounded-lg border border-border bg-card-bg px-4 py-2 text-sm font-mono text-foreground placeholder:text-muted focus:border-accent focus:outline-none"
           />
           {error && <p className="text-sm text-red-400">{error}</p>}
           <button
             type="submit"
             disabled={saving || !apiKey.trim()}
-            className="w-full rounded-lg bg-primary px-4 py-2 text-sm text-white transition-colors hover:bg-primary-hover disabled:opacity-50"
+            className="w-full rounded-lg bg-accent px-4 py-2 text-sm text-white transition-colors hover:bg-primary-hover disabled:opacity-50"
           >
             {saving ? 'Saving...' : 'Save API Key'}
           </button>
@@ -387,7 +388,7 @@ function DoneStep({ onFinish }: { onFinish: () => void }): JSX.Element {
       <button
         type="button"
         onClick={onFinish}
-        className="mt-8 inline-flex items-center gap-2 rounded-lg bg-primary px-6 py-3 text-sm font-medium text-white transition-colors hover:bg-primary-hover"
+        className="mt-8 inline-flex items-center gap-2 rounded-lg bg-accent px-6 py-3 text-sm font-medium text-white transition-colors hover:bg-primary-hover"
       >
         Go to Dashboard
         <ArrowRight size={16} />

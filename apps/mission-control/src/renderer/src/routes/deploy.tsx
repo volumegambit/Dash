@@ -139,18 +139,22 @@ export function DeployWizard(): JSX.Element {
       {step === 'agent' && (
         <div className="space-y-6">
           <label className="block">
-            <span className="mb-1 block text-sm font-medium">Agent Name</span>
+            <span className="mb-1 block font-[family-name:var(--font-mono)] text-[11px] uppercase tracking-[2px] text-muted">
+              Agent Name
+            </span>
             <input
               type="text"
               value={agent.name}
               onChange={(e) => setAgent((prev) => ({ ...prev, name: e.target.value }))}
               placeholder="my-agent"
-              className="w-full rounded-lg border border-border bg-sidebar-bg px-4 py-2 text-sm text-foreground placeholder:text-muted focus:border-primary focus:outline-none"
+              className="w-full rounded-lg border border-border bg-card-bg px-4 py-2 text-sm text-foreground placeholder:text-muted focus:border-accent focus:outline-none"
             />
           </label>
 
           <div>
-            <span className="mb-1 block text-sm font-medium">Model</span>
+            <span className="mb-1 block font-[family-name:var(--font-mono)] text-[11px] uppercase tracking-[2px] text-muted">
+              Model
+            </span>
             <ModelChainEditor
               model={agent.model}
               fallbackModels={agent.fallbackModels}
@@ -169,19 +173,23 @@ export function DeployWizard(): JSX.Element {
           </div>
 
           <label className="block">
-            <span className="mb-1 block text-sm font-medium">System Prompt</span>
+            <span className="mb-1 block font-[family-name:var(--font-mono)] text-[11px] uppercase tracking-[2px] text-muted">
+              System Prompt
+            </span>
             <textarea
               value={agent.systemPrompt}
               onChange={(e) => setAgent((prev) => ({ ...prev, systemPrompt: e.target.value }))}
               placeholder="You are a helpful assistant..."
               rows={4}
-              className="w-full rounded-lg border border-border bg-sidebar-bg px-4 py-2 text-sm text-foreground placeholder:text-muted focus:border-primary focus:outline-none"
+              className="w-full rounded-lg border border-border bg-card-bg px-4 py-2 text-sm text-foreground placeholder:text-muted focus:border-accent focus:outline-none"
             />
           </label>
 
           <div>
             <div className="mb-2 flex items-center justify-between">
-              <span className="text-sm font-medium">Tools</span>
+              <span className="font-[family-name:var(--font-mono)] text-[11px] uppercase tracking-[2px] text-muted">
+                Tools
+              </span>
               <label className="flex cursor-pointer items-center gap-1.5 text-xs text-muted hover:text-foreground">
                 <input
                   type="checkbox"
@@ -197,7 +205,7 @@ export function DeployWizard(): JSX.Element {
                       tools: prev.tools.length === ALL_TOOL_IDS.length ? [] : [...ALL_TOOL_IDS],
                     }))
                   }
-                  className="accent-primary"
+                  className="accent-accent"
                 />
                 Select all
               </label>
@@ -206,10 +214,15 @@ export function DeployWizard(): JSX.Element {
               {TOOL_GROUPS.map((group) => {
                 const allEnabled = group.tools.every((t) => agent.tools.includes(t));
                 const someEnabled = !allEnabled && group.tools.some((t) => agent.tools.includes(t));
+                const anySelected = group.tools.some((t) => agent.tools.includes(t));
                 return (
                   <label
                     key={group.name}
-                    className="flex cursor-pointer items-start gap-3 rounded-lg border border-border px-3 py-2.5 text-sm transition-colors hover:bg-sidebar-hover"
+                    className={`flex cursor-pointer items-start gap-3 rounded-lg border px-3 py-2.5 text-sm transition-colors ${
+                      anySelected
+                        ? 'border-accent bg-accent-tint'
+                        : 'border-border hover:bg-sidebar-hover'
+                    }`}
                   >
                     <input
                       type="checkbox"
@@ -226,7 +239,7 @@ export function DeployWizard(): JSX.Element {
                           };
                         })
                       }
-                      className="mt-0.5 accent-primary"
+                      className="mt-0.5 accent-accent"
                     />
                     <span>
                       <span className="font-medium">{group.name}</span>
@@ -239,14 +252,16 @@ export function DeployWizard(): JSX.Element {
           </div>
 
           <div>
-            <span className="mb-1 block text-sm font-medium">Workspace</span>
+            <span className="mb-1 block font-[family-name:var(--font-mono)] text-[11px] uppercase tracking-[2px] text-muted">
+              Workspace
+            </span>
             <div className="flex items-center gap-2">
               <input
                 type="text"
                 readOnly
                 value={agent.workspace}
                 placeholder="Auto-generated"
-                className="flex-1 rounded-lg border border-border bg-sidebar-bg px-4 py-2 text-sm text-foreground placeholder:text-muted focus:outline-none"
+                className="flex-1 rounded-lg border border-border bg-card-bg px-4 py-2 text-sm text-foreground placeholder:text-muted focus:outline-none"
               />
               {agent.workspace && (
                 <button
@@ -275,7 +290,7 @@ export function DeployWizard(): JSX.Element {
               type="button"
               disabled={!canAdvanceAgent}
               onClick={() => setStep('review')}
-              className="inline-flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm text-white transition-colors hover:bg-primary-hover disabled:opacity-50"
+              className="inline-flex items-center gap-2 rounded-lg bg-accent px-4 py-2 text-sm text-white transition-colors hover:bg-primary-hover disabled:opacity-50"
             >
               Next
               <ArrowRight size={16} />
@@ -286,7 +301,7 @@ export function DeployWizard(): JSX.Element {
 
       {step === 'review' && (
         <div className="space-y-6">
-          <div className="rounded-lg border border-border bg-sidebar-bg p-4 space-y-3">
+          <div className="rounded-lg border border-border bg-card-bg p-4 space-y-3">
             <ReviewRow label="Name" value={agent.name} />
             <ReviewRow
               label="Model"
@@ -360,7 +375,7 @@ export function DeployWizard(): JSX.Element {
               type="button"
               onClick={handleDeploy}
               disabled={deploying}
-              className="inline-flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm text-white transition-colors hover:bg-primary-hover disabled:opacity-50"
+              className="inline-flex items-center gap-2 rounded-lg bg-accent px-4 py-2 text-sm text-white transition-colors hover:bg-primary-hover disabled:opacity-50"
             >
               {deploying ? (
                 <>
@@ -397,7 +412,7 @@ function StepIndicator({ current }: { current: Step }): JSX.Element {
           <div className="flex items-center gap-2">
             <div
               className={`flex h-6 w-6 items-center justify-center rounded-full text-xs ${
-                i <= currentIndex ? 'bg-primary text-white' : 'bg-border text-muted'
+                i <= currentIndex ? 'bg-accent text-white' : 'bg-border text-muted'
               }`}
             >
               {i < currentIndex ? <Check size={12} /> : i + 1}
@@ -419,7 +434,9 @@ function ReviewRow({
 }: { label: string; value: string; multiline?: boolean }): JSX.Element {
   return (
     <div>
-      <p className="text-xs text-muted">{label}</p>
+      <p className="font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-widest text-muted">
+        {label}
+      </p>
       <p className={`mt-0.5 text-sm ${multiline ? 'whitespace-pre-wrap' : ''}`}>{value}</p>
     </div>
   );
