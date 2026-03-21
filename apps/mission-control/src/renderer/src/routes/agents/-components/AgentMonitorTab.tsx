@@ -38,20 +38,8 @@ export function AgentMonitorTab({
           </span>
         </span>
         <span>
-          <span className="text-muted">PID</span>{' '}
-          <span className="font-medium">
-            {status?.agentServerPid ?? deployment.agentServerPid ?? 'N/A'}
-          </span>
-        </span>
-        <span>
-          <span className="text-muted">Chat port</span>{' '}
-          <span className="font-medium">{status?.chatPort ?? deployment.chatPort ?? 'N/A'}</span>
-        </span>
-        <span>
-          <span className="text-muted">Mgmt port</span>{' '}
-          <span className="font-medium">
-            {status?.managementPort ?? deployment.managementPort ?? 'N/A'}
-          </span>
+          <span className="text-muted">State</span>{' '}
+          <span className="font-medium">{status?.state ?? deployment.status}</span>
         </span>
         <span>
           <span className="text-muted">Created</span>{' '}

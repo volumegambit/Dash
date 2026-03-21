@@ -1,38 +1,32 @@
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { existsSync, statSync } from 'node:fs';
-import { chmod, mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
-import net from 'node:net';
-import { tmpdir } from 'node:os';
+import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import type { AgentRegistry } from '../agents/registry.js';
 import type { MessagingAppRegistry } from '../messaging-apps/registry.js';
 import { getPlatformDataDir } from '../platform-paths.js';
 import { generateToken } from '../security/keygen.js';
 import type { SecretStore } from '../security/secrets.js';
-import type { MessagingApp } from '../types.js';
 import {
   type GatewayChannelConfig,
   type GatewayHealthResponse,
   GatewayManagementClient,
+  type RuntimeAgentConfig,
 } from './gateway-client.js';
 import { GatewayStateStore } from './gateway-state.js';
-import { type ProcessSnapshot, resolveRuntimeStatus } from './status.js';
+import { resolveRuntimeStatus } from './status.js';
 import type { DeploymentRuntime, RuntimeStatus } from './types.js';
 
 import { parseProviderSecretKey } from './provider-keys.js';
 export { providerSecretKey, parseProviderSecretKey } from './provider-keys.js';
-
-interface ProcessState {
-  agentServer: SpawnedProcess;
-  startTime: number;
-}
 
 export interface GatewayOptions {
   gatewayDataDir: string;
   gatewayRuntimeDir?: string; // --data-dir passed to the gateway process
   makeGatewayClient?: (baseUrl: string, token: string) => GatewayManagementClient;
   managementPort?: number;
+  channelPort?: number;
 }
 
 export interface SpawnedProcess {
@@ -67,8 +61,6 @@ export const defaultProcessSpawner: ProcessSpawner = {
 
 export type HealthChecker = (port: number) => Promise<boolean>;
 
-export type StartupResult = { success: true } | { success: false; logs: string[]; reason: string };
-
 export const defaultHealthChecker: HealthChecker = async (port: number): Promise<boolean> => {
   try {
     const resp = await fetch(`http://localhost:${port}/health`, {
@@ -80,78 +72,6 @@ export const defaultHealthChecker: HealthChecker = async (port: number): Promise
   }
 };
 
-export async function waitForStartup(
-  child: SpawnedProcess,
-  managementPort: number,
-  timeoutMs: number,
-  healthChecker: HealthChecker = defaultHealthChecker,
-): Promise<StartupResult> {
-  const logs: string[] = [];
-  let readyLineSeen = false;
-  let healthOk = false;
-  let settled = false;
-
-  return new Promise<StartupResult>((resolve) => {
-    const settle = (result: StartupResult): void => {
-      if (settled) return;
-      settled = true;
-      clearInterval(healthInterval);
-      clearTimeout(timeoutHandle);
-      resolve(result);
-    };
-
-    const checkSuccess = (): void => {
-      if (readyLineSeen && healthOk) {
-        settle({ success: true });
-      }
-    };
-
-    // Capture log lines
-    const onData = (chunk: Buffer | string): void => {
-      const text = chunk.toString();
-      for (const line of text.split('\n')) {
-        const trimmed = line.trim();
-        if (!trimmed) continue;
-        logs.push(trimmed);
-        if (trimmed.includes('Server ready')) {
-          readyLineSeen = true;
-          checkSuccess();
-        }
-      }
-    };
-
-    child.stdout?.on('data', onData);
-    child.stderr?.on('data', onData);
-
-    // Watch for process exit
-    child.on('exit', (code) => {
-      settle({
-        success: false,
-        logs,
-        reason: `process exited with code ${code ?? 'null'}`,
-      });
-    });
-
-    // Poll health endpoint
-    const healthInterval = setInterval(async () => {
-      if (settled) return;
-      try {
-        const ok = await healthChecker(managementPort);
-        if (settled) return; // check again after async gap
-        healthOk = ok;
-        checkSuccess();
-      } catch {
-        // ignore
-      }
-    }, 500);
-
-    // Timeout
-    const timeoutHandle = setTimeout(() => {
-      settle({ success: false, logs, reason: `timeout after ${timeoutMs}ms` });
-    }, timeoutMs);
-  });
-}
-
 export class DeploymentStartupError extends Error {
   constructor(
     public readonly deploymentId: string,
@@ -160,30 +80,6 @@ export class DeploymentStartupError extends Error {
     super(reason);
     this.name = 'DeploymentStartupError';
   }
-}
-
-export type StartupWatcher = (
-  child: SpawnedProcess,
-  managementPort: number,
-) => Promise<StartupResult>;
-
-export const defaultStartupWatcher: StartupWatcher = (child, port) =>
-  waitForStartup(child, port, 10_000);
-
-export async function findAvailablePort(): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const server = net.createServer();
-    server.listen(0, '127.0.0.1', () => {
-      const addr = server.address();
-      if (addr && typeof addr === 'object') {
-        const port = addr.port;
-        server.close(() => resolve(port));
-      } else {
-        server.close(() => reject(new Error('Failed to get port')));
-      }
-    });
-    server.on('error', reject);
-  });
 }
 
 export function validateConfigDir(configDir: string): void {
@@ -201,60 +97,208 @@ export function validateConfigDir(configDir: string): void {
   }
 }
 
-export interface AgentSecretsFile {
-  providerApiKeys?: Record<string, Record<string, string>>;
-  managementToken: string;
-  chatToken: string;
+// ---------------------------------------------------------------------------
+// Internal agent config type — extends the shared type with credential mapping
+// ---------------------------------------------------------------------------
+
+interface AgentCfg {
+  name: string;
+  model: string;
+  fallbackModels?: string[];
+  systemPrompt: string;
+  tools?: string[];
+  workspace?: string;
+  opencodeStateDir?: string;
+  credentialKeys?: Record<string, string>;
+  maxTokens?: number;
+  skills?: { paths?: string[]; urls?: string[] };
 }
 
-export interface ResolvedMessagingApp {
-  app: MessagingApp;
-  token: string;
-  authStateDir?: string; // for whatsapp channels
-}
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
 
-export async function writeSecretsFile(secrets: AgentSecretsFile, prefix: string): Promise<string> {
-  const filePath = join(tmpdir(), `${prefix}-${randomUUID()}.json`);
-  await writeFile(filePath, JSON.stringify(secrets, null, 2), { mode: 0o600 });
-  await chmod(filePath, 0o600);
-  return filePath;
-}
+/** Read agent configs from an agents/ directory or dash.json. */
+async function readAgentConfigs(absConfigDir: string): Promise<Record<string, AgentCfg>> {
+  const agentConfigs: Record<string, AgentCfg> = {};
 
-async function killPidWithEscalation(pid: number): Promise<void> {
-  try {
-    process.kill(pid, 'SIGTERM');
-  } catch {
-    return; // Process already dead
-  }
-
-  // Poll for up to 5 seconds, then escalate to SIGKILL
-  const deadline = Date.now() + 5000;
-  while (Date.now() < deadline) {
-    await new Promise<void>((resolve) => setTimeout(resolve, 100));
-    try {
-      process.kill(pid, 0); // throws ESRCH if process is dead
-    } catch {
-      return; // Process has exited
+  const agentsDir = join(absConfigDir, 'agents');
+  if (existsSync(agentsDir) && statSync(agentsDir).isDirectory()) {
+    const files = await readdir(agentsDir);
+    for (const file of files.filter((f) => f.endsWith('.json'))) {
+      const name = file.slice(0, -5);
+      const raw = await readFile(join(agentsDir, file), 'utf-8');
+      const cfg = JSON.parse(raw) as Partial<AgentCfg>;
+      agentConfigs[name] = {
+        name,
+        model: cfg.model ?? '',
+        fallbackModels: cfg.fallbackModels,
+        systemPrompt: cfg.systemPrompt ?? '',
+        tools: cfg.tools,
+        workspace: cfg.workspace,
+        credentialKeys: cfg.credentialKeys,
+        maxTokens: cfg.maxTokens,
+        skills: cfg.skills,
+      };
     }
   }
 
-  try {
-    process.kill(pid, 'SIGKILL');
-  } catch {
-    // Process died just before SIGKILL
+  if (Object.keys(agentConfigs).length === 0) {
+    const dashJsonPath = join(absConfigDir, 'dash.json');
+    if (existsSync(dashJsonPath)) {
+      const raw = await readFile(dashJsonPath, 'utf-8');
+      const dashJson = JSON.parse(raw) as { agents?: Record<string, Partial<AgentCfg>> };
+      if (dashJson.agents) {
+        for (const [name, cfg] of Object.entries(dashJson.agents)) {
+          agentConfigs[name] = {
+            name,
+            model: cfg.model ?? '',
+            fallbackModels: cfg.fallbackModels,
+            systemPrompt: cfg.systemPrompt ?? '',
+            tools: cfg.tools,
+            workspace: cfg.workspace,
+            credentialKeys: cfg.credentialKeys,
+            maxTokens: cfg.maxTokens,
+            skills: cfg.skills,
+          };
+        }
+      }
+    }
+  }
+
+  return agentConfigs;
+}
+
+/**
+ * Read all provider API keys from the secret store.
+ * Returns nested `{ provider: { keyName: value } }`.
+ */
+async function resolveProviderApiKeys(
+  secrets: SecretStore,
+): Promise<Record<string, Record<string, string>>> {
+  const allSecretKeys = await secrets.list();
+  const providerApiKeys: Record<string, Record<string, string>> = {};
+  for (const secretKey of allSecretKeys) {
+    const parsed = parseProviderSecretKey(secretKey);
+    if (!parsed) continue;
+    const value = await secrets.get(secretKey);
+    if (!value) continue;
+    if (!providerApiKeys[parsed.provider]) {
+      providerApiKeys[parsed.provider] = {};
+    }
+    providerApiKeys[parsed.provider][parsed.keyName] = value;
+  }
+  return providerApiKeys;
+}
+
+/**
+ * Flatten nested provider keys into `Record<string, string>` per agent.
+ *
+ * The gateway runtime expects a flat map where each key is a provider name
+ * and the value is the API key string. If the agent config has a
+ * `credentialKeys` mapping (`{ providerName: keyName }`), use that to pick
+ * the right key. Otherwise fall back to the `default` key (or the first
+ * available key) for each provider.
+ */
+function flattenProviderKeys(
+  providerApiKeys: Record<string, Record<string, string>>,
+  agentCfg: AgentCfg,
+): Record<string, string> {
+  const flat: Record<string, string> = {};
+  for (const [provider, keys] of Object.entries(providerApiKeys)) {
+    const preferredKeyName = agentCfg.credentialKeys?.[provider];
+    if (preferredKeyName && keys[preferredKeyName]) {
+      flat[provider] = keys[preferredKeyName];
+    } else if (keys.default) {
+      flat[provider] = keys.default;
+    } else {
+      // Pick the first available key
+      const firstKey = Object.values(keys)[0];
+      if (firstKey) flat[provider] = firstKey;
+    }
+  }
+  return flat;
+}
+
+/**
+ * Register messaging app channels with the gateway for the given agent names.
+ */
+async function registerMessagingApps(
+  gatewayClient: GatewayManagementClient,
+  messagingApps: MessagingAppRegistry,
+  secrets: SecretStore,
+  deploymentId: string,
+  agentNames: string[],
+): Promise<void> {
+  const mcDataDir = process.env.MC_DATA_DIR || getPlatformDataDir('dash');
+  const apps = await messagingApps.list();
+
+  for (const app of apps) {
+    if (!app.enabled) continue;
+    const relevantRules = app.routing.filter((r) => agentNames.includes(r.targetAgentName));
+    if (relevantRules.length === 0) continue;
+
+    const channelConfig: GatewayChannelConfig = {
+      adapter: app.type as 'telegram' | 'whatsapp',
+      globalDenyList: app.globalDenyList,
+      routing: relevantRules.map((r) => ({
+        condition: r.condition,
+        agentName: r.targetAgentName,
+        allowList: r.allowList ?? [],
+        denyList: r.denyList ?? [],
+      })),
+    };
+
+    if (app.type === 'whatsapp') {
+      const authStateDir = join(mcDataDir, 'whatsapp-sessions', app.id);
+      channelConfig.authStateDir = authStateDir;
+
+      // Sync runtime auth state back into encrypted store, then bundle for gateway
+      try {
+        const { FileSecretStore } = await import('../security/secrets.js');
+        const runtimeStore = new FileSecretStore(authStateDir);
+        const runtimeKeys = await runtimeStore.list();
+        const authPrefix = `${app.credentialsKey}:`;
+        for (const key of runtimeKeys) {
+          const val = await runtimeStore.get(key);
+          if (val) await secrets.set(`${authPrefix}${key}`, val);
+        }
+      } catch {
+        // No runtime state to sync (first deploy)
+      }
+
+      const authPrefix = `${app.credentialsKey}:`;
+      const allKeys = await secrets.list();
+      const authBlob: Record<string, string> = {};
+      for (const k of allKeys.filter((k) => k.startsWith(authPrefix))) {
+        const val = await secrets.get(k);
+        if (val) authBlob[k.slice(authPrefix.length)] = val;
+      }
+      if (Object.keys(authBlob).length > 0) {
+        channelConfig.whatsappAuth = authBlob;
+      }
+    } else {
+      const token = await secrets.get(app.credentialsKey);
+      if (!token) continue;
+      channelConfig.token = token;
+    }
+
+    await gatewayClient.registerChannel(deploymentId, `messaging-app-${app.id}`, channelConfig);
   }
 }
 
-export class ProcessRuntime implements DeploymentRuntime {
-  private processes = new Map<string, ProcessState>();
+// ---------------------------------------------------------------------------
+// ProcessRuntime
+// ---------------------------------------------------------------------------
 
+export class ProcessRuntime implements DeploymentRuntime {
   constructor(
     private registry: AgentRegistry,
     private secrets: SecretStore,
     private projectRoot: string,
     private spawner: ProcessSpawner = defaultProcessSpawner,
     private messagingApps?: MessagingAppRegistry,
-    private startupWatcher: StartupWatcher = defaultStartupWatcher,
+    _startupWatcher?: unknown, // kept for constructor compatibility
     private gatewayOptions?: GatewayOptions,
   ) {}
 
@@ -263,6 +307,7 @@ export class ProcessRuntime implements DeploymentRuntime {
     if (!opts) return null;
 
     const managementPort = opts.managementPort ?? 9300;
+    const channelPort = opts.channelPort ?? 9200;
     const store = new GatewayStateStore(opts.gatewayDataDir);
     const makeClient =
       opts.makeGatewayClient ?? ((url, token) => new GatewayManagementClient(url, token));
@@ -294,8 +339,19 @@ export class ProcessRuntime implements DeploymentRuntime {
 
     // Spawn fresh gateway daemon
     const token = generateToken();
+    const chatToken = generateToken();
     const gatewayBin = join(this.projectRoot, 'apps/gateway/dist/index.js');
-    const spawnArgs = [gatewayBin, '--management-port', String(managementPort), '--token', token];
+    const spawnArgs = [
+      gatewayBin,
+      '--management-port',
+      String(managementPort),
+      '--channel-port',
+      String(channelPort),
+      '--token',
+      token,
+      '--chat-token',
+      chatToken,
+    ];
     if (opts.gatewayRuntimeDir) {
       spawnArgs.push('--data-dir', opts.gatewayRuntimeDir);
     }
@@ -328,6 +384,8 @@ export class ProcessRuntime implements DeploymentRuntime {
       startedAt: health.startedAt,
       token,
       port: managementPort,
+      channelPort,
+      chatToken,
     });
 
     return newClient;
@@ -351,64 +409,71 @@ export class ProcessRuntime implements DeploymentRuntime {
     const gatewayClient = await this.getGatewayClient();
     if (!gatewayClient) return;
 
-    const agentNames = Object.keys(deployment.config?.agents ?? {});
-    if (!agentNames.length || !deployment.chatPort || !deployment.chatToken) {
-      console.warn(
-        `registerWithGateway: deployment ${deploymentId} missing agents/ports, skipping`,
-      );
+    const agents = deployment.config?.agents ?? {};
+    const agentNames = Object.keys(agents);
+    if (!agentNames.length) {
+      console.warn(`registerWithGateway: deployment ${deploymentId} has no agents, skipping`);
       return;
     }
 
+    // Resolve provider keys for credentials
+    const providerApiKeys = await resolveProviderApiKeys(this.secrets);
+
+    // Register each agent with the gateway runtime and set credentials
     for (const agentName of agentNames) {
-      await gatewayClient.registerAgent(
-        deploymentId,
-        agentName,
-        `ws://localhost:${deployment.chatPort}/ws`,
-        deployment.chatToken,
-      );
+      const agentCfg = agents[agentName];
+      if (!agentCfg) continue;
+
+      const runtimeConfig: RuntimeAgentConfig = {
+        name: agentName,
+        model: agentCfg.model,
+        systemPrompt: agentCfg.systemPrompt,
+        fallbackModels: agentCfg.fallbackModels,
+        tools: agentCfg.tools,
+        skills: agentCfg.skills,
+        workspace: agentCfg.workspace,
+        maxTokens: agentCfg.maxTokens,
+      };
+
+      try {
+        await gatewayClient.registerRuntimeAgent(runtimeConfig);
+      } catch (err) {
+        console.warn(
+          `registerWithGateway: failed to register agent ${agentName}:`,
+          err instanceof Error ? err.message : err,
+        );
+        continue;
+      }
+
+      // Flatten and set credentials
+      const flatKeys = flattenProviderKeys(providerApiKeys, agentCfg as AgentCfg);
+      if (Object.keys(flatKeys).length > 0) {
+        try {
+          await gatewayClient.setRuntimeAgentCredentials(agentName, flatKeys);
+        } catch (err) {
+          console.warn(
+            `registerWithGateway: failed to set credentials for ${agentName}:`,
+            err instanceof Error ? err.message : err,
+          );
+        }
+      }
     }
 
+    // Register messaging app channels
     if (this.messagingApps) {
-      const mcDataDir = process.env.MC_DATA_DIR || getPlatformDataDir('dash');
-      const apps = await this.messagingApps.list();
-      for (const app of apps) {
-        if (!app.enabled) continue;
-        const relevantRules = app.routing.filter((r) => agentNames.includes(r.targetAgentName));
-        if (relevantRules.length === 0) continue;
-
-        const token =
-          app.type !== 'whatsapp' ? await this.secrets.get(app.credentialsKey) : undefined;
-        if (app.type !== 'whatsapp' && !token) continue;
-
-        const channelConfig: GatewayChannelConfig = {
-          adapter: app.type as 'telegram' | 'whatsapp',
-          globalDenyList: app.globalDenyList,
-          routing: relevantRules.map((r) => ({
-            condition: r.condition,
-            agentName: r.targetAgentName,
-            allowList: r.allowList ?? [],
-            denyList: r.denyList ?? [],
-          })),
-        };
-        if (app.type === 'whatsapp') {
-          const authStateDir = join(mcDataDir, 'whatsapp-sessions', app.id);
-          channelConfig.authStateDir = authStateDir;
-
-          const authPrefix = `${app.credentialsKey}:`;
-          const allKeys = await this.secrets.list();
-          const authBlob: Record<string, string> = {};
-          for (const k of allKeys.filter((k) => k.startsWith(authPrefix))) {
-            const val = await this.secrets.get(k);
-            if (val) authBlob[k.slice(authPrefix.length)] = val;
-          }
-          if (Object.keys(authBlob).length > 0) {
-            channelConfig.whatsappAuth = authBlob;
-          }
-        } else {
-          channelConfig.token = token ?? undefined;
-        }
-
-        await gatewayClient.registerChannel(deploymentId, `messaging-app-${app.id}`, channelConfig);
+      try {
+        await registerMessagingApps(
+          gatewayClient,
+          this.messagingApps,
+          this.secrets,
+          deploymentId,
+          agentNames,
+        );
+      } catch (err) {
+        console.warn(
+          'registerWithGateway: failed to register messaging apps:',
+          err instanceof Error ? err.message : err,
+        );
       }
     }
   }
@@ -417,78 +482,16 @@ export class ProcessRuntime implements DeploymentRuntime {
     const absConfigDir = resolve(configDir);
     validateConfigDir(absConfigDir);
 
-    // Read agent configs from agents/ directory or dash.json
-    interface AgentCfg {
-      name: string;
-      model: string;
-      fallbackModels?: string[];
-      systemPrompt: string;
-      tools?: string[];
-      workspace?: string;
-      opencodeStateDir?: string;
-      credentialKeys?: Record<string, string>;
-    }
-    const agentConfigs: Record<string, AgentCfg> = {};
-
-    const agentsDir = join(absConfigDir, 'agents');
-    if (existsSync(agentsDir) && statSync(agentsDir).isDirectory()) {
-      const files = await readdir(agentsDir);
-      for (const file of files.filter((f) => f.endsWith('.json'))) {
-        const name = file.slice(0, -5);
-        const raw = await readFile(join(agentsDir, file), 'utf-8');
-        const cfg = JSON.parse(raw) as Partial<AgentCfg>;
-        agentConfigs[name] = {
-          name,
-          model: cfg.model ?? '',
-          fallbackModels: cfg.fallbackModels,
-          systemPrompt: cfg.systemPrompt ?? '',
-          tools: cfg.tools,
-          workspace: cfg.workspace,
-          credentialKeys: cfg.credentialKeys,
-        };
-      }
-    }
-
-    if (Object.keys(agentConfigs).length === 0) {
-      // Fall back to dash.json agents
-      const dashJsonPath = join(absConfigDir, 'dash.json');
-      if (existsSync(dashJsonPath)) {
-        const raw = await readFile(dashJsonPath, 'utf-8');
-        const dashJson = JSON.parse(raw) as { agents?: Record<string, Partial<AgentCfg>> };
-        if (dashJson.agents) {
-          for (const [name, cfg] of Object.entries(dashJson.agents)) {
-            agentConfigs[name] = {
-              name,
-              model: cfg.model ?? '',
-              fallbackModels: cfg.fallbackModels,
-              systemPrompt: cfg.systemPrompt ?? '',
-              tools: cfg.tools,
-              workspace: cfg.workspace,
-              credentialKeys: cfg.credentialKeys,
-            };
-          }
-        }
-      }
-    }
-
+    // Read agent configs
+    const agentConfigs = await readAgentConfigs(absConfigDir);
     const agentNames = Object.keys(agentConfigs);
     if (agentNames.length === 0) {
       throw new Error('No agent configurations found in config directory');
     }
 
-    // Allocate ports
-    const [managementPort, chatPort] = await Promise.all([
-      findAvailablePort(),
-      findAvailablePort(),
-    ]);
-
-    // Generate tokens
-    const managementToken = generateToken();
-    const chatToken = generateToken();
     const id = randomUUID().slice(0, 8);
 
-    // Resolve workspace and OpenCode state dir for each agent,
-    // then write back to the agent config JSON so the agent server picks them up.
+    // Resolve workspace for each agent and write back to config files
     const mcDataDir = process.env.MC_DATA_DIR || getPlatformDataDir('dash');
     const agentDataDir = getPlatformDataDir('dash-agent');
     for (const [name, cfg] of Object.entries(agentConfigs)) {
@@ -497,11 +500,9 @@ export class ProcessRuntime implements DeploymentRuntime {
       }
       await mkdir(cfg.workspace, { recursive: true, mode: 0o700 });
 
-      // Isolated OpenCode state per-deployment (DB, auth, sessions)
       cfg.opencodeStateDir = join(agentDataDir, 'opencode', `${name}-${id}`);
       await mkdir(cfg.opencodeStateDir, { recursive: true, mode: 0o700 });
 
-      // Write resolved paths back to the agent config file
       const agentFile = join(absConfigDir, 'agents', `${name}.json`);
       if (existsSync(agentFile)) {
         const raw = await readFile(agentFile, 'utf-8');
@@ -512,24 +513,8 @@ export class ProcessRuntime implements DeploymentRuntime {
       }
     }
 
-    // Store tokens in secret store
-    await this.secrets.set(`agent-token:${id}`, managementToken);
-    await this.secrets.set(`chat-token:${id}`, chatToken);
-
-    // Read provider API keys from secret store
-    const allSecretKeys = await this.secrets.list();
-    const providerApiKeys: Record<string, Record<string, string>> = {};
-    for (const secretKey of allSecretKeys) {
-      const parsed = parseProviderSecretKey(secretKey);
-      if (!parsed) continue;
-      const value = await this.secrets.get(secretKey);
-      if (!value) continue;
-      if (!providerApiKeys[parsed.provider]) {
-        providerApiKeys[parsed.provider] = {};
-      }
-      providerApiKeys[parsed.provider][parsed.keyName] = value;
-    }
-
+    // Resolve provider API keys
+    const providerApiKeys = await resolveProviderApiKeys(this.secrets);
     if (Object.keys(providerApiKeys).length === 0) {
       throw new Error(
         'No provider API key configured. Add at least one API key in Mission Control Settings.',
@@ -555,72 +540,7 @@ export class ProcessRuntime implements DeploymentRuntime {
       }
     }
 
-    // Write temp agent-server secrets file
-    const agentSecretsFile: AgentSecretsFile = {
-      providerApiKeys,
-      managementToken,
-      chatToken,
-    };
-    const agentSecretsPath = await writeSecretsFile(agentSecretsFile, 'agent-secrets');
-
-    // Resolve messaging apps targeting any of our agents
-    const resolvedApps: ResolvedMessagingApp[] = [];
-    if (this.messagingApps) {
-      const apps = await this.messagingApps.list();
-      for (const app of apps) {
-        if (!app.enabled) continue;
-        const hasRelevantRule = app.routing.some((r) => agentNames.includes(r.targetAgentName));
-        if (!hasRelevantRule) continue;
-
-        if (app.type === 'whatsapp') {
-          const authStateDir = join(mcDataDir, 'whatsapp-sessions', app.id);
-          resolvedApps.push({ app, token: '', authStateDir });
-        } else {
-          const token = await this.secrets.get(app.credentialsKey);
-          if (token) {
-            resolvedApps.push({ app, token });
-          }
-        }
-      }
-    }
-
-    // Collect WhatsApp auth blobs for messaging apps
-    const whatsappAuthBlobs = new Map<string, Record<string, string>>();
-    for (const { app, authStateDir } of resolvedApps) {
-      if (app.type !== 'whatsapp') continue;
-
-      const channelKey = `messaging-app-${app.id}`;
-      const authPrefix = `${app.credentialsKey}:`;
-
-      // 1. Sync any runtime FileStore updates back into EncryptedSecretStore
-      // (Runtime updates from previous gateway runs are stored in authStateDir/auth.json)
-      if (!authStateDir) continue;
-      try {
-        const { FileSecretStore } = await import('../security/secrets.js');
-        const runtimeStore = new FileSecretStore(authStateDir);
-        const runtimeKeys = await runtimeStore.list();
-        for (const key of runtimeKeys) {
-          const val = await runtimeStore.get(key);
-          if (val) await this.secrets.set(`${authPrefix}${key}`, val);
-        }
-      } catch {
-        // No runtime state to sync (first deploy)
-      }
-
-      // 2. Read all auth keys from encrypted store and bundle as blob
-      const allKeys = await this.secrets.list();
-      const authBlob: Record<string, string> = {};
-      for (const k of allKeys.filter((k) => k.startsWith(authPrefix))) {
-        const val = await this.secrets.get(k);
-        if (val) authBlob[k.slice(authPrefix.length)] = val;
-      }
-
-      if (Object.keys(authBlob).length > 0) {
-        whatsappAuthBlobs.set(channelKey, authBlob);
-      }
-    }
-
-    // Register deployment immediately with provisioning status
+    // Register deployment with provisioning status
     const name = agentNames[0] ?? 'deployment';
     await this.registry.add({
       id,
@@ -634,113 +554,69 @@ export class ProcessRuntime implements DeploymentRuntime {
       },
       createdAt: new Date().toISOString(),
       configDir: absConfigDir,
-      managementPort,
-      managementToken,
-      chatPort,
-      chatToken,
       workspace: agentConfigs[agentNames[0]]?.workspace,
     });
 
-    // Spawn agent-server with piped stdio for startup monitoring
-    const agentServerBin = join(this.projectRoot, 'apps/dash/dist/index.js');
-    const agentServer = this.spawner.spawn(
-      'node',
-      [agentServerBin, '--config', absConfigDir, '--secrets', agentSecretsPath],
-      {
-        env: {
-          ...process.env,
-          MANAGEMENT_API_PORT: String(managementPort),
-          CHAT_API_PORT: String(chatPort),
-        },
-        stdio: ['ignore', 'pipe', 'pipe'],
-        detached: false,
-      },
-    );
-
-    // Wait for startup confirmation
-    const startupResult = await this.startupWatcher(agentServer, managementPort);
-
-    if (!startupResult.success) {
-      // Kill the process if still alive
-      if (agentServer.exitCode === null) {
-        agentServer.kill('SIGKILL');
-      }
-      // Destroy streams
-      (agentServer.stdout as { destroy?: () => void } | undefined)?.destroy?.();
-      (agentServer.stderr as { destroy?: () => void } | undefined)?.destroy?.();
-
-      // Update registry with error state
+    // Ensure gateway is running
+    const gatewayClient = await this.ensureGateway();
+    if (!gatewayClient) {
       await this.registry.update(id, {
         status: 'error',
-        errorMessage: startupResult.reason,
-        startupLogs: startupResult.logs,
+        errorMessage: 'No gateway configured',
       });
-
-      throw new DeploymentStartupError(id, startupResult.reason);
+      throw new DeploymentStartupError(id, 'No gateway configured');
     }
 
-    // Success: detach process and release streams
-    (agentServer as { unref?: () => void }).unref?.();
-    (agentServer.stdout as { destroy?: () => void } | undefined)?.destroy?.();
-    (agentServer.stderr as { destroy?: () => void } | undefined)?.destroy?.();
+    // Register each agent with gateway runtime API
+    try {
+      for (const [agentName, cfg] of Object.entries(agentConfigs)) {
+        const runtimeConfig: RuntimeAgentConfig = {
+          name: agentName,
+          model: cfg.model,
+          systemPrompt: cfg.systemPrompt,
+          fallbackModels: cfg.fallbackModels,
+          tools: cfg.tools,
+          skills: cfg.skills,
+          workspace: cfg.workspace,
+          maxTokens: cfg.maxTokens,
+        };
+        await gatewayClient.registerRuntimeAgent(runtimeConfig);
 
-    // Ensure shared gateway is running and register this deployment
-    const gatewayClient = await this.ensureGateway();
-    if (gatewayClient) {
-      // Register agent(s)
-      for (const agentName of agentNames) {
-        await gatewayClient.registerAgent(
+        // Flatten and set credentials per agent
+        const flatKeys = flattenProviderKeys(providerApiKeys, cfg);
+        if (Object.keys(flatKeys).length > 0) {
+          await gatewayClient.setRuntimeAgentCredentials(agentName, flatKeys);
+        }
+      }
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      await this.registry.update(id, {
+        status: 'error',
+        errorMessage: reason,
+      });
+      throw new DeploymentStartupError(id, reason);
+    }
+
+    // Register messaging app channels
+    if (this.messagingApps) {
+      try {
+        await registerMessagingApps(
+          gatewayClient,
+          this.messagingApps,
+          this.secrets,
           id,
-          agentName,
-          `ws://localhost:${chatPort}/ws`,
-          chatToken,
+          agentNames,
+        );
+      } catch (err) {
+        console.warn(
+          'deploy: messaging app registration failed:',
+          err instanceof Error ? err.message : err,
         );
       }
-
-      // Register messaging app channels
-      for (const { app, token: appToken, authStateDir } of resolvedApps) {
-        if (!app.enabled) continue;
-        const relevantRules = app.routing.filter((r) => agentNames.includes(r.targetAgentName));
-        if (relevantRules.length === 0) continue;
-
-        const channelConfig: GatewayChannelConfig = {
-          adapter: app.type,
-          globalDenyList: app.globalDenyList,
-          routing: relevantRules.map((r) => ({
-            condition: r.condition,
-            agentName: r.targetAgentName,
-            allowList: r.allowList,
-            denyList: r.denyList,
-          })),
-        };
-        if (app.type === 'whatsapp') {
-          channelConfig.authStateDir = authStateDir;
-          channelConfig.whatsappAuth = whatsappAuthBlobs.get(`messaging-app-${app.id}`);
-        } else {
-          channelConfig.token = appToken;
-        }
-
-        await gatewayClient.registerChannel(id, `messaging-app-${app.id}`, channelConfig);
-      }
     }
 
-    this.processes.set(id, { agentServer, startTime: Date.now() });
-
-    // Update registry to running with PID
-    await this.registry.update(id, {
-      status: 'running',
-      agentServerPid: agentServer.pid,
-    });
-
-    // Watch for process exit after successful startup
-    agentServer.on('exit', async () => {
-      if (!this.processes.get(id)) return;
-      try {
-        await this.registry.update(id, { status: 'stopped' });
-      } catch {
-        // Registry update can fail if already removed
-      }
-    });
+    // Update registry to running
+    await this.registry.update(id, { status: 'running' });
 
     return id;
   }
@@ -750,121 +626,91 @@ export class ProcessRuntime implements DeploymentRuntime {
     if (!deployment) throw new Error(`Deployment "${id}" not found`);
     if (!deployment.configDir) throw new Error(`Deployment "${id}" has no config directory`);
 
-    // Stop the old process if still running
+    // Stop the old registration if still running
     if (deployment.status === 'running' || deployment.status === 'provisioning') {
       await this.stop(id);
     }
 
-    // Allocate fresh ports and tokens
-    const [managementPort, chatPort] = await Promise.all([
-      findAvailablePort(),
-      findAvailablePort(),
-    ]);
-    const managementToken = generateToken();
-    const chatToken = generateToken();
-
-    // Update stored tokens
-    await this.secrets.set(`agent-token:${id}`, managementToken);
-    await this.secrets.set(`chat-token:${id}`, chatToken);
-
-    // Read fresh provider API keys from secret store
-    const allSecretKeys = await this.secrets.list();
-    const providerApiKeys: Record<string, Record<string, string>> = {};
-    for (const secretKey of allSecretKeys) {
-      const parsed = parseProviderSecretKey(secretKey);
-      if (!parsed) continue;
-      const value = await this.secrets.get(secretKey);
-      if (!value) continue;
-      if (!providerApiKeys[parsed.provider]) {
-        providerApiKeys[parsed.provider] = {};
-      }
-      providerApiKeys[parsed.provider][parsed.keyName] = value;
+    // Read fresh agent configs from disk
+    const agentConfigs = await readAgentConfigs(deployment.configDir);
+    const agentNames = Object.keys(agentConfigs);
+    if (agentNames.length === 0) {
+      throw new Error('No agent configurations found in config directory');
     }
 
+    // Resolve provider API keys
+    const providerApiKeys = await resolveProviderApiKeys(this.secrets);
     if (Object.keys(providerApiKeys).length === 0) {
       throw new Error(
         'No provider API key configured. Add at least one API key in Mission Control Settings.',
       );
     }
 
-    // Write temp secrets file
-    const agentSecretsFile: AgentSecretsFile = {
-      providerApiKeys,
-      managementToken,
-      chatToken,
-    };
-    const agentSecretsPath = await writeSecretsFile(agentSecretsFile, 'agent-secrets');
-
     // Update registry to provisioning
     await this.registry.update(id, {
       status: 'provisioning',
-      managementPort,
-      managementToken,
-      chatPort,
-      chatToken,
       errorMessage: undefined,
       startupLogs: undefined,
     });
 
-    // Spawn agent-server
-    const agentServerBin = join(this.projectRoot, 'apps/dash/dist/index.js');
-    const agentServer = this.spawner.spawn(
-      'node',
-      [agentServerBin, '--config', deployment.configDir, '--secrets', agentSecretsPath],
-      {
-        env: {
-          ...process.env,
-          MANAGEMENT_API_PORT: String(managementPort),
-          CHAT_API_PORT: String(chatPort),
-        },
-        stdio: ['ignore', 'pipe', 'pipe'],
-        detached: false,
-      },
-    );
-
-    // Wait for startup
-    const startupResult = await this.startupWatcher(agentServer, managementPort);
-
-    if (!startupResult.success) {
-      if (agentServer.exitCode === null) agentServer.kill('SIGKILL');
-      (agentServer.stdout as { destroy?: () => void } | undefined)?.destroy?.();
-      (agentServer.stderr as { destroy?: () => void } | undefined)?.destroy?.();
-
+    // Ensure gateway and re-register
+    const gatewayClient = await this.ensureGateway();
+    if (!gatewayClient) {
       await this.registry.update(id, {
         status: 'error',
-        errorMessage: startupResult.reason,
-        startupLogs: startupResult.logs,
+        errorMessage: 'No gateway configured',
       });
-
-      throw new DeploymentStartupError(id, startupResult.reason);
+      throw new DeploymentStartupError(id, 'No gateway configured');
     }
 
-    // Success
-    (agentServer as { unref?: () => void }).unref?.();
-    (agentServer.stdout as { destroy?: () => void } | undefined)?.destroy?.();
-    (agentServer.stderr as { destroy?: () => void } | undefined)?.destroy?.();
+    try {
+      for (const [agentName, cfg] of Object.entries(agentConfigs)) {
+        const runtimeConfig: RuntimeAgentConfig = {
+          name: agentName,
+          model: cfg.model,
+          systemPrompt: cfg.systemPrompt,
+          fallbackModels: cfg.fallbackModels,
+          tools: cfg.tools,
+          skills: cfg.skills,
+          workspace: cfg.workspace,
+          maxTokens: cfg.maxTokens,
+        };
+        await gatewayClient.registerRuntimeAgent(runtimeConfig);
 
-    // Re-register with gateway
-    const gatewayClient = await this.ensureGateway();
-    if (gatewayClient) {
-      await this.registerWithGateway(id);
-    }
-
-    this.processes.set(id, { agentServer, startTime: Date.now() });
-
-    await this.registry.update(id, {
-      status: 'running',
-      agentServerPid: agentServer.pid,
-    });
-
-    agentServer.on('exit', async () => {
-      if (!this.processes.get(id)) return;
-      try {
-        await this.registry.update(id, { status: 'stopped' });
-      } catch {
-        // Registry update can fail if already removed
+        const flatKeys = flattenProviderKeys(providerApiKeys, cfg);
+        if (Object.keys(flatKeys).length > 0) {
+          await gatewayClient.setRuntimeAgentCredentials(agentName, flatKeys);
+        }
       }
-    });
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      await this.registry.update(id, {
+        status: 'error',
+        errorMessage: reason,
+      });
+      throw new DeploymentStartupError(id, reason);
+    }
+
+    // Register messaging app channels
+    if (this.messagingApps) {
+      try {
+        await registerMessagingApps(
+          gatewayClient,
+          this.messagingApps,
+          this.secrets,
+          id,
+          agentNames,
+        );
+      } catch (err) {
+        console.warn(
+          'start: messaging app registration failed:',
+          err instanceof Error ? err.message : err,
+        );
+      }
+    }
+
+    // Update registry to running
+    await this.registry.update(id, { status: 'running' });
   }
 
   async stop(id: string): Promise<void> {
@@ -873,40 +719,20 @@ export class ProcessRuntime implements DeploymentRuntime {
       throw new Error(`Deployment "${id}" not found`);
     }
 
-    // Deregister from shared gateway (best-effort)
     const gatewayClient = await this.getGatewayClient();
     if (gatewayClient) {
-      await gatewayClient.deregisterDeployment(id); // already swallows errors
-    }
+      // Remove runtime agents for this deployment
+      const agents = deployment.config?.agents ?? {};
+      for (const agentName of Object.keys(agents)) {
+        try {
+          await gatewayClient.removeRuntimeAgent(agentName);
+        } catch {
+          // Best-effort: agent may already be removed or gateway down
+        }
+      }
 
-    const state = this.processes.get(id);
-    if (state) {
-      // Graceful shutdown: SIGTERM → wait 5s → SIGKILL
-      const killProcess = (proc: SpawnedProcess): Promise<void> => {
-        return new Promise((resolve) => {
-          if (proc.exitCode !== null) {
-            resolve();
-            return;
-          }
-
-          const timeout = setTimeout(() => {
-            proc.kill('SIGKILL');
-          }, 5000);
-
-          proc.on('exit', () => {
-            clearTimeout(timeout);
-            resolve();
-          });
-
-          proc.kill('SIGTERM');
-        });
-      };
-
-      this.processes.delete(id);
-      await killProcess(state.agentServer);
-    } else {
-      // Process not tracked in memory — PID-based kill with SIGTERM → SIGKILL escalation
-      if (deployment.agentServerPid) await killPidWithEscalation(deployment.agentServerPid);
+      // Deregister channels
+      await gatewayClient.deregisterDeployment(id);
     }
 
     await this.registry.update(id, { status: 'stopped' });
@@ -937,36 +763,32 @@ export class ProcessRuntime implements DeploymentRuntime {
       throw new Error(`Deployment "${id}" not found`);
     }
 
-    const state = this.processes.get(id);
-    const snapshot: ProcessSnapshot | null = state
-      ? {
-          agentServer: {
-            exitCode: state.agentServer.exitCode,
-            pid: state.agentServer.pid,
-          },
-          startTime: state.startTime,
+    // If deployment claims to be running, verify with gateway
+    if (deployment.status === 'running') {
+      const gatewayClient = await this.getGatewayClient();
+      if (gatewayClient) {
+        const agents = deployment.config?.agents ?? {};
+        const agentNames = Object.keys(agents);
+        if (agentNames.length > 0) {
+          try {
+            const agentInfo = await gatewayClient.getRuntimeAgent(agentNames[0]);
+            if (agentInfo.status === 'active') {
+              return { state: 'running' };
+            }
+            if (agentInfo.status === 'registered') {
+              return { state: 'running' };
+            }
+            if (agentInfo.status === 'disabled') {
+              return { state: 'stopped' };
+            }
+          } catch {
+            // Gateway may be down — fall through to registry status
+          }
         }
-      : null;
-
-    // Build health check callback if management API is configured
-    let healthCheck: (() => Promise<boolean>) | undefined;
-    if (deployment.managementPort && deployment.managementToken) {
-      const { ManagementClient } = await import('@dash/management');
-      const client = new ManagementClient(
-        `http://localhost:${deployment.managementPort}`,
-        deployment.managementToken,
-      );
-      healthCheck = async () => {
-        try {
-          await client.health();
-          return true;
-        } catch {
-          return false;
-        }
-      };
+      }
     }
 
-    return await resolveRuntimeStatus(snapshot, deployment, undefined, healthCheck);
+    return await resolveRuntimeStatus(deployment);
   }
 
   async updateAgentConfig(
@@ -1012,40 +834,35 @@ export class ProcessRuntime implements DeploymentRuntime {
       await this.registry.update(id, { config: deployment.config });
     }
 
-    // 3. Push to running agent server (best-effort — server may be unreachable)
-    if (
-      deployment.status === 'running' &&
-      deployment.managementPort &&
-      deployment.managementToken
-    ) {
-      try {
-        const { ManagementClient } = await import('@dash/management');
-        const client = new ManagementClient(
-          `http://127.0.0.1:${deployment.managementPort}`,
-          deployment.managementToken,
-        );
-        await client.updateAgentConfig(agentName, patch);
-      } catch {
-        // Config saved to disk and registry — will apply on next restart
+    // 3. Push to running agent via gateway runtime API (best-effort)
+    if (deployment.status === 'running') {
+      const gatewayClient = await this.getGatewayClient();
+      if (gatewayClient) {
+        try {
+          const runtimePatch: Partial<RuntimeAgentConfig> = {};
+          if (patch.model !== undefined) runtimePatch.model = patch.model;
+          if (patch.fallbackModels !== undefined)
+            runtimePatch.fallbackModels = patch.fallbackModels;
+          if (patch.tools !== undefined) runtimePatch.tools = patch.tools;
+          if (patch.systemPrompt !== undefined) runtimePatch.systemPrompt = patch.systemPrompt;
+          await gatewayClient.updateRuntimeAgent(agentName, runtimePatch);
+        } catch (err) {
+          console.warn(
+            'updateAgentConfig: gateway update failed (will apply on restart):',
+            err instanceof Error ? err.message : err,
+          );
+        }
       }
     }
   }
 
-  async *getLogs(id: string, signal?: AbortSignal): AsyncIterable<string> {
+  async *getLogs(id: string, _signal?: AbortSignal): AsyncIterable<string> {
     const deployment = await this.registry.get(id);
     if (!deployment) {
       throw new Error(`Deployment "${id}" not found`);
     }
 
-    if (!deployment.managementPort || !deployment.managementToken) {
-      throw new Error(`Deployment "${id}" has no management API configured. Cannot retrieve logs.`);
-    }
-
-    const { ManagementClient } = await import('@dash/management');
-    const client = new ManagementClient(
-      `http://localhost:${deployment.managementPort}`,
-      deployment.managementToken,
-    );
-    yield* client.streamLogs(signal);
+    // Gateway log streaming not wired yet
+    yield '[warn] Log streaming not yet available (pending gateway log streaming)';
   }
 }

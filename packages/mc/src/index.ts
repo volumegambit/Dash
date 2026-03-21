@@ -19,24 +19,17 @@ export type { DeploymentRuntime, RuntimeStatus } from './runtime/types.js';
 export { providerSecretKey, parseProviderSecretKey } from './runtime/provider-keys.js';
 export {
   ProcessRuntime,
-  findAvailablePort,
   validateConfigDir,
   defaultProcessSpawner,
-  waitForStartup,
   defaultHealthChecker,
-  defaultStartupWatcher,
   DeploymentStartupError,
 } from './runtime/process.js';
 export type {
   ProcessSpawner,
   SpawnedProcess,
-  ResolvedMessagingApp,
   HealthChecker,
-  StartupResult,
-  StartupWatcher,
 } from './runtime/process.js';
 export { resolveRuntimeStatus } from './runtime/status.js';
-export type { ProcessSnapshot } from './runtime/status.js';
 export { ConversationStore } from './conversations.js';
 export type { McConversation, McMessage } from './conversations.js';
 export type { MessagingApp, RoutingRule, RoutingCondition } from './types.js';
@@ -53,3 +46,5 @@ export type {
   GatewayChannelConfig,
   GatewayHealthResponse,
 } from './runtime/gateway-client.js';
+export { GatewayStateStore } from './runtime/gateway-state.js';
+export type { GatewayState } from './runtime/gateway-state.js';

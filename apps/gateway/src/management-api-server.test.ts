@@ -19,7 +19,7 @@ describe('createGatewayManagementApp', () => {
   it('GET /health returns startedAt and counts without auth', async () => {
     const gw = makeFakeGateway();
     const startedAt = '2026-03-08T00:00:00Z';
-    const app = createGatewayManagementApp(gw, startedAt);
+    const app = createGatewayManagementApp({ gateway: gw, startedAt });
 
     const res = await app.request('/health');
     expect(res.status).toBe(200);
@@ -32,7 +32,11 @@ describe('createGatewayManagementApp', () => {
 
   it('POST /agents registers agent and returns 201', async () => {
     const gw = makeFakeGateway();
-    const app = createGatewayManagementApp(gw, '2026-03-08T00:00:00Z', 'secret-token');
+    const app = createGatewayManagementApp({
+      gateway: gw,
+      startedAt: '2026-03-08T00:00:00Z',
+      token: 'secret-token',
+    });
 
     const res = await app.request('/agents', {
       method: 'POST',
@@ -51,7 +55,11 @@ describe('createGatewayManagementApp', () => {
 
   it('POST /agents returns 401 with wrong token', async () => {
     const gw = makeFakeGateway();
-    const app = createGatewayManagementApp(gw, '2026-03-08T00:00:00Z', 'secret-token');
+    const app = createGatewayManagementApp({
+      gateway: gw,
+      startedAt: '2026-03-08T00:00:00Z',
+      token: 'secret-token',
+    });
 
     const res = await app.request('/agents', {
       method: 'POST',
@@ -70,7 +78,11 @@ describe('createGatewayManagementApp', () => {
 
   it('DELETE /deployments/:id deregisters deployment', async () => {
     const gw = makeFakeGateway();
-    const app = createGatewayManagementApp(gw, '2026-03-08T00:00:00Z', 'tok');
+    const app = createGatewayManagementApp({
+      gateway: gw,
+      startedAt: '2026-03-08T00:00:00Z',
+      token: 'tok',
+    });
 
     const res = await app.request('/deployments/dep1', {
       method: 'DELETE',
@@ -83,7 +95,11 @@ describe('createGatewayManagementApp', () => {
 
   it('POST /channels registers telegram channel', async () => {
     const gw = makeFakeGateway();
-    const app = createGatewayManagementApp(gw, '2026-03-08T00:00:00Z', 'tok');
+    const app = createGatewayManagementApp({
+      gateway: gw,
+      startedAt: '2026-03-08T00:00:00Z',
+      token: 'tok',
+    });
 
     const res = await app.request('/channels', {
       method: 'POST',
@@ -108,7 +124,11 @@ describe('createGatewayManagementApp', () => {
 
   it('POST /channels returns 400 for telegram missing token', async () => {
     const gw = makeFakeGateway();
-    const app = createGatewayManagementApp(gw, '2026-03-08T00:00:00Z', 'tok');
+    const app = createGatewayManagementApp({
+      gateway: gw,
+      startedAt: '2026-03-08T00:00:00Z',
+      token: 'tok',
+    });
 
     const res = await app.request('/channels', {
       method: 'POST',
@@ -130,7 +150,11 @@ describe('createGatewayManagementApp', () => {
 
   it('POST /agents returns 400 for missing fields', async () => {
     const gw = makeFakeGateway();
-    const app = createGatewayManagementApp(gw, '2026-03-08T00:00:00Z', 'tok');
+    const app = createGatewayManagementApp({
+      gateway: gw,
+      startedAt: '2026-03-08T00:00:00Z',
+      token: 'tok',
+    });
 
     const res = await app.request('/agents', {
       method: 'POST',

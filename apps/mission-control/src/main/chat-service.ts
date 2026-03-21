@@ -3,6 +3,11 @@ import type { AgentRegistry, ConversationStore, McConversation, McMessage } from
 import WebSocket from 'ws';
 import type { McAgentEvent } from '../shared/ipc.js';
 
+export interface GatewayConnection {
+  channelPort: number;
+  chatToken?: string;
+}
+
 export class ChatService {
   private activeStreams = new Map<string, { ws: WebSocket; msgId: string }>();
 
@@ -12,7 +17,12 @@ export class ChatService {
     private onEvent: (conversationId: string, event: McAgentEvent) => void,
     private onDone: (conversationId: string) => void,
     private onError: (conversationId: string, error: string) => void,
+    private gatewayConnection?: GatewayConnection,
   ) {}
+
+  setGatewayConnection(connection: GatewayConnection): void {
+    this.gatewayConnection = connection;
+  }
 
   async createConversation(deploymentId: string, agentName: string): Promise<McConversation> {
     return this.store.create(deploymentId, agentName);
@@ -49,7 +59,7 @@ export class ChatService {
 
     const deployment = await this.registry.get(conversation.deploymentId);
     if (!deployment) throw new Error(`Deployment "${conversation.deploymentId}" not found`);
-    if (!deployment.chatPort) {
+    if (deployment.status !== 'running') {
       throw new Error(`Deployment "${conversation.deploymentId}" is not running`);
     }
 
@@ -61,8 +71,9 @@ export class ChatService {
     };
     await this.store.appendMessage(conversationId, userMessage);
 
-    const token = deployment.chatToken;
-    const url = `ws://localhost:${deployment.chatPort}/ws${token ? `?token=${encodeURIComponent(token)}` : ''}`;
+    if (!this.gatewayConnection) throw new Error('Gateway connection not configured');
+    const { channelPort, chatToken } = this.gatewayConnection;
+    const url = `ws://localhost:${channelPort}/ws/chat${chatToken ? `?token=${encodeURIComponent(chatToken)}` : ''}`;
     const msgId = randomUUID();
     const ws = new WebSocket(url);
     this.activeStreams.set(conversationId, { ws, msgId });

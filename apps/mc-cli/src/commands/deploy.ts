@@ -103,10 +103,7 @@ export function registerDeployCommand(program: Command): void {
 
         const status = await runtime.getStatus(id);
         console.log(`✓ Deployment ${id} started`);
-        if (status.managementPort)
-          console.log(`  Management API: http://localhost:${status.managementPort}`);
-        if (status.chatPort) console.log(`  Chat API: ws://localhost:${status.chatPort}/ws`);
-        if (status.agentServerPid) console.log(`  Agent server PID: ${status.agentServerPid}`);
+        console.log(`  State: ${status.state}`);
       } catch (err) {
         console.error(`Deploy failed: ${(err as Error).message}`);
         process.exitCode = 1;

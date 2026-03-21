@@ -22,7 +22,13 @@ describe('GatewayStateStore', () => {
 
   it('writes and reads back state', async () => {
     const store = new GatewayStateStore(tmpDir);
-    const state = { pid: 12345, startedAt: '2026-03-08T00:00:00Z', token: 'tok', port: 9300 };
+    const state = {
+      pid: 12345,
+      startedAt: '2026-03-08T00:00:00Z',
+      token: 'tok',
+      port: 9300,
+      channelPort: 9301,
+    };
     await store.write(state);
     const read = await store.read();
     expect(read).toEqual(state);
@@ -38,7 +44,7 @@ describe('GatewayStateStore', () => {
 
   it('clear() removes the state file', async () => {
     const store = new GatewayStateStore(tmpDir);
-    await store.write({ pid: 1, startedAt: 'x', token: 'y', port: 9300 });
+    await store.write({ pid: 1, startedAt: 'x', token: 'y', port: 9300, channelPort: 9301 });
     await store.clear();
     expect(await store.read()).toBeNull();
   });
