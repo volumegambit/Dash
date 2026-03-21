@@ -6,12 +6,12 @@ import { join } from 'node:path';
 import { AgentRegistry, ConversationStore } from '@dash/mc';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { WebSocketServer } from 'ws';
+import type { GatewayConnection } from './chat-service.js';
 import { ChatService } from './chat-service.js';
 
 const BASE_PORT = 19700 + Math.floor(Math.random() * 200);
 
-// TODO: Task 4/7 will update these tests to use gateway channel port
-function makeDeployment(_chatPort: number, _chatToken?: string) {
+function makeDeployment() {
   return {
     id: 'dep-1',
     name: 'test',
@@ -32,6 +32,11 @@ describe('ChatService', () => {
   let onError: ReturnType<typeof vi.fn>;
   let service: ChatService;
 
+  function makeService(port: number, token?: string): ChatService {
+    const gw: GatewayConnection = { channelPort: port, chatToken: token };
+    return new ChatService(registry, store, onEvent, onDone, onError, gw);
+  }
+
   beforeEach(async () => {
     dataDir = join(tmpdir(), `chat-service-test-${Date.now()}`);
     await mkdir(dataDir, { recursive: true });
@@ -40,7 +45,7 @@ describe('ChatService', () => {
     onEvent = vi.fn();
     onDone = vi.fn();
     onError = vi.fn();
-    service = new ChatService(registry, store, onEvent, onDone, onError);
+    service = makeService(BASE_PORT);
   });
 
   afterEach(async () => {
@@ -52,7 +57,7 @@ describe('ChatService', () => {
   });
 
   it('creates and lists conversations', async () => {
-    await registry.add(makeDeployment(BASE_PORT));
+    await registry.add(makeDeployment());
     const conv = await service.createConversation('dep-1', 'myagent');
     expect(conv.agentName).toBe('myagent');
     const list = await service.listConversations('dep-1');
@@ -60,9 +65,11 @@ describe('ChatService', () => {
   });
 
   it('sends user message then streams events and done', async () => {
-    await registry.add(makeDeployment(BASE_PORT + 100));
+    const port = BASE_PORT + 100;
+    service = makeService(port);
+    await registry.add(makeDeployment());
 
-    wss = new WebSocketServer({ port: BASE_PORT + 100 });
+    wss = new WebSocketServer({ port });
     wss.on('connection', (ws) => {
       ws.on('message', (raw) => {
         const msg = JSON.parse(String(raw));
@@ -95,9 +102,11 @@ describe('ChatService', () => {
   });
 
   it('calls onError when gateway sends error', async () => {
-    await registry.add(makeDeployment(BASE_PORT + 200));
+    const port = BASE_PORT + 200;
+    service = makeService(port);
+    await registry.add(makeDeployment());
 
-    wss = new WebSocketServer({ port: BASE_PORT + 200 });
+    wss = new WebSocketServer({ port });
     wss.on('connection', (ws) => {
       ws.on('message', (raw) => {
         const msg = JSON.parse(String(raw));
@@ -120,16 +129,27 @@ describe('ChatService', () => {
   });
 
   it('throws if deployment is not running', async () => {
-    await registry.add({ ...makeDeployment(BASE_PORT + 300), status: 'stopped' as const });
+    await registry.add({ ...makeDeployment(), status: 'stopped' as const });
     const conv = await service.createConversation('dep-1', 'myagent');
     await expect(service.sendMessage(conv.id, 'hello')).rejects.toThrow('not running');
   });
 
+  it('throws if gateway connection is not configured', async () => {
+    const noGwService = new ChatService(registry, store, onEvent, onDone, onError);
+    await registry.add(makeDeployment());
+    const conv = await noGwService.createConversation('dep-1', 'myagent');
+    await expect(noGwService.sendMessage(conv.id, 'hello')).rejects.toThrow(
+      'Gateway connection not configured',
+    );
+  });
+
   it('cancel closes the active WebSocket', async () => {
-    await registry.add(makeDeployment(BASE_PORT + 400));
+    const port = BASE_PORT + 400;
+    service = makeService(port);
+    await registry.add(makeDeployment());
 
     let serverWs: import('ws').WebSocket | undefined;
-    wss = new WebSocketServer({ port: BASE_PORT + 400 });
+    wss = new WebSocketServer({ port });
     wss.on('connection', (ws) => {
       serverWs = ws;
       ws.on('message', async () => {
@@ -159,10 +179,12 @@ describe('ChatService', () => {
   });
 
   it('answerQuestion sends answer over active WebSocket', async () => {
-    await registry.add(makeDeployment(BASE_PORT + 500));
+    const port = BASE_PORT + 500;
+    service = makeService(port);
+    await registry.add(makeDeployment());
 
     let receivedAnswer: Record<string, unknown> | undefined;
-    wss = new WebSocketServer({ port: BASE_PORT + 500 });
+    wss = new WebSocketServer({ port });
     wss.on('connection', (ws) => {
       ws.on('message', (raw) => {
         const msg = JSON.parse(String(raw));
@@ -212,5 +234,27 @@ describe('ChatService', () => {
 
   it('answerQuestion throws if no active stream', () => {
     expect(() => service.answerQuestion('nonexistent', 'q-1', 'A')).toThrow('No active stream');
+  });
+
+  it('setGatewayConnection updates the connection', async () => {
+    const port = BASE_PORT + 600;
+    const noGwService = new ChatService(registry, store, onEvent, onDone, onError);
+    noGwService.setGatewayConnection({ channelPort: port });
+    await registry.add(makeDeployment());
+
+    wss = new WebSocketServer({ port });
+    wss.on('connection', (ws) => {
+      ws.on('message', (raw) => {
+        const msg = JSON.parse(String(raw));
+        ws.send(JSON.stringify({ type: 'done', id: msg.id }));
+      });
+    });
+    await new Promise<void>((r) => wss?.on('listening', r));
+
+    const conv = await noGwService.createConversation('dep-1', 'myagent');
+    await noGwService.sendMessage(conv.id, 'hello');
+    await new Promise((r) => setTimeout(r, 100));
+
+    expect(onDone).toHaveBeenCalledWith(conv.id);
   });
 });
