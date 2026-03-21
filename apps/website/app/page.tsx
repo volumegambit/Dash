@@ -6,6 +6,8 @@ import { AIProviders } from '@/components/AIProviders';
 import { MessagingApps } from '@/components/MessagingApps';
 import { UseCases } from '@/components/UseCases';
 import { HowItWorks } from '@/components/HowItWorks';
+import { FinalCTA } from '@/components/FinalCTA';
+import { Footer } from '@/components/Footer';
 
 export default function Home() {
   return (
@@ -18,6 +20,8 @@ export default function Home() {
       <MessagingApps />
       <UseCases />
       <HowItWorks />
+      <FinalCTA />
+      <Footer />
     </main>
   );
 }
