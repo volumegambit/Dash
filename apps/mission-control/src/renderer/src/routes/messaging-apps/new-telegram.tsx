@@ -155,7 +155,7 @@ function NewTelegramWizard(): JSX.Element {
             .map((s, i) => (
               <div
                 key={s}
-                className={`h-1 flex-1 rounded-full transition-colors ${i <= stepIndex ? 'bg-primary' : 'bg-sidebar-hover'}`}
+                className={`h-1 flex-1 rounded-full transition-colors ${i <= stepIndex ? 'bg-accent' : 'bg-card-hover'}`}
               />
             ))}
         </div>
@@ -164,7 +164,9 @@ function NewTelegramWizard(): JSX.Element {
       <div className="min-h-[360px]">
         {stepId === 'choose-path' && (
           <div>
-            <h2 className="text-xl font-bold">Connect Telegram</h2>
+            <h2 className="text-xl font-bold font-[family-name:var(--font-display)]">
+              Connect Telegram
+            </h2>
             <p className="mt-2 text-sm text-muted">
               By connecting Telegram, you or others can send messages to your agents.
             </p>
@@ -172,7 +174,7 @@ function NewTelegramWizard(): JSX.Element {
               <button
                 type="button"
                 onClick={() => choosePath('new')}
-                className="rounded-lg border-2 border-border px-5 py-4 text-left transition-colors hover:border-primary/50 hover:bg-sidebar-hover"
+                className="rounded-lg border-2 border-border px-5 py-4 text-left transition-colors hover:border-accent/50 hover:bg-card-hover"
               >
                 <p className="font-medium">I'm new to Telegram</p>
                 <p className="text-sm text-muted">
@@ -182,7 +184,7 @@ function NewTelegramWizard(): JSX.Element {
               <button
                 type="button"
                 onClick={() => choosePath('know')}
-                className="rounded-lg border-2 border-border px-5 py-4 text-left transition-colors hover:border-primary/50 hover:bg-sidebar-hover"
+                className="rounded-lg border-2 border-border px-5 py-4 text-left transition-colors hover:border-accent/50 hover:bg-card-hover"
               >
                 <p className="font-medium">I know Telegram — help me create a bot</p>
                 <p className="text-sm text-muted">Skip the basics, start with BotFather</p>
@@ -190,7 +192,7 @@ function NewTelegramWizard(): JSX.Element {
               <button
                 type="button"
                 onClick={() => choosePath('token')}
-                className="rounded-lg border-2 border-border px-5 py-4 text-left transition-colors hover:border-primary/50 hover:bg-sidebar-hover"
+                className="rounded-lg border-2 border-border px-5 py-4 text-left transition-colors hover:border-accent/50 hover:bg-card-hover"
               >
                 <p className="font-medium">I already have a bot token</p>
                 <p className="text-sm text-muted">Go straight to connecting your existing bot</p>
@@ -200,7 +202,7 @@ function NewTelegramWizard(): JSX.Element {
               <button
                 type="button"
                 onClick={() => navigate({ to: '/messaging-apps' })}
-                className="inline-flex items-center gap-2 rounded-lg border border-border px-4 py-2 text-sm text-muted transition-colors hover:bg-sidebar-hover hover:text-foreground"
+                className="inline-flex items-center gap-2 rounded-lg border border-border px-4 py-2 text-sm text-muted transition-colors hover:bg-card-hover hover:text-foreground"
               >
                 <ArrowLeft size={14} />
                 Cancel
@@ -235,8 +237,8 @@ function NewTelegramWizard(): JSX.Element {
               When someone opens your bot's chat and sends a message, your AI assistant will read it
               and reply — automatically.
             </p>
-            <div className="mt-5 rounded-lg border border-border bg-sidebar-bg p-4 text-sm">
-              <p className="font-medium">💡 Good to know:</p>
+            <div className="mt-5 rounded-lg border border-border bg-card-bg p-4 text-sm">
+              <p className="font-medium">Good to know:</p>
               <ul className="mt-2 space-y-1 text-muted">
                 <li>• Your bot gets its own unique name (ending in "bot")</li>
                 <li>• You control who can message it</li>
@@ -266,14 +268,14 @@ function NewTelegramWizard(): JSX.Element {
               />
               <Step number={4} text='Tap the blue "START" button at the bottom' />
             </div>
-            <div className="mt-4 rounded-lg border border-border bg-sidebar-bg p-4 text-sm">
-              <p className="font-medium">💡 Tip: use Telegram on the web</p>
+            <div className="mt-4 rounded-lg border border-border bg-card-bg p-4 text-sm">
+              <p className="font-medium">Tip: use Telegram on the web</p>
               <p className="mt-1 text-muted">
                 Open Telegram at{' '}
                 <button
                   type="button"
                   onClick={() => window.api.openExternal('https://web.telegram.org')}
-                  className="text-primary hover:underline"
+                  className="text-accent hover:underline"
                 >
                   web.telegram.org
                 </button>{' '}
@@ -283,7 +285,7 @@ function NewTelegramWizard(): JSX.Element {
             <button
               type="button"
               onClick={() => window.api.openExternal('https://t.me/BotFather')}
-              className="mt-5 inline-flex items-center gap-2 rounded-lg border border-border px-4 py-2 text-sm text-muted hover:bg-sidebar-hover hover:text-foreground"
+              className="mt-5 inline-flex items-center gap-2 rounded-lg border border-border px-4 py-2 text-sm text-muted hover:bg-card-hover hover:text-foreground"
             >
               <ExternalLink size={14} />
               Open BotFather in browser
@@ -309,10 +311,10 @@ function NewTelegramWizard(): JSX.Element {
                 number={3}
                 text='BotFather asks for a username. This must end in "bot" — e.g. "myassistant_bot"'
               />
-              <Step number={4} text="BotFather will confirm your bot is created ✅" />
+              <Step number={4} text="BotFather will confirm your bot is created" />
             </div>
-            <div className="mt-4 rounded-lg border border-border bg-sidebar-bg p-4 text-sm text-muted">
-              💡 The username can't be changed later, but the display name can. Keep it simple.
+            <div className="mt-4 rounded-lg border border-border bg-card-bg p-4 text-sm text-muted">
+              The username can't be changed later, but the display name can. Keep it simple.
             </div>
           </WizardStep>
         )}
@@ -329,11 +331,11 @@ function NewTelegramWizard(): JSX.Element {
               <strong>token</strong>. This is the "key" that lets your assistant connect to your
               bot.
             </p>
-            <div className="mt-4 rounded-lg border border-amber-600/40 bg-amber-900/10 p-4 text-sm">
-              <p className="font-medium text-amber-300">⚠️ Keep this code private</p>
+            <div className="mt-4 rounded-lg border border-border bg-card-bg p-4 text-sm">
+              <p className="font-medium text-foreground">Keep this code private</p>
               <p className="mt-1 text-muted">
                 The token looks like:{' '}
-                <code className="font-mono text-xs">
+                <code className="font-[family-name:var(--font-mono)] text-xs">
                   110201543:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw
                 </code>
               </p>
@@ -343,7 +345,7 @@ function NewTelegramWizard(): JSX.Element {
             </div>
             <p className="mt-4 text-sm text-muted">
               Don't worry if the message disappears — you can always ask BotFather for it again by
-              sending <code className="font-mono">/mybots</code>.
+              sending <code className="font-[family-name:var(--font-mono)]">/mybots</code>.
             </p>
           </WizardStep>
         )}
@@ -354,7 +356,14 @@ function NewTelegramWizard(): JSX.Element {
               Paste the token you copied from BotFather into the box below:
             </p>
             <div className="mt-5">
+              <label
+                htmlFor="bot-token"
+                className="block font-[family-name:var(--font-mono)] text-xs uppercase tracking-wider text-muted mb-1"
+              >
+                Bot Token
+              </label>
               <input
+                id="bot-token"
                 type="text"
                 value={token}
                 onChange={(e) => {
@@ -362,9 +371,9 @@ function NewTelegramWizard(): JSX.Element {
                   setVerifyError('');
                 }}
                 placeholder="110201543:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw"
-                className="w-full rounded-lg border border-border bg-background px-3 py-2 font-mono text-sm focus:border-primary focus:outline-none"
+                className="w-full rounded-lg border border-border bg-card-bg px-3 py-2 font-[family-name:var(--font-mono)] text-sm focus:border-accent focus:outline-none"
               />
-              {verifyError && <p className="mt-2 text-sm text-red-400">❌ {verifyError}</p>}
+              {verifyError && <p className="mt-2 text-sm text-red">Error: {verifyError}</p>}
               <p className="mt-2 text-xs text-muted">
                 We'll verify the token is correct before continuing.
               </p>
@@ -373,7 +382,7 @@ function NewTelegramWizard(): JSX.Element {
               type="button"
               onClick={handleVerifyToken}
               disabled={!token.trim() || verifying}
-              className="mt-5 inline-flex items-center gap-2 rounded-lg bg-primary px-5 py-2 text-sm text-white transition-colors hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-50"
+              className="mt-5 inline-flex items-center gap-2 rounded-lg bg-accent px-5 py-2 text-sm text-white transition-colors hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
             >
               {verifying ? <Loader size={14} className="animate-spin" /> : <Check size={14} />}
               {verifying ? 'Verifying…' : 'Verify and continue'}
@@ -388,10 +397,10 @@ function NewTelegramWizard(): JSX.Element {
             onBack={goPrev}
           >
             {botInfo && (
-              <div className="mb-4 flex items-center gap-3 rounded-lg border border-green-600/40 bg-green-900/10 p-3">
-                <CheckCircle size={20} className="text-green-400" />
+              <div className="mb-4 flex items-center gap-3 rounded-lg border border-border bg-green-tint p-3">
+                <CheckCircle size={20} className="text-green" />
                 <div>
-                  <p className="text-sm font-medium text-green-300">Bot verified!</p>
+                  <p className="text-sm font-medium text-green">Bot verified!</p>
                   <p className="text-xs text-muted">
                     @{botInfo.username} · {botInfo.firstName}
                   </p>
@@ -403,12 +412,19 @@ function NewTelegramWizard(): JSX.Element {
               describes what it's for.
             </p>
             <div className="mt-5">
+              <label
+                htmlFor="connection-name"
+                className="block font-[family-name:var(--font-mono)] text-xs uppercase tracking-wider text-muted mb-1"
+              >
+                Connection Name
+              </label>
               <input
+                id="connection-name"
                 type="text"
                 value={connectionName}
                 onChange={(e) => setConnectionName(e.target.value)}
                 placeholder='e.g. "Customer Support Bot" or "Family Chat Bot"'
-                className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm focus:border-primary focus:outline-none"
+                className="w-full rounded-lg border border-border bg-card-bg px-3 py-2 text-sm focus:border-accent focus:outline-none"
               />
             </div>
           </WizardStep>
@@ -420,7 +436,7 @@ function NewTelegramWizard(): JSX.Element {
               Which AI assistant should handle messages sent to this bot?
             </p>
             {availableAgents.length === 0 ? (
-              <div className="mt-4 rounded-lg border border-border bg-sidebar-bg p-4 text-sm text-muted">
+              <div className="mt-4 rounded-lg border border-border bg-card-bg p-4 text-sm text-muted">
                 No agents are running. Deploy an agent first, then come back here.
               </div>
             ) : (
@@ -435,8 +451,8 @@ function NewTelegramWizard(): JSX.Element {
                     className={`rounded-lg border-2 px-4 py-3 text-left text-sm transition-colors ${
                       selectedAgent?.agentName === a.agentName &&
                       selectedAgent?.deploymentId === a.deploymentId
-                        ? 'border-primary bg-primary/10'
-                        : 'border-border hover:border-primary/50'
+                        ? 'border-accent bg-accent/10'
+                        : 'border-border hover:border-accent/50 hover:bg-card-hover'
                     }`}
                   >
                     <span className="font-medium">{a.label}</span>
@@ -449,27 +465,29 @@ function NewTelegramWizard(): JSX.Element {
                 type="button"
                 onClick={handleSave}
                 disabled={saving}
-                className="mt-5 inline-flex items-center gap-2 rounded-lg bg-primary px-5 py-2 text-sm text-white hover:bg-primary-hover disabled:opacity-50"
+                className="mt-5 inline-flex items-center gap-2 rounded-lg bg-accent px-5 py-2 text-sm text-white hover:opacity-90 disabled:opacity-50"
               >
                 {saving ? <Loader size={14} className="animate-spin" /> : <Check size={14} />}
                 {saving ? 'Connecting…' : 'Connect bot'}
               </button>
             )}
-            {saveError && <p className="mt-3 text-sm text-red-400">❌ {saveError}</p>}
+            {saveError && <p className="mt-3 text-sm text-red">Error: {saveError}</p>}
           </WizardStep>
         )}
 
         {stepId === 'done' && botInfo && (
           <div className="flex flex-col items-center py-12 text-center">
-            <CheckCircle size={64} className="text-green-400" />
-            <h2 className="mt-6 text-2xl font-bold">You're all set! 🎉</h2>
+            <CheckCircle size={64} className="text-green" />
+            <h2 className="mt-6 text-2xl font-bold font-[family-name:var(--font-display)]">
+              You're all set!
+            </h2>
             <p className="mt-3 text-base text-muted">
               Your Telegram bot <strong>@{botInfo.username}</strong> is now connected.
             </p>
             <button
               type="button"
               onClick={() => window.api.openExternal(`https://t.me/${botInfo.username}`)}
-              className="mt-3 inline-flex items-center gap-2 rounded-lg border border-border px-4 py-2 text-sm text-primary hover:bg-sidebar-hover"
+              className="mt-3 inline-flex items-center gap-2 rounded-lg border border-border px-4 py-2 text-sm text-accent hover:bg-card-hover"
             >
               <ExternalLink size={14} />
               t.me/{botInfo.username}
@@ -477,7 +495,7 @@ function NewTelegramWizard(): JSX.Element {
             <button
               type="button"
               onClick={() => navigate({ to: '/messaging-apps' })}
-              className="mt-6 rounded-lg bg-primary px-6 py-2 text-sm text-white hover:bg-primary-hover"
+              className="mt-6 rounded-lg bg-accent px-6 py-2 text-sm text-white hover:opacity-90"
             >
               Done
             </button>
@@ -506,13 +524,13 @@ function WizardStep({
 }): JSX.Element {
   return (
     <div>
-      <h2 className="text-xl font-bold">{title}</h2>
+      <h2 className="text-xl font-bold font-[family-name:var(--font-display)]">{title}</h2>
       <div className="mt-4">{children}</div>
       <div className="mt-8 flex items-center justify-between">
         <button
           type="button"
           onClick={onBack}
-          className="inline-flex items-center gap-2 rounded-lg border border-border px-4 py-2 text-sm text-muted transition-colors hover:bg-sidebar-hover hover:text-foreground"
+          className="inline-flex items-center gap-2 rounded-lg border border-border px-4 py-2 text-sm text-muted transition-colors hover:bg-card-hover hover:text-foreground"
         >
           <ArrowLeft size={14} />
           {backLabel}
@@ -521,7 +539,7 @@ function WizardStep({
           <button
             type="button"
             onClick={onNext}
-            className="inline-flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm text-white transition-colors hover:bg-primary-hover"
+            className="inline-flex items-center gap-2 rounded-lg bg-accent px-4 py-2 text-sm text-white transition-colors hover:opacity-90"
           >
             {nextLabel}
             <ArrowRight size={14} />
@@ -535,7 +553,7 @@ function WizardStep({
 function Step({ number, text }: { number: number; text: string }): JSX.Element {
   return (
     <div className="flex gap-3">
-      <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-primary text-xs font-bold text-white">
+      <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-accent text-xs font-bold text-white">
         {number}
       </span>
       <p className="pt-0.5 text-sm leading-relaxed">{text}</p>
