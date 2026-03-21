@@ -82,14 +82,19 @@ function Settings(): JSX.Element {
 
   return (
     <div>
-      <h1 className="text-2xl font-bold">Settings</h1>
-      <p className="mt-2 text-muted">Application settings and configuration.</p>
+      {/* Page header */}
+      <div className="mb-6">
+        <h1 className="text-2xl font-bold">Settings</h1>
+        <p className="mt-2 text-muted">Application settings and configuration.</p>
+      </div>
 
-      <div className="mt-6 rounded-lg border border-border bg-sidebar-bg p-4">
-        <h2 className="mb-1 text-sm font-semibold">Default Model Chain</h2>
+      <div className="mt-6 rounded-lg border border-border bg-card-bg p-4">
+        <h2 className="mb-1 font-[family-name:var(--font-mono)] text-[11px] uppercase tracking-[2px] text-accent">
+          Default Model Chain
+        </h2>
         <p className="mb-4 text-xs text-muted">
           Pre-populates the model selection when creating a new agent.
-          {saving && <span className="ml-2 text-primary">Saving...</span>}
+          {saving && <span className="ml-2 text-accent">Saving...</span>}
         </p>
         <ModelChainEditor
           model={settings.defaultModel ?? availableModels[0]?.value ?? ''}
@@ -101,14 +106,16 @@ function Settings(): JSX.Element {
         />
       </div>
 
-      <div className="mt-6 rounded-lg border border-border bg-sidebar-bg p-4">
-        <h2 className="mb-1 text-sm font-semibold">Web Search</h2>
+      <div className="mt-6 rounded-lg border border-border bg-card-bg p-4">
+        <h2 className="mb-1 font-[family-name:var(--font-mono)] text-[11px] uppercase tracking-[2px] text-accent">
+          Web Search
+        </h2>
         <p className="mb-4 text-xs text-muted">
           API key for web search. Currently supports Brave Search.
         </p>
         {braveKeyMasked ? (
           <div className="flex items-center gap-2">
-            <span className="flex-1 rounded border border-border bg-sidebar-hover px-3 py-1.5 text-xs font-mono text-muted">
+            <span className="flex-1 rounded border border-border bg-card-bg px-3 py-1.5 text-xs font-mono text-muted">
               {braveKeyMasked}
             </span>
             <button
@@ -126,12 +133,12 @@ function Settings(): JSX.Element {
               value={braveKeyInput}
               onChange={(e) => setBraveKeyInput(e.target.value)}
               placeholder="BSA-xxxxxxxxxxxxxxxx"
-              className="flex-1 rounded-lg border border-border bg-sidebar-bg px-3 py-1.5 text-xs text-foreground placeholder:text-muted focus:border-primary focus:outline-none"
+              className="flex-1 rounded-lg border border-border bg-card-bg px-3 py-1.5 text-xs text-foreground placeholder:text-muted focus:border-accent focus:outline-none"
             />
             <button
               type="submit"
               disabled={!braveKeyInput.trim() || braveKeySaving}
-              className="rounded-lg bg-primary px-3 py-1.5 text-xs text-white hover:bg-primary-hover disabled:opacity-50"
+              className="rounded-lg bg-accent px-3 py-1.5 text-xs text-white hover:bg-primary-hover disabled:opacity-50"
             >
               {braveKeySaving ? 'Saving...' : 'Save'}
             </button>
@@ -139,8 +146,10 @@ function Settings(): JSX.Element {
         )}
       </div>
 
-      <div className="mt-6 rounded-lg border border-border bg-sidebar-bg p-4">
-        <h2 className="text-sm font-semibold">About</h2>
+      <div className="mt-6 rounded-lg border border-border bg-card-bg p-4">
+        <h2 className="font-[family-name:var(--font-mono)] text-[11px] uppercase tracking-[2px] text-accent">
+          About
+        </h2>
         <p className="mt-2 text-sm text-muted">
           Mission Control v<span className="text-foreground">{version}</span>
         </p>
