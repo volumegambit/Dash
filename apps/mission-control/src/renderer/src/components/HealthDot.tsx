@@ -3,10 +3,10 @@ import type { ChannelHealthEntry } from '../../../shared/ipc.js';
 type ChannelHealth = ChannelHealthEntry['health'];
 
 const COLOUR: Record<ChannelHealth, string> = {
-  connected: 'bg-green-400',
-  connecting: 'bg-yellow-400',
-  disconnected: 'bg-red-400',
-  needs_reauth: 'bg-red-400',
+  connected: 'bg-green',
+  connecting: 'bg-yellow',
+  disconnected: 'bg-red',
+  needs_reauth: 'bg-red',
 };
 
 const PULSE: Record<ChannelHealth, boolean> = {
