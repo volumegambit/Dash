@@ -166,7 +166,7 @@ describe('GatewayManagementClient', () => {
     });
 
     it('registerRuntimeAgent() throws on non-ok response', async () => {
-      fetchSpy.mockResolvedValueOnce({ ok: false, status: 409 });
+      fetchSpy.mockResolvedValueOnce({ ok: false, status: 409, text: () => Promise.resolve('') });
 
       const client = new GatewayManagementClient('http://localhost:9300', 'tok');
       await expect(client.registerRuntimeAgent(baseConfig)).rejects.toThrow(

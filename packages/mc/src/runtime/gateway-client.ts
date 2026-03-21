@@ -115,7 +115,8 @@ export class GatewayManagementClient {
       body: JSON.stringify(config),
     });
     if (!res.ok) {
-      throw new Error(`Gateway registerRuntimeAgent failed: ${res.status}`);
+      const body = await res.text().catch(() => '');
+      throw new Error(`Gateway registerRuntimeAgent failed: ${res.status} ${body}`);
     }
   }
 
