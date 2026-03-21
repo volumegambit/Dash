@@ -32,6 +32,10 @@ export class ChatService {
     return this.store.list(deploymentId);
   }
 
+  async listAllConversations(): Promise<McConversation[]> {
+    return this.store.listAll();
+  }
+
   async getMessages(conversationId: string): Promise<McMessage[]> {
     return this.store.getMessages(conversationId);
   }
