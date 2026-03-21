@@ -3,6 +3,8 @@ import { TelegramAdapter, WhatsAppAdapter } from '@dash/channels';
 import { RemoteAgentClient } from '@dash/chat';
 import { Hono } from 'hono';
 
+import type { GatewayAgentConfig } from './agent-registry.js';
+import type { AgentRuntime } from './agent-runtime.js';
 import type { DynamicGateway } from './gateway.js';
 
 export interface RegisterAgentRequest {
@@ -44,11 +46,16 @@ export interface GatewayHealthResponse {
   channels: number;
 }
 
-export function createGatewayManagementApp(
-  gateway: DynamicGateway,
-  startedAt: string,
-  token?: string,
-): Hono {
+export interface GatewayManagementOptions {
+  gateway: DynamicGateway;
+  runtime?: AgentRuntime;
+  token?: string;
+  startedAt?: string;
+}
+
+export function createGatewayManagementApp(options: GatewayManagementOptions): Hono {
+  const { gateway, runtime, token } = options;
+  const startedAt = options.startedAt ?? new Date().toISOString();
   const app = new Hono();
 
   // Auth middleware — /health is exempt
@@ -69,12 +76,17 @@ export function createGatewayManagementApp(
   });
 
   app.get('/health', (c) => {
-    return c.json({
-      status: 'healthy' as const,
+    const health: Record<string, unknown> = {
+      status: 'healthy',
       startedAt,
       agents: gateway.agentCount(),
       channels: gateway.channelCount(),
-    });
+    };
+    if (runtime) {
+      health.pool = runtime.stats();
+      health.runtimeAgents = runtime.registry.list().length;
+    }
+    return c.json(health);
   });
 
   app.post('/agents', async (c) => {
@@ -151,6 +163,115 @@ export function createGatewayManagementApp(
     }
     return c.json({ ok: true }, 201);
   });
+
+  // --- In-process agent management (only when runtime is available) ---
+
+  if (runtime) {
+    app.post('/runtime/agents', async (c) => {
+      let body: GatewayAgentConfig;
+      try {
+        body = await c.req.json<GatewayAgentConfig>();
+      } catch {
+        return c.json({ error: 'Invalid JSON' }, 400);
+      }
+      if (!body.name || !body.model || !body.systemPrompt) {
+        return c.json({ error: 'Missing required fields: name, model, systemPrompt' }, 400);
+      }
+      try {
+        const entry = runtime.registry.register(body);
+        return c.json(entry, 201);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Internal error';
+        return c.json({ error: message }, 409);
+      }
+    });
+
+    app.get('/runtime/agents', (c) => {
+      const agents = runtime.registry.list();
+      return c.json(agents);
+    });
+
+    app.get('/runtime/agents/:name', (c) => {
+      const name = c.req.param('name');
+      const entry = runtime.registry.get(name);
+      if (!entry) return c.json({ error: 'not found' }, 404);
+      return c.json(entry);
+    });
+
+    app.put('/runtime/agents/:name', async (c) => {
+      const name = c.req.param('name');
+      const entry = runtime.registry.get(name);
+      if (!entry) return c.json({ error: 'not found' }, 404);
+      let patch: Partial<Omit<GatewayAgentConfig, 'name'>>;
+      try {
+        patch = await c.req.json();
+      } catch {
+        return c.json({ error: 'Invalid JSON' }, 400);
+      }
+      try {
+        const updated = runtime.registry.update(name, patch);
+        return c.json(updated);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Internal error';
+        return c.json({ error: message }, 500);
+      }
+    });
+
+    app.delete('/runtime/agents/:name', async (c) => {
+      const name = c.req.param('name');
+      const entry = runtime.registry.get(name);
+      if (!entry) return c.json({ error: 'not found' }, 404);
+      try {
+        await runtime.removeAgent(name);
+        return c.json({ ok: true });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Internal error';
+        return c.json({ error: message }, 500);
+      }
+    });
+
+    app.post('/runtime/agents/:name/credentials', async (c) => {
+      const name = c.req.param('name');
+      const entry = runtime.registry.get(name);
+      if (!entry) return c.json({ error: 'not found' }, 404);
+      let body: { providerApiKeys: Record<string, string> };
+      try {
+        body = await c.req.json();
+      } catch {
+        return c.json({ error: 'Invalid JSON' }, 400);
+      }
+      if (!body.providerApiKeys) {
+        return c.json({ error: 'Missing required field: providerApiKeys' }, 400);
+      }
+      runtime.registry.update(name, { providerApiKeys: body.providerApiKeys });
+      await runtime.updateCredentials(name, body.providerApiKeys);
+      return c.json({ ok: true });
+    });
+
+    app.post('/runtime/agents/:name/disable', (c) => {
+      const name = c.req.param('name');
+      try {
+        runtime.registry.disable(name);
+        return c.json({ ok: true });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Internal error';
+        if (message.includes('not found')) return c.json({ error: message }, 404);
+        return c.json({ error: message }, 500);
+      }
+    });
+
+    app.post('/runtime/agents/:name/enable', (c) => {
+      const name = c.req.param('name');
+      try {
+        runtime.registry.enable(name);
+        return c.json({ ok: true });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Internal error';
+        if (message.includes('not found')) return c.json({ error: message }, 404);
+        return c.json({ error: message }, 500);
+      }
+    });
+  }
 
   return app;
 }

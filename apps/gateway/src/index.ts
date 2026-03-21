@@ -44,7 +44,11 @@ async function main() {
     }
 
     const gateway = createDynamicGateway();
-    const app = createGatewayManagementApp(gateway, startedAt, flags.token);
+    const app = createGatewayManagementApp({
+      gateway,
+      startedAt,
+      token: flags.token,
+    });
 
     const server = serve({
       fetch: app.fetch,
