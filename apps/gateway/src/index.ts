@@ -1,3 +1,4 @@
+import type { Server } from 'node:http';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { config } from 'dotenv';
@@ -5,7 +6,13 @@ import { config } from 'dotenv';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 config({ path: resolve(__dirname, '../../../.env') });
 
+import { PiAgentBackend } from '@dash/agent';
 import { serve } from '@hono/node-server';
+import { createNodeWebSocket } from '@hono/node-ws';
+import { Hono } from 'hono';
+import { AgentRegistry } from './agent-registry.js';
+import { AgentRuntime } from './agent-runtime.js';
+import { mountChatWs } from './chat-ws.js';
 import { loadConfig, parseFlags } from './config.js';
 import { createDynamicGateway, createGateway } from './gateway.js';
 import { createGatewayManagementApp } from './management-api.js';
@@ -33,45 +40,89 @@ async function main() {
 
     await gateway.start();
   } else {
-    // Daemon mode — shared gateway with management API
+    // Daemon mode — shared gateway with management API + in-process agent runtime
     const managementPort = flags.managementPort ?? 9300;
+    const channelPort = flags.channelPort ?? 9200;
     const startedAt = new Date().toISOString();
+    const dataDir = flags.dataDir ?? '.';
 
-    // Ensure data dir exists if specified
-    if (flags.dataDir) {
-      const { mkdir } = await import('node:fs/promises');
-      await mkdir(flags.dataDir, { recursive: true });
-    }
+    // Ensure data dir exists
+    const { mkdir } = await import('node:fs/promises');
+    await mkdir(dataDir, { recursive: true });
 
+    // Create gateway + agent runtime
     const gateway = createDynamicGateway();
-    const app = createGatewayManagementApp({
+    const registry = new AgentRegistry();
+    const runtime = new AgentRuntime({
+      registry,
+      poolMaxSize: Number(process.env.POOL_MAX_SIZE ?? '200'),
+      sessionBaseDir: resolve(dataDir, 'sessions'),
+      createBackend: async (config, conversationId) => {
+        const sessionDir = resolve(dataDir, 'sessions', config.name, conversationId);
+        await mkdir(sessionDir, { recursive: true });
+        return new PiAgentBackend(
+          {
+            model: config.model,
+            systemPrompt: config.systemPrompt,
+            fallbackModels: config.fallbackModels,
+            tools: config.tools,
+            skills: config.skills,
+          },
+          config.providerApiKeys ?? {},
+          undefined,
+          sessionDir,
+          resolve(dataDir, 'skills', config.name),
+        );
+      },
+    });
+
+    // Management API (HTTP)
+    const managementApp = createGatewayManagementApp({
       gateway,
+      runtime,
       startedAt,
       token: flags.token,
     });
 
-    const server = serve({
-      fetch: app.fetch,
+    const managementServer = serve({
+      fetch: managementApp.fetch,
       port: managementPort,
       hostname: '127.0.0.1',
     });
 
+    // Channel server (HTTP + WebSocket for /ws/chat)
+    const channelApp = new Hono();
+    const { injectWebSocket, upgradeWebSocket } = createNodeWebSocket({ app: channelApp });
+
+    mountChatWs(channelApp, {
+      runtime,
+      token: flags.chatToken,
+      upgradeWebSocket,
+    });
+
+    const channelServer = serve({
+      fetch: channelApp.fetch,
+      port: channelPort,
+      hostname: '127.0.0.1',
+    }) as Server;
+
+    injectWebSocket(channelServer);
+
     console.log(`Gateway management API listening on port ${managementPort}`);
+    console.log(`Gateway channel server listening on port ${channelPort}`);
     console.log('Server ready');
 
     const shutdown = async (signal: string) => {
       console.log(`\nReceived ${signal}, shutting down...`);
+      await runtime.stop();
       await gateway.stop();
-      server.close();
+      managementServer.close();
+      channelServer.close();
       process.exit(0);
     };
 
-    process.on('SIGINT', () => {
-      shutdown('SIGINT');
-    });
-    process.on('SIGTERM', () => {
-      shutdown('SIGTERM');
-    });
+    process.on('SIGINT', () => shutdown('SIGINT'));
+    process.on('SIGTERM', () => shutdown('SIGTERM'));
   }
 }
 
