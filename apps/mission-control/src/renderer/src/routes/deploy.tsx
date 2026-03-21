@@ -129,273 +129,278 @@ export function DeployWizard(): JSX.Element {
 
   return (
     <div className="h-full flex flex-col overflow-hidden">
-    <div className="flex-1 overflow-y-auto p-8">
-    <div className="mx-auto max-w-2xl">
-      <div className="mb-8">
-        <h1 className="text-2xl font-bold">Deploy Agent</h1>
-        <p className="mt-1 text-sm text-muted">Configure and launch a new Dash agent.</p>
-      </div>
-
-      <StepIndicator current={step} />
-
-      {step === 'agent' && (
-        <div className="space-y-6">
-          <label className="block">
-            <span className="mb-1 block font-[family-name:var(--font-mono)] text-[11px] uppercase tracking-[2px] text-muted">
-              Agent Name
-            </span>
-            <input
-              type="text"
-              value={agent.name}
-              onChange={(e) => setAgent((prev) => ({ ...prev, name: e.target.value }))}
-              placeholder="my-agent"
-              className="w-full rounded-lg border border-border bg-card-bg px-4 py-2 text-sm text-foreground placeholder:text-muted focus:border-accent focus:outline-none"
-            />
-          </label>
-
-          <div>
-            <span className="mb-1 block font-[family-name:var(--font-mono)] text-[11px] uppercase tracking-[2px] text-muted">
-              Model
-            </span>
-            <ModelChainEditor
-              model={agent.model}
-              fallbackModels={agent.fallbackModels}
-              availableModels={availableModels}
-              onChange={(model, fallbackModels) =>
-                setAgent((prev) => ({ ...prev, model, fallbackModels }))
-              }
-              onRefresh={refreshModels}
-              refreshing={modelsRefreshing}
-            />
-            {agent.model && !modelHasKey && (
-              <p className="mt-1 text-xs text-red">
-                Add an API key in Settings → AI Providers to use this model.
-              </p>
-            )}
+      <div className="flex-1 overflow-y-auto p-8">
+        <div className="mx-auto max-w-2xl">
+          <div className="mb-8">
+            <h1 className="text-2xl font-bold">Deploy Agent</h1>
+            <p className="mt-1 text-sm text-muted">Configure and launch a new Dash agent.</p>
           </div>
 
-          <label className="block">
-            <span className="mb-1 block font-[family-name:var(--font-mono)] text-[11px] uppercase tracking-[2px] text-muted">
-              System Prompt
-            </span>
-            <textarea
-              value={agent.systemPrompt}
-              onChange={(e) => setAgent((prev) => ({ ...prev, systemPrompt: e.target.value }))}
-              placeholder="You are a helpful assistant..."
-              rows={4}
-              className="w-full rounded-lg border border-border bg-card-bg px-4 py-2 text-sm text-foreground placeholder:text-muted focus:border-accent focus:outline-none"
-            />
-          </label>
+          <StepIndicator current={step} />
 
-          <div>
-            <div className="mb-2 flex items-center justify-between">
-              <span className="font-[family-name:var(--font-mono)] text-[11px] uppercase tracking-[2px] text-muted">
-                Tools
-              </span>
-              <label className="flex cursor-pointer items-center gap-1.5 text-xs text-muted hover:text-foreground">
+          {step === 'agent' && (
+            <div className="space-y-6">
+              <label className="block">
+                <span className="mb-1 block font-[family-name:var(--font-mono)] text-[11px] uppercase tracking-[2px] text-muted">
+                  Agent Name
+                </span>
                 <input
-                  type="checkbox"
-                  checked={agent.tools.length === ALL_TOOL_IDS.length}
-                  ref={(el) => {
-                    if (el)
-                      el.indeterminate =
-                        agent.tools.length > 0 && agent.tools.length < ALL_TOOL_IDS.length;
-                  }}
-                  onChange={() =>
-                    setAgent((prev) => ({
-                      ...prev,
-                      tools: prev.tools.length === ALL_TOOL_IDS.length ? [] : [...ALL_TOOL_IDS],
-                    }))
-                  }
-                  className="accent-accent"
+                  type="text"
+                  value={agent.name}
+                  onChange={(e) => setAgent((prev) => ({ ...prev, name: e.target.value }))}
+                  placeholder="my-agent"
+                  className="w-full rounded-lg border border-border bg-card-bg px-4 py-2 text-sm text-foreground placeholder:text-muted focus:border-accent focus:outline-none"
                 />
-                Select all
               </label>
-            </div>
-            <div className="space-y-2">
-              {TOOL_GROUPS.map((group) => {
-                const allEnabled = group.tools.every((t) => agent.tools.includes(t));
-                const someEnabled = !allEnabled && group.tools.some((t) => agent.tools.includes(t));
-                const anySelected = group.tools.some((t) => agent.tools.includes(t));
-                return (
-                  <label
-                    key={group.name}
-                    className={`flex cursor-pointer items-start gap-3 rounded-lg border px-3 py-2.5 text-sm transition-colors ${
-                      anySelected
-                        ? 'border-accent bg-accent-tint'
-                        : 'border-border hover:bg-sidebar-hover'
-                    }`}
-                  >
+
+              <div>
+                <span className="mb-1 block font-[family-name:var(--font-mono)] text-[11px] uppercase tracking-[2px] text-muted">
+                  Model
+                </span>
+                <ModelChainEditor
+                  model={agent.model}
+                  fallbackModels={agent.fallbackModels}
+                  availableModels={availableModels}
+                  onChange={(model, fallbackModels) =>
+                    setAgent((prev) => ({ ...prev, model, fallbackModels }))
+                  }
+                  onRefresh={refreshModels}
+                  refreshing={modelsRefreshing}
+                />
+                {agent.model && !modelHasKey && (
+                  <p className="mt-1 text-xs text-red">
+                    Add an API key in Settings → AI Providers to use this model.
+                  </p>
+                )}
+              </div>
+
+              <label className="block">
+                <span className="mb-1 block font-[family-name:var(--font-mono)] text-[11px] uppercase tracking-[2px] text-muted">
+                  System Prompt
+                </span>
+                <textarea
+                  value={agent.systemPrompt}
+                  onChange={(e) => setAgent((prev) => ({ ...prev, systemPrompt: e.target.value }))}
+                  placeholder="You are a helpful assistant..."
+                  rows={4}
+                  className="w-full rounded-lg border border-border bg-card-bg px-4 py-2 text-sm text-foreground placeholder:text-muted focus:border-accent focus:outline-none"
+                />
+              </label>
+
+              <div>
+                <div className="mb-2 flex items-center justify-between">
+                  <span className="font-[family-name:var(--font-mono)] text-[11px] uppercase tracking-[2px] text-muted">
+                    Tools
+                  </span>
+                  <label className="flex cursor-pointer items-center gap-1.5 text-xs text-muted hover:text-foreground">
                     <input
                       type="checkbox"
-                      checked={allEnabled}
+                      checked={agent.tools.length === ALL_TOOL_IDS.length}
                       ref={(el) => {
-                        if (el) el.indeterminate = someEnabled;
+                        if (el)
+                          el.indeterminate =
+                            agent.tools.length > 0 && agent.tools.length < ALL_TOOL_IDS.length;
                       }}
                       onChange={() =>
-                        setAgent((prev) => {
-                          const without = prev.tools.filter((t) => !group.tools.includes(t));
-                          return {
-                            ...prev,
-                            tools: allEnabled ? without : [...without, ...group.tools],
-                          };
-                        })
+                        setAgent((prev) => ({
+                          ...prev,
+                          tools: prev.tools.length === ALL_TOOL_IDS.length ? [] : [...ALL_TOOL_IDS],
+                        }))
                       }
-                      className="mt-0.5 accent-accent"
+                      className="accent-accent"
                     />
-                    <span>
-                      <span className="font-medium">{group.name}</span>
-                      <span className="block text-xs text-muted">{group.description}</span>
-                    </span>
+                    Select all
                   </label>
-                );
-              })}
-            </div>
-          </div>
+                </div>
+                <div className="space-y-2">
+                  {TOOL_GROUPS.map((group) => {
+                    const allEnabled = group.tools.every((t) => agent.tools.includes(t));
+                    const someEnabled =
+                      !allEnabled && group.tools.some((t) => agent.tools.includes(t));
+                    const anySelected = group.tools.some((t) => agent.tools.includes(t));
+                    return (
+                      <label
+                        key={group.name}
+                        className={`flex cursor-pointer items-start gap-3 rounded-lg border px-3 py-2.5 text-sm transition-colors ${
+                          anySelected
+                            ? 'border-accent bg-accent-tint'
+                            : 'border-border hover:bg-sidebar-hover'
+                        }`}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={allEnabled}
+                          ref={(el) => {
+                            if (el) el.indeterminate = someEnabled;
+                          }}
+                          onChange={() =>
+                            setAgent((prev) => {
+                              const without = prev.tools.filter((t) => !group.tools.includes(t));
+                              return {
+                                ...prev,
+                                tools: allEnabled ? without : [...without, ...group.tools],
+                              };
+                            })
+                          }
+                          className="mt-0.5 accent-accent"
+                        />
+                        <span>
+                          <span className="font-medium">{group.name}</span>
+                          <span className="block text-xs text-muted">{group.description}</span>
+                        </span>
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
 
-          <div>
-            <span className="mb-1 block font-[family-name:var(--font-mono)] text-[11px] uppercase tracking-[2px] text-muted">
-              Workspace
-            </span>
-            <div className="flex items-center gap-2">
-              <input
-                type="text"
-                readOnly
-                value={agent.workspace}
-                placeholder="Auto-generated"
-                className="flex-1 rounded-lg border border-border bg-card-bg px-4 py-2 text-sm text-foreground placeholder:text-muted focus:outline-none"
-              />
-              {agent.workspace && (
+              <div>
+                <span className="mb-1 block font-[family-name:var(--font-mono)] text-[11px] uppercase tracking-[2px] text-muted">
+                  Workspace
+                </span>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="text"
+                    readOnly
+                    value={agent.workspace}
+                    placeholder="Auto-generated"
+                    className="flex-1 rounded-lg border border-border bg-card-bg px-4 py-2 text-sm text-foreground placeholder:text-muted focus:outline-none"
+                  />
+                  {agent.workspace && (
+                    <button
+                      type="button"
+                      onClick={() => setAgent((prev) => ({ ...prev, workspace: '' }))}
+                      className="rounded-lg border border-border px-3 py-2 text-sm text-muted transition-colors hover:bg-sidebar-hover hover:text-foreground"
+                    >
+                      Clear
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={handleBrowseWorkspace}
+                    className="rounded-lg border border-border px-3 py-2 text-sm text-muted transition-colors hover:bg-sidebar-hover hover:text-foreground"
+                  >
+                    Browse…
+                  </button>
+                </div>
+                <p className="mt-1 text-xs text-muted">
+                  The directory where this agent's file tools will be sandboxed.
+                </p>
+              </div>
+
+              <div className="flex justify-end">
                 <button
                   type="button"
-                  onClick={() => setAgent((prev) => ({ ...prev, workspace: '' }))}
-                  className="rounded-lg border border-border px-3 py-2 text-sm text-muted transition-colors hover:bg-sidebar-hover hover:text-foreground"
+                  disabled={!canAdvanceAgent}
+                  onClick={() => setStep('review')}
+                  className="inline-flex items-center gap-2 rounded-lg bg-accent px-4 py-2 text-sm text-white transition-colors hover:bg-primary-hover disabled:opacity-50"
                 >
-                  Clear
+                  Next
+                  <ArrowRight size={16} />
                 </button>
-              )}
-              <button
-                type="button"
-                onClick={handleBrowseWorkspace}
-                className="rounded-lg border border-border px-3 py-2 text-sm text-muted transition-colors hover:bg-sidebar-hover hover:text-foreground"
-              >
-                Browse…
-              </button>
-            </div>
-            <p className="mt-1 text-xs text-muted">
-              The directory where this agent's file tools will be sandboxed.
-            </p>
-          </div>
-
-          <div className="flex justify-end">
-            <button
-              type="button"
-              disabled={!canAdvanceAgent}
-              onClick={() => setStep('review')}
-              className="inline-flex items-center gap-2 rounded-lg bg-accent px-4 py-2 text-sm text-white transition-colors hover:bg-primary-hover disabled:opacity-50"
-            >
-              Next
-              <ArrowRight size={16} />
-            </button>
-          </div>
-        </div>
-      )}
-
-      {step === 'review' && (
-        <div className="space-y-6">
-          <div className="rounded-lg border border-border bg-card-bg p-4 space-y-3">
-            <ReviewRow label="Name" value={agent.name} />
-            <ReviewRow
-              label="Model"
-              value={[agent.model, ...agent.fallbackModels]
-                .map((v) => AVAILABLE_MODELS.find((m) => m.value === v)?.label ?? v)
-                .join(' → ')}
-            />
-            <ReviewRow label="System Prompt" value={agent.systemPrompt || '(default)'} multiline />
-            <ReviewRow
-              label="Tools"
-              value={
-                agent.tools.length > 0
-                  ? TOOL_GROUPS.filter((g) => g.tools.some((t) => agent.tools.includes(t)))
-                      .map((g) => g.name)
-                      .join(', ') || agent.tools.join(', ')
-                  : '(none)'
-              }
-            />
-            <ReviewRow label="Workspace" value={agent.workspace || 'Auto-generated'} />
-          </div>
-
-          {deployError && (
-            <div className="space-y-2">
-              <div className="rounded-lg bg-red-900/30 px-4 py-3 text-sm text-red">
-                {deployError}
               </div>
-              {deployStartupLogs.length > 0 && (
-                <details className="rounded-lg border border-red-900/30">
-                  <summary className="cursor-pointer px-4 py-2 text-xs text-red/70 hover:text-red">
-                    <span className="inline-flex items-center justify-between w-[calc(100%-1rem)]">
-                      <span>Startup logs ({deployStartupLogs.length} lines)</span>
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.preventDefault();
-                          navigator.clipboard.writeText(deployStartupLogs.join('\n'));
-                          setLogsCopied(true);
-                          setTimeout(() => setLogsCopied(false), 2000);
-                        }}
-                        className="ml-2 inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-red/70 hover:bg-red-900/20 hover:text-red"
-                      >
-                        {logsCopied ? <ClipboardCheck size={12} /> : <Clipboard size={12} />}
-                        {logsCopied ? 'Copied' : 'Copy'}
-                      </button>
-                    </span>
-                  </summary>
-                  <div className="max-h-48 overflow-auto rounded-b-lg bg-[#0d0d0d] p-3 font-mono text-xs leading-5">
-                    {deployStartupLogs.map((line, i) => (
-                      // biome-ignore lint/suspicious/noArrayIndexKey: log lines are ordered by index
-                      <div key={i} className="text-red-300/70">
-                        {line}
-                      </div>
-                    ))}
-                  </div>
-                </details>
-              )}
             </div>
           )}
 
-          <div className="flex justify-between">
-            <button
-              type="button"
-              onClick={() => setStep('agent')}
-              disabled={deploying}
-              className="inline-flex items-center gap-2 rounded-lg border border-border px-4 py-2 text-sm text-muted transition-colors hover:bg-sidebar-hover hover:text-foreground disabled:opacity-50"
-            >
-              <ArrowLeft size={16} />
-              Back
-            </button>
-            <button
-              type="button"
-              onClick={handleDeploy}
-              disabled={deploying}
-              className="inline-flex items-center gap-2 rounded-lg bg-accent px-4 py-2 text-sm text-white transition-colors hover:bg-primary-hover disabled:opacity-50"
-            >
-              {deploying ? (
-                <>
-                  <Loader size={16} className="animate-spin" />
-                  Deploying...
-                </>
-              ) : (
-                <>
-                  <Rocket size={16} />
-                  Deploy
-                </>
+          {step === 'review' && (
+            <div className="space-y-6">
+              <div className="rounded-lg border border-border bg-card-bg p-4 space-y-3">
+                <ReviewRow label="Name" value={agent.name} />
+                <ReviewRow
+                  label="Model"
+                  value={[agent.model, ...agent.fallbackModels]
+                    .map((v) => AVAILABLE_MODELS.find((m) => m.value === v)?.label ?? v)
+                    .join(' → ')}
+                />
+                <ReviewRow
+                  label="System Prompt"
+                  value={agent.systemPrompt || '(default)'}
+                  multiline
+                />
+                <ReviewRow
+                  label="Tools"
+                  value={
+                    agent.tools.length > 0
+                      ? TOOL_GROUPS.filter((g) => g.tools.some((t) => agent.tools.includes(t)))
+                          .map((g) => g.name)
+                          .join(', ') || agent.tools.join(', ')
+                      : '(none)'
+                  }
+                />
+                <ReviewRow label="Workspace" value={agent.workspace || 'Auto-generated'} />
+              </div>
+
+              {deployError && (
+                <div className="space-y-2">
+                  <div className="rounded-lg bg-red-900/30 px-4 py-3 text-sm text-red">
+                    {deployError}
+                  </div>
+                  {deployStartupLogs.length > 0 && (
+                    <details className="rounded-lg border border-red-900/30">
+                      <summary className="cursor-pointer px-4 py-2 text-xs text-red/70 hover:text-red">
+                        <span className="inline-flex items-center justify-between w-[calc(100%-1rem)]">
+                          <span>Startup logs ({deployStartupLogs.length} lines)</span>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.preventDefault();
+                              navigator.clipboard.writeText(deployStartupLogs.join('\n'));
+                              setLogsCopied(true);
+                              setTimeout(() => setLogsCopied(false), 2000);
+                            }}
+                            className="ml-2 inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-red/70 hover:bg-red-900/20 hover:text-red"
+                          >
+                            {logsCopied ? <ClipboardCheck size={12} /> : <Clipboard size={12} />}
+                            {logsCopied ? 'Copied' : 'Copy'}
+                          </button>
+                        </span>
+                      </summary>
+                      <div className="max-h-48 overflow-auto rounded-b-lg bg-[#0d0d0d] p-3 font-mono text-xs leading-5">
+                        {deployStartupLogs.map((line, i) => (
+                          // biome-ignore lint/suspicious/noArrayIndexKey: log lines are ordered by index
+                          <div key={i} className="text-red-300/70">
+                            {line}
+                          </div>
+                        ))}
+                      </div>
+                    </details>
+                  )}
+                </div>
               )}
-            </button>
-          </div>
+
+              <div className="flex justify-between">
+                <button
+                  type="button"
+                  onClick={() => setStep('agent')}
+                  disabled={deploying}
+                  className="inline-flex items-center gap-2 rounded-lg border border-border px-4 py-2 text-sm text-muted transition-colors hover:bg-sidebar-hover hover:text-foreground disabled:opacity-50"
+                >
+                  <ArrowLeft size={16} />
+                  Back
+                </button>
+                <button
+                  type="button"
+                  onClick={handleDeploy}
+                  disabled={deploying}
+                  className="inline-flex items-center gap-2 rounded-lg bg-accent px-4 py-2 text-sm text-white transition-colors hover:bg-primary-hover disabled:opacity-50"
+                >
+                  {deploying ? (
+                    <>
+                      <Loader size={16} className="animate-spin" />
+                      Deploying...
+                    </>
+                  ) : (
+                    <>
+                      <Rocket size={16} />
+                      Deploy
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
+          )}
         </div>
-      )}
-    </div>
-    </div>
+      </div>
     </div>
   );
 }
