@@ -1,2 +1,2 @@
 export type { DeploymentRuntime, RuntimeStatus } from './types.js';
-export { ProcessRuntime, findAvailablePort, validateConfigDir } from './process.js';
+export { ProcessRuntime, validateConfigDir } from './process.js';
