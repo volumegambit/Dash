@@ -4,6 +4,8 @@ import { SecureSandbox } from '@/components/SecureSandbox';
 import { DeployAndRun } from '@/components/DeployAndRun';
 import { AIProviders } from '@/components/AIProviders';
 import { MessagingApps } from '@/components/MessagingApps';
+import { UseCases } from '@/components/UseCases';
+import { HowItWorks } from '@/components/HowItWorks';
 
 export default function Home() {
   return (
@@ -14,6 +16,8 @@ export default function Home() {
       <DeployAndRun />
       <AIProviders />
       <MessagingApps />
+      <UseCases />
+      <HowItWorks />
     </main>
   );
 }
