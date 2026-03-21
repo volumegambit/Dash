@@ -365,7 +365,7 @@ describe('ProcessRuntime lifecycle', () => {
     expect(deployment?.name).toBe('test-agent');
   });
 
-  it('deploy() records agentServerPid from spawned process', async () => {
+  it('deploy() records running status from spawned process', async () => {
     const { spawner } = createMockSpawner();
     const successWatcher: StartupWatcher = async () => ({ success: true });
     const runtime = new ProcessRuntime(
@@ -380,8 +380,7 @@ describe('ProcessRuntime lifecycle', () => {
     const id = await runtime.deploy(configDir);
 
     const deployment = await registry.get(id);
-    expect(deployment?.agentServerPid).toBe(10_000);
-    expect((deployment as Record<string, unknown>)?.gatewayPid).toBeUndefined();
+    expect(deployment?.status).toBe('running');
   });
 
   it('exit handler updates registry to stopped when agent server exits', async () => {
@@ -432,7 +431,7 @@ describe('ProcessRuntime lifecycle', () => {
     expect(deployment?.status).toBe('stopped');
   });
 
-  it('getStatus() returns running with agentServerPid only', async () => {
+  it('getStatus() returns running state', async () => {
     const { spawner } = createMockSpawner();
     const successWatcher: StartupWatcher = async () => ({ success: true });
     const runtime = new ProcessRuntime(
@@ -448,9 +447,6 @@ describe('ProcessRuntime lifecycle', () => {
     const status = await runtime.getStatus(id);
 
     expect(status.state).toBe('running');
-    expect(status.agentServerPid).toBe(10_000);
-    expect((status as Record<string, unknown>).gatewayPid).toBeUndefined();
-    expect(status.uptime).toBeGreaterThanOrEqual(0);
   });
 
   it('getStatus() returns stopped after agent server exits', async () => {
@@ -477,7 +473,7 @@ describe('ProcessRuntime lifecycle', () => {
     expect(status.state).toBe('stopped');
   });
 
-  it('stop() uses PID-based kill when not tracked in memory', async () => {
+  it('stop() updates registry when not tracked in memory', async () => {
     const { spawner } = createMockSpawner();
     const successWatcher: StartupWatcher = async () => ({ success: true });
     const runtime = new ProcessRuntime(
@@ -491,6 +487,7 @@ describe('ProcessRuntime lifecycle', () => {
     const id = await runtime.deploy(configDir);
 
     // Fresh runtime simulates MC restart — no in-memory process state
+    // TODO: Task 3 will handle stop via gateway runtime API
     const runtime2 = new ProcessRuntime(
       registry,
       secrets,
@@ -500,22 +497,7 @@ describe('ProcessRuntime lifecycle', () => {
       successWatcher,
     );
 
-    const killed: { pid: number | bigint; signal: unknown }[] = [];
-    const killSpy = vi.spyOn(process, 'kill').mockImplementation((pid, signal) => {
-      killed.push({ pid, signal });
-      if (signal === 0) throw new Error('ESRCH'); // Simulate dead process on liveness check
-      return true;
-    });
-
-    try {
-      await runtime2.stop(id);
-    } finally {
-      killSpy.mockRestore();
-    }
-
-    expect(killed.some((k) => k.pid === 10_000 && k.signal === 'SIGTERM')).toBe(true);
-    // No gateway PID kill
-    expect(killed.filter((k) => k.signal === 'SIGTERM')).toHaveLength(1);
+    await runtime2.stop(id);
 
     const deployment = await registry.get(id);
     expect(deployment?.status).toBe('stopped');
@@ -735,10 +717,10 @@ describe('ProcessRuntime.registerWithGateway', () => {
     await rm(tmpDir, { recursive: true });
   });
 
-  it('calls registerAgent for each agent in a running deployment', async () => {
+  // TODO: Task 3 will rewrite registerWithGateway to use gateway runtime API.
+  // For now it's stubbed out, so this test just verifies it doesn't throw.
+  it('does not throw for a running deployment', async () => {
     const deploymentId = 'dep-abc123';
-    const chatPort = 8765;
-    const chatToken = 'test-chat-token';
 
     const fakeDeployment = {
       id: deploymentId,
@@ -746,8 +728,6 @@ describe('ProcessRuntime.registerWithGateway', () => {
       target: 'local' as const,
       status: 'running' as const,
       createdAt: new Date().toISOString(),
-      chatPort,
-      chatToken,
       config: {
         target: 'local' as const,
         agents: { 'test-agent': { name: 'test-agent', model: 'claude-3', systemPrompt: 'hi' } },
@@ -770,19 +750,6 @@ describe('ProcessRuntime.registerWithGateway', () => {
       list: async () => [],
     };
 
-    const mockRegisterAgent = vi.fn().mockResolvedValue(undefined);
-    const mockGatewayClient = {
-      health: vi.fn().mockResolvedValue({
-        status: 'healthy',
-        startedAt: '2026-01-01T00:00:00Z',
-        agents: 0,
-        channels: 0,
-      }),
-      registerAgent: mockRegisterAgent,
-      registerChannel: vi.fn().mockResolvedValue(undefined),
-      deregisterDeployment: vi.fn().mockResolvedValue(undefined),
-    };
-
     const { GatewayStateStore } = await import('./gateway-state.js');
     const store = new GatewayStateStore(tmpDir);
     await store.write({
@@ -790,6 +757,7 @@ describe('ProcessRuntime.registerWithGateway', () => {
       startedAt: '2026-01-01T00:00:00Z',
       token: 'gw-tok',
       port: 9300,
+      channelPort: 9301,
     });
 
     const runtime = new ProcessRuntime(
@@ -801,19 +769,15 @@ describe('ProcessRuntime.registerWithGateway', () => {
       undefined,
       {
         gatewayDataDir: tmpDir,
-        makeGatewayClient: () => mockGatewayClient as unknown as GatewayManagementClient,
+        makeGatewayClient: () =>
+          ({
+            registerAgent: vi.fn(),
+            registerChannel: vi.fn(),
+          }) as unknown as GatewayManagementClient,
       },
     );
 
-    await runtime.registerWithGateway(deploymentId);
-
-    expect(mockRegisterAgent).toHaveBeenCalledOnce();
-    expect(mockRegisterAgent).toHaveBeenCalledWith(
-      deploymentId,
-      'test-agent',
-      `ws://localhost:${chatPort}/ws`,
-      chatToken,
-    );
+    await expect(runtime.registerWithGateway(deploymentId)).resolves.toBeUndefined();
   });
 
   it('skips silently if deployment is not found', async () => {
@@ -840,6 +804,7 @@ describe('ProcessRuntime.registerWithGateway', () => {
       startedAt: '2026-01-01T00:00:00Z',
       token: 'tok',
       port: 9300,
+      channelPort: 9301,
     });
 
     const runtime = new ProcessRuntime(
@@ -868,8 +833,6 @@ describe('ProcessRuntime.registerWithGateway', () => {
       target: 'local' as const,
       status: 'stopped' as const,
       createdAt: new Date().toISOString(),
-      chatPort: 8765,
-      chatToken: 'tok',
       config: { target: 'local' as const, agents: { agent: {} }, channels: {} },
     };
 
@@ -896,6 +859,7 @@ describe('ProcessRuntime.registerWithGateway', () => {
       startedAt: '2026-01-01T00:00:00Z',
       token: 'tok',
       port: 9300,
+      channelPort: 9301,
     });
 
     const runtime = new ProcessRuntime(
@@ -916,219 +880,9 @@ describe('ProcessRuntime.registerWithGateway', () => {
     expect(mockRegisterAgent).not.toHaveBeenCalled();
   });
 
-  it('calls registerChannel for an enabled telegram messaging app', async () => {
-    const deploymentId = 'dep-tg-test';
-    const chatPort = 8766;
-    const chatToken = 'test-chat-token-tg';
-
-    const fakeApp: MessagingApp = {
-      id: 'app-tg-1',
-      name: 'My Telegram Bot',
-      type: 'telegram',
-      credentialsKey: 'messaging-app:app-tg-1:token',
-      enabled: true,
-      createdAt: new Date().toISOString(),
-      globalDenyList: [],
-      routing: [
-        {
-          condition: 'all',
-          targetAgentName: 'test-agent',
-          allowList: [],
-          denyList: [],
-        },
-      ],
-    };
-
-    const fakeDeployment = {
-      id: deploymentId,
-      name: 'test-agent',
-      target: 'local' as const,
-      status: 'running' as const,
-      createdAt: new Date().toISOString(),
-      chatPort,
-      chatToken,
-      config: {
-        target: 'local' as const,
-        agents: { 'test-agent': { name: 'test-agent', model: 'claude-3', systemPrompt: 'hi' } },
-        channels: {},
-      },
-    };
-
-    const fakeRegistry = {
-      get: async (id: string) => (id === deploymentId ? fakeDeployment : null),
-      list: async () => [fakeDeployment],
-      add: async () => {},
-      update: async () => {},
-      remove: async () => {},
-    };
-
-    const fakeSecrets: SecretStore = {
-      get: async (key: string) => (key === fakeApp.credentialsKey ? 'tg-bot-token-123' : null),
-      set: async () => {},
-      delete: async () => {},
-      list: async () => [fakeApp.credentialsKey],
-    };
-
-    const mockRegisterAgent = vi.fn().mockResolvedValue(undefined);
-    const mockRegisterChannel = vi.fn().mockResolvedValue(undefined);
-    const mockGatewayClient = {
-      health: vi.fn().mockResolvedValue({
-        status: 'healthy',
-        startedAt: '2026-01-01T00:00:00Z',
-        agents: 0,
-        channels: 0,
-      }),
-      registerAgent: mockRegisterAgent,
-      registerChannel: mockRegisterChannel,
-      deregisterDeployment: vi.fn().mockResolvedValue(undefined),
-    };
-
-    const { GatewayStateStore } = await import('./gateway-state.js');
-    const store = new GatewayStateStore(tmpDir);
-    await store.write({
-      pid: process.pid,
-      startedAt: '2026-01-01T00:00:00Z',
-      token: 'gw-tok',
-      port: 9300,
-    });
-
-    const fakeMessagingApps = {
-      list: async () => [fakeApp],
-    };
-
-    const runtime = new ProcessRuntime(
-      fakeRegistry as unknown as Parameters<typeof ProcessRuntime>[0],
-      fakeSecrets,
-      '/fake/root',
-      undefined,
-      fakeMessagingApps as unknown as Parameters<typeof ProcessRuntime>[4],
-      undefined,
-      {
-        gatewayDataDir: tmpDir,
-        makeGatewayClient: () => mockGatewayClient as unknown as GatewayManagementClient,
-      },
-    );
-
-    await runtime.registerWithGateway(deploymentId);
-
-    expect(mockRegisterChannel).toHaveBeenCalledOnce();
-    expect(mockRegisterChannel).toHaveBeenCalledWith(
-      deploymentId,
-      `messaging-app-${fakeApp.id}`,
-      expect.objectContaining({
-        adapter: 'telegram',
-        token: 'tg-bot-token-123',
-      }),
-    );
-  });
-
-  it('calls registerChannel for an enabled whatsapp messaging app', async () => {
-    const deploymentId = 'dep-wa-test';
-    const chatPort = 8767;
-    const chatToken = 'test-chat-token-wa';
-
-    const fakeApp: MessagingApp = {
-      id: 'app-wa-1',
-      name: 'My WhatsApp Bot',
-      type: 'whatsapp',
-      credentialsKey: 'whatsapp-auth:app-wa-1',
-      enabled: true,
-      createdAt: new Date().toISOString(),
-      globalDenyList: [],
-      routing: [
-        {
-          condition: 'all',
-          targetAgentName: 'test-agent',
-          allowList: [],
-          denyList: [],
-        },
-      ],
-    };
-
-    const fakeDeployment = {
-      id: deploymentId,
-      name: 'test-agent',
-      target: 'local' as const,
-      status: 'running' as const,
-      createdAt: new Date().toISOString(),
-      chatPort,
-      chatToken,
-      config: {
-        target: 'local' as const,
-        agents: { 'test-agent': { name: 'test-agent', model: 'claude-3', systemPrompt: 'hi' } },
-        channels: {},
-      },
-    };
-
-    const fakeRegistry = {
-      get: async (id: string) => (id === deploymentId ? fakeDeployment : null),
-      list: async () => [fakeDeployment],
-      add: async () => {},
-      update: async () => {},
-      remove: async () => {},
-    };
-
-    const authKey = `${fakeApp.credentialsKey}:creds`;
-    const fakeSecrets: SecretStore = {
-      get: async (key: string) => (key === authKey ? 'some-creds' : null),
-      set: async () => {},
-      delete: async () => {},
-      list: async () => [authKey],
-    };
-
-    const mockRegisterAgent = vi.fn().mockResolvedValue(undefined);
-    const mockRegisterChannel = vi.fn().mockResolvedValue(undefined);
-    const mockGatewayClient = {
-      health: vi.fn().mockResolvedValue({
-        status: 'healthy',
-        startedAt: '2026-01-01T00:00:00Z',
-        agents: 0,
-        channels: 0,
-      }),
-      registerAgent: mockRegisterAgent,
-      registerChannel: mockRegisterChannel,
-      deregisterDeployment: vi.fn().mockResolvedValue(undefined),
-    };
-
-    const { GatewayStateStore } = await import('./gateway-state.js');
-    const store = new GatewayStateStore(tmpDir);
-    await store.write({
-      pid: process.pid,
-      startedAt: '2026-01-01T00:00:00Z',
-      token: 'gw-tok',
-      port: 9300,
-    });
-
-    const fakeMessagingApps = {
-      list: async () => [fakeApp],
-    };
-
-    const runtime = new ProcessRuntime(
-      fakeRegistry as unknown as Parameters<typeof ProcessRuntime>[0],
-      fakeSecrets,
-      '/fake/root',
-      undefined,
-      fakeMessagingApps as unknown as Parameters<typeof ProcessRuntime>[4],
-      undefined,
-      {
-        gatewayDataDir: tmpDir,
-        makeGatewayClient: () => mockGatewayClient as unknown as GatewayManagementClient,
-      },
-    );
-
-    await runtime.registerWithGateway(deploymentId);
-
-    expect(mockRegisterChannel).toHaveBeenCalledOnce();
-    expect(mockRegisterChannel).toHaveBeenCalledWith(
-      deploymentId,
-      `messaging-app-${fakeApp.id}`,
-      expect.objectContaining({
-        adapter: 'whatsapp',
-        authStateDir: expect.any(String),
-        whatsappAuth: expect.objectContaining({ creds: 'some-creds' }),
-      }),
-    );
-  });
+  // TODO: Task 3 will rewrite registerWithGateway tests for gateway runtime API
+  // Telegram and WhatsApp channel registration tests are temporarily removed
+  // since registerWithGateway is stubbed pending the full rewrite.
 
   it('skips silently if no gateway is configured', async () => {
     const deploymentId = 'dep-abc';
@@ -1138,8 +892,6 @@ describe('ProcessRuntime.registerWithGateway', () => {
       target: 'local' as const,
       status: 'running' as const,
       createdAt: new Date().toISOString(),
-      chatPort: 8765,
-      chatToken: 'tok',
       config: { target: 'local' as const, agents: { agent: {} }, channels: {} },
     };
 
@@ -1216,6 +968,7 @@ describe('ProcessRuntime.ensureGatewayRunning', () => {
       startedAt: '2026-01-01T00:00:00Z',
       token: 'gw-tok',
       port: 9300,
+      channelPort: 9301,
     });
 
     const runtime = new ProcessRuntime(
@@ -1234,7 +987,6 @@ describe('ProcessRuntime.ensureGatewayRunning', () => {
     await runtime.deploy(configDir);
 
     expect(processes).toHaveLength(1);
-    expect(mockGatewayClient.registerAgent).toHaveBeenCalled();
   });
 
   it('stop() calls deregisterDeployment on gateway', async () => {
@@ -1260,6 +1012,7 @@ describe('ProcessRuntime.ensureGatewayRunning', () => {
       startedAt: '2026-01-01T00:00:00Z',
       token: 'gw-tok',
       port: 9300,
+      channelPort: 9301,
     });
 
     const runtime = new ProcessRuntime(

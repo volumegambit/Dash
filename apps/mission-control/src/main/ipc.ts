@@ -3,7 +3,7 @@ import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { ManagementClient, type SkillsConfig } from '@dash/management';
+import type { ManagementClient, SkillsConfig } from '@dash/management';
 import {
   AgentRegistry,
   ConversationStore,
@@ -163,12 +163,14 @@ function getSettingsStore(): SettingsStore {
   return new SettingsStore(DATA_DIR);
 }
 
-async function getSkillsClient(deploymentId: string) {
+async function getSkillsClient(deploymentId: string): Promise<ManagementClient> {
+  // TODO: Task 5 will resolve management connection via gateway runtime API
   const dep = await getRegistry().get(deploymentId);
-  if (!dep?.managementPort || !dep?.managementToken) {
+  if (!dep || dep.status !== 'running') {
     throw new Error('Deployment not running or Management API not available');
   }
-  return new ManagementClient(`http://127.0.0.1:${dep.managementPort}`, dep.managementToken);
+  // Placeholder — Task 5 will get port/token from gateway state
+  throw new Error('Skills API temporarily unavailable (pending gateway runtime API migration)');
 }
 
 function cacheKey(key: Buffer): void {
@@ -218,27 +220,20 @@ async function pushCredentialsToRunningDeployments(): Promise<CredentialPushResu
     providerApiKeys[parsed.provider][parsed.keyName] = value;
   }
 
+  // TODO: Task 5 will push credentials via gateway runtime API
   const reg = getRegistry();
   const deployments = await reg.list();
-  const running = deployments.filter(
-    (dep) => dep.status === 'running' && dep.managementPort && dep.managementToken,
-  );
+  const running = deployments.filter((dep) => dep.status === 'running');
 
   const result: CredentialPushResult = { total: running.length, succeeded: 0, failed: [] };
 
+  // Credential push temporarily disabled — pending gateway runtime API migration
   for (const dep of running) {
-    try {
-      const token = dep.managementToken ?? '';
-      const client = new ManagementClient(`http://127.0.0.1:${dep.managementPort}`, token);
-      await client.updateCredentials(providerApiKeys);
-      result.succeeded++;
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      console.error(
-        `[credentials] Failed to push to deployment "${dep.name}" (${dep.id}): ${message}`,
-      );
-      result.failed.push({ deploymentId: dep.id, name: dep.name, error: message });
-    }
+    result.failed.push({
+      deploymentId: dep.id,
+      name: dep.name,
+      error: 'Credential push not yet available (pending gateway runtime API migration)',
+    });
   }
 
   if (result.failed.length > 0) {
@@ -281,19 +276,8 @@ export async function registerIpcHandlers(
   );
   gatewayPoller.start(sendGatewayStatus);
 
-  // Start health pollers for existing running deployments so status changes
-  // are detected after MC restart (pollers are normally only started at deploy time).
-  const existingDeployments = await getRegistry().list();
-  for (const dep of existingDeployments) {
-    if (dep.status === 'running' && dep.managementPort && dep.managementToken) {
-      healthPoller.start(dep.id, dep.managementPort, dep.managementToken, (status) => {
-        const win = getWindow();
-        if (win && !win.isDestroyed()) {
-          win.webContents.send('deployment:statusChange', dep.id, status);
-        }
-      });
-    }
-  }
+  // TODO: Task 5 will start health pollers via gateway runtime API
+  // Health pollers temporarily disabled — pending gateway runtime API migration
 
   // Auto-unlock from cached session key.
   // Validates the key before registering IPC handlers so the renderer never
@@ -595,15 +579,7 @@ export async function registerIpcHandlers(
         throw err;
       }
     }
-    const dep = await getRegistry().get(deploymentId);
-    if (dep?.managementPort && dep?.managementToken) {
-      healthPoller.start(deploymentId, dep.managementPort, dep.managementToken, (status) => {
-        const win = getWindow();
-        if (win && !win.isDestroyed()) {
-          win.webContents.send('deployment:statusChange', deploymentId, status);
-        }
-      });
-    }
+    // TODO: Task 5 will start health poller via gateway runtime API
     return deploymentId;
   });
 
@@ -638,15 +614,7 @@ export async function registerIpcHandlers(
           throw err;
         }
       }
-      const dep = await getRegistry().get(deploymentId);
-      if (dep?.managementPort && dep?.managementToken) {
-        healthPoller.start(deploymentId, dep.managementPort, dep.managementToken, (status) => {
-          const win = getWindow();
-          if (win && !win.isDestroyed()) {
-            win.webContents.send('deployment:statusChange', deploymentId, status);
-          }
-        });
-      }
+      // TODO: Task 5 will start health poller via gateway runtime API
       return deploymentId;
     },
   );
@@ -663,15 +631,8 @@ export async function registerIpcHandlers(
   ipcMain.handle('deployments:restart', async (_event, id: string) => {
     healthPoller.stop(id);
     await getRuntime().start(id);
+    // TODO: Task 5 will start health poller via gateway runtime API
     const dep = await getRegistry().get(id);
-    if (dep?.managementPort && dep?.managementToken) {
-      healthPoller.start(id, dep.managementPort, dep.managementToken, (status) => {
-        const win = getWindow();
-        if (win && !win.isDestroyed()) {
-          win.webContents.send('deployment:statusChange', id, status);
-        }
-      });
-    }
     const win = getWindow();
     if (win) {
       win.webContents.send('deployment:statusChange', id, dep?.status ?? 'running');
@@ -707,19 +668,12 @@ export async function registerIpcHandlers(
   });
 
   ipcMain.handle('deployments:getChannelHealth', async (_event, id: string) => {
+    // TODO: Task 5 will query channel health via gateway runtime API
     const deployment = await getRegistry().get(id);
-    if (!deployment || !deployment.managementPort) {
+    if (!deployment || deployment.status !== 'running') {
       return [];
     }
-    try {
-      const client = new ManagementClient(
-        `http://127.0.0.1:${deployment.managementPort}`,
-        deployment.managementToken ?? '',
-      );
-      return await client.getChannelHealth();
-    } catch {
-      return [];
-    }
+    return [];
   });
 
   ipcMain.handle('deployments:logs:subscribe', async (_event, id: string) => {

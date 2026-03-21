@@ -49,7 +49,7 @@ export class ChatService {
 
     const deployment = await this.registry.get(conversation.deploymentId);
     if (!deployment) throw new Error(`Deployment "${conversation.deploymentId}" not found`);
-    if (!deployment.chatPort) {
+    if (deployment.status !== 'running') {
       throw new Error(`Deployment "${conversation.deploymentId}" is not running`);
     }
 
@@ -61,8 +61,8 @@ export class ChatService {
     };
     await this.store.appendMessage(conversationId, userMessage);
 
-    const token = deployment.chatToken;
-    const url = `ws://localhost:${deployment.chatPort}/ws${token ? `?token=${encodeURIComponent(token)}` : ''}`;
+    // TODO: Task 4 will connect via gateway channel port instead of direct agent server
+    const url = 'ws://localhost:0/ws'; // placeholder — Task 4 will resolve via gateway state
     const msgId = randomUUID();
     const ws = new WebSocket(url);
     this.activeStreams.set(conversationId, { ws, msgId });

@@ -17,7 +17,7 @@ import {
   GatewayManagementClient,
 } from './gateway-client.js';
 import { GatewayStateStore } from './gateway-state.js';
-import { type ProcessSnapshot, resolveRuntimeStatus } from './status.js';
+import { resolveRuntimeStatus } from './status.js';
 import type { DeploymentRuntime, RuntimeStatus } from './types.js';
 
 import { parseProviderSecretKey } from './provider-keys.js';
@@ -323,11 +323,14 @@ export class ProcessRuntime implements DeploymentRuntime {
 
     const gatewayPid = gateway.pid;
     if (!gatewayPid) throw new Error('Gateway process has no PID');
+    // TODO: Task 3 will resolve channelPort from gateway health response
+    const channelPort = managementPort + 1;
     await store.write({
       pid: gatewayPid,
       startedAt: health.startedAt,
       token,
       port: managementPort,
+      channelPort,
     });
 
     return newClient;
@@ -352,21 +355,16 @@ export class ProcessRuntime implements DeploymentRuntime {
     if (!gatewayClient) return;
 
     const agentNames = Object.keys(deployment.config?.agents ?? {});
-    if (!agentNames.length || !deployment.chatPort || !deployment.chatToken) {
-      console.warn(
-        `registerWithGateway: deployment ${deploymentId} missing agents/ports, skipping`,
-      );
+    if (!agentNames.length) {
+      console.warn(`registerWithGateway: deployment ${deploymentId} has no agents, skipping`);
       return;
     }
 
-    for (const agentName of agentNames) {
-      await gatewayClient.registerAgent(
-        deploymentId,
-        agentName,
-        `ws://localhost:${deployment.chatPort}/ws`,
-        deployment.chatToken,
-      );
-    }
+    // TODO: Task 3 will rewrite this to use gateway runtime API instead of
+    // direct agent server WebSocket connections
+    console.warn(
+      `registerWithGateway: skipping agent registration for ${deploymentId} (process fields removed)`,
+    );
 
     if (this.messagingApps) {
       const mcDataDir = process.env.MC_DATA_DIR || getPlatformDataDir('dash');
@@ -634,10 +632,6 @@ export class ProcessRuntime implements DeploymentRuntime {
       },
       createdAt: new Date().toISOString(),
       configDir: absConfigDir,
-      managementPort,
-      managementToken,
-      chatPort,
-      chatToken,
       workspace: agentConfigs[agentNames[0]]?.workspace,
     });
 
@@ -726,10 +720,10 @@ export class ProcessRuntime implements DeploymentRuntime {
 
     this.processes.set(id, { agentServer, startTime: Date.now() });
 
-    // Update registry to running with PID
+    // Update registry to running
+    // TODO: Task 3 will remove PID tracking entirely
     await this.registry.update(id, {
       status: 'running',
-      agentServerPid: agentServer.pid,
     });
 
     // Watch for process exit after successful startup
@@ -796,12 +790,9 @@ export class ProcessRuntime implements DeploymentRuntime {
     const agentSecretsPath = await writeSecretsFile(agentSecretsFile, 'agent-secrets');
 
     // Update registry to provisioning
+    // TODO: Task 3 will remove port/token fields from registry updates
     await this.registry.update(id, {
       status: 'provisioning',
-      managementPort,
-      managementToken,
-      chatPort,
-      chatToken,
       errorMessage: undefined,
       startupLogs: undefined,
     });
@@ -852,9 +843,9 @@ export class ProcessRuntime implements DeploymentRuntime {
 
     this.processes.set(id, { agentServer, startTime: Date.now() });
 
+    // TODO: Task 3 will remove PID tracking entirely
     await this.registry.update(id, {
       status: 'running',
-      agentServerPid: agentServer.pid,
     });
 
     agentServer.on('exit', async () => {
@@ -905,8 +896,7 @@ export class ProcessRuntime implements DeploymentRuntime {
       this.processes.delete(id);
       await killProcess(state.agentServer);
     } else {
-      // Process not tracked in memory — PID-based kill with SIGTERM → SIGKILL escalation
-      if (deployment.agentServerPid) await killPidWithEscalation(deployment.agentServerPid);
+      // TODO: Task 3 will remove PID-based kill — agents are managed via gateway runtime API
     }
 
     await this.registry.update(id, { status: 'stopped' });
@@ -937,36 +927,8 @@ export class ProcessRuntime implements DeploymentRuntime {
       throw new Error(`Deployment "${id}" not found`);
     }
 
-    const state = this.processes.get(id);
-    const snapshot: ProcessSnapshot | null = state
-      ? {
-          agentServer: {
-            exitCode: state.agentServer.exitCode,
-            pid: state.agentServer.pid,
-          },
-          startTime: state.startTime,
-        }
-      : null;
-
-    // Build health check callback if management API is configured
-    let healthCheck: (() => Promise<boolean>) | undefined;
-    if (deployment.managementPort && deployment.managementToken) {
-      const { ManagementClient } = await import('@dash/management');
-      const client = new ManagementClient(
-        `http://localhost:${deployment.managementPort}`,
-        deployment.managementToken,
-      );
-      healthCheck = async () => {
-        try {
-          await client.health();
-          return true;
-        } catch {
-          return false;
-        }
-      };
-    }
-
-    return await resolveRuntimeStatus(snapshot, deployment, undefined, healthCheck);
+    // TODO: Task 3 will query gateway runtime API for live status
+    return await resolveRuntimeStatus(deployment);
   }
 
   async updateAgentConfig(
@@ -1012,40 +974,18 @@ export class ProcessRuntime implements DeploymentRuntime {
       await this.registry.update(id, { config: deployment.config });
     }
 
-    // 3. Push to running agent server (best-effort — server may be unreachable)
-    if (
-      deployment.status === 'running' &&
-      deployment.managementPort &&
-      deployment.managementToken
-    ) {
-      try {
-        const { ManagementClient } = await import('@dash/management');
-        const client = new ManagementClient(
-          `http://127.0.0.1:${deployment.managementPort}`,
-          deployment.managementToken,
-        );
-        await client.updateAgentConfig(agentName, patch);
-      } catch {
-        // Config saved to disk and registry — will apply on next restart
-      }
-    }
+    // 3. Push to running agent server (best-effort)
+    // TODO: Task 3 will push config updates via gateway runtime API
+    // For now, config is saved to disk and registry — will apply on next restart
   }
 
-  async *getLogs(id: string, signal?: AbortSignal): AsyncIterable<string> {
+  async *getLogs(id: string, _signal?: AbortSignal): AsyncIterable<string> {
     const deployment = await this.registry.get(id);
     if (!deployment) {
       throw new Error(`Deployment "${id}" not found`);
     }
 
-    if (!deployment.managementPort || !deployment.managementToken) {
-      throw new Error(`Deployment "${id}" has no management API configured. Cannot retrieve logs.`);
-    }
-
-    const { ManagementClient } = await import('@dash/management');
-    const client = new ManagementClient(
-      `http://localhost:${deployment.managementPort}`,
-      deployment.managementToken,
-    );
-    yield* client.streamLogs(signal);
+    // TODO: Task 3 will retrieve logs via gateway runtime API
+    yield '[warn] Log streaming not yet available (pending gateway runtime API migration)';
   }
 }

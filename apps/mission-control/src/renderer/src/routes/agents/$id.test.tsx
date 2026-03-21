@@ -24,9 +24,6 @@ const runningDeployment = {
   name: 'Developer',
   status: 'running' as const,
   createdAt: new Date().toISOString(),
-  managementPort: 53891,
-  chatPort: 53892,
-  agentServerPid: 1,
   config: {
     agents: { myAgent: { model: 'claude-sonnet-4-6', systemPrompt: '' } },
   },

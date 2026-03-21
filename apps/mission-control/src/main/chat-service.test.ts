@@ -10,7 +10,8 @@ import { ChatService } from './chat-service.js';
 
 const BASE_PORT = 19700 + Math.floor(Math.random() * 200);
 
-function makeDeployment(chatPort: number, chatToken?: string) {
+// TODO: Task 4/7 will update these tests to use gateway channel port
+function makeDeployment(_chatPort: number, _chatToken?: string) {
   return {
     id: 'dep-1',
     name: 'test',
@@ -18,8 +19,6 @@ function makeDeployment(chatPort: number, chatToken?: string) {
     status: 'running' as const,
     config: { target: 'local' as const, agents: {}, channels: {} },
     createdAt: new Date().toISOString(),
-    chatPort,
-    chatToken,
   };
 }
 
@@ -120,8 +119,8 @@ describe('ChatService', () => {
     expect(onError).toHaveBeenCalledWith(conv.id, 'agent exploded');
   });
 
-  it('throws if deployment chatPort is missing', async () => {
-    await registry.add({ ...makeDeployment(BASE_PORT + 300), chatPort: undefined });
+  it('throws if deployment is not running', async () => {
+    await registry.add({ ...makeDeployment(BASE_PORT + 300), status: 'stopped' as const });
     const conv = await service.createConversation('dep-1', 'myagent');
     await expect(service.sendMessage(conv.id, 'hello')).rejects.toThrow('not running');
   });
