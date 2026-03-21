@@ -128,6 +128,8 @@ export function DeployWizard(): JSX.Element {
   };
 
   return (
+    <div className="h-full flex flex-col overflow-hidden">
+    <div className="flex-1 overflow-y-auto p-8">
     <div className="mx-auto max-w-2xl">
       <div className="mb-8">
         <h1 className="text-2xl font-bold">Deploy Agent</h1>
@@ -392,6 +394,8 @@ export function DeployWizard(): JSX.Element {
           </div>
         </div>
       )}
+    </div>
+    </div>
     </div>
   );
 }

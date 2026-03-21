@@ -71,7 +71,7 @@ function Agents(): JSX.Element {
   const filtered = deployments.filter((d) => d.name.toLowerCase().includes(search.toLowerCase()));
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex flex-col h-full overflow-hidden">
       {/* Page header */}
       <div className="bg-surface px-8 py-4 border-b border-border flex justify-between items-center flex-shrink-0">
         <h1 className="font-[family-name:var(--font-display)] text-[22px] font-semibold text-foreground">

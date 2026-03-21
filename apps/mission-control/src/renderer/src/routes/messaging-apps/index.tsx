@@ -53,10 +53,10 @@ function MessagingApps(): JSX.Element {
   }, [loadApps]);
 
   return (
-    <div>
+    <div className="flex h-full flex-col overflow-hidden">
       {/* Header */}
-      <div className="mb-6 flex items-center justify-between">
-        <h1 className="text-2xl font-bold font-[family-name:var(--font-display)]">
+      <div className="bg-surface px-8 py-4 border-b border-border flex items-center justify-between shrink-0">
+        <h1 className="text-[22px] font-semibold font-[family-name:var(--font-display)] text-foreground">
           Messaging Apps
         </h1>
         <div className="flex items-center gap-2">
@@ -78,7 +78,7 @@ function MessagingApps(): JSX.Element {
       </div>
 
       {/* Body */}
-      <div className="p-8 bg-card-bg border border-border rounded-lg">
+      <div className="flex-1 overflow-y-auto p-8">
         {/* Section label */}
         <p className="font-[family-name:var(--font-mono)] text-[11px] uppercase tracking-[2px] text-accent mb-4">
           Connected Platforms

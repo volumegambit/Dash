@@ -109,9 +109,9 @@ function MessagingAppDetail(): JSX.Element {
   }
 
   return (
-    <div>
+    <div className="h-full flex flex-col overflow-hidden">
       {/* Header */}
-      <div className="mb-6 flex items-center gap-4">
+      <div className="bg-surface px-8 py-4 border-b border-border flex items-center gap-4 shrink-0">
         <Link
           to="/messaging-apps"
           className="rounded p-1.5 text-muted transition-colors hover:bg-card-hover hover:text-foreground"
@@ -138,6 +138,8 @@ function MessagingAppDetail(): JSX.Element {
         )}
       </div>
 
+      {/* Body */}
+      <div className="flex-1 overflow-y-auto p-8">
       {error && (
         <div className="mb-4 rounded-lg border border-red-600/40 bg-red-tint px-4 py-3 text-sm text-red">
           {error}
@@ -145,7 +147,7 @@ function MessagingAppDetail(): JSX.Element {
       )}
 
       {/* Two-column body */}
-      <div className="p-8 flex gap-6">
+      <div className="flex gap-6">
         {/* Left column: Connection Details */}
         <div className="flex-1">
           <div className="bg-card-bg border border-border rounded-lg p-5">
@@ -291,6 +293,7 @@ function MessagingAppDetail(): JSX.Element {
             <p className="text-xs text-muted">No recent events to display.</p>
           </div>
         </div>
+      </div>
       </div>
     </div>
   );
