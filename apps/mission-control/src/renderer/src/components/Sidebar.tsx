@@ -8,9 +8,9 @@ import {
   MessageSquare,
   Plug,
   Settings,
-  Zap,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
+import { DashSquadLogo } from './DashSquadLogo.js';
 import { useEffect, useState } from 'react';
 import type { ChannelHealthEntry, GatewayStatus } from '../../../shared/ipc.js';
 import { useMessagingAppsStore } from '../stores/messaging-apps.js';
@@ -76,12 +76,7 @@ export function Sidebar(): JSX.Element {
     <aside className="flex h-full w-56 shrink-0 flex-col border-r border-border bg-sidebar-bg p-3.5">
       {/* Header */}
       <div className="flex items-center justify-between border-b border-border px-1 pb-4 pt-3">
-        <div className="flex items-center gap-2">
-          <Zap size={18} className="text-accent" />
-          <span className="font-[family-name:var(--font-display)] text-[13px] font-bold tracking-wide text-foreground">
-            Mission Control
-          </span>
-        </div>
+        <DashSquadLogo />
         <HealthDot health={gatewayHealth} />
       </div>
 

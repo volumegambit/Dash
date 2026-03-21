@@ -12,7 +12,7 @@ describe('SetupWizard', () => {
       render(
         <SetupWizard needsSetup={true} needsUnlock={false} needsApiKey={true} onComplete={noop} />,
       );
-      expect(screen.getByText('Welcome to Mission Control')).toBeInTheDocument();
+      expect(screen.getByText('Welcome to DashSquad')).toBeInTheDocument();
       expect(screen.getByText('Get Started')).toBeInTheDocument();
     });
 
@@ -70,7 +70,7 @@ describe('SetupWizard', () => {
       expect(screen.getByText('Create Encryption Password')).toBeInTheDocument();
 
       await user.click(screen.getByText('Back'));
-      expect(screen.getByText('Welcome to Mission Control')).toBeInTheDocument();
+      expect(screen.getByText('Welcome to DashSquad')).toBeInTheDocument();
     });
   });
 
