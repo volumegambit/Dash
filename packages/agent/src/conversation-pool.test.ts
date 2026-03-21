@@ -239,4 +239,21 @@ describe('ConversationPool', () => {
     const entry2 = await pool.getOrCreate('a', 'conv-1');
     expect(entry2.lastActive).toBeGreaterThan(firstActive);
   });
+
+  it('throws when pool is full and all entries are pinned', async () => {
+    const pool = new ConversationPool({
+      maxSize: 2,
+      backendFactory: vi.fn().mockImplementation(async () => ({
+        backend: mockBackend(),
+        agent: mockAgent(),
+      })),
+    });
+
+    await pool.getOrCreate('a', 'conv-1');
+    pool.pin('a', 'conv-1');
+    await pool.getOrCreate('b', 'conv-2');
+    pool.pin('b', 'conv-2');
+
+    await expect(pool.getOrCreate('c', 'conv-3')).rejects.toThrow(/all pinned/);
+  });
 });
