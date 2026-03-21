@@ -19,21 +19,15 @@ export type { DeploymentRuntime, RuntimeStatus } from './runtime/types.js';
 export { providerSecretKey, parseProviderSecretKey } from './runtime/provider-keys.js';
 export {
   ProcessRuntime,
-  findAvailablePort,
   validateConfigDir,
   defaultProcessSpawner,
-  waitForStartup,
   defaultHealthChecker,
-  defaultStartupWatcher,
   DeploymentStartupError,
 } from './runtime/process.js';
 export type {
   ProcessSpawner,
   SpawnedProcess,
-  ResolvedMessagingApp,
   HealthChecker,
-  StartupResult,
-  StartupWatcher,
 } from './runtime/process.js';
 export { resolveRuntimeStatus } from './runtime/status.js';
 export { ConversationStore } from './conversations.js';
