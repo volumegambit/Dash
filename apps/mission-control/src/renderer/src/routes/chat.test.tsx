@@ -24,9 +24,6 @@ const dep1 = {
   name: 'Developer',
   status: 'running' as const,
   createdAt: new Date().toISOString(),
-  managementPort: 53891,
-  chatPort: 53892,
-  agentServerPid: 1,
   config: { agents: { myAgent: { model: 'claude-sonnet-4-6', systemPrompt: '' } } },
 };
 
@@ -35,9 +32,6 @@ const dep2 = {
   name: 'Assistant',
   status: 'running' as const,
   createdAt: new Date().toISOString(),
-  managementPort: 53893,
-  chatPort: 53894,
-  agentServerPid: 3,
   config: { agents: { helper: { model: 'claude-sonnet-4-6', systemPrompt: '' } } },
 };
 
