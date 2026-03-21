@@ -2,14 +2,16 @@ import { randomUUID } from 'node:crypto';
 import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
-import type { ManagementClient, SkillsConfig } from '@dash/management';
+import { join } from 'node:path';
+import type { SkillsConfig } from '@dash/management';
+import { ManagementClient } from '@dash/management';
 import {
   AgentRegistry,
   ConversationStore,
   DeploymentStartupError,
   EncryptedSecretStore,
-  GatewayOptions,
+  GatewayManagementClient,
+  GatewayStateStore,
   MessagingAppRegistry,
   ModelCacheService,
   ProcessRuntime,
@@ -27,7 +29,6 @@ import { ChatService } from './chat-service.js';
 import { completeClaudeOAuth, prepareClaudeOAuth } from './claude-auth.js';
 import { refreshCodexToken, startCodexOAuth } from './codex-auth.js';
 import { GatewayPoller } from './gateway-poller.js';
-import { HealthPoller } from './health-poller.js';
 
 const DATA_DIR = process.env.MC_DATA_DIR || getPlatformDataDir('dash');
 const SESSION_KEY_PATH = join(DATA_DIR, 'session.key');
@@ -39,7 +40,6 @@ let runtime: ProcessRuntime | undefined;
 let messagingAppRegistry: MessagingAppRegistry | undefined;
 let gatewayPoller: GatewayPoller | undefined;
 let modelCache: ModelCacheService | undefined;
-const healthPoller = new HealthPoller();
 
 function getModelCache(): ModelCacheService {
   if (!modelCache) {
@@ -163,14 +163,12 @@ function getSettingsStore(): SettingsStore {
   return new SettingsStore(DATA_DIR);
 }
 
-async function getSkillsClient(deploymentId: string): Promise<ManagementClient> {
-  // TODO: Task 5 will resolve management connection via gateway runtime API
-  const dep = await getRegistry().get(deploymentId);
-  if (!dep || dep.status !== 'running') {
-    throw new Error('Deployment not running or Management API not available');
+async function getSkillsClient(_deploymentId: string): Promise<ManagementClient> {
+  const gatewayState = await new GatewayStateStore(DATA_DIR).read();
+  if (!gatewayState) {
+    throw new Error('Gateway not running — Skills API unavailable');
   }
-  // Placeholder — Task 5 will get port/token from gateway state
-  throw new Error('Skills API temporarily unavailable (pending gateway runtime API migration)');
+  return new ManagementClient(`http://127.0.0.1:${gatewayState.port}`, gatewayState.token);
 }
 
 function cacheKey(key: Buffer): void {
@@ -207,33 +205,49 @@ async function pushCredentialsToRunningDeployments(): Promise<CredentialPushResu
   const store = getSecretStore();
   if (!store.isUnlocked()) return { total: 0, succeeded: 0, failed: [] };
 
+  // Collect all provider API keys (flattened: provider -> default key value)
   const allKeys = await store.list();
-  const providerApiKeys: Record<string, Record<string, string>> = {};
+  const flatKeys: Record<string, string> = {};
   for (const key of allKeys) {
     const parsed = parseProviderSecretKey(key);
     if (!parsed) continue;
+    if (parsed.keyName !== 'default') continue;
     const value = await store.get(key);
-    if (!value) continue;
-    if (!providerApiKeys[parsed.provider]) {
-      providerApiKeys[parsed.provider] = {};
-    }
-    providerApiKeys[parsed.provider][parsed.keyName] = value;
+    if (value) flatKeys[parsed.provider] = value;
   }
 
-  // TODO: Task 5 will push credentials via gateway runtime API
-  const reg = getRegistry();
-  const deployments = await reg.list();
-  const running = deployments.filter((dep) => dep.status === 'running');
+  // Read gateway state to get a management client
+  const gatewayState = await new GatewayStateStore(DATA_DIR).read();
+  if (!gatewayState) {
+    return { total: 0, succeeded: 0, failed: [] };
+  }
 
-  const result: CredentialPushResult = { total: running.length, succeeded: 0, failed: [] };
+  const gwClient = new GatewayManagementClient(
+    `http://127.0.0.1:${gatewayState.port}`,
+    gatewayState.token,
+  );
 
-  // Credential push temporarily disabled — pending gateway runtime API migration
-  for (const dep of running) {
-    result.failed.push({
-      deploymentId: dep.id,
-      name: dep.name,
-      error: 'Credential push not yet available (pending gateway runtime API migration)',
-    });
+  // Push credentials to each runtime agent registered in the gateway
+  let agents: { name: string }[];
+  try {
+    agents = await gwClient.listRuntimeAgents();
+  } catch {
+    return { total: 0, succeeded: 0, failed: [] };
+  }
+
+  const result: CredentialPushResult = { total: agents.length, succeeded: 0, failed: [] };
+
+  for (const agent of agents) {
+    try {
+      await gwClient.setRuntimeAgentCredentials(agent.name, flatKeys);
+      result.succeeded++;
+    } catch (err) {
+      result.failed.push({
+        deploymentId: agent.name,
+        name: agent.name,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
   }
 
   if (result.failed.length > 0) {
@@ -256,6 +270,18 @@ export async function registerIpcHandlers(
     console.error('Gateway startup failed on MC launch:', err);
   }
 
+  // Read gateway state and pass connection to ChatService
+  const refreshChatServiceConnection = async () => {
+    const gatewayState = await new GatewayStateStore(DATA_DIR).read();
+    if (gatewayState) {
+      getChatService(getWindow).setGatewayConnection({
+        channelPort: gatewayState.channelPort,
+        chatToken: gatewayState.chatToken,
+      });
+    }
+  };
+  await refreshChatServiceConnection();
+
   // Start gateway health poller
   const sendGatewayStatus = (status: string) => {
     const win = getWindow();
@@ -272,12 +298,11 @@ export async function registerIpcHandlers(
           console.error(`Failed to re-register deployment ${dep.id} after gateway restart:`, err);
         }
       }
+      // Refresh ChatService connection after gateway restart
+      await refreshChatServiceConnection();
     },
   );
   gatewayPoller.start(sendGatewayStatus);
-
-  // TODO: Task 5 will start health pollers via gateway runtime API
-  // Health pollers temporarily disabled — pending gateway runtime API migration
 
   // Auto-unlock from cached session key.
   // Validates the key before registering IPC handlers so the renderer never
@@ -579,7 +604,6 @@ export async function registerIpcHandlers(
         throw err;
       }
     }
-    // TODO: Task 5 will start health poller via gateway runtime API
     return deploymentId;
   });
 
@@ -614,13 +638,11 @@ export async function registerIpcHandlers(
           throw err;
         }
       }
-      // TODO: Task 5 will start health poller via gateway runtime API
       return deploymentId;
     },
   );
 
   ipcMain.handle('deployments:stop', async (_event, id: string) => {
-    healthPoller.stop(id);
     await getRuntime().stop(id);
     const win = getWindow();
     if (win) {
@@ -629,9 +651,7 @@ export async function registerIpcHandlers(
   });
 
   ipcMain.handle('deployments:restart', async (_event, id: string) => {
-    healthPoller.stop(id);
     await getRuntime().start(id);
-    // TODO: Task 5 will start health poller via gateway runtime API
     const dep = await getRegistry().get(id);
     const win = getWindow();
     if (win) {
@@ -640,8 +660,6 @@ export async function registerIpcHandlers(
   });
 
   ipcMain.handle('deployments:remove', async (_event, id: string, deleteWorkspace?: boolean) => {
-    healthPoller.stop(id);
-
     // Cancel any active log subscription
     const sub = logSubscriptions.get(id);
     if (sub) {
@@ -668,11 +686,11 @@ export async function registerIpcHandlers(
   });
 
   ipcMain.handle('deployments:getChannelHealth', async (_event, id: string) => {
-    // TODO: Task 5 will query channel health via gateway runtime API
     const deployment = await getRegistry().get(id);
     if (!deployment || deployment.status !== 'running') {
       return [];
     }
+    // Channel health is monitored by the gateway; return empty for now
     return [];
   });
 
@@ -955,6 +973,6 @@ export async function registerIpcHandlers(
     });
 
   app.on('before-quit', () => {
-    healthPoller.stopAll();
+    gatewayPoller?.stop();
   });
 }
