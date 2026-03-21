@@ -67,14 +67,14 @@ export function ProviderConnectModal({
       <div
         role="dialog"
         aria-modal="true"
-        className="w-full max-w-md rounded-xl bg-background p-6 shadow-xl"
+        className="w-full max-w-md rounded-lg bg-background border border-border p-6"
         onClick={(e) => e.stopPropagation()}
         onKeyDown={(e) => e.stopPropagation()}
       >
         <div className="mb-4 flex items-start justify-between">
           <div className="flex items-center gap-2">
             <KeyRound size={20} className="text-muted" />
-            <h2 className="text-lg font-bold">{config.title}</h2>
+            <h2 className="text-lg font-semibold text-foreground">{config.title}</h2>
           </div>
           <button
             type="button"
@@ -88,13 +88,13 @@ export function ProviderConnectModal({
 
         <p className="mb-4 text-sm text-muted">{config.explanation}</p>
 
-        <div className="mb-4 rounded-lg border border-border bg-sidebar-bg p-4">
+        <div className="mb-4 rounded-lg border border-border bg-card-bg p-4">
           <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-muted">
             How to get your key
           </p>
           <ol className="space-y-2">
             <li className="flex gap-2 text-xs text-muted">
-              <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-primary/20 text-[10px] font-bold text-primary">
+              <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-accent/20 text-[10px] font-bold text-accent">
                 1
               </span>
               <span className="pt-0.5">
@@ -102,7 +102,7 @@ export function ProviderConnectModal({
                 <button
                   type="button"
                   onClick={() => handleOpenUrl(config.consoleUrl)}
-                  className="inline-flex items-center gap-0.5 font-medium text-primary hover:underline"
+                  className="inline-flex items-center gap-0.5 font-medium text-accent hover:underline"
                 >
                   {consoleDomain}
                   <ExternalLink size={10} />
@@ -111,7 +111,7 @@ export function ProviderConnectModal({
               </span>
             </li>
             <li className="flex gap-2 text-xs text-muted">
-              <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-primary/20 text-[10px] font-bold text-primary">
+              <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-accent/20 text-[10px] font-bold text-accent">
                 2
               </span>
               <span className="pt-0.5">
@@ -119,7 +119,7 @@ export function ProviderConnectModal({
                 <button
                   type="button"
                   onClick={() => handleOpenUrl(config.apiKeysUrl)}
-                  className="inline-flex items-center gap-0.5 font-medium text-primary hover:underline"
+                  className="inline-flex items-center gap-0.5 font-medium text-accent hover:underline"
                 >
                   API Keys
                   <ExternalLink size={10} />
@@ -129,7 +129,7 @@ export function ProviderConnectModal({
             </li>
             {config.steps.map((step, i) => (
               <li key={step} className="flex gap-2 text-xs text-muted">
-                <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-primary/20 text-[10px] font-bold text-primary">
+                <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-accent/20 text-[10px] font-bold text-accent">
                   {i + 3}
                 </span>
                 <span className="pt-0.5">{step}</span>
@@ -139,7 +139,7 @@ export function ProviderConnectModal({
           <button
             type="button"
             onClick={() => handleOpenUrl(config.helpUrl)}
-            className="mt-3 inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline"
+            className="mt-3 inline-flex items-center gap-1 text-xs font-medium text-accent hover:underline"
           >
             <ExternalLink size={12} />
             {config.helpLabel}
@@ -147,34 +147,46 @@ export function ProviderConnectModal({
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-3">
-          <input
-            type="text"
-            value={keyNameInput}
-            onChange={(e) => setKeyNameInput(e.target.value)}
-            placeholder="Key name (e.g. default, high-volume)"
-            aria-label="Key name"
-            className="w-full rounded-lg border border-border bg-sidebar-bg px-4 py-2 text-sm text-foreground placeholder:text-muted focus:border-primary focus:outline-none"
-          />
-          <input
-            type="password"
-            value={apiKey}
-            onChange={(e) => setApiKey(e.target.value)}
-            placeholder={config.placeholder}
-            className="w-full rounded-lg border border-border bg-sidebar-bg px-4 py-2 text-sm font-mono text-foreground placeholder:text-muted focus:border-primary focus:outline-none"
-          />
+          <div>
+            <label className="mb-1.5 block text-sm text-foreground" htmlFor="key-name-input">
+              Key name
+            </label>
+            <input
+              id="key-name-input"
+              type="text"
+              value={keyNameInput}
+              onChange={(e) => setKeyNameInput(e.target.value)}
+              placeholder="Key name (e.g. default, high-volume)"
+              aria-label="Key name"
+              className="w-full rounded-lg border border-border bg-card-bg px-4 py-3 text-sm text-foreground placeholder:text-muted focus:border-accent focus:outline-none"
+            />
+          </div>
+          <div>
+            <label className="mb-1.5 block text-sm text-foreground" htmlFor="api-key-input">
+              API key
+            </label>
+            <input
+              id="api-key-input"
+              type="password"
+              value={apiKey}
+              onChange={(e) => setApiKey(e.target.value)}
+              placeholder={config.placeholder}
+              className="w-full rounded-lg border border-border bg-card-bg px-4 py-3 text-sm font-mono text-foreground placeholder:text-muted focus:border-accent focus:outline-none"
+            />
+          </div>
           {error && <p className="text-sm text-red-400">{error}</p>}
-          <div className="flex gap-2">
+          <div className="flex gap-2 pt-1">
             <button
               type="button"
               onClick={onClose}
-              className="flex-1 rounded-lg border border-border px-4 py-2 text-sm text-muted hover:text-foreground"
+              className="flex-1 rounded-lg border border-border px-4 py-2 text-sm text-muted hover:text-foreground transition-colors"
             >
               Cancel
             </button>
             <button
               type="submit"
               disabled={saving || !apiKey.trim() || !keyNameInput.trim()}
-              className="flex-1 rounded-lg bg-primary px-4 py-2 text-sm text-white transition-colors hover:bg-primary-hover disabled:opacity-50"
+              className="flex-1 rounded-lg bg-accent px-4 py-2 text-sm text-white transition-colors hover:bg-primary-hover disabled:opacity-50"
             >
               {saving ? 'Saving...' : 'Save API Key'}
             </button>
