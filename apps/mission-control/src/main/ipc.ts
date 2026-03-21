@@ -262,10 +262,19 @@ async function pushCredentialsToRunningDeployments(): Promise<CredentialPushResu
 export async function registerIpcHandlers(
   getWindow: () => BrowserWindow | undefined,
 ): Promise<void> {
-  // Start shared gateway
+  // Start shared gateway and register existing deployments
   const rt = getRuntime();
   try {
     await rt.ensureGateway();
+    // Re-register any running deployments with the fresh gateway
+    const deployments = await getRegistry().list();
+    for (const dep of deployments.filter((d) => d.status === 'running')) {
+      try {
+        await rt.registerWithGateway(dep.id);
+      } catch (err) {
+        console.error(`Failed to register deployment ${dep.id} on startup:`, err);
+      }
+    }
   } catch (err) {
     console.error('Gateway startup failed on MC launch:', err);
   }
