@@ -46,7 +46,7 @@ export function SetupWizard({
   };
 
   return (
-    <div className="flex h-screen items-center justify-center bg-background text-foreground">
+    <div className="flex h-full items-center justify-center bg-background text-foreground">
       <div className="w-full max-w-md px-4">
         {step === 'welcome' && <WelcomeStep onNext={() => setStep('password')} />}
         {step === 'password' && (
