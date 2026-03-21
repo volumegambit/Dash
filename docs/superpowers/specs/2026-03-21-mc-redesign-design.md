@@ -400,11 +400,24 @@ Keep existing multi-step flow. Restyle with:
 
 ---
 
+## Root Layout Change
+
+The root layout at `apps/mission-control/src/renderer/src/routes/__root.tsx` currently wraps `<Outlet />` in `<main className="flex flex-1 flex-col overflow-auto p-8">`. The `p-8` must be **removed** so that each screen controls its own padding — this is required for the full-bleed page headers (`bg-surface` stretching edge-to-edge) and the chat screen's edge-to-edge conversation list.
+
+Change the main wrapper to: `<main className="flex flex-1 flex-col overflow-auto">`
+
+Each screen's body section applies its own `p-8` (or `px-8 py-6`) internally, after the header.
+
+---
+
 ## Files Changed
+
+All paths are relative to `apps/mission-control/`.
 
 | File | Change Type | Description |
 |------|-------------|-------------|
 | `src/renderer/src/assets/main.css` | Modify | Replace theme tokens, add font imports |
+| `src/renderer/src/routes/__root.tsx` | Modify | Remove p-8 from main wrapper |
 | `src/renderer/src/components/Sidebar.tsx` | Rewrite | Grouped nav with section labels |
 | `src/renderer/src/routes/index.tsx` | Rewrite | Dashboard with stats, conversations, health |
 | `src/renderer/src/routes/chat.tsx` | Major modify | Add conversation list panel, restyle messages |
@@ -415,6 +428,8 @@ Keep existing multi-step flow. Restyle with:
 | `src/renderer/src/routes/agents/-components/AgentSkillsTab.tsx` | Delete | Merged into Configuration |
 | `src/renderer/src/routes/messaging-apps/index.tsx` | Modify | Card grid layout |
 | `src/renderer/src/routes/messaging-apps/$id.tsx` | Modify | Two-column detail layout |
+| `src/renderer/src/routes/messaging-apps/new-telegram.tsx` | Modify | Restyle with new tokens |
+| `src/renderer/src/routes/messaging-apps/new-whatsapp.tsx` | Modify | Restyle with new tokens |
 | `src/renderer/src/routes/connections.tsx` | Modify | Provider list with icons/badges |
 | `src/renderer/src/routes/secrets.tsx` | Modify | Table layout with info banner |
 | `src/renderer/src/routes/settings.tsx` | Modify | Restyle with new tokens |
@@ -422,6 +437,7 @@ Keep existing multi-step flow. Restyle with:
 | `src/renderer/src/components/SetupWizard.tsx` | Modify | Restyle with new tokens |
 | `src/renderer/src/components/HealthDot.tsx` | Modify | Update colors |
 | `src/renderer/src/components/ModelChainEditor.tsx` | Modify | Restyle with new tokens |
+| `src/renderer/src/components/ProviderConnectModal.tsx` | Modify | Restyle with new tokens |
 
 ---
 
