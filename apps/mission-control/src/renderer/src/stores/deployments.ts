@@ -19,7 +19,13 @@ interface DeploymentsState {
   getStatus(id: string): Promise<RuntimeStatus>;
   updateConfig(
     id: string,
-    patch: { model?: string; fallbackModels?: string[]; tools?: string[]; systemPrompt?: string },
+    patch: {
+      name?: string;
+      model?: string;
+      fallbackModels?: string[];
+      tools?: string[];
+      systemPrompt?: string;
+    },
   ): Promise<void>;
   subscribeLogs(id: string): void;
   unsubscribeLogs(id: string): void;
@@ -129,7 +135,13 @@ export const useDeploymentsStore = create<DeploymentsState>((set, get) => ({
 
   async updateConfig(
     id: string,
-    patch: { model?: string; fallbackModels?: string[]; tools?: string[]; systemPrompt?: string },
+    patch: {
+      name?: string;
+      model?: string;
+      fallbackModels?: string[];
+      tools?: string[];
+      systemPrompt?: string;
+    },
   ) {
     try {
       await window.api.deploymentsUpdateConfig(id, patch);

@@ -1,7 +1,18 @@
 import type { RuntimeStatus } from '@dash/mc';
 import { Link, createFileRoute, useNavigate } from '@tanstack/react-router';
-import { ArrowLeft, Loader, MessageSquare, Play, RefreshCw, Square, Trash2 } from 'lucide-react';
-import { useCallback, useEffect, useState } from 'react';
+import {
+  ArrowLeft,
+  Check,
+  Loader,
+  MessageSquare,
+  Pencil,
+  Play,
+  RefreshCw,
+  Square,
+  Trash2,
+  X,
+} from 'lucide-react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useDeploymentsStore } from '../../stores/deployments';
 import { useMessagingAppsStore } from '../../stores/messaging-apps.js';
 import { AgentConfigTab } from './-components/AgentConfigTab.js';
@@ -28,6 +39,9 @@ export function AgentDetail(): JSX.Element {
   const { apps: messagingApps, loadApps: loadMessagingApps } = useMessagingAppsStore();
 
   const [activeTab, setActiveTab] = useState<TabId>('overview');
+  const [editingName, setEditingName] = useState(false);
+  const [newName, setNewName] = useState('');
+  const nameInputRef = useRef<HTMLInputElement>(null);
 
   const deployment = deployments.find((d) => d.id === id);
   const logs = logLines[id] ?? [];
@@ -56,6 +70,13 @@ export function AgentDetail(): JSX.Element {
     loadMessagingApps();
   }, [loadMessagingApps]);
 
+  useEffect(() => {
+    if (editingName && nameInputRef.current) {
+      nameInputRef.current.focus();
+      nameInputRef.current.select();
+    }
+  }, [editingName]);
+
   const handleStop = useCallback(async () => {
     await stop(id);
     const s = await window.api.deploymentsGetStatus(id).catch(() => null);
@@ -78,6 +99,30 @@ export function AgentDetail(): JSX.Element {
     await remove(id);
     navigate({ to: '/agents' });
   }, [id, remove, navigate]);
+
+  const handleStartRename = useCallback(() => {
+    setNewName(deployment?.name ?? '');
+    setEditingName(true);
+  }, [deployment?.name]);
+
+  const handleCancelRename = useCallback(() => {
+    setEditingName(false);
+    setNewName('');
+  }, []);
+
+  const handleSaveRename = useCallback(async () => {
+    const trimmed = newName.trim();
+    if (!trimmed || trimmed === deployment?.name) {
+      setEditingName(false);
+      return;
+    }
+    try {
+      await updateConfig(id, { name: trimmed });
+      setEditingName(false);
+    } catch (err) {
+      console.error('Failed to rename agent:', err);
+    }
+  }, [id, newName, deployment?.name, updateConfig]);
 
   if (loading) {
     return (
@@ -130,9 +175,50 @@ export function AgentDetail(): JSX.Element {
           className="text-muted cursor-pointer hover:text-foreground shrink-0"
           onClick={() => navigate({ to: '/agents' })}
         />
-        <span className="font-[family-name:var(--font-display)] text-[22px] font-semibold text-foreground">
-          {deployment.name}
-        </span>
+        {editingName ? (
+          <div className="flex items-center gap-2">
+            <input
+              ref={nameInputRef}
+              type="text"
+              value={newName}
+              onChange={(e) => setNewName(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') handleSaveRename();
+                if (e.key === 'Escape') handleCancelRename();
+              }}
+              className="font-[family-name:var(--font-display)] text-[22px] font-semibold text-foreground bg-transparent border-b-2 border-accent outline-none px-1"
+            />
+            <button
+              type="button"
+              onClick={handleSaveRename}
+              className="p-1 text-green hover:text-green/80 transition-colors"
+              title="Save"
+            >
+              <Check size={18} />
+            </button>
+            <button
+              type="button"
+              onClick={handleCancelRename}
+              className="p-1 text-muted hover:text-foreground transition-colors"
+              title="Cancel"
+            >
+              <X size={18} />
+            </button>
+          </div>
+        ) : (
+          <button
+            type="button"
+            onClick={handleStartRename}
+            className="group flex items-center gap-2 font-[family-name:var(--font-display)] text-[22px] font-semibold text-foreground hover:text-accent transition-colors"
+            title="Click to rename"
+          >
+            {deployment.name}
+            <Pencil
+              size={14}
+              className="opacity-0 group-hover:opacity-100 transition-opacity text-muted"
+            />
+          </button>
+        )}
         <StatusBadge status={resolvedStatus} />
         <div className="ml-auto flex items-center gap-2">
           {isRunning && agentName && (
