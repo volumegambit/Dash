@@ -80,7 +80,7 @@ export function AgentMonitorTab({
             onClick={() => setActiveLevel(l)}
             className={`rounded px-2 py-0.5 text-xs capitalize transition-colors ${
               activeLevel === l
-                ? 'bg-primary text-white'
+                ? 'bg-accent text-white'
                 : 'bg-sidebar-hover text-muted hover:text-foreground'
             }`}
           >
@@ -120,9 +120,9 @@ function LogViewer({
   };
 
   const lineClass = (line: string): string => {
-    if (line.includes('[error]')) return 'text-red-400';
-    if (line.includes('[warn]')) return 'text-yellow-400';
-    return 'text-green-300/80';
+    if (line.includes('[error]')) return 'text-red';
+    if (line.includes('[warn]')) return 'text-yellow';
+    return 'text-green';
   };
 
   return (
@@ -130,7 +130,7 @@ function LogViewer({
       <div
         ref={containerRef}
         onScroll={handleScroll}
-        className="absolute inset-0 overflow-auto rounded-lg border border-border bg-[#0d0d0d] p-3 font-mono text-xs leading-5"
+        className="absolute inset-0 overflow-auto rounded-lg border border-border bg-card-bg p-3 font-[family-name:var(--font-mono)] text-xs leading-5"
       >
         {filtered.length === 0 ? (
           <p className="text-muted">No logs yet. Waiting for output...</p>
@@ -151,7 +151,7 @@ function LogViewer({
               containerRef.current.scrollTop = containerRef.current.scrollHeight;
             }
           }}
-          className="absolute bottom-3 right-3 rounded bg-primary/80 px-2 py-1 text-xs text-white hover:bg-primary"
+          className="absolute bottom-3 right-3 rounded bg-accent/80 px-2 py-1 text-xs text-white hover:bg-accent"
         >
           Scroll to bottom
         </button>
