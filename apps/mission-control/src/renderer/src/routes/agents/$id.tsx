@@ -122,9 +122,9 @@ export function AgentDetail(): JSX.Element {
   ];
 
   return (
-    <div className="flex min-h-full flex-col">
+    <div className="flex h-full flex-col overflow-hidden">
       {/* Header */}
-      <div className="bg-surface px-8 py-4 border-b border-border flex items-center gap-4 -mx-8 -mt-6 mb-0">
+      <div className="bg-surface px-8 py-4 border-b border-border flex items-center gap-4 ">
         <ArrowLeft
           size={20}
           className="text-muted cursor-pointer hover:text-foreground shrink-0"
@@ -217,7 +217,7 @@ export function AgentDetail(): JSX.Element {
       )}
 
       {/* Tab bar */}
-      <div className="bg-surface px-8 border-b border-border flex -mx-8 mt-0">
+      <div className="bg-surface px-8 border-b border-border flex">
         {TABS.map((tab) => (
           <button
             key={tab.id}
@@ -235,7 +235,7 @@ export function AgentDetail(): JSX.Element {
       </div>
 
       {/* Tab content */}
-      <div className="flex-1 p-8 overflow-y-auto -mx-8">
+      <div className="flex-1 p-8 overflow-y-auto">
         {activeTab === 'overview' && (
           <OverviewTab
             deployment={deployment}
