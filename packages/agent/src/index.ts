@@ -45,4 +45,6 @@ export const AGENT_TOOL_NAMES = [
   'web_fetch',
   // Skill tools
   'create_skill',
+  // MCP
+  'mcp',
 ] as const;

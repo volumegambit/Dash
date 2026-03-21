@@ -8,7 +8,7 @@ import { startChatServer } from '@dash/chat';
 import { startManagementServer } from '@dash/management';
 import type { InfoResponse, SkillsHandlers } from '@dash/management';
 import { loadSkillsFromDir } from '@mariozechner/pi-coding-agent';
-import { resolveAgentKeys } from './config.js';
+import { resolveAgentKeys, resolveMcpServers } from './config.js';
 import type { DashConfig } from './config.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -54,6 +54,8 @@ export async function createAgentServer(config: DashConfig) {
       ? join(resolve(config.configDir, '..'), 'skills', name)
       : null;
 
+    const resolvedMcpServers = resolveMcpServers(config.mcpServers, agentConfig.mcpServers);
+
     const createBackend: BackendFactory = (cfg, keys, sessionDir) =>
       new PiAgentBackend(cfg, keys, logger, sessionDir, managedDir ?? undefined);
 
@@ -65,6 +67,7 @@ export async function createAgentServer(config: DashConfig) {
         tools: agentConfig.tools,
         workspace,
         skills: agentConfig.skills,
+        mcpServers: resolvedMcpServers.length > 0 ? resolvedMcpServers : undefined,
       },
       agentKeys,
       join(sessionBaseDir, name),

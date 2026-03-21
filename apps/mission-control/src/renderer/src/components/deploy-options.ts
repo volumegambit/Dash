@@ -26,6 +26,7 @@ export const TOOL_DESCRIPTIONS: Record<string, string> = {
   web_search: 'Search the internet for information',
   web_fetch: 'Download content from web pages',
   create_skill: 'Create reusable skills the agent remembers across conversations',
+  mcp: 'Connect to external MCP servers for additional tools',
 };
 
 export const AVAILABLE_MODELS: ModelOption[] = [
@@ -115,4 +116,5 @@ export const AVAILABLE_TOOLS: ToolOption[] = [
   { value: 'web_search', label: 'Web Search', description: TOOL_DESCRIPTIONS.web_search },
   { value: 'web_fetch', label: 'Web Fetch', description: TOOL_DESCRIPTIONS.web_fetch },
   { value: 'create_skill', label: 'Create Skill', description: TOOL_DESCRIPTIONS.create_skill },
+  { value: 'mcp', label: 'MCP', description: TOOL_DESCRIPTIONS.mcp },
 ];

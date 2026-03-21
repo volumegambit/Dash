@@ -38,6 +38,7 @@ export interface AgentDeployAgentConfig {
     paths?: string[];
     urls?: string[];
   };
+  mcpServers?: import('@dash/mcp').McpServerConfig[];
 }
 
 export interface ChannelDeployConfig {
