@@ -176,7 +176,7 @@ function PasswordStep({
               className="w-full rounded-lg border border-border bg-card-bg px-4 py-2 text-sm text-foreground placeholder:text-muted focus:border-accent focus:outline-none"
             />
           )}
-          {error && <p className="text-sm text-red-400">{error}</p>}
+          {error && <p className="text-sm text-red">{error}</p>}
           <button
             type="submit"
             disabled={loading || !password}
@@ -363,7 +363,7 @@ function ApiKeyStep({
             placeholder={config.placeholder}
             className="w-full rounded-lg border border-border bg-card-bg px-4 py-2 text-sm font-mono text-foreground placeholder:text-muted focus:border-accent focus:outline-none"
           />
-          {error && <p className="text-sm text-red-400">{error}</p>}
+          {error && <p className="text-sm text-red">{error}</p>}
           <button
             type="submit"
             disabled={saving || !apiKey.trim()}

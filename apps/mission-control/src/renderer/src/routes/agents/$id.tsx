@@ -181,7 +181,7 @@ export function AgentDetail(): JSX.Element {
             <button
               type="button"
               onClick={handleRemove}
-              className="inline-flex items-center gap-2 rounded-lg border border-red-900/50 px-3 py-2 text-sm text-red-400 transition-colors hover:bg-red-900/30"
+              className="inline-flex items-center gap-2 rounded-lg border border-red-900/50 px-3 py-2 text-sm text-red transition-colors hover:bg-red-900/30"
             >
               <Trash2 size={14} />
               Remove
@@ -192,15 +192,15 @@ export function AgentDetail(): JSX.Element {
 
       {deployment.status === 'error' && (
         <div className="mt-6 mb-2 space-y-2">
-          <div className="rounded-lg bg-red-900/30 px-4 py-3 text-sm text-red-400">
+          <div className="rounded-lg bg-red-900/30 px-4 py-3 text-sm text-red">
             <p className="font-medium">Startup failed</p>
             {deployment.errorMessage && (
-              <p className="mt-1 text-red-400/80">{deployment.errorMessage}</p>
+              <p className="mt-1 text-red/80">{deployment.errorMessage}</p>
             )}
           </div>
           {deployment.startupLogs && deployment.startupLogs.length > 0 && (
             <details className="rounded-lg border border-red-900/30">
-              <summary className="cursor-pointer px-4 py-2 text-xs text-red-400/70 hover:text-red-400">
+              <summary className="cursor-pointer px-4 py-2 text-xs text-red/70 hover:text-red">
                 Startup logs ({deployment.startupLogs.length} lines)
               </summary>
               <div className="max-h-64 overflow-auto rounded-b-lg bg-[#0d0d0d] p-3 font-mono text-xs leading-5">
@@ -252,15 +252,9 @@ export function AgentDetail(): JSX.Element {
             updateConfig={updateConfig}
           />
         )}
-        {activeTab === 'channels' && (
-          <ChannelsTab connectedChannels={connectedChannels} />
-        )}
+        {activeTab === 'channels' && <ChannelsTab connectedChannels={connectedChannels} />}
         {activeTab === 'logs' && (
-          <AgentMonitorTab
-            deployment={deployment}
-            status={status}
-            logs={logs}
-          />
+          <AgentMonitorTab deployment={deployment} status={status} logs={logs} />
         )}
       </div>
     </div>
@@ -278,14 +272,22 @@ interface OverviewTabProps {
   agentConfig: import('@dash/mc').AgentDeployAgentConfig | undefined;
 }
 
-function OverviewTab({ deployment, status, connectedChannels, agentConfig }: OverviewTabProps): JSX.Element {
+function OverviewTab({
+  deployment,
+  status,
+  connectedChannels,
+  agentConfig,
+}: OverviewTabProps): JSX.Element {
   const resolvedStatus = status?.state ?? deployment.status;
 
   // Build a simple timeline of events from available data
   const events: { time: string; description: string }[] = [];
   if (deployment.createdAt) {
     events.push({
-      time: new Date(deployment.createdAt).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }),
+      time: new Date(deployment.createdAt).toLocaleTimeString('en-GB', {
+        hour: '2-digit',
+        minute: '2-digit',
+      }),
       description: 'Agent deployed',
     });
   }
@@ -385,8 +387,11 @@ function OverviewTab({ deployment, status, connectedChannels, agentConfig }: Ove
               <div className="px-5 py-3 text-sm text-muted">No activity recorded.</div>
             ) : (
               events.map((event, i) => (
-                // biome-ignore lint/suspicious/noArrayIndexKey: static event list ordered by index
-                <div key={i} className="flex gap-4 px-5 py-3 border-b border-border last:border-b-0">
+                <div
+                  // biome-ignore lint/suspicious/noArrayIndexKey: static event list ordered by index
+                  key={i}
+                  className="flex gap-4 px-5 py-3 border-b border-border last:border-b-0"
+                >
                   <span className="font-[family-name:var(--font-mono)] text-[11px] text-muted w-16 shrink-0">
                     {event.time}
                   </span>
@@ -405,7 +410,9 @@ function OverviewTab({ deployment, status, connectedChannels, agentConfig }: Ove
 // Channels tab
 // ---------------------------------------------------------------------------
 
-function ChannelsTab({ connectedChannels }: { connectedChannels: import('@dash/mc').MessagingApp[] }): JSX.Element {
+function ChannelsTab({
+  connectedChannels,
+}: { connectedChannels: import('@dash/mc').MessagingApp[] }): JSX.Element {
   if (connectedChannels.length === 0) {
     return (
       <div className="px-8 py-12 flex flex-col items-center gap-3 text-center">

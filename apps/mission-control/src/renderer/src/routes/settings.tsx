@@ -121,7 +121,7 @@ function Settings(): JSX.Element {
             <button
               type="button"
               onClick={handleRemoveBraveKey}
-              className="rounded-lg border border-border px-3 py-1.5 text-xs text-red-400 hover:bg-red-900/20"
+              className="rounded-lg border border-border px-3 py-1.5 text-xs text-red hover:bg-red-900/20"
             >
               Remove
             </button>

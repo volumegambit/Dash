@@ -113,7 +113,7 @@ function renderEvents(
           : ((event.error as unknown as { message?: string })?.message ?? 'Unknown error');
       const timestamp = typeof event.timestamp === 'string' ? event.timestamp : undefined;
       elements.push(
-        <div key={`err-${blockCount++}`} className="mb-3 flex items-center gap-2 text-red-400">
+        <div key={`err-${blockCount++}`} className="mb-3 flex items-center gap-2 text-red">
           <span>{msg}</span>
           {navigateToLogs && timestamp && (
             <button
@@ -215,7 +215,7 @@ function QuestionBlock({
       <div className="mb-2 rounded border border-border bg-sidebar-hover px-3 py-1.5 text-xs">
         <span className="text-muted">Question</span>
         <span className="ml-1">{answer}</span>
-        <span className="ml-1 text-green-400">✓</span>
+        <span className="ml-1 text-green">✓</span>
       </div>
     );
   }
@@ -230,7 +230,7 @@ function QuestionBlock({
               key={opt}
               type="button"
               onClick={() => onAnswer?.(id, opt)}
-              className="rounded-lg border border-border bg-sidebar-bg px-3 py-1.5 text-xs transition-colors hover:bg-sidebar-hover hover:border-accent"
+              className="rounded-lg border border-border bg-card-bg px-3 py-1.5 text-xs transition-colors hover:bg-card-hover hover:border-accent"
             >
               {opt}
             </button>
@@ -250,7 +250,7 @@ function QuestionBlock({
             value={inputValue}
             onChange={(e) => setInputValue(e.target.value)}
             placeholder="Type your answer…"
-            className="flex-1 rounded-lg border border-border bg-sidebar-bg px-3 py-1.5 text-xs text-foreground placeholder:text-muted focus:border-accent focus:outline-none"
+            className="flex-1 rounded-lg border border-border bg-card-bg px-3 py-1.5 text-xs text-foreground placeholder:text-muted focus:border-accent focus:outline-none"
           />
           <button
             type="submit"
@@ -266,7 +266,7 @@ function QuestionBlock({
 }
 
 const STATUS_INDICATOR: Record<string, { icon: string; label: string; color: string }> = {
-  completed: { icon: '✓', label: 'Done', color: 'text-green-400' },
+  completed: { icon: '✓', label: 'Done', color: 'text-green' },
   in_progress: { icon: '◉', label: 'In progress', color: 'text-accent' },
   pending: { icon: '○', label: 'Pending', color: 'text-muted' },
 };
@@ -318,9 +318,7 @@ function ToolBlock({
       >
         <span className="font-mono">{toolLabel(name)}</span>
         {summary && <span className="ml-1 text-muted">{summary}</span>}
-        <span className={`ml-1 ${isError ? 'text-red-400' : 'text-green-400'}`}>
-          {isError ? '✗' : '✓'}
-        </span>
+        <span className={`ml-1 ${isError ? 'text-red' : 'text-green'}`}>{isError ? '✗' : '✓'}</span>
       </button>
       {open && (
         <div className="border-t border-border px-3 pb-2 pt-1">
@@ -490,7 +488,7 @@ function PinnedTodoPanel({ todos }: { todos: TodoItem[] }): JSX.Element {
   if (dismissed) return <></>;
 
   return (
-    <div className="border-t border-border bg-sidebar-bg">
+    <div className="border-t border-border bg-card-bg">
       <div className="flex w-full items-center justify-between px-6 py-2 text-xs text-muted">
         <button
           type="button"
@@ -634,7 +632,9 @@ function ConversationItem({
         }`}
       >
         <p className="truncate font-semibold text-sm text-foreground">{conversation.title}</p>
-        <p className="truncate font-[family-name:var(--font-mono)] text-[10px] text-accent">{conversation.agentName}</p>
+        <p className="truncate font-[family-name:var(--font-mono)] text-[10px] text-accent">
+          {conversation.agentName}
+        </p>
       </button>
       <div className="mr-2 mt-2 flex shrink-0 items-center gap-0.5">
         {confirmingDelete ? (
@@ -645,7 +645,7 @@ function ConversationItem({
                 setConfirmingDelete(false);
                 onDelete();
               }}
-              className="rounded p-0.5 text-red-400 hover:bg-red-900/30"
+              className="rounded p-0.5 text-red hover:bg-red-900/30"
               aria-label="Confirm delete"
             >
               <Check size={10} />
@@ -672,7 +672,7 @@ function ConversationItem({
             <button
               type="button"
               onClick={() => setConfirmingDelete(true)}
-              className="opacity-0 transition-opacity group-hover:opacity-100 rounded p-0.5 text-muted hover:text-red-400"
+              className="opacity-0 transition-opacity group-hover:opacity-100 rounded p-0.5 text-muted hover:text-red"
               aria-label={`Delete conversation ${conversation.title}`}
             >
               <Trash2 size={10} />
@@ -886,7 +886,9 @@ export function Chat(): JSX.Element {
     <div className="-m-8 flex flex-col h-full overflow-hidden">
       {/* Page Header */}
       <div className="bg-surface px-8 py-4 border-b border-border flex justify-between items-center shrink-0">
-        <h1 className="font-[family-name:var(--font-display)] text-[22px] font-semibold text-foreground">Chat</h1>
+        <h1 className="font-[family-name:var(--font-display)] text-[22px] font-semibold text-foreground">
+          Chat
+        </h1>
         <div className="flex gap-3">
           {/* Deployment picker */}
           {runningDeployments.length > 1 && (
@@ -1048,7 +1050,7 @@ export function Chat(): JSX.Element {
                   ))}
                 </div>
               )}
-              {imageError && <p className="text-xs text-red-400">{imageError}</p>}
+              {imageError && <p className="text-xs text-red">{imageError}</p>}
               <form
                 className="flex items-center gap-3"
                 onSubmit={(e) => {
@@ -1112,14 +1114,16 @@ export function Chat(): JSX.Element {
                   <button
                     type="button"
                     onClick={() => selectedConversationId && cancelMessage(selectedConversationId)}
-                    className="rounded-lg bg-red-900/50 p-2.5 text-red-400 transition-colors hover:bg-red-900/70 shrink-0"
+                    className="rounded-lg bg-red-900/50 p-2.5 text-red transition-colors hover:bg-red-900/70 shrink-0"
                   >
                     <Square size={16} />
                   </button>
                 ) : (
                   <button
                     type="submit"
-                    disabled={(!input.trim() && attachedImages.length === 0) || !selectedConversationId}
+                    disabled={
+                      (!input.trim() && attachedImages.length === 0) || !selectedConversationId
+                    }
                     className="bg-accent text-white rounded-lg p-2.5 hover:bg-primary-hover disabled:opacity-50 transition-colors shrink-0"
                   >
                     <Send size={16} />

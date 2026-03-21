@@ -1,4 +1,4 @@
-@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap');
+@import url("https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap");
 @import "tailwindcss";
 @import "highlight.js/styles/github-dark-dimmed.min.css";
 
@@ -11,10 +11,10 @@
   --color-muted: #a3a3a3;
 
   /* Brand */
-  --color-primary: #FF5500;
-  --color-primary-hover: #CC4400;
-  --color-accent: #FF5500;
-  --color-accent-tint: #FF550018;
+  --color-primary: #ff5500;
+  --color-primary-hover: #cc4400;
+  --color-accent: #ff5500;
+  --color-accent-tint: #ff550018;
 
   /* Cards */
   --color-card-bg: #141414;
@@ -26,7 +26,7 @@
   --color-sidebar-active: #222222;
 
   /* Status */
-  --color-green: #00CC66;
+  --color-green: #00cc66;
   --color-green-tint: #16a34a18;
   --color-red: #f87171;
   --color-red-tint: #ef444418;
@@ -34,8 +34,8 @@
   --color-yellow-tint: #facc1518;
 
   /* Fonts */
-  --font-display: 'Outfit', -apple-system, BlinkMacSystemFont, sans-serif;
-  --font-mono: 'JetBrains Mono', monospace;
+  --font-display: "Outfit", -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-mono: "JetBrains Mono", monospace;
 }
 
 body {

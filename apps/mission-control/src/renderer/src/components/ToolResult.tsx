@@ -57,10 +57,10 @@ function DirectoryListing({ content }: { content: string }): JSX.Element {
         const isDir = entry.endsWith('/');
         return (
           <div key={entry} className="flex items-center gap-1.5">
-            <span className={isDir ? 'text-blue-400' : 'text-foreground/70'}>
+            <span className={isDir ? 'text-accent' : 'text-foreground/70'}>
               {isDir ? '📁' : '📄'}
             </span>
-            <span className={isDir ? 'text-blue-400' : 'text-foreground/70'}>{entry}</span>
+            <span className={isDir ? 'text-accent' : 'text-foreground/70'}>{entry}</span>
           </div>
         );
       })}
@@ -96,7 +96,7 @@ export function ToolResult({
   isError,
 }: { name: string; result: string; isError?: boolean }): JSX.Element {
   if (isError) {
-    return <p className="whitespace-pre-wrap text-red-400">{result}</p>;
+    return <p className="whitespace-pre-wrap text-red">{result}</p>;
   }
 
   if (!result.trim()) {
@@ -138,7 +138,7 @@ export function ToolResult({
   // Short results (< 3 lines) — render inline
   const lineCount = content.split('\n').length;
   if (lineCount <= 3) {
-    return <p className="whitespace-pre-wrap text-green-400/80">{content}</p>;
+    return <p className="whitespace-pre-wrap text-green/80">{content}</p>;
   }
 
   // Long plain text — render in a scrollable code block
