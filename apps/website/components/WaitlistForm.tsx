@@ -18,7 +18,7 @@ export function WaitlistForm() {
 
     try {
       const res = await fetch(
-        `${process.env.NEXT_PUBLIC_WAITLIST_URL ?? 'http://localhost:9300'}/api/waitlist`,
+        `${process.env.NEXT_PUBLIC_WAITLIST_URL ?? 'https://dashsquad-waitlist.volumegambit.workers.dev'}/api/waitlist`,
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
