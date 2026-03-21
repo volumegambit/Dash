@@ -174,7 +174,7 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
       } catch {
         return c.json({ error: 'Invalid JSON' }, 400);
       }
-      if (!body.name || !body.model || !body.systemPrompt) {
+      if (!body.name || !body.model || body.systemPrompt == null) {
         return c.json({ error: 'Missing required fields: name, model, systemPrompt' }, 400);
       }
       try {
