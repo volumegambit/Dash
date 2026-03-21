@@ -7,7 +7,15 @@ import { useMessagingAppsStore } from '../../stores/messaging-apps.js';
 function PlatformIcon({ type }: { type: string }): JSX.Element {
   if (type === 'whatsapp') {
     return (
-      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" className="text-[#25D366]">
+      <svg
+        width="24"
+        height="24"
+        viewBox="0 0 24 24"
+        fill="none"
+        className="text-[#25D366]"
+        role="img"
+        aria-label="WhatsApp"
+      >
         <path
           d="M12 2C6.477 2 2 6.477 2 12c0 1.89.525 3.66 1.438 5.168L2 22l4.832-1.438A9.956 9.956 0 0012 22c5.523 0 10-4.477 10-10S17.523 2 12 2z"
           fill="currentColor"
@@ -22,12 +30,17 @@ function PlatformIcon({ type }: { type: string }): JSX.Element {
   }
   // Telegram
   return (
-    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" className="text-[#229ED9]">
+    <svg
+      width="24"
+      height="24"
+      viewBox="0 0 24 24"
+      fill="none"
+      className="text-[#229ED9]"
+      role="img"
+      aria-label="Telegram"
+    >
       <circle cx="12" cy="12" r="10" fill="currentColor" fillOpacity="0.2" />
-      <path
-        d="M17.5 7L10 13.5 7 12l10.5-5zM10 13.5l.8 3.5 2-2.2-2.8-1.3z"
-        fill="currentColor"
-      />
+      <path d="M17.5 7L10 13.5 7 12l10.5-5zM10 13.5l.8 3.5 2-2.2-2.8-1.3z" fill="currentColor" />
     </svg>
   );
 }

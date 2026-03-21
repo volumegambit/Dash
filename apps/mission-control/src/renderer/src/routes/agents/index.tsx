@@ -1,8 +1,8 @@
+import type { AgentDeployment } from '@dash/mc';
 import { Link, createFileRoute, useNavigate } from '@tanstack/react-router';
 import { Bot, Plus, Search, Square, Trash2 } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { useDeploymentsStore } from '../../stores/deployments';
-import type { AgentDeployment } from '@dash/mc';
 
 function getAgentConfig(deployment: AgentDeployment) {
   // Support both new `agents` map and legacy `agent` field
@@ -23,7 +23,7 @@ function truncateModel(model: string): string {
   // Strip provider prefix like "anthropic/claude-3-5-sonnet-20241022" → "claude-3-5-sonnet..."
   const parts = model.split('/');
   const name = parts[parts.length - 1] ?? model;
-  return name.length > 24 ? name.slice(0, 22) + '…' : name;
+  return name.length > 24 ? `${name.slice(0, 22)}…` : name;
 }
 
 function getTools(deployment: AgentDeployment): number {
@@ -48,9 +48,9 @@ function relativeTime(dateStr: string): string {
 }
 
 function statusDotColor(status: string): string {
-  if (status === 'running') return 'bg-green-400';
-  if (status === 'error' || status === 'stopped') return 'bg-red-400';
-  return 'bg-yellow-400'; // provisioning / starting
+  if (status === 'running') return 'bg-green';
+  if (status === 'error' || status === 'stopped') return 'bg-red';
+  return 'bg-yellow'; // provisioning / starting
 }
 
 function Agents(): JSX.Element {
@@ -68,9 +68,7 @@ function Agents(): JSX.Element {
     loadDeployments();
   }, [loadDeployments]);
 
-  const filtered = deployments.filter((d) =>
-    d.name.toLowerCase().includes(search.toLowerCase()),
-  );
+  const filtered = deployments.filter((d) => d.name.toLowerCase().includes(search.toLowerCase()));
 
   return (
     <div className="flex flex-col h-full">
@@ -249,8 +247,9 @@ function AgentRow({ deployment, onNavigate, onStop, onRemove }: AgentRowProps): 
   const model = getModel(deployment);
 
   return (
-    <div
-      className="border-b border-border flex items-center px-5 py-3.5 hover:bg-card-hover cursor-pointer transition-colors group last:border-b-0"
+    <button
+      type="button"
+      className="w-full border-b border-border flex items-center px-5 py-3.5 hover:bg-card-hover cursor-pointer transition-colors group last:border-b-0"
       onClick={onNavigate}
     >
       {/* Status */}
@@ -297,6 +296,8 @@ function AgentRow({ deployment, onNavigate, onStop, onRemove }: AgentRowProps): 
       <div
         className="w-16 flex items-center justify-end gap-1 opacity-0 group-hover:opacity-100 transition-opacity"
         onClick={(e) => e.stopPropagation()}
+        onKeyDown={(e) => e.stopPropagation()}
+        role="presentation"
       >
         {deployment.status === 'running' && (
           <button
@@ -312,12 +313,12 @@ function AgentRow({ deployment, onNavigate, onStop, onRemove }: AgentRowProps): 
           type="button"
           onClick={onRemove}
           title="Remove"
-          className="p-1.5 text-muted transition-colors hover:bg-red-900/30 hover:text-red-400 rounded"
+          className="p-1.5 text-muted transition-colors hover:bg-red-900/30 hover:text-red rounded"
         >
           <Trash2 size={13} />
         </button>
       </div>
-    </div>
+    </button>
   );
 }
 

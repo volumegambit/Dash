@@ -166,7 +166,7 @@ export function DeployWizard(): JSX.Element {
               refreshing={modelsRefreshing}
             />
             {agent.model && !modelHasKey && (
-              <p className="mt-1 text-xs text-red-400">
+              <p className="mt-1 text-xs text-red">
                 Add an API key in Settings → AI Providers to use this model.
               </p>
             )}
@@ -325,12 +325,12 @@ export function DeployWizard(): JSX.Element {
 
           {deployError && (
             <div className="space-y-2">
-              <div className="rounded-lg bg-red-900/30 px-4 py-3 text-sm text-red-400">
+              <div className="rounded-lg bg-red-900/30 px-4 py-3 text-sm text-red">
                 {deployError}
               </div>
               {deployStartupLogs.length > 0 && (
                 <details className="rounded-lg border border-red-900/30">
-                  <summary className="cursor-pointer px-4 py-2 text-xs text-red-400/70 hover:text-red-400">
+                  <summary className="cursor-pointer px-4 py-2 text-xs text-red/70 hover:text-red">
                     <span className="inline-flex items-center justify-between w-[calc(100%-1rem)]">
                       <span>Startup logs ({deployStartupLogs.length} lines)</span>
                       <button
@@ -341,7 +341,7 @@ export function DeployWizard(): JSX.Element {
                           setLogsCopied(true);
                           setTimeout(() => setLogsCopied(false), 2000);
                         }}
-                        className="ml-2 inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-red-400/70 hover:bg-red-900/20 hover:text-red-400"
+                        className="ml-2 inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-red/70 hover:bg-red-900/20 hover:text-red"
                       >
                         {logsCopied ? <ClipboardCheck size={12} /> : <Clipboard size={12} />}
                         {logsCopied ? 'Copied' : 'Copy'}

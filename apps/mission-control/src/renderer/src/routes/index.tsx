@@ -171,9 +171,9 @@ function StatCard({
         <span
           className={`text-xs flex items-center gap-1 ${
             deltaPositive === true
-              ? 'text-green-400'
+              ? 'text-green'
               : deltaPositive === false
-                ? 'text-red-400'
+                ? 'text-red'
                 : 'text-muted'
           }`}
         >
@@ -189,9 +189,7 @@ function ServiceRow({ name, status }: { name: string; status: string }): JSX.Ele
   const isOk = status === 'Operational';
   return (
     <div className="flex items-center gap-2">
-      <div
-        className={`w-2 h-2 rounded-full flex-shrink-0 ${isOk ? 'bg-green-400' : 'bg-red-400'}`}
-      />
+      <div className={`w-2 h-2 rounded-full flex-shrink-0 ${isOk ? 'bg-green' : 'bg-red'}`} />
       <span className="text-sm text-foreground flex-1">{name}</span>
       <span className="text-xs text-muted">{status}</span>
     </div>
@@ -205,11 +203,9 @@ function AgentHealthRow({
 }): JSX.Element {
   const isRunning = deployment.status === 'running';
   const isError = deployment.status === 'error';
-  const dotColor = isRunning ? 'bg-green-400' : 'bg-red-400';
+  const dotColor = isRunning ? 'bg-green' : 'bg-red';
   const badgeLabel = isRunning ? 'Active' : isError ? 'Error' : 'Stopped';
-  const badgeColor = isRunning
-    ? 'bg-green-400/10 text-green-400'
-    : 'bg-red-400/10 text-red-400';
+  const badgeColor = isRunning ? 'bg-green-tint text-green' : 'bg-red-tint text-red';
 
   return (
     <div className="flex items-center gap-2">
