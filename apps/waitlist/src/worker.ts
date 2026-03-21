@@ -37,4 +37,63 @@ app.get('/api/waitlist', async (c) => {
   return c.json({ count: results.length, entries: results });
 });
 
+app.get('/dashboard', async (c) => {
+  const { results } = await c.env.DB.prepare('SELECT email, created_at FROM waitlist ORDER BY created_at DESC').all();
+  const count = results.length;
+  const rows = results
+    .map(
+      (r: Record<string, unknown>, i: number) =>
+        `<tr><td>${count - i}</td><td>${r.email}</td><td>${new Date(r.created_at as string).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</td></tr>`
+    )
+    .join('');
+
+  return c.html(`<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DashSquad Waitlist</title>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: #0A0A0A; color: #fff; font-family: 'Outfit', sans-serif; min-height: 100vh; }
+    .container { max-width: 900px; margin: 0 auto; padding: 60px 24px; }
+    .header { margin-bottom: 40px; }
+    .label { font-family: 'JetBrains Mono', monospace; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 3px; color: #FF5500; margin-bottom: 12px; }
+    h1 { font-size: 36px; font-weight: 800; letter-spacing: -1px; }
+    .count { display: inline-flex; align-items: center; gap: 8px; background: #FF550015; border: 1px solid #FF5500; border-radius: 100px; padding: 6px 16px; margin-top: 16px; font-size: 14px; color: #FF5500; font-weight: 600; }
+    .count .dot { width: 8px; height: 8px; border-radius: 50%; background: #FF5500; }
+    table { width: 100%; border-collapse: collapse; margin-top: 32px; }
+    th { font-family: 'JetBrains Mono', monospace; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 2px; color: #555; text-align: left; padding: 12px 16px; border-bottom: 1px solid #222; }
+    td { padding: 14px 16px; border-bottom: 1px solid #1A1A1A; font-size: 15px; color: #ccc; }
+    tr:hover td { background: #111; }
+    td:first-child { color: #555; font-family: 'JetBrains Mono', monospace; font-size: 13px; width: 60px; }
+    td:nth-child(2) { color: #fff; font-weight: 600; }
+    td:nth-child(3) { color: #888; font-size: 13px; }
+    .empty { text-align: center; padding: 80px 0; color: #555; font-size: 18px; }
+    .logo { display: flex; align-items: center; gap: 10px; margin-bottom: 32px; }
+    .logo svg { filter: drop-shadow(0 0 12px rgba(255,85,0,0.3)); }
+    .logo span { font-size: 20px; font-weight: 800; letter-spacing: -0.5px; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="logo">
+      <svg width="28" height="28" viewBox="0 0 28 28" fill="none"><rect width="28" height="28" rx="6" fill="#FF5500"/><path d="M17.5 11L21 14L17.5 17" stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M11 8L15 11L11 14" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M11 14L15 17L11 20" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <span>dashsquad</span>
+    </div>
+    <div class="header">
+      <div class="label">WAITLIST</div>
+      <h1>Early Access Signups</h1>
+      <div class="count"><span class="dot"></span>${count} signup${count !== 1 ? 's' : ''}</div>
+    </div>
+    ${count === 0
+      ? '<div class="empty">No signups yet.</div>'
+      : `<table><thead><tr><th>#</th><th>Email</th><th>Signed Up</th></tr></thead><tbody>${rows}</tbody></table>`
+    }
+  </div>
+</body>
+</html>`);
+});
+
 export default app;
