@@ -22,6 +22,26 @@ export interface GatewayHealthResponse {
   startedAt: string;
   agents: number;
   channels: number;
+  pool?: { size: number; maxSize: number; pinned: number; agents: Record<string, number> };
+  runtimeAgents?: number;
+}
+
+export interface RuntimeAgentConfig {
+  name: string;
+  model: string;
+  systemPrompt: string;
+  fallbackModels?: string[];
+  tools?: string[];
+  skills?: { paths?: string[]; urls?: string[] };
+  workspace?: string;
+  maxTokens?: number;
+}
+
+export interface RegisteredRuntimeAgent {
+  name: string;
+  config: RuntimeAgentConfig;
+  status: 'registered' | 'active' | 'disabled';
+  registeredAt: number;
 }
 
 export class GatewayManagementClient {
@@ -85,6 +105,95 @@ export class GatewayManagementClient {
     });
     if (!res.ok) {
       throw new Error(`Gateway registerChannel failed: ${res.status}`);
+    }
+  }
+
+  async registerRuntimeAgent(config: RuntimeAgentConfig): Promise<void> {
+    const res = await fetch(`${this.baseUrl}/runtime/agents`, {
+      method: 'POST',
+      headers: this.headers(),
+      body: JSON.stringify(config),
+    });
+    if (!res.ok) {
+      throw new Error(`Gateway registerRuntimeAgent failed: ${res.status}`);
+    }
+  }
+
+  async listRuntimeAgents(): Promise<RegisteredRuntimeAgent[]> {
+    const res = await fetch(`${this.baseUrl}/runtime/agents`, {
+      headers: this.headers(),
+    });
+    if (!res.ok) {
+      throw new Error(`Gateway listRuntimeAgents failed: ${res.status}`);
+    }
+    return res.json() as Promise<RegisteredRuntimeAgent[]>;
+  }
+
+  async getRuntimeAgent(name: string): Promise<RegisteredRuntimeAgent> {
+    const res = await fetch(`${this.baseUrl}/runtime/agents/${encodeURIComponent(name)}`, {
+      headers: this.headers(),
+    });
+    if (!res.ok) {
+      throw new Error(`Gateway getRuntimeAgent failed: ${res.status}`);
+    }
+    return res.json() as Promise<RegisteredRuntimeAgent>;
+  }
+
+  async updateRuntimeAgent(name: string, patch: Partial<RuntimeAgentConfig>): Promise<void> {
+    const res = await fetch(`${this.baseUrl}/runtime/agents/${encodeURIComponent(name)}`, {
+      method: 'PUT',
+      headers: this.headers(),
+      body: JSON.stringify(patch),
+    });
+    if (!res.ok) {
+      throw new Error(`Gateway updateRuntimeAgent failed: ${res.status}`);
+    }
+  }
+
+  async removeRuntimeAgent(name: string): Promise<void> {
+    const res = await fetch(`${this.baseUrl}/runtime/agents/${encodeURIComponent(name)}`, {
+      method: 'DELETE',
+      headers: this.headers(),
+    });
+    if (!res.ok) {
+      throw new Error(`Gateway removeRuntimeAgent failed: ${res.status}`);
+    }
+  }
+
+  async setRuntimeAgentCredentials(
+    name: string,
+    providerApiKeys: Record<string, string>,
+  ): Promise<void> {
+    const res = await fetch(
+      `${this.baseUrl}/runtime/agents/${encodeURIComponent(name)}/credentials`,
+      {
+        method: 'POST',
+        headers: this.headers(),
+        body: JSON.stringify({ providerApiKeys }),
+      },
+    );
+    if (!res.ok) {
+      throw new Error(`Gateway setRuntimeAgentCredentials failed: ${res.status}`);
+    }
+  }
+
+  async disableRuntimeAgent(name: string): Promise<void> {
+    const res = await fetch(`${this.baseUrl}/runtime/agents/${encodeURIComponent(name)}/disable`, {
+      method: 'POST',
+      headers: this.headers(),
+    });
+    if (!res.ok) {
+      throw new Error(`Gateway disableRuntimeAgent failed: ${res.status}`);
+    }
+  }
+
+  async enableRuntimeAgent(name: string): Promise<void> {
+    const res = await fetch(`${this.baseUrl}/runtime/agents/${encodeURIComponent(name)}/enable`, {
+      method: 'POST',
+      headers: this.headers(),
+    });
+    if (!res.ok) {
+      throw new Error(`Gateway enableRuntimeAgent failed: ${res.status}`);
     }
   }
 }
