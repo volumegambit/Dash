@@ -1,6 +1,7 @@
 import { Nav } from '@/components/Nav';
 import { Hero } from '@/components/Hero';
 import { SecureSandbox } from '@/components/SecureSandbox';
+import { DeployAndRun } from '@/components/DeployAndRun';
 
 export default function Home() {
   return (
@@ -8,6 +9,7 @@ export default function Home() {
       <Nav />
       <Hero />
       <SecureSandbox />
+      <DeployAndRun />
     </main>
   );
 }
