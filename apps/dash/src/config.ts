@@ -2,6 +2,7 @@ import { existsSync, statSync } from 'node:fs';
 import { readFile, readdir, unlink } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import type { McpServerConfig } from '@dash/mcp';
 
 // --- JSON config schema ---
 
@@ -17,11 +18,13 @@ export interface AgentConfig {
     paths?: string[];
     urls?: string[];
   };
+  mcpServers?: string[];
 }
 
 export interface DashJsonConfig {
   agents: Record<string, AgentConfig>;
   logging: { level: string };
+  mcpServers?: Record<string, Omit<McpServerConfig, 'name'>>;
 }
 
 // --- Runtime config (merged JSON + env) ---
@@ -36,6 +39,7 @@ export interface DashConfig {
   chatPort: number;
   chatToken?: string;
   configDir?: string; // directory containing dash.json, for writing config changes
+  mcpServers?: Record<string, Omit<McpServerConfig, 'name'>>;
 }
 
 const DEFAULTS: DashJsonConfig = {
@@ -246,6 +250,7 @@ export async function loadConfig(options?: LoadConfigOptions): Promise<DashConfi
     chatPort,
     chatToken,
     configDir,
+    mcpServers: merged.mcpServers,
   };
 }
 
@@ -275,6 +280,22 @@ export function resolveAgentKeys(
     }
   }
   return resolved;
+}
+
+/** Resolve per-agent MCP server name references to full configs. */
+export function resolveMcpServers(
+  globalDefs: Record<string, Omit<McpServerConfig, 'name'>> | undefined,
+  agentServerNames: string[] | undefined,
+): McpServerConfig[] {
+  if (!globalDefs || !agentServerNames?.length) return [];
+  return agentServerNames.flatMap((name) => {
+    const def = globalDefs[name];
+    if (!def) {
+      console.warn(`[Config] MCP server "${name}" referenced but not defined; skipping`);
+      return [];
+    }
+    return [{ ...def, name }];
+  });
 }
 
 /** Parse --config and --secrets flags from argv */

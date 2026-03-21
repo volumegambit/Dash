@@ -19,6 +19,15 @@ export type McAgentEvent =
   | { type: 'skill_created'; name: string; description: string }
   | { type: 'error'; error: string; timestamp: string };
 
+export interface DeployWithConfigMcpServer {
+  name: string;
+  transport:
+    | { type: 'stdio'; command: string; args?: string[] }
+    | { type: 'sse'; url: string }
+    | { type: 'streamable-http'; url: string };
+  env?: Record<string, string>;
+}
+
 export interface DeployWithConfigOptions {
   name: string;
   model: string;
@@ -27,6 +36,7 @@ export interface DeployWithConfigOptions {
   tools: string[];
   workspace?: string;
   credentialKeys?: Record<string, string>;
+  mcpServers?: DeployWithConfigMcpServer[];
 }
 
 export interface SetupStatus {

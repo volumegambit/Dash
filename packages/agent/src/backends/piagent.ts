@@ -16,6 +16,8 @@ import {
 } from '@mariozechner/pi-coding-agent';
 import type { AgentSession, AgentSessionEvent } from '@mariozechner/pi-coding-agent';
 
+import type { McpManager } from '@dash/mcp';
+
 import type { Logger } from '../logger.js';
 import {
   createCreateSkillTool,
@@ -56,6 +58,7 @@ export class PiAgentBackend implements AgentBackend {
   private session: AgentSession | null = null;
   private auth: AuthStorage | null = null;
   private abortRequested = false;
+  private ownsMcpManager = false;
 
   /** Accumulated full text during a response, for the `response` event */
   private fullText = '';
@@ -69,6 +72,7 @@ export class PiAgentBackend implements AgentBackend {
     private logger?: Logger,
     private sessionDir?: string,
     private managedSkillsDir?: string,
+    private mcpManager?: McpManager,
   ) {}
 
   /** Detect OAuth access tokens (e.g. sk-ant-oat01-...) vs regular API keys */
@@ -221,6 +225,11 @@ export class PiAgentBackend implements AgentBackend {
       customs.push(wrap(createCreateSkillTool(this.managedSkillsDir)));
     }
 
+    // MCP tools
+    if (allowedNames.has('mcp') && this.mcpManager) {
+      customs.push(...this.mcpManager.getTools());
+    }
+
     return customs;
   }
 
@@ -234,6 +243,15 @@ export class PiAgentBackend implements AgentBackend {
 
     this.auth = this.setupAuth();
     const model = this.resolveModel(this.config.model);
+
+    // MCP: create manager if not injected and servers are configured
+    if (!this.mcpManager && this.config.mcpServers?.length) {
+      const { McpManager: McpMgr } = await import('@dash/mcp');
+      this.mcpManager = new McpMgr(this.config.mcpServers, this.logger);
+      await this.mcpManager.start();
+      this.ownsMcpManager = true;
+    }
+
     const builtinTools = this.buildBuiltinTools(workspace);
     const customTools = this.buildCustomTools();
     this.logger?.info(
@@ -275,6 +293,13 @@ export class PiAgentBackend implements AgentBackend {
     this.abortRequested = false;
     this.fullText = '';
     this.lastCompactionReason = 'threshold';
+
+    // Emit mcp_server_error events for any servers that failed during start
+    if (this.mcpManager) {
+      for (const failed of this.mcpManager.getFailedServers()) {
+        yield { type: 'mcp_server_error' as const, server: failed.name, error: failed.error };
+      }
+    }
 
     // Resolve model from state (may differ from config model)
     const model = this.resolveModel(state.model);
@@ -521,6 +546,10 @@ export class PiAgentBackend implements AgentBackend {
     if (this.session) {
       this.session.dispose();
       this.session = null;
+    }
+    if (this.ownsMcpManager && this.mcpManager) {
+      await this.mcpManager.stop();
+      this.mcpManager = undefined;
     }
     this.auth = null;
     this.logger?.info('[PiAgent] Stopped');
