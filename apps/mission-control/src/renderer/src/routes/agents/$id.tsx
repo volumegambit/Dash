@@ -45,13 +45,31 @@ export function AgentDetail(): JSX.Element {
 
   const deployment = deployments.find((d) => d.id === id);
   const logs = logLines[id] ?? [];
-  const agentConfig = deployment?.config?.agents
-    ? Object.values(deployment.config.agents)[0]
-    : deployment?.config?.agent;
+
+  // Read agent config from gateway (source of truth)
+  const [agentConfig, setAgentConfig] = useState<
+    import('@dash/mc').AgentDeployAgentConfig | undefined
+  >(undefined);
 
   useEffect(() => {
     loadDeployments().then(() => setLoading(false));
   }, [loadDeployments]);
+
+  useEffect(() => {
+    if (!deployment?.name) return;
+    window.api
+      .deploymentsGetAgentConfig(deployment.name)
+      .then((agent) => {
+        setAgentConfig(agent.config as unknown as import('@dash/mc').AgentDeployAgentConfig);
+      })
+      .catch(() => {
+        // Fall back to local config if gateway unavailable
+        const localConfig = deployment?.config?.agents
+          ? Object.values(deployment.config.agents)[0]
+          : deployment?.config?.agent;
+        if (localConfig) setAgentConfig(localConfig);
+      });
+  }, [deployment?.name, deployment?.config]);
 
   useEffect(() => {
     if (!deployment) return;
