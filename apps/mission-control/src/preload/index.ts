@@ -193,6 +193,14 @@ const api: MissionControlAPI = {
   mcpGetAllowlist: () => ipcRenderer.invoke('mcp:getAllowlist'),
   mcpSetAllowlist: (patterns: string[]) => ipcRenderer.invoke('mcp:setAllowlist', patterns),
 
+  // Gateway events (SSE)
+  onGatewayEvent: (callback: (eventType: string, data: string) => void): (() => void) => {
+    const handler = (_: Electron.IpcRendererEvent, eventType: string, data: string) =>
+      callback(eventType, data);
+    ipcRenderer.on('gateway:event', handler);
+    return () => ipcRenderer.removeListener('gateway:event', handler);
+  },
+
   // Updates
   onUpdateAvailable: (callback: (info: { version: string }) => void): (() => void) => {
     const handler = (_: Electron.IpcRendererEvent, info: { version: string }) => callback(info);
