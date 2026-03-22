@@ -197,7 +197,7 @@ export function ToolResult({
             {path}
           </p>
         )}
-        <div className="overflow-x-auto rounded bg-[#161b22] p-2">
+        <div className="overflow-x-auto bg-[#161b22] p-2">
           <SourceCode content={content} language={lang} />
         </div>
       </div>
