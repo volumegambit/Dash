@@ -1,3 +1,6 @@
+import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { dirname } from 'node:path';
+
 export interface GatewayAgentConfig {
   name: string;
   model: string;
@@ -22,6 +25,33 @@ export interface RegisteredAgent {
 
 export class AgentRegistry {
   private agents = new Map<string, RegisteredAgent>();
+
+  constructor(private filePath?: string) {}
+
+  /** Load persisted agents from disk. No-op if no file path or file doesn't exist. */
+  async load(): Promise<void> {
+    if (!this.filePath) return;
+    try {
+      const raw = await readFile(this.filePath, 'utf-8');
+      const entries = JSON.parse(raw) as RegisteredAgent[];
+      this.agents.clear();
+      for (const entry of entries) {
+        this.agents.set(entry.name, entry);
+      }
+    } catch {
+      // File doesn't exist or is invalid — start empty
+    }
+  }
+
+  /** Persist current state to disk. No-op if no file path. */
+  async save(): Promise<void> {
+    if (!this.filePath) return;
+    await mkdir(dirname(this.filePath), { recursive: true });
+    const entries = [...this.agents.values()];
+    const tmpPath = `${this.filePath}.tmp`;
+    await writeFile(tmpPath, JSON.stringify(entries, null, 2));
+    await rename(tmpPath, this.filePath);
+  }
 
   register(config: GatewayAgentConfig): RegisteredAgent {
     if (this.agents.has(config.name)) {
