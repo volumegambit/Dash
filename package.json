@@ -14,8 +14,7 @@
     "apps/*"
   ],
   "scripts": {
-    "build": "npm run build -w packages/agent -w packages/channels -w packages/logging -w packages/management -w packages/chat -w packages/mc -w packages/mcp -w apps/gateway -w apps/tui -w apps/mc-cli",
-    "tui": "npm run dev --workspace=apps/tui",
+    "build": "npm run build -w packages/agent -w packages/channels -w packages/logging -w packages/management -w packages/chat -w packages/mc -w packages/mcp -w apps/gateway -w apps/mc-cli",
     "mc-cli": "node --import tsx apps/mc-cli/src/index.ts",
     "gateway": "node --import tsx apps/gateway/src/index.ts",
     "mc:dev": "npm run dev --workspace=apps/mission-control",
