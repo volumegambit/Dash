@@ -84,6 +84,7 @@ async function main() {
             const current = entry.config.mcpServers ?? [];
             if (!current.includes(serverName)) {
               registry.update(agentName, { mcpServers: [...current, serverName] });
+              await registry.save();
             }
           },
           unassignFromAgent: async (serverName: string) => {
@@ -93,6 +94,7 @@ async function main() {
             registry.update(agentName, {
               mcpServers: current.filter((s) => s !== serverName),
             });
+            await registry.save();
             // Remove from pool if no other agents reference it
             const allAgents = registry.list();
             const stillReferenced = allAgents.some(
