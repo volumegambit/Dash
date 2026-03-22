@@ -35,6 +35,7 @@ import {
   parseTodos,
   summarize,
   toolLabel,
+  truncate,
 } from './chat.helpers.js';
 
 /** Event types that produce visible rendered output in renderEvents / MessageBubble */
@@ -337,14 +338,6 @@ function ToolBlock({
   const summary = summarize(name, input);
   const normalizedName = name === 'read_file' ? 'read' : name;
   const isBash = normalizedName === 'bash' || name === 'execute_command';
-  const highlightedSummary = useMemo(() => {
-    if (!isBash || !summary) return null;
-    try {
-      return hljs.highlight(summary, { language: 'bash' }).value;
-    } catch {
-      return null;
-    }
-  }, [isBash, summary]);
   const READ_HIDDEN_KEYS = new Set(['path', 'offset', 'limit']);
   const allDetails = formatDetails(input);
   const details =
@@ -352,6 +345,24 @@ function ToolBlock({
       ? allDetails.filter(({ key }) => !READ_HIDDEN_KEYS.has(key))
       : allDetails;
   const todos = isTodoWrite(name) ? parseTodos(input) : null;
+
+  // For Read tool: extract path from result XML as fallback when input is empty
+  const effectiveSummary = useMemo(() => {
+    if (summary) return summary;
+    if (normalizedName === 'read' && result) {
+      const pathMatch = result.match(/<path>(.*?)<\/path>/s);
+      if (pathMatch?.[1]) return truncate(pathMatch[1]);
+    }
+    return '';
+  }, [summary, normalizedName, result]);
+  const highlightedSummary = useMemo(() => {
+    if (!isBash || !effectiveSummary) return null;
+    try {
+      return hljs.highlight(effectiveSummary, { language: 'bash' }).value;
+    } catch {
+      return null;
+    }
+  }, [isBash, effectiveSummary]);
 
   return (
     <div
@@ -368,11 +379,11 @@ function ToolBlock({
           <Circle size={8} className="inline text-green fill-green mr-1.5" />
         )}
         <span className="font-mono">{toolLabel(name)}</span>
-        {summary && highlightedSummary ? (
+        {effectiveSummary && highlightedSummary ? (
           // biome-ignore lint/security/noDangerouslySetInnerHtml: highlight.js output is safe
           <span className="ml-1 font-mono text-muted" dangerouslySetInnerHTML={{ __html: highlightedSummary }} />
-        ) : summary ? (
-          <span className="ml-1 text-muted">{summary}</span>
+        ) : effectiveSummary ? (
+          <span className="ml-1 text-muted">{effectiveSummary}</span>
         ) : null}
       </button>
       {open && (
