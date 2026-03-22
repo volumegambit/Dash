@@ -1,10 +1,11 @@
-import type { McpManager, McpServerConfig } from '@dash/mcp';
+import type { McpLogger, McpManager, McpServerConfig } from '@dash/mcp';
 import type { Hono } from 'hono';
 import type { McpConfigStore } from './mcp-store.js';
 
 export interface McpManagementDeps {
   manager: McpManager;
   configStore: McpConfigStore;
+  logger?: McpLogger;
 }
 
 /** Extract the server URL from a transport config, or undefined for stdio */
@@ -35,6 +36,9 @@ export function mountMcpRoutes(app: Hono, deps: McpManagementDeps): void {
     if (url) {
       const allowed = await configStore.isAllowed(url);
       if (!allowed) {
+        deps.logger?.info(
+          `[mcp:audit] mcp:proposal:rejected source=api server=${body.name} reason=allowlist`,
+        );
         return c.json({ error: 'Server URL not in allowlist' }, 403);
       }
     }
@@ -56,6 +60,9 @@ export function mountMcpRoutes(app: Hono, deps: McpManagementDeps): void {
       .filter((t) => t.name.startsWith(`${body.name}__`))
       .map((t) => t.name);
 
+    deps.logger?.info(
+      `[mcp:audit] mcp:server:added source=api server=${body.name} url=${getServerUrl(body) ?? 'stdio'}`,
+    );
     return c.json({ status: 'connected', serverName: body.name, tools }, 201);
   });
 
@@ -101,6 +108,7 @@ export function mountMcpRoutes(app: Hono, deps: McpManagementDeps): void {
       }
       return c.json({ error: message }, 500);
     }
+    deps.logger?.info(`[mcp:audit] mcp:server:removed source=api server=${name}`);
     return c.json({ ok: true });
   });
 
@@ -121,6 +129,7 @@ export function mountMcpRoutes(app: Hono, deps: McpManagementDeps): void {
       const message = err instanceof Error ? err.message : 'Internal error';
       return c.json({ error: message }, 500);
     }
+    deps.logger?.info(`[mcp:audit] mcp:server:reconnected source=api server=${name}`);
     return c.json({ ok: true, status: manager.getServerStatus(name) });
   });
 
@@ -142,6 +151,7 @@ export function mountMcpRoutes(app: Hono, deps: McpManagementDeps): void {
       return c.json({ error: 'Expected an array of URL patterns' }, 400);
     }
     await configStore.saveAllowlist(patterns);
+    deps.logger?.info(`[mcp:audit] mcp:allowlist:updated count=${patterns.length}`);
     return c.json({ ok: true, count: patterns.length });
   });
 }

@@ -101,7 +101,7 @@ async function main() {
       runtime,
       startedAt,
       token: flags.token,
-      mcpDeps: { manager: mcpManager, configStore: mcpConfigStore },
+      mcpDeps: { manager: mcpManager, configStore: mcpConfigStore, logger: console },
     });
 
     const managementServer = serve({
