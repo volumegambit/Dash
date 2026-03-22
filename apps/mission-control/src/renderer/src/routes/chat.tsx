@@ -24,8 +24,9 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 hljs.registerLanguage('bash', bash);
 import type { McAgentEvent } from '../../../shared/ipc.js';
+import { detectLanguage } from '../components/DiffView.js';
 import { Markdown } from '../components/Markdown.js';
-import { ToolResult } from '../components/ToolResult.js';
+import { HighlightedCode, ToolResult } from '../components/ToolResult.js';
 import { useChatStore } from '../stores/chat.js';
 import { useDeploymentsStore } from '../stores/deployments.js';
 import {
@@ -338,13 +339,30 @@ function ToolBlock({
   const summary = summarize(name, input);
   const normalizedName = name === 'read_file' ? 'read' : name;
   const isBash = normalizedName === 'bash' || name === 'execute_command';
+  const isWrite = normalizedName === 'write' || name === 'write_file';
   const READ_HIDDEN_KEYS = new Set(['path', 'offset', 'limit']);
   const allDetails = formatDetails(input);
   const details =
     normalizedName === 'read'
       ? allDetails.filter(({ key }) => !READ_HIDDEN_KEYS.has(key))
-      : allDetails;
+      : isWrite
+        ? allDetails.filter(({ key }) => key !== 'content')
+        : allDetails;
   const todos = isTodoWrite(name) ? parseTodos(input) : null;
+
+  // Parse Write tool content for syntax-highlighted display
+  const writeContent = useMemo(() => {
+    if (!isWrite || !input) return null;
+    try {
+      const parsed = JSON.parse(input) as Record<string, unknown>;
+      if (typeof parsed.content !== 'string') return null;
+      const filePath = typeof parsed.path === 'string' ? parsed.path : undefined;
+      const lang = filePath ? detectLanguage(filePath) : undefined;
+      return { content: parsed.content, language: lang };
+    } catch {
+      return null;
+    }
+  }, [isWrite, input]);
 
   // For Read tool: extract path from result XML as fallback when input is empty
   const effectiveSummary = useMemo(() => {
@@ -411,13 +429,28 @@ function ToolBlock({
                   ))}
                 </div>
               )}
-              <ToolResult
-                name={name}
-                input={input}
-                result={result}
-                isError={isError}
-                details={toolDetails}
-              />
+              {writeContent ? (
+                <div className="max-h-64 overflow-auto bg-[#161b22] p-2">
+                  {writeContent.language ? (
+                    <HighlightedCode
+                      content={writeContent.content}
+                      language={writeContent.language}
+                    />
+                  ) : (
+                    <pre className="overflow-x-auto whitespace-pre text-foreground/80">
+                      {writeContent.content}
+                    </pre>
+                  )}
+                </div>
+              ) : (
+                <ToolResult
+                  name={name}
+                  input={input}
+                  result={result}
+                  isError={isError}
+                  details={toolDetails}
+                />
+              )}
             </>
           )}
         </div>
