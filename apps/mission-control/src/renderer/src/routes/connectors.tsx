@@ -441,8 +441,15 @@ function AllowlistSection(): JSX.Element {
 // --- Main Page ---
 
 function ConnectorsPage(): JSX.Element {
-  const { connectors, loading, loadConnectors, addConnector, removeConnector, reconnectConnector } =
-    useConnectorsStore();
+  const {
+    connectors,
+    loading,
+    error,
+    loadConnectors,
+    addConnector,
+    removeConnector,
+    reconnectConnector,
+  } = useConnectorsStore();
   const [modalOpen, setModalOpen] = useState(false);
   const [authUrl, setAuthUrl] = useState<string | null>(null);
   const [polling, setPolling] = useState(false);
@@ -524,12 +531,18 @@ function ConnectorsPage(): JSX.Element {
         </button>
       </div>
 
+      {error && (
+        <div className="mb-4 rounded-lg border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-400">
+          {error}
+        </div>
+      )}
+
       {loading ? (
         <div className="flex items-center gap-2 text-fg-muted">
           <Loader size={16} className="animate-spin" />
           Loading connectors...
         </div>
-      ) : connectors.length === 0 ? (
+      ) : connectors.length === 0 && !error ? (
         <div className="rounded-lg border border-dashed border-border p-8 text-center text-fg-muted">
           <Cable size={32} className="mx-auto mb-2 opacity-50" />
           <p>No connectors configured.</p>
