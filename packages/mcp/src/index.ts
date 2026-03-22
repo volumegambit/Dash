@@ -14,6 +14,15 @@ export { interpolateEnvVars, interpolateConfigEnvVars } from './env.js';
 export { wrapMcpTool } from './tools.js';
 export type { McpToolDefinition } from './tools.js';
 export { McpClient } from './client.js';
+export type { McpClientOptions } from './client.js';
 export { McpManager } from './manager.js';
+export type { McpManagerOptions } from './manager.js';
 export { DashOAuthClientProvider } from './auth.js';
 export type { DashOAuthClientProviderOptions } from './auth.js';
+export { FileTokenStore } from './file-token-store.js';
+export { startOAuthCallbackServer } from './oauth-callback.js';
+export type {
+  OAuthCallbackServer,
+  OAuthCallbackResult,
+  OAuthCallbackOptions,
+} from './oauth-callback.js';

@@ -15,14 +15,14 @@ export class FileTokenStore implements TokenStore {
 
   async get(key: string): Promise<string | undefined> {
     await this.ensureLoaded();
-    return this.cache!.get(key);
+    return this.cache?.get(key);
   }
 
   async set(key: string, value: string): Promise<void> {
     // Serialize mutations to prevent concurrent cache/file issues
     const p = this.writeQueue.then(async () => {
       await this.ensureLoaded();
-      this.cache!.set(key, value);
+      this.cache?.set(key, value);
       await this.doFlush();
     });
     this.writeQueue = p.catch(() => {}); // Don't let errors break the chain
@@ -32,7 +32,7 @@ export class FileTokenStore implements TokenStore {
   async delete(key: string): Promise<void> {
     const p = this.writeQueue.then(async () => {
       await this.ensureLoaded();
-      this.cache!.delete(key);
+      this.cache?.delete(key);
       await this.doFlush();
     });
     this.writeQueue = p.catch(() => {});
