@@ -292,10 +292,10 @@ export async function registerIpcHandlers(
     async () => {
       // Gateway self-restores agents from its own persistent registry.
       // Just refresh the chat service connection.
+      // SSE reconnection is handled by the status callback below.
       await refreshChatServiceConnection();
     },
   );
-  gatewayPoller.start(sendGatewayStatus);
 
   // SSE subscription to gateway events
   let sseAbort: AbortController | null = null;
@@ -350,8 +350,15 @@ export async function registerIpcHandlers(
     }
   }
 
-  // Connect to SSE after initial gateway health check
-  connectToGatewayEvents().catch(() => {});
+  // Connect to SSE when gateway becomes healthy (initial or after restart).
+  // The poller calls onStatusChange('healthy') on first health check and after restarts.
+  // connectToGatewayEvents() aborts any previous connection, so it's safe to call repeatedly.
+  gatewayPoller.start((status: string) => {
+    sendGatewayStatus(status);
+    if (status === 'healthy') {
+      connectToGatewayEvents().catch(() => {});
+    }
+  });
 
   // Auto-unlock from cached session key.
   // Validates the key before registering IPC handlers so the renderer never
