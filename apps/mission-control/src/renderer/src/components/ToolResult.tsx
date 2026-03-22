@@ -72,7 +72,7 @@ function DirectoryListing({ content }: { content: string }): JSX.Element {
   );
 }
 
-function HighlightedCode({
+export function HighlightedCode({
   content,
   language,
 }: { content: string; language: string }): JSX.Element {
