@@ -110,6 +110,8 @@ export interface McpAddServerDeps {
   configStore: McpConfigStoreInterface;
   agentContext: McpAgentContext;
   logger?: McpLogger;
+  /** Called after tools change so the backend can sync them into the live session */
+  onToolsChanged?: () => void;
 }
 
 export function createMcpAddServerTool(
@@ -157,6 +159,7 @@ export function createMcpAddServerTool(
         // Same server — just assign to this agent
         await deps.agentContext.assignToAgent(params.name);
         deps.logger?.info(`[mcp:audit] mcp:server:assigned source=agent server=${params.name}`);
+        deps.onToolsChanged?.();
 
         const tools = deps.manager
           .getTools()
@@ -175,6 +178,7 @@ export function createMcpAddServerTool(
         await deps.agentContext.assignToAgent(params.name);
 
         deps.logger?.info(`[mcp:audit] mcp:server:added source=agent server=${params.name}`);
+        deps.onToolsChanged?.();
 
         const tools = deps.manager
           .getTools()
@@ -260,6 +264,8 @@ export interface McpRemoveServerDeps {
   configStore: McpConfigStoreInterface;
   agentContext: McpAgentContext;
   logger?: McpLogger;
+  /** Called after tools change so the backend can sync them into the live session */
+  onToolsChanged?: () => void;
 }
 
 export function createMcpRemoveServerTool(
@@ -285,6 +291,7 @@ export function createMcpRemoveServerTool(
         deps.logger?.info(
           `[mcp:audit] mcp:server:removed source=agent server=${params.name} poolRemoved=${removedFromPool}`,
         );
+        deps.onToolsChanged?.();
 
         if (removedFromPool) {
           return ok(

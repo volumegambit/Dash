@@ -260,6 +260,8 @@ export class PiAgentBackend implements AgentBackend {
 
     // MCP management tools (add/remove/list servers)
     if (this.mcpManager && this.mcpConfigStore && this.mcpAgentContext) {
+      const onToolsChanged = () => this.syncMcpToolsToSession();
+
       if (allowedNames.has('mcp_add_server')) {
         customs.push(
           wrap(
@@ -268,6 +270,7 @@ export class PiAgentBackend implements AgentBackend {
               configStore: this.mcpConfigStore,
               agentContext: this.mcpAgentContext,
               logger: this.logger,
+              onToolsChanged,
             }),
           ),
         );
@@ -291,6 +294,7 @@ export class PiAgentBackend implements AgentBackend {
               configStore: this.mcpConfigStore,
               agentContext: this.mcpAgentContext,
               logger: this.logger,
+              onToolsChanged,
             }),
           ),
         );
@@ -298,6 +302,30 @@ export class PiAgentBackend implements AgentBackend {
     }
 
     return customs;
+  }
+
+  /**
+   * Sync MCP tools into the live Pi session after mcp_add_server / mcp_remove_server.
+   *
+   * Pi's AgentSession freezes customTools at construction time. When the agent
+   * adds or removes an MCP server mid-conversation, the new tools aren't visible
+   * to the LLM. This method rebuilds the custom tool list and pokes it into the
+   * session's internal registry so tools are available on the next LLM turn.
+   */
+  private syncMcpToolsToSession(): void {
+    if (!this.session) return;
+
+    const customTools = this.buildCustomTools();
+    this.logger?.info(
+      `[PiAgent] Syncing ${customTools.length} custom tools to live session: ${customTools.map((t: { name: string }) => t.name).join(', ')}`,
+    );
+
+    // Pi's _customTools and _refreshToolRegistry are private, but we need to
+    // update them at runtime to register dynamically-added MCP server tools.
+    // biome-ignore lint/suspicious/noExplicitAny: accessing private Pi session internals for dynamic tool sync
+    const session = this.session as any;
+    session._customTools = customTools;
+    session._refreshToolRegistry();
   }
 
   /**
