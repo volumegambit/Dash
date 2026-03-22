@@ -1079,7 +1079,7 @@ export function Chat(): JSX.Element {
 
       <div className="flex flex-1 min-h-0">
         {/* Left: Conversation List */}
-        <div className="w-[300px] bg-surface border-r border-border flex flex-col shrink-0">
+        <div className="w-[300px] bg-surface border-r border-border flex flex-col shrink-0 overflow-hidden">
           {/* Search bar */}
           <div className="px-4 py-3 border-b border-border">
             <div className="flex items-center gap-2 bg-card-bg border border-border rounded-lg px-3 py-2">
@@ -1117,7 +1117,7 @@ export function Chat(): JSX.Element {
 
         {/* Right: Chat Panel */}
         <div
-          className="flex flex-1 flex-col min-h-0"
+          className="flex flex-1 flex-col min-h-0 min-w-0"
           onDrop={(e) => {
             e.preventDefault();
             if (e.dataTransfer.files.length > 0) addImageFiles(e.dataTransfer.files);
@@ -1139,7 +1139,7 @@ export function Chat(): JSX.Element {
 
           {/* biome-ignore lint/a11y/useKeyWithClickEvents: click-to-focus convenience for sighted users, not a keyboard-navigable action */}
           <div
-            className="flex-1 overflow-y-auto px-6 py-4"
+            className="flex-1 overflow-y-auto overflow-x-hidden px-6 py-4"
             onClick={() => textareaRef.current?.focus()}
           >
             {!selectedConversationId ? (
