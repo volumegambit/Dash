@@ -1031,6 +1031,17 @@ export function Chat(): JSX.Element {
         <h1 className="font-[family-name:var(--font-display)] text-[22px] font-semibold text-foreground">
           Chat
         </h1>
+        <button
+          type="button"
+          onClick={handleNewConversation}
+          disabled={availableAgents.length === 0}
+          className="flex items-center gap-1.5 rounded-lg border border-primary/40 bg-primary/10 px-3 py-1.5 text-xs text-primary transition-colors hover:bg-primary/20 hover:border-primary/60 disabled:opacity-40"
+          title="New conversation (⌘N)"
+        >
+          <Plus size={12} />
+          New conversation
+          <kbd className="text-[10px] font-medium text-primary/60 bg-primary/10 border border-primary/20 rounded px-1.5 py-0.5">⌘N</kbd>
+        </button>
       </div>
 
       {showAgentModal && (
@@ -1045,18 +1056,7 @@ export function Chat(): JSX.Element {
         {/* Left: Conversation List */}
         <div className="w-[300px] bg-surface border-r border-border flex flex-col shrink-0">
           {/* Search bar */}
-          <div className="px-4 py-3 border-b border-border flex flex-col gap-2">
-            <button
-              type="button"
-              onClick={handleNewConversation}
-              disabled={availableAgents.length === 0}
-              className="flex items-center justify-center gap-1.5 rounded-lg border border-primary/40 bg-primary/10 px-3 py-2 text-sm text-primary transition-colors hover:bg-primary/20 hover:border-primary/60 disabled:opacity-40 w-full"
-              title="New conversation (⌘N)"
-            >
-              <Plus size={14} />
-              <span className="flex-1 text-center">New conversation</span>
-              <kbd className="text-[10px] font-medium text-primary/60 bg-primary/10 border border-primary/20 rounded px-1.5 py-0.5">⌘N</kbd>
-            </button>
+          <div className="px-4 py-3 border-b border-border">
             <div className="flex items-center gap-2 bg-card-bg border border-border rounded-lg px-3 py-2">
               <Search size={14} className="text-muted shrink-0" />
               <input
