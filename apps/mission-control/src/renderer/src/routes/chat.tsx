@@ -866,7 +866,6 @@ function AgentSelectionModal({
                   }`}
                 >
                   <p className="text-sm font-medium text-foreground">{agent.agentName}</p>
-                  <p className="text-[10px] text-muted">{agent.deploymentName}</p>
                 </button>
               </li>
             ))
