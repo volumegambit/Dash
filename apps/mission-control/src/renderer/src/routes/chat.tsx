@@ -1228,11 +1228,7 @@ export function Chat(): JSX.Element {
             </div>
           )}
 
-          {/* biome-ignore lint/a11y/useKeyWithClickEvents: click-to-focus convenience for sighted users, not a keyboard-navigable action */}
-          <div
-            className="flex-1 overflow-y-auto overflow-x-hidden px-6 py-4"
-            onClick={() => textareaRef.current?.focus()}
-          >
+          <div className="flex-1 overflow-y-auto overflow-x-hidden px-6 py-4">
             {!selectedConversationId ? (
               <p className="text-center text-sm text-muted mt-8">
                 {runningDeployments.length === 0
