@@ -81,6 +81,7 @@ function renderEvents(
           input={inputJson}
           result={event.content}
           isError={event.isError}
+          toolDetails={event.details}
         />,
       );
       toolName = '';
@@ -300,7 +301,8 @@ function ToolBlock({
   input,
   result,
   isError,
-}: { name: string; input: string; result: string; isError?: boolean }): JSX.Element {
+  toolDetails,
+}: { name: string; input: string; result: string; isError?: boolean; toolDetails?: unknown }): JSX.Element {
   const [open, setOpen] = useState(false);
   const [showRaw, setShowRaw] = useState(false);
   const summary = summarize(name, input);
@@ -345,7 +347,7 @@ function ToolBlock({
                   ))}
                 </div>
               )}
-              <ToolResult name={name} result={result} isError={isError} />
+              <ToolResult name={name} result={result} isError={isError} details={toolDetails} />
             </>
           )}
         </div>
