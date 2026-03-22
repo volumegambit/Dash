@@ -1,4 +1,6 @@
-import { DiffView } from './DiffView.js';
+import hljs from 'highlight.js';
+import { useMemo } from 'react';
+import { DiffView, detectLanguage } from './DiffView.js';
 
 /**
  * Renders formatted tool results in the chat interface.
@@ -70,16 +72,38 @@ function DirectoryListing({ content }: { content: string }): JSX.Element {
   );
 }
 
-function SourceCode({ content }: { content: string }): JSX.Element {
+function SourceCode({ content, language }: { content: string; language?: string }): JSX.Element {
+  const highlightedLines = useMemo(() => {
+    if (!language) return null;
+    // Extract just the code (without line numbers) for highlighting as a block
+    const lines = content.split('\n');
+    const codeOnly = lines.map((line) => {
+      const match = line.match(/^(\s*\d+[\t|])(.*)/);
+      return match ? match[2] : line;
+    });
+    try {
+      const highlighted = hljs.highlight(codeOnly.join('\n'), { language }).value;
+      return highlighted.split('\n');
+    } catch {
+      return null;
+    }
+  }, [content, language]);
+
   return (
     <pre className="overflow-x-auto whitespace-pre text-foreground/80">
       {content.split('\n').map((line, i) => {
         const match = line.match(/^(\s*\d+[\t|])(.*)/);
         if (match) {
+          const highlighted = highlightedLines?.[i];
           return (
             <div key={`line-${match[1].trim()}`} className="flex">
               <span className="mr-3 select-none text-muted/50">{match[1].trim()}</span>
-              <span>{match[2]}</span>
+              {highlighted !== undefined ? (
+                // biome-ignore lint/security/noDangerouslySetInnerHtml: highlight.js output is safe
+                <span dangerouslySetInnerHTML={{ __html: highlighted }} />
+              ) : (
+                <span>{match[2]}</span>
+              )}
             </div>
           );
         }
@@ -153,15 +177,28 @@ export function ToolResult({
 
   // File content with line numbers
   if (isNumberedSource(content)) {
+    // Detect language from path in structured output, or from Read tool input
+    let langPath = path;
+    if (!langPath && input) {
+      try {
+        const parsed = JSON.parse(input);
+        if (typeof parsed.path === 'string') langPath = parsed.path;
+      } catch {
+        /* ignore */
+      }
+    }
+    const lang = langPath ? detectLanguage(langPath) : undefined;
+    const isRead = name === 'read' || name === 'read_file';
+
     return (
       <div>
-        {path && (
+        {path && !isRead && (
           <p className="mb-1.5 truncate font-mono text-muted" title={path}>
             {path}
           </p>
         )}
         <div className="overflow-x-auto rounded bg-[#161b22] p-2">
-          <SourceCode content={content} />
+          <SourceCode content={content} language={lang} />
         </div>
       </div>
     );

@@ -208,7 +208,7 @@ const EXT_TO_LANG: Record<string, string> = {
   svelte: 'xml',
 };
 
-function detectLanguage(filePath: string): string | undefined {
+export function detectLanguage(filePath: string): string | undefined {
   const filename = filePath.split('/').pop() ?? '';
 
   // Check special filenames
