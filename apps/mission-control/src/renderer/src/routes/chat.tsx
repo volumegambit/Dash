@@ -306,7 +306,13 @@ function ToolBlock({
   result,
   isError,
   toolDetails,
-}: { name: string; input: string; result: string; isError?: boolean; toolDetails?: unknown }): JSX.Element {
+}: {
+  name: string;
+  input: string;
+  result: string;
+  isError?: boolean;
+  toolDetails?: unknown;
+}): JSX.Element {
   const hasDiff =
     name === 'edit' &&
     toolDetails != null &&
@@ -366,7 +372,13 @@ function ToolBlock({
                   ))}
                 </div>
               )}
-              <ToolResult name={name} input={input} result={result} isError={isError} details={toolDetails} />
+              <ToolResult
+                name={name}
+                input={input}
+                result={result}
+                isError={isError}
+                details={toolDetails}
+              />
             </>
           )}
         </div>
@@ -444,21 +456,21 @@ function MessageBubble({
         <div className="opacity-0 group-hover:opacity-100 transition-opacity mt-3">
           {userText && <CopyButton text={userText} />}
         </div>
-        <div className="bg-accent text-white p-4 max-w-[70%] text-sm">
-            {userText && <p className="whitespace-pre-wrap">{userText}</p>}
-            {userImages && userImages.length > 0 && (
-              <div className="mt-2 flex flex-wrap gap-2">
-                {userImages.map((img, i) => (
-                  <img
-                    key={`img-${img.mediaType}-${img.data.slice(0, 16)}-${i}`}
-                    src={`data:${img.mediaType};base64,${img.data}`}
-                    alt={`Attached ${i + 1}`}
-                    className="max-h-48 max-w-full"
-                  />
-                ))}
-              </div>
-            )}
-          </div>
+        <div className="bg-[#141414] border-l-[3px] border-l-accent text-foreground p-3 max-w-[350px] text-sm">
+          {userText && <p className="whitespace-pre-wrap">{userText}</p>}
+          {userImages && userImages.length > 0 && (
+            <div className="mt-2 flex flex-wrap gap-2">
+              {userImages.map((img, i) => (
+                <img
+                  key={`img-${img.mediaType}-${img.data.slice(0, 16)}-${i}`}
+                  src={`data:${img.mediaType};base64,${img.data}`}
+                  alt={`Attached ${i + 1}`}
+                  className="max-h-48 max-w-full"
+                />
+              ))}
+            </div>
+          )}
+        </div>
       </div>
     );
   }
@@ -470,7 +482,7 @@ function MessageBubble({
 
   return (
     <div className="group mb-6">
-      <div className="bg-card-bg p-4 max-w-[70%] text-sm text-foreground">
+      <div className="bg-[#141414] border-2 border-border p-3 max-w-[450px] text-sm text-foreground">
         {renderEvents(events, navigateToLogs, onAnswerQuestion, answeredQuestions)}
       </div>
       <div className="mt-1 flex items-center gap-2 max-w-[80%] px-1">
@@ -478,7 +490,7 @@ function MessageBubble({
           {assistantText && <CopyButton text={assistantText} />}
         </div>
         {usage && (
-          <div className="text-[10px] text-muted/60">
+          <div className="font-[family-name:var(--font-mono)] text-[10px] text-muted opacity-60">
             {usage.input_tokens != null && <span>{formatTokens(usage.input_tokens)} in</span>}
             {usage.input_tokens != null && usage.output_tokens != null && <span> · </span>}
             {usage.output_tokens != null && <span>{formatTokens(usage.output_tokens)} out</span>}
@@ -683,8 +695,8 @@ function ConversationItem({
 
   return (
     <li
-      className={`group flex items-start justify-between border-b border-border transition-colors hover:bg-sidebar-hover cursor-pointer ${
-        isSelected ? 'bg-card-bg border-l-[3px] border-accent' : ''
+      className={`group flex items-start justify-between transition-colors hover:bg-sidebar-hover cursor-pointer ${
+        isSelected ? 'bg-[#141414] border-l-[3px] border-l-accent' : 'border-b border-border'
       }`}
     >
       <button
@@ -695,7 +707,7 @@ function ConversationItem({
           isSelected ? 'text-foreground' : 'text-muted'
         }`}
       >
-        <p className="truncate font-semibold text-sm text-foreground flex items-center gap-1.5">
+        <p className="truncate font-[family-name:var(--font-display)] text-sm font-semibold text-foreground flex items-center gap-1.5">
           {hasUnread && <span className="inline-block h-2 w-2 shrink-0 rounded-full bg-green" />}
           {conversation.title}
         </p>
@@ -775,8 +787,7 @@ function AgentSelectionModal({
         0,
         agents.findIndex(
           (a) =>
-            a.deploymentId === defaultAgent.deploymentId &&
-            a.agentName === defaultAgent.agentName,
+            a.deploymentId === defaultAgent.deploymentId && a.agentName === defaultAgent.agentName,
         ),
       )
     : 0;
@@ -838,8 +849,10 @@ function AgentSelectionModal({
         onKeyDown={handleKeyDown}
       >
         <div className="border-b border-border px-4 py-3">
-          <p className="mb-2 text-sm font-medium text-foreground">Select an agent</p>
-          <div className="flex items-center gap-2 bg-card-bg border border-border px-3 py-2">
+          <p className="mb-2 font-[family-name:var(--font-mono)] text-[11px] font-semibold uppercase tracking-[3px] text-accent">
+            Select Agent
+          </p>
+          <div className="flex items-center gap-2 bg-[#141414] border border-border px-3 py-2">
             <Search size={14} className="text-muted shrink-0" />
             <input
               ref={searchInputRef}
@@ -850,7 +863,7 @@ function AgentSelectionModal({
               className="flex-1 bg-transparent text-sm text-foreground placeholder:text-muted focus:outline-none"
             />
           </div>
-          <p className="mt-2 text-[10px] text-muted">
+          <p className="mt-2 text-[10px] text-muted font-[family-name:var(--font-mono)]">
             ↑↓ to navigate · Enter to select · Esc to cancel
           </p>
         </div>
@@ -866,11 +879,13 @@ function AgentSelectionModal({
                   onMouseEnter={() => setSelectedIndex(i)}
                   className={`w-full text-left px-4 py-2.5 transition-colors ${
                     i === selectedIndex
-                      ? 'bg-primary text-white'
-                      : 'text-muted hover:bg-sidebar-hover'
+                      ? 'bg-[#141414] border-l-[3px] border-l-accent'
+                      : 'border-b border-border text-muted hover:bg-sidebar-hover'
                   }`}
                 >
-                  <p className="text-sm font-medium text-foreground">{agent.agentName}</p>
+                  <p className="font-[family-name:var(--font-display)] text-sm font-semibold text-foreground">
+                    {agent.agentName}
+                  </p>
                 </button>
               </li>
             ))
@@ -1125,9 +1140,14 @@ export function Chat(): JSX.Element {
     <div className="flex flex-col h-full overflow-hidden">
       {/* Page Header */}
       <div className="bg-surface px-8 py-4 border-b border-border flex justify-between items-center shrink-0">
-        <h1 className="font-[family-name:var(--font-display)] text-[22px] font-semibold text-foreground">
-          Chat
-        </h1>
+        <div>
+          <span className="font-[family-name:var(--font-mono)] text-[11px] font-semibold uppercase tracking-[3px] text-accent">
+            Conversations
+          </span>
+          <h1 className="font-[family-name:var(--font-display)] text-[22px] font-semibold text-foreground">
+            Chat
+          </h1>
+        </div>
         <button
           type="button"
           onClick={handleNewConversation}
@@ -1137,7 +1157,9 @@ export function Chat(): JSX.Element {
         >
           <Plus size={12} />
           New conversation
-          <kbd className="text-[10px] font-medium text-primary/60 bg-primary/10 border border-primary/20 px-1.5 py-0.5">⌘N</kbd>
+          <kbd className="text-[10px] font-medium text-primary/60 bg-primary/10 border border-primary/20 px-1.5 py-0.5">
+            ⌘N
+          </kbd>
         </button>
       </div>
 
@@ -1162,7 +1184,7 @@ export function Chat(): JSX.Element {
         <div className="w-[300px] bg-surface border-r border-border flex flex-col shrink-0 overflow-hidden">
           {/* Search bar */}
           <div className="px-4 py-3 border-b border-border">
-            <div className="flex items-center gap-2 bg-card-bg border border-border px-3 py-2">
+            <div className="flex items-center gap-2 bg-[#141414] border border-border px-3 py-2">
               <Search size={14} className="text-muted shrink-0" />
               <input
                 type="text"
@@ -1213,7 +1235,7 @@ export function Chat(): JSX.Element {
                 </span>
               )}
               {activeModel && (
-                <span className="text-xs text-foreground/70">{formatModelName(activeModel)}</span>
+                <span className="text-xs text-muted">{formatModelName(activeModel)}</span>
               )}
               {(activeWorkspace || managedSkillsDir) && (
                 <div className="ml-auto flex items-center gap-4">
@@ -1342,7 +1364,7 @@ export function Chat(): JSX.Element {
                     selectedConversationId ? 'Type a message…' : 'Select a conversation first'
                   }
                   disabled={!selectedConversationId || isStreaming}
-                  className="flex-1 bg-card-bg border border-border px-4 py-3 text-sm text-foreground placeholder:text-muted focus:border-accent focus:outline-none disabled:opacity-50 resize-none"
+                  className="flex-1 bg-[#141414] border border-border px-4 py-3 text-sm text-foreground placeholder:text-muted focus:border-accent focus:outline-none disabled:opacity-50 resize-none"
                 />
                 <input
                   ref={fileInputRef}
