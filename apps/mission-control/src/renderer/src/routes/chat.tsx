@@ -4,6 +4,7 @@ import {
   Check,
   ChevronDown,
   ChevronUp,
+  Circle,
   Copy,
   FolderOpen,
   Loader,
@@ -15,6 +16,7 @@ import {
   Square,
   Trash2,
   X,
+  XCircle,
 } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { McAgentEvent } from '../../../shared/ipc.js';
@@ -331,9 +333,13 @@ function ToolBlock({
         onClick={() => setOpen((o) => !o)}
         className="w-full px-3 py-1.5 text-left hover:text-foreground"
       >
+        {isError ? (
+          <XCircle size={10} className="inline text-red mr-1.5" />
+        ) : (
+          <Circle size={8} className="inline text-green fill-green mr-1.5" />
+        )}
         <span className="font-mono">{toolLabel(name)}</span>
         {summary && <span className="ml-1 text-muted">{summary}</span>}
-        <span className={`ml-1 ${isError ? 'text-red' : 'text-green'}`}>{isError ? '✗' : '✓'}</span>
       </button>
       {open && (
         <div className="border-t border-border px-3 pb-2 pt-1">
