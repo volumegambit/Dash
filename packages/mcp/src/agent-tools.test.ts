@@ -134,6 +134,72 @@ describe('mcp_add_server', () => {
     expect(ctx.assignToAgent).toHaveBeenCalledWith('local');
   });
 
+  it('calls onToolsChanged after assigning existing server', async () => {
+    const manager = makeMockManager();
+    const store = makeMockStore();
+    const ctx = makeMockAgentContext();
+    const onToolsChanged = vi.fn();
+    const tool = createMcpAddServerTool({
+      manager,
+      configStore: store,
+      agentContext: ctx,
+      onToolsChanged,
+    });
+
+    await tool.execute('call-1', {
+      name: 'github',
+      url: 'https://github.com/mcp',
+      transportType: 'sse',
+    });
+
+    expect(onToolsChanged).toHaveBeenCalledOnce();
+  });
+
+  it('calls onToolsChanged after creating new server', async () => {
+    const manager = makeMockManager();
+    const store = makeMockStore();
+    (store.loadConfigs as ReturnType<typeof vi.fn>).mockResolvedValue([]);
+    const ctx = makeMockAgentContext();
+    const onToolsChanged = vi.fn();
+    const tool = createMcpAddServerTool({
+      manager,
+      configStore: store,
+      agentContext: ctx,
+      onToolsChanged,
+    });
+
+    await tool.execute('call-1', {
+      name: 'jira',
+      url: 'https://jira.example.com/mcp',
+      transportType: 'sse',
+    });
+
+    expect(onToolsChanged).toHaveBeenCalledOnce();
+  });
+
+  it('does not call onToolsChanged on failure', async () => {
+    const manager = makeMockManager();
+    (manager.addServer as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('fail'));
+    const store = makeMockStore();
+    (store.loadConfigs as ReturnType<typeof vi.fn>).mockResolvedValue([]);
+    const ctx = makeMockAgentContext();
+    const onToolsChanged = vi.fn();
+    const tool = createMcpAddServerTool({
+      manager,
+      configStore: store,
+      agentContext: ctx,
+      onToolsChanged,
+    });
+
+    await tool.execute('call-1', {
+      name: 'broken',
+      url: 'https://broken.example.com',
+      transportType: 'sse',
+    });
+
+    expect(onToolsChanged).not.toHaveBeenCalled();
+  });
+
   it('returns error when connection fails', async () => {
     const manager = makeMockManager();
     (manager.addServer as ReturnType<typeof vi.fn>).mockRejectedValue(
@@ -227,6 +293,38 @@ describe('mcp_remove_server', () => {
 
     const result = await tool.execute('call-1', { name: 'github' });
     expect(result.content[0].text).toContain('remains in the pool');
+  });
+
+  it('calls onToolsChanged after removing', async () => {
+    const manager = makeMockManager();
+    const store = makeMockStore();
+    const ctx = makeMockAgentContext(['github']);
+    const onToolsChanged = vi.fn();
+    const tool = createMcpRemoveServerTool({
+      manager,
+      configStore: store,
+      agentContext: ctx,
+      onToolsChanged,
+    });
+
+    await tool.execute('call-1', { name: 'github' });
+    expect(onToolsChanged).toHaveBeenCalledOnce();
+  });
+
+  it('does not call onToolsChanged for unassigned server', async () => {
+    const manager = makeMockManager();
+    const store = makeMockStore();
+    const ctx = makeMockAgentContext([]);
+    const onToolsChanged = vi.fn();
+    const tool = createMcpRemoveServerTool({
+      manager,
+      configStore: store,
+      agentContext: ctx,
+      onToolsChanged,
+    });
+
+    await tool.execute('call-1', { name: 'github' });
+    expect(onToolsChanged).not.toHaveBeenCalled();
   });
 
   it('returns error for unassigned server', async () => {
