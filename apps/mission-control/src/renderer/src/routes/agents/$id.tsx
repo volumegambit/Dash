@@ -2,6 +2,7 @@ import type { RuntimeStatus } from '@dash/mc';
 import { Link, createFileRoute, useNavigate } from '@tanstack/react-router';
 import {
   ArrowLeft,
+  BookOpen,
   Check,
   Loader,
   MessageSquare,
@@ -458,6 +459,9 @@ function OverviewTab({
             )}
           </div>
         </div>
+
+        {/* Skills card */}
+        <SkillsCard agentConfig={agentConfig} />
       </div>
 
       {/* Right column */}
@@ -487,6 +491,62 @@ function OverviewTab({
             )}
           </div>
         </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Skills card
+// ---------------------------------------------------------------------------
+
+function SkillsCard({
+  agentConfig,
+}: { agentConfig: import('@dash/mc').AgentDeployAgentConfig | undefined }): JSX.Element {
+  const skills = agentConfig?.skills;
+  const paths = skills?.paths ?? [];
+  const urls = skills?.urls ?? [];
+  const hasSkills = paths.length > 0 || urls.length > 0;
+
+  return (
+    <div className="bg-card-bg border border-border overflow-hidden">
+      <div className="px-5 py-3 border-b border-border">
+        <span className="font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[2px] text-accent">
+          Skills
+        </span>
+      </div>
+      <div className="p-5 flex flex-col gap-3">
+        {!hasSkills ? (
+          <div className="flex items-center gap-3 text-sm text-muted">
+            <BookOpen size={14} className="shrink-0" />
+            <span>No skills configured</span>
+          </div>
+        ) : (
+          <>
+            {paths.map((p) => (
+              <div key={p} className="flex items-center gap-3 text-sm">
+                <BookOpen size={14} className="text-accent shrink-0" />
+                <span
+                  className="font-[family-name:var(--font-mono)] text-xs text-foreground truncate"
+                  title={p}
+                >
+                  {p.split('/').pop() ?? p}
+                </span>
+              </div>
+            ))}
+            {urls.map((u) => (
+              <div key={u} className="flex items-center gap-3 text-sm">
+                <BookOpen size={14} className="text-accent shrink-0" />
+                <span
+                  className="font-[family-name:var(--font-mono)] text-xs text-foreground truncate"
+                  title={u}
+                >
+                  {u}
+                </span>
+              </div>
+            ))}
+          </>
+        )}
       </div>
     </div>
   );
