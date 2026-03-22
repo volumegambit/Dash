@@ -1,5 +1,5 @@
 import type { Server } from 'node:http';
-import { dirname, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { config } from 'dotenv';
 
@@ -7,6 +7,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 config({ path: resolve(__dirname, '../../../.env') });
 
 import { PiAgentBackend } from '@dash/agent';
+import { FileTokenStore, McpManager } from '@dash/mcp';
 import { serve } from '@hono/node-server';
 import { createNodeWebSocket } from '@hono/node-ws';
 import { Hono } from 'hono';
@@ -16,6 +17,7 @@ import { mountChatWs } from './chat-ws.js';
 import { loadConfig, parseFlags } from './config.js';
 import { createDynamicGateway, createGateway } from './gateway.js';
 import { createGatewayManagementApp } from './management-api.js';
+import { McpConfigStore } from './mcp-store.js';
 
 async function main() {
   const flags = parseFlags(process.argv.slice(2));
@@ -50,6 +52,19 @@ async function main() {
     const { mkdir } = await import('node:fs/promises');
     await mkdir(dataDir, { recursive: true });
 
+    // MCP setup
+    const mcpDir = resolve(dataDir, 'mcp');
+    await mkdir(mcpDir, { recursive: true });
+    const mcpConfigStore = new McpConfigStore(mcpDir);
+    const mcpTokenStore = new FileTokenStore(join(mcpDir, 'tokens.json'));
+
+    const mcpConfigs = await mcpConfigStore.loadConfigs();
+    const mcpManager = new McpManager(mcpConfigs, { logger: console });
+    if (mcpConfigs.length > 0) {
+      console.log(`[MCP] Restoring ${mcpConfigs.length} persisted server(s)...`);
+      await mcpManager.start();
+    }
+
     // Create gateway + agent runtime
     const gateway = createDynamicGateway();
     const registry = new AgentRegistry();
@@ -72,6 +87,7 @@ async function main() {
           undefined,
           sessionDir,
           resolve(dataDir, 'skills', config.name),
+          mcpManager,
         );
       },
     });
@@ -82,6 +98,7 @@ async function main() {
       runtime,
       startedAt,
       token: flags.token,
+      mcpDeps: { manager: mcpManager, configStore: mcpConfigStore },
     });
 
     const managementServer = serve({
@@ -114,6 +131,7 @@ async function main() {
 
     const shutdown = async (signal: string) => {
       console.log(`\nReceived ${signal}, shutting down...`);
+      await mcpManager.stop();
       await runtime.stop();
       await gateway.stop();
       managementServer.close();
