@@ -70,6 +70,8 @@ export interface DashAgentConfig {
     urls?: string[];
   };
   mcpServers?: import('@dash/mcp').McpServerConfig[];
+  /** Names of MCP servers assigned to this agent from the gateway pool */
+  assignedMcpServers?: string[];
 }
 
 export interface AgentState {

@@ -3,7 +3,7 @@ import {
   createMcpListServersTool,
   createMcpRemoveServerTool,
 } from './agent-tools.js';
-import type { McpConfigStoreInterface } from './agent-tools.js';
+import type { McpAgentContext, McpConfigStoreInterface } from './agent-tools.js';
 import type { McpManager } from './manager.js';
 
 function makeMockManager() {
@@ -31,11 +31,24 @@ function makeMockStore(): McpConfigStoreInterface {
   };
 }
 
+function makeMockAgentContext(assigned: string[] = []): McpAgentContext {
+  const servers = [...assigned];
+  return {
+    assignToAgent: vi.fn(async (name: string) => {
+      if (!servers.includes(name)) servers.push(name);
+    }),
+    unassignFromAgent: vi.fn().mockResolvedValue(false),
+    getAssignedServers: vi.fn(() => servers),
+  };
+}
+
 describe('mcp_add_server', () => {
-  it('connects immediately and returns discovered tools', async () => {
+  it('creates new server and assigns to agent', async () => {
     const manager = makeMockManager();
     const store = makeMockStore();
-    const tool = createMcpAddServerTool({ manager, configStore: store });
+    (store.loadConfigs as ReturnType<typeof vi.fn>).mockResolvedValue([]); // no existing
+    const ctx = makeMockAgentContext();
+    const tool = createMcpAddServerTool({ manager, configStore: store, agentContext: ctx });
 
     const result = await tool.execute('call-1', {
       name: 'jira',
@@ -44,16 +57,53 @@ describe('mcp_add_server', () => {
     });
 
     expect(result.details?.isError).toBeFalsy();
-    expect(result.content[0].text).toContain('connected successfully');
+    expect(result.content[0].text).toContain('connected and assigned');
     expect(manager.addServer).toHaveBeenCalled();
     expect(store.addConfig).toHaveBeenCalled();
+    expect(ctx.assignToAgent).toHaveBeenCalledWith('jira');
+  });
+
+  it('assigns existing server with same URL to agent', async () => {
+    const manager = makeMockManager();
+    const store = makeMockStore(); // has 'github' at https://github.com/mcp
+    const ctx = makeMockAgentContext();
+    const tool = createMcpAddServerTool({ manager, configStore: store, agentContext: ctx });
+
+    const result = await tool.execute('call-1', {
+      name: 'github',
+      url: 'https://github.com/mcp',
+      transportType: 'sse',
+    });
+
+    expect(result.details?.isError).toBeFalsy();
+    expect(result.content[0].text).toContain('assigned to this agent');
+    expect(manager.addServer).not.toHaveBeenCalled(); // didn't create new
+    expect(ctx.assignToAgent).toHaveBeenCalledWith('github');
+  });
+
+  it('rejects existing server with different URL', async () => {
+    const manager = makeMockManager();
+    const store = makeMockStore(); // has 'github' at https://github.com/mcp
+    const ctx = makeMockAgentContext();
+    const tool = createMcpAddServerTool({ manager, configStore: store, agentContext: ctx });
+
+    const result = await tool.execute('call-1', {
+      name: 'github',
+      url: 'https://evil.com/mcp',
+      transportType: 'sse',
+    });
+
+    expect(result.details?.isError).toBe(true);
+    expect(result.content[0].text).toContain('different URL');
+    expect(result.content[0].text).toContain('Choose another name');
   });
 
   it('rejects when URL not in allowlist', async () => {
     const manager = makeMockManager();
     const store = makeMockStore();
     (store.isAllowed as ReturnType<typeof vi.fn>).mockResolvedValue(false);
-    const tool = createMcpAddServerTool({ manager, configStore: store });
+    const ctx = makeMockAgentContext();
+    const tool = createMcpAddServerTool({ manager, configStore: store, agentContext: ctx });
 
     const result = await tool.execute('call-1', {
       name: 'bad',
@@ -61,15 +111,17 @@ describe('mcp_add_server', () => {
       transportType: 'sse',
     });
 
-    expect(result.content[0].text).toContain('not in the allowlist');
     expect(result.details?.isError).toBe(true);
+    expect(result.content[0].text).toContain('not in the allowlist');
     expect(manager.addServer).not.toHaveBeenCalled();
   });
 
   it('allows stdio servers without URL check', async () => {
     const manager = makeMockManager();
     const store = makeMockStore();
-    const tool = createMcpAddServerTool({ manager, configStore: store });
+    (store.loadConfigs as ReturnType<typeof vi.fn>).mockResolvedValue([]);
+    const ctx = makeMockAgentContext();
+    const tool = createMcpAddServerTool({ manager, configStore: store, agentContext: ctx });
 
     const result = await tool.execute('call-1', {
       name: 'local',
@@ -79,6 +131,7 @@ describe('mcp_add_server', () => {
 
     expect(result.details?.isError).toBeFalsy();
     expect(manager.addServer).toHaveBeenCalled();
+    expect(ctx.assignToAgent).toHaveBeenCalledWith('local');
   });
 
   it('returns error when connection fails', async () => {
@@ -87,7 +140,9 @@ describe('mcp_add_server', () => {
       new Error('connection refused'),
     );
     const store = makeMockStore();
-    const tool = createMcpAddServerTool({ manager, configStore: store });
+    (store.loadConfigs as ReturnType<typeof vi.fn>).mockResolvedValue([]);
+    const ctx = makeMockAgentContext();
+    const tool = createMcpAddServerTool({ manager, configStore: store, agentContext: ctx });
 
     const result = await tool.execute('call-1', {
       name: 'broken',
@@ -101,48 +156,87 @@ describe('mcp_add_server', () => {
 });
 
 describe('mcp_list_servers', () => {
-  it('returns list of connected servers and tools', async () => {
+  it('shows assigned and available servers', async () => {
     const manager = makeMockManager();
     const store = makeMockStore();
-    const tool = createMcpListServersTool({ manager, configStore: store });
+    const ctx = makeMockAgentContext(['github']);
+    const tool = createMcpListServersTool({ manager, configStore: store, agentContext: ctx });
 
     const result = await tool.execute('call-1', {});
     const text = result.content[0].text;
+    expect(text).toContain('Assigned to this agent');
     expect(text).toContain('github');
     expect(text).toContain('connected');
   });
 
-  it('returns empty message when no servers', async () => {
+  it('shows empty message when pool is empty', async () => {
     const manager = makeMockManager();
     manager.getTools = vi.fn().mockReturnValue([]);
     const store = makeMockStore();
     (store.loadConfigs as ReturnType<typeof vi.fn>).mockResolvedValue([]);
-    const tool = createMcpListServersTool({ manager, configStore: store });
+    const ctx = makeMockAgentContext();
+    const tool = createMcpListServersTool({ manager, configStore: store, agentContext: ctx });
 
     const result = await tool.execute('call-1', {});
     expect(result.content[0].text).toContain('No MCP servers');
   });
+
+  it('shows unassigned servers as available in pool', async () => {
+    const manager = makeMockManager();
+    const store = makeMockStore(); // has 'github'
+    const ctx = makeMockAgentContext([]); // not assigned to this agent
+    const tool = createMcpListServersTool({ manager, configStore: store, agentContext: ctx });
+
+    const result = await tool.execute('call-1', {});
+    const text = result.content[0].text;
+    expect(text).toContain('Assigned to this agent:** none');
+    expect(text).toContain('Available in pool');
+    expect(text).toContain('github');
+  });
 });
 
 describe('mcp_remove_server', () => {
-  it('removes a server', async () => {
+  it('unassigns server from agent', async () => {
     const manager = makeMockManager();
     const store = makeMockStore();
-    const tool = createMcpRemoveServerTool({ manager, configStore: store });
+    const ctx = makeMockAgentContext(['github']);
+    const tool = createMcpRemoveServerTool({ manager, configStore: store, agentContext: ctx });
 
     const result = await tool.execute('call-1', { name: 'github' });
     expect(result.details?.isError).toBeFalsy();
-    expect(manager.removeServer).toHaveBeenCalledWith('github');
-    expect(store.removeConfig).toHaveBeenCalledWith('github');
+    expect(ctx.unassignFromAgent).toHaveBeenCalledWith('github');
   });
 
-  it('returns error for unknown server', async () => {
+  it('reports when server was also removed from pool', async () => {
     const manager = makeMockManager();
-    (manager.removeServer as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('not found'));
     const store = makeMockStore();
-    const tool = createMcpRemoveServerTool({ manager, configStore: store });
+    const ctx = makeMockAgentContext(['github']);
+    (ctx.unassignFromAgent as ReturnType<typeof vi.fn>).mockResolvedValue(true);
+    const tool = createMcpRemoveServerTool({ manager, configStore: store, agentContext: ctx });
 
-    const result = await tool.execute('call-1', { name: 'ghost' });
+    const result = await tool.execute('call-1', { name: 'github' });
+    expect(result.content[0].text).toContain('removed from the pool');
+  });
+
+  it('reports when server stays in pool for other agents', async () => {
+    const manager = makeMockManager();
+    const store = makeMockStore();
+    const ctx = makeMockAgentContext(['github']);
+    (ctx.unassignFromAgent as ReturnType<typeof vi.fn>).mockResolvedValue(false);
+    const tool = createMcpRemoveServerTool({ manager, configStore: store, agentContext: ctx });
+
+    const result = await tool.execute('call-1', { name: 'github' });
+    expect(result.content[0].text).toContain('remains in the pool');
+  });
+
+  it('returns error for unassigned server', async () => {
+    const manager = makeMockManager();
+    const store = makeMockStore();
+    const ctx = makeMockAgentContext([]); // not assigned
+    const tool = createMcpRemoveServerTool({ manager, configStore: store, agentContext: ctx });
+
+    const result = await tool.execute('call-1', { name: 'github' });
     expect(result.details?.isError).toBe(true);
+    expect(result.content[0].text).toContain('not assigned to this agent');
   });
 });
