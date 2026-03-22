@@ -15,6 +15,7 @@ import { AgentRegistry } from './agent-registry.js';
 import { AgentRuntime } from './agent-runtime.js';
 import { mountChatWs } from './chat-ws.js';
 import { loadConfig, parseFlags } from './config.js';
+import { EventBus } from './event-bus.js';
 import { createDynamicGateway, createGateway } from './gateway.js';
 import { createGatewayManagementApp } from './management-api.js';
 import { McpConfigStore } from './mcp-store.js';
@@ -67,6 +68,7 @@ async function main() {
 
     // Create gateway + agent runtime
     const gateway = createDynamicGateway();
+    const eventBus = new EventBus();
     const registryPath = resolve(dataDir, 'agents.json');
     const registry = new AgentRegistry(registryPath);
     await registry.load();
@@ -90,6 +92,11 @@ async function main() {
             if (!current.includes(serverName)) {
               registry.update(agentName, { mcpServers: [...current, serverName] });
               await registry.save();
+              eventBus.emit({
+                type: 'agent:config-changed',
+                agent: agentName,
+                fields: ['mcpServers'],
+              });
             }
           },
           unassignFromAgent: async (serverName: string) => {
@@ -100,6 +107,11 @@ async function main() {
               mcpServers: current.filter((s) => s !== serverName),
             });
             await registry.save();
+            eventBus.emit({
+              type: 'agent:config-changed',
+              agent: agentName,
+              fields: ['mcpServers'],
+            });
             // Remove from pool if no other agents reference it
             const allAgents = registry.list();
             const stillReferenced = allAgents.some(
@@ -148,7 +160,14 @@ async function main() {
       runtime,
       startedAt,
       token: flags.token,
-      mcpDeps: { manager: mcpManager, configStore: mcpConfigStore, registry, logger: console },
+      mcpDeps: {
+        manager: mcpManager,
+        configStore: mcpConfigStore,
+        registry,
+        logger: console,
+        eventBus,
+      },
+      eventBus,
     });
 
     const managementServer = serve({

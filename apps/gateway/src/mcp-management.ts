@@ -1,6 +1,7 @@
 import type { McpLogger, McpManager, McpServerConfig } from '@dash/mcp';
 import type { Hono } from 'hono';
 import type { AgentRegistry } from './agent-registry.js';
+import type { EventBus } from './event-bus.js';
 import type { McpConfigStore } from './mcp-store.js';
 
 export interface McpManagementDeps {
@@ -8,6 +9,7 @@ export interface McpManagementDeps {
   configStore: McpConfigStore;
   registry?: AgentRegistry;
   logger?: McpLogger;
+  eventBus?: EventBus;
 }
 
 /** Extract the server URL from a transport config, or undefined for stdio */
@@ -65,6 +67,7 @@ export function mountMcpRoutes(app: Hono, deps: McpManagementDeps): void {
     deps.logger?.info(
       `[mcp:audit] mcp:server:added source=api server=${body.name} url=${getServerUrl(body) ?? 'stdio'}`,
     );
+    deps.eventBus?.emit({ type: 'mcp:server-added', server: body.name });
     return c.json({ status: 'connected', serverName: body.name, tools }, 201);
   });
 
@@ -128,6 +131,7 @@ export function mountMcpRoutes(app: Hono, deps: McpManagementDeps): void {
     }
 
     deps.logger?.info(`[mcp:audit] mcp:server:removed source=api server=${name}`);
+    deps.eventBus?.emit({ type: 'mcp:server-removed', server: name });
     return c.json({ ok: true });
   });
 
