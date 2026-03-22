@@ -456,7 +456,7 @@ function MessageBubble({
         <div className="opacity-0 group-hover:opacity-100 transition-opacity mt-3">
           {userText && <CopyButton text={userText} />}
         </div>
-        <div className="bg-[#141414] border-l-[3px] border-l-accent text-foreground p-3 max-w-[350px] text-sm">
+        <div className="bg-[#141414] border-l-[3px] border-l-accent text-foreground p-3 max-w-[85%] text-sm">
           {userText && <p className="whitespace-pre-wrap">{userText}</p>}
           {userImages && userImages.length > 0 && (
             <div className="mt-2 flex flex-wrap gap-2">
@@ -482,7 +482,7 @@ function MessageBubble({
 
   return (
     <div className="group mb-6">
-      <div className="bg-[#141414] border-2 border-border p-3 max-w-[450px] text-sm text-foreground">
+      <div className="bg-[#141414] border-2 border-border p-3 max-w-[95%] text-sm text-foreground">
         {renderEvents(events, navigateToLogs, onAnswerQuestion, answeredQuestions)}
       </div>
       <div className="mt-1 flex items-center gap-2 max-w-[80%] px-1">
