@@ -1,4 +1,4 @@
-# Dash — Your AI Team, Always On
+# Dash — You bring the ambition. We bring the squad.
 
 [![CI](https://github.com/volumegambit/Dash/actions/workflows/ci.yml/badge.svg)](https://github.com/volumegambit/Dash/actions/workflows/ci.yml)
 [![Node.js](https://img.shields.io/badge/Node.js-22%2B-339933?logo=node.js&logoColor=white)](https://nodejs.org)
