@@ -1,5 +1,5 @@
-import type { McpServerConfig } from './types.js';
 import { McpProposalStore } from './proposals.js';
+import type { McpServerConfig } from './types.js';
 
 describe('McpProposalStore', () => {
   const sampleConfig: McpServerConfig = {

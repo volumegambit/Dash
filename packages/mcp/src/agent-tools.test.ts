@@ -22,9 +22,11 @@ function makeMockManager() {
 
 function makeMockStore(): McpConfigStoreInterface {
   return {
-    loadConfigs: vi.fn().mockResolvedValue([
-      { name: 'github', transport: { type: 'sse', url: 'https://github.com/mcp' } },
-    ]),
+    loadConfigs: vi
+      .fn()
+      .mockResolvedValue([
+        { name: 'github', transport: { type: 'sse', url: 'https://github.com/mcp' } },
+      ]),
     addConfig: vi.fn().mockResolvedValue(undefined),
     removeConfig: vi.fn().mockResolvedValue(undefined),
     isAllowed: vi.fn().mockResolvedValue(true),
@@ -184,9 +186,7 @@ describe('mcp_remove_server', () => {
 
   it('returns error for unknown server', async () => {
     const manager = makeMockManager();
-    (manager.removeServer as ReturnType<typeof vi.fn>).mockRejectedValue(
-      new Error('not found'),
-    );
+    (manager.removeServer as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('not found'));
     const store = makeMockStore();
     const tool = createMcpRemoveServerTool({ manager, configStore: store });
 
