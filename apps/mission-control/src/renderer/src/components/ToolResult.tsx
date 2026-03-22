@@ -110,12 +110,9 @@ export function ToolResult({
   if (name === 'edit' && details && typeof details === 'object' && 'diff' in details) {
     const { diff } = details as { diff: string; firstChangedLine?: number };
     if (typeof diff === 'string' && diff.trim()) {
-      // Extract path from the result text: "Successfully replaced text in <path>."
-      const pathMatch = result.match(/in (.+)\.$/);
       return (
         <div>
-          <p className="mb-1.5 text-green/80">{result}</p>
-          <DiffView diff={diff} path={pathMatch?.[1]} />
+          <DiffView diff={diff} />
         </div>
       );
     }
