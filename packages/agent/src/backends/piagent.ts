@@ -46,7 +46,7 @@ import type {
 import { DashResourceLoader } from './dash-resource-loader.js';
 
 /** All built-in tool names supported by PiAgent */
-const ALL_TOOL_NAMES = ['read', 'bash', 'edit', 'write', 'grep', 'find', 'ls'] as const;
+const DEFAULT_TOOL_NAMES = ['read', 'bash', 'edit', 'write', 'grep', 'find', 'ls'] as const;
 
 /**
  * PiAgentBackend - AgentBackend implementation using the PiAgent SDK
@@ -158,7 +158,7 @@ export class PiAgentBackend implements AgentBackend {
    * These go in createAgentSession({ tools }) — PiAgent recognizes them by name.
    */
   private buildBuiltinTools(workspace: string) {
-    const allowedNames = this.config.tools ? new Set(this.config.tools) : new Set(ALL_TOOL_NAMES);
+    const allowedNames = this.config.tools ? new Set(this.config.tools) : new Set(DEFAULT_TOOL_NAMES);
 
     // biome-ignore lint/suspicious/noExplicitAny: Tool type not exported from pi-coding-agent top-level
     const toolBuilders: Record<string, () => any> = {
@@ -172,7 +172,7 @@ export class PiAgentBackend implements AgentBackend {
     };
 
     const tools = [];
-    for (const name of ALL_TOOL_NAMES) {
+    for (const name of DEFAULT_TOOL_NAMES) {
       if (allowedNames.has(name) && toolBuilders[name]) {
         tools.push(toolBuilders[name]());
       }
@@ -188,7 +188,7 @@ export class PiAgentBackend implements AgentBackend {
    */
   // biome-ignore lint/suspicious/noExplicitAny: tool types from pi-coding-agent SDK lack exported interfaces
   private buildCustomTools(): any[] {
-    const allowedNames = this.config.tools ? new Set(this.config.tools) : new Set(ALL_TOOL_NAMES);
+    const allowedNames = this.config.tools ? new Set(this.config.tools) : new Set(DEFAULT_TOOL_NAMES);
     // biome-ignore lint/suspicious/noExplicitAny: tool types from pi-coding-agent SDK lack exported interfaces
     const customs: any[] = [];
 
