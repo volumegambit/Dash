@@ -13,6 +13,7 @@ import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as SecretsRouteImport } from './routes/secrets'
 import { Route as MessagingAppsRouteImport } from './routes/messaging-apps'
 import { Route as DeployRouteImport } from './routes/deploy'
+import { Route as ConnectorsRouteImport } from './routes/connectors'
 import { Route as ConnectionsRouteImport } from './routes/connections'
 import { Route as ChatRouteImport } from './routes/chat'
 import { Route as AgentsRouteImport } from './routes/agents'
@@ -42,6 +43,11 @@ const MessagingAppsRoute = MessagingAppsRouteImport.update({
 const DeployRoute = DeployRouteImport.update({
   id: '/deploy',
   path: '/deploy',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ConnectorsRoute = ConnectorsRouteImport.update({
+  id: '/connectors',
+  path: '/connectors',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ConnectionsRoute = ConnectionsRouteImport.update({
@@ -102,6 +108,7 @@ export interface FileRoutesByFullPath {
   '/agents': typeof AgentsRouteWithChildren
   '/chat': typeof ChatRoute
   '/connections': typeof ConnectionsRoute
+  '/connectors': typeof ConnectorsRoute
   '/deploy': typeof DeployRoute
   '/messaging-apps': typeof MessagingAppsRouteWithChildren
   '/secrets': typeof SecretsRoute
@@ -117,6 +124,7 @@ export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/chat': typeof ChatRoute
   '/connections': typeof ConnectionsRoute
+  '/connectors': typeof ConnectorsRoute
   '/deploy': typeof DeployRoute
   '/secrets': typeof SecretsRoute
   '/settings': typeof SettingsRoute
@@ -133,6 +141,7 @@ export interface FileRoutesById {
   '/agents': typeof AgentsRouteWithChildren
   '/chat': typeof ChatRoute
   '/connections': typeof ConnectionsRoute
+  '/connectors': typeof ConnectorsRoute
   '/deploy': typeof DeployRoute
   '/messaging-apps': typeof MessagingAppsRouteWithChildren
   '/secrets': typeof SecretsRoute
@@ -151,6 +160,7 @@ export interface FileRouteTypes {
     | '/agents'
     | '/chat'
     | '/connections'
+    | '/connectors'
     | '/deploy'
     | '/messaging-apps'
     | '/secrets'
@@ -166,6 +176,7 @@ export interface FileRouteTypes {
     | '/'
     | '/chat'
     | '/connections'
+    | '/connectors'
     | '/deploy'
     | '/secrets'
     | '/settings'
@@ -181,6 +192,7 @@ export interface FileRouteTypes {
     | '/agents'
     | '/chat'
     | '/connections'
+    | '/connectors'
     | '/deploy'
     | '/messaging-apps'
     | '/secrets'
@@ -198,6 +210,7 @@ export interface RootRouteChildren {
   AgentsRoute: typeof AgentsRouteWithChildren
   ChatRoute: typeof ChatRoute
   ConnectionsRoute: typeof ConnectionsRoute
+  ConnectorsRoute: typeof ConnectorsRoute
   DeployRoute: typeof DeployRoute
   MessagingAppsRoute: typeof MessagingAppsRouteWithChildren
   SecretsRoute: typeof SecretsRoute
@@ -232,6 +245,13 @@ declare module '@tanstack/react-router' {
       path: '/deploy'
       fullPath: '/deploy'
       preLoaderRoute: typeof DeployRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/connectors': {
+      id: '/connectors'
+      path: '/connectors'
+      fullPath: '/connectors'
+      preLoaderRoute: typeof ConnectorsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/connections': {
@@ -343,6 +363,7 @@ const rootRouteChildren: RootRouteChildren = {
   AgentsRoute: AgentsRouteWithChildren,
   ChatRoute: ChatRoute,
   ConnectionsRoute: ConnectionsRoute,
+  ConnectorsRoute: ConnectorsRoute,
   DeployRoute: DeployRoute,
   MessagingAppsRoute: MessagingAppsRouteWithChildren,
   SecretsRoute: SecretsRoute,
