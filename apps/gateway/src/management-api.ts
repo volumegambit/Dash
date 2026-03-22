@@ -5,6 +5,7 @@ import { Hono } from 'hono';
 
 import type { GatewayAgentConfig } from './agent-registry.js';
 import type { AgentRuntime } from './agent-runtime.js';
+import type { EventBus, GatewayEvent } from './event-bus.js';
 import type { DynamicGateway } from './gateway.js';
 import { type McpManagementDeps, mountMcpRoutes } from './mcp-management.js';
 
@@ -53,6 +54,7 @@ export interface GatewayManagementOptions {
   token?: string;
   startedAt?: string;
   mcpDeps?: McpManagementDeps;
+  eventBus?: EventBus;
 }
 
 export function createGatewayManagementApp(options: GatewayManagementOptions): Hono {
@@ -182,6 +184,11 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
       try {
         const entry = runtime.registry.register(body);
         await runtime.registry.save();
+        options.eventBus?.emit({
+          type: 'agent:config-changed',
+          agent: body.name,
+          fields: ['*'],
+        });
         return c.json(entry, 201);
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Internal error';
@@ -214,6 +221,11 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
       try {
         const updated = runtime.registry.update(name, patch);
         await runtime.registry.save();
+        options.eventBus?.emit({
+          type: 'agent:config-changed',
+          agent: name,
+          fields: Object.keys(patch),
+        });
         return c.json(updated);
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Internal error';
@@ -250,6 +262,11 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
       }
       runtime.registry.update(name, { providerApiKeys: body.providerApiKeys });
       await runtime.registry.save();
+      options.eventBus?.emit({
+        type: 'agent:config-changed',
+        agent: name,
+        fields: ['providerApiKeys'],
+      });
       await runtime.updateCredentials(name, body.providerApiKeys);
       return c.json({ ok: true });
     });
@@ -283,6 +300,50 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
 
   if (options.mcpDeps) {
     mountMcpRoutes(app, options.mcpDeps);
+  }
+
+  // SSE event stream
+  if (options.eventBus) {
+    const eventBus = options.eventBus;
+    app.get('/events', (c) => {
+      return c.newResponse(
+        new ReadableStream({
+          start(controller) {
+            const encoder = new TextEncoder();
+            const send = (event: GatewayEvent) => {
+              try {
+                controller.enqueue(
+                  encoder.encode(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`),
+                );
+              } catch {
+                // Stream may be closed
+              }
+            };
+            // Send keepalive comment every 30s
+            const keepalive = setInterval(() => {
+              try {
+                controller.enqueue(encoder.encode(': keepalive\n\n'));
+              } catch {
+                clearInterval(keepalive);
+              }
+            }, 30_000);
+            const unsub = eventBus.subscribe(send);
+            // Clean up when client disconnects
+            c.req.raw.signal.addEventListener('abort', () => {
+              unsub();
+              clearInterval(keepalive);
+            });
+          },
+        }),
+        {
+          headers: {
+            'Content-Type': 'text/event-stream',
+            'Cache-Control': 'no-cache',
+            Connection: 'keep-alive',
+          },
+        },
+      );
+    });
   }
 
   return app;
