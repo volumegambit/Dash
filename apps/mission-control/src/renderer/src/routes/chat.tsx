@@ -353,7 +353,7 @@ function ToolBlock({
                   ))}
                 </div>
               )}
-              <ToolResult name={name} result={result} isError={isError} details={toolDetails} />
+              <ToolResult name={name} input={input} result={result} isError={isError} details={toolDetails} />
             </>
           )}
         </div>
