@@ -81,13 +81,9 @@ function Dashboard(): JSX.Element {
                 </div>
               ) : (
                 deployments.slice(0, 8).map((deployment) => {
-                  const channelKeys = Object.keys(deployment.config.channels ?? {});
+                  const channelKeys = Object.keys(deployment.config?.channels ?? {});
                   const channel = channelKeys[0] ?? '—';
-                  const agentKeys = Object.keys(deployment.config.agents ?? {});
-                  const agentName =
-                    agentKeys.length > 0
-                      ? (deployment.config.agents?.[agentKeys[0]]?.name ?? deployment.name)
-                      : deployment.name;
+                  const agentName = deployment.name;
                   const relativeTime = formatRelativeTime(deployment.createdAt);
 
                   return (

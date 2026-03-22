@@ -2,20 +2,12 @@ import type { AgentDeployment } from '@dash/mc';
 import { Link, createFileRoute, useNavigate } from '@tanstack/react-router';
 import { Bot, Plus, Search, Square, Trash2 } from 'lucide-react';
 import { useEffect, useState } from 'react';
+import type { RuntimeAgentConfig } from '../../../../shared/ipc.js';
+import { useAgentConfigsStore } from '../../stores/agent-configs.js';
 import { useDeploymentsStore } from '../../stores/deployments';
 
-function getAgentConfig(deployment: AgentDeployment) {
-  // Support both new `agents` map and legacy `agent` field
-  const agents = deployment.config.agents;
-  if (agents) {
-    const first = Object.values(agents)[0];
-    return first ?? null;
-  }
-  return deployment.config.agent ?? null;
-}
-
-function getModel(deployment: AgentDeployment): string {
-  const cfg = getAgentConfig(deployment);
+function getModel(configs: Record<string, RuntimeAgentConfig>, deployment: AgentDeployment): string {
+  const cfg = configs[deployment.name];
   return cfg?.model ?? '—';
 }
 
@@ -26,13 +18,13 @@ function truncateModel(model: string): string {
   return name.length > 24 ? `${name.slice(0, 22)}…` : name;
 }
 
-function getTools(deployment: AgentDeployment): number {
-  const cfg = getAgentConfig(deployment);
+function getTools(configs: Record<string, RuntimeAgentConfig>, deployment: AgentDeployment): number {
+  const cfg = configs[deployment.name];
   return cfg?.tools?.length ?? 0;
 }
 
 function getChannelCount(deployment: AgentDeployment): number {
-  return Object.keys(deployment.config.channels ?? {}).length;
+  return Object.keys(deployment.config?.channels ?? {}).length;
 }
 
 function relativeTime(dateStr: string): string {
@@ -55,6 +47,7 @@ function statusDotColor(status: string): string {
 
 function Agents(): JSX.Element {
   const { deployments, loading, loadDeployments, stop, remove } = useDeploymentsStore();
+  const configs = useAgentConfigsStore((s) => s.configs);
   const navigate = useNavigate();
   const [search, setSearch] = useState('');
   const [removeTarget, setRemoveTarget] = useState<{
@@ -242,9 +235,10 @@ interface AgentRowProps {
 }
 
 function AgentRow({ deployment, onNavigate, onStop, onRemove }: AgentRowProps): JSX.Element {
-  const toolCount = getTools(deployment);
+  const configs = useAgentConfigsStore((s) => s.configs);
+  const toolCount = getTools(configs, deployment);
   const channelCount = getChannelCount(deployment);
-  const model = getModel(deployment);
+  const model = getModel(configs, deployment);
 
   return (
     <button
