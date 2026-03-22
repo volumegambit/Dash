@@ -6,6 +6,7 @@ import { Hono } from 'hono';
 import type { GatewayAgentConfig } from './agent-registry.js';
 import type { AgentRuntime } from './agent-runtime.js';
 import type { DynamicGateway } from './gateway.js';
+import { type McpManagementDeps, mountMcpRoutes } from './mcp-management.js';
 
 export interface RegisterAgentRequest {
   deploymentId: string;
@@ -51,6 +52,7 @@ export interface GatewayManagementOptions {
   runtime?: AgentRuntime;
   token?: string;
   startedAt?: string;
+  mcpDeps?: McpManagementDeps;
 }
 
 export function createGatewayManagementApp(options: GatewayManagementOptions): Hono {
@@ -271,6 +273,10 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
         return c.json({ error: message }, 500);
       }
     });
+  }
+
+  if (options.mcpDeps) {
+    mountMcpRoutes(app, options.mcpDeps);
   }
 
   return app;
