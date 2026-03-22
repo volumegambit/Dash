@@ -70,11 +70,19 @@ export class McpClient {
 
     const result = await this.client.listTools();
 
-    const callTool = async (name: string, params: Record<string, unknown>) => {
+    const callTool = async (
+      name: string,
+      params: Record<string, unknown>,
+      options?: { signal?: AbortSignal },
+    ) => {
       if (!this.client) {
         throw new Error('MCP client is not connected');
       }
-      const res = await this.client.callTool({ name, arguments: params });
+      const res = await this.client.callTool(
+        { name, arguments: params },
+        undefined,
+        options?.signal ? { signal: options.signal } : undefined,
+      );
       return res as { content: Array<{ type: string; text?: string }>; isError?: boolean };
     };
 

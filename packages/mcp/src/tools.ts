@@ -11,6 +11,7 @@ export interface McpToolDefinition {
 type CallToolFn = (
   name: string,
   params: Record<string, unknown>,
+  options?: { signal?: AbortSignal },
 ) => Promise<{ content: Array<{ type: string; text?: string }>; isError?: boolean }>;
 
 interface McpToolDetails {
@@ -33,14 +34,23 @@ export function wrapMcpTool(
     execute: async (
       _toolCallId: string,
       params: unknown,
-      _signal?: AbortSignal,
+      signal?: AbortSignal,
     ): Promise<AgentToolResult<McpToolDetails>> => {
       try {
         const timeoutController = new AbortController();
         const timeoutId = setTimeout(() => timeoutController.abort(), toolTimeout);
 
+        // Combine external signal with timeout signal
+        const combinedSignal = signal
+          ? AbortSignal.any([signal, timeoutController.signal])
+          : timeoutController.signal;
+
         try {
-          const result = await callTool(def.name, (params ?? {}) as Record<string, unknown>);
+          const result = await callTool(
+            def.name,
+            (params ?? {}) as Record<string, unknown>,
+            { signal: combinedSignal },
+          );
           clearTimeout(timeoutId);
 
           const content = (result.content ?? []).map((c) => ({

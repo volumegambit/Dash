@@ -46,7 +46,11 @@ describe('wrapMcpTool', () => {
     });
     const tool = wrapMcpTool('github', mcpToolDef, mockCallTool, 60_000);
     const result = await tool.execute('call-1', { title: 'Bug' });
-    expect(mockCallTool).toHaveBeenCalledWith('create_issue', { title: 'Bug' });
+    expect(mockCallTool).toHaveBeenCalledWith(
+      'create_issue',
+      { title: 'Bug' },
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
     expect(result.content).toEqual([{ type: 'text', text: 'Issue #42 created' }]);
   });
 
@@ -59,6 +63,39 @@ describe('wrapMcpTool', () => {
       text: expect.stringContaining('Server unavailable'),
     });
     expect(result.details).toEqual({ isError: true });
+  });
+
+  it('passes abort signal to callTool', async () => {
+    mockCallTool.mockResolvedValue({
+      content: [{ type: 'text', text: 'ok' }],
+    });
+    const controller = new AbortController();
+    const tool = wrapMcpTool('github', mcpToolDef, mockCallTool, 60_000);
+    await tool.execute('call-1', { title: 'Bug' }, controller.signal);
+    expect(mockCallTool).toHaveBeenCalledWith(
+      'create_issue',
+      { title: 'Bug' },
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+  });
+
+  it('returns error when external signal is aborted', async () => {
+    mockCallTool.mockImplementation(
+      (_name: string, _params: Record<string, unknown>, opts?: { signal?: AbortSignal }) =>
+        new Promise((_resolve, reject) => {
+          if (opts?.signal?.aborted) {
+            reject(new Error('aborted'));
+            return;
+          }
+          opts?.signal?.addEventListener('abort', () => reject(new Error('aborted')));
+        }),
+    );
+    const controller = new AbortController();
+    controller.abort();
+    const tool = wrapMcpTool('github', mcpToolDef, mockCallTool, 60_000);
+    const result = await tool.execute('call-1', { title: 'Bug' }, controller.signal);
+    expect(result.details?.isError).toBe(true);
+    expect(result.content[0].text).toContain('aborted');
   });
 
   it('returns isError when MCP result has isError flag', async () => {
