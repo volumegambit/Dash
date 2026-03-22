@@ -75,6 +75,46 @@ async function main() {
       createBackend: async (config, conversationId) => {
         const sessionDir = resolve(dataDir, 'sessions', config.name, conversationId);
         await mkdir(sessionDir, { recursive: true });
+
+        const agentName = config.name;
+        const mcpAgentContext = {
+          assignToAgent: async (serverName: string) => {
+            const entry = registry.get(agentName);
+            if (!entry) return;
+            const current = entry.config.mcpServers ?? [];
+            if (!current.includes(serverName)) {
+              registry.update(agentName, { mcpServers: [...current, serverName] });
+            }
+          },
+          unassignFromAgent: async (serverName: string) => {
+            const entry = registry.get(agentName);
+            if (!entry) return false;
+            const current = entry.config.mcpServers ?? [];
+            registry.update(agentName, {
+              mcpServers: current.filter((s) => s !== serverName),
+            });
+            // Remove from pool if no other agents reference it
+            const allAgents = registry.list();
+            const stillReferenced = allAgents.some(
+              (a) => a.config.mcpServers?.includes(serverName) ?? false,
+            );
+            if (!stillReferenced) {
+              try {
+                await mcpManager.removeServer(serverName);
+              } catch {
+                // May already be disconnected
+              }
+              await mcpConfigStore.removeConfig(serverName);
+              return true;
+            }
+            return false;
+          },
+          getAssignedServers: () => {
+            const entry = registry.get(agentName);
+            return entry?.config.mcpServers ?? [];
+          },
+        };
+
         return new PiAgentBackend(
           {
             model: config.model,
@@ -82,6 +122,7 @@ async function main() {
             fallbackModels: config.fallbackModels,
             tools: config.tools,
             skills: config.skills,
+            assignedMcpServers: config.mcpServers,
           },
           config.providerApiKeys ?? {},
           undefined,
@@ -89,6 +130,7 @@ async function main() {
           resolve(dataDir, 'skills', config.name),
           mcpManager,
           mcpConfigStore,
+          mcpAgentContext,
         );
       },
     });
@@ -99,7 +141,7 @@ async function main() {
       runtime,
       startedAt,
       token: flags.token,
-      mcpDeps: { manager: mcpManager, configStore: mcpConfigStore, logger: console },
+      mcpDeps: { manager: mcpManager, configStore: mcpConfigStore, registry, logger: console },
     });
 
     const managementServer = serve({
