@@ -3,6 +3,7 @@
 export interface McpLogger {
   info(msg: string): void;
   warn(msg: string): void;
+  error(msg: string): void;
 }
 
 // --- Transport configs ---
@@ -53,9 +54,10 @@ export interface McpServerConfig {
   env?: Record<string, string>;
   auth?: McpServerAuth;
   toolTimeout?: number;
+  maxReconnectAttempts?: number;
 }
 
-export type McpServerStatus = 'connected' | 'disconnected' | 'error';
+export type McpServerStatus = 'connected' | 'disconnected' | 'reconnecting' | 'error';
 
 // --- Token storage (pluggable) ---
 
