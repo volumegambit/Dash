@@ -15,6 +15,19 @@ export interface McpConfigStoreInterface {
   isAllowed(url: string): Promise<boolean>;
 }
 
+/**
+ * Agent identity context — provides per-agent MCP server assignment operations.
+ * Constructed by the gateway with closures that capture the agent name and registry.
+ */
+export interface McpAgentContext {
+  /** Assign an MCP server to this agent */
+  assignToAgent(serverName: string): Promise<void>;
+  /** Unassign from this agent. Returns true if also removed from pool (no other refs). */
+  unassignFromAgent(serverName: string): Promise<boolean>;
+  /** Get this agent's assigned server names */
+  getAssignedServers(): string[];
+}
+
 interface McpToolDetails {
   isError?: boolean;
 }
@@ -84,11 +97,18 @@ function buildConfig(params: Static<typeof addServerSchema>): McpServerConfig {
   };
 }
 
+function getConfigUrl(config: McpServerConfig): string | undefined {
+  const t = config.transport;
+  if (t.type === 'sse' || t.type === 'streamable-http') return t.url;
+  return undefined;
+}
+
 // --- Tool factories ---
 
 export interface McpAddServerDeps {
   manager: McpManager;
   configStore: McpConfigStoreInterface;
+  agentContext: McpAgentContext;
   logger?: McpLogger;
 }
 
@@ -99,20 +119,16 @@ export function createMcpAddServerTool(
     name: 'mcp_add_server',
     label: 'MCP: Add Server',
     description:
-      'Connect to an MCP server. Validates against the allowlist, then connects and discovers tools.',
+      'Connect to an MCP server. If the server already exists in the pool, assigns it to this agent. Otherwise creates a new connection.',
     parameters: addServerSchema,
     execute: async (
       _toolCallId: string,
       params: Static<typeof addServerSchema>,
     ): Promise<AgentToolResult<McpToolDetails>> => {
       const config = buildConfig(params);
+      const url = getConfigUrl(config);
 
       // Allowlist check for URL-based transports
-      const url =
-        config.transport.type === 'sse' || config.transport.type === 'streamable-http'
-          ? config.transport.url
-          : undefined;
-
       if (url) {
         const allowed = await deps.configStore.isAllowed(url);
         if (!allowed) {
@@ -125,9 +141,38 @@ export function createMcpAddServerTool(
         }
       }
 
+      // Check if server already exists in pool
+      const existingConfigs = await deps.configStore.loadConfigs();
+      const existing = existingConfigs.find((c) => c.name === params.name);
+
+      if (existing) {
+        // Server exists — check if same URL
+        const existingUrl = getConfigUrl(existing);
+        if (url && existingUrl && url !== existingUrl) {
+          return err(
+            `MCP server "${params.name}" already exists with a different URL (${existingUrl}). Choose another name.`,
+          );
+        }
+
+        // Same server — just assign to this agent
+        await deps.agentContext.assignToAgent(params.name);
+        deps.logger?.info(`[mcp:audit] mcp:server:assigned source=agent server=${params.name}`);
+
+        const tools = deps.manager
+          .getTools()
+          .filter((t) => t.name.startsWith(`${params.name}__`))
+          .map((t) => t.name);
+
+        return ok(
+          `MCP server "${params.name}" assigned to this agent.\n${tools.length} tool(s) available: ${tools.join(', ') || '(none)'}.\nThese tools will be available on the next message.`,
+        );
+      }
+
+      // New server — create + assign
       try {
         await deps.manager.addServer(config);
         await deps.configStore.addConfig(config);
+        await deps.agentContext.assignToAgent(params.name);
 
         deps.logger?.info(`[mcp:audit] mcp:server:added source=agent server=${params.name}`);
 
@@ -137,7 +182,7 @@ export function createMcpAddServerTool(
           .map((t) => t.name);
 
         return ok(
-          `MCP server "${params.name}" connected successfully.\nDiscovered ${tools.length} tool(s): ${tools.join(', ') || '(none)'}.\nThese tools will be available on the next message.`,
+          `MCP server "${params.name}" connected and assigned to this agent.\nDiscovered ${tools.length} tool(s): ${tools.join(', ') || '(none)'}.\nThese tools will be available on the next message.`,
         );
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
@@ -150,6 +195,7 @@ export function createMcpAddServerTool(
 export interface McpListServersDeps {
   manager: McpManager;
   configStore: McpConfigStoreInterface;
+  agentContext: McpAgentContext;
 }
 
 export function createMcpListServersTool(
@@ -158,16 +204,20 @@ export function createMcpListServersTool(
   return {
     name: 'mcp_list_servers',
     label: 'MCP: List Servers',
-    description: 'List all connected MCP servers and their available tools.',
+    description: 'List MCP servers assigned to this agent and other available servers in the pool.',
     parameters: listServersSchema,
     execute: async (): Promise<AgentToolResult<McpToolDetails>> => {
-      const configs = await deps.configStore.loadConfigs();
+      const allConfigs = await deps.configStore.loadConfigs();
+      const assigned = new Set(deps.agentContext.getAssignedServers());
 
-      if (configs.length === 0) {
-        return ok('No MCP servers configured.');
+      if (allConfigs.length === 0) {
+        return ok('No MCP servers in the pool.');
       }
 
-      const lines = configs.map((cfg) => {
+      const assignedLines: string[] = [];
+      const availableLines: string[] = [];
+
+      for (const cfg of allConfigs) {
         const status = deps.manager.getServerStatus(cfg.name);
         const tools = deps.manager
           .getTools()
@@ -179,13 +229,28 @@ export function createMcpListServersTool(
             ? cfg.transport.command
             : (cfg.transport as { url: string }).url;
 
-        return (
+        const line =
           `• ${cfg.name} [${status}] (${cfg.transport.type}: ${transportDesc})\n` +
-          `  Tools: ${tools.length > 0 ? tools.join(', ') : '(none)'}`
-        );
-      });
+          `  Tools: ${tools.length > 0 ? tools.join(', ') : '(none)'}`;
 
-      return ok(lines.join('\n\n'));
+        if (assigned.has(cfg.name)) {
+          assignedLines.push(line);
+        } else {
+          availableLines.push(line);
+        }
+      }
+
+      const parts: string[] = [];
+      if (assignedLines.length > 0) {
+        parts.push(`**Assigned to this agent:**\n\n${assignedLines.join('\n\n')}`);
+      } else {
+        parts.push('**Assigned to this agent:** none');
+      }
+      if (availableLines.length > 0) {
+        parts.push(`**Available in pool (not assigned):**\n\n${availableLines.join('\n\n')}`);
+      }
+
+      return ok(parts.join('\n\n'));
     },
   };
 }
@@ -193,6 +258,7 @@ export function createMcpListServersTool(
 export interface McpRemoveServerDeps {
   manager: McpManager;
   configStore: McpConfigStoreInterface;
+  agentContext: McpAgentContext;
   logger?: McpLogger;
 }
 
@@ -202,17 +268,32 @@ export function createMcpRemoveServerTool(
   return {
     name: 'mcp_remove_server',
     label: 'MCP: Remove Server',
-    description: 'Disconnect and remove an MCP server.',
+    description:
+      'Unassign an MCP server from this agent. If no other agents use it, removes it from the pool entirely.',
     parameters: removeServerSchema,
     execute: async (
       _toolCallId: string,
       params: Static<typeof removeServerSchema>,
     ): Promise<AgentToolResult<McpToolDetails>> => {
+      const assigned = deps.agentContext.getAssignedServers();
+      if (!assigned.includes(params.name)) {
+        return err(`MCP server "${params.name}" is not assigned to this agent.`);
+      }
+
       try {
-        await deps.manager.removeServer(params.name);
-        await deps.configStore.removeConfig(params.name);
-        deps.logger?.info(`[mcp:audit] mcp:server:removed source=agent server=${params.name}`);
-        return ok(`MCP server "${params.name}" disconnected and removed.`);
+        const removedFromPool = await deps.agentContext.unassignFromAgent(params.name);
+        deps.logger?.info(
+          `[mcp:audit] mcp:server:removed source=agent server=${params.name} poolRemoved=${removedFromPool}`,
+        );
+
+        if (removedFromPool) {
+          return ok(
+            `MCP server "${params.name}" unassigned and removed from the pool (no other agents were using it).`,
+          );
+        }
+        return ok(
+          `MCP server "${params.name}" unassigned from this agent. Other agents still use it, so it remains in the pool.`,
+        );
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         return err(`Failed to remove MCP server "${params.name}": ${message}`);

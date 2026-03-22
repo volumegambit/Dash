@@ -18,7 +18,7 @@ import {
 } from '@mariozechner/pi-coding-agent';
 import type { AgentSession, AgentSessionEvent, Skill } from '@mariozechner/pi-coding-agent';
 
-import type { McpConfigStoreInterface, McpManager } from '@dash/mcp';
+import type { McpAgentContext, McpConfigStoreInterface, McpManager } from '@dash/mcp';
 import {
   createMcpAddServerTool,
   createMcpListServersTool,
@@ -83,6 +83,7 @@ export class PiAgentBackend implements AgentBackend {
     private managedSkillsDir?: string,
     private mcpManager?: McpManager,
     private mcpConfigStore?: McpConfigStoreInterface,
+    private mcpAgentContext?: McpAgentContext,
   ) {}
 
   /** Detect OAuth access tokens (e.g. sk-ant-oat01-...) vs regular API keys */
@@ -158,7 +159,9 @@ export class PiAgentBackend implements AgentBackend {
    * These go in createAgentSession({ tools }) — PiAgent recognizes them by name.
    */
   private buildBuiltinTools(workspace: string) {
-    const allowedNames = this.config.tools ? new Set(this.config.tools) : new Set(DEFAULT_TOOL_NAMES);
+    const allowedNames = this.config.tools
+      ? new Set(this.config.tools)
+      : new Set(DEFAULT_TOOL_NAMES);
 
     // biome-ignore lint/suspicious/noExplicitAny: Tool type not exported from pi-coding-agent top-level
     const toolBuilders: Record<string, () => any> = {
@@ -188,7 +191,9 @@ export class PiAgentBackend implements AgentBackend {
    */
   // biome-ignore lint/suspicious/noExplicitAny: tool types from pi-coding-agent SDK lack exported interfaces
   private buildCustomTools(): any[] {
-    const allowedNames = this.config.tools ? new Set(this.config.tools) : new Set(DEFAULT_TOOL_NAMES);
+    const allowedNames = this.config.tools
+      ? new Set(this.config.tools)
+      : new Set(DEFAULT_TOOL_NAMES);
     // biome-ignore lint/suspicious/noExplicitAny: tool types from pi-coding-agent SDK lack exported interfaces
     const customs: any[] = [];
 
@@ -235,19 +240,33 @@ export class PiAgentBackend implements AgentBackend {
       customs.push(wrap(createCreateSkillTool(this.managedSkillsDir)));
     }
 
-    // MCP server tools (from connected MCP servers)
+    // MCP server tools (from connected MCP servers, filtered by agent's assigned servers)
     if (allowedNames.has('mcp') && this.mcpManager) {
-      customs.push(...this.mcpManager.getTools());
+      const assigned = this.config.assignedMcpServers;
+      if (assigned && assigned.length > 0) {
+        const assignedSet = new Set(assigned);
+        customs.push(
+          ...this.mcpManager.getTools().filter((t) => {
+            const serverName = t.name.split('__')[0];
+            return assignedSet.has(serverName);
+          }),
+        );
+      } else if (!assigned) {
+        // No assignedMcpServers field = legacy/standalone mode, show all
+        customs.push(...this.mcpManager.getTools());
+      }
+      // assignedMcpServers = [] means explicitly no servers assigned
     }
 
     // MCP management tools (add/remove/list servers)
-    if (this.mcpManager && this.mcpConfigStore) {
+    if (this.mcpManager && this.mcpConfigStore && this.mcpAgentContext) {
       if (allowedNames.has('mcp_add_server')) {
         customs.push(
           wrap(
             createMcpAddServerTool({
               manager: this.mcpManager,
               configStore: this.mcpConfigStore,
+              agentContext: this.mcpAgentContext,
               logger: this.logger,
             }),
           ),
@@ -259,6 +278,7 @@ export class PiAgentBackend implements AgentBackend {
             createMcpListServersTool({
               manager: this.mcpManager,
               configStore: this.mcpConfigStore,
+              agentContext: this.mcpAgentContext,
             }),
           ),
         );
@@ -269,6 +289,7 @@ export class PiAgentBackend implements AgentBackend {
             createMcpRemoveServerTool({
               manager: this.mcpManager,
               configStore: this.mcpConfigStore,
+              agentContext: this.mcpAgentContext,
               logger: this.logger,
             }),
           ),

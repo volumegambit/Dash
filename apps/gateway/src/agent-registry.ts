@@ -8,6 +8,7 @@ export interface GatewayAgentConfig {
   providerApiKeys?: Record<string, string>;
   workspace?: string;
   maxTokens?: number;
+  mcpServers?: string[];
 }
 
 export type AgentStatus = 'registered' | 'active' | 'disabled';

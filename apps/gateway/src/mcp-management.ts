@@ -1,10 +1,12 @@
 import type { McpLogger, McpManager, McpServerConfig } from '@dash/mcp';
 import type { Hono } from 'hono';
+import type { AgentRegistry } from './agent-registry.js';
 import type { McpConfigStore } from './mcp-store.js';
 
 export interface McpManagementDeps {
   manager: McpManager;
   configStore: McpConfigStore;
+  registry?: AgentRegistry;
   logger?: McpLogger;
 }
 
@@ -108,6 +110,18 @@ export function mountMcpRoutes(app: Hono, deps: McpManagementDeps): void {
       }
       return c.json({ error: message }, 500);
     }
+    // Remove from all agent configs
+    if (deps.registry) {
+      for (const agent of deps.registry.list()) {
+        const servers = agent.config.mcpServers ?? [];
+        if (servers.includes(name)) {
+          deps.registry.update(agent.name, {
+            mcpServers: servers.filter((s) => s !== name),
+          });
+        }
+      }
+    }
+
     deps.logger?.info(`[mcp:audit] mcp:server:removed source=api server=${name}`);
     return c.json({ ok: true });
   });
