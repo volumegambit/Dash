@@ -29,6 +29,14 @@ interface ChatState {
 const eventBuffer = new Map<string, McAgentEvent[]>();
 let flushTimer: ReturnType<typeof setTimeout> | null = null;
 
+/** Move a conversation to the top of the list and update its updatedAt timestamp */
+function moveConversationToTop(conversations: McConversation[], id: string): McConversation[] {
+  const now = new Date().toISOString();
+  return conversations
+    .map((c) => (c.id === id ? { ...c, updatedAt: now } : c))
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+}
+
 function flushEventBuffer(set: (fn: (s: ChatState) => Partial<ChatState>) => void): void {
   if (flushTimer) {
     clearTimeout(flushTimer);
@@ -88,7 +96,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
   async renameConversation(id: string, title: string) {
     await window.api.chatRenameConversation(id, title);
     set((s) => ({
-      conversations: s.conversations.map((c) => (c.id === id ? { ...c, title } : c)),
+      conversations: moveConversationToTop(
+        s.conversations.map((c) => (c.id === id ? { ...c, title } : c)),
+        id,
+      ),
     }));
   },
 
@@ -124,6 +135,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       timestamp: new Date().toISOString(),
     };
     set((s) => ({
+      conversations: moveConversationToTop(s.conversations, conversationId),
       messages: {
         ...s.messages,
         [conversationId]: [...(s.messages[conversationId] ?? []), userMsg],
@@ -177,6 +189,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         ? new Set([...state.unreadConversations, conversationId])
         : state.unreadConversations;
     set((s) => ({
+      conversations: moveConversationToTop(s.conversations, conversationId),
       messages: {
         ...s.messages,
         [conversationId]: [...(s.messages[conversationId] ?? []), assistantMsg],
@@ -195,6 +208,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       timestamp: new Date().toISOString(),
     };
     set((s) => ({
+      conversations: moveConversationToTop(s.conversations, conversationId),
       messages: {
         ...s.messages,
         [conversationId]: [...(s.messages[conversationId] ?? []), errMsg],
