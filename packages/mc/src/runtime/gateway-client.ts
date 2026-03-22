@@ -35,6 +35,8 @@ export interface RuntimeAgentConfig {
   skills?: { paths?: string[]; urls?: string[] };
   workspace?: string;
   maxTokens?: number;
+  mcpServers?: string[];
+  providerApiKeys?: Record<string, string>;
 }
 
 export interface RegisteredRuntimeAgent {
