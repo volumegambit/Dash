@@ -18,6 +18,7 @@
   "dependencies": {
     "@dash/agent": "*",
     "@dash/channels": "*",
+    "@dash/mcp": "*",
     "@dash/chat": "*",
     "@dash/management": "*",
     "@hono/node-server": "^1",
