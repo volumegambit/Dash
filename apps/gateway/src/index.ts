@@ -67,7 +67,12 @@ async function main() {
 
     // Create gateway + agent runtime
     const gateway = createDynamicGateway();
-    const registry = new AgentRegistry();
+    const registryPath = resolve(dataDir, 'agents.json');
+    const registry = new AgentRegistry(registryPath);
+    await registry.load();
+    if (registry.list().length > 0) {
+      console.log(`[agents] Restored ${registry.list().length} agent(s) from disk`);
+    }
     const runtime = new AgentRuntime({
       registry,
       poolMaxSize: Number(process.env.POOL_MAX_SIZE ?? '200'),
