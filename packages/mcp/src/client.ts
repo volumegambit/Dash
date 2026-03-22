@@ -104,12 +104,21 @@ export class McpClient {
   async stop(): Promise<void> {
     this.logger.info(`[mcp:${this.config.name}] disconnecting...`);
     try {
+      if (this.client) {
+        await this.client.close();
+      }
+    } catch (err) {
+      this.logger.warn(
+        `[mcp:${this.config.name}] error during client close: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+    try {
       if (this.transport) {
         await this.transport.close();
       }
     } catch (err) {
       this.logger.warn(
-        `[mcp:${this.config.name}] error during disconnect: ${err instanceof Error ? err.message : String(err)}`,
+        `[mcp:${this.config.name}] error during transport close: ${err instanceof Error ? err.message : String(err)}`,
       );
     } finally {
       this.transport = null;
