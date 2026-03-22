@@ -190,23 +190,9 @@ function renderEvents(
 
 function ThinkingIndicator(): JSX.Element {
   return (
-    <div className="mb-4 flex items-center gap-1.5 py-2">
-      {[0, 1, 2].map((i) => (
-        <span
-          key={i}
-          className="inline-block h-2 w-2 rounded-full bg-muted"
-          style={{
-            animation: 'thinking-bounce 1.4s ease-in-out infinite',
-            animationDelay: `${i * 0.16}s`,
-          }}
-        />
-      ))}
-      <style>
-        {`@keyframes thinking-bounce {
-          0%, 80%, 100% { opacity: 0.3; transform: scale(0.8); }
-          40% { opacity: 1; transform: scale(1); }
-        }`}
-      </style>
+    <div className="mb-4 flex items-center gap-2 py-2 text-xs text-muted">
+      <Loader size={12} className="animate-spin" />
+      <span>Thinking…</span>
     </div>
   );
 }
