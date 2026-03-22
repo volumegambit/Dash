@@ -10,11 +10,11 @@
     "packages/logging",
     "packages/management",
     "packages/mc",
+    "packages/mcp",
     "apps/*"
   ],
   "scripts": {
-    "build": "npm run build -w packages/agent -w packages/channels -w packages/logging -w packages/management -w packages/chat -w packages/mc -w apps/dash -w apps/gateway -w apps/tui -w apps/mc-cli",
-    "dev": "npm run dev --workspace=apps/dash",
+    "build": "npm run build -w packages/agent -w packages/channels -w packages/logging -w packages/management -w packages/chat -w packages/mc -w packages/mcp -w apps/gateway -w apps/tui -w apps/mc-cli",
     "tui": "npm run dev --workspace=apps/tui",
     "mc-cli": "node --import tsx apps/mc-cli/src/index.ts",
     "gateway": "node --import tsx apps/gateway/src/index.ts",

@@ -51,16 +51,6 @@ cp -r config.example config
 npm run tui
 ```
 
-### Run the agent server
-
-```bash
-# Set tokens in .env to enable the APIs
-MANAGEMENT_API_TOKEN=your-mgmt-token
-CHAT_API_TOKEN=your-chat-token
-
-npm run dev
-```
-
 ### Run (Docker)
 
 ```bash
@@ -74,23 +64,20 @@ graph TB
   platforms["Chat platforms<br/><small>Telegram, etc.</small>"]
 
   subgraph infra ["Your Desktop or Private Server"]
-    agent-server["Agent Server<br/><small>Chat API :9101 · Management API :9100</small>"]
-    gateway["Gateway<br/><small>Channel routing :9200</small>"]
-    gateway -- "WebSocket" --> agent-server
+    gateway["Gateway<br/><small>Management :9300 · Chat :9200</small>"]
   end
 
   mc["Mission Control<br/><small>Desktop app / CLI</small>"]
 
   platforms -- "Bot API" --> gateway
-  mc -- "Deploy & Manage" --> agent-server
+  mc -- "Deploy & Manage" --> gateway
   mc -- "WebSocket" --> gateway
 ```
 
-Dash has three main components. They can all run on a single machine or split across machines — the agent server and gateway on a VPS, Mission Control on your laptop:
+Dash has two main components:
 
-- **Agent server** — hosts agents and exposes two APIs: a Chat API (WebSocket, port 9101) for real-time interaction and a Management API (HTTP, port 9100) for health checks and shutdown. Each API uses its own auth token. Runs on a VPS, private cloud, or local machine.
-- **Gateway** — connects to external chat platforms (Telegram, etc.) and routes messages to agents via the Chat API. Mission Control's chat panel also connects through the gateway. One process, one config file for all channels. Runs alongside the agent server.
-- **Mission Control** — desktop app or CLI for deploying, monitoring, and chatting with agents. Connects to the gateway for chat (WebSocket, port 9200) and to agent servers for monitoring (HTTP, port 9100). Includes a built-in TUI for terminal-based interaction. Runs on your local machine.
+- **Gateway** — hosts agents in-process and exposes a Management API (HTTP, port 9300) for deploying agents and a Chat API (WebSocket, port 9200) for real-time interaction. Also connects to external chat platforms (Telegram, etc.) and routes messages to agents. Runs on a VPS, private cloud, or local machine.
+- **Mission Control** — desktop app or CLI for deploying, monitoring, and chatting with agents. Connects to the gateway for both management and chat. Includes a built-in TUI for terminal-based interaction. Runs on your local machine.
 
 ## Packages
 
@@ -109,8 +96,7 @@ Dash has three main components. They can all run on a single machine or split ac
 
 | Package | What it does |
 |---------|-------------|
-| `@dash/agent-server` | Headless server that wires up agents and starts the management + chat APIs |
-| `@dash/gateway` | Channel gateway — routes Telegram, MC chat, and other channels to agents |
+| `@dash/gateway` | Agent runtime and channel gateway — hosts agents in-process, routes Telegram/MC/other channels to agents |
 | `@dash/tui` | Built-in terminal interface within Mission Control for quick agent interaction |
 | `@dash/mission-control` | Desktop app for managing your agent team and chatting with agents directly (Electron + React) |
 | `@dash/mc-cli` | CLI equivalent of Mission Control — `deploy`, `status`, `stop`, `remove`, `logs`, `health`, `info`, `secrets`, `lock`, `unlock` |
@@ -127,8 +113,7 @@ Dash/
 │   ├── management/   # Management API (HTTP server)
 │   └── mc/           # Deployment registry, encrypted secrets store
 ├── apps/
-│   ├── dash/         # Agent server entry point, config
-│   ├── gateway/      # Channel gateway (routes channels to agents)
+│   ├── gateway/      # Agent runtime + channel gateway
 │   ├── tui/          # Terminal UI
 │   ├── mc-cli/       # Mission Control CLI
 │   └── mission-control/  # Mission Control desktop app (Electron)
@@ -172,12 +157,6 @@ Or `config/credentials.json` (gitignored):
 }
 ```
 
-For manual deployments, use `--secrets` to pass a temporary secrets file that is deleted after reading:
-
-```bash
-node apps/dash/dist/index.js --config /path/to/dash.json --secrets /path/to/secrets.json
-```
-
 ### Agent Config (`config/dash.json`)
 
 Define named agent profiles with model, system prompt, tools, and token limits:
@@ -210,7 +189,6 @@ Full documentation is available at [docs.dashsquad.ai](https://docs.dashsquad.ai
 
 ```bash
 npm run build         # Build all packages and apps (tsup)
-npm run dev           # Dev server (apps/dash via tsx)
 npm run tui           # Terminal UI (apps/tui via tsx)
 npm run gateway       # Channel gateway (pass --config <path>)
 npm run mc-cli        # Mission Control CLI (apps/mc-cli via tsx)
