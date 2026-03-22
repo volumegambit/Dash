@@ -51,7 +51,7 @@ const sections: NavSection[] = [
     label: 'CONFIGURE',
     items: [
       { to: '/connections', label: 'AI Providers', icon: Plug },
-      { to: '/connectors', label: 'Connectors', icon: Cable },
+      { to: '/connectors', label: 'Connectors (MCP)', icon: Cable },
       { to: '/secrets', label: 'Secrets', icon: KeyRound },
       { to: '/settings', label: 'Settings', icon: Settings },
     ],
