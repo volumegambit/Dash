@@ -369,7 +369,68 @@ export async function registerIpcHandlers(
   }
 
   // Gateway self-restores agents from its own persistent registry on startup.
-  // No re-registration needed from MC.
+  // One-time migration: move agent config from MC registry to gateway if needed.
+  if (getSecretStore().isUnlocked()) {
+    try {
+      const deployments = await getRegistry().list();
+      const needsMigration = deployments.some(
+        (d) => d.config?.agents && Object.keys(d.config.agents).length > 0,
+      );
+      if (needsMigration) {
+        console.log('[migration] Moving agent config from MC registry to gateway...');
+        const gatewayState = await new GatewayStateStore(DATA_DIR).read();
+        if (gatewayState) {
+          const gwClient = new GatewayManagementClient(
+            `http://127.0.0.1:${gatewayState.port}`,
+            gatewayState.token,
+          );
+          for (const dep of deployments) {
+            if (dep.status !== 'running' || !dep.config?.agents) continue;
+            for (const [agentName, cfg] of Object.entries(dep.config.agents)) {
+              // Skip if agent already exists on gateway
+              try {
+                await gwClient.getRuntimeAgent(agentName);
+                continue;
+              } catch {
+                // Not found — register it
+              }
+              // Flatten provider keys for this agent
+              const allKeys = await getProviderApiKeys();
+              const flatKeys: Record<string, string> = {};
+              for (const [provider, keys] of Object.entries(allKeys)) {
+                const first = Object.values(keys)[0];
+                if (first) flatKeys[provider] = first;
+              }
+              const runtimeConfig = {
+                name: agentName,
+                model: cfg.model,
+                systemPrompt: cfg.systemPrompt,
+                fallbackModels: cfg.fallbackModels,
+                tools: cfg.tools,
+                skills: cfg.skills,
+                workspace: cfg.workspace,
+                maxTokens: cfg.maxTokens,
+                providerApiKeys:
+                  Object.keys(flatKeys).length > 0 ? flatKeys : undefined,
+              };
+              try {
+                await gwClient.registerRuntimeAgent(runtimeConfig);
+                console.log(`[migration] Registered agent "${agentName}" with gateway`);
+              } catch (err) {
+                console.warn(
+                  `[migration] Failed to register agent "${agentName}":`,
+                  err instanceof Error ? err.message : err,
+                );
+              }
+            }
+          }
+          console.log('[migration] Agent config migration complete');
+        }
+      }
+    } catch (err) {
+      console.warn('[migration] Migration failed:', err instanceof Error ? err.message : err);
+    }
+  }
 
   ipcMain.handle('app:getVersion', () => app.getVersion());
 
