@@ -82,35 +82,5 @@ describe('AgentConnector', () => {
     await expect(connector.getClient('local-3')).rejects.toThrow('No management token');
   });
 
-  it('throws for cloud deployment without IP', async () => {
-    await registry.add({
-      id: 'cloud-1',
-      name: 'test',
-      target: 'digitalocean',
-      status: 'running',
-      config: { ...baseConfig, target: 'digitalocean' },
-      createdAt: '2026-03-01T00:00:00Z',
-    });
 
-    const secrets = createFakeSecrets({ 'agent-token:cloud-1': 'tok' });
-    const connector = new AgentConnector(registry, secrets);
-    await expect(connector.getClient('cloud-1')).rejects.toThrow('No IP address');
-  });
-
-  it('creates client for cloud deployment with IP', async () => {
-    await registry.add({
-      id: 'cloud-2',
-      name: 'test',
-      target: 'digitalocean',
-      status: 'running',
-      config: { ...baseConfig, target: 'digitalocean' },
-      createdAt: '2026-03-01T00:00:00Z',
-      dropletIp: '10.0.0.1',
-    });
-
-    const secrets = createFakeSecrets({ 'agent-token:cloud-2': 'tok' });
-    const connector = new AgentConnector(registry, secrets);
-    const client = await connector.getClient('cloud-2');
-    expect(client).toBeDefined();
-  });
 });

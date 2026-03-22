@@ -1,25 +1,19 @@
 export interface AgentDeployment {
   id: string;
   name: string;
-  target: 'local' | 'digitalocean';
+  target: 'local';
   status: 'running' | 'stopped' | 'error' | 'provisioning';
   config: DeployConfig;
   createdAt: string;
-  // Local-specific
-  containerId?: string;
   configDir?: string;
   workspace?: string;
   // Startup diagnostics
   startupLogs?: string[]; // captured stdout/stderr from a failed startup
   errorMessage?: string; // human-readable failure reason
-  // Cloud-specific
-  dropletId?: number;
-  dropletIp?: string;
-  region?: string;
 }
 
 export interface DeployConfig {
-  target: 'local' | 'digitalocean';
+  target?: 'local';
   agents?: Record<string, AgentDeployAgentConfig>;
   /** @deprecated Use `agents` instead */
   agent?: AgentDeployAgentConfig;
