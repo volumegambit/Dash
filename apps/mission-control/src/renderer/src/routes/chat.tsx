@@ -514,7 +514,7 @@ const MessageBubble = memo(function MessageBubble({
 
   return (
     <div className="group mb-6">
-      <div className="bg-[#141414] border-2 border-border p-3 max-w-[95%] text-sm text-foreground [&>*:last-child]:mb-0">
+      <div className="bg-[#141414] border-2 border-border p-3 w-fit max-w-[95%] text-sm text-foreground [&>*:last-child]:mb-0">
         {rendered}
       </div>
       <div className="mt-1 flex items-center gap-2 max-w-[80%] px-1">
