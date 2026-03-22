@@ -1050,11 +1050,12 @@ export function Chat(): JSX.Element {
               type="button"
               onClick={handleNewConversation}
               disabled={availableAgents.length === 0}
-              className="flex items-center justify-center gap-1.5 rounded-lg border border-border bg-card-bg px-3 py-2 text-sm text-muted transition-colors hover:bg-sidebar-hover hover:text-foreground disabled:opacity-40 w-full"
+              className="flex items-center justify-center gap-1.5 rounded-lg border border-primary/40 bg-primary/10 px-3 py-2 text-sm text-primary transition-colors hover:bg-primary/20 hover:border-primary/60 disabled:opacity-40 w-full"
               title="New conversation (⌘N)"
             >
               <Plus size={14} />
-              New conversation
+              <span className="flex-1 text-center">New conversation</span>
+              <kbd className="text-[10px] font-medium text-primary/60 bg-primary/10 border border-primary/20 rounded px-1.5 py-0.5">⌘N</kbd>
             </button>
             <div className="flex items-center gap-2 bg-card-bg border border-border rounded-lg px-3 py-2">
               <Search size={14} className="text-muted shrink-0" />
