@@ -26,7 +26,6 @@ describe('AgentRegistry', () => {
       channels: {},
     },
     createdAt: '2026-03-01T00:00:00Z',
-    containerId: 'abc123',
   };
 
   beforeEach(async () => {
