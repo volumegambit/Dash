@@ -30,11 +30,11 @@ function DownloadableImage({ src, alt }: { src?: string; alt?: string }): JSX.El
 
   return (
     <span className="group/img relative inline-block my-2">
-      <img src={src} alt={alt ?? ''} className="max-w-full rounded" />
+      <img src={src} alt={alt ?? ''} className="max-w-full" />
       <button
         type="button"
         onClick={handleDownload}
-        className="absolute top-2 right-2 p-1.5 bg-black/60 text-white/80 rounded opacity-0 group-hover/img:opacity-100 transition-opacity hover:bg-black/80 hover:text-white"
+        className="absolute top-2 right-2 p-1.5 bg-black/60 text-white/80 opacity-0 group-hover/img:opacity-100 transition-opacity hover:bg-black/80 hover:text-white"
         title="Download image"
       >
         <Download size={14} />
