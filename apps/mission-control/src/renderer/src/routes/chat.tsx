@@ -37,6 +37,15 @@ import {
   toolLabel,
 } from './chat.helpers.js';
 
+/** Event types that produce visible rendered output in renderEvents / MessageBubble */
+const VISIBLE_EVENT_TYPES = new Set([
+  'text_delta',
+  'tool_use_start',
+  'tool_result',
+  'error',
+  'question',
+]);
+
 // --- Event rendering helpers ---
 
 function renderEvents(
@@ -510,13 +519,17 @@ const MessageBubble = memo(function MessageBubble({
 
   const events: Record<string, unknown>[] =
     streamingEvents ?? (message?.content.type === 'assistant' ? message.content.events : []);
+  const rendered = renderEvents(events, navigateToLogs, onAnswerQuestion, answeredQuestions);
   const usage = extractUsage(events);
   const assistantText = extractTextFromEvents(events);
+
+  // Don't render an empty bubble — show nothing (the streaming ThinkingIndicator handles the waiting state)
+  if (rendered.length === 0) return <></>;
 
   return (
     <div className="group mb-6">
       <div className="bg-[#141414] border-2 border-border p-3 max-w-[95%] text-sm text-foreground">
-        {renderEvents(events, navigateToLogs, onAnswerQuestion, answeredQuestions)}
+        {rendered}
       </div>
       <div className="mt-1 flex items-center gap-2 max-w-[80%] px-1">
         <div className="opacity-0 group-hover:opacity-100 transition-opacity">
@@ -1355,8 +1368,8 @@ export function Chat(): JSX.Element {
                     answeredQuestions={answeredQuestions}
                   />
                 ))}
-                {isStreaming && !liveEvents.some((e) => e.type !== 'thinking_delta') && <ThinkingIndicator />}
-                {isStreaming && liveEvents.some((e) => e.type !== 'thinking_delta') && (
+                {isStreaming && !liveEvents.some((e) => VISIBLE_EVENT_TYPES.has(e.type)) && <ThinkingIndicator />}
+                {isStreaming && liveEvents.some((e) => VISIBLE_EVENT_TYPES.has(e.type)) && (
                   <MessageBubble
                     streamingEvents={liveEvents}
                     navigateToLogs={navigateToLogs}
