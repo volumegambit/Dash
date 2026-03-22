@@ -341,22 +341,24 @@ describe('ProcessRuntime lifecycle', () => {
     );
   });
 
-  it('deploy() calls setRuntimeAgentCredentials on gateway', async () => {
+  it('deploy() embeds providerApiKeys in agent config sent to gateway', async () => {
     const { runtime, gatewayClient } = await createRuntimeWithGateway(registry, secrets, tmpDir);
     await runtime.deploy(configDir);
 
-    expect(gatewayClient.setRuntimeAgentCredentials).toHaveBeenCalledWith(
-      'test-agent',
-      expect.objectContaining({ anthropic: 'sk-ant-test' }),
+    expect(gatewayClient.registerRuntimeAgent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: 'test-agent',
+        providerApiKeys: expect.objectContaining({ anthropic: 'sk-ant-test' }),
+      }),
     );
   });
 
-  it('stop() calls removeRuntimeAgent and deregisterDeployment', async () => {
+  it('stop() calls disableRuntimeAgent and deregisterDeployment', async () => {
     const { runtime, gatewayClient } = await createRuntimeWithGateway(registry, secrets, tmpDir);
     const id = await runtime.deploy(configDir);
     await runtime.stop(id);
 
-    expect(gatewayClient.removeRuntimeAgent).toHaveBeenCalledWith('test-agent');
+    expect(gatewayClient.disableRuntimeAgent).toHaveBeenCalledWith('test-agent');
     expect(gatewayClient.deregisterDeployment).toHaveBeenCalledWith(id);
 
     const deployment = await registry.get(id);
@@ -747,11 +749,11 @@ describe('ProcessRuntime gateway integration', () => {
     expect(gatewayClient.deregisterDeployment).toHaveBeenCalledWith(id);
   });
 
-  it('stop() calls removeRuntimeAgent for each agent', async () => {
+  it('stop() calls disableRuntimeAgent for each agent', async () => {
     const { runtime, gatewayClient } = await createRuntimeWithGateway(registry, secrets, tmpDir);
     const id = await runtime.deploy(configDir);
     await runtime.stop(id);
 
-    expect(gatewayClient.removeRuntimeAgent).toHaveBeenCalledWith('test-agent');
+    expect(gatewayClient.disableRuntimeAgent).toHaveBeenCalledWith('test-agent');
   });
 });
