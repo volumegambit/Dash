@@ -18,7 +18,14 @@ import {
 } from '@mariozechner/pi-coding-agent';
 import type { AgentSession, AgentSessionEvent, Skill } from '@mariozechner/pi-coding-agent';
 
-import type { McpManager } from '@dash/mcp';
+import type { McpConfigStoreInterface, McpManager } from '@dash/mcp';
+import type { McpProposalStore } from '@dash/mcp';
+import {
+  createMcpAddServerTool,
+  createMcpConfirmAddTool,
+  createMcpListServersTool,
+  createMcpRemoveServerTool,
+} from '@dash/mcp';
 
 import type { Logger } from '../logger.js';
 import {
@@ -77,6 +84,8 @@ export class PiAgentBackend implements AgentBackend {
     private sessionDir?: string,
     private managedSkillsDir?: string,
     private mcpManager?: McpManager,
+    private mcpConfigStore?: McpConfigStoreInterface,
+    private mcpProposalStore?: McpProposalStore,
   ) {}
 
   /** Detect OAuth access tokens (e.g. sk-ant-oat01-...) vs regular API keys */
@@ -229,9 +238,57 @@ export class PiAgentBackend implements AgentBackend {
       customs.push(wrap(createCreateSkillTool(this.managedSkillsDir)));
     }
 
-    // MCP tools
+    // MCP server tools (from connected MCP servers)
     if (allowedNames.has('mcp') && this.mcpManager) {
       customs.push(...this.mcpManager.getTools());
+    }
+
+    // MCP management tools (add/remove/list servers)
+    if (this.mcpManager && this.mcpConfigStore && this.mcpProposalStore) {
+      if (allowedNames.has('mcp_add_server')) {
+        customs.push(
+          wrap(
+            createMcpAddServerTool({
+              proposalStore: this.mcpProposalStore,
+              configStore: this.mcpConfigStore,
+              logger: this.logger,
+            }),
+          ),
+        );
+      }
+      if (allowedNames.has('mcp_confirm_add')) {
+        customs.push(
+          wrap(
+            createMcpConfirmAddTool({
+              proposalStore: this.mcpProposalStore,
+              manager: this.mcpManager,
+              configStore: this.mcpConfigStore,
+              logger: this.logger,
+            }),
+          ),
+        );
+      }
+      if (allowedNames.has('mcp_list_servers')) {
+        customs.push(
+          wrap(
+            createMcpListServersTool({
+              manager: this.mcpManager,
+              configStore: this.mcpConfigStore,
+            }),
+          ),
+        );
+      }
+      if (allowedNames.has('mcp_remove_server')) {
+        customs.push(
+          wrap(
+            createMcpRemoveServerTool({
+              manager: this.mcpManager,
+              configStore: this.mcpConfigStore,
+              logger: this.logger,
+            }),
+          ),
+        );
+      }
     }
 
     return customs;
