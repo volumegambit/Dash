@@ -234,56 +234,48 @@ describe('ProcessRuntime.deploy() model/key validation', () => {
 // ---------------------------------------------------------------------------
 
 describe('ProcessRuntime.updateAgentConfig', () => {
-  it('rewrites model and fallbackModels in the agent JSON file', async () => {
-    const configDir = await mkdtemp(join(tmpdir(), 'mc-update-test-'));
-    const agentsDir = join(configDir, 'agents');
-    await mkdir(agentsDir, { recursive: true });
+  let tmpDir: string;
+  let configDir: string;
+  let registry: AgentRegistry;
+  let secrets: SecretStore;
+
+  beforeEach(async () => {
+    tmpDir = await mkdtemp(join(tmpdir(), 'mc-update-'));
+    configDir = await mkdtemp(join(tmpdir(), 'mc-config-'));
+    await mkdir(join(configDir, 'agents'));
     await writeFile(
-      join(agentsDir, 'my-agent.json'),
-      JSON.stringify({ model: 'anthropic/claude-sonnet-4-20250514', systemPrompt: 'hello' }),
+      join(configDir, 'agents', 'test-agent.json'),
+      JSON.stringify({
+        name: 'test-agent',
+        model: 'claude-sonnet-4-20250514',
+        systemPrompt: 'hi',
+      }),
     );
+    registry = new AgentRegistry(tmpDir);
+    secrets = createMockSecrets();
+  });
 
-    const fakeDeployment = {
-      id: 'test-id',
-      configDir,
-      status: 'running' as const,
-      name: 'my-agent',
-      target: 'local' as const,
-      createdAt: new Date().toISOString(),
-      config: { target: 'local' as const, channels: {} },
-    };
-    const fakeRegistry = {
-      get: async (_id: string) => fakeDeployment,
-      list: async () => [fakeDeployment],
-      add: async () => {},
-      update: async () => {},
-      remove: async () => {},
-    };
-    const fakeSecrets = {
-      get: async () => null,
-      set: async () => {},
-      delete: async () => {},
-      list: async () => [],
-      isUnlocked: () => true,
-      lock: () => {},
-    };
+  afterEach(async () => {
+    await rm(tmpDir, { recursive: true, force: true });
+    await rm(configDir, { recursive: true, force: true });
+  });
 
-    const runtime = new ProcessRuntime(
-      fakeRegistry as unknown as Parameters<typeof ProcessRuntime>[0],
-      fakeSecrets as unknown as Parameters<typeof ProcessRuntime>[1],
-      '/',
-    );
-    await runtime.updateAgentConfig('test-id', {
+  it('sends config patch to gateway via updateRuntimeAgent', async () => {
+    const { runtime, gatewayClient } = await createRuntimeWithGateway(registry, secrets, tmpDir);
+    const id = await runtime.deploy(configDir);
+
+    await runtime.updateAgentConfig(id, {
       model: 'openai/gpt-4o',
       fallbackModels: ['anthropic/claude-haiku-4-5-20251001'],
     });
 
-    const updated = JSON.parse(await readFile(join(agentsDir, 'my-agent.json'), 'utf-8'));
-    expect(updated.model).toBe('openai/gpt-4o');
-    expect(updated.fallbackModels).toEqual(['anthropic/claude-haiku-4-5-20251001']);
-    expect(updated.systemPrompt).toBe('hello');
-
-    await rm(configDir, { recursive: true });
+    expect(gatewayClient.updateRuntimeAgent).toHaveBeenCalledWith(
+      'test-agent',
+      expect.objectContaining({
+        model: 'openai/gpt-4o',
+        fallbackModels: ['anthropic/claude-haiku-4-5-20251001'],
+      }),
+    );
   });
 });
 

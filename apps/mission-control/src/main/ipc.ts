@@ -960,6 +960,7 @@ export async function registerIpcHandlers(
         fallbackModels?: string[];
         tools?: string[];
         systemPrompt?: string;
+        mcpServers?: string[];
       },
     ) => {
       await getRuntime().updateAgentConfig(id, patch);
