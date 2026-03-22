@@ -251,7 +251,7 @@ export class PiAgentBackend implements AgentBackend {
     // MCP: create manager if not injected and servers are configured
     if (!this.mcpManager && this.config.mcpServers?.length) {
       const { McpManager: McpMgr } = await import('@dash/mcp');
-      this.mcpManager = new McpMgr(this.config.mcpServers, this.logger);
+      this.mcpManager = new McpMgr(this.config.mcpServers, { logger: this.logger });
       await this.mcpManager.start();
       this.ownsMcpManager = true;
     }
