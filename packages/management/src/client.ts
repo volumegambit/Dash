@@ -2,6 +2,9 @@ import type {
   ChannelHealthEntry,
   HealthResponse,
   InfoResponse,
+  McpAddServerRequest,
+  McpAddServerResponse,
+  McpServerInfo,
   ShutdownResponse,
   SkillContent,
   SkillInfo,
@@ -188,5 +191,44 @@ export class ManagementClient {
     } finally {
       reader.releaseLock();
     }
+  }
+
+  // --- MCP Connectors ---
+
+  async mcpListServers(): Promise<McpServerInfo[]> {
+    return this.request<McpServerInfo[]>('GET', '/runtime/mcp/servers');
+  }
+
+  async mcpGetServer(name: string): Promise<McpServerInfo> {
+    return this.request<McpServerInfo>(
+      'GET',
+      `/runtime/mcp/servers/${encodeURIComponent(name)}`,
+    );
+  }
+
+  async mcpAddServer(config: McpAddServerRequest): Promise<McpAddServerResponse> {
+    return this.requestWithBody<McpAddServerResponse>('POST', '/runtime/mcp/servers', config);
+  }
+
+  async mcpRemoveServer(name: string): Promise<void> {
+    await this.request<{ ok: boolean }>(
+      'DELETE',
+      `/runtime/mcp/servers/${encodeURIComponent(name)}`,
+    );
+  }
+
+  async mcpReconnectServer(name: string): Promise<void> {
+    await this.request<{ ok: boolean }>(
+      'POST',
+      `/runtime/mcp/servers/${encodeURIComponent(name)}/reconnect`,
+    );
+  }
+
+  async mcpGetAllowlist(): Promise<string[]> {
+    return this.request<string[]>('GET', '/runtime/mcp/allowlist');
+  }
+
+  async mcpSetAllowlist(patterns: string[]): Promise<void> {
+    await this.requestWithBody<{ ok: boolean }>('PUT', '/runtime/mcp/allowlist', patterns);
   }
 }
