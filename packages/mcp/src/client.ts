@@ -19,15 +19,13 @@ export interface McpClientOptions {
   onAuthUrl?: (url: URL) => void;
 }
 
+type TransportType = StdioClientTransport | SSEClientTransport | StreamableHTTPClientTransport;
+
 export class McpClient {
   private config: McpServerConfig;
   private logger: McpLogger;
   private client: Client | null = null;
-  private transport:
-    | StdioClientTransport
-    | SSEClientTransport
-    | StreamableHTTPClientTransport
-    | null = null;
+  private transport: TransportType | null = null;
   private tools: AgentTool<TSchema>[] = [];
   private _status: McpServerStatus = 'disconnected';
   private toolTimeout = DEFAULT_TOOL_TIMEOUT;
@@ -44,6 +42,14 @@ export class McpClient {
       ) => Promise<{ content: Array<{ type: string; text?: string }>; isError?: boolean }>)
     | null = null;
 
+  // --- Reconnection state ---
+  private stopping = false;
+  private reconnectAttempt = 0;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private readonly maxReconnectAttempts: number;
+  private readonly initialReconnectDelay = 1_000;
+  private readonly maxReconnectDelay = 30_000;
+
   constructor(config: McpServerConfig, options?: McpClientOptions) {
     this.logger = options?.logger ?? {
       info: () => {},
@@ -53,6 +59,7 @@ export class McpClient {
     this.config = interpolateConfigEnvVars(config, this.logger);
     this.options = options;
     this.onToolsChanged = options?.onToolsChanged;
+    this.maxReconnectAttempts = config.maxReconnectAttempts ?? 10;
   }
 
   get name(): string {
@@ -62,6 +69,107 @@ export class McpClient {
   get status(): McpServerStatus {
     return this._status;
   }
+
+  // --- Transport creation ---
+
+  private createTransport(): TransportType {
+    const { transport: transportConfig } = this.config;
+
+    if (transportConfig.type === 'stdio') {
+      return new StdioClientTransport({
+        command: transportConfig.command,
+        args: transportConfig.args,
+        env: { ...process.env, ...(this.config.env ?? {}) } as Record<string, string>,
+      });
+    }
+    if (transportConfig.type === 'sse') {
+      const url = new URL(transportConfig.url);
+      const headers = transportConfig.headers;
+      return new SSEClientTransport(url, {
+        ...(headers ? { requestInit: { headers } } : {}),
+        ...(this.authProvider ? { authProvider: this.authProvider } : {}),
+      });
+    }
+    if (transportConfig.type === 'streamable-http') {
+      const url = new URL(transportConfig.url);
+      const headers = transportConfig.headers;
+      return new StreamableHTTPClientTransport(url, {
+        ...(headers ? { requestInit: { headers } } : {}),
+        ...(this.authProvider ? { authProvider: this.authProvider } : {}),
+        reconnectionOptions: {
+          maxReconnectionDelay: this.maxReconnectDelay,
+          initialReconnectionDelay: this.initialReconnectDelay,
+          reconnectionDelayGrowFactor: 2,
+          maxRetries: this.maxReconnectAttempts,
+        },
+      });
+    }
+    throw new Error(`Unsupported transport type: ${(transportConfig as { type: string }).type}`);
+  }
+
+  private setupTransportHandlers(): void {
+    if (!this.transport) return;
+
+    this.transport.onerror = (err: Error) => {
+      this.logger.error(`[mcp:${this.config.name}] transport error: ${err.message}`);
+    };
+
+    this.transport.onclose = () => {
+      if (this.stopping) return;
+      this.logger.warn(`[mcp:${this.config.name}] transport closed unexpectedly`);
+      this.scheduleReconnect();
+    };
+  }
+
+  // --- Reconnection ---
+
+  private getReconnectDelay(): number {
+    return Math.min(
+      this.initialReconnectDelay * 2 ** this.reconnectAttempt,
+      this.maxReconnectDelay,
+    );
+  }
+
+  private scheduleReconnect(): void {
+    if (this.stopping || this._status === 'error') return;
+
+    if (this.reconnectAttempt >= this.maxReconnectAttempts) {
+      this._status = 'error';
+      this.logger.error(
+        `[mcp:${this.config.name}] max reconnect attempts (${this.maxReconnectAttempts}) exhausted`,
+      );
+      return;
+    }
+
+    this._status = 'reconnecting';
+    const delay = this.getReconnectDelay();
+    this.logger.warn(
+      `[mcp:${this.config.name}] reconnecting in ${delay}ms (attempt ${this.reconnectAttempt + 1}/${this.maxReconnectAttempts})`,
+    );
+
+    this.reconnectTimer = setTimeout(async () => {
+      this.reconnectAttempt++;
+      try {
+        this.client = new Client({ name: 'dash-mcp-client', version: '1.0.0' });
+        this.transport = this.createTransport();
+        this.setupTransportHandlers();
+        await this.client.connect(this.transport);
+        this.setupCallToolFn();
+        this.registerNotificationHandlers();
+        await this.rebuildTools();
+        this._status = 'connected';
+        this.reconnectAttempt = 0;
+        this.logger.info(`[mcp:${this.config.name}] reconnected successfully`);
+      } catch (err) {
+        this.logger.warn(
+          `[mcp:${this.config.name}] reconnect failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+        this.scheduleReconnect();
+      }
+    }, delay);
+  }
+
+  // --- Tool management ---
 
   /** Fetch all tools with pagination support. */
   private async listAllTools(): Promise<
@@ -107,79 +215,12 @@ export class McpClient {
         this.toolTimeout,
       ),
     );
-    this.logger.info(
-      `[mcp:${this.config.name}] tools refreshed, ${this.tools.length} tool(s)`,
-    );
+    this.logger.info(`[mcp:${this.config.name}] tools refreshed, ${this.tools.length} tool(s)`);
     this.onToolsChanged?.(this.config.name, this.tools);
   }
 
-  async start(): Promise<void> {
-    const { transport: transportConfig } = this.config;
-    this.toolTimeout = this.config.toolTimeout ?? DEFAULT_TOOL_TIMEOUT;
-
-    // Set up OAuth provider if auth is configured
-    if (this.config.auth && this.options?.tokenStore) {
-      this.authProvider = new DashOAuthClientProvider(
-        this.config.name,
-        this.options.tokenStore,
-        {
-          clientId: this.config.auth.clientId,
-          clientSecret: this.config.auth.clientSecret,
-          scopes: this.config.auth.scopes,
-          grantType: this.config.auth.grantType,
-          onAuthUrl: this.options.onAuthUrl,
-          logger: this.logger,
-        },
-      );
-    }
-
-    this.client = new Client({ name: 'dash-mcp-client', version: '1.0.0' });
-
-    if (transportConfig.type === 'stdio') {
-      this.transport = new StdioClientTransport({
-        command: transportConfig.command,
-        args: transportConfig.args,
-        env: { ...process.env, ...(this.config.env ?? {}) } as Record<string, string>,
-      });
-    } else if (transportConfig.type === 'sse') {
-      const url = new URL(transportConfig.url);
-      const headers = transportConfig.headers;
-      this.transport = new SSEClientTransport(url, {
-        ...(headers ? { requestInit: { headers } } : {}),
-        ...(this.authProvider ? { authProvider: this.authProvider } : {}),
-      });
-    } else if (transportConfig.type === 'streamable-http') {
-      const url = new URL(transportConfig.url);
-      const headers = transportConfig.headers;
-      this.transport = new StreamableHTTPClientTransport(url, {
-        ...(headers ? { requestInit: { headers } } : {}),
-        ...(this.authProvider ? { authProvider: this.authProvider } : {}),
-      });
-    } else {
-      throw new Error(`Unsupported transport type: ${(transportConfig as { type: string }).type}`);
-    }
-
-    this.logger.info(`[mcp:${this.config.name}] connecting...`);
-    try {
-      await this.client.connect(this.transport);
-    } catch (err) {
-      if (err instanceof UnauthorizedError && this.authProvider) {
-        // Auth code flow: wait for callback, then finish auth and retry
-        this.logger.info(`[mcp:${this.config.name}] awaiting OAuth authorization...`);
-        const code = await this.authProvider.waitForAuthorizationCode();
-        if ('finishAuth' in this.transport) {
-          await (
-            this.transport as SSEClientTransport | StreamableHTTPClientTransport
-          ).finishAuth(code);
-        }
-        // Retry connection
-        await this.client.connect(this.transport);
-      } else {
-        throw err;
-      }
-    }
-
-    // Store callTool closure for rebuildTools
+  /** Set up the callTool closure. */
+  private setupCallToolFn(): void {
     this.callToolFn = async (
       name: string,
       params: Record<string, unknown>,
@@ -188,6 +229,9 @@ export class McpClient {
       if (!this.client) {
         throw new Error('MCP client is not connected');
       }
+      if (this._status === 'reconnecting') {
+        throw new Error(`MCP server '${this.config.name}' is reconnecting`);
+      }
       const res = await this.client.callTool(
         { name, arguments: params },
         undefined,
@@ -195,11 +239,11 @@ export class McpClient {
       );
       return res as { content: Array<{ type: string; text?: string }>; isError?: boolean };
     };
+  }
 
-    // Discover tools (with pagination)
-    await this.rebuildTools();
-
-    // Register tools/list_changed notification handler
+  /** Register notification handlers on the client. */
+  private registerNotificationHandlers(): void {
+    if (!this.client) return;
     this.client.setNotificationHandler(
       ToolListChangedNotificationSchema,
       async () => {
@@ -213,6 +257,52 @@ export class McpClient {
         }
       },
     );
+  }
+
+  // --- Lifecycle ---
+
+  async start(): Promise<void> {
+    this.stopping = false;
+    this.reconnectAttempt = 0;
+    this.toolTimeout = this.config.toolTimeout ?? DEFAULT_TOOL_TIMEOUT;
+
+    // Set up OAuth provider if auth is configured
+    if (this.config.auth && this.options?.tokenStore) {
+      this.authProvider = new DashOAuthClientProvider(this.config.name, this.options.tokenStore, {
+        clientId: this.config.auth.clientId,
+        clientSecret: this.config.auth.clientSecret,
+        scopes: this.config.auth.scopes,
+        grantType: this.config.auth.grantType,
+        onAuthUrl: this.options.onAuthUrl,
+        logger: this.logger,
+      });
+    }
+
+    this.client = new Client({ name: 'dash-mcp-client', version: '1.0.0' });
+    this.transport = this.createTransport();
+    this.setupTransportHandlers();
+
+    this.logger.info(`[mcp:${this.config.name}] connecting...`);
+    try {
+      await this.client.connect(this.transport);
+    } catch (err) {
+      if (err instanceof UnauthorizedError && this.authProvider) {
+        this.logger.info(`[mcp:${this.config.name}] awaiting OAuth authorization...`);
+        const code = await this.authProvider.waitForAuthorizationCode();
+        if ('finishAuth' in this.transport) {
+          await (this.transport as SSEClientTransport | StreamableHTTPClientTransport).finishAuth(
+            code,
+          );
+        }
+        await this.client.connect(this.transport);
+      } else {
+        throw err;
+      }
+    }
+
+    this.setupCallToolFn();
+    this.registerNotificationHandlers();
+    await this.rebuildTools();
 
     this._status = 'connected';
     this.logger.info(
@@ -221,6 +311,13 @@ export class McpClient {
   }
 
   async stop(): Promise<void> {
+    this.stopping = true;
+
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+
     this.logger.info(`[mcp:${this.config.name}] disconnecting...`);
     try {
       if (this.client) {
