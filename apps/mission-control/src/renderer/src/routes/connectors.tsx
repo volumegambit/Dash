@@ -116,7 +116,7 @@ function AddConnectorModal({
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
       <div className="w-full max-w-lg rounded-lg border border-border bg-bg p-6 shadow-xl">
         <div className="mb-4 flex items-center justify-between">
-          <h2 className="text-lg font-semibold">Add Connector</h2>
+          <h2 className="text-lg font-semibold">Add Connector (MCP Server)</h2>
           <button type="button" onClick={handleClose} className="text-fg-muted hover:text-fg">
             <X size={18} />
           </button>
@@ -509,7 +509,10 @@ function ConnectorsPage(): JSX.Element {
       <div className="mb-6 flex items-center justify-between">
         <div className="flex items-center gap-2">
           <Cable size={20} />
-          <h1 className="text-xl font-semibold">Connectors</h1>
+          <div>
+            <h1 className="text-xl font-semibold">Connectors</h1>
+            <p className="text-xs text-fg-muted">MCP Servers</p>
+          </div>
         </div>
         <button
           type="button"
@@ -531,7 +534,7 @@ function ConnectorsPage(): JSX.Element {
           <Cable size={32} className="mx-auto mb-2 opacity-50" />
           <p>No connectors configured.</p>
           <p className="mt-1 text-sm">
-            Connectors let your agents use external tools from MCP servers.
+            Add MCP servers to give your agents access to external tools and services.
           </p>
         </div>
       ) : (
