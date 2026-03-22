@@ -9,14 +9,24 @@ interface FailedServer {
   error: string;
 }
 
+export interface McpManagerOptions {
+  logger?: McpLogger;
+  onToolsChanged?: (serverName: string, tools: AgentTool<TSchema>[]) => void;
+}
+
 export class McpManager {
   private clients = new Map<string, McpClient>();
   private failedServers: FailedServer[] = [];
+  private logger?: McpLogger;
+  private onToolsChanged?: (serverName: string, tools: AgentTool<TSchema>[]) => void;
 
   constructor(
     private servers: McpServerConfig[],
-    private logger?: McpLogger,
+    options?: McpManagerOptions,
   ) {
+    this.logger = options?.logger;
+    this.onToolsChanged = options?.onToolsChanged;
+
     const seen = new Set<string>();
     for (const server of servers) {
       if (!SERVER_NAME_PATTERN.test(server.name)) {
@@ -40,7 +50,10 @@ export class McpManager {
     this.failedServers = [];
     const results = await Promise.allSettled(
       this.servers.map(async (config) => {
-        const client = new McpClient(config, this.logger);
+        const client = new McpClient(config, {
+          logger: this.logger,
+          onToolsChanged: this.onToolsChanged,
+        });
         await client.start();
         return client;
       }),
@@ -65,6 +78,40 @@ export class McpManager {
     await Promise.allSettled(Array.from(this.clients.values()).map((c) => c.stop()));
     this.clients.clear();
     this.failedServers = [];
+  }
+
+  async addServer(config: McpServerConfig): Promise<void> {
+    if (!SERVER_NAME_PATTERN.test(config.name)) {
+      throw new Error(
+        `Invalid MCP server name "${config.name}": must match ${SERVER_NAME_PATTERN}`,
+      );
+    }
+    if (config.name.includes(NAMESPACE_SEPARATOR)) {
+      throw new Error(
+        `Invalid MCP server name "${config.name}": must not contain "${NAMESPACE_SEPARATOR}"`,
+      );
+    }
+    if (this.clients.has(config.name)) {
+      throw new Error(`MCP server "${config.name}" already exists`);
+    }
+
+    const client = new McpClient(config, {
+      logger: this.logger,
+      onToolsChanged: this.onToolsChanged,
+    });
+    await client.start();
+    this.clients.set(config.name, client);
+    this.logger?.info(`[MCP] Server "${config.name}" added at runtime`);
+  }
+
+  async removeServer(name: string): Promise<void> {
+    const client = this.clients.get(name);
+    if (!client) {
+      throw new Error(`MCP server "${name}" not found`);
+    }
+    await client.stop();
+    this.clients.delete(name);
+    this.logger?.info(`[MCP] Server "${name}" removed`);
   }
 
   getTools(): AgentTool<TSchema, unknown>[] {
