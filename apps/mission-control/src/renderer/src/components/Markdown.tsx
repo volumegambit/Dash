@@ -21,7 +21,7 @@ const components: Components = {
   },
   // Code blocks and inline code
   pre({ children }) {
-    return <pre className="my-2 overflow-x-auto rounded bg-[#161b22] p-3 text-xs">{children}</pre>;
+    return <pre className="my-2 overflow-x-auto bg-[#161b22] p-3 text-xs">{children}</pre>;
   },
   code({ className, children }) {
     const isBlock = className?.startsWith('hljs');
@@ -29,7 +29,7 @@ const components: Components = {
       return <code className={className}>{children}</code>;
     }
     return (
-      <code className="rounded bg-[#161b22] px-1.5 py-0.5 text-xs text-orange-300">{children}</code>
+      <code className="bg-[#161b22] px-1.5 py-0.5 text-xs text-orange-300">{children}</code>
     );
   },
   // Headers
