@@ -803,87 +803,40 @@ export class ProcessRuntime implements DeploymentRuntime {
       fallbackModels?: string[];
       tools?: string[];
       systemPrompt?: string;
+      mcpServers?: string[];
     },
   ): Promise<void> {
     const deployment = await this.registry.get(id);
     if (!deployment) throw new Error(`Deployment "${id}" not found`);
 
-    const configDir = deployment.configDir;
-    if (!configDir) throw new Error(`Deployment "${id}" has no config directory`);
+    // Resolve the agent name from the deployment
+    const agents = deployment.config?.agents ?? {};
+    const agentName = Object.keys(agents)[0];
+    if (!agentName) throw new Error(`Deployment "${id}" has no agents`);
 
-    const agentsDir = join(configDir, 'agents');
-    const files = await readdir(agentsDir);
-    const jsonFile = files.find((f) => f.endsWith('.json'));
-    if (!jsonFile) throw new Error(`No agent config file found in ${agentsDir}`);
-    const agentName = jsonFile.slice(0, -5);
-
-    // Handle rename if name is provided and different
     const newName = patch.name?.trim();
     const isRename = newName && newName !== agentName && newName !== deployment.name;
 
-    // 1. Write to config file on disk (for crash recovery / restart)
-    const filePath = join(agentsDir, jsonFile);
-    const raw = await readFile(filePath, 'utf-8');
-    const config = JSON.parse(raw) as Record<string, unknown>;
-
-    if (patch.model !== undefined) config.model = patch.model;
-    if (patch.fallbackModels !== undefined) config.fallbackModels = patch.fallbackModels;
-    if (patch.tools !== undefined) config.tools = patch.tools;
-    if (patch.systemPrompt !== undefined) config.systemPrompt = patch.systemPrompt;
-    if (newName) config.name = newName;
-
-    // If renaming, write to new file and delete old one
     if (isRename) {
-      const newFilePath = join(agentsDir, `${newName}.json`);
-      await writeFile(newFilePath, JSON.stringify(config, null, 2));
-      await rm(filePath);
-    } else {
-      await writeFile(filePath, JSON.stringify(config, null, 2));
-    }
-
-    // 2. Update registry so the UI reflects the change immediately
-    if (deployment.config?.agents?.[agentName]) {
-      const agentCfg = deployment.config.agents[agentName];
-      if (patch.model !== undefined) agentCfg.model = patch.model;
-      if (patch.fallbackModels !== undefined) agentCfg.fallbackModels = patch.fallbackModels;
-      if (patch.tools !== undefined) agentCfg.tools = patch.tools;
-      if (patch.systemPrompt !== undefined) agentCfg.systemPrompt = patch.systemPrompt;
-
-      // If renaming, update the agents dict key and deployment name
-      if (isRename) {
-        agentCfg.name = newName;
-        delete deployment.config.agents[agentName];
-        deployment.config.agents[newName] = agentCfg;
-        await this.registry.update(id, { name: newName, config: deployment.config });
-      } else {
-        await this.registry.update(id, { config: deployment.config });
-      }
-    } else if (isRename) {
-      // No agents config but still update deployment name
+      // Renames require restart — update MC registry name only
       await this.registry.update(id, { name: newName });
+      return;
     }
 
-    // 3. Push to running agent via gateway runtime API (best-effort)
-    // Note: name changes require restart to take effect in gateway
-    if (deployment.status === 'running' && !isRename) {
-      const gatewayClient = await this.getGatewayClient();
-      if (gatewayClient) {
-        try {
-          const runtimePatch: Partial<RuntimeAgentConfig> = {};
-          if (patch.model !== undefined) runtimePatch.model = patch.model;
-          if (patch.fallbackModels !== undefined)
-            runtimePatch.fallbackModels = patch.fallbackModels;
-          if (patch.tools !== undefined) runtimePatch.tools = patch.tools;
-          if (patch.systemPrompt !== undefined) runtimePatch.systemPrompt = patch.systemPrompt;
-          await gatewayClient.updateRuntimeAgent(agentName, runtimePatch);
-        } catch (err) {
-          console.warn(
-            'updateAgentConfig: gateway update failed (will apply on restart):',
-            err instanceof Error ? err.message : err,
-          );
-        }
-      }
+    // Push config change to gateway (gateway persists)
+    const gatewayClient = await this.getGatewayClient();
+    if (!gatewayClient) {
+      throw new Error('Gateway not available — cannot update agent config');
     }
+
+    const runtimePatch: Partial<RuntimeAgentConfig> = {};
+    if (patch.model !== undefined) runtimePatch.model = patch.model;
+    if (patch.fallbackModels !== undefined) runtimePatch.fallbackModels = patch.fallbackModels;
+    if (patch.tools !== undefined) runtimePatch.tools = patch.tools;
+    if (patch.systemPrompt !== undefined) runtimePatch.systemPrompt = patch.systemPrompt;
+    if (patch.mcpServers !== undefined) runtimePatch.mcpServers = patch.mcpServers;
+
+    await gatewayClient.updateRuntimeAgent(agentName, runtimePatch);
   }
 
   async *getLogs(id: string, _signal?: AbortSignal): AsyncIterable<string> {
