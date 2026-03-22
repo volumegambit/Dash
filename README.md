@@ -98,7 +98,7 @@ Dash has two main components:
 |---------|-------------|
 | `@dash/gateway` | Agent runtime and channel gateway — hosts agents in-process, routes Telegram/MC/other channels to agents |
 | `@dash/mission-control` | Desktop app for managing your agent team and chatting with agents directly (Electron + React) |
-| `@dash/mc-cli` | CLI equivalent of Mission Control — `deploy`, `status`, `stop`, `remove`, `logs`, `health`, `info`, `secrets`, `lock`, `unlock` |
+
 
 ## Project Structure
 
@@ -113,7 +113,6 @@ Dash/
 │   └── mc/           # Deployment registry, encrypted secrets store
 ├── apps/
 │   ├── gateway/      # Agent runtime + channel gateway
-│   ├── mc-cli/       # Mission Control CLI
 │   └── mission-control/  # Mission Control desktop app (Electron)
 ├── config.example/
 │   ├── credentials.json  # Credential placeholders
@@ -130,16 +129,9 @@ Dash/
 
 ### Credentials
 
-**Mission Control (recommended):** Secrets are stored in an encrypted file at `~/.mission-control/secrets.enc` (AES-256-GCM, password-derived key via scrypt). The derived key is cached in your OS keychain so you only enter your password once per session.
+**Mission Control (recommended):** Secrets are managed through the Mission Control desktop app. They are stored in an encrypted file (AES-256-GCM, password-derived key via scrypt). The derived key is cached in your OS keychain so you only enter your password once per session.
 
-```bash
-npm run mc-cli -- secrets set anthropic-api-key    # Prompts for value
-npm run mc-cli -- secrets list                     # Show stored key names
-npm run mc-cli -- secrets get anthropic-api-key    # Show masked value
-npm run mc-cli -- lock                             # Clear keychain cache
-```
-
-**Agent server / TUI:** Use environment variables or `config/credentials.json`:
+**Gateway / environment:** Use environment variables or `config/credentials.json`:
 
 ```
 ANTHROPIC_API_KEY=sk-ant-...
@@ -188,7 +180,6 @@ Full documentation is available at [docs.dashsquad.ai](https://docs.dashsquad.ai
 ```bash
 npm run build         # Build all packages and apps (tsup)
 npm run gateway       # Channel gateway (pass --config <path>)
-npm run mc-cli        # Mission Control CLI (apps/mc-cli via tsx)
 npm run mc:dev        # Mission Control desktop app (dev mode)
 npm run mc:build      # Mission Control desktop app (production build)
 npm test              # Run all tests (vitest)

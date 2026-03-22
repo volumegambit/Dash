@@ -20,7 +20,6 @@ Cross-reference `api-reference.mdx` against actual endpoints in `packages/manage
 ### 6. Feature accuracy
 Check that features described in docs (Mission Control UI, CLI commands, skills, etc.) match the current codebase. Key source files:
 - MC routes: `apps/mission-control/src/renderer/src/routes/`
-- CLI commands: `apps/mc-cli/src/`
 - Skills: `packages/agent/src/skills/`
 - Tools: `packages/agent/src/tools/` or `packages/agent/src/backends/piagent.ts`
 
