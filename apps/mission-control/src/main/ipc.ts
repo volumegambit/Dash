@@ -297,6 +297,62 @@ export async function registerIpcHandlers(
   );
   gatewayPoller.start(sendGatewayStatus);
 
+  // SSE subscription to gateway events
+  let sseAbort: AbortController | null = null;
+
+  async function connectToGatewayEvents(): Promise<void> {
+    sseAbort?.abort();
+    const gatewayState = await new GatewayStateStore(DATA_DIR).read();
+    if (!gatewayState) return;
+
+    const abort = new AbortController();
+    sseAbort = abort;
+
+    try {
+      const res = await fetch(`http://127.0.0.1:${gatewayState.port}/events`, {
+        headers: { Authorization: `Bearer ${gatewayState.token}` },
+        signal: abort.signal,
+      });
+      if (!res.ok || !res.body) return;
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+
+        const lines = buffer.split('\n');
+        buffer = lines.pop() ?? '';
+        let eventType = '';
+        for (const line of lines) {
+          if (line.startsWith('event: ')) {
+            eventType = line.slice(7).trim();
+          } else if (line.startsWith('data: ') && eventType) {
+            const data = line.slice(6);
+            const win = getWindow();
+            if (win && !win.isDestroyed()) {
+              win.webContents.send('gateway:event', eventType, data);
+            }
+            eventType = '';
+          }
+        }
+      }
+    } catch (err) {
+      if (!abort.signal.aborted) {
+        console.warn(
+          '[sse] Gateway event stream disconnected:',
+          err instanceof Error ? err.message : err,
+        );
+      }
+    }
+  }
+
+  // Connect to SSE after initial gateway health check
+  connectToGatewayEvents().catch(() => {});
+
   // Auto-unlock from cached session key.
   // Validates the key before registering IPC handlers so the renderer never
   // sees isUnlocked=true with a stale key.
