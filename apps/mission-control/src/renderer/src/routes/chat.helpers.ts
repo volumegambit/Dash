@@ -79,7 +79,7 @@ const PRIMARY_KEYS: Record<string, string[]> = {
   create_skill: ['name'],
 };
 
-function truncate(s: string, max = 60): string {
+export function truncate(s: string, max = 60): string {
   if (s.length <= max) return s;
 
   // For file paths, use middle-ellipsis to preserve the filename

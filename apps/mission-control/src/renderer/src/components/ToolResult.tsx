@@ -72,6 +72,30 @@ function DirectoryListing({ content }: { content: string }): JSX.Element {
   );
 }
 
+function HighlightedCode({
+  content,
+  language,
+}: { content: string; language: string }): JSX.Element {
+  const highlighted = useMemo(() => {
+    try {
+      return hljs.highlight(content, { language }).value;
+    } catch {
+      return null;
+    }
+  }, [content, language]);
+
+  if (!highlighted) {
+    return <pre className="overflow-x-auto whitespace-pre text-foreground/80">{content}</pre>;
+  }
+
+  return (
+    <pre className="overflow-x-auto whitespace-pre text-foreground/80">
+      {/* biome-ignore lint/security/noDangerouslySetInnerHtml: highlight.js output is safe */}
+      <code dangerouslySetInnerHTML={{ __html: highlighted }} />
+    </pre>
+  );
+}
+
 function SourceCode({ content, language }: { content: string; language?: string }): JSX.Element {
   const highlightedLines = useMemo(() => {
     if (!language) return null;
@@ -208,6 +232,35 @@ export function ToolResult({
   const lineCount = content.split('\n').length;
   if (lineCount <= 3) {
     return <p className="whitespace-pre-wrap text-green/80">{content}</p>;
+  }
+
+  // Detect language for syntax highlighting from path or input
+  const isRead = name === 'read' || name === 'read_file';
+  let langPath = path;
+  if (!langPath && input) {
+    try {
+      const parsed = JSON.parse(input);
+      if (typeof parsed.path === 'string') langPath = parsed.path;
+    } catch {
+      /* ignore */
+    }
+  }
+  const lang = langPath ? detectLanguage(langPath) : undefined;
+
+  // Long text with detectable language — render with syntax highlighting
+  if (lang) {
+    return (
+      <div>
+        {path && !isRead && (
+          <p className="mb-1.5 truncate font-mono text-muted" title={path}>
+            {path}
+          </p>
+        )}
+        <div className="max-h-64 overflow-auto bg-[#161b22] p-2">
+          <HighlightedCode content={content} language={lang} />
+        </div>
+      </div>
+    );
   }
 
   // Long plain text — render in a scrollable code block
