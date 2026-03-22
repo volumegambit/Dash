@@ -26,6 +26,7 @@ export class McpClient {
     this.logger = logger ?? {
       info: () => {},
       warn: () => {},
+      error: () => {},
     };
   }
 
