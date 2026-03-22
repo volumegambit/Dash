@@ -585,12 +585,12 @@ function extractLatestTodos(msgs: McMessage[], liveEvents: McAgentEvent[]): Todo
 }
 
 function PinnedTodoPanel({ todos }: { todos: TodoItem[] }): JSX.Element {
-  const [collapsed, setCollapsed] = useState(false);
-  const [dismissed, setDismissed] = useState(false);
   const completed = todos.filter((t) => t.status === 'completed').length;
   const inProgress = todos.filter((t) => t.status === 'in_progress').length;
   const progressPct = todos.length > 0 ? (completed / todos.length) * 100 : 0;
   const allDone = completed === todos.length;
+  const [collapsed, setCollapsed] = useState(allDone);
+  const [dismissed, setDismissed] = useState(false);
 
   if (dismissed) return <></>;
 
