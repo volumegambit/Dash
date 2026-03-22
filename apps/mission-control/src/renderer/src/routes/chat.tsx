@@ -509,6 +509,8 @@ const MessageBubble = memo(function MessageBubble({
   const usage = extractUsage(events);
   const assistantText = extractTextFromEvents(events);
 
+  const isLive = streamingEvents != null;
+
   // Don't render an empty bubble — show nothing (the streaming ThinkingIndicator handles the waiting state)
   if (rendered.length === 0) return <></>;
 
@@ -516,6 +518,11 @@ const MessageBubble = memo(function MessageBubble({
     <div className="group mb-6">
       <div className="bg-[#141414] border-2 border-border p-3 w-fit max-w-[95%] text-sm text-foreground [&>*:last-child]:mb-0">
         {rendered}
+        {isLive && (
+          <div className="mt-2 flex items-center gap-2 text-xs text-muted">
+            <Loader size={12} className="animate-spin" />
+          </div>
+        )}
       </div>
       <div className="mt-1 flex items-center gap-2 max-w-[80%] px-1">
         <div className="opacity-0 group-hover:opacity-100 transition-opacity">
