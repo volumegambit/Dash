@@ -1,12 +1,12 @@
 import { chmod, mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import type { McpServerConfig } from '@dash/mcp';
+import type { McpConfigStoreInterface, McpServerConfig } from '@dash/mcp';
 
 /**
  * Persists MCP server configs and allowlist to the gateway's data directory.
  * All files are written with 0600 permissions using atomic writes.
  */
-export class McpConfigStore {
+export class McpConfigStore implements McpConfigStoreInterface {
   private readonly configsPath: string;
   private readonly allowlistPath: string;
 
