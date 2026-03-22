@@ -17,6 +17,7 @@ export class McpManager {
     private servers: McpServerConfig[],
     private logger?: McpLogger,
   ) {
+    const seen = new Set<string>();
     for (const server of servers) {
       if (!SERVER_NAME_PATTERN.test(server.name)) {
         throw new Error(
@@ -28,6 +29,10 @@ export class McpManager {
           `Invalid MCP server name "${server.name}": must not contain "${NAMESPACE_SEPARATOR}"`,
         );
       }
+      if (seen.has(server.name)) {
+        throw new Error(`Duplicate MCP server name "${server.name}"`);
+      }
+      seen.add(server.name);
     }
   }
 

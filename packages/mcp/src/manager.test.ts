@@ -28,6 +28,12 @@ describe('McpManager', () => {
     }
   });
 
+  it('throws on duplicate server names', () => {
+    expect(
+      () => new McpManager([testServerConfig('dupe'), testServerConfig('dupe')]),
+    ).toThrow('Duplicate MCP server name "dupe"');
+  });
+
   it('aggregates tools from multiple servers with namespacing', async () => {
     manager = new McpManager([testServerConfig('server-a'), testServerConfig('server-b')]);
     await manager.start();
