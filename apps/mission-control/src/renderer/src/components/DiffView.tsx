@@ -36,7 +36,7 @@ export function DiffView({ diff, path }: { diff: string; path?: string }): JSX.E
 
   return (
     <div>
-      <div className="overflow-x-auto rounded bg-[#161b22] p-2">
+      <div className="overflow-x-auto bg-[#161b22] p-2">
         <pre className="text-xs leading-relaxed">
           {lines.map((line, i) => {
             const type = classifyLine(line);

@@ -146,7 +146,7 @@ function renderEvents(
     elements.push(
       <div
         key="tool-progress"
-        className="mb-2 flex items-center gap-2 rounded border border-border bg-sidebar-hover px-3 py-1.5 text-xs text-muted"
+        className="mb-2 flex items-center gap-2 border border-border bg-sidebar-hover px-3 py-1.5 text-xs text-muted"
       >
         <Loader size={12} className="animate-spin shrink-0" />
         <span className="font-mono">{toolLabel(toolName)}</span>
@@ -184,7 +184,7 @@ function ThinkingIndicator(): JSX.Element {
 function ThinkingBlock({ text }: { text: string }): JSX.Element {
   const [open, setOpen] = useState(false);
   return (
-    <div className="mb-2 rounded border border-border bg-sidebar-hover">
+    <div className="mb-2 border border-border bg-sidebar-hover">
       <button
         type="button"
         onClick={() => setOpen((o) => !o)}
@@ -215,7 +215,7 @@ function QuestionBlock({
 
   if (answered) {
     return (
-      <div className="mb-2 rounded border border-border bg-sidebar-hover px-3 py-1.5 text-xs">
+      <div className="mb-2 border border-border bg-sidebar-hover px-3 py-1.5 text-xs">
         <span className="text-muted">Question</span>
         <span className="ml-1">{answer}</span>
         <span className="ml-1 text-green">✓</span>
@@ -224,7 +224,7 @@ function QuestionBlock({
   }
 
   return (
-    <div className="mb-2 rounded border border-accent/50 bg-accent/5 px-3 py-2 text-sm">
+    <div className="mb-2 border border-accent/50 bg-accent/5 px-3 py-2 text-sm">
       <p className="mb-2">❓ {question}</p>
       {options.length > 0 ? (
         <div className="flex flex-wrap gap-2">
@@ -233,7 +233,7 @@ function QuestionBlock({
               key={opt}
               type="button"
               onClick={() => onAnswer?.(id, opt)}
-              className="rounded-lg border border-border bg-card-bg px-3 py-1.5 text-xs transition-colors hover:bg-card-hover hover:border-accent"
+              className="border border-border bg-card-bg px-3 py-1.5 text-xs transition-colors hover:bg-card-hover hover:border-accent"
             >
               {opt}
             </button>
@@ -253,12 +253,12 @@ function QuestionBlock({
             value={inputValue}
             onChange={(e) => setInputValue(e.target.value)}
             placeholder="Type your answer…"
-            className="flex-1 rounded-lg border border-border bg-card-bg px-3 py-1.5 text-xs text-foreground placeholder:text-muted focus:border-accent focus:outline-none"
+            className="flex-1 border border-border bg-card-bg px-3 py-1.5 text-xs text-foreground placeholder:text-muted focus:border-accent focus:outline-none"
           />
           <button
             type="submit"
             disabled={!inputValue.trim()}
-            className="rounded-lg bg-accent px-3 py-1.5 text-xs text-white hover:bg-primary-hover disabled:opacity-50"
+            className="bg-accent px-3 py-1.5 text-xs text-white hover:bg-primary-hover disabled:opacity-50"
           >
             Reply
           </button>
@@ -324,7 +324,7 @@ function ToolBlock({
 
   return (
     <div
-      className={`mb-3 rounded border text-xs ${isError ? 'border-red-900/50 bg-red-900/10' : 'border-border bg-sidebar-hover'}`}
+      className={`mb-3 border text-xs ${isError ? 'border-red-900/50 bg-red-900/10' : 'border-border bg-sidebar-hover'}`}
     >
       <button
         type="button"
@@ -406,7 +406,7 @@ function CopyButton({ text }: { text: string }): JSX.Element {
     <button
       type="button"
       onClick={handleCopy}
-      className="rounded p-1 text-muted/50 hover:text-foreground transition-colors"
+      className="p-1 text-muted/50 hover:text-foreground transition-colors"
       title="Copy message"
     >
       {copied ? <Check size={14} className="text-green" /> : <Copy size={14} />}
@@ -438,7 +438,7 @@ function MessageBubble({
         <div className="opacity-0 group-hover:opacity-100 transition-opacity mt-3">
           {userText && <CopyButton text={userText} />}
         </div>
-        <div className="bg-accent text-white rounded-lg p-4 max-w-[70%] text-sm">
+        <div className="bg-accent text-white p-4 max-w-[70%] text-sm">
             {userText && <p className="whitespace-pre-wrap">{userText}</p>}
             {userImages && userImages.length > 0 && (
               <div className="mt-2 flex flex-wrap gap-2">
@@ -447,7 +447,7 @@ function MessageBubble({
                     key={`img-${img.mediaType}-${img.data.slice(0, 16)}-${i}`}
                     src={`data:${img.mediaType};base64,${img.data}`}
                     alt={`Attached ${i + 1}`}
-                    className="max-h-48 max-w-full rounded"
+                    className="max-h-48 max-w-full"
                   />
                 ))}
               </div>
@@ -464,7 +464,7 @@ function MessageBubble({
 
   return (
     <div className="group mb-6">
-      <div className="bg-card-bg rounded-lg p-4 max-w-[70%] text-sm text-foreground">
+      <div className="bg-card-bg p-4 max-w-[70%] text-sm text-foreground">
         {renderEvents(events, navigateToLogs, onAnswerQuestion, answeredQuestions)}
       </div>
       <div className="mt-1 flex items-center gap-2 max-w-[80%] px-1">
@@ -571,7 +571,7 @@ function PinnedTodoPanel({ todos }: { todos: TodoItem[] }): JSX.Element {
           <button
             type="button"
             onClick={() => setDismissed(true)}
-            className="ml-2 rounded p-0.5 hover:bg-border hover:text-foreground"
+            className="ml-2 p-0.5 hover:bg-border hover:text-foreground"
             title="Dismiss task list"
           >
             <X size={12} />
@@ -597,7 +597,7 @@ function PinnedTodoPanel({ todos }: { todos: TodoItem[] }): JSX.Element {
               return (
                 <div
                   key={todo.id ?? todo.content}
-                  className={`flex items-center gap-2 rounded px-2 py-1 ${
+                  className={`flex items-center gap-2 px-2 py-1 ${
                     isActive ? 'bg-accent/10 border border-accent/30' : ''
                   }`}
                 >
@@ -667,7 +667,7 @@ function ConversationItem({
             if (e.key === 'Escape') setEditing(false);
           }}
           onBlur={commitRename}
-          className="w-full rounded border border-accent bg-card-bg px-2 py-1 text-xs text-foreground focus:outline-none"
+          className="w-full border border-accent bg-card-bg px-2 py-1 text-xs text-foreground focus:outline-none"
         />
       </li>
     );
@@ -701,7 +701,7 @@ function ConversationItem({
                 setConfirmingDelete(false);
                 onDelete();
               }}
-              className="rounded p-0.5 text-red hover:bg-red-900/30"
+              className="p-0.5 text-red hover:bg-red-900/30"
               aria-label="Confirm delete"
             >
               <Check size={10} />
@@ -709,7 +709,7 @@ function ConversationItem({
             <button
               type="button"
               onClick={() => setConfirmingDelete(false)}
-              className="rounded p-0.5 text-muted hover:bg-sidebar-hover"
+              className="p-0.5 text-muted hover:bg-sidebar-hover"
               aria-label="Cancel delete"
             >
               <X size={10} />
@@ -720,7 +720,7 @@ function ConversationItem({
             <button
               type="button"
               onClick={startRename}
-              className="opacity-0 transition-opacity group-hover:opacity-100 rounded p-0.5 text-muted hover:text-foreground"
+              className="opacity-0 transition-opacity group-hover:opacity-100 p-0.5 text-muted hover:text-foreground"
               aria-label={`Rename conversation ${conversation.title}`}
             >
               <Pencil size={10} />
@@ -728,7 +728,7 @@ function ConversationItem({
             <button
               type="button"
               onClick={() => setConfirmingDelete(true)}
-              className="opacity-0 transition-opacity group-hover:opacity-100 rounded p-0.5 text-muted hover:text-red"
+              className="opacity-0 transition-opacity group-hover:opacity-100 p-0.5 text-muted hover:text-red"
               aria-label={`Delete conversation ${conversation.title}`}
             >
               <Trash2 size={10} />
@@ -823,12 +823,12 @@ function AgentSelectionModal({
       <div className="absolute inset-0 bg-black/50" onClick={onClose} />
       {/* biome-ignore lint/a11y/noNoninteractiveElementToFocusEvents: modal container needs key handling */}
       <div
-        className="relative z-10 w-[400px] rounded-xl border border-border bg-surface shadow-2xl"
+        className="relative z-10 w-[400px] border border-border bg-surface shadow-2xl"
         onKeyDown={handleKeyDown}
       >
         <div className="border-b border-border px-4 py-3">
           <p className="mb-2 text-sm font-medium text-foreground">Select an agent</p>
-          <div className="flex items-center gap-2 bg-card-bg border border-border rounded-lg px-3 py-2">
+          <div className="flex items-center gap-2 bg-card-bg border border-border px-3 py-2">
             <Search size={14} className="text-muted shrink-0" />
             <input
               ref={searchInputRef}
@@ -1151,7 +1151,7 @@ export function Chat(): JSX.Element {
         <div className="w-[300px] bg-surface border-r border-border flex flex-col shrink-0 overflow-hidden">
           {/* Search bar */}
           <div className="px-4 py-3 border-b border-border">
-            <div className="flex items-center gap-2 bg-card-bg border border-border rounded-lg px-3 py-2">
+            <div className="flex items-center gap-2 bg-card-bg border border-border px-3 py-2">
               <Search size={14} className="text-muted shrink-0" />
               <input
                 type="text"
@@ -1279,7 +1279,7 @@ export function Chat(): JSX.Element {
                       <img
                         src={img.preview}
                         alt="Attached"
-                        className="h-16 w-16 rounded border border-border object-cover"
+                        className="h-16 w-16 border border-border object-cover"
                       />
                       <button
                         type="button"
@@ -1330,7 +1330,7 @@ export function Chat(): JSX.Element {
                     selectedConversationId ? 'Type a message…' : 'Select a conversation first'
                   }
                   disabled={!selectedConversationId || isStreaming}
-                  className="flex-1 bg-card-bg border border-border rounded-lg px-4 py-3 text-sm text-foreground placeholder:text-muted focus:border-accent focus:outline-none disabled:opacity-50 resize-none"
+                  className="flex-1 bg-card-bg border border-border px-4 py-3 text-sm text-foreground placeholder:text-muted focus:border-accent focus:outline-none disabled:opacity-50 resize-none"
                 />
                 <input
                   ref={fileInputRef}
@@ -1347,7 +1347,7 @@ export function Chat(): JSX.Element {
                   type="button"
                   onClick={() => fileInputRef.current?.click()}
                   disabled={!selectedConversationId || isStreaming}
-                  className="rounded-lg border border-border p-2.5 text-muted transition-colors hover:bg-sidebar-hover hover:text-foreground disabled:opacity-50 shrink-0"
+                  className="border border-border p-2.5 text-muted transition-colors hover:bg-sidebar-hover hover:text-foreground disabled:opacity-50 shrink-0"
                   title="Attach image"
                 >
                   <Paperclip size={16} />
@@ -1356,7 +1356,7 @@ export function Chat(): JSX.Element {
                   <button
                     type="button"
                     onClick={() => selectedConversationId && cancelMessage(selectedConversationId)}
-                    className="rounded-lg bg-red-900/50 p-2.5 text-red transition-colors hover:bg-red-900/70 shrink-0"
+                    className="bg-red-900/50 p-2.5 text-red transition-colors hover:bg-red-900/70 shrink-0"
                   >
                     <Square size={16} />
                   </button>
@@ -1366,7 +1366,7 @@ export function Chat(): JSX.Element {
                     disabled={
                       (!input.trim() && attachedImages.length === 0) || !selectedConversationId
                     }
-                    className="bg-accent text-white rounded-lg p-2.5 hover:bg-primary-hover disabled:opacity-50 transition-colors shrink-0"
+                    className="bg-accent text-white p-2.5 hover:bg-primary-hover disabled:opacity-50 transition-colors shrink-0"
                   >
                     <Send size={16} />
                   </button>
