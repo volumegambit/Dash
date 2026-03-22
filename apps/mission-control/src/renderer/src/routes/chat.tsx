@@ -861,8 +861,8 @@ function AgentSelectionModal({
                   onMouseEnter={() => setSelectedIndex(i)}
                   className={`w-full text-left px-4 py-2.5 transition-colors ${
                     i === selectedIndex
-                      ? 'bg-primary/15 border-l-2 border-primary text-foreground'
-                      : 'border-l-2 border-transparent text-muted hover:bg-sidebar-hover'
+                      ? 'bg-primary text-white'
+                      : 'text-muted hover:bg-sidebar-hover'
                   }`}
                 >
                   <p className="text-sm font-medium text-foreground">{agent.agentName}</p>
