@@ -26,17 +26,13 @@ export type {
   OAuthCallbackResult,
   OAuthCallbackOptions,
 } from './oauth-callback.js';
-export { McpProposalStore } from './proposals.js';
-export type { McpProposal } from './proposals.js';
 export {
   createMcpAddServerTool,
-  createMcpConfirmAddTool,
   createMcpListServersTool,
   createMcpRemoveServerTool,
 } from './agent-tools.js';
 export type {
   McpAddServerDeps,
-  McpConfirmAddDeps,
   McpListServersDeps,
   McpRemoveServerDeps,
   McpConfigStoreInterface,

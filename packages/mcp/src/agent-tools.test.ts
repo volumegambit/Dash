@@ -1,12 +1,10 @@
 import {
   createMcpAddServerTool,
-  createMcpConfirmAddTool,
   createMcpListServersTool,
   createMcpRemoveServerTool,
 } from './agent-tools.js';
 import type { McpConfigStoreInterface } from './agent-tools.js';
 import type { McpManager } from './manager.js';
-import { McpProposalStore } from './proposals.js';
 
 function makeMockManager() {
   return {
@@ -34,10 +32,10 @@ function makeMockStore(): McpConfigStoreInterface {
 }
 
 describe('mcp_add_server', () => {
-  it('creates a pending proposal and returns confirmation prompt', async () => {
-    const proposals = new McpProposalStore();
+  it('connects immediately and returns discovered tools', async () => {
+    const manager = makeMockManager();
     const store = makeMockStore();
-    const tool = createMcpAddServerTool({ proposalStore: proposals, configStore: store });
+    const tool = createMcpAddServerTool({ manager, configStore: store });
 
     const result = await tool.execute('call-1', {
       name: 'jira',
@@ -45,17 +43,17 @@ describe('mcp_add_server', () => {
       transportType: 'sse',
     });
 
-    expect(result.content[0].text).toContain('jira');
-    expect(result.content[0].text).toContain('https://jira.example.com/mcp');
-    expect(result.content[0].text).toContain('confirm');
-    expect(proposals.get('jira')).toBeDefined();
+    expect(result.details?.isError).toBeFalsy();
+    expect(result.content[0].text).toContain('connected successfully');
+    expect(manager.addServer).toHaveBeenCalled();
+    expect(store.addConfig).toHaveBeenCalled();
   });
 
   it('rejects when URL not in allowlist', async () => {
-    const proposals = new McpProposalStore();
+    const manager = makeMockManager();
     const store = makeMockStore();
     (store.isAllowed as ReturnType<typeof vi.fn>).mockResolvedValue(false);
-    const tool = createMcpAddServerTool({ proposalStore: proposals, configStore: store });
+    const tool = createMcpAddServerTool({ manager, configStore: store });
 
     const result = await tool.execute('call-1', {
       name: 'bad',
@@ -65,13 +63,13 @@ describe('mcp_add_server', () => {
 
     expect(result.content[0].text).toContain('not in the allowlist');
     expect(result.details?.isError).toBe(true);
-    expect(proposals.get('bad')).toBeUndefined();
+    expect(manager.addServer).not.toHaveBeenCalled();
   });
 
   it('allows stdio servers without URL check', async () => {
-    const proposals = new McpProposalStore();
+    const manager = makeMockManager();
     const store = makeMockStore();
-    const tool = createMcpAddServerTool({ proposalStore: proposals, configStore: store });
+    const tool = createMcpAddServerTool({ manager, configStore: store });
 
     const result = await tool.execute('call-1', {
       name: 'local',
@@ -80,71 +78,25 @@ describe('mcp_add_server', () => {
     });
 
     expect(result.details?.isError).toBeFalsy();
-    expect(proposals.get('local')).toBeDefined();
-  });
-});
-
-describe('mcp_confirm_add', () => {
-  it('connects a pending proposal', async () => {
-    const proposals = new McpProposalStore();
-    const manager = makeMockManager();
-    const store = makeMockStore();
-
-    proposals.add('jira', {
-      name: 'jira',
-      transport: { type: 'sse', url: 'https://jira.example.com/mcp' },
-    });
-
-    const tool = createMcpConfirmAddTool({
-      proposalStore: proposals,
-      manager,
-      configStore: store,
-    });
-
-    const result = await tool.execute('call-1', { name: 'jira' });
-    expect(result.details?.isError).toBeFalsy();
     expect(manager.addServer).toHaveBeenCalled();
-    expect(store.addConfig).toHaveBeenCalled();
-    expect(proposals.get('jira')).toBeUndefined(); // consumed
   });
 
-  it('returns error for non-existent proposal', async () => {
-    const proposals = new McpProposalStore();
+  it('returns error when connection fails', async () => {
     const manager = makeMockManager();
+    (manager.addServer as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new Error('connection refused'),
+    );
     const store = makeMockStore();
+    const tool = createMcpAddServerTool({ manager, configStore: store });
 
-    const tool = createMcpConfirmAddTool({
-      proposalStore: proposals,
-      manager,
-      configStore: store,
+    const result = await tool.execute('call-1', {
+      name: 'broken',
+      url: 'https://broken.example.com',
+      transportType: 'sse',
     });
 
-    const result = await tool.execute('call-1', { name: 'ghost' });
     expect(result.details?.isError).toBe(true);
-    expect(result.content[0].text).toContain('No pending proposal');
-  });
-
-  it('returns error for expired proposal', async () => {
-    const proposals = new McpProposalStore(1); // 1ms TTL
-    const manager = makeMockManager();
-    const store = makeMockStore();
-
-    proposals.add('jira', {
-      name: 'jira',
-      transport: { type: 'sse', url: 'https://jira.example.com/mcp' },
-    });
-
-    await new Promise((r) => setTimeout(r, 50));
-
-    const tool = createMcpConfirmAddTool({
-      proposalStore: proposals,
-      manager,
-      configStore: store,
-    });
-
-    const result = await tool.execute('call-1', { name: 'jira' });
-    expect(result.details?.isError).toBe(true);
-    expect(result.content[0].text).toContain('No pending proposal');
+    expect(result.content[0].text).toContain('connection refused');
   });
 });
 

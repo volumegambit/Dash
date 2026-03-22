@@ -1,8 +1,7 @@
 import type { AgentTool, AgentToolResult } from '@mariozechner/pi-agent-core';
 import { Type } from '@sinclair/typebox';
-import type { Static, TSchema } from '@sinclair/typebox';
+import type { Static } from '@sinclair/typebox';
 import type { McpManager } from './manager.js';
-import type { McpProposalStore } from './proposals.js';
 import type { McpLogger, McpServerConfig } from './types.js';
 
 /**
@@ -37,10 +36,6 @@ const addServerSchema = Type.Object({
   env: Type.Optional(
     Type.Record(Type.String(), Type.String(), { description: 'Environment variables' }),
   ),
-});
-
-const confirmAddSchema = Type.Object({
-  name: Type.String({ description: 'Name of the server to confirm' }),
 });
 
 const removeServerSchema = Type.Object({
@@ -92,7 +87,7 @@ function buildConfig(params: Static<typeof addServerSchema>): McpServerConfig {
 // --- Tool factories ---
 
 export interface McpAddServerDeps {
-  proposalStore: McpProposalStore;
+  manager: McpManager;
   configStore: McpConfigStoreInterface;
   logger?: McpLogger;
 }
@@ -104,7 +99,7 @@ export function createMcpAddServerTool(
     name: 'mcp_add_server',
     label: 'MCP: Add Server',
     description:
-      'Propose connecting to an MCP server. Creates a pending proposal that needs user confirmation via mcp_confirm_add.',
+      'Connect to an MCP server. Validates against the allowlist, then connects and discovers tools.',
     parameters: addServerSchema,
     execute: async (
       _toolCallId: string,
@@ -130,55 +125,11 @@ export function createMcpAddServerTool(
         }
       }
 
-      deps.proposalStore.add(params.name, config);
-      deps.logger?.info(`[mcp:audit] mcp:proposal:created source=agent server=${params.name}`);
-
-      const transportDesc =
-        config.transport.type === 'stdio'
-          ? `command: ${(config.transport as { command: string }).command}`
-          : `URL: ${url}`;
-
-      return ok(
-        `Pending approval to connect MCP server "${params.name}" (${config.transport.type}, ${transportDesc}).\n\n` +
-          `Please confirm by asking the user if they approve, then call mcp_confirm_add with name "${params.name}".`,
-      );
-    },
-  };
-}
-
-export interface McpConfirmAddDeps {
-  proposalStore: McpProposalStore;
-  manager: McpManager;
-  configStore: McpConfigStoreInterface;
-  logger?: McpLogger;
-}
-
-export function createMcpConfirmAddTool(
-  deps: McpConfirmAddDeps,
-): AgentTool<typeof confirmAddSchema, McpToolDetails> {
-  return {
-    name: 'mcp_confirm_add',
-    label: 'MCP: Confirm Add Server',
-    description:
-      'Confirm a pending MCP server proposal. Call this after the user approves the connection proposed by mcp_add_server.',
-    parameters: confirmAddSchema,
-    execute: async (
-      _toolCallId: string,
-      params: Static<typeof confirmAddSchema>,
-    ): Promise<AgentToolResult<McpToolDetails>> => {
-      const proposal = deps.proposalStore.get(params.name);
-      if (!proposal) {
-        return err(
-          `No pending proposal found for "${params.name}". It may have expired (proposals last 5 minutes). Use mcp_add_server to create a new proposal.`,
-        );
-      }
-
       try {
-        await deps.manager.addServer(proposal.config);
-        await deps.configStore.addConfig(proposal.config);
-        deps.proposalStore.remove(params.name);
+        await deps.manager.addServer(config);
+        await deps.configStore.addConfig(config);
 
-        deps.logger?.info(`[mcp:audit] mcp:proposal:confirmed source=agent server=${params.name}`);
+        deps.logger?.info(`[mcp:audit] mcp:server:added source=agent server=${params.name}`);
 
         const tools = deps.manager
           .getTools()
@@ -189,7 +140,6 @@ export function createMcpConfirmAddTool(
           `MCP server "${params.name}" connected successfully.\nDiscovered ${tools.length} tool(s): ${tools.join(', ') || '(none)'}.\nThese tools will be available on the next message.`,
         );
       } catch (error) {
-        deps.proposalStore.remove(params.name);
         const message = error instanceof Error ? error.message : String(error);
         return err(`Failed to connect MCP server "${params.name}": ${message}`);
       }

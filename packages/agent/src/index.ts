@@ -48,7 +48,6 @@ export const AGENT_TOOL_NAMES = [
   // MCP
   'mcp',
   'mcp_add_server',
-  'mcp_confirm_add',
   'mcp_list_servers',
   'mcp_remove_server',
 ] as const;
