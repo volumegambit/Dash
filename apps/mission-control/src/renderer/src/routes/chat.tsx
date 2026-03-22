@@ -696,12 +696,24 @@ function AgentSelectionModal({
   agents,
   onSelect,
   onClose,
+  defaultAgent,
 }: {
   agents: { deploymentId: string; deploymentName: string; agentName: string }[];
   onSelect: (deploymentId: string, agentName: string) => void;
   onClose: () => void;
+  defaultAgent?: { deploymentId: string; agentName: string } | null;
 }): JSX.Element {
-  const [selectedIndex, setSelectedIndex] = useState(0);
+  const defaultIndex = defaultAgent
+    ? Math.max(
+        0,
+        agents.findIndex(
+          (a) =>
+            a.deploymentId === defaultAgent.deploymentId &&
+            a.agentName === defaultAgent.agentName,
+        ),
+      )
+    : 0;
+  const [selectedIndex, setSelectedIndex] = useState(defaultIndex);
   const [searchTerm, setSearchTerm] = useState('');
   const searchInputRef = useRef<HTMLInputElement>(null);
 
@@ -1049,6 +1061,14 @@ export function Chat(): JSX.Element {
           agents={availableAgents}
           onSelect={handleAgentSelected}
           onClose={() => setShowAgentModal(false)}
+          defaultAgent={
+            selectedConversation
+              ? {
+                  deploymentId: selectedConversation.deploymentId,
+                  agentName: selectedConversation.agentName,
+                }
+              : null
+          }
         />
       )}
 
