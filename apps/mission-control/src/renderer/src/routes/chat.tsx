@@ -958,6 +958,14 @@ export function Chat(): JSX.Element {
     // biome-ignore lint/correctness/useExhaustiveDependencies: intentionally run once
   }, []);
 
+  // Auto-focus textarea when a conversation is selected (e.g. after creating a new one)
+  useEffect(() => {
+    if (selectedConversationId) {
+      // Small delay to ensure the textarea is enabled after render
+      requestAnimationFrame(() => textareaRef.current?.focus());
+    }
+  }, [selectedConversationId]);
+
   const resizeTextarea = useCallback(() => {
     const ta = textareaRef.current;
     if (!ta) return;
