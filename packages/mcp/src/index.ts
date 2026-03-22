@@ -36,4 +36,5 @@ export type {
   McpListServersDeps,
   McpRemoveServerDeps,
   McpConfigStoreInterface,
+  McpAgentContext,
 } from './agent-tools.js';
