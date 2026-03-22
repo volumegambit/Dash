@@ -1009,10 +1009,22 @@ export function Chat(): JSX.Element {
   const isStreaming = selectedConversationId ? (sending[selectedConversationId] ?? false) : false;
   const liveEvents = selectedConversationId ? (streamingEvents[selectedConversationId] ?? []) : [];
 
+  // Track previous message count to distinguish bulk loads from incremental updates
+  const prevMessageCount = useRef(0);
+
   // biome-ignore lint/correctness/useExhaustiveDependencies: messagesEndRef is a stable ref
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    // Bulk load (conversation switched): jump instantly instead of smooth-scrolling through all messages
+    const isBulkLoad = prevMessageCount.current === 0 && selectedMessages.length > 0;
+    prevMessageCount.current = selectedMessages.length;
+    messagesEndRef.current?.scrollIntoView({ behavior: isBulkLoad ? 'instant' : 'smooth' });
   }, [selectedMessages.length, liveEvents.length]);
+
+  // Reset message count tracking when conversation changes
+  // biome-ignore lint/correctness/useExhaustiveDependencies: intentionally reset on conversation change
+  useEffect(() => {
+    prevMessageCount.current = 0;
+  }, [selectedConversationId]);
 
   // Build available agents list from running deployments
   const availableAgents = useMemo(() => runningDeployments.flatMap((dep) => {
