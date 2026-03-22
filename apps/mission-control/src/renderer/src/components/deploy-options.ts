@@ -27,6 +27,9 @@ export const TOOL_DESCRIPTIONS: Record<string, string> = {
   web_fetch: 'Download content from web pages',
   create_skill: 'Create reusable skills the agent remembers across conversations',
   mcp: 'Connect to external MCP servers for additional tools',
+  mcp_add_server: 'Let the agent connect to new external tool servers',
+  mcp_list_servers: 'Let the agent see which external tool servers are available',
+  mcp_remove_server: 'Let the agent disconnect external tool servers',
 };
 
 export const AVAILABLE_MODELS: ModelOption[] = [
@@ -100,6 +103,11 @@ export const TOOL_GROUPS: ToolGroup[] = [
     description: 'Create and manage reusable agent skills',
     tools: ['create_skill'],
   },
+  {
+    name: 'Connectors',
+    description: 'Manage connections to external tool servers (MCP)',
+    tools: ['mcp', 'mcp_add_server', 'mcp_list_servers', 'mcp_remove_server'],
+  },
 ];
 
 /** All tool IDs across all groups, in group order. */
@@ -117,4 +125,7 @@ export const AVAILABLE_TOOLS: ToolOption[] = [
   { value: 'web_fetch', label: 'Web Fetch', description: TOOL_DESCRIPTIONS.web_fetch },
   { value: 'create_skill', label: 'Create Skill', description: TOOL_DESCRIPTIONS.create_skill },
   { value: 'mcp', label: 'MCP', description: TOOL_DESCRIPTIONS.mcp },
+  { value: 'mcp_add_server', label: 'Add Connector', description: TOOL_DESCRIPTIONS.mcp_add_server },
+  { value: 'mcp_list_servers', label: 'List Connectors', description: TOOL_DESCRIPTIONS.mcp_list_servers },
+  { value: 'mcp_remove_server', label: 'Remove Connector', description: TOOL_DESCRIPTIONS.mcp_remove_server },
 ];
