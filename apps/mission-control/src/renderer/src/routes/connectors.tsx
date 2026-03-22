@@ -287,8 +287,6 @@ interface ConnectorCardProps {
 }
 
 function ConnectorCard({ connector, onReconnect, onRemove }: ConnectorCardProps): JSX.Element {
-  const [expanded, setExpanded] = useState(false);
-
   return (
     <div className="border border-border bg-card-bg p-4">
       <div className="flex items-center justify-between">
@@ -321,13 +319,6 @@ function ConnectorCard({ connector, onReconnect, onRemove }: ConnectorCardProps)
           >
             <Trash2 size={14} />
           </button>
-          <button
-            type="button"
-            onClick={() => setExpanded(!expanded)}
-            className="p-1.5 text-muted hover:bg-sidebar-hover hover:text-foreground"
-          >
-            {expanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
-          </button>
         </div>
       </div>
 
@@ -338,14 +329,6 @@ function ConnectorCard({ connector, onReconnect, onRemove }: ConnectorCardProps)
               {tool.split('__')[1] ?? tool}
             </span>
           ))}
-        </div>
-      )}
-
-      {expanded && (
-        <div className="mt-3 border-t border-border pt-3 text-sm text-muted">
-          <p>Status: {connector.status}</p>
-          <p>Tools: {connector.tools.length}</p>
-          <p>Transport: {connector.transport.type}</p>
         </div>
       )}
     </div>
