@@ -113,54 +113,56 @@ function AddConnectorModal({
     name.trim() && !submitting && (transportType === 'stdio' ? command.trim() : url.trim());
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-      <div className="w-full max-w-lg rounded-lg border border-border bg-bg p-6 shadow-xl">
-        <div className="mb-4 flex items-center justify-between">
-          <h2 className="text-lg font-semibold">Add Connector (MCP Server)</h2>
-          <button type="button" onClick={handleClose} className="text-fg-muted hover:text-fg">
-            <X size={18} />
-          </button>
+    <div className="fixed inset-0 z-50 flex items-start justify-center pt-[20vh]">
+      {/* biome-ignore lint/a11y/useKeyWithClickEvents: backdrop click to close */}
+      <div className="absolute inset-0 bg-black/50" onClick={handleClose} />
+      <div className="relative z-10 w-full max-w-lg border border-border bg-surface shadow-2xl">
+        <div className="border-b border-border px-6 py-4">
+          <p className="font-[family-name:var(--font-mono)] text-[11px] font-semibold uppercase tracking-[3px] text-accent">
+            New Connector
+          </p>
+          <p className="mt-1 text-sm text-muted">Add an MCP server to extend your agents</p>
         </div>
 
         {authUrl ? (
-          <div className="space-y-4">
-            <p className="text-sm text-fg-muted">
+          <div className="space-y-4 px-6 py-4">
+            <p className="text-sm text-muted">
               Authorization required. Click the link below to authenticate:
             </p>
             <a
               href={authUrl}
               target="_blank"
               rel="noopener noreferrer"
-              className="block rounded border border-border p-3 text-center text-sm text-accent hover:bg-bg-hover"
+              className="block border border-border p-3 text-center text-sm text-accent hover:bg-sidebar-hover"
             >
               Open Authorization Page →
             </a>
             {polling && (
-              <div className="flex items-center gap-2 text-sm text-fg-muted">
+              <div className="flex items-center gap-2 text-sm text-muted">
                 <Loader size={14} className="animate-spin" />
                 Waiting for authorization...
               </div>
             )}
           </div>
         ) : (
-          <div className="space-y-4">
+          <div className="space-y-4 px-6 py-4">
             <div>
-              <label className="mb-1 block text-sm font-medium">Name</label>
+              <label className="mb-1 block text-xs font-medium text-muted">Name</label>
               <input
                 type="text"
                 value={name}
                 onChange={(e) => setName(e.target.value)}
                 placeholder="e.g. github, jira"
-                className="w-full rounded border border-border bg-bg-input px-3 py-2 text-sm"
+                className="w-full border border-border bg-card-bg px-3 py-2 text-sm text-foreground placeholder:text-muted focus:border-accent focus:outline-none"
               />
             </div>
 
             <div>
-              <label className="mb-1 block text-sm font-medium">Type</label>
+              <label className="mb-1 block text-xs font-medium text-muted">Type</label>
               <select
                 value={transportType}
                 onChange={(e) => setTransportType(e.target.value as typeof transportType)}
-                className="w-full rounded border border-border bg-bg-input px-3 py-2 text-sm"
+                className="w-full border border-border bg-card-bg px-3 py-2 text-sm text-foreground focus:border-accent focus:outline-none"
               >
                 <option value="streamable-http">Standard (HTTP)</option>
                 <option value="sse">SSE</option>
@@ -171,41 +173,43 @@ function AddConnectorModal({
             {transportType === 'stdio' ? (
               <>
                 <div>
-                  <label className="mb-1 block text-sm font-medium">Command</label>
+                  <label className="mb-1 block text-xs font-medium text-muted">Command</label>
                   <input
                     type="text"
                     value={command}
                     onChange={(e) => setCommand(e.target.value)}
                     placeholder="e.g. npx @modelcontextprotocol/server-github"
-                    className="w-full rounded border border-border bg-bg-input px-3 py-2 text-sm"
+                    className="w-full border border-border bg-card-bg px-3 py-2 text-sm text-foreground placeholder:text-muted focus:border-accent focus:outline-none"
                   />
                 </div>
                 <div>
-                  <label className="mb-1 block text-sm font-medium">Arguments</label>
+                  <label className="mb-1 block text-xs font-medium text-muted">Arguments</label>
                   <input
                     type="text"
                     value={args}
                     onChange={(e) => setArgs(e.target.value)}
                     placeholder="Space-separated arguments"
-                    className="w-full rounded border border-border bg-bg-input px-3 py-2 text-sm"
+                    className="w-full border border-border bg-card-bg px-3 py-2 text-sm text-foreground placeholder:text-muted focus:border-accent focus:outline-none"
                   />
                 </div>
               </>
             ) : (
               <div>
-                <label className="mb-1 block text-sm font-medium">URL</label>
+                <label className="mb-1 block text-xs font-medium text-muted">URL</label>
                 <input
                   type="text"
                   value={url}
                   onChange={(e) => setUrl(e.target.value)}
                   placeholder="https://mcp.example.com"
-                  className="w-full rounded border border-border bg-bg-input px-3 py-2 text-sm"
+                  className="w-full border border-border bg-card-bg px-3 py-2 text-sm text-foreground placeholder:text-muted focus:border-accent focus:outline-none"
                 />
               </div>
             )}
 
             <div>
-              <label className="mb-1 block text-sm font-medium">Environment Variables</label>
+              <label className="mb-1 block text-xs font-medium text-muted">
+                Environment Variables
+              </label>
               {envPairs.map((pair, i) => (
                 <div key={`env-${i}`} className="mb-1 flex gap-2">
                   <input
@@ -217,7 +221,7 @@ function AddConnectorModal({
                       setEnvPairs(next);
                     }}
                     placeholder="KEY"
-                    className="w-1/3 rounded border border-border bg-bg-input px-2 py-1 text-sm"
+                    className="w-1/3 border border-border bg-card-bg px-2 py-1 text-sm text-foreground placeholder:text-muted focus:border-accent focus:outline-none"
                   />
                   <input
                     type="text"
@@ -228,12 +232,12 @@ function AddConnectorModal({
                       setEnvPairs(next);
                     }}
                     placeholder="value"
-                    className="flex-1 rounded border border-border bg-bg-input px-2 py-1 text-sm"
+                    className="flex-1 border border-border bg-card-bg px-2 py-1 text-sm text-foreground placeholder:text-muted focus:border-accent focus:outline-none"
                   />
                   <button
                     type="button"
                     onClick={() => setEnvPairs(envPairs.filter((_, j) => j !== i))}
-                    className="text-fg-muted hover:text-fg"
+                    className="text-muted hover:text-foreground"
                   >
                     <X size={14} />
                   </button>
@@ -248,13 +252,13 @@ function AddConnectorModal({
               </button>
             </div>
 
-            {error && <p className="text-sm text-red-500">{error}</p>}
+            {error && <p className="text-sm text-red">{error}</p>}
 
-            <div className="flex justify-end gap-2 pt-2">
+            <div className="flex justify-end gap-2 border-t border-border pt-4">
               <button
                 type="button"
                 onClick={handleClose}
-                className="rounded border border-border px-4 py-2 text-sm hover:bg-bg-hover"
+                className="border border-border px-4 py-2 text-sm text-muted transition-colors hover:bg-sidebar-hover hover:text-foreground"
               >
                 Cancel
               </button>
@@ -262,7 +266,7 @@ function AddConnectorModal({
                 type="button"
                 onClick={handleSubmit}
                 disabled={!canSubmit}
-                className="rounded bg-accent px-4 py-2 text-sm text-white hover:bg-accent-hover disabled:opacity-50"
+                className="flex items-center gap-1.5 border border-primary/40 bg-primary/10 px-4 py-2 text-sm text-primary transition-colors hover:bg-primary/20 hover:border-primary/60 disabled:opacity-50"
               >
                 {submitting ? <Loader size={14} className="animate-spin" /> : 'Connect'}
               </button>
@@ -286,18 +290,18 @@ function ConnectorCard({ connector, onReconnect, onRemove }: ConnectorCardProps)
   const [expanded, setExpanded] = useState(false);
 
   return (
-    <div className="rounded-lg border border-border bg-bg p-4">
+    <div className="border border-border bg-card-bg p-4">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
           <HealthDot health={connectorHealthStatus(connector.status)} />
           <div>
             <div className="flex items-center gap-2">
               <span className="font-medium">{connector.name}</span>
-              <span className="rounded bg-bg-hover px-1.5 py-0.5 text-xs text-fg-muted">
+              <span className="bg-sidebar-hover px-1.5 py-0.5 text-xs text-muted">
                 {transportLabel(connector.transport.type)}
               </span>
             </div>
-            <p className="text-sm text-fg-muted">{transportDesc(connector.transport)}</p>
+            <p className="text-sm text-muted">{transportDesc(connector.transport)}</p>
           </div>
         </div>
         <div className="flex items-center gap-1">
@@ -305,7 +309,7 @@ function ConnectorCard({ connector, onReconnect, onRemove }: ConnectorCardProps)
             type="button"
             onClick={() => onReconnect(connector.name)}
             title="Reconnect"
-            className="rounded p-1.5 text-fg-muted hover:bg-bg-hover hover:text-fg"
+            className="p-1.5 text-muted hover:bg-sidebar-hover hover:text-foreground"
           >
             <RefreshCw size={14} />
           </button>
@@ -313,14 +317,14 @@ function ConnectorCard({ connector, onReconnect, onRemove }: ConnectorCardProps)
             type="button"
             onClick={() => onRemove(connector.name)}
             title="Remove"
-            className="rounded p-1.5 text-fg-muted hover:bg-bg-hover hover:text-red-500"
+            className="p-1.5 text-muted hover:bg-sidebar-hover hover:text-red"
           >
             <Trash2 size={14} />
           </button>
           <button
             type="button"
             onClick={() => setExpanded(!expanded)}
-            className="rounded p-1.5 text-fg-muted hover:bg-bg-hover hover:text-fg"
+            className="p-1.5 text-muted hover:bg-sidebar-hover hover:text-foreground"
           >
             {expanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
           </button>
@@ -330,7 +334,7 @@ function ConnectorCard({ connector, onReconnect, onRemove }: ConnectorCardProps)
       {connector.tools.length > 0 && (
         <div className="mt-2 flex flex-wrap gap-1">
           {connector.tools.map((tool) => (
-            <span key={tool} className="rounded bg-bg-hover px-1.5 py-0.5 text-xs text-fg-muted">
+            <span key={tool} className="bg-sidebar-hover px-1.5 py-0.5 text-xs text-muted">
               {tool.split('__')[1] ?? tool}
             </span>
           ))}
@@ -338,7 +342,7 @@ function ConnectorCard({ connector, onReconnect, onRemove }: ConnectorCardProps)
       )}
 
       {expanded && (
-        <div className="mt-3 border-t border-border pt-3 text-sm text-fg-muted">
+        <div className="mt-3 border-t border-border pt-3 text-sm text-muted">
           <p>Status: {connector.status}</p>
           <p>Tools: {connector.tools.length}</p>
           <p>Transport: {connector.transport.type}</p>
@@ -374,7 +378,7 @@ function AllowlistSection(): JSX.Element {
   );
 
   return (
-    <div className="rounded-lg border border-border bg-bg">
+    <div className="border border-border bg-card-bg">
       <button
         type="button"
         onClick={() => setExpanded(!expanded)}
@@ -387,7 +391,7 @@ function AllowlistSection(): JSX.Element {
       {expanded && (
         <div className="border-t border-border p-4">
           {allowlist.length === 0 ? (
-            <p className="mb-3 text-sm text-fg-muted">
+            <p className="mb-3 text-sm text-muted">
               No URL restrictions configured. All connector URLs are allowed.
             </p>
           ) : (
@@ -395,13 +399,13 @@ function AllowlistSection(): JSX.Element {
               {allowlist.map((pattern, i) => (
                 <li
                   key={`al-${i}`}
-                  className="flex items-center justify-between rounded bg-bg-hover px-3 py-1.5 text-sm"
+                  className="flex items-center justify-between bg-sidebar-hover px-3 py-1.5 text-sm"
                 >
-                  <code>{pattern}</code>
+                  <code className="font-[family-name:var(--font-mono)] text-xs">{pattern}</code>
                   <button
                     type="button"
                     onClick={() => handleRemove(i)}
-                    className="text-fg-muted hover:text-red-500"
+                    className="text-muted hover:text-red"
                   >
                     <X size={14} />
                   </button>
@@ -417,19 +421,19 @@ function AllowlistSection(): JSX.Element {
               onChange={(e) => setNewPattern(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && handleAdd()}
               placeholder="https://*.example.com"
-              className="flex-1 rounded border border-border bg-bg-input px-3 py-1.5 text-sm"
+              className="flex-1 border border-border bg-card-bg px-3 py-1.5 text-sm text-foreground placeholder:text-muted focus:border-accent focus:outline-none"
             />
             <button
               type="button"
               onClick={handleAdd}
               disabled={!newPattern.trim()}
-              className="rounded bg-accent px-3 py-1.5 text-sm text-white hover:bg-accent-hover disabled:opacity-50"
+              className="bg-accent px-3 py-1.5 text-sm text-white hover:bg-primary-hover disabled:opacity-50"
             >
               Add
             </button>
           </div>
 
-          <p className="mt-2 text-xs text-fg-muted">
+          <p className="mt-2 text-xs text-muted">
             Use * for wildcards. When the list is empty, all URLs are allowed.
           </p>
         </div>
@@ -512,59 +516,61 @@ function ConnectorsPage(): JSX.Element {
   );
 
   return (
-    <div className="flex flex-1 flex-col overflow-auto p-6">
-      <div className="mb-6 flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <Cable size={20} />
-          <div>
-            <h1 className="text-xl font-semibold">Connectors</h1>
-            <p className="text-xs text-fg-muted">MCP Servers</p>
-          </div>
+    <div className="flex flex-col h-full overflow-hidden">
+      {/* Page header */}
+      <div className="bg-surface px-8 py-4 border-b border-border flex justify-between items-center shrink-0">
+        <div>
+          <span className="font-[family-name:var(--font-mono)] text-[11px] font-semibold uppercase tracking-[3px] text-accent">
+            Manage Connectors
+          </span>
+          <h1 className="font-[family-name:var(--font-display)] text-[22px] font-semibold text-foreground">
+            Connectors
+          </h1>
         </div>
         <button
           type="button"
           onClick={() => setModalOpen(true)}
-          className="flex items-center gap-1.5 rounded bg-accent px-3 py-2 text-sm text-white hover:bg-accent-hover"
+          className="flex items-center gap-1.5 border border-primary/40 bg-primary/10 px-3 py-1.5 text-xs text-primary transition-colors hover:bg-primary/20 hover:border-primary/60"
         >
-          <Plus size={14} />
+          <Plus size={12} />
           Add Connector
         </button>
       </div>
 
-      {error && (
-        <div className="mb-4 rounded-lg border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-400">
-          {error}
-        </div>
-      )}
+      <div className="flex-1 overflow-auto px-8 py-6">
+        {error && (
+          <div className="mb-4 border border-red/30 bg-red-tint p-3 text-sm text-red">{error}</div>
+        )}
 
-      {loading ? (
-        <div className="flex items-center gap-2 text-fg-muted">
-          <Loader size={16} className="animate-spin" />
-          Loading connectors...
-        </div>
-      ) : connectors.length === 0 && !error ? (
-        <div className="rounded-lg border border-dashed border-border p-8 text-center text-fg-muted">
-          <Cable size={32} className="mx-auto mb-2 opacity-50" />
-          <p>No connectors configured.</p>
-          <p className="mt-1 text-sm">
-            Add MCP servers to give your agents access to external tools and services.
-          </p>
-        </div>
-      ) : (
-        <div className="space-y-3">
-          {connectors.map((c) => (
-            <ConnectorCard
-              key={c.name}
-              connector={c}
-              onReconnect={handleReconnect}
-              onRemove={handleRemove}
-            />
-          ))}
-        </div>
-      )}
+        {loading ? (
+          <div className="flex items-center gap-2 text-muted">
+            <Loader size={16} className="animate-spin" />
+            Loading connectors...
+          </div>
+        ) : connectors.length === 0 && !error ? (
+          <div className="border border-dashed border-border p-8 text-center text-muted">
+            <Cable size={32} className="mx-auto mb-2 opacity-50" />
+            <p>No connectors configured.</p>
+            <p className="mt-1 text-sm">
+              Add MCP servers to give your agents access to external tools and services.
+            </p>
+          </div>
+        ) : (
+          <div className="space-y-3">
+            {connectors.map((c) => (
+              <ConnectorCard
+                key={c.name}
+                connector={c}
+                onReconnect={handleReconnect}
+                onRemove={handleRemove}
+              />
+            ))}
+          </div>
+        )}
 
-      <div className="mt-6">
-        <AllowlistSection />
+        <div className="mt-6">
+          <AllowlistSection />
+        </div>
       </div>
 
       <AddConnectorModal
