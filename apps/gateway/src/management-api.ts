@@ -181,6 +181,7 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
       }
       try {
         const entry = runtime.registry.register(body);
+        await runtime.registry.save();
         return c.json(entry, 201);
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Internal error';
@@ -212,6 +213,7 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
       }
       try {
         const updated = runtime.registry.update(name, patch);
+        await runtime.registry.save();
         return c.json(updated);
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Internal error';
@@ -225,6 +227,7 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
       if (!entry) return c.json({ error: 'not found' }, 404);
       try {
         await runtime.removeAgent(name);
+        await runtime.registry.save();
         return c.json({ ok: true });
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Internal error';
@@ -246,14 +249,16 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
         return c.json({ error: 'Missing required field: providerApiKeys' }, 400);
       }
       runtime.registry.update(name, { providerApiKeys: body.providerApiKeys });
+      await runtime.registry.save();
       await runtime.updateCredentials(name, body.providerApiKeys);
       return c.json({ ok: true });
     });
 
-    app.post('/runtime/agents/:name/disable', (c) => {
+    app.post('/runtime/agents/:name/disable', async (c) => {
       const name = c.req.param('name');
       try {
         runtime.registry.disable(name);
+        await runtime.registry.save();
         return c.json({ ok: true });
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Internal error';
@@ -262,10 +267,11 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
       }
     });
 
-    app.post('/runtime/agents/:name/enable', (c) => {
+    app.post('/runtime/agents/:name/enable', async (c) => {
       const name = c.req.param('name');
       try {
         runtime.registry.enable(name);
+        await runtime.registry.save();
         return c.json({ ok: true });
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Internal error';
