@@ -39,6 +39,38 @@ export interface DeployWithConfigOptions {
   mcpServers?: DeployWithConfigMcpServer[];
 }
 
+// --- MCP Connectors ---
+
+export interface McpConnectorInfo {
+  name: string;
+  transport: { type: string; url?: string; command?: string; args?: string[] };
+  status: 'connected' | 'disconnected' | 'reconnecting' | 'error';
+  tools: string[];
+}
+
+export interface McpAddConnectorConfig {
+  name: string;
+  transport:
+    | { type: 'stdio'; command: string; args?: string[] }
+    | { type: 'sse'; url: string; headers?: Record<string, string> }
+    | { type: 'streamable-http'; url: string; headers?: Record<string, string> };
+  env?: Record<string, string>;
+  auth?: {
+    type: 'oauth';
+    grantType?: 'authorization_code' | 'client_credentials';
+    clientId?: string;
+    clientSecret?: string;
+    scopes?: string[];
+  };
+}
+
+export interface McpAddConnectorResult {
+  status: 'connected' | 'awaiting_authorization';
+  serverName: string;
+  tools?: string[];
+  authUrl?: string;
+}
+
 export interface SetupStatus {
   needsSetup: boolean;
   needsUnlock: boolean;
@@ -151,6 +183,7 @@ export interface MissionControlAPI {
       fallbackModels?: string[];
       tools?: string[];
       systemPrompt?: string;
+      mcpServers?: string[];
     },
   ): Promise<void>;
   deploymentsLogsSubscribe(id: string): Promise<void>;
@@ -224,6 +257,15 @@ export interface MissionControlAPI {
   modelsList(): Promise<Array<{ value: string; label: string; provider: string }>>;
   modelsRefresh(): Promise<Array<{ value: string; label: string; provider: string }>>;
   toolsList(): Promise<string[]>;
+
+  // Connectors (MCP)
+  mcpListConnectors(): Promise<McpConnectorInfo[]>;
+  mcpGetConnector(name: string): Promise<McpConnectorInfo>;
+  mcpAddConnector(config: McpAddConnectorConfig): Promise<McpAddConnectorResult>;
+  mcpRemoveConnector(name: string): Promise<void>;
+  mcpReconnectConnector(name: string): Promise<void>;
+  mcpGetAllowlist(): Promise<string[]>;
+  mcpSetAllowlist(patterns: string[]): Promise<void>;
 
   // Updates
   onUpdateAvailable(callback: (info: { version: string }) => void): () => void;
