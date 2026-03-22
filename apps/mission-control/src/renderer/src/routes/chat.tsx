@@ -344,7 +344,7 @@ function ToolBlock({
             </>
           ) : (
             <>
-              {input && (
+              {input && !hasDiff && (
                 <div className="mb-1 space-y-0.5">
                   {details.map(({ key, value }) => (
                     <p key={key} className="text-muted">
