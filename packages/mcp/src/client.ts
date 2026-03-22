@@ -22,12 +22,12 @@ export class McpClient {
   private _status: McpServerStatus = 'disconnected';
 
   constructor(config: McpServerConfig, logger?: McpLogger) {
-    this.config = interpolateConfigEnvVars(config);
     this.logger = logger ?? {
       info: () => {},
       warn: () => {},
       error: () => {},
     };
+    this.config = interpolateConfigEnvVars(config, this.logger);
   }
 
   get name(): string {
