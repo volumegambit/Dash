@@ -561,9 +561,10 @@ export class ProcessRuntime implements DeploymentRuntime {
       throw new DeploymentStartupError(id, 'No gateway configured');
     }
 
-    // Register each agent with gateway runtime API
+    // Register each agent with gateway runtime API (credentials embedded in config)
     try {
       for (const [agentName, cfg] of Object.entries(agentConfigs)) {
+        const flatKeys = flattenProviderKeys(providerApiKeys, cfg);
         const runtimeConfig: RuntimeAgentConfig = {
           name: agentName,
           model: cfg.model,
@@ -573,14 +574,9 @@ export class ProcessRuntime implements DeploymentRuntime {
           skills: cfg.skills,
           workspace: cfg.workspace,
           maxTokens: cfg.maxTokens,
+          providerApiKeys: Object.keys(flatKeys).length > 0 ? flatKeys : undefined,
         };
         await gatewayClient.registerRuntimeAgent(runtimeConfig);
-
-        // Flatten and set credentials per agent
-        const flatKeys = flattenProviderKeys(providerApiKeys, cfg);
-        if (Object.keys(flatKeys).length > 0) {
-          await gatewayClient.setRuntimeAgentCredentials(agentName, flatKeys);
-        }
       }
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
@@ -657,8 +653,26 @@ export class ProcessRuntime implements DeploymentRuntime {
       throw new DeploymentStartupError(id, 'No gateway configured');
     }
 
+    // Try to re-enable existing agents on gateway (they may be disabled from a previous stop)
+    const agents = deployment.config?.agents ?? {};
+    let allEnabled = true;
+    for (const agentName of Object.keys(agents)) {
+      try {
+        await gatewayClient.enableRuntimeAgent(agentName);
+      } catch {
+        allEnabled = false;
+        break;
+      }
+    }
+    if (allEnabled && Object.keys(agents).length > 0) {
+      await this.registry.update(id, { status: 'running' });
+      return;
+    }
+
+    // Fall through to full registration if enable didn't work
     try {
       for (const [agentName, cfg] of Object.entries(agentConfigs)) {
+        const flatKeys = flattenProviderKeys(providerApiKeys, cfg);
         const runtimeConfig: RuntimeAgentConfig = {
           name: agentName,
           model: cfg.model,
@@ -668,13 +682,9 @@ export class ProcessRuntime implements DeploymentRuntime {
           skills: cfg.skills,
           workspace: cfg.workspace,
           maxTokens: cfg.maxTokens,
+          providerApiKeys: Object.keys(flatKeys).length > 0 ? flatKeys : undefined,
         };
         await gatewayClient.registerRuntimeAgent(runtimeConfig);
-
-        const flatKeys = flattenProviderKeys(providerApiKeys, cfg);
-        if (Object.keys(flatKeys).length > 0) {
-          await gatewayClient.setRuntimeAgentCredentials(agentName, flatKeys);
-        }
       }
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
@@ -715,11 +725,11 @@ export class ProcessRuntime implements DeploymentRuntime {
 
     const gatewayClient = await this.getGatewayClient();
     if (gatewayClient) {
-      // Remove runtime agents for this deployment
+      // Disable runtime agents (keep config for re-enable on start)
       const agents = deployment.config?.agents ?? {};
       for (const agentName of Object.keys(agents)) {
         try {
-          await gatewayClient.removeRuntimeAgent(agentName);
+          await gatewayClient.disableRuntimeAgent(agentName);
         } catch {
           // Best-effort: agent may already be removed or gateway down
         }
