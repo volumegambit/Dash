@@ -1121,12 +1121,12 @@ export function Chat(): JSX.Element {
           type="button"
           onClick={handleNewConversation}
           disabled={availableAgents.length === 0}
-          className="flex items-center gap-1.5 rounded-lg border border-primary/40 bg-primary/10 px-3 py-1.5 text-xs text-primary transition-colors hover:bg-primary/20 hover:border-primary/60 disabled:opacity-40"
+          className="flex items-center gap-1.5 border border-primary/40 bg-primary/10 px-3 py-1.5 text-xs text-primary transition-colors hover:bg-primary/20 hover:border-primary/60 disabled:opacity-40"
           title="New conversation (⌘N)"
         >
           <Plus size={12} />
           New conversation
-          <kbd className="text-[10px] font-medium text-primary/60 bg-primary/10 border border-primary/20 rounded px-1.5 py-0.5">⌘N</kbd>
+          <kbd className="text-[10px] font-medium text-primary/60 bg-primary/10 border border-primary/20 px-1.5 py-0.5">⌘N</kbd>
         </button>
       </div>
 
