@@ -4,6 +4,7 @@ import {
   Check,
   ChevronDown,
   ChevronUp,
+  FolderOpen,
   Loader,
   Paperclip,
   Pencil,
@@ -1042,6 +1043,7 @@ export function Chat(): JSX.Element {
       selectedDeployment?.config?.agent)
     : undefined;
   const activeModel = agentConfig?.model;
+  const activeWorkspace = agentConfig?.workspace ?? selectedDeployment?.workspace;
 
   const filteredConversations = conversationSearch.trim()
     ? conversations.filter(
@@ -1143,6 +1145,17 @@ export function Chat(): JSX.Element {
               )}
               {activeModel && (
                 <span className="text-xs text-foreground/70">{formatModelName(activeModel)}</span>
+              )}
+              {activeWorkspace && (
+                <button
+                  type="button"
+                  onClick={() => window.api.openPath(activeWorkspace)}
+                  className="ml-auto flex items-center gap-1.5 text-xs text-muted transition-colors hover:text-foreground"
+                  title={activeWorkspace}
+                >
+                  <FolderOpen size={12} />
+                  <span className="max-w-[300px] truncate">{activeWorkspace}</span>
+                </button>
               )}
             </div>
           )}
