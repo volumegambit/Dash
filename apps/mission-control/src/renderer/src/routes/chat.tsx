@@ -313,7 +313,13 @@ function ToolBlock({
   const [open, setOpen] = useState(hasDiff);
   const [showRaw, setShowRaw] = useState(false);
   const summary = summarize(name, input);
-  const details = formatDetails(input);
+  const normalizedName = name === 'read_file' ? 'read' : name;
+  const READ_HIDDEN_KEYS = new Set(['path', 'offset', 'limit']);
+  const allDetails = formatDetails(input);
+  const details =
+    normalizedName === 'read'
+      ? allDetails.filter(({ key }) => !READ_HIDDEN_KEYS.has(key))
+      : allDetails;
   const todos = isTodoWrite(name) ? parseTodos(input) : null;
 
   return (
