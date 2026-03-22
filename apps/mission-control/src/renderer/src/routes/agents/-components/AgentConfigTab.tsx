@@ -77,9 +77,7 @@ export function AgentConfigTab({
       .catch(() => {});
   }, [agentConfig]);
 
-  const unassignedConnectors = poolConnectors.filter(
-    (c) => !assignedConnectors.includes(c.name),
-  );
+  const unassignedConnectors = poolConnectors.filter((c) => !assignedConnectors.includes(c.name));
 
   const handleAssignConnector = useCallback(
     async (name: string) => {

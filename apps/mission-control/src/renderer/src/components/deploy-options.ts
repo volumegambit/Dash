@@ -125,7 +125,19 @@ export const AVAILABLE_TOOLS: ToolOption[] = [
   { value: 'web_fetch', label: 'Web Fetch', description: TOOL_DESCRIPTIONS.web_fetch },
   { value: 'create_skill', label: 'Create Skill', description: TOOL_DESCRIPTIONS.create_skill },
   { value: 'mcp', label: 'MCP', description: TOOL_DESCRIPTIONS.mcp },
-  { value: 'mcp_add_server', label: 'Add Connector', description: TOOL_DESCRIPTIONS.mcp_add_server },
-  { value: 'mcp_list_servers', label: 'List Connectors', description: TOOL_DESCRIPTIONS.mcp_list_servers },
-  { value: 'mcp_remove_server', label: 'Remove Connector', description: TOOL_DESCRIPTIONS.mcp_remove_server },
+  {
+    value: 'mcp_add_server',
+    label: 'Add Connector',
+    description: TOOL_DESCRIPTIONS.mcp_add_server,
+  },
+  {
+    value: 'mcp_list_servers',
+    label: 'List Connectors',
+    description: TOOL_DESCRIPTIONS.mcp_list_servers,
+  },
+  {
+    value: 'mcp_remove_server',
+    label: 'Remove Connector',
+    description: TOOL_DESCRIPTIONS.mcp_remove_server,
+  },
 ];

@@ -11,10 +11,10 @@ import {
   Settings,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
-import { DashSquadLogo } from './DashSquadLogo.js';
 import { useEffect, useState } from 'react';
 import type { ChannelHealthEntry, GatewayStatus } from '../../../shared/ipc.js';
 import { useMessagingAppsStore } from '../stores/messaging-apps.js';
+import { DashSquadLogo } from './DashSquadLogo.js';
 import { HealthDot } from './HealthDot.js';
 
 type ChannelHealth = ChannelHealthEntry['health'];
