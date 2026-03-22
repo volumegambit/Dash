@@ -181,6 +181,16 @@ const api: MissionControlAPI = {
     return () => ipcRenderer.removeListener('credentials:pushFailed', handler);
   },
 
+  // Connectors (MCP)
+  mcpListConnectors: () => ipcRenderer.invoke('mcp:listConnectors'),
+  mcpGetConnector: (name: string) => ipcRenderer.invoke('mcp:getConnector', name),
+  mcpAddConnector: (config: Parameters<MissionControlAPI['mcpAddConnector']>[0]) =>
+    ipcRenderer.invoke('mcp:addConnector', config),
+  mcpRemoveConnector: (name: string) => ipcRenderer.invoke('mcp:removeConnector', name),
+  mcpReconnectConnector: (name: string) => ipcRenderer.invoke('mcp:reconnectConnector', name),
+  mcpGetAllowlist: () => ipcRenderer.invoke('mcp:getAllowlist'),
+  mcpSetAllowlist: (patterns: string[]) => ipcRenderer.invoke('mcp:setAllowlist', patterns),
+
   // Updates
   onUpdateAvailable: (callback: (info: { version: string }) => void): (() => void) => {
     const handler = (_: Electron.IpcRendererEvent, info: { version: string }) => callback(info);
