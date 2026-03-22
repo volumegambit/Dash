@@ -4,6 +4,7 @@ import {
   Check,
   ChevronDown,
   ChevronUp,
+  Copy,
   FolderOpen,
   Loader,
   Paperclip,
@@ -375,6 +376,38 @@ function extractUsage(events: Record<string, unknown>[]): Record<string, number>
   return null;
 }
 
+/** Extract plain text from assistant events for copying */
+function extractTextFromEvents(events: Record<string, unknown>[]): string {
+  const parts: string[] = [];
+  for (const event of events) {
+    const e = event as McAgentEvent;
+    if (e.type === 'text_delta') parts.push(e.text);
+  }
+  return parts.join('');
+}
+
+function CopyButton({ text }: { text: string }): JSX.Element {
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = useCallback(() => {
+    navigator.clipboard.writeText(text).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    });
+  }, [text]);
+
+  return (
+    <button
+      type="button"
+      onClick={handleCopy}
+      className="rounded p-1 text-muted/50 hover:text-foreground transition-colors"
+      title="Copy message"
+    >
+      {copied ? <Check size={14} className="text-green" /> : <Copy size={14} />}
+    </button>
+  );
+}
+
 function MessageBubble({
   message,
   streamingEvents,
@@ -391,25 +424,30 @@ function MessageBubble({
   const isUser = message?.role === 'user';
 
   if (isUser && message) {
+    const userText =
+      message.content.type === 'user' && message.content.text ? message.content.text : '';
     const userImages = message.content.type === 'user' ? message.content.images : undefined;
     return (
-      <div className="mb-6 flex justify-end">
-        <div className="bg-accent text-white rounded-lg p-4 max-w-[70%] ml-auto text-sm">
-          {message.content.type === 'user' && message.content.text && (
-            <p className="whitespace-pre-wrap">{message.content.text}</p>
-          )}
-          {userImages && userImages.length > 0 && (
-            <div className="mt-2 flex flex-wrap gap-2">
-              {userImages.map((img, i) => (
-                <img
-                  key={`img-${img.mediaType}-${img.data.slice(0, 16)}-${i}`}
-                  src={`data:${img.mediaType};base64,${img.data}`}
-                  alt={`Attached ${i + 1}`}
-                  className="max-h-48 max-w-full rounded"
-                />
-              ))}
-            </div>
-          )}
+      <div className="group mb-6 flex justify-end">
+        <div className="flex items-start gap-1">
+          <div className="opacity-0 group-hover:opacity-100 transition-opacity pt-1">
+            {userText && <CopyButton text={userText} />}
+          </div>
+          <div className="bg-accent text-white rounded-lg p-4 max-w-[70%] ml-auto text-sm">
+            {userText && <p className="whitespace-pre-wrap">{userText}</p>}
+            {userImages && userImages.length > 0 && (
+              <div className="mt-2 flex flex-wrap gap-2">
+                {userImages.map((img, i) => (
+                  <img
+                    key={`img-${img.mediaType}-${img.data.slice(0, 16)}-${i}`}
+                    src={`data:${img.mediaType};base64,${img.data}`}
+                    alt={`Attached ${i + 1}`}
+                    className="max-h-48 max-w-full rounded"
+                  />
+                ))}
+              </div>
+            )}
+          </div>
         </div>
       </div>
     );
@@ -418,19 +456,25 @@ function MessageBubble({
   const events: Record<string, unknown>[] =
     streamingEvents ?? (message?.content.type === 'assistant' ? message.content.events : []);
   const usage = extractUsage(events);
+  const assistantText = extractTextFromEvents(events);
 
   return (
-    <div className="mb-6">
+    <div className="group mb-6">
       <div className="bg-card-bg rounded-lg p-4 max-w-[70%] text-sm text-foreground">
         {renderEvents(events, navigateToLogs, onAnswerQuestion, answeredQuestions)}
       </div>
-      {usage && (
-        <div className="mt-1 max-w-[80%] px-1 text-[10px] text-muted/60">
-          {usage.input_tokens != null && <span>{formatTokens(usage.input_tokens)} in</span>}
-          {usage.input_tokens != null && usage.output_tokens != null && <span> · </span>}
-          {usage.output_tokens != null && <span>{formatTokens(usage.output_tokens)} out</span>}
+      <div className="mt-1 flex items-center gap-2 max-w-[80%] px-1">
+        <div className="opacity-0 group-hover:opacity-100 transition-opacity">
+          {assistantText && <CopyButton text={assistantText} />}
         </div>
-      )}
+        {usage && (
+          <div className="text-[10px] text-muted/60">
+            {usage.input_tokens != null && <span>{formatTokens(usage.input_tokens)} in</span>}
+            {usage.input_tokens != null && usage.output_tokens != null && <span> · </span>}
+            {usage.output_tokens != null && <span>{formatTokens(usage.output_tokens)} out</span>}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
