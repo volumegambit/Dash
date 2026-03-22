@@ -1011,19 +1011,36 @@ export function Chat(): JSX.Element {
 
   // Track previous message count to distinguish bulk loads from incremental updates
   const prevMessageCount = useRef(0);
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const isNearBottom = useRef(true);
+
+  // Track whether user is scrolled near the bottom of the message area
+  const handleScroll = useCallback(() => {
+    const el = scrollContainerRef.current;
+    if (!el) return;
+    // Consider "near bottom" if within 150px of the bottom
+    isNearBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 150;
+  }, []);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: messagesEndRef is a stable ref
   useEffect(() => {
-    // Bulk load (conversation switched): jump instantly instead of smooth-scrolling through all messages
+    // Bulk load (conversation switched): always jump instantly to bottom
     const isBulkLoad = prevMessageCount.current === 0 && selectedMessages.length > 0;
     prevMessageCount.current = selectedMessages.length;
-    messagesEndRef.current?.scrollIntoView({ behavior: isBulkLoad ? 'instant' : 'smooth' });
+    if (isBulkLoad) {
+      messagesEndRef.current?.scrollIntoView({ behavior: 'instant' });
+      isNearBottom.current = true;
+    } else if (isNearBottom.current) {
+      // Only auto-scroll if user is already near the bottom
+      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
   }, [selectedMessages.length, liveEvents.length]);
 
   // Reset message count tracking when conversation changes
   // biome-ignore lint/correctness/useExhaustiveDependencies: intentionally reset on conversation change
   useEffect(() => {
     prevMessageCount.current = 0;
+    isNearBottom.current = true;
   }, [selectedConversationId]);
 
   // Build available agents list from running deployments
@@ -1320,7 +1337,7 @@ export function Chat(): JSX.Element {
             </div>
           )}
 
-          <div className="flex-1 overflow-y-auto overflow-x-hidden px-6 py-4">
+          <div ref={scrollContainerRef} onScroll={handleScroll} className="flex-1 overflow-y-auto overflow-x-hidden px-6 py-4">
             {!selectedConversationId ? (
               <p className="text-center text-sm text-muted mt-8">
                 {runningDeployments.length === 0
