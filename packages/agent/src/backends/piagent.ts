@@ -443,12 +443,23 @@ export class PiAgentBackend implements AgentBackend {
         } else {
           content = String(e.result ?? '');
         }
+        // Extract details (e.g. diff from Edit tool) if present
+        const rawDetails =
+          e.result && typeof e.result === 'object' && 'details' in e.result
+            ? (e.result as { details?: unknown }).details
+            : undefined;
+        // Only include details if it has meaningful content (skip empty objects)
+        const hasDetails =
+          rawDetails !== undefined &&
+          rawDetails !== null &&
+          !(typeof rawDetails === 'object' && Object.keys(rawDetails as object).length === 0);
         return {
           type: 'tool_result',
           id: e.toolCallId,
           name: e.toolName,
           content,
           isError: e.isError,
+          ...(hasDetails ? { details: rawDetails } : {}),
         };
       }
 
