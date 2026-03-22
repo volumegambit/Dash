@@ -169,6 +169,20 @@ export interface MissionControlAPI {
   // Deployments
   deploymentsList(): Promise<AgentDeployment[]>;
   deploymentsGet(id: string): Promise<AgentDeployment | null>;
+  deploymentsGetAgentConfig(agentName: string): Promise<{
+    name: string;
+    config: {
+      name: string;
+      model: string;
+      systemPrompt: string;
+      fallbackModels?: string[];
+      tools?: string[];
+      mcpServers?: string[];
+      workspace?: string;
+      skills?: { paths?: string[]; urls?: string[] };
+    };
+    status: string;
+  }>;
   deploymentsDeploy(configDir: string): Promise<string>;
   deploymentsDeployWithConfig(options: DeployWithConfigOptions): Promise<string>;
   deploymentsStop(id: string): Promise<void>;
