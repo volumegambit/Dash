@@ -304,7 +304,12 @@ function ToolBlock({
   isError,
   toolDetails,
 }: { name: string; input: string; result: string; isError?: boolean; toolDetails?: unknown }): JSX.Element {
-  const [open, setOpen] = useState(false);
+  const hasDiff =
+    name === 'edit' &&
+    toolDetails != null &&
+    typeof toolDetails === 'object' &&
+    'diff' in toolDetails;
+  const [open, setOpen] = useState(hasDiff);
   const [showRaw, setShowRaw] = useState(false);
   const summary = summarize(name, input);
   const details = formatDetails(input);
