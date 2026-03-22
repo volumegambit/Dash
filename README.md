@@ -97,7 +97,6 @@ Dash has two main components:
 | Package | What it does |
 |---------|-------------|
 | `@dash/gateway` | Agent runtime and channel gateway — hosts agents in-process, routes Telegram/MC/other channels to agents |
-| `@dash/tui` | Built-in terminal interface within Mission Control for quick agent interaction |
 | `@dash/mission-control` | Desktop app for managing your agent team and chatting with agents directly (Electron + React) |
 | `@dash/mc-cli` | CLI equivalent of Mission Control — `deploy`, `status`, `stop`, `remove`, `logs`, `health`, `info`, `secrets`, `lock`, `unlock` |
 
@@ -114,7 +113,6 @@ Dash/
 │   └── mc/           # Deployment registry, encrypted secrets store
 ├── apps/
 │   ├── gateway/      # Agent runtime + channel gateway
-│   ├── tui/          # Terminal UI
 │   ├── mc-cli/       # Mission Control CLI
 │   └── mission-control/  # Mission Control desktop app (Electron)
 ├── config.example/
@@ -189,7 +187,6 @@ Full documentation is available at [docs.dashsquad.ai](https://docs.dashsquad.ai
 
 ```bash
 npm run build         # Build all packages and apps (tsup)
-npm run tui           # Terminal UI (apps/tui via tsx)
 npm run gateway       # Channel gateway (pass --config <path>)
 npm run mc-cli        # Mission Control CLI (apps/mc-cli via tsx)
 npm run mc:dev        # Mission Control desktop app (dev mode)
