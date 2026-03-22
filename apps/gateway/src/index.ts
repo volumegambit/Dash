@@ -7,7 +7,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 config({ path: resolve(__dirname, '../../../.env') });
 
 import { PiAgentBackend } from '@dash/agent';
-import { FileTokenStore, McpManager } from '@dash/mcp';
+import { FileTokenStore, McpManager, McpProposalStore } from '@dash/mcp';
 import { serve } from '@hono/node-server';
 import { createNodeWebSocket } from '@hono/node-ws';
 import { Hono } from 'hono';
@@ -58,6 +58,7 @@ async function main() {
     const mcpConfigStore = new McpConfigStore(mcpDir);
     const mcpTokenStore = new FileTokenStore(join(mcpDir, 'tokens.json'));
 
+    const mcpProposalStore = new McpProposalStore();
     const mcpConfigs = await mcpConfigStore.loadConfigs();
     const mcpManager = new McpManager(mcpConfigs, { logger: console });
     if (mcpConfigs.length > 0) {
@@ -88,6 +89,8 @@ async function main() {
           sessionDir,
           resolve(dataDir, 'skills', config.name),
           mcpManager,
+          mcpConfigStore,
+          mcpProposalStore,
         );
       },
     });
