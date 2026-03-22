@@ -65,7 +65,7 @@ export class ConversationStore {
       id: randomUUID(),
       deploymentId,
       agentName,
-      title: 'New conversation',
+      title: 'New Conversation',
       createdAt: now,
       updatedAt: now,
     };
@@ -118,7 +118,7 @@ export class ConversationStore {
     if (idx !== -1) {
       conversations[idx].updatedAt = new Date().toISOString();
       if (
-        conversations[idx].title === 'New conversation' &&
+        conversations[idx].title === 'New Conversation' &&
         message.role === 'user' &&
         message.content.type === 'user'
       ) {

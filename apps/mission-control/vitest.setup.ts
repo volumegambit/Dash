@@ -21,7 +21,7 @@ function createMockApi(): Record<keyof MissionControlAPI, ReturnType<typeof vi.f
       id: 'conv-1',
       deploymentId: 'dep-1',
       agentName: 'agent',
-      title: 'New conversation',
+      title: 'New Conversation',
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     }),

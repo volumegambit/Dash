@@ -23,7 +23,7 @@ describe('ConversationStore', () => {
     expect(conv.id).toBeTruthy();
     expect(conv.deploymentId).toBe('deploy-1');
     expect(conv.agentName).toBe('myagent');
-    expect(conv.title).toBe('New conversation');
+    expect(conv.title).toBe('New Conversation');
   });
 
   it('lists conversations filtered by deploymentId', async () => {
