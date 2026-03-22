@@ -94,10 +94,17 @@ function SourceCode({ content }: { content: string }): JSX.Element {
 
 export function ToolResult({
   name,
+  input,
   result,
   isError,
   details,
-}: { name: string; result: string; isError?: boolean; details?: unknown }): JSX.Element {
+}: {
+  name: string;
+  input?: string;
+  result: string;
+  isError?: boolean;
+  details?: unknown;
+}): JSX.Element {
   if (isError) {
     return <p className="whitespace-pre-wrap text-red">{result}</p>;
   }
@@ -110,9 +117,19 @@ export function ToolResult({
   if (name === 'edit' && details && typeof details === 'object' && 'diff' in details) {
     const { diff } = details as { diff: string; firstChangedLine?: number };
     if (typeof diff === 'string' && diff.trim()) {
+      // Extract file path from tool input for language detection
+      let filePath: string | undefined;
+      if (input) {
+        try {
+          const parsed = JSON.parse(input);
+          if (typeof parsed.path === 'string') filePath = parsed.path;
+        } catch {
+          /* ignore */
+        }
+      }
       return (
         <div>
-          <DiffView diff={diff} />
+          <DiffView diff={diff} path={filePath} />
         </div>
       );
     }
