@@ -1,7 +1,9 @@
 import type { AgentDeployAgentConfig } from '@dash/mc';
 import { providerSecretKey } from '@dash/mc/provider-keys';
-import { ChevronDown, ChevronUp, FolderOpen } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { ChevronDown, ChevronUp, FolderOpen, X } from 'lucide-react';
+import { useCallback, useEffect, useState } from 'react';
+import type { McpConnectorInfo } from '../../../../shared/ipc.js';
+import { HealthDot } from '../../../components/HealthDot.js';
 import { ModelChainEditor } from '../../../components/ModelChainEditor.js';
 import { ALL_TOOL_IDS, TOOL_GROUPS } from '../../../components/deploy-options.js';
 import { useAvailableModels } from '../../../hooks/useAvailableModels.js';
@@ -11,6 +13,7 @@ type ConfigPatch = {
   fallbackModels?: string[];
   tools?: string[];
   systemPrompt?: string;
+  mcpServers?: string[];
 };
 
 interface AgentConfigTabProps {
@@ -33,7 +36,9 @@ export function AgentConfigTab({
   } = useAvailableModels();
 
   // Which card is open (null = all collapsed). Opening goes straight to edit mode.
-  const [openCard, setOpenCard] = useState<'models' | 'prompt' | 'tools' | null>(null);
+  const [openCard, setOpenCard] = useState<'models' | 'prompt' | 'tools' | 'connectors' | null>(
+    null,
+  );
 
   // Model chain editing state
   const [chainModel, setChainModel] = useState('');
@@ -49,6 +54,10 @@ export function AgentConfigTab({
   const [promptDraft, setPromptDraft] = useState('');
   const [promptSaving, setPromptSaving] = useState(false);
 
+  // Connectors state
+  const [assignedConnectors, setAssignedConnectors] = useState<string[]>([]);
+  const [poolConnectors, setPoolConnectors] = useState<McpConnectorInfo[]>([]);
+
   // Credential key resolution
   const [modelKeys, setModelKeys] = useState<Record<string, { label: string; masked: string }>>({});
 
@@ -56,6 +65,47 @@ export function AgentConfigTab({
   const credentialKeys = (
     agentConfig as AgentDeployAgentConfig & { credentialKeys?: Record<string, string> }
   )?.credentialKeys;
+
+  // Sync connectors when agentConfig changes
+  useEffect(() => {
+    setAssignedConnectors(
+      (agentConfig as AgentDeployAgentConfig & { mcpServers?: string[] })?.mcpServers ?? [],
+    );
+    window.api
+      .mcpListConnectors()
+      .then(setPoolConnectors)
+      .catch(() => {});
+  }, [agentConfig]);
+
+  const unassignedConnectors = poolConnectors.filter(
+    (c) => !assignedConnectors.includes(c.name),
+  );
+
+  const handleAssignConnector = useCallback(
+    async (name: string) => {
+      const next = [...assignedConnectors, name];
+      setAssignedConnectors(next);
+      await updateConfig(deploymentId, { mcpServers: next });
+    },
+    [assignedConnectors, deploymentId, updateConfig],
+  );
+
+  const handleUnassignConnector = useCallback(
+    async (name: string) => {
+      const next = assignedConnectors.filter((s) => s !== name);
+      setAssignedConnectors(next);
+      await updateConfig(deploymentId, { mcpServers: next });
+    },
+    [assignedConnectors, deploymentId, updateConfig],
+  );
+
+  function connectorHealthStatus(
+    status: McpConnectorInfo['status'],
+  ): 'connected' | 'connecting' | 'disconnected' {
+    if (status === 'connected') return 'connected';
+    if (status === 'reconnecting') return 'connecting';
+    return 'disconnected';
+  }
 
   // Sync chain model/fallbacks when agentConfig changes
   useEffect(() => {
@@ -396,6 +446,81 @@ export function AgentConfigTab({
                 Cancel
               </button>
             </div>
+          </div>
+        )}
+      </div>
+
+      {/* Connectors card */}
+      <div className="rounded-lg border border-border bg-card-bg">
+        <button
+          type="button"
+          onClick={() => setOpenCard(openCard === 'connectors' ? null : 'connectors')}
+          className="flex w-full items-center justify-between p-4 text-left"
+        >
+          <div>
+            <h3 className="text-sm font-medium">Connectors</h3>
+            <p className="text-xs text-muted">
+              {assignedConnectors.length > 0
+                ? `${assignedConnectors.length} connected`
+                : 'No connectors assigned'}
+            </p>
+          </div>
+          {openCard === 'connectors' ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+        </button>
+
+        {openCard === 'connectors' && (
+          <div className="border-t border-border p-4">
+            {assignedConnectors.length > 0 && (
+              <div className="mb-3 flex flex-wrap gap-2">
+                {assignedConnectors.map((name) => {
+                  const info = poolConnectors.find((c) => c.name === name);
+                  return (
+                    <span
+                      key={name}
+                      className="flex items-center gap-1 rounded bg-bg-hover px-2 py-1 text-sm"
+                    >
+                      {info && <HealthDot health={connectorHealthStatus(info.status)} />}
+                      {name}
+                      <button
+                        type="button"
+                        onClick={() => handleUnassignConnector(name)}
+                        className="ml-1 text-fg-muted hover:text-red-500"
+                      >
+                        <X size={12} />
+                      </button>
+                    </span>
+                  );
+                })}
+              </div>
+            )}
+
+            {unassignedConnectors.length > 0 ? (
+              <select
+                onChange={(e) => {
+                  handleAssignConnector(e.target.value);
+                  e.target.value = '';
+                }}
+                defaultValue=""
+                className="rounded border border-border bg-bg-input px-3 py-1.5 text-sm"
+              >
+                <option value="" disabled>
+                  Add connector...
+                </option>
+                {unassignedConnectors.map((c) => (
+                  <option key={c.name} value={c.name}>
+                    {c.name} ({c.tools.length} tools)
+                  </option>
+                ))}
+              </select>
+            ) : assignedConnectors.length === 0 ? (
+              <p className="text-sm text-fg-muted">
+                No connectors available.{' '}
+                <a href="#/connectors" className="text-accent hover:underline">
+                  Add connectors
+                </a>{' '}
+                first.
+              </p>
+            ) : null}
           </div>
         )}
       </div>
