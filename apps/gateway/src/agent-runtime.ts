@@ -35,9 +35,11 @@ export class AgentRuntime {
         const entry = this.registry.get(agentName);
         if (!entry) throw new Error(`Agent '${agentName}' not found`);
         const backend = await options.createBackend(entry.config, conversationId);
+        // Prepend agent identity so the model knows its name
+        const systemPrompt = `You are "${agentName}".\n\n${entry.config.systemPrompt}`;
         const dashConfig: DashAgentConfig = {
           model: entry.config.model,
-          systemPrompt: entry.config.systemPrompt,
+          systemPrompt,
           fallbackModels: entry.config.fallbackModels,
           tools: entry.config.tools,
           skills: entry.config.skills,

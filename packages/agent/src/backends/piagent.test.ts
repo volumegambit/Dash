@@ -8,6 +8,18 @@ vi.mock('@mariozechner/pi-coding-agent', () => ({
       getApiKey: vi.fn(),
     })),
   },
+  DefaultResourceLoader: vi.fn(() => ({
+    reload: vi.fn().mockResolvedValue(undefined),
+    getSkills: vi.fn(() => ({ skills: [], diagnostics: [] })),
+    getSystemPrompt: vi.fn(() => undefined),
+    getAppendSystemPrompt: vi.fn(() => []),
+    getExtensions: vi.fn(() => ({ extensions: [], runtime: {} })),
+    getPrompts: vi.fn(() => ({ prompts: [], diagnostics: [] })),
+    getThemes: vi.fn(() => ({ themes: [], diagnostics: [] })),
+    getAgentsFiles: vi.fn(() => ({ agentsFiles: [] })),
+    getPathMetadata: vi.fn(() => new Map()),
+    extendResources: vi.fn(),
+  })),
   SessionManager: {
     inMemory: vi.fn(() => ({})),
     continueRecent: vi.fn(() => ({})),
@@ -324,6 +336,7 @@ describe('PiAgentBackend lifecycle', () => {
     const mockDispose = vi.fn();
     const mockSetModel = vi.fn().mockResolvedValue(undefined);
     const mockAgent = { setSystemPrompt: vi.fn() };
+    const activeTools = ['read', 'bash', 'edit', 'write'];
     vi.mocked(createAgentSession).mockResolvedValueOnce({
       session: {
         dispose: mockDispose,
@@ -332,6 +345,8 @@ describe('PiAgentBackend lifecycle', () => {
         abort: vi.fn(),
         setModel: mockSetModel,
         agent: mockAgent,
+        getActiveToolNames: vi.fn(() => activeTools),
+        setActiveToolsByName: vi.fn(),
         // biome-ignore lint/suspicious/noExplicitAny: test mock for partial session object
       } as any,
       // biome-ignore lint/suspicious/noExplicitAny: test mock
@@ -356,6 +371,7 @@ describe('PiAgentBackend lifecycle', () => {
     // biome-ignore lint/suspicious/noExplicitAny: test mock callback type
     let subscribeCb: ((event: any) => void) | null = null;
     const mockAgent = { setSystemPrompt: vi.fn() };
+    const activeTools = ['read', 'bash', 'edit', 'write'];
     const mockSession = {
       dispose: vi.fn(),
       // biome-ignore lint/suspicious/noExplicitAny: test mock callback type
@@ -388,6 +404,8 @@ describe('PiAgentBackend lifecycle', () => {
       }),
       abort: vi.fn(),
       setModel: vi.fn().mockResolvedValue(undefined),
+      getActiveToolNames: vi.fn(() => activeTools),
+      setActiveToolsByName: vi.fn(),
       agent: mockAgent,
     };
 
@@ -453,6 +471,8 @@ describe('PiAgentBackend sessionDir', () => {
         prompt: vi.fn(),
         abort: vi.fn(),
         setModel: vi.fn(),
+        getActiveToolNames: vi.fn(() => []),
+        setActiveToolsByName: vi.fn(),
         agent: { setSystemPrompt: vi.fn() },
         // biome-ignore lint/suspicious/noExplicitAny: test mock for partial session object
       } as any,
@@ -483,6 +503,8 @@ describe('PiAgentBackend sessionDir', () => {
         prompt: vi.fn(),
         abort: vi.fn(),
         setModel: vi.fn(),
+        getActiveToolNames: vi.fn(() => []),
+        setActiveToolsByName: vi.fn(),
         agent: { setSystemPrompt: vi.fn() },
         // biome-ignore lint/suspicious/noExplicitAny: test mock for partial session object
       } as any,
