@@ -1,3 +1,5 @@
+import hljs from 'highlight.js/lib/core';
+import bash from 'highlight.js/lib/languages/bash';
 import type { McMessage } from '@dash/mc';
 import { createFileRoute, useNavigate } from '@tanstack/react-router';
 import {
@@ -18,7 +20,9 @@ import {
   X,
   XCircle,
 } from 'lucide-react';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+
+hljs.registerLanguage('bash', bash);
 import type { McAgentEvent } from '../../../shared/ipc.js';
 import { Markdown } from '../components/Markdown.js';
 import { ToolResult } from '../components/ToolResult.js';
@@ -145,6 +149,16 @@ function renderEvents(
   // Flush in-progress tool call (tool_use_start seen but no tool_result yet)
   if (toolName) {
     const inProgressSummary = toolInput ? summarize(toolName, JSON.stringify(toolInput)) : '';
+    const isBashInProgress =
+      toolName === 'bash' || toolName === 'execute_command';
+    let inProgressHtml: string | null = null;
+    if (isBashInProgress && inProgressSummary) {
+      try {
+        inProgressHtml = hljs.highlight(inProgressSummary, { language: 'bash' }).value;
+      } catch {
+        /* ignore */
+      }
+    }
     elements.push(
       <div
         key="tool-progress"
@@ -152,7 +166,12 @@ function renderEvents(
       >
         <Loader size={12} className="animate-spin shrink-0" />
         <span className="font-mono">{toolLabel(toolName)}</span>
-        {inProgressSummary && <span className="ml-1 text-muted">{inProgressSummary}</span>}
+        {inProgressSummary && inProgressHtml ? (
+          // biome-ignore lint/security/noDangerouslySetInnerHtml: highlight.js output is safe
+          <span className="ml-1 font-mono text-muted" dangerouslySetInnerHTML={{ __html: inProgressHtml }} />
+        ) : inProgressSummary ? (
+          <span className="ml-1 text-muted">{inProgressSummary}</span>
+        ) : null}
       </div>,
     );
   }
@@ -322,6 +341,15 @@ function ToolBlock({
   const [showRaw, setShowRaw] = useState(false);
   const summary = summarize(name, input);
   const normalizedName = name === 'read_file' ? 'read' : name;
+  const isBash = normalizedName === 'bash' || name === 'execute_command';
+  const highlightedSummary = useMemo(() => {
+    if (!isBash || !summary) return null;
+    try {
+      return hljs.highlight(summary, { language: 'bash' }).value;
+    } catch {
+      return null;
+    }
+  }, [isBash, summary]);
   const READ_HIDDEN_KEYS = new Set(['path', 'offset', 'limit']);
   const allDetails = formatDetails(input);
   const details =
@@ -345,7 +373,12 @@ function ToolBlock({
           <Circle size={8} className="inline text-green fill-green mr-1.5" />
         )}
         <span className="font-mono">{toolLabel(name)}</span>
-        {summary && <span className="ml-1 text-muted">{summary}</span>}
+        {summary && highlightedSummary ? (
+          // biome-ignore lint/security/noDangerouslySetInnerHtml: highlight.js output is safe
+          <span className="ml-1 font-mono text-muted" dangerouslySetInnerHTML={{ __html: highlightedSummary }} />
+        ) : summary ? (
+          <span className="ml-1 text-muted">{summary}</span>
+        ) : null}
       </button>
       {open && (
         <div className="border-t border-border px-3 pb-2 pt-1">
