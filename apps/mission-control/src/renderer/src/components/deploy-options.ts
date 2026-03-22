@@ -104,8 +104,8 @@ export const TOOL_GROUPS: ToolGroup[] = [
     tools: ['create_skill'],
   },
   {
-    name: 'Connectors',
-    description: 'Manage connections to external tool servers (MCP)',
+    name: 'Manage Connectors / MCP Servers',
+    description: 'Let agents connect to, list, and remove external tool servers',
     tools: ['mcp', 'mcp_add_server', 'mcp_list_servers', 'mcp_remove_server'],
   },
 ];
