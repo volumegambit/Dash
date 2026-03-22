@@ -268,20 +268,19 @@ export class PiAgentBackend implements AgentBackend {
     // Create a resource loader that pi will use to build the system prompt.
     // We wrap it with DashResourceLoader so we can inject Dash's system prompt
     // and managed skills dynamically. Pi's _baseSystemPrompt reads from here.
-    // Pass configured skill paths and managed directory so pi discovers them natively.
-    const additionalSkillPaths: string[] = [];
-    if (this.managedSkillsDir) {
-      additionalSkillPaths.push(this.managedSkillsDir);
-    }
-    for (const p of this.config.skills?.paths ?? []) {
-      const expanded = p.startsWith('~/') ? p.replace('~', homedir()) : p;
-      additionalSkillPaths.push(expanded);
-    }
+    //
+    // Disable all pi-native resource discovery (skills, extensions, prompts, themes)
+    // so the gateway has full control. Pi's user settings (~/.pi/agent/settings.json),
+    // project settings (<cwd>/.pi/), and ~/.agents/ would otherwise silently influence
+    // agent behavior in unpredictable ways. All skill injection goes through
+    // DashResourceLoader.setExtraSkills() instead.
     const innerLoader = new DefaultResourceLoader({
       cwd: workspace,
       systemPrompt: this.config.systemPrompt,
-      noSkills: false,
-      additionalSkillPaths,
+      noSkills: true,
+      noExtensions: true,
+      noPromptTemplates: true,
+      noThemes: true,
     });
     await innerLoader.reload();
     this.resourceLoader = new DashResourceLoader(innerLoader);
