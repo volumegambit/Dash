@@ -50,6 +50,7 @@ export function AgentDetail(): JSX.Element {
   const [agentConfig, setAgentConfig] = useState<
     import('@dash/mc').AgentDeployAgentConfig | undefined
   >(undefined);
+  const [configRefreshKey, setConfigRefreshKey] = useState(0);
 
   useEffect(() => {
     loadDeployments().then(() => setLoading(false));
@@ -69,7 +70,25 @@ export function AgentDetail(): JSX.Element {
           : deployment?.config?.agent;
         if (localConfig) setAgentConfig(localConfig);
       });
-  }, [deployment?.name, deployment?.config]);
+  }, [deployment?.name, deployment?.config, configRefreshKey]);
+
+  // Auto-refresh agent config on gateway events
+  useEffect(() => {
+    if (!deployment?.name) return;
+    const unsub = window.api.onGatewayEvent((eventType, data) => {
+      if (eventType === 'agent:config-changed') {
+        try {
+          const parsed = JSON.parse(data) as { agent: string };
+          if (parsed.agent === deployment.name) {
+            setConfigRefreshKey((k) => k + 1);
+          }
+        } catch {
+          // Ignore parse errors
+        }
+      }
+    });
+    return unsub;
+  }, [deployment?.name]);
 
   useEffect(() => {
     if (!deployment) return;
