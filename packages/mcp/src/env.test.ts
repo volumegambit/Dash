@@ -1,4 +1,4 @@
-import { interpolateEnvVars, interpolateConfigEnvVars } from './env.js';
+import { interpolateConfigEnvVars, interpolateEnvVars } from './env.js';
 import type { McpServerConfig } from './types.js';
 
 describe('interpolateEnvVars', () => {
@@ -54,11 +54,11 @@ describe('interpolateConfigEnvVars', () => {
     };
 
     const result = interpolateConfigEnvVars(config);
-    expect(
-      result.transport.type === 'sse' && result.transport.headers?.Authorization,
-    ).toBe('Bearer from-config');
+    expect(result.transport.type === 'sse' && result.transport.headers?.Authorization).toBe(
+      'Bearer from-config',
+    );
 
-    if (original === undefined) delete process.env.TEST_SECRET;
+    if (original === undefined) process.env.TEST_SECRET = undefined;
     else process.env.TEST_SECRET = original;
   });
 

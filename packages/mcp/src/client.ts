@@ -206,12 +206,13 @@ export class McpClient {
   /** Re-fetch tools and rebuild wrapped tool array. */
   private async rebuildTools(): Promise<void> {
     if (!this.client || !this.callToolFn) return;
+    const callTool = this.callToolFn;
     const toolDefs = await this.listAllTools();
     this.tools = toolDefs.map((def) =>
       wrapMcpTool(
         this.config.name,
         { name: def.name, description: def.description, inputSchema: def.inputSchema },
-        this.callToolFn!,
+        callTool,
         this.toolTimeout,
       ),
     );
@@ -244,19 +245,16 @@ export class McpClient {
   /** Register notification handlers on the client. */
   private registerNotificationHandlers(): void {
     if (!this.client) return;
-    this.client.setNotificationHandler(
-      ToolListChangedNotificationSchema,
-      async () => {
-        this.logger.info(`[mcp:${this.config.name}] tools/list_changed notification received`);
-        try {
-          await this.rebuildTools();
-        } catch (err) {
-          this.logger.error(
-            `[mcp:${this.config.name}] failed to refresh tools: ${err instanceof Error ? err.message : String(err)}`,
-          );
-        }
-      },
-    );
+    this.client.setNotificationHandler(ToolListChangedNotificationSchema, async () => {
+      this.logger.info(`[mcp:${this.config.name}] tools/list_changed notification received`);
+      try {
+        await this.rebuildTools();
+      } catch (err) {
+        this.logger.error(
+          `[mcp:${this.config.name}] failed to refresh tools: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    });
   }
 
   // --- Lifecycle ---

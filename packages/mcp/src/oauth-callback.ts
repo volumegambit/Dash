@@ -1,4 +1,4 @@
-import { createServer, type Server } from 'node:http';
+import { type Server, createServer } from 'node:http';
 import type { McpLogger } from './types.js';
 
 export interface OAuthCallbackResult {
@@ -65,7 +65,7 @@ export async function startOAuthCallbackServer(
     res.writeHead(200, { 'Content-Type': 'text/html' });
     res.end(SUCCESS_HTML);
 
-    resolveCallback!({ code, state });
+    resolveCallback?.({ code, state });
 
     // Auto-close after successful callback
     setTimeout(() => close(), 100);
@@ -93,7 +93,7 @@ export async function startOAuthCallbackServer(
 
   // Set up timeout
   const timeoutId = setTimeout(() => {
-    rejectCallback!(new Error(`OAuth callback timed out after ${timeout}ms`));
+    rejectCallback?.(new Error(`OAuth callback timed out after ${timeout}ms`));
     close();
   }, timeout);
 
