@@ -10,10 +10,6 @@ files:
   - out/**/*
 
 extraResources:
-  - from: ../../apps/dash/dist
-    to: apps/dash/dist
-    filter:
-      - "**/*"
   - from: ../../apps/gateway/dist
     to: apps/gateway/dist
     filter:
@@ -42,7 +38,7 @@ extraResources:
     to: node_modules
     filter:
       # Runtime dependencies only — dev/build tools are excluded.
-      # To regenerate: check production deps of apps/dash, apps/gateway,
+      # To regenerate: check production deps of apps/gateway,
       # packages/agent, packages/channels, packages/chat, packages/management.
       - "@cacheable/**"
       - "@hapi/**"
