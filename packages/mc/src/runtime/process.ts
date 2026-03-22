@@ -108,7 +108,6 @@ interface AgentCfg {
   systemPrompt: string;
   tools?: string[];
   workspace?: string;
-  opencodeStateDir?: string;
   credentialKeys?: Record<string, string>;
   maxTokens?: number;
   skills?: { paths?: string[]; urls?: string[] };
@@ -493,22 +492,17 @@ export class ProcessRuntime implements DeploymentRuntime {
 
     // Resolve workspace for each agent and write back to config files
     const mcDataDir = process.env.MC_DATA_DIR || getPlatformDataDir('dash');
-    const agentDataDir = getPlatformDataDir('dash-agent');
     for (const [name, cfg] of Object.entries(agentConfigs)) {
       if (!cfg.workspace) {
         cfg.workspace = join(mcDataDir, 'workspaces', `${name}-${id}`);
       }
       await mkdir(cfg.workspace, { recursive: true, mode: 0o700 });
 
-      cfg.opencodeStateDir = join(agentDataDir, 'opencode', `${name}-${id}`);
-      await mkdir(cfg.opencodeStateDir, { recursive: true, mode: 0o700 });
-
       const agentFile = join(absConfigDir, 'agents', `${name}.json`);
       if (existsSync(agentFile)) {
         const raw = await readFile(agentFile, 'utf-8');
         const json = JSON.parse(raw) as Record<string, unknown>;
         json.workspace = cfg.workspace;
-        json.opencodeStateDir = cfg.opencodeStateDir;
         await writeFile(agentFile, JSON.stringify(json, null, 2));
       }
     }
