@@ -20,7 +20,7 @@ import {
   X,
   XCircle,
 } from 'lucide-react';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 hljs.registerLanguage('bash', bash);
 import type { McAgentEvent } from '../../../shared/ipc.js';
@@ -465,7 +465,7 @@ function CopyButton({ text }: { text: string }): JSX.Element {
   );
 }
 
-function MessageBubble({
+const MessageBubble = memo(function MessageBubble({
   message,
   streamingEvents,
   navigateToLogs,
@@ -532,7 +532,7 @@ function MessageBubble({
       </div>
     </div>
   );
-}
+});
 
 /** Extract the latest TodoWrite state from messages and live streaming events */
 function extractLatestTodos(msgs: McMessage[], liveEvents: McAgentEvent[]): TodoItem[] | null {
@@ -670,7 +670,7 @@ function PinnedTodoPanel({ todos }: { todos: TodoItem[] }): JSX.Element {
   );
 }
 
-function ConversationItem({
+const ConversationItem = memo(function ConversationItem({
   conversation,
   isSelected,
   hasUnread,
@@ -794,7 +794,7 @@ function ConversationItem({
       </div>
     </li>
   );
-}
+});
 
 function formatModelName(model: string): string {
   // Strip provider prefix (e.g. "anthropic/claude-sonnet-4-5" → "claude-sonnet-4-5")
@@ -1015,14 +1015,14 @@ export function Chat(): JSX.Element {
   }, [selectedMessages.length, liveEvents.length]);
 
   // Build available agents list from running deployments
-  const availableAgents = runningDeployments.flatMap((dep) => {
+  const availableAgents = useMemo(() => runningDeployments.flatMap((dep) => {
     const agentNames = dep.config.agents ? Object.keys(dep.config.agents) : [];
     return agentNames.map((name) => ({
       deploymentId: dep.id,
       deploymentName: dep.name,
       agentName: name,
     }));
-  });
+  }), [runningDeployments]);
 
   const handleNewConversation = useCallback(() => {
     if (availableAgents.length === 0) return;
@@ -1161,13 +1161,22 @@ export function Chat(): JSX.Element {
       ? `${selectedDeployment.configDir.replace(/\/[^/]+$/, '')}/skills/${selectedConversation.agentName}`
       : undefined;
 
-  const filteredConversations = conversationSearch.trim()
-    ? conversations.filter(
-        (c) =>
-          c.title.toLowerCase().includes(conversationSearch.toLowerCase()) ||
-          c.agentName.toLowerCase().includes(conversationSearch.toLowerCase()),
-      )
-    : conversations;
+  const latestTodos = useMemo(
+    () => extractLatestTodos(selectedMessages, liveEvents),
+    [selectedMessages, liveEvents],
+  );
+
+  const filteredConversations = useMemo(
+    () =>
+      conversationSearch.trim()
+        ? conversations.filter(
+            (c) =>
+              c.title.toLowerCase().includes(conversationSearch.toLowerCase()) ||
+              c.agentName.toLowerCase().includes(conversationSearch.toLowerCase()),
+          )
+        : conversations,
+    [conversations, conversationSearch],
+  );
 
   return (
     <div className="flex flex-col h-full overflow-hidden">
@@ -1331,10 +1340,7 @@ export function Chat(): JSX.Element {
             <div ref={messagesEndRef} />
           </div>
 
-          {(() => {
-            const todos = extractLatestTodos(selectedMessages, liveEvents);
-            return todos && todos.length > 0 ? <PinnedTodoPanel todos={todos} /> : null;
-          })()}
+          {latestTodos && latestTodos.length > 0 && <PinnedTodoPanel todos={latestTodos} />}
 
           {/* Input bar */}
           <div className="bg-surface border-t border-border px-6 py-4 flex items-center gap-3 shrink-0">
