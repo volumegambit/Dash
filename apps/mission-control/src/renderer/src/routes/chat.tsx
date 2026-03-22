@@ -350,15 +350,45 @@ function ToolBlock({
         : allDetails;
   const todos = isTodoWrite(name) ? parseTodos(input) : null;
 
-  // Parse Write tool content for syntax-highlighted display
+  // Parse Write tool content for rich display
   const writeContent = useMemo(() => {
     if (!isWrite || !input) return null;
     try {
       const parsed = JSON.parse(input) as Record<string, unknown>;
       if (typeof parsed.content !== 'string') return null;
       const filePath = typeof parsed.path === 'string' ? parsed.path : undefined;
+      const ext = filePath?.split('.').pop()?.toLowerCase();
+
+      // Detect render mode from file extension
+      if (ext === 'md' || ext === 'mdx') {
+        return { content: parsed.content, mode: 'markdown' as const };
+      }
+      if (ext === 'svg') {
+        // Sanitize SVG: strip script tags and event handlers
+        const parser = new DOMParser();
+        const doc = parser.parseFromString(parsed.content, 'image/svg+xml');
+        for (const el of doc.querySelectorAll('script')) el.remove();
+        for (const el of doc.querySelectorAll('*')) {
+          for (const attr of [...el.attributes]) {
+            if (attr.name.startsWith('on')) el.removeAttribute(attr.name);
+          }
+        }
+        const svg = doc.querySelector('svg');
+        const sanitized = svg ? svg.outerHTML : parsed.content;
+        return { content: sanitized, mode: 'svg' as const };
+      }
+      if (ext === 'json') {
+        // Pretty-print if not already formatted
+        try {
+          const obj = JSON.parse(parsed.content);
+          return { content: JSON.stringify(obj, null, 2), mode: 'code' as const, language: 'json' };
+        } catch {
+          return { content: parsed.content, mode: 'code' as const, language: 'json' };
+        }
+      }
+
       const lang = filePath ? detectLanguage(filePath) : undefined;
-      return { content: parsed.content, language: lang };
+      return { content: parsed.content, mode: 'code' as const, language: lang };
     } catch {
       return null;
     }
@@ -429,7 +459,16 @@ function ToolBlock({
                   ))}
                 </div>
               )}
-              {writeContent ? (
+              {writeContent?.mode === 'markdown' ? (
+                <div className="max-h-64 overflow-auto prose-sm">
+                  <Markdown>{writeContent.content}</Markdown>
+                </div>
+              ) : writeContent?.mode === 'svg' ? (
+                <div className="max-h-64 overflow-auto bg-white/5 p-2 flex items-center justify-center">
+                  {/* biome-ignore lint/security/noDangerouslySetInnerHtml: SVG from Write tool content */}
+                  <div dangerouslySetInnerHTML={{ __html: writeContent.content }} />
+                </div>
+              ) : writeContent?.mode === 'code' ? (
                 <div className="max-h-64 overflow-auto bg-[#161b22] p-2">
                   {writeContent.language ? (
                     <HighlightedCode
