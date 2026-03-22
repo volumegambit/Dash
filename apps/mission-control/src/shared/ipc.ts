@@ -281,6 +281,9 @@ export interface MissionControlAPI {
   mcpGetAllowlist(): Promise<string[]>;
   mcpSetAllowlist(patterns: string[]): Promise<void>;
 
+  // Gateway events (SSE)
+  onGatewayEvent(callback: (eventType: string, data: string) => void): () => void;
+
   // Updates
   onUpdateAvailable(callback: (info: { version: string }) => void): () => void;
 }
