@@ -428,12 +428,11 @@ function MessageBubble({
       message.content.type === 'user' && message.content.text ? message.content.text : '';
     const userImages = message.content.type === 'user' ? message.content.images : undefined;
     return (
-      <div className="group mb-6 flex justify-end">
-        <div className="flex items-center gap-1">
-          <div className="opacity-0 group-hover:opacity-100 transition-opacity">
-            {userText && <CopyButton text={userText} />}
-          </div>
-          <div className="bg-accent text-white rounded-lg p-4 max-w-[70%] text-sm">
+      <div className="group mb-6 flex items-start justify-end gap-1">
+        <div className="opacity-0 group-hover:opacity-100 transition-opacity mt-3">
+          {userText && <CopyButton text={userText} />}
+        </div>
+        <div className="bg-accent text-white rounded-lg p-4 max-w-[70%] text-sm">
             {userText && <p className="whitespace-pre-wrap">{userText}</p>}
             {userImages && userImages.length > 0 && (
               <div className="mt-2 flex flex-wrap gap-2">
@@ -448,7 +447,6 @@ function MessageBubble({
               </div>
             )}
           </div>
-        </div>
       </div>
     );
   }
