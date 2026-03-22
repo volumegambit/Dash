@@ -290,15 +290,8 @@ export async function registerIpcHandlers(
   gatewayPoller = new GatewayPoller(
     () => rt.ensureGateway(),
     async () => {
-      const deployments = await getRegistry().list();
-      for (const dep of deployments.filter((d) => d.status === 'running')) {
-        try {
-          await rt.registerWithGateway(dep.id);
-        } catch (err) {
-          console.error(`Failed to re-register deployment ${dep.id} after gateway restart:`, err);
-        }
-      }
-      // Refresh ChatService connection after gateway restart
+      // Gateway self-restores agents from its own persistent registry.
+      // Just refresh the chat service connection.
       await refreshChatServiceConnection();
     },
   );
@@ -319,17 +312,8 @@ export async function registerIpcHandlers(
     }
   }
 
-  // Register existing running deployments with gateway (after secrets are available)
-  if (getSecretStore().isUnlocked()) {
-    const deployments = await getRegistry().list();
-    for (const dep of deployments.filter((d) => d.status === 'running')) {
-      try {
-        await rt.registerWithGateway(dep.id);
-      } catch (err) {
-        console.error(`Failed to register deployment ${dep.id} on startup:`, err);
-      }
-    }
-  }
+  // Gateway self-restores agents from its own persistent registry on startup.
+  // No re-registration needed from MC.
 
   ipcMain.handle('app:getVersion', () => app.getVersion());
 
