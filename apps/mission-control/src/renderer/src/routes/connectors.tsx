@@ -445,6 +445,16 @@ function ConnectorsPage(): JSX.Element {
     loadConnectors();
   }, [loadConnectors]);
 
+  // Auto-refresh when gateway emits MCP events
+  useEffect(() => {
+    const unsub = window.api.onGatewayEvent((eventType) => {
+      if (eventType === 'mcp:server-added' || eventType === 'mcp:server-removed') {
+        loadConnectors();
+      }
+    });
+    return unsub;
+  }, [loadConnectors]);
+
   const handleAdd = useCallback(
     async (config: McpAddConnectorConfig) => {
       const result = await addConnector(config);
