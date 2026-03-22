@@ -76,6 +76,7 @@ const api: MissionControlAPI = {
   deploymentsGet: (id: string) => ipcRenderer.invoke('deployments:get', id),
   deploymentsGetAgentConfig: (agentName: string) =>
     ipcRenderer.invoke('deployments:getAgentConfig', agentName),
+  deploymentsListAgentConfigs: () => ipcRenderer.invoke('deployments:listAgentConfigs'),
   deploymentsDeploy: (configDir: string) => ipcRenderer.invoke('deployments:deploy', configDir),
   deploymentsDeployWithConfig: (options) =>
     ipcRenderer.invoke('deployments:deployWithConfig', options),

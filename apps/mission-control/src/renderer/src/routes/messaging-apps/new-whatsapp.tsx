@@ -62,13 +62,11 @@ function NewWhatsAppWizard(): JSX.Element {
 
   const availableAgents = deployments
     .filter((d) => d.status === 'running')
-    .flatMap((d) =>
-      Object.keys(d.config.agents ?? {}).map((agentName) => ({
-        label: `${agentName} (${d.name})`,
-        deploymentId: d.id,
-        agentName,
-      })),
-    );
+    .map((d) => ({
+      label: d.name,
+      deploymentId: d.id,
+      agentName: d.name,
+    }));
 
   async function handleSave() {
     if (!selectedAgent) return;

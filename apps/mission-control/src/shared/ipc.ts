@@ -39,6 +39,27 @@ export interface DeployWithConfigOptions {
   mcpServers?: DeployWithConfigMcpServer[];
 }
 
+// --- Runtime Agent Info (from gateway) ---
+
+export interface RuntimeAgentConfig {
+  name: string;
+  model: string;
+  systemPrompt: string;
+  fallbackModels?: string[];
+  tools?: string[];
+  mcpServers?: string[];
+  workspace?: string;
+  maxTokens?: number;
+  skills?: { paths?: string[]; urls?: string[] };
+}
+
+export interface RuntimeAgentInfo {
+  name: string;
+  config: RuntimeAgentConfig;
+  status: string;
+  registeredAt: number;
+}
+
 // --- MCP Connectors ---
 
 export interface McpConnectorInfo {
@@ -169,20 +190,8 @@ export interface MissionControlAPI {
   // Deployments
   deploymentsList(): Promise<AgentDeployment[]>;
   deploymentsGet(id: string): Promise<AgentDeployment | null>;
-  deploymentsGetAgentConfig(agentName: string): Promise<{
-    name: string;
-    config: {
-      name: string;
-      model: string;
-      systemPrompt: string;
-      fallbackModels?: string[];
-      tools?: string[];
-      mcpServers?: string[];
-      workspace?: string;
-      skills?: { paths?: string[]; urls?: string[] };
-    };
-    status: string;
-  }>;
+  deploymentsGetAgentConfig(agentName: string): Promise<RuntimeAgentInfo>;
+  deploymentsListAgentConfigs(): Promise<RuntimeAgentInfo[]>;
   deploymentsDeploy(configDir: string): Promise<string>;
   deploymentsDeployWithConfig(options: DeployWithConfigOptions): Promise<string>;
   deploymentsStop(id: string): Promise<void>;

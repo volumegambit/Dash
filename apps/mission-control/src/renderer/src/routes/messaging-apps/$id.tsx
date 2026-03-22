@@ -72,16 +72,14 @@ function MessagingAppDetail(): JSX.Element {
 
   const availableAgents = deployments
     .filter((d) => d.status === 'running')
-    .flatMap((d) =>
-      Object.keys(d.config.agents ?? {}).map((agentName) => ({
-        label: `${agentName} (${d.name})`,
-        agentName,
-      })),
-    );
+    .map((d) => ({
+      label: d.name,
+      agentName: d.name,
+    }));
 
   const knownAgentNames: Set<string> | null = deploymentsLoading
     ? null
-    : new Set(deployments.flatMap((d) => Object.keys(d.config.agents ?? {})));
+    : new Set(deployments.map((d) => d.name));
 
   async function addGlobalDeny() {
     const val = globalDenyInput.trim();
