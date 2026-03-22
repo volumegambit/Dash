@@ -46,8 +46,7 @@ const DEFAULTS: DashJsonConfig = {
   agents: {
     default: {
       model: 'anthropic/claude-sonnet-4-5',
-      systemPrompt:
-        'You are Dash, a helpful AI assistant. You can use tools to help accomplish tasks.',
+      systemPrompt: 'You are a helpful AI assistant. You can use tools to help accomplish tasks.',
       tools: ['bash', 'edit', 'write', 'read', 'glob', 'grep', 'ls'],
     },
   },

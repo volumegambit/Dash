@@ -59,11 +59,17 @@ export async function createAgentServer(config: DashConfig) {
     const createBackend: BackendFactory = (cfg, keys, sessionDir) =>
       new PiAgentBackend(cfg, keys, logger, sessionDir, managedDir ?? undefined);
 
+    // Build the system prompt with agent identity and skills directory info
+    let systemPrompt = `You are "${name}".\n\n${agentConfig.systemPrompt}`;
+    if (managedDir) {
+      systemPrompt += `\n\nWhen you create skills (via the create_skill tool), they are saved to: ${managedDir}`;
+    }
+
     const client = new PooledAgentClient(
       {
         model: agentConfig.model,
         fallbackModels: agentConfig.fallbackModels,
-        systemPrompt: agentConfig.systemPrompt,
+        systemPrompt,
         tools: agentConfig.tools,
         workspace,
         skills: agentConfig.skills,
