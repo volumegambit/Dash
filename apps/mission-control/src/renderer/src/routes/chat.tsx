@@ -1355,8 +1355,8 @@ export function Chat(): JSX.Element {
                     answeredQuestions={answeredQuestions}
                   />
                 ))}
-                {isStreaming && liveEvents.length === 0 && <ThinkingIndicator />}
-                {isStreaming && liveEvents.length > 0 && (
+                {isStreaming && !liveEvents.some((e) => e.type !== 'thinking_delta') && <ThinkingIndicator />}
+                {isStreaming && liveEvents.some((e) => e.type !== 'thinking_delta') && (
                   <MessageBubble
                     streamingEvents={liveEvents}
                     navigateToLogs={navigateToLogs}
