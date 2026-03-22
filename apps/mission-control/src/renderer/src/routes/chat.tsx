@@ -1031,18 +1031,6 @@ export function Chat(): JSX.Element {
         <h1 className="font-[family-name:var(--font-display)] text-[22px] font-semibold text-foreground">
           Chat
         </h1>
-        <div className="flex gap-3">
-          <button
-            type="button"
-            onClick={handleNewConversation}
-            disabled={availableAgents.length === 0}
-            className="flex items-center gap-1.5 rounded-lg border border-border bg-card-bg px-3 py-1.5 text-xs text-muted transition-colors hover:bg-sidebar-hover hover:text-foreground disabled:opacity-40"
-            title="New conversation (⌘N)"
-          >
-            <Plus size={12} />
-            New conversation
-          </button>
-        </div>
       </div>
 
       {showAgentModal && (
@@ -1057,7 +1045,17 @@ export function Chat(): JSX.Element {
         {/* Left: Conversation List */}
         <div className="w-[300px] bg-surface border-r border-border flex flex-col shrink-0">
           {/* Search bar */}
-          <div className="px-4 py-3 border-b border-border">
+          <div className="px-4 py-3 border-b border-border flex flex-col gap-2">
+            <button
+              type="button"
+              onClick={handleNewConversation}
+              disabled={availableAgents.length === 0}
+              className="flex items-center justify-center gap-1.5 rounded-lg border border-border bg-card-bg px-3 py-2 text-sm text-muted transition-colors hover:bg-sidebar-hover hover:text-foreground disabled:opacity-40 w-full"
+              title="New conversation (⌘N)"
+            >
+              <Plus size={14} />
+              New conversation
+            </button>
             <div className="flex items-center gap-2 bg-card-bg border border-border rounded-lg px-3 py-2">
               <Search size={14} className="text-muted shrink-0" />
               <input
