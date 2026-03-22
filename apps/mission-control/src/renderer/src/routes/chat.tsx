@@ -1133,14 +1133,11 @@ export function Chat(): JSX.Element {
   }, [selectedConversationId]);
 
   // Build available agents list from running deployments
-  const availableAgents = useMemo(() => runningDeployments.flatMap((dep) => {
-    const agentNames = dep.config.agents ? Object.keys(dep.config.agents) : [];
-    return agentNames.map((name) => ({
-      deploymentId: dep.id,
-      deploymentName: dep.name,
-      agentName: name,
-    }));
-  }), [runningDeployments]);
+  const availableAgents = useMemo(() => runningDeployments.map((dep) => ({
+    deploymentId: dep.id,
+    deploymentName: dep.name,
+    agentName: dep.name,
+  })), [runningDeployments]);
 
   const handleNewConversation = useCallback(() => {
     if (availableAgents.length === 0) return;

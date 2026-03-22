@@ -3,6 +3,7 @@ import { Loader } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { SetupWizard } from '../components/SetupWizard';
 import { Sidebar } from '../components/Sidebar';
+import { useAgentConfigsStore } from '../stores/agent-configs.js';
 import { initChatListeners } from '../stores/chat';
 import { initDeploymentListeners, useDeploymentsStore } from '../stores/deployments';
 import { useMessagingAppsStore } from '../stores/messaging-apps.js';
@@ -41,12 +42,36 @@ function RootLayout(): JSX.Element {
       });
   }, []);
 
+  const loadAllAgentConfigs = useAgentConfigsStore((s) => s.loadAll);
+  const refreshAgentConfig = useAgentConfigsStore((s) => s.refresh);
+
   useEffect(() => {
     if (ready) {
       initDeploymentListeners();
       initChatListeners();
+      loadAllAgentConfigs();
     }
-  }, [ready]);
+  }, [ready, loadAllAgentConfigs]);
+
+  // Listen for gateway agent config change events and refresh the store
+  useEffect(() => {
+    if (!ready) return;
+    const unsub = window.api.onGatewayEvent((eventType, data) => {
+      if (eventType === 'agent:config-changed') {
+        try {
+          const parsed = JSON.parse(data) as { agent: string };
+          refreshAgentConfig(parsed.agent);
+        } catch {
+          // Ignore parse errors — re-fetch all as fallback
+          loadAllAgentConfigs();
+        }
+      } else if (eventType === 'mcp:server-added' || eventType === 'mcp:server-removed') {
+        // MCP changes may affect agent configs (mcpServers field)
+        loadAllAgentConfigs();
+      }
+    });
+    return unsub;
+  }, [ready, refreshAgentConfig, loadAllAgentConfigs]);
 
   useEffect(() => {
     return window.api.onUpdateAvailable((info) => {

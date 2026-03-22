@@ -91,13 +91,11 @@ function NewTelegramWizard(): JSX.Element {
   // Build flat list of all agents across all running deployments
   const availableAgents = deployments
     .filter((d) => d.status === 'running')
-    .flatMap((d) =>
-      Object.keys(d.config.agents ?? {}).map((agentName) => ({
-        label: `${agentName} (${d.name})`,
-        deploymentId: d.id,
-        agentName,
-      })),
-    );
+    .map((d) => ({
+      label: d.name,
+      deploymentId: d.id,
+      agentName: d.name,
+    }));
 
   async function handleVerifyToken() {
     setVerifying(true);
