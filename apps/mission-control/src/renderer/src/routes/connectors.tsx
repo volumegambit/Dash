@@ -1,14 +1,5 @@
 import { createFileRoute } from '@tanstack/react-router';
-import {
-  Cable,
-  ChevronDown,
-  ChevronUp,
-  Loader,
-  Plus,
-  RefreshCw,
-  Trash2,
-  X,
-} from 'lucide-react';
+import { Cable, ChevronDown, ChevronUp, Loader, Plus, RefreshCw, Trash2, X } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
 import type { McpAddConnectorConfig, McpConnectorInfo } from '../../../shared/ipc.js';
 import { HealthDot } from '../components/HealthDot.js';
@@ -119,9 +110,7 @@ function AddConnectorModal({
   if (!open) return null;
 
   const canSubmit =
-    name.trim() &&
-    !submitting &&
-    (transportType === 'stdio' ? command.trim() : url.trim());
+    name.trim() && !submitting && (transportType === 'stdio' ? command.trim() : url.trim());
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
@@ -341,10 +330,7 @@ function ConnectorCard({ connector, onReconnect, onRemove }: ConnectorCardProps)
       {connector.tools.length > 0 && (
         <div className="mt-2 flex flex-wrap gap-1">
           {connector.tools.map((tool) => (
-            <span
-              key={tool}
-              className="rounded bg-bg-hover px-1.5 py-0.5 text-xs text-fg-muted"
-            >
+            <span key={tool} className="rounded bg-bg-hover px-1.5 py-0.5 text-xs text-fg-muted">
               {tool.split('__')[1] ?? tool}
             </span>
           ))}
