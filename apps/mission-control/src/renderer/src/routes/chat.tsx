@@ -628,12 +628,14 @@ function PinnedTodoPanel({ todos }: { todos: TodoItem[] }): JSX.Element {
 function ConversationItem({
   conversation,
   isSelected,
+  hasUnread,
   onSelect,
   onRename,
   onDelete,
 }: {
   conversation: { id: string; title: string; agentName: string };
   isSelected: boolean;
+  hasUnread: boolean;
   onSelect: () => void;
   onRename: (title: string) => void;
   onDelete: () => void;
@@ -693,7 +695,10 @@ function ConversationItem({
           isSelected ? 'text-foreground' : 'text-muted'
         }`}
       >
-        <p className="truncate font-semibold text-sm text-foreground">{conversation.title}</p>
+        <p className="truncate font-semibold text-sm text-foreground flex items-center gap-1.5">
+          {hasUnread && <span className="inline-block h-2 w-2 shrink-0 rounded-full bg-green" />}
+          {conversation.title}
+        </p>
         <p className="truncate font-[family-name:var(--font-mono)] text-[10px] text-accent">
           {conversation.agentName}
         </p>
@@ -887,6 +892,7 @@ export function Chat(): JSX.Element {
     messages,
     streamingEvents,
     sending,
+    unreadConversations,
     loadAllConversations,
     selectConversation,
     createConversation,
@@ -1180,6 +1186,7 @@ export function Chat(): JSX.Element {
                   key={conv.id}
                   conversation={conv}
                   isSelected={conv.id === selectedConversationId}
+                  hasUnread={unreadConversations.has(conv.id)}
                   onSelect={() => selectConversation(conv.id)}
                   onRename={(title) => renameConversation(conv.id, title)}
                   onDelete={() => deleteConversation(conv.id)}

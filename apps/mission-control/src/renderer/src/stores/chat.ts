@@ -8,6 +8,7 @@ interface ChatState {
   messages: Record<string, McMessage[]>;
   streamingEvents: Record<string, McAgentEvent[]>;
   sending: Record<string, boolean>;
+  unreadConversations: Set<string>;
 
   loadConversations(deploymentId: string): Promise<void>;
   loadAllConversations(): Promise<void>;
@@ -51,6 +52,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   messages: {},
   streamingEvents: {},
   sending: {},
+  unreadConversations: new Set(),
 
   async loadConversations(deploymentId: string) {
     const conversations = await window.api.chatListConversations(deploymentId);
@@ -65,7 +67,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   async selectConversation(id: string) {
-    set({ selectedConversationId: id });
+    const unread = new Set(get().unreadConversations);
+    unread.delete(id);
+    set({ selectedConversationId: id, unreadConversations: unread });
     if (!get().messages[id]) {
       const messages = await window.api.chatGetMessages(id);
       set((s) => ({ messages: { ...s.messages, [id]: messages } }));
@@ -94,12 +98,15 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const { [id]: _m, ...restMessages } = s.messages;
       const { [id]: _se, ...restEvents } = s.streamingEvents;
       const { [id]: _s, ...restSending } = s.sending;
+      const unread = new Set(s.unreadConversations);
+      unread.delete(id);
       return {
         conversations: s.conversations.filter((c) => c.id !== id),
         selectedConversationId: s.selectedConversationId === id ? null : s.selectedConversationId,
         messages: restMessages,
         streamingEvents: restEvents,
         sending: restSending,
+        unreadConversations: unread,
       };
     });
   },
@@ -156,13 +163,19 @@ export const useChatStore = create<ChatState>((set, get) => ({
   finalizeMessage(conversationId: string) {
     // Flush any buffered events before finalizing
     flushEventBuffer(set);
-    const events = get().streamingEvents[conversationId] ?? [];
+    const state = get();
+    const events = state.streamingEvents[conversationId] ?? [];
     const assistantMsg: McMessage = {
       id: crypto.randomUUID(),
       role: 'assistant',
       content: { type: 'assistant', events: events as Record<string, unknown>[] },
       timestamp: new Date().toISOString(),
     };
+    // Mark as unread if this conversation is not currently selected
+    const unread =
+      state.selectedConversationId !== conversationId
+        ? new Set([...state.unreadConversations, conversationId])
+        : state.unreadConversations;
     set((s) => ({
       messages: {
         ...s.messages,
@@ -170,6 +183,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       },
       streamingEvents: { ...s.streamingEvents, [conversationId]: [] },
       sending: { ...s.sending, [conversationId]: false },
+      unreadConversations: unread,
     }));
   },
 
