@@ -1,9 +1,11 @@
 import { homedir } from 'node:os';
+import { dirname } from 'node:path';
 import type { AgentEvent as PiAgentEvent } from '@mariozechner/pi-agent-core';
 import { getModel } from '@mariozechner/pi-ai';
 import type { Api, AssistantMessage, ImageContent, Model, Usage } from '@mariozechner/pi-ai';
 import {
   AuthStorage,
+  DefaultResourceLoader,
   SessionManager,
   createAgentSession,
   createBashTool,
@@ -14,7 +16,7 @@ import {
   createReadTool,
   createWriteTool,
 } from '@mariozechner/pi-coding-agent';
-import type { AgentSession, AgentSessionEvent } from '@mariozechner/pi-coding-agent';
+import type { AgentSession, AgentSessionEvent, Skill } from '@mariozechner/pi-coding-agent';
 
 import type { McpManager } from '@dash/mcp';
 
@@ -36,6 +38,7 @@ import type {
   DashAgentConfig,
   RunOptions,
 } from '../types.js';
+import { DashResourceLoader } from './dash-resource-loader.js';
 
 /** All built-in tool names supported by PiAgent */
 const ALL_TOOL_NAMES = ['read', 'bash', 'edit', 'write', 'grep', 'find', 'ls'] as const;
@@ -59,6 +62,7 @@ export class PiAgentBackend implements AgentBackend {
   private auth: AuthStorage | null = null;
   private abortRequested = false;
   private ownsMcpManager = false;
+  private resourceLoader: DashResourceLoader | null = null;
 
   /** Accumulated full text during a response, for the `response` event */
   private fullText = '';
@@ -261,12 +265,29 @@ export class PiAgentBackend implements AgentBackend {
       `[PiAgent] Registering ${customTools.length} custom tools: ${customTools.map((t: { name: string }) => t.name).join(', ')}`,
     );
 
+    // Create a resource loader that pi will use to build the system prompt.
+    // We wrap it with DashResourceLoader so we can inject Dash's system prompt
+    // and managed skills dynamically. Pi's _baseSystemPrompt reads from here.
+    const innerLoader = new DefaultResourceLoader({
+      cwd: workspace,
+      systemPrompt: this.config.systemPrompt,
+      noSkills: false,
+    });
+    await innerLoader.reload();
+    this.resourceLoader = new DashResourceLoader(innerLoader);
+
+    // Pre-populate with Dash's managed skills
+    const dashSkills = await this.listSkillsAsPiSkills();
+    this.resourceLoader.setExtraSkills(dashSkills);
+    this.logger?.info(`[PiAgent] Injecting ${dashSkills.length} Dash skills into resource loader`);
+
     const { session } = await createAgentSession({
       cwd: workspace,
       authStorage: this.auth,
       model,
       tools: builtinTools,
       customTools,
+      resourceLoader: this.resourceLoader,
       sessionManager: this.sessionDir
         ? SessionManager.continueRecent(workspace, this.sessionDir)
         : SessionManager.inMemory(),
@@ -305,8 +326,17 @@ export class PiAgentBackend implements AgentBackend {
     const model = this.resolveModel(state.model);
     await this.session.setModel(model);
 
-    // Set system prompt on the session's agent
-    this.session.agent.setSystemPrompt(state.systemPrompt);
+    // Update the resource loader with the current system prompt and skills,
+    // then trigger a _baseSystemPrompt rebuild via setActiveToolsByName.
+    // This ensures pi's session.prompt() uses the correct prompt instead of
+    // overwriting Dash's prompt with its own _baseSystemPrompt.
+    if (this.resourceLoader) {
+      this.resourceLoader.setSystemPrompt(state.systemPrompt);
+      const dashSkills = await this.listSkillsAsPiSkills();
+      this.resourceLoader.setExtraSkills(dashSkills);
+      // Force pi to rebuild _baseSystemPrompt from the updated resource loader
+      this.session.setActiveToolsByName(this.session.getActiveToolNames());
+    }
 
     // Event queue for bridging subscribe callback to async generator
     const queue: (
@@ -563,7 +593,23 @@ export class PiAgentBackend implements AgentBackend {
       this.mcpManager = undefined;
     }
     this.auth = null;
+    this.resourceLoader = null;
     this.logger?.info('[PiAgent] Stopped');
+  }
+
+  /**
+   * Convert Dash's discovered skills to pi's Skill format for the resource loader.
+   */
+  private async listSkillsAsPiSkills(): Promise<Skill[]> {
+    const dashSkills = await this.listSkills();
+    return dashSkills.map((s) => ({
+      name: s.name,
+      description: s.description,
+      filePath: s.location,
+      baseDir: dirname(s.location),
+      source: s.source,
+      disableModelInvocation: false,
+    }));
   }
 
   /**
