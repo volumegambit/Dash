@@ -28,9 +28,7 @@ const addServerSchema = Type.Object({
     [Type.Literal('stdio'), Type.Literal('sse'), Type.Literal('streamable-http')],
     { description: 'Transport type' },
   ),
-  url: Type.Optional(
-    Type.String({ description: 'Server URL (required for sse/streamable-http)' }),
-  ),
+  url: Type.Optional(Type.String({ description: 'Server URL (required for sse/streamable-http)' })),
   command: Type.Optional(Type.String({ description: 'Command to run (required for stdio)' })),
   args: Type.Optional(Type.Array(Type.String(), { description: 'Command arguments (stdio)' })),
   headers: Type.Optional(
@@ -133,9 +131,7 @@ export function createMcpAddServerTool(
       }
 
       deps.proposalStore.add(params.name, config);
-      deps.logger?.info(
-        `[mcp:audit] mcp:proposal:created source=agent server=${params.name}`,
-      );
+      deps.logger?.info(`[mcp:audit] mcp:proposal:created source=agent server=${params.name}`);
 
       const transportDesc =
         config.transport.type === 'stdio'
@@ -182,9 +178,7 @@ export function createMcpConfirmAddTool(
         await deps.configStore.addConfig(proposal.config);
         deps.proposalStore.remove(params.name);
 
-        deps.logger?.info(
-          `[mcp:audit] mcp:proposal:confirmed source=agent server=${params.name}`,
-        );
+        deps.logger?.info(`[mcp:audit] mcp:proposal:confirmed source=agent server=${params.name}`);
 
         const tools = deps.manager
           .getTools()
@@ -192,9 +186,7 @@ export function createMcpConfirmAddTool(
           .map((t) => t.name);
 
         return ok(
-          `MCP server "${params.name}" connected successfully.\n` +
-            `Discovered ${tools.length} tool(s): ${tools.join(', ') || '(none)'}.\n` +
-            'These tools will be available on the next message.',
+          `MCP server "${params.name}" connected successfully.\nDiscovered ${tools.length} tool(s): ${tools.join(', ') || '(none)'}.\nThese tools will be available on the next message.`,
         );
       } catch (error) {
         deps.proposalStore.remove(params.name);
@@ -269,9 +261,7 @@ export function createMcpRemoveServerTool(
       try {
         await deps.manager.removeServer(params.name);
         await deps.configStore.removeConfig(params.name);
-        deps.logger?.info(
-          `[mcp:audit] mcp:server:removed source=agent server=${params.name}`,
-        );
+        deps.logger?.info(`[mcp:audit] mcp:server:removed source=agent server=${params.name}`);
         return ok(`MCP server "${params.name}" disconnected and removed.`);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
