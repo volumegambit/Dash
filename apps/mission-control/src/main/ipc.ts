@@ -339,6 +339,9 @@ export async function registerIpcHandlers(
   });
 
   ipcMain.handle('openPath', async (_event, path: string) => {
+    if (!existsSync(path)) {
+      await mkdir(path, { recursive: true });
+    }
     await shell.openPath(path);
   });
 
