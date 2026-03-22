@@ -738,6 +738,16 @@ export async function registerIpcHandlers(
     return client.getRuntimeAgent(agentName);
   });
 
+  ipcMain.handle('deployments:listAgentConfigs', async () => {
+    const gatewayState = await new GatewayStateStore(DATA_DIR).read();
+    if (!gatewayState) throw new Error('Gateway not running');
+    const client = new GatewayManagementClient(
+      `http://127.0.0.1:${gatewayState.port}`,
+      gatewayState.token,
+    );
+    return client.listRuntimeAgents();
+  });
+
   ipcMain.handle('deployments:deploy', async (_event, configDir: string) => {
     let deploymentId: string;
     try {

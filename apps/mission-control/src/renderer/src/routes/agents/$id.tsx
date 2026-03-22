@@ -13,6 +13,7 @@ import {
   X,
 } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { useAgentConfigsStore } from '../../stores/agent-configs.js';
 import { useDeploymentsStore } from '../../stores/deployments';
 import { useMessagingAppsStore } from '../../stores/messaging-apps.js';
 import { AgentConfigTab } from './-components/AgentConfigTab.js';
@@ -46,49 +47,14 @@ export function AgentDetail(): JSX.Element {
   const deployment = deployments.find((d) => d.id === id);
   const logs = logLines[id] ?? [];
 
-  // Read agent config from gateway (source of truth)
-  const [agentConfig, setAgentConfig] = useState<
-    import('@dash/mc').AgentDeployAgentConfig | undefined
-  >(undefined);
-  const [configRefreshKey, setConfigRefreshKey] = useState(0);
+  // Agent config from gateway (via centralized store)
+  const agentConfig = useAgentConfigsStore(
+    (s) => (deployment?.name ? s.configs[deployment.name] : undefined) as import('@dash/mc').AgentDeployAgentConfig | undefined,
+  );
 
   useEffect(() => {
     loadDeployments().then(() => setLoading(false));
   }, [loadDeployments]);
-
-  useEffect(() => {
-    if (!deployment?.name) return;
-    window.api
-      .deploymentsGetAgentConfig(deployment.name)
-      .then((agent) => {
-        setAgentConfig(agent.config as unknown as import('@dash/mc').AgentDeployAgentConfig);
-      })
-      .catch(() => {
-        // Fall back to local config if gateway unavailable
-        const localConfig = deployment?.config?.agents
-          ? Object.values(deployment.config.agents)[0]
-          : deployment?.config?.agent;
-        if (localConfig) setAgentConfig(localConfig);
-      });
-  }, [deployment?.name, deployment?.config, configRefreshKey]);
-
-  // Auto-refresh agent config on gateway events
-  useEffect(() => {
-    if (!deployment?.name) return;
-    const unsub = window.api.onGatewayEvent((eventType, data) => {
-      if (eventType === 'agent:config-changed') {
-        try {
-          const parsed = JSON.parse(data) as { agent: string };
-          if (parsed.agent === deployment.name) {
-            setConfigRefreshKey((k) => k + 1);
-          }
-        } catch {
-          // Ignore parse errors
-        }
-      }
-    });
-    return unsub;
-  }, [deployment?.name]);
 
   useEffect(() => {
     if (!deployment) return;
@@ -187,9 +153,7 @@ export function AgentDetail(): JSX.Element {
   const resolvedStatus = status?.state ?? deployment.status;
   const isRunning = resolvedStatus === 'running';
   const isStopped = resolvedStatus === 'stopped' || resolvedStatus === 'error';
-  const agentName = deployment.config?.agents
-    ? (Object.keys(deployment.config.agents)[0] ?? '')
-    : '';
+  const agentName = deployment.name;
 
   // Connected channels: messaging apps whose routing targets this agent
   const connectedChannels = messagingApps.filter((app) =>
