@@ -730,8 +730,13 @@ function AgentSelectionModal({
     searchInputRef.current?.focus();
   }, []);
 
-  // Reset selection when filter changes
+  // Reset selection when filter changes (skip initial render)
+  const isInitialRender = useRef(true);
   useEffect(() => {
+    if (isInitialRender.current) {
+      isInitialRender.current = false;
+      return;
+    }
     setSelectedIndex(0);
   }, [searchTerm]);
 
