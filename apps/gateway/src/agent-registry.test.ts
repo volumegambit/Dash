@@ -1,3 +1,6 @@
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { AgentRegistry } from './agent-registry.js';
 
 describe('AgentRegistry', () => {
@@ -96,5 +99,85 @@ describe('AgentRegistry', () => {
   it('enable throws for unknown agent', () => {
     const registry = new AgentRegistry();
     expect(() => registry.enable('nope')).toThrow(/not found/);
+  });
+});
+
+describe('AgentRegistry (file-backed)', () => {
+  let dir: string;
+  let filePath: string;
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'agent-reg-'));
+    filePath = join(dir, 'agents.json');
+  });
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it('persists on save and restores on load', async () => {
+    const reg = new AgentRegistry(filePath);
+    reg.register({ name: 'a', model: 'm', systemPrompt: 's' });
+    await reg.save();
+
+    const reg2 = new AgentRegistry(filePath);
+    await reg2.load();
+    expect(reg2.get('a')?.config.model).toBe('m');
+  });
+
+  it('persists updates', async () => {
+    const reg = new AgentRegistry(filePath);
+    reg.register({ name: 'a', model: 'm1', systemPrompt: 's' });
+    await reg.save();
+
+    reg.update('a', { model: 'm2' });
+    await reg.save();
+
+    const reg2 = new AgentRegistry(filePath);
+    await reg2.load();
+    expect(reg2.get('a')?.config.model).toBe('m2');
+  });
+
+  it('persists removes', async () => {
+    const reg = new AgentRegistry(filePath);
+    reg.register({ name: 'a', model: 'm', systemPrompt: 's' });
+    await reg.save();
+
+    reg.remove('a');
+    await reg.save();
+
+    const reg2 = new AgentRegistry(filePath);
+    await reg2.load();
+    expect(reg2.list()).toEqual([]);
+  });
+
+  it('preserves status and registeredAt across save/load', async () => {
+    const reg = new AgentRegistry(filePath);
+    reg.register({ name: 'a', model: 'm', systemPrompt: 's' });
+    reg.disable('a');
+    await reg.save();
+
+    const reg2 = new AgentRegistry(filePath);
+    await reg2.load();
+    expect(reg2.get('a')?.status).toBe('disabled');
+    expect(reg2.get('a')?.registeredAt).toBe(reg.get('a')?.registeredAt);
+  });
+
+  it('works without a file path (in-memory only)', () => {
+    const reg = new AgentRegistry();
+    reg.register({ name: 'a', model: 'm', systemPrompt: 's' });
+    expect(reg.get('a')).toBeDefined();
+  });
+
+  it('save is a no-op without a file path', async () => {
+    const reg = new AgentRegistry();
+    reg.register({ name: 'a', model: 'm', systemPrompt: 's' });
+    await reg.save(); // should not throw
+  });
+
+  it('load is a no-op when file does not exist', async () => {
+    const reg = new AgentRegistry(filePath);
+    await reg.load();
+    expect(reg.list()).toEqual([]);
   });
 });
