@@ -1,3 +1,5 @@
+import { DiffView } from './DiffView.js';
+
 /**
  * Renders formatted tool results in the chat interface.
  * Detects patterns in raw result strings (XML tags, line numbers, file paths)
@@ -94,13 +96,29 @@ export function ToolResult({
   name,
   result,
   isError,
-}: { name: string; result: string; isError?: boolean }): JSX.Element {
+  details,
+}: { name: string; result: string; isError?: boolean; details?: unknown }): JSX.Element {
   if (isError) {
     return <p className="whitespace-pre-wrap text-red">{result}</p>;
   }
 
   if (!result.trim()) {
     return <p className="text-muted italic">No output</p>;
+  }
+
+  // Edit tool with diff details — render a visual diff view
+  if (name === 'edit' && details && typeof details === 'object' && 'diff' in details) {
+    const { diff } = details as { diff: string; firstChangedLine?: number };
+    if (typeof diff === 'string' && diff.trim()) {
+      // Extract path from the result text: "Successfully replaced text in <path>."
+      const pathMatch = result.match(/in (.+)\.$/);
+      return (
+        <div>
+          <p className="mb-1.5 text-green/80">{result}</p>
+          <DiffView diff={diff} path={pathMatch?.[1]} />
+        </div>
+      );
+    }
   }
 
   const { path, type, content } = stripXmlTags(result);
