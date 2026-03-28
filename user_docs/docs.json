@@ -1,9 +1,9 @@
 {
   "$schema": "https://mintlify.com/docs/mint-schema.json",
   "theme": "maple",
-  "name": "Dash",
+  "name": "Atrium",
   "colors": {
-    "primary": "#3B82F6"
+    "primary": "#3A8B6B"
   },
   "navigation": {
     "tabs": [
@@ -12,7 +12,7 @@
         "groups": [
           {
             "group": "Getting Started",
-            "pages": ["introduction", "how-dashsquad-works", "getting-started"]
+            "pages": ["introduction", "how-atrium-works", "getting-started"]
           },
           {
             "group": "Core Concepts",
