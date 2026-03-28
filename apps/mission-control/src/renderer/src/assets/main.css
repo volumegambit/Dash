@@ -11,10 +11,10 @@
   --color-muted: #a3a3a3;
 
   /* Brand */
-  --color-primary: #0EA5E9;
-  --color-primary-hover: #0B84BA;
-  --color-accent: #0EA5E9;
-  --color-accent-tint: #0EA5E918;
+  --color-primary: #7DD3FC;
+  --color-primary-hover: #5BB8E0;
+  --color-accent: #7DD3FC;
+  --color-accent-tint: #7DD3FC18;
 
   /* Cards */
   --color-card-bg: #141414;
