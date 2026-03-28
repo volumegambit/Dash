@@ -23,12 +23,12 @@ export function Hero() {
 
       {/* Headline */}
       <h1 className="font-outfit text-4xl md:text-5xl lg:text-[64px] font-extrabold text-white tracking-tight leading-[1.1] text-center max-w-[900px]">
-        You bring the ambition.<br />We bring the squad.
+        The space where your<br />work comes together.
       </h1>
 
       {/* Sub-copy */}
       <p className="text-[19px] text-text-secondary text-center leading-relaxed max-w-[750px]">
-        DashSquad lets you create AI agents — each with its own role. A researcher, a writer, an analyst. They work on their own, around the clock, even when you&apos;re not watching. Just chat with them like you&apos;d message a coworker.
+        Atrium is the personal operating system for people who build. AI agents that learn, remember, and compound your advantage — in a space that&apos;s entirely yours.
       </p>
 
       {/* CTA Button */}
@@ -53,7 +53,7 @@ export function Hero() {
           alt="AI Squad collaborating"
           width={900}
           height={500}
-          className="rounded-2xl shadow-[0_8px_40px_rgba(255,85,0,0.12)]"
+          className="rounded-2xl shadow-[0_8px_40px_rgba(58,139,107,0.12)]"
           priority
         />
       </div>

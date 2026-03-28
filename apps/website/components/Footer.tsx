@@ -6,25 +6,22 @@ export function Footer() {
         {/* Brand column */}
         <div className="md:w-[300px]">
           <a href="#" className="flex items-center gap-2.5">
-            <span className="shadow-[0_0_16px_rgba(255,85,0,0.25)] rounded-md">
-              <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
-                <rect width="28" height="28" rx="6" fill="#FF5500" />
-                <path d="M17.5 11L21 14L17.5 17" stroke="white" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
-                <path d="M11 8L15 11L11 14" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-                <path d="M11 14L15 17L11 20" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-              </svg>
-            </span>
-            <span className="text-xl font-extrabold text-white tracking-tight">dashsquad</span>
+            <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
+              <rect x="2" y="2" width="24" height="24" rx="4" stroke="#3A8B6B" strokeWidth="2" fill="none" />
+              <line x1="2" y1="10" x2="26" y2="10" stroke="#3A8B6B" strokeWidth="1.5" />
+              <path d="M14 22C14 22 11 17 11 14C11 11 13 9 14 8C15 9 17 11 17 14C17 17 14 22 14 22Z" fill="#3A8B6B" />
+            </svg>
+            <span className="text-xl font-extrabold text-white tracking-tight">atrium</span>
           </a>
-          <p className="text-[14px] text-text-muted mt-3">Your AI team, always on.</p>
-          <p className="text-xs text-text-dim mt-1">DashSquad.ai · 2026</p>
+          <p className="text-[14px] text-text-muted mt-3">Your personal operating system.</p>
+          <p className="text-xs text-text-dim mt-1">Atrium · 2026</p>
         </div>
 
       </div>
 
       <hr className="border-divider" />
 
-      <p className="text-xs text-text-dim">© 2026 DashSquad.ai — All rights reserved.</p>
+      <p className="text-xs text-text-dim">© 2026 Atrium — All rights reserved.</p>
     </footer>
   );
 }
