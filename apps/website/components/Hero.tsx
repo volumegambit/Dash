@@ -53,7 +53,7 @@ export function Hero() {
           alt="AI Squad collaborating"
           width={900}
           height={500}
-          className="rounded-2xl shadow-[0_8px_40px_rgba(43,186,160,0.12)]"
+          className="rounded-2xl shadow-[0_8px_40px_rgba(14,165,233,0.12)]"
           priority
         />
       </div>
