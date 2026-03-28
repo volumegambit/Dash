@@ -52,17 +52,17 @@ app.get('/dashboard', async (c) => {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>DashSquad Waitlist</title>
+  <title>Atrium Waitlist</title>
   <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body { background: #0A0A0A; color: #fff; font-family: 'Outfit', sans-serif; min-height: 100vh; }
     .container { max-width: 900px; margin: 0 auto; padding: 60px 24px; }
     .header { margin-bottom: 40px; }
-    .label { font-family: 'JetBrains Mono', monospace; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 3px; color: #FF5500; margin-bottom: 12px; }
+    .label { font-family: 'JetBrains Mono', monospace; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 3px; color: #3A8B6B; margin-bottom: 12px; }
     h1 { font-size: 36px; font-weight: 800; letter-spacing: -1px; }
-    .count { display: inline-flex; align-items: center; gap: 8px; background: #FF550015; border: 1px solid #FF5500; border-radius: 100px; padding: 6px 16px; margin-top: 16px; font-size: 14px; color: #FF5500; font-weight: 600; }
-    .count .dot { width: 8px; height: 8px; border-radius: 50%; background: #FF5500; }
+    .count { display: inline-flex; align-items: center; gap: 8px; background: #3A8B6B15; border: 1px solid #3A8B6B; border-radius: 100px; padding: 6px 16px; margin-top: 16px; font-size: 14px; color: #3A8B6B; font-weight: 600; }
+    .count .dot { width: 8px; height: 8px; border-radius: 50%; background: #3A8B6B; }
     table { width: 100%; border-collapse: collapse; margin-top: 32px; }
     th { font-family: 'JetBrains Mono', monospace; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 2px; color: #555; text-align: left; padding: 12px 16px; border-bottom: 1px solid #222; }
     td { padding: 14px 16px; border-bottom: 1px solid #1A1A1A; font-size: 15px; color: #ccc; }
@@ -72,15 +72,15 @@ app.get('/dashboard', async (c) => {
     td:nth-child(3) { color: #888; font-size: 13px; }
     .empty { text-align: center; padding: 80px 0; color: #555; font-size: 18px; }
     .logo { display: flex; align-items: center; gap: 10px; margin-bottom: 32px; }
-    .logo svg { filter: drop-shadow(0 0 12px rgba(255,85,0,0.3)); }
+    .logo svg { filter: drop-shadow(0 0 12px rgba(58,139,107,0.3)); }
     .logo span { font-size: 20px; font-weight: 800; letter-spacing: -0.5px; }
   </style>
 </head>
 <body>
   <div class="container">
     <div class="logo">
-      <svg width="28" height="28" viewBox="0 0 28 28" fill="none"><rect width="28" height="28" rx="6" fill="#FF5500"/><path d="M17.5 11L21 14L17.5 17" stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M11 8L15 11L11 14" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M11 14L15 17L11 20" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
-      <span>dashsquad</span>
+      <svg width="28" height="28" viewBox="0 0 28 28" fill="none"><rect x="2" y="2" width="24" height="24" rx="4" stroke="#3A8B6B" stroke-width="2" fill="none"/><line x1="2" y1="10" x2="26" y2="10" stroke="#3A8B6B" stroke-width="1.5"/><path d="M14 22C14 22 11 17 11 14C11 11 13 9 14 8C15 9 17 11 17 14C17 17 14 22 14 22Z" fill="#3A8B6B"/></svg>
+      <span>atrium</span>
     </div>
     <div class="header">
       <div class="label">WAITLIST</div>
