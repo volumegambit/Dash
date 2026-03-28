@@ -1,13 +1,15 @@
-# DashSquad — You bring the ambition. We bring the squad.
+# Atrium — The space where your work comes together.
 
 [![CI](https://github.com/volumegambit/Dash/actions/workflows/ci.yml/badge.svg)](https://github.com/volumegambit/Dash/actions/workflows/ci.yml)
 [![Node.js](https://img.shields.io/badge/Node.js-22%2B-339933?logo=node.js&logoColor=white)](https://nodejs.org)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.7-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org)
 [![License](https://img.shields.io/badge/license-private-red)]()
 
-> **Early Access** — DashSquad is under active development. Expect rough edges and breaking changes.
+> **Early Access** — Atrium is under active development. Expect rough edges and breaking changes.
 
-DashSquad lets anyone run a team of AI agents that work autonomously — handling tasks, making decisions, and getting things done — so you don't have to.
+Atrium is the personal operating system for people who build. AI agents that learn, remember, and compound your advantage — in a space that's entirely yours.
+
+Atrium lets anyone deploy AI agents that work autonomously — handling tasks, making decisions, and getting things done — so you don't have to.
 
 ## Quick Start
 
@@ -91,7 +93,7 @@ npm run lint:fix      # Biome auto-fix
 
 ## Documentation
 
-Full docs at [docs.dashsquad.ai](https://docs.dashsquad.ai), or in [`user_docs/`](user_docs/).
+Full docs at [docs.atrium.ai](https://docs.atrium.ai), or in [`user_docs/`](user_docs/).
 
 ## License
 
