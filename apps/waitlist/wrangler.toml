@@ -1,8 +1,8 @@
-name = "dashsquad-waitlist"
+name = "atrium-waitlist"
 main = "src/worker.ts"
 compatibility_date = "2024-12-01"
 
 [[d1_databases]]
 binding = "DB"
-database_name = "dashsquad-waitlist"
+database_name = "atrium-waitlist"
 database_id = "38a504a5-4c7c-4128-bc67-c626a15ab64a"
