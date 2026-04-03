@@ -1,3 +1,4 @@
+import type { AgentClient } from '@dash/agent';
 import type { ChannelAdapter } from '@dash/channels';
 import { TelegramAdapter, WhatsAppAdapter } from '@dash/channels';
 import { RemoteAgentClient } from '@dash/chat';
@@ -165,6 +166,26 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
       const message = err instanceof Error ? err.message : 'Internal error';
       return c.json({ error: message }, 500);
     }
+
+    // Bridge runtime agents into the gateway agents map so channel routing can find them.
+    // Channel routing looks up agents as "${deploymentId}:${agentName}" but runtime agents
+    // are stored by name only. Register a thin AgentClient wrapper for each routing rule
+    // whose agent exists in the runtime registry.
+    if (runtime) {
+      for (const rule of cfg.routing) {
+        if (runtime.registry.get(rule.agentName)) {
+          const agentName = rule.agentName;
+          const rt = runtime;
+          const bridgeClient: AgentClient = {
+            chat(channelId, conversationId, text) {
+              return rt.chat({ agentName, conversationId, channelId, text });
+            },
+          };
+          gateway.registerAgent(body.deploymentId, agentName, bridgeClient);
+        }
+      }
+    }
+
     return c.json({ ok: true }, 201);
   });
 
