@@ -28,6 +28,7 @@ import type { DeployWithConfigOptions } from '../shared/ipc.js';
 import { ChatService } from './chat-service.js';
 import { completeClaudeOAuth, prepareClaudeOAuth } from './claude-auth.js';
 import { refreshCodexToken, startCodexOAuth } from './codex-auth.js';
+import { pushCredentialsWithRetry } from './credential-push-retry.js';
 import { GatewayPoller } from './gateway-poller.js';
 
 const DATA_DIR = process.env.MC_DATA_DIR || getPlatformDataDir('dash');
@@ -664,7 +665,7 @@ export async function registerIpcHandlers(
     await getSecretStore().set(key, value);
     // Push updated credentials to running deployments if a provider key changed
     if (key.includes('-api-key:')) {
-      pushCredentialsToRunningDeployments()
+      pushCredentialsWithRetry(() => pushCredentialsToRunningDeployments())
         .then((result) => {
           if (result.failed.length > 0) {
             const win = getWindow();
@@ -686,7 +687,7 @@ export async function registerIpcHandlers(
     await getSecretStore().delete(key);
     // Push updated credentials to running deployments if a provider key changed
     if (key.includes('-api-key:')) {
-      pushCredentialsToRunningDeployments()
+      pushCredentialsWithRetry(() => pushCredentialsToRunningDeployments())
         .then((result) => {
           if (result.failed.length > 0) {
             const win = getWindow();
