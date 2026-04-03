@@ -283,13 +283,8 @@ function MessagingAppDetail(): JSX.Element {
             )}
           </div>
 
-          {/* Recent Events */}
-          <div className="bg-card-bg border border-border rounded-lg p-5">
-            <p className="font-[family-name:var(--font-mono)] text-[11px] uppercase tracking-[2px] text-accent mb-4">
-              Recent Events
-            </p>
-            <p className="text-xs text-muted">No recent events to display.</p>
-          </div>
+          {/* Message Log */}
+          <MessageLog appId={id} />
         </div>
       </div>
       </div>
@@ -716,6 +711,102 @@ function AddRulePanel({
           Add rule
         </button>
       </div>
+    </div>
+  );
+}
+
+interface LogEntry {
+  timestamp: string;
+  senderId: string;
+  senderName: string;
+  text: string;
+  outcome: string;
+  agentName?: string;
+  blockReason?: string;
+}
+
+function MessageLog({ appId }: { appId: string }): JSX.Element {
+  const [entries, setEntries] = useState<LogEntry[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let mounted = true;
+    const load = () => {
+      window.api
+        .messagingAppsGetLog(appId, 100)
+        .then((logs) => {
+          if (mounted) setEntries(logs);
+        })
+        .catch(() => {})
+        .finally(() => {
+          if (mounted) setLoading(false);
+        });
+    };
+    load();
+    const interval = setInterval(load, 5000);
+    return () => {
+      mounted = false;
+      clearInterval(interval);
+    };
+  }, [appId]);
+
+  return (
+    <div className="bg-card-bg border border-border p-5">
+      <p className="font-[family-name:var(--font-mono)] text-[11px] uppercase tracking-[2px] text-accent mb-4">
+        Message Log
+      </p>
+      {loading && <p className="text-xs text-muted">Loading...</p>}
+      {!loading && entries.length === 0 && (
+        <p className="text-xs text-muted">No messages received yet.</p>
+      )}
+      {entries.length > 0 && (
+        <div className="flex flex-col gap-1.5 max-h-80 overflow-y-auto">
+          {entries.map((entry, i) => {
+            const time = new Date(entry.timestamp);
+            const timeStr = time.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+            const dateStr = time.toLocaleDateString([], { month: 'short', day: 'numeric' });
+            const isBlocked = entry.outcome === 'blocked' || entry.outcome === 'no_match';
+
+            return (
+              <div
+                key={`${entry.timestamp}-${i}`}
+                className="flex items-start gap-2 py-1.5 border-b border-border last:border-0"
+              >
+                <div className="shrink-0 text-right" style={{ width: 70 }}>
+                  <p className="font-[family-name:var(--font-mono)] text-[10px] text-muted">
+                    {dateStr}
+                  </p>
+                  <p className="font-[family-name:var(--font-mono)] text-[10px] text-muted">
+                    {timeStr}
+                  </p>
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-xs font-medium text-foreground truncate">
+                      {entry.senderName}
+                    </span>
+                    <span className="font-[family-name:var(--font-mono)] text-[10px] text-muted">
+                      {entry.senderId}
+                    </span>
+                  </div>
+                  <p className="text-xs text-muted truncate mt-0.5">{entry.text}</p>
+                </div>
+                <div className="shrink-0">
+                  {isBlocked ? (
+                    <span className="bg-red-tint text-red px-1.5 py-0.5 text-[9px] font-[family-name:var(--font-mono)] font-medium">
+                      {entry.blockReason === 'no_match' ? 'No match' : 'Blocked'}
+                    </span>
+                  ) : (
+                    <span className="bg-green-tint text-green px-1.5 py-0.5 text-[9px] font-[family-name:var(--font-mono)] font-medium">
+                      → {entry.agentName}
+                    </span>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
