@@ -354,12 +354,20 @@ export async function registerIpcHandlers(
   // Connect to SSE when gateway becomes healthy (initial or after restart).
   // The poller calls onStatusChange('healthy') on first health check and after restarts.
   // connectToGatewayEvents() aborts any previous connection, so it's safe to call repeatedly.
-  gatewayPoller.start((status: string) => {
-    sendGatewayStatus(status);
-    if (status === 'healthy') {
-      connectToGatewayEvents().catch(() => {});
-    }
-  });
+  gatewayPoller.start(
+    (status: string) => {
+      sendGatewayStatus(status);
+      if (status === 'healthy') {
+        connectToGatewayEvents().catch(() => {});
+      }
+    },
+    (serverName: string, mcpStatus: string) => {
+      const win = getWindow();
+      if (win && !win.isDestroyed()) {
+        win.webContents.send('mcp:statusChanged', { serverName, status: mcpStatus });
+      }
+    },
+  );
 
   // Auto-unlock from cached session key.
   // Validates the key before registering IPC handlers so the renderer never

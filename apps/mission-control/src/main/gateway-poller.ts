@@ -8,6 +8,7 @@ type OnRestart = () => Promise<void>;
 export class GatewayPoller {
   private timer: NodeJS.Timeout | null = null;
   private currentStatus: GatewayStatus = 'starting';
+  private lastMcpStatuses = new Map<string, string>();
 
   constructor(
     private ensureGateway: EnsureGateway,
@@ -15,7 +16,10 @@ export class GatewayPoller {
     private intervalMs = 5_000,
   ) {}
 
-  start(onStatusChange: (status: GatewayStatus) => void): void {
+  start(
+    onStatusChange: (status: GatewayStatus) => void,
+    onMcpStatusChange?: (serverName: string, status: string) => void,
+  ): void {
     this.stop();
     this.timer = setInterval(async () => {
       try {
@@ -26,6 +30,17 @@ export class GatewayPoller {
         if (newStatus !== this.currentStatus) {
           this.currentStatus = newStatus;
           onStatusChange(newStatus);
+        }
+
+        // Track MCP server statuses
+        if (onMcpStatusChange && health.mcpServers) {
+          for (const server of health.mcpServers) {
+            const prev = this.lastMcpStatuses.get(server.name);
+            if (server.status !== prev) {
+              this.lastMcpStatuses.set(server.name, server.status);
+              onMcpStatusChange(server.name, server.status);
+            }
+          }
         }
       } catch {
         if (this.currentStatus !== 'restarting') {
@@ -49,6 +64,7 @@ export class GatewayPoller {
       clearInterval(this.timer);
       this.timer = null;
     }
+    this.lastMcpStatuses.clear();
   }
 
   getCurrentStatus(): GatewayStatus {

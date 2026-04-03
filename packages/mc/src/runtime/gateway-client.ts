@@ -24,6 +24,7 @@ export interface GatewayHealthResponse {
   channels: number;
   pool?: { size: number; maxSize: number; pinned: number; agents: Record<string, number> };
   runtimeAgents?: number;
+  mcpServers?: Array<{ name: string; status: string }>;
 }
 
 export interface RuntimeAgentConfig {
