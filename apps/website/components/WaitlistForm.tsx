@@ -1,9 +1,9 @@
 'use client';
 
-import { useState, type FormEvent } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { CheckCircle2, AlertCircle } from 'lucide-react';
+import { AlertCircle, CheckCircle2 } from 'lucide-react';
+import { type FormEvent, useState } from 'react';
 
 type Status = 'idle' | 'loading' | 'success' | 'error' | 'duplicate';
 
@@ -23,7 +23,7 @@ export function WaitlistForm() {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ email }),
-        }
+        },
       );
       const data = await res.json();
 

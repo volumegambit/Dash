@@ -57,9 +57,7 @@ describe('createDynamicGateway', () => {
     const adapter = makeFakeAdapter('telegram');
     await gw.registerChannel('tg1', adapter, {
       globalDenyList: [],
-      routing: [
-        { condition: { type: 'default' }, agentId: 'agent1', allowList: [], denyList: [] },
-      ],
+      routing: [{ condition: { type: 'default' }, agentId: 'agent1', allowList: [], denyList: [] }],
     });
 
     expect(adapter.start).toHaveBeenCalled();
@@ -74,9 +72,7 @@ describe('createDynamicGateway', () => {
     const adapter = makeFakeAdapter('telegram');
     await gw.registerChannel('tg1', adapter, {
       globalDenyList: [],
-      routing: [
-        { condition: { type: 'default' }, agentId: 'agent1', allowList: [], denyList: [] },
-      ],
+      routing: [{ condition: { type: 'default' }, agentId: 'agent1', allowList: [], denyList: [] }],
     });
 
     await adapter.trigger({
@@ -98,9 +94,7 @@ describe('createDynamicGateway', () => {
     const adapter = makeFakeAdapter('telegram');
     await gw.registerChannel('tg1', adapter, {
       globalDenyList: [],
-      routing: [
-        { condition: { type: 'default' }, agentId: 'agent1', allowList: [], denyList: [] },
-      ],
+      routing: [{ condition: { type: 'default' }, agentId: 'agent1', allowList: [], denyList: [] }],
     });
 
     const removed = await gw.deregisterAgent('agent1');
@@ -151,9 +145,7 @@ describe('createDynamicGateway', () => {
     const adapter = makeFakeAdapter('telegram');
     await gw.registerChannel('tg1', adapter, {
       globalDenyList: ['blocked-user'],
-      routing: [
-        { condition: { type: 'default' }, agentId: 'agent1', allowList: [], denyList: [] },
-      ],
+      routing: [{ condition: { type: 'default' }, agentId: 'agent1', allowList: [], denyList: [] }],
     });
 
     await adapter.trigger({
@@ -278,9 +270,7 @@ describe('createDynamicGateway', () => {
     const adapter = makeFakeAdapter('telegram');
     await gw.registerChannel('my-channel', adapter, {
       globalDenyList: [],
-      routing: [
-        { condition: { type: 'default' }, agentId: 'agent1', allowList: [], denyList: [] },
-      ],
+      routing: [{ condition: { type: 'default' }, agentId: 'agent1', allowList: [], denyList: [] }],
     });
 
     await adapter.trigger({
@@ -303,9 +293,7 @@ describe('createDynamicGateway', () => {
     const adapter = makeFakeAdapter('telegram');
     await gw.registerChannel('tg1', adapter, {
       globalDenyList: [],
-      routing: [
-        { condition: { type: 'default' }, agentId: 'agent1', allowList: [], denyList: [] },
-      ],
+      routing: [{ condition: { type: 'default' }, agentId: 'agent1', allowList: [], denyList: [] }],
     });
 
     await adapter.trigger({
@@ -332,9 +320,7 @@ describe('createDynamicGateway', () => {
     // Channel with only agent1 rules — should be removed
     await gw.registerChannel('ch1', adapter1, {
       globalDenyList: [],
-      routing: [
-        { condition: { type: 'default' }, agentId: 'agent1', allowList: [], denyList: [] },
-      ],
+      routing: [{ condition: { type: 'default' }, agentId: 'agent1', allowList: [], denyList: [] }],
     });
 
     // Channel with rules for both agents — should survive

@@ -1,5 +1,5 @@
-import type { CreateAgentRequest, GatewayAgent } from '../../../shared/ipc.js';
 import { create } from 'zustand';
+import type { CreateAgentRequest, GatewayAgent } from '../../../shared/ipc.js';
 
 interface AgentsState {
   agents: GatewayAgent[];

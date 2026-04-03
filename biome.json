@@ -17,6 +17,28 @@
       "semicolons": "always"
     }
   },
+  "overrides": [
+    {
+      "include": ["apps/mission-control/src/renderer/src/routes/chat.tsx"],
+      "linter": {
+        "rules": {
+          "security": {
+            "noDangerouslySetInnerHtml": "off"
+          }
+        }
+      }
+    },
+    {
+      "include": ["apps/mission-control/src/renderer/src/routes/messaging-apps/$id.tsx"],
+      "linter": {
+        "rules": {
+          "suspicious": {
+            "noArrayIndexKey": "off"
+          }
+        }
+      }
+    }
+  ],
   "files": {
     "ignore": [
       "**/dist/**",
@@ -25,7 +47,8 @@
       "data/**",
       "**/*.gen.ts",
       ".claude/worktrees/**",
-      ".worktrees/**"
+      ".worktrees/**",
+      "apps/website/.next/**"
     ]
   }
 }

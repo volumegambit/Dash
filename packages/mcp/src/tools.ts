@@ -46,11 +46,9 @@ export function wrapMcpTool(
           : timeoutController.signal;
 
         try {
-          const result = await callTool(
-            def.name,
-            (params ?? {}) as Record<string, unknown>,
-            { signal: combinedSignal },
-          );
+          const result = await callTool(def.name, (params ?? {}) as Record<string, unknown>, {
+            signal: combinedSignal,
+          });
           clearTimeout(timeoutId);
 
           const content = (result.content ?? []).map((c) => ({

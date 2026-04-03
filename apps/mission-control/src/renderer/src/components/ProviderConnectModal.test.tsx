@@ -45,7 +45,10 @@ describe('ProviderConnectModal', () => {
     );
     await user.type(screen.getByPlaceholderText('sk-ant-...'), 'sk-ant-testkey');
     await user.click(screen.getByText('Save API Key'));
-    expect(mockApi.credentialsSet).toHaveBeenCalledWith('anthropic-api-key:default', 'sk-ant-testkey');
+    expect(mockApi.credentialsSet).toHaveBeenCalledWith(
+      'anthropic-api-key:default',
+      'sk-ant-testkey',
+    );
     await screen.findByRole('button', { name: /save api key/i });
     expect(onSaved).toHaveBeenCalledOnce();
   });

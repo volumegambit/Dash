@@ -24,10 +24,7 @@ function relativeTime(dateStr: string): string {
   return `${days}d ago`;
 }
 
-function mcpIssueText(
-  agent: GatewayAgent,
-  connectors: McpConnectorInfo[],
-): string | null {
+function mcpIssueText(agent: GatewayAgent, connectors: McpConnectorInfo[]): string | null {
   const mcpNames = agent.config.mcpServers ?? [];
   if (mcpNames.length === 0) return null;
 
@@ -41,10 +38,7 @@ function mcpIssueText(
   return null;
 }
 
-function statusDotColor(
-  agent: GatewayAgent,
-  connectors: McpConnectorInfo[],
-): string {
+function statusDotColor(agent: GatewayAgent, connectors: McpConnectorInfo[]): string {
   const isActive = agent.status === 'active' || agent.status === 'registered';
   if (isActive && mcpIssueText(agent, connectors)) return 'bg-yellow';
   if (isActive) return 'bg-green';
@@ -161,9 +155,7 @@ function Agents(): JSX.Element {
                     key={agent.id}
                     agent={agent}
                     connectors={connectors}
-                    onNavigate={() =>
-                      navigate({ to: '/agents/$id', params: { id: agent.id } })
-                    }
+                    onNavigate={() => navigate({ to: '/agents/$id', params: { id: agent.id } })}
                     onRemove={() => {
                       setRemoveTarget({
                         id: agent.id,
@@ -185,9 +177,7 @@ function Agents(): JSX.Element {
             <h2 className="text-base font-semibold font-[family-name:var(--font-display)]">
               Remove {removeTarget.name}?
             </h2>
-            <p className="mt-1 text-sm text-muted">
-              This will remove the agent from the gateway.
-            </p>
+            <p className="mt-1 text-sm text-muted">This will remove the agent from the gateway.</p>
 
             <div className="mt-6 flex justify-end gap-2">
               <button
@@ -248,9 +238,7 @@ function AgentRow({ agent, connectors, onNavigate, onRemove }: AgentRowProps): J
           {agent.name}
         </span>
         {isActive && mcpIssueText(agent, connectors) && (
-          <p className="text-xs text-yellow-400 mt-0.5">
-            {mcpIssueText(agent, connectors)}
-          </p>
+          <p className="text-xs text-yellow-400 mt-0.5">{mcpIssueText(agent, connectors)}</p>
         )}
       </div>
 

@@ -129,9 +129,7 @@ function Dashboard(): JSX.Element {
                 {agents.length === 0 ? (
                   <span className="text-xs text-muted">No agents deployed</span>
                 ) : (
-                  agents.map((agent) => (
-                    <AgentHealthRow key={agent.id} agent={agent} />
-                  ))
+                  agents.map((agent) => <AgentHealthRow key={agent.id} agent={agent} />)
                 )}
               </div>
             </div>

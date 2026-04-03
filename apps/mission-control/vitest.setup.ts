@@ -32,9 +32,7 @@ function createMockApi(): Record<keyof MissionControlAPI, ReturnType<typeof vi.f
     channelsCreate: vi.fn().mockResolvedValue(undefined),
     channelsUpdate: vi.fn().mockResolvedValue(undefined),
     channelsRemove: vi.fn().mockResolvedValue(undefined),
-    channelsVerifyTelegramToken: vi
-      .fn()
-      .mockResolvedValue({ username: 'bot', firstName: 'Bot' }),
+    channelsVerifyTelegramToken: vi.fn().mockResolvedValue({ username: 'bot', firstName: 'Bot' }),
 
     // Credentials (gateway passthrough)
     credentialsSet: vi.fn().mockResolvedValue(undefined),

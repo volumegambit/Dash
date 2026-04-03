@@ -120,10 +120,7 @@ export class AgentRuntime {
     this.registry.remove(agentId);
   }
 
-  async updateCredentials(
-    agentId: string,
-    providerApiKeys: Record<string, string>,
-  ): Promise<void> {
+  async updateCredentials(agentId: string, providerApiKeys: Record<string, string>): Promise<void> {
     await this.pool.forAgent(agentId, async (entry) => {
       await entry.backend.updateCredentials(providerApiKeys);
     });

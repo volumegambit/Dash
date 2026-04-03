@@ -1,10 +1,7 @@
 import { spawn } from 'node:child_process';
 import { join } from 'node:path';
 import { generateToken } from '../security/keygen.js';
-import {
-  type GatewayHealthResponse,
-  GatewayManagementClient,
-} from './gateway-client.js';
+import { type GatewayHealthResponse, GatewayManagementClient } from './gateway-client.js';
 import { GatewayStateStore } from './gateway-state.js';
 
 export { providerSecretKey, parseProviderSecretKey } from './provider-keys.js';
@@ -167,8 +164,7 @@ export class GatewayProcess {
     const state = await store.read();
     if (!state) return null;
     const makeClient =
-      this.options.makeGatewayClient ??
-      ((url, token) => new GatewayManagementClient(url, token));
+      this.options.makeGatewayClient ?? ((url, token) => new GatewayManagementClient(url, token));
     return makeClient(`http://localhost:${state.port}`, state.token);
   }
 }

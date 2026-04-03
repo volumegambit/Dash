@@ -1,11 +1,4 @@
-import {
-  ArrowRight,
-  Bot,
-  CheckCircle,
-  ExternalLink,
-  KeyRound,
-  Loader,
-} from 'lucide-react';
+import { ArrowRight, Bot, CheckCircle, ExternalLink, KeyRound, Loader } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { DashSquadMark } from './DashSquadLogo.js';
 import { PROVIDERS, PROVIDER_CONFIG, type Provider } from './providers.js';

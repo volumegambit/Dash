@@ -19,11 +19,7 @@ export class MessageRouter {
   }
 
   // Accepts a simple agent name (backwards compat) or a full RouterConfig
-  addAdapter(
-    adapter: ChannelAdapter,
-    routing: string | RouterConfig,
-    channelName?: string,
-  ): void {
+  addAdapter(adapter: ChannelAdapter, routing: string | RouterConfig, channelName?: string): void {
     if (!this.agents.size) {
       throw new Error('No agents configured');
     }

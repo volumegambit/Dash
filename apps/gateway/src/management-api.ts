@@ -29,15 +29,8 @@ function stripSecrets(entry: RegisteredAgent): RegisteredAgent {
 }
 
 export function createGatewayManagementApp(options: GatewayManagementOptions): Hono {
-  const {
-    gateway,
-    runtime,
-    agentRegistry,
-    channelRegistry,
-    credentialStore,
-    token,
-    eventBus,
-  } = options;
+  const { gateway, runtime, agentRegistry, channelRegistry, credentialStore, token, eventBus } =
+    options;
   const startedAt = options.startedAt ?? new Date().toISOString();
   const app = new Hono();
 

@@ -52,7 +52,7 @@ describe('Gateway integration', () => {
     expect(events[1]).toMatchObject({ type: 'response', content: 'Hello!' });
 
     // Agent should be active
-    expect(registry.get('test-agent')?.status).toBe('active');
+    expect(registry.findByName('test-agent')?.status).toBe('active');
 
     // Pool should have one entry
     expect(runtime.stats().size).toBe(1);

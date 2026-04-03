@@ -27,12 +27,11 @@ function makeAgentRegistry(): AgentRegistry {
       return entry;
     }),
     get: vi.fn((id: string) => agents.get(id)),
-    findByName: vi.fn((name: string) =>
-      [...agents.values()].find((a) => a.name === name),
-    ),
+    findByName: vi.fn((name: string) => [...agents.values()].find((a) => a.name === name)),
     list: vi.fn(() => [...agents.values()]),
     update: vi.fn((id: string, patch: Record<string, unknown>) => {
-      const entry = agents.get(id)!;
+      const entry = agents.get(id);
+      if (!entry) throw new Error(`Agent '${id}' not found`);
       entry.config = { ...entry.config, ...patch };
       return entry;
     }),
@@ -71,8 +70,10 @@ function makeChannelRegistry(): ChannelRegistry {
     get: vi.fn((name: string) => channels.get(name)),
     list: vi.fn(() => [...channels.values()]),
     update: vi.fn((name: string, patch: Record<string, unknown>) => {
-      const entry = channels.get(name)!;
-      if (patch.routing !== undefined) entry.routing = patch.routing as RegisteredChannel['routing'];
+      const entry = channels.get(name);
+      if (!entry) throw new Error(`Channel '${name}' not found`);
+      if (patch.routing !== undefined)
+        entry.routing = patch.routing as RegisteredChannel['routing'];
       if (patch.globalDenyList !== undefined)
         entry.globalDenyList = patch.globalDenyList as string[];
       return entry;
@@ -165,7 +166,7 @@ describe('createGatewayManagementApp', () => {
         model: 'm',
         systemPrompt: 'p',
       });
-      (channelRegistry as unknown as { _addForTest: boolean }); // channels already empty
+      channelRegistry as unknown as { _addForTest: boolean }; // channels already empty
       const res = await app.request('/health');
       const body = await res.json();
       expect(body.agents).toBe(1);
@@ -397,9 +398,7 @@ describe('createGatewayManagementApp', () => {
         body: JSON.stringify({
           name: 'tg1',
           adapter: 'telegram',
-          routing: [
-            { condition: { type: 'default' }, agentId: 'a1', allowList: [], denyList: [] },
-          ],
+          routing: [{ condition: { type: 'default' }, agentId: 'a1', allowList: [], denyList: [] }],
         }),
       });
       expect(res.status).toBe(201);

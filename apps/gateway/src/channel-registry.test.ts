@@ -75,7 +75,9 @@ describe('ChannelRegistry', () => {
 
   it('update throws if channel not found', () => {
     const registry = new ChannelRegistry();
-    expect(() => registry.update('missing', { adapter: 'whatsapp' })).toThrow("Channel 'missing' not found");
+    expect(() => registry.update('missing', { adapter: 'whatsapp' })).toThrow(
+      "Channel 'missing' not found",
+    );
   });
 
   it('remove deletes channel', () => {
@@ -99,7 +101,12 @@ describe('ChannelRegistry', () => {
         name: 'mixed-channel',
         routing: [
           { condition: { type: 'default' }, agentId: 'agent-1', allowList: [], denyList: [] },
-          { condition: { type: 'sender', ids: ['u1'] }, agentId: 'agent-2', allowList: [], denyList: [] },
+          {
+            condition: { type: 'sender', ids: ['u1'] },
+            agentId: 'agent-2',
+            allowList: [],
+            denyList: [],
+          },
         ],
       }),
     );
@@ -141,7 +148,12 @@ describe('ChannelRegistry', () => {
         name: 'ch-2',
         routing: [
           { condition: { type: 'default' }, agentId: 'agent-z', allowList: [], denyList: [] },
-          { condition: { type: 'group', ids: ['g1'] }, agentId: 'agent-y', allowList: [], denyList: [] },
+          {
+            condition: { type: 'group', ids: ['g1'] },
+            agentId: 'agent-y',
+            allowList: [],
+            denyList: [],
+          },
         ],
       }),
     );
@@ -154,7 +166,9 @@ describe('ChannelRegistry', () => {
 
   it('persists and reloads channels', async () => {
     const registry = new ChannelRegistry(filePath);
-    registry.register(makeConfig({ name: 'persist-me', adapter: 'whatsapp', globalDenyList: ['blocked'] }));
+    registry.register(
+      makeConfig({ name: 'persist-me', adapter: 'whatsapp', globalDenyList: ['blocked'] }),
+    );
     await registry.save();
 
     const registry2 = new ChannelRegistry(filePath);

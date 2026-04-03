@@ -1,4 +1,4 @@
-import { MessageCircle, Send, Hash } from 'lucide-react';
+import { Hash, MessageCircle, Send } from 'lucide-react';
 
 export function ChatAppsVisual() {
   return (

@@ -14,10 +14,14 @@
  * To add a new model, edit: packages/mc/src/models/supported-models.ts
  */
 
-import { readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
+import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { SUPPORTED_MODELS, findSupportedModel, globToRegex } from '../packages/mc/src/models/supported-models.js';
+import {
+  SUPPORTED_MODELS,
+  findSupportedModel,
+  globToRegex,
+} from '../packages/mc/src/models/supported-models.js';
 
 interface RawCacheModel {
   value: string;
@@ -96,12 +100,16 @@ function printReport(reports: ModelReport[]): void {
     const providerAllowed = providerReports.filter((r) => r.status === 'allowed');
     const providerFiltered = providerReports.filter((r) => r.status === 'filtered');
 
-    console.log(`── ${provider.toUpperCase()} (${providerAllowed.length} allowed, ${providerFiltered.length} filtered) ──`);
+    console.log(
+      `── ${provider.toUpperCase()} (${providerAllowed.length} allowed, ${providerFiltered.length} filtered) ──`,
+    );
 
     if (providerAllowed.length > 0) {
       console.log('  Allowed:');
       for (const r of providerAllowed.sort((a, b) => (a.tier ?? 99) - (b.tier ?? 99))) {
-        console.log(`    ✓ ${r.label.padEnd(30)} ${r.modelId.padEnd(35)} tier=${r.tier} pattern=${r.matchedPattern}`);
+        console.log(
+          `    ✓ ${r.label.padEnd(30)} ${r.modelId.padEnd(35)} tier=${r.tier} pattern=${r.matchedPattern}`,
+        );
       }
     }
 
@@ -115,7 +123,9 @@ function printReport(reports: ModelReport[]): void {
   }
 
   // Show allow-list patterns with no matches (stale patterns)
-  const usedPatterns = new Set(reports.filter((r) => r.matchedPattern).map((r) => r.matchedPattern));
+  const usedPatterns = new Set(
+    reports.filter((r) => r.matchedPattern).map((r) => r.matchedPattern),
+  );
   const stalePatterns = SUPPORTED_MODELS.filter((e) => !usedPatterns.has(e.pattern));
   if (stalePatterns.length > 0) {
     console.log('── STALE PATTERNS (no models matched) ──');
@@ -145,7 +155,9 @@ async function main(): Promise<void> {
   } else {
     rawModels = await loadRawCache();
     if (rawModels.length === 0) {
-      console.log('No model cache found. Run with --refresh or refresh from Mission Control first.');
+      console.log(
+        'No model cache found. Run with --refresh or refresh from Mission Control first.',
+      );
       console.log(`  Expected cache at: ${CACHE_PATH}\n`);
       console.log('Showing allow-list patterns only:\n');
       for (const e of SUPPORTED_MODELS) {

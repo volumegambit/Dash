@@ -1,6 +1,6 @@
-import { Rocket } from 'lucide-react';
 import { AgentDashboardVisual } from '@/components/visuals/AgentDashboardVisual';
 import { ChatAppsVisual } from '@/components/visuals/ChatAppsVisual';
+import { Rocket } from 'lucide-react';
 
 function MCInlineVisual() {
   return (

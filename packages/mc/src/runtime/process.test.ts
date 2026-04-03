@@ -236,9 +236,7 @@ describe('GatewayProcess.getClient()', () => {
     });
 
     const mockClient = createMockGatewayClient();
-    const gp = new GatewayProcess(
-      makeOptions(tmpDir, { makeGatewayClient: () => mockClient }),
-    );
+    const gp = new GatewayProcess(makeOptions(tmpDir, { makeGatewayClient: () => mockClient }));
 
     const client = await gp.getClient();
     expect(client).toBe(mockClient);

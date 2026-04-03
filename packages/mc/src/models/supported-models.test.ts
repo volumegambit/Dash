@@ -103,13 +103,13 @@ describe('findSupportedModel', () => {
   it('returns tier for matched model', () => {
     const result = findSupportedModel('anthropic', 'claude-opus-4-20250514');
     expect(result).not.toBeNull();
-    expect(result!.tier).toBe(0);
+    expect(result?.tier).toBe(0);
   });
 
   it('returns higher tier for less capable models', () => {
     const opus = findSupportedModel('anthropic', 'claude-opus-4-20250514');
     const haiku = findSupportedModel('anthropic', 'claude-haiku-4-5-20251001');
-    expect(opus!.tier).toBeLessThan(haiku!.tier);
+    expect(opus?.tier).toBeLessThan(haiku?.tier);
   });
 
   it('returns null for unsupported model', () => {

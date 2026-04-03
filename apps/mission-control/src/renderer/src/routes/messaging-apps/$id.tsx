@@ -81,9 +81,7 @@ function MessagingAppDetail(): JSX.Element {
       agentId: a.id,
     }));
 
-  const knownAgentIds: Set<string> | null = agentsLoading
-    ? null
-    : new Set(agents.map((a) => a.id));
+  const knownAgentIds: Set<string> | null = agentsLoading ? null : new Set(agents.map((a) => a.id));
 
   async function addGlobalDeny() {
     const val = globalDenyInput.trim();
@@ -142,123 +140,129 @@ function MessagingAppDetail(): JSX.Element {
 
       {/* Body */}
       <div className="flex-1 overflow-y-auto p-8">
-      {error && (
-        <div className="mb-4 rounded-lg border border-red-600/40 bg-red-tint px-4 py-3 text-sm text-red">
-          {error}
-        </div>
-      )}
+        {error && (
+          <div className="mb-4 rounded-lg border border-red-600/40 bg-red-tint px-4 py-3 text-sm text-red">
+            {error}
+          </div>
+        )}
 
-      {/* Two-column body */}
-      <div className="flex gap-6">
-        {/* Left column: Connection Details */}
-        <div className="flex-1">
-          <div className="bg-card-bg border border-border rounded-lg p-5">
-            <p className="font-[family-name:var(--font-mono)] text-[11px] uppercase tracking-[2px] text-accent mb-4">
-              Connection Details
-            </p>
+        {/* Two-column body */}
+        <div className="flex gap-6">
+          {/* Left column: Connection Details */}
+          <div className="flex-1">
+            <div className="bg-card-bg border border-border rounded-lg p-5">
+              <p className="font-[family-name:var(--font-mono)] text-[11px] uppercase tracking-[2px] text-accent mb-4">
+                Connection Details
+              </p>
 
-            <div className="space-y-3">
-              <DetailRow label="Type" value={<span className="capitalize">{channel.adapter}</span>} />
-              <DetailRow label="Registered" value={new Date(channel.registeredAt).toLocaleDateString()} />
-              <DetailRow label="Routing Rules" value={String(channel.routing.length)} />
+              <div className="space-y-3">
+                <DetailRow
+                  label="Type"
+                  value={<span className="capitalize">{channel.adapter}</span>}
+                />
+                <DetailRow
+                  label="Registered"
+                  value={new Date(channel.registeredAt).toLocaleDateString()}
+                />
+                <DetailRow label="Routing Rules" value={String(channel.routing.length)} />
+              </div>
+            </div>
+
+            {/* Global Block List */}
+            <div className="bg-card-bg border border-border rounded-lg p-5 mt-4">
+              <p className="font-[family-name:var(--font-mono)] text-[11px] uppercase tracking-[2px] text-accent mb-4">
+                Global Block List
+              </p>
+              <p className="mb-3 text-xs text-muted">
+                These senders are always blocked, regardless of routing rules.
+              </p>
+              {channel.globalDenyList.length > 0 && (
+                <div className="mb-3 flex flex-wrap gap-2">
+                  {channel.globalDenyList.map((entry) => (
+                    <span
+                      key={entry}
+                      className="flex items-center gap-1 rounded bg-surface px-2 py-1 font-[family-name:var(--font-mono)] text-xs"
+                    >
+                      {entry}
+                      <button
+                        type="button"
+                        onClick={() => removeGlobalDeny(entry)}
+                        className="text-muted hover:text-red"
+                      >
+                        ×
+                      </button>
+                    </span>
+                  ))}
+                </div>
+              )}
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={globalDenyInput}
+                  onChange={(e) => setGlobalDenyInput(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && addGlobalDeny()}
+                  placeholder="Enter sender ID"
+                  className="flex-1 rounded-lg border border-border bg-card-bg px-3 py-2 text-sm focus:border-accent focus:outline-none"
+                />
+                <button
+                  type="button"
+                  onClick={addGlobalDeny}
+                  className="rounded-lg bg-accent px-3 py-2 text-sm text-white hover:opacity-90"
+                >
+                  Block
+                </button>
+              </div>
             </div>
           </div>
 
-          {/* Global Block List */}
-          <div className="bg-card-bg border border-border rounded-lg p-5 mt-4">
-            <p className="font-[family-name:var(--font-mono)] text-[11px] uppercase tracking-[2px] text-accent mb-4">
-              Global Block List
-            </p>
-            <p className="mb-3 text-xs text-muted">
-              These senders are always blocked, regardless of routing rules.
-            </p>
-            {channel.globalDenyList.length > 0 && (
-              <div className="mb-3 flex flex-wrap gap-2">
-                {channel.globalDenyList.map((entry) => (
-                  <span
-                    key={entry}
-                    className="flex items-center gap-1 rounded bg-surface px-2 py-1 font-[family-name:var(--font-mono)] text-xs"
-                  >
-                    {entry}
-                    <button
-                      type="button"
-                      onClick={() => removeGlobalDeny(entry)}
-                      className="text-muted hover:text-red"
-                    >
-                      ×
-                    </button>
-                  </span>
-                ))}
-              </div>
-            )}
-            <div className="flex gap-2">
-              <input
-                type="text"
-                value={globalDenyInput}
-                onChange={(e) => setGlobalDenyInput(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && addGlobalDeny()}
-                placeholder="Enter sender ID"
-                className="flex-1 rounded-lg border border-border bg-card-bg px-3 py-2 text-sm focus:border-accent focus:outline-none"
-              />
+          {/* Right column */}
+          <div className="w-[360px] flex flex-col gap-4">
+            {/* Connected Agents */}
+            <div className="bg-card-bg border border-border rounded-lg p-5">
+              <p className="font-[family-name:var(--font-mono)] text-[11px] uppercase tracking-[2px] text-accent mb-4">
+                Connected Agents
+              </p>
+              {channel.routing.length === 0 ? (
+                <p className="text-xs text-muted">No routing rules configured yet.</p>
+              ) : (
+                <div className="space-y-2">
+                  {channel.routing.map((rule, i) => (
+                    <RuleCard
+                      key={`rule-${i}`}
+                      rule={rule}
+                      index={i}
+                      total={channel.routing.length}
+                      agents={agents}
+                      knownAgentIds={knownAgentIds}
+                      onMoveUp={() => moveRule(i, 'up')}
+                      onMoveDown={() => moveRule(i, 'down')}
+                      onDelete={() => removeRule(i)}
+                    />
+                  ))}
+                </div>
+              )}
               <button
                 type="button"
-                onClick={addGlobalDeny}
-                className="rounded-lg bg-accent px-3 py-2 text-sm text-white hover:opacity-90"
+                onClick={() => setShowAddRule(true)}
+                className="mt-4 inline-flex items-center gap-2 text-accent text-xs hover:underline"
               >
-                Block
+                <Plus size={12} />
+                Add routing rule
               </button>
+
+              {showAddRule && (
+                <AddRulePanel
+                  availableAgents={availableAgents}
+                  onAdd={async (rule) => {
+                    await updateChannel(id, { routing: [...channel.routing, rule] });
+                    setShowAddRule(false);
+                  }}
+                  onCancel={() => setShowAddRule(false)}
+                />
+              )}
             </div>
           </div>
         </div>
-
-        {/* Right column */}
-        <div className="w-[360px] flex flex-col gap-4">
-          {/* Connected Agents */}
-          <div className="bg-card-bg border border-border rounded-lg p-5">
-            <p className="font-[family-name:var(--font-mono)] text-[11px] uppercase tracking-[2px] text-accent mb-4">
-              Connected Agents
-            </p>
-            {channel.routing.length === 0 ? (
-              <p className="text-xs text-muted">No routing rules configured yet.</p>
-            ) : (
-              <div className="space-y-2">
-                {channel.routing.map((rule, i) => (
-                  <RuleCard
-                    key={`rule-${i}`}
-                    rule={rule}
-                    index={i}
-                    total={channel.routing.length}
-                    agents={agents}
-                    knownAgentIds={knownAgentIds}
-                    onMoveUp={() => moveRule(i, 'up')}
-                    onMoveDown={() => moveRule(i, 'down')}
-                    onDelete={() => removeRule(i)}
-                  />
-                ))}
-              </div>
-            )}
-            <button
-              type="button"
-              onClick={() => setShowAddRule(true)}
-              className="mt-4 inline-flex items-center gap-2 text-accent text-xs hover:underline"
-            >
-              <Plus size={12} />
-              Add routing rule
-            </button>
-
-            {showAddRule && (
-              <AddRulePanel
-                availableAgents={availableAgents}
-                onAdd={async (rule) => {
-                  await updateChannel(id, { routing: [...channel.routing, rule] });
-                  setShowAddRule(false);
-                }}
-                onCancel={() => setShowAddRule(false)}
-              />
-            )}
-          </div>
-        </div>
-      </div>
       </div>
 
       {/* Delete confirmation modal */}
@@ -369,10 +373,7 @@ function RuleCard({
           <p className="text-xs font-medium text-muted">Rule {index + 1}</p>
           <p className="mt-0.5 text-sm">{conditionLabel}</p>
           <p className="mt-1 text-xs text-muted">
-            →{' '}
-            <strong className={agentMissing ? 'text-amber-400' : undefined}>
-              {agentName}
-            </strong>
+            → <strong className={agentMissing ? 'text-amber-400' : undefined}>{agentName}</strong>
             {agentMissing && (
               <span
                 className="ml-1.5 inline-flex items-center gap-1 text-amber-400"

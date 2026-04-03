@@ -3,8 +3,8 @@ import { Loader } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { SetupWizard } from '../components/SetupWizard';
 import { Sidebar } from '../components/Sidebar';
-import { initChatListeners } from '../stores/chat';
 import { useAgentsStore } from '../stores/agents.js';
+import { initChatListeners } from '../stores/chat';
 
 export const Route = createRootRoute({
   component: RootLayout,
@@ -69,12 +69,7 @@ function RootLayout(): JSX.Element {
   }
 
   if (!ready) {
-    return (
-      <SetupWizard
-        needsSetup={needsSetup}
-        onComplete={() => setReady(true)}
-      />
-    );
+    return <SetupWizard needsSetup={needsSetup} onComplete={() => setReady(true)} />;
   }
 
   return (

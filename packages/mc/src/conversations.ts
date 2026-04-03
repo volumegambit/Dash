@@ -53,7 +53,10 @@ export class ConversationStore {
 
   private saveIndex(conversations: McConversation[]): Promise<void> {
     // Serialize concurrent writes to prevent race conditions on the shared tmp file
-    this.indexLock = this.indexLock.then(() => this.writeIndex(conversations), () => this.writeIndex(conversations));
+    this.indexLock = this.indexLock.then(
+      () => this.writeIndex(conversations),
+      () => this.writeIndex(conversations),
+    );
     return this.indexLock;
   }
 
