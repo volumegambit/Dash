@@ -17,6 +17,7 @@ function createMockApi(): Record<keyof MissionControlAPI, ReturnType<typeof vi.f
 
     // Chat
     chatListConversations: vi.fn().mockResolvedValue([]),
+    chatListAllConversations: vi.fn().mockResolvedValue([]),
     chatCreateConversation: vi.fn().mockResolvedValue({
       id: 'conv-1',
       deploymentId: 'dep-1',
@@ -30,9 +31,20 @@ function createMockApi(): Record<keyof MissionControlAPI, ReturnType<typeof vi.f
     chatDeleteConversation: vi.fn().mockResolvedValue(undefined),
     chatSendMessage: vi.fn().mockResolvedValue(undefined),
     chatCancel: vi.fn().mockResolvedValue(undefined),
+    chatAnswerQuestion: vi.fn().mockResolvedValue(undefined),
     chatOnEvent: vi.fn().mockReturnValue(() => {}),
     chatOnDone: vi.fn().mockReturnValue(() => {}),
     chatOnError: vi.fn().mockReturnValue(() => {}),
+
+    // Codex OAuth
+    codexStartOAuth: vi.fn().mockResolvedValue({ success: true }),
+    codexRefreshToken: vi.fn().mockResolvedValue({ success: true }),
+
+    // Claude OAuth
+    claudePrepareOAuth: vi
+      .fn()
+      .mockResolvedValue({ authorizeUrl: 'https://example.com', state: 's', verifier: 'v' }),
+    claudeCompleteOAuth: vi.fn().mockResolvedValue({ success: true }),
 
     // Secrets
     secretsNeedsSetup: vi.fn().mockResolvedValue(false),
@@ -74,6 +86,7 @@ function createMockApi(): Record<keyof MissionControlAPI, ReturnType<typeof vi.f
     messagingAppsVerifyTelegramToken: vi
       .fn()
       .mockResolvedValue({ username: 'bot', firstName: 'Bot' }),
+    messagingAppsGetLog: vi.fn().mockResolvedValue([]),
     whatsappStartPairing: vi.fn().mockResolvedValue(undefined),
     whatsappOnQr: vi.fn().mockReturnValue(() => {}),
     whatsappOnLinked: vi.fn().mockReturnValue(() => {}),
@@ -107,6 +120,20 @@ function createMockApi(): Record<keyof MissionControlAPI, ReturnType<typeof vi.f
 
     // Updates
     onUpdateAvailable: vi.fn().mockReturnValue(() => {}),
+
+    // MCP Connectors
+    mcpListConnectors: vi.fn().mockResolvedValue([]),
+    mcpGetConnector: vi.fn().mockResolvedValue(null),
+    mcpAddConnector: vi.fn().mockResolvedValue({ status: 'connected', serverName: 'test' }),
+    mcpRemoveConnector: vi.fn().mockResolvedValue(undefined),
+    mcpReconnectConnector: vi.fn().mockResolvedValue(undefined),
+    mcpGetAllowlist: vi.fn().mockResolvedValue([]),
+    mcpSetAllowlist: vi.fn().mockResolvedValue(undefined),
+    mcpReauthorize: vi.fn().mockResolvedValue(undefined),
+    onMcpStatusChanged: vi.fn().mockReturnValue(() => {}),
+
+    // Gateway events
+    onGatewayEvent: vi.fn().mockReturnValue(() => {}),
 
     // Channel health & Skills
     deploymentsGetChannelHealth: vi.fn().mockResolvedValue([]),
