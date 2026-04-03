@@ -155,7 +155,7 @@ function Settings(): JSX.Element {
           About
         </h2>
         <p className="mt-2 text-sm text-muted">
-          Atrium v<span className="text-foreground">{version}</span>
+          DashSquad v<span className="text-foreground">{version}</span>
         </p>
       </div>
       </div>

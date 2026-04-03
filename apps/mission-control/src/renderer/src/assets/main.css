@@ -4,30 +4,30 @@
 
 @theme {
   /* Core */
-  --color-background: #0a0a0a;
-  --color-foreground: #fafafa;
-  --color-surface: #0f0f0f;
-  --color-border: #262626;
-  --color-muted: #a3a3a3;
+  --color-background: #0f172a;
+  --color-foreground: #f8fafc;
+  --color-surface: #1e293b;
+  --color-border: #334155;
+  --color-muted: #94a3b8;
 
   /* Brand */
-  --color-primary: #3A8B6B;
-  --color-primary-hover: #2D7558;
-  --color-accent: #3A8B6B;
-  --color-accent-tint: #3A8B6B18;
+  --color-primary: #2563eb;
+  --color-primary-hover: #1d4fbf;
+  --color-accent: #2563eb;
+  --color-accent-tint: #2563eb18;
 
   /* Cards */
-  --color-card-bg: #141414;
-  --color-card-hover: #1c1c1c;
+  --color-card-bg: #1e293b;
+  --color-card-hover: #334155;
 
   /* Sidebar */
-  --color-sidebar-bg: #111111;
-  --color-sidebar-hover: #1a1a1a;
-  --color-sidebar-active: #222222;
+  --color-sidebar-bg: #0f172a;
+  --color-sidebar-hover: #1e293b;
+  --color-sidebar-active: #1e293b;
 
   /* Status */
-  --color-green: #00cc66;
-  --color-green-tint: #16a34a18;
+  --color-green: #22c55e;
+  --color-green-tint: #22c55e18;
   --color-red: #f87171;
   --color-red-tint: #ef444418;
   --color-yellow: #facc15;
