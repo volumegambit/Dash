@@ -12,6 +12,7 @@ interface FailedServer {
 export interface McpManagerOptions {
   logger?: McpLogger;
   onToolsChanged?: (serverName: string, tools: AgentTool<TSchema>[]) => void;
+  onStatusChange?: (serverName: string, status: McpServerStatus) => void;
 }
 
 export class McpManager {
@@ -19,11 +20,13 @@ export class McpManager {
   private failedServers: FailedServer[] = [];
   private logger?: McpLogger;
   private onToolsChanged?: (serverName: string, tools: AgentTool<TSchema>[]) => void;
+  private options?: McpManagerOptions;
 
   constructor(
     private servers: McpServerConfig[],
     options?: McpManagerOptions,
   ) {
+    this.options = options;
     this.logger = options?.logger;
     this.onToolsChanged = options?.onToolsChanged;
 
@@ -53,6 +56,7 @@ export class McpManager {
         const client = new McpClient(config, {
           logger: this.logger,
           onToolsChanged: this.onToolsChanged,
+          onStatusChange: this.options?.onStatusChange,
         });
         await client.start();
         return client;
@@ -98,6 +102,7 @@ export class McpManager {
     const client = new McpClient(config, {
       logger: this.logger,
       onToolsChanged: this.onToolsChanged,
+      onStatusChange: this.options?.onStatusChange,
     });
     await client.start();
     this.clients.set(config.name, client);
@@ -127,6 +132,22 @@ export class McpManager {
     if (client) return client.status;
     if (this.failedServers.find((f) => f.name === name)) return 'error';
     return 'disconnected';
+  }
+
+  getServerStatuses(): Array<{ name: string; status: McpServerStatus }> {
+    return this.servers.map((cfg) => ({
+      name: cfg.name,
+      status: this.getServerStatus(cfg.name),
+    }));
+  }
+
+  async reauthorize(name: string): Promise<void> {
+    const client = this.clients.get(name);
+    if (!client) {
+      throw new Error(`MCP server "${name}" not found`);
+    }
+    await client.reauthorize();
+    this.logger?.info(`[MCP] Server "${name}" re-authorized`);
   }
 
   getFailedServers(): FailedServer[] {
