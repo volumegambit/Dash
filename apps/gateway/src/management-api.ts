@@ -84,11 +84,10 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
 
       // Create bridge client that routes through runtime
       const agentId = entry.id;
-      const agentName = entry.name;
       const rt = runtime;
       const bridgeClient: AgentClient = {
         chat(channelId, conversationId, text) {
-          return rt.chat({ agentName, conversationId, channelId, text });
+          return rt.chat({ agentId, conversationId, channelId, text });
         },
       };
       gateway.registerAgent(agentId, bridgeClient);
@@ -227,11 +226,11 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
       for (const rule of routing) {
         const agentEntry = agentRegistry.get(rule.agentId);
         if (agentEntry) {
-          const agentName = agentEntry.name;
+          const agentId = agentEntry.id;
           const rt = runtime;
           const bridgeClient: AgentClient = {
             chat(channelId, conversationId, text) {
-              return rt.chat({ agentName, conversationId, channelId, text });
+              return rt.chat({ agentId, conversationId, channelId, text });
             },
           };
           gateway.registerAgent(rule.agentId, bridgeClient);

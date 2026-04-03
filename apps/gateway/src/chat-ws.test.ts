@@ -40,7 +40,7 @@ function makeRuntime(registry: AgentRegistry, events: AgentEvent[] = []): AgentR
 describe('chat-ws runtime integration', () => {
   it('streams events for a valid message', async () => {
     const registry = new AgentRegistry();
-    registry.register({
+    const { id } = registry.register({
       name: 'helper',
       model: 'anthropic/claude-sonnet-4-20250514',
       systemPrompt: 'You are helpful.',
@@ -55,7 +55,7 @@ describe('chat-ws runtime integration', () => {
     const collected: AgentEvent[] = [];
 
     for await (const event of runtime.chat({
-      agentName: 'helper',
+      agentId: id,
       conversationId: 'conv-ws-1',
       channelId: 'direct',
       text: 'Hello',
@@ -80,7 +80,7 @@ describe('chat-ws runtime integration', () => {
     const collected: AgentEvent[] = [];
 
     for await (const event of runtime.chat({
-      agentName: 'does-not-exist',
+      agentId: 'does-not-exist-id',
       conversationId: 'conv-ws-2',
       channelId: 'direct',
       text: 'Hello',
@@ -98,18 +98,18 @@ describe('chat-ws runtime integration', () => {
 
   it('yields error event for disabled agent', async () => {
     const registry = new AgentRegistry();
-    registry.register({
+    const { id: disabledId } = registry.register({
       name: 'disabled-bot',
       model: 'anthropic/claude-sonnet-4-20250514',
       systemPrompt: 'test',
     });
-    registry.disable('disabled-bot');
+    registry.disable(disabledId);
 
     const runtime = makeRuntime(registry);
     const collected: AgentEvent[] = [];
 
     for await (const event of runtime.chat({
-      agentName: 'disabled-bot',
+      agentId: disabledId,
       conversationId: 'conv-ws-3',
       channelId: 'direct',
       text: 'Hello',
@@ -127,7 +127,7 @@ describe('chat-ws runtime integration', () => {
 
   it('streams multiple events in order', async () => {
     const registry = new AgentRegistry();
-    registry.register({
+    const { id: multiId } = registry.register({
       name: 'multi-agent',
       model: 'anthropic/claude-sonnet-4-20250514',
       systemPrompt: 'You help with math.',
@@ -146,7 +146,7 @@ describe('chat-ws runtime integration', () => {
     const collected: AgentEvent[] = [];
 
     for await (const event of runtime.chat({
-      agentName: 'multi-agent',
+      agentId: multiId,
       conversationId: 'conv-ws-4',
       channelId: 'direct',
       text: 'What is 2+2?',

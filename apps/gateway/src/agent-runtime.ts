@@ -16,7 +16,7 @@ export interface AgentRuntimeOptions {
 }
 
 export interface ChatRequest {
-  agentName: string;
+  agentId: string;
   conversationId: string;
   channelId?: string;
   text: string;
@@ -31,12 +31,12 @@ export class AgentRuntime {
     this.registry = options.registry;
     this.pool = new ConversationPool({
       maxSize: options.poolMaxSize,
-      backendFactory: async (agentName, conversationId) => {
-        const entry = this.registry.get(agentName);
-        if (!entry) throw new Error(`Agent '${agentName}' not found`);
+      backendFactory: async (agentId, conversationId) => {
+        const entry = this.registry.get(agentId);
+        if (!entry) throw new Error(`Agent '${agentId}' not found`);
         const backend = await options.createBackend(entry.config, conversationId);
         // Prepend agent identity so the model knows its name
-        const systemPrompt = `You are "${agentName}".\n\n${entry.config.systemPrompt}`;
+        const systemPrompt = `You are "${entry.config.name}".\n\n${entry.config.systemPrompt}`;
         const dashConfig: DashAgentConfig = {
           model: entry.config.model,
           systemPrompt,
@@ -46,25 +46,25 @@ export class AgentRuntime {
         };
         await backend.start(entry.config.workspace ?? '.');
         const agent = new DashAgent(backend, dashConfig);
-        this.registry.setActive(agentName);
+        this.registry.setActive(agentId);
         return { backend, agent };
       },
     });
   }
 
   async *chat(request: ChatRequest): AsyncGenerator<AgentEvent> {
-    const entry = this.registry.get(request.agentName);
+    const entry = this.registry.get(request.agentId);
     if (!entry) {
-      yield { type: 'error', error: new Error(`Agent '${request.agentName}' not found`) };
+      yield { type: 'error', error: new Error(`Agent '${request.agentId}' not found`) };
       return;
     }
     if (entry.status === 'disabled') {
-      yield { type: 'error', error: new Error(`Agent '${request.agentName}' is disabled`) };
+      yield { type: 'error', error: new Error(`Agent '${request.agentId}' is disabled`) };
       return;
     }
 
-    const poolEntry = await this.pool.getOrCreate(request.agentName, request.conversationId);
-    this.pool.pin(request.agentName, request.conversationId);
+    const poolEntry = await this.pool.getOrCreate(request.agentId, request.conversationId);
+    this.pool.pin(request.agentId, request.conversationId);
 
     try {
       yield* poolEntry.agent.chat(
@@ -74,17 +74,17 @@ export class AgentRuntime {
         { images: request.images },
       );
     } finally {
-      this.pool.unpin(request.agentName, request.conversationId);
+      this.pool.unpin(request.agentId, request.conversationId);
     }
   }
 
   async steer(
-    agentName: string,
+    agentId: string,
     conversationId: string,
     text: string,
     images?: ImageBlock[],
   ): Promise<void> {
-    const entry = this.pool.get(agentName, conversationId);
+    const entry = this.pool.get(agentId, conversationId);
     if (!entry) throw new Error('No active conversation to steer');
     const backend = entry.backend as AgentBackend & {
       steer?: (text: string, images?: ImageBlock[]) => Promise<void>;
@@ -95,12 +95,12 @@ export class AgentRuntime {
   }
 
   async followUp(
-    agentName: string,
+    agentId: string,
     conversationId: string,
     text: string,
     images?: ImageBlock[],
   ): Promise<void> {
-    const entry = this.pool.get(agentName, conversationId);
+    const entry = this.pool.get(agentId, conversationId);
     if (!entry) throw new Error('No active conversation for followUp');
     const backend = entry.backend as AgentBackend & {
       followUp?: (text: string, images?: ImageBlock[]) => Promise<void>;
@@ -110,21 +110,21 @@ export class AgentRuntime {
     }
   }
 
-  abort(agentName: string, conversationId: string): void {
-    const entry = this.pool.get(agentName, conversationId);
+  abort(agentId: string, conversationId: string): void {
+    const entry = this.pool.get(agentId, conversationId);
     if (entry) entry.backend.abort();
   }
 
-  async removeAgent(agentName: string): Promise<void> {
-    await this.pool.evictAgent(agentName);
-    this.registry.remove(agentName);
+  async removeAgent(agentId: string): Promise<void> {
+    await this.pool.evictAgent(agentId);
+    this.registry.remove(agentId);
   }
 
   async updateCredentials(
-    agentName: string,
+    agentId: string,
     providerApiKeys: Record<string, string>,
   ): Promise<void> {
-    await this.pool.forAgent(agentName, async (entry) => {
+    await this.pool.forAgent(agentId, async (entry) => {
       await entry.backend.updateCredentials(providerApiKeys);
     });
   }

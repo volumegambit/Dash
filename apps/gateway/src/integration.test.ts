@@ -30,7 +30,7 @@ describe('Gateway integration', () => {
     });
 
     // Register agent
-    registry.register({
+    const { id } = registry.register({
       name: 'test-agent',
       model: 'anthropic/claude-sonnet-4-20250514',
       systemPrompt: 'You are a test agent.',
@@ -39,7 +39,7 @@ describe('Gateway integration', () => {
     // Send message
     const events: AgentEvent[] = [];
     for await (const event of runtime.chat({
-      agentName: 'test-agent',
+      agentId: id,
       conversationId: 'conv-1',
       text: 'Hello',
     })) {
