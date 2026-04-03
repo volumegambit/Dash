@@ -8,7 +8,7 @@ export function SandboxVisual() {
   ];
 
   return (
-    <div className="bg-white rounded-2xl shadow-lg p-8 flex flex-col gap-6">
+    <div className="bg-white shadow-lg p-8 flex flex-col gap-6">
       {/* Lock icon row */}
       <div className="flex items-center justify-center gap-3">
         <Lock size={32} className="text-text-dark" />

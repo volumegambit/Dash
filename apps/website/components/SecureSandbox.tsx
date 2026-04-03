@@ -46,7 +46,7 @@ export function SecureSandbox() {
           <div className="flex flex-col gap-4">
             {BULLETS.map(({ Icon, title, description }) => (
               <div key={title} className="flex items-start gap-3.5">
-                <div className="w-10 h-10 rounded-lg bg-[#FFF0E8] flex items-center justify-center shrink-0">
+                <div className="w-10 h-10 bg-[#FFF0E8] flex items-center justify-center shrink-0">
                   <Icon size={20} className="text-brand" />
                 </div>
                 <div className="flex flex-col gap-0.5">

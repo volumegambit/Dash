@@ -51,11 +51,11 @@ export function AIProviders() {
         {PROVIDERS.map(({ gradient, Icon, name, description, recommended }) => (
           <Card
             key={name}
-            className="bg-white rounded-2xl shadow-sm p-8 flex-1 flex flex-col items-center gap-5"
+            className="bg-white shadow-sm p-8 flex-1 flex flex-col items-center gap-5"
           >
             <CardHeader>
               <div
-                className="w-16 h-16 rounded-2xl flex items-center justify-center"
+                className="w-16 h-16 flex items-center justify-center"
                 style={{ background: gradient }}
               >
                 <Icon size={28} color="white" />
