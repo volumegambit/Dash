@@ -1,9 +1,9 @@
-Audit all user documentation in `user_docs/` for accuracy, dead links, and quality. Fix all issues found.
+Audit all user documentation in `docs/` for accuracy, dead links, and quality. Fix all issues found.
 
 ## What to check
 
 ### 1. Dead links
-Check every internal link in all `user_docs/*.mdx` files. Valid page slugs are determined by filenames in `user_docs/` (without the `.mdx` extension). Also check `user_docs/docs.json` to ensure every page listed in navigation exists as a file.
+Check every internal link in all `docs/*.mdx` files. Valid page slugs are determined by filenames in `docs/` (without the `.mdx` extension). Also check `docs/docs.json` to ensure every page listed in navigation exists as a file.
 
 ### 2. Tool names
 The canonical tool names are defined in `apps/mission-control/src/renderer/src/components/deploy-options.ts` (`AVAILABLE_TOOLS`). Check all docs for stale tool names (e.g. `read_file` instead of `read`).
@@ -31,8 +31,8 @@ Flag awkward phrasing, jargon in user-facing pages, or inconsistent tone.
 
 ## How to run
 
-1. List all `.mdx` files in `user_docs/` to discover every page dynamically
-2. Read `user_docs/docs.json` to get the navigation structure and groups
+1. List all `.mdx` files in `docs/` to discover every page dynamically
+2. Read `docs/docs.json` to get the navigation structure and groups
 3. Split the discovered pages into ~4 equal batches
 4. Dispatch 4 parallel Explore agents, one per batch, each reviewing its assigned pages against the checks above
 
