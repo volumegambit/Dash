@@ -344,7 +344,7 @@ export function AiProviders(): JSX.Element {
                           keyName: hasKeys ? undefined : 'default',
                         })
                       }
-                      className="inline-flex items-center gap-1 text-xs text-muted hover:text-foreground transition-colors"
+                      className="inline-flex items-center gap-1 rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-muted hover:text-foreground hover:bg-card-hover transition-colors"
                       aria-label={`Add key for ${p.name}`}
                     >
                       <Plus size={14} />
