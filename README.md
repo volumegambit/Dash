@@ -93,7 +93,7 @@ npm run lint:fix      # Biome auto-fix
 
 ## Documentation
 
-Full docs at [docs.atrium.ai](https://docs.atrium.ai), or in [`user_docs/`](user_docs/).
+Full docs at [docs.atrium.ai](https://docs.atrium.ai), or in [`docs/`](docs/).
 
 ## License
 
