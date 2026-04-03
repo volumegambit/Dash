@@ -1,4 +1,4 @@
-import { MessageCircle, Send, Hash } from 'lucide-react';
+import { Hash, MessageCircle, Send } from 'lucide-react';
 
 const APPS = [
   {
@@ -55,34 +55,36 @@ export function MessagingApps() {
 
       {/* Cards */}
       <div className="flex flex-col md:flex-row gap-6 pt-12">
-        {APPS.map(({ gradient, Icon, name, description, statusBg, statusText, dotBg, statusLabel }) => (
-          <div
-            key={name}
-            className="bg-surface shadow-lg p-8 flex-1 flex flex-col items-center gap-5"
-          >
-            {/* Gradient icon */}
+        {APPS.map(
+          ({ gradient, Icon, name, description, statusBg, statusText, dotBg, statusLabel }) => (
             <div
-              className="w-14 h-14 flex items-center justify-center"
-              style={{ background: gradient }}
+              key={name}
+              className="bg-surface shadow-lg p-8 flex-1 flex flex-col items-center gap-5"
             >
-              <Icon size={24} color="white" />
+              {/* Gradient icon */}
+              <div
+                className="w-14 h-14 flex items-center justify-center"
+                style={{ background: gradient }}
+              >
+                <Icon size={24} color="white" />
+              </div>
+
+              {/* Name */}
+              <span className="text-[22px] font-bold text-white">{name}</span>
+
+              {/* Description */}
+              <p className="text-[15px] text-[#999] text-center leading-relaxed">{description}</p>
+
+              {/* Status badge */}
+              <div
+                className={`px-3 py-1 text-[11px] font-semibold flex items-center gap-1.5 ${statusBg} ${statusText}`}
+              >
+                <span className={`w-1.5 h-1.5 rounded-full ${dotBg}`} />
+                {statusLabel}
+              </div>
             </div>
-
-            {/* Name */}
-            <span className="text-[22px] font-bold text-white">{name}</span>
-
-            {/* Description */}
-            <p className="text-[15px] text-[#999] text-center leading-relaxed">{description}</p>
-
-            {/* Status badge */}
-            <div
-              className={`px-3 py-1 text-[11px] font-semibold flex items-center gap-1.5 ${statusBg} ${statusText}`}
-            >
-              <span className={`w-1.5 h-1.5 rounded-full ${dotBg}`} />
-              {statusLabel}
-            </div>
-          </div>
-        ))}
+          ),
+        )}
       </div>
     </section>
   );

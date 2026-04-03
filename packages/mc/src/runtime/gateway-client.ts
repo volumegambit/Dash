@@ -20,7 +20,10 @@ export interface GatewayChannel {
   adapter: 'telegram' | 'whatsapp';
   globalDenyList: string[];
   routing: Array<{
-    condition: { type: 'default' } | { type: 'sender'; ids: string[] } | { type: 'group'; ids: string[] };
+    condition:
+      | { type: 'default' }
+      | { type: 'sender'; ids: string[] }
+      | { type: 'group'; ids: string[] };
     agentId: string;
     allowList: string[];
     denyList: string[];

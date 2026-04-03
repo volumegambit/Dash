@@ -61,3 +61,10 @@ docs/plans/
 *.tmp
 .clone/
 .claude/worktrees/
+
+# Generated design assets
+designs/images/
+
+# Website build artifacts
+apps/website/.next/
+apps/website/next-env.d.ts

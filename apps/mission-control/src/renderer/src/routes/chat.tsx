@@ -190,6 +190,17 @@ function renderEvents(
         /* ignore */
       }
     }
+    let inProgressNode: React.ReactNode = null;
+    if (inProgressSummary && inProgressHtml) {
+      inProgressNode = (
+        <span
+          className="ml-1 font-mono text-muted"
+          dangerouslySetInnerHTML={{ __html: inProgressHtml }}
+        />
+      );
+    } else if (inProgressSummary) {
+      inProgressNode = <span className="ml-1 text-muted">{inProgressSummary}</span>;
+    }
     elements.push(
       <div
         key="tool-progress"
@@ -197,15 +208,7 @@ function renderEvents(
       >
         <Loader size={12} className="animate-spin shrink-0" />
         <span className="font-mono">{toolLabel(toolName)}</span>
-        {inProgressSummary && inProgressHtml ? (
-          // biome-ignore lint/security/noDangerouslySetInnerHtml: highlight.js output is safe
-          <span
-            className="ml-1 font-mono text-muted"
-            dangerouslySetInnerHTML={{ __html: inProgressHtml }}
-          />
-        ) : inProgressSummary ? (
-          <span className="ml-1 text-muted">{inProgressSummary}</span>
-        ) : null}
+        {inProgressNode}
       </div>,
     );
   }
@@ -435,6 +438,18 @@ function ToolBlock({
     }
   }, [isBash, effectiveSummary]);
 
+  let summaryNode: React.ReactNode = null;
+  if (effectiveSummary && highlightedSummary) {
+    summaryNode = (
+      <span
+        className="ml-1 font-mono text-muted"
+        dangerouslySetInnerHTML={{ __html: highlightedSummary }}
+      />
+    );
+  } else if (effectiveSummary) {
+    summaryNode = <span className="ml-1 text-muted">{effectiveSummary}</span>;
+  }
+
   return (
     <div
       className={`mb-3 border text-xs ${isError ? 'border-red-900/50 bg-red-900/10' : 'border-border bg-sidebar-hover'}`}
@@ -450,15 +465,7 @@ function ToolBlock({
           <Circle size={8} className="inline text-green fill-green mr-1.5" />
         )}
         <span className="font-mono">{toolLabel(name)}</span>
-        {effectiveSummary && highlightedSummary ? (
-          // biome-ignore lint/security/noDangerouslySetInnerHtml: highlight.js output is safe
-          <span
-            className="ml-1 font-mono text-muted"
-            dangerouslySetInnerHTML={{ __html: highlightedSummary }}
-          />
-        ) : effectiveSummary ? (
-          <span className="ml-1 text-muted">{effectiveSummary}</span>
-        ) : null}
+        {summaryNode}
       </button>
       {open && (
         <div className="border-t border-border px-3 pb-2 pt-1">
@@ -491,7 +498,6 @@ function ToolBlock({
                 </div>
               ) : writeContent?.mode === 'svg' ? (
                 <div className="max-h-64 overflow-auto bg-white/5 p-2 flex items-center justify-center">
-                  {/* biome-ignore lint/security/noDangerouslySetInnerHtml: SVG from Write tool content */}
                   <div dangerouslySetInnerHTML={{ __html: writeContent.content }} />
                 </div>
               ) : writeContent?.mode === 'code' ? (
@@ -949,9 +955,7 @@ function AgentSelectionModal({
   const searchInputRef = useRef<HTMLInputElement>(null);
 
   const filtered = searchTerm.trim()
-    ? agents.filter((a) =>
-        a.agentName.toLowerCase().includes(searchTerm.toLowerCase()),
-      )
+    ? agents.filter((a) => a.agentName.toLowerCase().includes(searchTerm.toLowerCase()))
     : agents;
 
   // Focus search input on mount
@@ -961,6 +965,7 @@ function AgentSelectionModal({
 
   // Reset selection when filter changes (skip initial render)
   const isInitialRender = useRef(true);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: searchTerm is the trigger, not a used value
   useEffect(() => {
     if (isInitialRender.current) {
       isInitialRender.current = false;
@@ -994,7 +999,6 @@ function AgentSelectionModal({
     <div className="fixed inset-0 z-50 flex items-start justify-center pt-[20vh]">
       {/* biome-ignore lint/a11y/useKeyWithClickEvents: backdrop click to close */}
       <div className="absolute inset-0 bg-black/50" onClick={onClose} />
-      {/* biome-ignore lint/a11y/noNoninteractiveElementToFocusEvents: modal container needs key handling */}
       <div
         className="relative z-10 w-[400px] border border-border bg-surface shadow-2xl"
         onKeyDown={handleKeyDown}
@@ -1218,15 +1222,14 @@ export function Chat(): JSX.Element {
     return () => window.removeEventListener('keydown', handler);
   }, [handleNewConversation]);
 
-  // If navigated with search params, auto-create conversation
+  // If navigated with search params, auto-create conversation — intentionally run once on mount
+  // biome-ignore lint/correctness/useExhaustiveDependencies: intentionally run once on mount
   useEffect(() => {
     if (search.agentId) {
       createConversation(search.agentId)
         .then((conv) => selectConversation(conv.id))
         .catch((err) => console.error('[Chat] Failed to create conversation from search:', err));
     }
-    // Only run once on mount
-    // biome-ignore lint/correctness/useExhaustiveDependencies: intentionally run once
   }, []);
 
   // Auto-focus textarea when a conversation is selected (e.g. after creating a new one)
@@ -1373,11 +1376,7 @@ export function Chat(): JSX.Element {
           agents={availableAgents}
           onSelect={handleAgentSelected}
           onClose={() => setShowAgentModal(false)}
-          defaultAgent={
-            selectedConversation
-              ? { agentId: selectedConversation.agentId }
-              : null
-          }
+          defaultAgent={selectedConversation ? { agentId: selectedConversation.agentId } : null}
         />
       )}
 
@@ -1432,9 +1431,7 @@ export function Chat(): JSX.Element {
           {(activeModel || selectedConversation) && (
             <div className="flex items-center gap-3 border-b border-border px-6 py-1.5 shrink-0">
               {selectedAgent && (
-                <span className="text-xs font-medium text-accent">
-                  {selectedAgent.name}
-                </span>
+                <span className="text-xs font-medium text-accent">{selectedAgent.name}</span>
               )}
               {activeModel && (
                 <span className="text-xs text-muted">{formatModelName(activeModel)}</span>
@@ -1581,10 +1578,7 @@ export function Chat(): JSX.Element {
                   placeholder={
                     selectedConversationId ? 'Type a message…' : 'Select a conversation first'
                   }
-                  disabled={
-                    !selectedConversationId ||
-                    isStreaming
-                  }
+                  disabled={!selectedConversationId || isStreaming}
                   className="flex-1 bg-[#141414] border border-border px-4 py-3 text-sm text-foreground placeholder:text-muted focus:border-accent focus:outline-none disabled:opacity-50 resize-none"
                 />
                 <input
@@ -1619,8 +1613,7 @@ export function Chat(): JSX.Element {
                   <button
                     type="submit"
                     disabled={
-                      (!input.trim() && attachedImages.length === 0) ||
-                      !selectedConversationId
+                      (!input.trim() && attachedImages.length === 0) || !selectedConversationId
                     }
                     className="bg-accent text-white p-2.5 hover:bg-primary-hover disabled:opacity-50 transition-colors shrink-0"
                   >

@@ -29,9 +29,9 @@ describe('McpManager', () => {
   });
 
   it('throws on duplicate server names', () => {
-    expect(
-      () => new McpManager([testServerConfig('dupe'), testServerConfig('dupe')]),
-    ).toThrow('Duplicate MCP server name "dupe"');
+    expect(() => new McpManager([testServerConfig('dupe'), testServerConfig('dupe')])).toThrow(
+      'Duplicate MCP server name "dupe"',
+    );
   });
 
   it('aggregates tools from multiple servers with namespacing', async () => {

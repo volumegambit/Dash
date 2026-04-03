@@ -121,14 +121,9 @@ async function main() {
         }
         adapter = new TelegramAdapter(token, []);
       } else if (channel.adapter === 'whatsapp') {
-        const authRaw = await credentialStore.get(
-          `channel:${channel.name}:whatsapp-auth`,
-        );
+        const authRaw = await credentialStore.get(`channel:${channel.name}:whatsapp-auth`);
         const auth = authRaw ? (JSON.parse(authRaw) as Record<string, string>) : {};
-        adapter = new WhatsAppAdapter(
-          auth,
-          join(dataDir, 'whatsapp-sessions', channel.name),
-        );
+        adapter = new WhatsAppAdapter(auth, join(dataDir, 'whatsapp-sessions', channel.name));
       } else {
         continue;
       }

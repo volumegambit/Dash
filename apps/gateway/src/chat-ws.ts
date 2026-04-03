@@ -177,7 +177,6 @@ export function mountChatWs(app: Hono, options: ChatWsOptions): void {
             conversationStreams.set(convKey, msg.id);
 
             (async () => {
-
               const stream = runtime.chat({
                 agentId,
                 conversationId: convId,
@@ -190,7 +189,6 @@ export function mountChatWs(app: Hono, options: ChatWsOptions): void {
                   if (controller.signal.aborted) break;
 
                   if (agentEvent.type === 'error') {
-
                     (agentEvent as { timestamp?: string }).timestamp = new Date().toISOString();
                   }
                   const serverMsg: WsServerMessage = {

@@ -1,3 +1,4 @@
+import type { SkillContent, SkillInfo, SkillsConfig } from '@dash/management';
 import type {
   CachedModel,
   CreateAgentRequest,
@@ -6,7 +7,6 @@ import type {
   McConversation,
   McMessage,
 } from '@dash/mc';
-import type { SkillContent, SkillInfo, SkillsConfig } from '@dash/management';
 
 // Serializable AgentEvent (error is string, not Error object, for IPC transport)
 export type McAgentEvent =

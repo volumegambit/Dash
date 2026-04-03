@@ -10,7 +10,6 @@ export type {
   SpawnedProcess,
   HealthChecker,
 } from './runtime/process.js';
-export type { RuntimeStatus } from './runtime/types.js';
 export { providerSecretKey, parseProviderSecretKey } from './runtime/provider-keys.js';
 export { ConversationStore } from './conversations.js';
 export type { McConversation, McMessage } from './conversations.js';
