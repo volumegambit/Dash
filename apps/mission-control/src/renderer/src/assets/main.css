@@ -33,6 +33,17 @@
   --color-yellow: #facc15;
   --color-yellow-tint: #facc1518;
 
+  /* Border radius — sharp corners per brand guidelines */
+  --radius-xs: 0px;
+  --radius-sm: 0px;
+  --radius: 0px;
+  --radius-md: 0px;
+  --radius-lg: 0px;
+  --radius-xl: 0px;
+  --radius-2xl: 0px;
+  --radius-3xl: 0px;
+  --radius-4xl: 0px;
+
   /* Fonts */
   --font-display: "Outfit", -apple-system, BlinkMacSystemFont, sans-serif;
   --font-mono: "JetBrains Mono", monospace;

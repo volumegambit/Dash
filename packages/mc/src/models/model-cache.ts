@@ -16,6 +16,29 @@ interface CacheFile {
   tools?: string[];
 }
 
+/** Model IDs containing these substrings are not usable for agent chat. */
+const NON_CHAT_PATTERNS = [
+  'embedding',
+  'image',
+  'tts',
+  'whisper',
+  'dall-e',
+  'moderation',
+  'realtime',
+  'audio',
+  'transcription',
+];
+
+/** Dated variant pattern — e.g. "gpt-4o-2024-05-13" */
+const DATED_VARIANT = /\d{4}-\d{2}-\d{2}/;
+
+function isChatModel(modelId: string): boolean {
+  const lower = modelId.toLowerCase();
+  if (NON_CHAT_PATTERNS.some((p) => lower.includes(p))) return false;
+  if (DATED_VARIANT.test(modelId)) return false;
+  return true;
+}
+
 export class ModelCacheService {
   private cacheFilePath: string;
   private dataDir: string;
@@ -102,8 +125,8 @@ export class ModelCacheService {
       const models: CachedModel[] = [];
       for (const provider of response.data?.providers ?? []) {
         for (const [modelId, model] of Object.entries(provider.models ?? {})) {
-          // Skip deprecated models
           if (model.status === 'deprecated') continue;
+          if (!isChatModel(modelId)) continue;
           models.push({
             value: `${provider.id}/${modelId}`,
             label: model.name || modelId,
