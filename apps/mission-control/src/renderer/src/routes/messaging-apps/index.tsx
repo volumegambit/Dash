@@ -1,6 +1,6 @@
 import type { MessagingApp } from '@dash/mc';
 import { Link, createFileRoute } from '@tanstack/react-router';
-import { AlertTriangle, MessageSquare, Plus } from 'lucide-react';
+import { AlertTriangle, ExternalLink, MessageSquare, Plus } from 'lucide-react';
 import { useEffect } from 'react';
 import { useMessagingAppsStore } from '../../stores/messaging-apps.js';
 
@@ -169,8 +169,20 @@ function AppCard({
         </div>
       )}
 
-      {/* Configure link */}
-      <span className="text-accent text-xs hover:underline">Configure →</span>
+      {/* Chat shortcut for Telegram bots with a known username */}
+      {app.type === 'telegram' && app.metadata?.username && (
+        <button
+          type="button"
+          onClick={(e) => {
+            e.preventDefault();
+            window.api.openExternal(`https://t.me/${app.metadata!.username}`);
+          }}
+          className="inline-flex items-center gap-1 text-accent text-xs hover:underline self-start"
+        >
+          <ExternalLink size={10} />
+          Chat on Telegram
+        </button>
+      )}
     </Link>
   );
 }

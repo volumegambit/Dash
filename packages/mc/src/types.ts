@@ -65,4 +65,5 @@ export interface MessagingApp {
   createdAt: string;
   globalDenyList: string[]; // blocked before any routing evaluates
   routing: RoutingRule[]; // ordered, first match wins
+  metadata?: Record<string, string>; // platform-specific data, e.g. { username: 'mybot' }
 }
