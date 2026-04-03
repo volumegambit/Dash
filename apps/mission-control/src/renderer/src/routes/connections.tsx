@@ -1,6 +1,6 @@
 import { providerSecretKey } from '@dash/mc/provider-keys';
 import { createFileRoute } from '@tanstack/react-router';
-import { Loader, Lock, LogIn, Pencil, Plus, Trash2 } from 'lucide-react';
+import { Loader, Lock, LogIn, Plus, Trash2 } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
 import { KeyDeleteModal } from '../components/KeyDeleteModal.js';
 import { ProviderConnectModal } from '../components/ProviderConnectModal.js';
@@ -300,7 +300,7 @@ export function AiProviders(): JSX.Element {
                       </button>
                     )}
 
-                    {/* Edit button */}
+                    {/* Add Key button */}
                     <button
                       type="button"
                       onClick={() =>
@@ -309,10 +309,11 @@ export function AiProviders(): JSX.Element {
                           keyName: hasKeys ? undefined : 'default',
                         })
                       }
-                      className="text-muted hover:text-foreground transition-colors"
-                      aria-label={`Edit ${p.name}`}
+                      className="inline-flex items-center gap-1 text-xs text-muted hover:text-foreground transition-colors"
+                      aria-label={`Add key for ${p.name}`}
                     >
-                      <Pencil size={15} />
+                      <Plus size={14} />
+                      Add Key
                     </button>
 
                     {/* Delete button */}
