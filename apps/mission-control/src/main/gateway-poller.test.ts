@@ -20,9 +20,8 @@ describe('GatewayPoller', () => {
     } as unknown as GatewayManagementClient;
     const mockEnsure = vi.fn().mockResolvedValue(mockClient);
     const onStatusChange = vi.fn();
-    const onRestart = vi.fn().mockResolvedValue(undefined);
 
-    const poller = new GatewayPoller(mockEnsure, onRestart, 5000);
+    const poller = new GatewayPoller(mockEnsure, 5000);
     poller.start(onStatusChange);
 
     await vi.advanceTimersByTimeAsync(5000);
@@ -32,18 +31,16 @@ describe('GatewayPoller', () => {
     poller.stop();
   });
 
-  it('calls onStatusChange restarting and calls onRestart when ensureGateway throws', async () => {
+  it('calls onStatusChange with unhealthy when ensureGateway throws', async () => {
     const mockEnsure = vi.fn().mockRejectedValue(new Error('gateway down'));
     const onStatusChange = vi.fn();
-    const onRestart = vi.fn().mockResolvedValue(undefined);
 
-    const poller = new GatewayPoller(mockEnsure, onRestart, 5000);
+    const poller = new GatewayPoller(mockEnsure, 5000);
     poller.start(onStatusChange);
 
     await vi.advanceTimersByTimeAsync(5000);
 
-    expect(onStatusChange).toHaveBeenCalledWith('restarting');
-    expect(onRestart).toHaveBeenCalled();
+    expect(onStatusChange).toHaveBeenCalledWith('unhealthy');
     poller.stop();
   });
 
@@ -55,9 +52,8 @@ describe('GatewayPoller', () => {
     } as unknown as GatewayManagementClient;
     const mockEnsure = vi.fn().mockResolvedValue(mockClient);
     const onStatusChange = vi.fn();
-    const onRestart = vi.fn().mockResolvedValue(undefined);
 
-    const poller = new GatewayPoller(mockEnsure, onRestart, 5000);
+    const poller = new GatewayPoller(mockEnsure, 5000);
     poller.start(onStatusChange);
 
     await vi.advanceTimersByTimeAsync(10000); // two ticks
@@ -66,12 +62,24 @@ describe('GatewayPoller', () => {
     poller.stop();
   });
 
+  it('does not call onStatusChange again after already unhealthy', async () => {
+    const mockEnsure = vi.fn().mockRejectedValue(new Error('down'));
+    const onStatusChange = vi.fn();
+
+    const poller = new GatewayPoller(mockEnsure, 5000);
+    poller.start(onStatusChange);
+
+    await vi.advanceTimersByTimeAsync(10000); // two ticks — both fail
+
+    expect(onStatusChange).toHaveBeenCalledTimes(1); // only first failure (starting → unhealthy)
+    poller.stop();
+  });
+
   it('stop() prevents further polling', async () => {
     const mockEnsure = vi.fn().mockRejectedValue(new Error('down'));
     const onStatusChange = vi.fn();
-    const onRestart = vi.fn().mockResolvedValue(undefined);
 
-    const poller = new GatewayPoller(mockEnsure, onRestart, 5000);
+    const poller = new GatewayPoller(mockEnsure, 5000);
     poller.start(onStatusChange);
     poller.stop();
 
@@ -83,8 +91,7 @@ describe('GatewayPoller', () => {
 
   it('getCurrentStatus returns current status', () => {
     const mockEnsure = vi.fn();
-    const onRestart = vi.fn();
-    const poller = new GatewayPoller(mockEnsure, onRestart, 5000);
+    const poller = new GatewayPoller(mockEnsure, 5000);
     expect(poller.getCurrentStatus()).toBe('starting');
   });
 });

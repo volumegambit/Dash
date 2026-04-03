@@ -1,9 +1,8 @@
 import type { GatewayManagementClient } from '@dash/mc';
 
-export type GatewayStatus = 'starting' | 'healthy' | 'unhealthy' | 'restarting';
+export type GatewayStatus = 'starting' | 'healthy' | 'unhealthy';
 
 type EnsureGateway = () => Promise<GatewayManagementClient | null>;
-type OnRestart = () => Promise<void>;
 
 export class GatewayPoller {
   private timer: NodeJS.Timeout | null = null;
@@ -12,7 +11,6 @@ export class GatewayPoller {
 
   constructor(
     private ensureGateway: EnsureGateway,
-    private onRestart: OnRestart,
     private intervalMs = 5_000,
   ) {}
 
@@ -43,17 +41,9 @@ export class GatewayPoller {
           }
         }
       } catch {
-        if (this.currentStatus !== 'restarting') {
-          this.currentStatus = 'restarting';
-          onStatusChange('restarting');
-          try {
-            await this.onRestart();
-            this.currentStatus = 'healthy';
-            onStatusChange('healthy');
-          } catch {
-            this.currentStatus = 'unhealthy';
-            onStatusChange('unhealthy');
-          }
+        if (this.currentStatus !== 'unhealthy') {
+          this.currentStatus = 'unhealthy';
+          onStatusChange('unhealthy');
         }
       }
     }, this.intervalMs);

@@ -142,12 +142,7 @@ export async function registerIpcHandlers(
     const win = getWindow();
     if (win && !win.isDestroyed()) win.webContents.send('gateway:status', status);
   };
-  gatewayPoller = new GatewayPoller(
-    () => gw.ensureRunning(),
-    async () => {
-      await refreshChatServiceConnection();
-    },
-  );
+  gatewayPoller = new GatewayPoller(() => gw.ensureRunning());
 
   // SSE subscription to gateway events
   let sseAbort: AbortController | null = null;
