@@ -149,6 +149,7 @@ function NewTelegramWizard(): JSX.Element {
               denyList: [],
             },
           ],
+          metadata: botInfo ? { username: botInfo.username } : undefined,
         },
         token,
       );
