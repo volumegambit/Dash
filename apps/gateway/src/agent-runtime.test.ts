@@ -21,7 +21,7 @@ function makeMockBackend(events: AgentEvent[]): AgentBackend {
 describe('AgentRuntime', () => {
   it('routes a message to the correct agent and streams events', async () => {
     const registry = new AgentRegistry();
-    registry.register({
+    const { id } = registry.register({
       name: 'test-agent',
       model: 'anthropic/claude-sonnet-4-20250514',
       systemPrompt: 'You are helpful.',
@@ -45,7 +45,7 @@ describe('AgentRuntime', () => {
 
     const collected: AgentEvent[] = [];
     for await (const event of runtime.chat({
-      agentName: 'test-agent',
+      agentId: id,
       conversationId: 'conv-1',
       text: 'Hi there',
     })) {
@@ -67,7 +67,7 @@ describe('AgentRuntime', () => {
 
     const collected: AgentEvent[] = [];
     for await (const event of runtime.chat({
-      agentName: 'nonexistent',
+      agentId: 'nonexistent-id',
       conversationId: 'conv-1',
       text: 'Hello',
     })) {
@@ -83,12 +83,12 @@ describe('AgentRuntime', () => {
 
   it('rejects messages to disabled agents (yields error event)', async () => {
     const registry = new AgentRegistry();
-    registry.register({
+    const { id } = registry.register({
       name: 'disabled-agent',
       model: 'anthropic/claude-sonnet-4-20250514',
       systemPrompt: 'test',
     });
-    registry.disable('disabled-agent');
+    registry.disable(id);
 
     const runtime = new AgentRuntime({
       registry,
@@ -99,7 +99,7 @@ describe('AgentRuntime', () => {
 
     const collected: AgentEvent[] = [];
     for await (const event of runtime.chat({
-      agentName: 'disabled-agent',
+      agentId: id,
       conversationId: 'conv-1',
       text: 'Hello',
     })) {
