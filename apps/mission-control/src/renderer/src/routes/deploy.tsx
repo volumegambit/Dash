@@ -3,18 +3,14 @@ import {
   ArrowLeft,
   ArrowRight,
   Check,
-  Clipboard,
-  ClipboardCheck,
   Loader,
   Rocket,
 } from 'lucide-react';
 import { useEffect, useState } from 'react';
-import { RendererDeploymentError } from '../../../shared/ipc';
 import { ModelChainEditor } from '../components/ModelChainEditor.js';
 import { ALL_TOOL_IDS, AVAILABLE_MODELS, TOOL_GROUPS } from '../components/deploy-options.js';
 import { useAvailableModels } from '../hooks/useAvailableModels.js';
-import { useDeploymentsStore } from '../stores/deployments';
-import { useSecretsStore } from '../stores/secrets.js';
+import { useAgentsStore } from '../stores/agents.js';
 
 type Step = 'agent' | 'review';
 
@@ -29,7 +25,7 @@ interface AgentConfig {
 
 export function DeployWizard(): JSX.Element {
   const navigate = useNavigate();
-  const { deployWithConfig } = useDeploymentsStore();
+  const { createAgent } = useAgentsStore();
   const {
     models: availableModels,
     refreshing: modelsRefreshing,
@@ -38,8 +34,6 @@ export function DeployWizard(): JSX.Element {
   const [step, setStep] = useState<Step>('agent');
   const [deploying, setDeploying] = useState(false);
   const [deployError, setDeployError] = useState<string | null>(null);
-  const [deployStartupLogs, setDeployStartupLogs] = useState<string[]>([]);
-  const [logsCopied, setLogsCopied] = useState(false);
 
   const [agent, setAgent] = useState<AgentConfig>({
     name: '',
@@ -49,10 +43,6 @@ export function DeployWizard(): JSX.Element {
     tools: [],
     workspace: '',
   });
-
-  useEffect(() => {
-    useSecretsStore.getState().checkStatus();
-  }, []);
 
   // One-time: load settings and pick initial model
   // biome-ignore lint/correctness/useExhaustiveDependencies: intentionally runs once on mount; availableModels is stable at this point
@@ -93,9 +83,8 @@ export function DeployWizard(): JSX.Element {
   const handleDeploy = async (): Promise<void> => {
     setDeploying(true);
     setDeployError(null);
-    setDeployStartupLogs([]);
     try {
-      const id = await deployWithConfig({
+      const created = await createAgent({
         name: agent.name.trim(),
         model: agent.model,
         fallbackModels: agent.fallbackModels.length > 0 ? agent.fallbackModels : undefined,
@@ -103,10 +92,9 @@ export function DeployWizard(): JSX.Element {
         tools: agent.tools,
         workspace: agent.workspace || undefined,
       });
-      navigate({ to: '/agents/$id', params: { id } });
+      navigate({ to: '/agents/$id', params: { id: created.id } });
     } catch (err: unknown) {
       setDeployError((err as Error).message);
-      setDeployStartupLogs(err instanceof RendererDeploymentError ? err.startupLogs : []);
       setDeploying(false);
     }
   };
@@ -331,40 +319,8 @@ export function DeployWizard(): JSX.Element {
               </div>
 
               {deployError && (
-                <div className="space-y-2">
-                  <div className="rounded-lg bg-red-900/30 px-4 py-3 text-sm text-red">
-                    {deployError}
-                  </div>
-                  {deployStartupLogs.length > 0 && (
-                    <details className="rounded-lg border border-red-900/30">
-                      <summary className="cursor-pointer px-4 py-2 text-xs text-red/70 hover:text-red">
-                        <span className="inline-flex items-center justify-between w-[calc(100%-1rem)]">
-                          <span>Startup logs ({deployStartupLogs.length} lines)</span>
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.preventDefault();
-                              navigator.clipboard.writeText(deployStartupLogs.join('\n'));
-                              setLogsCopied(true);
-                              setTimeout(() => setLogsCopied(false), 2000);
-                            }}
-                            className="ml-2 inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-red/70 hover:bg-red-900/20 hover:text-red"
-                          >
-                            {logsCopied ? <ClipboardCheck size={12} /> : <Clipboard size={12} />}
-                            {logsCopied ? 'Copied' : 'Copy'}
-                          </button>
-                        </span>
-                      </summary>
-                      <div className="max-h-48 overflow-auto rounded-b-lg bg-[#0d0d0d] p-3 font-mono text-xs leading-5">
-                        {deployStartupLogs.map((line, i) => (
-                          // biome-ignore lint/suspicious/noArrayIndexKey: log lines are ordered by index
-                          <div key={i} className="text-red-300/70">
-                            {line}
-                          </div>
-                        ))}
-                      </div>
-                    </details>
-                  )}
+                <div className="rounded-lg bg-red-900/30 px-4 py-3 text-sm text-red">
+                  {deployError}
                 </div>
               )}
 

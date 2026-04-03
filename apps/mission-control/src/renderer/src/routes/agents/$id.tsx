@@ -1,4 +1,4 @@
-import type { RuntimeStatus } from '@dash/mc';
+import type { GatewayAgent, GatewayChannel } from '@dash/mc';
 import { Link, createFileRoute, useNavigate } from '@tanstack/react-router';
 import {
   ArrowLeft,
@@ -7,71 +7,45 @@ import {
   MessageSquare,
   Pencil,
   Play,
-  RefreshCw,
   Square,
   Trash2,
   X,
 } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { useAgentConfigsStore } from '../../stores/agent-configs.js';
-import { useDeploymentsStore } from '../../stores/deployments';
-import { useMessagingAppsStore } from '../../stores/messaging-apps.js';
+import { useAgentsStore } from '../../stores/agents.js';
+import { useChannelsStore } from '../../stores/messaging-apps.js';
 import { AgentConfigTab } from './-components/AgentConfigTab.js';
-import { AgentMonitorTab } from './-components/AgentMonitorTab.js';
 
-type TabId = 'overview' | 'configuration' | 'channels' | 'logs';
+type TabId = 'overview' | 'configuration' | 'channels';
 
 export function AgentDetail(): JSX.Element {
   const { id } = Route.useParams();
   const navigate = useNavigate();
   const {
-    deployments,
-    logLines,
-    loadDeployments,
-    stop,
-    restart,
-    remove,
-    updateConfig,
-    subscribeLogs,
-    unsubscribeLogs,
-  } = useDeploymentsStore();
-  const [status, setStatus] = useState<RuntimeStatus | null>(null);
+    agents,
+    loadAgents,
+    disableAgent,
+    enableAgent,
+    removeAgent,
+    updateAgent,
+  } = useAgentsStore();
+  const { channels, loadChannels } = useChannelsStore();
   const [loading, setLoading] = useState(true);
-  const { apps: messagingApps, loadApps: loadMessagingApps } = useMessagingAppsStore();
 
   const [activeTab, setActiveTab] = useState<TabId>('overview');
   const [editingName, setEditingName] = useState(false);
   const [newName, setNewName] = useState('');
   const nameInputRef = useRef<HTMLInputElement>(null);
 
-  const deployment = deployments.find((d) => d.id === id);
-  const logs = logLines[id] ?? [];
-
-  // Agent config from gateway (via centralized store)
-  const agentConfig = useAgentConfigsStore(
-    (s) => (deployment?.name ? s.configs[deployment.name] : undefined) as import('@dash/mc').AgentDeployAgentConfig | undefined,
-  );
+  const agent = agents.find((a) => a.id === id);
 
   useEffect(() => {
-    loadDeployments().then(() => setLoading(false));
-  }, [loadDeployments]);
+    loadAgents().then(() => setLoading(false));
+  }, [loadAgents]);
 
   useEffect(() => {
-    if (!deployment) return;
-    window.api
-      .deploymentsGetStatus(id)
-      .then(setStatus)
-      .catch(() => {});
-  }, [id, deployment]);
-
-  useEffect(() => {
-    subscribeLogs(id);
-    return () => unsubscribeLogs(id);
-  }, [id, subscribeLogs, unsubscribeLogs]);
-
-  useEffect(() => {
-    loadMessagingApps();
-  }, [loadMessagingApps]);
+    loadChannels();
+  }, [loadChannels]);
 
   useEffect(() => {
     if (editingName && nameInputRef.current) {
@@ -80,33 +54,23 @@ export function AgentDetail(): JSX.Element {
     }
   }, [editingName]);
 
-  const handleStop = useCallback(async () => {
-    await stop(id);
-    const s = await window.api.deploymentsGetStatus(id).catch(() => null);
-    if (s) setStatus(s);
-  }, [id, stop]);
+  const handleDisable = useCallback(async () => {
+    await disableAgent(id);
+  }, [id, disableAgent]);
 
-  const [restarting, setRestarting] = useState(false);
-  const handleRestart = useCallback(async () => {
-    setRestarting(true);
-    try {
-      await restart(id);
-      const s = await window.api.deploymentsGetStatus(id).catch(() => null);
-      if (s) setStatus(s);
-    } finally {
-      setRestarting(false);
-    }
-  }, [id, restart]);
+  const handleEnable = useCallback(async () => {
+    await enableAgent(id);
+  }, [id, enableAgent]);
 
   const handleRemove = useCallback(async () => {
-    await remove(id);
+    await removeAgent(id);
     navigate({ to: '/agents' });
-  }, [id, remove, navigate]);
+  }, [id, removeAgent, navigate]);
 
   const handleStartRename = useCallback(() => {
-    setNewName(deployment?.name ?? '');
+    setNewName(agent?.name ?? '');
     setEditingName(true);
-  }, [deployment?.name]);
+  }, [agent?.name]);
 
   const handleCancelRename = useCallback(() => {
     setEditingName(false);
@@ -115,17 +79,24 @@ export function AgentDetail(): JSX.Element {
 
   const handleSaveRename = useCallback(async () => {
     const trimmed = newName.trim();
-    if (!trimmed || trimmed === deployment?.name) {
+    if (!trimmed || trimmed === agent?.name) {
       setEditingName(false);
       return;
     }
     try {
-      await updateConfig(id, { name: trimmed });
+      await updateAgent(id, { name: trimmed });
       setEditingName(false);
     } catch (err) {
       console.error('Failed to rename agent:', err);
     }
-  }, [id, newName, deployment?.name, updateConfig]);
+  }, [id, newName, agent?.name, updateAgent]);
+
+  const handleUpdateConfig = useCallback(
+    async (agentId: string, patch: Record<string, unknown>) => {
+      await updateAgent(agentId, patch);
+    },
+    [updateAgent],
+  );
 
   if (loading) {
     return (
@@ -135,7 +106,7 @@ export function AgentDetail(): JSX.Element {
     );
   }
 
-  if (!deployment) {
+  if (!agent) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-4">
         <p className="text-muted">Agent not found.</p>
@@ -150,21 +121,18 @@ export function AgentDetail(): JSX.Element {
     );
   }
 
-  const resolvedStatus = status?.state ?? deployment.status;
-  const isRunning = resolvedStatus === 'running';
-  const isStopped = resolvedStatus === 'stopped' || resolvedStatus === 'error';
-  const agentName = deployment.name;
+  const isActive = agent.status === 'active' || agent.status === 'registered';
+  const isDisabled = agent.status === 'disabled';
 
-  // Connected channels: messaging apps whose routing targets this agent
-  const connectedChannels = messagingApps.filter((app) =>
-    app.routing.some((rule) => rule.targetAgentName === agentName),
+  // Connected channels: channels whose routing targets this agent
+  const connectedChannels = channels.filter((ch) =>
+    ch.routing.some((rule) => rule.agentId === agent.id),
   );
 
   const TABS: { id: TabId; label: string }[] = [
     { id: 'overview', label: 'Overview' },
     { id: 'configuration', label: 'Configuration' },
     { id: 'channels', label: 'Channels' },
-    { id: 'logs', label: 'Logs' },
   ];
 
   return (
@@ -213,58 +181,46 @@ export function AgentDetail(): JSX.Element {
             className="group flex items-center gap-2 font-[family-name:var(--font-display)] text-[22px] font-semibold text-foreground hover:text-accent transition-colors"
             title="Click to rename"
           >
-            {deployment.name}
+            {agent.name}
             <Pencil
               size={14}
               className="opacity-0 group-hover:opacity-100 transition-opacity text-muted"
             />
           </button>
         )}
-        <StatusBadge status={resolvedStatus} />
+        <StatusBadge status={agent.status} />
         <div className="ml-auto flex items-center gap-2">
-          {isRunning && agentName && (
+          {isActive && (
             <button
               type="button"
-              onClick={() => navigate({ to: '/chat', search: { deploymentId: id, agentName } })}
+              onClick={() => navigate({ to: '/chat', search: { agentId: id } })}
               className="inline-flex items-center gap-2 rounded-lg border border-border px-3 py-2 text-sm text-muted transition-colors hover:bg-sidebar-hover hover:text-foreground"
             >
               <MessageSquare size={14} />
               Chat
             </button>
           )}
-          {isStopped && (
+          {isDisabled && (
             <button
               type="button"
-              onClick={handleRestart}
-              disabled={restarting}
-              className="inline-flex items-center gap-2 rounded-lg bg-accent px-3 py-2 text-sm text-white transition-colors hover:bg-primary-hover disabled:opacity-50"
+              onClick={handleEnable}
+              className="inline-flex items-center gap-2 rounded-lg bg-accent px-3 py-2 text-sm text-white transition-colors hover:bg-primary-hover"
             >
-              {restarting ? <Loader size={14} className="animate-spin" /> : <Play size={14} />}
-              {restarting ? 'Starting...' : 'Start'}
+              <Play size={14} />
+              Enable
             </button>
           )}
-          {isRunning && (
+          {isActive && (
             <button
               type="button"
-              onClick={handleRestart}
-              disabled={restarting}
-              className="inline-flex items-center gap-2 rounded-lg border border-border px-3 py-2 text-sm text-muted transition-colors hover:bg-sidebar-hover hover:text-foreground disabled:opacity-50"
-            >
-              <RefreshCw size={14} className={restarting ? 'animate-spin' : ''} />
-              {restarting ? 'Restarting...' : 'Restart'}
-            </button>
-          )}
-          {isRunning && (
-            <button
-              type="button"
-              onClick={handleStop}
+              onClick={handleDisable}
               className="inline-flex items-center gap-2 rounded-lg border border-border px-3 py-2 text-sm text-muted transition-colors hover:bg-sidebar-hover hover:text-foreground"
             >
               <Square size={14} />
-              Stop
+              Disable
             </button>
           )}
-          {isStopped && (
+          {isDisabled && (
             <button
               type="button"
               onClick={handleRemove}
@@ -276,32 +232,6 @@ export function AgentDetail(): JSX.Element {
           )}
         </div>
       </div>
-
-      {deployment.status === 'error' && (
-        <div className="px-8 pt-4 pb-2 space-y-2 shrink-0">
-          <div className="rounded-lg bg-red-900/30 px-4 py-3 text-sm text-red">
-            <p className="font-medium">Startup failed</p>
-            {deployment.errorMessage && (
-              <p className="mt-1 text-red/80">{deployment.errorMessage}</p>
-            )}
-          </div>
-          {deployment.startupLogs && deployment.startupLogs.length > 0 && (
-            <details className="rounded-lg border border-red-900/30">
-              <summary className="cursor-pointer px-4 py-2 text-xs text-red/70 hover:text-red">
-                Startup logs ({deployment.startupLogs.length} lines)
-              </summary>
-              <div className="max-h-64 overflow-auto rounded-b-lg bg-[#0d0d0d] p-3 font-mono text-xs leading-5">
-                {deployment.startupLogs.map((line, i) => (
-                  // biome-ignore lint/suspicious/noArrayIndexKey: log lines are ordered by index
-                  <div key={i} className="text-red-300/70">
-                    {line}
-                  </div>
-                ))}
-              </div>
-            </details>
-          )}
-        </div>
-      )}
 
       {/* Tab bar */}
       <div className="bg-surface px-8 border-b border-border flex shrink-0">
@@ -325,24 +255,19 @@ export function AgentDetail(): JSX.Element {
       <div className="flex-1 p-8 overflow-y-auto">
         {activeTab === 'overview' && (
           <OverviewTab
-            deployment={deployment}
-            status={status}
+            agent={agent}
             connectedChannels={connectedChannels}
-            agentConfig={agentConfig}
           />
         )}
         {activeTab === 'configuration' && (
           <AgentConfigTab
-            deploymentId={id}
-            agentConfig={agentConfig}
-            workspace={deployment.workspace}
-            updateConfig={updateConfig}
+            agentId={id}
+            agentConfig={agent.config}
+            workspace={agent.config.workspace}
+            updateConfig={handleUpdateConfig}
           />
         )}
         {activeTab === 'channels' && <ChannelsTab connectedChannels={connectedChannels} />}
-        {activeTab === 'logs' && (
-          <AgentMonitorTab deployment={deployment} status={status} logs={logs} />
-        )}
       </div>
     </div>
   );
@@ -352,46 +277,13 @@ export function AgentDetail(): JSX.Element {
 // Overview tab
 // ---------------------------------------------------------------------------
 
-interface OverviewTabProps {
-  deployment: import('@dash/mc').AgentDeployment;
-  status: RuntimeStatus | null;
-  connectedChannels: import('@dash/mc').MessagingApp[];
-  agentConfig: import('@dash/mc').AgentDeployAgentConfig | undefined;
-}
-
 function OverviewTab({
-  deployment,
-  status,
+  agent,
   connectedChannels,
-  agentConfig,
-}: OverviewTabProps): JSX.Element {
-  const resolvedStatus = status?.state ?? deployment.status;
-
-  // Build a simple timeline of events from available data
-  const events: { time: string; description: string }[] = [];
-  if (deployment.createdAt) {
-    events.push({
-      time: new Date(deployment.createdAt).toLocaleTimeString('en-GB', {
-        hour: '2-digit',
-        minute: '2-digit',
-      }),
-      description: 'Agent deployed',
-    });
-  }
-  if (deployment.status === 'running') {
-    events.push({ time: 'Now', description: 'Agent running' });
-  } else if (deployment.status === 'stopped') {
-    events.push({ time: '—', description: 'Agent stopped' });
-  } else if (deployment.status === 'error') {
-    events.push({ time: '—', description: 'Startup failed' });
-  }
-
-  const lastActiveStr = status?.uptime
-    ? `${Math.floor(status.uptime / 1000)}s uptime`
-    : deployment.status === 'running'
-      ? 'Running'
-      : 'N/A';
-
+}: {
+  agent: GatewayAgent;
+  connectedChannels: GatewayChannel[];
+}): JSX.Element {
   return (
     <div className="flex gap-6">
       {/* Left column */}
@@ -407,31 +299,29 @@ function OverviewTab({
             <div className="flex justify-between text-sm">
               <span className="text-muted">Model</span>
               <span className="text-foreground font-[family-name:var(--font-mono)] text-xs">
-                {agentConfig?.model ?? 'N/A'}
+                {agent.config.model}
               </span>
             </div>
             <div className="flex justify-between text-sm">
-              <span className="text-muted">Created</span>
+              <span className="text-muted">Registered</span>
               <span className="text-foreground font-[family-name:var(--font-mono)] text-xs">
-                {deployment.createdAt
-                  ? new Date(deployment.createdAt).toLocaleDateString('en-GB', {
-                      day: 'numeric',
-                      month: 'short',
-                      year: 'numeric',
-                    })
-                  : 'N/A'}
-              </span>
-            </div>
-            <div className="flex justify-between text-sm">
-              <span className="text-muted">Last Active</span>
-              <span className="text-foreground font-[family-name:var(--font-mono)] text-xs">
-                {lastActiveStr}
+                {new Date(agent.registeredAt).toLocaleDateString('en-GB', {
+                  day: 'numeric',
+                  month: 'short',
+                  year: 'numeric',
+                })}
               </span>
             </div>
             <div className="flex justify-between text-sm">
               <span className="text-muted">Status</span>
               <span className="text-foreground font-[family-name:var(--font-mono)] text-xs">
-                {resolvedStatus}
+                {agent.status}
+              </span>
+            </div>
+            <div className="flex justify-between text-sm">
+              <span className="text-muted">Tools</span>
+              <span className="text-foreground font-[family-name:var(--font-mono)] text-xs">
+                {agent.config.tools?.length ?? 0}
               </span>
             </div>
           </div>
@@ -448,11 +338,11 @@ function OverviewTab({
             {connectedChannels.length === 0 ? (
               <p className="text-sm text-muted">No channels connected</p>
             ) : (
-              connectedChannels.map((app) => (
-                <div key={app.id} className="flex justify-between text-sm">
-                  <span className="text-foreground">{app.name}</span>
+              connectedChannels.map((ch) => (
+                <div key={ch.name} className="flex justify-between text-sm">
+                  <span className="text-foreground">{ch.name}</span>
                   <span className="text-foreground font-[family-name:var(--font-mono)] text-xs capitalize">
-                    {app.type}
+                    {ch.adapter}
                   </span>
                 </div>
               ))
@@ -470,22 +360,7 @@ function OverviewTab({
             </span>
           </div>
           <div className="flex flex-col gap-0">
-            {events.length === 0 ? (
-              <div className="px-5 py-3 text-sm text-muted">No activity recorded.</div>
-            ) : (
-              events.map((event, i) => (
-                <div
-                  // biome-ignore lint/suspicious/noArrayIndexKey: static event list ordered by index
-                  key={i}
-                  className="flex gap-4 px-5 py-3 border-b border-border last:border-b-0"
-                >
-                  <span className="font-[family-name:var(--font-mono)] text-[11px] text-muted w-16 shrink-0">
-                    {event.time}
-                  </span>
-                  <span className="text-sm text-foreground">{event.description}</span>
-                </div>
-              ))
-            )}
+            <div className="px-5 py-3 text-sm text-muted">No activity recorded.</div>
           </div>
         </div>
       </div>
@@ -499,7 +374,7 @@ function OverviewTab({
 
 function ChannelsTab({
   connectedChannels,
-}: { connectedChannels: import('@dash/mc').MessagingApp[] }): JSX.Element {
+}: { connectedChannels: GatewayChannel[] }): JSX.Element {
   if (connectedChannels.length === 0) {
     return (
       <div className="py-12 flex flex-col items-center gap-3 text-center">
@@ -517,15 +392,15 @@ function ChannelsTab({
 
   return (
     <div className="space-y-3">
-      {connectedChannels.map((app) => (
+      {connectedChannels.map((ch) => (
         <div
-          key={app.id}
+          key={ch.name}
           className="bg-card-bg border border-border p-5 flex items-center justify-between"
         >
           <div className="flex flex-col gap-1">
-            <span className="text-sm font-medium text-foreground">{app.name}</span>
+            <span className="text-sm font-medium text-foreground">{ch.name}</span>
             <span className="font-[family-name:var(--font-mono)] text-xs text-muted capitalize">
-              {app.type}
+              {ch.adapter}
             </span>
           </div>
           <div className="flex items-center gap-3">
@@ -546,36 +421,20 @@ function ChannelsTab({
 // Status badge
 // ---------------------------------------------------------------------------
 
-function StatusBadge({ status }: { status: string }): JSX.Element {
-  if (status === 'running') {
+function StatusBadge({ status }: { status: GatewayAgent['status'] }): JSX.Element {
+  if (status === 'active' || status === 'registered') {
     return (
       <span className="flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-semibold bg-green-tint text-green">
         <span className="w-1.5 h-1.5 rounded-full bg-green shrink-0" />
-        running
+        active
       </span>
     );
   }
-  if (status === 'error') {
+  if (status === 'disabled') {
     return (
       <span className="flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-semibold bg-red-tint text-red">
         <span className="w-1.5 h-1.5 rounded-full bg-red shrink-0" />
-        error
-      </span>
-    );
-  }
-  if (status === 'stopped') {
-    return (
-      <span className="flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-semibold bg-red-tint text-red">
-        <span className="w-1.5 h-1.5 rounded-full bg-red shrink-0" />
-        stopped
-      </span>
-    );
-  }
-  if (status === 'provisioning') {
-    return (
-      <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-semibold bg-yellow-tint text-yellow">
-        <Loader size={10} className="animate-spin" />
-        starting
+        disabled
       </span>
     );
   }
@@ -590,10 +449,5 @@ export const Route = createFileRoute('/agents/$id')({
   component: AgentDetail,
   validateSearch: (search: Record<string, unknown>) => ({
     tab: typeof search.tab === 'string' ? search.tab : undefined,
-    since: typeof search.since === 'string' ? search.since : undefined,
-    level:
-      search.level === 'info' || search.level === 'warn' || search.level === 'error'
-        ? (search.level as 'info' | 'warn' | 'error')
-        : undefined,
   }),
 });

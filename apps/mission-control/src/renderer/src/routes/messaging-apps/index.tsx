@@ -1,8 +1,8 @@
-import type { MessagingApp } from '@dash/mc';
+import type { GatewayChannel } from '@dash/mc';
 import { Link, createFileRoute } from '@tanstack/react-router';
-import { AlertTriangle, ExternalLink, MessageSquare, Plus } from 'lucide-react';
+import { MessageSquare, Plus } from 'lucide-react';
 import { useEffect } from 'react';
-import { useMessagingAppsStore } from '../../stores/messaging-apps.js';
+import { useChannelsStore } from '../../stores/messaging-apps.js';
 
 function PlatformIcon({ type }: { type: string }): JSX.Element {
   if (type === 'whatsapp') {
@@ -46,11 +46,11 @@ function PlatformIcon({ type }: { type: string }): JSX.Element {
 }
 
 function MessagingApps(): JSX.Element {
-  const { apps, loading, loadApps } = useMessagingAppsStore();
+  const { channels, loading, loadChannels } = useChannelsStore();
 
   useEffect(() => {
-    loadApps();
-  }, [loadApps]);
+    loadChannels();
+  }, [loadChannels]);
 
   return (
     <div className="flex h-full flex-col overflow-hidden">
@@ -84,7 +84,7 @@ function MessagingApps(): JSX.Element {
           Connected Platforms
         </p>
 
-        {apps.length === 0 && !loading ? (
+        {channels.length === 0 && !loading ? (
           <div className="rounded-lg border border-border bg-surface p-8 text-center">
             <MessageSquare size={24} className="mx-auto mb-2 text-muted" />
             <p className="text-sm font-medium">No messaging apps connected yet</p>
@@ -111,8 +111,8 @@ function MessagingApps(): JSX.Element {
           </div>
         ) : (
           <div className="grid grid-cols-2 gap-4">
-            {apps.map((app) => (
-              <AppCard key={app.id} app={app} agentCount={app.routing.length} />
+            {channels.map((ch) => (
+              <ChannelCard key={ch.name} channel={ch} agentCount={ch.routing.length} />
             ))}
           </div>
         )}
@@ -121,68 +121,34 @@ function MessagingApps(): JSX.Element {
   );
 }
 
-function AppCard({
-  app,
+function ChannelCard({
+  channel,
   agentCount,
 }: {
-  app: MessagingApp;
+  channel: GatewayChannel;
   agentCount: number;
 }): JSX.Element {
-  const isConnected = app.enabled;
-  const hasOpenRule =
-    app.type === 'telegram' &&
-    app.routing.some((r) => r.condition.type === 'default' && r.allowList.length === 0);
-
   return (
     <Link
       to="/messaging-apps/$id"
-      params={{ id: app.id }}
+      params={{ id: channel.name }}
       className="bg-card-bg border border-border p-5 flex flex-col gap-3 hover:bg-card-hover transition-colors cursor-pointer"
     >
       {/* Header row */}
       <div className="flex justify-between items-center">
         <div className="flex items-center gap-2">
-          <PlatformIcon type={app.type} />
-          <span className="font-semibold text-[16px] text-foreground">{app.name}</span>
+          <PlatformIcon type={channel.adapter} />
+          <span className="font-semibold text-[16px] text-foreground">{channel.name}</span>
         </div>
-        {isConnected ? (
-          <span className="bg-green-tint text-green px-2 py-0.5 text-[10px] font-[family-name:var(--font-mono)] font-semibold">
-            Connected
-          </span>
-        ) : (
-          <span className="bg-red-tint text-red px-2 py-0.5 text-[10px] font-[family-name:var(--font-mono)] font-semibold">
-            Not Connected
-          </span>
-        )}
+        <span className="bg-green-tint text-green px-2 py-0.5 text-[10px] font-[family-name:var(--font-mono)] font-semibold">
+          Connected
+        </span>
       </div>
 
       {/* Agent count */}
       <p className="text-xs text-muted">
         {agentCount} agent{agentCount !== 1 ? 's' : ''} connected
       </p>
-
-      {/* Open to everyone warning */}
-      {hasOpenRule && (
-        <div className="flex items-center gap-1.5 text-red">
-          <AlertTriangle size={12} />
-          <span className="text-[11px] font-medium">Open to everyone</span>
-        </div>
-      )}
-
-      {/* Chat shortcut for Telegram bots with a known username */}
-      {app.type === 'telegram' && app.metadata?.username && (
-        <button
-          type="button"
-          onClick={(e) => {
-            e.preventDefault();
-            window.api.openExternal(`https://t.me/${app.metadata!.username}`);
-          }}
-          className="inline-flex items-center gap-1 text-accent text-xs hover:underline self-start"
-        >
-          <ExternalLink size={10} />
-          Chat on Telegram
-        </button>
-      )}
     </Link>
   );
 }

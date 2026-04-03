@@ -13,14 +13,11 @@ import {
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { useEffect, useState } from 'react';
-import type { ChannelHealthEntry, GatewayStatus } from '../../../shared/ipc.js';
-import { useMessagingAppsStore } from '../stores/messaging-apps.js';
+import type { GatewayStatus } from '../../../shared/ipc.js';
 import { DashSquadLogo } from './DashSquadLogo.js';
 import { HealthDot } from './HealthDot.js';
 
-type ChannelHealth = ChannelHealthEntry['health'];
-
-const HEALTH_ROUTES = new Set(['/agents', '/messaging-apps']);
+type HealthStatus = 'connected' | 'connecting' | 'disconnected';
 
 interface NavItemDef {
   to: string;
@@ -61,7 +58,6 @@ const sections: NavSection[] = [
 ];
 
 export function Sidebar(): JSX.Element {
-  const worstHealth = useMessagingAppsStore((s) => s.getWorstHealth());
   const [gatewayStatus, setGatewayStatus] = useState<GatewayStatus>('starting');
 
   useEffect(() => {
@@ -69,7 +65,7 @@ export function Sidebar(): JSX.Element {
     return window.api.gatewayOnStatus(setGatewayStatus);
   }, []);
 
-  const gatewayHealth: ChannelHealth =
+  const gatewayHealth: HealthStatus =
     gatewayStatus === 'healthy'
       ? 'connected'
       : gatewayStatus === 'unhealthy'
@@ -101,9 +97,6 @@ export function Sidebar(): JSX.Element {
               >
                 <item.icon size={16} />
                 {item.label}
-                {HEALTH_ROUTES.has(item.to) && (
-                  <HealthDot health={worstHealth} className="ml-auto" />
-                )}
               </Link>
             ))}
           </div>
