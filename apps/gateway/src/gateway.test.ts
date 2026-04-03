@@ -38,27 +38,27 @@ describe('createDynamicGateway', () => {
 
   it('registers an agent', () => {
     const gw = createDynamicGateway();
-    gw.registerAgent('dep1', 'default', makeFakeAgent());
+    gw.registerAgent('agent1', makeFakeAgent());
     expect(gw.agentCount()).toBe(1);
   });
 
-  it('deregisters all agents for a deployment', async () => {
+  it('deregisters an agent', async () => {
     const gw = createDynamicGateway();
-    gw.registerAgent('dep1', 'default', makeFakeAgent());
-    gw.registerAgent('dep1', 'specialist', makeFakeAgent());
-    await gw.deregisterDeployment('dep1');
-    expect(gw.agentCount()).toBe(0);
+    gw.registerAgent('agent1', makeFakeAgent());
+    gw.registerAgent('agent2', makeFakeAgent());
+    await gw.deregisterAgent('agent1');
+    expect(gw.agentCount()).toBe(1);
   });
 
   it('registers a channel and starts its adapter', async () => {
     const gw = createDynamicGateway();
-    gw.registerAgent('dep1', 'default', makeFakeAgent());
+    gw.registerAgent('agent1', makeFakeAgent());
 
     const adapter = makeFakeAdapter('telegram');
-    await gw.registerChannel('dep1', 'tg1', adapter, {
+    await gw.registerChannel('tg1', adapter, {
       globalDenyList: [],
       routing: [
-        { condition: { type: 'default' }, agentName: 'default', allowList: [], denyList: [] },
+        { condition: { type: 'default' }, agentId: 'agent1', allowList: [], denyList: [] },
       ],
     });
 
@@ -69,13 +69,13 @@ describe('createDynamicGateway', () => {
   it('routes messages from a registered channel to the correct agent', async () => {
     const gw = createDynamicGateway();
     const agent = makeFakeAgent();
-    gw.registerAgent('dep1', 'default', agent);
+    gw.registerAgent('agent1', agent);
 
     const adapter = makeFakeAdapter('telegram');
-    await gw.registerChannel('dep1', 'tg1', adapter, {
+    await gw.registerChannel('tg1', adapter, {
       globalDenyList: [],
       routing: [
-        { condition: { type: 'default' }, agentName: 'default', allowList: [], denyList: [] },
+        { condition: { type: 'default' }, agentId: 'agent1', allowList: [], denyList: [] },
       ],
     });
 
@@ -88,74 +88,71 @@ describe('createDynamicGateway', () => {
       timestamp: new Date(),
     });
 
-    expect(agent.chat).toHaveBeenCalledWith('tg1', 'conv1', 'hi');
+    expect(agent.chat).toHaveBeenCalledWith('tg1', 'tg1:conv1', 'hi');
   });
 
-  it('deregistering deployment stops adapter when no rules remain', async () => {
+  it('deregisterAgent stops adapter when no rules remain', async () => {
     const gw = createDynamicGateway();
-    gw.registerAgent('dep1', 'default', makeFakeAgent());
+    gw.registerAgent('agent1', makeFakeAgent());
 
     const adapter = makeFakeAdapter('telegram');
-    await gw.registerChannel('dep1', 'tg1', adapter, {
+    await gw.registerChannel('tg1', adapter, {
       globalDenyList: [],
       routing: [
-        { condition: { type: 'default' }, agentName: 'default', allowList: [], denyList: [] },
+        { condition: { type: 'default' }, agentId: 'agent1', allowList: [], denyList: [] },
       ],
     });
 
-    await gw.deregisterDeployment('dep1');
+    const removed = await gw.deregisterAgent('agent1');
 
     expect(adapter.stop).toHaveBeenCalled();
     expect(gw.channelCount()).toBe(0);
+    expect(removed).toEqual(['tg1']);
   });
 
-  it('deregistering one deployment leaves channels used by another', async () => {
+  it('deregisterAgent leaves channels that still have rules for other agents', async () => {
     const gw = createDynamicGateway();
 
-    gw.registerAgent('dep1', 'default', makeFakeAgent());
-    gw.registerAgent('dep2', 'default', makeFakeAgent());
+    gw.registerAgent('agent1', makeFakeAgent());
+    gw.registerAgent('agent2', makeFakeAgent());
 
     const adapter = makeFakeAdapter('telegram');
-    await gw.registerChannel('dep1', 'tg1', adapter, {
+    await gw.registerChannel('tg1', adapter, {
       globalDenyList: [],
       routing: [
         {
           condition: { type: 'sender', ids: ['user1'] },
-          agentName: 'default',
+          agentId: 'agent1',
           allowList: [],
           denyList: [],
         },
-      ],
-    });
-    await gw.registerChannel('dep2', 'tg1', adapter, {
-      globalDenyList: [],
-      routing: [
         {
           condition: { type: 'sender', ids: ['user2'] },
-          agentName: 'default',
+          agentId: 'agent2',
           allowList: [],
           denyList: [],
         },
       ],
     });
 
-    await gw.deregisterDeployment('dep1');
+    const removed = await gw.deregisterAgent('agent1');
 
-    // Adapter still running — dep2 still has rules
+    // Adapter still running — agent2 still has rules
     expect(adapter.stop).not.toHaveBeenCalled();
     expect(gw.channelCount()).toBe(1);
+    expect(removed).toEqual([]);
   });
 
   it('respects globalDenyList', async () => {
     const gw = createDynamicGateway();
     const agent = makeFakeAgent();
-    gw.registerAgent('dep1', 'default', agent);
+    gw.registerAgent('agent1', agent);
 
     const adapter = makeFakeAdapter('telegram');
-    await gw.registerChannel('dep1', 'tg1', adapter, {
+    await gw.registerChannel('tg1', adapter, {
       globalDenyList: ['blocked-user'],
       routing: [
-        { condition: { type: 'default' }, agentName: 'default', allowList: [], denyList: [] },
+        { condition: { type: 'default' }, agentId: 'agent1', allowList: [], denyList: [] },
       ],
     });
 
@@ -174,15 +171,15 @@ describe('createDynamicGateway', () => {
   it('drops message when sender not in non-empty allowList', async () => {
     const gw = createDynamicGateway();
     const agent = makeFakeAgent();
-    gw.registerAgent('dep1', 'default', agent);
+    gw.registerAgent('agent1', agent);
 
     const adapter = makeFakeAdapter('telegram');
-    await gw.registerChannel('dep1', 'tg1', adapter, {
+    await gw.registerChannel('tg1', adapter, {
       globalDenyList: [],
       routing: [
         {
           condition: { type: 'default' },
-          agentName: 'default',
+          agentId: 'agent1',
           allowList: ['allowed-user'],
           denyList: [],
         },
@@ -204,15 +201,15 @@ describe('createDynamicGateway', () => {
   it('drops message when sender is in rule denyList', async () => {
     const gw = createDynamicGateway();
     const agent = makeFakeAgent();
-    gw.registerAgent('dep1', 'default', agent);
+    gw.registerAgent('agent1', agent);
 
     const adapter = makeFakeAdapter('telegram');
-    await gw.registerChannel('dep1', 'tg1', adapter, {
+    await gw.registerChannel('tg1', adapter, {
       globalDenyList: [],
       routing: [
         {
           condition: { type: 'default' },
-          agentName: 'default',
+          agentId: 'agent1',
           allowList: [],
           denyList: ['denied-user'],
         },
@@ -231,75 +228,28 @@ describe('createDynamicGateway', () => {
     expect(agent.chat).not.toHaveBeenCalled();
   });
 
-  it('globalDenyList from one deployment does not block messages to another deployment', async () => {
-    const gw = createDynamicGateway();
-    const agentA = makeFakeAgent();
-    const agentB = makeFakeAgent();
-    gw.registerAgent('dep1', 'default', agentA);
-    gw.registerAgent('dep2', 'default', agentB);
-
-    const adapter = makeFakeAdapter('telegram');
-    // dep1 blocks 'userX' globally
-    await gw.registerChannel('dep1', 'tg1', adapter, {
-      globalDenyList: ['userX'],
-      routing: [
-        {
-          condition: { type: 'sender', ids: ['userX'] },
-          agentName: 'default',
-          allowList: [],
-          denyList: [],
-        },
-      ],
-    });
-    // dep2 does not block 'userX'
-    await gw.registerChannel('dep2', 'tg1', adapter, {
-      globalDenyList: [],
-      routing: [
-        {
-          condition: { type: 'sender', ids: ['userX'] },
-          agentName: 'default',
-          allowList: [],
-          denyList: [],
-        },
-      ],
-    });
-
-    await adapter.trigger({
-      channelId: 'tg1',
-      conversationId: 'conv1',
-      senderId: 'userX',
-      senderName: 'User',
-      text: 'hi',
-      timestamp: new Date(),
-    });
-
-    // dep1's agent blocked, dep2's agent should receive (first unblocked match wins)
-    expect(agentA.chat).not.toHaveBeenCalled();
-    expect(agentB.chat).toHaveBeenCalledWith('tg1', 'conv1', 'hi');
-  });
-
   it('routes to first matching rule only (first-match-wins)', async () => {
     const gw = createDynamicGateway();
     const agentA = makeFakeAgent();
     const agentB = makeFakeAgent();
-    gw.registerAgent('dep1', 'agentA', agentA);
-    gw.registerAgent('dep1', 'agentB', agentB);
+    gw.registerAgent('agentA', agentA);
+    gw.registerAgent('agentB', agentB);
 
     const adapter = makeFakeAdapter('telegram');
-    await gw.registerChannel('dep1', 'tg1', adapter, {
+    await gw.registerChannel('tg1', adapter, {
       globalDenyList: [],
       routing: [
         // First rule: matches sender user1
         {
           condition: { type: 'sender', ids: ['user1'] },
-          agentName: 'agentA',
+          agentId: 'agentA',
           allowList: [],
           denyList: [],
         },
         // Second rule: default (matches everything)
         {
           condition: { type: 'default' },
-          agentName: 'agentB',
+          agentId: 'agentB',
           allowList: [],
           denyList: [],
         },
@@ -316,7 +266,102 @@ describe('createDynamicGateway', () => {
     });
 
     // Only agentA should be called (first match)
-    expect(agentA.chat).toHaveBeenCalledWith('tg1', 'conv1', 'hi');
+    expect(agentA.chat).toHaveBeenCalledWith('tg1', 'tg1:conv1', 'hi');
     expect(agentB.chat).not.toHaveBeenCalled();
+  });
+
+  it('prefixes conversationId with channel name', async () => {
+    const gw = createDynamicGateway();
+    const agent = makeFakeAgent();
+    gw.registerAgent('agent1', agent);
+
+    const adapter = makeFakeAdapter('telegram');
+    await gw.registerChannel('my-channel', adapter, {
+      globalDenyList: [],
+      routing: [
+        { condition: { type: 'default' }, agentId: 'agent1', allowList: [], denyList: [] },
+      ],
+    });
+
+    await adapter.trigger({
+      channelId: 'my-channel',
+      conversationId: '12345',
+      senderId: 'user1',
+      senderName: 'User',
+      text: 'hello',
+      timestamp: new Date(),
+    });
+
+    expect(agent.chat).toHaveBeenCalledWith('my-channel', 'my-channel:12345', 'hello');
+  });
+
+  it('sends response with original unprefixed conversationId', async () => {
+    const gw = createDynamicGateway();
+    const agent = makeFakeAgent();
+    gw.registerAgent('agent1', agent);
+
+    const adapter = makeFakeAdapter('telegram');
+    await gw.registerChannel('tg1', adapter, {
+      globalDenyList: [],
+      routing: [
+        { condition: { type: 'default' }, agentId: 'agent1', allowList: [], denyList: [] },
+      ],
+    });
+
+    await adapter.trigger({
+      channelId: 'tg1',
+      conversationId: 'conv1',
+      senderId: 'user1',
+      senderName: 'User',
+      text: 'hi',
+      timestamp: new Date(),
+    });
+
+    // adapter.send should receive the original unprefixed conversationId
+    expect(adapter.send).toHaveBeenCalledWith('conv1', { text: 'hello' });
+  });
+
+  it('deregisterAgent removes rules and stops empty channels', async () => {
+    const gw = createDynamicGateway();
+    gw.registerAgent('agent1', makeFakeAgent());
+    gw.registerAgent('agent2', makeFakeAgent());
+
+    const adapter1 = makeFakeAdapter('telegram');
+    const adapter2 = makeFakeAdapter('whatsapp');
+
+    // Channel with only agent1 rules — should be removed
+    await gw.registerChannel('ch1', adapter1, {
+      globalDenyList: [],
+      routing: [
+        { condition: { type: 'default' }, agentId: 'agent1', allowList: [], denyList: [] },
+      ],
+    });
+
+    // Channel with rules for both agents — should survive
+    await gw.registerChannel('ch2', adapter2, {
+      globalDenyList: [],
+      routing: [
+        {
+          condition: { type: 'sender', ids: ['u1'] },
+          agentId: 'agent1',
+          allowList: [],
+          denyList: [],
+        },
+        {
+          condition: { type: 'default' },
+          agentId: 'agent2',
+          allowList: [],
+          denyList: [],
+        },
+      ],
+    });
+
+    const removed = await gw.deregisterAgent('agent1');
+
+    expect(removed).toEqual(['ch1']);
+    expect(adapter1.stop).toHaveBeenCalled();
+    expect(adapter2.stop).not.toHaveBeenCalled();
+    expect(gw.channelCount()).toBe(1);
+    expect(gw.agentCount()).toBe(1);
   });
 });
