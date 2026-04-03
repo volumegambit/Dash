@@ -117,6 +117,11 @@ describe('McpManager', () => {
     expect(manager.getServerStatus('failing-server')).toBe('error');
   }, 30_000);
 
+  it('getServerStatuses returns empty for no servers', () => {
+    const manager = new McpManager([], { logger: console });
+    expect(manager.getServerStatuses()).toEqual([]);
+  });
+
   it('cleans up all connections on stop', async () => {
     manager = new McpManager([testServerConfig('cleanup-a'), testServerConfig('cleanup-b')]);
     await manager.start();
