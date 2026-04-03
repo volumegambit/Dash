@@ -6,7 +6,10 @@ import type { RuntimeAgentConfig } from '../../../../shared/ipc.js';
 import { useAgentConfigsStore } from '../../stores/agent-configs.js';
 import { useDeploymentsStore } from '../../stores/deployments';
 
-function getModel(configs: Record<string, RuntimeAgentConfig>, deployment: AgentDeployment): string {
+function getModel(
+  configs: Record<string, RuntimeAgentConfig>,
+  deployment: AgentDeployment,
+): string {
   const cfg = configs[deployment.name];
   return cfg?.model ?? '—';
 }
@@ -18,7 +21,10 @@ function truncateModel(model: string): string {
   return name.length > 24 ? `${name.slice(0, 22)}…` : name;
 }
 
-function getTools(configs: Record<string, RuntimeAgentConfig>, deployment: AgentDeployment): number {
+function getTools(
+  configs: Record<string, RuntimeAgentConfig>,
+  deployment: AgentDeployment,
+): number {
   const cfg = configs[deployment.name];
   return cfg?.tools?.length ?? 0;
 }
