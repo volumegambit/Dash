@@ -37,7 +37,7 @@ export interface AppSettings {
   defaultFallbackModels?: string[];
 }
 
-export type GatewayStatus = 'starting' | 'healthy' | 'unhealthy' | 'restarting';
+export type GatewayStatus = 'starting' | 'healthy' | 'unhealthy';
 
 // --- MCP Connectors ---
 
