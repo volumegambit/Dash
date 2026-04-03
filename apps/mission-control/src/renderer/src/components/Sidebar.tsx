@@ -14,7 +14,7 @@ import type { LucideIcon } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import type { ChannelHealthEntry, GatewayStatus } from '../../../shared/ipc.js';
 import { useMessagingAppsStore } from '../stores/messaging-apps.js';
-import { AtriumLogo } from './AtriumLogo.js';
+import { DashSquadLogo } from './DashSquadLogo.js';
 import { HealthDot } from './HealthDot.js';
 
 type ChannelHealth = ChannelHealthEntry['health'];
@@ -78,7 +78,7 @@ export function Sidebar(): JSX.Element {
     <aside className="flex h-full w-56 shrink-0 flex-col border-r border-border bg-sidebar-bg p-3.5">
       {/* Header */}
       <div className="flex items-center justify-between border-b border-border px-1 pb-4 pt-3">
-        <AtriumLogo />
+        <DashSquadLogo />
         <HealthDot health={gatewayHealth} />
       </div>
 
