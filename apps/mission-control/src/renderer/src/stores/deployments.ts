@@ -31,6 +31,12 @@ interface DeploymentsState {
   unsubscribeLogs(id: string): void;
   appendLogLine(id: string, line: string): void;
   handleStatusChange(id: string, status: string): void;
+  handleCredentialStatusChange(
+    deploymentId: string,
+    status: 'ok' | 'missing' | 'invalid',
+    provider?: string,
+    detail?: string,
+  ): void;
 }
 
 export const useDeploymentsStore = create<DeploymentsState>((set, get) => ({
@@ -180,11 +186,27 @@ export const useDeploymentsStore = create<DeploymentsState>((set, get) => ({
       ),
     }));
   },
+
+  handleCredentialStatusChange(deploymentId, status, provider, detail) {
+    set((state) => ({
+      deployments: state.deployments.map((d) =>
+        d.id === deploymentId
+          ? {
+              ...d,
+              credentialStatus: status,
+              credentialProvider: provider ?? d.credentialProvider,
+              credentialDetail: detail ?? d.credentialDetail,
+            }
+          : d,
+      ),
+    }));
+  },
 }));
 
 // Set up global event listeners for push events from main process
 let cleanupLog: (() => void) | null = null;
 let cleanupStatus: (() => void) | null = null;
+let cleanupCredentialStatus: (() => void) | null = null;
 
 export function initDeploymentListeners(): void {
   if (cleanupLog) return; // Already initialized
@@ -196,11 +218,24 @@ export function initDeploymentListeners(): void {
   cleanupStatus = window.api.onDeploymentStatusChange((id, status) => {
     useDeploymentsStore.getState().handleStatusChange(id, status);
   });
+
+  cleanupCredentialStatus = window.api.onCredentialStatusChanged((change) => {
+    useDeploymentsStore
+      .getState()
+      .handleCredentialStatusChange(
+        change.deploymentId,
+        change.status,
+        change.provider,
+        change.detail,
+      );
+  });
 }
 
 export function cleanupDeploymentListeners(): void {
   cleanupLog?.();
   cleanupStatus?.();
+  cleanupCredentialStatus?.();
   cleanupLog = null;
   cleanupStatus = null;
+  cleanupCredentialStatus = null;
 }
