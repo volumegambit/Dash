@@ -12,12 +12,9 @@ describe('AiProviders page', () => {
 
   it('shows connected status indicator for providers with a key', async () => {
     render(<AiProviders />);
-    await waitFor(() => {
-      expect(screen.getByText('Claude by Anthropic')).toBeInTheDocument();
-    });
-    await waitFor(() => {
-      expect(screen.getByText('default')).toBeInTheDocument();
-    });
+    expect(await screen.findByText('Claude by Anthropic')).toBeInTheDocument();
+    // Key entries load asynchronously from credentialsList
+    expect(await screen.findByText('Active')).toBeInTheDocument();
   });
 
   it('shows Add Key button for every provider', async () => {
