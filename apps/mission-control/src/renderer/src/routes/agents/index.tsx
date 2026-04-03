@@ -39,9 +39,15 @@ function relativeTime(dateStr: string): string {
   return `${days}d ago`;
 }
 
-function statusDotColor(status: string): string {
-  if (status === 'running') return 'bg-green';
-  if (status === 'error' || status === 'stopped') return 'bg-red';
+function statusDotColor(deployment: AgentDeployment): string {
+  if (
+    deployment.status === 'running' &&
+    (deployment.credentialStatus === 'missing' || deployment.credentialStatus === 'invalid')
+  ) {
+    return 'bg-yellow';
+  }
+  if (deployment.status === 'running') return 'bg-green';
+  if (deployment.status === 'error' || deployment.status === 'stopped') return 'bg-red';
   return 'bg-yellow'; // provisioning / starting
 }
 
@@ -249,7 +255,14 @@ function AgentRow({ deployment, onNavigate, onStop, onRemove }: AgentRowProps): 
       {/* Status */}
       <div className="w-16 flex items-center">
         <span
-          className={`w-2 h-2 rounded-full flex-shrink-0 ${statusDotColor(deployment.status)}`}
+          className={`w-2 h-2 rounded-full flex-shrink-0 ${statusDotColor(deployment)}`}
+          title={
+            deployment.credentialStatus === 'missing'
+              ? `Missing API key: ${deployment.credentialDetail ?? 'unknown'}`
+              : deployment.credentialStatus === 'invalid'
+                ? `Invalid credentials: ${deployment.credentialDetail ?? 'unknown'}`
+                : deployment.status
+          }
         />
       </div>
 
@@ -258,6 +271,18 @@ function AgentRow({ deployment, onNavigate, onStop, onRemove }: AgentRowProps): 
         <span className="font-[family-name:var(--font-display)] font-semibold text-sm text-foreground">
           {deployment.name}
         </span>
+        {deployment.credentialStatus === 'missing' && (
+          <p className="text-[11px] text-yellow mt-0.5">
+            Missing API key
+            {deployment.credentialProvider ? ` for ${deployment.credentialProvider}` : ''}
+          </p>
+        )}
+        {deployment.credentialStatus === 'invalid' && (
+          <p className="text-[11px] text-yellow mt-0.5">
+            Invalid credentials
+            {deployment.credentialProvider ? ` for ${deployment.credentialProvider}` : ''}
+          </p>
+        )}
       </div>
 
       {/* Model */}
