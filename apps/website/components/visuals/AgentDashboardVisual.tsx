@@ -6,7 +6,7 @@ const AGENTS = [
 
 export function AgentDashboardVisual() {
   return (
-    <div className="bg-surface rounded-xl p-5 flex flex-col justify-center gap-3 w-[280px] h-[160px]">
+    <div className="bg-surface p-5 flex flex-col justify-center gap-3 w-[280px] h-[160px]">
       {AGENTS.map((agent) => (
         <div key={agent.name} className="flex items-center gap-3">
           <span className={`w-2 h-2 rounded-full ${agent.dot}`} />

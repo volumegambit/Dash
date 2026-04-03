@@ -8,9 +8,9 @@ const badgeVariants = cva(
     variants: {
       variant: {
         default:
-          'bg-brand-light text-brand border border-brand rounded-full',
-        pill: 'bg-surface text-text-primary border border-surface-muted rounded-full',
-        tag: 'bg-[#FFF0E8] text-brand font-mono text-[11px] rounded-full',
+          'bg-brand-light text-brand border border-brand',
+        pill: 'bg-surface text-text-primary border border-surface-muted',
+        tag: 'bg-[#FFF0E8] text-brand font-mono text-[11px]',
       },
       size: {
         default: 'px-5 py-2 text-[13px]',
