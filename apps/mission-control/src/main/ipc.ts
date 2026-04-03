@@ -418,8 +418,7 @@ export async function registerIpcHandlers(
                 skills: cfg.skills,
                 workspace: cfg.workspace,
                 maxTokens: cfg.maxTokens,
-                providerApiKeys:
-                  Object.keys(flatKeys).length > 0 ? flatKeys : undefined,
+                providerApiKeys: Object.keys(flatKeys).length > 0 ? flatKeys : undefined,
               };
               try {
                 await gwClient.registerRuntimeAgent(runtimeConfig);
@@ -665,12 +664,33 @@ export async function registerIpcHandlers(
     await getSecretStore().set(key, value);
     // Push updated credentials to running deployments if a provider key changed
     if (key.includes('-api-key:')) {
+      // Capture deployments that are currently missing credentials — push may fix them
+      const allDeps = await getRegistry()
+        .list()
+        .catch(() => []);
+      const missingBefore = allDeps.filter((d) => d.credentialStatus === 'missing');
+
       pushCredentialsWithRetry(() => pushCredentialsToRunningDeployments())
-        .then((result) => {
-          if (result.failed.length > 0) {
-            const win = getWindow();
-            if (win && !win.isDestroyed()) {
-              win.webContents.send('credentials:pushFailed', result.failed);
+        .then(async (result) => {
+          const win = getWindow();
+          if (result.failed.length > 0 && win && !win.isDestroyed()) {
+            win.webContents.send('credentials:pushFailed', result.failed);
+          }
+          // Emit statusChanged for deployments that were missing and push succeeded
+          const failedIds = new Set(result.failed.map((f) => f.deploymentId));
+          for (const dep of missingBefore) {
+            if (!failedIds.has(dep.id)) {
+              await getRegistry().update(dep.id, {
+                credentialStatus: 'ok',
+                credentialProvider: undefined,
+                credentialDetail: undefined,
+              });
+              if (win && !win.isDestroyed()) {
+                win.webContents.send('credentials:statusChanged', {
+                  deploymentId: dep.id,
+                  status: 'ok',
+                });
+              }
             }
           }
         })
@@ -704,6 +724,82 @@ export async function registerIpcHandlers(
         .catch(() => {});
     }
   });
+
+  ipcMain.handle(
+    'credentials:getAffectedAgents',
+    async (_event, provider: string, keyName: string) => {
+      const reg = getRegistry();
+      const deployments = await reg.list();
+      const affected: { deploymentId: string; name: string }[] = [];
+      for (const deployment of deployments) {
+        if (deployment.status === 'stopped') continue;
+        const agents = deployment.config.agents ?? {};
+        for (const [, agentCfg] of Object.entries(agents)) {
+          const assignedKey = agentCfg.credentialKeys?.[provider];
+          if (assignedKey === keyName || (!assignedKey && keyName === 'default')) {
+            affected.push({ deploymentId: deployment.id, name: deployment.name });
+            break;
+          }
+        }
+      }
+      return affected;
+    },
+  );
+
+  ipcMain.handle(
+    'credentials:reassignKey',
+    async (
+      _event,
+      provider: string,
+      assignments: { deploymentId: string; newKeyName: string | null }[],
+    ) => {
+      const reg = getRegistry();
+      for (const { deploymentId, newKeyName } of assignments) {
+        const deployment = await reg.get(deploymentId);
+        if (!deployment) continue;
+        const agents = deployment.config.agents ?? {};
+        const updatedAgents: typeof agents = {};
+        for (const [agentName, agentCfg] of Object.entries(agents)) {
+          const updatedCredentialKeys = { ...(agentCfg.credentialKeys ?? {}) };
+          if (newKeyName) {
+            updatedCredentialKeys[provider] = newKeyName;
+          } else {
+            delete updatedCredentialKeys[provider];
+          }
+          updatedAgents[agentName] = {
+            ...agentCfg,
+            ...(Object.keys(updatedCredentialKeys).length > 0
+              ? { credentialKeys: updatedCredentialKeys }
+              : {}),
+          };
+        }
+        await reg.update(deploymentId, {
+          config: { ...deployment.config, agents: updatedAgents },
+        });
+      }
+    },
+  );
+
+  ipcMain.handle(
+    'deployments:updateCredentialStatus',
+    async (_event, deploymentId: string, status: string, provider?: string, detail?: string) => {
+      const reg = getRegistry();
+      await reg.update(deploymentId, {
+        credentialStatus: status as 'ok' | 'missing' | 'invalid',
+        credentialProvider: provider,
+        credentialDetail: detail,
+      });
+      const win = getWindow();
+      if (win && !win.isDestroyed()) {
+        win.webContents.send('credentials:statusChanged', {
+          deploymentId,
+          status,
+          provider,
+          detail,
+        });
+      }
+    },
+  );
 
   // Deployment handlers
   ipcMain.handle('deployments:list', async () => {
