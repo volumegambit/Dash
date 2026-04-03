@@ -1,5 +1,5 @@
 import type { MessagingApp, RoutingCondition, RoutingRule } from '@dash/mc';
-import { Link, createFileRoute } from '@tanstack/react-router';
+import { Link, createFileRoute, useNavigate } from '@tanstack/react-router';
 import { AlertTriangle, ArrowLeft, ExternalLink, Plus, Trash2 } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { useDeploymentsStore } from '../../stores/deployments';
@@ -47,10 +47,12 @@ function PlatformIcon({ type }: { type: string }): JSX.Element {
 
 function MessagingAppDetail(): JSX.Element {
   const { id } = Route.useParams();
-  const { apps, loadApps, updateApp, error } = useMessagingAppsStore();
+  const navigate = useNavigate();
+  const { apps, loadApps, updateApp, deleteApp, error } = useMessagingAppsStore();
   const { deployments, loading: deploymentsLoading, loadDeployments } = useDeploymentsStore();
   const [globalDenyInput, setGlobalDenyInput] = useState('');
   const [showAddRule, setShowAddRule] = useState(false);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
 
   useEffect(() => {
     loadApps();
@@ -125,6 +127,14 @@ function MessagingAppDetail(): JSX.Element {
             <p className="text-sm text-muted capitalize">{app.type} bot</p>
           </div>
         </div>
+        <button
+          type="button"
+          onClick={() => setShowDeleteConfirm(true)}
+          className="rounded p-1.5 text-muted transition-colors hover:bg-red-900/20 hover:text-red"
+          title="Delete messaging app"
+        >
+          <Trash2 size={16} />
+        </button>
         {app.enabled ? (
           <span className="bg-green-tint text-green rounded px-2 py-0.5 text-[10px] font-[family-name:var(--font-mono)] font-semibold">
             Connected
@@ -292,6 +302,82 @@ function MessagingAppDetail(): JSX.Element {
           </div>
         </div>
       </div>
+      </div>
+
+      {/* Delete confirmation modal */}
+      {showDeleteConfirm && (
+        <DeleteConfirmDialog
+          app={app}
+          onCancel={() => setShowDeleteConfirm(false)}
+          onConfirm={async () => {
+            setShowDeleteConfirm(false);
+            await deleteApp(id);
+            navigate({ to: '/messaging-apps' });
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+function DeleteConfirmDialog({
+  app,
+  onCancel,
+  onConfirm,
+}: {
+  app: MessagingApp;
+  onCancel: () => void;
+  onConfirm: () => void;
+}): JSX.Element {
+  const affectedAgents = [...new Set(app.routing.map((r) => r.targetAgentName))];
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+      <div className="w-full max-w-sm border border-border bg-card-bg p-6 shadow-lg">
+        <h2 className="text-base font-semibold font-[family-name:var(--font-display)]">
+          Delete {app.name}?
+        </h2>
+        <p className="mt-1 text-sm text-muted">
+          This will permanently delete this {app.type} connection and remove its credentials.
+        </p>
+
+        {affectedAgents.length > 0 && (
+          <div className="mt-4 rounded border border-amber-500/40 bg-amber-500/10 p-3">
+            <div className="flex items-start gap-2">
+              <AlertTriangle size={14} className="mt-0.5 shrink-0 text-amber-400" />
+              <div>
+                <p className="text-xs font-medium text-amber-400">
+                  {affectedAgents.length === 1 ? '1 agent' : `${affectedAgents.length} agents`} will
+                  lose access to this messaging app:
+                </p>
+                <ul className="mt-1.5 space-y-0.5">
+                  {affectedAgents.map((name) => (
+                    <li key={name} className="text-xs text-foreground font-mono">
+                      {name}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            </div>
+          </div>
+        )}
+
+        <div className="mt-6 flex justify-end gap-2">
+          <button
+            type="button"
+            onClick={onCancel}
+            className="border border-border px-4 py-2 text-sm text-muted transition-colors hover:bg-card-hover hover:text-foreground"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={onConfirm}
+            className="bg-red-600 px-4 py-2 text-sm text-white transition-colors hover:bg-red-700"
+          >
+            Delete
+          </button>
+        </div>
       </div>
     </div>
   );
