@@ -1,6 +1,6 @@
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { McpClient } from './client.js';
 import type { McpServerConfig } from './types.js';
 
@@ -85,4 +85,23 @@ describe('McpClient', () => {
     expect(client.status).toBe('disconnected');
     client = null; // already stopped, prevent afterEach from calling again
   }, 15_000);
+
+  it('accepts onStatusChange callback without error', () => {
+    const onChange = vi.fn();
+    client = new McpClient(testServerConfig(), { onStatusChange: onChange });
+    expect(client.status).toBe('disconnected');
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it('fires onStatusChange when status changes', async () => {
+    const onChange = vi.fn();
+    client = new McpClient(testServerConfig(), { onStatusChange: onChange });
+    await client.start();
+    expect(onChange).toHaveBeenCalledWith('test', 'connected');
+  }, 15_000);
+
+  it('reauthorize() throws if not in needs_reauth state', async () => {
+    client = new McpClient(testServerConfig());
+    await expect(client.reauthorize()).rejects.toThrow('Cannot reauthorize');
+  });
 });
