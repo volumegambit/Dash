@@ -2,8 +2,9 @@ import type { AgentDeployment } from '@dash/mc';
 import { Link, createFileRoute, useNavigate } from '@tanstack/react-router';
 import { Bot, Plus, Search, Square, Trash2 } from 'lucide-react';
 import { useEffect, useState } from 'react';
-import type { RuntimeAgentConfig } from '../../../../shared/ipc.js';
+import type { McpConnectorInfo, RuntimeAgentConfig } from '../../../../shared/ipc.js';
 import { useAgentConfigsStore } from '../../stores/agent-configs.js';
+import { useConnectorsStore } from '../../stores/connectors.js';
 import { useDeploymentsStore } from '../../stores/deployments';
 
 function getModel(
@@ -45,11 +46,39 @@ function relativeTime(dateStr: string): string {
   return `${days}d ago`;
 }
 
-function statusDotColor(deployment: AgentDeployment): string {
+function mcpIssueText(
+  deployment: AgentDeployment,
+  configs: Record<string, RuntimeAgentConfig>,
+  connectors: McpConnectorInfo[],
+): string | null {
+  const cfg = configs[deployment.name];
+  const mcpNames = cfg?.mcpServers ?? [];
+  if (mcpNames.length === 0) return null;
+
+  for (const name of mcpNames) {
+    const connector = connectors.find((c) => c.name === name);
+    if (!connector) continue;
+    if (connector.status === 'needs_reauth') return `${name} needs re-authorization`;
+    if (connector.status === 'error') return `${name} connector offline`;
+    if (connector.status === 'disconnected') return `${name} connector disconnected`;
+  }
+  return null;
+}
+
+function statusDotColor(
+  deployment: AgentDeployment,
+  configs: Record<string, RuntimeAgentConfig>,
+  connectors: McpConnectorInfo[],
+): string {
+  // Credential issues take priority
   if (
     deployment.status === 'running' &&
     (deployment.credentialStatus === 'missing' || deployment.credentialStatus === 'invalid')
   ) {
+    return 'bg-yellow';
+  }
+  // MCP issues
+  if (deployment.status === 'running' && mcpIssueText(deployment, configs, connectors)) {
     return 'bg-yellow';
   }
   if (deployment.status === 'running') return 'bg-green';
@@ -60,6 +89,8 @@ function statusDotColor(deployment: AgentDeployment): string {
 function Agents(): JSX.Element {
   const { deployments, loading, loadDeployments, stop, remove } = useDeploymentsStore();
   const configs = useAgentConfigsStore((s) => s.configs);
+  const connectors = useConnectorsStore((s) => s.connectors);
+  const loadConnectors = useConnectorsStore((s) => s.loadConnectors);
   const navigate = useNavigate();
   const [search, setSearch] = useState('');
   const [removeTarget, setRemoveTarget] = useState<{
@@ -71,7 +102,13 @@ function Agents(): JSX.Element {
 
   useEffect(() => {
     loadDeployments();
-  }, [loadDeployments]);
+    loadConnectors();
+  }, [loadDeployments, loadConnectors]);
+
+  useEffect(() => {
+    const unsub = useConnectorsStore.getState().initConnectorListeners();
+    return unsub;
+  }, []);
 
   const filtered = deployments.filter((d) => d.name.toLowerCase().includes(search.toLowerCase()));
 
@@ -248,6 +285,7 @@ interface AgentRowProps {
 
 function AgentRow({ deployment, onNavigate, onStop, onRemove }: AgentRowProps): JSX.Element {
   const configs = useAgentConfigsStore((s) => s.configs);
+  const connectors = useConnectorsStore((s) => s.connectors);
   const toolCount = getTools(configs, deployment);
   const channelCount = getChannelCount(deployment);
   const model = getModel(configs, deployment);
@@ -261,7 +299,7 @@ function AgentRow({ deployment, onNavigate, onStop, onRemove }: AgentRowProps): 
       {/* Status */}
       <div className="w-16 flex items-center">
         <span
-          className={`w-2 h-2 rounded-full flex-shrink-0 ${statusDotColor(deployment)}`}
+          className={`w-2 h-2 rounded-full flex-shrink-0 ${statusDotColor(deployment, configs, connectors)}`}
           title={
             deployment.credentialStatus === 'missing'
               ? `Missing API key: ${deployment.credentialDetail ?? 'unknown'}`
@@ -289,6 +327,15 @@ function AgentRow({ deployment, onNavigate, onStop, onRemove }: AgentRowProps): 
             {deployment.credentialProvider ? ` for ${deployment.credentialProvider}` : ''}
           </p>
         )}
+        {deployment.status === 'running' &&
+          !(
+            deployment.credentialStatus === 'missing' || deployment.credentialStatus === 'invalid'
+          ) &&
+          mcpIssueText(deployment, configs, connectors) && (
+            <p className="text-xs text-yellow-400 mt-0.5">
+              {mcpIssueText(deployment, configs, connectors)}
+            </p>
+          )}
       </div>
 
       {/* Model */}
