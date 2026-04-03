@@ -152,6 +152,11 @@ export interface AffectedAgent {
   name: string;
 }
 
+export interface McpStatusChange {
+  serverName: string;
+  status: 'connected' | 'disconnected' | 'reconnecting' | 'error' | 'needs_reauth';
+}
+
 export interface MissionControlAPI {
   getVersion(): Promise<string>;
 
@@ -334,6 +339,10 @@ export interface MissionControlAPI {
   mcpReconnectConnector(name: string): Promise<void>;
   mcpGetAllowlist(): Promise<string[]>;
   mcpSetAllowlist(patterns: string[]): Promise<void>;
+  mcpReauthorize(name: string): Promise<void>;
+
+  // MCP status events (push from main → renderer)
+  onMcpStatusChanged(callback: (change: McpStatusChange) => void): () => void;
 
   // Gateway events (SSE)
   onGatewayEvent(callback: (eventType: string, data: string) => void): () => void;

@@ -1301,6 +1301,11 @@ export async function registerIpcHandlers(
     return client.mcpReconnectServer(name);
   });
 
+  ipcMain.handle('mcp:reauthorize', async (_e, name: string) => {
+    const client = await getMcpClient();
+    return client.mcpReauthorizeServer(name);
+  });
+
   ipcMain.handle('mcp:getAllowlist', async () => {
     const client = await getMcpClient();
     return client.mcpGetAllowlist();
