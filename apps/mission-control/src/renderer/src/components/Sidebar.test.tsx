@@ -13,7 +13,7 @@ describe('Sidebar', () => {
     expect(screen.getByText('Dashboard')).toBeInTheDocument();
     expect(screen.getByText('Chat')).toBeInTheDocument();
     expect(screen.getByText('Agents')).toBeInTheDocument();
-    expect(screen.getByText('Secrets')).toBeInTheDocument();
+    expect(screen.queryByText('Secrets')).not.toBeInTheDocument();
     expect(screen.getByText('Settings')).toBeInTheDocument();
     expect(screen.getByText('Messaging Apps')).toBeInTheDocument();
   });
