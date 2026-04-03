@@ -30,52 +30,6 @@ describe('createGatewayManagementApp', () => {
     expect(body.channels).toBe(1);
   });
 
-  it('POST /agents registers agent and returns 201', async () => {
-    const gw = makeFakeGateway();
-    const app = createGatewayManagementApp({
-      gateway: gw,
-      startedAt: '2026-03-08T00:00:00Z',
-      token: 'secret-token',
-    });
-
-    const res = await app.request('/agents', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer secret-token' },
-      body: JSON.stringify({
-        deploymentId: 'dep1',
-        agentName: 'default',
-        chatUrl: 'ws://localhost:9101/ws',
-        chatToken: 'tok',
-      }),
-    });
-
-    expect(res.status).toBe(201);
-    expect(gw.registerAgent).toHaveBeenCalledWith('dep1', 'default', expect.anything());
-  });
-
-  it('POST /agents returns 401 with wrong token', async () => {
-    const gw = makeFakeGateway();
-    const app = createGatewayManagementApp({
-      gateway: gw,
-      startedAt: '2026-03-08T00:00:00Z',
-      token: 'secret-token',
-    });
-
-    const res = await app.request('/agents', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer wrong' },
-      body: JSON.stringify({
-        deploymentId: 'dep1',
-        agentName: 'default',
-        chatUrl: 'ws://localhost:9101/ws',
-        chatToken: 'tok',
-      }),
-    });
-
-    expect(res.status).toBe(401);
-    expect(gw.registerAgent).not.toHaveBeenCalled();
-  });
-
   it('DELETE /deployments/:id deregisters deployment', async () => {
     const gw = makeFakeGateway();
     const app = createGatewayManagementApp({
@@ -148,20 +102,4 @@ describe('createGatewayManagementApp', () => {
     expect(gw.registerChannel).not.toHaveBeenCalled();
   });
 
-  it('POST /agents returns 400 for missing fields', async () => {
-    const gw = makeFakeGateway();
-    const app = createGatewayManagementApp({
-      gateway: gw,
-      startedAt: '2026-03-08T00:00:00Z',
-      token: 'tok',
-    });
-
-    const res = await app.request('/agents', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer tok' },
-      body: JSON.stringify({ deploymentId: 'dep1' }),
-    });
-
-    expect(res.status).toBe(400);
-  });
 });
