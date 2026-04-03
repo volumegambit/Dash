@@ -9,6 +9,7 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from './routes/__root'
+import { Route as WebSearchRouteImport } from './routes/web-search'
 import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as SecretsRouteImport } from './routes/secrets'
 import { Route as MessagingAppsRouteImport } from './routes/messaging-apps'
@@ -25,6 +26,11 @@ import { Route as MessagingAppsNewTelegramRouteImport } from './routes/messaging
 import { Route as MessagingAppsIdRouteImport } from './routes/messaging-apps/$id'
 import { Route as AgentsIdRouteImport } from './routes/agents/$id'
 
+const WebSearchRoute = WebSearchRouteImport.update({
+  id: '/web-search',
+  path: '/web-search',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const SettingsRoute = SettingsRouteImport.update({
   id: '/settings',
   path: '/settings',
@@ -113,6 +119,7 @@ export interface FileRoutesByFullPath {
   '/messaging-apps': typeof MessagingAppsRouteWithChildren
   '/secrets': typeof SecretsRoute
   '/settings': typeof SettingsRoute
+  '/web-search': typeof WebSearchRoute
   '/agents/$id': typeof AgentsIdRoute
   '/messaging-apps/$id': typeof MessagingAppsIdRoute
   '/messaging-apps/new-telegram': typeof MessagingAppsNewTelegramRoute
@@ -128,6 +135,7 @@ export interface FileRoutesByTo {
   '/deploy': typeof DeployRoute
   '/secrets': typeof SecretsRoute
   '/settings': typeof SettingsRoute
+  '/web-search': typeof WebSearchRoute
   '/agents/$id': typeof AgentsIdRoute
   '/messaging-apps/$id': typeof MessagingAppsIdRoute
   '/messaging-apps/new-telegram': typeof MessagingAppsNewTelegramRoute
@@ -146,6 +154,7 @@ export interface FileRoutesById {
   '/messaging-apps': typeof MessagingAppsRouteWithChildren
   '/secrets': typeof SecretsRoute
   '/settings': typeof SettingsRoute
+  '/web-search': typeof WebSearchRoute
   '/agents/$id': typeof AgentsIdRoute
   '/messaging-apps/$id': typeof MessagingAppsIdRoute
   '/messaging-apps/new-telegram': typeof MessagingAppsNewTelegramRoute
@@ -165,6 +174,7 @@ export interface FileRouteTypes {
     | '/messaging-apps'
     | '/secrets'
     | '/settings'
+    | '/web-search'
     | '/agents/$id'
     | '/messaging-apps/$id'
     | '/messaging-apps/new-telegram'
@@ -180,6 +190,7 @@ export interface FileRouteTypes {
     | '/deploy'
     | '/secrets'
     | '/settings'
+    | '/web-search'
     | '/agents/$id'
     | '/messaging-apps/$id'
     | '/messaging-apps/new-telegram'
@@ -197,6 +208,7 @@ export interface FileRouteTypes {
     | '/messaging-apps'
     | '/secrets'
     | '/settings'
+    | '/web-search'
     | '/agents/$id'
     | '/messaging-apps/$id'
     | '/messaging-apps/new-telegram'
@@ -215,10 +227,18 @@ export interface RootRouteChildren {
   MessagingAppsRoute: typeof MessagingAppsRouteWithChildren
   SecretsRoute: typeof SecretsRoute
   SettingsRoute: typeof SettingsRoute
+  WebSearchRoute: typeof WebSearchRoute
 }
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
+    '/web-search': {
+      id: '/web-search'
+      path: '/web-search'
+      fullPath: '/web-search'
+      preLoaderRoute: typeof WebSearchRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/settings': {
       id: '/settings'
       path: '/settings'
@@ -368,6 +388,7 @@ const rootRouteChildren: RootRouteChildren = {
   MessagingAppsRoute: MessagingAppsRouteWithChildren,
   SecretsRoute: SecretsRoute,
   SettingsRoute: SettingsRoute,
+  WebSearchRoute: WebSearchRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
