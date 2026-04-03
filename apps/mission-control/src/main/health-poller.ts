@@ -3,6 +3,7 @@ import { ManagementClient } from '@dash/management';
 export class HealthPoller {
   private timers = new Map<string, NodeJS.Timeout>();
   private lastStatus = new Map<string, string>();
+  private lastMcpStatuses = new Map<string, Map<string, string>>();
   private clients = new Map<string, ManagementClient>();
 
   start(
@@ -10,6 +11,7 @@ export class HealthPoller {
     managementPort: number,
     managementToken: string,
     onStatusChange: (status: string) => void,
+    onMcpStatusChange?: (serverName: string, status: string) => void,
   ): void {
     this.stop(id); // stop any existing poller for this id
     const client = new ManagementClient(`http://127.0.0.1:${managementPort}`, managementToken);
@@ -22,6 +24,22 @@ export class HealthPoller {
         if (status !== prev) {
           this.lastStatus.set(id, status);
           onStatusChange(status);
+        }
+
+        // Track MCP server statuses
+        if (onMcpStatusChange && result.mcpServers) {
+          let prevMcp = this.lastMcpStatuses.get(id);
+          if (!prevMcp) {
+            prevMcp = new Map();
+            this.lastMcpStatuses.set(id, prevMcp);
+          }
+          for (const server of result.mcpServers) {
+            const prevStatus = prevMcp.get(server.name);
+            if (server.status !== prevStatus) {
+              prevMcp.set(server.name, server.status);
+              onMcpStatusChange(server.name, server.status);
+            }
+          }
         }
       } catch {
         const prev = this.lastStatus.get(id);
@@ -40,6 +58,7 @@ export class HealthPoller {
       clearInterval(timer);
       this.timers.delete(id);
       this.lastStatus.delete(id);
+      this.lastMcpStatuses.delete(id);
       this.clients.delete(id);
     }
   }
