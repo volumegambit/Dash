@@ -9,9 +9,10 @@ import { useConnectorsStore } from '../stores/connectors.js';
 
 function connectorHealthStatus(
   status: McpConnectorInfo['status'],
-): 'connected' | 'connecting' | 'disconnected' {
+): 'connected' | 'connecting' | 'disconnected' | 'needs_reauth' {
   if (status === 'connected') return 'connected';
   if (status === 'reconnecting') return 'connecting';
+  if (status === 'needs_reauth') return 'needs_reauth';
   return 'disconnected';
 }
 
@@ -284,9 +285,15 @@ interface ConnectorCardProps {
   connector: McpConnectorInfo;
   onReconnect(name: string): void;
   onRemove(name: string): void;
+  onReauthorize(name: string): void;
 }
 
-function ConnectorCard({ connector, onReconnect, onRemove }: ConnectorCardProps): JSX.Element {
+function ConnectorCard({
+  connector,
+  onReconnect,
+  onRemove,
+  onReauthorize,
+}: ConnectorCardProps): JSX.Element {
   return (
     <div className="border border-border bg-card-bg p-4">
       <div className="flex items-center justify-between">
@@ -303,14 +310,24 @@ function ConnectorCard({ connector, onReconnect, onRemove }: ConnectorCardProps)
           </div>
         </div>
         <div className="flex items-center gap-1">
-          <button
-            type="button"
-            onClick={() => onReconnect(connector.name)}
-            title="Reconnect"
-            className="p-1.5 text-muted hover:bg-sidebar-hover hover:text-foreground"
-          >
-            <RefreshCw size={14} />
-          </button>
+          {connector.status === 'needs_reauth' ? (
+            <button
+              type="button"
+              onClick={() => onReauthorize(connector.name)}
+              className="flex items-center gap-1 border border-yellow-700/50 bg-yellow-900/20 px-2.5 py-1 text-xs text-yellow-200 hover:bg-yellow-900/40"
+            >
+              Re-authorize
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={() => onReconnect(connector.name)}
+              title="Reconnect"
+              className="p-1.5 text-muted hover:bg-sidebar-hover hover:text-foreground"
+            >
+              <RefreshCw size={14} />
+            </button>
+          )}
           <button
             type="button"
             onClick={() => onRemove(connector.name)}
@@ -508,6 +525,23 @@ function ConnectorsPage(): JSX.Element {
     [reconnectConnector],
   );
 
+  const handleReauthorize = useCallback(
+    async (name: string) => {
+      try {
+        await window.api.mcpReauthorize(name);
+        await loadConnectors();
+      } catch {
+        // Error is set in the store
+      }
+    },
+    [loadConnectors],
+  );
+
+  useEffect(() => {
+    const unsub = useConnectorsStore.getState().initConnectorListeners();
+    return unsub;
+  }, []);
+
   return (
     <div className="flex flex-col h-full overflow-hidden">
       {/* Page header */}
@@ -556,6 +590,7 @@ function ConnectorsPage(): JSX.Element {
                 connector={c}
                 onReconnect={handleReconnect}
                 onRemove={handleRemove}
+                onReauthorize={handleReauthorize}
               />
             ))}
           </div>
