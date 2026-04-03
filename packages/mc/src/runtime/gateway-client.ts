@@ -67,22 +67,6 @@ export class GatewayManagementClient {
     return res.json() as Promise<GatewayHealthResponse>;
   }
 
-  async registerAgent(
-    deploymentId: string,
-    agentName: string,
-    chatUrl: string,
-    chatToken: string,
-  ): Promise<void> {
-    const res = await fetch(`${this.baseUrl}/agents`, {
-      method: 'POST',
-      headers: this.headers(),
-      body: JSON.stringify({ deploymentId, agentName, chatUrl, chatToken }),
-    });
-    if (!res.ok) {
-      throw new Error(`Gateway registerAgent failed: ${res.status}`);
-    }
-  }
-
   async deregisterDeployment(deploymentId: string): Promise<void> {
     try {
       await fetch(`${this.baseUrl}/deployments/${deploymentId}`, {

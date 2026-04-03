@@ -91,7 +91,6 @@ function createMockGatewayClient() {
       agents: 0,
       channels: 0,
     }),
-    registerAgent: vi.fn().mockResolvedValue(undefined),
     registerChannel: vi.fn().mockResolvedValue(undefined),
     deregisterDeployment: vi.fn().mockResolvedValue(undefined),
     registerRuntimeAgent: vi.fn().mockResolvedValue(undefined),
