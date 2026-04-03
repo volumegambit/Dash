@@ -48,3 +48,17 @@ export interface RouterConfig {
   globalDenyList: string[];
   rules: RouterRoutingRule[];
 }
+
+export interface MessageLogEntry {
+  timestamp: string;
+  channelName: string;
+  senderId: string;
+  senderName: string;
+  conversationId: string;
+  text: string;
+  outcome: 'routed' | 'blocked' | 'no_match';
+  agentName?: string;
+  blockReason?: string;
+}
+
+export type MessageLogger = (entry: MessageLogEntry) => void;
