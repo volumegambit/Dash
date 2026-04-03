@@ -129,6 +129,13 @@ function MessagingAppDetail(): JSX.Element {
         </div>
         <button
           type="button"
+          onClick={() => updateApp(id, { enabled: !app.enabled })}
+          className="rounded-lg border border-border px-3 py-1.5 text-xs text-muted transition-colors hover:bg-card-hover hover:text-foreground"
+        >
+          {app.enabled ? 'Disconnect' : 'Reconnect'}
+        </button>
+        <button
+          type="button"
           onClick={() => setShowDeleteConfirm(true)}
           className="rounded p-1.5 text-muted transition-colors hover:bg-red-900/20 hover:text-red"
           title="Delete messaging app"
@@ -180,23 +187,6 @@ function MessagingAppDetail(): JSX.Element {
               <DetailRow label="Routing Rules" value={String(app.routing.length)} />
             </div>
 
-            {/* Action buttons */}
-            <div className="mt-6 flex gap-3">
-              <button
-                type="button"
-                onClick={() => updateApp(id, { enabled: !app.enabled })}
-                className="rounded-lg border border-border px-4 py-2 text-sm text-muted transition-colors hover:bg-card-hover hover:text-foreground"
-              >
-                {app.enabled ? 'Disconnect' : 'Reconnect'}
-              </button>
-              <Link
-                to="/messaging-apps/$id"
-                params={{ id: app.id }}
-                className="rounded-lg bg-accent px-4 py-2 text-sm text-white transition-colors hover:opacity-90"
-              >
-                Edit Connection
-              </Link>
-            </div>
           </div>
 
           {/* Global Block List */}
