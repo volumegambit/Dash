@@ -3,35 +3,33 @@ import { join } from 'node:path';
 import type { AgentClient } from '@dash/agent';
 import type { ChannelAdapter, InboundMessage, MessageLogEntry } from '@dash/channels';
 
-interface OwnerRule {
-  ownerDeploymentId: string;
-  ownerGlobalDenyList: string[];
+interface RoutingRule {
+  globalDenyList: string[];
   condition:
     | { type: 'default' }
     | { type: 'sender'; ids: string[] }
     | { type: 'group'; ids: string[] };
-  agentKey: string; // {deploymentId}:{agentName}
+  agentId: string;
   allowList: string[];
   denyList: string[];
 }
 
 interface ChannelState {
   adapter: ChannelAdapter;
-  rules: OwnerRule[];
+  rules: RoutingRule[];
 }
 
 export interface DynamicGateway {
-  registerAgent(deploymentId: string, agentName: string, client: AgentClient): void;
-  deregisterDeployment(deploymentId: string): Promise<void>;
+  registerAgent(agentId: string, client: AgentClient): void;
+  deregisterAgent(agentId: string): Promise<string[]>;
   registerChannel(
-    deploymentId: string,
     channelName: string,
     adapter: ChannelAdapter,
     config: {
       globalDenyList: string[];
       routing: Array<{
-        condition: OwnerRule['condition'];
-        agentName: string;
+        condition: RoutingRule['condition'];
+        agentId: string;
         allowList: string[];
         denyList: string[];
       }>;
@@ -64,10 +62,6 @@ export function createDynamicGateway(options?: { dataDir?: string }): DynamicGat
     }
   }
 
-  function makeAgentKey(deploymentId: string, agentName: string): string {
-    return `${deploymentId}:${agentName}`;
-  }
-
   async function handleMessage(
     channelName: string,
     msg: InboundMessage,
@@ -86,7 +80,7 @@ export function createDynamicGateway(options?: { dataDir?: string }): DynamicGat
     };
 
     const matched = state.rules.find((rule) => {
-      if (rule.ownerGlobalDenyList.includes(msg.senderId)) return false;
+      if (rule.globalDenyList.includes(msg.senderId)) return false;
       switch (rule.condition.type) {
         case 'default':
           return true;
@@ -101,7 +95,7 @@ export function createDynamicGateway(options?: { dataDir?: string }): DynamicGat
       return;
     }
 
-    const agentName = matched.agentKey.split(':')[1] ?? matched.agentKey;
+    const agentName = matched.agentId;
 
     if (matched.denyList.includes(msg.senderId)) {
       logMessage({ ...baseLog, outcome: 'blocked', agentName, blockReason: 'rule_deny' });
@@ -112,17 +106,19 @@ export function createDynamicGateway(options?: { dataDir?: string }): DynamicGat
       return;
     }
 
-    const agent = agents.get(matched.agentKey);
+    const agent = agents.get(matched.agentId);
     if (!agent) {
-      console.warn(`[gateway] dropped message: agent "${matched.agentKey}" not found`);
+      console.warn(`[gateway] dropped message: agent "${matched.agentId}" not found`);
       logMessage({ ...baseLog, outcome: 'blocked', agentName, blockReason: 'agent_not_found' });
       return;
     }
 
     logMessage({ ...baseLog, outcome: 'routed', agentName });
 
+    const prefixedConvId = `${channelName}:${msg.conversationId}`;
+
     let fullResponse = '';
-    for await (const event of agent.chat(msg.channelId, msg.conversationId, msg.text)) {
+    for await (const event of agent.chat(msg.channelId, prefixedConvId, msg.text)) {
       if (event.type === 'response') {
         fullResponse = event.content;
       } else if (event.type === 'error') {
@@ -133,45 +129,39 @@ export function createDynamicGateway(options?: { dataDir?: string }): DynamicGat
   }
 
   return {
-    registerAgent(deploymentId, agentName, client) {
-      agents.set(makeAgentKey(deploymentId, agentName), client);
+    registerAgent(agentId, client) {
+      agents.set(agentId, client);
     },
 
-    async deregisterDeployment(deploymentId) {
-      // Remove agents belonging to this deployment
-      for (const key of [...agents.keys()]) {
-        if (key.startsWith(`${deploymentId}:`)) agents.delete(key);
-      }
+    async deregisterAgent(agentId) {
+      agents.delete(agentId);
 
-      // Remove routing rules for this deployment; stop adapter if no rules remain
+      const removedChannels: string[] = [];
       const toStop: ChannelAdapter[] = [];
       for (const [name, state] of [...channels.entries()]) {
-        state.rules = state.rules.filter((r) => r.ownerDeploymentId !== deploymentId);
+        state.rules = state.rules.filter((r) => r.agentId !== agentId);
         if (state.rules.length === 0) {
           toStop.push(state.adapter);
           channels.delete(name);
+          removedChannels.push(name);
         }
       }
       await Promise.all(toStop.map((a) => a.stop()));
+      return removedChannels;
     },
 
-    async registerChannel(deploymentId, channelName, adapter, config) {
-      const newRules: OwnerRule[] = config.routing.map((r) => ({
-        ownerDeploymentId: deploymentId,
-        ownerGlobalDenyList: config.globalDenyList ?? [],
+    async registerChannel(channelName, adapter, config) {
+      const newRules: RoutingRule[] = config.routing.map((r) => ({
+        globalDenyList: config.globalDenyList ?? [],
         condition: r.condition,
-        agentKey: makeAgentKey(deploymentId, r.agentName),
+        agentId: r.agentId,
         allowList: r.allowList,
         denyList: r.denyList,
       }));
 
       const existing = channels.get(channelName);
       if (existing) {
-        // Replace rules for this deployment, keep rules from other deployments
-        existing.rules = [
-          ...existing.rules.filter((r) => r.ownerDeploymentId !== deploymentId),
-          ...newRules,
-        ];
+        existing.rules = [...existing.rules, ...newRules];
       } else {
         const state: ChannelState = {
           adapter,
