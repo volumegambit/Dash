@@ -18,13 +18,12 @@ export { AgentConnector } from './agents/connector.js';
 export type { DeploymentRuntime, RuntimeStatus } from './runtime/types.js';
 export { providerSecretKey, parseProviderSecretKey } from './runtime/provider-keys.js';
 export {
-  ProcessRuntime,
-  validateConfigDir,
+  GatewayProcess,
   defaultProcessSpawner,
   defaultHealthChecker,
-  DeploymentStartupError,
 } from './runtime/process.js';
 export type {
+  GatewayProcessOptions,
   ProcessSpawner,
   SpawnedProcess,
   HealthChecker,
@@ -37,7 +36,6 @@ export { MessagingAppRegistry } from './messaging-apps/registry.js';
 export { SettingsStore } from './settings-store.js';
 export type { AppSettings } from './settings-store.js';
 export { getPlatformDataDir } from './platform-paths.js';
-export type { GatewayOptions } from './runtime/process.js';
 export { ModelCacheService } from './models/model-cache.js';
 export type { CachedModel } from './models/model-cache.js';
 export {
@@ -49,8 +47,8 @@ export {
 export type { SupportedModelEntry } from './models/supported-models.js';
 export { GatewayManagementClient } from './runtime/gateway-client.js';
 export type {
-  GatewayChannelRoutingRule,
-  GatewayChannelConfig,
+  GatewayAgent,
+  GatewayChannel,
   GatewayHealthResponse,
 } from './runtime/gateway-client.js';
 export { GatewayStateStore } from './runtime/gateway-state.js';
