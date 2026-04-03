@@ -27,7 +27,9 @@ import type { McAgentEvent } from '../../../shared/ipc.js';
 import { detectLanguage } from '../components/DiffView.js';
 import { Markdown } from '../components/Markdown.js';
 import { HighlightedCode, ToolResult } from '../components/ToolResult.js';
+import { useAgentConfigsStore } from '../stores/agent-configs.js';
 import { useChatStore } from '../stores/chat.js';
+import { useConnectorsStore } from '../stores/connectors.js';
 import { useDeploymentsStore } from '../stores/deployments.js';
 import {
   type TodoItem,
@@ -1072,6 +1074,9 @@ export function Chat(): JSX.Element {
     cancelMessage,
   } = useChatStore();
 
+  const connectors = useConnectorsStore((s) => s.connectors);
+  const configs = useAgentConfigsStore((s) => s.configs);
+
   const navigate = useNavigate();
   const runningDeployments = deployments.filter((d) => d.status === 'running');
   const [input, setInput] = useState('');
@@ -1125,6 +1130,13 @@ export function Chat(): JSX.Element {
   useEffect(() => {
     loadAllConversations();
   }, [loadAllConversations]);
+
+  // Load connectors and subscribe to status changes
+  useEffect(() => {
+    useConnectorsStore.getState().loadConnectors();
+    const unsub = useConnectorsStore.getState().initConnectorListeners();
+    return unsub;
+  }, []);
 
   // Scroll to bottom on new messages
   const selectedMessages = selectedConversationId ? (messages[selectedConversationId] ?? []) : [];
@@ -1307,6 +1319,22 @@ export function Chat(): JSX.Element {
     selectedDeployment?.credentialStatus === 'invalid'
       ? selectedDeployment
       : null;
+  const mcpIssue = useMemo(() => {
+    if (!selectedDeployment || selectedDeployment.status !== 'running') return null;
+    const agentConfig = configs[selectedDeployment.name];
+    const mcpNames = agentConfig?.mcpServers ?? [];
+    for (const name of mcpNames) {
+      const connector = connectors.find((c: { name: string; status: string }) => c.name === name);
+      if (!connector) continue;
+      if (connector.status === 'needs_reauth') {
+        return { serverName: name, status: 'needs_reauth' as const };
+      }
+      if (connector.status === 'error' || connector.status === 'disconnected') {
+        return { serverName: name, status: connector.status };
+      }
+    }
+    return null;
+  }, [selectedDeployment, configs, connectors]);
   const agentConfig = selectedConversation
     ? (selectedDeployment?.config?.agents?.[selectedConversation.agentName] ??
       selectedDeployment?.config?.agent)
@@ -1558,6 +1586,30 @@ export function Chat(): JSX.Element {
                 className="shrink-0 rounded-lg bg-yellow-700/50 px-3 py-1.5 text-xs font-medium text-yellow-100 hover:bg-yellow-700/70"
               >
                 Go to AI Providers
+              </button>
+            </div>
+          )}
+
+          {/* MCP connector warning banner */}
+          {mcpIssue && !credentialIssue && (
+            <div className="bg-yellow-900/30 border-t border-yellow-700/50 px-6 py-3 flex items-center justify-between shrink-0">
+              <span className="text-sm text-yellow-200">
+                {mcpIssue.status === 'needs_reauth'
+                  ? `${mcpIssue.serverName} connector needs re-authorization`
+                  : `${mcpIssue.serverName} connector is offline`}
+              </span>
+              <button
+                type="button"
+                onClick={async () => {
+                  if (mcpIssue.status === 'needs_reauth') {
+                    await window.api.mcpReauthorize(mcpIssue.serverName);
+                  } else {
+                    await window.api.mcpReconnectConnector(mcpIssue.serverName);
+                  }
+                }}
+                className="border border-yellow-700/50 bg-yellow-900/40 px-3 py-1 text-xs text-yellow-200 hover:bg-yellow-900/60"
+              >
+                {mcpIssue.status === 'needs_reauth' ? 'Re-authorize' : 'Reconnect'}
               </button>
             </div>
           )}
