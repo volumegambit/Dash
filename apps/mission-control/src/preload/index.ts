@@ -1,5 +1,10 @@
 import { contextBridge, ipcRenderer } from 'electron';
-import type { CredentialStatusChange, McAgentEvent, MissionControlAPI } from '../shared/ipc.js';
+import type {
+  CredentialStatusChange,
+  McAgentEvent,
+  McpStatusChange,
+  MissionControlAPI,
+} from '../shared/ipc.js';
 
 const api: MissionControlAPI = {
   getVersion: () => ipcRenderer.invoke('app:getVersion'),
@@ -217,6 +222,13 @@ const api: MissionControlAPI = {
   mcpReconnectConnector: (name: string) => ipcRenderer.invoke('mcp:reconnectConnector', name),
   mcpGetAllowlist: () => ipcRenderer.invoke('mcp:getAllowlist'),
   mcpSetAllowlist: (patterns: string[]) => ipcRenderer.invoke('mcp:setAllowlist', patterns),
+  mcpReauthorize: (name: string) => ipcRenderer.invoke('mcp:reauthorize', name),
+
+  onMcpStatusChanged: (callback: (change: McpStatusChange) => void): (() => void) => {
+    const handler = (_: Electron.IpcRendererEvent, change: McpStatusChange) => callback(change);
+    ipcRenderer.on('mcp:statusChanged', handler);
+    return () => ipcRenderer.removeListener('mcp:statusChanged', handler);
+  },
 
   // Gateway events (SSE)
   onGatewayEvent: (callback: (eventType: string, data: string) => void): (() => void) => {
