@@ -1,6 +1,6 @@
 import type { MessagingApp, RoutingCondition, RoutingRule } from '@dash/mc';
 import { Link, createFileRoute } from '@tanstack/react-router';
-import { AlertTriangle, ArrowLeft, Plus, Trash2 } from 'lucide-react';
+import { AlertTriangle, ArrowLeft, ExternalLink, Plus, Trash2 } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { useDeploymentsStore } from '../../stores/deployments';
 import { useMessagingAppsStore } from '../../stores/messaging-apps';
@@ -403,12 +403,14 @@ function AddRulePanel({
   onAdd: (rule: RoutingRule) => Promise<void>;
   onCancel: () => void;
 }): JSX.Element {
-  const [conditionType, setConditionType] = useState<'default' | 'sender' | 'group'>('default');
+  const [conditionType, setConditionType] = useState<'default' | 'sender' | 'group'>('sender');
   const [conditionIds, setConditionIds] = useState('');
   const [agentName, setAgentName] = useState(availableAgents[0]?.agentName ?? '');
   const [allowList, setAllowList] = useState('');
   const [denyList, setDenyList] = useState('');
   const [label, setLabel] = useState('');
+  const [showEveryoneWarning, setShowEveryoneWarning] = useState(false);
+  const [everyoneConfirmed, setEveryoneConfirmed] = useState(false);
 
   function buildCondition(): RoutingCondition {
     const ids = conditionIds
@@ -454,13 +456,58 @@ function AddRulePanel({
           <select
             id="rule-condition-type"
             value={conditionType}
-            onChange={(e) => setConditionType(e.target.value as typeof conditionType)}
-            className="w-full rounded border border-border bg-card-bg px-2 py-1.5 text-sm focus:border-accent focus:outline-none"
+            onChange={(e) => {
+              const val = e.target.value as typeof conditionType;
+              if (val === 'default') {
+                setShowEveryoneWarning(true);
+                setEveryoneConfirmed(false);
+              } else {
+                setShowEveryoneWarning(false);
+                setEveryoneConfirmed(false);
+              }
+              setConditionType(val);
+            }}
+            className="w-full border border-border bg-card-bg px-2 py-1.5 text-sm focus:border-accent focus:outline-none"
           >
-            <option value="default">Everyone (default / catch-all)</option>
-            <option value="sender">Specific people (by Telegram user ID)</option>
-            <option value="group">Specific groups (by group chat ID)</option>
+            <option value="sender">Specific people</option>
+            <option value="group">Specific groups</option>
+            <option value="default">Everyone</option>
           </select>
+
+          {showEveryoneWarning && !everyoneConfirmed && (
+            <div className="mt-2 border-2 border-red/40 bg-red-tint p-3">
+              <div className="flex items-start gap-2">
+                <AlertTriangle size={16} className="text-red shrink-0 mt-0.5" />
+                <div>
+                  <p className="text-xs font-medium text-red">
+                    This will allow anyone on Telegram to message this agent and use any tools it has access to.
+                  </p>
+                  <div className="mt-2 flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setConditionType('sender');
+                        setShowEveryoneWarning(false);
+                      }}
+                      className="border border-border px-2 py-1 text-[10px] text-muted hover:text-foreground transition-colors"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setEveryoneConfirmed(true);
+                        setShowEveryoneWarning(false);
+                      }}
+                      className="bg-red/80 px-2 py-1 text-[10px] text-white hover:bg-red transition-colors"
+                    >
+                      I understand, allow everyone
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
 
         {conditionType !== 'default' && (
@@ -478,8 +525,22 @@ function AddRulePanel({
               value={conditionIds}
               onChange={(e) => setConditionIds(e.target.value)}
               placeholder="123456789, 987654321"
-              className="w-full rounded border border-border bg-card-bg px-2 py-1.5 font-[family-name:var(--font-mono)] text-sm focus:border-accent focus:outline-none"
+              className="w-full border border-border bg-card-bg px-2 py-1.5 font-[family-name:var(--font-mono)] text-sm focus:border-accent focus:outline-none"
             />
+            {conditionType === 'sender' && (
+              <p className="mt-1.5 text-xs text-muted">
+                To find a user ID, message{' '}
+                <button
+                  type="button"
+                  onClick={() => window.api.openExternal('https://t.me/userinfobot')}
+                  className="inline-flex items-center gap-0.5 text-accent hover:underline"
+                >
+                  @userinfobot
+                  <ExternalLink size={10} />
+                </button>{' '}
+                on Telegram — it replies with your numeric ID.
+              </p>
+            )}
           </div>
         )}
 
@@ -573,8 +634,8 @@ function AddRulePanel({
         <button
           type="button"
           onClick={handleAdd}
-          disabled={!agentName}
-          className="rounded-lg bg-accent px-4 py-1.5 text-sm text-white hover:opacity-90 disabled:opacity-50"
+          disabled={!agentName || (conditionType === 'default' && !everyoneConfirmed)}
+          className="bg-accent px-4 py-1.5 text-sm text-white hover:opacity-90 disabled:opacity-50"
         >
           Add rule
         </button>

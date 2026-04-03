@@ -1,6 +1,6 @@
 import type { MessagingApp } from '@dash/mc';
 import { Link, createFileRoute } from '@tanstack/react-router';
-import { MessageSquare, Plus } from 'lucide-react';
+import { AlertTriangle, MessageSquare, Plus } from 'lucide-react';
 import { useEffect } from 'react';
 import { useMessagingAppsStore } from '../../stores/messaging-apps.js';
 
@@ -129,25 +129,28 @@ function AppCard({
   agentCount: number;
 }): JSX.Element {
   const isConnected = app.enabled;
+  const hasOpenRule =
+    app.type === 'telegram' &&
+    app.routing.some((r) => r.condition.type === 'default' && r.allowList.length === 0);
 
   return (
     <Link
       to="/messaging-apps/$id"
       params={{ id: app.id }}
-      className="bg-card-bg border border-border p-5 flex flex-col gap-3 hover:bg-card-hover transition-colors cursor-pointer rounded-lg"
+      className="bg-card-bg border border-border p-5 flex flex-col gap-3 hover:bg-card-hover transition-colors cursor-pointer"
     >
       {/* Header row */}
       <div className="flex justify-between items-center">
         <div className="flex items-center gap-2">
           <PlatformIcon type={app.type} />
-          <span className="font-semibold text-[16px] text-foreground capitalize">{app.type}</span>
+          <span className="font-semibold text-[16px] text-foreground">{app.name}</span>
         </div>
         {isConnected ? (
-          <span className="bg-green-tint text-green rounded px-2 py-0.5 text-[10px] font-[family-name:var(--font-mono)] font-semibold">
+          <span className="bg-green-tint text-green px-2 py-0.5 text-[10px] font-[family-name:var(--font-mono)] font-semibold">
             Connected
           </span>
         ) : (
-          <span className="bg-red-tint text-red rounded px-2 py-0.5 text-[10px] font-[family-name:var(--font-mono)] font-semibold">
+          <span className="bg-red-tint text-red px-2 py-0.5 text-[10px] font-[family-name:var(--font-mono)] font-semibold">
             Not Connected
           </span>
         )}
@@ -157,6 +160,14 @@ function AppCard({
       <p className="text-xs text-muted">
         {agentCount} agent{agentCount !== 1 ? 's' : ''} connected
       </p>
+
+      {/* Open to everyone warning */}
+      {hasOpenRule && (
+        <div className="flex items-center gap-1.5 text-red">
+          <AlertTriangle size={12} />
+          <span className="text-[11px] font-medium">Open to everyone</span>
+        </div>
+      )}
 
       {/* Configure link */}
       <span className="text-accent text-xs hover:underline">Configure →</span>
