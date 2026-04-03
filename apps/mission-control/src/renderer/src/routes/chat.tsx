@@ -1,7 +1,7 @@
-import hljs from 'highlight.js/lib/core';
-import bash from 'highlight.js/lib/languages/bash';
 import type { McMessage } from '@dash/mc';
 import { createFileRoute, useNavigate } from '@tanstack/react-router';
+import hljs from 'highlight.js/lib/core';
+import bash from 'highlight.js/lib/languages/bash';
 import {
   Check,
   ChevronDown,
@@ -55,6 +55,7 @@ function renderEvents(
   navigateToLogs?: (timestamp: string) => void,
   onAnswerQuestion?: (questionId: string, answer: string) => void,
   answeredQuestions?: Record<string, string>,
+  onNavigateToConnections?: () => void,
 ): JSX.Element[] {
   const elements: JSX.Element[] = [];
   let blockCount = 0;
@@ -132,17 +133,36 @@ function renderEvents(
           ? event.error
           : ((event.error as unknown as { message?: string })?.message ?? 'Unknown error');
       const timestamp = typeof event.timestamp === 'string' ? event.timestamp : undefined;
+      const isAuthError =
+        msg.includes('401') ||
+        msg.includes('403') ||
+        msg.toLowerCase().includes('authentication') ||
+        msg.toLowerCase().includes('unauthorized') ||
+        /invalid.*key/i.test(msg);
       elements.push(
-        <div key={`err-${blockCount++}`} className="mb-3 flex items-center gap-2 text-red">
-          <span>{msg}</span>
-          {navigateToLogs && timestamp && (
-            <button
-              type="button"
-              onClick={() => navigateToLogs(timestamp)}
-              className="text-xs text-muted underline hover:text-foreground"
-            >
-              View logs →
-            </button>
+        <div key={`err-${blockCount++}`} className="mb-3 text-red">
+          <div className="flex items-center gap-2">
+            <span>{msg}</span>
+            {navigateToLogs && timestamp && (
+              <button
+                type="button"
+                onClick={() => navigateToLogs(timestamp)}
+                className="text-xs text-muted underline hover:text-foreground"
+              >
+                View logs →
+              </button>
+            )}
+          </div>
+          {isAuthError && onNavigateToConnections && (
+            <div className="mt-1">
+              <button
+                type="button"
+                onClick={onNavigateToConnections}
+                className="inline-flex items-center gap-1 text-xs text-accent hover:underline"
+              >
+                Update Key →
+              </button>
+            </div>
           )}
         </div>,
       );
@@ -160,8 +180,7 @@ function renderEvents(
   // Flush in-progress tool call (tool_use_start seen but no tool_result yet)
   if (toolName) {
     const inProgressSummary = toolInput ? summarize(toolName, JSON.stringify(toolInput)) : '';
-    const isBashInProgress =
-      toolName === 'bash' || toolName === 'execute_command';
+    const isBashInProgress = toolName === 'bash' || toolName === 'execute_command';
     let inProgressHtml: string | null = null;
     if (isBashInProgress && inProgressSummary) {
       try {
@@ -179,7 +198,10 @@ function renderEvents(
         <span className="font-mono">{toolLabel(toolName)}</span>
         {inProgressSummary && inProgressHtml ? (
           // biome-ignore lint/security/noDangerouslySetInnerHtml: highlight.js output is safe
-          <span className="ml-1 font-mono text-muted" dangerouslySetInnerHTML={{ __html: inProgressHtml }} />
+          <span
+            className="ml-1 font-mono text-muted"
+            dangerouslySetInnerHTML={{ __html: inProgressHtml }}
+          />
         ) : inProgressSummary ? (
           <span className="ml-1 text-muted">{inProgressSummary}</span>
         ) : null}
@@ -429,7 +451,10 @@ function ToolBlock({
         <span className="font-mono">{toolLabel(name)}</span>
         {effectiveSummary && highlightedSummary ? (
           // biome-ignore lint/security/noDangerouslySetInnerHtml: highlight.js output is safe
-          <span className="ml-1 font-mono text-muted" dangerouslySetInnerHTML={{ __html: highlightedSummary }} />
+          <span
+            className="ml-1 font-mono text-muted"
+            dangerouslySetInnerHTML={{ __html: highlightedSummary }}
+          />
         ) : effectiveSummary ? (
           <span className="ml-1 text-muted">{effectiveSummary}</span>
         ) : null}
@@ -549,12 +574,14 @@ const MessageBubble = memo(function MessageBubble({
   navigateToLogs,
   onAnswerQuestion,
   answeredQuestions,
+  onNavigateToConnections,
 }: {
   message?: McMessage;
   streamingEvents?: McAgentEvent[];
   navigateToLogs?: (timestamp: string) => void;
   onAnswerQuestion?: (questionId: string, answer: string) => void;
   answeredQuestions?: Record<string, string>;
+  onNavigateToConnections?: () => void;
 }): JSX.Element {
   const isUser = message?.role === 'user';
 
@@ -588,7 +615,13 @@ const MessageBubble = memo(function MessageBubble({
 
   const events: Record<string, unknown>[] =
     streamingEvents ?? (message?.content.type === 'assistant' ? message.content.events : []);
-  const rendered = renderEvents(events, navigateToLogs, onAnswerQuestion, answeredQuestions);
+  const rendered = renderEvents(
+    events,
+    navigateToLogs,
+    onAnswerQuestion,
+    answeredQuestions,
+    onNavigateToConnections,
+  );
   const usage = extractUsage(events);
   const assistantText = extractTextFromEvents(events);
 
@@ -1133,11 +1166,15 @@ export function Chat(): JSX.Element {
   }, [selectedConversationId]);
 
   // Build available agents list from running deployments
-  const availableAgents = useMemo(() => runningDeployments.map((dep) => ({
-    deploymentId: dep.id,
-    deploymentName: dep.name,
-    agentName: dep.name,
-  })), [runningDeployments]);
+  const availableAgents = useMemo(
+    () =>
+      runningDeployments.map((dep) => ({
+        deploymentId: dep.id,
+        deploymentName: dep.name,
+        agentName: dep.name,
+      })),
+    [runningDeployments],
+  );
 
   const handleNewConversation = useCallback(() => {
     if (availableAgents.length === 0) return;
@@ -1265,6 +1302,11 @@ export function Chat(): JSX.Element {
 
   // Resolve model for the selected conversation's agent
   const selectedDeployment = deployments.find((d) => d.id === selectedDeploymentId);
+  const credentialIssue =
+    selectedDeployment?.credentialStatus === 'missing' ||
+    selectedDeployment?.credentialStatus === 'invalid'
+      ? selectedDeployment
+      : null;
   const agentConfig = selectedConversation
     ? (selectedDeployment?.config?.agents?.[selectedConversation.agentName] ??
       selectedDeployment?.config?.agent)
@@ -1275,6 +1317,41 @@ export function Chat(): JSX.Element {
     selectedDeployment?.configDir && selectedConversation
       ? `${selectedDeployment.configDir.replace(/\/[^/]+$/, '')}/skills/${selectedConversation.agentName}`
       : undefined;
+
+  // Detect auth errors in streaming events and update credential status
+  useEffect(() => {
+    if (!selectedDeployment) return;
+    const allEvents = [
+      ...liveEvents,
+      ...selectedMessages.flatMap((m) => (m.content.type === 'assistant' ? m.content.events : [])),
+    ] as McAgentEvent[];
+    const authError = allEvents.find((e) => {
+      if (e.type !== 'error') return false;
+      const msg =
+        typeof e.error === 'string'
+          ? e.error
+          : ((e.error as unknown as { message?: string })?.message ?? '');
+      return (
+        msg.includes('401') ||
+        msg.includes('403') ||
+        msg.toLowerCase().includes('authentication') ||
+        msg.toLowerCase().includes('unauthorized') ||
+        /invalid.*key/i.test(msg)
+      );
+    });
+    if (authError && selectedDeployment.credentialStatus !== 'invalid') {
+      const msg =
+        typeof authError.error === 'string'
+          ? authError.error
+          : ((authError.error as unknown as { message?: string })?.message ?? 'Auth error');
+      window.api.deploymentsUpdateCredentialStatus(
+        selectedDeployment.id,
+        'invalid',
+        undefined,
+        msg,
+      );
+    }
+  }, [liveEvents, selectedMessages, selectedDeployment]);
 
   const latestTodos = useMemo(
     () => extractLatestTodos(selectedMessages, liveEvents),
@@ -1423,7 +1500,11 @@ export function Chat(): JSX.Element {
             </div>
           )}
 
-          <div ref={scrollContainerRef} onScroll={handleScroll} className="flex-1 overflow-y-auto overflow-x-hidden px-6 py-4">
+          <div
+            ref={scrollContainerRef}
+            onScroll={handleScroll}
+            className="flex-1 overflow-y-auto overflow-x-hidden px-6 py-4"
+          >
             {!selectedConversationId ? (
               <p className="text-center text-sm text-muted mt-8">
                 {runningDeployments.length === 0
@@ -1439,15 +1520,19 @@ export function Chat(): JSX.Element {
                     navigateToLogs={navigateToLogs}
                     onAnswerQuestion={handleAnswerQuestion}
                     answeredQuestions={answeredQuestions}
+                    onNavigateToConnections={() => navigate({ to: '/connections' })}
                   />
                 ))}
-                {isStreaming && !liveEvents.some((e) => VISIBLE_EVENT_TYPES.has(e.type)) && <ThinkingIndicator />}
+                {isStreaming && !liveEvents.some((e) => VISIBLE_EVENT_TYPES.has(e.type)) && (
+                  <ThinkingIndicator />
+                )}
                 {isStreaming && liveEvents.some((e) => VISIBLE_EVENT_TYPES.has(e.type)) && (
                   <MessageBubble
                     streamingEvents={liveEvents}
                     navigateToLogs={navigateToLogs}
                     onAnswerQuestion={handleAnswerQuestion}
                     answeredQuestions={answeredQuestions}
+                    onNavigateToConnections={() => navigate({ to: '/connections' })}
                   />
                 )}
               </>
@@ -1456,6 +1541,26 @@ export function Chat(): JSX.Element {
           </div>
 
           {latestTodos && latestTodos.length > 0 && <PinnedTodoPanel todos={latestTodos} />}
+
+          {/* Credential warning banner */}
+          {credentialIssue?.credentialStatus === 'missing' && (
+            <div className="bg-yellow-900/30 border-t border-yellow-700/50 px-6 py-3 flex items-center justify-between shrink-0">
+              <span className="text-sm text-yellow-200">
+                This agent is missing an API key
+                {credentialIssue.credentialProvider
+                  ? ` for ${credentialIssue.credentialProvider}`
+                  : ''}
+                . Add or reassign a key to continue.
+              </span>
+              <button
+                type="button"
+                onClick={() => navigate({ to: '/connections' })}
+                className="shrink-0 rounded-lg bg-yellow-700/50 px-3 py-1.5 text-xs font-medium text-yellow-100 hover:bg-yellow-700/70"
+              >
+                Go to AI Providers
+              </button>
+            </div>
+          )}
 
           {/* Input bar */}
           <div className="bg-surface border-t border-border px-6 py-4 flex items-center gap-3 shrink-0">
@@ -1517,7 +1622,11 @@ export function Chat(): JSX.Element {
                   placeholder={
                     selectedConversationId ? 'Type a message…' : 'Select a conversation first'
                   }
-                  disabled={!selectedConversationId || isStreaming}
+                  disabled={
+                    !selectedConversationId ||
+                    isStreaming ||
+                    credentialIssue?.credentialStatus === 'missing'
+                  }
                   className="flex-1 bg-[#141414] border border-border px-4 py-3 text-sm text-foreground placeholder:text-muted focus:border-accent focus:outline-none disabled:opacity-50 resize-none"
                 />
                 <input
@@ -1552,7 +1661,9 @@ export function Chat(): JSX.Element {
                   <button
                     type="submit"
                     disabled={
-                      (!input.trim() && attachedImages.length === 0) || !selectedConversationId
+                      (!input.trim() && attachedImages.length === 0) ||
+                      !selectedConversationId ||
+                      credentialIssue?.credentialStatus === 'missing'
                     }
                     className="bg-accent text-white p-2.5 hover:bg-primary-hover disabled:opacity-50 transition-colors shrink-0"
                   >
