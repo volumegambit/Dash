@@ -157,4 +157,45 @@ describe('HealthPoller', () => {
     await vi.advanceTimersByTimeAsync(15_000);
     expect(onStatusChange).toHaveBeenCalledTimes(2);
   });
+
+  it('calls onMcpStatusChange when an MCP server status changes', async () => {
+    mockHealth.mockResolvedValue({
+      status: 'healthy',
+      uptime: 100,
+      version: '1.0',
+      mcpServers: [
+        { name: 'github', status: 'connected' },
+        { name: 'slack', status: 'connected' },
+      ],
+    });
+    const onStatusChange = vi.fn();
+    const onMcpStatusChange = vi.fn();
+
+    poller.start('dep1', 3000, 'token123', onStatusChange, onMcpStatusChange);
+
+    await vi.advanceTimersByTimeAsync(15_000);
+    // First poll — all statuses are new
+    expect(onMcpStatusChange).toHaveBeenCalledTimes(2);
+    expect(onMcpStatusChange).toHaveBeenCalledWith('github', 'connected');
+    expect(onMcpStatusChange).toHaveBeenCalledWith('slack', 'connected');
+
+    // Second poll — same statuses, no calls
+    onMcpStatusChange.mockClear();
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(onMcpStatusChange).toHaveBeenCalledTimes(0);
+
+    // Third poll — slack goes to error
+    mockHealth.mockResolvedValue({
+      status: 'healthy',
+      uptime: 300,
+      version: '1.0',
+      mcpServers: [
+        { name: 'github', status: 'connected' },
+        { name: 'slack', status: 'error' },
+      ],
+    });
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(onMcpStatusChange).toHaveBeenCalledTimes(1);
+    expect(onMcpStatusChange).toHaveBeenCalledWith('slack', 'error');
+  });
 });
