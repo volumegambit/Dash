@@ -140,7 +140,7 @@ export class McpClient {
   }
 
   private scheduleReconnect(): void {
-    if (this.stopping || this._status === 'error') return;
+    if (this.stopping || this._status === 'error' || this._status === 'needs_reauth') return;
 
     if (this.reconnectAttempt >= this.maxReconnectAttempts) {
       this.setStatus('error');
@@ -385,6 +385,7 @@ export class McpClient {
     this.transport = null;
     this.client = null;
     this.callToolFn = null;
+    this.tools = [];
     this.authProvider?.dispose();
     this.authProvider = null;
     this.stopping = false;
