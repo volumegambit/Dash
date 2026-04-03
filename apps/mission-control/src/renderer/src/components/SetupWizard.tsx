@@ -9,7 +9,7 @@ import {
   Rocket,
 } from 'lucide-react';
 import { useState } from 'react';
-import { AtriumMark } from './AtriumLogo.js';
+import { DashSquadMark } from './DashSquadLogo.js';
 import { PROVIDERS, PROVIDER_CONFIG, type Provider } from './providers.js';
 
 type Step = 'welcome' | 'password' | 'provider' | 'api-key' | 'done';
@@ -94,9 +94,9 @@ function WelcomeStep({ onNext }: { onNext: () => void }): JSX.Element {
   return (
     <div className="text-center">
       <div className="mx-auto mb-6">
-        <AtriumMark size={48} />
+        <DashSquadMark size={48} />
       </div>
-      <h1 className="font-[family-name:var(--font-display)] text-3xl font-extrabold tracking-tight">Welcome to Atrium</h1>
+      <h1 className="font-[family-name:var(--font-display)] text-3xl font-extrabold tracking-tight">Welcome to DashSquad</h1>
       <p className="mt-3 text-muted">
         Deploy, manage, and monitor your AI agents from a single dashboard. Let's get you set up in
         just a few steps.
@@ -385,7 +385,7 @@ function DoneStep({ onFinish }: { onFinish: () => void }): JSX.Element {
       <CheckCircle size={48} className="mx-auto mb-6 text-green-500" />
       <h1 className="text-3xl font-bold">You're All Set!</h1>
       <p className="mt-3 text-muted">
-        Atrium is ready. You can now deploy and manage your AI agents.
+        DashSquad is ready. You can now deploy and manage your AI agents.
       </p>
       <button
         type="button"
