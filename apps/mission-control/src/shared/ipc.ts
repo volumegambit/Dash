@@ -13,7 +13,14 @@ export type McAgentEvent =
   | { type: 'thinking_delta'; text: string }
   | { type: 'tool_use_start'; id: string; name: string; input?: Record<string, unknown> }
   | { type: 'tool_use_delta'; partial_json: string }
-  | { type: 'tool_result'; id: string; name: string; content: string; isError?: boolean; details?: unknown }
+  | {
+      type: 'tool_result';
+      id: string;
+      name: string;
+      content: string;
+      isError?: boolean;
+      details?: unknown;
+    }
   | { type: 'response'; content: string; usage: Record<string, number> }
   | { type: 'question'; id: string; question: string; options: string[] }
   | { type: 'skill_created'; name: string; description: string }
@@ -131,6 +138,18 @@ export interface CredentialPushFailure {
   deploymentId: string;
   name: string;
   error: string;
+}
+
+export interface CredentialStatusChange {
+  deploymentId: string;
+  status: 'ok' | 'missing' | 'invalid';
+  provider?: string;
+  detail?: string;
+}
+
+export interface AffectedAgent {
+  deploymentId: string;
+  name: string;
 }
 
 export interface MissionControlAPI {
@@ -275,6 +294,18 @@ export interface MissionControlAPI {
 
   // Credentials
   onCredentialsPushFailed(callback: (failures: CredentialPushFailure[]) => void): () => void;
+  onCredentialStatusChanged(callback: (change: CredentialStatusChange) => void): () => void;
+  credentialsGetAffectedAgents(provider: string, keyName: string): Promise<AffectedAgent[]>;
+  credentialsReassignKey(
+    provider: string,
+    assignments: { deploymentId: string; newKeyName: string | null }[],
+  ): Promise<void>;
+  deploymentsUpdateCredentialStatus(
+    deploymentId: string,
+    status: 'ok' | 'missing' | 'invalid',
+    provider?: string,
+    detail?: string,
+  ): Promise<void>;
 
   // Models & Tools
   modelsList(): Promise<Array<{ value: string; label: string; provider: string }>>;
