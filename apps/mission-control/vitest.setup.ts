@@ -95,6 +95,10 @@ function createMockApi(): Record<keyof MissionControlAPI, ReturnType<typeof vi.f
 
     // Credentials
     onCredentialsPushFailed: vi.fn().mockReturnValue(() => {}),
+    onCredentialStatusChanged: vi.fn().mockReturnValue(() => {}),
+    credentialsGetAffectedAgents: vi.fn().mockResolvedValue([]),
+    credentialsReassignKey: vi.fn().mockResolvedValue(undefined),
+    deploymentsUpdateCredentialStatus: vi.fn().mockResolvedValue(undefined),
 
     // Models & Tools
     modelsList: vi.fn().mockResolvedValue([]),

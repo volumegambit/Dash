@@ -10,6 +10,10 @@ export interface AgentDeployment {
   // Startup diagnostics
   startupLogs?: string[]; // captured stdout/stderr from a failed startup
   errorMessage?: string; // human-readable failure reason
+  // Credential status
+  credentialStatus?: 'ok' | 'missing' | 'invalid';
+  credentialProvider?: string;
+  credentialDetail?: string;
 }
 
 export interface DeployConfig {
@@ -33,6 +37,7 @@ export interface AgentDeployAgentConfig {
     urls?: string[];
   };
   mcpServers?: import('@dash/mcp').McpServerConfig[];
+  credentialKeys?: Record<string, string>;
 }
 
 export interface ChannelDeployConfig {
