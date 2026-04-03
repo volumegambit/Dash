@@ -15,6 +15,7 @@ import type { McpLogger, McpServerConfig, McpServerStatus, TokenStore } from './
 export interface McpClientOptions {
   logger?: McpLogger;
   onToolsChanged?: (serverName: string, tools: AgentTool<TSchema>[]) => void;
+  onStatusChange?: (serverName: string, status: McpServerStatus) => void;
   tokenStore?: TokenStore;
   onAuthUrl?: (url: URL) => void;
 }
@@ -31,6 +32,7 @@ export class McpClient {
   private toolTimeout = DEFAULT_TOOL_TIMEOUT;
   private options?: McpClientOptions;
   private onToolsChanged?: (serverName: string, tools: AgentTool<TSchema>[]) => void;
+  private onStatusChange?: (serverName: string, status: McpServerStatus) => void;
   private authProvider: DashOAuthClientProvider | null = null;
 
   /** Stored callTool closure, used by rebuildTools */
@@ -60,6 +62,7 @@ export class McpClient {
     this.options = options;
     this.onToolsChanged = options?.onToolsChanged;
     this.maxReconnectAttempts = config.maxReconnectAttempts ?? 10;
+    this.onStatusChange = options?.onStatusChange;
   }
 
   get name(): string {
@@ -68,6 +71,12 @@ export class McpClient {
 
   get status(): McpServerStatus {
     return this._status;
+  }
+
+  private setStatus(status: McpServerStatus): void {
+    if (this._status === status) return;
+    this._status = status;
+    this.onStatusChange?.(this.config.name, status);
   }
 
   // --- Transport creation ---
@@ -134,14 +143,14 @@ export class McpClient {
     if (this.stopping || this._status === 'error') return;
 
     if (this.reconnectAttempt >= this.maxReconnectAttempts) {
-      this._status = 'error';
+      this.setStatus('error');
       this.logger.error(
         `[mcp:${this.config.name}] max reconnect attempts (${this.maxReconnectAttempts}) exhausted`,
       );
       return;
     }
 
-    this._status = 'reconnecting';
+    this.setStatus('reconnecting');
     const delay = this.getReconnectDelay();
     this.logger.warn(
       `[mcp:${this.config.name}] reconnecting in ${delay}ms (attempt ${this.reconnectAttempt + 1}/${this.maxReconnectAttempts})`,
@@ -157,7 +166,7 @@ export class McpClient {
         this.setupCallToolFn();
         this.registerNotificationHandlers();
         await this.rebuildTools();
-        this._status = 'connected';
+        this.setStatus('connected');
         this.reconnectAttempt = 0;
         this.logger.info(`[mcp:${this.config.name}] reconnected successfully`);
       } catch (err) {
@@ -230,15 +239,28 @@ export class McpClient {
       if (!this.client) {
         throw new Error('MCP client is not connected');
       }
+      if (this._status === 'needs_reauth') {
+        throw new Error(`MCP server '${this.config.name}' needs re-authorization`);
+      }
       if (this._status === 'reconnecting') {
         throw new Error(`MCP server '${this.config.name}' is reconnecting`);
       }
-      const res = await this.client.callTool(
-        { name, arguments: params },
-        undefined,
-        options?.signal ? { signal: options.signal } : undefined,
-      );
-      return res as { content: Array<{ type: string; text?: string }>; isError?: boolean };
+      try {
+        const res = await this.client.callTool(
+          { name, arguments: params },
+          undefined,
+          options?.signal ? { signal: options.signal } : undefined,
+        );
+        return res as { content: Array<{ type: string; text?: string }>; isError?: boolean };
+      } catch (err) {
+        if (err instanceof UnauthorizedError) {
+          this.logger.warn(
+            `[mcp:${this.config.name}] unauthorized during tool call — needs re-auth`,
+          );
+          this.setStatus('needs_reauth');
+        }
+        throw err;
+      }
     };
   }
 
@@ -302,7 +324,7 @@ export class McpClient {
     this.registerNotificationHandlers();
     await this.rebuildTools();
 
-    this._status = 'connected';
+    this.setStatus('connected');
     this.logger.info(
       `[mcp:${this.config.name}] connected, ${this.tools.length} tool(s) discovered`,
     );
@@ -339,10 +361,34 @@ export class McpClient {
       this.client = null;
       this.callToolFn = null;
       this.tools = [];
-      this._status = 'disconnected';
+      this.setStatus('disconnected');
       this.authProvider?.dispose();
       this.authProvider = null;
     }
+  }
+
+  async reauthorize(): Promise<void> {
+    if (this._status !== 'needs_reauth') {
+      throw new Error(`Cannot reauthorize: server is in '${this._status}' state`);
+    }
+    this.stopping = true;
+    try {
+      if (this.client) await this.client.close();
+    } catch {
+      /* ignore */
+    }
+    try {
+      if (this.transport) await this.transport.close();
+    } catch {
+      /* ignore */
+    }
+    this.transport = null;
+    this.client = null;
+    this.callToolFn = null;
+    this.authProvider?.dispose();
+    this.authProvider = null;
+    this.stopping = false;
+    await this.start();
   }
 
   getTools(): AgentTool<TSchema>[] {
