@@ -1,7 +1,6 @@
 import type { AgentClient } from '@dash/agent';
 import type { ChannelAdapter } from '@dash/channels';
 import { TelegramAdapter, WhatsAppAdapter } from '@dash/channels';
-import { RemoteAgentClient } from '@dash/chat';
 import { Hono } from 'hono';
 
 import type { GatewayAgentConfig } from './agent-registry.js';
@@ -9,13 +8,6 @@ import type { AgentRuntime } from './agent-runtime.js';
 import type { EventBus, GatewayEvent } from './event-bus.js';
 import type { DynamicGateway } from './gateway.js';
 import { type McpManagementDeps, mountMcpRoutes } from './mcp-management.js';
-
-export interface RegisterAgentRequest {
-  deploymentId: string;
-  agentName: string;
-  chatUrl: string;
-  chatToken: string;
-}
 
 export interface ChannelRoutingRule {
   condition:
@@ -92,28 +84,6 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
       health.runtimeAgents = runtime.registry.list().length;
     }
     return c.json(health);
-  });
-
-  app.post('/agents', async (c) => {
-    let body: RegisterAgentRequest;
-    try {
-      body = await c.req.json<RegisterAgentRequest>();
-    } catch {
-      return c.json({ error: 'Invalid JSON' }, 400);
-    }
-    if (!body.deploymentId || !body.agentName || !body.chatUrl || !body.chatToken) {
-      return c.json(
-        { error: 'Missing required fields: deploymentId, agentName, chatUrl, chatToken' },
-        400,
-      );
-    }
-    const client = new RemoteAgentClient(
-      body.chatUrl,
-      body.chatToken,
-      `${body.deploymentId}:${body.agentName}`,
-    );
-    gateway.registerAgent(body.deploymentId, body.agentName, client);
-    return c.json({ ok: true }, 201);
   });
 
   app.delete('/deployments/:id', async (c) => {
