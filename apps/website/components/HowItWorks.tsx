@@ -4,7 +4,7 @@ import { ChatAppsVisual } from '@/components/visuals/ChatAppsVisual';
 
 function MCInlineVisual() {
   return (
-    <div className="bg-surface rounded-xl overflow-hidden w-[280px] h-[160px]">
+    <div className="bg-surface overflow-hidden w-[280px] h-[160px]">
       {/* Title bar */}
       <div className="h-6 bg-[#111] border-b border-surface-border flex items-center gap-1 px-2">
         <span className="w-1.5 h-1.5 rounded-full bg-surface-muted" />

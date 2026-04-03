@@ -41,7 +41,7 @@ export function DeployAndRun() {
           <div className="flex flex-col gap-5">
             {BULLETS.map(({ Icon, title, description }) => (
               <div key={title} className="flex items-start gap-4">
-                <div className="w-12 h-12 rounded-xl bg-brand/20 flex items-center justify-center shrink-0">
+                <div className="w-12 h-12 bg-brand/20 flex items-center justify-center shrink-0">
                   <Icon size={24} className="text-brand" />
                 </div>
                 <div className="flex flex-col gap-1">

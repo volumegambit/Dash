@@ -58,11 +58,11 @@ export function MessagingApps() {
         {APPS.map(({ gradient, Icon, name, description, statusBg, statusText, dotBg, statusLabel }) => (
           <div
             key={name}
-            className="bg-surface rounded-2xl shadow-lg p-8 flex-1 flex flex-col items-center gap-5"
+            className="bg-surface shadow-lg p-8 flex-1 flex flex-col items-center gap-5"
           >
             {/* Gradient icon */}
             <div
-              className="w-14 h-14 rounded-xl flex items-center justify-center"
+              className="w-14 h-14 flex items-center justify-center"
               style={{ background: gradient }}
             >
               <Icon size={24} color="white" />
@@ -76,7 +76,7 @@ export function MessagingApps() {
 
             {/* Status badge */}
             <div
-              className={`rounded-full px-3 py-1 text-[11px] font-semibold flex items-center gap-1.5 ${statusBg} ${statusText}`}
+              className={`px-3 py-1 text-[11px] font-semibold flex items-center gap-1.5 ${statusBg} ${statusText}`}
             >
               <span className={`w-1.5 h-1.5 rounded-full ${dotBg}`} />
               {statusLabel}

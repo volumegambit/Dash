@@ -15,10 +15,10 @@ const jetbrainsMono = JetBrains_Mono({
 });
 
 export const metadata: Metadata = {
-  metadataBase: new URL('https://atrium.ai'),
-  title: 'Atrium — Your Personal Operating System',
+  metadataBase: new URL('https://dashsquad.ai'),
+  title: 'DashSquad — Your AI Team, Always On',
   description:
-    'Atrium is the personal operating system for people who build. AI agents that learn, remember, and compound your advantage.',
+    'DashSquad lets you create AI agents — each with its own role. They work on their own, around the clock, even when you\'re not watching.',
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

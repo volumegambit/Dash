@@ -67,7 +67,7 @@ export function WaitlistForm() {
         <Button
           type="submit"
           variant="cta"
-          className="rounded-full whitespace-nowrap"
+          className="whitespace-nowrap"
           disabled={status === 'loading'}
         >
           {status === 'loading' ? 'Joining...' : 'Request Early Access'}

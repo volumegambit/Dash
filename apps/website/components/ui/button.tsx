@@ -15,10 +15,10 @@ const buttonVariants = cva(
         cta: 'bg-white text-command font-bold hover:bg-cream shadow-lg',
       },
       size: {
-        default: 'px-6 py-3 text-[15px] rounded-lg',
-        sm: 'px-4 py-2 text-sm rounded-md',
-        lg: 'px-10 py-4 text-lg rounded-lg',
-        pill: 'px-6 py-2.5 text-[15px] rounded-full',
+        default: 'px-6 py-3 text-[15px]',
+        sm: 'px-4 py-2 text-sm',
+        lg: 'px-10 py-4 text-lg',
+        pill: 'px-6 py-2.5 text-[15px]',
       },
     },
     defaultVariants: {
