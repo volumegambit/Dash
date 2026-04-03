@@ -507,34 +507,7 @@ export class ProcessRuntime implements DeploymentRuntime {
       }
     }
 
-    // Resolve provider API keys
-    const providerApiKeys = await resolveProviderApiKeys(this.secrets);
-    if (Object.keys(providerApiKeys).length === 0) {
-      throw new Error(
-        'No provider API key configured. Add at least one API key in Mission Control Settings.',
-      );
-    }
-
-    // Validate that each agent's primary model has a matching provider API key
-    for (const [name, cfg] of Object.entries(agentConfigs)) {
-      if (!cfg.model.includes('/')) continue;
-      const providerID = cfg.model.split('/')[0];
-      if (providerID && !providerApiKeys[providerID]) {
-        throw new Error(
-          `No API key configured for provider '${providerID}'. Add a key in Mission Control Settings → AI Providers, or change the agent model to one you have a key for.`,
-        );
-      }
-      if (cfg.credentialKeys?.[providerID]) {
-        const keyName = cfg.credentialKeys[providerID];
-        if (!providerApiKeys[providerID]?.[keyName]) {
-          throw new Error(
-            `Agent "${name}" requires credential "${keyName}" for provider "${providerID}", but no key with that name exists.`,
-          );
-        }
-      }
-    }
-
-    // Register deployment with provisioning status
+    // Register deployment with provisioning status (before validation so we can persist errors)
     const name = agentNames[0] ?? 'deployment';
     await this.registry.add({
       id,
@@ -550,6 +523,49 @@ export class ProcessRuntime implements DeploymentRuntime {
       configDir: absConfigDir,
       workspace: agentConfigs[agentNames[0]]?.workspace,
     });
+
+    // Resolve provider API keys
+    const providerApiKeys = await resolveProviderApiKeys(this.secrets);
+    if (Object.keys(providerApiKeys).length === 0) {
+      const msg =
+        'No provider API key configured. Add at least one API key in Mission Control Settings.';
+      await this.registry.update(id, {
+        status: 'error',
+        errorMessage: msg,
+        credentialStatus: 'missing',
+      });
+      throw new DeploymentStartupError(id, msg);
+    }
+
+    // Validate that each agent's primary model has a matching provider API key
+    for (const [agentName, cfg] of Object.entries(agentConfigs)) {
+      if (!cfg.model.includes('/')) continue;
+      const providerID = cfg.model.split('/')[0];
+      if (providerID && !providerApiKeys[providerID]) {
+        const msg = `No API key configured for provider '${providerID}'. Add a key in Mission Control Settings → AI Providers, or change the agent model to one you have a key for.`;
+        await this.registry.update(id, {
+          status: 'error',
+          errorMessage: msg,
+          credentialStatus: 'missing',
+          credentialProvider: providerID,
+        });
+        throw new DeploymentStartupError(id, msg);
+      }
+      if (cfg.credentialKeys?.[providerID]) {
+        const keyName = cfg.credentialKeys[providerID];
+        if (!providerApiKeys[providerID]?.[keyName]) {
+          const msg = `Agent "${agentName}" requires credential "${keyName}" for provider "${providerID}", but no key with that name exists.`;
+          await this.registry.update(id, {
+            status: 'error',
+            errorMessage: msg,
+            credentialStatus: 'missing',
+            credentialProvider: providerID,
+            credentialDetail: keyName,
+          });
+          throw new DeploymentStartupError(id, msg);
+        }
+      }
+    }
 
     // Ensure gateway is running
     const gatewayClient = await this.ensureGateway();
@@ -606,7 +622,7 @@ export class ProcessRuntime implements DeploymentRuntime {
     }
 
     // Update registry to running
-    await this.registry.update(id, { status: 'running' });
+    await this.registry.update(id, { status: 'running', credentialStatus: 'ok' });
 
     return id;
   }
@@ -665,7 +681,7 @@ export class ProcessRuntime implements DeploymentRuntime {
       }
     }
     if (allEnabled && Object.keys(agents).length > 0) {
-      await this.registry.update(id, { status: 'running' });
+      await this.registry.update(id, { status: 'running', credentialStatus: 'ok' });
       return;
     }
 
@@ -714,7 +730,7 @@ export class ProcessRuntime implements DeploymentRuntime {
     }
 
     // Update registry to running
-    await this.registry.update(id, { status: 'running' });
+    await this.registry.update(id, { status: 'running', credentialStatus: 'ok' });
   }
 
   async stop(id: string): Promise<void> {
