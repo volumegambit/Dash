@@ -1,9 +1,9 @@
-import type { MessagingApp, RoutingCondition, RoutingRule } from '@dash/mc';
+import type { GatewayChannel } from '@dash/mc';
 import { Link, createFileRoute, useNavigate } from '@tanstack/react-router';
-import { AlertTriangle, ArrowLeft, ExternalLink, Plus, Trash2 } from 'lucide-react';
+import { AlertTriangle, ArrowLeft, Plus, Trash2 } from 'lucide-react';
 import { useEffect, useState } from 'react';
-import { useDeploymentsStore } from '../../stores/deployments';
-import { useMessagingAppsStore } from '../../stores/messaging-apps';
+import { useAgentsStore } from '../../stores/agents.js';
+import { useChannelsStore } from '../../stores/messaging-apps.js';
 
 function PlatformIcon({ type }: { type: string }): JSX.Element {
   if (type === 'whatsapp') {
@@ -45,23 +45,25 @@ function PlatformIcon({ type }: { type: string }): JSX.Element {
   );
 }
 
+type ChannelRouteRule = GatewayChannel['routing'][number];
+
 function MessagingAppDetail(): JSX.Element {
   const { id } = Route.useParams();
   const navigate = useNavigate();
-  const { apps, loadApps, updateApp, deleteApp, error } = useMessagingAppsStore();
-  const { deployments, loading: deploymentsLoading, loadDeployments } = useDeploymentsStore();
+  const { channels, loadChannels, updateChannel, removeChannel, error } = useChannelsStore();
+  const { agents, loading: agentsLoading, loadAgents } = useAgentsStore();
   const [globalDenyInput, setGlobalDenyInput] = useState('');
   const [showAddRule, setShowAddRule] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
 
   useEffect(() => {
-    loadApps();
-    loadDeployments();
-  }, [loadApps, loadDeployments]);
+    loadChannels();
+    loadAgents();
+  }, [loadChannels, loadAgents]);
 
-  const app = apps.find((a) => a.id === id);
+  const channel = channels.find((ch) => ch.name === id);
 
-  if (!app) {
+  if (!channel) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-4">
         <p className="text-muted">Messaging app not found.</p>
@@ -72,40 +74,38 @@ function MessagingAppDetail(): JSX.Element {
     );
   }
 
-  const availableAgents = deployments
-    .filter((d) => d.status === 'running')
-    .map((d) => ({
-      label: d.name,
-      agentName: d.name,
+  const availableAgents = agents
+    .filter((a) => a.status === 'active' || a.status === 'registered')
+    .map((a) => ({
+      label: a.name,
+      agentId: a.id,
     }));
 
-  const knownAgentNames: Set<string> | null = deploymentsLoading
+  const knownAgentIds: Set<string> | null = agentsLoading
     ? null
-    : new Set(deployments.map((d) => d.name));
+    : new Set(agents.map((a) => a.id));
 
   async function addGlobalDeny() {
     const val = globalDenyInput.trim();
     if (!val) return;
-    await updateApp(id, { globalDenyList: [...app.globalDenyList, val] });
+    await updateChannel(id, { globalDenyList: [...channel.globalDenyList, val] });
     setGlobalDenyInput('');
   }
 
   async function removeGlobalDeny(entry: string) {
-    await updateApp(id, { globalDenyList: app.globalDenyList.filter((e) => e !== entry) });
+    await updateChannel(id, { globalDenyList: channel.globalDenyList.filter((e) => e !== entry) });
   }
 
-  async function removeRule(ruleId: string) {
-    await updateApp(id, { routing: app.routing.filter((r) => r.id !== ruleId) });
+  async function removeRule(index: number) {
+    await updateChannel(id, { routing: channel.routing.filter((_, i) => i !== index) });
   }
 
-  async function moveRule(ruleId: string, direction: 'up' | 'down') {
-    const idx = app.routing.findIndex((r) => r.id === ruleId);
-    if (idx < 0) return;
-    const newRouting = [...app.routing];
-    const swapIdx = direction === 'up' ? idx - 1 : idx + 1;
+  async function moveRule(index: number, direction: 'up' | 'down') {
+    const newRouting = [...channel.routing];
+    const swapIdx = direction === 'up' ? index - 1 : index + 1;
     if (swapIdx < 0 || swapIdx >= newRouting.length) return;
-    [newRouting[idx], newRouting[swapIdx]] = [newRouting[swapIdx], newRouting[idx]];
-    await updateApp(id, { routing: newRouting });
+    [newRouting[index], newRouting[swapIdx]] = [newRouting[swapIdx], newRouting[index]];
+    await updateChannel(id, { routing: newRouting });
   }
 
   return (
@@ -119,38 +119,25 @@ function MessagingAppDetail(): JSX.Element {
           <ArrowLeft size={16} />
         </Link>
         <div className="flex items-center gap-3 flex-1">
-          <PlatformIcon type={app.type} />
+          <PlatformIcon type={channel.adapter} />
           <div>
             <h1 className="text-2xl font-bold font-[family-name:var(--font-display)]">
-              {app.name}
+              {channel.name}
             </h1>
-            <p className="text-sm text-muted capitalize">{app.type} bot</p>
+            <p className="text-sm text-muted capitalize">{channel.adapter} bot</p>
           </div>
         </div>
         <button
           type="button"
-          onClick={() => updateApp(id, { enabled: !app.enabled })}
-          className="rounded-lg border border-border px-3 py-1.5 text-xs text-muted transition-colors hover:bg-card-hover hover:text-foreground"
-        >
-          {app.enabled ? 'Disconnect' : 'Reconnect'}
-        </button>
-        <button
-          type="button"
           onClick={() => setShowDeleteConfirm(true)}
           className="rounded p-1.5 text-muted transition-colors hover:bg-red-900/20 hover:text-red"
-          title="Delete messaging app"
+          title="Delete channel"
         >
           <Trash2 size={16} />
         </button>
-        {app.enabled ? (
-          <span className="bg-green-tint text-green rounded px-2 py-0.5 text-[10px] font-[family-name:var(--font-mono)] font-semibold">
-            Connected
-          </span>
-        ) : (
-          <span className="bg-red-tint text-red rounded px-2 py-0.5 text-[10px] font-[family-name:var(--font-mono)] font-semibold">
-            Not Connected
-          </span>
-        )}
+        <span className="bg-green-tint text-green rounded px-2 py-0.5 text-[10px] font-[family-name:var(--font-mono)] font-semibold">
+          Connected
+        </span>
       </div>
 
       {/* Body */}
@@ -170,23 +157,11 @@ function MessagingAppDetail(): JSX.Element {
               Connection Details
             </p>
 
-            {/* Key-value rows */}
             <div className="space-y-3">
-              <DetailRow label="Type" value={<span className="capitalize">{app.type}</span>} />
-              <DetailRow
-                label="Status"
-                value={
-                  app.enabled ? (
-                    <span className="text-green">Enabled</span>
-                  ) : (
-                    <span className="text-red">Disabled</span>
-                  )
-                }
-              />
-              <DetailRow label="Created" value={new Date(app.createdAt).toLocaleDateString()} />
-              <DetailRow label="Routing Rules" value={String(app.routing.length)} />
+              <DetailRow label="Type" value={<span className="capitalize">{channel.adapter}</span>} />
+              <DetailRow label="Registered" value={new Date(channel.registeredAt).toLocaleDateString()} />
+              <DetailRow label="Routing Rules" value={String(channel.routing.length)} />
             </div>
-
           </div>
 
           {/* Global Block List */}
@@ -195,12 +170,11 @@ function MessagingAppDetail(): JSX.Element {
               Global Block List
             </p>
             <p className="mb-3 text-xs text-muted">
-              These senders are always blocked, regardless of routing rules. Add their Telegram user
-              ID (a number like <code>123456789</code>).
+              These senders are always blocked, regardless of routing rules.
             </p>
-            {app.globalDenyList.length > 0 && (
+            {channel.globalDenyList.length > 0 && (
               <div className="mb-3 flex flex-wrap gap-2">
-                {app.globalDenyList.map((entry) => (
+                {channel.globalDenyList.map((entry) => (
                   <span
                     key={entry}
                     className="flex items-center gap-1 rounded bg-surface px-2 py-1 font-[family-name:var(--font-mono)] text-xs"
@@ -223,7 +197,7 @@ function MessagingAppDetail(): JSX.Element {
                 value={globalDenyInput}
                 onChange={(e) => setGlobalDenyInput(e.target.value)}
                 onKeyDown={(e) => e.key === 'Enter' && addGlobalDeny()}
-                placeholder="Enter Telegram user ID"
+                placeholder="Enter sender ID"
                 className="flex-1 rounded-lg border border-border bg-card-bg px-3 py-2 text-sm focus:border-accent focus:outline-none"
               />
               <button
@@ -244,20 +218,21 @@ function MessagingAppDetail(): JSX.Element {
             <p className="font-[family-name:var(--font-mono)] text-[11px] uppercase tracking-[2px] text-accent mb-4">
               Connected Agents
             </p>
-            {app.routing.length === 0 ? (
+            {channel.routing.length === 0 ? (
               <p className="text-xs text-muted">No routing rules configured yet.</p>
             ) : (
               <div className="space-y-2">
-                {app.routing.map((rule, i) => (
+                {channel.routing.map((rule, i) => (
                   <RuleCard
-                    key={rule.id}
+                    key={`rule-${i}`}
                     rule={rule}
                     index={i}
-                    total={app.routing.length}
-                    knownAgentNames={knownAgentNames}
-                    onMoveUp={() => moveRule(rule.id, 'up')}
-                    onMoveDown={() => moveRule(rule.id, 'down')}
-                    onDelete={() => removeRule(rule.id)}
+                    total={channel.routing.length}
+                    agents={agents}
+                    knownAgentIds={knownAgentIds}
+                    onMoveUp={() => moveRule(i, 'up')}
+                    onMoveDown={() => moveRule(i, 'down')}
+                    onDelete={() => removeRule(i)}
                   />
                 ))}
               </div>
@@ -275,16 +250,13 @@ function MessagingAppDetail(): JSX.Element {
               <AddRulePanel
                 availableAgents={availableAgents}
                 onAdd={async (rule) => {
-                  await updateApp(id, { routing: [...app.routing, rule] });
+                  await updateChannel(id, { routing: [...channel.routing, rule] });
                   setShowAddRule(false);
                 }}
                 onCancel={() => setShowAddRule(false)}
               />
             )}
           </div>
-
-          {/* Message Log */}
-          <MessageLog appId={id} />
         </div>
       </div>
       </div>
@@ -292,11 +264,11 @@ function MessagingAppDetail(): JSX.Element {
       {/* Delete confirmation modal */}
       {showDeleteConfirm && (
         <DeleteConfirmDialog
-          app={app}
+          channel={channel}
           onCancel={() => setShowDeleteConfirm(false)}
           onConfirm={async () => {
             setShowDeleteConfirm(false);
-            await deleteApp(id);
+            await removeChannel(id);
             navigate({ to: '/messaging-apps' });
           }}
         />
@@ -306,46 +278,23 @@ function MessagingAppDetail(): JSX.Element {
 }
 
 function DeleteConfirmDialog({
-  app,
+  channel,
   onCancel,
   onConfirm,
 }: {
-  app: MessagingApp;
+  channel: GatewayChannel;
   onCancel: () => void;
   onConfirm: () => void;
 }): JSX.Element {
-  const affectedAgents = [...new Set(app.routing.map((r) => r.targetAgentName))];
-
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
       <div className="w-full max-w-sm border border-border bg-card-bg p-6 shadow-lg">
         <h2 className="text-base font-semibold font-[family-name:var(--font-display)]">
-          Delete {app.name}?
+          Delete {channel.name}?
         </h2>
         <p className="mt-1 text-sm text-muted">
-          This will permanently delete this {app.type} connection and remove its credentials.
+          This will permanently delete this {channel.adapter} connection.
         </p>
-
-        {affectedAgents.length > 0 && (
-          <div className="mt-4 rounded border border-amber-500/40 bg-amber-500/10 p-3">
-            <div className="flex items-start gap-2">
-              <AlertTriangle size={14} className="mt-0.5 shrink-0 text-amber-400" />
-              <div>
-                <p className="text-xs font-medium text-amber-400">
-                  {affectedAgents.length === 1 ? '1 agent' : `${affectedAgents.length} agents`} will
-                  lose access to this messaging app:
-                </p>
-                <ul className="mt-1.5 space-y-0.5">
-                  {affectedAgents.map((name) => (
-                    <li key={name} className="text-xs text-foreground font-mono">
-                      {name}
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            </div>
-          </div>
-        )}
 
         <div className="mt-6 flex justify-end gap-2">
           <button
@@ -389,20 +338,23 @@ function RuleCard({
   rule,
   index,
   total,
-  knownAgentNames,
+  agents,
+  knownAgentIds,
   onMoveUp,
   onMoveDown,
   onDelete,
 }: {
-  rule: RoutingRule;
+  rule: ChannelRouteRule;
   index: number;
   total: number;
-  knownAgentNames: Set<string> | null;
+  agents: Array<{ id: string; name: string }>;
+  knownAgentIds: Set<string> | null;
   onMoveUp: () => void;
   onMoveDown: () => void;
   onDelete: () => void;
 }): JSX.Element {
-  const agentMissing = knownAgentNames !== null && !knownAgentNames.has(rule.targetAgentName);
+  const agentMissing = knownAgentIds !== null && !knownAgentIds.has(rule.agentId);
+  const agentName = agents.find((a) => a.id === rule.agentId)?.name ?? rule.agentId;
   const conditionLabel =
     rule.condition.type === 'default'
       ? 'Everyone (default)'
@@ -419,7 +371,7 @@ function RuleCard({
           <p className="mt-1 text-xs text-muted">
             →{' '}
             <strong className={agentMissing ? 'text-amber-400' : undefined}>
-              {rule.targetAgentName}
+              {agentName}
             </strong>
             {agentMissing && (
               <span
@@ -433,7 +385,6 @@ function RuleCard({
             {rule.allowList.length > 0 && ` · Allow: ${rule.allowList.join(', ')}`}
             {rule.denyList.length > 0 && ` · Block: ${rule.denyList.join(', ')}`}
           </p>
-          {rule.label && <p className="mt-1 text-xs text-muted italic">"{rule.label}"</p>}
         </div>
         <div className="flex items-center gap-1">
           <button
@@ -470,20 +421,19 @@ function AddRulePanel({
   onAdd,
   onCancel,
 }: {
-  availableAgents: Array<{ agentName: string; label: string }>;
-  onAdd: (rule: RoutingRule) => Promise<void>;
+  availableAgents: Array<{ agentId: string; label: string }>;
+  onAdd: (rule: ChannelRouteRule) => Promise<void>;
   onCancel: () => void;
 }): JSX.Element {
   const [conditionType, setConditionType] = useState<'default' | 'sender' | 'group'>('sender');
   const [conditionIds, setConditionIds] = useState('');
-  const [agentName, setAgentName] = useState(availableAgents[0]?.agentName ?? '');
+  const [agentId, setAgentId] = useState(availableAgents[0]?.agentId ?? '');
   const [allowList, setAllowList] = useState('');
   const [denyList, setDenyList] = useState('');
-  const [label, setLabel] = useState('');
   const [showEveryoneWarning, setShowEveryoneWarning] = useState(false);
   const [everyoneConfirmed, setEveryoneConfirmed] = useState(false);
 
-  function buildCondition(): RoutingCondition {
+  function buildCondition(): ChannelRouteRule['condition'] {
     const ids = conditionIds
       .split(',')
       .map((s) => s.trim())
@@ -494,11 +444,9 @@ function AddRulePanel({
   }
 
   async function handleAdd() {
-    const rule: RoutingRule = {
-      id: `rule-${Date.now()}`,
-      label: label.trim() || undefined,
+    const rule: ChannelRouteRule = {
       condition: buildCondition(),
-      targetAgentName: agentName,
+      agentId,
       allowList: allowList
         .split(',')
         .map((s) => s.trim())
@@ -551,7 +499,7 @@ function AddRulePanel({
                 <AlertTriangle size={16} className="text-red shrink-0 mt-0.5" />
                 <div>
                   <p className="text-xs font-medium text-red">
-                    This will allow anyone on Telegram to message this agent and use any tools it has access to.
+                    This will allow anyone to message this agent.
                   </p>
                   <div className="mt-2 flex gap-2">
                     <button
@@ -587,8 +535,7 @@ function AddRulePanel({
               htmlFor="rule-condition-ids"
               className="block font-[family-name:var(--font-mono)] text-xs uppercase tracking-wider text-muted mb-1"
             >
-              {conditionType === 'sender' ? 'Telegram user IDs' : 'Group chat IDs'}{' '}
-              (comma-separated)
+              {conditionType === 'sender' ? 'Sender IDs' : 'Group IDs'} (comma-separated)
             </label>
             <input
               id="rule-condition-ids"
@@ -598,38 +545,24 @@ function AddRulePanel({
               placeholder="123456789, 987654321"
               className="w-full border border-border bg-card-bg px-2 py-1.5 font-[family-name:var(--font-mono)] text-sm focus:border-accent focus:outline-none"
             />
-            {conditionType === 'sender' && (
-              <p className="mt-1.5 text-xs text-muted">
-                To find a user ID, message{' '}
-                <button
-                  type="button"
-                  onClick={() => window.api.openExternal('https://t.me/userinfobot')}
-                  className="inline-flex items-center gap-0.5 text-accent hover:underline"
-                >
-                  @userinfobot
-                  <ExternalLink size={10} />
-                </button>{' '}
-                on Telegram — it replies with your numeric ID.
-              </p>
-            )}
           </div>
         )}
 
         <div>
           <label
-            htmlFor="rule-agent-name"
+            htmlFor="rule-agent-id"
             className="block font-[family-name:var(--font-mono)] text-xs uppercase tracking-wider text-muted mb-1"
           >
             Route to agent
           </label>
           <select
-            id="rule-agent-name"
-            value={agentName}
-            onChange={(e) => setAgentName(e.target.value)}
+            id="rule-agent-id"
+            value={agentId}
+            onChange={(e) => setAgentId(e.target.value)}
             className="w-full rounded border border-border bg-card-bg px-2 py-1.5 text-sm focus:border-accent focus:outline-none"
           >
             {availableAgents.map((a) => (
-              <option key={a.agentName} value={a.agentName}>
+              <option key={a.agentId} value={a.agentId}>
                 {a.label}
               </option>
             ))}
@@ -646,7 +579,7 @@ function AddRulePanel({
                 htmlFor="rule-allow-list"
                 className="block font-[family-name:var(--font-mono)] text-xs uppercase tracking-wider text-muted mb-1"
               >
-                Only allow these senders (IDs, comma-separated — leave empty to allow all)
+                Only allow these senders (IDs, comma-separated)
               </label>
               <input
                 id="rule-allow-list"
@@ -662,7 +595,7 @@ function AddRulePanel({
                 htmlFor="rule-deny-list"
                 className="block font-[family-name:var(--font-mono)] text-xs uppercase tracking-wider text-muted mb-1"
               >
-                Always block these senders from this agent (IDs, comma-separated)
+                Always block these senders (IDs, comma-separated)
               </label>
               <input
                 id="rule-deny-list"
@@ -675,23 +608,6 @@ function AddRulePanel({
             </div>
           </div>
         </details>
-
-        <div>
-          <label
-            htmlFor="rule-label"
-            className="block font-[family-name:var(--font-mono)] text-xs uppercase tracking-wider text-muted mb-1"
-          >
-            Rule label (optional)
-          </label>
-          <input
-            id="rule-label"
-            type="text"
-            value={label}
-            onChange={(e) => setLabel(e.target.value)}
-            placeholder='e.g. "VIP Clients" or "Support Group"'
-            className="w-full rounded border border-border bg-card-bg px-2 py-1.5 text-sm focus:border-accent focus:outline-none"
-          />
-        </div>
       </div>
 
       <div className="mt-4 flex justify-end gap-2">
@@ -705,108 +621,12 @@ function AddRulePanel({
         <button
           type="button"
           onClick={handleAdd}
-          disabled={!agentName || (conditionType === 'default' && !everyoneConfirmed)}
+          disabled={!agentId || (conditionType === 'default' && !everyoneConfirmed)}
           className="bg-accent px-4 py-1.5 text-sm text-white hover:opacity-90 disabled:opacity-50"
         >
           Add rule
         </button>
       </div>
-    </div>
-  );
-}
-
-interface LogEntry {
-  timestamp: string;
-  senderId: string;
-  senderName: string;
-  text: string;
-  outcome: string;
-  agentName?: string;
-  blockReason?: string;
-}
-
-function MessageLog({ appId }: { appId: string }): JSX.Element {
-  const [entries, setEntries] = useState<LogEntry[]>([]);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    let mounted = true;
-    const load = () => {
-      window.api
-        .messagingAppsGetLog(appId, 100)
-        .then((logs) => {
-          if (mounted) setEntries(logs);
-        })
-        .catch(() => {})
-        .finally(() => {
-          if (mounted) setLoading(false);
-        });
-    };
-    load();
-    const interval = setInterval(load, 5000);
-    return () => {
-      mounted = false;
-      clearInterval(interval);
-    };
-  }, [appId]);
-
-  return (
-    <div className="bg-card-bg border border-border p-5">
-      <p className="font-[family-name:var(--font-mono)] text-[11px] uppercase tracking-[2px] text-accent mb-4">
-        Message Log
-      </p>
-      {loading && <p className="text-xs text-muted">Loading...</p>}
-      {!loading && entries.length === 0 && (
-        <p className="text-xs text-muted">No messages received yet.</p>
-      )}
-      {entries.length > 0 && (
-        <div className="flex flex-col gap-1.5 max-h-80 overflow-y-auto">
-          {entries.map((entry, i) => {
-            const time = new Date(entry.timestamp);
-            const timeStr = time.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-            const dateStr = time.toLocaleDateString([], { month: 'short', day: 'numeric' });
-            const isBlocked = entry.outcome === 'blocked' || entry.outcome === 'no_match';
-
-            return (
-              <div
-                key={`${entry.timestamp}-${i}`}
-                className="flex items-start gap-2 py-1.5 border-b border-border last:border-0"
-              >
-                <div className="shrink-0 text-right" style={{ width: 70 }}>
-                  <p className="font-[family-name:var(--font-mono)] text-[10px] text-muted">
-                    {dateStr}
-                  </p>
-                  <p className="font-[family-name:var(--font-mono)] text-[10px] text-muted">
-                    {timeStr}
-                  </p>
-                </div>
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-1.5">
-                    <span className="text-xs font-medium text-foreground truncate">
-                      {entry.senderName}
-                    </span>
-                    <span className="font-[family-name:var(--font-mono)] text-[10px] text-muted">
-                      {entry.senderId}
-                    </span>
-                  </div>
-                  <p className="text-xs text-muted truncate mt-0.5">{entry.text}</p>
-                </div>
-                <div className="shrink-0">
-                  {isBlocked ? (
-                    <span className="bg-red-tint text-red px-1.5 py-0.5 text-[9px] font-[family-name:var(--font-mono)] font-medium">
-                      {entry.blockReason === 'no_match' ? 'No match' : 'Blocked'}
-                    </span>
-                  ) : (
-                    <span className="bg-green-tint text-green px-1.5 py-0.5 text-[9px] font-[family-name:var(--font-mono)] font-medium">
-                      → {entry.agentName}
-                    </span>
-                  )}
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      )}
     </div>
   );
 }
