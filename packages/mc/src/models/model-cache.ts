@@ -3,6 +3,7 @@ import { readFile, unlink, writeFile } from 'node:fs/promises';
 import net from 'node:net';
 import { join } from 'node:path';
 import { AGENT_TOOL_NAMES } from '@dash/agent';
+import { findSupportedModel } from './supported-models.js';
 
 export interface CachedModel {
   value: string; // "provider/model-id"
@@ -14,29 +15,6 @@ interface CacheFile {
   fetchedAt: string;
   models: CachedModel[];
   tools?: string[];
-}
-
-/** Model IDs containing these substrings are not usable for agent chat. */
-const NON_CHAT_PATTERNS = [
-  'embedding',
-  'image',
-  'tts',
-  'whisper',
-  'dall-e',
-  'moderation',
-  'realtime',
-  'audio',
-  'transcription',
-];
-
-/** Dated variant pattern — e.g. "gpt-4o-2024-05-13" */
-const DATED_VARIANT = /\d{4}-\d{2}-\d{2}/;
-
-function isChatModel(modelId: string): boolean {
-  const lower = modelId.toLowerCase();
-  if (NON_CHAT_PATTERNS.some((p) => lower.includes(p))) return false;
-  if (DATED_VARIANT.test(modelId)) return false;
-  return true;
 }
 
 export class ModelCacheService {
@@ -70,7 +48,18 @@ export class ModelCacheService {
   }
 
   async save(models: CachedModel[], tools?: string[]): Promise<void> {
-    const sorted = [...models].sort((a, b) => a.label.localeCompare(b.label));
+    const providerOrder = ['anthropic', 'openai', 'google'];
+    const sorted = [...models].sort((a, b) => {
+      const pa = providerOrder.indexOf(a.provider);
+      const pb = providerOrder.indexOf(b.provider);
+      const providerDiff = (pa === -1 ? 99 : pa) - (pb === -1 ? 99 : pb);
+      if (providerDiff !== 0) return providerDiff;
+      const modelIdA = a.value.includes('/') ? a.value.split('/')[1] : a.value;
+      const modelIdB = b.value.includes('/') ? b.value.split('/')[1] : b.value;
+      const tierA = findSupportedModel(a.provider, modelIdA)?.tier ?? 99;
+      const tierB = findSupportedModel(b.provider, modelIdB)?.tier ?? 99;
+      return tierA - tierB;
+    });
     const existing = await this.loadCache();
     const cache: CacheFile = {
       fetchedAt: new Date().toISOString(),
@@ -126,7 +115,7 @@ export class ModelCacheService {
       for (const provider of response.data?.providers ?? []) {
         for (const [modelId, model] of Object.entries(provider.models ?? {})) {
           if (model.status === 'deprecated') continue;
-          if (!isChatModel(modelId)) continue;
+          if (!findSupportedModel(provider.id, modelId)) continue;
           models.push({
             value: `${provider.id}/${modelId}`,
             label: model.name || modelId,
