@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import type { AgentRegistry, ConversationStore, McConversation, McMessage } from '@dash/mc';
+import type { ConversationStore, McConversation, McMessage } from '@dash/mc';
 import WebSocket from 'ws';
 import type { McAgentEvent } from '../shared/ipc.js';
 
@@ -12,7 +12,6 @@ export class ChatService {
   private activeStreams = new Map<string, { ws: WebSocket; msgId: string }>();
 
   constructor(
-    private registry: AgentRegistry,
     private store: ConversationStore,
     private onEvent: (conversationId: string, event: McAgentEvent) => void,
     private onDone: (conversationId: string) => void,
@@ -24,15 +23,11 @@ export class ChatService {
     this.gatewayConnection = connection;
   }
 
-  async createConversation(deploymentId: string, agentName: string): Promise<McConversation> {
-    return this.store.create(deploymentId, agentName);
+  async createConversation(agentId: string): Promise<McConversation> {
+    return this.store.create(agentId);
   }
 
-  async listConversations(deploymentId: string): Promise<McConversation[]> {
-    return this.store.list(deploymentId);
-  }
-
-  async listAllConversations(): Promise<McConversation[]> {
+  async listConversations(): Promise<McConversation[]> {
     return this.store.listAll();
   }
 
@@ -61,12 +56,6 @@ export class ChatService {
       throw new Error(`Conversation "${conversationId}" already has an active stream`);
     }
 
-    const deployment = await this.registry.get(conversation.deploymentId);
-    if (!deployment) throw new Error(`Deployment "${conversation.deploymentId}" not found`);
-    if (deployment.status !== 'running') {
-      throw new Error(`Deployment "${conversation.deploymentId}" is not running`);
-    }
-
     const userMessage: McMessage = {
       id: randomUUID(),
       role: 'user',
@@ -89,7 +78,7 @@ export class ChatService {
         JSON.stringify({
           id: msgId,
           type: 'message',
-          agent: conversation.agentName,
+          agentId: conversation.agentId,
           channelId: 'mission-control',
           conversationId,
           text,

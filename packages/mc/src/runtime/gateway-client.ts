@@ -45,6 +45,7 @@ export interface GatewayHealthResponse {
   startedAt: string;
   agents: number;
   channels: number;
+  mcpServers?: Array<{ name: string; status: string }>;
 }
 
 export class GatewayManagementClient {
