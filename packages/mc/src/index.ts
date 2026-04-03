@@ -40,6 +40,13 @@ export { getPlatformDataDir } from './platform-paths.js';
 export type { GatewayOptions } from './runtime/process.js';
 export { ModelCacheService } from './models/model-cache.js';
 export type { CachedModel } from './models/model-cache.js';
+export {
+  SUPPORTED_MODELS,
+  findSupportedModel,
+  isModelSupported,
+  globToRegex,
+} from './models/supported-models.js';
+export type { SupportedModelEntry } from './models/supported-models.js';
 export { GatewayManagementClient } from './runtime/gateway-client.js';
 export type {
   GatewayChannelRoutingRule,
