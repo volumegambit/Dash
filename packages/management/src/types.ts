@@ -2,6 +2,7 @@ export interface HealthResponse {
   status: 'healthy';
   uptime: number;
   version: string;
+  mcpServers?: Array<{ name: string; status: string }>;
 }
 
 export interface AgentInfo {
