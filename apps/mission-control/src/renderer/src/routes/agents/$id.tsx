@@ -21,14 +21,8 @@ type TabId = 'overview' | 'configuration' | 'channels';
 export function AgentDetail(): JSX.Element {
   const { id } = Route.useParams();
   const navigate = useNavigate();
-  const {
-    agents,
-    loadAgents,
-    disableAgent,
-    enableAgent,
-    removeAgent,
-    updateAgent,
-  } = useAgentsStore();
+  const { agents, loadAgents, disableAgent, enableAgent, removeAgent, updateAgent } =
+    useAgentsStore();
   const { channels, loadChannels } = useChannelsStore();
   const [loading, setLoading] = useState(true);
 
@@ -254,10 +248,7 @@ export function AgentDetail(): JSX.Element {
       {/* Tab content */}
       <div className="flex-1 p-8 overflow-y-auto">
         {activeTab === 'overview' && (
-          <OverviewTab
-            agent={agent}
-            connectedChannels={connectedChannels}
-          />
+          <OverviewTab agent={agent} connectedChannels={connectedChannels} />
         )}
         {activeTab === 'configuration' && (
           <AgentConfigTab
@@ -372,9 +363,7 @@ function OverviewTab({
 // Channels tab
 // ---------------------------------------------------------------------------
 
-function ChannelsTab({
-  connectedChannels,
-}: { connectedChannels: GatewayChannel[] }): JSX.Element {
+function ChannelsTab({ connectedChannels }: { connectedChannels: GatewayChannel[] }): JSX.Element {
   if (connectedChannels.length === 0) {
     return (
       <div className="py-12 flex flex-col items-center gap-3 text-center">

@@ -27,7 +27,9 @@ function makeChannel(overrides?: Partial<GatewayChannel>): GatewayChannel {
     name: 'my-channel',
     adapter: 'telegram',
     globalDenyList: [],
-    routing: [{ condition: { type: 'default' }, agentId: 'agent-123', allowList: [], denyList: [] }],
+    routing: [
+      { condition: { type: 'default' }, agentId: 'agent-123', allowList: [], denyList: [] },
+    ],
     registeredAt: '2026-04-01T00:00:00Z',
     ...overrides,
   };
@@ -111,7 +113,9 @@ describe('GatewayManagementClient', () => {
       mockError(409, 'Agent already exists');
 
       const client = new GatewayManagementClient(BASE_URL, TOKEN);
-      await expect(client.createAgent(req)).rejects.toThrow('Gateway createAgent failed: 409 Agent already exists');
+      await expect(client.createAgent(req)).rejects.toThrow(
+        'Gateway createAgent failed: 409 Agent already exists',
+      );
     });
   });
 
@@ -159,23 +163,24 @@ describe('GatewayManagementClient', () => {
       const client = new GatewayManagementClient(BASE_URL, TOKEN);
       await client.getAgent('my agent');
 
-      expect(fetchSpy).toHaveBeenCalledWith(
-        `${BASE_URL}/agents/my%20agent`,
-        expect.anything(),
-      );
+      expect(fetchSpy).toHaveBeenCalledWith(`${BASE_URL}/agents/my%20agent`, expect.anything());
     });
 
     it('throws on 404', async () => {
       mockError(404, 'not found');
 
       const client = new GatewayManagementClient(BASE_URL, TOKEN);
-      await expect(client.getAgent('missing')).rejects.toThrow('Gateway getAgent failed: 404 not found');
+      await expect(client.getAgent('missing')).rejects.toThrow(
+        'Gateway getAgent failed: 404 not found',
+      );
     });
   });
 
   describe('updateAgent()', () => {
     it('calls PUT /agents/:id with patch body and returns updated agent', async () => {
-      const updated = makeAgent({ config: { model: 'claude-opus-4-20250514', systemPrompt: 'Updated.' } });
+      const updated = makeAgent({
+        config: { model: 'claude-opus-4-20250514', systemPrompt: 'Updated.' },
+      });
       mockOk(updated);
 
       const client = new GatewayManagementClient(BASE_URL, TOKEN);
@@ -197,7 +202,9 @@ describe('GatewayManagementClient', () => {
       mockError(404);
 
       const client = new GatewayManagementClient(BASE_URL, TOKEN);
-      await expect(client.updateAgent('missing', {})).rejects.toThrow('Gateway updateAgent failed: 404');
+      await expect(client.updateAgent('missing', {})).rejects.toThrow(
+        'Gateway updateAgent failed: 404',
+      );
     });
   });
 
@@ -221,7 +228,9 @@ describe('GatewayManagementClient', () => {
       mockError(404);
 
       const client = new GatewayManagementClient(BASE_URL, TOKEN);
-      await expect(client.removeAgent('missing')).rejects.toThrow('Gateway removeAgent failed: 404');
+      await expect(client.removeAgent('missing')).rejects.toThrow(
+        'Gateway removeAgent failed: 404',
+      );
     });
   });
 
@@ -245,7 +254,9 @@ describe('GatewayManagementClient', () => {
       mockError(404);
 
       const client = new GatewayManagementClient(BASE_URL, TOKEN);
-      await expect(client.disableAgent('missing')).rejects.toThrow('Gateway disableAgent failed: 404');
+      await expect(client.disableAgent('missing')).rejects.toThrow(
+        'Gateway disableAgent failed: 404',
+      );
     });
   });
 
@@ -269,7 +280,9 @@ describe('GatewayManagementClient', () => {
       mockError(404);
 
       const client = new GatewayManagementClient(BASE_URL, TOKEN);
-      await expect(client.enableAgent('missing')).rejects.toThrow('Gateway enableAgent failed: 404');
+      await expect(client.enableAgent('missing')).rejects.toThrow(
+        'Gateway enableAgent failed: 404',
+      );
     });
   });
 
@@ -284,7 +297,9 @@ describe('GatewayManagementClient', () => {
         name: 'my-channel',
         adapter: 'telegram',
         globalDenyList: ['spammer'],
-        routing: [{ condition: { type: 'default' }, agentId: 'agent-123', allowList: [], denyList: [] }],
+        routing: [
+          { condition: { type: 'default' }, agentId: 'agent-123', allowList: [], denyList: [] },
+        ],
       });
 
       expect(fetchSpy).toHaveBeenCalledWith(
@@ -354,10 +369,7 @@ describe('GatewayManagementClient', () => {
       const client = new GatewayManagementClient(BASE_URL, TOKEN);
       await client.getChannel('my channel');
 
-      expect(fetchSpy).toHaveBeenCalledWith(
-        `${BASE_URL}/channels/my%20channel`,
-        expect.anything(),
-      );
+      expect(fetchSpy).toHaveBeenCalledWith(`${BASE_URL}/channels/my%20channel`, expect.anything());
     });
 
     it('throws on 404', async () => {
@@ -390,7 +402,9 @@ describe('GatewayManagementClient', () => {
       mockError(404);
 
       const client = new GatewayManagementClient(BASE_URL, TOKEN);
-      await expect(client.updateChannel('missing', {})).rejects.toThrow('Gateway updateChannel failed: 404');
+      await expect(client.updateChannel('missing', {})).rejects.toThrow(
+        'Gateway updateChannel failed: 404',
+      );
     });
   });
 
@@ -414,7 +428,9 @@ describe('GatewayManagementClient', () => {
       mockError(404);
 
       const client = new GatewayManagementClient(BASE_URL, TOKEN);
-      await expect(client.removeChannel('missing')).rejects.toThrow('Gateway removeChannel failed: 404');
+      await expect(client.removeChannel('missing')).rejects.toThrow(
+        'Gateway removeChannel failed: 404',
+      );
     });
   });
 
@@ -442,7 +458,9 @@ describe('GatewayManagementClient', () => {
       mockError(400, 'invalid key');
 
       const client = new GatewayManagementClient(BASE_URL, TOKEN);
-      await expect(client.setCredential('', 'val')).rejects.toThrow('Gateway setCredential failed: 400 invalid key');
+      await expect(client.setCredential('', 'val')).rejects.toThrow(
+        'Gateway setCredential failed: 400 invalid key',
+      );
     });
   });
 
@@ -500,7 +518,9 @@ describe('GatewayManagementClient', () => {
       mockError(404);
 
       const client = new GatewayManagementClient(BASE_URL, TOKEN);
-      await expect(client.removeCredential('missing')).rejects.toThrow('Gateway removeCredential failed: 404');
+      await expect(client.removeCredential('missing')).rejects.toThrow(
+        'Gateway removeCredential failed: 404',
+      );
     });
   });
 });

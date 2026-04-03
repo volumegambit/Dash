@@ -1,5 +1,5 @@
-import { MousePointerClick, Layers, Timer } from 'lucide-react';
 import { MCDeployVisual } from '@/components/visuals/MCDeployVisual';
+import { Layers, MousePointerClick, Timer } from 'lucide-react';
 
 const BULLETS = [
   {
@@ -34,7 +34,8 @@ export function DeployAndRun() {
           </h2>
 
           <p className="text-[18px] text-text-secondary leading-relaxed">
-            Deploy autonomous AI agents from Mission Control — no terminal needed. Configure, launch, and manage your entire squad from one dashboard.
+            Deploy autonomous AI agents from Mission Control — no terminal needed. Configure,
+            launch, and manage your entire squad from one dashboard.
           </p>
 
           {/* Feature bullets */}
@@ -46,7 +47,9 @@ export function DeployAndRun() {
                 </div>
                 <div className="flex flex-col gap-1">
                   <span className="text-[16px] font-semibold text-white">{title}</span>
-                  <span className="text-[14px] text-text-secondary leading-relaxed">{description}</span>
+                  <span className="text-[14px] text-text-secondary leading-relaxed">
+                    {description}
+                  </span>
                 </div>
               </div>
             ))}

@@ -1,6 +1,6 @@
-import { Brain, Sparkles, Zap } from 'lucide-react';
-import { Card, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
+import { Card, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Brain, Sparkles, Zap } from 'lucide-react';
 
 const PROVIDERS = [
   {

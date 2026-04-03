@@ -200,10 +200,7 @@ export class ManagementClient {
   }
 
   async mcpGetServer(name: string): Promise<McpServerInfo> {
-    return this.request<McpServerInfo>(
-      'GET',
-      `/runtime/mcp/servers/${encodeURIComponent(name)}`,
-    );
+    return this.request<McpServerInfo>('GET', `/runtime/mcp/servers/${encodeURIComponent(name)}`);
   }
 
   async mcpAddServer(config: McpAddServerRequest): Promise<McpAddServerResponse> {

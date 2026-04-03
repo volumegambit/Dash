@@ -24,8 +24,7 @@ const api: MissionControlAPI = {
   channelsCreate: (config) => ipcRenderer.invoke('channels:create', config),
   channelsUpdate: (name, patch) => ipcRenderer.invoke('channels:update', name, patch),
   channelsRemove: (name) => ipcRenderer.invoke('channels:remove', name),
-  channelsVerifyTelegramToken: (token) =>
-    ipcRenderer.invoke('channels:verifyTelegramToken', token),
+  channelsVerifyTelegramToken: (token) => ipcRenderer.invoke('channels:verifyTelegramToken', token),
 
   // Credentials
   credentialsSet: (key, value) => ipcRenderer.invoke('credentials:set', key, value),

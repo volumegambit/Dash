@@ -58,9 +58,7 @@ export function UseCases() {
                 <h3 className="text-[28px] font-bold text-text-dark tracking-tight">
                   {useCase.title}
                 </h3>
-                <p className="text-[16px] text-text-muted leading-relaxed">
-                  {useCase.description}
-                </p>
+                <p className="text-[16px] text-text-muted leading-relaxed">{useCase.description}</p>
                 <div className="flex flex-wrap gap-2 pt-2">
                   {useCase.tags.map((tag) => (
                     <Badge key={tag} variant="tag" size="sm">

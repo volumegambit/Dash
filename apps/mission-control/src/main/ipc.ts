@@ -5,7 +5,7 @@ import type { SkillsConfig } from '@dash/management';
 import { ManagementClient } from '@dash/management';
 import {
   ConversationStore,
-  GatewayManagementClient,
+  type GatewayManagementClient,
   GatewayProcess,
   GatewayStateStore,
   ModelCacheService,
@@ -13,7 +13,12 @@ import {
   defaultProcessSpawner,
   getPlatformDataDir,
 } from '@dash/mc';
-import type { CreateAgentRequest, GatewayChannel, GatewayProcessOptions, ProcessSpawner } from '@dash/mc';
+import type {
+  CreateAgentRequest,
+  GatewayChannel,
+  GatewayProcessOptions,
+  ProcessSpawner,
+} from '@dash/mc';
 import { app, dialog, ipcMain, shell } from 'electron';
 import type { BrowserWindow } from 'electron';
 import { ChatService } from './chat-service.js';
@@ -360,7 +365,9 @@ export async function registerIpcHandlers(
     const client = await getClient(gw);
     await client.setCredential(key, value);
     // Refresh model cache when a provider key changes
-    getModelCache().refresh().catch(() => {});
+    getModelCache()
+      .refresh()
+      .catch(() => {});
   });
 
   ipcMain.handle('credentials:list', async () => {
@@ -372,7 +379,9 @@ export async function registerIpcHandlers(
     const client = await getClient(gw);
     await client.removeCredential(key);
     // Refresh model cache when a provider key changes
-    getModelCache().refresh().catch(() => {});
+    getModelCache()
+      .refresh()
+      .catch(() => {});
   });
 
   // -----------------------------------------------------------------------
@@ -390,7 +399,9 @@ export async function registerIpcHandlers(
       await client.setCredential(`openai-codex-refresh:${keyName}`, result.refreshToken);
       await client.setCredential(`openai-codex-expires:${keyName}`, String(result.expiresAt));
 
-      getModelCache().refresh().catch(() => {});
+      getModelCache()
+        .refresh()
+        .catch(() => {});
       return { success: true };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -441,7 +452,9 @@ export async function registerIpcHandlers(
         const client = await getClient(gw);
         await client.setCredential(`anthropic-api-key:${keyName}`, apiKey);
 
-        getModelCache().refresh().catch(() => {});
+        getModelCache()
+          .refresh()
+          .catch(() => {});
         return { success: true };
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
@@ -455,9 +468,7 @@ export async function registerIpcHandlers(
   // Chat
   // -----------------------------------------------------------------------
 
-  ipcMain.handle('chat:listConversations', () =>
-    getChatService(getWindow).listConversations(),
-  );
+  ipcMain.handle('chat:listConversations', () => getChatService(getWindow).listConversations());
 
   ipcMain.handle('chat:createConversation', (_event, agentId: string) =>
     getChatService(getWindow).createConversation(agentId),
@@ -528,10 +539,8 @@ export async function registerIpcHandlers(
     (await getSkillsClient()).skillsConfig(agentId),
   );
 
-  ipcMain.handle(
-    'skills:updateConfig',
-    async (_e, agentId: string, config: SkillsConfig) =>
-      (await getSkillsClient()).updateSkillsConfig(agentId, config),
+  ipcMain.handle('skills:updateConfig', async (_e, agentId: string, config: SkillsConfig) =>
+    (await getSkillsClient()).updateSkillsConfig(agentId, config),
   );
 
   // -----------------------------------------------------------------------

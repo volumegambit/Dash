@@ -1,4 +1,4 @@
-import { LayoutDashboard, Rocket, MessageSquare, Settings } from 'lucide-react';
+import { LayoutDashboard, MessageSquare, Rocket, Settings } from 'lucide-react';
 
 export function MCDeployVisual() {
   return (
@@ -27,7 +27,9 @@ export function MCDeployVisual() {
 
           {/* Agent Name field */}
           <div className="flex flex-col gap-1.5">
-            <span className="font-mono text-[10px] text-text-muted uppercase tracking-wider">Agent Name</span>
+            <span className="font-mono text-[10px] text-text-muted uppercase tracking-wider">
+              Agent Name
+            </span>
             <div className="h-8 bg-surface border border-surface-border px-3 flex items-center">
               <span className="text-xs text-text-secondary">Research Assistant</span>
             </div>
@@ -35,7 +37,9 @@ export function MCDeployVisual() {
 
           {/* Model field */}
           <div className="flex flex-col gap-1.5">
-            <span className="font-mono text-[10px] text-text-muted uppercase tracking-wider">Model</span>
+            <span className="font-mono text-[10px] text-text-muted uppercase tracking-wider">
+              Model
+            </span>
             <div className="h-8 bg-surface border border-surface-border px-3 flex items-center">
               <span className="text-xs text-text-secondary">Claude 3.5 Sonnet</span>
             </div>
@@ -43,7 +47,9 @@ export function MCDeployVisual() {
 
           {/* Tools field */}
           <div className="flex flex-col gap-1.5">
-            <span className="font-mono text-[10px] text-text-muted uppercase tracking-wider">Tools</span>
+            <span className="font-mono text-[10px] text-text-muted uppercase tracking-wider">
+              Tools
+            </span>
             <div className="flex items-center gap-2">
               <span className="bg-brand/20 border border-brand px-2 py-1 text-[10px] text-brand">
                 Web Search
@@ -58,7 +64,10 @@ export function MCDeployVisual() {
           </div>
 
           {/* Deploy button */}
-          <button className="w-full bg-brand text-white text-xs font-semibold py-2 flex items-center justify-center gap-1.5 mt-auto">
+          <button
+            type="button"
+            className="w-full bg-brand text-white text-xs font-semibold py-2 flex items-center justify-center gap-1.5 mt-auto"
+          >
             <Rocket size={12} />
             Deploy Agent
           </button>

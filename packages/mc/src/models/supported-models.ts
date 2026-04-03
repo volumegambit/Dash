@@ -82,11 +82,7 @@ const GOOGLE: SupportedModelEntry[] = [
 // ---------------------------------------------------------------------------
 // Exports
 // ---------------------------------------------------------------------------
-export const SUPPORTED_MODELS: SupportedModelEntry[] = [
-  ...ANTHROPIC,
-  ...OPENAI,
-  ...GOOGLE,
-];
+export const SUPPORTED_MODELS: SupportedModelEntry[] = [...ANTHROPIC, ...OPENAI, ...GOOGLE];
 
 /**
  * Convert a glob pattern (with `*` wildcards) to a RegExp.
@@ -101,10 +97,7 @@ export function globToRegex(pattern: string): RegExp {
  * Check if a model ID is supported for the given provider.
  * Returns the matching entry (with tier info) or null.
  */
-export function findSupportedModel(
-  provider: string,
-  modelId: string,
-): SupportedModelEntry | null {
+export function findSupportedModel(provider: string, modelId: string): SupportedModelEntry | null {
   for (const entry of SUPPORTED_MODELS) {
     if (entry.provider !== provider) continue;
     if (globToRegex(entry.pattern).test(modelId)) return entry;

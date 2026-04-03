@@ -1,5 +1,5 @@
-import type { GatewayChannel } from '../../../shared/ipc.js';
 import { create } from 'zustand';
+import type { GatewayChannel } from '../../../shared/ipc.js';
 
 interface ChannelsState {
   channels: GatewayChannel[];

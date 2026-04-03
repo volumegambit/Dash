@@ -1,9 +1,9 @@
-import { serve } from '@hono/node-server';
-import { Hono } from 'hono';
-import { cors } from 'hono/cors';
-import Database from 'better-sqlite3';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
+import { serve } from '@hono/node-server';
+import Database from 'better-sqlite3';
+import { Hono } from 'hono';
+import { cors } from 'hono/cors';
 
 const DB_PATH = process.env.DB_PATH ?? 'data/waitlist.db';
 const PORT = Number(process.env.PORT ?? 9300);
@@ -56,9 +56,7 @@ app.post('/api/waitlist', async (c) => {
 
 // GET /api/waitlist
 app.get('/api/waitlist', (c) => {
-  const entries = db
-    .prepare('SELECT * FROM waitlist ORDER BY created_at DESC')
-    .all();
+  const entries = db.prepare('SELECT * FROM waitlist ORDER BY created_at DESC').all();
   return c.json({ count: entries.length, entries });
 });
 

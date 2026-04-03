@@ -148,8 +148,11 @@ function AddConnectorModal({
         ) : (
           <div className="space-y-4 px-6 py-4">
             <div>
-              <label className="mb-1 block text-xs font-medium text-muted">Name</label>
+              <label htmlFor="connector-name" className="mb-1 block text-xs font-medium text-muted">
+                Name
+              </label>
               <input
+                id="connector-name"
                 type="text"
                 value={name}
                 onChange={(e) => setName(e.target.value)}
@@ -159,8 +162,11 @@ function AddConnectorModal({
             </div>
 
             <div>
-              <label className="mb-1 block text-xs font-medium text-muted">Type</label>
+              <label htmlFor="connector-type" className="mb-1 block text-xs font-medium text-muted">
+                Type
+              </label>
               <select
+                id="connector-type"
                 value={transportType}
                 onChange={(e) => setTransportType(e.target.value as typeof transportType)}
                 className="w-full border border-border bg-card-bg px-3 py-2 text-sm text-foreground focus:border-accent focus:outline-none"
@@ -174,8 +180,14 @@ function AddConnectorModal({
             {transportType === 'stdio' ? (
               <>
                 <div>
-                  <label className="mb-1 block text-xs font-medium text-muted">Command</label>
+                  <label
+                    htmlFor="connector-command"
+                    className="mb-1 block text-xs font-medium text-muted"
+                  >
+                    Command
+                  </label>
                   <input
+                    id="connector-command"
                     type="text"
                     value={command}
                     onChange={(e) => setCommand(e.target.value)}
@@ -184,8 +196,14 @@ function AddConnectorModal({
                   />
                 </div>
                 <div>
-                  <label className="mb-1 block text-xs font-medium text-muted">Arguments</label>
+                  <label
+                    htmlFor="connector-args"
+                    className="mb-1 block text-xs font-medium text-muted"
+                  >
+                    Arguments
+                  </label>
                   <input
+                    id="connector-args"
                     type="text"
                     value={args}
                     onChange={(e) => setArgs(e.target.value)}
@@ -196,8 +214,14 @@ function AddConnectorModal({
               </>
             ) : (
               <div>
-                <label className="mb-1 block text-xs font-medium text-muted">URL</label>
+                <label
+                  htmlFor="connector-url"
+                  className="mb-1 block text-xs font-medium text-muted"
+                >
+                  URL
+                </label>
                 <input
+                  id="connector-url"
                   type="text"
                   value={url}
                   onChange={(e) => setUrl(e.target.value)}
@@ -208,10 +232,12 @@ function AddConnectorModal({
             )}
 
             <div>
+              {/* biome-ignore lint/a11y/noLabelWithoutControl: label for dynamic env var group, not a single input */}
               <label className="mb-1 block text-xs font-medium text-muted">
                 Environment Variables
               </label>
               {envPairs.map((pair, i) => (
+                // biome-ignore lint/suspicious/noArrayIndexKey: env pairs have no stable unique key
                 <div key={`env-${i}`} className="mb-1 flex gap-2">
                   <input
                     type="text"
@@ -398,7 +424,7 @@ function AllowlistSection(): JSX.Element {
             <ul className="mb-3 space-y-1">
               {allowlist.map((pattern, i) => (
                 <li
-                  key={`al-${i}`}
+                  key={pattern}
                   className="flex items-center justify-between bg-sidebar-hover px-3 py-1.5 text-sm"
                 >
                   <code className="font-[family-name:var(--font-mono)] text-xs">{pattern}</code>

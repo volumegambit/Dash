@@ -30,14 +30,7 @@ describe('parseFlags', () => {
 
   it('parses multiple flags', () => {
     expect(
-      parseFlags([
-        '--management-port',
-        '9400',
-        '--token',
-        'my-token',
-        '--data-dir',
-        '/tmp/data',
-      ]),
+      parseFlags(['--management-port', '9400', '--token', 'my-token', '--data-dir', '/tmp/data']),
     ).toEqual({
       managementPort: 9400,
       token: 'my-token',
