@@ -39,6 +39,7 @@ export interface GatewayHealthResponse {
   startedAt: string;
   agents: number;
   channels: number;
+  mcpServers?: Array<{ name: string; status: string }>;
 }
 
 export interface GatewayManagementOptions {
@@ -82,6 +83,9 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
     if (runtime) {
       health.pool = runtime.stats();
       health.runtimeAgents = runtime.registry.list().length;
+    }
+    if (options.mcpDeps?.manager) {
+      health.mcpServers = options.mcpDeps.manager.getServerStatuses();
     }
     return c.json(health);
   });
