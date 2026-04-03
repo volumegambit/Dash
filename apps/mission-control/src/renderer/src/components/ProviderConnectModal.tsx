@@ -69,7 +69,10 @@ export function ProviderConnectModal({
         aria-modal="true"
         className="w-full max-w-md rounded-lg bg-background border border-border p-6"
         onClick={(e) => e.stopPropagation()}
-        onKeyDown={(e) => e.stopPropagation()}
+        onKeyDown={(e) => {
+          if (e.key === 'Escape') onClose();
+          e.stopPropagation();
+        }}
       >
         <div className="mb-4 flex items-start justify-between">
           <div className="flex items-center gap-2">

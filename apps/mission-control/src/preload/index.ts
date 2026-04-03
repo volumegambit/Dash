@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron';
-import type { McAgentEvent, MissionControlAPI } from '../shared/ipc.js';
+import type { CredentialStatusChange, McAgentEvent, MissionControlAPI } from '../shared/ipc.js';
 
 const api: MissionControlAPI = {
   getVersion: () => ipcRenderer.invoke('app:getVersion'),
@@ -183,6 +183,28 @@ const api: MissionControlAPI = {
     ipcRenderer.on('credentials:pushFailed', handler);
     return () => ipcRenderer.removeListener('credentials:pushFailed', handler);
   },
+
+  onCredentialStatusChanged: (callback: (change: CredentialStatusChange) => void): (() => void) => {
+    const handler = (_: Electron.IpcRendererEvent, change: CredentialStatusChange) =>
+      callback(change);
+    ipcRenderer.on('credentials:statusChanged', handler);
+    return () => ipcRenderer.removeListener('credentials:statusChanged', handler);
+  },
+
+  credentialsGetAffectedAgents: (provider: string, keyName: string) =>
+    ipcRenderer.invoke('credentials:getAffectedAgents', provider, keyName),
+
+  credentialsReassignKey: (
+    provider: string,
+    assignments: { deploymentId: string; newKeyName: string | null }[],
+  ) => ipcRenderer.invoke('credentials:reassignKey', provider, assignments),
+
+  deploymentsUpdateCredentialStatus: (
+    id: string,
+    status: string,
+    provider?: string,
+    detail?: string,
+  ) => ipcRenderer.invoke('deployments:updateCredentialStatus', id, status, provider, detail),
 
   // Connectors (MCP)
   mcpListConnectors: () => ipcRenderer.invoke('mcp:listConnectors'),

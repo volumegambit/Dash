@@ -1,7 +1,8 @@
 import { providerSecretKey } from '@dash/mc/provider-keys';
 import { createFileRoute } from '@tanstack/react-router';
-import { KeyRound, Loader, Lock, LogIn, Pencil, Trash2, X } from 'lucide-react';
+import { KeyRound, Loader, Lock, LogIn, Plus, Trash2, X } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
+import { KeyDeleteModal } from '../components/KeyDeleteModal.js';
 import { ProviderConnectModal } from '../components/ProviderConnectModal.js';
 import { PROVIDERS, type Provider } from '../components/providers.js';
 
@@ -51,6 +52,12 @@ export function AiProviders(): JSX.Element {
   const [claudeOAuthName, setClaudeOAuthName] = useState('');
   const [claudeOAuthCode, setClaudeOAuthCode] = useState('');
   const [claudeOAuthError, setClaudeOAuthError] = useState<string | null>(null);
+  const [deleteModal, setDeleteModal] = useState<{
+    provider: string;
+    keyName: string;
+    affectedAgents: { deploymentId: string; name: string }[];
+    availableKeys: string[];
+  } | null>(null);
 
   const loadKeys = useCallback(async (): Promise<void> => {
     const unlocked = await window.api.secretsIsUnlocked();
@@ -182,6 +189,33 @@ export function AiProviders(): JSX.Element {
     }
   };
 
+  const handleDisconnectRequest = async (provider: Provider, keyName: string): Promise<void> => {
+    const affected = await window.api.credentialsGetAffectedAgents(provider, keyName);
+    if (affected.length === 0) {
+      await handleDisconnect(provider, keyName);
+      return;
+    }
+    const allProviderKeys = (providerKeys[provider] ?? [])
+      .map((k) => k.name)
+      .filter((name) => name !== keyName);
+    setDeleteModal({
+      provider,
+      keyName,
+      affectedAgents: affected,
+      availableKeys: allProviderKeys,
+    });
+    setDisconnectConfirm(null);
+  };
+
+  const handleDeleteConfirm = async (
+    assignments: { deploymentId: string; newKeyName: string | null }[],
+  ): Promise<void> => {
+    if (!deleteModal) return;
+    await window.api.credentialsReassignKey(deleteModal.provider, assignments);
+    await handleDisconnect(deleteModal.provider as Provider, deleteModal.keyName);
+    setDeleteModal(null);
+  };
+
   const handleOAuthLogin = async (provider: OAuthProvider, keyName: string): Promise<void> => {
     setOauthLoading(provider);
     setOauthError(null);
@@ -301,7 +335,7 @@ export function AiProviders(): JSX.Element {
                       </button>
                     )}
 
-                    {/* Edit button */}
+                    {/* Add Key button */}
                     <button
                       type="button"
                       onClick={() =>
@@ -310,10 +344,11 @@ export function AiProviders(): JSX.Element {
                           keyName: hasKeys ? undefined : 'default',
                         })
                       }
-                      className="text-muted hover:text-foreground transition-colors"
-                      aria-label={`Edit ${p.name}`}
+                      className="inline-flex items-center gap-1 text-xs text-muted hover:text-foreground transition-colors"
+                      aria-label={`Add key for ${p.name}`}
                     >
-                      <Pencil size={15} />
+                      <Plus size={14} />
+                      Add Key
                     </button>
 
                     {/* Delete button */}
@@ -331,7 +366,6 @@ export function AiProviders(): JSX.Element {
                     )}
                   </div>
                 </div>
-
 
                 {/* OAuth error */}
                 {oauthError?.provider === p.id && (
@@ -410,7 +444,7 @@ export function AiProviders(): JSX.Element {
                                 <span className="text-xs text-muted">Remove key?</span>
                                 <button
                                   type="button"
-                                  onClick={() => handleDisconnect(p.id, entry.name)}
+                                  onClick={() => handleDisconnectRequest(p.id, entry.name)}
                                   className="text-xs text-red hover:underline"
                                 >
                                   Yes, remove
@@ -640,6 +674,17 @@ export function AiProviders(): JSX.Element {
             </form>
           </div>
         </div>
+      )}
+
+      {deleteModal && (
+        <KeyDeleteModal
+          provider={deleteModal.provider}
+          keyName={deleteModal.keyName}
+          affectedAgents={deleteModal.affectedAgents}
+          availableKeys={deleteModal.availableKeys}
+          onConfirm={handleDeleteConfirm}
+          onClose={() => setDeleteModal(null)}
+        />
       )}
     </div>
   );
