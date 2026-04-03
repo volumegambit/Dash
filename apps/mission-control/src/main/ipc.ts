@@ -1,46 +1,32 @@
-import { randomUUID } from 'node:crypto';
-import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
-import { mkdir, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { existsSync } from 'node:fs';
+import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { SkillsConfig } from '@dash/management';
 import { ManagementClient } from '@dash/management';
 import {
-  AgentRegistry,
   ConversationStore,
-  DeploymentStartupError,
-  EncryptedSecretStore,
   GatewayManagementClient,
+  GatewayProcess,
   GatewayStateStore,
-  MessagingAppRegistry,
   ModelCacheService,
-  ProcessRuntime,
   SettingsStore,
   defaultProcessSpawner,
   getPlatformDataDir,
-  parseProviderSecretKey,
-  providerSecretKey,
 } from '@dash/mc';
-import type { MessagingApp, ProcessSpawner } from '@dash/mc';
-import { app, dialog, ipcMain, safeStorage, shell } from 'electron';
+import type { CreateAgentRequest, GatewayChannel, GatewayProcessOptions, ProcessSpawner } from '@dash/mc';
+import { app, dialog, ipcMain, shell } from 'electron';
 import type { BrowserWindow } from 'electron';
-import type { DeployWithConfigOptions } from '../shared/ipc.js';
 import { ChatService } from './chat-service.js';
 import { completeClaudeOAuth, prepareClaudeOAuth } from './claude-auth.js';
 import { refreshCodexToken, startCodexOAuth } from './codex-auth.js';
-import { pushCredentialsWithRetry } from './credential-push-retry.js';
 import { GatewayPoller } from './gateway-poller.js';
 
 const DATA_DIR = process.env.MC_DATA_DIR || getPlatformDataDir('dash');
-const SESSION_KEY_PATH = join(DATA_DIR, 'session.key');
 
 let chatService: ChatService | undefined;
-let secretStore: EncryptedSecretStore | undefined;
-let registry: AgentRegistry | undefined;
-let runtime: ProcessRuntime | undefined;
-let messagingAppRegistry: MessagingAppRegistry | undefined;
 let gatewayPoller: GatewayPoller | undefined;
 let modelCache: ModelCacheService | undefined;
+let gatewayProcess: GatewayProcess | undefined;
 
 function getModelCache(): ModelCacheService {
   if (!modelCache) {
@@ -49,68 +35,15 @@ function getModelCache(): ModelCacheService {
   return modelCache;
 }
 
-async function getProviderApiKeys(): Promise<Record<string, string>> {
-  const store = getSecretStore();
-  const keys: Record<string, string> = {};
-  try {
-    const allKeys = await store.list();
-    for (const secretKey of allKeys) {
-      const parsed = parseProviderSecretKey(secretKey);
-      if (!parsed) continue;
-      // Only use the 'default' key per provider for discovery
-      if (parsed.keyName !== 'default') continue;
-      const value = await store.get(secretKey);
-      if (value) keys[parsed.provider] = value;
-    }
-  } catch {
-    // Secret store may be locked — return empty
+function getGatewayProcess(options: GatewayProcessOptions): GatewayProcess {
+  if (!gatewayProcess) {
+    gatewayProcess = new GatewayProcess(options);
   }
-  return keys;
+  return gatewayProcess;
 }
 
-function getMessagingAppRegistry(): MessagingAppRegistry {
-  if (!messagingAppRegistry) {
-    messagingAppRegistry = new MessagingAppRegistry(DATA_DIR);
-  }
-  return messagingAppRegistry;
-}
-
-const logSubscriptions = new Map<string, AbortController>();
-
-function getSecretStore(): EncryptedSecretStore {
-  if (!secretStore) {
-    secretStore = new EncryptedSecretStore(DATA_DIR);
-  }
-  return secretStore;
-}
-
-function getRegistry(): AgentRegistry {
-  if (!registry) {
-    registry = new AgentRegistry(DATA_DIR);
-  }
-  return registry;
-}
-
-function getChatService(getWindow: () => BrowserWindow | undefined): ChatService {
-  if (!chatService) {
-    chatService = new ChatService(
-      getRegistry(),
-      new ConversationStore(DATA_DIR),
-      (conversationId, event) => {
-        const win = getWindow();
-        if (win && !win.isDestroyed()) win.webContents.send('chat:event', conversationId, event);
-      },
-      (conversationId) => {
-        const win = getWindow();
-        if (win && !win.isDestroyed()) win.webContents.send('chat:done', conversationId);
-      },
-      (conversationId, error) => {
-        const win = getWindow();
-        if (win && !win.isDestroyed()) win.webContents.send('chat:error', conversationId, error);
-      },
-    );
-  }
-  return chatService;
+async function getClient(gw: GatewayProcess): Promise<GatewayManagementClient> {
+  return gw.ensureRunning();
 }
 
 export function makePackagedSpawner(
@@ -142,29 +75,32 @@ function resolveProjectRoot(): string {
   return join(__dirname, '../../../..');
 }
 
-function getRuntime(): ProcessRuntime {
-  if (!runtime) {
-    runtime = new ProcessRuntime(
-      getRegistry(),
-      getSecretStore(),
-      resolveProjectRoot(),
-      makePackagedSpawner(process.execPath, defaultProcessSpawner, app.isPackaged),
-      getMessagingAppRegistry(),
-      undefined,
-      {
-        gatewayDataDir: DATA_DIR,
-        gatewayRuntimeDir: getPlatformDataDir('dash-gateway'),
-      },
-    );
-  }
-  return runtime;
-}
-
 function getSettingsStore(): SettingsStore {
   return new SettingsStore(DATA_DIR);
 }
 
-async function getSkillsClient(_deploymentId: string): Promise<ManagementClient> {
+function getChatService(getWindow: () => BrowserWindow | undefined): ChatService {
+  if (!chatService) {
+    chatService = new ChatService(
+      new ConversationStore(DATA_DIR),
+      (conversationId, event) => {
+        const win = getWindow();
+        if (win && !win.isDestroyed()) win.webContents.send('chat:event', conversationId, event);
+      },
+      (conversationId) => {
+        const win = getWindow();
+        if (win && !win.isDestroyed()) win.webContents.send('chat:done', conversationId);
+      },
+      (conversationId, error) => {
+        const win = getWindow();
+        if (win && !win.isDestroyed()) win.webContents.send('chat:error', conversationId, error);
+      },
+    );
+  }
+  return chatService;
+}
+
+async function getSkillsClient(): Promise<ManagementClient> {
   const gatewayState = await new GatewayStateStore(DATA_DIR).read();
   if (!gatewayState) {
     throw new Error('Gateway not running — Skills API unavailable');
@@ -172,101 +108,19 @@ async function getSkillsClient(_deploymentId: string): Promise<ManagementClient>
   return new ManagementClient(`http://127.0.0.1:${gatewayState.port}`, gatewayState.token);
 }
 
-function cacheKey(key: Buffer): void {
-  if (!safeStorage.isEncryptionAvailable()) return;
-  const encrypted = safeStorage.encryptString(key.toString('hex'));
-  writeFileSync(SESSION_KEY_PATH, encrypted, { mode: 0o600 });
-}
-
-function loadCachedKey(): Buffer | null {
-  if (!safeStorage.isEncryptionAvailable()) return null;
-  if (!existsSync(SESSION_KEY_PATH)) return null;
-  try {
-    const encrypted = readFileSync(SESSION_KEY_PATH);
-    const hex = safeStorage.decryptString(encrypted);
-    return Buffer.from(hex, 'hex');
-  } catch {
-    return null;
-  }
-}
-
-function clearCachedKey(): void {
-  if (existsSync(SESSION_KEY_PATH)) {
-    unlinkSync(SESSION_KEY_PATH);
-  }
-}
-
-interface CredentialPushResult {
-  total: number;
-  succeeded: number;
-  failed: { deploymentId: string; name: string; error: string }[];
-}
-
-async function pushCredentialsToRunningDeployments(): Promise<CredentialPushResult> {
-  const store = getSecretStore();
-  if (!store.isUnlocked()) return { total: 0, succeeded: 0, failed: [] };
-
-  // Collect all provider API keys (flattened: provider -> default key value)
-  const allKeys = await store.list();
-  const flatKeys: Record<string, string> = {};
-  for (const key of allKeys) {
-    const parsed = parseProviderSecretKey(key);
-    if (!parsed) continue;
-    if (parsed.keyName !== 'default') continue;
-    const value = await store.get(key);
-    if (value) flatKeys[parsed.provider] = value;
-  }
-
-  // Read gateway state to get a management client
-  const gatewayState = await new GatewayStateStore(DATA_DIR).read();
-  if (!gatewayState) {
-    return { total: 0, succeeded: 0, failed: [] };
-  }
-
-  const gwClient = new GatewayManagementClient(
-    `http://127.0.0.1:${gatewayState.port}`,
-    gatewayState.token,
-  );
-
-  // Push credentials to each runtime agent registered in the gateway
-  let agents: { name: string }[];
-  try {
-    agents = await gwClient.listRuntimeAgents();
-  } catch {
-    return { total: 0, succeeded: 0, failed: [] };
-  }
-
-  const result: CredentialPushResult = { total: agents.length, succeeded: 0, failed: [] };
-
-  for (const agent of agents) {
-    try {
-      await gwClient.setRuntimeAgentCredentials(agent.name, flatKeys);
-      result.succeeded++;
-    } catch (err) {
-      result.failed.push({
-        deploymentId: agent.name,
-        name: agent.name,
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
-  }
-
-  if (result.failed.length > 0) {
-    console.warn(
-      `[credentials] Push completed: ${result.succeeded}/${result.total} succeeded, ${result.failed.length} failed`,
-    );
-  }
-
-  return result;
-}
-
 export async function registerIpcHandlers(
   getWindow: () => BrowserWindow | undefined,
 ): Promise<void> {
+  const gwOptions: GatewayProcessOptions = {
+    gatewayDataDir: DATA_DIR,
+    gatewayRuntimeDir: getPlatformDataDir('dash-gateway'),
+    projectRoot: resolveProjectRoot(),
+  };
+  const gw = getGatewayProcess(gwOptions);
+
   // Start shared gateway
-  const rt = getRuntime();
   try {
-    await rt.ensureGateway();
+    await gw.ensureRunning();
   } catch (err) {
     console.error('Gateway startup failed on MC launch:', err);
   }
@@ -289,11 +143,8 @@ export async function registerIpcHandlers(
     if (win && !win.isDestroyed()) win.webContents.send('gateway:status', status);
   };
   gatewayPoller = new GatewayPoller(
-    () => rt.ensureGateway(),
+    () => gw.ensureRunning(),
     async () => {
-      // Gateway self-restores agents from its own persistent registry.
-      // Just refresh the chat service connection.
-      // SSE reconnection is handled by the status callback below.
       await refreshChatServiceConnection();
     },
   );
@@ -351,9 +202,6 @@ export async function registerIpcHandlers(
     }
   }
 
-  // Connect to SSE when gateway becomes healthy (initial or after restart).
-  // The poller calls onStatusChange('healthy') on first health check and after restarts.
-  // connectToGatewayEvents() aborts any previous connection, so it's safe to call repeatedly.
   gatewayPoller.start(
     (status: string) => {
       sendGatewayStatus(status);
@@ -369,83 +217,9 @@ export async function registerIpcHandlers(
     },
   );
 
-  // Auto-unlock from cached session key.
-  // Validates the key before registering IPC handlers so the renderer never
-  // sees isUnlocked=true with a stale key.
-  const cachedKey = loadCachedKey();
-  if (cachedKey) {
-    const store = getSecretStore();
-    store.unlock(cachedKey);
-    try {
-      await store.list();
-    } catch {
-      store.lock();
-      clearCachedKey();
-    }
-  }
-
-  // Gateway self-restores agents from its own persistent registry on startup.
-  // One-time migration: move agent config from MC registry to gateway if needed.
-  if (getSecretStore().isUnlocked()) {
-    try {
-      const deployments = await getRegistry().list();
-      const needsMigration = deployments.some(
-        (d) => d.config?.agents && Object.keys(d.config.agents).length > 0,
-      );
-      if (needsMigration) {
-        console.log('[migration] Moving agent config from MC registry to gateway...');
-        const gatewayState = await new GatewayStateStore(DATA_DIR).read();
-        if (gatewayState) {
-          const gwClient = new GatewayManagementClient(
-            `http://127.0.0.1:${gatewayState.port}`,
-            gatewayState.token,
-          );
-          for (const dep of deployments) {
-            if (dep.status !== 'running' || !dep.config?.agents) continue;
-            for (const [agentName, cfg] of Object.entries(dep.config.agents)) {
-              // Skip if agent already exists on gateway
-              try {
-                await gwClient.getRuntimeAgent(agentName);
-                continue;
-              } catch {
-                // Not found — register it
-              }
-              // Flatten provider keys for this agent
-              const allKeys = await getProviderApiKeys();
-              const flatKeys: Record<string, string> = {};
-              for (const [provider, keys] of Object.entries(allKeys)) {
-                const first = Object.values(keys)[0];
-                if (first) flatKeys[provider] = first;
-              }
-              const runtimeConfig = {
-                name: agentName,
-                model: cfg.model,
-                systemPrompt: cfg.systemPrompt,
-                fallbackModels: cfg.fallbackModels,
-                tools: cfg.tools,
-                skills: cfg.skills,
-                workspace: cfg.workspace,
-                maxTokens: cfg.maxTokens,
-                providerApiKeys: Object.keys(flatKeys).length > 0 ? flatKeys : undefined,
-              };
-              try {
-                await gwClient.registerRuntimeAgent(runtimeConfig);
-                console.log(`[migration] Registered agent "${agentName}" with gateway`);
-              } catch (err) {
-                console.warn(
-                  `[migration] Failed to register agent "${agentName}":`,
-                  err instanceof Error ? err.message : err,
-                );
-              }
-            }
-          }
-          console.log('[migration] Agent config migration complete');
-        }
-      }
-    } catch (err) {
-      console.warn('[migration] Migration failed:', err instanceof Error ? err.message : err);
-    }
-  }
+  // -----------------------------------------------------------------------
+  // App
+  // -----------------------------------------------------------------------
 
   ipcMain.handle('app:getVersion', () => app.getVersion());
 
@@ -468,645 +242,103 @@ export async function registerIpcHandlers(
     return result.canceled ? null : result.filePaths[0];
   });
 
-  // Setup handler
-  ipcMain.handle('setup:getStatus', async () => {
-    const store = getSecretStore();
-    const needsSetup = await store.needsSetup();
-    if (needsSetup) {
-      return { needsSetup: true, needsUnlock: false, needsApiKey: true };
-    }
-    if (!store.isUnlocked()) {
-      // Secrets exist but are locked — need unlock, NOT setup
-      return { needsSetup: false, needsUnlock: true, needsApiKey: false };
-    }
-    const allKeys = await store.list();
-    const hasAnyKey = allKeys.some((k) => parseProviderSecretKey(k) !== null);
-    return { needsSetup: false, needsUnlock: false, needsApiKey: !hasAnyKey };
+  // -----------------------------------------------------------------------
+  // Agents (gateway passthrough)
+  // -----------------------------------------------------------------------
+
+  ipcMain.handle('agents:list', async () => {
+    const client = await getClient(gw);
+    return client.listAgents();
   });
 
-  // Codex OAuth handlers
-  ipcMain.handle('codex:startOAuth', async (_event, keyName: string) => {
-    try {
-      const result = await startCodexOAuth((url) => shell.openExternal(url));
-      if (!result) {
-        return { success: false, error: 'OAuth flow was cancelled or timed out' };
-      }
-      const store = getSecretStore();
-      await store.set(providerSecretKey('openai', keyName), result.accessToken);
-      await store.set(`openai-codex-refresh:${keyName}`, result.refreshToken);
-      await store.set(`openai-codex-expires:${keyName}`, String(result.expiresAt));
-
-      // Push credentials to running deployments
-      pushCredentialsToRunningDeployments()
-        .then((pushResult) => {
-          if (pushResult.failed.length > 0) {
-            const win = getWindow();
-            if (win && !win.isDestroyed()) {
-              win.webContents.send('credentials:pushFailed', pushResult.failed);
-            }
-          }
-        })
-        .catch((err) => console.error('[codex-auth] Credential push error:', err));
-      getModelCache()
-        .refresh()
-        .catch(() => {});
-
-      return { success: true };
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      console.error('[codex-auth] OAuth error:', message);
-      return { success: false, error: message };
-    }
+  ipcMain.handle('agents:get', async (_e, id: string) => {
+    const client = await getClient(gw);
+    return client.getAgent(id);
   });
 
-  ipcMain.handle('codex:refreshToken', async (_event, keyName: string) => {
-    try {
-      const store = getSecretStore();
-      const refreshToken = await store.get(`openai-codex-refresh:${keyName}`);
-      if (!refreshToken) {
-        return { success: false, error: 'No Codex refresh token found' };
-      }
-      const result = await refreshCodexToken(refreshToken);
-      if (!result) {
-        return { success: false, error: 'Token refresh failed' };
-      }
-      await store.set(providerSecretKey('openai', keyName), result.accessToken);
-      await store.set(`openai-codex-refresh:${keyName}`, result.refreshToken);
-      await store.set(`openai-codex-expires:${keyName}`, String(result.expiresAt));
-
-      pushCredentialsToRunningDeployments().catch(() => {});
-      return { success: true };
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      return { success: false, error: message };
-    }
+  ipcMain.handle('agents:create', async (_e, config: CreateAgentRequest) => {
+    const client = await getClient(gw);
+    return client.createAgent(config);
   });
 
-  // Claude OAuth handlers (two-step manual flow)
-  ipcMain.handle('claude:prepareOAuth', async () => {
-    const flow = await prepareClaudeOAuth();
-    await shell.openExternal(flow.authorizeUrl);
-    return flow;
+  ipcMain.handle('agents:update', async (_e, id: string, patch: Partial<CreateAgentRequest>) => {
+    const client = await getClient(gw);
+    return client.updateAgent(id, patch);
+  });
+
+  ipcMain.handle('agents:remove', async (_e, id: string) => {
+    const client = await getClient(gw);
+    await client.removeAgent(id);
+  });
+
+  ipcMain.handle('agents:disable', async (_e, id: string) => {
+    const client = await getClient(gw);
+    await client.disableAgent(id);
+  });
+
+  ipcMain.handle('agents:enable', async (_e, id: string) => {
+    const client = await getClient(gw);
+    await client.enableAgent(id);
+  });
+
+  // -----------------------------------------------------------------------
+  // Channels (gateway passthrough)
+  // -----------------------------------------------------------------------
+
+  ipcMain.handle('channels:list', async () => {
+    const client = await getClient(gw);
+    return client.listChannels();
+  });
+
+  ipcMain.handle('channels:get', async (_e, name: string) => {
+    const client = await getClient(gw);
+    return client.getChannel(name);
   });
 
   ipcMain.handle(
-    'claude:completeOAuth',
-    async (_event, keyName: string, code: string, state: string, verifier: string) => {
-      try {
-        const apiKey = await completeClaudeOAuth(code, state, verifier);
-        if (!apiKey) {
-          return { success: false, error: 'Failed to create API key' };
-        }
-        const store = getSecretStore();
-        await store.set(providerSecretKey('anthropic', keyName), apiKey);
-        await store.set(`anthropic-oauth-marker:${keyName}`, '1');
-
-        pushCredentialsToRunningDeployments()
-          .then((pushResult) => {
-            if (pushResult.failed.length > 0) {
-              const win = getWindow();
-              if (win && !win.isDestroyed()) {
-                win.webContents.send('credentials:pushFailed', pushResult.failed);
-              }
-            }
-          })
-          .catch((err) => console.error('[claude-auth] Credential push error:', err));
-        getModelCache()
-          .refresh()
-          .catch(() => {});
-
-        return { success: true };
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        console.error('[claude-auth] OAuth error:', message);
-        return { success: false, error: message };
-      }
-    },
-  );
-
-  // Chat handlers
-  ipcMain.handle('chat:listConversations', (_event, deploymentId: string) =>
-    getChatService(getWindow).listConversations(deploymentId),
-  );
-  ipcMain.handle('chat:listAllConversations', () =>
-    getChatService(getWindow).listAllConversations(),
-  );
-  ipcMain.handle('chat:createConversation', (_event, deploymentId: string, agentName: string) =>
-    getChatService(getWindow).createConversation(deploymentId, agentName),
-  );
-  ipcMain.handle('chat:getMessages', (_event, conversationId: string) =>
-    getChatService(getWindow).getMessages(conversationId),
-  );
-  ipcMain.handle('chat:renameConversation', (_event, conversationId: string, title: string) =>
-    getChatService(getWindow).renameConversation(conversationId, title),
-  );
-  ipcMain.handle('chat:deleteConversation', (_event, conversationId: string) =>
-    getChatService(getWindow).deleteConversation(conversationId),
-  );
-  ipcMain.handle(
-    'chat:sendMessage',
-    (
-      _event,
-      conversationId: string,
-      text: string,
-      images?: { mediaType: string; data: string }[],
-    ) => getChatService(getWindow).sendMessage(conversationId, text, images),
-  );
-  ipcMain.handle('chat:cancel', (_event, conversationId: string) => {
-    getChatService(getWindow).cancel(conversationId);
-  });
-  ipcMain.handle(
-    'chat:answer-question',
-    (_event, conversationId: string, questionId: string, answer: string) =>
-      getChatService(getWindow).answerQuestion(conversationId, questionId, answer),
-  );
-
-  // Secrets handlers
-  ipcMain.handle('secrets:needsSetup', async () => {
-    return getSecretStore().needsSetup();
-  });
-
-  ipcMain.handle('secrets:needsMigration', async () => {
-    return getSecretStore().needsMigration();
-  });
-
-  ipcMain.handle('secrets:isUnlocked', () => {
-    return getSecretStore().isUnlocked();
-  });
-
-  ipcMain.handle('secrets:setup', async (_event, password: string) => {
-    const store = getSecretStore();
-    const key = await store.setup(password);
-    cacheKey(key);
-  });
-
-  ipcMain.handle('secrets:unlock', async (_event, password: string) => {
-    const store = getSecretStore();
-    const key = await store.unlockWithPassword(password);
-    cacheKey(key);
-    // Register running deployments now that secrets are available
-    const deployments = await getRegistry().list();
-    for (const dep of deployments.filter((d) => d.status === 'running')) {
-      try {
-        await rt.registerWithGateway(dep.id);
-      } catch (err) {
-        console.error(`Failed to register deployment ${dep.id} after unlock:`, err);
-      }
-    }
-  });
-
-  ipcMain.handle('secrets:lock', () => {
-    getSecretStore().lock();
-    clearCachedKey();
-  });
-
-  ipcMain.handle('secrets:list', async () => {
-    return getSecretStore().list();
-  });
-
-  ipcMain.handle('secrets:get', async (_event, key: string) => {
-    return getSecretStore().get(key);
-  });
-
-  ipcMain.handle('secrets:set', async (_event, key: string, value: string) => {
-    await getSecretStore().set(key, value);
-    // Push updated credentials to running deployments if a provider key changed
-    if (key.includes('-api-key:')) {
-      // Capture deployments that are currently missing credentials — push may fix them
-      const allDeps = await getRegistry()
-        .list()
-        .catch(() => []);
-      const missingBefore = allDeps.filter((d) => d.credentialStatus === 'missing');
-
-      pushCredentialsWithRetry(() => pushCredentialsToRunningDeployments())
-        .then(async (result) => {
-          const win = getWindow();
-          if (result.failed.length > 0 && win && !win.isDestroyed()) {
-            win.webContents.send('credentials:pushFailed', result.failed);
-          }
-          // Emit statusChanged for deployments that were missing and push succeeded
-          const failedIds = new Set(result.failed.map((f) => f.deploymentId));
-          for (const dep of missingBefore) {
-            if (!failedIds.has(dep.id)) {
-              await getRegistry().update(dep.id, {
-                credentialStatus: 'ok',
-                credentialProvider: undefined,
-                credentialDetail: undefined,
-              });
-              if (win && !win.isDestroyed()) {
-                win.webContents.send('credentials:statusChanged', {
-                  deploymentId: dep.id,
-                  status: 'ok',
-                });
-              }
-            }
-          }
-        })
-        .catch((err) => {
-          console.error('[credentials] Unexpected error during push:', err);
-        });
-      getModelCache()
-        .refresh()
-        .catch(() => {});
-    }
-  });
-
-  ipcMain.handle('secrets:delete', async (_event, key: string) => {
-    await getSecretStore().delete(key);
-    // Push updated credentials to running deployments if a provider key changed
-    if (key.includes('-api-key:')) {
-      pushCredentialsWithRetry(() => pushCredentialsToRunningDeployments())
-        .then((result) => {
-          if (result.failed.length > 0) {
-            const win = getWindow();
-            if (win && !win.isDestroyed()) {
-              win.webContents.send('credentials:pushFailed', result.failed);
-            }
-          }
-        })
-        .catch((err) => {
-          console.error('[credentials] Unexpected error during push:', err);
-        });
-      getModelCache()
-        .refresh()
-        .catch(() => {});
-    }
-  });
-
-  ipcMain.handle(
-    'credentials:getAffectedAgents',
-    async (_event, provider: string, keyName: string) => {
-      const reg = getRegistry();
-      const deployments = await reg.list();
-      const affected: { deploymentId: string; name: string }[] = [];
-      for (const deployment of deployments) {
-        if (deployment.status === 'stopped') continue;
-        const agents = deployment.config.agents ?? {};
-        for (const [, agentCfg] of Object.entries(agents)) {
-          const assignedKey = agentCfg.credentialKeys?.[provider];
-          if (assignedKey === keyName || (!assignedKey && keyName === 'default')) {
-            affected.push({ deploymentId: deployment.id, name: deployment.name });
-            break;
-          }
-        }
-      }
-      return affected;
-    },
-  );
-
-  ipcMain.handle(
-    'credentials:reassignKey',
+    'channels:create',
     async (
-      _event,
-      provider: string,
-      assignments: { deploymentId: string; newKeyName: string | null }[],
+      _e,
+      config: {
+        name: string;
+        adapter: string;
+        token?: string;
+        globalDenyList?: string[];
+        routing: GatewayChannel['routing'];
+      },
     ) => {
-      const reg = getRegistry();
-      for (const { deploymentId, newKeyName } of assignments) {
-        const deployment = await reg.get(deploymentId);
-        if (!deployment) continue;
-        const agents = deployment.config.agents ?? {};
-        const updatedAgents: typeof agents = {};
-        for (const [agentName, agentCfg] of Object.entries(agents)) {
-          const updatedCredentialKeys = { ...(agentCfg.credentialKeys ?? {}) };
-          if (newKeyName) {
-            updatedCredentialKeys[provider] = newKeyName;
-          } else {
-            delete updatedCredentialKeys[provider];
-          }
-          updatedAgents[agentName] = {
-            ...agentCfg,
-            ...(Object.keys(updatedCredentialKeys).length > 0
-              ? { credentialKeys: updatedCredentialKeys }
-              : {}),
-          };
-        }
-        await reg.update(deploymentId, {
-          config: { ...deployment.config, agents: updatedAgents },
-        });
+      const client = await getClient(gw);
+      // If token provided, store as credential first
+      if (config.token) {
+        await client.setCredential(`channel:${config.name}:token`, config.token);
       }
-    },
-  );
-
-  ipcMain.handle(
-    'deployments:updateCredentialStatus',
-    async (_event, deploymentId: string, status: string, provider?: string, detail?: string) => {
-      const reg = getRegistry();
-      await reg.update(deploymentId, {
-        credentialStatus: status as 'ok' | 'missing' | 'invalid',
-        credentialProvider: provider,
-        credentialDetail: detail,
+      await client.registerChannel({
+        name: config.name,
+        adapter: config.adapter,
+        globalDenyList: config.globalDenyList ?? [],
+        routing: config.routing,
       });
-      const win = getWindow();
-      if (win && !win.isDestroyed()) {
-        win.webContents.send('credentials:statusChanged', {
-          deploymentId,
-          status,
-          provider,
-          detail,
-        });
-      }
     },
   );
 
-  // Deployment handlers
-  ipcMain.handle('deployments:list', async () => {
-    const deployments = await getRegistry().list();
-    // Resolve live runtime status for deployments that claim to be running,
-    // since the persisted status can be stale after MC restart or agent crash.
-    const resolved = await Promise.all(
-      deployments.map(async (dep) => {
-        if (dep.status !== 'running' && dep.status !== 'provisioning') return dep;
-        try {
-          const rs = await getRuntime().getStatus(dep.id);
-          const mapped = rs.state === 'starting' ? 'provisioning' : rs.state;
-          return mapped !== dep.status ? { ...dep, status: mapped as typeof dep.status } : dep;
-        } catch {
-          return dep;
-        }
-      }),
-    );
-    return resolved;
-  });
-
-  ipcMain.handle('deployments:get', async (_event, id: string) => {
-    return getRegistry().get(id);
-  });
-
-  ipcMain.handle('deployments:getAgentConfig', async (_event, agentName: string) => {
-    const gatewayState = await new GatewayStateStore(DATA_DIR).read();
-    if (!gatewayState) throw new Error('Gateway not running');
-    const client = new GatewayManagementClient(
-      `http://127.0.0.1:${gatewayState.port}`,
-      gatewayState.token,
-    );
-    return client.getRuntimeAgent(agentName);
-  });
-
-  ipcMain.handle('deployments:listAgentConfigs', async () => {
-    const gatewayState = await new GatewayStateStore(DATA_DIR).read();
-    if (!gatewayState) throw new Error('Gateway not running');
-    const client = new GatewayManagementClient(
-      `http://127.0.0.1:${gatewayState.port}`,
-      gatewayState.token,
-    );
-    return client.listRuntimeAgents();
-  });
-
-  ipcMain.handle('deployments:deploy', async (_event, configDir: string) => {
-    let deploymentId: string;
-    try {
-      deploymentId = await getRuntime().deploy(configDir);
-    } catch (err) {
-      if (err instanceof DeploymentStartupError) {
-        deploymentId = err.deploymentId;
-      } else {
-        throw err;
-      }
-    }
-    return deploymentId;
-  });
-
   ipcMain.handle(
-    'deployments:deployWithConfig',
-    async (_event, options: DeployWithConfigOptions) => {
-      const { name, model, fallbackModels, systemPrompt, tools, workspace, mcpServers } = options;
-
-      // Create a temp config directory with the agent and gateway config
-      const configDir = join(tmpdir(), `mc-deploy-${Date.now()}`);
-      const agentsDir = join(configDir, 'agents');
-      await mkdir(agentsDir, { recursive: true });
-
-      // Write agent config
-      const agentConfig = {
-        name,
-        model,
-        fallbackModels: fallbackModels && fallbackModels.length > 0 ? fallbackModels : undefined,
-        systemPrompt,
-        tools: tools.length > 0 ? tools : undefined,
-        ...(workspace ? { workspace } : {}),
-        ...(mcpServers && mcpServers.length > 0 ? { mcpServers } : {}),
-      };
-      await writeFile(join(agentsDir, `${name}.json`), JSON.stringify(agentConfig, null, 2));
-
-      let deploymentId: string;
-      try {
-        deploymentId = await getRuntime().deploy(configDir);
-      } catch (err) {
-        if (err instanceof DeploymentStartupError) {
-          deploymentId = err.deploymentId;
-        } else {
-          throw err;
-        }
-      }
-      return deploymentId;
-    },
-  );
-
-  ipcMain.handle('deployments:stop', async (_event, id: string) => {
-    await getRuntime().stop(id);
-    const win = getWindow();
-    if (win) {
-      win.webContents.send('deployment:statusChange', id, 'stopped');
-    }
-  });
-
-  ipcMain.handle('deployments:restart', async (_event, id: string) => {
-    await getRuntime().start(id);
-    const dep = await getRegistry().get(id);
-    const win = getWindow();
-    if (win) {
-      win.webContents.send('deployment:statusChange', id, dep?.status ?? 'running');
-    }
-  });
-
-  ipcMain.handle('deployments:remove', async (_event, id: string, deleteWorkspace?: boolean) => {
-    // Cancel any active log subscription
-    const sub = logSubscriptions.get(id);
-    if (sub) {
-      sub.abort();
-      logSubscriptions.delete(id);
-    }
-
-    if (deleteWorkspace) {
-      const deployment = await getRegistry().get(id);
-      if (deployment?.workspace) {
-        await rm(deployment.workspace, { recursive: true, force: true });
-      }
-    }
-
-    await getRuntime().remove(id);
-    const win = getWindow();
-    if (win) {
-      win.webContents.send('deployment:statusChange', id, 'removed');
-    }
-  });
-
-  ipcMain.handle('deployments:getStatus', async (_event, id: string) => {
-    return getRuntime().getStatus(id);
-  });
-
-  ipcMain.handle('deployments:getChannelHealth', async (_event, id: string) => {
-    const deployment = await getRegistry().get(id);
-    if (!deployment || deployment.status !== 'running') {
-      return [];
-    }
-    // Channel health is monitored by the gateway; return empty for now
-    return [];
-  });
-
-  ipcMain.handle('deployments:logs:subscribe', async (_event, id: string) => {
-    // Cancel existing subscription for this ID
-    const existing = logSubscriptions.get(id);
-    if (existing) {
-      existing.abort();
-    }
-
-    const controller = new AbortController();
-    logSubscriptions.set(id, controller);
-
-    // Start iterating logs in the background
-    (async () => {
-      try {
-        const logs = getRuntime().getLogs(id, controller.signal);
-        for await (const line of logs) {
-          if (controller.signal.aborted) break;
-          const win = getWindow();
-          if (win && !win.isDestroyed()) {
-            win.webContents.send('deployment:log', id, line);
-          } else {
-            break;
-          }
-        }
-      } catch {
-        // Deployment may not have active processes
-      } finally {
-        logSubscriptions.delete(id);
-      }
-    })();
-  });
-
-  ipcMain.handle('deployments:logs:unsubscribe', async (_event, id: string) => {
-    const sub = logSubscriptions.get(id);
-    if (sub) {
-      sub.abort();
-      logSubscriptions.delete(id);
-    }
-  });
-
-  // Messaging Apps handlers
-  /** Re-register messaging app channels for all running deployments. */
-  async function syncMessagingAppsToGateway(): Promise<void> {
-    const rt = getRuntime();
-    const deployments = await getRegistry().list();
-    for (const dep of deployments.filter((d) => d.status === 'running')) {
-      try {
-        await rt.syncMessagingApps(dep.id);
-      } catch (err) {
-        console.warn(
-          `syncMessagingAppsToGateway: failed for deployment ${dep.id}:`,
-          err instanceof Error ? err.message : err,
-        );
-      }
-    }
-  }
-
-  ipcMain.handle('messagingApps:list', async () => {
-    return getMessagingAppRegistry().list();
-  });
-
-  ipcMain.handle('messagingApps:get', async (_event, id: string) => {
-    return getMessagingAppRegistry().get(id);
-  });
-
-  ipcMain.handle(
-    'messagingApps:create',
+    'channels:update',
     async (
-      _event,
-      app: Omit<MessagingApp, 'id' | 'createdAt' | 'credentialsKey'>,
-      token: string,
+      _e,
+      name: string,
+      patch: Partial<Pick<GatewayChannel, 'globalDenyList' | 'routing'>>,
     ) => {
-      const registry = getMessagingAppRegistry();
-      const secretStore = getSecretStore();
-      const id = randomUUID().slice(0, 8);
-      const created: MessagingApp = {
-        ...app,
-        id,
-        credentialsKey: '',
-        createdAt: new Date().toISOString(),
-      };
-      await registry.add(created);
-      const credKey = `messaging-app:${id}:token`;
-      try {
-        await secretStore.set(credKey, token);
-      } catch (err) {
-        await registry.remove(id).catch(() => {});
-        throw err;
-      }
-      await registry.update(id, { credentialsKey: credKey });
-      syncMessagingAppsToGateway().catch(() => {});
-      return { ...created, credentialsKey: credKey };
+      const client = await getClient(gw);
+      await client.updateChannel(name, patch);
     },
   );
 
-  ipcMain.handle(
-    'messagingApps:update',
-    async (_event, id: string, patch: Partial<MessagingApp>) => {
-      await getMessagingAppRegistry().update(id, patch);
-      syncMessagingAppsToGateway().catch(() => {});
-    },
-  );
-
-  ipcMain.handle('messagingApps:delete', async (_event, id: string) => {
-    const app = await getMessagingAppRegistry().get(id);
-    if (app) {
-      if (app.type === 'whatsapp') {
-        // Clean up all namespaced auth keys
-        const secretStore = getSecretStore();
-        const prefix = `${app.credentialsKey}:`;
-        const allKeys = await secretStore.list();
-        for (const key of allKeys.filter((k) => k.startsWith(prefix))) {
-          await secretStore.delete(key);
-        }
-        // Clean up runtime auth state directory
-        const { homedir } = await import('node:os');
-        const { rm } = await import('node:fs/promises');
-        const authStateDir = join(DATA_DIR, 'whatsapp-sessions', id);
-        await rm(authStateDir, { recursive: true, force: true });
-      } else {
-        await getSecretStore().delete(app.credentialsKey);
-      }
-    }
-    await getMessagingAppRegistry().remove(id);
-    syncMessagingAppsToGateway().catch(() => {});
+  ipcMain.handle('channels:remove', async (_e, name: string) => {
+    const client = await getClient(gw);
+    await client.removeChannel(name);
   });
 
-  ipcMain.handle(
-    'messagingApps:getLog',
-    async (_event, appId: string, limit?: number) => {
-      const { existsSync } = await import('node:fs');
-      const { readFile } = await import('node:fs/promises');
-      const logPath = join(DATA_DIR, 'channel-logs', `${appId}.jsonl`);
-      if (!existsSync(logPath)) return [];
-      const raw = await readFile(logPath, 'utf-8');
-      const lines = raw
-        .split('\n')
-        .filter(Boolean)
-        .map((line) => {
-          try {
-            return JSON.parse(line);
-          } catch {
-            return null;
-          }
-        })
-        .filter(Boolean);
-      // Return most recent entries first
-      lines.reverse();
-      return limit ? lines.slice(0, limit) : lines.slice(0, 200);
-    },
-  );
-
-  ipcMain.handle('messagingApps:verifyTelegramToken', async (_event, token: string) => {
+  ipcMain.handle('channels:verifyTelegramToken', async (_e, token: string) => {
     const response = await fetch(`https://api.telegram.org/bot${token}/getMe`);
     if (!response.ok) {
       throw new Error(`Telegram API error: ${response.status} ${response.statusText}`);
@@ -1125,126 +357,192 @@ export async function registerIpcHandlers(
     return { username: data.result.username, firstName: data.result.first_name };
   });
 
-  ipcMain.handle('whatsapp:startPairing', async (_event, appId: string) => {
-    const store = getSecretStore();
-    const prefix = `whatsapp-auth:${appId}:`;
+  // -----------------------------------------------------------------------
+  // Credentials (gateway passthrough)
+  // -----------------------------------------------------------------------
 
-    // Wrap store with prefix for this pairing session
-    const prefixedStore = {
-      get: (key: string) => store.get(`${prefix}${key}`),
-      set: (key: string, value: string) => store.set(`${prefix}${key}`, value),
-      delete: (key: string) => store.delete(`${prefix}${key}`),
-      list: async () => {
-        const all = await store.list();
-        return all.filter((k) => k.startsWith(prefix)).map((k) => k.slice(prefix.length));
-      },
-    };
+  ipcMain.handle('credentials:set', async (_e, key: string, value: string) => {
+    const client = await getClient(gw);
+    await client.setCredential(key, value);
+    // Refresh model cache when a provider key changes
+    getModelCache().refresh().catch(() => {});
+  });
 
-    const { startWhatsAppPairing } = await import('@dash/channels');
-    const qrcode = await import('qrcode');
+  ipcMain.handle('credentials:list', async () => {
+    const client = await getClient(gw);
+    return client.listCredentials();
+  });
 
-    await startWhatsAppPairing(prefixedStore, {
-      onQr: (qrString) => {
-        try {
-          qrcode.default.toDataURL(qrString).then((qrDataUrl) => {
-            const win = getWindow();
-            win?.webContents.send('whatsapp:qr', appId, qrDataUrl);
-          });
-        } catch {
-          // QR generation failed silently
-        }
-      },
-      onLinked: () => {
-        const win = getWindow();
-        win?.webContents.send('whatsapp:linked', appId);
-      },
-      onError: (message) => {
-        const win = getWindow();
-        win?.webContents.send('whatsapp:error', appId, message);
-      },
-    });
+  ipcMain.handle('credentials:remove', async (_e, key: string) => {
+    const client = await getClient(gw);
+    await client.removeCredential(key);
+    // Refresh model cache when a provider key changes
+    getModelCache().refresh().catch(() => {});
+  });
+
+  // -----------------------------------------------------------------------
+  // OAuth — Codex (OpenAI)
+  // -----------------------------------------------------------------------
+
+  ipcMain.handle('codex:startOAuth', async (_event, keyName: string) => {
+    try {
+      const result = await startCodexOAuth((url) => shell.openExternal(url));
+      if (!result) {
+        return { success: false, error: 'OAuth flow was cancelled or timed out' };
+      }
+      const client = await getClient(gw);
+      await client.setCredential(`openai-api-key:${keyName}`, result.accessToken);
+      await client.setCredential(`openai-codex-refresh:${keyName}`, result.refreshToken);
+      await client.setCredential(`openai-codex-expires:${keyName}`, String(result.expiresAt));
+
+      getModelCache().refresh().catch(() => {});
+      return { success: true };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error('[codex-auth] OAuth error:', message);
+      return { success: false, error: message };
+    }
+  });
+
+  ipcMain.handle('codex:refreshToken', async (_event, keyName: string) => {
+    try {
+      const client = await getClient(gw);
+      // Retrieve refresh token from gateway credentials
+      // The gateway credentials API only lists keys, not values — so we store
+      // the refresh token as a credential and retrieve it via a convention.
+      // For now, the codex refresh flow requires the token to have been stored.
+      const result = await refreshCodexToken(''); // TODO: retrieve refresh token from gateway
+      if (!result) {
+        return { success: false, error: 'Token refresh failed' };
+      }
+      await client.setCredential(`openai-api-key:${keyName}`, result.accessToken);
+      await client.setCredential(`openai-codex-refresh:${keyName}`, result.refreshToken);
+      await client.setCredential(`openai-codex-expires:${keyName}`, String(result.expiresAt));
+      return { success: true };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return { success: false, error: message };
+    }
+  });
+
+  // -----------------------------------------------------------------------
+  // OAuth — Claude (Anthropic)
+  // -----------------------------------------------------------------------
+
+  ipcMain.handle('claude:prepareOAuth', async () => {
+    const flow = await prepareClaudeOAuth();
+    await shell.openExternal(flow.authorizeUrl);
+    return flow;
   });
 
   ipcMain.handle(
-    'messagingApps:createWhatsApp',
-    async (
-      _event,
-      appId: string,
-      app: Omit<MessagingApp, 'id' | 'createdAt' | 'credentialsKey'>,
-    ) => {
-      const registry = getMessagingAppRegistry();
-      const credentialsKey = `whatsapp-auth:${appId}`;
-      const created: MessagingApp = {
-        ...app,
-        id: appId,
-        credentialsKey,
-        createdAt: new Date().toISOString(),
-      };
-      await registry.add(created);
-      return created;
-    },
-  );
-
-  // Skills
-  ipcMain.handle('skills:list', async (_e, deploymentId: string, agentName: string) =>
-    (await getSkillsClient(deploymentId)).skills(agentName),
-  );
-  ipcMain.handle(
-    'skills:get',
-    async (_e, deploymentId: string, agentName: string, skillName: string) => {
+    'claude:completeOAuth',
+    async (_event, keyName: string, code: string, state: string, verifier: string) => {
       try {
-        return await (await getSkillsClient(deploymentId)).skill(agentName, skillName);
+        const apiKey = await completeClaudeOAuth(code, state, verifier);
+        if (!apiKey) {
+          return { success: false, error: 'Failed to create API key' };
+        }
+        const client = await getClient(gw);
+        await client.setCredential(`anthropic-api-key:${keyName}`, apiKey);
+
+        getModelCache().refresh().catch(() => {});
+        return { success: true };
       } catch (err) {
-        if (err instanceof Error && err.message.includes('404')) return null;
-        throw err;
+        const message = err instanceof Error ? err.message : String(err);
+        console.error('[claude-auth] OAuth error:', message);
+        return { success: false, error: message };
       }
     },
   );
+
+  // -----------------------------------------------------------------------
+  // Chat
+  // -----------------------------------------------------------------------
+
+  ipcMain.handle('chat:listConversations', () =>
+    getChatService(getWindow).listConversations(),
+  );
+
+  ipcMain.handle('chat:createConversation', (_event, agentId: string) =>
+    getChatService(getWindow).createConversation(agentId),
+  );
+
+  ipcMain.handle('chat:getMessages', (_event, conversationId: string) =>
+    getChatService(getWindow).getMessages(conversationId),
+  );
+
+  ipcMain.handle('chat:renameConversation', (_event, conversationId: string, title: string) =>
+    getChatService(getWindow).renameConversation(conversationId, title),
+  );
+
+  ipcMain.handle('chat:deleteConversation', (_event, conversationId: string) =>
+    getChatService(getWindow).deleteConversation(conversationId),
+  );
+
+  ipcMain.handle(
+    'chat:sendMessage',
+    (
+      _event,
+      conversationId: string,
+      text: string,
+      images?: { mediaType: string; data: string }[],
+    ) => getChatService(getWindow).sendMessage(conversationId, text, images),
+  );
+
+  ipcMain.handle('chat:cancel', (_event, conversationId: string) => {
+    getChatService(getWindow).cancel(conversationId);
+  });
+
+  ipcMain.handle(
+    'chat:answer-question',
+    (_event, conversationId: string, questionId: string, answer: string) =>
+      getChatService(getWindow).answerQuestion(conversationId, questionId, answer),
+  );
+
+  // -----------------------------------------------------------------------
+  // Skills (gateway passthrough)
+  // -----------------------------------------------------------------------
+
+  ipcMain.handle('skills:list', async (_e, agentId: string) =>
+    (await getSkillsClient()).skills(agentId),
+  );
+
+  ipcMain.handle('skills:get', async (_e, agentId: string, skillName: string) => {
+    try {
+      return await (await getSkillsClient()).skill(agentId, skillName);
+    } catch (err) {
+      if (err instanceof Error && err.message.includes('404')) return null;
+      throw err;
+    }
+  });
+
   ipcMain.handle(
     'skills:updateContent',
-    async (_e, deploymentId: string, agentName: string, skillName: string, content: string) =>
-      (await getSkillsClient(deploymentId)).updateSkillContent(agentName, skillName, content),
+    async (_e, agentId: string, skillName: string, content: string) =>
+      (await getSkillsClient()).updateSkillContent(agentId, skillName, content),
   );
+
   ipcMain.handle(
     'skills:create',
-    async (
-      _e,
-      deploymentId: string,
-      agentName: string,
-      name: string,
-      description: string,
-      content: string,
-    ) => (await getSkillsClient(deploymentId)).createSkill(agentName, name, description, content),
+    async (_e, agentId: string, name: string, description: string, content: string) =>
+      (await getSkillsClient()).createSkill(agentId, name, description, content),
   );
-  ipcMain.handle('skills:getConfig', async (_e, deploymentId: string, agentName: string) =>
-    (await getSkillsClient(deploymentId)).skillsConfig(agentName),
+
+  ipcMain.handle('skills:getConfig', async (_e, agentId: string) =>
+    (await getSkillsClient()).skillsConfig(agentId),
   );
+
   ipcMain.handle(
     'skills:updateConfig',
-    async (_e, deploymentId: string, agentName: string, config: SkillsConfig) =>
-      (await getSkillsClient(deploymentId)).updateSkillsConfig(agentName, config),
+    async (_e, agentId: string, config: SkillsConfig) =>
+      (await getSkillsClient()).updateSkillsConfig(agentId, config),
   );
 
-  // Deployment config update
-  ipcMain.handle(
-    'deployments:updateConfig',
-    async (
-      _event,
-      id: string,
-      patch: {
-        name?: string;
-        model?: string;
-        fallbackModels?: string[];
-        tools?: string[];
-        systemPrompt?: string;
-        mcpServers?: string[];
-      },
-    ) => {
-      await getRuntime().updateAgentConfig(id, patch);
-    },
-  );
+  // -----------------------------------------------------------------------
+  // Settings
+  // -----------------------------------------------------------------------
 
-  // Settings handlers
   ipcMain.handle('settings:get', async () => {
     return getSettingsStore().get();
   });
@@ -1256,25 +554,62 @@ export async function registerIpcHandlers(
     },
   );
 
+  // -----------------------------------------------------------------------
+  // Gateway status
+  // -----------------------------------------------------------------------
+
   ipcMain.handle('gateway:getStatus', () => {
     return gatewayPoller?.getCurrentStatus() ?? 'starting';
   });
 
-  // Models
+  ipcMain.handle('gateway:status', async () => {
+    try {
+      const client = await getClient(gw);
+      await client.health();
+      return 'healthy';
+    } catch {
+      return 'unhealthy';
+    }
+  });
+
+  // -----------------------------------------------------------------------
+  // Setup (simplified — no password)
+  // -----------------------------------------------------------------------
+
+  ipcMain.handle('setup:status', async () => {
+    try {
+      const client = await getClient(gw);
+      const health = await client.health();
+      const creds = await client.listCredentials();
+      return { needsSetup: creds.length === 0, gatewayReady: true };
+    } catch {
+      return { needsSetup: true, gatewayReady: false };
+    }
+  });
+
+  ipcMain.handle('setup:ensureGateway', async () => {
+    await getClient(gw); // ensureRunning is called inside
+  });
+
+  // -----------------------------------------------------------------------
+  // Models & Tools
+  // -----------------------------------------------------------------------
+
   ipcMain.handle('models:list', async () => {
     return getModelCache().load();
   });
 
   ipcMain.handle('models:refresh', async () => {
-    const apiKeys = await getProviderApiKeys();
-    return getModelCache().refresh(apiKeys);
+    return getModelCache().refresh();
   });
 
   ipcMain.handle('tools:list', async () => {
     return getModelCache().loadTools();
   });
 
-  // --- MCP Connectors ---
+  // -----------------------------------------------------------------------
+  // MCP Connectors
+  // -----------------------------------------------------------------------
 
   async function getMcpClient(): Promise<ManagementClient> {
     const gatewayState = await new GatewayStateStore(DATA_DIR).read();
@@ -1324,15 +659,76 @@ export async function registerIpcHandlers(
     return client.mcpSetAllowlist(patterns);
   });
 
+  // -----------------------------------------------------------------------
+  // WhatsApp pairing
+  // -----------------------------------------------------------------------
+
+  ipcMain.handle('whatsapp:startPairing', async (_event, appId: string) => {
+    const client = await getClient(gw);
+
+    // Wrap gateway credentials with prefix for this pairing session
+    const prefix = `whatsapp-auth:${appId}:`;
+    const prefixedStore = {
+      get: async (key: string) => {
+        // Gateway credentials API only lists keys; for WhatsApp auth we need
+        // values. This is a temporary adapter until WhatsApp pairing moves fully
+        // to the gateway.
+        // TODO: implement credential get-value in gateway
+        return null as string | null;
+      },
+      set: async (key: string, value: string) => {
+        await client.setCredential(`${prefix}${key}`, value);
+      },
+      delete: async (key: string) => {
+        await client.removeCredential(`${prefix}${key}`);
+      },
+      list: async () => {
+        const all = await client.listCredentials();
+        return all.filter((k) => k.startsWith(prefix)).map((k) => k.slice(prefix.length));
+      },
+    };
+
+    const { startWhatsAppPairing } = await import('@dash/channels');
+    const qrcode = await import('qrcode');
+
+    await startWhatsAppPairing(prefixedStore, {
+      onQr: (qrString) => {
+        try {
+          qrcode.default.toDataURL(qrString).then((qrDataUrl) => {
+            const win = getWindow();
+            win?.webContents.send('whatsapp:qr', appId, qrDataUrl);
+          });
+        } catch {
+          // QR generation failed silently
+        }
+      },
+      onLinked: () => {
+        const win = getWindow();
+        win?.webContents.send('whatsapp:linked', appId);
+      },
+      onError: (message) => {
+        const win = getWindow();
+        win?.webContents.send('whatsapp:error', appId, message);
+      },
+    });
+  });
+
+  // -----------------------------------------------------------------------
   // Background model cache refresh on startup
-  getProviderApiKeys()
-    .then((apiKeys) => getModelCache().refresh(apiKeys))
+  // -----------------------------------------------------------------------
+
+  getModelCache()
+    .refresh()
     .catch((err) => {
       console.warn(
         'Background model cache refresh failed:',
         err instanceof Error ? err.message : err,
       );
     });
+
+  // -----------------------------------------------------------------------
+  // Cleanup on quit
+  // -----------------------------------------------------------------------
 
   app.on('before-quit', async () => {
     gatewayPoller?.stop();

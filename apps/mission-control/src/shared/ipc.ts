@@ -1,11 +1,12 @@
-import type { SkillContent, SkillInfo, SkillsConfig } from '@dash/management';
 import type {
-  AgentDeployment,
+  CachedModel,
+  CreateAgentRequest,
+  GatewayAgent,
+  GatewayChannel,
   McConversation,
   McMessage,
-  MessagingApp,
-  RuntimeStatus,
 } from '@dash/mc';
+import type { SkillContent, SkillInfo, SkillsConfig } from '@dash/management';
 
 // Serializable AgentEvent (error is string, not Error object, for IPC transport)
 export type McAgentEvent =
@@ -26,46 +27,17 @@ export type McAgentEvent =
   | { type: 'skill_created'; name: string; description: string }
   | { type: 'error'; error: string; timestamp: string };
 
-export interface DeployWithConfigMcpServer {
-  name: string;
-  transport:
-    | { type: 'stdio'; command: string; args?: string[] }
-    | { type: 'sse'; url: string }
-    | { type: 'streamable-http'; url: string };
-  env?: Record<string, string>;
+export interface TelegramBotInfo {
+  username: string;
+  firstName: string;
 }
 
-export interface DeployWithConfigOptions {
-  name: string;
-  model: string;
-  fallbackModels?: string[];
-  systemPrompt: string;
-  tools: string[];
-  workspace?: string;
-  credentialKeys?: Record<string, string>;
-  mcpServers?: DeployWithConfigMcpServer[];
+export interface AppSettings {
+  defaultModel?: string;
+  defaultFallbackModels?: string[];
 }
 
-// --- Runtime Agent Info (from gateway) ---
-
-export interface RuntimeAgentConfig {
-  name: string;
-  model: string;
-  systemPrompt: string;
-  fallbackModels?: string[];
-  tools?: string[];
-  mcpServers?: string[];
-  workspace?: string;
-  maxTokens?: number;
-  skills?: { paths?: string[]; urls?: string[] };
-}
-
-export interface RuntimeAgentInfo {
-  name: string;
-  config: RuntimeAgentConfig;
-  status: string;
-  registeredAt: number;
-}
+export type GatewayStatus = 'starting' | 'healthy' | 'unhealthy' | 'restarting';
 
 // --- MCP Connectors ---
 
@@ -99,59 +71,6 @@ export interface McpAddConnectorResult {
   authUrl?: string;
 }
 
-export interface SetupStatus {
-  needsSetup: boolean;
-  needsUnlock: boolean;
-  needsApiKey: boolean;
-}
-
-export interface TelegramBotInfo {
-  username: string;
-  firstName: string;
-}
-
-export interface AppSettings {
-  defaultModel?: string;
-  defaultFallbackModels?: string[];
-}
-
-export interface ChannelHealthEntry {
-  appId: string;
-  type: string;
-  health: 'connected' | 'connecting' | 'disconnected' | 'needs_reauth';
-}
-
-export type GatewayStatus = 'starting' | 'healthy' | 'unhealthy' | 'restarting';
-
-export class RendererDeploymentError extends Error {
-  constructor(
-    message: string,
-    public readonly deploymentId: string,
-    public readonly startupLogs: string[],
-  ) {
-    super(message);
-    this.name = 'RendererDeploymentError';
-  }
-}
-
-export interface CredentialPushFailure {
-  deploymentId: string;
-  name: string;
-  error: string;
-}
-
-export interface CredentialStatusChange {
-  deploymentId: string;
-  status: 'ok' | 'missing' | 'invalid';
-  provider?: string;
-  detail?: string;
-}
-
-export interface AffectedAgent {
-  deploymentId: string;
-  name: string;
-}
-
 export interface McpStatusChange {
   serverName: string;
   status: 'connected' | 'disconnected' | 'reconnecting' | 'error' | 'needs_reauth';
@@ -165,26 +84,36 @@ export interface MissionControlAPI {
   openPath(path: string): Promise<void>;
   dialogOpenDirectory(): Promise<string | null>;
 
-  // Setup
-  setupGetStatus(): Promise<SetupStatus>;
+  // Agents (gateway passthrough)
+  agentsList(): Promise<GatewayAgent[]>;
+  agentsGet(id: string): Promise<GatewayAgent>;
+  agentsCreate(config: CreateAgentRequest): Promise<GatewayAgent>;
+  agentsUpdate(id: string, patch: Partial<CreateAgentRequest>): Promise<GatewayAgent>;
+  agentsRemove(id: string): Promise<void>;
+  agentsDisable(id: string): Promise<void>;
+  agentsEnable(id: string): Promise<void>;
 
-  // Chat
-  chatListConversations(deploymentId: string): Promise<McConversation[]>;
-  chatListAllConversations(): Promise<McConversation[]>;
-  chatCreateConversation(deploymentId: string, agentName: string): Promise<McConversation>;
-  chatGetMessages(conversationId: string): Promise<McMessage[]>;
-  chatRenameConversation(conversationId: string, title: string): Promise<void>;
-  chatDeleteConversation(conversationId: string): Promise<void>;
-  chatSendMessage(
-    conversationId: string,
-    text: string,
-    images?: { mediaType: string; data: string }[],
+  // Channels (gateway passthrough)
+  channelsList(): Promise<GatewayChannel[]>;
+  channelsGet(name: string): Promise<GatewayChannel>;
+  channelsCreate(config: {
+    name: string;
+    adapter: string;
+    token?: string;
+    globalDenyList?: string[];
+    routing: GatewayChannel['routing'];
+  }): Promise<void>;
+  channelsUpdate(
+    name: string,
+    patch: Partial<Pick<GatewayChannel, 'globalDenyList' | 'routing'>>,
   ): Promise<void>;
-  chatCancel(conversationId: string): Promise<void>;
-  chatAnswerQuestion(conversationId: string, questionId: string, answer: string): Promise<void>;
-  chatOnEvent(callback: (conversationId: string, event: McAgentEvent) => void): () => void;
-  chatOnDone(callback: (conversationId: string) => void): () => void;
-  chatOnError(callback: (conversationId: string, error: string) => void): () => void;
+  channelsRemove(name: string): Promise<void>;
+  channelsVerifyTelegramToken(token: string): Promise<TelegramBotInfo>;
+
+  // Credentials (gateway passthrough)
+  credentialsSet(key: string, value: string): Promise<void>;
+  credentialsList(): Promise<string[]>;
+  credentialsRemove(key: string): Promise<void>;
 
   // Codex OAuth (OpenAI)
   codexStartOAuth(keyName: string): Promise<{ success: boolean; error?: string }>;
@@ -199,136 +128,45 @@ export interface MissionControlAPI {
     verifier: string,
   ): Promise<{ success: boolean; error?: string }>;
 
-  // Secrets
-  secretsNeedsSetup(): Promise<boolean>;
-  secretsNeedsMigration(): Promise<boolean>;
-  secretsIsUnlocked(): Promise<boolean>;
-  secretsSetup(password: string): Promise<void>;
-  secretsUnlock(password: string): Promise<void>;
-  secretsLock(): Promise<void>;
-  secretsList(): Promise<string[]>;
-  secretsGet(key: string): Promise<string | null>;
-  secretsSet(key: string, value: string): Promise<void>;
-  secretsDelete(key: string): Promise<void>;
-
-  // Deployments
-  deploymentsList(): Promise<AgentDeployment[]>;
-  deploymentsGet(id: string): Promise<AgentDeployment | null>;
-  deploymentsGetAgentConfig(agentName: string): Promise<RuntimeAgentInfo>;
-  deploymentsListAgentConfigs(): Promise<RuntimeAgentInfo[]>;
-  deploymentsDeploy(configDir: string): Promise<string>;
-  deploymentsDeployWithConfig(options: DeployWithConfigOptions): Promise<string>;
-  deploymentsStop(id: string): Promise<void>;
-  deploymentsRestart(id: string): Promise<void>;
-  deploymentsRemove(id: string, deleteWorkspace?: boolean): Promise<void>;
-  deploymentsGetStatus(id: string): Promise<RuntimeStatus>;
-  deploymentsUpdateConfig(
-    id: string,
-    patch: {
-      name?: string;
-      model?: string;
-      fallbackModels?: string[];
-      tools?: string[];
-      systemPrompt?: string;
-      mcpServers?: string[];
-    },
+  // Chat
+  chatCreateConversation(agentId: string): Promise<McConversation>;
+  chatListConversations(): Promise<McConversation[]>;
+  chatGetMessages(conversationId: string): Promise<McMessage[]>;
+  chatSend(
+    conversationId: string,
+    text: string,
+    images?: { mediaType: string; data: string }[],
   ): Promise<void>;
-  deploymentsLogsSubscribe(id: string): Promise<void>;
-  deploymentsLogsUnsubscribe(id: string): Promise<void>;
-  deploymentsGetChannelHealth(deploymentId: string): Promise<ChannelHealthEntry[]>;
+  chatCancel(conversationId: string): void;
+  chatRenameConversation(conversationId: string, title: string): Promise<void>;
+  chatDeleteConversation(conversationId: string): Promise<void>;
+  chatAnswerQuestion(conversationId: string, questionId: string, answer: string): void;
 
-  // Messaging Apps
-  messagingAppsList(): Promise<MessagingApp[]>;
-  messagingAppsGet(id: string): Promise<MessagingApp | null>;
-  messagingAppsCreate(
-    app: Omit<MessagingApp, 'id' | 'createdAt' | 'credentialsKey'>,
-    token: string,
-  ): Promise<MessagingApp>;
-  messagingAppsUpdate(id: string, patch: Partial<MessagingApp>): Promise<void>;
-  messagingAppsDelete(id: string): Promise<void>;
-  messagingAppsVerifyTelegramToken(token: string): Promise<TelegramBotInfo>;
-  messagingAppsGetLog(
-    appId: string,
-    limit?: number,
-  ): Promise<
-    Array<{
-      timestamp: string;
-      senderId: string;
-      senderName: string;
-      text: string;
-      outcome: string;
-      agentName?: string;
-      blockReason?: string;
-    }>
-  >;
+  // Events (push from main -> renderer)
+  onAgentEvent(callback: (conversationId: string, event: McAgentEvent) => void): () => void;
+  onChatDone(callback: (conversationId: string) => void): () => void;
+  onChatError(callback: (conversationId: string, error: string) => void): () => void;
 
-  // WhatsApp
-  whatsappStartPairing(appId: string): Promise<void>;
-  whatsappOnQr(callback: (appId: string, qrDataUrl: string) => void): () => void;
-  whatsappOnLinked(callback: (appId: string) => void): () => void;
-  whatsappOnError(callback: (appId: string, message: string) => void): () => void;
-  messagingAppsCreateWhatsApp(
-    appId: string,
-    app: Omit<MessagingApp, 'id' | 'createdAt' | 'credentialsKey'>,
-  ): Promise<MessagingApp>;
-
-  // Skills
-  skillsList(deploymentId: string, agentName: string): Promise<SkillInfo[]>;
-  skillsGet(
-    deploymentId: string,
-    agentName: string,
-    skillName: string,
-  ): Promise<SkillContent | null>;
-  skillsUpdateContent(
-    deploymentId: string,
-    agentName: string,
-    skillName: string,
-    content: string,
-  ): Promise<void>;
+  // Skills (gateway passthrough)
+  skillsList(agentId: string): Promise<SkillInfo[]>;
+  skillsGet(agentId: string, skillName: string): Promise<SkillContent | null>;
+  skillsUpdateContent(agentId: string, skillName: string, content: string): Promise<void>;
   skillsCreate(
-    deploymentId: string,
-    agentName: string,
+    agentId: string,
     name: string,
     description: string,
     content: string,
   ): Promise<SkillContent>;
-  skillsGetConfig(deploymentId: string, agentName: string): Promise<SkillsConfig>;
-  skillsUpdateConfig(
-    deploymentId: string,
-    agentName: string,
-    config: SkillsConfig,
-  ): Promise<{ requiresRestart: boolean }>;
-
-  // Events (push from main → renderer)
-  onDeploymentLog(callback: (id: string, line: string) => void): () => void;
-  onDeploymentStatusChange(callback: (id: string, status: string) => void): () => void;
+  skillsGetConfig(agentId: string): Promise<SkillsConfig>;
+  skillsUpdateConfig(agentId: string, config: SkillsConfig): Promise<{ requiresRestart: boolean }>;
 
   // Settings
   settingsGet(): Promise<AppSettings>;
   settingsSet(patch: Partial<AppSettings>): Promise<void>;
 
-  // Gateway
-  gatewayGetStatus(): Promise<GatewayStatus>;
-  gatewayOnStatus(callback: (status: GatewayStatus) => void): () => void;
-
-  // Credentials
-  onCredentialsPushFailed(callback: (failures: CredentialPushFailure[]) => void): () => void;
-  onCredentialStatusChanged(callback: (change: CredentialStatusChange) => void): () => void;
-  credentialsGetAffectedAgents(provider: string, keyName: string): Promise<AffectedAgent[]>;
-  credentialsReassignKey(
-    provider: string,
-    assignments: { deploymentId: string; newKeyName: string | null }[],
-  ): Promise<void>;
-  deploymentsUpdateCredentialStatus(
-    deploymentId: string,
-    status: 'ok' | 'missing' | 'invalid',
-    provider?: string,
-    detail?: string,
-  ): Promise<void>;
-
   // Models & Tools
-  modelsList(): Promise<Array<{ value: string; label: string; provider: string }>>;
-  modelsRefresh(): Promise<Array<{ value: string; label: string; provider: string }>>;
+  modelsList(): Promise<CachedModel[]>;
+  modelsRefresh(): Promise<CachedModel[]>;
   toolsList(): Promise<string[]>;
 
   // Connectors (MCP)
@@ -341,11 +179,25 @@ export interface MissionControlAPI {
   mcpSetAllowlist(patterns: string[]): Promise<void>;
   mcpReauthorize(name: string): Promise<void>;
 
-  // MCP status events (push from main → renderer)
+  // MCP status events (push from main -> renderer)
   onMcpStatusChanged(callback: (change: McpStatusChange) => void): () => void;
+
+  // Gateway
+  gatewayGetStatus(): Promise<GatewayStatus>;
+  gatewayOnStatus(callback: (status: GatewayStatus) => void): () => void;
 
   // Gateway events (SSE)
   onGatewayEvent(callback: (eventType: string, data: string) => void): () => void;
+
+  // Setup (simplified — no password)
+  setupStatus(): Promise<{ needsSetup: boolean; gatewayReady: boolean }>;
+  setupEnsureGateway(): Promise<void>;
+
+  // WhatsApp
+  whatsappStartPairing(appId: string): Promise<void>;
+  whatsappOnQr(callback: (appId: string, qrDataUrl: string) => void): () => void;
+  whatsappOnLinked(callback: (appId: string) => void): () => void;
+  whatsappOnError(callback: (appId: string, message: string) => void): () => void;
 
   // Updates
   onUpdateAvailable(callback: (info: { version: string }) => void): () => void;
