@@ -224,6 +224,13 @@ export class ManagementClient {
     );
   }
 
+  async mcpReauthorizeServer(name: string): Promise<void> {
+    await this.request<{ ok: boolean }>(
+      'POST',
+      `/runtime/mcp/servers/${encodeURIComponent(name)}/reauthorize`,
+    );
+  }
+
   async mcpGetAllowlist(): Promise<string[]> {
     return this.request<string[]>('GET', '/runtime/mcp/allowlist');
   }
