@@ -499,7 +499,7 @@ function NewTelegramWizard(): JSX.Element {
             action={
               <button
                 type="button"
-                onClick={handleSave}
+                onClick={() => handleSave(false)}
                 disabled={!whitelistIds.trim() || saving}
                 className="inline-flex items-center gap-2 bg-accent px-5 py-2 text-sm text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
               >
