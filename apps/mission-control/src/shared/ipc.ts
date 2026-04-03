@@ -242,6 +242,20 @@ export interface MissionControlAPI {
   messagingAppsUpdate(id: string, patch: Partial<MessagingApp>): Promise<void>;
   messagingAppsDelete(id: string): Promise<void>;
   messagingAppsVerifyTelegramToken(token: string): Promise<TelegramBotInfo>;
+  messagingAppsGetLog(
+    appId: string,
+    limit?: number,
+  ): Promise<
+    Array<{
+      timestamp: string;
+      senderId: string;
+      senderName: string;
+      text: string;
+      outcome: string;
+      agentName?: string;
+      blockReason?: string;
+    }>
+  >;
 
   // WhatsApp
   whatsappStartPairing(appId: string): Promise<void>;

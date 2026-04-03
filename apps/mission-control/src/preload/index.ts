@@ -117,6 +117,8 @@ const api: MissionControlAPI = {
   messagingAppsDelete: (id: string) => ipcRenderer.invoke('messagingApps:delete', id),
   messagingAppsVerifyTelegramToken: (token: string) =>
     ipcRenderer.invoke('messagingApps:verifyTelegramToken', token),
+  messagingAppsGetLog: (appId: string, limit?: number) =>
+    ipcRenderer.invoke('messagingApps:getLog', appId, limit),
   whatsappStartPairing: (appId: string) => ipcRenderer.invoke('whatsapp:startPairing', appId),
   whatsappOnQr: (callback: (appId: string, qrDataUrl: string) => void) => {
     const listener = (_event: Electron.IpcRendererEvent, appId: string, qrDataUrl: string) =>
