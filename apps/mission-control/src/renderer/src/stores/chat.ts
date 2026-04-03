@@ -10,10 +10,10 @@ interface ChatState {
   sending: Record<string, boolean>;
   unreadConversations: Set<string>;
 
-  loadConversations(deploymentId: string): Promise<void>;
+  loadConversations(): Promise<void>;
   loadAllConversations(): Promise<void>;
   selectConversation(id: string): Promise<void>;
-  createConversation(deploymentId: string, agentName: string): Promise<McConversation>;
+  createConversation(agentId: string): Promise<McConversation>;
   renameConversation(id: string, title: string): Promise<void>;
   deleteConversation(id: string): Promise<void>;
   sendMessage(conversationId: string, text: string): Promise<void>;
@@ -62,14 +62,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
   sending: {},
   unreadConversations: new Set(),
 
-  async loadConversations(deploymentId: string) {
-    const conversations = await window.api.chatListConversations(deploymentId);
+  async loadConversations() {
+    const conversations = await window.api.chatListConversations();
     conversations.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
     set({ conversations });
   },
 
   async loadAllConversations() {
-    const conversations = await window.api.chatListAllConversations();
+    const conversations = await window.api.chatListConversations();
     conversations.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
     set({ conversations });
   },
@@ -84,8 +84,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }
   },
 
-  async createConversation(deploymentId: string, agentName: string) {
-    const conversation = await window.api.chatCreateConversation(deploymentId, agentName);
+  async createConversation(agentId: string) {
+    const conversation = await window.api.chatCreateConversation(agentId);
     set((s) => ({
       conversations: [conversation, ...s.conversations],
       messages: { ...s.messages, [conversation.id]: [] },
@@ -144,7 +144,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       sending: { ...s.sending, [conversationId]: true },
     }));
     try {
-      await window.api.chatSendMessage(conversationId, text, images);
+      await window.api.chatSend(conversationId, text, images);
     } catch (err) {
       // Optimistic user message is kept — user can see what they sent and retry
       set((s) => ({ sending: { ...s.sending, [conversationId]: false } }));
@@ -226,13 +226,13 @@ export function initChatListeners(): void {
   if (initialized) return;
   initialized = true;
 
-  window.api.chatOnEvent((conversationId, event) => {
+  window.api.onAgentEvent((conversationId, event) => {
     useChatStore.getState().appendStreamingEvent(conversationId, event);
   });
-  window.api.chatOnDone((conversationId) => {
+  window.api.onChatDone((conversationId) => {
     useChatStore.getState().finalizeMessage(conversationId);
   });
-  window.api.chatOnError((conversationId, error) => {
+  window.api.onChatError((conversationId, error) => {
     useChatStore.getState().setMessageError(conversationId, error);
   });
 }

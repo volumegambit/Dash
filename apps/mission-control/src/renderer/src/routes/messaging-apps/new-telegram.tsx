@@ -1,8 +1,8 @@
 import { createFileRoute, useNavigate } from '@tanstack/react-router';
 import { AlertTriangle, ArrowLeft, ArrowRight, Check, CheckCircle, ExternalLink, Loader } from 'lucide-react';
 import { useEffect, useState } from 'react';
-import { useDeploymentsStore } from '../../stores/deployments';
-import { useMessagingAppsStore } from '../../stores/messaging-apps';
+import { useAgentsStore } from '../../stores/agents.js';
+import { useChannelsStore } from '../../stores/messaging-apps.js';
 
 type PathId = 'new' | 'know' | 'token';
 
@@ -64,19 +64,18 @@ function NewTelegramWizard(): JSX.Element {
   const [showOpenWarning, setShowOpenWarning] = useState(false);
 
   // Agent selection
-  const { deployments, loadDeployments } = useDeploymentsStore();
+  const { agents, loadAgents } = useAgentsStore();
   const [selectedAgent, setSelectedAgent] = useState<{
-    deploymentId: string;
-    agentName: string;
+    agentId: string;
   } | null>(null);
 
-  const { createApp } = useMessagingAppsStore();
+  const { createChannel } = useChannelsStore();
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState('');
 
   useEffect(() => {
-    loadDeployments();
-  }, [loadDeployments]);
+    loadAgents();
+  }, [loadAgents]);
 
   const steps = path ? PATH_STEPS[path] : [];
   const stepId: StepId = path ? steps[stepIndex] : 'choose-path';
@@ -95,20 +94,19 @@ function NewTelegramWizard(): JSX.Element {
     setStepIndex(0);
   }
 
-  // Build flat list of all agents across all running deployments
-  const availableAgents = deployments
-    .filter((d) => d.status === 'running')
-    .map((d) => ({
-      label: d.name,
-      deploymentId: d.id,
-      agentName: d.name,
+  // Build flat list of all active agents
+  const availableAgents = agents
+    .filter((a) => a.status === 'active' || a.status === 'registered')
+    .map((a) => ({
+      label: a.name,
+      agentId: a.id,
     }));
 
   async function handleVerifyToken() {
     setVerifying(true);
     setVerifyError('');
     try {
-      const info = await window.api.messagingAppsVerifyTelegramToken(token.trim());
+      const info = await window.api.channelsVerifyTelegramToken(token.trim());
       setBotInfo(info);
       setConnectionName(`${info.firstName}'s Bot`);
       goNext();
@@ -134,25 +132,20 @@ function NewTelegramWizard(): JSX.Element {
     setSaving(true);
     setSaveError('');
     try {
-      await createApp(
-        {
-          name: connectionName,
-          type: 'telegram',
-          enabled: true,
-          globalDenyList: [],
-          routing: [
-            {
-              id: `rule-${Date.now()}`,
-              condition,
-              targetAgentName: selectedAgent.agentName,
-              allowList: [],
-              denyList: [],
-            },
-          ],
-          metadata: botInfo ? { username: botInfo.username } : undefined,
-        },
+      await createChannel({
+        name: connectionName,
+        adapter: 'telegram',
         token,
-      );
+        globalDenyList: [],
+        routing: [
+          {
+            condition,
+            agentId: selectedAgent.agentId,
+            allowList: [],
+            denyList: [],
+          },
+        ],
+      });
       goNext(); // go to done step
     } catch (err) {
       setSaveError((err as Error).message);
@@ -274,31 +267,13 @@ function NewTelegramWizard(): JSX.Element {
             nextLabel="I've opened BotFather"
           >
             <p className="text-base leading-relaxed">
-              Telegram has an official tool called <strong>BotFather</strong> for creating bots. It
-              lives inside Telegram itself.
+              Telegram has an official tool called <strong>BotFather</strong> for creating bots.
             </p>
             <div className="mt-5 space-y-4">
               <Step number={1} text="Open Telegram on your phone or computer" />
               <Step number={2} text="In the search bar at the top, type: BotFather" />
-              <Step
-                number={3}
-                text="Tap the result that has a blue checkmark — that's the official one"
-              />
+              <Step number={3} text="Tap the result that has a blue checkmark" />
               <Step number={4} text='Tap the blue "START" button at the bottom' />
-            </div>
-            <div className="mt-4 border border-border bg-card-bg p-4 text-sm">
-              <p className="font-medium">Tip: use Telegram on the web</p>
-              <p className="mt-1 text-muted">
-                Open Telegram at{' '}
-                <button
-                  type="button"
-                  onClick={() => window.api.openExternal('https://web.telegram.org')}
-                  className="text-accent hover:underline"
-                >
-                  web.telegram.org
-                </button>{' '}
-                — it makes it easier to copy and paste the token in the next step.
-              </p>
             </div>
             <button
               type="button"
@@ -321,18 +296,9 @@ function NewTelegramWizard(): JSX.Element {
             <p className="text-base leading-relaxed">Inside BotFather, follow these steps:</p>
             <div className="mt-5 space-y-4">
               <Step number={1} text="/newbot and press Send" />
-              <Step
-                number={2}
-                text='BotFather asks for a name. This is what people see — e.g. "My Assistant"'
-              />
-              <Step
-                number={3}
-                text='BotFather asks for a username. This must end in "bot" — e.g. "myassistant_bot"'
-              />
+              <Step number={2} text='BotFather asks for a name — e.g. "My Assistant"' />
+              <Step number={3} text='BotFather asks for a username ending in "bot"' />
               <Step number={4} text="BotFather will confirm your bot is created" />
-            </div>
-            <div className="mt-4 border border-border bg-card-bg p-4 text-sm text-muted">
-              The username can't be changed later, but the display name can. Keep it simple.
             </div>
           </WizardStep>
         )}
@@ -345,9 +311,7 @@ function NewTelegramWizard(): JSX.Element {
             nextLabel="I've copied the token"
           >
             <p className="text-base leading-relaxed">
-              After creating your bot, BotFather shows you a long code called a{' '}
-              <strong>token</strong>. This is the "key" that lets your assistant connect to your
-              bot.
+              After creating your bot, BotFather shows you a <strong>token</strong>. Copy it.
             </p>
             <div className="mt-4 border border-border bg-card-bg p-4 text-sm">
               <p className="font-medium text-foreground">Keep this code private</p>
@@ -357,14 +321,7 @@ function NewTelegramWizard(): JSX.Element {
                   110201543:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw
                 </code>
               </p>
-              <p className="mt-2 text-muted">
-                Copy the entire code — tap and hold it, then tap Copy.
-              </p>
             </div>
-            <p className="mt-4 text-sm text-muted">
-              Don't worry if the message disappears — you can always ask BotFather for it again by
-              sending <code className="font-[family-name:var(--font-mono)]">/mybots</code>.
-            </p>
           </WizardStep>
         )}
 
@@ -386,7 +343,7 @@ function NewTelegramWizard(): JSX.Element {
             }
           >
             <p className="text-base leading-relaxed">
-              Paste the token you copied from BotFather into the box below:
+              Paste the token you copied from BotFather:
             </p>
             <div className="mt-5">
               <label
@@ -407,9 +364,6 @@ function NewTelegramWizard(): JSX.Element {
                 className="w-full border border-border bg-card-bg px-3 py-2 font-[family-name:var(--font-mono)] text-sm focus:border-accent focus:outline-none"
               />
               {verifyError && <p className="mt-2 text-sm text-red">Error: {verifyError}</p>}
-              <p className="mt-2 text-xs text-muted">
-                We'll verify the token is correct before continuing.
-              </p>
             </div>
           </WizardStep>
         )}
@@ -432,8 +386,7 @@ function NewTelegramWizard(): JSX.Element {
               </div>
             )}
             <p className="text-base leading-relaxed">
-              Give this connection a friendly name so you can recognise it later — something that
-              describes what it's for.
+              Give this connection a friendly name.
             </p>
             <div className="mt-5">
               <label
@@ -447,7 +400,7 @@ function NewTelegramWizard(): JSX.Element {
                 type="text"
                 value={connectionName}
                 onChange={(e) => setConnectionName(e.target.value)}
-                placeholder='e.g. "Customer Support Bot" or "Family Chat Bot"'
+                placeholder='e.g. "Customer Support Bot"'
                 className="w-full border border-border bg-card-bg px-3 py-2 text-sm focus:border-accent focus:outline-none"
               />
             </div>
@@ -471,14 +424,11 @@ function NewTelegramWizard(): JSX.Element {
               <div className="mt-4 flex flex-col gap-2">
                 {availableAgents.map((a) => (
                   <button
-                    key={`${a.deploymentId}-${a.agentName}`}
+                    key={a.agentId}
                     type="button"
-                    onClick={() =>
-                      setSelectedAgent({ deploymentId: a.deploymentId, agentName: a.agentName })
-                    }
+                    onClick={() => setSelectedAgent({ agentId: a.agentId })}
                     className={`border-2 px-4 py-3 text-left text-sm transition-colors ${
-                      selectedAgent?.agentName === a.agentName &&
-                      selectedAgent?.deploymentId === a.deploymentId
+                      selectedAgent?.agentId === a.agentId
                         ? 'border-accent bg-accent/10'
                         : 'border-border hover:border-accent/50 hover:bg-card-hover'
                     }`}
@@ -509,8 +459,7 @@ function NewTelegramWizard(): JSX.Element {
             }
           >
             <p className="text-base leading-relaxed">
-              For security, add the Telegram user IDs of people who are allowed to message this bot.
-              Anyone not on this list will be ignored.
+              Add the Telegram user IDs of people allowed to message this bot.
             </p>
 
             <div className="mt-5 border border-border bg-card-bg p-4 text-sm">
@@ -518,7 +467,7 @@ function NewTelegramWizard(): JSX.Element {
               <div className="mt-3 space-y-3">
                 <Step number={1} text='Open Telegram and search for "@userinfobot"' />
                 <Step number={2} text="Start a chat with it and send any message" />
-                <Step number={3} text="It will reply with your user ID — a number like 123456789" />
+                <Step number={3} text="It will reply with your user ID" />
               </div>
               <button
                 type="button"
@@ -548,9 +497,6 @@ function NewTelegramWizard(): JSX.Element {
                 placeholder="123456789, 987654321"
                 className="w-full border border-border bg-card-bg px-3 py-2 font-[family-name:var(--font-mono)] text-sm focus:border-accent focus:outline-none"
               />
-              <p className="mt-2 text-xs text-muted">
-                You can add more people later in the routing rules settings.
-              </p>
             </div>
 
             {!showOpenWarning && (
@@ -570,9 +516,7 @@ function NewTelegramWizard(): JSX.Element {
                   <div>
                     <p className="text-sm font-medium text-red">This bot will be publicly accessible</p>
                     <p className="mt-1 text-xs text-muted">
-                      Anyone who finds your bot's username on Telegram will be able to message
-                      your agent and use any tools it has access to. Only do this if you intend
-                      to run a public bot.
+                      Anyone who finds your bot on Telegram will be able to message your agent.
                     </p>
                     <div className="mt-3 flex gap-2">
                       <button

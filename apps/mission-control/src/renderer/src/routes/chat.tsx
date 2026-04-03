@@ -27,10 +27,9 @@ import type { McAgentEvent } from '../../../shared/ipc.js';
 import { detectLanguage } from '../components/DiffView.js';
 import { Markdown } from '../components/Markdown.js';
 import { HighlightedCode, ToolResult } from '../components/ToolResult.js';
-import { useAgentConfigsStore } from '../stores/agent-configs.js';
+import { useAgentsStore } from '../stores/agents.js';
 import { useChatStore } from '../stores/chat.js';
 import { useConnectorsStore } from '../stores/connectors.js';
-import { useDeploymentsStore } from '../stores/deployments.js';
 import {
   type TodoItem,
   formatDetails,
@@ -934,18 +933,15 @@ function AgentSelectionModal({
   onClose,
   defaultAgent,
 }: {
-  agents: { deploymentId: string; deploymentName: string; agentName: string }[];
-  onSelect: (deploymentId: string, agentName: string) => void;
+  agents: { agentId: string; agentName: string }[];
+  onSelect: (agentId: string) => void;
   onClose: () => void;
-  defaultAgent?: { deploymentId: string; agentName: string } | null;
+  defaultAgent?: { agentId: string } | null;
 }): JSX.Element {
   const defaultIndex = defaultAgent
     ? Math.max(
         0,
-        agents.findIndex(
-          (a) =>
-            a.deploymentId === defaultAgent.deploymentId && a.agentName === defaultAgent.agentName,
-        ),
+        agents.findIndex((a) => a.agentId === defaultAgent.agentId),
       )
     : 0;
   const [selectedIndex, setSelectedIndex] = useState(defaultIndex);
@@ -953,10 +949,8 @@ function AgentSelectionModal({
   const searchInputRef = useRef<HTMLInputElement>(null);
 
   const filtered = searchTerm.trim()
-    ? agents.filter(
-        (a) =>
-          a.agentName.toLowerCase().includes(searchTerm.toLowerCase()) ||
-          a.deploymentName.toLowerCase().includes(searchTerm.toLowerCase()),
+    ? agents.filter((a) =>
+        a.agentName.toLowerCase().includes(searchTerm.toLowerCase()),
       )
     : agents;
 
@@ -986,7 +980,7 @@ function AgentSelectionModal({
       } else if (e.key === 'Enter') {
         e.preventDefault();
         if (filtered[selectedIndex]) {
-          onSelect(filtered[selectedIndex].deploymentId, filtered[selectedIndex].agentName);
+          onSelect(filtered[selectedIndex].agentId);
         }
       } else if (e.key === 'Escape') {
         e.preventDefault();
@@ -1029,10 +1023,10 @@ function AgentSelectionModal({
             <li className="px-4 py-3 text-xs text-muted">No agents found.</li>
           ) : (
             filtered.map((agent, i) => (
-              <li key={`${agent.deploymentId}-${agent.agentName}`}>
+              <li key={agent.agentId}>
                 <button
                   type="button"
-                  onClick={() => onSelect(agent.deploymentId, agent.agentName)}
+                  onClick={() => onSelect(agent.agentId)}
                   onMouseEnter={() => setSelectedIndex(i)}
                   className={`w-full text-left px-4 py-2.5 transition-colors ${
                     i === selectedIndex
@@ -1057,7 +1051,7 @@ function AgentSelectionModal({
 
 export function Chat(): JSX.Element {
   const search = Route.useSearch();
-  const { deployments, loadDeployments } = useDeploymentsStore();
+  const { agents, loadAgents } = useAgentsStore();
   const {
     conversations,
     selectedConversationId,
@@ -1075,10 +1069,9 @@ export function Chat(): JSX.Element {
   } = useChatStore();
 
   const connectors = useConnectorsStore((s) => s.connectors);
-  const configs = useAgentConfigsStore((s) => s.configs);
 
   const navigate = useNavigate();
-  const runningDeployments = deployments.filter((d) => d.status === 'running');
+  const activeAgents = agents.filter((a) => a.status === 'active' || a.status === 'registered');
   const [input, setInput] = useState('');
   const [attachedImages, setAttachedImages] = useState<
     { id: string; preview: string; mediaType: string; data: string }[]
@@ -1091,22 +1084,22 @@ export function Chat(): JSX.Element {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Resolve the deployment for the selected conversation
+  // Resolve the agent for the selected conversation
   const selectedConversation = selectedConversationId
     ? conversations.find((c) => c.id === selectedConversationId)
     : null;
-  const selectedDeploymentId = selectedConversation?.deploymentId ?? '';
+  const selectedAgentId = selectedConversation?.agentId ?? '';
 
   const navigateToLogs = useCallback(
     (timestamp: string) => {
-      if (!selectedDeploymentId) return;
+      if (!selectedAgentId) return;
       navigate({
         to: '/agents/$id',
-        params: { id: selectedDeploymentId },
-        search: { tab: 'monitor', since: timestamp, level: 'error' },
+        params: { id: selectedAgentId },
+        search: { tab: 'monitor' },
       });
     },
-    [selectedDeploymentId, navigate],
+    [selectedAgentId, navigate],
   );
 
   const handleAnswerQuestion = useCallback(
@@ -1123,8 +1116,8 @@ export function Chat(): JSX.Element {
   );
 
   useEffect(() => {
-    loadDeployments();
-  }, [loadDeployments]);
+    loadAgents();
+  }, [loadAgents]);
 
   // Load all conversations on mount
   useEffect(() => {
@@ -1177,15 +1170,14 @@ export function Chat(): JSX.Element {
     isNearBottom.current = true;
   }, [selectedConversationId]);
 
-  // Build available agents list from running deployments
+  // Build available agents list from active agents
   const availableAgents = useMemo(
     () =>
-      runningDeployments.map((dep) => ({
-        deploymentId: dep.id,
-        deploymentName: dep.name,
-        agentName: dep.name,
+      activeAgents.map((a) => ({
+        agentId: a.id,
+        agentName: a.name,
       })),
-    [runningDeployments],
+    [activeAgents],
   );
 
   const handleNewConversation = useCallback(() => {
@@ -1193,7 +1185,7 @@ export function Chat(): JSX.Element {
     // If only one agent, create immediately
     if (availableAgents.length === 1) {
       const agent = availableAgents[0];
-      createConversation(agent.deploymentId, agent.agentName)
+      createConversation(agent.agentId)
         .then((conv) => selectConversation(conv.id))
         .catch((err) => console.error('[Chat] Failed to create conversation:', err));
       return;
@@ -1202,10 +1194,10 @@ export function Chat(): JSX.Element {
   }, [availableAgents, createConversation, selectConversation]);
 
   const handleAgentSelected = useCallback(
-    async (deploymentId: string, agentName: string) => {
+    async (agentId: string) => {
       setShowAgentModal(false);
       try {
-        const conv = await createConversation(deploymentId, agentName);
+        const conv = await createConversation(agentId);
         await selectConversation(conv.id);
       } catch (err) {
         console.error('[Chat] Failed to create conversation:', err);
@@ -1228,8 +1220,8 @@ export function Chat(): JSX.Element {
 
   // If navigated with search params, auto-create conversation
   useEffect(() => {
-    if (search.deploymentId && search.agentName) {
-      createConversation(search.deploymentId, search.agentName)
+    if (search.agentId) {
+      createConversation(search.agentId)
         .then((conv) => selectConversation(conv.id))
         .catch((err) => console.error('[Chat] Failed to create conversation from search:', err));
     }
@@ -1313,16 +1305,10 @@ export function Chat(): JSX.Element {
   }, [input, attachedImages, selectedConversationId, isStreaming, sendMessage]);
 
   // Resolve model for the selected conversation's agent
-  const selectedDeployment = deployments.find((d) => d.id === selectedDeploymentId);
-  const credentialIssue =
-    selectedDeployment?.credentialStatus === 'missing' ||
-    selectedDeployment?.credentialStatus === 'invalid'
-      ? selectedDeployment
-      : null;
+  const selectedAgent = agents.find((a) => a.id === selectedAgentId);
   const mcpIssue = useMemo(() => {
-    if (!selectedDeployment || selectedDeployment.status !== 'running') return null;
-    const agentConfig = configs[selectedDeployment.name];
-    const mcpNames = agentConfig?.mcpServers ?? [];
+    if (!selectedAgent) return null;
+    const mcpNames = selectedAgent.config.mcpServers ?? [];
     for (const name of mcpNames) {
       const connector = connectors.find((c: { name: string; status: string }) => c.name === name);
       if (!connector) continue;
@@ -1334,52 +1320,9 @@ export function Chat(): JSX.Element {
       }
     }
     return null;
-  }, [selectedDeployment, configs, connectors]);
-  const agentConfig = selectedConversation
-    ? (selectedDeployment?.config?.agents?.[selectedConversation.agentName] ??
-      selectedDeployment?.config?.agent)
-    : undefined;
-  const activeModel = agentConfig?.model;
-  const activeWorkspace = agentConfig?.workspace ?? selectedDeployment?.workspace;
-  const managedSkillsDir =
-    selectedDeployment?.configDir && selectedConversation
-      ? `${selectedDeployment.configDir.replace(/\/[^/]+$/, '')}/skills/${selectedConversation.agentName}`
-      : undefined;
-
-  // Detect auth errors in streaming events and update credential status
-  useEffect(() => {
-    if (!selectedDeployment) return;
-    const allEvents = [
-      ...liveEvents,
-      ...selectedMessages.flatMap((m) => (m.content.type === 'assistant' ? m.content.events : [])),
-    ] as McAgentEvent[];
-    const authError = allEvents.find((e) => {
-      if (e.type !== 'error') return false;
-      const msg =
-        typeof e.error === 'string'
-          ? e.error
-          : ((e.error as unknown as { message?: string })?.message ?? '');
-      return (
-        msg.includes('401') ||
-        msg.includes('403') ||
-        msg.toLowerCase().includes('authentication') ||
-        msg.toLowerCase().includes('unauthorized') ||
-        /invalid.*key/i.test(msg)
-      );
-    });
-    if (authError && selectedDeployment.credentialStatus !== 'invalid') {
-      const msg =
-        typeof authError.error === 'string'
-          ? authError.error
-          : ((authError.error as unknown as { message?: string })?.message ?? 'Auth error');
-      window.api.deploymentsUpdateCredentialStatus(
-        selectedDeployment.id,
-        'invalid',
-        undefined,
-        msg,
-      );
-    }
-  }, [liveEvents, selectedMessages, selectedDeployment]);
+  }, [selectedAgent, connectors]);
+  const activeModel = selectedAgent?.config.model;
+  const activeWorkspace = selectedAgent?.config.workspace;
 
   const latestTodos = useMemo(
     () => extractLatestTodos(selectedMessages, liveEvents),
@@ -1432,10 +1375,7 @@ export function Chat(): JSX.Element {
           onClose={() => setShowAgentModal(false)}
           defaultAgent={
             selectedConversation
-              ? {
-                  deploymentId: selectedConversation.deploymentId,
-                  agentName: selectedConversation.agentName,
-                }
+              ? { agentId: selectedConversation.agentId }
               : null
           }
         />
@@ -1491,38 +1431,25 @@ export function Chat(): JSX.Element {
         >
           {(activeModel || selectedConversation) && (
             <div className="flex items-center gap-3 border-b border-border px-6 py-1.5 shrink-0">
-              {selectedConversation && (
+              {selectedAgent && (
                 <span className="text-xs font-medium text-accent">
-                  {selectedConversation.agentName}
+                  {selectedAgent.name}
                 </span>
               )}
               {activeModel && (
                 <span className="text-xs text-muted">{formatModelName(activeModel)}</span>
               )}
-              {(activeWorkspace || managedSkillsDir) && (
+              {activeWorkspace && (
                 <div className="ml-auto flex items-center gap-4">
-                  {activeWorkspace && (
-                    <button
-                      type="button"
-                      onClick={() => window.api.openPath(activeWorkspace)}
-                      className="flex items-center gap-1.5 text-xs text-muted transition-colors hover:text-foreground"
-                      title={`Workspace: ${activeWorkspace}`}
-                    >
-                      <FolderOpen size={12} />
-                      <span className="max-w-[300px] truncate">{activeWorkspace}</span>
-                    </button>
-                  )}
-                  {managedSkillsDir && (
-                    <button
-                      type="button"
-                      onClick={() => window.api.openPath(managedSkillsDir)}
-                      className="flex items-center gap-1.5 text-xs text-muted transition-colors hover:text-foreground"
-                      title={`Skills: ${managedSkillsDir}`}
-                    >
-                      <FolderOpen size={12} />
-                      <span>Skills</span>
-                    </button>
-                  )}
+                  <button
+                    type="button"
+                    onClick={() => window.api.openPath(activeWorkspace)}
+                    className="flex items-center gap-1.5 text-xs text-muted transition-colors hover:text-foreground"
+                    title={`Workspace: ${activeWorkspace}`}
+                  >
+                    <FolderOpen size={12} />
+                    <span className="max-w-[300px] truncate">{activeWorkspace}</span>
+                  </button>
                 </div>
               )}
             </div>
@@ -1535,7 +1462,7 @@ export function Chat(): JSX.Element {
           >
             {!selectedConversationId ? (
               <p className="text-center text-sm text-muted mt-8">
-                {runningDeployments.length === 0
+                {activeAgents.length === 0
                   ? 'Deploy an agent first, then come back to chat.'
                   : 'Select a conversation or press ⌘N to start a new one.'}
               </p>
@@ -1570,28 +1497,8 @@ export function Chat(): JSX.Element {
 
           {latestTodos && latestTodos.length > 0 && <PinnedTodoPanel todos={latestTodos} />}
 
-          {/* Credential warning banner */}
-          {credentialIssue?.credentialStatus === 'missing' && (
-            <div className="bg-yellow-900/30 border-t border-yellow-700/50 px-6 py-3 flex items-center justify-between shrink-0">
-              <span className="text-sm text-yellow-200">
-                This agent is missing an API key
-                {credentialIssue.credentialProvider
-                  ? ` for ${credentialIssue.credentialProvider}`
-                  : ''}
-                . Add or reassign a key to continue.
-              </span>
-              <button
-                type="button"
-                onClick={() => navigate({ to: '/connections' })}
-                className="shrink-0 rounded-lg bg-yellow-700/50 px-3 py-1.5 text-xs font-medium text-yellow-100 hover:bg-yellow-700/70"
-              >
-                Go to AI Providers
-              </button>
-            </div>
-          )}
-
           {/* MCP connector warning banner */}
-          {mcpIssue && !credentialIssue && (
+          {mcpIssue && (
             <div className="bg-yellow-900/30 border-t border-yellow-700/50 px-6 py-3 flex items-center justify-between shrink-0">
               <span className="text-sm text-yellow-200">
                 {mcpIssue.status === 'needs_reauth'
@@ -1676,8 +1583,7 @@ export function Chat(): JSX.Element {
                   }
                   disabled={
                     !selectedConversationId ||
-                    isStreaming ||
-                    credentialIssue?.credentialStatus === 'missing'
+                    isStreaming
                   }
                   className="flex-1 bg-[#141414] border border-border px-4 py-3 text-sm text-foreground placeholder:text-muted focus:border-accent focus:outline-none disabled:opacity-50 resize-none"
                 />
@@ -1714,8 +1620,7 @@ export function Chat(): JSX.Element {
                     type="submit"
                     disabled={
                       (!input.trim() && attachedImages.length === 0) ||
-                      !selectedConversationId ||
-                      credentialIssue?.credentialStatus === 'missing'
+                      !selectedConversationId
                     }
                     className="bg-accent text-white p-2.5 hover:bg-primary-hover disabled:opacity-50 transition-colors shrink-0"
                   >
@@ -1733,8 +1638,7 @@ export function Chat(): JSX.Element {
 
 export const Route = createFileRoute('/chat')({
   validateSearch: (search: Record<string, unknown>) => ({
-    deploymentId: typeof search.deploymentId === 'string' ? search.deploymentId : '',
-    agentName: typeof search.agentName === 'string' ? search.agentName : '',
+    agentId: typeof search.agentId === 'string' ? search.agentId : '',
   }),
   component: Chat,
 });

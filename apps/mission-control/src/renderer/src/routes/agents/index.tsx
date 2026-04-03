@@ -1,37 +1,15 @@
-import type { AgentDeployment } from '@dash/mc';
+import type { GatewayAgent } from '@dash/mc';
 import { Link, createFileRoute, useNavigate } from '@tanstack/react-router';
-import { Bot, Plus, Search, Square, Trash2 } from 'lucide-react';
+import { Bot, Plus, Search, Trash2 } from 'lucide-react';
 import { useEffect, useState } from 'react';
-import type { McpConnectorInfo, RuntimeAgentConfig } from '../../../../shared/ipc.js';
-import { useAgentConfigsStore } from '../../stores/agent-configs.js';
+import type { McpConnectorInfo } from '../../../../shared/ipc.js';
+import { useAgentsStore } from '../../stores/agents.js';
 import { useConnectorsStore } from '../../stores/connectors.js';
-import { useDeploymentsStore } from '../../stores/deployments';
-
-function getModel(
-  configs: Record<string, RuntimeAgentConfig>,
-  deployment: AgentDeployment,
-): string {
-  const cfg = configs[deployment.name];
-  return cfg?.model ?? '—';
-}
 
 function truncateModel(model: string): string {
-  // Strip provider prefix like "anthropic/claude-3-5-sonnet-20241022" → "claude-3-5-sonnet..."
   const parts = model.split('/');
   const name = parts[parts.length - 1] ?? model;
   return name.length > 24 ? `${name.slice(0, 22)}…` : name;
-}
-
-function getTools(
-  configs: Record<string, RuntimeAgentConfig>,
-  deployment: AgentDeployment,
-): number {
-  const cfg = configs[deployment.name];
-  return cfg?.tools?.length ?? 0;
-}
-
-function getChannelCount(deployment: AgentDeployment): number {
-  return Object.keys(deployment.config?.channels ?? {}).length;
 }
 
 function relativeTime(dateStr: string): string {
@@ -47,12 +25,10 @@ function relativeTime(dateStr: string): string {
 }
 
 function mcpIssueText(
-  deployment: AgentDeployment,
-  configs: Record<string, RuntimeAgentConfig>,
+  agent: GatewayAgent,
   connectors: McpConnectorInfo[],
 ): string | null {
-  const cfg = configs[deployment.name];
-  const mcpNames = cfg?.mcpServers ?? [];
+  const mcpNames = agent.config.mcpServers ?? [];
   if (mcpNames.length === 0) return null;
 
   for (const name of mcpNames) {
@@ -66,29 +42,17 @@ function mcpIssueText(
 }
 
 function statusDotColor(
-  deployment: AgentDeployment,
-  configs: Record<string, RuntimeAgentConfig>,
+  agent: GatewayAgent,
   connectors: McpConnectorInfo[],
 ): string {
-  // Credential issues take priority
-  if (
-    deployment.status === 'running' &&
-    (deployment.credentialStatus === 'missing' || deployment.credentialStatus === 'invalid')
-  ) {
-    return 'bg-yellow';
-  }
-  // MCP issues
-  if (deployment.status === 'running' && mcpIssueText(deployment, configs, connectors)) {
-    return 'bg-yellow';
-  }
-  if (deployment.status === 'running') return 'bg-green';
-  if (deployment.status === 'error' || deployment.status === 'stopped') return 'bg-red';
-  return 'bg-yellow'; // provisioning / starting
+  const isActive = agent.status === 'active' || agent.status === 'registered';
+  if (isActive && mcpIssueText(agent, connectors)) return 'bg-yellow';
+  if (isActive) return 'bg-green';
+  return 'bg-red'; // disabled
 }
 
 function Agents(): JSX.Element {
-  const { deployments, loading, loadDeployments, stop, remove } = useDeploymentsStore();
-  const configs = useAgentConfigsStore((s) => s.configs);
+  const { agents, loading, loadAgents, removeAgent } = useAgentsStore();
   const connectors = useConnectorsStore((s) => s.connectors);
   const loadConnectors = useConnectorsStore((s) => s.loadConnectors);
   const navigate = useNavigate();
@@ -96,21 +60,19 @@ function Agents(): JSX.Element {
   const [removeTarget, setRemoveTarget] = useState<{
     id: string;
     name: string;
-    workspace?: string;
   } | null>(null);
-  const [deleteWorkspace, setDeleteWorkspace] = useState(false);
 
   useEffect(() => {
-    loadDeployments();
+    loadAgents();
     loadConnectors();
-  }, [loadDeployments, loadConnectors]);
+  }, [loadAgents, loadConnectors]);
 
   useEffect(() => {
     const unsub = useConnectorsStore.getState().initConnectorListeners();
     return unsub;
   }, []);
 
-  const filtered = deployments.filter((d) => d.name.toLowerCase().includes(search.toLowerCase()));
+  const filtered = agents.filter((a) => a.name.toLowerCase().includes(search.toLowerCase()));
 
   return (
     <div className="flex flex-col h-full overflow-hidden">
@@ -140,7 +102,7 @@ function Agents(): JSX.Element {
 
       {/* Body */}
       <div className="p-8 flex flex-col gap-4 flex-1 overflow-y-auto">
-        {loading && deployments.length === 0 ? (
+        {loading && agents.length === 0 ? (
           <div className="flex flex-1 items-center justify-center">
             <div className="flex gap-1.5 items-center text-muted text-sm">
               <span className="animate-bounce [animation-delay:0ms]">•</span>
@@ -148,7 +110,7 @@ function Agents(): JSX.Element {
               <span className="animate-bounce [animation-delay:300ms]">•</span>
             </div>
           </div>
-        ) : deployments.length === 0 ? (
+        ) : agents.length === 0 ? (
           <div className="border border-border bg-card-bg p-8 text-center">
             <Bot size={24} className="mx-auto mb-2 text-muted" />
             <p className="text-sm text-muted">No agents deployed yet.</p>
@@ -181,11 +143,8 @@ function Agents(): JSX.Element {
                 <span className="w-20 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-wider text-muted">
                   TOOLS
                 </span>
-                <span className="w-24 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-wider text-muted">
-                  CHANNELS
-                </span>
                 <span className="w-28 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-wider text-muted">
-                  LAST ACTIVE
+                  REGISTERED
                 </span>
                 {/* actions column spacer */}
                 <span className="w-16" />
@@ -197,20 +156,18 @@ function Agents(): JSX.Element {
                   No agents match your search.
                 </div>
               ) : (
-                filtered.map((deployment) => (
+                filtered.map((agent) => (
                   <AgentRow
-                    key={deployment.id}
-                    deployment={deployment}
+                    key={agent.id}
+                    agent={agent}
+                    connectors={connectors}
                     onNavigate={() =>
-                      navigate({ to: '/agents/$id', params: { id: deployment.id } })
+                      navigate({ to: '/agents/$id', params: { id: agent.id } })
                     }
-                    onStop={() => stop(deployment.id)}
                     onRemove={() => {
-                      setDeleteWorkspace(false);
                       setRemoveTarget({
-                        id: deployment.id,
-                        name: deployment.name,
-                        workspace: deployment.workspace,
+                        id: agent.id,
+                        name: agent.name,
                       });
                     }}
                   />
@@ -229,25 +186,8 @@ function Agents(): JSX.Element {
               Remove {removeTarget.name}?
             </h2>
             <p className="mt-1 text-sm text-muted">
-              This will remove the deployment. The agent process will be stopped.
+              This will remove the agent from the gateway.
             </p>
-
-            {removeTarget.workspace && (
-              <label className="mt-4 flex cursor-pointer items-center gap-2 text-sm">
-                <input
-                  type="checkbox"
-                  checked={deleteWorkspace}
-                  onChange={(e) => setDeleteWorkspace(e.target.checked)}
-                  className="accent-accent"
-                />
-                <span>
-                  Also delete workspace at{' '}
-                  <span className="font-[family-name:var(--font-mono)] text-xs">
-                    {removeTarget.workspace}
-                  </span>
-                </span>
-              </label>
-            )}
 
             <div className="mt-6 flex justify-end gap-2">
               <button
@@ -262,7 +202,7 @@ function Agents(): JSX.Element {
                 onClick={async () => {
                   const { id } = removeTarget;
                   setRemoveTarget(null);
-                  await remove(id, deleteWorkspace);
+                  await removeAgent(id);
                 }}
                 className="bg-red-600 px-4 py-2 text-sm text-white transition-colors hover:bg-red-700"
               >
@@ -277,18 +217,16 @@ function Agents(): JSX.Element {
 }
 
 interface AgentRowProps {
-  deployment: AgentDeployment;
+  agent: GatewayAgent;
+  connectors: McpConnectorInfo[];
   onNavigate(): void;
-  onStop(): void;
   onRemove(): void;
 }
 
-function AgentRow({ deployment, onNavigate, onStop, onRemove }: AgentRowProps): JSX.Element {
-  const configs = useAgentConfigsStore((s) => s.configs);
-  const connectors = useConnectorsStore((s) => s.connectors);
-  const toolCount = getTools(configs, deployment);
-  const channelCount = getChannelCount(deployment);
-  const model = getModel(configs, deployment);
+function AgentRow({ agent, connectors, onNavigate, onRemove }: AgentRowProps): JSX.Element {
+  const toolCount = agent.config.tools?.length ?? 0;
+  const model = agent.config.model;
+  const isActive = agent.status === 'active' || agent.status === 'registered';
 
   return (
     <button
@@ -299,43 +237,21 @@ function AgentRow({ deployment, onNavigate, onStop, onRemove }: AgentRowProps): 
       {/* Status */}
       <div className="w-16 flex items-center">
         <span
-          className={`w-2 h-2 rounded-full flex-shrink-0 ${statusDotColor(deployment, configs, connectors)}`}
-          title={
-            deployment.credentialStatus === 'missing'
-              ? `Missing API key: ${deployment.credentialDetail ?? 'unknown'}`
-              : deployment.credentialStatus === 'invalid'
-                ? `Invalid credentials: ${deployment.credentialDetail ?? 'unknown'}`
-                : deployment.status
-          }
+          className={`w-2 h-2 rounded-full flex-shrink-0 ${statusDotColor(agent, connectors)}`}
+          title={agent.status}
         />
       </div>
 
       {/* Name */}
       <div className="flex-1 min-w-0 text-left">
         <span className="font-[family-name:var(--font-display)] font-semibold text-sm text-foreground">
-          {deployment.name}
+          {agent.name}
         </span>
-        {deployment.credentialStatus === 'missing' && (
-          <p className="text-[11px] text-yellow mt-0.5">
-            Missing API key
-            {deployment.credentialProvider ? ` for ${deployment.credentialProvider}` : ''}
+        {isActive && mcpIssueText(agent, connectors) && (
+          <p className="text-xs text-yellow-400 mt-0.5">
+            {mcpIssueText(agent, connectors)}
           </p>
         )}
-        {deployment.credentialStatus === 'invalid' && (
-          <p className="text-[11px] text-yellow mt-0.5">
-            Invalid credentials
-            {deployment.credentialProvider ? ` for ${deployment.credentialProvider}` : ''}
-          </p>
-        )}
-        {deployment.status === 'running' &&
-          !(
-            deployment.credentialStatus === 'missing' || deployment.credentialStatus === 'invalid'
-          ) &&
-          mcpIssueText(deployment, configs, connectors) && (
-            <p className="text-xs text-yellow-400 mt-0.5">
-              {mcpIssueText(deployment, configs, connectors)}
-            </p>
-          )}
       </div>
 
       {/* Model */}
@@ -352,16 +268,9 @@ function AgentRow({ deployment, onNavigate, onStop, onRemove }: AgentRowProps): 
         </span>
       </div>
 
-      {/* Channels */}
-      <div className="w-24">
-        <span className="bg-accent-tint text-accent text-xs px-2 py-0.5 rounded font-semibold">
-          {channelCount}
-        </span>
-      </div>
-
-      {/* Last Active */}
+      {/* Registered */}
       <div className="w-28">
-        <span className="text-xs text-muted">{relativeTime(deployment.createdAt)}</span>
+        <span className="text-xs text-muted">{relativeTime(agent.registeredAt)}</span>
       </div>
 
       {/* Actions — visible on row hover */}
@@ -371,16 +280,6 @@ function AgentRow({ deployment, onNavigate, onStop, onRemove }: AgentRowProps): 
         onKeyDown={(e) => e.stopPropagation()}
         role="presentation"
       >
-        {deployment.status === 'running' && (
-          <button
-            type="button"
-            onClick={onStop}
-            title="Stop"
-            className="p-1.5 text-muted transition-colors hover:bg-surface hover:text-foreground rounded"
-          >
-            <Square size={13} />
-          </button>
-        )}
         <button
           type="button"
           onClick={onRemove}

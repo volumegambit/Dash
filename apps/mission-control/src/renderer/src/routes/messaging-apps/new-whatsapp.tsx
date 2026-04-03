@@ -1,7 +1,7 @@
 import { createFileRoute, useNavigate } from '@tanstack/react-router';
 import { ArrowLeft, ArrowRight, Check, CheckCircle, Loader } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
-import { useDeploymentsStore } from '../../stores/deployments';
+import { useAgentsStore } from '../../stores/agents.js';
 
 type StepId = 'intro' | 'scan-qr' | 'name-connection' | 'choose-assistant' | 'done';
 
@@ -22,17 +22,16 @@ function NewWhatsAppWizard(): JSX.Element {
   const [connectionName, setConnectionName] = useState('My WhatsApp');
 
   // choose-assistant step
-  const { deployments, loadDeployments } = useDeploymentsStore();
+  const { agents, loadAgents } = useAgentsStore();
   const [selectedAgent, setSelectedAgent] = useState<{
-    deploymentId: string;
-    agentName: string;
+    agentId: string;
   } | null>(null);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState('');
 
   useEffect(() => {
-    loadDeployments();
-  }, [loadDeployments]);
+    loadAgents();
+  }, [loadAgents]);
 
   const stepId = STEPS[stepIndex];
   const goNext = () => setStepIndex((i) => Math.min(i + 1, STEPS.length - 1));
@@ -60,12 +59,11 @@ function NewWhatsAppWizard(): JSX.Element {
     return () => unsub();
   }, [stepId, pairingAttempt]);
 
-  const availableAgents = deployments
-    .filter((d) => d.status === 'running')
-    .map((d) => ({
-      label: d.name,
-      deploymentId: d.id,
-      agentName: d.name,
+  const availableAgents = agents
+    .filter((a) => a.status === 'active' || a.status === 'registered')
+    .map((a) => ({
+      label: a.name,
+      agentId: a.id,
     }));
 
   async function handleSave() {
@@ -73,16 +71,15 @@ function NewWhatsAppWizard(): JSX.Element {
     setSaving(true);
     setSaveError('');
     try {
-      await window.api.messagingAppsCreateWhatsApp(appIdRef.current, {
+      // WhatsApp channel creation uses the same channels API
+      await window.api.channelsCreate({
         name: connectionName,
-        type: 'whatsapp',
-        enabled: true,
+        adapter: 'whatsapp',
         globalDenyList: [],
         routing: [
           {
-            id: `rule-${Date.now()}`,
             condition: { type: 'default' },
-            targetAgentName: selectedAgent.agentName,
+            agentId: selectedAgent.agentId,
             allowList: [],
             denyList: [],
           },
@@ -120,11 +117,10 @@ function NewWhatsAppWizard(): JSX.Element {
           >
             <p className="text-base leading-relaxed">
               Link your personal WhatsApp account so your AI assistant can receive and reply to
-              messages — just like a regular contact.
+              messages.
             </p>
             <p className="mt-4 text-base leading-relaxed">
-              This uses WhatsApp's <strong>Linked Devices</strong> feature — the same way WhatsApp
-              Web works. No business account needed.
+              This uses WhatsApp's <strong>Linked Devices</strong> feature.
             </p>
             <div className="mt-5 rounded-lg border border-border bg-card-bg p-4 text-sm">
               <p className="font-medium">What you'll need:</p>
@@ -229,14 +225,11 @@ function NewWhatsAppWizard(): JSX.Element {
               <div className="mt-4 flex flex-col gap-2">
                 {availableAgents.map((a) => (
                   <button
-                    key={`${a.deploymentId}-${a.agentName}`}
+                    key={a.agentId}
                     type="button"
-                    onClick={() =>
-                      setSelectedAgent({ deploymentId: a.deploymentId, agentName: a.agentName })
-                    }
+                    onClick={() => setSelectedAgent({ agentId: a.agentId })}
                     className={`rounded-lg border-2 px-4 py-3 text-left text-sm transition-colors ${
-                      selectedAgent?.agentName === a.agentName &&
-                      selectedAgent?.deploymentId === a.deploymentId
+                      selectedAgent?.agentId === a.agentId
                         ? 'border-accent bg-accent/10'
                         : 'border-border hover:border-accent/50 hover:bg-card-hover'
                     }`}
@@ -268,8 +261,7 @@ function NewWhatsAppWizard(): JSX.Element {
               WhatsApp connected!
             </h2>
             <p className="mt-3 text-base text-muted">
-              Your assistant will now receive and reply to WhatsApp messages. Make sure your
-              deployment is running.
+              Your assistant will now receive and reply to WhatsApp messages.
             </p>
             <button
               type="button"
