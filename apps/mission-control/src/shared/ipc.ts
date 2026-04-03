@@ -72,7 +72,7 @@ export interface RuntimeAgentInfo {
 export interface McpConnectorInfo {
   name: string;
   transport: { type: string; url?: string; command?: string; args?: string[] };
-  status: 'connected' | 'disconnected' | 'reconnecting' | 'error';
+  status: 'connected' | 'disconnected' | 'reconnecting' | 'error' | 'needs_reauth';
   tools: string[];
 }
 
