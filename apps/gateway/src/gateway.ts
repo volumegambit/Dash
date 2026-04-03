@@ -1,3 +1,5 @@
+import { appendFileSync, mkdirSync } from 'node:fs';
+import { join } from 'node:path';
 import type { AgentClient } from '@dash/agent';
 import {
   MessageRouter,
@@ -5,7 +7,7 @@ import {
   TelegramAdapter,
   WhatsAppAdapter,
 } from '@dash/channels';
-import type { ChannelAdapter, InboundMessage, RouterConfig } from '@dash/channels';
+import type { ChannelAdapter, MessageLogEntry, RouterConfig } from '@dash/channels';
 import { RemoteAgentClient } from '@dash/chat';
 import type { GatewayConfig } from './config.js';
 import { ChannelHealthReporter } from './health-reporter.js';
@@ -45,6 +47,18 @@ export function createGateway(config: GatewayConfig) {
   const mcAdapters: MissionControlAdapter[] = [];
   const reporterAdapters: Array<{ adapter: ChannelAdapter; appId: string }> = [];
 
+  // Set up channel message logging
+  const logDir = join(config.dataDir ?? '.', 'channel-logs');
+  mkdirSync(logDir, { recursive: true });
+  router.setLogger((entry: MessageLogEntry) => {
+    try {
+      const logPath = join(logDir, `${entry.channelName}.jsonl`);
+      appendFileSync(logPath, `${JSON.stringify(entry)}\n`);
+    } catch {
+      // Don't let logging failures break message handling
+    }
+  });
+
   for (const [name, channelConfig] of Object.entries(config.channels)) {
     if (channelConfig.adapter === 'mission-control') {
       const port = channelConfig.port ?? 9200;
@@ -66,7 +80,7 @@ export function createGateway(config: GatewayConfig) {
             denyList: r.denyList,
           })),
         };
-        router.addAdapter(adapter, routerConfig);
+        router.addAdapter(adapter, routerConfig, appId);
         console.log(
           `Channel "${name}" (${channelConfig.adapter}) → routing rules (${routerConfig.rules.length} rules)`,
         );
@@ -74,7 +88,7 @@ export function createGateway(config: GatewayConfig) {
         // Simple mode
         const agentName = channelConfig.agent;
         if (!agentName) throw new Error(`Channel "${name}" requires an "agent" field.`);
-        router.addAdapter(adapter, agentName);
+        router.addAdapter(adapter, agentName, appId);
         console.log(`Channel "${name}" (${channelConfig.adapter}) → agent "${agentName}"`);
       }
     }
@@ -144,9 +158,26 @@ export interface DynamicGateway {
   stop(): Promise<void>;
 }
 
-export function createDynamicGateway(): DynamicGateway {
+export function createDynamicGateway(options?: { dataDir?: string }): DynamicGateway {
   const agents = new Map<string, AgentClient>();
   const channels = new Map<string, ChannelState>();
+
+  // Set up channel message logging
+  let logDir: string | null = null;
+  if (options?.dataDir) {
+    logDir = join(options.dataDir, 'channel-logs');
+    mkdirSync(logDir, { recursive: true });
+  }
+
+  function logMessage(entry: MessageLogEntry): void {
+    if (!logDir) return;
+    try {
+      const logPath = join(logDir, `${entry.channelName}.jsonl`);
+      appendFileSync(logPath, `${JSON.stringify(entry)}\n`);
+    } catch {
+      // Don't let logging failures break message handling
+    }
+  }
 
   function makeAgentKey(deploymentId: string, agentName: string): string {
     return `${deploymentId}:${agentName}`;
@@ -160,6 +191,15 @@ export function createDynamicGateway(): DynamicGateway {
     const state = channels.get(channelName);
     if (!state) return;
 
+    const baseLog: Omit<MessageLogEntry, 'outcome' | 'agentName' | 'blockReason'> = {
+      timestamp: new Date().toISOString(),
+      channelName,
+      senderId: msg.senderId,
+      senderName: msg.senderName,
+      conversationId: msg.conversationId,
+      text: msg.text,
+    };
+
     const matched = state.rules.find((rule) => {
       if (rule.ownerGlobalDenyList.includes(msg.senderId)) return false;
       switch (rule.condition.type) {
@@ -171,16 +211,30 @@ export function createDynamicGateway(): DynamicGateway {
           return rule.condition.ids.includes(msg.conversationId);
       }
     });
-    if (!matched) return;
+    if (!matched) {
+      logMessage({ ...baseLog, outcome: 'no_match' });
+      return;
+    }
 
-    if (matched.denyList.includes(msg.senderId)) return;
-    if (matched.allowList.length > 0 && !matched.allowList.includes(msg.senderId)) return;
+    const agentName = matched.agentKey.split(':')[1] ?? matched.agentKey;
+
+    if (matched.denyList.includes(msg.senderId)) {
+      logMessage({ ...baseLog, outcome: 'blocked', agentName, blockReason: 'rule_deny' });
+      return;
+    }
+    if (matched.allowList.length > 0 && !matched.allowList.includes(msg.senderId)) {
+      logMessage({ ...baseLog, outcome: 'blocked', agentName, blockReason: 'not_on_allow_list' });
+      return;
+    }
 
     const agent = agents.get(matched.agentKey);
     if (!agent) {
       console.warn(`[gateway] dropped message: agent "${matched.agentKey}" not found`);
+      logMessage({ ...baseLog, outcome: 'blocked', agentName, blockReason: 'agent_not_found' });
       return;
     }
+
+    logMessage({ ...baseLog, outcome: 'routed', agentName });
 
     let fullResponse = '';
     for await (const event of agent.chat(msg.channelId, msg.conversationId, msg.text)) {
@@ -228,8 +282,11 @@ export function createDynamicGateway(): DynamicGateway {
 
       const existing = channels.get(channelName);
       if (existing) {
-        // Same channel, different deployment: append rules (adapter already running)
-        existing.rules.push(...newRules);
+        // Replace rules for this deployment, keep rules from other deployments
+        existing.rules = [
+          ...existing.rules.filter((r) => r.ownerDeploymentId !== deploymentId),
+          ...newRules,
+        ];
       } else {
         const state: ChannelState = {
           adapter,

@@ -477,6 +477,31 @@ export class ProcessRuntime implements DeploymentRuntime {
     }
   }
 
+  /**
+   * Re-register messaging app channels for a running deployment without
+   * touching agent registrations. Safe to call repeatedly — the gateway
+   * replaces existing rules for the same deployment + channel pair.
+   */
+  async syncMessagingApps(deploymentId: string): Promise<void> {
+    if (!this.messagingApps) return;
+    const deployment = await this.registry.get(deploymentId);
+    if (!deployment || deployment.status !== 'running') return;
+
+    const gatewayClient = await this.getGatewayClient();
+    if (!gatewayClient) return;
+
+    const agentNames = Object.keys(deployment.config?.agents ?? {});
+    if (!agentNames.length) return;
+
+    await registerMessagingApps(
+      gatewayClient,
+      this.messagingApps,
+      this.secrets,
+      deploymentId,
+      agentNames,
+    );
+  }
+
   async deploy(configDir: string): Promise<string> {
     const absConfigDir = resolve(configDir);
     validateConfigDir(absConfigDir);

@@ -890,6 +890,22 @@ export async function registerIpcHandlers(
   });
 
   // Messaging Apps handlers
+  /** Re-register messaging app channels for all running deployments. */
+  async function syncMessagingAppsToGateway(): Promise<void> {
+    const rt = getRuntime();
+    const deployments = await getRegistry().list();
+    for (const dep of deployments.filter((d) => d.status === 'running')) {
+      try {
+        await rt.syncMessagingApps(dep.id);
+      } catch (err) {
+        console.warn(
+          `syncMessagingAppsToGateway: failed for deployment ${dep.id}:`,
+          err instanceof Error ? err.message : err,
+        );
+      }
+    }
+  }
+
   ipcMain.handle('messagingApps:list', async () => {
     return getMessagingAppRegistry().list();
   });
@@ -923,6 +939,7 @@ export async function registerIpcHandlers(
         throw err;
       }
       await registry.update(id, { credentialsKey: credKey });
+      syncMessagingAppsToGateway().catch(() => {});
       return { ...created, credentialsKey: credKey };
     },
   );
@@ -930,7 +947,8 @@ export async function registerIpcHandlers(
   ipcMain.handle(
     'messagingApps:update',
     async (_event, id: string, patch: Partial<MessagingApp>) => {
-      return getMessagingAppRegistry().update(id, patch);
+      await getMessagingAppRegistry().update(id, patch);
+      syncMessagingAppsToGateway().catch(() => {});
     },
   );
 
@@ -954,8 +972,34 @@ export async function registerIpcHandlers(
         await getSecretStore().delete(app.credentialsKey);
       }
     }
-    return getMessagingAppRegistry().remove(id);
+    await getMessagingAppRegistry().remove(id);
+    syncMessagingAppsToGateway().catch(() => {});
   });
+
+  ipcMain.handle(
+    'messagingApps:getLog',
+    async (_event, appId: string, limit?: number) => {
+      const { existsSync } = await import('node:fs');
+      const { readFile } = await import('node:fs/promises');
+      const logPath = join(DATA_DIR, 'channel-logs', `${appId}.jsonl`);
+      if (!existsSync(logPath)) return [];
+      const raw = await readFile(logPath, 'utf-8');
+      const lines = raw
+        .split('\n')
+        .filter(Boolean)
+        .map((line) => {
+          try {
+            return JSON.parse(line);
+          } catch {
+            return null;
+          }
+        })
+        .filter(Boolean);
+      // Return most recent entries first
+      lines.reverse();
+      return limit ? lines.slice(0, limit) : lines.slice(0, 200);
+    },
+  );
 
   ipcMain.handle('messagingApps:verifyTelegramToken', async (_event, token: string) => {
     const response = await fetch(`https://api.telegram.org/bot${token}/getMe`);
