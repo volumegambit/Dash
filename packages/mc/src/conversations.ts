@@ -4,8 +4,7 @@ import { join } from 'node:path';
 
 export interface McConversation {
   id: string;
-  deploymentId: string;
-  agentName: string;
+  agentId: string;
   title: string;
   createdAt: string;
   updatedAt: string;
@@ -65,13 +64,12 @@ export class ConversationStore {
     await rename(tmpPath, this.indexPath);
   }
 
-  async create(deploymentId: string, agentName: string): Promise<McConversation> {
+  async create(agentId: string): Promise<McConversation> {
     const conversations = await this.loadIndex();
     const now = new Date().toISOString();
     const conversation: McConversation = {
       id: randomUUID(),
-      deploymentId,
-      agentName,
+      agentId,
       title: 'New Conversation',
       createdAt: now,
       updatedAt: now,
@@ -81,9 +79,9 @@ export class ConversationStore {
     return conversation;
   }
 
-  async list(deploymentId: string): Promise<McConversation[]> {
+  async listByAgent(agentId: string): Promise<McConversation[]> {
     const conversations = await this.loadIndex();
-    return conversations.filter((c) => c.deploymentId === deploymentId);
+    return conversations.filter((c) => c.agentId === agentId);
   }
 
   async listAll(): Promise<McConversation[]> {
