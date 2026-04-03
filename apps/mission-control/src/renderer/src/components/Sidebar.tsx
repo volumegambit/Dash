@@ -2,6 +2,7 @@ import { Link } from '@tanstack/react-router';
 import {
   Bot,
   Cable,
+  Globe,
   KeyRound,
   LayoutDashboard,
   LifeBuoy,
@@ -52,6 +53,7 @@ const sections: NavSection[] = [
     items: [
       { to: '/connections', label: 'AI Providers', icon: Plug },
       { to: '/connectors', label: 'Connectors (MCP)', icon: Cable },
+      { to: '/web-search', label: 'Web Search', icon: Globe },
       { to: '/secrets', label: 'Secrets', icon: KeyRound },
       { to: '/settings', label: 'Settings', icon: Settings },
     ],
