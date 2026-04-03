@@ -32,6 +32,7 @@ export interface McMessage {
 export class ConversationStore {
   private readonly dir: string;
   private readonly indexPath: string;
+  private indexLock: Promise<void> = Promise.resolve();
 
   constructor(dataDir: string) {
     this.dir = join(dataDir, 'conversations');
@@ -51,9 +52,15 @@ export class ConversationStore {
     }
   }
 
-  private async saveIndex(conversations: McConversation[]): Promise<void> {
+  private saveIndex(conversations: McConversation[]): Promise<void> {
+    // Serialize concurrent writes to prevent race conditions on the shared tmp file
+    this.indexLock = this.indexLock.then(() => this.writeIndex(conversations), () => this.writeIndex(conversations));
+    return this.indexLock;
+  }
+
+  private async writeIndex(conversations: McConversation[]): Promise<void> {
     await mkdir(this.dir, { recursive: true });
-    const tmpPath = `${this.indexPath}.tmp`;
+    const tmpPath = `${this.indexPath}.${randomUUID()}.tmp`;
     await writeFile(tmpPath, JSON.stringify(conversations, null, 2));
     await rename(tmpPath, this.indexPath);
   }
