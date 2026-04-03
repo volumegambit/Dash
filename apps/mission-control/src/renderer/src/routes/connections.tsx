@@ -1,6 +1,6 @@
 import { providerSecretKey } from '@dash/mc/provider-keys';
 import { createFileRoute } from '@tanstack/react-router';
-import { Loader, Lock, LogIn, Pencil, Plus, Trash2 } from 'lucide-react';
+import { KeyRound, Loader, Lock, LogIn, Pencil, Trash2, X } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
 import { ProviderConnectModal } from '../components/ProviderConnectModal.js';
 import { PROVIDERS, type Provider } from '../components/providers.js';
@@ -41,15 +41,16 @@ export function AiProviders(): JSX.Element {
   const [oauthError, setOauthError] = useState<{ provider: OAuthProvider; message: string } | null>(
     null,
   );
-  const [oauthNamePrompt, setOauthNamePrompt] = useState<OAuthProvider | null>(null);
-  const [oauthNameInput, setOauthNameInput] = useState('');
-  // Claude OAuth two-step flow state
-  const [claudeCodePrompt, setClaudeCodePrompt] = useState<{
-    keyName: string;
+  const [codexOAuthModal, setCodexOAuthModal] = useState(false);
+  const [codexOAuthName, setCodexOAuthName] = useState('');
+  // Claude OAuth modal state (combines name + code in one modal)
+  const [claudeOAuthModal, setClaudeOAuthModal] = useState<{
     state: string;
     verifier: string;
   } | null>(null);
-  const [claudeCodeInput, setClaudeCodeInput] = useState('');
+  const [claudeOAuthName, setClaudeOAuthName] = useState('');
+  const [claudeOAuthCode, setClaudeOAuthCode] = useState('');
+  const [claudeOAuthError, setClaudeOAuthError] = useState<string | null>(null);
 
   const loadKeys = useCallback(async (): Promise<void> => {
     const unlocked = await window.api.secretsIsUnlocked();
@@ -114,10 +115,77 @@ export function AiProviders(): JSX.Element {
     loadKeys();
   };
 
+  /** Suggest "default" or "default-2", "default-3", etc. if taken */
+  const suggestClaudeLabel = useCallback((): string => {
+    const existing = (providerKeys.anthropic ?? []).map((k) => k.name);
+    const base = 'default';
+    if (!existing.includes(base)) return base;
+    for (let i = 2; ; i++) {
+      const candidate = `${base}-${i}`;
+      if (!existing.includes(candidate)) return candidate;
+    }
+  }, [providerKeys]);
+
+  const suggestCodexLabel = useCallback((): string => {
+    const existing = (providerKeys.openai ?? []).map((k) => k.name);
+    const base = 'default';
+    if (!existing.includes(base)) return base;
+    for (let i = 2; ; i++) {
+      const candidate = `${base}-${i}`;
+      if (!existing.includes(candidate)) return candidate;
+    }
+  }, [providerKeys]);
+
+  /** Start Claude OAuth: immediately open browser + show modal */
+  const handleClaudeOAuthStart = async (prefillName?: string): Promise<void> => {
+    setOauthError(null);
+    setClaudeOAuthError(null);
+    try {
+      const { state, verifier } = await window.api.claudePrepareOAuth();
+      setClaudeOAuthModal({ state, verifier });
+      setClaudeOAuthName(prefillName ?? suggestClaudeLabel());
+      setClaudeOAuthCode('');
+    } catch (err) {
+      setOauthError({ provider: 'anthropic', message: (err as Error).message });
+    }
+  };
+
+  /** Complete Claude OAuth: validate label + exchange code */
+  const handleClaudeOAuthSubmit = async (): Promise<void> => {
+    if (!claudeOAuthModal) return;
+    const name = claudeOAuthName.trim();
+    const code = claudeOAuthCode.trim();
+    if (!name || !code) return;
+    if (!KEY_NAME_PATTERN.test(name)) {
+      setClaudeOAuthError('Label must contain only letters, numbers, and hyphens.');
+      return;
+    }
+    setOauthLoading('anthropic');
+    setClaudeOAuthError(null);
+    try {
+      const result = await window.api.claudeCompleteOAuth(
+        name,
+        code,
+        claudeOAuthModal.state,
+        claudeOAuthModal.verifier,
+      );
+      if (result.success) {
+        setClaudeOAuthModal(null);
+        loadKeys();
+      } else {
+        setClaudeOAuthError(result.error ?? 'Login failed');
+      }
+    } catch (err) {
+      setClaudeOAuthError((err as Error).message);
+    } finally {
+      setOauthLoading(null);
+    }
+  };
+
   const handleOAuthLogin = async (provider: OAuthProvider, keyName: string): Promise<void> => {
     setOauthLoading(provider);
     setOauthError(null);
-    setOauthNamePrompt(null);
+    setCodexOAuthModal(false);
     try {
       if (provider === 'openai') {
         const result = await window.api.codexStartOAuth(keyName);
@@ -127,11 +195,8 @@ export function AiProviders(): JSX.Element {
           setOauthError({ provider, message: result.error ?? 'Login failed' });
         }
       } else {
-        // Anthropic: two-step manual flow
-        const { state, verifier } = await window.api.claudePrepareOAuth();
-        // Browser opens automatically via main process
-        setClaudeCodePrompt({ keyName, state, verifier });
-        setClaudeCodeInput('');
+        // Anthropic uses the modal flow
+        await handleClaudeOAuthStart(keyName);
       }
     } catch (err) {
       setOauthError({ provider, message: (err as Error).message });
@@ -140,44 +205,18 @@ export function AiProviders(): JSX.Element {
     }
   };
 
-  const handleClaudeCodeSubmit = async (): Promise<void> => {
-    if (!claudeCodePrompt) return;
-    const code = claudeCodeInput.trim();
-    if (!code) return;
-    setOauthLoading('anthropic');
-    setOauthError(null);
-    try {
-      const result = await window.api.claudeCompleteOAuth(
-        claudeCodePrompt.keyName,
-        code,
-        claudeCodePrompt.state,
-        claudeCodePrompt.verifier,
-      );
-      if (result.success) {
-        setClaudeCodePrompt(null);
-        setClaudeCodeInput('');
-        loadKeys();
-      } else {
-        setOauthError({ provider: 'anthropic', message: result.error ?? 'Login failed' });
-      }
-    } catch (err) {
-      setOauthError({ provider: 'anthropic', message: (err as Error).message });
-    } finally {
-      setOauthLoading(null);
-    }
-  };
-
-  const handleOAuthNameSubmit = (provider: OAuthProvider): void => {
-    const name = oauthNameInput.trim();
+  const handleCodexOAuthSubmit = (): void => {
+    const name = codexOAuthName.trim();
     if (!name) return;
     if (!KEY_NAME_PATTERN.test(name)) {
       setOauthError({
-        provider,
-        message: 'Key name must contain only letters, numbers, and hyphens.',
+        provider: 'openai',
+        message: 'Label must contain only letters, numbers, and hyphens.',
       });
       return;
     }
-    handleOAuthLogin(provider, name);
+    setCodexOAuthModal(false);
+    handleOAuthLogin('openai', name);
   };
 
   return (
@@ -190,14 +229,6 @@ export function AiProviders(): JSX.Element {
           </h1>
           <p className="text-sm text-muted">Configure API keys for LLM providers</p>
         </div>
-        <button
-          type="button"
-          onClick={() => setModal({ provider: PROVIDERS[0].id, keyName: 'default' })}
-          className="inline-flex items-center gap-1.5 rounded-lg bg-accent px-4 py-2 text-sm font-medium text-white hover:bg-accent/90 transition-colors"
-        >
-          <Plus size={16} />
-          Add Provider
-        </button>
       </div>
 
       {/* Body */}
@@ -250,9 +281,13 @@ export function AiProviders(): JSX.Element {
                       <button
                         type="button"
                         onClick={() => {
-                          setOauthNameInput('');
-                          setOauthError(null);
-                          setOauthNamePrompt(p.id);
+                          if (p.id === 'anthropic') {
+                            handleClaudeOAuthStart();
+                          } else {
+                            setCodexOAuthName(suggestCodexLabel());
+                            setOauthError(null);
+                            setCodexOAuthModal(true);
+                          }
                         }}
                         disabled={isAnyOAuthLoading}
                         className="inline-flex items-center gap-1 rounded-lg border border-green-700 bg-green-900/20 px-3 py-1.5 text-xs font-medium text-green hover:bg-green-900/40 disabled:opacity-50"
@@ -297,88 +332,6 @@ export function AiProviders(): JSX.Element {
                   </div>
                 </div>
 
-                {/* OAuth name prompt */}
-                {oauthSupported && oauthNamePrompt === p.id && !isAnyOAuthLoading && (
-                  <div className="px-5 pb-4 flex items-center gap-2">
-                    <input
-                      type="text"
-                      value={oauthNameInput}
-                      onChange={(e) => setOauthNameInput(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter') handleOAuthNameSubmit(p.id);
-                        if (e.key === 'Escape') setOauthNamePrompt(null);
-                      }}
-                      placeholder="Key name (e.g. default, personal, work)"
-                      // biome-ignore lint/a11y/noAutofocus: focus newly revealed input for UX
-                      autoFocus
-                      className="flex-1 rounded-lg border border-border bg-card-bg px-3 py-1.5 text-xs text-foreground placeholder:text-muted focus:border-accent focus:outline-none"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => handleOAuthNameSubmit(p.id)}
-                      disabled={!oauthNameInput.trim()}
-                      className="rounded-lg bg-green-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-green-600 disabled:opacity-50"
-                    >
-                      Login
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setOauthNamePrompt(null)}
-                      className="rounded-lg border border-border px-3 py-1.5 text-xs text-muted hover:text-foreground"
-                    >
-                      Cancel
-                    </button>
-                  </div>
-                )}
-
-                {/* Claude OAuth code prompt */}
-                {p.id === 'anthropic' && claudeCodePrompt && (
-                  <div className="px-5 pb-4 space-y-2">
-                    <p className="text-xs text-muted">
-                      A browser window has opened. Sign in to Claude and copy the authorization
-                      code, then paste it below.
-                    </p>
-                    <div className="flex items-center gap-2">
-                      <input
-                        type="text"
-                        value={claudeCodeInput}
-                        onChange={(e) => setClaudeCodeInput(e.target.value)}
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter') handleClaudeCodeSubmit();
-                          if (e.key === 'Escape') {
-                            setClaudeCodePrompt(null);
-                            setClaudeCodeInput('');
-                          }
-                        }}
-                        placeholder="Paste authorization code here"
-                        // biome-ignore lint/a11y/noAutofocus: focus newly revealed input for UX
-                        autoFocus
-                        className="flex-1 rounded-lg border border-border bg-card-bg px-3 py-1.5 text-xs text-foreground placeholder:text-muted focus:border-accent focus:outline-none"
-                      />
-                      <button
-                        type="button"
-                        onClick={handleClaudeCodeSubmit}
-                        disabled={!claudeCodeInput.trim() || oauthLoading === 'anthropic'}
-                        className="inline-flex items-center gap-1 rounded-lg bg-green-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-green-600 disabled:opacity-50"
-                      >
-                        {oauthLoading === 'anthropic' && (
-                          <Loader size={12} className="animate-spin" />
-                        )}
-                        {oauthLoading === 'anthropic' ? 'Verifying...' : 'Submit'}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setClaudeCodePrompt(null);
-                          setClaudeCodeInput('');
-                        }}
-                        className="rounded-lg border border-border px-3 py-1.5 text-xs text-muted hover:text-foreground"
-                      >
-                        Cancel
-                      </button>
-                    </div>
-                  </div>
-                )}
 
                 {/* OAuth error */}
                 {oauthError?.provider === p.id && (
@@ -490,6 +443,203 @@ export function AiProviders(): JSX.Element {
           onClose={() => setModal(null)}
           onSaved={handleSaved}
         />
+      )}
+
+      {/* Codex OAuth modal */}
+      {codexOAuthModal && (
+        <div
+          role="presentation"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
+          onClick={() => setCodexOAuthModal(false)}
+          onKeyDown={(e) => {
+            if (e.key === 'Escape') setCodexOAuthModal(false);
+          }}
+        >
+          {/* biome-ignore lint/a11y/useSemanticElements: custom modal uses div for flexible Tailwind styling */}
+          <div
+            role="dialog"
+            aria-modal="true"
+            className="w-full max-w-md bg-background border border-border p-6"
+            onClick={(e) => e.stopPropagation()}
+            onKeyDown={(e) => e.stopPropagation()}
+          >
+            <div className="mb-4 flex items-start justify-between">
+              <div className="flex items-center gap-2">
+                <KeyRound size={20} className="text-muted" />
+                <h2 className="text-lg font-semibold text-foreground">Codex Login</h2>
+              </div>
+              <button
+                type="button"
+                onClick={() => setCodexOAuthModal(false)}
+                className="p-1 text-muted hover:text-foreground"
+                aria-label="Close"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <p className="mb-4 text-sm text-muted">
+              Choose a label for this connection. A browser window will open for you to sign in to
+              your OpenAI account.
+            </p>
+
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                handleCodexOAuthSubmit();
+              }}
+              className="space-y-3"
+            >
+              <div>
+                <label className="mb-1.5 block text-xs text-muted" htmlFor="codex-oauth-name">
+                  Connection label
+                </label>
+                <input
+                  id="codex-oauth-name"
+                  type="text"
+                  value={codexOAuthName}
+                  onChange={(e) => setCodexOAuthName(e.target.value)}
+                  placeholder="e.g. default, personal, work"
+                  // biome-ignore lint/a11y/noAutofocus: focus primary input in modal
+                  autoFocus
+                  className="w-full border border-border bg-card-bg px-4 py-3 text-sm text-foreground placeholder:text-muted focus:border-accent focus:outline-none"
+                />
+              </div>
+              {oauthError?.provider === 'openai' && (
+                <p className="text-sm text-red">{oauthError.message}</p>
+              )}
+              <div className="flex gap-2 pt-1">
+                <button
+                  type="button"
+                  onClick={() => setCodexOAuthModal(false)}
+                  className="flex-1 border border-border px-4 py-2 text-sm text-muted hover:text-foreground transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={!codexOAuthName.trim() || oauthLoading === 'openai'}
+                  className="flex-1 bg-accent px-4 py-2 text-sm text-white transition-colors hover:bg-primary-hover disabled:opacity-50 inline-flex items-center justify-center gap-1"
+                >
+                  {oauthLoading === 'openai' && <Loader size={14} className="animate-spin" />}
+                  {oauthLoading === 'openai' ? 'Logging in...' : 'Login'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Claude OAuth modal */}
+      {claudeOAuthModal && (
+        <div
+          role="presentation"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
+          onClick={() => {
+            setClaudeOAuthModal(null);
+            setClaudeOAuthError(null);
+          }}
+          onKeyDown={(e) => {
+            if (e.key === 'Escape') {
+              setClaudeOAuthModal(null);
+              setClaudeOAuthError(null);
+            }
+          }}
+        >
+          {/* biome-ignore lint/a11y/useSemanticElements: custom modal uses div for flexible Tailwind styling */}
+          <div
+            role="dialog"
+            aria-modal="true"
+            className="w-full max-w-md rounded-lg bg-background border border-border p-6"
+            onClick={(e) => e.stopPropagation()}
+            onKeyDown={(e) => e.stopPropagation()}
+          >
+            <div className="mb-4 flex items-start justify-between">
+              <div className="flex items-center gap-2">
+                <KeyRound size={20} className="text-muted" />
+                <h2 className="text-lg font-semibold text-foreground">Claude Login</h2>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setClaudeOAuthModal(null);
+                  setClaudeOAuthError(null);
+                }}
+                className="rounded p-1 text-muted hover:text-foreground"
+                aria-label="Close"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <p className="mb-4 text-sm text-muted">
+              A browser window has opened. Sign in to Claude and copy the authorization code, then
+              paste it below.
+            </p>
+
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                handleClaudeOAuthSubmit();
+              }}
+              className="space-y-3"
+            >
+              <div>
+                <label className="mb-1.5 block text-xs text-muted" htmlFor="claude-oauth-code">
+                  Authorization code
+                </label>
+                <input
+                  id="claude-oauth-code"
+                  type="text"
+                  value={claudeOAuthCode}
+                  onChange={(e) => setClaudeOAuthCode(e.target.value)}
+                  placeholder="Paste authorization code here"
+                  // biome-ignore lint/a11y/noAutofocus: focus primary input in modal
+                  autoFocus
+                  className="w-full rounded-lg border border-border bg-card-bg px-4 py-3 text-sm font-mono text-foreground placeholder:text-muted focus:border-accent focus:outline-none"
+                />
+              </div>
+              <div>
+                <label className="mb-1.5 block text-xs text-muted" htmlFor="claude-oauth-name">
+                  Connection label
+                </label>
+                <input
+                  id="claude-oauth-name"
+                  type="text"
+                  value={claudeOAuthName}
+                  onChange={(e) => setClaudeOAuthName(e.target.value)}
+                  placeholder="e.g. claude-login"
+                  className="w-full rounded-lg border border-border bg-card-bg px-4 py-3 text-sm text-foreground placeholder:text-muted focus:border-accent focus:outline-none"
+                />
+              </div>
+              {claudeOAuthError && <p className="text-sm text-red">{claudeOAuthError}</p>}
+              <div className="flex gap-2 pt-1">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setClaudeOAuthModal(null);
+                    setClaudeOAuthError(null);
+                  }}
+                  className="flex-1 rounded-lg border border-border px-4 py-2 text-sm text-muted hover:text-foreground transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={
+                    !claudeOAuthCode.trim() ||
+                    !claudeOAuthName.trim() ||
+                    oauthLoading === 'anthropic'
+                  }
+                  className="flex-1 rounded-lg bg-accent px-4 py-2 text-sm text-white transition-colors hover:bg-primary-hover disabled:opacity-50 inline-flex items-center justify-center gap-1"
+                >
+                  {oauthLoading === 'anthropic' && <Loader size={14} className="animate-spin" />}
+                  {oauthLoading === 'anthropic' ? 'Verifying...' : 'Connect'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
       )}
     </div>
   );
