@@ -46,29 +46,27 @@ Use `mcp__linear-server__*` tools only. Never use raw HTTP to call Linear.
 
 **Routes you will test:**
 - `/` — Home / dashboard
-- `/deploy` — Deploy new agent
+- `/deploy` — Create new agent
 - `/agents` — Agent list
-- `/agents/$id` — Individual agent detail (start/stop/remove)
+- `/agents/$id` — Individual agent detail (disable/enable/remove)
 - `/chat` — Chat interface (WebSocket streaming)
-- `/connections` — Channel connections
-- `/secrets` — Secrets manager
+- `/connections` — AI provider credential management
+- `/connectors` — MCP connectors
+- `/web-search` — Web search API key management
 - `/settings` — App settings
-- `/messaging-apps` — Messaging app registry
+- `/messaging-apps` — Channel list (Telegram/WhatsApp)
 - `/messaging-apps/new-telegram` — Telegram pairing
 - `/messaging-apps/new-whatsapp` — WhatsApp pairing
-- `/messaging-apps/$id` — Individual messaging app detail
+- `/messaging-apps/$id` — Individual channel detail
 
 **IPC domains to exercise:**
-- Setup (gates everything on first load): `setupGetStatus`
-- Deployments: `deploymentsList`, `deploymentsGet`, `deploymentsDeploy` (config-file path), `deploymentsDeployWithConfig` (form-based path), `deploymentsStop`, `deploymentsRemove`, `deploymentsGetStatus`, `deploymentsUpdateConfig`, `deploymentsLogsSubscribe`, `deploymentsLogsUnsubscribe`
-  - Note: there is no separate "start" — `deploymentsDeployWithConfig` both creates and starts a deployment
-- Connections (per-deployment channel health): `deploymentsGetChannelHealth` — backs the `/connections` route
-- Secrets: `secretsNeedsSetup`, `secretsNeedsMigration`, `secretsIsUnlocked`, `secretsSetup`, `secretsUnlock`, `secretsLock`, `secretsList`, `secretsGet`, `secretsSet`, `secretsDelete`
-- Chat: `chatListConversations`, `chatCreateConversation`, `chatGetMessages`, `chatSendMessage`, `chatDeleteConversation`, `chatCancel`
-- Messaging apps: `messagingAppsList`, `messagingAppsGet`, `messagingAppsCreate`, `messagingAppsUpdate`, `messagingAppsDelete`, `messagingAppsVerifyTelegramToken`, `whatsappStartPairing`, `messagingAppsCreateWhatsApp`
+- Setup: `setupStatus`, `setupEnsureGateway`
+- Agents: `agentsList`, `agentsGet`, `agentsCreate`, `agentsUpdate`, `agentsRemove`, `agentsDisable`, `agentsEnable`
+- Channels: `channelsList`, `channelsGet`, `channelsCreate`, `channelsUpdate`, `channelsRemove`, `channelsVerifyTelegramToken`
+- Credentials: `credentialsSet`, `credentialsList`, `credentialsRemove`
+- Chat: `chatListConversations`, `chatCreateConversation`, `chatGetMessages`, `chatSend`, `chatDeleteConversation`, `chatCancel`, `chatRenameConversation`
 - Settings: `settingsGet`, `settingsSet`
-- Skills: `skillsList`, `skillsGet`, `skillsCreate`, `skillsUpdateContent`, `skillsUpdateConfig`, `skillsGetConfig`
-  - Note: all skills methods require `(deploymentId, agentName, ...)` — scoped to a specific deployed agent
+- Gateway: `gatewayStatus`
 
 **What counts as a finding:**
 - Any uncaught JS exception captured by the error interceptor
@@ -247,35 +245,40 @@ From the snapshot output, identify all interactive elements. Click buttons, focu
 
 **3.S.3 — Execute the happy-path flow**
 
-**Priority 1 — Deploy + Secrets:**
-1. Navigate to `/secrets`. Snapshot to find the "Add secret" or key input.
-2. Fill in key = `ANTHROPIC_API_KEY`, value = `sk-test-qa-placeholder`. Save.
+**Priority 1 — Credentials + Agent Create:**
+1. Navigate to `/connections`. Snapshot to find the provider list.
+2. Add an API key: click "Add Key" for Anthropic, enter `sk-test-qa-placeholder`, save. Verify the key appears in the list.
 3. Navigate to `/deploy`. Fill in: name = `MC-QA-Test`, model = first available in dropdown, system prompt = `You are a test agent.`, select at least one tool.
-4. Submit the deploy form. `deploymentsDeployWithConfig` both creates and starts the deployment — there is no separate Start button. Verify `MC-QA-Test` appears in `/agents` and its status is Starting or Running.
-5. Navigate to the `MC-QA-Test` detail page by clicking it in the agents list. Verify the status display and log stream render. Click Stop, verify status changes to Stopped.
-6. Click Remove. Verify `MC-QA-Test` disappears from `/agents`.
-7. Return to `/secrets`. Delete the `ANTHROPIC_API_KEY` entry.
+4. Submit the form. Verify `MC-QA-Test` appears in `/agents` with status `registered` or `active`.
+5. Navigate to `/connections`. Delete the `sk-test-qa-placeholder` key.
 
-> This is the only flow that creates and destroys real state. Clean up the `MC-QA-Test` deployment and the test secret before moving on. If a `MC-QA-Test` deployment already exists from a prior interrupted run, remove it first.
+> This is the only flow that creates real state. Clean up in Priority 4.
 
 **Priority 2 — Chat:**
 1. Navigate to `/chat`.
-2. If no active deployment exists, note as a finding ("Chat route unusable without active agent") and skip.
-3. Create a new conversation. Send "hello". Verify a response streams back.
+2. If no agent with status `active` or `registered` exists, note as a finding and skip.
+3. Create a new conversation with the test agent. Send "hello". Verify a response streams back (or an error from invalid API key — either confirms the flow works).
 4. Delete the conversation.
 
-**Priority 3 — Connections:**
-1. Navigate to `/connections`. Verify channel health status renders.
+**Priority 3 — Channels:**
+1. Navigate to `/messaging-apps`. Verify the page renders (list or empty state).
 2. Navigate to `/messaging-apps/new-telegram`. Verify the form renders (do not submit).
-3. Navigate to `/messaging-apps/new-whatsapp`. Verify the QR code or pairing UI renders (do not submit).
+3. Navigate to `/messaging-apps/new-whatsapp`. Verify the pairing UI renders (do not submit).
 
-**Priority 4 — Agent lifecycle:**
-1. Navigate to `/agents`. Verify page renders (list or empty state).
-2. If any agent exists, navigate to its detail page. Verify it renders and shows status.
+**Priority 4 — Agent lifecycle (disable/enable/remove):**
+1. Navigate to `/agents`. Verify `MC-QA-Test` appears.
+2. Click `MC-QA-Test` to open the detail page. Verify it renders with correct config.
+3. Click Disable (or Stop). Verify status changes to `disabled`.
+4. Click Enable (or Start). Verify status changes back to `registered` or `active`.
+5. Click Remove. Verify `MC-QA-Test` disappears from `/agents`.
+6. Navigate back to `/agents`. Confirm it's gone.
 
-**Priority 5 — Settings + Skills:**
+> This is a critical test — agent removal must cascade correctly (clean up routing rules, evict from pool).
+
+**Priority 5 — Settings + Other pages:**
 1. Navigate to `/settings`. Change the default model, save, reload the page, verify the value persisted.
-2. Navigate to the Skills route (from the Phase 2 route list). If it exists: verify it renders, create a test skill, verify it appears, then delete it.
+2. Navigate to `/web-search`. Verify the page renders.
+3. Navigate to `/connectors`. Verify it renders (may show "not available" message — that's OK).
 
 **3.S.4 — Capture screenshot after each state change**
 
@@ -471,5 +474,5 @@ Screenshots saved to: /tmp/mc-qa-RUNID/
 2. **Functional failures only** — do not file tickets for visual regressions, slow performance, or cosmetic issues.
 3. **One ticket per distinct failure** — deduplication key is the `[MC] <Screen/Flow>:` title prefix.
 4. **Linear MCP only** — never use raw `fetch`/`curl` to call the Linear API.
-5. **Named test fixture** — the Deploy flow uses a deployment named exactly `MC-QA-Test`. Remove any pre-existing `MC-QA-Test` before starting. Touch no other deployments.
+5. **Named test fixture** — the create flow uses an agent named exactly `MC-QA-Test`. Remove any pre-existing `MC-QA-Test` before starting. Touch no other agents.
 6. **No remediation** — find and report bugs only. Do not fix them or modify application code.
