@@ -1,7 +1,7 @@
 import { createFileRoute, useNavigate } from '@tanstack/react-router';
 import { ArrowLeft, ArrowRight, Check, CheckCircle, Loader } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
-import { useDeploymentsStore } from '../../stores/deployments';
+import { useAgentsStore } from '../../stores/agents.js';
 
 type StepId = 'intro' | 'scan-qr' | 'name-connection' | 'choose-assistant' | 'done';
 
@@ -22,17 +22,16 @@ function NewWhatsAppWizard(): JSX.Element {
   const [connectionName, setConnectionName] = useState('My WhatsApp');
 
   // choose-assistant step
-  const { deployments, loadDeployments } = useDeploymentsStore();
+  const { agents, loadAgents } = useAgentsStore();
   const [selectedAgent, setSelectedAgent] = useState<{
-    deploymentId: string;
-    agentName: string;
+    agentId: string;
   } | null>(null);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState('');
 
   useEffect(() => {
-    loadDeployments();
-  }, [loadDeployments]);
+    loadAgents();
+  }, [loadAgents]);
 
   const stepId = STEPS[stepIndex];
   const goNext = () => setStepIndex((i) => Math.min(i + 1, STEPS.length - 1));
@@ -60,12 +59,11 @@ function NewWhatsAppWizard(): JSX.Element {
     return () => unsub();
   }, [stepId, pairingAttempt]);
 
-  const availableAgents = deployments
-    .filter((d) => d.status === 'running')
-    .map((d) => ({
-      label: d.name,
-      deploymentId: d.id,
-      agentName: d.name,
+  const availableAgents = agents
+    .filter((a) => a.status === 'active' || a.status === 'registered')
+    .map((a) => ({
+      label: a.name,
+      agentId: a.id,
     }));
 
   async function handleSave() {
@@ -73,16 +71,15 @@ function NewWhatsAppWizard(): JSX.Element {
     setSaving(true);
     setSaveError('');
     try {
-      await window.api.messagingAppsCreateWhatsApp(appIdRef.current, {
+      // WhatsApp channel creation uses the same channels API
+      await window.api.channelsCreate({
         name: connectionName,
-        type: 'whatsapp',
-        enabled: true,
+        adapter: 'whatsapp',
         globalDenyList: [],
         routing: [
           {
-            id: `rule-${Date.now()}`,
             condition: { type: 'default' },
-            targetAgentName: selectedAgent.agentName,
+            agentId: selectedAgent.agentId,
             allowList: [],
             denyList: [],
           },
@@ -98,191 +95,189 @@ function NewWhatsAppWizard(): JSX.Element {
 
   return (
     <div className="h-full flex flex-col overflow-hidden">
-    <div className="flex-1 overflow-y-auto p-8">
-    <div className="mx-auto max-w-2xl">
-      {/* Progress bar */}
-      <div className="mb-8 flex gap-1">
-        {STEPS.filter((s) => s !== 'done').map((s, i) => (
-          <div
-            key={s}
-            className={`h-1 flex-1 rounded-full transition-colors ${i <= stepIndex ? 'bg-accent' : 'bg-card-hover'}`}
-          />
-        ))}
-      </div>
-
-      <div className="min-h-[360px]">
-        {stepId === 'intro' && (
-          <WizardStep
-            title="Connect WhatsApp"
-            onNext={goNext}
-            onBack={() => navigate({ to: '/messaging-apps' })}
-            backLabel="Cancel"
-          >
-            <p className="text-base leading-relaxed">
-              Link your personal WhatsApp account so your AI assistant can receive and reply to
-              messages — just like a regular contact.
-            </p>
-            <p className="mt-4 text-base leading-relaxed">
-              This uses WhatsApp's <strong>Linked Devices</strong> feature — the same way WhatsApp
-              Web works. No business account needed.
-            </p>
-            <div className="mt-5 rounded-lg border border-border bg-card-bg p-4 text-sm">
-              <p className="font-medium">What you'll need:</p>
-              <ul className="mt-2 space-y-1 text-muted">
-                <li>• WhatsApp installed on your phone</li>
-                <li>• Your phone nearby to scan a QR code</li>
-              </ul>
-            </div>
-          </WizardStep>
-        )}
-
-        {stepId === 'scan-qr' && (
-          <WizardStep
-            title="Scan the QR code"
-            onNext={linked ? goNext : undefined}
-            onBack={goPrev}
-            nextLabel="Continue"
-          >
-            {!linked && (
-              <>
-                <p className="text-base leading-relaxed">
-                  Open WhatsApp on your phone →{' '}
-                  <strong>Settings → Linked Devices → Link a Device</strong> → scan the code below.
-                </p>
-                <div className="mt-6 flex flex-col items-center">
-                  {pairingError ? (
-                    <div className="rounded-lg border border-border bg-red-tint p-4 text-sm text-red">
-                      Error: {pairingError}
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setPairingAttempt((prev) => prev + 1);
-                        }}
-                        className="mt-3 block rounded-lg bg-accent px-4 py-2 text-white hover:opacity-90"
-                      >
-                        Try again
-                      </button>
-                    </div>
-                  ) : qrDataUrl ? (
-                    <img
-                      src={qrDataUrl}
-                      alt="WhatsApp QR Code"
-                      className="h-56 w-56 rounded-lg border border-border"
-                    />
-                  ) : (
-                    <div className="flex items-center gap-3 text-muted">
-                      <Loader size={20} className="animate-spin" />
-                      <span>Generating QR code…</span>
-                    </div>
-                  )}
-                </div>
-              </>
-            )}
-            {linked && (
-              <div className="flex flex-col items-center py-8">
-                <CheckCircle size={48} className="text-green" />
-                <p className="mt-4 text-base font-medium">WhatsApp linked!</p>
-                <p className="mt-1 text-sm text-muted">Click Continue to name this connection.</p>
-              </div>
-            )}
-          </WizardStep>
-        )}
-
-        {stepId === 'name-connection' && (
-          <WizardStep
-            title="Name this connection"
-            onNext={connectionName.trim() ? goNext : undefined}
-            onBack={goPrev}
-          >
-            <p className="text-base leading-relaxed">
-              Give this connection a name so you can recognise it later.
-            </p>
-            <div className="mt-5">
-              <label
-                htmlFor="connection-name"
-                className="block font-[family-name:var(--font-mono)] text-xs uppercase tracking-wider text-muted mb-1"
-              >
-                Connection Name
-              </label>
-              <input
-                id="connection-name"
-                type="text"
-                value={connectionName}
-                onChange={(e) => setConnectionName(e.target.value)}
-                placeholder='e.g. "Personal WhatsApp"'
-                className="w-full rounded-lg border border-border bg-card-bg px-3 py-2 text-sm focus:border-accent focus:outline-none"
+      <div className="flex-1 overflow-y-auto p-8">
+        <div className="mx-auto max-w-2xl">
+          {/* Progress bar */}
+          <div className="mb-8 flex gap-1">
+            {STEPS.filter((s) => s !== 'done').map((s, i) => (
+              <div
+                key={s}
+                className={`h-1 flex-1 rounded-full transition-colors ${i <= stepIndex ? 'bg-accent' : 'bg-card-hover'}`}
               />
-            </div>
-          </WizardStep>
-        )}
-
-        {stepId === 'choose-assistant' && (
-          <WizardStep title="Choose your assistant" onNext={undefined} onBack={goPrev}>
-            <p className="text-base leading-relaxed">
-              Which AI assistant should handle WhatsApp messages?
-            </p>
-            {availableAgents.length === 0 ? (
-              <div className="mt-4 rounded-lg border border-border bg-card-bg p-4 text-sm text-muted">
-                No agents are running. Deploy an agent first, then come back here.
-              </div>
-            ) : (
-              <div className="mt-4 flex flex-col gap-2">
-                {availableAgents.map((a) => (
-                  <button
-                    key={`${a.deploymentId}-${a.agentName}`}
-                    type="button"
-                    onClick={() =>
-                      setSelectedAgent({ deploymentId: a.deploymentId, agentName: a.agentName })
-                    }
-                    className={`rounded-lg border-2 px-4 py-3 text-left text-sm transition-colors ${
-                      selectedAgent?.agentName === a.agentName &&
-                      selectedAgent?.deploymentId === a.deploymentId
-                        ? 'border-accent bg-accent/10'
-                        : 'border-border hover:border-accent/50 hover:bg-card-hover'
-                    }`}
-                  >
-                    {a.label}
-                  </button>
-                ))}
-              </div>
-            )}
-            {selectedAgent && (
-              <button
-                type="button"
-                onClick={handleSave}
-                disabled={saving}
-                className="mt-5 inline-flex items-center gap-2 rounded-lg bg-accent px-5 py-2 text-sm text-white hover:opacity-90 disabled:opacity-50"
-              >
-                {saving ? <Loader size={14} className="animate-spin" /> : <Check size={14} />}
-                {saving ? 'Connecting…' : 'Connect WhatsApp'}
-              </button>
-            )}
-            {saveError && <p className="mt-3 text-sm text-red">Error: {saveError}</p>}
-          </WizardStep>
-        )}
-
-        {stepId === 'done' && (
-          <div className="flex flex-col items-center py-12 text-center">
-            <CheckCircle size={64} className="text-green" />
-            <h2 className="mt-6 text-2xl font-bold font-[family-name:var(--font-display)]">
-              WhatsApp connected!
-            </h2>
-            <p className="mt-3 text-base text-muted">
-              Your assistant will now receive and reply to WhatsApp messages. Make sure your
-              deployment is running.
-            </p>
-            <button
-              type="button"
-              onClick={() => navigate({ to: '/messaging-apps' })}
-              className="mt-6 rounded-lg bg-accent px-6 py-2 text-sm text-white hover:opacity-90"
-            >
-              Done
-            </button>
+            ))}
           </div>
-        )}
+
+          <div className="min-h-[360px]">
+            {stepId === 'intro' && (
+              <WizardStep
+                title="Connect WhatsApp"
+                onNext={goNext}
+                onBack={() => navigate({ to: '/messaging-apps' })}
+                backLabel="Cancel"
+              >
+                <p className="text-base leading-relaxed">
+                  Link your personal WhatsApp account so your AI assistant can receive and reply to
+                  messages.
+                </p>
+                <p className="mt-4 text-base leading-relaxed">
+                  This uses WhatsApp's <strong>Linked Devices</strong> feature.
+                </p>
+                <div className="mt-5 rounded-lg border border-border bg-card-bg p-4 text-sm">
+                  <p className="font-medium">What you'll need:</p>
+                  <ul className="mt-2 space-y-1 text-muted">
+                    <li>• WhatsApp installed on your phone</li>
+                    <li>• Your phone nearby to scan a QR code</li>
+                  </ul>
+                </div>
+              </WizardStep>
+            )}
+
+            {stepId === 'scan-qr' && (
+              <WizardStep
+                title="Scan the QR code"
+                onNext={linked ? goNext : undefined}
+                onBack={goPrev}
+                nextLabel="Continue"
+              >
+                {!linked && (
+                  <>
+                    <p className="text-base leading-relaxed">
+                      Open WhatsApp on your phone →{' '}
+                      <strong>Settings → Linked Devices → Link a Device</strong> → scan the code
+                      below.
+                    </p>
+                    <div className="mt-6 flex flex-col items-center">
+                      {pairingError ? (
+                        <div className="rounded-lg border border-border bg-red-tint p-4 text-sm text-red">
+                          Error: {pairingError}
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setPairingAttempt((prev) => prev + 1);
+                            }}
+                            className="mt-3 block rounded-lg bg-accent px-4 py-2 text-white hover:opacity-90"
+                          >
+                            Try again
+                          </button>
+                        </div>
+                      ) : qrDataUrl ? (
+                        <img
+                          src={qrDataUrl}
+                          alt="WhatsApp QR Code"
+                          className="h-56 w-56 rounded-lg border border-border"
+                        />
+                      ) : (
+                        <div className="flex items-center gap-3 text-muted">
+                          <Loader size={20} className="animate-spin" />
+                          <span>Generating QR code…</span>
+                        </div>
+                      )}
+                    </div>
+                  </>
+                )}
+                {linked && (
+                  <div className="flex flex-col items-center py-8">
+                    <CheckCircle size={48} className="text-green" />
+                    <p className="mt-4 text-base font-medium">WhatsApp linked!</p>
+                    <p className="mt-1 text-sm text-muted">
+                      Click Continue to name this connection.
+                    </p>
+                  </div>
+                )}
+              </WizardStep>
+            )}
+
+            {stepId === 'name-connection' && (
+              <WizardStep
+                title="Name this connection"
+                onNext={connectionName.trim() ? goNext : undefined}
+                onBack={goPrev}
+              >
+                <p className="text-base leading-relaxed">
+                  Give this connection a name so you can recognise it later.
+                </p>
+                <div className="mt-5">
+                  <label
+                    htmlFor="connection-name"
+                    className="block font-[family-name:var(--font-mono)] text-xs uppercase tracking-wider text-muted mb-1"
+                  >
+                    Connection Name
+                  </label>
+                  <input
+                    id="connection-name"
+                    type="text"
+                    value={connectionName}
+                    onChange={(e) => setConnectionName(e.target.value)}
+                    placeholder='e.g. "Personal WhatsApp"'
+                    className="w-full rounded-lg border border-border bg-card-bg px-3 py-2 text-sm focus:border-accent focus:outline-none"
+                  />
+                </div>
+              </WizardStep>
+            )}
+
+            {stepId === 'choose-assistant' && (
+              <WizardStep title="Choose your assistant" onNext={undefined} onBack={goPrev}>
+                <p className="text-base leading-relaxed">
+                  Which AI assistant should handle WhatsApp messages?
+                </p>
+                {availableAgents.length === 0 ? (
+                  <div className="mt-4 rounded-lg border border-border bg-card-bg p-4 text-sm text-muted">
+                    No agents are running. Deploy an agent first, then come back here.
+                  </div>
+                ) : (
+                  <div className="mt-4 flex flex-col gap-2">
+                    {availableAgents.map((a) => (
+                      <button
+                        key={a.agentId}
+                        type="button"
+                        onClick={() => setSelectedAgent({ agentId: a.agentId })}
+                        className={`rounded-lg border-2 px-4 py-3 text-left text-sm transition-colors ${
+                          selectedAgent?.agentId === a.agentId
+                            ? 'border-accent bg-accent/10'
+                            : 'border-border hover:border-accent/50 hover:bg-card-hover'
+                        }`}
+                      >
+                        {a.label}
+                      </button>
+                    ))}
+                  </div>
+                )}
+                {selectedAgent && (
+                  <button
+                    type="button"
+                    onClick={handleSave}
+                    disabled={saving}
+                    className="mt-5 inline-flex items-center gap-2 rounded-lg bg-accent px-5 py-2 text-sm text-white hover:opacity-90 disabled:opacity-50"
+                  >
+                    {saving ? <Loader size={14} className="animate-spin" /> : <Check size={14} />}
+                    {saving ? 'Connecting…' : 'Connect WhatsApp'}
+                  </button>
+                )}
+                {saveError && <p className="mt-3 text-sm text-red">Error: {saveError}</p>}
+              </WizardStep>
+            )}
+
+            {stepId === 'done' && (
+              <div className="flex flex-col items-center py-12 text-center">
+                <CheckCircle size={64} className="text-green" />
+                <h2 className="mt-6 text-2xl font-bold font-[family-name:var(--font-display)]">
+                  WhatsApp connected!
+                </h2>
+                <p className="mt-3 text-base text-muted">
+                  Your assistant will now receive and reply to WhatsApp messages.
+                </p>
+                <button
+                  type="button"
+                  onClick={() => navigate({ to: '/messaging-apps' })}
+                  className="mt-6 rounded-lg bg-accent px-6 py-2 text-sm text-white hover:opacity-90"
+                >
+                  Done
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
       </div>
-    </div>
-    </div>
     </div>
   );
 }

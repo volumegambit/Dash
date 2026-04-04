@@ -6,16 +6,54 @@ import { AgentRegistry } from './agent-registry.js';
 describe('AgentRegistry', () => {
   it('registers and retrieves an agent', () => {
     const registry = new AgentRegistry();
-    registry.register({
+    const entry = registry.register({
       name: 'agent-a',
       model: 'anthropic/claude-sonnet-4-20250514',
       systemPrompt: 'You are helpful.',
     });
 
-    const agent = registry.get('agent-a');
+    const agent = registry.get(entry.id);
     expect(agent).toBeDefined();
     expect(agent?.name).toBe('agent-a');
     expect(agent?.status).toBe('registered');
+  });
+
+  it('assigns a unique id on register', () => {
+    const registry = new AgentRegistry();
+    const a = registry.register({ name: 'a', model: 'm', systemPrompt: 's' });
+    const b = registry.register({ name: 'b', model: 'm', systemPrompt: 's' });
+    expect(a.id).toBeDefined();
+    expect(b.id).toBeDefined();
+    expect(a.id).not.toBe(b.id);
+    expect(a.id).toHaveLength(8);
+  });
+
+  it('preserves id across update', () => {
+    const registry = new AgentRegistry();
+    const entry = registry.register({ name: 'a', model: 'm1', systemPrompt: 's' });
+    const updated = registry.update(entry.id, { model: 'm2' });
+    expect(updated.id).toBe(entry.id);
+  });
+
+  it('can get agent by id', () => {
+    const registry = new AgentRegistry();
+    const entry = registry.register({ name: 'a', model: 'm', systemPrompt: 's' });
+    expect(registry.get(entry.id)).toBe(entry);
+  });
+
+  it('get by name returns undefined', () => {
+    const registry = new AgentRegistry();
+    registry.register({ name: 'a', model: 'm', systemPrompt: 's' });
+    expect(registry.get('a')).toBeUndefined();
+  });
+
+  it('findByName returns the agent', () => {
+    const registry = new AgentRegistry();
+    const entry = registry.register({ name: 'agent-x', model: 'm', systemPrompt: 's' });
+    const found = registry.findByName('agent-x');
+    expect(found).toBeDefined();
+    expect(found?.id).toBe(entry.id);
+    expect(registry.findByName('nonexistent')).toBeUndefined();
   });
 
   it('rejects duplicate names', () => {
@@ -43,47 +81,47 @@ describe('AgentRegistry', () => {
 
   it('removes an agent', () => {
     const registry = new AgentRegistry();
-    registry.register({ name: 'a', model: 'm', systemPrompt: 's' });
-    registry.remove('a');
-    expect(registry.get('a')).toBeUndefined();
+    const entry = registry.register({ name: 'a', model: 'm', systemPrompt: 's' });
+    registry.remove(entry.id);
+    expect(registry.get(entry.id)).toBeUndefined();
   });
 
   it('updates agent config', () => {
     const registry = new AgentRegistry();
-    registry.register({ name: 'a', model: 'm1', systemPrompt: 's' });
-    registry.update('a', { model: 'm2' });
-    expect(registry.get('a')?.config.model).toBe('m2');
+    const entry = registry.register({ name: 'a', model: 'm1', systemPrompt: 's' });
+    registry.update(entry.id, { model: 'm2' });
+    expect(registry.get(entry.id)?.config.model).toBe('m2');
   });
 
   it('supports disabled state', () => {
     const registry = new AgentRegistry();
-    registry.register({ name: 'a', model: 'm', systemPrompt: 's' });
-    registry.disable('a');
-    expect(registry.get('a')?.status).toBe('disabled');
-    registry.enable('a');
-    expect(registry.get('a')?.status).toBe('registered');
+    const entry = registry.register({ name: 'a', model: 'm', systemPrompt: 's' });
+    registry.disable(entry.id);
+    expect(registry.get(entry.id)?.status).toBe('disabled');
+    registry.enable(entry.id);
+    expect(registry.get(entry.id)?.status).toBe('registered');
   });
 
   it('has() returns true for registered agents', () => {
     const registry = new AgentRegistry();
-    registry.register({ name: 'a', model: 'm', systemPrompt: 's' });
-    expect(registry.has('a')).toBe(true);
-    expect(registry.has('b')).toBe(false);
+    const entry = registry.register({ name: 'a', model: 'm', systemPrompt: 's' });
+    expect(registry.has(entry.id)).toBe(true);
+    expect(registry.has('nonexistent-id')).toBe(false);
   });
 
   it('setActive transitions registered to active', () => {
     const registry = new AgentRegistry();
-    registry.register({ name: 'a', model: 'm', systemPrompt: 's' });
-    registry.setActive('a');
-    expect(registry.get('a')?.status).toBe('active');
+    const entry = registry.register({ name: 'a', model: 'm', systemPrompt: 's' });
+    registry.setActive(entry.id);
+    expect(registry.get(entry.id)?.status).toBe('active');
   });
 
   it('setActive does not transition disabled to active', () => {
     const registry = new AgentRegistry();
-    registry.register({ name: 'a', model: 'm', systemPrompt: 's' });
-    registry.disable('a');
-    registry.setActive('a');
-    expect(registry.get('a')?.status).toBe('disabled');
+    const entry = registry.register({ name: 'a', model: 'm', systemPrompt: 's' });
+    registry.disable(entry.id);
+    registry.setActive(entry.id);
+    expect(registry.get(entry.id)?.status).toBe('disabled');
   });
 
   it('update throws for unknown agent', () => {
@@ -117,33 +155,33 @@ describe('AgentRegistry (file-backed)', () => {
 
   it('persists on save and restores on load', async () => {
     const reg = new AgentRegistry(filePath);
-    reg.register({ name: 'a', model: 'm', systemPrompt: 's' });
+    const entry = reg.register({ name: 'a', model: 'm', systemPrompt: 's' });
     await reg.save();
 
     const reg2 = new AgentRegistry(filePath);
     await reg2.load();
-    expect(reg2.get('a')?.config.model).toBe('m');
+    expect(reg2.get(entry.id)?.config.model).toBe('m');
   });
 
   it('persists updates', async () => {
     const reg = new AgentRegistry(filePath);
-    reg.register({ name: 'a', model: 'm1', systemPrompt: 's' });
+    const entry = reg.register({ name: 'a', model: 'm1', systemPrompt: 's' });
     await reg.save();
 
-    reg.update('a', { model: 'm2' });
+    reg.update(entry.id, { model: 'm2' });
     await reg.save();
 
     const reg2 = new AgentRegistry(filePath);
     await reg2.load();
-    expect(reg2.get('a')?.config.model).toBe('m2');
+    expect(reg2.get(entry.id)?.config.model).toBe('m2');
   });
 
   it('persists removes', async () => {
     const reg = new AgentRegistry(filePath);
-    reg.register({ name: 'a', model: 'm', systemPrompt: 's' });
+    const entry = reg.register({ name: 'a', model: 'm', systemPrompt: 's' });
     await reg.save();
 
-    reg.remove('a');
+    reg.remove(entry.id);
     await reg.save();
 
     const reg2 = new AgentRegistry(filePath);
@@ -153,20 +191,20 @@ describe('AgentRegistry (file-backed)', () => {
 
   it('preserves status and registeredAt across save/load', async () => {
     const reg = new AgentRegistry(filePath);
-    reg.register({ name: 'a', model: 'm', systemPrompt: 's' });
-    reg.disable('a');
+    const entry = reg.register({ name: 'a', model: 'm', systemPrompt: 's' });
+    reg.disable(entry.id);
     await reg.save();
 
     const reg2 = new AgentRegistry(filePath);
     await reg2.load();
-    expect(reg2.get('a')?.status).toBe('disabled');
-    expect(reg2.get('a')?.registeredAt).toBe(reg.get('a')?.registeredAt);
+    expect(reg2.get(entry.id)?.status).toBe('disabled');
+    expect(reg2.get(entry.id)?.registeredAt).toBe(reg.get(entry.id)?.registeredAt);
   });
 
   it('works without a file path (in-memory only)', () => {
     const reg = new AgentRegistry();
-    reg.register({ name: 'a', model: 'm', systemPrompt: 's' });
-    expect(reg.get('a')).toBeDefined();
+    const entry = reg.register({ name: 'a', model: 'm', systemPrompt: 's' });
+    expect(reg.get(entry.id)).toBeDefined();
   });
 
   it('save is a no-op without a file path', async () => {

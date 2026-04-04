@@ -1,15 +1,9 @@
 import { providerSecretKey } from '@dash/mc/provider-keys';
 import { createFileRoute } from '@tanstack/react-router';
-import { KeyRound, Loader, Lock, LogIn, Plus, Trash2, X } from 'lucide-react';
+import { KeyRound, Loader, LogIn, Plus, Trash2, X } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
-import { KeyDeleteModal } from '../components/KeyDeleteModal.js';
 import { ProviderConnectModal } from '../components/ProviderConnectModal.js';
 import { PROVIDERS, type Provider } from '../components/providers.js';
-
-function maskKey(key: string): string {
-  if (key.length <= 17) return '••••••••';
-  return `${key.slice(0, 10)}${'•'.repeat(6)}${key.slice(-7)}`;
-}
 
 const KEY_NAME_PATTERN = /^[a-zA-Z0-9-]+$/;
 
@@ -26,13 +20,11 @@ function hasOAuthSupport(providerId: string): providerId is OAuthProvider {
 
 interface ProviderKeyEntry {
   name: string;
-  value: string;
   isOAuth?: boolean;
 }
 
 export function AiProviders(): JSX.Element {
   const [providerKeys, setProviderKeys] = useState<Record<string, ProviderKeyEntry[]>>({});
-  const [locked, setLocked] = useState(false);
   const [modal, setModal] = useState<{ provider: Provider; keyName?: string } | null>(null);
   const [disconnectConfirm, setDisconnectConfirm] = useState<{
     provider: Provider;
@@ -52,21 +44,9 @@ export function AiProviders(): JSX.Element {
   const [claudeOAuthName, setClaudeOAuthName] = useState('');
   const [claudeOAuthCode, setClaudeOAuthCode] = useState('');
   const [claudeOAuthError, setClaudeOAuthError] = useState<string | null>(null);
-  const [deleteModal, setDeleteModal] = useState<{
-    provider: string;
-    keyName: string;
-    affectedAgents: { deploymentId: string; name: string }[];
-    availableKeys: string[];
-  } | null>(null);
 
   const loadKeys = useCallback(async (): Promise<void> => {
-    const unlocked = await window.api.secretsIsUnlocked();
-    if (!unlocked) {
-      setLocked(true);
-      return;
-    }
-    setLocked(false);
-    const allKeys = await window.api.secretsList();
+    const allKeys = await window.api.credentialsList();
     // Codex OAuth keys have a matching refresh token
     const codexRefreshKeys = new Set(
       allKeys
@@ -83,21 +63,13 @@ export function AiProviders(): JSX.Element {
     for (const p of PROVIDERS) {
       const prefix = `${p.id}-api-key:`;
       const matching = allKeys.filter((k: string) => k.startsWith(prefix));
-      const entries: ProviderKeyEntry[] = [];
-      for (const key of matching) {
-        try {
-          const value = await window.api.secretsGet(key);
-          if (value) {
-            const name = key.slice(prefix.length);
-            const isOAuth =
-              (p.id === 'openai' && codexRefreshKeys.has(name)) ||
-              (p.id === 'anthropic' && claudeOAuthKeys.has(name));
-            entries.push({ name, value, isOAuth });
-          }
-        } catch {
-          // skip
-        }
-      }
+      const entries: ProviderKeyEntry[] = matching.map((key) => {
+        const name = key.slice(prefix.length);
+        const isOAuth =
+          (p.id === 'openai' && codexRefreshKeys.has(name)) ||
+          (p.id === 'anthropic' && claudeOAuthKeys.has(name));
+        return { name, isOAuth };
+      });
       grouped[p.id] = entries;
     }
     setProviderKeys(grouped);
@@ -113,11 +85,11 @@ export function AiProviders(): JSX.Element {
   };
 
   const handleDisconnect = async (provider: Provider, keyName: string): Promise<void> => {
-    await window.api.secretsDelete(providerSecretKey(provider, keyName));
+    await window.api.credentialsRemove(providerSecretKey(provider, keyName));
     // Clean up OAuth metadata
-    await window.api.secretsDelete(`openai-codex-refresh:${keyName}`).catch(() => {});
-    await window.api.secretsDelete(`openai-codex-expires:${keyName}`).catch(() => {});
-    await window.api.secretsDelete(`anthropic-oauth-marker:${keyName}`).catch(() => {});
+    await window.api.credentialsRemove(`openai-codex-refresh:${keyName}`).catch(() => {});
+    await window.api.credentialsRemove(`openai-codex-expires:${keyName}`).catch(() => {});
+    await window.api.credentialsRemove(`anthropic-oauth-marker:${keyName}`).catch(() => {});
     setDisconnectConfirm(null);
     loadKeys();
   };
@@ -190,30 +162,7 @@ export function AiProviders(): JSX.Element {
   };
 
   const handleDisconnectRequest = async (provider: Provider, keyName: string): Promise<void> => {
-    const affected = await window.api.credentialsGetAffectedAgents(provider, keyName);
-    if (affected.length === 0) {
-      await handleDisconnect(provider, keyName);
-      return;
-    }
-    const allProviderKeys = (providerKeys[provider] ?? [])
-      .map((k) => k.name)
-      .filter((name) => name !== keyName);
-    setDeleteModal({
-      provider,
-      keyName,
-      affectedAgents: affected,
-      availableKeys: allProviderKeys,
-    });
-    setDisconnectConfirm(null);
-  };
-
-  const handleDeleteConfirm = async (
-    assignments: { deploymentId: string; newKeyName: string | null }[],
-  ): Promise<void> => {
-    if (!deleteModal) return;
-    await window.api.credentialsReassignKey(deleteModal.provider, assignments);
-    await handleDisconnect(deleteModal.provider as Provider, deleteModal.keyName);
-    setDeleteModal(null);
+    await handleDisconnect(provider, keyName);
   };
 
   const handleOAuthLogin = async (provider: OAuthProvider, keyName: string): Promise<void> => {
@@ -267,13 +216,6 @@ export function AiProviders(): JSX.Element {
 
       {/* Body */}
       <div className="p-8 flex-1 overflow-y-auto">
-        {locked && (
-          <div className="mb-6 flex items-center gap-2 rounded-lg border border-border bg-card-bg px-4 py-3 text-sm text-muted">
-            <Lock size={16} className="shrink-0" />
-            <span>Secrets are locked. Unlock your secrets store to view provider status.</span>
-          </div>
-        )}
-
         <p className="font-[family-name:var(--font-mono)] text-[11px] uppercase tracking-[2px] text-accent">
           Configured Providers
         </p>
@@ -294,7 +236,7 @@ export function AiProviders(): JSX.Element {
                   <div className="flex-1 min-w-0">
                     <p className="font-semibold text-foreground">{p.name}</p>
                     <p className="font-[family-name:var(--font-mono)] text-xs text-muted mt-0.5">
-                      {hasKeys ? keys.map((k) => k.name).join(', ') : 'API key configured'}
+                      {hasKeys ? keys.map((k) => k.name).join(', ') : 'No key configured'}
                     </p>
                   </div>
 
@@ -344,7 +286,7 @@ export function AiProviders(): JSX.Element {
                           keyName: hasKeys ? undefined : 'default',
                         })
                       }
-                      className="inline-flex items-center gap-1 text-xs text-muted hover:text-foreground transition-colors"
+                      className="inline-flex items-center gap-1 rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-muted hover:text-foreground hover:bg-card-hover transition-colors"
                       aria-label={`Add key for ${p.name}`}
                     >
                       <Plus size={14} />
@@ -400,7 +342,7 @@ export function AiProviders(): JSX.Element {
                                 {oauthConfigForEntry.badgeLabel}
                               </span>
                             )}
-                            <span className="text-xs text-muted">{maskKey(entry.value)}</span>
+                            <span className="text-xs text-muted">••••••••</span>
                           </div>
                           <div className="flex items-center gap-2">
                             {!isConfirming && (
@@ -674,17 +616,6 @@ export function AiProviders(): JSX.Element {
             </form>
           </div>
         </div>
-      )}
-
-      {deleteModal && (
-        <KeyDeleteModal
-          provider={deleteModal.provider}
-          keyName={deleteModal.keyName}
-          affectedAgents={deleteModal.affectedAgents}
-          availableKeys={deleteModal.availableKeys}
-          onConfirm={handleDeleteConfirm}
-          onClose={() => setDeleteModal(null)}
-        />
       )}
     </div>
   );

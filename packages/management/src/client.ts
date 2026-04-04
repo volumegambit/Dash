@@ -200,10 +200,7 @@ export class ManagementClient {
   }
 
   async mcpGetServer(name: string): Promise<McpServerInfo> {
-    return this.request<McpServerInfo>(
-      'GET',
-      `/runtime/mcp/servers/${encodeURIComponent(name)}`,
-    );
+    return this.request<McpServerInfo>('GET', `/runtime/mcp/servers/${encodeURIComponent(name)}`);
   }
 
   async mcpAddServer(config: McpAddServerRequest): Promise<McpAddServerResponse> {
@@ -221,6 +218,13 @@ export class ManagementClient {
     await this.request<{ ok: boolean }>(
       'POST',
       `/runtime/mcp/servers/${encodeURIComponent(name)}/reconnect`,
+    );
+  }
+
+  async mcpReauthorizeServer(name: string): Promise<void> {
+    await this.request<{ ok: boolean }>(
+      'POST',
+      `/runtime/mcp/servers/${encodeURIComponent(name)}/reauthorize`,
     );
   }
 

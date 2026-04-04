@@ -9,9 +9,10 @@ import { useConnectorsStore } from '../stores/connectors.js';
 
 function connectorHealthStatus(
   status: McpConnectorInfo['status'],
-): 'connected' | 'connecting' | 'disconnected' {
+): 'connected' | 'connecting' | 'disconnected' | 'needs_reauth' {
   if (status === 'connected') return 'connected';
   if (status === 'reconnecting') return 'connecting';
+  if (status === 'needs_reauth') return 'needs_reauth';
   return 'disconnected';
 }
 
@@ -147,8 +148,11 @@ function AddConnectorModal({
         ) : (
           <div className="space-y-4 px-6 py-4">
             <div>
-              <label className="mb-1 block text-xs font-medium text-muted">Name</label>
+              <label htmlFor="connector-name" className="mb-1 block text-xs font-medium text-muted">
+                Name
+              </label>
               <input
+                id="connector-name"
                 type="text"
                 value={name}
                 onChange={(e) => setName(e.target.value)}
@@ -158,8 +162,11 @@ function AddConnectorModal({
             </div>
 
             <div>
-              <label className="mb-1 block text-xs font-medium text-muted">Type</label>
+              <label htmlFor="connector-type" className="mb-1 block text-xs font-medium text-muted">
+                Type
+              </label>
               <select
+                id="connector-type"
                 value={transportType}
                 onChange={(e) => setTransportType(e.target.value as typeof transportType)}
                 className="w-full border border-border bg-card-bg px-3 py-2 text-sm text-foreground focus:border-accent focus:outline-none"
@@ -173,8 +180,14 @@ function AddConnectorModal({
             {transportType === 'stdio' ? (
               <>
                 <div>
-                  <label className="mb-1 block text-xs font-medium text-muted">Command</label>
+                  <label
+                    htmlFor="connector-command"
+                    className="mb-1 block text-xs font-medium text-muted"
+                  >
+                    Command
+                  </label>
                   <input
+                    id="connector-command"
                     type="text"
                     value={command}
                     onChange={(e) => setCommand(e.target.value)}
@@ -183,8 +196,14 @@ function AddConnectorModal({
                   />
                 </div>
                 <div>
-                  <label className="mb-1 block text-xs font-medium text-muted">Arguments</label>
+                  <label
+                    htmlFor="connector-args"
+                    className="mb-1 block text-xs font-medium text-muted"
+                  >
+                    Arguments
+                  </label>
                   <input
+                    id="connector-args"
                     type="text"
                     value={args}
                     onChange={(e) => setArgs(e.target.value)}
@@ -195,8 +214,14 @@ function AddConnectorModal({
               </>
             ) : (
               <div>
-                <label className="mb-1 block text-xs font-medium text-muted">URL</label>
+                <label
+                  htmlFor="connector-url"
+                  className="mb-1 block text-xs font-medium text-muted"
+                >
+                  URL
+                </label>
                 <input
+                  id="connector-url"
                   type="text"
                   value={url}
                   onChange={(e) => setUrl(e.target.value)}
@@ -207,10 +232,12 @@ function AddConnectorModal({
             )}
 
             <div>
+              {/* biome-ignore lint/a11y/noLabelWithoutControl: label for dynamic env var group, not a single input */}
               <label className="mb-1 block text-xs font-medium text-muted">
                 Environment Variables
               </label>
               {envPairs.map((pair, i) => (
+                // biome-ignore lint/suspicious/noArrayIndexKey: env pairs have no stable unique key
                 <div key={`env-${i}`} className="mb-1 flex gap-2">
                   <input
                     type="text"
@@ -284,9 +311,15 @@ interface ConnectorCardProps {
   connector: McpConnectorInfo;
   onReconnect(name: string): void;
   onRemove(name: string): void;
+  onReauthorize(name: string): void;
 }
 
-function ConnectorCard({ connector, onReconnect, onRemove }: ConnectorCardProps): JSX.Element {
+function ConnectorCard({
+  connector,
+  onReconnect,
+  onRemove,
+  onReauthorize,
+}: ConnectorCardProps): JSX.Element {
   return (
     <div className="border border-border bg-card-bg p-4">
       <div className="flex items-center justify-between">
@@ -303,14 +336,24 @@ function ConnectorCard({ connector, onReconnect, onRemove }: ConnectorCardProps)
           </div>
         </div>
         <div className="flex items-center gap-1">
-          <button
-            type="button"
-            onClick={() => onReconnect(connector.name)}
-            title="Reconnect"
-            className="p-1.5 text-muted hover:bg-sidebar-hover hover:text-foreground"
-          >
-            <RefreshCw size={14} />
-          </button>
+          {connector.status === 'needs_reauth' ? (
+            <button
+              type="button"
+              onClick={() => onReauthorize(connector.name)}
+              className="flex items-center gap-1 border border-yellow-700/50 bg-yellow-900/20 px-2.5 py-1 text-xs text-yellow-200 hover:bg-yellow-900/40"
+            >
+              Re-authorize
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={() => onReconnect(connector.name)}
+              title="Reconnect"
+              className="p-1.5 text-muted hover:bg-sidebar-hover hover:text-foreground"
+            >
+              <RefreshCw size={14} />
+            </button>
+          )}
           <button
             type="button"
             onClick={() => onRemove(connector.name)}
@@ -381,7 +424,7 @@ function AllowlistSection(): JSX.Element {
             <ul className="mb-3 space-y-1">
               {allowlist.map((pattern, i) => (
                 <li
-                  key={`al-${i}`}
+                  key={pattern}
                   className="flex items-center justify-between bg-sidebar-hover px-3 py-1.5 text-sm"
                 >
                   <code className="font-[family-name:var(--font-mono)] text-xs">{pattern}</code>
@@ -508,6 +551,23 @@ function ConnectorsPage(): JSX.Element {
     [reconnectConnector],
   );
 
+  const handleReauthorize = useCallback(
+    async (name: string) => {
+      try {
+        await window.api.mcpReauthorize(name);
+        await loadConnectors();
+      } catch {
+        // Error is set in the store
+      }
+    },
+    [loadConnectors],
+  );
+
+  useEffect(() => {
+    const unsub = useConnectorsStore.getState().initConnectorListeners();
+    return unsub;
+  }, []);
+
   return (
     <div className="flex flex-col h-full overflow-hidden">
       {/* Page header */}
@@ -556,6 +616,7 @@ function ConnectorsPage(): JSX.Element {
                 connector={c}
                 onReconnect={handleReconnect}
                 onRemove={handleRemove}
+                onReauthorize={handleReauthorize}
               />
             ))}
           </div>

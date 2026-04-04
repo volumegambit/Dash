@@ -1,32 +1,37 @@
-export interface GatewayChannelRoutingRule {
-  condition:
-    | { type: 'default' }
-    | { type: 'sender'; ids: string[] }
-    | { type: 'group'; ids: string[] };
-  agentName: string;
-  allowList: string[];
-  denyList: string[];
+export interface GatewayAgent {
+  id: string;
+  name: string;
+  config: {
+    model: string;
+    systemPrompt: string;
+    fallbackModels?: string[];
+    tools?: string[];
+    skills?: { paths?: string[]; urls?: string[] };
+    workspace?: string;
+    maxTokens?: number;
+    mcpServers?: string[];
+  };
+  status: 'registered' | 'active' | 'disabled';
+  registeredAt: string;
 }
 
-export interface GatewayChannelConfig {
+export interface GatewayChannel {
+  name: string;
   adapter: 'telegram' | 'whatsapp';
-  token?: string;
-  authStateDir?: string;
-  whatsappAuth?: Record<string, string>;
-  globalDenyList?: string[];
-  routing: GatewayChannelRoutingRule[];
+  globalDenyList: string[];
+  routing: Array<{
+    condition:
+      | { type: 'default' }
+      | { type: 'sender'; ids: string[] }
+      | { type: 'group'; ids: string[] };
+    agentId: string;
+    allowList: string[];
+    denyList: string[];
+  }>;
+  registeredAt: string;
 }
 
-export interface GatewayHealthResponse {
-  status: string;
-  startedAt: string;
-  agents: number;
-  channels: number;
-  pool?: { size: number; maxSize: number; pinned: number; agents: Record<string, number> };
-  runtimeAgents?: number;
-}
-
-export interface RuntimeAgentConfig {
+export interface CreateAgentRequest {
   name: string;
   model: string;
   systemPrompt: string;
@@ -36,14 +41,14 @@ export interface RuntimeAgentConfig {
   workspace?: string;
   maxTokens?: number;
   mcpServers?: string[];
-  providerApiKeys?: Record<string, string>;
 }
 
-export interface RegisteredRuntimeAgent {
-  name: string;
-  config: RuntimeAgentConfig;
-  status: 'registered' | 'active' | 'disabled';
-  registeredAt: number;
+export interface GatewayHealthResponse {
+  status: 'healthy';
+  startedAt: string;
+  agents: number;
+  channels: number;
+  mcpServers?: Array<{ name: string; status: string }>;
 }
 
 export class GatewayManagementClient {
@@ -53,150 +58,157 @@ export class GatewayManagementClient {
   ) {}
 
   private headers(): Record<string, string> {
-    return {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${this.token}`,
-    };
+    return { Authorization: `Bearer ${this.token}`, 'Content-Type': 'application/json' };
   }
 
+  private async throwIfNotOk(res: Response, label: string): Promise<void> {
+    if (!res.ok) {
+      const body = await res.text().catch(() => '');
+      throw new Error(`Gateway ${label} failed: ${res.status} ${body}`.trimEnd());
+    }
+  }
+
+  // Health
   async health(): Promise<GatewayHealthResponse> {
-    const res = await fetch(`${this.baseUrl}/health`, {
-      headers: this.headers(),
-      signal: AbortSignal.timeout(3000),
-    });
+    const res = await fetch(`${this.baseUrl}/health`);
     return res.json() as Promise<GatewayHealthResponse>;
   }
 
-  async registerAgent(
-    deploymentId: string,
-    agentName: string,
-    chatUrl: string,
-    chatToken: string,
-  ): Promise<void> {
+  // Agents
+  async createAgent(config: CreateAgentRequest): Promise<GatewayAgent> {
     const res = await fetch(`${this.baseUrl}/agents`, {
-      method: 'POST',
-      headers: this.headers(),
-      body: JSON.stringify({ deploymentId, agentName, chatUrl, chatToken }),
-    });
-    if (!res.ok) {
-      throw new Error(`Gateway registerAgent failed: ${res.status}`);
-    }
-  }
-
-  async deregisterDeployment(deploymentId: string): Promise<void> {
-    try {
-      await fetch(`${this.baseUrl}/deployments/${deploymentId}`, {
-        method: 'DELETE',
-        headers: this.headers(),
-        signal: AbortSignal.timeout(3000),
-      });
-    } catch {
-      // Best-effort: gateway may be down, swallow errors
-    }
-  }
-
-  async registerChannel(
-    deploymentId: string,
-    channelName: string,
-    config: GatewayChannelConfig,
-  ): Promise<void> {
-    const res = await fetch(`${this.baseUrl}/channels`, {
-      method: 'POST',
-      headers: this.headers(),
-      body: JSON.stringify({ deploymentId, channelName, config }),
-    });
-    if (!res.ok) {
-      throw new Error(`Gateway registerChannel failed: ${res.status}`);
-    }
-  }
-
-  async registerRuntimeAgent(config: RuntimeAgentConfig): Promise<void> {
-    const res = await fetch(`${this.baseUrl}/runtime/agents`, {
       method: 'POST',
       headers: this.headers(),
       body: JSON.stringify(config),
     });
-    if (!res.ok) {
-      const body = await res.text().catch(() => '');
-      throw new Error(`Gateway registerRuntimeAgent failed: ${res.status} ${body}`);
-    }
+    await this.throwIfNotOk(res, 'createAgent');
+    return res.json() as Promise<GatewayAgent>;
   }
 
-  async listRuntimeAgents(): Promise<RegisteredRuntimeAgent[]> {
-    const res = await fetch(`${this.baseUrl}/runtime/agents`, {
+  async listAgents(): Promise<GatewayAgent[]> {
+    const res = await fetch(`${this.baseUrl}/agents`, {
       headers: this.headers(),
     });
-    if (!res.ok) {
-      throw new Error(`Gateway listRuntimeAgents failed: ${res.status}`);
-    }
-    return res.json() as Promise<RegisteredRuntimeAgent[]>;
+    await this.throwIfNotOk(res, 'listAgents');
+    return res.json() as Promise<GatewayAgent[]>;
   }
 
-  async getRuntimeAgent(name: string): Promise<RegisteredRuntimeAgent> {
-    const res = await fetch(`${this.baseUrl}/runtime/agents/${encodeURIComponent(name)}`, {
+  async getAgent(id: string): Promise<GatewayAgent> {
+    const res = await fetch(`${this.baseUrl}/agents/${encodeURIComponent(id)}`, {
       headers: this.headers(),
     });
-    if (!res.ok) {
-      throw new Error(`Gateway getRuntimeAgent failed: ${res.status}`);
-    }
-    return res.json() as Promise<RegisteredRuntimeAgent>;
+    await this.throwIfNotOk(res, 'getAgent');
+    return res.json() as Promise<GatewayAgent>;
   }
 
-  async updateRuntimeAgent(name: string, patch: Partial<RuntimeAgentConfig>): Promise<void> {
-    const res = await fetch(`${this.baseUrl}/runtime/agents/${encodeURIComponent(name)}`, {
+  async updateAgent(id: string, patch: Partial<CreateAgentRequest>): Promise<GatewayAgent> {
+    const res = await fetch(`${this.baseUrl}/agents/${encodeURIComponent(id)}`, {
       method: 'PUT',
       headers: this.headers(),
       body: JSON.stringify(patch),
     });
-    if (!res.ok) {
-      throw new Error(`Gateway updateRuntimeAgent failed: ${res.status}`);
-    }
+    await this.throwIfNotOk(res, 'updateAgent');
+    return res.json() as Promise<GatewayAgent>;
   }
 
-  async removeRuntimeAgent(name: string): Promise<void> {
-    const res = await fetch(`${this.baseUrl}/runtime/agents/${encodeURIComponent(name)}`, {
+  async removeAgent(id: string): Promise<void> {
+    const res = await fetch(`${this.baseUrl}/agents/${encodeURIComponent(id)}`, {
       method: 'DELETE',
       headers: this.headers(),
     });
-    if (!res.ok) {
-      throw new Error(`Gateway removeRuntimeAgent failed: ${res.status}`);
-    }
+    await this.throwIfNotOk(res, 'removeAgent');
   }
 
-  async setRuntimeAgentCredentials(
+  async disableAgent(id: string): Promise<void> {
+    const res = await fetch(`${this.baseUrl}/agents/${encodeURIComponent(id)}/disable`, {
+      method: 'POST',
+      headers: this.headers(),
+    });
+    await this.throwIfNotOk(res, 'disableAgent');
+  }
+
+  async enableAgent(id: string): Promise<void> {
+    const res = await fetch(`${this.baseUrl}/agents/${encodeURIComponent(id)}/enable`, {
+      method: 'POST',
+      headers: this.headers(),
+    });
+    await this.throwIfNotOk(res, 'enableAgent');
+  }
+
+  // Channels
+  async registerChannel(config: {
+    name: string;
+    adapter: string;
+    globalDenyList?: string[];
+    routing: GatewayChannel['routing'];
+  }): Promise<void> {
+    const res = await fetch(`${this.baseUrl}/channels`, {
+      method: 'POST',
+      headers: this.headers(),
+      body: JSON.stringify(config),
+    });
+    await this.throwIfNotOk(res, 'registerChannel');
+  }
+
+  async listChannels(): Promise<GatewayChannel[]> {
+    const res = await fetch(`${this.baseUrl}/channels`, {
+      headers: this.headers(),
+    });
+    await this.throwIfNotOk(res, 'listChannels');
+    return res.json() as Promise<GatewayChannel[]>;
+  }
+
+  async getChannel(name: string): Promise<GatewayChannel> {
+    const res = await fetch(`${this.baseUrl}/channels/${encodeURIComponent(name)}`, {
+      headers: this.headers(),
+    });
+    await this.throwIfNotOk(res, 'getChannel');
+    return res.json() as Promise<GatewayChannel>;
+  }
+
+  async updateChannel(
     name: string,
-    providerApiKeys: Record<string, string>,
+    patch: Partial<Pick<GatewayChannel, 'globalDenyList' | 'routing'>>,
   ): Promise<void> {
-    const res = await fetch(
-      `${this.baseUrl}/runtime/agents/${encodeURIComponent(name)}/credentials`,
-      {
-        method: 'POST',
-        headers: this.headers(),
-        body: JSON.stringify({ providerApiKeys }),
-      },
-    );
-    if (!res.ok) {
-      throw new Error(`Gateway setRuntimeAgentCredentials failed: ${res.status}`);
-    }
+    const res = await fetch(`${this.baseUrl}/channels/${encodeURIComponent(name)}`, {
+      method: 'PUT',
+      headers: this.headers(),
+      body: JSON.stringify(patch),
+    });
+    await this.throwIfNotOk(res, 'updateChannel');
   }
 
-  async disableRuntimeAgent(name: string): Promise<void> {
-    const res = await fetch(`${this.baseUrl}/runtime/agents/${encodeURIComponent(name)}/disable`, {
-      method: 'POST',
+  async removeChannel(name: string): Promise<void> {
+    const res = await fetch(`${this.baseUrl}/channels/${encodeURIComponent(name)}`, {
+      method: 'DELETE',
       headers: this.headers(),
     });
-    if (!res.ok) {
-      throw new Error(`Gateway disableRuntimeAgent failed: ${res.status}`);
-    }
+    await this.throwIfNotOk(res, 'removeChannel');
   }
 
-  async enableRuntimeAgent(name: string): Promise<void> {
-    const res = await fetch(`${this.baseUrl}/runtime/agents/${encodeURIComponent(name)}/enable`, {
+  // Credentials
+  async setCredential(key: string, value: string): Promise<void> {
+    const res = await fetch(`${this.baseUrl}/credentials`, {
       method: 'POST',
       headers: this.headers(),
+      body: JSON.stringify({ key, value }),
     });
-    if (!res.ok) {
-      throw new Error(`Gateway enableRuntimeAgent failed: ${res.status}`);
-    }
+    await this.throwIfNotOk(res, 'setCredential');
+  }
+
+  async listCredentials(): Promise<string[]> {
+    const res = await fetch(`${this.baseUrl}/credentials`, {
+      headers: this.headers(),
+    });
+    await this.throwIfNotOk(res, 'listCredentials');
+    return res.json() as Promise<string[]>;
+  }
+
+  async removeCredential(key: string): Promise<void> {
+    const res = await fetch(`${this.baseUrl}/credentials/${encodeURIComponent(key)}`, {
+      method: 'DELETE',
+      headers: this.headers(),
+    });
+    await this.throwIfNotOk(res, 'removeCredential');
   }
 }

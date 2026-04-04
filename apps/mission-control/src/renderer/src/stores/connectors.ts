@@ -18,6 +18,7 @@ interface ConnectorsState {
   getConnector(name: string): Promise<McpConnectorInfo>;
   loadAllowlist(): Promise<void>;
   setAllowlist(patterns: string[]): Promise<void>;
+  initConnectorListeners(): () => void;
 }
 
 export const useConnectorsStore = create<ConnectorsState>((set, get) => ({
@@ -32,7 +33,11 @@ export const useConnectorsStore = create<ConnectorsState>((set, get) => ({
       const connectors = await window.api.mcpListConnectors();
       set({ connectors, loading: false });
     } catch (err) {
-      set({ loading: false, error: (err as Error).message });
+      const msg = (err as Error).message;
+      const friendly = msg.includes('404')
+        ? 'MCP connectors are not available. The gateway does not support this feature yet.'
+        : msg;
+      set({ connectors: [], loading: false, error: friendly });
     }
   },
 
@@ -93,5 +98,17 @@ export const useConnectorsStore = create<ConnectorsState>((set, get) => ({
       set({ error: (err as Error).message });
       throw err;
     }
+  },
+
+  initConnectorListeners() {
+    const unsub = window.api.onMcpStatusChanged((change) => {
+      set((state) => {
+        const connectors = state.connectors.map((c) =>
+          c.name === change.serverName ? { ...c, status: change.status } : c,
+        );
+        return { connectors };
+      });
+    });
+    return unsub;
   },
 }));

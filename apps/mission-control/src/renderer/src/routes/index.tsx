@@ -1,17 +1,18 @@
 import { Link, createFileRoute } from '@tanstack/react-router';
 import { ArrowUpRight, Plus } from 'lucide-react';
 import { useEffect } from 'react';
-import { useDeploymentsStore } from '../stores/deployments';
+import type { GatewayAgent } from '../../../shared/ipc.js';
+import { useAgentsStore } from '../stores/agents.js';
 
 function Dashboard(): JSX.Element {
-  const { deployments, loading, loadDeployments } = useDeploymentsStore();
+  const { agents, loading, loadAgents } = useAgentsStore();
 
   useEffect(() => {
-    loadDeployments();
-  }, [loadDeployments]);
+    loadAgents();
+  }, [loadAgents]);
 
-  const running = deployments.filter((d) => d.status === 'running').length;
-  const total = deployments.length;
+  const active = agents.filter((a) => a.status === 'active' || a.status === 'registered').length;
+  const total = agents.length;
 
   return (
     <div className="flex flex-col flex-1 overflow-hidden">
@@ -39,7 +40,7 @@ function Dashboard(): JSX.Element {
         <div className="flex gap-4">
           <StatCard
             label="ACTIVE AGENTS"
-            value={loading ? '—' : running}
+            value={loading ? '—' : active}
             delta={`→ ${total} total`}
             deltaPositive={null}
           />
@@ -75,26 +76,23 @@ function Dashboard(): JSX.Element {
 
             {/* Table rows */}
             <div className="flex-1 overflow-y-auto">
-              {deployments.length === 0 ? (
+              {agents.length === 0 ? (
                 <div className="flex items-center justify-center h-full py-12">
                   <span className="text-xs text-muted">No recent conversations</span>
                 </div>
               ) : (
-                deployments.slice(0, 8).map((deployment) => {
-                  const channelKeys = Object.keys(deployment.config?.channels ?? {});
-                  const channel = channelKeys[0] ?? '—';
-                  const agentName = deployment.name;
-                  const relativeTime = formatRelativeTime(deployment.createdAt);
+                agents.slice(0, 8).map((agent) => {
+                  const relativeTime = formatRelativeTime(agent.registeredAt);
 
                   return (
                     <Link
-                      key={deployment.id}
+                      key={agent.id}
                       to="/agents/$id"
-                      params={{ id: deployment.id }}
+                      params={{ id: agent.id }}
                       className="grid grid-cols-[2fr_1fr_2fr_1fr] px-5 py-3 border-b border-border hover:bg-sidebar-hover transition-colors items-center"
                     >
-                      <span className="text-sm text-foreground truncate">{agentName}</span>
-                      <span className="text-xs text-muted truncate capitalize">{channel}</span>
+                      <span className="text-sm text-foreground truncate">{agent.name}</span>
+                      <span className="text-xs text-muted truncate">—</span>
                       <span className="text-xs text-muted truncate">—</span>
                       <span className="text-xs text-muted">{relativeTime}</span>
                     </Link>
@@ -128,12 +126,10 @@ function Dashboard(): JSX.Element {
               </span>
 
               <div className="flex flex-col gap-2">
-                {deployments.length === 0 ? (
+                {agents.length === 0 ? (
                   <span className="text-xs text-muted">No agents deployed</span>
                 ) : (
-                  deployments.map((deployment) => (
-                    <AgentHealthRow key={deployment.id} deployment={deployment} />
-                  ))
+                  agents.map((agent) => <AgentHealthRow key={agent.id} agent={agent} />)
                 )}
               </div>
             </div>
@@ -193,20 +189,19 @@ function ServiceRow({ name, status }: { name: string; status: string }): JSX.Ele
 }
 
 function AgentHealthRow({
-  deployment,
+  agent,
 }: {
-  deployment: { id: string; name: string; status: string };
+  agent: GatewayAgent;
 }): JSX.Element {
-  const isRunning = deployment.status === 'running';
-  const isError = deployment.status === 'error';
-  const dotColor = isRunning ? 'bg-green' : 'bg-red';
-  const badgeLabel = isRunning ? 'Active' : isError ? 'Error' : 'Stopped';
-  const badgeColor = isRunning ? 'bg-green-tint text-green' : 'bg-red-tint text-red';
+  const isActive = agent.status === 'active' || agent.status === 'registered';
+  const dotColor = isActive ? 'bg-green' : 'bg-red';
+  const badgeLabel = isActive ? 'Active' : 'Disabled';
+  const badgeColor = isActive ? 'bg-green-tint text-green' : 'bg-red-tint text-red';
 
   return (
     <div className="flex items-center gap-2">
       <div className={`w-2 h-2 rounded-full flex-shrink-0 ${dotColor}`} />
-      <span className="text-sm text-foreground flex-1 truncate">{deployment.name}</span>
+      <span className="text-sm text-foreground flex-1 truncate">{agent.name}</span>
       <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded ${badgeColor}`}>
         {badgeLabel}
       </span>

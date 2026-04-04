@@ -1,5 +1,5 @@
-import { ShieldCheck, HardDrive, FileSearch, EyeOff } from 'lucide-react';
 import { SandboxVisual } from '@/components/visuals/SandboxVisual';
+import { EyeOff, FileSearch, HardDrive, ShieldCheck } from 'lucide-react';
 
 const BULLETS = [
   {
@@ -10,17 +10,20 @@ const BULLETS = [
   {
     Icon: HardDrive,
     title: '100% Local Data',
-    description: 'Conversations and session data stay on your computer. Nothing leaves without your explicit command.',
+    description:
+      'Conversations and session data stay on your computer. Nothing leaves without your explicit command.',
   },
   {
     Icon: FileSearch,
     title: 'Full Audit Trail',
-    description: 'Every action logged in append-only session files. See exactly what your agents did and why.',
+    description:
+      'Every action logged in append-only session files. See exactly what your agents did and why.',
   },
   {
     Icon: EyeOff,
     title: 'Zero Surveillance',
-    description: 'No tracking, no ads, no data selling. Your conversations stay between you and your agents.',
+    description:
+      'No tracking, no ads, no data selling. Your conversations stay between you and your agents.',
   },
 ];
 
@@ -35,11 +38,14 @@ export function SecureSandbox() {
           </span>
 
           <h2 className="font-outfit text-[32px] lg:text-[44px] font-extrabold text-text-dark tracking-tight leading-[1.1]">
-            Runs on your machine.<br />Stays on your machine.
+            Runs on your machine.
+            <br />
+            Stays on your machine.
           </h2>
 
           <p className="text-[17px] text-text-secondary leading-relaxed">
-            Your agents execute in isolated sandboxes on your own hardware. No cloud dependencies, no data exfiltration, full control.
+            Your agents execute in isolated sandboxes on your own hardware. No cloud dependencies,
+            no data exfiltration, full control.
           </p>
 
           {/* Feature bullets */}
@@ -51,7 +57,9 @@ export function SecureSandbox() {
                 </div>
                 <div className="flex flex-col gap-0.5">
                   <span className="text-[16px] font-semibold text-text-dark">{title}</span>
-                  <span className="text-[14px] text-text-secondary leading-relaxed">{description}</span>
+                  <span className="text-[14px] text-text-secondary leading-relaxed">
+                    {description}
+                  </span>
                 </div>
               </div>
             ))}
