@@ -10,6 +10,7 @@ function Settings(): JSX.Element {
   const [settings, setSettings] = useState<AppSettings>({});
   const [saving, setSaving] = useState(false);
   const [restarting, setRestarting] = useState(false);
+  const [restartStatus, setRestartStatus] = useState<'idle' | 'success' | 'error'>('idle');
   const {
     models: availableModels,
     refreshing: modelsRefreshing,
@@ -26,10 +27,14 @@ function Settings(): JSX.Element {
 
   const handleRestartGateway = useCallback(async () => {
     setRestarting(true);
+    setRestartStatus('idle');
     try {
       await window.api.gatewayRestart();
+      setRestartStatus('success');
+      setTimeout(() => setRestartStatus('idle'), 3000);
     } catch {
-      // Will recover on next health poll
+      setRestartStatus('error');
+      setTimeout(() => setRestartStatus('idle'), 5000);
     } finally {
       setRestarting(false);
     }
@@ -85,15 +90,23 @@ function Settings(): JSX.Element {
           <p className="mb-3 text-xs text-muted">
             The gateway process manages agents, channels, and credentials.
           </p>
-          <button
-            type="button"
-            onClick={handleRestartGateway}
-            disabled={restarting}
-            className="inline-flex items-center gap-2 rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-muted hover:text-foreground hover:bg-card-hover transition-colors disabled:opacity-50"
-          >
-            <RefreshCw size={14} className={restarting ? 'animate-spin' : ''} />
-            {restarting ? 'Restarting...' : 'Restart Gateway'}
-          </button>
+          <div className="flex items-center gap-3">
+            <button
+              type="button"
+              onClick={handleRestartGateway}
+              disabled={restarting}
+              className="inline-flex items-center gap-2 rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-muted hover:text-foreground hover:bg-card-hover transition-colors disabled:opacity-50"
+            >
+              <RefreshCw size={14} className={restarting ? 'animate-spin' : ''} />
+              {restarting ? 'Restarting...' : 'Restart Gateway'}
+            </button>
+            {restartStatus === 'success' && (
+              <span className="text-xs text-green">Gateway restarted successfully</span>
+            )}
+            {restartStatus === 'error' && (
+              <span className="text-xs text-red">Failed to restart gateway</span>
+            )}
+          </div>
         </div>
 
         <div className="mt-6 rounded-lg border border-border bg-card-bg p-4">

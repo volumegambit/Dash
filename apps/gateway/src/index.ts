@@ -77,21 +77,23 @@ async function main() {
       const sessionDir = resolve(dataDir, 'sessions', agentConfig.name, conversationId);
       await mkdir(sessionDir, { recursive: true });
 
-      // Read credentials from credential store for this agent
-      const agentEntry = registry.findByName(agentConfig.name);
-      const agentId = agentEntry?.id;
+      // Read provider credentials from the credential store.
+      // Keys are stored globally as {provider}-api-key:{keyName} (e.g. anthropic-api-key:default).
+      // The agent's model determines which provider key to use.
       const providerApiKeys: Record<string, string> = {};
-      if (agentId) {
-        const keys = await credentialStore.list();
-        for (const k of keys) {
-          if (k.startsWith(`agent:${agentId}:`)) {
-            const provider = k.split(':')[2];
+      const allKeys = await credentialStore.list();
+      for (const k of allKeys) {
+        const match = k.match(/^(.+)-api-key:(.+)$/);
+        if (match) {
+          const provider = match[1];
+          if (!providerApiKeys[provider]) {
             const value = await credentialStore.get(k);
-            if (provider && value) providerApiKeys[provider] = value;
+            if (value) providerApiKeys[provider] = value;
           }
         }
       }
-      // Fall back to config.providerApiKeys for backward compat during migration
+
+      // Fall back to config.providerApiKeys for backward compat
       const finalKeys =
         Object.keys(providerApiKeys).length > 0
           ? providerApiKeys
