@@ -38,6 +38,14 @@ export class AgentRegistry {
       const entries = JSON.parse(raw) as RegisteredAgent[];
       this.agents.clear();
       for (const entry of entries) {
+        // Assign ID to legacy agents registered before the ID migration
+        if (!entry.id) {
+          entry.id = randomUUID().slice(0, 8);
+        }
+        // Normalize legacy registeredAt (epoch number → ISO string)
+        if (typeof entry.registeredAt === 'number') {
+          entry.registeredAt = new Date(entry.registeredAt).toISOString();
+        }
         this.agents.set(entry.id, entry);
       }
     } catch {
