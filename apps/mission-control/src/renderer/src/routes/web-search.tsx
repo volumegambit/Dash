@@ -1,31 +1,38 @@
 import { providerSecretKey } from '@dash/mc/provider-keys';
 import { createFileRoute } from '@tanstack/react-router';
 import { useCallback, useEffect, useState } from 'react';
-import { useSecretsStore } from '../stores/secrets.js';
 
 function WebSearch(): JSX.Element {
-  const { loadKeys, setSecret, deleteSecret, getSecret } = useSecretsStore();
-  const keys = useSecretsStore((s) => s.keys);
+  const [keys, setKeys] = useState<string[]>([]);
   const [braveKeyMasked, setBraveKeyMasked] = useState<string | null>(null);
   const [braveKeyInput, setBraveKeyInput] = useState('');
   const [braveKeySaving, setBraveKeySaving] = useState(false);
+
+  const loadKeys = useCallback(async () => {
+    try {
+      const credKeys = await window.api.credentialsList();
+      setKeys(credKeys);
+    } catch {
+      // Gateway may not be ready
+    }
+  }, []);
 
   useEffect(() => {
     loadKeys();
   }, [loadKeys]);
 
   useEffect(() => {
-    const hasBrave = keys.some((k) => k.startsWith(providerSecretKey('brave')));
-    if (hasBrave) {
-      getSecret(providerSecretKey('brave')).then((val) => {
-        if (val) {
-          setBraveKeyMasked(`${val.slice(0, 6)}${'•'.repeat(6)}${val.slice(-4)}`);
-        }
-      });
-    } else {
+    const braveKey = providerSecretKey('brave');
+    const hasBrave = keys.some((k) => k.startsWith(braveKey));
+    if (!hasBrave) {
       setBraveKeyMasked(null);
     }
-  }, [keys, getSecret]);
+    // Note: gateway credentials API only lists keys, not values.
+    // We can't unmask the key, so just show a placeholder when present.
+    if (hasBrave) {
+      setBraveKeyMasked('••••••••••••••••');
+    }
+  }, [keys]);
 
   const handleSaveBraveKey = useCallback(
     async (e: React.FormEvent) => {
@@ -34,21 +41,23 @@ function WebSearch(): JSX.Element {
       if (!trimmed) return;
       setBraveKeySaving(true);
       try {
-        await setSecret(providerSecretKey('brave'), trimmed);
+        await window.api.credentialsSet(providerSecretKey('brave'), trimmed);
         setBraveKeyMasked(`${trimmed.slice(0, 6)}${'•'.repeat(6)}${trimmed.slice(-4)}`);
         setBraveKeyInput('');
+        await loadKeys();
       } finally {
         setBraveKeySaving(false);
       }
     },
-    [braveKeyInput, setSecret],
+    [braveKeyInput, loadKeys],
   );
 
   const handleRemoveBraveKey = useCallback(async () => {
-    await deleteSecret(providerSecretKey('brave'));
+    await window.api.credentialsRemove(providerSecretKey('brave'));
     setBraveKeyMasked(null);
     setBraveKeyInput('');
-  }, [deleteSecret]);
+    await loadKeys();
+  }, [loadKeys]);
 
   return (
     <div className="h-full flex flex-col overflow-hidden">
