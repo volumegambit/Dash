@@ -1,5 +1,5 @@
-import { createWriteStream, existsSync } from 'node:fs';
-import { mkdir, readFile, stat } from 'node:fs/promises';
+import { createWriteStream, existsSync, mkdirSync } from 'node:fs';
+import { mkdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { SkillsConfig } from '@dash/management';
 import { ManagementClient } from '@dash/management';
@@ -35,7 +35,7 @@ let mcLogStream: ReturnType<typeof createWriteStream> | undefined;
 function initMcLogging(): void {
   if (mcLogStream) return;
   const logsDir = join(DATA_DIR, 'logs');
-  require('node:fs').mkdirSync(logsDir, { recursive: true });
+  mkdirSync(logsDir, { recursive: true });
   mcLogStream = createWriteStream(MC_LOG_PATH, { flags: 'a' });
   mcLogStream.write(`\n--- MC starting at ${new Date().toISOString()} ---\n`);
 

@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { createWriteStream } from 'node:fs';
+import { closeSync, openSync, writeSync } from 'node:fs';
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { generateToken } from '../security/keygen.js';
@@ -129,16 +129,16 @@ export class GatewayProcess {
     const logsDir = join(opts.gatewayDataDir, 'logs');
     await mkdir(logsDir, { recursive: true });
     const logPath = join(logsDir, 'gateway.log');
-    const logStream = createWriteStream(logPath, { flags: 'a' });
-    logStream.write(`\n--- Gateway starting at ${new Date().toISOString()} ---\n`);
+    const logFd = openSync(logPath, 'a');
+    writeSync(logFd, `\n--- Gateway starting at ${new Date().toISOString()} ---\n`);
 
     const gateway = this.spawner.spawn('node', spawnArgs, {
       env: { ...process.env },
-      stdio: ['ignore', logStream, logStream],
+      stdio: ['ignore', logFd, logFd],
       detached: true,
     });
     (gateway as { unref?: () => void }).unref?.();
-    logStream.unref();
+    closeSync(logFd); // Child inherited the fd; parent can close its copy
 
     // Wait for health endpoint
     const newClient = makeClient(`http://localhost:${managementPort}`, token);
