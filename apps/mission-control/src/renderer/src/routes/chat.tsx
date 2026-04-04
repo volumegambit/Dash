@@ -1324,16 +1324,26 @@ export function Chat(): JSX.Element {
     [selectedMessages, liveEvents],
   );
 
+  // Enrich conversations with agent names resolved from the agents store
+  const enrichedConversations = useMemo(
+    () =>
+      conversations.map((c) => {
+        const agent = agents.find((a) => a.id === c.agentId);
+        return { ...c, agentName: agent?.name ?? '' };
+      }),
+    [conversations, agents],
+  );
+
   const filteredConversations = useMemo(
     () =>
       conversationSearch.trim()
-        ? conversations.filter(
+        ? enrichedConversations.filter(
             (c) =>
               c.title.toLowerCase().includes(conversationSearch.toLowerCase()) ||
               c.agentName.toLowerCase().includes(conversationSearch.toLowerCase()),
           )
-        : conversations,
-    [conversations, conversationSearch],
+        : enrichedConversations,
+    [enrichedConversations, conversationSearch],
   );
 
   return (
