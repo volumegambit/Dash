@@ -1,5 +1,5 @@
-import { existsSync } from 'node:fs';
-import { mkdir } from 'node:fs/promises';
+import { createWriteStream, existsSync } from 'node:fs';
+import { mkdir, readFile, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { SkillsConfig } from '@dash/management';
 import { ManagementClient } from '@dash/management';
@@ -27,6 +27,31 @@ import { refreshCodexToken, startCodexOAuth } from './codex-auth.js';
 import { GatewayPoller } from './gateway-poller.js';
 
 const DATA_DIR = process.env.MC_DATA_DIR || getPlatformDataDir('dash');
+
+// Capture MC main process logs to a file
+const MC_LOG_PATH = join(DATA_DIR, 'logs', 'mc.log');
+let mcLogStream: ReturnType<typeof createWriteStream> | undefined;
+
+function initMcLogging(): void {
+  if (mcLogStream) return;
+  const logsDir = join(DATA_DIR, 'logs');
+  require('node:fs').mkdirSync(logsDir, { recursive: true });
+  mcLogStream = createWriteStream(MC_LOG_PATH, { flags: 'a' });
+  mcLogStream.write(`\n--- MC starting at ${new Date().toISOString()} ---\n`);
+
+  const origLog = console.log.bind(console);
+  const origWarn = console.warn.bind(console);
+  const origError = console.error.bind(console);
+
+  const write = (prefix: string, args: unknown[]) => {
+    const line = `[${new Date().toISOString()}] ${prefix} ${args.map((a) => (typeof a === 'string' ? a : JSON.stringify(a))).join(' ')}\n`;
+    mcLogStream?.write(line);
+  };
+
+  console.log = (...args: unknown[]) => { origLog(...args); write('INFO', args); };
+  console.warn = (...args: unknown[]) => { origWarn(...args); write('WARN', args); };
+  console.error = (...args: unknown[]) => { origError(...args); write('ERROR', args); };
+}
 
 let chatService: ChatService | undefined;
 let gatewayPoller: GatewayPoller | undefined;
@@ -116,6 +141,8 @@ async function getSkillsClient(): Promise<ManagementClient> {
 export async function registerIpcHandlers(
   getWindow: () => BrowserWindow | undefined,
 ): Promise<void> {
+  initMcLogging();
+
   const gwOptions: GatewayProcessOptions = {
     gatewayDataDir: DATA_DIR,
     gatewayRuntimeDir: getPlatformDataDir('dash-gateway'),
@@ -746,6 +773,27 @@ export async function registerIpcHandlers(
         win?.webContents.send('whatsapp:error', appId, message);
       },
     });
+  });
+
+  // -----------------------------------------------------------------------
+  // Under the Hood — log reading (dev mode)
+  // -----------------------------------------------------------------------
+
+  const GATEWAY_LOG_PATH = join(DATA_DIR, 'logs', 'gateway.log');
+
+  ipcMain.handle('logs:read', async (_e, source: 'mc' | 'gateway', tailLines = 500) => {
+    const logPath = source === 'mc' ? MC_LOG_PATH : GATEWAY_LOG_PATH;
+    try {
+      const content = await readFile(logPath, 'utf-8');
+      const lines = content.split('\n');
+      return lines.slice(-tailLines).join('\n');
+    } catch {
+      return `No ${source} logs found yet.`;
+    }
+  });
+
+  ipcMain.handle('logs:paths', async () => {
+    return { mc: MC_LOG_PATH, gateway: GATEWAY_LOG_PATH, dataDir: DATA_DIR };
   });
 
   // -----------------------------------------------------------------------

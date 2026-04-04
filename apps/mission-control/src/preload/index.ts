@@ -135,6 +135,11 @@ const api: MissionControlAPI = {
   setupStatus: () => ipcRenderer.invoke('setup:status'),
   setupEnsureGateway: () => ipcRenderer.invoke('setup:ensureGateway'),
 
+  // Logs
+  logsRead: (source: 'mc' | 'gateway', tailLines?: number) =>
+    ipcRenderer.invoke('logs:read', source, tailLines),
+  logsPaths: () => ipcRenderer.invoke('logs:paths'),
+
   // WhatsApp
   whatsappStartPairing: (appId: string) => ipcRenderer.invoke('whatsapp:startPairing', appId),
   whatsappOnQr: (callback: (appId: string, qrDataUrl: string) => void) => {

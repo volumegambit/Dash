@@ -1,4 +1,6 @@
 import { spawn } from 'node:child_process';
+import { createWriteStream } from 'node:fs';
+import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { generateToken } from '../security/keygen.js';
 import { type GatewayHealthResponse, GatewayManagementClient } from './gateway-client.js';
@@ -123,12 +125,20 @@ export class GatewayProcess {
     if (opts.gatewayRuntimeDir) {
       spawnArgs.push('--data-dir', opts.gatewayRuntimeDir);
     }
+    // Write gateway logs to a file so they can be viewed from MC
+    const logsDir = join(opts.gatewayDataDir, 'logs');
+    await mkdir(logsDir, { recursive: true });
+    const logPath = join(logsDir, 'gateway.log');
+    const logStream = createWriteStream(logPath, { flags: 'a' });
+    logStream.write(`\n--- Gateway starting at ${new Date().toISOString()} ---\n`);
+
     const gateway = this.spawner.spawn('node', spawnArgs, {
       env: { ...process.env },
-      stdio: ['ignore', 'ignore', 'ignore'],
+      stdio: ['ignore', logStream, logStream],
       detached: true,
     });
     (gateway as { unref?: () => void }).unref?.();
+    logStream.unref();
 
     // Wait for health endpoint
     const newClient = makeClient(`http://localhost:${managementPort}`, token);

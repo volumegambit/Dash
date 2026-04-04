@@ -9,6 +9,7 @@ import {
   MessageSquare,
   Plug,
   Settings,
+  Terminal,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { useEffect, useState } from 'react';
@@ -53,6 +54,14 @@ const sections: NavSection[] = [
       { to: '/settings', label: 'Settings', icon: Settings },
     ],
   },
+  ...(import.meta.env.DEV
+    ? [
+        {
+          label: 'DEVELOPER',
+          items: [{ to: '/under-the-hood', label: 'Under the Hood', icon: Terminal }],
+        },
+      ]
+    : []),
 ];
 
 export function Sidebar(): JSX.Element {

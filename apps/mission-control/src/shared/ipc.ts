@@ -200,6 +200,10 @@ export interface MissionControlAPI {
   whatsappOnLinked(callback: (appId: string) => void): () => void;
   whatsappOnError(callback: (appId: string, message: string) => void): () => void;
 
+  // Logs (Under the Hood)
+  logsRead(source: 'mc' | 'gateway', tailLines?: number): Promise<string>;
+  logsPaths(): Promise<{ mc: string; gateway: string; dataDir: string }>;
+
   // Updates
   onUpdateAvailable(callback: (info: { version: string }) => void): () => void;
 }
