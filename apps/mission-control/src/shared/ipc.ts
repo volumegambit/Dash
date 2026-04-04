@@ -184,6 +184,7 @@ export interface MissionControlAPI {
 
   // Gateway
   gatewayGetStatus(): Promise<GatewayStatus>;
+  gatewayRestart(): Promise<void>;
   gatewayOnStatus(callback: (status: GatewayStatus) => void): () => void;
 
   // Gateway events (SSE)

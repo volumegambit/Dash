@@ -566,6 +566,18 @@ export async function registerIpcHandlers(
     return gatewayPoller?.getCurrentStatus() ?? 'starting';
   });
 
+  ipcMain.handle('gateway:restart', async () => {
+    await gw.restart();
+    // Update chat service connection with new gateway
+    const state = await new GatewayStateStore(DATA_DIR).read();
+    if (state && chatService) {
+      chatService.setGatewayConnection({
+        channelPort: state.channelPort,
+        chatToken: state.chatToken,
+      });
+    }
+  });
+
   ipcMain.handle('gateway:status', async () => {
     try {
       const client = await getClient(gw);
