@@ -9,6 +9,8 @@ import type { ChannelRegistry, ChannelRoutingRule } from './channel-registry.js'
 import type { GatewayCredentialStore } from './credential-store.js';
 import type { EventBus, GatewayEvent } from './event-bus.js';
 import type { DynamicGateway } from './gateway.js';
+import type { McpManagementDeps } from './mcp-management.js';
+import { mountMcpRoutes } from './mcp-management.js';
 
 export interface GatewayManagementOptions {
   gateway: DynamicGateway;
@@ -19,6 +21,7 @@ export interface GatewayManagementOptions {
   token?: string;
   startedAt?: string;
   eventBus?: EventBus;
+  mcpDeps?: McpManagementDeps;
 }
 
 /** Strip providerApiKeys from agent entries before returning to clients. */
@@ -310,6 +313,11 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
     await credentialStore.delete(key);
     return c.json({ ok: true });
   });
+
+  // --- MCP routes ---
+  if (options.mcpDeps) {
+    mountMcpRoutes(app, options.mcpDeps);
+  }
 
   // --- SSE event stream ---
 

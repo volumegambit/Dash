@@ -33,11 +33,7 @@ export const useConnectorsStore = create<ConnectorsState>((set, get) => ({
       const connectors = await window.api.mcpListConnectors();
       set({ connectors, loading: false });
     } catch (err) {
-      const msg = (err as Error).message;
-      const friendly = msg.includes('404')
-        ? 'MCP connectors are not available. The gateway does not support this feature yet.'
-        : msg;
-      set({ connectors: [], loading: false, error: friendly });
+      set({ loading: false, error: (err as Error).message });
     }
   },
 
