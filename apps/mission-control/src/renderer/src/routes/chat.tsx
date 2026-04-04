@@ -1186,16 +1186,8 @@ export function Chat(): JSX.Element {
 
   const handleNewConversation = useCallback(() => {
     if (availableAgents.length === 0) return;
-    // If only one agent, create immediately
-    if (availableAgents.length === 1) {
-      const agent = availableAgents[0];
-      createConversation(agent.agentId)
-        .then((conv) => selectConversation(conv.id))
-        .catch((err) => console.error('[Chat] Failed to create conversation:', err));
-      return;
-    }
     setShowAgentModal(true);
-  }, [availableAgents, createConversation, selectConversation]);
+  }, [availableAgents]);
 
   const handleAgentSelected = useCallback(
     async (agentId: string) => {
