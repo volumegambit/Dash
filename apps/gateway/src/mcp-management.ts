@@ -119,7 +119,7 @@ export function mountMcpRoutes(app: Hono, deps: McpManagementDeps): void {
       for (const agent of deps.registry.list()) {
         const servers = agent.config.mcpServers ?? [];
         if (servers.includes(name)) {
-          deps.registry.update(agent.name, {
+          deps.registry.update(agent.id, {
             mcpServers: servers.filter((s) => s !== name),
           });
           agentConfigChanged = true;

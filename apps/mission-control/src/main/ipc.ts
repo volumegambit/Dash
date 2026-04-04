@@ -615,25 +615,52 @@ export async function registerIpcHandlers(
   // MCP Connectors
   // -----------------------------------------------------------------------
 
-  // MCP routes were removed from the gateway — these handlers return empty/defaults
-  // until MCP management is re-implemented on the new gateway API.
-  ipcMain.handle('mcp:listConnectors', async () => []);
-  ipcMain.handle('mcp:getConnector', async () => null);
-  ipcMain.handle('mcp:addConnector', async () => {
-    throw new Error('MCP connectors are not available yet');
+  async function getMcpClient(): Promise<ManagementClient> {
+    const gatewayState = await new GatewayStateStore(DATA_DIR).read();
+    if (!gatewayState) {
+      throw new Error('Gateway not running — Connectors unavailable');
+    }
+    return new ManagementClient(`http://127.0.0.1:${gatewayState.port}`, gatewayState.token);
+  }
+
+  ipcMain.handle('mcp:listConnectors', async () => {
+    const client = await getMcpClient();
+    return client.mcpListServers();
   });
-  ipcMain.handle('mcp:removeConnector', async () => {
-    throw new Error('MCP connectors are not available yet');
+
+  ipcMain.handle('mcp:getConnector', async (_e, name: string) => {
+    const client = await getMcpClient();
+    return client.mcpGetServer(name);
   });
-  ipcMain.handle('mcp:reconnectConnector', async () => {
-    throw new Error('MCP connectors are not available yet');
+
+  ipcMain.handle('mcp:addConnector', async (_e, config) => {
+    const client = await getMcpClient();
+    return client.mcpAddServer(config);
   });
-  ipcMain.handle('mcp:reauthorize', async () => {
-    throw new Error('MCP connectors are not available yet');
+
+  ipcMain.handle('mcp:removeConnector', async (_e, name: string) => {
+    const client = await getMcpClient();
+    return client.mcpRemoveServer(name);
   });
-  ipcMain.handle('mcp:getAllowlist', async () => []);
-  ipcMain.handle('mcp:setAllowlist', async () => {
-    throw new Error('MCP connectors are not available yet');
+
+  ipcMain.handle('mcp:reconnectConnector', async (_e, name: string) => {
+    const client = await getMcpClient();
+    return client.mcpReconnectServer(name);
+  });
+
+  ipcMain.handle('mcp:reauthorize', async (_e, name: string) => {
+    const client = await getMcpClient();
+    return client.mcpReauthorizeServer(name);
+  });
+
+  ipcMain.handle('mcp:getAllowlist', async () => {
+    const client = await getMcpClient();
+    return client.mcpGetAllowlist();
+  });
+
+  ipcMain.handle('mcp:setAllowlist', async (_e, patterns: string[]) => {
+    const client = await getMcpClient();
+    return client.mcpSetAllowlist(patterns);
   });
 
   // -----------------------------------------------------------------------

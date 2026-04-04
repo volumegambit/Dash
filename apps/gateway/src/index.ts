@@ -13,6 +13,8 @@ import type { ChannelAdapter } from '@dash/channels';
 import { serve } from '@hono/node-server';
 import { createNodeWebSocket } from '@hono/node-ws';
 import { Hono } from 'hono';
+import { FileTokenStore, McpManager } from '@dash/mcp';
+import type { McpAgentContext } from '@dash/mcp';
 import { AgentRegistry } from './agent-registry.js';
 import { AgentRuntime } from './agent-runtime.js';
 import { ChannelRegistry } from './channel-registry.js';
@@ -22,6 +24,7 @@ import { GatewayCredentialStore } from './credential-store.js';
 import { EventBus } from './event-bus.js';
 import { createDynamicGateway } from './gateway.js';
 import { createGatewayManagementApp } from './management-api.js';
+import { McpConfigStore } from './mcp-store.js';
 
 async function main() {
   const flags = parseFlags(process.argv.slice(2));
@@ -42,6 +45,20 @@ async function main() {
   // Initialize channel registry
   const channelRegistry = new ChannelRegistry(join(dataDir, 'channels.json'));
   await channelRegistry.load();
+
+  // MCP setup
+  const mcpDir = resolve(dataDir, 'mcp');
+  await mkdir(mcpDir, { recursive: true });
+  const mcpConfigStore = new McpConfigStore(mcpDir);
+  const mcpTokenStore = new FileTokenStore(join(mcpDir, 'tokens.json'));
+  void mcpTokenStore; // reserved for OAuth flows
+
+  const mcpConfigs = await mcpConfigStore.loadConfigs();
+  const mcpManager = new McpManager(mcpConfigs, { logger: console });
+  if (mcpConfigs.length > 0) {
+    console.log(`[MCP] Restoring ${mcpConfigs.length} persisted server(s)...`);
+    await mcpManager.start();
+  }
 
   // Create gateway + agent runtime
   const gateway = createDynamicGateway({ dataDir });
@@ -80,6 +97,43 @@ async function main() {
           ? providerApiKeys
           : (agentConfig.providerApiKeys ?? {});
 
+      // MCP agent context — allows agents to manage their own MCP server assignments
+      const agentMcpServers = agentConfig.mcpServers ?? [];
+      const mcpAgentContext: McpAgentContext = {
+        async assignToAgent(serverName: string) {
+          const entry = registry.findByName(agentConfig.name);
+          if (!entry) return;
+          const current = entry.config.mcpServers ?? [];
+          if (!current.includes(serverName)) {
+            registry.update(entry.id, { mcpServers: [...current, serverName] });
+            await registry.save();
+          }
+        },
+        async unassignFromAgent(serverName: string) {
+          const entry = registry.findByName(agentConfig.name);
+          if (!entry) return false;
+          const current = entry.config.mcpServers ?? [];
+          registry.update(entry.id, { mcpServers: current.filter((s) => s !== serverName) });
+          await registry.save();
+          // Check if any other agent still uses this server
+          const stillUsed = registry.list().some((a) =>
+            (a.config.mcpServers ?? []).includes(serverName),
+          );
+          if (!stillUsed) {
+            try {
+              await mcpManager.removeServer(serverName);
+              await mcpConfigStore.removeConfig(serverName);
+            } catch { /* already removed */ }
+            return true;
+          }
+          return false;
+        },
+        getAssignedServers() {
+          const entry = registry.findByName(agentConfig.name);
+          return entry?.config.mcpServers ?? agentMcpServers;
+        },
+      };
+
       return new PiAgentBackend(
         {
           model: agentConfig.model,
@@ -92,6 +146,9 @@ async function main() {
         undefined,
         sessionDir,
         resolve(dataDir, 'skills', agentConfig.name),
+        mcpManager,
+        mcpConfigStore,
+        mcpAgentContext,
       );
     },
   });
@@ -171,6 +228,13 @@ async function main() {
     token: flags.token,
     startedAt,
     eventBus,
+    mcpDeps: {
+      manager: mcpManager,
+      configStore: mcpConfigStore,
+      registry,
+      logger: console,
+      eventBus,
+    },
   });
 
   const managementServer = serve({
@@ -203,6 +267,7 @@ async function main() {
 
   const shutdown = async (signal: string) => {
     console.log(`\nReceived ${signal}, shutting down...`);
+    await mcpManager.stop();
     await runtime.stop();
     await gateway.stop();
     managementServer.close();
