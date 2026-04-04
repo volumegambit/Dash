@@ -2,6 +2,17 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
+/** Legacy format — pre-migration conversations stored deploymentId + agentName */
+interface LegacyConversation {
+  id: string;
+  deploymentId?: string;
+  agentName?: string;
+  agentId?: string;
+  title: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface McConversation {
   id: string;
   agentId: string;
@@ -65,6 +76,49 @@ export class ConversationStore {
     const tmpPath = `${this.indexPath}.${randomUUID()}.tmp`;
     await writeFile(tmpPath, JSON.stringify(conversations, null, 2));
     await rename(tmpPath, this.indexPath);
+  }
+
+  /**
+   * Migrate legacy conversations that have deploymentId + agentName
+   * to use agentId. Resolver maps agent name → agent ID.
+   * Conversations with no resolvable agent are dropped.
+   */
+  async migrate(resolveAgentId: (agentName: string) => string | null): Promise<void> {
+    const raw = await readFile(this.indexPath, 'utf-8').catch(() => '[]');
+    if (!raw.trim()) return;
+    let entries: LegacyConversation[];
+    try {
+      entries = JSON.parse(raw) as LegacyConversation[];
+    } catch {
+      return;
+    }
+    let changed = false;
+    const migrated: McConversation[] = [];
+    for (const entry of entries) {
+      if (entry.agentId) {
+        migrated.push(entry as McConversation);
+        continue;
+      }
+      if (entry.agentName) {
+        const id = resolveAgentId(entry.agentName);
+        if (id) {
+          migrated.push({
+            id: entry.id,
+            agentId: id,
+            title: entry.title,
+            createdAt: entry.createdAt,
+            updatedAt: entry.updatedAt,
+          });
+          changed = true;
+          continue;
+        }
+      }
+      // No agentId and can't resolve — drop the conversation
+      changed = true;
+    }
+    if (changed) {
+      await this.saveIndex(migrated);
+    }
   }
 
   async create(agentId: string): Promise<McConversation> {
