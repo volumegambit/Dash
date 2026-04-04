@@ -37,16 +37,23 @@ export class AgentRegistry {
       const raw = await readFile(this.filePath, 'utf-8');
       const entries = JSON.parse(raw) as RegisteredAgent[];
       this.agents.clear();
+      let migrated = false;
       for (const entry of entries) {
         // Assign ID to legacy agents registered before the ID migration
         if (!entry.id) {
           entry.id = randomUUID().slice(0, 8);
+          migrated = true;
         }
         // Normalize legacy registeredAt (epoch number → ISO string)
         if (typeof entry.registeredAt === 'number') {
           entry.registeredAt = new Date(entry.registeredAt).toISOString();
+          migrated = true;
         }
         this.agents.set(entry.id, entry);
+      }
+      // Persist migrated data so IDs are stable across restarts
+      if (migrated) {
+        await this.save();
       }
     } catch {
       // File doesn't exist or is invalid — start empty
