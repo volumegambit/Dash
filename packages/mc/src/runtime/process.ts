@@ -167,22 +167,38 @@ export class GatewayProcess {
     const store = new GatewayStateStore(this.options.gatewayDataDir);
     const state = await store.read();
     if (state) {
+      // Try graceful shutdown via API first, fall back to SIGTERM
+      try {
+        const client = (this.options.makeGatewayClient ?? ((url, token) => new GatewayManagementClient(url, token)))(
+          `http://localhost:${state.port}`,
+          state.token,
+        );
+        await fetch(`http://localhost:${state.port}/lifecycle/shutdown`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${state.token}` },
+          signal: AbortSignal.timeout(2000),
+        }).catch(() => {});
+      } catch {
+        // API not reachable
+      }
       try {
         process.kill(state.pid, 'SIGTERM');
       } catch {
         // Already dead
       }
-      // Wait briefly for process to exit
-      const deadline = Date.now() + 3_000;
+      // Wait for process to exit (up to 5 seconds)
+      const deadline = Date.now() + 5_000;
       while (Date.now() < deadline) {
         try {
           process.kill(state.pid, 0);
-          await new Promise<void>((r) => setTimeout(r, 200));
+          await new Promise<void>((r) => setTimeout(r, 300));
         } catch {
           break; // Process is gone
         }
       }
       await store.clear();
+      // Extra wait for port release
+      await new Promise<void>((r) => setTimeout(r, 500));
     }
     return this.ensureRunning();
   }
