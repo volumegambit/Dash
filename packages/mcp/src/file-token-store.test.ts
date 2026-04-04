@@ -57,11 +57,7 @@ describe('FileTokenStore', () => {
   });
 
   it('handles concurrent writes safely', async () => {
-    await Promise.all([
-      store.set('a', '1'),
-      store.set('b', '2'),
-      store.set('c', '3'),
-    ]);
+    await Promise.all([store.set('a', '1'), store.set('b', '2'), store.set('c', '3')]);
     expect(await store.get('a')).toBe('1');
     expect(await store.get('b')).toBe('2');
     expect(await store.get('c')).toBe('3');

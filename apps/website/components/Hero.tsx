@@ -1,6 +1,6 @@
-import Image from 'next/image';
-import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import Image from 'next/image';
 
 export function Hero() {
   return (
@@ -15,11 +15,15 @@ export function Hero() {
           </Badge>
 
           <h1 className="font-outfit text-4xl md:text-5xl lg:text-[64px] font-extrabold text-white tracking-tight leading-[1.1]">
-            You bring the ambition.<br />We bring the squad.
+            You bring the ambition.
+            <br />
+            We bring the squad.
           </h1>
 
           <p className="text-[19px] text-text-secondary leading-relaxed max-w-[550px]">
-            DashSquad lets you create AI agents — each with its own role. A researcher, a writer, an analyst. They work on their own, around the clock, even when you&apos;re not watching. Just chat with them like you&apos;d message a coworker.
+            DashSquad lets you create AI agents — each with its own role. A researcher, a writer, an
+            analyst. They work on their own, around the clock, even when you&apos;re not watching.
+            Just chat with them like you&apos;d message a coworker.
           </p>
 
           <a href="#waitlist" className="w-fit">
@@ -39,7 +43,6 @@ export function Hero() {
           />
         </div>
       </div>
-
     </section>
   );
 }

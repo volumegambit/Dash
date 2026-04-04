@@ -1,13 +1,13 @@
-import { Nav } from '@/components/Nav';
-import { Hero } from '@/components/Hero';
-import { SecureSandbox } from '@/components/SecureSandbox';
-import { DeployAndRun } from '@/components/DeployAndRun';
 import { AIProviders } from '@/components/AIProviders';
-import { MessagingApps } from '@/components/MessagingApps';
-import { UseCases } from '@/components/UseCases';
-import { HowItWorks } from '@/components/HowItWorks';
+import { DeployAndRun } from '@/components/DeployAndRun';
 import { FinalCTA } from '@/components/FinalCTA';
 import { Footer } from '@/components/Footer';
+import { Hero } from '@/components/Hero';
+import { HowItWorks } from '@/components/HowItWorks';
+import { MessagingApps } from '@/components/MessagingApps';
+import { Nav } from '@/components/Nav';
+import { SecureSandbox } from '@/components/SecureSandbox';
+import { UseCases } from '@/components/UseCases';
 
 export default function Home() {
   return (

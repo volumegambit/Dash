@@ -26,6 +26,7 @@
     "website:build": "npm run build --workspace=apps/website",
     "waitlist:dev": "npm run dev --workspace=apps/waitlist",
     "waitlist:build": "npm run build --workspace=apps/waitlist",
+    "models": "npx tsx scripts/update-models.ts",
     "test": "vitest run",
     "lint": "biome check . && npm run typecheck --workspace=apps/mission-control",
     "lint:fix": "biome check --write .",

@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { AVAILABLE_MODELS } from '../components/deploy-options.js';
 import type { ModelOption } from '../components/deploy-options.js';
-import { useSecretsStore } from '../stores/secrets.js';
 
 interface UseAvailableModelsResult {
   models: ModelOption[];
@@ -21,16 +20,17 @@ function mergeModels(cached: { value: string; label: string; provider: string }[
 }
 
 export function useAvailableModels(): UseAvailableModelsResult {
-  const keys = useSecretsStore((state) => state.keys);
-  const loadKeys = useSecretsStore((state) => state.loadKeys);
+  const [keys, setKeys] = useState<string[]>([]);
   const [allModels, setAllModels] = useState<ModelOption[]>(AVAILABLE_MODELS);
   const [refreshing, setRefreshing] = useState(false);
 
+  // Load credential keys from the gateway
   useEffect(() => {
-    if (keys.length === 0) {
-      loadKeys();
-    }
-  }, [keys.length, loadKeys]);
+    window.api
+      .credentialsList()
+      .then(setKeys)
+      .catch(() => {});
+  }, []);
 
   useEffect(() => {
     window.api
@@ -47,13 +47,14 @@ export function useAvailableModels(): UseAvailableModelsResult {
 
   const refresh = useCallback(() => {
     setRefreshing(true);
-    window.api
-      .modelsRefresh()
-      .then((fresh) => {
+    Promise.all([
+      window.api.modelsRefresh().then((fresh) => {
         if (fresh.length > 0) {
           setAllModels(mergeModels(fresh));
         }
-      })
+      }),
+      window.api.credentialsList().then(setKeys),
+    ])
       .catch(() => {
         // Keep current models on error
       })

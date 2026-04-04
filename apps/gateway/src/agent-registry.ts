@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 
@@ -17,10 +18,11 @@ export interface GatewayAgentConfig {
 export type AgentStatus = 'registered' | 'active' | 'disabled';
 
 export interface RegisteredAgent {
+  id: string;
   name: string;
   config: GatewayAgentConfig;
   status: AgentStatus;
-  registeredAt: number;
+  registeredAt: string;
 }
 
 export class AgentRegistry {
@@ -36,7 +38,15 @@ export class AgentRegistry {
       const entries = JSON.parse(raw) as RegisteredAgent[];
       this.agents.clear();
       for (const entry of entries) {
-        this.agents.set(entry.name, entry);
+        // Assign ID to legacy agents registered before the ID migration
+        if (!entry.id) {
+          entry.id = randomUUID().slice(0, 8);
+        }
+        // Normalize legacy registeredAt (epoch number → ISO string)
+        if (typeof entry.registeredAt === 'number') {
+          entry.registeredAt = new Date(entry.registeredAt).toISOString();
+        }
+        this.agents.set(entry.id, entry);
       }
     } catch {
       // File doesn't exist or is invalid — start empty
@@ -54,58 +64,65 @@ export class AgentRegistry {
   }
 
   register(config: GatewayAgentConfig): RegisteredAgent {
-    if (this.agents.has(config.name)) {
+    const duplicate = [...this.agents.values()].find((a) => a.name === config.name);
+    if (duplicate) {
       throw new Error(`Agent '${config.name}' is already registered`);
     }
+    const id = randomUUID().slice(0, 8);
     const entry: RegisteredAgent = {
+      id,
       name: config.name,
       config,
       status: 'registered',
-      registeredAt: Date.now(),
+      registeredAt: new Date().toISOString(),
     };
-    this.agents.set(config.name, entry);
+    this.agents.set(id, entry);
     return entry;
   }
 
-  get(name: string): RegisteredAgent | undefined {
-    return this.agents.get(name);
+  get(id: string): RegisteredAgent | undefined {
+    return this.agents.get(id);
+  }
+
+  findByName(name: string): RegisteredAgent | undefined {
+    return [...this.agents.values()].find((a) => a.name === name);
   }
 
   list(): RegisteredAgent[] {
     return [...this.agents.values()];
   }
 
-  update(name: string, patch: Partial<Omit<GatewayAgentConfig, 'name'>>): RegisteredAgent {
-    const entry = this.agents.get(name);
-    if (!entry) throw new Error(`Agent '${name}' not found`);
+  update(id: string, patch: Partial<Omit<GatewayAgentConfig, 'name'>>): RegisteredAgent {
+    const entry = this.agents.get(id);
+    if (!entry) throw new Error(`Agent '${id}' not found`);
     entry.config = { ...entry.config, ...patch };
     return entry;
   }
 
-  remove(name: string): boolean {
-    return this.agents.delete(name);
+  remove(id: string): boolean {
+    return this.agents.delete(id);
   }
 
-  disable(name: string): void {
-    const entry = this.agents.get(name);
-    if (!entry) throw new Error(`Agent '${name}' not found`);
+  disable(id: string): void {
+    const entry = this.agents.get(id);
+    if (!entry) throw new Error(`Agent '${id}' not found`);
     entry.status = 'disabled';
   }
 
-  enable(name: string): void {
-    const entry = this.agents.get(name);
-    if (!entry) throw new Error(`Agent '${name}' not found`);
+  enable(id: string): void {
+    const entry = this.agents.get(id);
+    if (!entry) throw new Error(`Agent '${id}' not found`);
     entry.status = 'registered';
   }
 
-  setActive(name: string): void {
-    const entry = this.agents.get(name);
+  setActive(id: string): void {
+    const entry = this.agents.get(id);
     if (entry && entry.status === 'registered') {
       entry.status = 'active';
     }
   }
 
-  has(name: string): boolean {
-    return this.agents.has(name);
+  has(id: string): boolean {
+    return this.agents.has(id);
   }
 }

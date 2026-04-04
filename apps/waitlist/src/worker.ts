@@ -33,17 +33,21 @@ app.post('/api/waitlist', async (c) => {
 });
 
 app.get('/api/waitlist', async (c) => {
-  const { results } = await c.env.DB.prepare('SELECT email, created_at FROM waitlist ORDER BY created_at DESC').all();
+  const { results } = await c.env.DB.prepare(
+    'SELECT email, created_at FROM waitlist ORDER BY created_at DESC',
+  ).all();
   return c.json({ count: results.length, entries: results });
 });
 
 app.get('/dashboard', async (c) => {
-  const { results } = await c.env.DB.prepare('SELECT email, created_at FROM waitlist ORDER BY created_at DESC').all();
+  const { results } = await c.env.DB.prepare(
+    'SELECT email, created_at FROM waitlist ORDER BY created_at DESC',
+  ).all();
   const count = results.length;
   const rows = results
     .map(
       (r: Record<string, unknown>, i: number) =>
-        `<tr><td>${count - i}</td><td>${r.email}</td><td>${new Date(r.created_at as string).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</td></tr>`
+        `<tr><td>${count - i}</td><td>${r.email}</td><td>${new Date(r.created_at as string).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</td></tr>`,
     )
     .join('');
 
@@ -87,9 +91,10 @@ app.get('/dashboard', async (c) => {
       <h1>Early Access Signups</h1>
       <div class="count"><span class="dot"></span>${count} signup${count !== 1 ? 's' : ''}</div>
     </div>
-    ${count === 0
-      ? '<div class="empty">No signups yet.</div>'
-      : `<table><thead><tr><th>#</th><th>Email</th><th>Signed Up</th></tr></thead><tbody>${rows}</tbody></table>`
+    ${
+      count === 0
+        ? '<div class="empty">No signups yet.</div>'
+        : `<table><thead><tr><th>#</th><th>Email</th><th>Signed Up</th></tr></thead><tbody>${rows}</tbody></table>`
     }
   </div>
 </body>

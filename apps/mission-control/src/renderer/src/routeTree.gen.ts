@@ -11,7 +11,6 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as WebSearchRouteImport } from './routes/web-search'
 import { Route as SettingsRouteImport } from './routes/settings'
-import { Route as SecretsRouteImport } from './routes/secrets'
 import { Route as MessagingAppsRouteImport } from './routes/messaging-apps'
 import { Route as DeployRouteImport } from './routes/deploy'
 import { Route as ConnectorsRouteImport } from './routes/connectors'
@@ -34,11 +33,6 @@ const WebSearchRoute = WebSearchRouteImport.update({
 const SettingsRoute = SettingsRouteImport.update({
   id: '/settings',
   path: '/settings',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const SecretsRoute = SecretsRouteImport.update({
-  id: '/secrets',
-  path: '/secrets',
   getParentRoute: () => rootRouteImport,
 } as any)
 const MessagingAppsRoute = MessagingAppsRouteImport.update({
@@ -117,7 +111,6 @@ export interface FileRoutesByFullPath {
   '/connectors': typeof ConnectorsRoute
   '/deploy': typeof DeployRoute
   '/messaging-apps': typeof MessagingAppsRouteWithChildren
-  '/secrets': typeof SecretsRoute
   '/settings': typeof SettingsRoute
   '/web-search': typeof WebSearchRoute
   '/agents/$id': typeof AgentsIdRoute
@@ -133,7 +126,6 @@ export interface FileRoutesByTo {
   '/connections': typeof ConnectionsRoute
   '/connectors': typeof ConnectorsRoute
   '/deploy': typeof DeployRoute
-  '/secrets': typeof SecretsRoute
   '/settings': typeof SettingsRoute
   '/web-search': typeof WebSearchRoute
   '/agents/$id': typeof AgentsIdRoute
@@ -152,7 +144,6 @@ export interface FileRoutesById {
   '/connectors': typeof ConnectorsRoute
   '/deploy': typeof DeployRoute
   '/messaging-apps': typeof MessagingAppsRouteWithChildren
-  '/secrets': typeof SecretsRoute
   '/settings': typeof SettingsRoute
   '/web-search': typeof WebSearchRoute
   '/agents/$id': typeof AgentsIdRoute
@@ -172,7 +163,6 @@ export interface FileRouteTypes {
     | '/connectors'
     | '/deploy'
     | '/messaging-apps'
-    | '/secrets'
     | '/settings'
     | '/web-search'
     | '/agents/$id'
@@ -188,7 +178,6 @@ export interface FileRouteTypes {
     | '/connections'
     | '/connectors'
     | '/deploy'
-    | '/secrets'
     | '/settings'
     | '/web-search'
     | '/agents/$id'
@@ -206,7 +195,6 @@ export interface FileRouteTypes {
     | '/connectors'
     | '/deploy'
     | '/messaging-apps'
-    | '/secrets'
     | '/settings'
     | '/web-search'
     | '/agents/$id'
@@ -225,7 +213,6 @@ export interface RootRouteChildren {
   ConnectorsRoute: typeof ConnectorsRoute
   DeployRoute: typeof DeployRoute
   MessagingAppsRoute: typeof MessagingAppsRouteWithChildren
-  SecretsRoute: typeof SecretsRoute
   SettingsRoute: typeof SettingsRoute
   WebSearchRoute: typeof WebSearchRoute
 }
@@ -244,13 +231,6 @@ declare module '@tanstack/react-router' {
       path: '/settings'
       fullPath: '/settings'
       preLoaderRoute: typeof SettingsRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/secrets': {
-      id: '/secrets'
-      path: '/secrets'
-      fullPath: '/secrets'
-      preLoaderRoute: typeof SecretsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/messaging-apps': {
@@ -386,7 +366,6 @@ const rootRouteChildren: RootRouteChildren = {
   ConnectorsRoute: ConnectorsRoute,
   DeployRoute: DeployRoute,
   MessagingAppsRoute: MessagingAppsRouteWithChildren,
-  SecretsRoute: SecretsRoute,
   SettingsRoute: SettingsRoute,
   WebSearchRoute: WebSearchRoute,
 }

@@ -156,6 +156,19 @@ export function mountMcpRoutes(app: Hono, deps: McpManagementDeps): void {
     return c.json({ ok: true, status: manager.getServerStatus(name) });
   });
 
+  app.post('/runtime/mcp/servers/:name/reauthorize', async (c) => {
+    const name = c.req.param('name');
+    try {
+      await manager.reauthorize(name);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Internal error';
+      if (message.includes('not found')) return c.json({ error: message }, 404);
+      return c.json({ error: message }, 500);
+    }
+    deps.logger?.info(`[mcp:audit] mcp:server:reauthorized source=api server=${name}`);
+    return c.json({ ok: true, status: manager.getServerStatus(name) });
+  });
+
   // --- Allowlist ---
 
   app.get('/runtime/mcp/allowlist', async (c) => {

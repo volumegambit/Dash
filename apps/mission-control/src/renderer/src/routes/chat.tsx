@@ -27,8 +27,9 @@ import type { McAgentEvent } from '../../../shared/ipc.js';
 import { detectLanguage } from '../components/DiffView.js';
 import { Markdown } from '../components/Markdown.js';
 import { HighlightedCode, ToolResult } from '../components/ToolResult.js';
+import { useAgentsStore } from '../stores/agents.js';
 import { useChatStore } from '../stores/chat.js';
-import { useDeploymentsStore } from '../stores/deployments.js';
+import { useConnectorsStore } from '../stores/connectors.js';
 import {
   type TodoItem,
   formatDetails,
@@ -189,6 +190,17 @@ function renderEvents(
         /* ignore */
       }
     }
+    let inProgressNode: React.ReactNode = null;
+    if (inProgressSummary && inProgressHtml) {
+      inProgressNode = (
+        <span
+          className="ml-1 font-mono text-muted"
+          dangerouslySetInnerHTML={{ __html: inProgressHtml }}
+        />
+      );
+    } else if (inProgressSummary) {
+      inProgressNode = <span className="ml-1 text-muted">{inProgressSummary}</span>;
+    }
     elements.push(
       <div
         key="tool-progress"
@@ -196,15 +208,7 @@ function renderEvents(
       >
         <Loader size={12} className="animate-spin shrink-0" />
         <span className="font-mono">{toolLabel(toolName)}</span>
-        {inProgressSummary && inProgressHtml ? (
-          // biome-ignore lint/security/noDangerouslySetInnerHtml: highlight.js output is safe
-          <span
-            className="ml-1 font-mono text-muted"
-            dangerouslySetInnerHTML={{ __html: inProgressHtml }}
-          />
-        ) : inProgressSummary ? (
-          <span className="ml-1 text-muted">{inProgressSummary}</span>
-        ) : null}
+        {inProgressNode}
       </div>,
     );
   }
@@ -434,6 +438,18 @@ function ToolBlock({
     }
   }, [isBash, effectiveSummary]);
 
+  let summaryNode: React.ReactNode = null;
+  if (effectiveSummary && highlightedSummary) {
+    summaryNode = (
+      <span
+        className="ml-1 font-mono text-muted"
+        dangerouslySetInnerHTML={{ __html: highlightedSummary }}
+      />
+    );
+  } else if (effectiveSummary) {
+    summaryNode = <span className="ml-1 text-muted">{effectiveSummary}</span>;
+  }
+
   return (
     <div
       className={`mb-3 border text-xs ${isError ? 'border-red-900/50 bg-red-900/10' : 'border-border bg-sidebar-hover'}`}
@@ -449,15 +465,7 @@ function ToolBlock({
           <Circle size={8} className="inline text-green fill-green mr-1.5" />
         )}
         <span className="font-mono">{toolLabel(name)}</span>
-        {effectiveSummary && highlightedSummary ? (
-          // biome-ignore lint/security/noDangerouslySetInnerHtml: highlight.js output is safe
-          <span
-            className="ml-1 font-mono text-muted"
-            dangerouslySetInnerHTML={{ __html: highlightedSummary }}
-          />
-        ) : effectiveSummary ? (
-          <span className="ml-1 text-muted">{effectiveSummary}</span>
-        ) : null}
+        {summaryNode}
       </button>
       {open && (
         <div className="border-t border-border px-3 pb-2 pt-1">
@@ -490,7 +498,6 @@ function ToolBlock({
                 </div>
               ) : writeContent?.mode === 'svg' ? (
                 <div className="max-h-64 overflow-auto bg-white/5 p-2 flex items-center justify-center">
-                  {/* biome-ignore lint/security/noDangerouslySetInnerHtml: SVG from Write tool content */}
                   <div dangerouslySetInnerHTML={{ __html: writeContent.content }} />
                 </div>
               ) : writeContent?.mode === 'code' ? (
@@ -932,18 +939,15 @@ function AgentSelectionModal({
   onClose,
   defaultAgent,
 }: {
-  agents: { deploymentId: string; deploymentName: string; agentName: string }[];
-  onSelect: (deploymentId: string, agentName: string) => void;
+  agents: { agentId: string; agentName: string }[];
+  onSelect: (agentId: string) => void;
   onClose: () => void;
-  defaultAgent?: { deploymentId: string; agentName: string } | null;
+  defaultAgent?: { agentId: string } | null;
 }): JSX.Element {
   const defaultIndex = defaultAgent
     ? Math.max(
         0,
-        agents.findIndex(
-          (a) =>
-            a.deploymentId === defaultAgent.deploymentId && a.agentName === defaultAgent.agentName,
-        ),
+        agents.findIndex((a) => a.agentId === defaultAgent.agentId),
       )
     : 0;
   const [selectedIndex, setSelectedIndex] = useState(defaultIndex);
@@ -951,11 +955,7 @@ function AgentSelectionModal({
   const searchInputRef = useRef<HTMLInputElement>(null);
 
   const filtered = searchTerm.trim()
-    ? agents.filter(
-        (a) =>
-          a.agentName.toLowerCase().includes(searchTerm.toLowerCase()) ||
-          a.deploymentName.toLowerCase().includes(searchTerm.toLowerCase()),
-      )
+    ? agents.filter((a) => a.agentName.toLowerCase().includes(searchTerm.toLowerCase()))
     : agents;
 
   // Focus search input on mount
@@ -965,6 +965,7 @@ function AgentSelectionModal({
 
   // Reset selection when filter changes (skip initial render)
   const isInitialRender = useRef(true);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: searchTerm is the trigger, not a used value
   useEffect(() => {
     if (isInitialRender.current) {
       isInitialRender.current = false;
@@ -984,7 +985,7 @@ function AgentSelectionModal({
       } else if (e.key === 'Enter') {
         e.preventDefault();
         if (filtered[selectedIndex]) {
-          onSelect(filtered[selectedIndex].deploymentId, filtered[selectedIndex].agentName);
+          onSelect(filtered[selectedIndex].agentId);
         }
       } else if (e.key === 'Escape') {
         e.preventDefault();
@@ -998,7 +999,6 @@ function AgentSelectionModal({
     <div className="fixed inset-0 z-50 flex items-start justify-center pt-[20vh]">
       {/* biome-ignore lint/a11y/useKeyWithClickEvents: backdrop click to close */}
       <div className="absolute inset-0 bg-black/50" onClick={onClose} />
-      {/* biome-ignore lint/a11y/noNoninteractiveElementToFocusEvents: modal container needs key handling */}
       <div
         className="relative z-10 w-[400px] border border-border bg-surface shadow-2xl"
         onKeyDown={handleKeyDown}
@@ -1027,10 +1027,10 @@ function AgentSelectionModal({
             <li className="px-4 py-3 text-xs text-muted">No agents found.</li>
           ) : (
             filtered.map((agent, i) => (
-              <li key={`${agent.deploymentId}-${agent.agentName}`}>
+              <li key={agent.agentId}>
                 <button
                   type="button"
-                  onClick={() => onSelect(agent.deploymentId, agent.agentName)}
+                  onClick={() => onSelect(agent.agentId)}
                   onMouseEnter={() => setSelectedIndex(i)}
                   className={`w-full text-left px-4 py-2.5 transition-colors ${
                     i === selectedIndex
@@ -1055,7 +1055,7 @@ function AgentSelectionModal({
 
 export function Chat(): JSX.Element {
   const search = Route.useSearch();
-  const { deployments, loadDeployments } = useDeploymentsStore();
+  const { agents, loadAgents } = useAgentsStore();
   const {
     conversations,
     selectedConversationId,
@@ -1072,8 +1072,10 @@ export function Chat(): JSX.Element {
     cancelMessage,
   } = useChatStore();
 
+  const connectors = useConnectorsStore((s) => s.connectors);
+
   const navigate = useNavigate();
-  const runningDeployments = deployments.filter((d) => d.status === 'running');
+  const activeAgents = agents.filter((a) => a.status === 'active' || a.status === 'registered');
   const [input, setInput] = useState('');
   const [attachedImages, setAttachedImages] = useState<
     { id: string; preview: string; mediaType: string; data: string }[]
@@ -1086,22 +1088,22 @@ export function Chat(): JSX.Element {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Resolve the deployment for the selected conversation
+  // Resolve the agent for the selected conversation
   const selectedConversation = selectedConversationId
     ? conversations.find((c) => c.id === selectedConversationId)
     : null;
-  const selectedDeploymentId = selectedConversation?.deploymentId ?? '';
+  const selectedAgentId = selectedConversation?.agentId ?? '';
 
   const navigateToLogs = useCallback(
     (timestamp: string) => {
-      if (!selectedDeploymentId) return;
+      if (!selectedAgentId) return;
       navigate({
         to: '/agents/$id',
-        params: { id: selectedDeploymentId },
-        search: { tab: 'monitor', since: timestamp, level: 'error' },
+        params: { id: selectedAgentId },
+        search: { tab: 'monitor' },
       });
     },
-    [selectedDeploymentId, navigate],
+    [selectedAgentId, navigate],
   );
 
   const handleAnswerQuestion = useCallback(
@@ -1118,13 +1120,20 @@ export function Chat(): JSX.Element {
   );
 
   useEffect(() => {
-    loadDeployments();
-  }, [loadDeployments]);
+    loadAgents();
+  }, [loadAgents]);
 
   // Load all conversations on mount
   useEffect(() => {
     loadAllConversations();
   }, [loadAllConversations]);
+
+  // Load connectors and subscribe to status changes
+  useEffect(() => {
+    useConnectorsStore.getState().loadConnectors();
+    const unsub = useConnectorsStore.getState().initConnectorListeners();
+    return unsub;
+  }, []);
 
   // Scroll to bottom on new messages
   const selectedMessages = selectedConversationId ? (messages[selectedConversationId] ?? []) : [];
@@ -1165,15 +1174,14 @@ export function Chat(): JSX.Element {
     isNearBottom.current = true;
   }, [selectedConversationId]);
 
-  // Build available agents list from running deployments
+  // Build available agents list from active agents
   const availableAgents = useMemo(
     () =>
-      runningDeployments.map((dep) => ({
-        deploymentId: dep.id,
-        deploymentName: dep.name,
-        agentName: dep.name,
+      activeAgents.map((a) => ({
+        agentId: a.id,
+        agentName: a.name,
       })),
-    [runningDeployments],
+    [activeAgents],
   );
 
   const handleNewConversation = useCallback(() => {
@@ -1181,7 +1189,7 @@ export function Chat(): JSX.Element {
     // If only one agent, create immediately
     if (availableAgents.length === 1) {
       const agent = availableAgents[0];
-      createConversation(agent.deploymentId, agent.agentName)
+      createConversation(agent.agentId)
         .then((conv) => selectConversation(conv.id))
         .catch((err) => console.error('[Chat] Failed to create conversation:', err));
       return;
@@ -1190,10 +1198,10 @@ export function Chat(): JSX.Element {
   }, [availableAgents, createConversation, selectConversation]);
 
   const handleAgentSelected = useCallback(
-    async (deploymentId: string, agentName: string) => {
+    async (agentId: string) => {
       setShowAgentModal(false);
       try {
-        const conv = await createConversation(deploymentId, agentName);
+        const conv = await createConversation(agentId);
         await selectConversation(conv.id);
       } catch (err) {
         console.error('[Chat] Failed to create conversation:', err);
@@ -1214,15 +1222,14 @@ export function Chat(): JSX.Element {
     return () => window.removeEventListener('keydown', handler);
   }, [handleNewConversation]);
 
-  // If navigated with search params, auto-create conversation
+  // If navigated with search params, auto-create conversation — intentionally run once on mount
+  // biome-ignore lint/correctness/useExhaustiveDependencies: intentionally run once on mount
   useEffect(() => {
-    if (search.deploymentId && search.agentName) {
-      createConversation(search.deploymentId, search.agentName)
+    if (search.agentId) {
+      createConversation(search.agentId)
         .then((conv) => selectConversation(conv.id))
         .catch((err) => console.error('[Chat] Failed to create conversation from search:', err));
     }
-    // Only run once on mount
-    // biome-ignore lint/correctness/useExhaustiveDependencies: intentionally run once
   }, []);
 
   // Auto-focus textarea when a conversation is selected (e.g. after creating a new one)
@@ -1301,57 +1308,24 @@ export function Chat(): JSX.Element {
   }, [input, attachedImages, selectedConversationId, isStreaming, sendMessage]);
 
   // Resolve model for the selected conversation's agent
-  const selectedDeployment = deployments.find((d) => d.id === selectedDeploymentId);
-  const credentialIssue =
-    selectedDeployment?.credentialStatus === 'missing' ||
-    selectedDeployment?.credentialStatus === 'invalid'
-      ? selectedDeployment
-      : null;
-  const agentConfig = selectedConversation
-    ? (selectedDeployment?.config?.agents?.[selectedConversation.agentName] ??
-      selectedDeployment?.config?.agent)
-    : undefined;
-  const activeModel = agentConfig?.model;
-  const activeWorkspace = agentConfig?.workspace ?? selectedDeployment?.workspace;
-  const managedSkillsDir =
-    selectedDeployment?.configDir && selectedConversation
-      ? `${selectedDeployment.configDir.replace(/\/[^/]+$/, '')}/skills/${selectedConversation.agentName}`
-      : undefined;
-
-  // Detect auth errors in streaming events and update credential status
-  useEffect(() => {
-    if (!selectedDeployment) return;
-    const allEvents = [
-      ...liveEvents,
-      ...selectedMessages.flatMap((m) => (m.content.type === 'assistant' ? m.content.events : [])),
-    ] as McAgentEvent[];
-    const authError = allEvents.find((e) => {
-      if (e.type !== 'error') return false;
-      const msg =
-        typeof e.error === 'string'
-          ? e.error
-          : ((e.error as unknown as { message?: string })?.message ?? '');
-      return (
-        msg.includes('401') ||
-        msg.includes('403') ||
-        msg.toLowerCase().includes('authentication') ||
-        msg.toLowerCase().includes('unauthorized') ||
-        /invalid.*key/i.test(msg)
-      );
-    });
-    if (authError && selectedDeployment.credentialStatus !== 'invalid') {
-      const msg =
-        typeof authError.error === 'string'
-          ? authError.error
-          : ((authError.error as unknown as { message?: string })?.message ?? 'Auth error');
-      window.api.deploymentsUpdateCredentialStatus(
-        selectedDeployment.id,
-        'invalid',
-        undefined,
-        msg,
-      );
+  const selectedAgent = agents.find((a) => a.id === selectedAgentId);
+  const mcpIssue = useMemo(() => {
+    if (!selectedAgent) return null;
+    const mcpNames = selectedAgent.config.mcpServers ?? [];
+    for (const name of mcpNames) {
+      const connector = connectors.find((c: { name: string; status: string }) => c.name === name);
+      if (!connector) continue;
+      if (connector.status === 'needs_reauth') {
+        return { serverName: name, status: 'needs_reauth' as const };
+      }
+      if (connector.status === 'error' || connector.status === 'disconnected') {
+        return { serverName: name, status: connector.status };
+      }
     }
-  }, [liveEvents, selectedMessages, selectedDeployment]);
+    return null;
+  }, [selectedAgent, connectors]);
+  const activeModel = selectedAgent?.config.model;
+  const activeWorkspace = selectedAgent?.config.workspace;
 
   const latestTodos = useMemo(
     () => extractLatestTodos(selectedMessages, liveEvents),
@@ -1402,14 +1376,7 @@ export function Chat(): JSX.Element {
           agents={availableAgents}
           onSelect={handleAgentSelected}
           onClose={() => setShowAgentModal(false)}
-          defaultAgent={
-            selectedConversation
-              ? {
-                  deploymentId: selectedConversation.deploymentId,
-                  agentName: selectedConversation.agentName,
-                }
-              : null
-          }
+          defaultAgent={selectedConversation ? { agentId: selectedConversation.agentId } : null}
         />
       )}
 
@@ -1463,38 +1430,23 @@ export function Chat(): JSX.Element {
         >
           {(activeModel || selectedConversation) && (
             <div className="flex items-center gap-3 border-b border-border px-6 py-1.5 shrink-0">
-              {selectedConversation && (
-                <span className="text-xs font-medium text-accent">
-                  {selectedConversation.agentName}
-                </span>
+              {selectedAgent && (
+                <span className="text-xs font-medium text-accent">{selectedAgent.name}</span>
               )}
               {activeModel && (
                 <span className="text-xs text-muted">{formatModelName(activeModel)}</span>
               )}
-              {(activeWorkspace || managedSkillsDir) && (
+              {activeWorkspace && (
                 <div className="ml-auto flex items-center gap-4">
-                  {activeWorkspace && (
-                    <button
-                      type="button"
-                      onClick={() => window.api.openPath(activeWorkspace)}
-                      className="flex items-center gap-1.5 text-xs text-muted transition-colors hover:text-foreground"
-                      title={`Workspace: ${activeWorkspace}`}
-                    >
-                      <FolderOpen size={12} />
-                      <span className="max-w-[300px] truncate">{activeWorkspace}</span>
-                    </button>
-                  )}
-                  {managedSkillsDir && (
-                    <button
-                      type="button"
-                      onClick={() => window.api.openPath(managedSkillsDir)}
-                      className="flex items-center gap-1.5 text-xs text-muted transition-colors hover:text-foreground"
-                      title={`Skills: ${managedSkillsDir}`}
-                    >
-                      <FolderOpen size={12} />
-                      <span>Skills</span>
-                    </button>
-                  )}
+                  <button
+                    type="button"
+                    onClick={() => window.api.openPath(activeWorkspace)}
+                    className="flex items-center gap-1.5 text-xs text-muted transition-colors hover:text-foreground"
+                    title={`Workspace: ${activeWorkspace}`}
+                  >
+                    <FolderOpen size={12} />
+                    <span className="max-w-[300px] truncate">{activeWorkspace}</span>
+                  </button>
                 </div>
               )}
             </div>
@@ -1507,7 +1459,7 @@ export function Chat(): JSX.Element {
           >
             {!selectedConversationId ? (
               <p className="text-center text-sm text-muted mt-8">
-                {runningDeployments.length === 0
+                {activeAgents.length === 0
                   ? 'Deploy an agent first, then come back to chat.'
                   : 'Select a conversation or press ⌘N to start a new one.'}
               </p>
@@ -1542,22 +1494,26 @@ export function Chat(): JSX.Element {
 
           {latestTodos && latestTodos.length > 0 && <PinnedTodoPanel todos={latestTodos} />}
 
-          {/* Credential warning banner */}
-          {credentialIssue?.credentialStatus === 'missing' && (
+          {/* MCP connector warning banner */}
+          {mcpIssue && (
             <div className="bg-yellow-900/30 border-t border-yellow-700/50 px-6 py-3 flex items-center justify-between shrink-0">
               <span className="text-sm text-yellow-200">
-                This agent is missing an API key
-                {credentialIssue.credentialProvider
-                  ? ` for ${credentialIssue.credentialProvider}`
-                  : ''}
-                . Add or reassign a key to continue.
+                {mcpIssue.status === 'needs_reauth'
+                  ? `${mcpIssue.serverName} connector needs re-authorization`
+                  : `${mcpIssue.serverName} connector is offline`}
               </span>
               <button
                 type="button"
-                onClick={() => navigate({ to: '/connections' })}
-                className="shrink-0 rounded-lg bg-yellow-700/50 px-3 py-1.5 text-xs font-medium text-yellow-100 hover:bg-yellow-700/70"
+                onClick={async () => {
+                  if (mcpIssue.status === 'needs_reauth') {
+                    await window.api.mcpReauthorize(mcpIssue.serverName);
+                  } else {
+                    await window.api.mcpReconnectConnector(mcpIssue.serverName);
+                  }
+                }}
+                className="border border-yellow-700/50 bg-yellow-900/40 px-3 py-1 text-xs text-yellow-200 hover:bg-yellow-900/60"
               >
-                Go to AI Providers
+                {mcpIssue.status === 'needs_reauth' ? 'Re-authorize' : 'Reconnect'}
               </button>
             </div>
           )}
@@ -1622,11 +1578,7 @@ export function Chat(): JSX.Element {
                   placeholder={
                     selectedConversationId ? 'Type a message…' : 'Select a conversation first'
                   }
-                  disabled={
-                    !selectedConversationId ||
-                    isStreaming ||
-                    credentialIssue?.credentialStatus === 'missing'
-                  }
+                  disabled={!selectedConversationId || isStreaming}
                   className="flex-1 bg-[#141414] border border-border px-4 py-3 text-sm text-foreground placeholder:text-muted focus:border-accent focus:outline-none disabled:opacity-50 resize-none"
                 />
                 <input
@@ -1661,9 +1613,7 @@ export function Chat(): JSX.Element {
                   <button
                     type="submit"
                     disabled={
-                      (!input.trim() && attachedImages.length === 0) ||
-                      !selectedConversationId ||
-                      credentialIssue?.credentialStatus === 'missing'
+                      (!input.trim() && attachedImages.length === 0) || !selectedConversationId
                     }
                     className="bg-accent text-white p-2.5 hover:bg-primary-hover disabled:opacity-50 transition-colors shrink-0"
                   >
@@ -1681,8 +1631,7 @@ export function Chat(): JSX.Element {
 
 export const Route = createFileRoute('/chat')({
   validateSearch: (search: Record<string, unknown>) => ({
-    deploymentId: typeof search.deploymentId === 'string' ? search.deploymentId : '',
-    agentName: typeof search.agentName === 'string' ? search.agentName : '',
+    agentId: typeof search.agentId === 'string' ? search.agentId : '',
   }),
   component: Chat,
 });

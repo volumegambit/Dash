@@ -1,21 +1,23 @@
 import type { GatewayManagementClient } from '@dash/mc';
 
-export type GatewayStatus = 'starting' | 'healthy' | 'unhealthy' | 'restarting';
+export type GatewayStatus = 'starting' | 'healthy' | 'unhealthy';
 
 type EnsureGateway = () => Promise<GatewayManagementClient | null>;
-type OnRestart = () => Promise<void>;
 
 export class GatewayPoller {
   private timer: NodeJS.Timeout | null = null;
   private currentStatus: GatewayStatus = 'starting';
+  private lastMcpStatuses = new Map<string, string>();
 
   constructor(
     private ensureGateway: EnsureGateway,
-    private onRestart: OnRestart,
     private intervalMs = 5_000,
   ) {}
 
-  start(onStatusChange: (status: GatewayStatus) => void): void {
+  start(
+    onStatusChange: (status: GatewayStatus) => void,
+    onMcpStatusChange?: (serverName: string, status: string) => void,
+  ): void {
     this.stop();
     this.timer = setInterval(async () => {
       try {
@@ -27,18 +29,21 @@ export class GatewayPoller {
           this.currentStatus = newStatus;
           onStatusChange(newStatus);
         }
-      } catch {
-        if (this.currentStatus !== 'restarting') {
-          this.currentStatus = 'restarting';
-          onStatusChange('restarting');
-          try {
-            await this.onRestart();
-            this.currentStatus = 'healthy';
-            onStatusChange('healthy');
-          } catch {
-            this.currentStatus = 'unhealthy';
-            onStatusChange('unhealthy');
+
+        // Track MCP server statuses
+        if (onMcpStatusChange && health.mcpServers) {
+          for (const server of health.mcpServers) {
+            const prev = this.lastMcpStatuses.get(server.name);
+            if (server.status !== prev) {
+              this.lastMcpStatuses.set(server.name, server.status);
+              onMcpStatusChange(server.name, server.status);
+            }
           }
+        }
+      } catch {
+        if (this.currentStatus !== 'unhealthy') {
+          this.currentStatus = 'unhealthy';
+          onStatusChange('unhealthy');
         }
       }
     }, this.intervalMs);
@@ -49,6 +54,7 @@ export class GatewayPoller {
       clearInterval(this.timer);
       this.timer = null;
     }
+    this.lastMcpStatuses.clear();
   }
 
   getCurrentStatus(): GatewayStatus {

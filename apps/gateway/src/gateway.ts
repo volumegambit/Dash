@@ -1,152 +1,35 @@
 import { appendFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import type { AgentClient } from '@dash/agent';
-import {
-  MessageRouter,
-  MissionControlAdapter,
-  TelegramAdapter,
-  WhatsAppAdapter,
-} from '@dash/channels';
-import type { ChannelAdapter, MessageLogEntry, RouterConfig } from '@dash/channels';
-import { RemoteAgentClient } from '@dash/chat';
-import type { GatewayConfig } from './config.js';
-import { ChannelHealthReporter } from './health-reporter.js';
+import type { ChannelAdapter, InboundMessage, MessageLogEntry } from '@dash/channels';
 
-function createNonMcAdapter(
-  name: string,
-  config: GatewayConfig['channels'][string],
-): ChannelAdapter {
-  switch (config.adapter) {
-    case 'telegram': {
-      if (!config.token) {
-        throw new Error(`Channel "${name}" (telegram) requires a "token" field.`);
-      }
-      // In routing-rules mode, allowedUsers is not used (filtering is in MessageRouter)
-      return new TelegramAdapter(config.token, config.routing ? [] : (config.allowedUsers ?? []));
-    }
-    case 'whatsapp': {
-      const authStateDir = config.authStateDir;
-      if (!authStateDir) {
-        throw new Error(`Channel "${name}" (whatsapp) requires an "authStateDir" field.`);
-      }
-      return new WhatsAppAdapter(config.whatsappAuth ?? {}, authStateDir);
-    }
-    default:
-      throw new Error(`Unknown adapter type "${config.adapter}" for channel "${name}".`);
-  }
-}
-
-export function createGateway(config: GatewayConfig) {
-  const agents = new Map<string, AgentClient>();
-  for (const [name, endpoint] of Object.entries(config.agents)) {
-    agents.set(name, new RemoteAgentClient(endpoint.url, endpoint.token, name));
-    console.log(`Agent "${name}" configured (url: ${endpoint.url})`);
-  }
-
-  const router = new MessageRouter(agents);
-  const mcAdapters: MissionControlAdapter[] = [];
-  const reporterAdapters: Array<{ adapter: ChannelAdapter; appId: string }> = [];
-
-  // Set up channel message logging
-  const logDir = join(config.dataDir ?? '.', 'channel-logs');
-  mkdirSync(logDir, { recursive: true });
-  router.setLogger((entry: MessageLogEntry) => {
-    try {
-      const logPath = join(logDir, `${entry.channelName}.jsonl`);
-      appendFileSync(logPath, `${JSON.stringify(entry)}\n`);
-    } catch {
-      // Don't let logging failures break message handling
-    }
-  });
-
-  for (const [name, channelConfig] of Object.entries(config.channels)) {
-    if (channelConfig.adapter === 'mission-control') {
-      const port = channelConfig.port ?? 9200;
-      mcAdapters.push(new MissionControlAdapter(port, agents, channelConfig.token));
-      console.log(`Channel "${name}" (mission-control) on port ${port}`);
-    } else {
-      const adapter = createNonMcAdapter(name, channelConfig);
-      const appId = name.startsWith('messaging-app-') ? name.slice('messaging-app-'.length) : name;
-      reporterAdapters.push({ adapter, appId });
-
-      if (channelConfig.routing) {
-        // Advanced routing-rules mode
-        const routerConfig: RouterConfig = {
-          globalDenyList: channelConfig.globalDenyList ?? [],
-          rules: channelConfig.routing.map((r) => ({
-            condition: r.condition,
-            agentName: r.agentName,
-            allowList: r.allowList,
-            denyList: r.denyList,
-          })),
-        };
-        router.addAdapter(adapter, routerConfig, appId);
-        console.log(
-          `Channel "${name}" (${channelConfig.adapter}) → routing rules (${routerConfig.rules.length} rules)`,
-        );
-      } else {
-        // Simple mode
-        const agentName = channelConfig.agent;
-        if (!agentName) throw new Error(`Channel "${name}" requires an "agent" field.`);
-        router.addAdapter(adapter, agentName, appId);
-        console.log(`Channel "${name}" (${channelConfig.adapter}) → agent "${agentName}"`);
-      }
-    }
-  }
-
-  const managementUrl = process.env.MANAGEMENT_API_URL;
-  const managementToken = process.env.MANAGEMENT_API_TOKEN;
-  const reporter =
-    managementUrl && managementToken
-      ? new ChannelHealthReporter(reporterAdapters, managementUrl, managementToken)
-      : null;
-
-  return {
-    async start() {
-      await router.startAll();
-      await Promise.all(mcAdapters.map((a) => a.start()));
-      reporter?.start();
-      console.log('Gateway started');
-    },
-    async stop() {
-      await router.stopAll();
-      await Promise.all(mcAdapters.map((a) => a.stop()));
-      console.log('Gateway stopped');
-    },
-  };
-}
-
-// ── Dynamic gateway (shared mode) ──
-
-interface OwnerRule {
-  ownerDeploymentId: string;
-  ownerGlobalDenyList: string[];
+interface RoutingRule {
+  globalDenyList: string[];
   condition:
     | { type: 'default' }
     | { type: 'sender'; ids: string[] }
     | { type: 'group'; ids: string[] };
-  agentKey: string; // {deploymentId}:{agentName}
+  agentId: string;
   allowList: string[];
   denyList: string[];
 }
 
 interface ChannelState {
   adapter: ChannelAdapter;
-  rules: OwnerRule[];
+  rules: RoutingRule[];
 }
 
 export interface DynamicGateway {
-  registerAgent(deploymentId: string, agentName: string, client: AgentClient): void;
-  deregisterDeployment(deploymentId: string): Promise<void>;
+  registerAgent(agentId: string, client: AgentClient): void;
+  deregisterAgent(agentId: string): Promise<string[]>;
   registerChannel(
-    deploymentId: string,
     channelName: string,
     adapter: ChannelAdapter,
     config: {
       globalDenyList: string[];
       routing: Array<{
-        condition: OwnerRule['condition'];
-        agentName: string;
+        condition: RoutingRule['condition'];
+        agentId: string;
         allowList: string[];
         denyList: string[];
       }>;
@@ -179,10 +62,6 @@ export function createDynamicGateway(options?: { dataDir?: string }): DynamicGat
     }
   }
 
-  function makeAgentKey(deploymentId: string, agentName: string): string {
-    return `${deploymentId}:${agentName}`;
-  }
-
   async function handleMessage(
     channelName: string,
     msg: InboundMessage,
@@ -201,7 +80,7 @@ export function createDynamicGateway(options?: { dataDir?: string }): DynamicGat
     };
 
     const matched = state.rules.find((rule) => {
-      if (rule.ownerGlobalDenyList.includes(msg.senderId)) return false;
+      if (rule.globalDenyList.includes(msg.senderId)) return false;
       switch (rule.condition.type) {
         case 'default':
           return true;
@@ -216,7 +95,7 @@ export function createDynamicGateway(options?: { dataDir?: string }): DynamicGat
       return;
     }
 
-    const agentName = matched.agentKey.split(':')[1] ?? matched.agentKey;
+    const agentName = matched.agentId;
 
     if (matched.denyList.includes(msg.senderId)) {
       logMessage({ ...baseLog, outcome: 'blocked', agentName, blockReason: 'rule_deny' });
@@ -227,17 +106,19 @@ export function createDynamicGateway(options?: { dataDir?: string }): DynamicGat
       return;
     }
 
-    const agent = agents.get(matched.agentKey);
+    const agent = agents.get(matched.agentId);
     if (!agent) {
-      console.warn(`[gateway] dropped message: agent "${matched.agentKey}" not found`);
+      console.warn(`[gateway] dropped message: agent "${matched.agentId}" not found`);
       logMessage({ ...baseLog, outcome: 'blocked', agentName, blockReason: 'agent_not_found' });
       return;
     }
 
     logMessage({ ...baseLog, outcome: 'routed', agentName });
 
+    const prefixedConvId = `${channelName}:${msg.conversationId}`;
+
     let fullResponse = '';
-    for await (const event of agent.chat(msg.channelId, msg.conversationId, msg.text)) {
+    for await (const event of agent.chat(msg.channelId, prefixedConvId, msg.text)) {
       if (event.type === 'response') {
         fullResponse = event.content;
       } else if (event.type === 'error') {
@@ -248,45 +129,39 @@ export function createDynamicGateway(options?: { dataDir?: string }): DynamicGat
   }
 
   return {
-    registerAgent(deploymentId, agentName, client) {
-      agents.set(makeAgentKey(deploymentId, agentName), client);
+    registerAgent(agentId, client) {
+      agents.set(agentId, client);
     },
 
-    async deregisterDeployment(deploymentId) {
-      // Remove agents belonging to this deployment
-      for (const key of [...agents.keys()]) {
-        if (key.startsWith(`${deploymentId}:`)) agents.delete(key);
-      }
+    async deregisterAgent(agentId) {
+      agents.delete(agentId);
 
-      // Remove routing rules for this deployment; stop adapter if no rules remain
+      const removedChannels: string[] = [];
       const toStop: ChannelAdapter[] = [];
       for (const [name, state] of [...channels.entries()]) {
-        state.rules = state.rules.filter((r) => r.ownerDeploymentId !== deploymentId);
+        state.rules = state.rules.filter((r) => r.agentId !== agentId);
         if (state.rules.length === 0) {
           toStop.push(state.adapter);
           channels.delete(name);
+          removedChannels.push(name);
         }
       }
       await Promise.all(toStop.map((a) => a.stop()));
+      return removedChannels;
     },
 
-    async registerChannel(deploymentId, channelName, adapter, config) {
-      const newRules: OwnerRule[] = config.routing.map((r) => ({
-        ownerDeploymentId: deploymentId,
-        ownerGlobalDenyList: config.globalDenyList ?? [],
+    async registerChannel(channelName, adapter, config) {
+      const newRules: RoutingRule[] = config.routing.map((r) => ({
+        globalDenyList: config.globalDenyList ?? [],
         condition: r.condition,
-        agentKey: makeAgentKey(deploymentId, r.agentName),
+        agentId: r.agentId,
         allowList: r.allowList,
         denyList: r.denyList,
       }));
 
       const existing = channels.get(channelName);
       if (existing) {
-        // Replace rules for this deployment, keep rules from other deployments
-        existing.rules = [
-          ...existing.rules.filter((r) => r.ownerDeploymentId !== deploymentId),
-          ...newRules,
-        ];
+        existing.rules = [...existing.rules, ...newRules];
       } else {
         const state: ChannelState = {
           adapter,

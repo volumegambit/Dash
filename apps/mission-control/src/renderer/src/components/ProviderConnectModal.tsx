@@ -37,7 +37,7 @@ export function ProviderConnectModal({
     setSaving(true);
     setError(null);
     try {
-      await window.api.secretsSet(providerSecretKey(provider, trimmedName), trimmedKey);
+      await window.api.credentialsSet(providerSecretKey(provider, trimmedName), trimmedKey);
       setSaving(false);
       onSaved();
     } catch (err) {

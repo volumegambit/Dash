@@ -19,29 +19,28 @@ describe('ConversationStore', () => {
   });
 
   it('creates a conversation with auto-generated id', async () => {
-    const conv = await store.create('deploy-1', 'myagent');
+    const conv = await store.create('agent-123');
     expect(conv.id).toBeTruthy();
-    expect(conv.deploymentId).toBe('deploy-1');
-    expect(conv.agentName).toBe('myagent');
+    expect(conv.agentId).toBe('agent-123');
     expect(conv.title).toBe('New Conversation');
   });
 
-  it('lists conversations filtered by deploymentId', async () => {
-    await store.create('deploy-1', 'agent-a');
-    await store.create('deploy-1', 'agent-b');
-    await store.create('deploy-2', 'agent-a');
+  it('lists conversations filtered by agentId', async () => {
+    await store.create('agent-123');
+    await store.create('agent-123');
+    await store.create('agent-456');
 
-    const list = await store.list('deploy-1');
+    const list = await store.listByAgent('agent-123');
     expect(list).toHaveLength(2);
-    expect(list.every((c) => c.deploymentId === 'deploy-1')).toBe(true);
+    expect(list.every((c) => c.agentId === 'agent-123')).toBe(true);
   });
 
   it('returns empty array when no conversations exist', async () => {
-    expect(await store.list('deploy-1')).toEqual([]);
+    expect(await store.listByAgent('agent-123')).toEqual([]);
   });
 
   it('gets a conversation by id', async () => {
-    const conv = await store.create('deploy-1', 'agent');
+    const conv = await store.create('agent-123');
     const found = await store.get(conv.id);
     expect(found?.id).toBe(conv.id);
   });
@@ -51,7 +50,7 @@ describe('ConversationStore', () => {
   });
 
   it('deletes a conversation and its messages', async () => {
-    const conv = await store.create('deploy-1', 'agent');
+    const conv = await store.create('agent-123');
     await store.appendMessage(conv.id, {
       id: 'msg-1',
       role: 'user',
@@ -60,12 +59,12 @@ describe('ConversationStore', () => {
     });
 
     await store.delete(conv.id);
-    expect(await store.list('deploy-1')).toHaveLength(0);
+    expect(await store.listByAgent('agent-123')).toHaveLength(0);
     expect(await store.getMessages(conv.id)).toEqual([]);
   });
 
   it('appends messages and retrieves them in order', async () => {
-    const conv = await store.create('deploy-1', 'agent');
+    const conv = await store.create('agent-123');
     await store.appendMessage(conv.id, {
       id: 'msg-1',
       role: 'user',
@@ -86,7 +85,7 @@ describe('ConversationStore', () => {
   });
 
   it('sets title from first user message', async () => {
-    const conv = await store.create('deploy-1', 'agent');
+    const conv = await store.create('agent-123');
     await store.appendMessage(conv.id, {
       id: 'msg-1',
       role: 'user',
@@ -99,7 +98,7 @@ describe('ConversationStore', () => {
   });
 
   it('truncates long titles to 60 chars', async () => {
-    const conv = await store.create('deploy-1', 'agent');
+    const conv = await store.create('agent-123');
     const longText = 'a'.repeat(100);
     await store.appendMessage(conv.id, {
       id: 'msg-1',
@@ -113,13 +112,13 @@ describe('ConversationStore', () => {
   });
 
   it('returns empty array from getMessages when no messages file exists', async () => {
-    const conv = await store.create('deploy-1', 'agent');
+    const conv = await store.create('agent-123');
     // No messages appended — JSONL file does not exist yet
     expect(await store.getMessages(conv.id)).toEqual([]);
   });
 
   it('does not overwrite title after it has been set', async () => {
-    const conv = await store.create('deploy-1', 'agent');
+    const conv = await store.create('agent-123');
     await store.appendMessage(conv.id, {
       id: 'msg-1',
       role: 'user',
@@ -141,18 +140,18 @@ describe('ConversationStore', () => {
     const convDir = join(dataDir, 'conversations');
     await mkdir(convDir, { recursive: true });
     await writeFile(join(convDir, 'index.json'), '');
-    expect(await store.list('deploy-1')).toEqual([]);
+    expect(await store.listByAgent('agent-123')).toEqual([]);
   });
 
   it('returns empty list when index file contains truncated JSON', async () => {
     const convDir = join(dataDir, 'conversations');
     await mkdir(convDir, { recursive: true });
     await writeFile(join(convDir, 'index.json'), '[{"id":"c1"');
-    expect(await store.list('deploy-1')).toEqual([]);
+    expect(await store.listByAgent('agent-123')).toEqual([]);
   });
 
   it('handles trailing blank line in JSONL gracefully', async () => {
-    const conv = await store.create('deploy-1', 'agent');
+    const conv = await store.create('agent-123');
     await store.appendMessage(conv.id, {
       id: 'msg-1',
       role: 'user',

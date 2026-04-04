@@ -1,5 +1,5 @@
-import { Outfit, JetBrains_Mono } from 'next/font/google';
 import type { Metadata } from 'next';
+import { JetBrains_Mono, Outfit } from 'next/font/google';
 import './globals.css';
 
 const outfit = Outfit({
@@ -18,7 +18,7 @@ export const metadata: Metadata = {
   metadataBase: new URL('https://dashsquad.ai'),
   title: 'DashSquad — Your AI Team, Always On',
   description:
-    'DashSquad lets you create AI agents — each with its own role. They work on their own, around the clock, even when you\'re not watching.',
+    "DashSquad lets you create AI agents — each with its own role. They work on their own, around the clock, even when you're not watching.",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

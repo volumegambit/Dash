@@ -2,6 +2,7 @@ export interface HealthResponse {
   status: 'healthy';
   uptime: number;
   version: string;
+  mcpServers?: Array<{ name: string; status: string }>;
 }
 
 export interface AgentInfo {
@@ -56,7 +57,7 @@ export type ChannelHealthResponse = ChannelHealthEntry[];
 export interface McpServerInfo {
   name: string;
   transport: { type: string; url?: string; command?: string; args?: string[] };
-  status: 'connected' | 'disconnected' | 'reconnecting' | 'error';
+  status: 'connected' | 'disconnected' | 'reconnecting' | 'error' | 'needs_reauth';
   tools: string[];
 }
 

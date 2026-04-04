@@ -1,5 +1,4 @@
-import type { AgentDeployAgentConfig } from '@dash/mc';
-import { providerSecretKey } from '@dash/mc/provider-keys';
+import type { GatewayAgent } from '@dash/mc';
 import { ChevronDown, ChevronUp, FolderOpen, X } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
 import type { McpConnectorInfo } from '../../../../shared/ipc.js';
@@ -7,6 +6,8 @@ import { HealthDot } from '../../../components/HealthDot.js';
 import { ModelChainEditor } from '../../../components/ModelChainEditor.js';
 import { ALL_TOOL_IDS, TOOL_GROUPS } from '../../../components/deploy-options.js';
 import { useAvailableModels } from '../../../hooks/useAvailableModels.js';
+
+type AgentConfig = GatewayAgent['config'];
 
 type ConfigPatch = {
   model?: string;
@@ -17,14 +18,14 @@ type ConfigPatch = {
 };
 
 interface AgentConfigTabProps {
-  deploymentId: string;
-  agentConfig: AgentDeployAgentConfig | undefined;
+  agentId: string;
+  agentConfig: AgentConfig | undefined;
   workspace?: string;
   updateConfig: (id: string, patch: ConfigPatch) => Promise<void>;
 }
 
 export function AgentConfigTab({
-  deploymentId,
+  agentId,
   agentConfig,
   workspace,
   updateConfig,
@@ -58,19 +59,9 @@ export function AgentConfigTab({
   const [assignedConnectors, setAssignedConnectors] = useState<string[]>([]);
   const [poolConnectors, setPoolConnectors] = useState<McpConnectorInfo[]>([]);
 
-  // Credential key resolution
-  const [modelKeys, setModelKeys] = useState<Record<string, { label: string; masked: string }>>({});
-
-  // Extract credentialKeys from the runtime config (exists at runtime but not on the declared type)
-  const credentialKeys = (
-    agentConfig as AgentDeployAgentConfig & { credentialKeys?: Record<string, string> }
-  )?.credentialKeys;
-
   // Sync connectors when agentConfig changes
   useEffect(() => {
-    setAssignedConnectors(
-      (agentConfig as AgentDeployAgentConfig & { mcpServers?: string[] })?.mcpServers ?? [],
-    );
+    setAssignedConnectors(agentConfig?.mcpServers ?? []);
     window.api
       .mcpListConnectors()
       .then(setPoolConnectors)
@@ -83,18 +74,18 @@ export function AgentConfigTab({
     async (name: string) => {
       const next = [...assignedConnectors, name];
       setAssignedConnectors(next);
-      await updateConfig(deploymentId, { mcpServers: next });
+      await updateConfig(agentId, { mcpServers: next });
     },
-    [assignedConnectors, deploymentId, updateConfig],
+    [assignedConnectors, agentId, updateConfig],
   );
 
   const handleUnassignConnector = useCallback(
     async (name: string) => {
       const next = assignedConnectors.filter((s) => s !== name);
       setAssignedConnectors(next);
-      await updateConfig(deploymentId, { mcpServers: next });
+      await updateConfig(agentId, { mcpServers: next });
     },
-    [assignedConnectors, deploymentId, updateConfig],
+    [assignedConnectors, agentId, updateConfig],
   );
 
   function connectorHealthStatus(
@@ -113,54 +104,10 @@ export function AgentConfigTab({
     }
   }, [agentConfig?.model, agentConfig?.fallbackModels]);
 
-  // Resolve credential keys for display
-  useEffect(() => {
-    if (!agentConfig?.model) return;
-    const allModels = [agentConfig.model, ...(agentConfig.fallbackModels ?? [])];
-    const seen = new Set<string>();
-    const result: Record<string, { label: string; masked: string }> = {};
-
-    const resolve = async (): Promise<void> => {
-      for (const model of allModels) {
-        const provider = model.split('/')[0];
-        if (!provider || seen.has(provider)) {
-          if (provider && result[provider]) {
-            result[model] = result[Object.keys(result).find((k) => k.startsWith(provider)) ?? ''];
-          }
-          continue;
-        }
-        seen.add(provider);
-        const credName = credentialKeys?.[provider] ?? 'default';
-        const secretKey = providerSecretKey(provider, credName);
-        try {
-          const val = await window.api.secretsGet(secretKey);
-          const masked =
-            val && val.length > 17
-              ? `${val.slice(0, 10)}${'*'.repeat(6)}${val.slice(-7)}`
-              : val
-                ? '********'
-                : 'N/A';
-          result[model] = { label: credName, masked };
-        } catch {
-          result[model] = { label: credName, masked: 'N/A' };
-        }
-      }
-      for (const model of allModels) {
-        if (!result[model]) {
-          const provider = model.split('/')[0];
-          const match = allModels.find((m) => result[m] && m.split('/')[0] === provider);
-          if (match) result[model] = result[match];
-        }
-      }
-      setModelKeys(result);
-    };
-    resolve();
-  }, [agentConfig?.model, agentConfig?.fallbackModels, credentialKeys]);
-
   const handleSaveChain = async (): Promise<void> => {
     setChainSaving(true);
     try {
-      await updateConfig(deploymentId, { model: chainModel, fallbackModels: chainFallbacks });
+      await updateConfig(agentId, { model: chainModel, fallbackModels: chainFallbacks });
       setOpenCard(null);
     } finally {
       setChainSaving(false);
@@ -170,7 +117,7 @@ export function AgentConfigTab({
   const handleSaveTools = async (): Promise<void> => {
     setToolsSaving(true);
     try {
-      await updateConfig(deploymentId, { tools: toolsDraft });
+      await updateConfig(agentId, { tools: toolsDraft });
       setOpenCard(null);
       setToolsRestartNeeded(true);
     } finally {
@@ -181,7 +128,7 @@ export function AgentConfigTab({
   const handleSavePrompt = async (): Promise<void> => {
     setPromptSaving(true);
     try {
-      await updateConfig(deploymentId, { systemPrompt: promptDraft });
+      await updateConfig(agentId, { systemPrompt: promptDraft });
       setOpenCard(null);
     } finally {
       setPromptSaving(false);

@@ -32,7 +32,7 @@ describe('ProviderConnectModal', () => {
     expect(keyNameInput).toHaveValue('default');
   });
 
-  it('calls secretsSet with composite key and onSaved on submit', async () => {
+  it('calls credentialsSet with composite key and onSaved on submit', async () => {
     const user = userEvent.setup();
     const onSaved = vi.fn();
     render(
@@ -45,7 +45,10 @@ describe('ProviderConnectModal', () => {
     );
     await user.type(screen.getByPlaceholderText('sk-ant-...'), 'sk-ant-testkey');
     await user.click(screen.getByText('Save API Key'));
-    expect(mockApi.secretsSet).toHaveBeenCalledWith('anthropic-api-key:default', 'sk-ant-testkey');
+    expect(mockApi.credentialsSet).toHaveBeenCalledWith(
+      'anthropic-api-key:default',
+      'sk-ant-testkey',
+    );
     await screen.findByRole('button', { name: /save api key/i });
     expect(onSaved).toHaveBeenCalledOnce();
   });
@@ -58,9 +61,9 @@ describe('ProviderConnectModal', () => {
     expect(onClose).toHaveBeenCalledOnce();
   });
 
-  it('shows error when secretsSet rejects', async () => {
+  it('shows error when credentialsSet rejects', async () => {
     const user = userEvent.setup();
-    mockApi.secretsSet.mockRejectedValueOnce(new Error('Network error'));
+    mockApi.credentialsSet.mockRejectedValueOnce(new Error('Network error'));
     render(
       <ProviderConnectModal provider="google" keyName="default" onClose={noop} onSaved={noop} />,
     );
@@ -79,6 +82,6 @@ describe('ProviderConnectModal', () => {
     expect(
       await screen.findByText('Key name must contain only letters, numbers, and hyphens.'),
     ).toBeInTheDocument();
-    expect(mockApi.secretsSet).not.toHaveBeenCalled();
+    expect(mockApi.credentialsSet).not.toHaveBeenCalled();
   });
 });

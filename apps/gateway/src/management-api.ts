@@ -1,65 +1,36 @@
 import type { AgentClient } from '@dash/agent';
 import type { ChannelAdapter } from '@dash/channels';
 import { TelegramAdapter, WhatsAppAdapter } from '@dash/channels';
-import { RemoteAgentClient } from '@dash/chat';
 import { Hono } from 'hono';
 
-import type { GatewayAgentConfig } from './agent-registry.js';
+import type { AgentRegistry, GatewayAgentConfig, RegisteredAgent } from './agent-registry.js';
 import type { AgentRuntime } from './agent-runtime.js';
+import type { ChannelRegistry, ChannelRoutingRule } from './channel-registry.js';
+import type { GatewayCredentialStore } from './credential-store.js';
 import type { EventBus, GatewayEvent } from './event-bus.js';
 import type { DynamicGateway } from './gateway.js';
-import { type McpManagementDeps, mountMcpRoutes } from './mcp-management.js';
-
-export interface RegisterAgentRequest {
-  deploymentId: string;
-  agentName: string;
-  chatUrl: string;
-  chatToken: string;
-}
-
-export interface ChannelRoutingRule {
-  condition:
-    | { type: 'default' }
-    | { type: 'sender'; ids: string[] }
-    | { type: 'group'; ids: string[] };
-  agentName: string;
-  allowList: string[];
-  denyList: string[];
-}
-
-export interface ChannelRegistrationConfig {
-  adapter: 'telegram' | 'whatsapp';
-  token?: string;
-  authStateDir?: string;
-  whatsappAuth?: Record<string, string>;
-  globalDenyList?: string[];
-  routing: ChannelRoutingRule[];
-}
-
-export interface RegisterChannelRequest {
-  deploymentId: string;
-  channelName: string;
-  config: ChannelRegistrationConfig;
-}
-
-export interface GatewayHealthResponse {
-  status: 'healthy';
-  startedAt: string;
-  agents: number;
-  channels: number;
-}
 
 export interface GatewayManagementOptions {
   gateway: DynamicGateway;
-  runtime?: AgentRuntime;
+  runtime: AgentRuntime;
+  agentRegistry: AgentRegistry;
+  channelRegistry: ChannelRegistry;
+  credentialStore: GatewayCredentialStore;
   token?: string;
   startedAt?: string;
-  mcpDeps?: McpManagementDeps;
   eventBus?: EventBus;
 }
 
+/** Strip providerApiKeys from agent entries before returning to clients. */
+function stripSecrets(entry: RegisteredAgent): RegisteredAgent {
+  const { config, ...rest } = entry;
+  const { providerApiKeys: _, ...safeConfig } = config;
+  return { ...rest, config: safeConfig as GatewayAgentConfig };
+}
+
 export function createGatewayManagementApp(options: GatewayManagementOptions): Hono {
-  const { gateway, runtime, token } = options;
+  const { gateway, runtime, agentRegistry, channelRegistry, credentialStore, token, eventBus } =
+    options;
   const startedAt = options.startedAt ?? new Date().toISOString();
   const app = new Hono();
 
@@ -74,258 +45,276 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
       if (!auth || auth !== `Bearer ${token}`) {
         return c.json({ error: 'Unauthorized' }, 401);
       }
-    } else {
-      // No token configured — all routes are public (dev/no-auth mode)
     }
     await next();
   });
 
+  // --- Health ---
+
   app.get('/health', (c) => {
-    const health: Record<string, unknown> = {
+    return c.json({
       status: 'healthy',
       startedAt,
-      agents: gateway.agentCount(),
-      channels: gateway.channelCount(),
-    };
-    if (runtime) {
-      health.pool = runtime.stats();
-      health.runtimeAgents = runtime.registry.list().length;
-    }
-    return c.json(health);
+      agents: agentRegistry.list().length,
+      channels: channelRegistry.list().length,
+    });
   });
+
+  // --- Agent routes ---
 
   app.post('/agents', async (c) => {
-    let body: RegisterAgentRequest;
+    let body: GatewayAgentConfig;
     try {
-      body = await c.req.json<RegisterAgentRequest>();
+      body = await c.req.json<GatewayAgentConfig>();
     } catch {
       return c.json({ error: 'Invalid JSON' }, 400);
     }
-    if (!body.deploymentId || !body.agentName || !body.chatUrl || !body.chatToken) {
-      return c.json(
-        { error: 'Missing required fields: deploymentId, agentName, chatUrl, chatToken' },
-        400,
-      );
+    if (!body.name || !body.model || body.systemPrompt == null) {
+      return c.json({ error: 'Missing required fields: name, model, systemPrompt' }, 400);
     }
-    const client = new RemoteAgentClient(
-      body.chatUrl,
-      body.chatToken,
-      `${body.deploymentId}:${body.agentName}`,
-    );
-    gateway.registerAgent(body.deploymentId, body.agentName, client);
-    return c.json({ ok: true }, 201);
+    try {
+      const entry = agentRegistry.register(body);
+
+      // Create bridge client that routes through runtime
+      const agentId = entry.id;
+      const rt = runtime;
+      const bridgeClient: AgentClient = {
+        chat(channelId, conversationId, text) {
+          return rt.chat({ agentId, conversationId, channelId, text });
+        },
+      };
+      gateway.registerAgent(agentId, bridgeClient);
+
+      await agentRegistry.save();
+      eventBus?.emit({ type: 'agent:config-changed', agent: entry.name, fields: ['*'] });
+      return c.json(stripSecrets(entry), 201);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Internal error';
+      return c.json({ error: message }, 409);
+    }
   });
 
-  app.delete('/deployments/:id', async (c) => {
-    const { id } = c.req.param();
+  app.get('/agents', (c) => {
+    return c.json(agentRegistry.list().map(stripSecrets));
+  });
+
+  app.get('/agents/:id', (c) => {
+    const entry = agentRegistry.get(c.req.param('id'));
+    if (!entry) return c.json({ error: 'not found' }, 404);
+    return c.json(stripSecrets(entry));
+  });
+
+  app.put('/agents/:id', async (c) => {
+    const id = c.req.param('id');
+    const entry = agentRegistry.get(id);
+    if (!entry) return c.json({ error: 'not found' }, 404);
+    let patch: Partial<Omit<GatewayAgentConfig, 'name'>>;
     try {
-      await gateway.deregisterDeployment(id);
+      patch = await c.req.json();
+    } catch {
+      return c.json({ error: 'Invalid JSON' }, 400);
+    }
+    try {
+      const updated = agentRegistry.update(id, patch);
+      await agentRegistry.save();
+      eventBus?.emit({
+        type: 'agent:config-changed',
+        agent: entry.name,
+        fields: Object.keys(patch),
+      });
+      return c.json(stripSecrets(updated));
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Internal error';
       return c.json({ error: message }, 500);
     }
-    return c.json({ ok: true });
   });
+
+  app.delete('/agents/:id', async (c) => {
+    const id = c.req.param('id');
+    const entry = agentRegistry.get(id);
+    if (!entry) return c.json({ error: 'not found' }, 404);
+    try {
+      const removedChannels = await gateway.deregisterAgent(id);
+      for (const name of removedChannels) {
+        channelRegistry.remove(name);
+      }
+      channelRegistry.removeRoutesForAgent(id);
+      agentRegistry.remove(id);
+      await agentRegistry.save();
+      await channelRegistry.save();
+      return c.json({ ok: true });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Internal error';
+      return c.json({ error: message }, 500);
+    }
+  });
+
+  app.post('/agents/:id/disable', async (c) => {
+    const id = c.req.param('id');
+    try {
+      agentRegistry.disable(id);
+      await agentRegistry.save();
+      return c.json({ ok: true });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Internal error';
+      if (message.includes('not found')) return c.json({ error: message }, 404);
+      return c.json({ error: message }, 500);
+    }
+  });
+
+  app.post('/agents/:id/enable', async (c) => {
+    const id = c.req.param('id');
+    try {
+      agentRegistry.enable(id);
+      await agentRegistry.save();
+      return c.json({ ok: true });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Internal error';
+      if (message.includes('not found')) return c.json({ error: message }, 404);
+      return c.json({ error: message }, 500);
+    }
+  });
+
+  // --- Channel routes ---
 
   app.post('/channels', async (c) => {
-    let body: RegisterChannelRequest;
+    let body: { name: string; adapter: string; routing: unknown[]; globalDenyList?: string[] };
     try {
-      body = await c.req.json<RegisterChannelRequest>();
+      body = await c.req.json();
     } catch {
       return c.json({ error: 'Invalid JSON' }, 400);
     }
-    if (!body.deploymentId || !body.channelName || !body.config) {
-      return c.json({ error: 'Missing required fields: deploymentId, channelName, config' }, 400);
+    if (!body.name || !body.adapter || !body.routing) {
+      return c.json({ error: 'Missing required fields: name, adapter, routing' }, 400);
     }
 
-    const cfg = body.config;
+    const routing = body.routing as ChannelRoutingRule[];
+    const globalDenyList = body.globalDenyList ?? [];
+
+    // Create adapter from credentials
     let adapter: ChannelAdapter;
-    if (cfg.adapter === 'telegram') {
-      if (!cfg.token) {
-        return c.json({ error: 'Telegram adapter requires token' }, 400);
+    if (body.adapter === 'telegram') {
+      const credKey = `channel:${body.name}:token`;
+      const tok = await credentialStore.get(credKey);
+      if (!tok) {
+        return c.json({ error: `No credential found for key '${credKey}'` }, 400);
       }
-      adapter = new TelegramAdapter(cfg.token, []);
-    } else if (cfg.adapter === 'whatsapp') {
-      if (!cfg.authStateDir) {
-        return c.json({ error: 'WhatsApp adapter requires authStateDir' }, 400);
+      adapter = new TelegramAdapter(tok, []);
+    } else if (body.adapter === 'whatsapp') {
+      const credKey = `channel:${body.name}:whatsapp-auth`;
+      const authJson = await credentialStore.get(credKey);
+      if (!authJson) {
+        return c.json({ error: `No credential found for key '${credKey}'` }, 400);
       }
-      adapter = new WhatsAppAdapter(cfg.whatsappAuth ?? {}, cfg.authStateDir);
+      const auth = JSON.parse(authJson) as Record<string, string>;
+      adapter = new WhatsAppAdapter(auth, `data/whatsapp/${body.name}`);
     } else {
-      return c.json(
-        { error: `Unknown adapter type: ${(cfg as { adapter: string }).adapter}` },
-        400,
-      );
+      return c.json({ error: `Unknown adapter type: ${body.adapter}` }, 400);
     }
 
     try {
-      await gateway.registerChannel(body.deploymentId, body.channelName, adapter, {
-        globalDenyList: cfg.globalDenyList ?? [],
-        routing: cfg.routing,
-      });
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Internal error';
-      return c.json({ error: message }, 500);
-    }
+      await gateway.registerChannel(body.name, adapter, { globalDenyList, routing });
 
-    // Bridge runtime agents into the gateway agents map so channel routing can find them.
-    // Channel routing looks up agents as "${deploymentId}:${agentName}" but runtime agents
-    // are stored by name only. Register a thin AgentClient wrapper for each routing rule
-    // whose agent exists in the runtime registry.
-    if (runtime) {
-      for (const rule of cfg.routing) {
-        if (runtime.registry.get(rule.agentName)) {
-          const agentName = rule.agentName;
+      // Bridge runtime agents for each routing rule
+      for (const rule of routing) {
+        const agentEntry = agentRegistry.get(rule.agentId);
+        if (agentEntry) {
+          const agentId = agentEntry.id;
           const rt = runtime;
           const bridgeClient: AgentClient = {
             chat(channelId, conversationId, text) {
-              return rt.chat({ agentName, conversationId, channelId, text });
+              return rt.chat({ agentId, conversationId, channelId, text });
             },
           };
-          gateway.registerAgent(body.deploymentId, agentName, bridgeClient);
+          gateway.registerAgent(rule.agentId, bridgeClient);
         }
       }
-    }
 
+      channelRegistry.register({
+        name: body.name,
+        adapter: body.adapter as 'telegram' | 'whatsapp',
+        globalDenyList,
+        routing,
+      });
+      await channelRegistry.save();
+      return c.json({ ok: true }, 201);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Internal error';
+      return c.json({ error: message }, 500);
+    }
+  });
+
+  app.get('/channels', (c) => {
+    return c.json(channelRegistry.list());
+  });
+
+  app.get('/channels/:name', (c) => {
+    const name = decodeURIComponent(c.req.param('name'));
+    const entry = channelRegistry.get(name);
+    if (!entry) return c.json({ error: 'not found' }, 404);
+    return c.json(entry);
+  });
+
+  app.put('/channels/:name', async (c) => {
+    const name = decodeURIComponent(c.req.param('name'));
+    const entry = channelRegistry.get(name);
+    if (!entry) return c.json({ error: 'not found' }, 404);
+    let patch: Record<string, unknown>;
+    try {
+      patch = await c.req.json();
+    } catch {
+      return c.json({ error: 'Invalid JSON' }, 400);
+    }
+    try {
+      const updated = channelRegistry.update(name, patch);
+      await channelRegistry.save();
+      return c.json(updated);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Internal error';
+      return c.json({ error: message }, 500);
+    }
+  });
+
+  app.delete('/channels/:name', async (c) => {
+    const name = decodeURIComponent(c.req.param('name'));
+    const entry = channelRegistry.get(name);
+    if (!entry) return c.json({ error: 'not found' }, 404);
+    channelRegistry.remove(name);
+    await channelRegistry.save();
+    return c.json({ ok: true });
+  });
+
+  // --- Credential routes ---
+
+  app.post('/credentials', async (c) => {
+    let body: { key: string; value: string };
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: 'Invalid JSON' }, 400);
+    }
+    if (!body.key || !body.value) {
+      return c.json({ error: 'Missing required fields: key, value' }, 400);
+    }
+    await credentialStore.set(body.key, body.value);
     return c.json({ ok: true }, 201);
   });
 
-  // --- In-process agent management (only when runtime is available) ---
+  app.get('/credentials', async (c) => {
+    const keys = await credentialStore.list();
+    return c.json(keys);
+  });
 
-  if (runtime) {
-    app.post('/runtime/agents', async (c) => {
-      let body: GatewayAgentConfig;
-      try {
-        body = await c.req.json<GatewayAgentConfig>();
-      } catch {
-        return c.json({ error: 'Invalid JSON' }, 400);
-      }
-      if (!body.name || !body.model || body.systemPrompt == null) {
-        return c.json({ error: 'Missing required fields: name, model, systemPrompt' }, 400);
-      }
-      try {
-        const entry = runtime.registry.register(body);
-        await runtime.registry.save();
-        options.eventBus?.emit({
-          type: 'agent:config-changed',
-          agent: body.name,
-          fields: ['*'],
-        });
-        return c.json(entry, 201);
-      } catch (err) {
-        const message = err instanceof Error ? err.message : 'Internal error';
-        return c.json({ error: message }, 409);
-      }
-    });
+  app.delete('/credentials/:key', async (c) => {
+    const key = decodeURIComponent(c.req.param('key'));
+    await credentialStore.delete(key);
+    return c.json({ ok: true });
+  });
 
-    app.get('/runtime/agents', (c) => {
-      const agents = runtime.registry.list();
-      return c.json(agents);
-    });
+  // --- SSE event stream ---
 
-    app.get('/runtime/agents/:name', (c) => {
-      const name = c.req.param('name');
-      const entry = runtime.registry.get(name);
-      if (!entry) return c.json({ error: 'not found' }, 404);
-      return c.json(entry);
-    });
-
-    app.put('/runtime/agents/:name', async (c) => {
-      const name = c.req.param('name');
-      const entry = runtime.registry.get(name);
-      if (!entry) return c.json({ error: 'not found' }, 404);
-      let patch: Partial<Omit<GatewayAgentConfig, 'name'>>;
-      try {
-        patch = await c.req.json();
-      } catch {
-        return c.json({ error: 'Invalid JSON' }, 400);
-      }
-      try {
-        const updated = runtime.registry.update(name, patch);
-        await runtime.registry.save();
-        options.eventBus?.emit({
-          type: 'agent:config-changed',
-          agent: name,
-          fields: Object.keys(patch),
-        });
-        return c.json(updated);
-      } catch (err) {
-        const message = err instanceof Error ? err.message : 'Internal error';
-        return c.json({ error: message }, 500);
-      }
-    });
-
-    app.delete('/runtime/agents/:name', async (c) => {
-      const name = c.req.param('name');
-      const entry = runtime.registry.get(name);
-      if (!entry) return c.json({ error: 'not found' }, 404);
-      try {
-        await runtime.removeAgent(name);
-        await runtime.registry.save();
-        return c.json({ ok: true });
-      } catch (err) {
-        const message = err instanceof Error ? err.message : 'Internal error';
-        return c.json({ error: message }, 500);
-      }
-    });
-
-    app.post('/runtime/agents/:name/credentials', async (c) => {
-      const name = c.req.param('name');
-      const entry = runtime.registry.get(name);
-      if (!entry) return c.json({ error: 'not found' }, 404);
-      let body: { providerApiKeys: Record<string, string> };
-      try {
-        body = await c.req.json();
-      } catch {
-        return c.json({ error: 'Invalid JSON' }, 400);
-      }
-      if (!body.providerApiKeys) {
-        return c.json({ error: 'Missing required field: providerApiKeys' }, 400);
-      }
-      runtime.registry.update(name, { providerApiKeys: body.providerApiKeys });
-      await runtime.registry.save();
-      options.eventBus?.emit({
-        type: 'agent:config-changed',
-        agent: name,
-        fields: ['providerApiKeys'],
-      });
-      await runtime.updateCredentials(name, body.providerApiKeys);
-      return c.json({ ok: true });
-    });
-
-    app.post('/runtime/agents/:name/disable', async (c) => {
-      const name = c.req.param('name');
-      try {
-        runtime.registry.disable(name);
-        await runtime.registry.save();
-        return c.json({ ok: true });
-      } catch (err) {
-        const message = err instanceof Error ? err.message : 'Internal error';
-        if (message.includes('not found')) return c.json({ error: message }, 404);
-        return c.json({ error: message }, 500);
-      }
-    });
-
-    app.post('/runtime/agents/:name/enable', async (c) => {
-      const name = c.req.param('name');
-      try {
-        runtime.registry.enable(name);
-        await runtime.registry.save();
-        return c.json({ ok: true });
-      } catch (err) {
-        const message = err instanceof Error ? err.message : 'Internal error';
-        if (message.includes('not found')) return c.json({ error: message }, 404);
-        return c.json({ error: message }, 500);
-      }
-    });
-  }
-
-  if (options.mcpDeps) {
-    mountMcpRoutes(app, options.mcpDeps);
-  }
-
-  // SSE event stream
-  if (options.eventBus) {
-    const eventBus = options.eventBus;
+  if (eventBus) {
+    const bus = eventBus;
     app.get('/events', (c) => {
       return c.newResponse(
         new ReadableStream({
@@ -340,7 +329,6 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
                 // Stream may be closed
               }
             };
-            // Send keepalive comment every 30s
             const keepalive = setInterval(() => {
               try {
                 controller.enqueue(encoder.encode(': keepalive\n\n'));
@@ -348,8 +336,7 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
                 clearInterval(keepalive);
               }
             }, 30_000);
-            const unsub = eventBus.subscribe(send);
-            // Clean up when client disconnects
+            const unsub = bus.subscribe(send);
             c.req.raw.signal.addEventListener('abort', () => {
               unsub();
               clearInterval(keepalive);

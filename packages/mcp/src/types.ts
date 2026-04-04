@@ -57,7 +57,12 @@ export interface McpServerConfig {
   maxReconnectAttempts?: number;
 }
 
-export type McpServerStatus = 'connected' | 'disconnected' | 'reconnecting' | 'error';
+export type McpServerStatus =
+  | 'connected'
+  | 'disconnected'
+  | 'reconnecting'
+  | 'error'
+  | 'needs_reauth';
 
 // --- Token storage (pluggable) ---
 
