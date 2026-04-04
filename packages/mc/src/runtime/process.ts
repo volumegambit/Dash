@@ -99,10 +99,12 @@ export class GatewayProcess {
           const client = makeClient(`http://localhost:${state.port}`, state.token);
           const health = await client.health();
           if (health.startedAt === state.startedAt) {
-            return client; // healthy and same instance
+            // Verify auth token still works (health is unauthenticated)
+            await client.listAgents();
+            return client;
           }
         } catch {
-          /* health check failed, fall through to spawn */
+          /* health check or auth failed, fall through to spawn */
         }
       }
     }
