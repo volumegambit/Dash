@@ -468,7 +468,26 @@ export async function registerIpcHandlers(
   // Chat
   // -----------------------------------------------------------------------
 
-  ipcMain.handle('chat:listConversations', () => getChatService(getWindow).listConversations());
+  // Migrate legacy conversations (deploymentId+agentName → agentId) on first list
+  let conversationsMigrated = false;
+  ipcMain.handle('chat:listConversations', async () => {
+    if (!conversationsMigrated) {
+      conversationsMigrated = true;
+      try {
+        const client = await getClient(gw);
+        const agents = await client.listAgents();
+        const convStore = new ConversationStore(DATA_DIR);
+        await convStore.migrate((agentName) => {
+          const match = agents.find((a) => a.name === agentName);
+          return match?.id ?? null;
+        });
+      } catch {
+        // Gateway not ready — migration will retry next time
+        conversationsMigrated = false;
+      }
+    }
+    return getChatService(getWindow).listConversations();
+  });
 
   ipcMain.handle('chat:createConversation', (_event, agentId: string) =>
     getChatService(getWindow).createConversation(agentId),
