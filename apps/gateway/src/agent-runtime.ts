@@ -47,6 +47,7 @@ export class AgentRuntime {
         await backend.start(entry.config.workspace ?? '.');
         const agent = new DashAgent(backend, dashConfig);
         this.registry.setActive(agentId);
+        await this.registry.save();
         return { backend, agent };
       },
     });
@@ -118,6 +119,7 @@ export class AgentRuntime {
   async removeAgent(agentId: string): Promise<void> {
     await this.pool.evictAgent(agentId);
     this.registry.remove(agentId);
+    await this.registry.save();
   }
 
   async updateCredentials(agentId: string, providerApiKeys: Record<string, string>): Promise<void> {

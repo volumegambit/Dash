@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 
@@ -28,6 +29,7 @@ export interface RegisteredChannel {
 
 export class ChannelRegistry {
   private channels = new Map<string, RegisteredChannel>();
+  private saveLock: Promise<void> = Promise.resolve();
 
   constructor(private filePath?: string) {}
 
@@ -46,12 +48,21 @@ export class ChannelRegistry {
     }
   }
 
-  /** Persist current state to disk. No-op if no file path. */
-  async save(): Promise<void> {
+  /** Persist current state to disk. No-op if no file path. Serialized to prevent race conditions. */
+  save(): Promise<void> {
+    if (!this.filePath) return Promise.resolve();
+    this.saveLock = this.saveLock.then(
+      () => this.writeToDisk(),
+      () => this.writeToDisk(),
+    );
+    return this.saveLock;
+  }
+
+  private async writeToDisk(): Promise<void> {
     if (!this.filePath) return;
     await mkdir(dirname(this.filePath), { recursive: true });
     const entries = [...this.channels.values()];
-    const tmpPath = `${this.filePath}.tmp`;
+    const tmpPath = `${this.filePath}.${randomUUID()}.tmp`;
     await writeFile(tmpPath, JSON.stringify(entries, null, 2));
     await rename(tmpPath, this.filePath);
   }
