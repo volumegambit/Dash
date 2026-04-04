@@ -489,6 +489,20 @@ MC_DATA_DIR=/tmp/mc-test-$(date +%s) npm run mc:dev
 2. **Verify:** The image renders inline in the response
 3. **Verify:** A download button appears on hover over the image
 
+### 13.6 Download Image from Response
+1. Send: `Create an SVG image of a simple blue circle on a white background` (or trigger any response that includes an image)
+2. Wait for the response to render with the image visible
+3. Hover over the image in the response
+4. **Verify:** A download button/icon appears on the image
+5. Click the download button
+6. **Verify:** The image is saved to the local filesystem (check Downloads folder or the save dialog)
+7. **Verify:** The saved file is a valid image (correct format, not corrupted, non-zero file size)
+
+### 13.7 Download Image — Fallback
+1. If the direct download fails (e.g., Electron save dialog issue):
+2. **Verify:** The app falls back to opening the image in the system browser via `openExternal`
+3. **Verify:** No error is shown to the user — the fallback is seamless
+
 ---
 
 ## Section 14: Chat — Error Handling
