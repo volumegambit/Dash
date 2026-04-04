@@ -88,6 +88,10 @@ function createMockApi(): Record<keyof MissionControlAPI, ReturnType<typeof vi.f
     settingsGet: vi.fn().mockResolvedValue({}),
     settingsSet: vi.fn().mockResolvedValue(undefined),
 
+    // Logs
+    logsRead: vi.fn().mockResolvedValue(''),
+    logsPaths: vi.fn().mockResolvedValue({ mc: '/tmp/mc.log', gateway: '/tmp/gateway.log', dataDir: '/tmp' }),
+
     // Models & Tools
     modelsList: vi.fn().mockResolvedValue([]),
     modelsRefresh: vi.fn().mockResolvedValue([]),
