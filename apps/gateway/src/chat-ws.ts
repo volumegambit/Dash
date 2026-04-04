@@ -18,7 +18,7 @@ type WsClientMessage =
   | {
       type: 'message';
       id: string;
-      agent: string;
+      agentId: string;
       channelId: string;
       conversationId: string;
       text: string;
@@ -41,7 +41,7 @@ function validateMessage(msg: unknown): msg is WsClientMessage {
 
   if (m.type === 'message') {
     const valid =
-      typeof m.agent === 'string' &&
+      typeof m.agentId === 'string' &&
       typeof m.channelId === 'string' &&
       typeof m.conversationId === 'string' &&
       typeof m.text === 'string';
@@ -131,7 +131,7 @@ export function mountChatWs(app: Hono, options: ChatWsOptions): void {
           }
 
           if (msg.type === 'message') {
-            const agentId = msg.agent;
+            const agentId = msg.agentId;
             const convId = msg.conversationId;
             const channelId = msg.channelId;
             const text = msg.text;
