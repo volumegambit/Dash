@@ -40,6 +40,7 @@ logs/
 
 # Coverage & test artifacts
 coverage/
+test-credentials.json
 
 # Docker
 .docker/
