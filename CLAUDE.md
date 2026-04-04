@@ -50,6 +50,8 @@ When adding new features, follow these conventions: yield error events in genera
 
 ## Testing
 
+### Unit Tests
+
 ```bash
 npm test                          # All tests
 npx vitest run packages/agent     # Single package
@@ -57,6 +59,28 @@ npx vitest --watch                # Watch mode
 ```
 
 Tests use temp directories (`mkdtemp`) in beforeEach with cleanup in afterEach. No mocking of the Anthropic SDK — tests focus on session store, tool execution, and registry logic.
+
+### Mission Control Manual QA
+
+The exhaustive manual test plan lives at `apps/mission-control/TEST_PLAN.md`. It has 26 sections covering all MC features, business rules, and UI consistency. Each section is independently executable with preconditions and bootstrap steps.
+
+**Test credentials:** Copy `apps/mission-control/test-credentials.example.json` to `test-credentials.json` and fill in real API keys. The `.json` file is gitignored.
+
+**Running QA via the MC QA agent:**
+- Full run: dispatch `mission-control-qa` agent with "Run MC QA" or "exhaustive QA"
+- Specific sections: "Run MC QA sections 6-17" (chat tests) or "Test MC connectors" (Section 19)
+- Clean environment: dispatch `mission-control-qa-from-clean` agent
+
+**When to run QA:** After changes to MC features, run the relevant TEST_PLAN sections. Use the section-to-feature mapping:
+- AI Providers / credentials changes → Sections 3, 15, 24
+- Chat UI changes → Sections 6-17
+- Agent list/detail changes → Sections 4, 5, 18
+- Connectors (MCP) changes → Sections 19, 15
+- Messaging Apps changes → Sections 20, 20B
+- Settings / gateway changes → Section 22
+- Cross-cutting UI changes → Section 23 (UI consistency audit)
+
+**Maintaining the test plan:** When implementing new MC features or changing existing ones, update `apps/mission-control/TEST_PLAN.md` to cover the new/changed behavior. Add new sections or extend existing ones as needed.
 
 ## CI
 
