@@ -115,6 +115,7 @@ const api: MissionControlAPI = {
 
   // Gateway
   gatewayGetStatus: () => ipcRenderer.invoke('gateway:getStatus'),
+  gatewayRestart: () => ipcRenderer.invoke('gateway:restart'),
   gatewayOnStatus: (callback) => {
     const listener = (_event: Electron.IpcRendererEvent, status: string) =>
       callback(status as Parameters<typeof callback>[0]);

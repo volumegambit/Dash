@@ -1,5 +1,6 @@
 import { createFileRoute } from '@tanstack/react-router';
-import { useEffect, useState } from 'react';
+import { RefreshCw } from 'lucide-react';
+import { useCallback, useEffect, useState } from 'react';
 import type { AppSettings } from '../../../shared/ipc.js';
 import { ModelChainEditor } from '../components/ModelChainEditor.js';
 import { useAvailableModels } from '../hooks/useAvailableModels.js';
@@ -8,6 +9,7 @@ function Settings(): JSX.Element {
   const [version, setVersion] = useState<string>('...');
   const [settings, setSettings] = useState<AppSettings>({});
   const [saving, setSaving] = useState(false);
+  const [restarting, setRestarting] = useState(false);
   const {
     models: availableModels,
     refreshing: modelsRefreshing,
@@ -20,6 +22,17 @@ function Settings(): JSX.Element {
       .settingsGet()
       .then(setSettings)
       .catch(() => {});
+  }, []);
+
+  const handleRestartGateway = useCallback(async () => {
+    setRestarting(true);
+    try {
+      await window.api.gatewayRestart();
+    } catch {
+      // Will recover on next health poll
+    } finally {
+      setRestarting(false);
+    }
   }, []);
 
   const handleChainChange = async (model: string, fallbackModels: string[]): Promise<void> => {
@@ -63,6 +76,24 @@ function Settings(): JSX.Element {
             onRefresh={refreshModels}
             refreshing={modelsRefreshing}
           />
+        </div>
+
+        <div className="mt-6 rounded-lg border border-border bg-card-bg p-4">
+          <h2 className="mb-1 font-[family-name:var(--font-mono)] text-[11px] uppercase tracking-[2px] text-accent">
+            Gateway
+          </h2>
+          <p className="mb-3 text-xs text-muted">
+            The gateway process manages agents, channels, and credentials.
+          </p>
+          <button
+            type="button"
+            onClick={handleRestartGateway}
+            disabled={restarting}
+            className="inline-flex items-center gap-2 rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-muted hover:text-foreground hover:bg-card-hover transition-colors disabled:opacity-50"
+          >
+            <RefreshCw size={14} className={restarting ? 'animate-spin' : ''} />
+            {restarting ? 'Restarting...' : 'Restart Gateway'}
+          </button>
         </div>
 
         <div className="mt-6 rounded-lg border border-border bg-card-bg p-4">

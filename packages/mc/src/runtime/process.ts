@@ -159,6 +159,34 @@ export class GatewayProcess {
     return newClient;
   }
 
+  /**
+   * Kill the running gateway process and spawn a fresh one.
+   * Returns a client connected to the new instance.
+   */
+  async restart(): Promise<GatewayManagementClient> {
+    const store = new GatewayStateStore(this.options.gatewayDataDir);
+    const state = await store.read();
+    if (state) {
+      try {
+        process.kill(state.pid, 'SIGTERM');
+      } catch {
+        // Already dead
+      }
+      // Wait briefly for process to exit
+      const deadline = Date.now() + 3_000;
+      while (Date.now() < deadline) {
+        try {
+          process.kill(state.pid, 0);
+          await new Promise<void>((r) => setTimeout(r, 200));
+        } catch {
+          break; // Process is gone
+        }
+      }
+      await store.clear();
+    }
+    return this.ensureRunning();
+  }
+
   async getClient(): Promise<GatewayManagementClient | null> {
     const store = new GatewayStateStore(this.options.gatewayDataDir);
     const state = await store.read();
