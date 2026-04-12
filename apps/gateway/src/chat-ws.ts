@@ -1,10 +1,10 @@
 import type { AgentEvent, ImageBlock } from '@dash/agent';
 import type { Hono } from 'hono';
 import type { UpgradeWebSocket } from 'hono/ws';
-import type { AgentRuntime } from './agent-runtime.js';
+import type { AgentService } from './agent-service.js';
 
 export interface ChatWsOptions {
-  runtime: AgentRuntime;
+  agents: AgentService;
   token?: string;
   upgradeWebSocket: UpgradeWebSocket;
   /** When true, log every inbound and outbound WebSocket message. */
@@ -13,7 +13,8 @@ export interface ChatWsOptions {
 
 /** Truncate long fields (like base64 images) so logs stay readable. */
 function summarizeForLog(value: unknown): unknown {
-  if (typeof value === 'string') return value.length > 200 ? `${value.slice(0, 200)}…(${value.length} chars)` : value;
+  if (typeof value === 'string')
+    return value.length > 200 ? `${value.slice(0, 200)}…(${value.length} chars)` : value;
   if (Array.isArray(value)) return value.map(summarizeForLog);
   if (value && typeof value === 'object') {
     const out: Record<string, unknown> = {};
@@ -81,17 +82,14 @@ function conversationKey(agentId: string, conversationId: string): string {
 }
 
 export function mountChatWs(app: Hono, options: ChatWsOptions): void {
-  const { runtime, upgradeWebSocket, verbose = false } = options;
+  const { agents, upgradeWebSocket, verbose = false } = options;
 
   const logInbound = (raw: string, parsed: unknown): void => {
     if (!verbose) return;
     console.log('[chat-ws] ← inbound', JSON.stringify(summarizeForLog(parsed)));
   };
 
-  const sendServerMessage = (
-    ws: { send(data: string): void },
-    msg: WsServerMessage,
-  ): void => {
+  const sendServerMessage = (ws: { send(data: string): void }, msg: WsServerMessage): void => {
     const payload = JSON.stringify(msg, (_key, value) =>
       value instanceof Error ? value.message : value,
     );
@@ -184,7 +182,7 @@ export function mountChatWs(app: Hono, options: ChatWsOptions): void {
             if (existingMsgId && activeStreams.has(existingMsgId)) {
               const behavior = msg.streamingBehavior;
               if (behavior === 'steer') {
-                runtime.steer(agentId, convId, text, images).catch((err) => {
+                agents.steer(agentId, convId, text, images).catch((err) => {
                   sendServerMessage(ws, {
                     type: 'error',
                     id: msg.id,
@@ -194,7 +192,7 @@ export function mountChatWs(app: Hono, options: ChatWsOptions): void {
                 return;
               }
               if (behavior === 'followUp') {
-                runtime.followUp(agentId, convId, text, images).catch((err) => {
+                agents.followUp(agentId, convId, text, images).catch((err) => {
                   sendServerMessage(ws, {
                     type: 'error',
                     id: msg.id,
@@ -211,7 +209,7 @@ export function mountChatWs(app: Hono, options: ChatWsOptions): void {
             conversationStreams.set(convKey, msg.id);
 
             (async () => {
-              const stream = runtime.chat({
+              const stream = agents.chat({
                 agentId,
                 conversationId: convId,
                 channelId,

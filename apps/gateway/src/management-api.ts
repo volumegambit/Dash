@@ -4,7 +4,7 @@ import { TelegramAdapter, WhatsAppAdapter } from '@dash/channels';
 import { Hono } from 'hono';
 
 import type { AgentRegistry, GatewayAgentConfig, RegisteredAgent } from './agent-registry.js';
-import type { AgentRuntime } from './agent-runtime.js';
+import type { AgentService } from './agent-service.js';
 import type { ChannelRegistry, ChannelRoutingRule } from './channel-registry.js';
 import type { GatewayCredentialStore } from './credential-store.js';
 import type { EventBus, GatewayEvent } from './event-bus.js';
@@ -14,7 +14,7 @@ import { mountMcpRoutes } from './mcp-management.js';
 
 export interface GatewayManagementOptions {
   gateway: DynamicGateway;
-  runtime: AgentRuntime;
+  agents: AgentService;
   agentRegistry: AgentRegistry;
   channelRegistry: ChannelRegistry;
   credentialStore: GatewayCredentialStore;
@@ -32,7 +32,7 @@ function stripSecrets(entry: RegisteredAgent): RegisteredAgent {
 }
 
 export function createGatewayManagementApp(options: GatewayManagementOptions): Hono {
-  const { gateway, runtime, agentRegistry, channelRegistry, credentialStore, token, eventBus } =
+  const { gateway, agents, agentRegistry, channelRegistry, credentialStore, token, eventBus } =
     options;
   const startedAt = options.startedAt ?? new Date().toISOString();
   const app = new Hono();
@@ -78,12 +78,11 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
     try {
       const entry = agentRegistry.register(body);
 
-      // Create bridge client that routes through runtime
+      // Create bridge client that routes through the agent service
       const agentId = entry.id;
-      const rt = runtime;
       const bridgeClient: AgentClient = {
         chat(channelId, conversationId, text) {
-          return rt.chat({ agentId, conversationId, channelId, text });
+          return agents.chat({ agentId, conversationId, channelId, text });
         },
       };
       gateway.registerAgent(agentId, bridgeClient);
@@ -218,15 +217,14 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
     try {
       await gateway.registerChannel(body.name, adapter, { globalDenyList, routing });
 
-      // Bridge runtime agents for each routing rule
+      // Bridge agents for each routing rule
       for (const rule of routing) {
         const agentEntry = agentRegistry.get(rule.agentId);
         if (agentEntry) {
           const agentId = agentEntry.id;
-          const rt = runtime;
           const bridgeClient: AgentClient = {
             chat(channelId, conversationId, text) {
-              return rt.chat({ agentId, conversationId, channelId, text });
+              return agents.chat({ agentId, conversationId, channelId, text });
             },
           };
           gateway.registerAgent(rule.agentId, bridgeClient);

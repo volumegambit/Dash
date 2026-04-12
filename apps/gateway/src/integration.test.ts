@@ -1,11 +1,12 @@
-import type { AgentBackend, AgentEvent, AgentState, RunOptions } from '@dash/agent';
-import { describe, expect, it, vi } from 'vitest';
-import { AgentRegistry } from './agent-registry.js';
-import { AgentRuntime } from './agent-runtime.js';
-import { GatewayCredentialStore } from './credential-store.js';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import type { AgentBackend, AgentEvent, AgentState, RunOptions } from '@dash/agent';
+import { describe, expect, it, vi } from 'vitest';
+import { AgentRegistry } from './agent-registry.js';
+import type { AgentService } from './agent-service.js';
+import { createAgentService } from './agent-service.js';
+import { GatewayCredentialStore } from './credential-store.js';
 
 describe('Gateway integration', () => {
   it('registers an agent and handles a chat message end-to-end', async () => {
@@ -25,10 +26,9 @@ describe('Gateway integration', () => {
       abort: vi.fn(),
     };
 
-    const runtime = new AgentRuntime({
+    const agents = createAgentService({
       registry,
       poolMaxSize: 10,
-      sessionBaseDir: '/tmp/test-sessions',
       createBackend: vi.fn().mockResolvedValue(backend),
     });
 
@@ -41,7 +41,7 @@ describe('Gateway integration', () => {
 
     // Send message
     const events: AgentEvent[] = [];
-    for await (const event of runtime.chat({
+    for await (const event of agents.chat({
       agentId: id,
       conversationId: 'conv-1',
       text: 'Hello',
@@ -58,13 +58,13 @@ describe('Gateway integration', () => {
     expect(registry.findByName('test-agent')?.status).toBe('active');
 
     // Pool should have one entry
-    expect(runtime.stats().size).toBe(1);
+    expect(agents.stats().size).toBe(1);
 
     // Cleanup
-    await runtime.stop();
+    await agents.stop();
 
     // Pool should be empty after stop
-    expect(runtime.stats().size).toBe(0);
+    expect(agents.stats().size).toBe(0);
 
     // Backend stop should have been called
     expect(backend.stop).toHaveBeenCalled();
@@ -85,7 +85,10 @@ describe('Pull-based credential propagation (end-to-end)', () => {
   // These tests exercise that path with a fake backend that records which
   // keys it sees on each `run()`.
 
-  async function makeStore(): Promise<{ store: GatewayCredentialStore; cleanup: () => Promise<void> }> {
+  async function makeStore(): Promise<{
+    store: GatewayCredentialStore;
+    cleanup: () => Promise<void>;
+  }> {
     const dir = await mkdtemp(join(tmpdir(), 'gw-cred-it-'));
     const store = new GatewayCredentialStore(dir);
     await store.init();
@@ -119,8 +122,8 @@ describe('Pull-based credential propagation (end-to-end)', () => {
     };
   }
 
-  async function drain(runtime: AgentRuntime, agentId: string, convId: string): Promise<void> {
-    for await (const _ of runtime.chat({ agentId, conversationId: convId, text: 'hi' })) {
+  async function drain(agents: AgentService, agentId: string, convId: string): Promise<void> {
+    for await (const _ of agents.chat({ agentId, conversationId: convId, text: 'hi' })) {
       // discard
     }
   }
@@ -130,10 +133,9 @@ describe('Pull-based credential propagation (end-to-end)', () => {
     try {
       const observed: Record<string, string>[] = [];
       const registry = new AgentRegistry();
-      const runtime = new AgentRuntime({
+      const agents = createAgentService({
         registry,
         poolMaxSize: 10,
-        sessionBaseDir: '/tmp/test-sessions',
         createBackend: async () => makeCredentialAwareBackend(store, observed),
       });
       const { id } = registry.register({
@@ -143,7 +145,7 @@ describe('Pull-based credential propagation (end-to-end)', () => {
       });
 
       // First turn: no credentials in store
-      await drain(runtime, id, 'conv-1');
+      await drain(agents, id, 'conv-1');
       expect(observed[0]).toEqual({});
 
       // User adds the anthropic key via the management API (simulated here
@@ -151,11 +153,11 @@ describe('Pull-based credential propagation (end-to-end)', () => {
       await store.set('anthropic-api-key:default', 'sk-ant-1');
 
       // Second turn: the running backend pulls fresh from the store and sees
-      // the new key WITHOUT any explicit update call on runtime/backend.
-      await drain(runtime, id, 'conv-1');
+      // the new key WITHOUT any explicit update call on the service/backend.
+      await drain(agents, id, 'conv-1');
       expect(observed[1]).toEqual({ anthropic: 'sk-ant-1' });
 
-      await runtime.stop();
+      await agents.stop();
     } finally {
       await cleanup();
     }
@@ -168,10 +170,9 @@ describe('Pull-based credential propagation (end-to-end)', () => {
 
       const observed: Record<string, string>[] = [];
       const registry = new AgentRegistry();
-      const runtime = new AgentRuntime({
+      const agents = createAgentService({
         registry,
         poolMaxSize: 10,
-        sessionBaseDir: '/tmp/test-sessions',
         createBackend: async () => makeCredentialAwareBackend(store, observed),
       });
       const { id } = registry.register({
@@ -180,16 +181,16 @@ describe('Pull-based credential propagation (end-to-end)', () => {
         systemPrompt: 'p',
       });
 
-      await drain(runtime, id, 'conv-1');
+      await drain(agents, id, 'conv-1');
       expect(observed[0]).toEqual({ anthropic: 'sk-ant-old' });
 
       // Rotate
       await store.set('anthropic-api-key:default', 'sk-ant-new');
 
-      await drain(runtime, id, 'conv-1');
+      await drain(agents, id, 'conv-1');
       expect(observed[1]).toEqual({ anthropic: 'sk-ant-new' });
 
-      await runtime.stop();
+      await agents.stop();
     } finally {
       await cleanup();
     }
@@ -203,10 +204,9 @@ describe('Pull-based credential propagation (end-to-end)', () => {
 
       const observed: Record<string, string>[] = [];
       const registry = new AgentRegistry();
-      const runtime = new AgentRuntime({
+      const agents = createAgentService({
         registry,
         poolMaxSize: 10,
-        sessionBaseDir: '/tmp/test-sessions',
         createBackend: async () => makeCredentialAwareBackend(store, observed),
       });
       const { id } = registry.register({
@@ -215,16 +215,16 @@ describe('Pull-based credential propagation (end-to-end)', () => {
         systemPrompt: 'p',
       });
 
-      await drain(runtime, id, 'conv-1');
+      await drain(agents, id, 'conv-1');
       expect(observed[0]).toEqual({ anthropic: 'sk-ant', openai: 'sk-openai' });
 
       // Delete the openai key
       await store.delete('openai-api-key:default');
 
-      await drain(runtime, id, 'conv-1');
+      await drain(agents, id, 'conv-1');
       expect(observed[1]).toEqual({ anthropic: 'sk-ant' });
 
-      await runtime.stop();
+      await agents.stop();
     } finally {
       await cleanup();
     }
@@ -239,10 +239,9 @@ describe('Pull-based credential propagation (end-to-end)', () => {
 
       const observed: Record<string, string>[] = [];
       const registry = new AgentRegistry();
-      const runtime = new AgentRuntime({
+      const agents = createAgentService({
         registry,
         poolMaxSize: 10,
-        sessionBaseDir: '/tmp/test-sessions',
         createBackend: async () => makeCredentialAwareBackend(store, observed),
       });
       const { id } = registry.register({
@@ -251,12 +250,12 @@ describe('Pull-based credential propagation (end-to-end)', () => {
         systemPrompt: 'p',
       });
 
-      await drain(runtime, id, 'conv-1');
+      await drain(agents, id, 'conv-1');
       // Only the provider API key — channel tokens and OAuth refresh tokens
       // are not provider credentials and must not leak into the auth map.
       expect(observed[0]).toEqual({ anthropic: 'sk-ant' });
 
-      await runtime.stop();
+      await agents.stop();
     } finally {
       await cleanup();
     }

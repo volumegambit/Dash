@@ -1,16 +1,17 @@
 import type { AgentBackend, AgentEvent, AgentState, RunOptions } from '@dash/agent';
 import { describe, expect, it } from 'vitest';
 import { AgentRegistry } from './agent-registry.js';
-import { AgentRuntime } from './agent-runtime.js';
+import type { AgentService } from './agent-service.js';
+import { createAgentService } from './agent-service.js';
 
 /**
- * These tests verify that the AgentRuntime — which is the core dependency
- * behind the /ws/chat WebSocket endpoint — correctly routes chat messages,
+ * These tests verify that the AgentService — the core dependency behind
+ * the /ws/chat WebSocket endpoint — correctly routes chat messages,
  * rejects unknown agents, and rejects disabled agents.
  *
- * The tests exercise the runtime directly rather than going through a real
+ * The tests exercise the service directly rather than going through a real
  * WebSocket connection, since the chat-ws module is a thin WebSocket wrapper
- * around AgentRuntime.chat/steer/followUp.
+ * around AgentService.chat/steer/followUp.
  */
 
 function makeMockBackend(events: AgentEvent[]): AgentBackend {
@@ -27,16 +28,15 @@ function makeMockBackend(events: AgentEvent[]): AgentBackend {
   };
 }
 
-function makeRuntime(registry: AgentRegistry, events: AgentEvent[] = []): AgentRuntime {
-  return new AgentRuntime({
+function makeAgents(registry: AgentRegistry, events: AgentEvent[] = []): AgentService {
+  return createAgentService({
     registry,
     poolMaxSize: 10,
-    sessionBaseDir: '/tmp/test-chat-ws-sessions',
     createBackend: async () => makeMockBackend(events),
   });
 }
 
-describe('chat-ws runtime integration', () => {
+describe('chat-ws agent service integration', () => {
   it('streams events for a valid message', async () => {
     const registry = new AgentRegistry();
     const { id } = registry.register({
@@ -50,10 +50,10 @@ describe('chat-ws runtime integration', () => {
       { type: 'response', content: 'Hi', usage: { inputTokens: 5, outputTokens: 2 } },
     ];
 
-    const runtime = makeRuntime(registry, expectedEvents);
+    const agents = makeAgents(registry, expectedEvents);
     const collected: AgentEvent[] = [];
 
-    for await (const event of runtime.chat({
+    for await (const event of agents.chat({
       agentId: id,
       conversationId: 'conv-ws-1',
       channelId: 'direct',
@@ -70,15 +70,15 @@ describe('chat-ws runtime integration', () => {
       usage: { inputTokens: 5, outputTokens: 2 },
     });
 
-    await runtime.stop();
+    await agents.stop();
   });
 
   it('yields error event for unknown agent', async () => {
     const registry = new AgentRegistry();
-    const runtime = makeRuntime(registry);
+    const agents = makeAgents(registry);
     const collected: AgentEvent[] = [];
 
-    for await (const event of runtime.chat({
+    for await (const event of agents.chat({
       agentId: 'does-not-exist-id',
       conversationId: 'conv-ws-2',
       channelId: 'direct',
@@ -92,7 +92,7 @@ describe('chat-ws runtime integration', () => {
     const errEvent = collected[0] as { type: 'error'; error: Error };
     expect(errEvent.error.message).toContain('not found');
 
-    await runtime.stop();
+    await agents.stop();
   });
 
   it('yields error event for disabled agent', async () => {
@@ -104,10 +104,10 @@ describe('chat-ws runtime integration', () => {
     });
     registry.disable(disabledId);
 
-    const runtime = makeRuntime(registry);
+    const agents = makeAgents(registry);
     const collected: AgentEvent[] = [];
 
-    for await (const event of runtime.chat({
+    for await (const event of agents.chat({
       agentId: disabledId,
       conversationId: 'conv-ws-3',
       channelId: 'direct',
@@ -121,7 +121,7 @@ describe('chat-ws runtime integration', () => {
     const errEvent = collected[0] as { type: 'error'; error: Error };
     expect(errEvent.error.message).toContain('disabled');
 
-    await runtime.stop();
+    await agents.stop();
   });
 
   it('streams multiple events in order', async () => {
@@ -141,10 +141,10 @@ describe('chat-ws runtime integration', () => {
       { type: 'response', content: '2+2=4', usage: { inputTokens: 10, outputTokens: 5 } },
     ];
 
-    const runtime = makeRuntime(registry, expectedEvents);
+    const agents = makeAgents(registry, expectedEvents);
     const collected: AgentEvent[] = [];
 
-    for await (const event of runtime.chat({
+    for await (const event of agents.chat({
       agentId: multiId,
       conversationId: 'conv-ws-4',
       channelId: 'direct',
@@ -154,6 +154,6 @@ describe('chat-ws runtime integration', () => {
     }
 
     expect(collected).toEqual(expectedEvents);
-    await runtime.stop();
+    await agents.stop();
   });
 });

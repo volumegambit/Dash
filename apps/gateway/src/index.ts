@@ -10,13 +10,13 @@ import type { AgentClient } from '@dash/agent';
 import { PiAgentBackend } from '@dash/agent';
 import { TelegramAdapter, WhatsAppAdapter } from '@dash/channels';
 import type { ChannelAdapter } from '@dash/channels';
+import { FileTokenStore, McpManager } from '@dash/mcp';
+import type { McpAgentContext } from '@dash/mcp';
 import { serve } from '@hono/node-server';
 import { createNodeWebSocket } from '@hono/node-ws';
 import { Hono } from 'hono';
-import { FileTokenStore, McpManager } from '@dash/mcp';
-import type { McpAgentContext } from '@dash/mcp';
 import { AgentRegistry } from './agent-registry.js';
-import { AgentRuntime } from './agent-runtime.js';
+import { createAgentService } from './agent-service.js';
 import { ChannelRegistry } from './channel-registry.js';
 import { mountChatWs } from './chat-ws.js';
 import { parseFlags } from './config.js';
@@ -60,7 +60,7 @@ async function main() {
     await mcpManager.start();
   }
 
-  // Create gateway + agent runtime
+  // Create gateway + agent service
   const gateway = createDynamicGateway({ dataDir });
   const eventBus = new EventBus();
   const registryPath = resolve(dataDir, 'agents.json');
@@ -69,10 +69,9 @@ async function main() {
   if (registry.list().length > 0) {
     console.log(`[agents] Restored ${registry.list().length} agent(s) from disk`);
   }
-  const runtime = new AgentRuntime({
+  const agents = createAgentService({
     registry,
     poolMaxSize: Number(process.env.POOL_MAX_SIZE ?? '200'),
-    sessionBaseDir: resolve(dataDir, 'sessions'),
     createBackend: async (agentConfig, conversationId) => {
       const sessionDir = resolve(dataDir, 'sessions', agentConfig.name, conversationId);
       await mkdir(sessionDir, { recursive: true });
@@ -107,14 +106,16 @@ async function main() {
           registry.update(entry.id, { mcpServers: current.filter((s) => s !== serverName) });
           await registry.save();
           // Check if any other agent still uses this server
-          const stillUsed = registry.list().some((a) =>
-            (a.config.mcpServers ?? []).includes(serverName),
-          );
+          const stillUsed = registry
+            .list()
+            .some((a) => (a.config.mcpServers ?? []).includes(serverName));
           if (!stillUsed) {
             try {
               await mcpManager.removeServer(serverName);
               await mcpConfigStore.removeConfig(serverName);
-            } catch { /* already removed */ }
+            } catch {
+              /* already removed */
+            }
             return true;
           }
           return false;
@@ -150,7 +151,7 @@ async function main() {
       const agentId = entry.id;
       const bridgeClient: AgentClient = {
         chat(channelId: string, conversationId: string, text: string) {
-          return runtime.chat({ agentId, conversationId, channelId, text });
+          return agents.chat({ agentId, conversationId, channelId, text });
         },
       };
       gateway.registerAgent(agentId, bridgeClient);
@@ -181,14 +182,14 @@ async function main() {
         routing: channel.routing,
       });
 
-      // Bridge runtime agents for this channel's routing rules
+      // Bridge agents for this channel's routing rules
       for (const rule of channel.routing) {
         const agentEntry = registry.get(rule.agentId);
         if (agentEntry) {
           const ruleAgentId = rule.agentId;
           const bridgeClient: AgentClient = {
             chat(channelId: string, conversationId: string, text: string) {
-              return runtime.chat({
+              return agents.chat({
                 agentId: ruleAgentId,
                 conversationId,
                 channelId,
@@ -212,7 +213,7 @@ async function main() {
   // Management API (HTTP)
   const managementApp = createGatewayManagementApp({
     gateway,
-    runtime,
+    agents,
     agentRegistry: registry,
     channelRegistry,
     credentialStore,
@@ -241,7 +242,7 @@ async function main() {
   // Verbose WS logging in dev mode (opt in via --verbose OR NODE_ENV !== 'production')
   const verboseWs = flags.verbose || process.env.NODE_ENV !== 'production';
   mountChatWs(channelApp, {
-    runtime,
+    agents,
     token: flags.chatToken,
     upgradeWebSocket,
     verbose: verboseWs,
@@ -265,7 +266,7 @@ async function main() {
   const shutdown = async (signal: string) => {
     console.log(`\nReceived ${signal}, shutting down...`);
     await mcpManager.stop();
-    await runtime.stop();
+    await agents.stop();
     await gateway.stop();
     managementServer.close();
     channelServer.close();
