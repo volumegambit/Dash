@@ -11,7 +11,6 @@ import type { AgentBackend, AgentEvent, DashAgentConfig } from './types.js';
 
 const mockStart = vi.fn().mockResolvedValue(undefined);
 const mockStop = vi.fn().mockResolvedValue(undefined);
-const mockUpdateCredentials = vi.fn().mockResolvedValue(undefined);
 const mockAnswerQuestion = vi.fn().mockResolvedValue(undefined);
 
 function createMockBackend(): AgentBackend {
@@ -21,7 +20,6 @@ function createMockBackend(): AgentBackend {
     stop: mockStop,
     run: vi.fn(),
     abort: vi.fn(),
-    updateCredentials: mockUpdateCredentials,
     answerQuestion: mockAnswerQuestion,
   };
 }
@@ -231,24 +229,6 @@ describe('PooledAgentClient', () => {
     expect(factoryCalls).toHaveLength(1);
   });
 
-  it('updateCredentials() propagates to all existing backends', async () => {
-    const client = createClient();
-
-    // Create two entries
-    for await (const _ of client.chat('ch-1', 'conv-1', 'hi')) {
-      // consume
-    }
-    for await (const _ of client.chat('ch-1', 'conv-2', 'hi')) {
-      // consume
-    }
-
-    const newKeys = { anthropic: 'sk-new-key' };
-    await client.updateCredentials(newKeys);
-
-    expect(mockUpdateCredentials).toHaveBeenCalledTimes(2);
-    expect(mockUpdateCredentials).toHaveBeenCalledWith(newKeys);
-  });
-
   it('updateConfig() propagates to all existing agents AND stores for future backends', async () => {
     const client = createClient();
 
@@ -294,22 +274,21 @@ describe('PooledAgentClient', () => {
     expect(mockAnswerQuestion).toHaveBeenCalledWith('q-1', [['yes']]);
   });
 
-  it('passes current keys to factory for each new conversation', async () => {
+  it('passes the configured keys to factory for each new conversation', async () => {
     const client = createClient();
 
     for await (const _ of client.chat('ch-1', 'conv-1', 'hi')) {
       // consume
     }
-
     expect(factoryCalls[0][1]).toEqual({ anthropic: 'sk-test-key' });
 
-    // Update keys, then create a new conversation
-    await client.updateCredentials({ anthropic: 'sk-new-key' });
+    // Second conversation uses the same initial keys (the constructor
+    // snapshot) — push-based key rotation was removed in favour of
+    // pull-based reading from the credential store by the backend itself.
     for await (const _ of client.chat('ch-1', 'conv-2', 'hi')) {
       // consume
     }
-
-    expect(factoryCalls[1][1]).toEqual({ anthropic: 'sk-new-key' });
+    expect(factoryCalls[1][1]).toEqual({ anthropic: 'sk-test-key' });
   });
 
   it('uses process.cwd() when workspace is not provided', async () => {

@@ -19,7 +19,6 @@ function makeMockBackend(events: AgentEvent[]): AgentBackend {
     start: async () => {},
     stop: async () => {},
     abort: () => {},
-    updateCredentials: async () => {},
     async *run(_state: AgentState, _options: RunOptions): AsyncGenerator<AgentEvent> {
       for (const event of events) {
         yield event;

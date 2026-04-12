@@ -67,13 +67,6 @@ export class PooledAgentClient implements AgentClient {
     }
   }
 
-  async updateCredentials(keys: Record<string, string>): Promise<void> {
-    this.agentKeys = keys;
-    for (const { backend } of this.pool.values()) {
-      await backend.updateCredentials(keys);
-    }
-  }
-
   updateConfig(patch: {
     model?: string;
     fallbackModels?: string[];

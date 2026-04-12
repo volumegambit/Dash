@@ -288,6 +288,13 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
   });
 
   // --- Credential routes ---
+  //
+  // Writes only mutate the store; running agent backends pick up changes on
+  // their next `run()` because they pull from the store via a credential
+  // provider function (see apps/gateway/src/index.ts `createBackend`). This
+  // means OAuth refresh, token rotation, and raw key set/delete all "just
+  // work" without any propagation plumbing — the store is the single source
+  // of truth.
 
   app.post('/credentials', async (c) => {
     let body: { key: string; value: string };

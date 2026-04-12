@@ -99,6 +99,16 @@ function makeCredentialStore(): GatewayCredentialStore {
       return Promise.resolve();
     }),
     list: vi.fn(() => Promise.resolve([...store.keys()])),
+    readProviderApiKeys: vi.fn(() => {
+      const out: Record<string, string> = {};
+      for (const [key, value] of store.entries()) {
+        const match = key.match(/^(.+)-api-key:(.+)$/);
+        if (!match) continue;
+        const provider = match[1];
+        if (!out[provider] && value) out[provider] = value;
+      }
+      return Promise.resolve(out);
+    }),
     init: vi.fn().mockResolvedValue(undefined),
   } as unknown as GatewayCredentialStore;
 }
@@ -587,6 +597,33 @@ describe('createGatewayManagementApp', () => {
       const res = await app.request('/credentials/k1', { method: 'DELETE', headers: AUTH });
       expect(res.status).toBe(200);
       expect(credentialStore.delete).toHaveBeenCalledWith('k1');
+    });
+  });
+
+  // Credential endpoints — pull-based model
+  //
+  // The endpoints only mutate the credential store. Running agents pick up
+  // changes on their next `run()` via the provider function wired in
+  // `createBackend`. End-to-end behavioral coverage lives in
+  // `integration.test.ts` (`Pull-based credential propagation` describe).
+  describe('credential endpoints (pull-based model)', () => {
+    it('credentialStore.readProviderApiKeys() returns {provider: value} for stored keys', async () => {
+      // The backend's credential provider uses this helper on every `run()`.
+      // Verify the collapsing logic: only `{provider}-api-key:*` entries are
+      // picked up, first matching key per provider wins, channel tokens and
+      // OAuth state are ignored.
+      const { credentialStore } = createApp();
+      await credentialStore.set('anthropic-api-key:default', 'sk-ant-1');
+      await credentialStore.set('anthropic-api-key:work', 'sk-ant-2'); // ignored: first wins
+      await credentialStore.set('openai-api-key:default', 'sk-openai-1');
+      await credentialStore.set("channel:DashGerryBot's Bot:token", 'bot-token'); // ignored
+      await credentialStore.set('openai-codex-refresh:default', 'refresh-tok'); // ignored
+
+      const keys = await credentialStore.readProviderApiKeys();
+      expect(keys).toEqual({
+        anthropic: 'sk-ant-1',
+        openai: 'sk-openai-1',
+      });
     });
   });
 });

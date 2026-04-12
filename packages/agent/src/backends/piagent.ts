@@ -49,6 +49,18 @@ import { DashResourceLoader } from './dash-resource-loader.js';
 const DEFAULT_TOOL_NAMES = ['read', 'bash', 'edit', 'write', 'grep', 'find', 'ls'] as const;
 
 /**
+ * Provider API keys can be supplied either as a static snapshot (tests,
+ * one-shot agents) or as an async function that reads the current keys from
+ * an external source (e.g. the gateway credential store). When a function is
+ * supplied, PiAgentBackend invokes it before each `run()` so credential
+ * rotation, OAuth refresh, and key deletion are picked up without any
+ * explicit update call.
+ */
+export type ProviderApiKeysSource =
+  | Record<string, string>
+  | (() => Promise<Record<string, string>>);
+
+/**
  * PiAgentBackend - AgentBackend implementation using the PiAgent SDK
  * (@mariozechner/pi-coding-agent).
  *
@@ -75,9 +87,18 @@ export class PiAgentBackend implements AgentBackend {
   /** Track the compaction reason from auto_compaction_start for use in auto_compaction_end */
   private lastCompactionReason: 'threshold' | 'overflow' = 'threshold';
 
+  /**
+   * Current provider API keys — populated from the source (snapshot or
+   * function) on each resolve. Used by `setupAuth()` and redaction logs.
+   */
+  private providerApiKeys: Record<string, string> = {};
+
+  /** Hash of the last resolved keys, used to skip redundant auth rebuilds. */
+  private lastKeysHash = '';
+
   constructor(
     private config: DashAgentConfig,
-    private providerApiKeys: Record<string, string>,
+    private providerApiKeysSource: ProviderApiKeysSource,
     private logger?: Logger,
     private sessionDir?: string,
     private managedSkillsDir?: string,
@@ -85,6 +106,57 @@ export class PiAgentBackend implements AgentBackend {
     private mcpConfigStore?: McpConfigStoreInterface,
     private mcpAgentContext?: McpAgentContext,
   ) {}
+
+  /**
+   * Resolve the current provider keys from the source. Snapshot callers get
+   * the same object every time; function callers get whatever the provider
+   * returns now. The result is cached in `this.providerApiKeys` for use by
+   * `setupAuth()` and log redaction.
+   */
+  private async resolveProviderKeys(): Promise<Record<string, string>> {
+    const keys =
+      typeof this.providerApiKeysSource === 'function'
+        ? await this.providerApiKeysSource()
+        : this.providerApiKeysSource;
+    this.providerApiKeys = keys;
+    return keys;
+  }
+
+  /**
+   * Return a stable hash of the current provider keys so we can detect when
+   * they've changed and only rebuild auth when needed.
+   */
+  private hashKeys(keys: Record<string, string>): string {
+    const sorted = Object.keys(keys).sort();
+    return sorted.map((p) => `${p}=${keys[p]}`).join('|');
+  }
+
+  /**
+   * Pull fresh provider credentials from the source and apply them to the
+   * live AuthStorage if they've changed. Called at the start of every
+   * `run()` so any store mutation (add, update, delete, OAuth refresh) takes
+   * effect on the next turn without any explicit push.
+   *
+   * Exposed for tests — production code should not need to call this
+   * directly; `run()` invokes it automatically.
+   */
+  async refreshCredentials(): Promise<void> {
+    if (!this.auth) {
+      this.logger?.warn(
+        '[PiAgent] refreshCredentials: auth not initialized, skipping (call start() first)',
+      );
+      return;
+    }
+    const keys = await this.resolveProviderKeys();
+    const currentHash = this.hashKeys(keys);
+    if (currentHash === this.lastKeysHash) return;
+
+    this.logger?.info(
+      `[PiAgent] Credentials changed, refreshing auth: ${PiAgentBackend.redactKeys(keys)}`,
+    );
+    this.applyKeysToAuth(this.auth, keys);
+    this.lastKeysHash = currentHash;
+  }
 
   /** Detect OAuth access tokens (e.g. sk-ant-oat01-...) vs regular API keys */
   private static isOAuthToken(key: string): boolean {
@@ -110,15 +182,37 @@ export class PiAgentBackend implements AgentBackend {
    */
   private setupAuth(): AuthStorage {
     const auth = AuthStorage.inMemory();
+    this.applyKeysToAuth(auth, this.providerApiKeys);
+    return auth;
+  }
 
-    for (const [provider, key] of Object.entries(this.providerApiKeys)) {
+  /**
+   * Apply a fresh provider key map to an existing AuthStorage, replacing all
+   * previous credentials. Used both by `setupAuth()` (initial population) and
+   * by the pull-based refresh in `run()` to handle rotation AND deletion.
+   *
+   * This mutates `auth` in place — important because `createAgentSession`
+   * captures a reference to the storage at construction time.
+   */
+  private applyKeysToAuth(auth: AuthStorage, keys: Record<string, string>): void {
+    // Remove providers that are no longer present so deleted keys stop working
+    const existing = auth.list();
+    const desired = new Set(Object.keys(keys).filter((p) => keys[p]));
+    for (const provider of existing) {
+      if (!desired.has(provider)) {
+        auth.remove(provider);
+        this.logger?.info(`[PiAgent] Auth removed for provider: ${provider}`);
+      }
+    }
+
+    // Set (or overwrite) every desired provider
+    for (const [provider, key] of Object.entries(keys)) {
       if (!key) {
         this.logger?.warn(`[PiAgent] Skipping provider ${provider}: empty key`);
         continue;
       }
 
       if (PiAgentBackend.isOAuthToken(key)) {
-        // OAuth tokens: set as OAuth credential
         // OAuthCredential shape: { type: 'oauth', access, refresh, expires }
         const oneYearMs = 365 * 24 * 60 * 60 * 1000;
         auth.set(provider, {
@@ -128,14 +222,11 @@ export class PiAgentBackend implements AgentBackend {
           expires: Date.now() + oneYearMs,
         });
       } else {
-        // Regular API keys
         auth.set(provider, { type: 'api_key', key });
       }
 
       this.logger?.info(`[PiAgent] Auth set for provider: ${provider}`);
     }
-
-    return auth;
   }
 
   /**
@@ -332,8 +423,11 @@ export class PiAgentBackend implements AgentBackend {
    * Start the backend by creating a PiAgent session.
    */
   async start(workspace: string): Promise<void> {
+    // Resolve credentials from the source (snapshot or provider function).
+    const keys = await this.resolveProviderKeys();
+    this.lastKeysHash = this.hashKeys(keys);
     this.logger?.info(
-      `[PiAgent] Starting with credentials: ${PiAgentBackend.redactKeys(this.providerApiKeys)}`,
+      `[PiAgent] Starting with credentials: ${PiAgentBackend.redactKeys(keys)}`,
     );
 
     this.auth = this.setupAuth();
@@ -414,6 +508,11 @@ export class PiAgentBackend implements AgentBackend {
     this.abortRequested = false;
     this.fullText = '';
     this.lastCompactionReason = 'threshold';
+
+    // Pull fresh credentials from the source. When the source is a function
+    // (e.g. the gateway credential store reader), this picks up rotation,
+    // OAuth refresh, and key deletion without any explicit update call.
+    await this.refreshCredentials();
 
     // Emit mcp_server_error events for any servers that failed during start
     if (this.mcpManager) {
@@ -594,9 +693,19 @@ export class PiAgentBackend implements AgentBackend {
       }
 
       case 'message_end': {
-        // Emit a response event with accumulated text and usage
+        // Emit a response event with accumulated text and usage, or an error
+        // event if the model call failed. PiAgent reports upstream API errors
+        // (e.g. Anthropic 401 auth failures) via `stopReason: 'error'` on the
+        // assistant message — if we don't surface these, the chat UI just sees
+        // an empty response and the user has no idea what went wrong.
         const endEvent = event as Extract<AgentSessionEvent, { type: 'message_end' }>;
-        const msg = endEvent.message as AssistantMessage | undefined;
+        const msg = endEvent.message as
+          | (AssistantMessage & { stopReason?: string; errorMessage?: string })
+          | undefined;
+        if (msg?.stopReason === 'error') {
+          const errMsg = msg.errorMessage ?? 'Model call failed';
+          return { type: 'error', error: new Error(errMsg) };
+        }
         const usage: Usage | undefined = msg?.usage;
         return {
           type: 'response',
@@ -645,38 +754,6 @@ export class PiAgentBackend implements AgentBackend {
     if (this.session) {
       // session.abort() returns a promise but we fire-and-forget
       this.session.abort().catch(() => {});
-    }
-  }
-
-  /**
-   * Update provider API keys at runtime.
-   */
-  async updateCredentials(providerApiKeys: Record<string, string>): Promise<void> {
-    this.logger?.info(
-      `[PiAgent] updateCredentials called: ${PiAgentBackend.redactKeys(providerApiKeys)}`,
-    );
-    this.providerApiKeys = providerApiKeys;
-
-    if (this.auth) {
-      for (const [provider, key] of Object.entries(providerApiKeys)) {
-        if (!key) continue;
-        if (PiAgentBackend.isOAuthToken(key)) {
-          const oneYearMs = 365 * 24 * 60 * 60 * 1000;
-          this.auth.set(provider, {
-            type: 'oauth',
-            access: key,
-            refresh: '',
-            expires: Date.now() + oneYearMs,
-          });
-        } else {
-          this.auth.set(provider, { type: 'api_key', key });
-        }
-        this.logger?.info(`[PiAgent] Auth updated for provider: ${provider}`);
-      }
-    } else {
-      this.logger?.warn(
-        '[PiAgent] updateCredentials: auth not initialized, keys stored for next start',
-      );
     }
   }
 
