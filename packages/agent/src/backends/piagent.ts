@@ -93,8 +93,25 @@ export class PiAgentBackend implements AgentBackend {
    */
   private providerApiKeys: Record<string, string> = {};
 
-  /** Hash of the last resolved keys, used to skip redundant auth rebuilds. */
-  private lastKeysHash = '';
+  /**
+   * Snapshot of the last keys we **applied to the live AuthStorage from the
+   * store**. Compared against the current store values on each refresh so
+   * we only re-apply when the store has actually changed.
+   *
+   * Why this matters: pi's AuthStorage has a built-in OAuth refresh path
+   * that mutates auth in memory when an access token is about to expire.
+   * If we naively re-applied the store value on every `run()`, we would
+   * overwrite those refreshed tokens with the stale (pre-refresh) raw
+   * token from the store, causing the next model call to 401. By comparing
+   * to `lastAppliedKeys` — which represents what the store contained the
+   * last time WE touched auth — we only overwrite when the user has
+   * actually mutated the store (add / rotate / delete), leaving pi's
+   * internal refreshes alone.
+   *
+   * This is NOT a hash; it's a direct deep-equal comparison, so there's
+   * no collision risk (e.g. from base64 `=` in key values).
+   */
+  private lastAppliedKeys: Record<string, string> = {};
 
   constructor(
     private config: DashAgentConfig,
@@ -123,19 +140,14 @@ export class PiAgentBackend implements AgentBackend {
   }
 
   /**
-   * Return a stable hash of the current provider keys so we can detect when
-   * they've changed and only rebuild auth when needed.
-   */
-  private hashKeys(keys: Record<string, string>): string {
-    const sorted = Object.keys(keys).sort();
-    return sorted.map((p) => `${p}=${keys[p]}`).join('|');
-  }
-
-  /**
    * Pull fresh provider credentials from the source and apply them to the
-   * live AuthStorage if they've changed. Called at the start of every
-   * `run()` so any store mutation (add, update, delete, OAuth refresh) takes
-   * effect on the next turn without any explicit push.
+   * live AuthStorage if the store has changed since our last apply. Called
+   * at the start of every `run()` so user mutations (add, rotate, delete,
+   * re-auth) take effect on the next turn without any explicit push.
+   *
+   * Only applies when the store value differs from `lastAppliedKeys` — this
+   * is what preserves pi's internal OAuth token refreshes. See the
+   * `lastAppliedKeys` field comment for the full rationale.
    *
    * Exposed for tests — production code should not need to call this
    * directly; `run()` invokes it automatically.
@@ -148,14 +160,35 @@ export class PiAgentBackend implements AgentBackend {
       return;
     }
     const keys = await this.resolveProviderKeys();
-    const currentHash = this.hashKeys(keys);
-    if (currentHash === this.lastKeysHash) return;
-
+    if (PiAgentBackend.keysEqual(keys, this.lastAppliedKeys)) {
+      // Store unchanged since last apply — leave auth alone so any OAuth
+      // token refreshes pi has performed in-memory are preserved.
+      return;
+    }
     this.logger?.info(
-      `[PiAgent] Credentials changed, refreshing auth: ${PiAgentBackend.redactKeys(keys)}`,
+      `[PiAgent] Store credentials changed, refreshing auth: ${PiAgentBackend.redactKeys(keys)}`,
     );
     this.applyKeysToAuth(this.auth, keys);
-    this.lastKeysHash = currentHash;
+    this.lastAppliedKeys = { ...keys };
+  }
+
+  /**
+   * Direct deep equality check for {provider: value} maps. Used to decide
+   * whether the credential store has changed since the last apply.
+   * Intentionally NOT a hash — we want byte-exact comparison so two
+   * genuinely different key maps can never be treated as equal.
+   */
+  private static keysEqual(
+    a: Record<string, string>,
+    b: Record<string, string>,
+  ): boolean {
+    const aKeys = Object.keys(a);
+    const bKeys = Object.keys(b);
+    if (aKeys.length !== bKeys.length) return false;
+    for (const k of aKeys) {
+      if (a[k] !== b[k]) return false;
+    }
+    return true;
   }
 
   /** Detect OAuth access tokens (e.g. sk-ant-oat01-...) vs regular API keys */
@@ -425,12 +458,15 @@ export class PiAgentBackend implements AgentBackend {
   async start(workspace: string): Promise<void> {
     // Resolve credentials from the source (snapshot or provider function).
     const keys = await this.resolveProviderKeys();
-    this.lastKeysHash = this.hashKeys(keys);
     this.logger?.info(
       `[PiAgent] Starting with credentials: ${PiAgentBackend.redactKeys(keys)}`,
     );
 
     this.auth = this.setupAuth();
+    // Remember what we initialized auth with so `refreshCredentials()` can
+    // detect real store mutations (vs. identical re-reads) and leave any
+    // OAuth tokens pi refreshes in-memory alone.
+    this.lastAppliedKeys = { ...keys };
     const model = this.resolveModel(this.config.model);
 
     // MCP: create manager if not injected and servers are configured

@@ -649,7 +649,13 @@ describe('PiAgentBackend pull-based credential source', () => {
     expect(lastAuthStorage?._providers).toEqual(new Set(['anthropic']));
   });
 
-  it('does not rebuild auth when keys have not changed (hash-based skip)', async () => {
+  it('skips auth rebuild when the store has not changed since last apply', async () => {
+    // This is critical for OAuth token refresh correctness. pi's AuthStorage
+    // can refresh OAuth tokens in-memory between our refreshCredentials()
+    // calls. If we overwrote auth on every refresh with the stale store
+    // value, we would clobber pi's refreshed token and trigger 401 loops.
+    // The skip-when-store-unchanged check uses direct equality (NOT a hash)
+    // so there is no collision risk.
     await stubSession();
     const provider = vi.fn(async () => ({ anthropic: 'sk-stable' }));
 
@@ -660,13 +666,38 @@ describe('PiAgentBackend pull-based credential source', () => {
     await backend.start('/tmp/ws');
     const setCallsAfterStart = lastAuthStorage?.set.mock.calls.length ?? 0;
 
-    // Refresh with the same keys — should be a no-op
+    // Store value hasn't changed since start() seeded lastAppliedKeys →
+    // each refresh should be a no-op (provider is called, but applyKeys isn't)
     await backend.refreshCredentials();
     await backend.refreshCredentials();
 
     expect(provider).toHaveBeenCalledTimes(3); // start + 2 refreshes
-    // No additional set() calls since the hash didn't change
     expect(lastAuthStorage?.set.mock.calls.length).toBe(setCallsAfterStart);
+  });
+
+  it('refreshes when the store value differs from last applied (direct equality, no collision risk)', async () => {
+    // Two distinct key maps that would collide under a naive delimiter-based
+    // hash (sort + join with `=` and `|`): `{a: 'b|c=d'}` vs `{a: 'b', c: 'd'}`.
+    // Both serialize to the same string under a naive hash. Our direct
+    // equality check correctly distinguishes them.
+    await stubSession();
+    let current: Record<string, string> = { anthropic: 'sk-|=' };
+    const provider = vi.fn(async () => ({ ...current }));
+
+    const backend = new PiAgentBackend(
+      { model: 'anthropic/claude-sonnet-4-5', systemPrompt: '' },
+      provider,
+    );
+    await backend.start('/tmp/ws');
+
+    const setCallsAfterStart = lastAuthStorage?.set.mock.calls.length ?? 0;
+
+    // Mutate to a genuinely different map that a naive hash might collide with
+    current = { anthropic: 'sk-', openai: 'foo' };
+    await backend.refreshCredentials();
+
+    // Must have called set() at least once for the new openai provider
+    expect(lastAuthStorage?.set.mock.calls.length).toBeGreaterThan(setCallsAfterStart);
   });
 
   it('refreshCredentials() is a no-op when backend has not been started', async () => {

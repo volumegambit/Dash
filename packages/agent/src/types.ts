@@ -20,11 +20,6 @@ export interface ThinkingBlock {
   signature: string;
 }
 
-export interface RedactedThinkingBlock {
-  type: 'redacted_thinking';
-  data: string;
-}
-
 export interface ImageBlock {
   type: 'image';
   mediaType: 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp';

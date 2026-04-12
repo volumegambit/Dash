@@ -23,23 +23,6 @@ export interface AgentClient {
   answerQuestion?(id: string, answers: string[][]): Promise<void>;
 }
 
-export class LocalAgentClient implements AgentClient {
-  constructor(private agent: DashAgent) {}
-
-  async *chat(
-    channelId: string,
-    conversationId: string,
-    text: string,
-    options?: RunOptions & { images?: ImageBlock[] },
-  ): AsyncGenerator<AgentEvent> {
-    yield* this.agent.chat(channelId, conversationId, text, options);
-  }
-
-  async answerQuestion(id: string, answers: string[][]): Promise<void> {
-    await this.agent.answerQuestion(id, answers);
-  }
-}
-
 export class PooledAgentClient implements AgentClient {
   private pool = new Map<string, { backend: AgentBackend; agent: DashAgent }>();
 
