@@ -3,7 +3,35 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { GatewayManagementClient } from './gateway-client.js';
-import { GatewaySupervisor, type GatewaySupervisorOptions, type ProcessSpawner } from './process.js';
+import {
+  GatewaySupervisor,
+  type GatewaySupervisorOptions,
+  type ProcessKiller,
+  type ProcessSpawner,
+} from './process.js';
+
+/**
+ * Create a mock ProcessKiller backed by a set of "alive" pids. Tests use
+ * this instead of the real `process.kill` so they can write state files
+ * that reference `process.pid` (as a guaranteed alive PID) without
+ * actually signalling the test runner.
+ */
+function createMockKiller(aliveSet = new Set<number>()): ProcessKiller & {
+  isAlive: ReturnType<typeof vi.fn>;
+  signal: ReturnType<typeof vi.fn>;
+  aliveSet: Set<number>;
+} {
+  const killer = {
+    aliveSet,
+    isAlive: vi.fn((pid: number) => aliveSet.has(pid)),
+    signal: vi.fn((pid: number, _sig: NodeJS.Signals) => {
+      // Simulate SIGTERM: immediately mark the pid as dead so the
+      // shutdown wait loop in GatewaySupervisor exits promptly.
+      aliveSet.delete(pid);
+    }),
+  };
+  return killer;
+}
 
 // ---------------------------------------------------------------------------
 // Mock helpers
@@ -89,11 +117,10 @@ describe('GatewaySupervisor.ensureRunning()', () => {
   });
 
   it('reuses existing gateway when PID is alive and health matches', async () => {
-    // Write state pointing to current process (always alive)
     const { GatewayStateStore } = await import('./gateway-state.js');
     const store = new GatewayStateStore(tmpDir);
     await store.write({
-      pid: process.pid,
+      pid: 12345,
       startedAt: '2026-01-01T00:00:00Z',
       token: 'existing-token',
       port: 9300,
@@ -103,16 +130,19 @@ describe('GatewaySupervisor.ensureRunning()', () => {
 
     const mockClient = createMockGatewayClient('2026-01-01T00:00:00Z');
     const spawner = createMockSpawner();
+    const killer = createMockKiller(new Set([12345]));
 
     const gp = new GatewaySupervisor(
       makeOptions(tmpDir, { makeGatewayClient: () => mockClient }),
       spawner,
+      killer,
     );
 
     const client = await gp.ensureRunning();
 
     // Should NOT spawn a new process
     expect(spawner.spawn).not.toHaveBeenCalled();
+    expect(killer.signal).not.toHaveBeenCalled();
     expect(client).toBe(mockClient);
   });
 
@@ -143,12 +173,11 @@ describe('GatewaySupervisor.ensureRunning()', () => {
     expect(client).toBe(mockClient);
   });
 
-  it('respawns when health check startedAt does not match state', async () => {
-    // Write state pointing to current process but with a different startedAt
+  it('respawns and kills stale PID when health check startedAt does not match', async () => {
     const { GatewayStateStore } = await import('./gateway-state.js');
     const store = new GatewayStateStore(tmpDir);
     await store.write({
-      pid: process.pid,
+      pid: 11111,
       startedAt: '2026-01-01T00:00:00Z', // different from what health returns
       token: 'old-token',
       port: 9300,
@@ -159,16 +188,77 @@ describe('GatewaySupervisor.ensureRunning()', () => {
     // Health returns a different startedAt — gateway was restarted externally
     const mockClient = createMockGatewayClient('2026-03-01T00:00:00Z');
     const spawner = createMockSpawner(54321);
+    const killer = createMockKiller(new Set([11111]));
 
     const gp = new GatewaySupervisor(
       makeOptions(tmpDir, { makeGatewayClient: () => mockClient }),
       spawner,
+      killer,
     );
 
     const client = await gp.ensureRunning();
 
+    // Must kill the stale process BEFORE spawning, otherwise the new
+    // spawn collides on port 9300 with EADDRINUSE.
+    expect(killer.signal).toHaveBeenCalledWith(11111, 'SIGTERM');
     expect(spawner.spawn).toHaveBeenCalledOnce();
     expect(client).toBe(mockClient);
+  });
+
+  it('respawns and kills stale PID when auth token is rejected (EADDRINUSE regression)', async () => {
+    // This is the regression test for the respawn-loop scenario where
+    // MC's in-memory token no longer matches the running gateway's
+    // token. The old code fell through to `spawn` without killing the
+    // stale process, causing EADDRINUSE on every subsequent attempt.
+    const { GatewayStateStore } = await import('./gateway-state.js');
+    const store = new GatewayStateStore(tmpDir);
+    await store.write({
+      pid: 22222,
+      startedAt: '2026-01-01T00:00:00Z',
+      token: 'stale-token',
+      port: 9300,
+      channelPort: 9200,
+      chatToken: 'stale-chat-token',
+    });
+
+    // Health check succeeds with matching startedAt, but listAgents
+    // rejects with a 401 because the running gateway's token has drifted.
+    const mockClient = {
+      health: vi.fn().mockResolvedValue({
+        status: 'healthy',
+        startedAt: '2026-01-01T00:00:00Z',
+        agents: 0,
+        channels: 0,
+      }),
+      listAgents: vi.fn().mockRejectedValue(new Error('Gateway listAgents failed: 401 Unauthorized')),
+    } as unknown as GatewayManagementClient;
+
+    // After the kill + spawn, `ensureRunning` creates a fresh client —
+    // the factory returns a healthy one with no auth failures.
+    const freshClient = createMockGatewayClient('2026-04-01T00:00:00Z');
+    let callCount = 0;
+    const makeGatewayClient = vi.fn(() => {
+      callCount++;
+      return callCount === 1 ? mockClient : freshClient;
+    });
+
+    const spawner = createMockSpawner(54321);
+    const killer = createMockKiller(new Set([22222]));
+
+    const gp = new GatewaySupervisor(
+      makeOptions(tmpDir, { makeGatewayClient }),
+      spawner,
+      killer,
+    );
+
+    const client = await gp.ensureRunning();
+
+    // The stale process MUST be killed before spawning
+    expect(killer.signal).toHaveBeenCalledWith(22222, 'SIGTERM');
+    // Fresh gateway process must be spawned
+    expect(spawner.spawn).toHaveBeenCalledOnce();
+    // The returned client is the fresh one, not the stale one
+    expect(client).toBe(freshClient);
   });
 
   it('throws when gateway does not become healthy within timeout', async () => {
