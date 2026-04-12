@@ -1,6 +1,7 @@
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { vi } from 'vitest';
 import { AgentRegistry } from './agent-registry.js';
 
 describe('AgentRegistry', () => {
@@ -278,6 +279,132 @@ describe('AgentRegistry (file-backed)', () => {
     it('throws for unknown agent id', () => {
       const reg = new AgentRegistry();
       expect(() => reg.patchMcpServers('nope', 'add', 'server-1')).toThrow("'nope' not found");
+    });
+  });
+
+  describe('defaultWorkspace resolver', () => {
+    it('assigns the resolver result when the caller omits workspace', () => {
+      const resolverCalls: string[] = [];
+      const reg = new AgentRegistry(undefined, {
+        defaultWorkspace: (id) => {
+          resolverCalls.push(id);
+          return `/var/dash/workspaces/${id}`;
+        },
+      });
+
+      const entry = reg.register({
+        name: 'needs-default',
+        model: 'anthropic/claude-sonnet-4-5',
+        systemPrompt: 's',
+      });
+
+      // The resolver was invoked once, with the freshly-assigned ID
+      expect(resolverCalls).toEqual([entry.id]);
+      // The registry stored the resolved path, not undefined
+      expect(entry.config.workspace).toBe(`/var/dash/workspaces/${entry.id}`);
+      // A subsequent read returns the same path
+      expect(reg.get(entry.id)?.config.workspace).toBe(`/var/dash/workspaces/${entry.id}`);
+    });
+
+    it('also defaults when the caller passes an empty string workspace', () => {
+      // Some non-MC callers (curl, test scripts) may pass workspace:''
+      // directly rather than omitting the field. We treat '' the same as
+      // undefined so the default path is applied either way.
+      const reg = new AgentRegistry(undefined, {
+        defaultWorkspace: (id) => `/var/dash/workspaces/${id}`,
+      });
+
+      const entry = reg.register({
+        name: 'blank-workspace',
+        model: 'm',
+        systemPrompt: 's',
+        workspace: '',
+      });
+
+      expect(entry.config.workspace).toBe(`/var/dash/workspaces/${entry.id}`);
+    });
+
+    it('preserves an explicit workspace verbatim and never calls the resolver', () => {
+      const resolver = vi.fn((id: string) => `/should-not-be-used/${id}`);
+      const reg = new AgentRegistry(undefined, { defaultWorkspace: resolver });
+
+      const entry = reg.register({
+        name: 'explicit',
+        model: 'm',
+        systemPrompt: 's',
+        workspace: '/home/alice/my-project',
+      });
+
+      expect(entry.config.workspace).toBe('/home/alice/my-project');
+      expect(resolver).not.toHaveBeenCalled();
+    });
+
+    it('without a resolver, blank workspace stays undefined (legacy behavior)', () => {
+      // This is the pre-resolver contract — callers that construct an
+      // AgentRegistry without options (e.g. existing tests, CLI scripts
+      // that don't care about per-agent workspaces) must keep getting
+      // undefined so downstream `entry.config.workspace ?? '.'` fallbacks
+      // still fire.
+      const reg = new AgentRegistry();
+
+      const entry = reg.register({
+        name: 'no-resolver',
+        model: 'm',
+        systemPrompt: 's',
+      });
+
+      expect(entry.config.workspace).toBeUndefined();
+    });
+
+    it('persists the resolved workspace to disk and reloads it without re-resolving', async () => {
+      const tmpDir = await mkdtemp(join(tmpdir(), 'agent-registry-workspace-'));
+      const filePath = join(tmpDir, 'agents.json');
+      try {
+        let resolverCallCount = 0;
+        const resolver = (id: string) => {
+          resolverCallCount++;
+          return `/persistent/workspaces/${id}`;
+        };
+
+        // First lifetime: register an agent with the resolver
+        const reg1 = new AgentRegistry(filePath, { defaultWorkspace: resolver });
+        const entry1 = reg1.register({
+          name: 'persistent',
+          model: 'm',
+          systemPrompt: 's',
+        });
+        await reg1.save();
+        expect(resolverCallCount).toBe(1);
+        const expectedPath = `/persistent/workspaces/${entry1.id}`;
+        expect(entry1.config.workspace).toBe(expectedPath);
+
+        // Second lifetime: reload from disk with the SAME resolver
+        const reg2 = new AgentRegistry(filePath, { defaultWorkspace: resolver });
+        await reg2.load();
+        const reloaded = reg2.get(entry1.id);
+
+        // The workspace should survive the reload verbatim
+        expect(reloaded?.config.workspace).toBe(expectedPath);
+        // And the resolver must NOT have been called again on load — the
+        // stored path is authoritative
+        expect(resolverCallCount).toBe(1);
+      } finally {
+        await rm(tmpDir, { recursive: true, force: true });
+      }
+    });
+
+    it('uses a different resolved path for each registered agent (no collisions)', () => {
+      const reg = new AgentRegistry(undefined, {
+        defaultWorkspace: (id) => `/w/${id}`,
+      });
+
+      const a = reg.register({ name: 'a', model: 'm', systemPrompt: 's' });
+      const b = reg.register({ name: 'b', model: 'm', systemPrompt: 's' });
+      const c = reg.register({ name: 'c', model: 'm', systemPrompt: 's' });
+
+      const paths = [a.config.workspace, b.config.workspace, c.config.workspace];
+      expect(new Set(paths).size).toBe(3); // all distinct
+      expect(paths.every((p) => p?.startsWith('/w/'))).toBe(true);
     });
   });
 });

@@ -1,3 +1,4 @@
+import { mkdir } from 'node:fs/promises';
 import { ConversationPool, DashAgent } from '@dash/agent';
 import type { AgentBackend, AgentEvent, DashAgentConfig, ImageBlock } from '@dash/agent';
 import type { AgentRegistry, GatewayAgentConfig } from './agent-registry.js';
@@ -87,7 +88,18 @@ export function createAgentChatCoordinator(
         tools: entry.config.tools,
         skills: entry.config.skills,
       };
-      await backend.start(entry.config.workspace ?? '.');
+      // Resolve the workspace and ensure it exists on disk before any tool
+      // can touch it. The registry is expected to have assigned a default
+      // workspace at register() time via its `defaultWorkspace` resolver, so
+      // the `?? '.'` fallback is only hit by legacy agents registered before
+      // the resolver was wired up (they'll get normalized on their next
+      // write to the registry). mkdir is idempotent via `recursive: true`,
+      // so re-creation on each new conversation is safe and cheap.
+      const workspace = entry.config.workspace ?? '.';
+      if (workspace !== '.') {
+        await mkdir(workspace, { recursive: true });
+      }
+      await backend.start(workspace);
       const agent = new DashAgent(backend, dashConfig);
       registry.setActive(agentId);
       return { backend, agent };
