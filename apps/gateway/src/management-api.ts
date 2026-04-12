@@ -1,10 +1,12 @@
 import type { AgentClient } from '@dash/agent';
 import type { ChannelAdapter } from '@dash/channels';
 import { TelegramAdapter, WhatsAppAdapter } from '@dash/channels';
+import { createConsoleLogger, type StructuredLogger } from '@dash/logging';
 import { Hono } from 'hono';
+import type { Context } from 'hono';
 
 import type { AgentRegistry, GatewayAgentConfig, RegisteredAgent } from './agent-registry.js';
-import type { AgentService } from './agent-service.js';
+import type { AgentChatCoordinator } from './agent-chat-coordinator.js';
 import type { ChannelRegistry, ChannelRoutingRule } from './channel-registry.js';
 import type { GatewayCredentialStore } from './credential-store.js';
 import type { EventBus, GatewayEvent } from './event-bus.js';
@@ -14,7 +16,7 @@ import { mountMcpRoutes } from './mcp-management.js';
 
 export interface GatewayManagementOptions {
   gateway: DynamicGateway;
-  agents: AgentService;
+  agents: AgentChatCoordinator;
   agentRegistry: AgentRegistry;
   channelRegistry: ChannelRegistry;
   credentialStore: GatewayCredentialStore;
@@ -22,6 +24,40 @@ export interface GatewayManagementOptions {
   startedAt?: string;
   eventBus?: EventBus;
   mcpDeps?: McpManagementDeps;
+  /**
+   * Logger for request/response logging and internal events. Defaults to a
+   * text-format console logger scoped to the `gateway-api` component. Pass a
+   * shared logger from the gateway entrypoint to unify log streams.
+   */
+  logger?: StructuredLogger;
+}
+
+/**
+ * Keys whose values must never appear in logs. Matched case-insensitively
+ * against every property name in a request body. The match is exact (not
+ * substring) to keep this tight — fields like `workspace` or `deploymentKey`
+ * stay visible, while `providerApiKeys`, `value` (credentials payload),
+ * `token`, etc. get redacted.
+ */
+const SECRET_KEY_PATTERN = /^(providerApiKeys|token|secret|password|apiKey|apikey|value|credentials?)$/i;
+
+/**
+ * Deep-clone a request body with any secret-keyed values replaced by
+ * `[REDACTED]`. Non-mutating: returns a new object so the handler still
+ * sees the unredacted body when it calls `c.req.json()` a second time.
+ */
+function redactSecrets(value: unknown): unknown {
+  if (value === null || typeof value !== 'object') return value;
+  if (Array.isArray(value)) return value.map(redactSecrets);
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+    if (SECRET_KEY_PATTERN.test(k)) {
+      out[k] = '[REDACTED]';
+    } else {
+      out[k] = redactSecrets(v);
+    }
+  }
+  return out;
 }
 
 /** Strip providerApiKeys from agent entries before returning to clients. */
@@ -31,11 +67,147 @@ function stripSecrets(entry: RegisteredAgent): RegisteredAgent {
   return { ...rest, config: safeConfig as GatewayAgentConfig };
 }
 
+/**
+ * Parse the request body as JSON, returning a discriminated result. Callers
+ * return `result.response` on failure, `result.body` on success. Avoids
+ * repeating the same 4-line try/catch in every PUT/POST handler.
+ */
+async function parseJsonBody<T = Record<string, unknown>>(
+  c: Context,
+): Promise<{ ok: true; body: T } | { ok: false; response: Response }> {
+  try {
+    const body = (await c.req.json()) as T;
+    return { ok: true, body };
+  } catch {
+    return { ok: false, response: c.json({ error: 'Invalid JSON' }, 400) };
+  }
+}
+
 export function createGatewayManagementApp(options: GatewayManagementOptions): Hono {
   const { gateway, agents, agentRegistry, channelRegistry, credentialStore, token, eventBus } =
     options;
+  const logger = options.logger ?? createConsoleLogger('info', 'text', 'gateway-api');
   const startedAt = options.startedAt ?? new Date().toISOString();
   const app = new Hono();
+
+  // Request/response logging middleware. Placed first so unauthorized
+  // attempts are logged too, and so the duration measurement wraps auth +
+  // handler. `/health` is excluded to keep polling noise out of logs.
+  //
+  // Bodies are captured via `c.req.json()`, which Hono caches per request —
+  // handlers that later call `c.req.json()` get the same parsed result, so
+  // pre-reading here is non-destructive. Malformed JSON is caught and logged
+  // as `[invalid json]`, leaving the handler's own try/catch to return 400.
+  app.use('*', async (c, next) => {
+    if (c.req.path === '/health') {
+      await next();
+      return;
+    }
+    const start = Date.now();
+    const method = c.req.method;
+    const path = c.req.path;
+    const query = c.req.query();
+
+    let body: unknown;
+    if (method !== 'GET' && method !== 'DELETE') {
+      const contentType = c.req.header('Content-Type') ?? '';
+      if (contentType.includes('application/json')) {
+        try {
+          body = redactSecrets(await c.req.json());
+        } catch {
+          body = '[invalid json]';
+        }
+      }
+    }
+
+    const requestContext: Record<string, unknown> = { method, path };
+    if (Object.keys(query).length > 0) requestContext.query = query;
+    if (body !== undefined) requestContext.body = body;
+    logger.info(`→ ${method} ${path}`, requestContext);
+
+    try {
+      await next();
+    } finally {
+      logger.info(`← ${method} ${path} ${c.res.status}`, {
+        method,
+        path,
+        status: c.res.status,
+        durationMs: Date.now() - start,
+      });
+    }
+  });
+
+  /**
+   * Build the inline `AgentClient` bridge used by channel routing rules.
+   * One place so any future change (e.g., agent lookup, metrics, tracing)
+   * lands in all three call sites: POST /agents, POST /channels, and
+   * startup restore (which lives in index.ts, not here).
+   */
+  function buildBridgeClient(agentId: string): AgentClient {
+    return {
+      chat(channelId, conversationId, text) {
+        return agents.chat({ agentId, conversationId, channelId, text });
+      },
+    };
+  }
+
+  /**
+   * Telegram token-rotation helper: when `POST /credentials` sets a key
+   * matching `channel:<name>:token` and the named channel already exists,
+   * stop the old adapter and re-register with a fresh `TelegramAdapter`
+   * that captures the new token. Idempotent: if the channel doesn't
+   * exist yet (initial setup flow), no-op and the credential is simply
+   * staged for when POST /channels runs.
+   *
+   * Errors are logged but not re-raised — the credential itself has been
+   * persisted successfully, which is what the HTTP caller asked for;
+   * adapter restart failures leave the channel in a non-running state
+   * that a subsequent gateway restart (or manual DELETE+POST) will heal.
+   */
+  async function restartChannelForTokenRotation(credentialKey: string): Promise<void> {
+    const match = credentialKey.match(/^channel:(.+):token$/);
+    if (!match) return;
+    const channelName = match[1];
+    const entry = channelRegistry.get(channelName);
+    if (!entry || entry.adapter !== 'telegram') return;
+
+    const newToken = await credentialStore.get(credentialKey);
+    if (!newToken) return;
+
+    try {
+      await gateway.stopChannel(channelName);
+      const adapter = new TelegramAdapter(
+        newToken,
+        () => channelRegistry.get(channelName)?.allowedUsers ?? [],
+      );
+      await gateway.registerChannel(channelName, adapter, {
+        globalDenyList: entry.globalDenyList,
+        routing: entry.routing,
+      });
+      // Re-bridge agents — registerAgent is idempotent (overwrites the
+      // existing bridge client with one closing over the same agentId).
+      for (const rule of entry.routing) {
+        if (agentRegistry.get(rule.agentId)) {
+          gateway.registerAgent(rule.agentId, buildBridgeClient(rule.agentId));
+        }
+      }
+      eventBus?.emit({
+        type: 'channel:restarted',
+        channel: channelName,
+        reason: 'token-rotation',
+      });
+      logger.info(`channel "${channelName}" restarted after token rotation`, {
+        channel: channelName,
+        reason: 'token-rotation',
+      });
+    } catch (err) {
+      logger.error(
+        `channel "${channelName}" token-rotation restart failed`,
+        err instanceof Error ? err : undefined,
+        { channel: channelName },
+      );
+    }
+  }
 
   // Auth middleware — /health is exempt
   app.use('*', async (c, next) => {
@@ -77,16 +249,7 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
     }
     try {
       const entry = agentRegistry.register(body);
-
-      // Create bridge client that routes through the agent service
-      const agentId = entry.id;
-      const bridgeClient: AgentClient = {
-        chat(channelId, conversationId, text) {
-          return agents.chat({ agentId, conversationId, channelId, text });
-        },
-      };
-      gateway.registerAgent(agentId, bridgeClient);
-
+      gateway.registerAgent(entry.id, buildBridgeClient(entry.id));
       await agentRegistry.save();
       eventBus?.emit({ type: 'agent:config-changed', agent: entry.name, fields: ['*'] });
       return c.json(stripSecrets(entry), 201);
@@ -110,19 +273,15 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
     const id = c.req.param('id');
     const entry = agentRegistry.get(id);
     if (!entry) return c.json({ error: 'not found' }, 404);
-    let patch: Partial<Omit<GatewayAgentConfig, 'name'>>;
+    const parsed = await parseJsonBody<Partial<Omit<GatewayAgentConfig, 'name'>>>(c);
+    if (!parsed.ok) return parsed.response;
     try {
-      patch = await c.req.json();
-    } catch {
-      return c.json({ error: 'Invalid JSON' }, 400);
-    }
-    try {
-      const updated = agentRegistry.update(id, patch);
+      const updated = agentRegistry.update(id, parsed.body);
       await agentRegistry.save();
       eventBus?.emit({
         type: 'agent:config-changed',
         agent: entry.name,
-        fields: Object.keys(patch),
+        fields: Object.keys(parsed.body),
       });
       return c.json(stripSecrets(updated));
     } catch (err) {
@@ -187,66 +346,118 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
   // --- Channel routes ---
 
   app.post('/channels', async (c) => {
-    let body: { name: string; adapter: string; routing: unknown[]; globalDenyList?: string[] };
-    try {
-      body = await c.req.json();
-    } catch {
-      return c.json({ error: 'Invalid JSON' }, 400);
-    }
+    const parsed = await parseJsonBody<{
+      name: string;
+      adapter: string;
+      routing: unknown[];
+      globalDenyList?: string[];
+      allowedUsers?: string[];
+    }>(c);
+    if (!parsed.ok) return parsed.response;
+    const body = parsed.body;
+
     if (!body.name || !body.adapter || !body.routing) {
       return c.json({ error: 'Missing required fields: name, adapter, routing' }, 400);
+    }
+    if (body.allowedUsers !== undefined && !Array.isArray(body.allowedUsers)) {
+      return c.json({ error: 'allowedUsers must be an array of strings' }, 400);
     }
 
     const routing = body.routing as ChannelRoutingRule[];
     const globalDenyList = body.globalDenyList ?? [];
+    const allowedUsers = body.allowedUsers ?? [];
+    const channelName = body.name;
 
-    // Create adapter from credentials
+    // Referential integrity: reject routing rules that reference agents
+    // that don't exist. This is symmetric with `DELETE /agents/:id`,
+    // which cascades to remove channel rules for the deleted agent.
+    // Without this check, channels.json could accumulate dangling refs.
+    const missingAgents = routing
+      .map((r) => r.agentId)
+      .filter((id) => !agentRegistry.get(id));
+    if (missingAgents.length > 0) {
+      return c.json(
+        {
+          error: `routing references unknown agent(s): ${[...new Set(missingAgents)].join(', ')}`,
+        },
+        400,
+      );
+    }
+
+    // Pre-register in the channel registry BEFORE constructing the adapter.
+    // Two reasons:
+    //   1. The TelegramAdapter is constructed with a closure that reads
+    //      `allowedUsers` from the registry on every inbound message. If
+    //      we registered after `adapter.start()`, there's a race where a
+    //      message arriving immediately would see `undefined` and fall
+    //      through as "no filter".
+    //   2. The gateway's `resolveRouting` (wired in `index.ts`) also reads
+    //      from the registry on every message — same race for routing.
+    //
+    // On failure we roll back the in-memory entry below so the registry
+    // stays consistent with the running gateway.
+    if (channelRegistry.has(channelName)) {
+      return c.json({ error: `Channel '${channelName}' already exists` }, 409);
+    }
+    channelRegistry.register({
+      name: channelName,
+      adapter: body.adapter as 'telegram' | 'whatsapp',
+      globalDenyList,
+      allowedUsers,
+      routing,
+    });
+
+    // Create adapter from credentials. Telegram uses a pull-based closure
+    // over the registry so runtime edits to allowedUsers take effect on
+    // the next message without restarting the bot.
     let adapter: ChannelAdapter;
     if (body.adapter === 'telegram') {
-      const credKey = `channel:${body.name}:token`;
+      const credKey = `channel:${channelName}:token`;
       const tok = await credentialStore.get(credKey);
       if (!tok) {
+        channelRegistry.remove(channelName); // rollback
         return c.json({ error: `No credential found for key '${credKey}'` }, 400);
       }
-      adapter = new TelegramAdapter(tok, []);
+      adapter = new TelegramAdapter(
+        tok,
+        () => channelRegistry.get(channelName)?.allowedUsers ?? [],
+      );
     } else if (body.adapter === 'whatsapp') {
-      const credKey = `channel:${body.name}:whatsapp-auth`;
+      const credKey = `channel:${channelName}:whatsapp-auth`;
       const authJson = await credentialStore.get(credKey);
       if (!authJson) {
+        channelRegistry.remove(channelName); // rollback
         return c.json({ error: `No credential found for key '${credKey}'` }, 400);
       }
       const auth = JSON.parse(authJson) as Record<string, string>;
-      adapter = new WhatsAppAdapter(auth, `data/whatsapp/${body.name}`);
+      adapter = new WhatsAppAdapter(auth, `data/whatsapp/${channelName}`);
     } else {
+      channelRegistry.remove(channelName); // rollback
       return c.json({ error: `Unknown adapter type: ${body.adapter}` }, 400);
     }
 
     try {
-      await gateway.registerChannel(body.name, adapter, { globalDenyList, routing });
+      await gateway.registerChannel(channelName, adapter, { globalDenyList, routing });
 
-      // Bridge agents for each routing rule
+      // Bridge agents for each routing rule. The agentIds were already
+      // validated above, so every `agentRegistry.get()` here is guaranteed
+      // to hit — the re-check stays as defense-in-depth against concurrent
+      // agent removal between validation and registration.
       for (const rule of routing) {
-        const agentEntry = agentRegistry.get(rule.agentId);
-        if (agentEntry) {
-          const agentId = agentEntry.id;
-          const bridgeClient: AgentClient = {
-            chat(channelId, conversationId, text) {
-              return agents.chat({ agentId, conversationId, channelId, text });
-            },
-          };
-          gateway.registerAgent(rule.agentId, bridgeClient);
+        if (agentRegistry.get(rule.agentId)) {
+          gateway.registerAgent(rule.agentId, buildBridgeClient(rule.agentId));
         }
       }
 
-      channelRegistry.register({
-        name: body.name,
-        adapter: body.adapter as 'telegram' | 'whatsapp',
-        globalDenyList,
-        routing,
-      });
       await channelRegistry.save();
+      eventBus?.emit({ type: 'channel:created', channel: channelName });
       return c.json({ ok: true }, 201);
     } catch (err) {
+      // Registration with the gateway failed — roll back the registry
+      // entry so the persisted state matches the running state. Best-effort
+      // stop the adapter in case it partially started.
+      await gateway.stopChannel(channelName).catch(() => {});
+      channelRegistry.remove(channelName);
       const message = err instanceof Error ? err.message : 'Internal error';
       return c.json({ error: message }, 500);
     }
@@ -267,15 +478,54 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
     const name = decodeURIComponent(c.req.param('name'));
     const entry = channelRegistry.get(name);
     if (!entry) return c.json({ error: 'not found' }, 404);
-    let patch: Record<string, unknown>;
-    try {
-      patch = await c.req.json();
-    } catch {
-      return c.json({ error: 'Invalid JSON' }, 400);
+    const parsed = await parseJsonBody(c);
+    if (!parsed.ok) return parsed.response;
+    const patch = parsed.body;
+
+    // Validate array-typed fields so garbage input doesn't poison the
+    // in-memory registry. Missing fields are fine — they're treated as
+    // "no patch for this field".
+    if (patch.allowedUsers !== undefined && !Array.isArray(patch.allowedUsers)) {
+      return c.json({ error: 'allowedUsers must be an array of strings' }, 400);
     }
+    if (patch.globalDenyList !== undefined && !Array.isArray(patch.globalDenyList)) {
+      return c.json({ error: 'globalDenyList must be an array of strings' }, 400);
+    }
+    if (patch.routing !== undefined && !Array.isArray(patch.routing)) {
+      return c.json({ error: 'routing must be an array of rules' }, 400);
+    }
+
+    // Referential integrity for routing edits: if the caller is replacing
+    // the routing array, every new agentId must resolve. Stale agentIds
+    // would otherwise route to nowhere and get audit-logged as
+    // `agent_not_found` forever.
+    if (patch.routing !== undefined) {
+      const newRouting = patch.routing as ChannelRoutingRule[];
+      const missingAgents = newRouting
+        .map((r) => r.agentId)
+        .filter((id) => !agentRegistry.get(id));
+      if (missingAgents.length > 0) {
+        return c.json(
+          {
+            error: `routing references unknown agent(s): ${[...new Set(missingAgents)].join(', ')}`,
+          },
+          400,
+        );
+      }
+    }
+
     try {
+      // Runtime routing + allowedUsers edits propagate immediately: the
+      // gateway's `resolveRouting` and the Telegram adapter's
+      // `getAllowedUsers` closure both read from this registry on every
+      // inbound message. No reconciliation plumbing required.
       const updated = channelRegistry.update(name, patch);
       await channelRegistry.save();
+      eventBus?.emit({
+        type: 'channel:config-changed',
+        channel: name,
+        fields: Object.keys(patch),
+      });
       return c.json(updated);
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Internal error';
@@ -287,8 +537,16 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
     const name = decodeURIComponent(c.req.param('name'));
     const entry = channelRegistry.get(name);
     if (!entry) return c.json({ error: 'not found' }, 404);
+    // Stop the adapter BEFORE removing from the registry. The gateway's
+    // `resolveRouting` pulls from the registry on every message, so if we
+    // removed first, in-flight messages between the remove and the stop
+    // would be audit-logged as `channel_removed` rather than routed —
+    // technically correct but chatty. Stopping first makes the shutdown
+    // clean: no new messages, no polling, no stale routing.
+    await gateway.stopChannel(name);
     channelRegistry.remove(name);
     await channelRegistry.save();
+    eventBus?.emit({ type: 'channel:removed', channel: name });
     return c.json({ ok: true });
   });
 
@@ -302,16 +560,18 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
   // of truth.
 
   app.post('/credentials', async (c) => {
-    let body: { key: string; value: string };
-    try {
-      body = await c.req.json();
-    } catch {
-      return c.json({ error: 'Invalid JSON' }, 400);
-    }
+    const parsed = await parseJsonBody<{ key: string; value: string }>(c);
+    if (!parsed.ok) return parsed.response;
+    const body = parsed.body;
     if (!body.key || !body.value) {
       return c.json({ error: 'Missing required fields: key, value' }, 400);
     }
     await credentialStore.set(body.key, body.value);
+    // Telegram token rotation: if this credential keys a running
+    // Telegram channel, restart its adapter so the grammy Bot captures
+    // the new token. No-op for other keys; no-op if no such channel
+    // exists yet. Errors are logged but do not fail the request.
+    await restartChannelForTokenRotation(body.key);
     return c.json({ ok: true }, 201);
   });
 

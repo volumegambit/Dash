@@ -19,6 +19,15 @@ export interface GatewayChannel {
   name: string;
   adapter: 'telegram' | 'whatsapp';
   globalDenyList: string[];
+  /**
+   * Adapter-level allow-list (Telegram). When non-empty, the adapter itself
+   * rejects messages from senders not on the list and sends an
+   * "unauthorized" reply. Entries may be numeric IDs, bare usernames, or
+   * `@username`. Distinct from rule-level `allowList`: adapter-level
+   * filtering runs before routing, so blocked senders never touch the
+   * agent pool or the routed audit path.
+   */
+  allowedUsers: string[];
   routing: Array<{
     condition:
       | { type: 'default' }
@@ -140,6 +149,7 @@ export class GatewayManagementClient {
     name: string;
     adapter: string;
     globalDenyList?: string[];
+    allowedUsers?: string[];
     routing: GatewayChannel['routing'];
   }): Promise<void> {
     const res = await fetch(`${this.baseUrl}/channels`, {
@@ -168,7 +178,7 @@ export class GatewayManagementClient {
 
   async updateChannel(
     name: string,
-    patch: Partial<Pick<GatewayChannel, 'globalDenyList' | 'routing'>>,
+    patch: Partial<Pick<GatewayChannel, 'globalDenyList' | 'allowedUsers' | 'routing'>>,
   ): Promise<void> {
     const res = await fetch(`${this.baseUrl}/channels/${encodeURIComponent(name)}`, {
       method: 'PUT',

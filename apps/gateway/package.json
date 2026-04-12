@@ -20,6 +20,7 @@
     "@dash/channels": "*",
     "@dash/mcp": "*",
     "@dash/chat": "*",
+    "@dash/logging": "*",
     "@dash/management": "*",
     "@hono/node-server": "^1",
     "@hono/node-ws": "^1",

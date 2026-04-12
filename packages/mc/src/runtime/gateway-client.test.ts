@@ -27,6 +27,7 @@ function makeChannel(overrides?: Partial<GatewayChannel>): GatewayChannel {
     name: 'my-channel',
     adapter: 'telegram',
     globalDenyList: [],
+    allowedUsers: [],
     routing: [
       { condition: { type: 'default' }, agentId: 'agent-123', allowList: [], denyList: [] },
     ],

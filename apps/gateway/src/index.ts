@@ -10,13 +10,14 @@ import type { AgentClient } from '@dash/agent';
 import { PiAgentBackend } from '@dash/agent';
 import { TelegramAdapter, WhatsAppAdapter } from '@dash/channels';
 import type { ChannelAdapter } from '@dash/channels';
+import { createConsoleLogger } from '@dash/logging';
 import { FileTokenStore, McpManager } from '@dash/mcp';
 import type { McpAgentContext } from '@dash/mcp';
 import { serve } from '@hono/node-server';
 import { createNodeWebSocket } from '@hono/node-ws';
 import { Hono } from 'hono';
 import { AgentRegistry } from './agent-registry.js';
-import { createAgentService } from './agent-service.js';
+import { createAgentChatCoordinator } from './agent-chat-coordinator.js';
 import { ChannelRegistry } from './channel-registry.js';
 import { mountChatWs } from './chat-ws.js';
 import { parseFlags } from './config.js';
@@ -33,6 +34,15 @@ async function main() {
   const channelPort = flags.channelPort ?? 9200;
   const startedAt = new Date().toISOString();
   const dataDir = flags.dataDir ?? '.';
+
+  // One structured logger for the whole gateway process. Text format for
+  // human-readable console output; callers can swap this for a dual-writer
+  // (console + file) in production without touching downstream code.
+  const logger = createConsoleLogger(
+    flags.verbose ? 'debug' : 'info',
+    'text',
+    'gateway',
+  );
 
   // Ensure data dir exists
   const { mkdir } = await import('node:fs/promises');
@@ -54,14 +64,28 @@ async function main() {
   void mcpTokenStore; // reserved for OAuth flows
 
   const mcpConfigs = await mcpConfigStore.loadConfigs();
-  const mcpManager = new McpManager(mcpConfigs, { logger: console });
+  const mcpManager = new McpManager(mcpConfigs, { logger });
   if (mcpConfigs.length > 0) {
     console.log(`[MCP] Restoring ${mcpConfigs.length} persisted server(s)...`);
     await mcpManager.start();
   }
 
-  // Create gateway + agent service
-  const gateway = createDynamicGateway({ dataDir });
+  // Create gateway + agent service.
+  //
+  // `resolveRouting` is the live link to the persisted channel registry:
+  // every inbound message re-reads routing (rules + globalDenyList) from
+  // the registry, so `PUT /channels/:name` edits take effect on the next
+  // message with no reconciliation plumbing. Mirrors the credential-store
+  // pull-based pattern elsewhere in the gateway. Returning `null` signals
+  // the channel has been removed (adapter shutdown is a separate concern).
+  const gateway = createDynamicGateway({
+    dataDir,
+    resolveRouting: (name) => {
+      const entry = channelRegistry.get(name);
+      if (!entry) return null;
+      return { globalDenyList: entry.globalDenyList, routing: entry.routing };
+    },
+  });
   const eventBus = new EventBus();
   const registryPath = resolve(dataDir, 'agents.json');
   const registry = new AgentRegistry(registryPath);
@@ -69,7 +93,7 @@ async function main() {
   if (registry.list().length > 0) {
     console.log(`[agents] Restored ${registry.list().length} agent(s) from disk`);
   }
-  const agents = createAgentService({
+  const agents = createAgentChatCoordinator({
     registry,
     poolMaxSize: Number(process.env.POOL_MAX_SIZE ?? '200'),
     createBackend: async (agentConfig, conversationId) => {
@@ -90,20 +114,20 @@ async function main() {
       // MCP agent context — allows agents to manage their own MCP server assignments
       const agentMcpServers = agentConfig.mcpServers ?? [];
       const mcpAgentContext: McpAgentContext = {
+        // Both assign/unassign go through `patchMcpServers`, the single
+        // funnel for runtime `mcpServers` edits. See the method's doc in
+        // agent-registry.ts for the invariants it holds and the noted
+        // race with operator PUT /agents/:id edits.
         async assignToAgent(serverName: string) {
           const entry = registry.findByName(agentConfig.name);
           if (!entry) return;
-          const current = entry.config.mcpServers ?? [];
-          if (!current.includes(serverName)) {
-            registry.update(entry.id, { mcpServers: [...current, serverName] });
-            await registry.save();
-          }
+          registry.patchMcpServers(entry.id, 'add', serverName);
+          await registry.save();
         },
         async unassignFromAgent(serverName: string) {
           const entry = registry.findByName(agentConfig.name);
           if (!entry) return false;
-          const current = entry.config.mcpServers ?? [];
-          registry.update(entry.id, { mcpServers: current.filter((s) => s !== serverName) });
+          registry.patchMcpServers(entry.id, 'remove', serverName);
           await registry.save();
           // Check if any other agent still uses this server
           const stillUsed = registry
@@ -168,7 +192,15 @@ async function main() {
           console.warn(`[gateway] skipping channel ${channel.name}: no token`);
           continue;
         }
-        adapter = new TelegramAdapter(token, []);
+        // Pull-based allow-list: the closure reads from the channel
+        // registry on every inbound message, so runtime edits via
+        // PUT /channels/:name take effect without a restart. Captures
+        // the channel name by value (loop-scoped `const channel`).
+        const channelName = channel.name;
+        adapter = new TelegramAdapter(
+          token,
+          () => channelRegistry.get(channelName)?.allowedUsers ?? [],
+        );
       } else if (channel.adapter === 'whatsapp') {
         const authRaw = await credentialStore.get(`channel:${channel.name}:whatsapp-auth`);
         const auth = authRaw ? (JSON.parse(authRaw) as Record<string, string>) : {};
@@ -220,11 +252,12 @@ async function main() {
     token: flags.token,
     startedAt,
     eventBus,
+    logger,
     mcpDeps: {
       manager: mcpManager,
       configStore: mcpConfigStore,
       registry,
-      logger: console,
+      logger,
       eventBus,
     },
   });

@@ -1,17 +1,17 @@
 import type { AgentBackend, AgentEvent, AgentState, RunOptions } from '@dash/agent';
 import { describe, expect, it } from 'vitest';
 import { AgentRegistry } from './agent-registry.js';
-import type { AgentService } from './agent-service.js';
-import { createAgentService } from './agent-service.js';
+import type { AgentChatCoordinator } from './agent-chat-coordinator.js';
+import { createAgentChatCoordinator } from './agent-chat-coordinator.js';
 
 /**
- * These tests verify that the AgentService — the core dependency behind
- * the /ws/chat WebSocket endpoint — correctly routes chat messages,
+ * These tests verify that the AgentChatCoordinator — the core dependency
+ * behind the /ws/chat WebSocket endpoint — correctly routes chat messages,
  * rejects unknown agents, and rejects disabled agents.
  *
- * The tests exercise the service directly rather than going through a real
- * WebSocket connection, since the chat-ws module is a thin WebSocket wrapper
- * around AgentService.chat/steer/followUp.
+ * The tests exercise the coordinator directly rather than going through a
+ * real WebSocket connection, since the chat-ws module is a thin WebSocket
+ * wrapper around AgentChatCoordinator.chat/steer/followUp.
  */
 
 function makeMockBackend(events: AgentEvent[]): AgentBackend {
@@ -28,8 +28,8 @@ function makeMockBackend(events: AgentEvent[]): AgentBackend {
   };
 }
 
-function makeAgents(registry: AgentRegistry, events: AgentEvent[] = []): AgentService {
-  return createAgentService({
+function makeAgents(registry: AgentRegistry, events: AgentEvent[] = []): AgentChatCoordinator {
+  return createAgentChatCoordinator({
     registry,
     poolMaxSize: 10,
     createBackend: async () => makeMockBackend(events),

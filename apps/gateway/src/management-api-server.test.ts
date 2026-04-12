@@ -1,9 +1,10 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { AgentRegistry, RegisteredAgent } from './agent-registry.js';
-import type { AgentService } from './agent-service.js';
+import type { AgentChatCoordinator } from './agent-chat-coordinator.js';
 import type { ChannelRegistry, RegisteredChannel } from './channel-registry.js';
 import type { GatewayCredentialStore } from './credential-store.js';
+import { EventBus } from './event-bus.js';
 import type { DynamicGateway } from './gateway.js';
 import { createGatewayManagementApp } from './management-api.js';
 
@@ -61,6 +62,7 @@ function makeChannelRegistry(): ChannelRegistry {
         name: config.name,
         adapter: config.adapter,
         globalDenyList: config.globalDenyList,
+        allowedUsers: config.allowedUsers ?? [],
         routing: config.routing,
         registeredAt: new Date().toISOString(),
       };
@@ -76,6 +78,8 @@ function makeChannelRegistry(): ChannelRegistry {
         entry.routing = patch.routing as RegisteredChannel['routing'];
       if (patch.globalDenyList !== undefined)
         entry.globalDenyList = patch.globalDenyList as string[];
+      if (patch.allowedUsers !== undefined)
+        entry.allowedUsers = patch.allowedUsers as string[];
       return entry;
     }),
     remove: vi.fn((name: string) => channels.delete(name)),
@@ -118,6 +122,7 @@ function makeGateway(): DynamicGateway {
     registerAgent: vi.fn(),
     deregisterAgent: vi.fn().mockResolvedValue([]),
     registerChannel: vi.fn().mockResolvedValue(undefined),
+    stopChannel: vi.fn().mockResolvedValue(true),
     agentCount: vi.fn().mockReturnValue(0),
     channelCount: vi.fn().mockReturnValue(0),
     start: vi.fn().mockResolvedValue(undefined),
@@ -125,7 +130,7 @@ function makeGateway(): DynamicGateway {
   };
 }
 
-function makeAgents(): AgentService {
+function makeAgents(): AgentChatCoordinator {
   return {
     chat: vi.fn(),
     steer: vi.fn().mockResolvedValue(undefined),
@@ -157,6 +162,12 @@ const JSON_HEADERS = { 'Content-Type': 'application/json', ...AUTH };
 // --- Tests ---
 
 describe('createGatewayManagementApp', () => {
+  // Reset the module-level agent ID counter so tests that need a
+  // specific id (e.g. `a1`) get predictable values regardless of order.
+  beforeEach(() => {
+    agentIdCounter = 0;
+  });
+
   // Health
   describe('GET /health', () => {
     it('returns healthy without auth', async () => {
@@ -403,9 +414,16 @@ describe('createGatewayManagementApp', () => {
   // Channel routes
   describe('POST /channels', () => {
     it('registers telegram channel using credential store', async () => {
-      const { app, credentialStore, gateway, channelRegistry } = createApp();
-      // Pre-store credential
+      const { app, credentialStore, gateway, channelRegistry, agentRegistry } = createApp();
+      // Pre-store credential and register the referenced agent so the
+      // routing rule passes referential-integrity validation. Counter
+      // is reset in beforeEach, so the mock assigns id 'a1'.
       await credentialStore.set('channel:tg1:token', 'bot-token-123');
+      (agentRegistry.register as ReturnType<typeof vi.fn>)({
+        name: 'bot-a1',
+        model: 'm',
+        systemPrompt: 'p',
+      });
 
       const res = await app.request('/channels', {
         method: 'POST',
@@ -463,6 +481,189 @@ describe('createGatewayManagementApp', () => {
       const body = await res.json();
       expect(body.error).toContain('Unknown adapter');
     });
+
+    it('persists allowedUsers when provided in POST body', async () => {
+      const { app, credentialStore, channelRegistry, agentRegistry } = createApp();
+      await credentialStore.set('channel:tg1:token', 'bot-token-123');
+      (agentRegistry.register as ReturnType<typeof vi.fn>)({
+        name: 'bot-a1',
+        model: 'm',
+        systemPrompt: 'p',
+      });
+
+      const res = await app.request('/channels', {
+        method: 'POST',
+        headers: JSON_HEADERS,
+        body: JSON.stringify({
+          name: 'tg1',
+          adapter: 'telegram',
+          allowedUsers: ['@alice', '12345'],
+          routing: [
+            { condition: { type: 'default' }, agentId: 'a1', allowList: [], denyList: [] },
+          ],
+        }),
+      });
+      expect(res.status).toBe(201);
+      expect(channelRegistry.register).toHaveBeenCalledWith(
+        expect.objectContaining({ allowedUsers: ['@alice', '12345'] }),
+      );
+      // Verify the live registry has it so the adapter's closure would
+      // resolve to the same list on the next inbound message.
+      expect(channelRegistry.get('tg1')?.allowedUsers).toEqual(['@alice', '12345']);
+    });
+
+    it('returns 400 when allowedUsers is not an array', async () => {
+      const { app, credentialStore } = createApp();
+      await credentialStore.set('channel:tg1:token', 'bot-token-123');
+      const res = await app.request('/channels', {
+        method: 'POST',
+        headers: JSON_HEADERS,
+        body: JSON.stringify({
+          name: 'tg1',
+          adapter: 'telegram',
+          allowedUsers: '@alice',
+          routing: [],
+        }),
+      });
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toContain('allowedUsers must be an array');
+    });
+
+    it('rejects routing that references unknown agentId', async () => {
+      const { app, credentialStore } = createApp();
+      await credentialStore.set('channel:tg1:token', 'bot-token-123');
+      const res = await app.request('/channels', {
+        method: 'POST',
+        headers: JSON_HEADERS,
+        body: JSON.stringify({
+          name: 'tg1',
+          adapter: 'telegram',
+          routing: [
+            { condition: { type: 'default' }, agentId: 'ghost', allowList: [], denyList: [] },
+          ],
+        }),
+      });
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toContain('ghost');
+    });
+
+    it('emits channel:created event on successful registration', async () => {
+      const { app, credentialStore, agentRegistry, eventBus } = createApp({
+        eventBus: new EventBus(),
+      });
+      await credentialStore.set('channel:tg1:token', 'bot-token-123');
+      (agentRegistry.register as ReturnType<typeof vi.fn>)({
+        name: 'bot-a1',
+        model: 'm',
+        systemPrompt: 'p',
+      });
+      const events: unknown[] = [];
+      (eventBus as { subscribe: (fn: (e: unknown) => void) => void }).subscribe((e) =>
+        events.push(e),
+      );
+
+      const res = await app.request('/channels', {
+        method: 'POST',
+        headers: JSON_HEADERS,
+        body: JSON.stringify({
+          name: 'tg1',
+          adapter: 'telegram',
+          routing: [{ condition: { type: 'default' }, agentId: 'a1', allowList: [], denyList: [] }],
+        }),
+      });
+      expect(res.status).toBe(201);
+      expect(events).toContainEqual({ type: 'channel:created', channel: 'tg1' });
+    });
+
+    it('returns 409 when channel already exists', async () => {
+      const { app, credentialStore, agentRegistry } = createApp();
+      await credentialStore.set('channel:tg1:token', 'bot-token-123');
+      (agentRegistry.register as ReturnType<typeof vi.fn>)({
+        name: 'bot-a1',
+        model: 'm',
+        systemPrompt: 'p',
+      });
+      const body = JSON.stringify({
+        name: 'tg1',
+        adapter: 'telegram',
+        routing: [{ condition: { type: 'default' }, agentId: 'a1', allowList: [], denyList: [] }],
+      });
+      const first = await app.request('/channels', { method: 'POST', headers: JSON_HEADERS, body });
+      expect(first.status).toBe(201);
+      const second = await app.request('/channels', {
+        method: 'POST',
+        headers: JSON_HEADERS,
+        body,
+      });
+      expect(second.status).toBe(409);
+    });
+  });
+
+  describe('PUT /channels/:name', () => {
+    it('updates allowedUsers and persists', async () => {
+      const { app, channelRegistry } = createApp();
+      (channelRegistry.register as ReturnType<typeof vi.fn>)({
+        name: 'tg1',
+        adapter: 'telegram',
+        globalDenyList: [],
+        allowedUsers: ['@alice'],
+        routing: [],
+      });
+      const res = await app.request('/channels/tg1', {
+        method: 'PUT',
+        headers: JSON_HEADERS,
+        body: JSON.stringify({ allowedUsers: ['@alice', '@bob'] }),
+      });
+      expect(res.status).toBe(200);
+      expect(channelRegistry.update).toHaveBeenCalledWith('tg1', {
+        allowedUsers: ['@alice', '@bob'],
+      });
+      expect(channelRegistry.get('tg1')?.allowedUsers).toEqual(['@alice', '@bob']);
+    });
+
+    it('returns 400 when patched allowedUsers is not an array', async () => {
+      const { app, channelRegistry } = createApp();
+      (channelRegistry.register as ReturnType<typeof vi.fn>)({
+        name: 'tg1',
+        adapter: 'telegram',
+        globalDenyList: [],
+        allowedUsers: [],
+        routing: [],
+      });
+      const res = await app.request('/channels/tg1', {
+        method: 'PUT',
+        headers: JSON_HEADERS,
+        body: JSON.stringify({ allowedUsers: 'not-an-array' }),
+      });
+      expect(res.status).toBe(400);
+    });
+
+    it('emits channel:config-changed event on successful patch', async () => {
+      const { app, channelRegistry, eventBus } = createApp({ eventBus: new EventBus() });
+      (channelRegistry.register as ReturnType<typeof vi.fn>)({
+        name: 'tg1',
+        adapter: 'telegram',
+        globalDenyList: [],
+        allowedUsers: [],
+        routing: [],
+      });
+      const events: unknown[] = [];
+      (eventBus as { subscribe: (fn: (e: unknown) => void) => void }).subscribe((e) =>
+        events.push(e),
+      );
+      await app.request('/channels/tg1', {
+        method: 'PUT',
+        headers: JSON_HEADERS,
+        body: JSON.stringify({ allowedUsers: ['@alice'] }),
+      });
+      expect(events).toContainEqual({
+        type: 'channel:config-changed',
+        channel: 'tg1',
+        fields: ['allowedUsers'],
+      });
+    });
   });
 
   describe('GET /channels', () => {
@@ -506,7 +707,12 @@ describe('createGatewayManagementApp', () => {
 
   describe('PUT /channels/:name', () => {
     it('updates channel routing', async () => {
-      const { app, channelRegistry } = createApp();
+      const { app, channelRegistry, agentRegistry } = createApp();
+      (agentRegistry.register as ReturnType<typeof vi.fn>)({
+        name: 'bot-a1',
+        model: 'm',
+        systemPrompt: 'p',
+      });
       (channelRegistry.register as ReturnType<typeof vi.fn>)({
         name: 'tg1',
         adapter: 'telegram',
@@ -526,6 +732,28 @@ describe('createGatewayManagementApp', () => {
       expect(channelRegistry.save).toHaveBeenCalled();
     });
 
+    it('rejects routing patch that references unknown agentId', async () => {
+      const { app, channelRegistry } = createApp();
+      (channelRegistry.register as ReturnType<typeof vi.fn>)({
+        name: 'tg1',
+        adapter: 'telegram',
+        globalDenyList: [],
+        routing: [],
+      });
+      const res = await app.request('/channels/tg1', {
+        method: 'PUT',
+        headers: JSON_HEADERS,
+        body: JSON.stringify({
+          routing: [
+            { condition: { type: 'default' }, agentId: 'ghost', allowList: [], denyList: [] },
+          ],
+        }),
+      });
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toContain('ghost');
+    });
+
     it('returns 404 for unknown name', async () => {
       const { app } = createApp();
       const res = await app.request('/channels/nope', {
@@ -538,8 +766,8 @@ describe('createGatewayManagementApp', () => {
   });
 
   describe('DELETE /channels/:name', () => {
-    it('removes channel', async () => {
-      const { app, channelRegistry } = createApp();
+    it('removes channel and stops the adapter', async () => {
+      const { app, channelRegistry, gateway } = createApp();
       (channelRegistry.register as ReturnType<typeof vi.fn>)({
         name: 'tg1',
         adapter: 'telegram',
@@ -548,8 +776,27 @@ describe('createGatewayManagementApp', () => {
       });
       const res = await app.request('/channels/tg1', { method: 'DELETE', headers: AUTH });
       expect(res.status).toBe(200);
+      // Adapter shutdown must run BEFORE registry removal so in-flight
+      // messages drain through the still-registered routing config.
+      expect(gateway.stopChannel).toHaveBeenCalledWith('tg1');
       expect(channelRegistry.remove).toHaveBeenCalledWith('tg1');
       expect(channelRegistry.save).toHaveBeenCalled();
+    });
+
+    it('emits channel:removed event', async () => {
+      const { app, channelRegistry, eventBus } = createApp({ eventBus: new EventBus() });
+      (channelRegistry.register as ReturnType<typeof vi.fn>)({
+        name: 'tg1',
+        adapter: 'telegram',
+        globalDenyList: [],
+        routing: [],
+      });
+      const events: unknown[] = [];
+      (eventBus as { subscribe: (fn: (e: unknown) => void) => void }).subscribe((e) =>
+        events.push(e),
+      );
+      await app.request('/channels/tg1', { method: 'DELETE', headers: AUTH });
+      expect(events).toContainEqual({ type: 'channel:removed', channel: 'tg1' });
     });
 
     it('returns 404 for unknown name', async () => {
@@ -580,6 +827,69 @@ describe('createGatewayManagementApp', () => {
         body: JSON.stringify({ key: 'my-key' }),
       });
       expect(res.status).toBe(400);
+    });
+
+    it('restarts running telegram channel when its token is rotated', async () => {
+      const { app, credentialStore, channelRegistry, gateway, eventBus } = createApp({
+        eventBus: new EventBus(),
+      });
+      // Simulate a running channel: registered in the channel registry
+      // and already present in the gateway.
+      (channelRegistry.register as ReturnType<typeof vi.fn>)({
+        name: 'tg1',
+        adapter: 'telegram',
+        globalDenyList: [],
+        allowedUsers: [],
+        routing: [],
+      });
+      const events: unknown[] = [];
+      (eventBus as { subscribe: (fn: (e: unknown) => void) => void }).subscribe((e) =>
+        events.push(e),
+      );
+
+      const res = await app.request('/credentials', {
+        method: 'POST',
+        headers: JSON_HEADERS,
+        body: JSON.stringify({ key: 'channel:tg1:token', value: 'new-token' }),
+      });
+      expect(res.status).toBe(201);
+      expect(credentialStore.set).toHaveBeenCalledWith('channel:tg1:token', 'new-token');
+      // Rotation calls stopChannel then registerChannel with the new adapter.
+      expect(gateway.stopChannel).toHaveBeenCalledWith('tg1');
+      expect(gateway.registerChannel).toHaveBeenCalledWith(
+        'tg1',
+        expect.any(Object),
+        expect.objectContaining({ globalDenyList: [], routing: [] }),
+      );
+      expect(events).toContainEqual({
+        type: 'channel:restarted',
+        channel: 'tg1',
+        reason: 'token-rotation',
+      });
+    });
+
+    it('does nothing for non-channel credential keys', async () => {
+      const { app, gateway } = createApp();
+      const res = await app.request('/credentials', {
+        method: 'POST',
+        headers: JSON_HEADERS,
+        body: JSON.stringify({ key: 'anthropic-api-key:default', value: 'sk-foo' }),
+      });
+      expect(res.status).toBe(201);
+      expect(gateway.stopChannel).not.toHaveBeenCalled();
+      expect(gateway.registerChannel).not.toHaveBeenCalled();
+    });
+
+    it('stages token silently when no matching channel exists yet', async () => {
+      const { app, gateway } = createApp();
+      const res = await app.request('/credentials', {
+        method: 'POST',
+        headers: JSON_HEADERS,
+        body: JSON.stringify({ key: 'channel:future:token', value: 'tok' }),
+      });
+      expect(res.status).toBe(201);
+      expect(gateway.stopChannel).not.toHaveBeenCalled();
+      expect(gateway.registerChannel).not.toHaveBeenCalled();
     });
   });
 

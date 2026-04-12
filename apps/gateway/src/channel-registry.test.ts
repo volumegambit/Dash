@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -197,5 +197,54 @@ describe('ChannelRegistry', () => {
     registry.register(makeConfig({ name: 'exists' }));
     expect(registry.has('exists')).toBe(true);
     expect(registry.has('missing')).toBe(false);
+  });
+
+  it('register defaults allowedUsers to empty array when omitted', () => {
+    const registry = new ChannelRegistry();
+    const channel = registry.register(makeConfig({ name: 'no-allow' }));
+    expect(channel.allowedUsers).toEqual([]);
+  });
+
+  it('update patches allowedUsers', () => {
+    const registry = new ChannelRegistry();
+    registry.register(makeConfig({ name: 'ch', allowedUsers: ['@alice'] }));
+    const updated = registry.update('ch', { allowedUsers: ['@alice', '@bob'] });
+    expect(updated.allowedUsers).toEqual(['@alice', '@bob']);
+  });
+
+  it('persists and reloads allowedUsers', async () => {
+    const registry = new ChannelRegistry(filePath);
+    registry.register(
+      makeConfig({ name: 'allow-persist', allowedUsers: ['@alice', '12345'] }),
+    );
+    await registry.save();
+
+    const registry2 = new ChannelRegistry(filePath);
+    await registry2.load();
+    const channel = registry2.get('allow-persist');
+    expect(channel?.allowedUsers).toEqual(['@alice', '12345']);
+  });
+
+  it('load normalizes missing allowedUsers from legacy channels.json to []', async () => {
+    // Write a file that pre-dates the allowedUsers field.
+    const legacy = [
+      {
+        name: 'legacy',
+        adapter: 'telegram' as const,
+        globalDenyList: [],
+        routing: [
+          { condition: { type: 'default' }, agentId: 'agent-1', allowList: [], denyList: [] },
+        ],
+        registeredAt: new Date().toISOString(),
+        // note: no `allowedUsers` field
+      },
+    ];
+    await writeFile(filePath, JSON.stringify(legacy));
+
+    const registry = new ChannelRegistry(filePath);
+    await registry.load();
+    const channel = registry.get('legacy');
+    expect(channel).toBeDefined();
+    expect(channel?.allowedUsers).toEqual([]);
   });
 });
