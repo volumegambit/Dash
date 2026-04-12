@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { GatewayManagementClient } from './gateway-client.js';
-import { GatewayProcess, type GatewayProcessOptions, type ProcessSpawner } from './process.js';
+import { GatewaySupervisor, type GatewaySupervisorOptions, type ProcessSpawner } from './process.js';
 
 // ---------------------------------------------------------------------------
 // Mock helpers
@@ -36,8 +36,8 @@ function createMockSpawner(pid = 12345): ProcessSpawner {
 
 function makeOptions(
   tmpDir: string,
-  overrides: Partial<GatewayProcessOptions> = {},
-): GatewayProcessOptions {
+  overrides: Partial<GatewaySupervisorOptions> = {},
+): GatewaySupervisorOptions {
   return {
     gatewayDataDir: tmpDir,
     projectRoot: '/fake/root',
@@ -46,10 +46,10 @@ function makeOptions(
 }
 
 // ---------------------------------------------------------------------------
-// GatewayProcess.ensureRunning()
+// GatewaySupervisor.ensureRunning()
 // ---------------------------------------------------------------------------
 
-describe('GatewayProcess.ensureRunning()', () => {
+describe('GatewaySupervisor.ensureRunning()', () => {
   let tmpDir: string;
 
   beforeEach(async () => {
@@ -64,7 +64,7 @@ describe('GatewayProcess.ensureRunning()', () => {
     const mockClient = createMockGatewayClient();
     const spawner = createMockSpawner();
 
-    const gp = new GatewayProcess(
+    const gp = new GatewaySupervisor(
       makeOptions(tmpDir, { makeGatewayClient: () => mockClient }),
       spawner,
     );
@@ -96,7 +96,7 @@ describe('GatewayProcess.ensureRunning()', () => {
     const mockClient = createMockGatewayClient('2026-01-01T00:00:00Z');
     const spawner = createMockSpawner();
 
-    const gp = new GatewayProcess(
+    const gp = new GatewaySupervisor(
       makeOptions(tmpDir, { makeGatewayClient: () => mockClient }),
       spawner,
     );
@@ -124,7 +124,7 @@ describe('GatewayProcess.ensureRunning()', () => {
     const mockClient = createMockGatewayClient('2026-02-01T00:00:00Z');
     const spawner = createMockSpawner(54321);
 
-    const gp = new GatewayProcess(
+    const gp = new GatewaySupervisor(
       makeOptions(tmpDir, { makeGatewayClient: () => mockClient }),
       spawner,
     );
@@ -152,7 +152,7 @@ describe('GatewayProcess.ensureRunning()', () => {
     const mockClient = createMockGatewayClient('2026-03-01T00:00:00Z');
     const spawner = createMockSpawner(54321);
 
-    const gp = new GatewayProcess(
+    const gp = new GatewaySupervisor(
       makeOptions(tmpDir, { makeGatewayClient: () => mockClient }),
       spawner,
     );
@@ -170,7 +170,7 @@ describe('GatewayProcess.ensureRunning()', () => {
 
     const spawner = createMockSpawner();
 
-    const gp = new GatewayProcess(
+    const gp = new GatewaySupervisor(
       makeOptions(tmpDir, { makeGatewayClient: () => failingClient }),
       spawner,
     );
@@ -184,7 +184,7 @@ describe('GatewayProcess.ensureRunning()', () => {
     const mockClient = createMockGatewayClient();
     const spawner = createMockSpawner();
 
-    const gp = new GatewayProcess(
+    const gp = new GatewaySupervisor(
       makeOptions(tmpDir, {
         makeGatewayClient: () => mockClient,
         gatewayRuntimeDir: '/custom/data/dir',
@@ -203,10 +203,10 @@ describe('GatewayProcess.ensureRunning()', () => {
 });
 
 // ---------------------------------------------------------------------------
-// GatewayProcess.getClient()
+// GatewaySupervisor.getClient()
 // ---------------------------------------------------------------------------
 
-describe('GatewayProcess.getClient()', () => {
+describe('GatewaySupervisor.getClient()', () => {
   let tmpDir: string;
 
   beforeEach(async () => {
@@ -218,7 +218,7 @@ describe('GatewayProcess.getClient()', () => {
   });
 
   it('returns null when no state exists', async () => {
-    const gp = new GatewayProcess(makeOptions(tmpDir));
+    const gp = new GatewaySupervisor(makeOptions(tmpDir));
     const client = await gp.getClient();
     expect(client).toBeNull();
   });
@@ -236,7 +236,7 @@ describe('GatewayProcess.getClient()', () => {
     });
 
     const mockClient = createMockGatewayClient();
-    const gp = new GatewayProcess(makeOptions(tmpDir, { makeGatewayClient: () => mockClient }));
+    const gp = new GatewaySupervisor(makeOptions(tmpDir, { makeGatewayClient: () => mockClient }));
 
     const client = await gp.getClient();
     expect(client).toBe(mockClient);
@@ -256,7 +256,7 @@ describe('GatewayProcess.getClient()', () => {
 
     let capturedUrl = '';
     let capturedToken = '';
-    const gp = new GatewayProcess(
+    const gp = new GatewaySupervisor(
       makeOptions(tmpDir, {
         makeGatewayClient: (url, token) => {
           capturedUrl = url;

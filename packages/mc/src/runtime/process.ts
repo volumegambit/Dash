@@ -9,7 +9,7 @@ import { GatewayStateStore } from './gateway-state.js';
 export { providerSecretKey, parseProviderSecretKey } from './provider-keys.js';
 
 // ---------------------------------------------------------------------------
-// Process spawning interfaces (used by GatewayProcess and tests)
+// Process spawning interfaces (used by GatewaySupervisor and tests)
 // ---------------------------------------------------------------------------
 
 export interface SpawnedProcess {
@@ -56,10 +56,10 @@ export const defaultHealthChecker: HealthChecker = async (port: number): Promise
 };
 
 // ---------------------------------------------------------------------------
-// GatewayProcess
+// GatewaySupervisor
 // ---------------------------------------------------------------------------
 
-export interface GatewayProcessOptions {
+export interface GatewaySupervisorOptions {
   gatewayDataDir: string;
   gatewayRuntimeDir?: string; // --data-dir passed to the gateway process
   projectRoot: string;
@@ -68,9 +68,9 @@ export interface GatewayProcessOptions {
   channelPort?: number;
 }
 
-export class GatewayProcess {
+export class GatewaySupervisor {
   constructor(
-    private options: GatewayProcessOptions,
+    private options: GatewaySupervisorOptions,
     private spawner: ProcessSpawner = defaultProcessSpawner,
   ) {}
 
