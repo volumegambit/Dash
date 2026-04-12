@@ -60,6 +60,33 @@ export interface GatewayHealthResponse {
   mcpServers?: Array<{ name: string; status: string }>;
 }
 
+/**
+ * Structured HTTP error thrown by GatewayManagementClient when the server
+ * returns a non-2xx response. Exposes the HTTP status so callers (notably
+ * GatewaySupervisor) can distinguish transient failures from permanent
+ * ones: a 401 means "our token is wrong, the gateway is unusable to us"
+ * and should trigger a reconcile; a 500 or a fetch timeout means "the
+ * gateway had a blip" and should just be retried.
+ */
+export class GatewayHttpError extends Error {
+  constructor(
+    public readonly status: number,
+    public readonly label: string,
+    public readonly body: string,
+  ) {
+    super(`Gateway ${label} failed: ${status} ${body}`.trimEnd());
+    this.name = 'GatewayHttpError';
+  }
+}
+
+/**
+ * Default timeout for hot-path health/auth checks used by GatewaySupervisor.
+ * Short enough that a blocked event loop in the gateway doesn't wedge MC's
+ * startup / poller tick, long enough to survive normal GC pauses and MCP
+ * tool roundtrips.
+ */
+const HOT_PATH_TIMEOUT_MS = 2_000;
+
 export class GatewayManagementClient {
   constructor(
     private baseUrl: string,
@@ -73,13 +100,16 @@ export class GatewayManagementClient {
   private async throwIfNotOk(res: Response, label: string): Promise<void> {
     if (!res.ok) {
       const body = await res.text().catch(() => '');
-      throw new Error(`Gateway ${label} failed: ${res.status} ${body}`.trimEnd());
+      throw new GatewayHttpError(res.status, label, body);
     }
   }
 
-  // Health
+  // Health — unauthenticated, short-timeout, used by supervisor hot path.
   async health(): Promise<GatewayHealthResponse> {
-    const res = await fetch(`${this.baseUrl}/health`);
+    const res = await fetch(`${this.baseUrl}/health`, {
+      signal: AbortSignal.timeout(HOT_PATH_TIMEOUT_MS),
+    });
+    await this.throwIfNotOk(res, 'health');
     return res.json() as Promise<GatewayHealthResponse>;
   }
 
@@ -95,8 +125,12 @@ export class GatewayManagementClient {
   }
 
   async listAgents(): Promise<GatewayAgent[]> {
+    // Short timeout: the supervisor's reuse-check calls this on every
+    // `ensureRunning`, and an unbounded hang would wedge the poller.
+    // User-action calls that care about longer latency can retry.
     const res = await fetch(`${this.baseUrl}/agents`, {
       headers: this.headers(),
+      signal: AbortSignal.timeout(HOT_PATH_TIMEOUT_MS),
     });
     await this.throwIfNotOk(res, 'listAgents');
     return res.json() as Promise<GatewayAgent[]>;

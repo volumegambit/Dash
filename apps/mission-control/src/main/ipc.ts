@@ -169,12 +169,21 @@ export async function registerIpcHandlers(
   };
   await refreshChatServiceConnection();
 
-  // Start gateway health poller
+  // Start gateway health poller.
+  //
+  // IMPORTANT: the poller uses the read-only `getClient()` path, NOT
+  // `ensureRunning()`. Using `ensureRunning` here meant every transient
+  // hiccup in the gateway (slow MCP tool call, GC pause, momentary auth
+  // error) would trigger a respawn cascade — the root cause of the
+  // EADDRINUSE loop we hit. The poller's job is to report "is the
+  // gateway we already started still healthy?", not to reconcile
+  // lifecycle state. Explicit restart goes through the `gateway:restart`
+  // IPC handler below, which does call `gw.restart()`.
   const sendGatewayStatus = (status: string) => {
     const win = getWindow();
     if (win && !win.isDestroyed()) win.webContents.send('gateway:status', status);
   };
-  gatewayPoller = new GatewayPoller(() => gw.ensureRunning());
+  gatewayPoller = new GatewayPoller(async () => gw.getClient());
 
   // SSE subscription to gateway events
   let sseAbort: AbortController | null = null;

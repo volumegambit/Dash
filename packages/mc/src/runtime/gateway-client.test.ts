@@ -67,16 +67,34 @@ describe('GatewayManagementClient', () => {
   // ---- Health ----
 
   describe('health()', () => {
-    it('calls GET /health without auth headers', async () => {
+    it('calls GET /health without auth headers and with a short timeout', async () => {
       mockOk({ status: 'healthy', startedAt: '2026-04-01T00:00:00Z', agents: 2, channels: 1 });
 
       const client = new GatewayManagementClient(BASE_URL, TOKEN);
       const result = await client.health();
 
-      expect(fetchSpy).toHaveBeenCalledWith(`${BASE_URL}/health`);
+      // URL must match; options must include an AbortSignal (the
+      // short-timeout abort for the hot path). We don't assert on the
+      // exact timeout value — that's an implementation detail — only
+      // that a signal is present so the call is bounded.
+      expect(fetchSpy).toHaveBeenCalledWith(
+        `${BASE_URL}/health`,
+        expect.objectContaining({ signal: expect.any(AbortSignal) }),
+      );
       expect(result.status).toBe('healthy');
       expect(result.agents).toBe(2);
       expect(result.channels).toBe(1);
+    });
+
+    it('throws GatewayHttpError with the status on non-2xx responses', async () => {
+      // Important for GatewaySupervisor's error-classification logic:
+      // a 401 here must be distinguishable from a fetch timeout so
+      // that only permanent mismatches trigger a respawn.
+      const { GatewayHttpError } = await import('./gateway-client.js');
+      mockError(500, 'internal error');
+
+      const client = new GatewayManagementClient(BASE_URL, TOKEN);
+      await expect(client.health()).rejects.toBeInstanceOf(GatewayHttpError);
     });
   });
 
