@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import type { AgentRegistry, RegisteredAgent } from './agent-registry.js';
-import type { AgentRuntime } from './agent-runtime.js';
+import type { AgentService } from './agent-service.js';
 import type { ChannelRegistry, RegisteredChannel } from './channel-registry.js';
 import type { GatewayCredentialStore } from './credential-store.js';
 import type { DynamicGateway } from './gateway.js';
@@ -125,19 +125,20 @@ function makeGateway(): DynamicGateway {
   };
 }
 
-function makeRuntime(): AgentRuntime {
+function makeAgents(): AgentService {
   return {
     chat: vi.fn(),
-    registry: {} as AgentRegistry,
-    stats: vi.fn().mockReturnValue({}),
+    steer: vi.fn().mockResolvedValue(undefined),
+    followUp: vi.fn().mockResolvedValue(undefined),
+    stats: vi.fn().mockReturnValue({ size: 0, maxSize: 0, pinned: 0, agents: {} }),
     stop: vi.fn().mockResolvedValue(undefined),
-  } as unknown as AgentRuntime;
+  };
 }
 
 function createApp(overrides: Record<string, unknown> = {}) {
   const deps = {
     gateway: makeGateway(),
-    runtime: makeRuntime(),
+    agents: makeAgents(),
     agentRegistry: makeAgentRegistry(),
     channelRegistry: makeChannelRegistry(),
     credentialStore: makeCredentialStore(),

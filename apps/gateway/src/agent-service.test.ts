@@ -1,7 +1,7 @@
 import type { AgentBackend, AgentEvent, AgentState, RunOptions } from '@dash/agent';
 import { describe, expect, it } from 'vitest';
 import { AgentRegistry } from './agent-registry.js';
-import { AgentRuntime } from './agent-runtime.js';
+import { createAgentService } from './agent-service.js';
 
 function makeMockBackend(events: AgentEvent[]): AgentBackend {
   return {
@@ -17,7 +17,7 @@ function makeMockBackend(events: AgentEvent[]): AgentBackend {
   };
 }
 
-describe('AgentRuntime', () => {
+describe('AgentService', () => {
   it('routes a message to the correct agent and streams events', async () => {
     const registry = new AgentRegistry();
     const { id } = registry.register({
@@ -35,15 +35,14 @@ describe('AgentRuntime', () => {
       },
     ];
 
-    const runtime = new AgentRuntime({
+    const agents = createAgentService({
       registry,
       poolMaxSize: 10,
-      sessionBaseDir: '/tmp/test-sessions',
       createBackend: async () => makeMockBackend(expectedEvents),
     });
 
     const collected: AgentEvent[] = [];
-    for await (const event of runtime.chat({
+    for await (const event of agents.chat({
       agentId: id,
       conversationId: 'conv-1',
       text: 'Hi there',
@@ -52,20 +51,19 @@ describe('AgentRuntime', () => {
     }
 
     expect(collected).toEqual(expectedEvents);
-    await runtime.stop();
+    await agents.stop();
   });
 
   it('rejects messages to unknown agents (yields error event)', async () => {
     const registry = new AgentRegistry();
-    const runtime = new AgentRuntime({
+    const agents = createAgentService({
       registry,
       poolMaxSize: 10,
-      sessionBaseDir: '/tmp/test-sessions',
       createBackend: async () => makeMockBackend([]),
     });
 
     const collected: AgentEvent[] = [];
-    for await (const event of runtime.chat({
+    for await (const event of agents.chat({
       agentId: 'nonexistent-id',
       conversationId: 'conv-1',
       text: 'Hello',
@@ -77,7 +75,7 @@ describe('AgentRuntime', () => {
     expect(collected[0].type).toBe('error');
     const errorEvent = collected[0] as { type: 'error'; error: Error };
     expect(errorEvent.error.message).toMatch(/not found/);
-    await runtime.stop();
+    await agents.stop();
   });
 
   it('rejects messages to disabled agents (yields error event)', async () => {
@@ -89,15 +87,14 @@ describe('AgentRuntime', () => {
     });
     registry.disable(id);
 
-    const runtime = new AgentRuntime({
+    const agents = createAgentService({
       registry,
       poolMaxSize: 10,
-      sessionBaseDir: '/tmp/test-sessions',
       createBackend: async () => makeMockBackend([]),
     });
 
     const collected: AgentEvent[] = [];
-    for await (const event of runtime.chat({
+    for await (const event of agents.chat({
       agentId: id,
       conversationId: 'conv-1',
       text: 'Hello',
@@ -109,6 +106,6 @@ describe('AgentRuntime', () => {
     expect(collected[0].type).toBe('error');
     const errorEvent = collected[0] as { type: 'error'; error: Error };
     expect(errorEvent.error.message).toMatch(/disabled/);
-    await runtime.stop();
+    await agents.stop();
   });
 });
