@@ -642,7 +642,7 @@ describe('PiAgentBackend pull-based credential source', () => {
     expect(lastAuthStorage?._providers).toEqual(new Set(['anthropic', 'openai']));
 
     // Delete openai key from the store
-    delete keys.openai;
+    keys.openai = undefined as unknown as string;
     await backend.refreshCredentials();
 
     expect(lastAuthStorage?.remove).toHaveBeenCalledWith('openai');
@@ -725,7 +725,6 @@ describe('PiAgentBackend pull-based credential source', () => {
       expect.objectContaining({ type: 'oauth', access: 'sk-ant-oat01-abc' }),
     );
   });
-
 });
 
 describe('PiAgentBackend.normalizeEvent — error surfacing', () => {
@@ -783,5 +782,264 @@ describe('PiAgentBackend.normalizeEvent — error surfacing', () => {
       // biome-ignore lint/suspicious/noExplicitAny: test mock for partial event object
     } as any);
     expect(result).toEqual({ type: 'error', error: new Error('Model call failed') });
+  });
+});
+
+describe('PiAgentBackend model fallback chain', () => {
+  /**
+   * Build a mock session whose `prompt()` method produces a different
+   * behavior on each invocation. Each behavior is a function that receives
+   * the current subscribe callback and either throws (to simulate a provider
+   * failure) or fires events synchronously (to simulate a successful call).
+   */
+  function makeSequencedSession(
+    // biome-ignore lint/suspicious/noExplicitAny: test mock event type
+    behaviors: Array<(cb: (event: any) => void) => void | Promise<void>>,
+  ) {
+    // biome-ignore lint/suspicious/noExplicitAny: test mock callback type
+    let currentCb: ((event: any) => void) | null = null;
+    let callIndex = 0;
+
+    const session = {
+      dispose: vi.fn(),
+      // biome-ignore lint/suspicious/noExplicitAny: test mock callback type
+      subscribe: vi.fn((cb: any) => {
+        currentCb = cb;
+        return vi.fn();
+      }),
+      prompt: vi.fn(async () => {
+        const behavior = behaviors[callIndex++];
+        if (!behavior) {
+          throw new Error(`No behavior for prompt call ${callIndex}`);
+        }
+        if (!currentCb) {
+          throw new Error('subscribe() was not called before prompt()');
+        }
+        await behavior(currentCb);
+      }),
+      abort: vi.fn(),
+      setModel: vi.fn().mockResolvedValue(undefined),
+      getActiveToolNames: vi.fn(() => ['read', 'bash']),
+      setActiveToolsByName: vi.fn(),
+      agent: { setSystemPrompt: vi.fn() },
+    };
+
+    return session;
+  }
+
+  /** Fire a minimal successful sequence: single text_delta + message_end + agent_end */
+  // biome-ignore lint/suspicious/noExplicitAny: test mock event type
+  function fireSuccess(cb: (event: any) => void, text: string) {
+    cb({
+      type: 'message_update',
+      message: {},
+      assistantMessageEvent: {
+        type: 'text_delta',
+        contentIndex: 0,
+        delta: text,
+        partial: {},
+      },
+    });
+    cb({
+      type: 'message_end',
+      message: {
+        role: 'assistant',
+        usage: {
+          input: 5,
+          output: 2,
+          cacheRead: 0,
+          cacheWrite: 0,
+          totalTokens: 7,
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+        },
+      },
+    });
+    cb({ type: 'agent_end', messages: [] });
+  }
+
+  async function mountBackend(
+    session: ReturnType<typeof makeSequencedSession>,
+    fallbackModels?: string[],
+  ) {
+    const { createAgentSession } = await import('@mariozechner/pi-coding-agent');
+    vi.mocked(createAgentSession).mockResolvedValueOnce({
+      // biome-ignore lint/suspicious/noExplicitAny: test mock
+      session: session as any,
+      // biome-ignore lint/suspicious/noExplicitAny: test mock
+      extensionsResult: {} as any,
+    });
+
+    const backend = new PiAgentBackend(
+      {
+        model: 'anthropic/claude-sonnet-4-20250514',
+        systemPrompt: 'Test',
+        fallbackModels,
+      },
+      { anthropic: 'test-key' },
+    );
+    await backend.start('/tmp/test');
+    return backend;
+  }
+
+  function makeState() {
+    return {
+      channelId: 'ch-1',
+      conversationId: 'conv-1',
+      model: 'anthropic/claude-sonnet-4-20250514',
+      message: 'hello',
+      systemPrompt: 'Test',
+    };
+  }
+
+  it('primary model succeeds: fallbacks are never invoked', async () => {
+    const session = makeSequencedSession([(cb) => fireSuccess(cb, 'primary')]);
+    const backend = await mountBackend(session, ['anthropic/claude-haiku-4-20250514']);
+
+    const events: AgentEvent[] = [];
+    for await (const ev of backend.run(makeState(), {})) {
+      events.push(ev);
+    }
+
+    expect(session.prompt).toHaveBeenCalledTimes(1);
+    expect(session.setModel).toHaveBeenCalledTimes(1);
+    expect(events).toEqual([
+      { type: 'text_delta', text: 'primary' },
+      {
+        type: 'response',
+        content: 'primary',
+        usage: { inputTokens: 5, outputTokens: 2, cacheReadTokens: 0, cacheWriteTokens: 0 },
+      },
+    ]);
+
+    await backend.stop();
+  });
+
+  it('primary fails before any output: fallback runs and its output is yielded', async () => {
+    const session = makeSequencedSession([
+      () => {
+        // First attempt: provider error before any events
+        throw new Error('rate limit exceeded');
+      },
+      (cb) => fireSuccess(cb, 'from-fallback'),
+    ]);
+    const backend = await mountBackend(session, ['anthropic/claude-haiku-4-20250514']);
+
+    const events: AgentEvent[] = [];
+    for await (const ev of backend.run(makeState(), {})) {
+      events.push(ev);
+    }
+
+    // Prompt called twice (primary + fallback), setModel called twice
+    expect(session.prompt).toHaveBeenCalledTimes(2);
+    expect(session.setModel).toHaveBeenCalledTimes(2);
+
+    // Primary's error is swallowed; caller sees only the fallback's output.
+    // No 'error' event in the stream.
+    expect(events).toEqual([
+      { type: 'text_delta', text: 'from-fallback' },
+      {
+        type: 'response',
+        content: 'from-fallback',
+        usage: { inputTokens: 5, outputTokens: 2, cacheReadTokens: 0, cacheWriteTokens: 0 },
+      },
+    ]);
+
+    await backend.stop();
+  });
+
+  it('all models fail: final attempt yields the last error', async () => {
+    const session = makeSequencedSession([
+      () => {
+        throw new Error('primary: rate limit');
+      },
+      () => {
+        throw new Error('fallback-1: provider down');
+      },
+      () => {
+        throw new Error('fallback-2: auth failed');
+      },
+    ]);
+    const backend = await mountBackend(session, [
+      'anthropic/claude-haiku-4-20250514',
+      'openai/gpt-4o',
+    ]);
+
+    const events: AgentEvent[] = [];
+    for await (const ev of backend.run(makeState(), {})) {
+      events.push(ev);
+    }
+
+    // All three attempts fired
+    expect(session.prompt).toHaveBeenCalledTimes(3);
+    expect(session.setModel).toHaveBeenCalledTimes(3);
+
+    // Caller sees exactly one error event — the final failure
+    expect(events).toHaveLength(1);
+    expect(events[0]).toEqual({
+      type: 'error',
+      error: new Error('fallback-2: auth failed'),
+    });
+
+    await backend.stop();
+  });
+
+  it('primary fails AFTER content is emitted: error propagates, no retry', async () => {
+    const session = makeSequencedSession([
+      (cb) => {
+        // Emit one text delta then fail — mid-stream provider error
+        cb({
+          type: 'message_update',
+          message: {},
+          assistantMessageEvent: {
+            type: 'text_delta',
+            contentIndex: 0,
+            delta: 'partial',
+            partial: {},
+          },
+        });
+        throw new Error('stream died mid-response');
+      },
+      // This behavior should NEVER run
+      (cb) => fireSuccess(cb, 'should-not-appear'),
+    ]);
+    const backend = await mountBackend(session, ['anthropic/claude-haiku-4-20250514']);
+
+    const events: AgentEvent[] = [];
+    for await (const ev of backend.run(makeState(), {})) {
+      events.push(ev);
+    }
+
+    // Only the primary was invoked — the fallback was NOT tried because
+    // content had already been committed to the stream.
+    expect(session.prompt).toHaveBeenCalledTimes(1);
+    expect(session.setModel).toHaveBeenCalledTimes(1);
+
+    // Caller sees the partial content, then the error
+    expect(events).toEqual([
+      { type: 'text_delta', text: 'partial' },
+      { type: 'error', error: new Error('stream died mid-response') },
+    ]);
+
+    await backend.stop();
+  });
+
+  it('no fallbacks configured: behaves exactly like a single-model run', async () => {
+    const session = makeSequencedSession([
+      () => {
+        throw new Error('boom');
+      },
+    ]);
+    // No fallbackModels passed
+    const backend = await mountBackend(session);
+
+    const events: AgentEvent[] = [];
+    for await (const ev of backend.run(makeState(), {})) {
+      events.push(ev);
+    }
+
+    expect(session.prompt).toHaveBeenCalledTimes(1);
+    expect(events).toEqual([{ type: 'error', error: new Error('boom') }]);
+
+    await backend.stop();
   });
 });

@@ -178,10 +178,7 @@ export class PiAgentBackend implements AgentBackend {
    * Intentionally NOT a hash — we want byte-exact comparison so two
    * genuinely different key maps can never be treated as equal.
    */
-  private static keysEqual(
-    a: Record<string, string>,
-    b: Record<string, string>,
-  ): boolean {
+  private static keysEqual(a: Record<string, string>, b: Record<string, string>): boolean {
     const aKeys = Object.keys(a);
     const bKeys = Object.keys(b);
     if (aKeys.length !== bKeys.length) return false;
@@ -458,9 +455,7 @@ export class PiAgentBackend implements AgentBackend {
   async start(workspace: string): Promise<void> {
     // Resolve credentials from the source (snapshot or provider function).
     const keys = await this.resolveProviderKeys();
-    this.logger?.info(
-      `[PiAgent] Starting with credentials: ${PiAgentBackend.redactKeys(keys)}`,
-    );
+    this.logger?.info(`[PiAgent] Starting with credentials: ${PiAgentBackend.redactKeys(keys)}`);
 
     this.auth = this.setupAuth();
     // Remember what we initialized auth with so `refreshCredentials()` can
@@ -557,98 +552,155 @@ export class PiAgentBackend implements AgentBackend {
       }
     }
 
-    // Resolve model from state (may differ from config model)
-    const model = this.resolveModel(state.model);
-    await this.session.setModel(model);
+    // Build the model chain: primary (from state) + operator-configured fallbacks.
+    // On failures that occur BEFORE any event has been yielded, we transparently
+    // retry with the next model. Once any output has been committed to the stream,
+    // errors propagate normally — we can't safely retry mid-response.
+    const modelChain = [state.model, ...(this.config.fallbackModels ?? [])];
 
-    // Update the resource loader with the current system prompt and skills,
-    // then trigger a _baseSystemPrompt rebuild via setActiveToolsByName.
-    // This ensures pi's session.prompt() uses the correct prompt instead of
-    // overwriting Dash's prompt with its own _baseSystemPrompt.
-    if (this.resourceLoader) {
-      this.resourceLoader.setSystemPrompt(state.systemPrompt);
-      const dashSkills = await this.listSkillsAsPiSkills();
-      this.resourceLoader.setExtraSkills(dashSkills);
-      // Force pi to rebuild _baseSystemPrompt from the updated resource loader
-      this.session.setActiveToolsByName(this.session.getActiveToolNames());
-    }
+    for (let attempt = 0; attempt < modelChain.length; attempt++) {
+      const modelStr = modelChain[attempt];
+      const isLastAttempt = attempt === modelChain.length - 1;
 
-    // Event queue for bridging subscribe callback to async generator
-    const queue: (
-      | AgentSessionEvent
-      | { type: '__done__' }
-      | { type: '__error__'; error: Error }
-    )[] = [];
-    let resolve: (() => void) | null = null;
+      // Resolve and switch to this attempt's model. A malformed model string
+      // is a config error, not a runtime failure — but we still try the next
+      // model in the chain rather than giving up immediately.
+      let model: Model<Api>;
+      try {
+        model = this.resolveModel(modelStr);
+      } catch (err) {
+        const resolveError = err instanceof Error ? err : new Error(String(err));
+        if (isLastAttempt) {
+          yield { type: 'error', error: resolveError };
+          return;
+        }
+        this.logger?.warn(
+          `[PiAgent] Cannot resolve model "${modelStr}" (${resolveError.message}), falling back to "${modelChain[attempt + 1]}"`,
+        );
+        continue;
+      }
+      await this.session.setModel(model);
 
-    const waitForEvent = (): Promise<void> =>
-      new Promise<void>((r) => {
-        if (queue.length > 0) {
+      // Update the resource loader with the current system prompt and skills,
+      // then trigger a _baseSystemPrompt rebuild via setActiveToolsByName.
+      // This ensures pi's session.prompt() uses the correct prompt instead of
+      // overwriting Dash's prompt with its own _baseSystemPrompt. Only runs on
+      // the first attempt — the resource loader state doesn't change across
+      // retries (only the model does).
+      if (attempt === 0 && this.resourceLoader) {
+        this.resourceLoader.setSystemPrompt(state.systemPrompt);
+        const dashSkills = await this.listSkillsAsPiSkills();
+        this.resourceLoader.setExtraSkills(dashSkills);
+        // Force pi to rebuild _baseSystemPrompt from the updated resource loader
+        this.session.setActiveToolsByName(this.session.getActiveToolNames());
+      }
+
+      // Event queue for bridging subscribe callback to async generator
+      const queue: (
+        | AgentSessionEvent
+        | { type: '__done__' }
+        | { type: '__error__'; error: Error }
+      )[] = [];
+      let resolve: (() => void) | null = null;
+
+      const waitForEvent = (): Promise<void> =>
+        new Promise<void>((r) => {
+          if (queue.length > 0) {
+            r();
+          } else {
+            resolve = r;
+          }
+        });
+
+      const pushEvent = (
+        event: AgentSessionEvent | { type: '__done__' } | { type: '__error__'; error: Error },
+      ) => {
+        queue.push(event);
+        if (resolve) {
+          const r = resolve;
+          resolve = null;
           r();
-        } else {
-          resolve = r;
+        }
+      };
+
+      // Subscribe to session events
+      const unsubscribe = this.session.subscribe((event: AgentSessionEvent) => {
+        pushEvent(event);
+        if (event.type === 'agent_end') {
+          pushEvent({ type: '__done__' });
         }
       });
 
-    const pushEvent = (
-      event: AgentSessionEvent | { type: '__done__' } | { type: '__error__'; error: Error },
-    ) => {
-      queue.push(event);
-      if (resolve) {
-        const r = resolve;
-        resolve = null;
-        r();
-      }
-    };
+      // Convert Dash ImageBlock[] to PiAgent ImageContent[]
+      const images: ImageContent[] | undefined = state.images?.map((img) => ({
+        type: 'image' as const,
+        data: img.data,
+        mimeType: img.mediaType,
+      }));
 
-    // Subscribe to session events
-    const unsubscribe = this.session.subscribe((event: AgentSessionEvent) => {
-      pushEvent(event);
-      if (event.type === 'agent_end') {
-        pushEvent({ type: '__done__' });
-      }
-    });
+      // Fire prompt (runs concurrently with event consumption)
+      const promptPromise = this.session.prompt(state.message, { images }).catch((err) => {
+        pushEvent({
+          type: '__error__',
+          error: err instanceof Error ? err : new Error(String(err)),
+        });
+      });
 
-    // Convert Dash ImageBlock[] to PiAgent ImageContent[]
-    const images: ImageContent[] | undefined = state.images?.map((img) => ({
-      type: 'image' as const,
-      data: img.data,
-      mimeType: img.mediaType,
-    }));
+      // Track whether we've yielded any normalized event. Once true, we can't
+      // safely retry — retrying would duplicate or corrupt the output stream.
+      let committed = false;
+      let attemptError: Error | null = null;
+      let completed = false;
 
-    // Fire prompt (runs concurrently with event consumption)
-    const promptPromise = this.session.prompt(state.message, { images }).catch((err) => {
-      pushEvent({ type: '__error__', error: err instanceof Error ? err : new Error(String(err)) });
-    });
-
-    try {
-      while (true) {
-        if (options.signal?.aborted || this.abortRequested) break;
-
-        await waitForEvent();
-
-        while (queue.length > 0) {
-          const event = queue.shift();
-          if (!event) break;
-
-          if (event.type === '__done__') {
-            return;
+      try {
+        while (!completed) {
+          if (options.signal?.aborted || this.abortRequested) {
+            completed = true;
+            break;
           }
 
-          if (event.type === '__error__') {
-            yield { type: 'error', error: (event as { type: '__error__'; error: Error }).error };
-            return;
-          }
+          await waitForEvent();
 
-          const normalized = this.normalizeEvent(event as AgentSessionEvent);
-          if (normalized !== null) {
-            yield normalized;
+          while (queue.length > 0) {
+            const event = queue.shift();
+            if (!event) break;
+
+            if (event.type === '__done__') {
+              completed = true;
+              break;
+            }
+
+            if (event.type === '__error__') {
+              attemptError = (event as { type: '__error__'; error: Error }).error;
+              completed = true;
+              break;
+            }
+
+            const normalized = this.normalizeEvent(event as AgentSessionEvent);
+            if (normalized !== null) {
+              yield normalized;
+              committed = true;
+            }
           }
         }
+      } finally {
+        unsubscribe();
+        await promptPromise;
       }
-    } finally {
-      unsubscribe();
-      await promptPromise;
+
+      // Clean success (or clean abort): return without yielding further events
+      if (!attemptError) return;
+
+      // Error after content was emitted, or out of fallback options: propagate
+      if (committed || isLastAttempt) {
+        yield { type: 'error', error: attemptError };
+        return;
+      }
+
+      // Safe to fall back — nothing has been yielded yet. Log and retry.
+      this.logger?.warn(
+        `[PiAgent] Model "${modelStr}" failed before output (${attemptError.message}), falling back to "${modelChain[attempt + 1]}"`,
+      );
     }
   }
 
