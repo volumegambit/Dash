@@ -8,7 +8,7 @@
     "dev:debug": "bash scripts/patch-electron-name.sh && electron-vite dev -- --remote-debugging-port=${MC_DEBUG_PORT:-9222}",
     "build": "electron-vite build",
     "preview": "electron-vite preview",
-    "package": "node ../../scripts/download-opencode.mjs && electron-builder",
+    "package": "electron-builder",
     "typecheck": "tsc -p tsconfig.node.json --noEmit"
   },
   "dependencies": {

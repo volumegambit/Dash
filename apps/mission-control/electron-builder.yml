@@ -43,7 +43,6 @@ extraResources:
       - "@cacheable/**"
       - "@hapi/**"
       - "@hono/**"
-      - "@opencode-ai/**"
       - "@pinojs/**"
       - "@protobufjs/**"
       - "@whiskeysockets/**"
@@ -124,12 +123,6 @@ extraResources:
       - "y18n/**"
       - "yargs/**"
       - "yargs-parser/**"
-  - from: build/bin
-    to: bin
-    filter:
-      - "opencode"
-      - "opencode.exe"
-
 mac:
   target:
     - target: dmg

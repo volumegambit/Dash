@@ -391,10 +391,6 @@ export async function registerIpcHandlers(
   ipcMain.handle('credentials:set', async (_e, key: string, value: string) => {
     const client = await getClient(gw);
     await client.setCredential(key, value);
-    // Refresh model cache when a provider key changes
-    getModelCache()
-      .refresh()
-      .catch(() => {});
   });
 
   ipcMain.handle('credentials:list', async () => {
@@ -405,10 +401,6 @@ export async function registerIpcHandlers(
   ipcMain.handle('credentials:remove', async (_e, key: string) => {
     const client = await getClient(gw);
     await client.removeCredential(key);
-    // Refresh model cache when a provider key changes
-    getModelCache()
-      .refresh()
-      .catch(() => {});
   });
 
   // -----------------------------------------------------------------------
@@ -426,9 +418,6 @@ export async function registerIpcHandlers(
       await client.setCredential(`openai-codex-refresh:${keyName}`, result.refreshToken);
       await client.setCredential(`openai-codex-expires:${keyName}`, String(result.expiresAt));
 
-      getModelCache()
-        .refresh()
-        .catch(() => {});
       return { success: true };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -479,9 +468,6 @@ export async function registerIpcHandlers(
         const client = await getClient(gw);
         await client.setCredential(`anthropic-api-key:${keyName}`, apiKey);
 
-        getModelCache()
-          .refresh()
-          .catch(() => {});
         return { success: true };
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
@@ -662,7 +648,7 @@ export async function registerIpcHandlers(
   });
 
   ipcMain.handle('models:refresh', async () => {
-    return getModelCache().refresh();
+    return getModelCache().load();
   });
 
   ipcMain.handle('tools:list', async () => {
@@ -795,19 +781,6 @@ export async function registerIpcHandlers(
   ipcMain.handle('logs:paths', async () => {
     return { mc: MC_LOG_PATH, gateway: GATEWAY_LOG_PATH, dataDir: DATA_DIR };
   });
-
-  // -----------------------------------------------------------------------
-  // Background model cache refresh on startup
-  // -----------------------------------------------------------------------
-
-  getModelCache()
-    .refresh()
-    .catch((err) => {
-      console.warn(
-        'Background model cache refresh failed:',
-        err instanceof Error ? err.message : err,
-      );
-    });
 
   // -----------------------------------------------------------------------
   // Cleanup on quit

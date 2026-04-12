@@ -1,6 +1,5 @@
 import { existsSync } from 'node:fs';
 import { readFile, unlink, writeFile } from 'node:fs/promises';
-import net from 'node:net';
 import { join } from 'node:path';
 import { AGENT_TOOL_NAMES } from '@dash/agent';
 import { findSupportedModel } from './supported-models.js';
@@ -69,94 +68,4 @@ export class ModelCacheService {
     await writeFile(this.cacheFilePath, JSON.stringify(cache, null, 2));
   }
 
-  /**
-   * Spawn a temporary OpenCode server, query all providers and their models,
-   * save to cache, and shut down the server.
-   * Returns the discovered models, or falls back to the existing cache on failure.
-   *
-   * @param apiKeys Optional map of provider API keys (e.g. { anthropic: "sk-..." })
-   *   to set as env vars so the discovery server can enumerate key-gated providers.
-   */
-  async refresh(apiKeys?: Record<string, string>): Promise<CachedModel[]> {
-    if (this.refreshing) return this.load();
-    this.refreshing = true;
-
-    let serverClose: (() => void) | null = null;
-    const savedEnv: Record<string, string | undefined> = {};
-    try {
-      const { createOpencodeServer } = await import('@opencode-ai/sdk/v2');
-      const { createOpencodeClient } = await import('@opencode-ai/sdk/v2');
-
-      // Isolate temp server's state from production deployments
-      const ocTmpDir = join(this.dataDir, '.opencode-discovery');
-      process.env.XDG_DATA_HOME = join(ocTmpDir, 'data');
-      process.env.XDG_CONFIG_HOME = join(ocTmpDir, 'config');
-      process.env.XDG_STATE_HOME = join(ocTmpDir, 'state');
-      process.env.XDG_CACHE_HOME = join(ocTmpDir, 'cache');
-
-      // Set provider API keys as env vars so the discovery server can query them
-      if (apiKeys) {
-        for (const [provider, key] of Object.entries(apiKeys)) {
-          const envVar = `${provider.toUpperCase().replace(/-/g, '_')}_API_KEY`;
-          savedEnv[envVar] = process.env[envVar];
-          process.env[envVar] = key;
-        }
-      }
-
-      const port = await findFreePort();
-      const server = await createOpencodeServer({ port });
-      serverClose = () => server.close();
-
-      const client = createOpencodeClient({ baseUrl: server.url });
-      const response = await client.config.providers();
-      if (response.error) throw new Error('Failed to fetch providers');
-
-      const models: CachedModel[] = [];
-      for (const provider of response.data?.providers ?? []) {
-        for (const [modelId, model] of Object.entries(provider.models ?? {})) {
-          if (model.status === 'deprecated') continue;
-          if (!findSupportedModel(provider.id, modelId)) continue;
-          models.push({
-            value: `${provider.id}/${modelId}`,
-            label: model.name || modelId,
-            provider: provider.id,
-          });
-        }
-      }
-
-      // Tools are no longer discovered dynamically — KNOWN_TOOLS is the source of truth.
-      await this.save(models);
-      return models;
-    } catch {
-      // Refresh failed — return existing cache if available
-      return this.load();
-    } finally {
-      serverClose?.();
-      // Restore original env vars
-      for (const [envVar, original] of Object.entries(savedEnv)) {
-        if (original === undefined) {
-          delete process.env[envVar];
-        } else {
-          process.env[envVar] = original;
-        }
-      }
-      this.refreshing = false;
-    }
-  }
-}
-
-function findFreePort(): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const server = net.createServer();
-    server.listen(0, '127.0.0.1', () => {
-      const addr = server.address();
-      if (addr && typeof addr === 'object') {
-        const port = addr.port;
-        server.close(() => resolve(port));
-      } else {
-        server.close(() => reject(new Error('Failed to get port')));
-      }
-    });
-    server.on('error', reject);
-  });
 }

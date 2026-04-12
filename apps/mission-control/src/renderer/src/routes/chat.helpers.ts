@@ -1,4 +1,4 @@
-/** Normalize legacy tool names (read_file, write_file, etc.) to OpenCode names */
+/** Normalize legacy tool names (read_file, write_file, etc.) to canonical names */
 function normalizeTool(name: string): string {
   switch (name) {
     case 'read_file':
