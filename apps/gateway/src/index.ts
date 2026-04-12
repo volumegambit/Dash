@@ -77,27 +77,16 @@ async function main() {
       const sessionDir = resolve(dataDir, 'sessions', agentConfig.name, conversationId);
       await mkdir(sessionDir, { recursive: true });
 
-      // Read provider credentials from the credential store.
-      // Keys are stored globally as {provider}-api-key:{keyName} (e.g. anthropic-api-key:default).
-      // The agent's model determines which provider key to use.
-      const providerApiKeys: Record<string, string> = {};
-      const allKeys = await credentialStore.list();
-      for (const k of allKeys) {
-        const match = k.match(/^(.+)-api-key:(.+)$/);
-        if (match) {
-          const provider = match[1];
-          if (!providerApiKeys[provider]) {
-            const value = await credentialStore.get(k);
-            if (value) providerApiKeys[provider] = value;
-          }
-        }
-      }
-
-      // Fall back to config.providerApiKeys for backward compat
-      const finalKeys =
-        Object.keys(providerApiKeys).length > 0
-          ? providerApiKeys
-          : (agentConfig.providerApiKeys ?? {});
+      // Provide a pull-based credential source so the backend always reads
+      // the current values from the encrypted store on each `run()`. This
+      // means rotation, OAuth refresh, and deletion take effect on the next
+      // chat turn — no propagation plumbing required. The credential store
+      // is the single source of truth; agents registered without any keys
+      // in the store simply get an empty map and will fail their first
+      // model call with an auth error (which is now surfaced to the UI via
+      // the `message_end` error path in PiAgentBackend.normalizeEvent).
+      const credentialProvider = (): Promise<Record<string, string>> =>
+        credentialStore.readProviderApiKeys();
 
       // MCP agent context — allows agents to manage their own MCP server assignments
       const agentMcpServers = agentConfig.mcpServers ?? [];
@@ -144,7 +133,7 @@ async function main() {
           tools: agentConfig.tools,
           skills: agentConfig.skills,
         },
-        finalKeys,
+        credentialProvider,
         undefined,
         sessionDir,
         resolve(dataDir, 'skills', agentConfig.name),
@@ -249,11 +238,17 @@ async function main() {
   const channelApp = new Hono();
   const { injectWebSocket, upgradeWebSocket } = createNodeWebSocket({ app: channelApp });
 
+  // Verbose WS logging in dev mode (opt in via --verbose OR NODE_ENV !== 'production')
+  const verboseWs = flags.verbose || process.env.NODE_ENV !== 'production';
   mountChatWs(channelApp, {
     runtime,
     token: flags.chatToken,
     upgradeWebSocket,
+    verbose: verboseWs,
   });
+  if (verboseWs) {
+    console.log('[gateway] chat-ws verbose logging enabled');
+  }
 
   const channelServer = serve({
     fetch: channelApp.fetch,

@@ -13,7 +13,6 @@ function mockBackend(name = 'mock'): AgentBackend {
       options: RunOptions,
     ) => AsyncGenerator<AgentEvent>,
     abort: vi.fn(),
-    updateCredentials: vi.fn().mockResolvedValue(undefined),
   };
 }
 

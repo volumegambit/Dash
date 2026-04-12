@@ -66,6 +66,25 @@ export class GatewayCredentialStore {
     return Object.keys(secrets);
   }
 
+  /**
+   * Read all `{provider}-api-key:{keyName}` entries and collapse them into
+   * a single `{ provider: value }` map. The first matching key per provider
+   * wins (matching what `createBackend` does at agent spawn time).
+   */
+  async readProviderApiKeys(): Promise<Record<string, string>> {
+    const secrets = await this.load();
+    const out: Record<string, string> = {};
+    for (const [key, value] of Object.entries(secrets)) {
+      const match = key.match(/^(.+)-api-key:(.+)$/);
+      if (!match) continue;
+      const provider = match[1];
+      if (!out[provider] && value) {
+        out[provider] = value;
+      }
+    }
+    return out;
+  }
+
   private async load(): Promise<Record<string, string>> {
     if (!existsSync(this.encPath)) return {};
     const raw = await readFile(this.encPath, 'utf-8');

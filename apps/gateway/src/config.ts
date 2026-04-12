@@ -4,6 +4,7 @@ export interface LoadConfigOptions {
   token?: string;
   chatToken?: string;
   dataDir?: string;
+  verbose?: boolean;
 }
 
 export function parseFlags(argv: string[]): LoadConfigOptions {
@@ -25,6 +26,8 @@ export function parseFlags(argv: string[]): LoadConfigOptions {
     } else if (argv[i] === '--chat-token' && argv[i + 1]) {
       options.chatToken = argv[i + 1];
       i++;
+    } else if (argv[i] === '--verbose') {
+      options.verbose = true;
     }
   }
 

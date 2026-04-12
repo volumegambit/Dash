@@ -7,6 +7,22 @@ export interface ChatWsOptions {
   runtime: AgentRuntime;
   token?: string;
   upgradeWebSocket: UpgradeWebSocket;
+  /** When true, log every inbound and outbound WebSocket message. */
+  verbose?: boolean;
+}
+
+/** Truncate long fields (like base64 images) so logs stay readable. */
+function summarizeForLog(value: unknown): unknown {
+  if (typeof value === 'string') return value.length > 200 ? `${value.slice(0, 200)}…(${value.length} chars)` : value;
+  if (Array.isArray(value)) return value.map(summarizeForLog);
+  if (value && typeof value === 'object') {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      out[k] = summarizeForLog(v);
+    }
+    return out;
+  }
+  return value;
 }
 
 interface WsMessageImage {
@@ -65,7 +81,31 @@ function conversationKey(agentId: string, conversationId: string): string {
 }
 
 export function mountChatWs(app: Hono, options: ChatWsOptions): void {
-  const { runtime, upgradeWebSocket } = options;
+  const { runtime, upgradeWebSocket, verbose = false } = options;
+
+  const logInbound = (raw: string, parsed: unknown): void => {
+    if (!verbose) return;
+    console.log('[chat-ws] ← inbound', JSON.stringify(summarizeForLog(parsed)));
+  };
+
+  const sendServerMessage = (
+    ws: { send(data: string): void },
+    msg: WsServerMessage,
+  ): void => {
+    const payload = JSON.stringify(msg, (_key, value) =>
+      value instanceof Error ? value.message : value,
+    );
+    if (verbose) {
+      const summary =
+        msg.type === 'event'
+          ? `event:${msg.event?.type ?? '?'}`
+          : msg.type === 'error'
+            ? `error:${msg.error}`
+            : msg.type;
+      console.log(`[chat-ws] → outbound id=${msg.id} ${summary}`);
+    }
+    ws.send(payload);
+  };
 
   app.get(
     '/ws/chat',
@@ -94,26 +134,23 @@ export function mountChatWs(app: Hono, options: ChatWsOptions): void {
           try {
             parsed = JSON.parse(raw);
           } catch {
-            const errMsg: WsServerMessage = {
-              type: 'error',
-              id: '',
-              error: 'Invalid JSON',
-            };
-            ws.send(JSON.stringify(errMsg));
+            if (verbose) console.log('[chat-ws] ← invalid JSON:', raw.slice(0, 200));
+            sendServerMessage(ws, { type: 'error', id: '', error: 'Invalid JSON' });
             return;
           }
+
+          logInbound(raw, parsed);
 
           if (!validateMessage(parsed)) {
             const id =
               typeof (parsed as Record<string, unknown>).id === 'string'
                 ? ((parsed as Record<string, unknown>).id as string)
                 : '';
-            const errMsg: WsServerMessage = {
+            sendServerMessage(ws, {
               type: 'error',
               id,
               error: 'Invalid message: missing required fields',
-            };
-            ws.send(JSON.stringify(errMsg));
+            });
             return;
           }
 
@@ -125,8 +162,7 @@ export function mountChatWs(app: Hono, options: ChatWsOptions): void {
               entry.controller.abort();
               activeStreams.delete(msg.id);
             }
-            const ack: WsServerMessage = { type: 'done', id: msg.id };
-            ws.send(JSON.stringify(ack));
+            sendServerMessage(ws, { type: 'done', id: msg.id });
             return;
           }
 
@@ -149,23 +185,21 @@ export function mountChatWs(app: Hono, options: ChatWsOptions): void {
               const behavior = msg.streamingBehavior;
               if (behavior === 'steer') {
                 runtime.steer(agentId, convId, text, images).catch((err) => {
-                  const errMsg: WsServerMessage = {
+                  sendServerMessage(ws, {
                     type: 'error',
                     id: msg.id,
                     error: err instanceof Error ? err.message : String(err),
-                  };
-                  ws.send(JSON.stringify(errMsg));
+                  });
                 });
                 return;
               }
               if (behavior === 'followUp') {
                 runtime.followUp(agentId, convId, text, images).catch((err) => {
-                  const errMsg: WsServerMessage = {
+                  sendServerMessage(ws, {
                     type: 'error',
                     id: msg.id,
                     error: err instanceof Error ? err.message : String(err),
-                  };
-                  ws.send(JSON.stringify(errMsg));
+                  });
                 });
                 return;
               }
@@ -191,31 +225,19 @@ export function mountChatWs(app: Hono, options: ChatWsOptions): void {
                   if (agentEvent.type === 'error') {
                     (agentEvent as { timestamp?: string }).timestamp = new Date().toISOString();
                   }
-                  const serverMsg: WsServerMessage = {
-                    type: 'event',
-                    id: msg.id,
-                    event: agentEvent,
-                  };
-                  ws.send(
-                    JSON.stringify(serverMsg, (_key, value) =>
-                      value instanceof Error ? value.message : value,
-                    ),
-                  );
+                  sendServerMessage(ws, { type: 'event', id: msg.id, event: agentEvent });
                 }
                 if (!controller.signal.aborted) {
-                  const done: WsServerMessage = { type: 'done', id: msg.id };
-                  ws.send(JSON.stringify(done));
+                  sendServerMessage(ws, { type: 'done', id: msg.id });
                 }
               } catch (err) {
                 const errStr = err instanceof Error ? err.message : String(err);
+                if (verbose) {
+                  console.error('[chat-ws] stream threw:', err instanceof Error ? err.stack : err);
+                }
 
                 if (!controller.signal.aborted) {
-                  const errResponse: WsServerMessage = {
-                    type: 'error',
-                    id: msg.id,
-                    error: errStr,
-                  };
-                  ws.send(JSON.stringify(errResponse));
+                  sendServerMessage(ws, { type: 'error', id: msg.id, error: errStr });
                 }
               } finally {
                 activeStreams.delete(msg.id);
