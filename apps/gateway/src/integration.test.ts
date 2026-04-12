@@ -4,8 +4,8 @@ import { join } from 'node:path';
 import type { AgentBackend, AgentEvent, AgentState, RunOptions } from '@dash/agent';
 import { describe, expect, it, vi } from 'vitest';
 import { AgentRegistry } from './agent-registry.js';
-import type { AgentService } from './agent-service.js';
-import { createAgentService } from './agent-service.js';
+import type { AgentChatCoordinator } from './agent-chat-coordinator.js';
+import { createAgentChatCoordinator } from './agent-chat-coordinator.js';
 import { GatewayCredentialStore } from './credential-store.js';
 
 describe('Gateway integration', () => {
@@ -26,7 +26,7 @@ describe('Gateway integration', () => {
       abort: vi.fn(),
     };
 
-    const agents = createAgentService({
+    const agents = createAgentChatCoordinator({
       registry,
       poolMaxSize: 10,
       createBackend: vi.fn().mockResolvedValue(backend),
@@ -82,7 +82,7 @@ describe('Gateway integration', () => {
       },
       abort: vi.fn(),
     };
-    const agents = createAgentService({
+    const agents = createAgentChatCoordinator({
       registry,
       poolMaxSize: 10,
       createBackend: vi.fn().mockResolvedValue(backend),
@@ -159,7 +159,11 @@ describe('Pull-based credential propagation (end-to-end)', () => {
     };
   }
 
-  async function drain(agents: AgentService, agentId: string, convId: string): Promise<void> {
+  async function drain(
+    agents: AgentChatCoordinator,
+    agentId: string,
+    convId: string,
+  ): Promise<void> {
     for await (const _ of agents.chat({ agentId, conversationId: convId, text: 'hi' })) {
       // discard
     }
@@ -170,7 +174,7 @@ describe('Pull-based credential propagation (end-to-end)', () => {
     try {
       const observed: Record<string, string>[] = [];
       const registry = new AgentRegistry();
-      const agents = createAgentService({
+      const agents = createAgentChatCoordinator({
         registry,
         poolMaxSize: 10,
         createBackend: async () => makeCredentialAwareBackend(store, observed),
@@ -207,7 +211,7 @@ describe('Pull-based credential propagation (end-to-end)', () => {
 
       const observed: Record<string, string>[] = [];
       const registry = new AgentRegistry();
-      const agents = createAgentService({
+      const agents = createAgentChatCoordinator({
         registry,
         poolMaxSize: 10,
         createBackend: async () => makeCredentialAwareBackend(store, observed),
@@ -241,7 +245,7 @@ describe('Pull-based credential propagation (end-to-end)', () => {
 
       const observed: Record<string, string>[] = [];
       const registry = new AgentRegistry();
-      const agents = createAgentService({
+      const agents = createAgentChatCoordinator({
         registry,
         poolMaxSize: 10,
         createBackend: async () => makeCredentialAwareBackend(store, observed),
@@ -276,7 +280,7 @@ describe('Pull-based credential propagation (end-to-end)', () => {
 
       const observed: Record<string, string>[] = [];
       const registry = new AgentRegistry();
-      const agents = createAgentService({
+      const agents = createAgentChatCoordinator({
         registry,
         poolMaxSize: 10,
         createBackend: async () => makeCredentialAwareBackend(store, observed),

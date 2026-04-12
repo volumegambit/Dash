@@ -218,4 +218,66 @@ describe('AgentRegistry (file-backed)', () => {
     await reg.load();
     expect(reg.list()).toEqual([]);
   });
+
+  describe('patchMcpServers', () => {
+    it('adds a new server, starting from no mcpServers', () => {
+      const reg = new AgentRegistry();
+      const entry = reg.register({ name: 'a', model: 'm', systemPrompt: 's' });
+      reg.patchMcpServers(entry.id, 'add', 'server-1');
+      expect(reg.get(entry.id)?.config.mcpServers).toEqual(['server-1']);
+    });
+
+    it('adds to an existing list', () => {
+      const reg = new AgentRegistry();
+      const entry = reg.register({
+        name: 'a',
+        model: 'm',
+        systemPrompt: 's',
+        mcpServers: ['server-1'],
+      });
+      reg.patchMcpServers(entry.id, 'add', 'server-2');
+      expect(reg.get(entry.id)?.config.mcpServers).toEqual(['server-1', 'server-2']);
+    });
+
+    it('is idempotent on add (no duplicates)', () => {
+      const reg = new AgentRegistry();
+      const entry = reg.register({
+        name: 'a',
+        model: 'm',
+        systemPrompt: 's',
+        mcpServers: ['server-1'],
+      });
+      reg.patchMcpServers(entry.id, 'add', 'server-1');
+      expect(reg.get(entry.id)?.config.mcpServers).toEqual(['server-1']);
+    });
+
+    it('removes an existing server', () => {
+      const reg = new AgentRegistry();
+      const entry = reg.register({
+        name: 'a',
+        model: 'm',
+        systemPrompt: 's',
+        mcpServers: ['server-1', 'server-2'],
+      });
+      reg.patchMcpServers(entry.id, 'remove', 'server-1');
+      expect(reg.get(entry.id)?.config.mcpServers).toEqual(['server-2']);
+    });
+
+    it('is idempotent on remove (missing server is fine)', () => {
+      const reg = new AgentRegistry();
+      const entry = reg.register({
+        name: 'a',
+        model: 'm',
+        systemPrompt: 's',
+        mcpServers: ['server-1'],
+      });
+      reg.patchMcpServers(entry.id, 'remove', 'ghost');
+      expect(reg.get(entry.id)?.config.mcpServers).toEqual(['server-1']);
+    });
+
+    it('throws for unknown agent id', () => {
+      const reg = new AgentRegistry();
+      expect(() => reg.patchMcpServers('nope', 'add', 'server-1')).toThrow("'nope' not found");
+    });
+  });
 });

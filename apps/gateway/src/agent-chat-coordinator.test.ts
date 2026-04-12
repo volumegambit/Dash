@@ -1,7 +1,7 @@
 import type { AgentBackend, AgentEvent, AgentState, RunOptions } from '@dash/agent';
 import { describe, expect, it } from 'vitest';
 import { AgentRegistry } from './agent-registry.js';
-import { createAgentService } from './agent-service.js';
+import { createAgentChatCoordinator } from './agent-chat-coordinator.js';
 
 function makeMockBackend(events: AgentEvent[]): AgentBackend {
   return {
@@ -17,7 +17,7 @@ function makeMockBackend(events: AgentEvent[]): AgentBackend {
   };
 }
 
-describe('AgentService', () => {
+describe('AgentChatCoordinator', () => {
   it('routes a message to the correct agent and streams events', async () => {
     const registry = new AgentRegistry();
     const { id } = registry.register({
@@ -35,7 +35,7 @@ describe('AgentService', () => {
       },
     ];
 
-    const agents = createAgentService({
+    const agents = createAgentChatCoordinator({
       registry,
       poolMaxSize: 10,
       createBackend: async () => makeMockBackend(expectedEvents),
@@ -56,7 +56,7 @@ describe('AgentService', () => {
 
   it('rejects messages to unknown agents (yields error event)', async () => {
     const registry = new AgentRegistry();
-    const agents = createAgentService({
+    const agents = createAgentChatCoordinator({
       registry,
       poolMaxSize: 10,
       createBackend: async () => makeMockBackend([]),
@@ -87,7 +87,7 @@ describe('AgentService', () => {
     });
     registry.disable(id);
 
-    const agents = createAgentService({
+    const agents = createAgentChatCoordinator({
       registry,
       poolMaxSize: 10,
       createBackend: async () => makeMockBackend([]),

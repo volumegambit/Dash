@@ -99,10 +99,51 @@ export class AgentRegistry {
     return [...this.agents.values()];
   }
 
+  /**
+   * General-purpose partial update. Note: `mcpServers` patches sent through
+   * this method overwrite the list wholesale. Runtime writers that want
+   * to add or remove a single server must go through `patchMcpServers`
+   * instead — see its doc for the race-window caveat between runtime and
+   * operator edits.
+   */
   update(id: string, patch: Partial<Omit<GatewayAgentConfig, 'name'>>): RegisteredAgent {
     const entry = this.agents.get(id);
     if (!entry) throw new Error(`Agent '${id}' not found`);
     entry.config = { ...entry.config, ...patch };
+    return entry;
+  }
+
+  /**
+   * Single call-site for runtime edits to the `mcpServers` array.
+   * `mcpAgentContext.assignToAgent` / `unassignFromAgent` (invoked when
+   * an agent calls the `mcp_add_server` / `mcp_remove_server` tool during
+   * a chat turn) funnel through this method so reads-modify-writes have
+   * one place to hold invariants: `add` is idempotent (no duplicates),
+   * `remove` is idempotent (missing is fine).
+   *
+   * Race note: there is still a theoretical race with `PUT /agents/:id`
+   * whose body includes `mcpServers` — that path replaces the whole list
+   * via `update()`. If an operator PUTs a new list while an agent is
+   * mid-tool-call, last-write-wins on the file rewrite. At today's scale
+   * this is effectively impossible; the correct fix is to require all
+   * mcpServers edits to go through this method, but that would break the
+   * general-purpose PUT shape. Documented rather than funneled.
+   */
+  patchMcpServers(
+    id: string,
+    action: 'add' | 'remove',
+    serverName: string,
+  ): RegisteredAgent {
+    const entry = this.agents.get(id);
+    if (!entry) throw new Error(`Agent '${id}' not found`);
+    const current = entry.config.mcpServers ?? [];
+    if (action === 'add') {
+      if (!current.includes(serverName)) {
+        entry.config.mcpServers = [...current, serverName];
+      }
+    } else {
+      entry.config.mcpServers = current.filter((s) => s !== serverName);
+    }
     return entry;
   }
 

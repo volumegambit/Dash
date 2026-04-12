@@ -1,10 +1,10 @@
 import type { AgentEvent, ImageBlock } from '@dash/agent';
 import type { Hono } from 'hono';
 import type { UpgradeWebSocket } from 'hono/ws';
-import type { AgentService } from './agent-service.js';
+import type { AgentChatCoordinator } from './agent-chat-coordinator.js';
 
 export interface ChatWsOptions {
-  agents: AgentService;
+  agents: AgentChatCoordinator;
   token?: string;
   upgradeWebSocket: UpgradeWebSocket;
   /** When true, log every inbound and outbound WebSocket message. */

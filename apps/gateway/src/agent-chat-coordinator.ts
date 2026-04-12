@@ -7,7 +7,7 @@ export type BackendFactory = (
   conversationId: string,
 ) => Promise<AgentBackend>;
 
-export interface AgentServiceOptions {
+export interface AgentChatCoordinatorOptions {
   registry: AgentRegistry;
   poolMaxSize: number;
   createBackend: BackendFactory;
@@ -21,14 +21,28 @@ export interface ChatRequest {
   images?: ImageBlock[];
 }
 
-export interface AgentServiceStats {
+export interface AgentChatCoordinatorStats {
   size: number;
   maxSize: number;
   pinned: number;
   agents: Record<string, number>;
 }
 
-export interface AgentService {
+/**
+ * The gateway's single entry point for chat operations against agents.
+ * Coordinates three lower-level pieces — the `ConversationPool` (warm
+ * backend cache), the `AgentRegistry` (persisted agent list + lifecycle
+ * state), and the `createBackend` factory — and applies the rules every
+ * chat entry point needs: identity-prefixed system prompt, disabled-agent
+ * gate, pool pin/unpin for in-flight protection, and the
+ * `registered → active` lifecycle transition on first message.
+ *
+ * "Coordinator" rather than "service" because it owns no state of its
+ * own — all state lives in the pool and the injected registry. Entry
+ * points (`/ws/chat`, channel adapters, direct bridges) call through
+ * `chat` / `steer` / `followUp` so the rules stay in exactly one place.
+ */
+export interface AgentChatCoordinator {
   chat(request: ChatRequest): AsyncGenerator<AgentEvent>;
   steer(
     agentId: string,
@@ -49,22 +63,13 @@ export interface AgentService {
    * by agent ID independently of the registry.
    */
   evict(agentId: string): Promise<void>;
-  stats(): AgentServiceStats;
+  stats(): AgentChatCoordinatorStats;
   stop(): Promise<void>;
 }
 
-/**
- * The gateway's agent-chat facade. Wraps a `ConversationPool` plus the
- * rules every chat entry point needs: identity-prefixed system prompt,
- * disabled-agent gate, pool pin/unpin for in-flight protection, and the
- * `registered → active` lifecycle transition on first message.
- *
- * This is a dedup point, not a runtime — all state lives in the pool and
- * the injected registry. Entry points (`/ws/chat`, channel adapters,
- * direct bridges) call through `chat` / `steer` / `followUp` so the
- * rules stay in exactly one place.
- */
-export function createAgentService(options: AgentServiceOptions): AgentService {
+export function createAgentChatCoordinator(
+  options: AgentChatCoordinatorOptions,
+): AgentChatCoordinator {
   const { registry } = options;
 
   const pool = new ConversationPool({

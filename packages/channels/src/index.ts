@@ -9,6 +9,7 @@ export type { RouterRoutingRule, RouterConfig, MessageLogEntry, MessageLogger } 
 export { MessageRouter } from './router.js';
 export { MissionControlAdapter } from './adapters/mission-control.js';
 export { TelegramAdapter } from './adapters/telegram.js';
+export type { TelegramAllowedUsers } from './adapters/telegram.js';
 export { WhatsAppAdapter } from './adapters/whatsapp.js';
 export { makeBaileysAuthState } from './adapters/whatsapp-auth.js';
 export type { BaileysAuthState } from './adapters/whatsapp-auth.js';

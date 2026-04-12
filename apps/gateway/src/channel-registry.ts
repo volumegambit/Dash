@@ -15,6 +15,18 @@ export interface ChannelConfig {
   name: string;
   adapter: 'telegram' | 'whatsapp';
   globalDenyList: string[];
+  /**
+   * Optional adapter-level allow-list. When non-empty, the channel adapter
+   * itself rejects messages from senders that aren't on this list and sends
+   * an "unauthorized" reply. Distinct from rule-level `allowList` in two
+   * ways: (a) it runs BEFORE routing, so unauthorized senders never hit the
+   * agent pool or the audit log's routed path; (b) for Telegram it matches
+   * by numeric ID, bare username, or `@username`, not just sender ID.
+   *
+   * Leave empty (or omit) to forward every message to the routing layer and
+   * let rule-level `allowList` / `globalDenyList` do the filtering.
+   */
+  allowedUsers?: string[];
   routing: ChannelRoutingRule[];
 }
 
@@ -22,6 +34,7 @@ export interface RegisteredChannel {
   name: string;
   adapter: 'telegram' | 'whatsapp';
   globalDenyList: string[];
+  allowedUsers: string[];
   routing: ChannelRoutingRule[];
   registeredAt: string; // ISO timestamp
 }
@@ -34,15 +47,41 @@ export class ChannelRegistry {
   /** Load persisted channels from disk. No-op if no file path or file doesn't exist. */
   async load(): Promise<void> {
     if (!this.filePath) return;
+    let raw: string;
     try {
-      const raw = await readFile(this.filePath, 'utf-8');
+      raw = await readFile(this.filePath, 'utf-8');
+    } catch (err) {
+      // Missing file is the normal "first boot" case — stay silent.
+      // Any other read error is worth surfacing.
+      if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') {
+        console.warn(
+          `[channel-registry] failed to read ${this.filePath}:`,
+          err instanceof Error ? err.message : err,
+        );
+      }
+      return;
+    }
+    try {
       const entries = JSON.parse(raw) as RegisteredChannel[];
       this.channels.clear();
       for (const entry of entries) {
+        // Forward-compat: older channels.json files written before
+        // `allowedUsers` existed will not have the field. Normalize to an
+        // empty array so the field is always present in memory.
+        if (!Array.isArray(entry.allowedUsers)) {
+          entry.allowedUsers = [];
+        }
         this.channels.set(entry.name, entry);
       }
-    } catch {
-      // File doesn't exist or is invalid — start empty
+    } catch (err) {
+      // Corrupt JSON — do NOT silently reset to empty. Refuse to overwrite
+      // the file on the next save() by leaving the in-memory state empty
+      // while making the problem loud. An operator should move the file
+      // aside before restarting.
+      console.error(
+        `[channel-registry] ${this.filePath} is corrupt and could not be parsed — starting with empty channel list (file preserved):`,
+        err instanceof Error ? err.message : err,
+      );
     }
   }
 
@@ -61,6 +100,7 @@ export class ChannelRegistry {
       name: config.name,
       adapter: config.adapter,
       globalDenyList: config.globalDenyList,
+      allowedUsers: config.allowedUsers ?? [],
       routing: config.routing,
       registeredAt: new Date().toISOString(),
     };
@@ -81,6 +121,7 @@ export class ChannelRegistry {
     if (!entry) throw new Error(`Channel '${name}' not found`);
     if (patch.adapter !== undefined) entry.adapter = patch.adapter;
     if (patch.globalDenyList !== undefined) entry.globalDenyList = patch.globalDenyList;
+    if (patch.allowedUsers !== undefined) entry.allowedUsers = patch.allowedUsers;
     if (patch.routing !== undefined) entry.routing = patch.routing;
     return entry;
   }

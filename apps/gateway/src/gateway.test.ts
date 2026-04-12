@@ -309,6 +309,55 @@ describe('createDynamicGateway', () => {
     expect(adapter.send).toHaveBeenCalledWith('conv1', { text: 'hello' });
   });
 
+  it('stopChannel stops the adapter and removes it from the gateway', async () => {
+    const gw = createDynamicGateway();
+    gw.registerAgent('agent1', makeFakeAgent());
+    const adapter = makeFakeAdapter('telegram');
+    await gw.registerChannel('tg1', adapter, {
+      globalDenyList: [],
+      routing: [{ condition: { type: 'default' }, agentId: 'agent1', allowList: [], denyList: [] }],
+    });
+
+    const result = await gw.stopChannel('tg1');
+
+    expect(result).toBe(true);
+    expect(adapter.stop).toHaveBeenCalled();
+    expect(gw.channelCount()).toBe(0);
+
+    // Subsequent inbound messages should be no-ops because the channel
+    // is gone from the gateway's state map.
+    await adapter.trigger({
+      channelId: 'tg1',
+      conversationId: 'conv1',
+      senderId: 'user1',
+      senderName: 'User',
+      text: 'hi',
+      timestamp: new Date(),
+    });
+    // Agent was never registered with a message (the channel is gone)
+  });
+
+  it('stopChannel returns false for unknown channel', async () => {
+    const gw = createDynamicGateway();
+    const result = await gw.stopChannel('nonexistent');
+    expect(result).toBe(false);
+  });
+
+  it('stopChannel does not rethrow if adapter.stop() fails', async () => {
+    const gw = createDynamicGateway();
+    gw.registerAgent('agent1', makeFakeAgent());
+    const adapter = makeFakeAdapter('telegram');
+    (adapter.stop as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error('network dead'));
+    await gw.registerChannel('tg1', adapter, {
+      globalDenyList: [],
+      routing: [{ condition: { type: 'default' }, agentId: 'agent1', allowList: [], denyList: [] }],
+    });
+
+    // Must still resolve true (channel is removed from routing tables)
+    await expect(gw.stopChannel('tg1')).resolves.toBe(true);
+    expect(gw.channelCount()).toBe(0);
+  });
+
   it('deregisterAgent removes rules and stops empty channels', async () => {
     const gw = createDynamicGateway();
     gw.registerAgent('agent1', makeFakeAgent());
