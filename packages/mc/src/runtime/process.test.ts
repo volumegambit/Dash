@@ -265,15 +265,17 @@ describe('GatewaySupervisor.ensureRunning()', () => {
   });
 
   // ------------------------------------------------------------------
-  // Orphan path: port held by somebody else's gateway (token mismatch)
-  // → kill the REAL port owner (probe.pid), not state.pid
+  // Fail-loud paths: ensureRunning NEVER kills processes it didn't
+  // spawn. When the port is held by something we can't reuse, throw
+  // with an actionable message and let the operator decide.
   // ------------------------------------------------------------------
 
-  it('kills the port owner PID (not state.pid) when a different gateway holds the port', async () => {
-    // state.json says pid=11111 but the actual orphan on the port is
-    // pid=99785 (PID reported by /health). The supervisor MUST kill
-    // 99785, not 11111 — killing the wrong pid was the exact bug
-    // that caused the user-visible respawn loop.
+  it('throws when our token is rejected by the gateway on the port', async () => {
+    // state.json exists but the gateway on the port has a different
+    // token (orphan from a previous session, another MC profile,
+    // manually-started gateway). The supervisor MUST NOT kill it —
+    // killing processes MC didn't spawn is exactly the "creepy desktop
+    // app" behaviour we removed.
     await writeState(11111, '2026-01-01T00:00:00Z', 'stale-token');
 
     const staleClient = {
@@ -281,78 +283,53 @@ describe('GatewaySupervisor.ensureRunning()', () => {
         .fn()
         .mockRejectedValue(new GatewayHttpError(401, 'listAgents', 'Unauthorized')),
     } as unknown as GatewayManagementClient;
-    const freshClient = createMockGatewayClient('2026-04-01T00:00:00Z');
-    let call = 0;
-    const makeGatewayClient = vi.fn(() => (call++ === 0 ? staleClient : freshClient));
 
-    const spawner = createMockSpawner(54321);
+    const spawner = createMockSpawner();
     const killer = createMockKiller(new Set([11111, 99785]));
-    // probe.pid = 99785 (real port owner), different from state.pid=11111
     const probe = createMockProbe(probeOwner('2026-03-01T00:00:00Z', 99785));
 
     const gp = new GatewaySupervisor(
-      makeOptions(tmpDir, { makeGatewayClient }),
+      makeOptions(tmpDir, { makeGatewayClient: () => staleClient }),
       spawner,
       killer,
       probe,
     );
 
-    await gp.ensureRunning();
-
-    // MUST kill the PID from the probe, not the PID from state.json
-    expect(killer.signal).toHaveBeenCalledWith(99785, 'SIGTERM');
-    expect(killer.signal).not.toHaveBeenCalledWith(11111, 'SIGTERM');
-    expect(spawner.spawn).toHaveBeenCalledOnce();
+    await expect(gp.ensureRunning()).rejects.toThrow(/does not accept our token/);
+    // Nothing killed, nothing spawned. Operator must clean up.
+    expect(killer.signal).not.toHaveBeenCalled();
+    expect(spawner.spawn).not.toHaveBeenCalled();
   });
 
-  // ------------------------------------------------------------------
-  // Auth path: startedAt matches but token drifted
-  // ------------------------------------------------------------------
-
-  it('respawns and kills stale PID when auth token is rejected (EADDRINUSE regression)', async () => {
-    await writeState(22222, '2026-01-01T00:00:00Z', 'stale-token');
+  it('error message mentions the port owner PID and the lsof command', async () => {
+    await writeState(11111, '2026-01-01T00:00:00Z', 'stale-token');
 
     const staleClient = {
-      health: vi.fn().mockResolvedValue({
-        status: 'healthy',
-        startedAt: '2026-01-01T00:00:00Z',
-        agents: 0,
-        channels: 0,
-      }),
       listAgents: vi
         .fn()
         .mockRejectedValue(new GatewayHttpError(401, 'listAgents', 'Unauthorized')),
     } as unknown as GatewayManagementClient;
-    const freshClient = createMockGatewayClient('2026-04-01T00:00:00Z');
-    let call = 0;
-    const makeGatewayClient = vi.fn(() => (call++ === 0 ? staleClient : freshClient));
 
-    const spawner = createMockSpawner(54321);
-    const killer = createMockKiller(new Set([22222]));
-    const probe = createMockProbe(probeOwner('2026-01-01T00:00:00Z', 22222));
+    const probe = createMockProbe(probeOwner('2026-03-01T00:00:00Z', 99785));
 
     const gp = new GatewaySupervisor(
-      makeOptions(tmpDir, { makeGatewayClient }),
-      spawner,
-      killer,
+      makeOptions(tmpDir, { makeGatewayClient: () => staleClient }),
+      createMockSpawner(),
+      createMockKiller(new Set([99785])),
       probe,
     );
 
-    const client = await gp.ensureRunning();
-
-    expect(killer.signal).toHaveBeenCalledWith(22222, 'SIGTERM');
-    expect(spawner.spawn).toHaveBeenCalledOnce();
-    expect(client).toBe(freshClient);
+    await expect(gp.ensureRunning()).rejects.toThrow(/PID 99785/);
+    await expect(gp.ensureRunning()).rejects.toThrow(/lsof -ti :9300/);
   });
 
-  // ------------------------------------------------------------------
-  // Orphan-gateway path: no state but the port is held
-  // ------------------------------------------------------------------
-
-  it('kills untracked orphan gateway when no state exists but port is occupied', async () => {
-    // Fresh MC install scenario: no state.json, but there's an orphan
-    // gateway on port 9300 (inherited by init from an earlier process).
-    const spawner = createMockSpawner(54321);
+  it('throws when no state exists and the port is occupied by a foreign gateway', async () => {
+    // Fresh MC install / cleared state, but there's an orphan gateway
+    // on port 9300 (inherited by init from an earlier process, or
+    // another user running MC concurrently). We have no token to
+    // authenticate against, so we can't reuse. But we also must NOT
+    // kill — we don't know who it belongs to.
+    const spawner = createMockSpawner();
     const killer = createMockKiller(new Set([88888]));
     const probe = createMockProbe(probeOwner('2026-01-01T00:00:00Z', 88888));
 
@@ -365,28 +342,8 @@ describe('GatewaySupervisor.ensureRunning()', () => {
       probe,
     );
 
-    await gp.ensureRunning();
-
-    expect(killer.signal).toHaveBeenCalledWith(88888, 'SIGTERM');
-    expect(spawner.spawn).toHaveBeenCalledOnce();
-  });
-
-  it('throws if no state and orphan gateway does not expose pid in /health', async () => {
-    // If an older gateway (without the pid-in-health fix) is on the
-    // port and we have no state.json to fall back to, we cannot
-    // safely identify the listener. Fail loudly rather than SIGKILL
-    // a random PID or spawn into a collision.
-    const spawner = createMockSpawner();
-    const probe = createMockProbe({ type: 'owner', startedAt: '2026-01-01T00:00:00Z' });
-
-    const gp = new GatewaySupervisor(
-      makeOptions(tmpDir, { makeGatewayClient: () => createMockGatewayClient() }),
-      spawner,
-      undefined,
-      probe,
-    );
-
-    await expect(gp.ensureRunning()).rejects.toThrow(/can't identify/);
+    await expect(gp.ensureRunning()).rejects.toThrow(/already in use by another gateway/);
+    expect(killer.signal).not.toHaveBeenCalled();
     expect(spawner.spawn).not.toHaveBeenCalled();
   });
 
@@ -503,47 +460,106 @@ describe('GatewaySupervisor.ensureRunning()', () => {
     expect(c).toBe(mockClient);
   });
 
-  // ------------------------------------------------------------------
-  // SIGKILL escalation
-  // ------------------------------------------------------------------
+});
 
-  it('escalates SIGTERM to SIGKILL when stale process ignores SIGTERM', async () => {
-    await writeState(55555, '2026-01-01T00:00:00Z', 'stale-token');
+// ---------------------------------------------------------------------------
+// GatewaySupervisor.restart() — the only legitimate kill path
+// ---------------------------------------------------------------------------
 
-    const staleClient = {
-      listAgents: vi.fn().mockRejectedValue(new GatewayHttpError(401, 'listAgents', 'Unauthorized')),
-    } as unknown as GatewayManagementClient;
-    const freshClient = createMockGatewayClient('2026-04-01T00:00:00Z');
-    let call = 0;
-    const makeGatewayClient = vi.fn(() => (call++ === 0 ? staleClient : freshClient));
+describe('GatewaySupervisor.restart()', () => {
+  let tmpDir: string;
 
-    // Mock killer that ignores SIGTERM; only SIGKILL marks the pid as dead.
-    const aliveSet = new Set([55555]);
+  beforeEach(async () => {
+    tmpDir = await mkdtemp(join(tmpdir(), 'gw-restart-'));
+  });
+
+  afterEach(async () => {
+    await rm(tmpDir, { recursive: true });
+  });
+
+  it('gracefully shuts down our gateway and spawns a fresh one', async () => {
+    // User explicitly clicked "Restart Gateway" — MC owns the gateway
+    // (it has the token), so killing is authorized.
+    const { GatewayStateStore } = await import('./gateway-state.js');
+    const store = new GatewayStateStore(tmpDir);
+    await store.write({
+      pid: 55555,
+      startedAt: '2026-01-01T00:00:00Z',
+      token: 'our-token',
+      port: 9300,
+      channelPort: 9200,
+      chatToken: 'chat-tok',
+    });
+
+    const spawner = createMockSpawner(77777);
+    const killer = createMockKiller(new Set([55555]));
+    // First probe (called from restart to find kill target) returns
+    // the live gateway; second probe (called from ensureRunning
+    // after store.clear()) returns free because the mock killer
+    // deleted the pid.
+    let probeCall = 0;
+    const probe: PortOwnerProbe = vi.fn(async () => {
+      probeCall++;
+      if (probeCall === 1) return probeOwner('2026-01-01T00:00:00Z', 55555);
+      return { type: 'free' };
+    });
+
+    const gp = new GatewaySupervisor(
+      makeOptions(tmpDir, { makeGatewayClient: () => createMockGatewayClient() }),
+      spawner,
+      killer,
+      probe,
+    );
+
+    await gp.restart();
+
+    expect(killer.signal).toHaveBeenCalledWith(55555, 'SIGTERM');
+    expect(spawner.spawn).toHaveBeenCalledOnce();
+  });
+
+  it('escalates SIGTERM to SIGKILL when the gateway ignores SIGTERM', async () => {
+    const { GatewayStateStore } = await import('./gateway-state.js');
+    const store = new GatewayStateStore(tmpDir);
+    await store.write({
+      pid: 66666,
+      startedAt: '2026-01-01T00:00:00Z',
+      token: 'our-token',
+      port: 9300,
+      channelPort: 9200,
+      chatToken: 'chat-tok',
+    });
+
+    const aliveSet = new Set([66666]);
     const killer: ProcessKiller & {
       signal: ReturnType<typeof vi.fn>;
       isAlive: ReturnType<typeof vi.fn>;
     } = {
       isAlive: vi.fn((pid: number) => aliveSet.has(pid)),
       signal: vi.fn((pid: number, sig: NodeJS.Signals) => {
+        // SIGTERM is ignored (simulates process stuck in MCP teardown).
+        // Only SIGKILL actually removes the pid.
         if (sig === 'SIGKILL') aliveSet.delete(pid);
       }),
     };
 
-    const spawner = createMockSpawner(77777);
-    const probe = createMockProbe(probeOwner('2026-01-01T00:00:00Z', 55555));
+    let probeCall = 0;
+    const probe: PortOwnerProbe = vi.fn(async () => {
+      probeCall++;
+      if (probeCall === 1) return probeOwner('2026-01-01T00:00:00Z', 66666);
+      return { type: 'free' };
+    });
 
     const gp = new GatewaySupervisor(
-      makeOptions(tmpDir, { makeGatewayClient }),
-      spawner,
+      makeOptions(tmpDir, { makeGatewayClient: () => createMockGatewayClient() }),
+      createMockSpawner(88888),
       killer,
       probe,
     );
 
-    await gp.ensureRunning();
+    await gp.restart();
 
-    expect(killer.signal).toHaveBeenCalledWith(55555, 'SIGTERM');
-    expect(killer.signal).toHaveBeenCalledWith(55555, 'SIGKILL');
-    expect(spawner.spawn).toHaveBeenCalledOnce();
+    expect(killer.signal).toHaveBeenCalledWith(66666, 'SIGTERM');
+    expect(killer.signal).toHaveBeenCalledWith(66666, 'SIGKILL');
   }, 15_000);
 });
 

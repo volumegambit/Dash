@@ -342,15 +342,27 @@ export class GatewaySupervisor {
       );
     }
 
-    if (probe.type === 'owner' && state) {
-      // A gateway is on the port AND we have recorded state. The
-      // AUTHORITATIVE identity check is "does our token still
-      // authenticate?" — tokens are 256-bit random per spawn, so a
-      // successful `listAgents()` is cryptographic proof that the
-      // process on the port is the one that generated our token.
-      // `startedAt` and `pid` comparisons are weaker signals that we
-      // deliberately skip: if auth succeeds, we reuse no matter what
-      // state.json says about them.
+    if (probe.type === 'owner') {
+      // Someone is on the port. The ONLY outcome of ensureRunning on a
+      // held port is reuse — we never kill processes we don't
+      // explicitly own. Reuse is gated on successful auth with our
+      // saved token (cryptographic proof the gateway is the one we
+      // spawned, since tokens are 256-bit random per spawn). Any
+      // other outcome throws with an actionable message and lets the
+      // operator decide what to do.
+      if (!state) {
+        // No recorded state but the port is occupied. This is either
+        // an orphan from a previous MC that crashed, a gateway from
+        // a different MC profile, or a manually-started gateway. We
+        // can't tell which and we don't have authorization to kill
+        // it. Fail loudly.
+        const pidHint = probe.pid !== undefined ? ` PID ${probe.pid}` : '';
+        throw new Error(
+          `Port ${managementPort} is already in use by another gateway${pidHint} that we did not spawn. ` +
+            `Stop it manually before starting MC: lsof -ti :${managementPort} | xargs kill`,
+        );
+      }
+      // State exists — try to reuse with our token.
       try {
         const client = makeClient(`http://localhost:${state.port}`, state.token);
         await client.listAgents();
@@ -359,51 +371,27 @@ export class GatewaySupervisor {
         // up and still accepts our token. No spawn, no kill.
         return client;
       } catch (err) {
-        if (!isPermanentAuthMismatch(err)) throw err;
-        // 401 — our token does not work. The gateway on the port
-        // is somebody else's (orphan from a previous session, a
-        // different MC profile, a manually-started gateway). Kill
-        // it using the PID reported by the probe (from /health.pid
-        // or lsof fallback), NOT state.pid which can point anywhere.
-        if (probe.pid === undefined) {
-          throw new Error(
-            `Port ${managementPort} has a gateway that rejects our token, but we can't identify it (no pid in /health and lsof unavailable). Manual cleanup required.`,
-          );
-        }
-        console.warn(
-          `[gateway-supervisor] token mismatch on port ${managementPort} (running gateway is not ours); killing PID ${probe.pid} and spawning fresh`,
-        );
-        await this.shutdownStaleProcess(probe.pid, state);
-        await store.clear();
-        // fall through to spawn
-      }
-    } else if (probe.type === 'owner' && !state) {
-      // Untracked gateway on our port. No state to authenticate
-      // against, so we can't reuse — kill and spawn.
-      if (probe.pid === undefined) {
+        if (!isPermanentAuthMismatch(err)) throw err; // transient — propagate
+        // 401 — our token does not work. The gateway on the port is
+        // somebody else's. We refuse to kill processes we don't
+        // definitively own (was the root cause of MC nuking user
+        // processes and orphaned gateways). Give the operator the
+        // information they need to decide.
+        const pidHint = probe.pid !== undefined ? ` PID ${probe.pid}` : '';
         throw new Error(
-          `Port ${managementPort} is occupied by a gateway we can't identify (no pid in /health and lsof unavailable). Manual cleanup required.`,
+          `Port ${managementPort} is held by a gateway${pidHint} that does not accept our token. ` +
+            `This is not the gateway MC spawned. Stop it manually and restart: ` +
+            `lsof -ti :${managementPort} | xargs kill`,
         );
       }
-      console.warn(
-        `[gateway-supervisor] untracked gateway PID ${probe.pid} on port ${managementPort}; killing and spawning fresh`,
-      );
-      const synthState: GatewayState = {
-        pid: probe.pid,
-        startedAt: probe.startedAt,
-        token: '',
-        port: managementPort,
-        channelPort,
-        chatToken: '',
-      };
-      await this.shutdownStaleProcess(probe.pid, synthState);
-    } else if (probe.type === 'free' && state) {
-      // Nobody on the port, but state thinks there should be. The
-      // gateway died or was killed externally. Clear the stale file
-      // and spawn fresh.
+    }
+
+    // probe.type === 'free' — port is truly empty.
+    if (state) {
+      // Stale state pointing at a gateway that's no longer there.
+      // Clear it so the spawn path writes a fresh record.
       await store.clear();
     }
-    // probe.type === 'free' && !state → clean start, just spawn below.
 
     // Spawn fresh gateway daemon
     const token = generateToken();
