@@ -6,7 +6,7 @@ import { ManagementClient } from '@dash/management';
 import {
   ConversationStore,
   type GatewayManagementClient,
-  GatewayProcess,
+  GatewaySupervisor,
   GatewayStateStore,
   ModelCacheService,
   SettingsStore,
@@ -16,7 +16,7 @@ import {
 import type {
   CreateAgentRequest,
   GatewayChannel,
-  GatewayProcessOptions,
+  GatewaySupervisorOptions,
   ProcessSpawner,
 } from '@dash/mc';
 import { app, dialog, ipcMain, shell } from 'electron';
@@ -56,7 +56,7 @@ function initMcLogging(): void {
 let chatService: ChatService | undefined;
 let gatewayPoller: GatewayPoller | undefined;
 let modelCache: ModelCacheService | undefined;
-let gatewayProcess: GatewayProcess | undefined;
+let gatewaySupervisor: GatewaySupervisor | undefined;
 
 function getModelCache(): ModelCacheService {
   if (!modelCache) {
@@ -65,14 +65,14 @@ function getModelCache(): ModelCacheService {
   return modelCache;
 }
 
-function getGatewayProcess(options: GatewayProcessOptions): GatewayProcess {
-  if (!gatewayProcess) {
-    gatewayProcess = new GatewayProcess(options);
+function getGatewaySupervisor(options: GatewaySupervisorOptions): GatewaySupervisor {
+  if (!gatewaySupervisor) {
+    gatewaySupervisor = new GatewaySupervisor(options);
   }
-  return gatewayProcess;
+  return gatewaySupervisor;
 }
 
-async function getClient(gw: GatewayProcess): Promise<GatewayManagementClient> {
+async function getClient(gw: GatewaySupervisor): Promise<GatewayManagementClient> {
   return gw.ensureRunning();
 }
 
@@ -143,12 +143,12 @@ export async function registerIpcHandlers(
 ): Promise<void> {
   initMcLogging();
 
-  const gwOptions: GatewayProcessOptions = {
+  const gwOptions: GatewaySupervisorOptions = {
     gatewayDataDir: DATA_DIR,
     gatewayRuntimeDir: getPlatformDataDir('dash-gateway'),
     projectRoot: resolveProjectRoot(),
   };
-  const gw = getGatewayProcess(gwOptions);
+  const gw = getGatewaySupervisor(gwOptions);
 
   // Start shared gateway
   try {
