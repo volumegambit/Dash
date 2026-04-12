@@ -1,7 +1,36 @@
-import { spawn } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { closeSync, openSync, writeSync } from 'node:fs';
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
+import { promisify } from 'node:util';
+
+const execFileP = promisify(execFile);
+
+/**
+ * OS-level port-owner lookup via `lsof`. Used as a fallback when the
+ * gateway's /health endpoint doesn't expose its own PID (older builds).
+ * Returns the PID of the process listening on `port` on loopback, or
+ * `undefined` if lsof isn't available, fails, or finds nothing.
+ *
+ * macOS/Linux only. On Windows this always returns undefined and the
+ * caller must fall back to state.pid with a warning.
+ */
+async function lsofPortOwner(port: number): Promise<number | undefined> {
+  if (process.platform === 'win32') return undefined;
+  try {
+    const { stdout } = await execFileP(
+      'lsof',
+      ['-nP', '-ti', `TCP@127.0.0.1:${port}`, '-sTCP:LISTEN'],
+      { timeout: 2000 },
+    );
+    const line = stdout.trim().split('\n').find((l) => l.length > 0);
+    if (!line) return undefined;
+    const pid = Number.parseInt(line, 10);
+    return Number.isFinite(pid) ? pid : undefined;
+  } catch {
+    return undefined;
+  }
+}
 import { generateToken } from '../security/keygen.js';
 import {
   type GatewayHealthResponse,
@@ -79,6 +108,74 @@ export const defaultProcessKiller: ProcessKiller = {
   },
 };
 
+/**
+ * Result of probing a TCP port for a gateway process. Three cases that
+ * the supervisor handles very differently:
+ *
+ * - `free`: the port is definitively unused (TCP connection refused).
+ *   Safe to spawn a fresh gateway immediately.
+ *
+ * - `owner`: there IS a gateway listening and it answered `/health`
+ *   with a recognisable body. We can identify it (by `startedAt` and
+ *   ideally `pid`) and decide whether to reuse it, kill it, or report
+ *   auth mismatch.
+ *
+ * - `unknown`: something is on the port but we can't tell what —
+ *   timeout, non-gateway process, gateway mid-startup, 5xx. CRUCIAL:
+ *   the supervisor treats this as "do not touch" and propagates as a
+ *   transient error. Acting on it (spawn or kill) risks the classic
+ *   EADDRINUSE respawn loop, because a brief `/health` stutter is
+ *   indistinguishable from "listener dead" at the probe layer.
+ */
+export type PortOwnerProbeResult =
+  | { type: 'free' }
+  | { type: 'owner'; startedAt: string; pid?: number }
+  | { type: 'unknown'; reason: string };
+
+/**
+ * Injectable probe so tests can mock port ownership without actually
+ * binding real sockets.
+ */
+export type PortOwnerProbe = (port: number) => Promise<PortOwnerProbeResult>;
+
+export const defaultPortOwnerProbe: PortOwnerProbe = async (port) => {
+  let res: Response;
+  try {
+    res = await fetch(`http://localhost:${port}/health`, {
+      signal: AbortSignal.timeout(1500),
+    });
+  } catch (err) {
+    // undici wraps network errors; ECONNREFUSED means nobody is
+    // listening. Everything else (timeout, aborted, DNS, ...) means
+    // *something* is there but unresponsive — treat as unknown.
+    const cause = (err as { cause?: { code?: string } })?.cause;
+    if (cause?.code === 'ECONNREFUSED') return { type: 'free' };
+    return {
+      type: 'unknown',
+      reason: err instanceof Error ? err.message : String(err),
+    };
+  }
+  if (!res.ok) {
+    return { type: 'unknown', reason: `HTTP ${res.status}` };
+  }
+  let body: { startedAt?: string; pid?: number };
+  try {
+    body = (await res.json()) as { startedAt?: string; pid?: number };
+  } catch (err) {
+    return {
+      type: 'unknown',
+      reason: `non-JSON /health body: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+  if (typeof body.startedAt !== 'string') {
+    return { type: 'unknown', reason: 'missing startedAt in /health response' };
+  }
+  // Gateway identified. If /health didn't include pid (older gateway),
+  // fall back to lsof so the supervisor always has a kill target.
+  const pid = body.pid ?? (await lsofPortOwner(port));
+  return { type: 'owner', startedAt: body.startedAt, pid };
+};
+
 export const defaultProcessSpawner: ProcessSpawner = {
   spawn: (command, args, options) =>
     spawn(command, args, options as Parameters<typeof spawn>[2]) as SpawnedProcess & {
@@ -127,24 +224,34 @@ export class GatewaySupervisor {
     private options: GatewaySupervisorOptions,
     private spawner: ProcessSpawner = defaultProcessSpawner,
     private killer: ProcessKiller = defaultProcessKiller,
+    private portOwnerProbe: PortOwnerProbe = defaultPortOwnerProbe,
   ) {}
 
   /**
    * Gracefully shut down a stale gateway process and wait for it to exit.
-   * Used by both `restart()` and `ensureRunning()` when a tracked PID is
-   * still alive but doesn't match our expected state (startedAt mismatch
-   * or auth mismatch).
+   * Used by both `restart()` and `ensureRunning()` when a process on
+   * port 9300 doesn't match our expected state (startedAt mismatch or
+   * auth mismatch).
    *
-   * The caller MUST have determined that the process is alive AND that
-   * it is the wrong gateway before calling — this method always sends a
-   * signal to `state.pid`. Escalates SIGTERM → SIGKILL after 5s so we
-   * never return with the old process still holding the port.
+   * `targetPid` MUST be the real process holding the port, NOT
+   * `state.pid`. Callers are responsible for resolving the port owner
+   * first — typically by reading `health.pid` from the running server.
+   * This matters because state.json can drift (crashes, orphaned
+   * detached children, PID reuse); killing `state.pid` when the actual
+   * listener has a different PID would kill the wrong process and
+   * still hit EADDRINUSE on the next spawn.
+   *
+   * Escalates SIGTERM → SIGKILL after 5s so we never return with the
+   * old process still holding the port.
    */
-  private async shutdownStaleProcess(state: GatewayState): Promise<void> {
-    // Attempt graceful shutdown via management API first. This will fail
-    // silently if our token doesn't match the running gateway (the
-    // common case that brings us here), which is why we still fall
-    // through to SIGTERM.
+  private async shutdownStaleProcess(
+    targetPid: number,
+    state: GatewayState,
+  ): Promise<void> {
+    // Attempt graceful shutdown via management API first. This will
+    // fail silently if our token doesn't match the running gateway
+    // (the common case that brings us here), which is why we still
+    // fall through to SIGTERM.
     try {
       await fetch(`http://localhost:${state.port}/lifecycle/shutdown`, {
         method: 'POST',
@@ -155,7 +262,7 @@ export class GatewaySupervisor {
       /* API unreachable or token mismatch — SIGTERM below will handle it */
     }
     try {
-      this.killer.signal(state.pid, 'SIGTERM');
+      this.killer.signal(targetPid, 'SIGTERM');
     } catch {
       // Already dead between check and kill; nothing to do.
       return;
@@ -163,27 +270,27 @@ export class GatewaySupervisor {
     // Wait up to 5s for SIGTERM to take effect.
     const termDeadline = Date.now() + 5_000;
     while (Date.now() < termDeadline) {
-      if (!this.killer.isAlive(state.pid)) break;
+      if (!this.killer.isAlive(targetPid)) break;
       await new Promise<void>((r) => setTimeout(r, 300));
     }
     // Escalate to SIGKILL if still alive. Gateway children that are
-    // stuck in MCP subprocess teardown or a blocking syscall will ignore
-    // SIGTERM; SIGKILL is the hammer that always wins. Returning from
-    // this method with the old process still on the port would cause
-    // the subsequent spawn to hit EADDRINUSE.
-    if (this.killer.isAlive(state.pid)) {
+    // stuck in MCP subprocess teardown or a blocking syscall will
+    // ignore SIGTERM; SIGKILL is the hammer that always wins.
+    // Returning from this method with the old process still on the
+    // port would cause the subsequent spawn to hit EADDRINUSE.
+    if (this.killer.isAlive(targetPid)) {
       console.warn(
-        `[gateway-supervisor] stale PID ${state.pid} ignored SIGTERM; escalating to SIGKILL`,
+        `[gateway-supervisor] stale PID ${targetPid} ignored SIGTERM; escalating to SIGKILL`,
       );
       try {
-        this.killer.signal(state.pid, 'SIGKILL');
+        this.killer.signal(targetPid, 'SIGKILL');
       } catch {
         /* disappeared between checks */
       }
       // Short wait for the kernel to reap the process.
       const killDeadline = Date.now() + 2_000;
       while (Date.now() < killDeadline) {
-        if (!this.killer.isAlive(state.pid)) break;
+        if (!this.killer.isAlive(targetPid)) break;
         await new Promise<void>((r) => setTimeout(r, 100));
       }
     }
@@ -216,60 +323,87 @@ export class GatewaySupervisor {
 
     const state = await store.read();
 
-    if (state) {
-      const pidAlive = this.killer.isAlive(state.pid);
+    // Reconcile against reality BEFORE trusting state.json. The port
+    // owner may be a completely different process from the one in
+    // state — common causes: orphan gateway inherited by init after
+    // a parent MC crashed, PID reuse after a reboot, or a previous
+    // spawn that crashed before state.json was updated.
+    const probe = await this.portOwnerProbe(managementPort);
 
-      if (pidAlive) {
-        // Classify: does the running process match our state (reuse) or
-        // is it definitively the wrong gateway (kill + respawn) or are
-        // we just seeing a transient error (propagate, caller retries).
-        let permanentMismatch = false;
-        try {
-          const client = makeClient(`http://localhost:${state.port}`, state.token);
-          const health = await client.health();
-          if (health.startedAt !== state.startedAt) {
-            // Gateway was restarted outside our control — definitive
-            // mismatch, process is no longer "our" gateway.
-            permanentMismatch = true;
-          } else {
-            // Verify the auth token still works. Any HTTP 401 here is
-            // a permanent mismatch; any other error (timeout, 5xx,
-            // connection refused) is transient and should NOT trigger
-            // a respawn — the gateway was probably mid-MCP-call or
-            // garbage-collecting and will be fine in a moment.
-            try {
-              await client.listAgents();
-              return client;
-            } catch (err) {
-              if (isPermanentAuthMismatch(err)) {
-                permanentMismatch = true;
-              } else {
-                throw err; // transient — let the caller decide
-              }
-            }
-          }
-        } catch (err) {
-          // `health()` failure OR a transient `listAgents` failure
-          // rethrown above. Neither is grounds for killing the
-          // existing process. Propagate so the caller (typically the
-          // poller) can report unhealthy and try again next tick
-          // without leaking or restarting gateways.
-          if (!permanentMismatch) throw err;
-        }
-
-        if (permanentMismatch) {
-          console.warn(
-            `[gateway-supervisor] stale gateway PID ${state.pid} on port ${state.port} (auth mismatch or startedAt drift); shutting down before respawn`,
-          );
-          await this.shutdownStaleProcess(state);
-          await store.clear();
-          // fall through to spawn
-        }
-      } else {
-        // PID was dead — clear the stale state and spawn fresh below.
-        await store.clear();
-      }
+    if (probe.type === 'unknown') {
+      // Something is on the port but not responding in a way we can
+      // identify. Could be a transient `/health` stutter (mid-MCP
+      // call, GC pause), a non-gateway process, or a gateway mid
+      // startup. DO NOT act — acting on `unknown` is how the old
+      // code got into the respawn loop. Propagate so the poller
+      // reports unhealthy and retries next tick.
+      throw new Error(
+        `Port ${managementPort} listener is unresponsive or not a gateway: ${probe.reason}`,
+      );
     }
+
+    if (probe.type === 'owner' && state) {
+      // A gateway is on the port AND we have recorded state. The
+      // AUTHORITATIVE identity check is "does our token still
+      // authenticate?" — tokens are 256-bit random per spawn, so a
+      // successful `listAgents()` is cryptographic proof that the
+      // process on the port is the one that generated our token.
+      // `startedAt` and `pid` comparisons are weaker signals that we
+      // deliberately skip: if auth succeeds, we reuse no matter what
+      // state.json says about them.
+      try {
+        const client = makeClient(`http://localhost:${state.port}`, state.token);
+        await client.listAgents();
+        // Happy path — every new MC launch / poller tick goes
+        // through here as long as the gateway we spawned is still
+        // up and still accepts our token. No spawn, no kill.
+        return client;
+      } catch (err) {
+        if (!isPermanentAuthMismatch(err)) throw err;
+        // 401 — our token does not work. The gateway on the port
+        // is somebody else's (orphan from a previous session, a
+        // different MC profile, a manually-started gateway). Kill
+        // it using the PID reported by the probe (from /health.pid
+        // or lsof fallback), NOT state.pid which can point anywhere.
+        if (probe.pid === undefined) {
+          throw new Error(
+            `Port ${managementPort} has a gateway that rejects our token, but we can't identify it (no pid in /health and lsof unavailable). Manual cleanup required.`,
+          );
+        }
+        console.warn(
+          `[gateway-supervisor] token mismatch on port ${managementPort} (running gateway is not ours); killing PID ${probe.pid} and spawning fresh`,
+        );
+        await this.shutdownStaleProcess(probe.pid, state);
+        await store.clear();
+        // fall through to spawn
+      }
+    } else if (probe.type === 'owner' && !state) {
+      // Untracked gateway on our port. No state to authenticate
+      // against, so we can't reuse — kill and spawn.
+      if (probe.pid === undefined) {
+        throw new Error(
+          `Port ${managementPort} is occupied by a gateway we can't identify (no pid in /health and lsof unavailable). Manual cleanup required.`,
+        );
+      }
+      console.warn(
+        `[gateway-supervisor] untracked gateway PID ${probe.pid} on port ${managementPort}; killing and spawning fresh`,
+      );
+      const synthState: GatewayState = {
+        pid: probe.pid,
+        startedAt: probe.startedAt,
+        token: '',
+        port: managementPort,
+        channelPort,
+        chatToken: '',
+      };
+      await this.shutdownStaleProcess(probe.pid, synthState);
+    } else if (probe.type === 'free' && state) {
+      // Nobody on the port, but state thinks there should be. The
+      // gateway died or was killed externally. Clear the stale file
+      // and spawn fresh.
+      await store.clear();
+    }
+    // probe.type === 'free' && !state → clean start, just spawn below.
 
     // Spawn fresh gateway daemon
     const token = generateToken();
@@ -356,10 +490,19 @@ export class GatewaySupervisor {
   async restart(): Promise<GatewayManagementClient> {
     const store = new GatewayStateStore(this.options.gatewayDataDir);
     const state = await store.read();
-    if (state && this.killer.isAlive(state.pid)) {
-      await this.shutdownStaleProcess(state);
+    if (state) {
+      // Prefer the authoritative port-owner PID over state.pid — same
+      // reasoning as in ensureRunningInner(): state can drift. For
+      // restart we don't care about `unknown` vs `free` distinctions
+      // — we're going to kill and respawn regardless — but we do
+      // want the right PID.
+      const probe = await this.portOwnerProbe(state.port);
+      const killPid = probe.type === 'owner' ? (probe.pid ?? state.pid) : state.pid;
+      if (this.killer.isAlive(killPid)) {
+        await this.shutdownStaleProcess(killPid, state);
+      }
+      await store.clear();
     }
-    if (state) await store.clear();
     return this.ensureRunning();
   }
 

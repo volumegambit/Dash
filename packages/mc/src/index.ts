@@ -2,11 +2,16 @@ export { generateToken } from './security/keygen.js';
 export {
   GatewaySupervisor,
   defaultProcessSpawner,
+  defaultProcessKiller,
+  defaultPortOwnerProbe,
   defaultHealthChecker,
 } from './runtime/process.js';
 export type {
   GatewaySupervisorOptions,
   ProcessSpawner,
+  ProcessKiller,
+  PortOwnerProbe,
+  PortOwnerProbeResult,
   SpawnedProcess,
   HealthChecker,
 } from './runtime/process.js';

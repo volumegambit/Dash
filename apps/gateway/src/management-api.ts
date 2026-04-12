@@ -230,6 +230,15 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
     return c.json({
       status: 'healthy',
       startedAt,
+      // `pid` is load-bearing for MC's GatewaySupervisor: it lets the
+      // supervisor identify the actual process holding port 9300
+      // independently of its own gateway-state.json file. When state
+      // drifts (e.g. an orphan gateway inherited by init after a parent
+      // crashed), the supervisor's `state.pid` can point at the wrong
+      // process — we'd SIGTERM the wrong thing and then hit EADDRINUSE
+      // trying to spawn. Reading the real PID from the server itself
+      // lets the supervisor kill the correct process every time.
+      pid: process.pid,
       agents: agentRegistry.list().length,
       channels: channelRegistry.list().length,
     });
