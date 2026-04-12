@@ -16,8 +16,8 @@ import type { McpAgentContext } from '@dash/mcp';
 import { serve } from '@hono/node-server';
 import { createNodeWebSocket } from '@hono/node-ws';
 import { Hono } from 'hono';
-import { AgentRegistry } from './agent-registry.js';
 import { createAgentChatCoordinator } from './agent-chat-coordinator.js';
+import { AgentRegistry } from './agent-registry.js';
 import { ChannelRegistry } from './channel-registry.js';
 import { mountChatWs } from './chat-ws.js';
 import { parseFlags } from './config.js';
@@ -38,11 +38,7 @@ async function main() {
   // One structured logger for the whole gateway process. Text format for
   // human-readable console output; callers can swap this for a dual-writer
   // (console + file) in production without touching downstream code.
-  const logger = createConsoleLogger(
-    flags.verbose ? 'debug' : 'info',
-    'text',
-    'gateway',
-  );
+  const logger = createConsoleLogger(flags.verbose ? 'debug' : 'info', 'text', 'gateway');
 
   // Ensure data dir exists
   const { mkdir } = await import('node:fs/promises');
@@ -88,7 +84,15 @@ async function main() {
   });
   const eventBus = new EventBus();
   const registryPath = resolve(dataDir, 'agents.json');
-  const registry = new AgentRegistry(registryPath);
+  // Agents without an explicit workspace get a per-agent directory under
+  // `<dataDir>/workspaces/<agentId>`. This is resolved at register() time
+  // (synchronously, no mkdir) and actually created on disk when a chat
+  // starts — see agent-chat-coordinator.ts. The path is persisted to
+  // agents.json so it survives restarts and is visible on the MC agent
+  // detail page.
+  const registry = new AgentRegistry(registryPath, {
+    defaultWorkspace: (id) => resolve(dataDir, 'workspaces', id),
+  });
   await registry.load();
   if (registry.list().length > 0) {
     console.log(`[agents] Restored ${registry.list().length} agent(s) from disk`);

@@ -25,10 +25,33 @@ export interface RegisteredAgent {
   registeredAt: string;
 }
 
+export interface AgentRegistryOptions {
+  /**
+   * Resolver called during `register()` when the caller did not supply a
+   * `workspace` (or supplied an empty string). Receives the freshly-assigned
+   * agent ID; returns the absolute path that should be persisted as the
+   * agent's workspace. No filesystem side-effects happen here — `mkdir` is
+   * the responsibility of whoever actually uses the workspace
+   * (currently `agent-chat-coordinator.ts`, which `mkdir`s the path with
+   * `recursive: true` right before `backend.start(workspace)`).
+   *
+   * If this option is omitted, a blank workspace stays blank — legacy
+   * behavior for tests and callers that deliberately want the old
+   * fallback-to-`.` semantics.
+   */
+  defaultWorkspace?: (id: string) => string;
+}
+
 export class AgentRegistry {
   private agents = new Map<string, RegisteredAgent>();
+  private readonly options: AgentRegistryOptions;
 
-  constructor(private filePath?: string) {}
+  constructor(
+    private filePath?: string,
+    options: AgentRegistryOptions = {},
+  ) {
+    this.options = options;
+  }
 
   /** Load persisted agents from disk. No-op if no file path or file doesn't exist. */
   async load(): Promise<void> {
@@ -76,10 +99,19 @@ export class AgentRegistry {
       throw new Error(`Agent '${config.name}' is already registered`);
     }
     const id = randomUUID().slice(0, 8);
+
+    // If no workspace was supplied and a resolver is configured, assign one.
+    // An empty string is treated the same as undefined — the MC deploy form
+    // sends `'' || undefined` but other callers (curl, CLI) might send '' directly.
+    const resolvedConfig: GatewayAgentConfig =
+      (config.workspace === undefined || config.workspace === '') && this.options.defaultWorkspace
+        ? { ...config, workspace: this.options.defaultWorkspace(id) }
+        : config;
+
     const entry: RegisteredAgent = {
       id,
       name: config.name,
-      config,
+      config: resolvedConfig,
       status: 'registered',
       registeredAt: new Date().toISOString(),
     };
@@ -129,11 +161,7 @@ export class AgentRegistry {
    * mcpServers edits to go through this method, but that would break the
    * general-purpose PUT shape. Documented rather than funneled.
    */
-  patchMcpServers(
-    id: string,
-    action: 'add' | 'remove',
-    serverName: string,
-  ): RegisteredAgent {
+  patchMcpServers(id: string, action: 'add' | 'remove', serverName: string): RegisteredAgent {
     const entry = this.agents.get(id);
     if (!entry) throw new Error(`Agent '${id}' not found`);
     const current = entry.config.mcpServers ?? [];
