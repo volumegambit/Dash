@@ -17,7 +17,15 @@ function createMockGatewayClient(startedAt = '2026-01-01T00:00:00Z') {
       agents: 0,
       channels: 0,
     }),
-  } as unknown as GatewayManagementClient & { health: ReturnType<typeof vi.fn> };
+    // `ensureRunning()` calls `listAgents()` to verify the auth token works
+    // (the /health endpoint is unauthenticated, so a matching startedAt
+    // alone doesn't prove our token is still valid). Must be stubbed here
+    // or the reuse path silently falls through to a fresh spawn.
+    listAgents: vi.fn().mockResolvedValue([]),
+  } as unknown as GatewayManagementClient & {
+    health: ReturnType<typeof vi.fn>;
+    listAgents: ReturnType<typeof vi.fn>;
+  };
 }
 
 function createMockSpawner(pid = 12345): ProcessSpawner {
