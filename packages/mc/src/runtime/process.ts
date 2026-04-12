@@ -4,7 +4,7 @@ import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { generateToken } from '../security/keygen.js';
 import { type GatewayHealthResponse, GatewayManagementClient } from './gateway-client.js';
-import { GatewayStateStore } from './gateway-state.js';
+import { type GatewayState, GatewayStateStore } from './gateway-state.js';
 
 export { providerSecretKey, parseProviderSecretKey } from './provider-keys.js';
 
@@ -34,6 +34,34 @@ export interface ProcessSpawner {
     },
   ): SpawnedProcess & { unref?: () => void };
 }
+
+/**
+ * Process-signalling abstraction used for the "is this PID alive?" check
+ * and for killing stale gateway processes. Injectable so tests don't have
+ * to actually signal real processes (in particular, `process.pid` is
+ * commonly used as a "guaranteed alive" PID in tests, and a real SIGTERM
+ * to that PID would kill the test runner).
+ */
+export interface ProcessKiller {
+  /** Returns true if the PID is alive, false if not. Mirrors `process.kill(pid, 0)`. */
+  isAlive(pid: number): boolean;
+  /** Send a signal. Throws if the PID is already gone. */
+  signal(pid: number, sig: NodeJS.Signals): void;
+}
+
+export const defaultProcessKiller: ProcessKiller = {
+  isAlive(pid: number): boolean {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  },
+  signal(pid: number, sig: NodeJS.Signals): void {
+    process.kill(pid, sig);
+  },
+};
 
 export const defaultProcessSpawner: ProcessSpawner = {
   spawn: (command, args, options) =>
@@ -72,7 +100,48 @@ export class GatewaySupervisor {
   constructor(
     private options: GatewaySupervisorOptions,
     private spawner: ProcessSpawner = defaultProcessSpawner,
+    private killer: ProcessKiller = defaultProcessKiller,
   ) {}
+
+  /**
+   * Gracefully shut down a stale gateway process and wait for it to exit.
+   * Used by both `restart()` and `ensureRunning()` when a tracked PID is
+   * still alive but doesn't match our expected state (startedAt mismatch,
+   * auth mismatch, or health check failure).
+   *
+   * The caller MUST have determined that the process is alive before
+   * calling — this method assumes the PID is live at entry and waits
+   * either until it dies or until the timeout elapses.
+   */
+  private async shutdownStaleProcess(state: GatewayState): Promise<void> {
+    // Attempt graceful shutdown via management API first. This will fail
+    // silently if our token doesn't match the running gateway (the
+    // common case that brings us here), which is why we still fall
+    // through to SIGTERM.
+    try {
+      await fetch(`http://localhost:${state.port}/lifecycle/shutdown`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${state.token}` },
+        signal: AbortSignal.timeout(2000),
+      });
+    } catch {
+      /* API unreachable or token mismatch — SIGTERM below will handle it */
+    }
+    try {
+      this.killer.signal(state.pid, 'SIGTERM');
+    } catch {
+      // Already dead between check and kill; nothing to do.
+      return;
+    }
+    // Wait up to 5s for exit.
+    const deadline = Date.now() + 5_000;
+    while (Date.now() < deadline) {
+      if (!this.killer.isAlive(state.pid)) break;
+      await new Promise<void>((r) => setTimeout(r, 300));
+    }
+    // Extra pause for the TCP port to fully release (macOS/Linux FIN_WAIT).
+    await new Promise<void>((r) => setTimeout(r, 500));
+  }
 
   async ensureRunning(): Promise<GatewayManagementClient> {
     const opts = this.options;
@@ -85,14 +154,7 @@ export class GatewaySupervisor {
     const state = await store.read();
 
     if (state) {
-      // Check if PID is alive
-      let pidAlive = false;
-      try {
-        process.kill(state.pid, 0);
-        pidAlive = true;
-      } catch {
-        /* dead */
-      }
+      const pidAlive = this.killer.isAlive(state.pid);
 
       if (pidAlive) {
         try {
@@ -104,9 +166,26 @@ export class GatewaySupervisor {
             return client;
           }
         } catch {
-          /* health check or auth failed, fall through to spawn */
+          /* health check or auth failed, fall through to reconcile */
         }
+
+        // We got here with `pidAlive === true` but the process is not
+        // the one we can use: either startedAt drifted (process was
+        // restarted outside our control), the health endpoint is not
+        // responding, or our token is wrong. In every case, the old
+        // process is still holding the port — we MUST shut it down
+        // before spawning a new one, otherwise the new spawn hits
+        // EADDRINUSE and the caller ends up in a respawn loop.
+        console.warn(
+          `[gateway-supervisor] stale gateway PID ${state.pid} detected on port ${state.port}; shutting down before respawn`,
+        );
+        await this.shutdownStaleProcess(state);
       }
+
+      // PID was dead OR we just killed it — clear the stale state file
+      // so we don't read it back on the next `ensureRunning()` call if
+      // the spawn below fails.
+      await store.clear();
     }
 
     // Spawn fresh gateway daemon
@@ -178,40 +257,10 @@ export class GatewaySupervisor {
   async restart(): Promise<GatewayManagementClient> {
     const store = new GatewayStateStore(this.options.gatewayDataDir);
     const state = await store.read();
-    if (state) {
-      // Try graceful shutdown via API first, fall back to SIGTERM
-      try {
-        const client = (this.options.makeGatewayClient ?? ((url, token) => new GatewayManagementClient(url, token)))(
-          `http://localhost:${state.port}`,
-          state.token,
-        );
-        await fetch(`http://localhost:${state.port}/lifecycle/shutdown`, {
-          method: 'POST',
-          headers: { Authorization: `Bearer ${state.token}` },
-          signal: AbortSignal.timeout(2000),
-        }).catch(() => {});
-      } catch {
-        // API not reachable
-      }
-      try {
-        process.kill(state.pid, 'SIGTERM');
-      } catch {
-        // Already dead
-      }
-      // Wait for process to exit (up to 5 seconds)
-      const deadline = Date.now() + 5_000;
-      while (Date.now() < deadline) {
-        try {
-          process.kill(state.pid, 0);
-          await new Promise<void>((r) => setTimeout(r, 300));
-        } catch {
-          break; // Process is gone
-        }
-      }
-      await store.clear();
-      // Extra wait for port release
-      await new Promise<void>((r) => setTimeout(r, 500));
+    if (state && this.killer.isAlive(state.pid)) {
+      await this.shutdownStaleProcess(state);
     }
+    if (state) await store.clear();
     return this.ensureRunning();
   }
 
