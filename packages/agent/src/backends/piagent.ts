@@ -50,7 +50,7 @@ const DEFAULT_TOOL_NAMES = ['read', 'bash', 'edit', 'write', 'grep', 'find', 'ls
 
 /**
  * PiAgentBackend - AgentBackend implementation using the PiAgent SDK
- * (@mariozechner/pi-coding-agent) instead of OpenCode.
+ * (@mariozechner/pi-coding-agent).
  *
  * Key design:
  * - Uses in-memory auth (no filesystem credential storage)

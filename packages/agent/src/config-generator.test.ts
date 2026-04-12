@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { ALL_OPENCODE_TOOLS, buildToolsMap, parseModel } from './config-generator.js';
+import { ALL_AGENT_TOOLS, buildToolsMap, parseModel } from './config-generator.js';
 
 describe('parseModel', () => {
   it('splits provider and model correctly', () => {
@@ -31,7 +31,7 @@ describe('parseModel', () => {
 describe('buildToolsMap', () => {
   it('enables all tools when undefined passed', () => {
     const map = buildToolsMap(undefined);
-    for (const tool of ALL_OPENCODE_TOOLS) {
+    for (const tool of ALL_AGENT_TOOLS) {
       expect(map[tool]).toBe(true);
     }
     expect(Object.keys(map)).toHaveLength(11);
