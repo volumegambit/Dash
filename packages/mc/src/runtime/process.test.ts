@@ -2,7 +2,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { GatewayManagementClient } from './gateway-client.js';
+import { GatewayHttpError, type GatewayManagementClient } from './gateway-client.js';
 import {
   GatewaySupervisor,
   type GatewaySupervisorOptions,
@@ -223,6 +223,8 @@ describe('GatewaySupervisor.ensureRunning()', () => {
 
     // Health check succeeds with matching startedAt, but listAgents
     // rejects with a 401 because the running gateway's token has drifted.
+    // Must be a real GatewayHttpError so supervisor can classify it as
+    // a permanent mismatch rather than a transient blip.
     const mockClient = {
       health: vi.fn().mockResolvedValue({
         status: 'healthy',
@@ -230,7 +232,9 @@ describe('GatewaySupervisor.ensureRunning()', () => {
         agents: 0,
         channels: 0,
       }),
-      listAgents: vi.fn().mockRejectedValue(new Error('Gateway listAgents failed: 401 Unauthorized')),
+      listAgents: vi
+        .fn()
+        .mockRejectedValue(new GatewayHttpError(401, 'listAgents', 'Unauthorized')),
     } as unknown as GatewayManagementClient;
 
     // After the kill + spawn, `ensureRunning` creates a fresh client —
@@ -298,6 +302,214 @@ describe('GatewaySupervisor.ensureRunning()', () => {
       expect.anything(),
     );
   });
+
+  // -------------------------------------------------------------------------
+  // Error classification: transient failures do NOT trigger respawn
+  // -------------------------------------------------------------------------
+
+  it('propagates transient health() failure WITHOUT killing or respawning', async () => {
+    const { GatewayStateStore } = await import('./gateway-state.js');
+    const store = new GatewayStateStore(tmpDir);
+    await store.write({
+      pid: 33333,
+      startedAt: '2026-01-01T00:00:00Z',
+      token: 'existing-token',
+      port: 9300,
+      channelPort: 9200,
+      chatToken: 'existing-chat-token',
+    });
+
+    // Health fails with a transient error (fetch timeout, connection
+    // refused, 5xx). The old behaviour fell through to spawn — a root
+    // cause of the respawn loop. New behaviour: propagate the error so
+    // the caller can report unhealthy and retry next tick.
+    const mockClient = {
+      health: vi.fn().mockRejectedValue(new Error('fetch timeout')),
+      listAgents: vi.fn(),
+    } as unknown as GatewayManagementClient;
+
+    const spawner = createMockSpawner();
+    const killer = createMockKiller(new Set([33333]));
+
+    const gp = new GatewaySupervisor(
+      makeOptions(tmpDir, { makeGatewayClient: () => mockClient }),
+      spawner,
+      killer,
+    );
+
+    await expect(gp.ensureRunning()).rejects.toThrow('fetch timeout');
+
+    // Neither killed nor respawned — the running gateway is still
+    // there and the next call should retry, not rebuild.
+    expect(killer.signal).not.toHaveBeenCalled();
+    expect(spawner.spawn).not.toHaveBeenCalled();
+    // State is preserved so the next call sees the same PID/token.
+    const stateAfter = await store.read();
+    expect(stateAfter?.pid).toBe(33333);
+  });
+
+  it('propagates transient listAgents() failure (non-401) WITHOUT killing or respawning', async () => {
+    const { GatewayStateStore } = await import('./gateway-state.js');
+    const store = new GatewayStateStore(tmpDir);
+    await store.write({
+      pid: 44444,
+      startedAt: '2026-01-01T00:00:00Z',
+      token: 'existing-token',
+      port: 9300,
+      channelPort: 9200,
+      chatToken: 'existing-chat-token',
+    });
+
+    // Health passes, listAgents throws a 503 (e.g., gateway's event
+    // loop momentarily blocked). Old behaviour: kill + respawn. New
+    // behaviour: propagate, retry next tick.
+    const mockClient = {
+      health: vi.fn().mockResolvedValue({
+        status: 'healthy',
+        startedAt: '2026-01-01T00:00:00Z',
+        agents: 0,
+        channels: 0,
+      }),
+      listAgents: vi
+        .fn()
+        .mockRejectedValue(new GatewayHttpError(503, 'listAgents', 'temporarily unavailable')),
+    } as unknown as GatewayManagementClient;
+
+    const spawner = createMockSpawner();
+    const killer = createMockKiller(new Set([44444]));
+
+    const gp = new GatewaySupervisor(
+      makeOptions(tmpDir, { makeGatewayClient: () => mockClient }),
+      spawner,
+      killer,
+    );
+
+    await expect(gp.ensureRunning()).rejects.toThrow(/503/);
+
+    expect(killer.signal).not.toHaveBeenCalled();
+    expect(spawner.spawn).not.toHaveBeenCalled();
+  });
+
+  // -------------------------------------------------------------------------
+  // Concurrency guard: parallel calls share one spawn attempt
+  // -------------------------------------------------------------------------
+
+  it('concurrent ensureRunning() calls share one spawn', async () => {
+    // No state → every call would independently spawn a fresh gateway
+    // if not for the promise mutex. With the mutex, all three calls
+    // resolve to the same client from a single spawn.
+    const mockClient = createMockGatewayClient();
+    const spawner = createMockSpawner();
+
+    const gp = new GatewaySupervisor(
+      makeOptions(tmpDir, { makeGatewayClient: () => mockClient }),
+      spawner,
+    );
+
+    // Fire three in parallel
+    const [a, b, c] = await Promise.all([
+      gp.ensureRunning(),
+      gp.ensureRunning(),
+      gp.ensureRunning(),
+    ]);
+
+    expect(spawner.spawn).toHaveBeenCalledTimes(1);
+    expect(a).toBe(mockClient);
+    expect(b).toBe(mockClient);
+    expect(c).toBe(mockClient);
+  });
+
+  it('after an in-flight ensureRunning() completes, the next call is free to spawn again', async () => {
+    const mockClient = createMockGatewayClient();
+    const spawner = createMockSpawner();
+
+    const gp = new GatewaySupervisor(
+      makeOptions(tmpDir, { makeGatewayClient: () => mockClient }),
+      spawner,
+    );
+
+    await gp.ensureRunning();
+    // First call spawned (no state) and wrote state.
+    expect(spawner.spawn).toHaveBeenCalledTimes(1);
+
+    // Second call: state exists, PID is "alive" per the mock, health
+    // passes, listAgents passes → reuse. No second spawn.
+    const killer = createMockKiller(new Set([12345]));
+    // Rebuild the supervisor with the killer in scope; reuse the same
+    // state file (tmpDir) to exercise the reuse-path.
+    const gp2 = new GatewaySupervisor(
+      makeOptions(tmpDir, { makeGatewayClient: () => mockClient }),
+      createMockSpawner(),
+      killer,
+    );
+    await gp2.ensureRunning();
+  });
+
+  // -------------------------------------------------------------------------
+  // SIGKILL escalation
+  // -------------------------------------------------------------------------
+
+  it('escalates SIGTERM to SIGKILL when stale process ignores SIGTERM', async () => {
+    const { GatewayStateStore } = await import('./gateway-state.js');
+    const store = new GatewayStateStore(tmpDir);
+    await store.write({
+      pid: 55555,
+      startedAt: '2026-01-01T00:00:00Z',
+      token: 'stale-token',
+      port: 9300,
+      channelPort: 9200,
+      chatToken: 'stale-chat-token',
+    });
+
+    // Permanent auth mismatch brings us into shutdownStaleProcess.
+    const staleClient = {
+      health: vi.fn().mockResolvedValue({
+        status: 'healthy',
+        startedAt: '2026-01-01T00:00:00Z',
+        agents: 0,
+        channels: 0,
+      }),
+      listAgents: vi.fn().mockRejectedValue(new GatewayHttpError(401, 'listAgents', 'Unauthorized')),
+    } as unknown as GatewayManagementClient;
+    const freshClient = createMockGatewayClient('2026-04-01T00:00:00Z');
+    let call = 0;
+    const makeGatewayClient = vi.fn(() => {
+      call++;
+      return call === 1 ? staleClient : freshClient;
+    });
+
+    // Mock killer that refuses to die on SIGTERM — only SIGKILL
+    // actually removes the pid from the alive set.
+    const aliveSet = new Set([55555]);
+    const killer: ProcessKiller & {
+      signal: ReturnType<typeof vi.fn>;
+      isAlive: ReturnType<typeof vi.fn>;
+    } = {
+      isAlive: vi.fn((pid: number) => aliveSet.has(pid)),
+      signal: vi.fn((pid: number, sig: NodeJS.Signals) => {
+        if (sig === 'SIGKILL') aliveSet.delete(pid);
+        // SIGTERM is a no-op in this mock — simulates a process that
+        // ignores it (stuck on MCP teardown, blocked syscall, etc.)
+      }),
+    };
+
+    const spawner = createMockSpawner(77777);
+
+    const gp = new GatewaySupervisor(
+      makeOptions(tmpDir, { makeGatewayClient }),
+      spawner,
+      killer,
+    );
+
+    await gp.ensureRunning();
+
+    // Must have sent SIGTERM first…
+    expect(killer.signal).toHaveBeenCalledWith(55555, 'SIGTERM');
+    // …then escalated to SIGKILL when SIGTERM failed to kill…
+    expect(killer.signal).toHaveBeenCalledWith(55555, 'SIGKILL');
+    // …and finally respawned.
+    expect(spawner.spawn).toHaveBeenCalledOnce();
+  }, 15_000);
 });
 
 // ---------------------------------------------------------------------------

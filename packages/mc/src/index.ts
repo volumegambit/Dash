@@ -26,7 +26,7 @@ export {
   globToRegex,
 } from './models/supported-models.js';
 export type { SupportedModelEntry } from './models/supported-models.js';
-export { GatewayManagementClient } from './runtime/gateway-client.js';
+export { GatewayManagementClient, GatewayHttpError } from './runtime/gateway-client.js';
 export type {
   GatewayAgent,
   GatewayChannel,
