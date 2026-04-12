@@ -42,6 +42,13 @@ export interface AgentService {
     text: string,
     images?: ImageBlock[],
   ): Promise<void>;
+  /**
+   * Evict all warm conversation backends for an agent. Aborts any in-flight
+   * streams and calls `backend.stop()` on each evicted entry. Safe to call
+   * after the agent has been removed from the registry — the pool is keyed
+   * by agent ID independently of the registry.
+   */
+  evict(agentId: string): Promise<void>;
   stats(): AgentServiceStats;
   stop(): Promise<void>;
 }
@@ -129,6 +136,10 @@ export function createAgentService(options: AgentServiceOptions): AgentService {
       if (backend.followUp) {
         await backend.followUp(text, images);
       }
+    },
+
+    async evict(agentId) {
+      await pool.evictAgent(agentId);
     },
 
     stats() {

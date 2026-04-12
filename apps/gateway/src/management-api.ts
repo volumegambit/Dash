@@ -141,6 +141,13 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
         channelRegistry.remove(name);
       }
       channelRegistry.removeRoutesForAgent(id);
+      // Evict warm backends before removing the registry entry so any
+      // in-flight streams are aborted and backend.stop() is called. The
+      // pool is keyed independently of the registry, so order doesn't
+      // affect correctness of the eviction itself — but doing it before
+      // the registry remove means races that race a delete with a chat
+      // get aborted rather than serving a deleted agent's state.
+      await agents.evict(id);
       agentRegistry.remove(id);
       await agentRegistry.save();
       await channelRegistry.save();

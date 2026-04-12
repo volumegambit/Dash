@@ -130,6 +130,7 @@ function makeAgents(): AgentService {
     chat: vi.fn(),
     steer: vi.fn().mockResolvedValue(undefined),
     followUp: vi.fn().mockResolvedValue(undefined),
+    evict: vi.fn().mockResolvedValue(undefined),
     stats: vi.fn().mockReturnValue({ size: 0, maxSize: 0, pinned: 0, agents: {} }),
     stop: vi.fn().mockResolvedValue(undefined),
   };
@@ -319,8 +320,8 @@ describe('createGatewayManagementApp', () => {
   });
 
   describe('DELETE /agents/:id', () => {
-    it('removes agent and cleans up channels', async () => {
-      const { app, agentRegistry, gateway, channelRegistry } = createApp();
+    it('removes agent and cleans up channels, pool, and registry', async () => {
+      const { app, agentRegistry, gateway, channelRegistry, agents } = createApp();
       const entry = (agentRegistry.register as ReturnType<typeof vi.fn>)({
         name: 'x',
         model: 'm',
@@ -335,6 +336,9 @@ describe('createGatewayManagementApp', () => {
       expect(gateway.deregisterAgent).toHaveBeenCalledWith(entry.id);
       expect(channelRegistry.remove).toHaveBeenCalledWith('ch1');
       expect(channelRegistry.removeRoutesForAgent).toHaveBeenCalledWith(entry.id);
+      // Warm pool entries must be evicted so in-flight streams are aborted
+      // and backend.stop() runs on any cached DashAgent / AgentBackend.
+      expect(agents.evict).toHaveBeenCalledWith(entry.id);
       expect(agentRegistry.remove).toHaveBeenCalledWith(entry.id);
       expect(agentRegistry.save).toHaveBeenCalled();
       expect(channelRegistry.save).toHaveBeenCalled();

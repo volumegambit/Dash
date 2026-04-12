@@ -69,6 +69,43 @@ describe('Gateway integration', () => {
     // Backend stop should have been called
     expect(backend.stop).toHaveBeenCalled();
   });
+
+  it('evict(agentId) clears pool entries and stops their backends', async () => {
+    const registry = new AgentRegistry();
+    const backend: AgentBackend = {
+      name: 'test',
+      start: vi.fn().mockResolvedValue(undefined),
+      stop: vi.fn().mockResolvedValue(undefined),
+      async *run(_state: AgentState, _options: RunOptions): AsyncGenerator<AgentEvent> {
+        yield { type: 'text_delta', text: 'hi' };
+        yield { type: 'response', content: 'hi', usage: { inputTokens: 1, outputTokens: 1 } };
+      },
+      abort: vi.fn(),
+    };
+    const agents = createAgentService({
+      registry,
+      poolMaxSize: 10,
+      createBackend: vi.fn().mockResolvedValue(backend),
+    });
+    const { id } = registry.register({
+      name: 'evictable',
+      model: 'anthropic/claude-sonnet-4-5',
+      systemPrompt: 'p',
+    });
+
+    // Warm the pool with one conversation
+    for await (const _ of agents.chat({ agentId: id, conversationId: 'conv-1', text: 'hi' })) {
+      // drain
+    }
+    expect(agents.stats().size).toBe(1);
+
+    // Evict — backend.stop() should run and the pool should drop the entry
+    await agents.evict(id);
+    expect(backend.stop).toHaveBeenCalled();
+    expect(agents.stats().size).toBe(0);
+
+    await agents.stop();
+  });
 });
 
 describe('Pull-based credential propagation (end-to-end)', () => {
