@@ -55,6 +55,16 @@ export interface CreateAgentRequest {
 export interface GatewayHealthResponse {
   status: 'healthy';
   startedAt: string;
+  /**
+   * OS process id of the gateway server. Load-bearing for MC's
+   * `GatewaySupervisor`: when state.json drifts out of sync with the
+   * actual port owner (crashes, orphaned detached children, PID reuse),
+   * the supervisor reads this field from the live server instead of
+   * trusting its own state file. Optional so older gateways can still
+   * be detected (the supervisor falls back to `state.pid` + a
+   * loud-warning code path in that case).
+   */
+  pid?: number;
   agents: number;
   channels: number;
   mcpServers?: Array<{ name: string; status: string }>;
