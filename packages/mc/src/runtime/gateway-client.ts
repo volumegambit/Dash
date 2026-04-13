@@ -52,6 +52,44 @@ export interface CreateAgentRequest {
   mcpServers?: string[];
 }
 
+/**
+ * Curated model returned by the gateway's `GET /models` endpoint. Same
+ * shape as `@dash/models` `FilteredModel`. Re-declared locally to keep
+ * the MC client zero-dependency on `@dash/models` — MC just consumes
+ * the gateway's REST contract.
+ */
+export interface GatewayModel {
+  value: string;
+  label: string;
+  provider: string;
+}
+
+/**
+ * Response shape of `GET /models` and `POST /models/refresh`. The
+ * `source` discriminates between live-fetched data and the curated
+ * bootstrap fallback (returned when no provider credentials are
+ * configured at all).
+ */
+export interface GatewayModelsResponse {
+  models: GatewayModel[];
+  source: 'live' | 'bootstrap';
+  errors: Record<string, string>;
+  fetchedAt: string;
+  supportedModelsReviewedAt: string;
+}
+
+/**
+ * Response shape of `GET /models?debug=true`. Adds the bootstrap list,
+ * allow-list patterns, and configured/available provider lists for the
+ * Under the Hood debug page.
+ */
+export interface GatewayModelsDebugResponse extends GatewayModelsResponse {
+  bootstrap: GatewayModel[];
+  patterns: Array<{ provider: string; pattern: string; tier: number }>;
+  providersConfigured: string[];
+  providersAvailable: string[];
+}
+
 export interface GatewayHealthResponse {
   status: 'healthy';
   startedAt: string;
@@ -264,5 +302,37 @@ export class GatewayManagementClient {
       headers: this.headers(),
     });
     await this.throwIfNotOk(res, 'removeCredential');
+  }
+
+  // Models — gateway is the single source of truth. The store survives
+  // restarts; refresh forces a fetch from provider /v1/models endpoints.
+  async listModels(): Promise<GatewayModelsResponse> {
+    const res = await fetch(`${this.baseUrl}/models`, {
+      headers: this.headers(),
+      signal: AbortSignal.timeout(HOT_PATH_TIMEOUT_MS),
+    });
+    await this.throwIfNotOk(res, 'listModels');
+    return res.json() as Promise<GatewayModelsResponse>;
+  }
+
+  async refreshModels(): Promise<GatewayModelsResponse> {
+    // No timeout: refresh hits provider /v1/models endpoints which can
+    // take several seconds end-to-end. The route is mutex-guarded so
+    // parallel callers share one fetch.
+    const res = await fetch(`${this.baseUrl}/models/refresh`, {
+      method: 'POST',
+      headers: this.headers(),
+    });
+    await this.throwIfNotOk(res, 'refreshModels');
+    return res.json() as Promise<GatewayModelsResponse>;
+  }
+
+  async debugModels(): Promise<GatewayModelsDebugResponse> {
+    const res = await fetch(`${this.baseUrl}/models?debug=true`, {
+      headers: this.headers(),
+      signal: AbortSignal.timeout(HOT_PATH_TIMEOUT_MS),
+    });
+    await this.throwIfNotOk(res, 'debugModels');
+    return res.json() as Promise<GatewayModelsDebugResponse>;
   }
 }

@@ -2,7 +2,7 @@ import { createFileRoute, useNavigate } from '@tanstack/react-router';
 import { ArrowLeft, ArrowRight, Check, Loader, Rocket } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { ModelChainEditor } from '../components/ModelChainEditor.js';
-import { ALL_TOOL_IDS, AVAILABLE_MODELS, TOOL_GROUPS } from '../components/deploy-options.js';
+import { ALL_TOOL_IDS, TOOL_GROUPS } from '../components/deploy-options.js';
 import { useAvailableModels } from '../hooks/useAvailableModels.js';
 import { useAgentsStore } from '../stores/agents.js';
 
@@ -291,7 +291,7 @@ export function DeployWizard(): JSX.Element {
                 <ReviewRow
                   label="Model"
                   value={[agent.model, ...agent.fallbackModels]
-                    .map((v) => AVAILABLE_MODELS.find((m) => m.value === v)?.label ?? v)
+                    .map((v) => availableModels.find((m) => m.value === v)?.label ?? v)
                     .join(' → ')}
                 />
                 <ReviewRow

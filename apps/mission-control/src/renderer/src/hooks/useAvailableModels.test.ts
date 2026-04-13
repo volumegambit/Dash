@@ -1,47 +1,88 @@
 import { renderHook, waitFor } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 import { mockApi } from '../../../../vitest.setup.js';
 import { useAvailableModels } from './useAvailableModels.js';
 
+/**
+ * The hook is now a thin wrapper over the gateway's GET /models endpoint.
+ * It does not filter by credentials anymore — the gateway already returns
+ * only providers with credentials (or BOOTSTRAP_MODELS when zero
+ * credentials are configured). MC just renders whatever it gets.
+ */
 describe('useAvailableModels', () => {
   beforeEach(() => {
     mockApi.credentialsList.mockResolvedValue([]);
-    mockApi.modelsList.mockResolvedValue([]);
+    mockApi.modelsList.mockResolvedValue({
+      models: [],
+      source: 'bootstrap',
+      errors: {},
+      fetchedAt: '2026-04-13T00:00:00Z',
+      supportedModelsReviewedAt: '2026-04-13',
+    });
+    mockApi.modelsRefresh.mockResolvedValue({
+      models: [],
+      source: 'bootstrap',
+      errors: {},
+      fetchedAt: '2026-04-13T00:00:00Z',
+      supportedModelsReviewedAt: '2026-04-13',
+    });
   });
 
-  it('returns no models when no keys are present', async () => {
+  it('returns an empty list when the gateway returns no models', async () => {
     const { result } = renderHook(() => useAvailableModels());
     await waitFor(() => {
       expect(result.current.models).toHaveLength(0);
     });
   });
 
-  it('returns only anthropic models when only anthropic key is present', async () => {
-    mockApi.credentialsList.mockResolvedValue(['anthropic-api-key:default']);
+  it('renders whatever the gateway returns, without applying its own filter', async () => {
+    mockApi.modelsList.mockResolvedValue({
+      models: [
+        { value: 'anthropic/claude-opus-4-5', label: 'Claude Opus 4.5', provider: 'anthropic' },
+        { value: 'openai/gpt-5.4', label: 'GPT-5.4', provider: 'openai' },
+      ],
+      source: 'live',
+      errors: {},
+      fetchedAt: '2026-04-13T00:00:00Z',
+      supportedModelsReviewedAt: '2026-04-13',
+    });
     const { result } = renderHook(() => useAvailableModels());
     await waitFor(() => {
-      expect(result.current.models.every((m) => m.provider === 'anthropic')).toBe(true);
-      expect(result.current.models.length).toBeGreaterThan(0);
+      expect(result.current.models.map((m) => m.value)).toEqual([
+        'anthropic/claude-opus-4-5',
+        'openai/gpt-5.4',
+      ]);
     });
   });
 
-  it('returns models from all providers when all keys are present', async () => {
-    mockApi.credentialsList.mockResolvedValue([
-      'anthropic-api-key:default',
-      'openai-api-key:default',
-      'google-api-key:default',
-    ]);
+  it('refresh callback calls modelsRefresh and updates state', async () => {
+    mockApi.modelsList.mockResolvedValue({
+      models: [],
+      source: 'bootstrap',
+      errors: {},
+      fetchedAt: '2026-04-13T00:00:00Z',
+      supportedModelsReviewedAt: '2026-04-13',
+    });
+    mockApi.modelsRefresh.mockResolvedValue({
+      models: [
+        { value: 'anthropic/claude-opus-4-5', label: 'Claude Opus 4.5', provider: 'anthropic' },
+      ],
+      source: 'live',
+      errors: {},
+      fetchedAt: '2026-04-13T00:00:00Z',
+      supportedModelsReviewedAt: '2026-04-13',
+    });
     const { result } = renderHook(() => useAvailableModels());
     await waitFor(() => {
-      const providers = new Set(result.current.models.map((m) => m.provider));
-      expect(providers).toContain('anthropic');
-      expect(providers).toContain('openai');
-      expect(providers).toContain('google');
+      expect(result.current.models).toHaveLength(0);
+    });
+    result.current.refresh();
+    await waitFor(() => {
+      expect(result.current.models).toHaveLength(1);
     });
   });
 
   it('exposes refresh function and refreshing state', async () => {
-    mockApi.credentialsList.mockResolvedValue(['anthropic-api-key:default']);
     const { result } = renderHook(() => useAvailableModels());
     await waitFor(() => {
       expect(typeof result.current.refresh).toBe('function');

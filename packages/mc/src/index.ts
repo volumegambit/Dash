@@ -22,21 +22,15 @@ export type { MessagingApp, RoutingRule, RoutingCondition } from './types.js';
 export { SettingsStore } from './settings-store.js';
 export type { AppSettings } from './settings-store.js';
 export { getPlatformDataDir } from './platform-paths.js';
-export { ModelCacheService } from './models/model-cache.js';
-export type { CachedModel } from './models/model-cache.js';
-export {
-  SUPPORTED_MODELS,
-  findSupportedModel,
-  isModelSupported,
-  globToRegex,
-} from './models/supported-models.js';
-export type { SupportedModelEntry } from './models/supported-models.js';
 export { GatewayManagementClient, GatewayHttpError } from './runtime/gateway-client.js';
 export type {
   GatewayAgent,
   GatewayChannel,
   GatewayHealthResponse,
   CreateAgentRequest,
+  GatewayModel,
+  GatewayModelsResponse,
+  GatewayModelsDebugResponse,
 } from './runtime/gateway-client.js';
 export { GatewayStateStore } from './runtime/gateway-state.js';
 export type { GatewayState } from './runtime/gateway-state.js';

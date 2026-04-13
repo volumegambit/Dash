@@ -1,9 +1,10 @@
 import type { SkillContent, SkillInfo, SkillsConfig } from '@dash/management';
 import type {
-  CachedModel,
   CreateAgentRequest,
   GatewayAgent,
   GatewayChannel,
+  GatewayModelsDebugResponse,
+  GatewayModelsResponse,
   McConversation,
   McMessage,
 } from '@dash/mc';
@@ -164,9 +165,14 @@ export interface MissionControlAPI {
   settingsGet(): Promise<AppSettings>;
   settingsSet(patch: Partial<AppSettings>): Promise<void>;
 
-  // Models & Tools
-  modelsList(): Promise<CachedModel[]>;
-  modelsRefresh(): Promise<CachedModel[]>;
+  // Models & Tools — gateway is the source of truth for the model list.
+  // `modelsList` reads the gateway's persistent store (or its bootstrap
+  // fallback when no credentials are configured); `modelsRefresh` forces
+  // a fresh fetch from provider /v1/models endpoints; `modelsDebug`
+  // returns the extended shape used by the Under the Hood debug page.
+  modelsList(): Promise<GatewayModelsResponse>;
+  modelsRefresh(): Promise<GatewayModelsResponse>;
+  modelsDebug(): Promise<GatewayModelsDebugResponse>;
   toolsList(): Promise<string[]>;
 
   // Connectors (MCP)

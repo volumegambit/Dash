@@ -92,9 +92,32 @@ function createMockApi(): Record<keyof MissionControlAPI, ReturnType<typeof vi.f
     logsRead: vi.fn().mockResolvedValue(''),
     logsPaths: vi.fn().mockResolvedValue({ mc: '/tmp/mc.log', gateway: '/tmp/gateway.log', dataDir: '/tmp' }),
 
-    // Models & Tools
-    modelsList: vi.fn().mockResolvedValue([]),
-    modelsRefresh: vi.fn().mockResolvedValue([]),
+    // Models & Tools — gateway-shaped responses (see GatewayModelsResponse)
+    modelsList: vi.fn().mockResolvedValue({
+      models: [],
+      source: 'bootstrap',
+      errors: {},
+      fetchedAt: '2026-04-13T00:00:00Z',
+      supportedModelsReviewedAt: '2026-04-13',
+    }),
+    modelsRefresh: vi.fn().mockResolvedValue({
+      models: [],
+      source: 'bootstrap',
+      errors: {},
+      fetchedAt: '2026-04-13T00:00:00Z',
+      supportedModelsReviewedAt: '2026-04-13',
+    }),
+    modelsDebug: vi.fn().mockResolvedValue({
+      models: [],
+      source: 'bootstrap',
+      errors: {},
+      fetchedAt: '2026-04-13T00:00:00Z',
+      supportedModelsReviewedAt: '2026-04-13',
+      bootstrap: [],
+      patterns: [],
+      providersConfigured: [],
+      providersAvailable: ['anthropic', 'openai', 'google'],
+    }),
     toolsList: vi.fn().mockResolvedValue([]),
 
     // Connectors (MCP)

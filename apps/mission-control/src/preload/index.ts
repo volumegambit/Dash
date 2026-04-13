@@ -95,6 +95,7 @@ const api: MissionControlAPI = {
   // Models & Tools
   modelsList: () => ipcRenderer.invoke('models:list'),
   modelsRefresh: () => ipcRenderer.invoke('models:refresh'),
+  modelsDebug: () => ipcRenderer.invoke('models:debug'),
   toolsList: () => ipcRenderer.invoke('tools:list'),
 
   // Connectors (MCP)

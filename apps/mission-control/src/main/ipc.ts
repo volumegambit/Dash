@@ -8,7 +8,6 @@ import {
   type GatewayManagementClient,
   GatewaySupervisor,
   GatewayStateStore,
-  ModelCacheService,
   SettingsStore,
   defaultProcessSpawner,
   getPlatformDataDir,
@@ -55,15 +54,7 @@ function initMcLogging(): void {
 
 let chatService: ChatService | undefined;
 let gatewayPoller: GatewayPoller | undefined;
-let modelCache: ModelCacheService | undefined;
 let gatewaySupervisor: GatewaySupervisor | undefined;
-
-function getModelCache(): ModelCacheService {
-  if (!modelCache) {
-    modelCache = new ModelCacheService(DATA_DIR);
-  }
-  return modelCache;
-}
 
 function getGatewaySupervisor(options: GatewaySupervisorOptions): GatewaySupervisor {
   if (!gatewaySupervisor) {
@@ -652,16 +643,28 @@ export async function registerIpcHandlers(
   // Models & Tools
   // -----------------------------------------------------------------------
 
+  // Gateway is the source of truth for the model list. MC just calls
+  // through — the gateway handles persistence, bootstrap fallback, and
+  // SUPPORTED_MODELS filtering.
   ipcMain.handle('models:list', async () => {
-    return getModelCache().load();
+    const client = await getClient(gw);
+    return client.listModels();
   });
 
   ipcMain.handle('models:refresh', async () => {
-    return getModelCache().load();
+    const client = await getClient(gw);
+    return client.refreshModels();
+  });
+
+  ipcMain.handle('models:debug', async () => {
+    const client = await getClient(gw);
+    return client.debugModels();
   });
 
   ipcMain.handle('tools:list', async () => {
-    return getModelCache().loadTools();
+    // Tools list is static and shipped in @dash/agent. No gateway call.
+    const { AGENT_TOOL_NAMES } = await import('@dash/agent');
+    return [...AGENT_TOOL_NAMES];
   });
 
   // -----------------------------------------------------------------------

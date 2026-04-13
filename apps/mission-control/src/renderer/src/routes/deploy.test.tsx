@@ -1,5 +1,5 @@
 import '@testing-library/jest-dom/vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { mockApi } from '../../../../vitest.setup.js';
@@ -21,12 +21,37 @@ describe('DeployWizard', () => {
       loading: false,
       error: null,
     });
-    // Provide credentials so availableModels is non-empty
+    // Provide credentials so the hint state is populated
     mockApi.credentialsList.mockResolvedValue([
       'anthropic-api-key:default',
       'openai-api-key:default',
       'google-api-key:default',
     ]);
+    // The dropdown is now populated from the gateway. Seed a few
+    // models so the wizard's model-required validation passes.
+    mockApi.modelsList.mockResolvedValue({
+      models: [
+        {
+          value: 'anthropic/claude-opus-4-5',
+          label: 'Claude Opus 4.5',
+          provider: 'anthropic',
+        },
+        {
+          value: 'openai/gpt-5.4',
+          label: 'GPT-5.4',
+          provider: 'openai',
+        },
+        {
+          value: 'google/gemini-2.5-pro',
+          label: 'Gemini 2.5 Pro',
+          provider: 'google',
+        },
+      ],
+      source: 'live',
+      errors: {},
+      fetchedAt: '2026-04-13T00:00:00Z',
+      supportedModelsReviewedAt: '2026-04-13',
+    });
   });
 
   it('renders agent step initially', () => {
@@ -79,7 +104,7 @@ describe('DeployWizard', () => {
     await user.click(screen.getByRole('button', { name: /next/i }));
 
     expect(screen.getByText('my-cool-agent')).toBeInTheDocument();
-    expect(screen.getByText('Claude Opus 4')).toBeInTheDocument();
+    expect(screen.getByText('Claude Opus 4.5')).toBeInTheDocument();
   });
 
   it('deploy calls agentsCreate with correct options', async () => {
@@ -92,7 +117,7 @@ describe('DeployWizard', () => {
 
     expect(mockApi.agentsCreate).toHaveBeenCalledWith({
       name: 'deploy-test',
-      model: 'anthropic/claude-opus-4-20250514',
+      model: 'anthropic/claude-opus-4-5',
       fallbackModels: undefined,
       systemPrompt: '',
       tools: [],
@@ -104,6 +129,16 @@ describe('DeployWizard', () => {
 describe('DeployWizard model validation', () => {
   beforeEach(() => {
     mockApi.credentialsList.mockResolvedValue([]);
+    // Simulate the gateway's "no credentials configured" path: empty
+    // models list (in production this would be the bootstrap fallback,
+    // but the deploy wizard's "Next" button gates on availability).
+    mockApi.modelsList.mockResolvedValue({
+      models: [],
+      source: 'bootstrap',
+      errors: {},
+      fetchedAt: '2026-04-13T00:00:00Z',
+      supportedModelsReviewedAt: '2026-04-13',
+    });
   });
 
   it('Next button is disabled when no model is available (no keys configured)', async () => {
@@ -114,21 +149,20 @@ describe('DeployWizard model validation', () => {
     expect(nextButton).toBeDisabled();
   });
 
-  it('Next button is enabled when name is filled and model has a configured key', async () => {
-    mockApi.credentialsList.mockResolvedValue(['openai-api-key:default']);
+  it('Next button is enabled when gateway returns models', async () => {
+    mockApi.modelsList.mockResolvedValue({
+      models: [
+        { value: 'openai/gpt-5.4', label: 'GPT-5.4', provider: 'openai' },
+      ],
+      source: 'live',
+      errors: {},
+      fetchedAt: '2026-04-13T00:00:00Z',
+      supportedModelsReviewedAt: '2026-04-13',
+    });
     render(<DeployWizard />);
     const nameInput = screen.getByPlaceholderText('my-agent');
     await userEvent.type(nameInput, 'test-agent');
-    const nextButton = screen.getByRole('button', { name: /next/i });
-    expect(nextButton).not.toBeDisabled();
-  });
-
-  it('shows hint when selected model has no API key', async () => {
-    mockApi.credentialsList.mockResolvedValue(['openai-api-key:default']);
-    vi.mocked(window.api.settingsGet).mockResolvedValue({
-      defaultModel: 'anthropic/claude-sonnet-4-20250514',
-    });
-    render(<DeployWizard />);
-    await screen.findByText(/add an api key/i);
+    const nextButton = await screen.findByRole('button', { name: /next/i });
+    await waitFor(() => expect(nextButton).not.toBeDisabled());
   });
 });
