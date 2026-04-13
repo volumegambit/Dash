@@ -363,7 +363,7 @@ function DoneStep({ onFinish }: { onFinish: () => void }): JSX.Element {
         onClick={onFinish}
         className="mt-8 inline-flex items-center gap-2 rounded-lg bg-accent px-6 py-3 text-sm font-medium text-white transition-colors hover:bg-primary-hover"
       >
-        Go to Dashboard
+        Get Started
         <ArrowRight size={16} />
       </button>
     </div>

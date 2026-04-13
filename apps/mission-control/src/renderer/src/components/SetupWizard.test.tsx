@@ -86,18 +86,18 @@ describe('SetupWizard', () => {
     it('skips the wizard and lands directly on done', () => {
       render(<SetupWizard needsSetup={false} onComplete={noop} />);
       expect(screen.getByText("You're All Set!")).toBeInTheDocument();
-      expect(screen.getByText('Go to Dashboard')).toBeInTheDocument();
+      expect(screen.getByText('Get Started')).toBeInTheDocument();
       // Skipping to 'done' must NOT trigger setupEnsureGateway — the
       // caller already determined the gateway is live.
       expect(mockApi.setupEnsureGateway).not.toHaveBeenCalled();
     });
 
-    it('calls onComplete when "Go to Dashboard" clicked', async () => {
+    it('calls onComplete when "Get Started" clicked', async () => {
       const user = userEvent.setup();
       const onComplete = vi.fn();
       render(<SetupWizard needsSetup={false} onComplete={onComplete} />);
 
-      await user.click(screen.getByText('Go to Dashboard'));
+      await user.click(screen.getByText('Get Started'));
 
       expect(onComplete).toHaveBeenCalledOnce();
     });

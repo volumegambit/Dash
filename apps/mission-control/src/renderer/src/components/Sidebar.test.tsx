@@ -15,12 +15,16 @@ describe('Sidebar', () => {
 
   it('renders all expected nav items', () => {
     render(<Sidebar />);
-    expect(screen.getByText('Dashboard')).toBeInTheDocument();
     expect(screen.getByText('Chat')).toBeInTheDocument();
     expect(screen.getByText('Agents')).toBeInTheDocument();
     expect(screen.queryByText('Secrets')).not.toBeInTheDocument();
     expect(screen.getByText('Settings')).toBeInTheDocument();
     expect(screen.getByText('Messaging Apps')).toBeInTheDocument();
+  });
+
+  it('does not render a Dashboard nav item', () => {
+    render(<Sidebar />);
+    expect(screen.queryByText('Dashboard')).not.toBeInTheDocument();
   });
 
   it('does not render a Deploy nav item', () => {
@@ -41,7 +45,6 @@ describe('Sidebar', () => {
   it('hides nav labels when collapsed', () => {
     useUIStore.setState({ sidebarCollapsed: true });
     render(<Sidebar />);
-    expect(screen.queryByText('Dashboard')).not.toBeInTheDocument();
     expect(screen.queryByText('Chat')).not.toBeInTheDocument();
     expect(screen.queryByText('Agents')).not.toBeInTheDocument();
   });
