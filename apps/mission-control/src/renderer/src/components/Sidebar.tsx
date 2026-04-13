@@ -3,7 +3,6 @@ import {
   Bot,
   Cable,
   Globe,
-  LayoutDashboard,
   LifeBuoy,
   MessageCircle,
   MessageSquare,
@@ -37,10 +36,7 @@ interface NavSection {
 const sections: NavSection[] = [
   {
     label: 'CORE',
-    items: [
-      { to: '/', label: 'Dashboard', icon: LayoutDashboard },
-      { to: '/chat', label: 'Chat', icon: MessageCircle },
-    ],
+    items: [{ to: '/chat', label: 'Chat', icon: MessageCircle }],
   },
   {
     label: 'MANAGE',
