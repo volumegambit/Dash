@@ -11,12 +11,10 @@ import {
   FolderOpen,
   Loader,
   Paperclip,
-  Pencil,
   Plus,
   Search,
   Send,
   Square,
-  Trash2,
   X,
   XCircle,
 } from 'lucide-react';
@@ -27,9 +25,19 @@ import type { McAgentEvent } from '../../../shared/ipc.js';
 import { detectLanguage } from '../components/DiffView.js';
 import { Markdown } from '../components/Markdown.js';
 import { HighlightedCode, ToolResult } from '../components/ToolResult.js';
+import { useAvailableModels } from '../hooks/useAvailableModels.js';
 import { useAgentsStore } from '../stores/agents.js';
 import { useChatStore } from '../stores/chat.js';
 import { useConnectorsStore } from '../stores/connectors.js';
+import {
+  CompactionDivider,
+  CompactionToast,
+  ContextChip,
+  ModelChangeToast,
+  computeContextStatus,
+  latestUsageFromConversation,
+  messageEvents,
+} from './chat.context.js';
 import {
   type TodoItem,
   formatDetails,
@@ -39,14 +47,7 @@ import {
   toolLabel,
   truncate,
 } from './chat.helpers.js';
-import {
-  CompactionDivider,
-  CompactionToast,
-  ContextChip,
-  computeContextStatus,
-  latestUsageFromConversation,
-  messageEvents,
-} from './chat.context.js';
+import { ChatModelPicker } from './chat.model-picker.js';
 
 /** Event types that produce visible rendered output in renderEvents / MessageBubble */
 const VISIBLE_EVENT_TYPES = new Set([
@@ -568,7 +569,6 @@ function extractUsage(events: Record<string, unknown>[]): Record<string, number>
   return null;
 }
 
-
 /** Extract plain text from assistant events for copying */
 function extractTextFromEvents(events: Record<string, unknown>[]): string {
   const parts: string[] = [];
@@ -677,18 +677,19 @@ const MessageBubble = memo(function MessageBubble({
         <div className="opacity-0 group-hover:opacity-100 transition-opacity">
           {assistantText && <CopyButton text={assistantText} />}
         </div>
-        {usage && (() => {
-          const inTokens = usage.inputTokens ?? usage.input_tokens;
-          const outTokens = usage.outputTokens ?? usage.output_tokens;
-          if (inTokens == null && outTokens == null) return null;
-          return (
-            <div className="font-[family-name:var(--font-mono)] text-[10px] text-muted opacity-60">
-              {inTokens != null && <span>{formatTokens(inTokens)} in</span>}
-              {inTokens != null && outTokens != null && <span> · </span>}
-              {outTokens != null && <span>{formatTokens(outTokens)} out</span>}
-            </div>
-          );
-        })()}
+        {usage &&
+          (() => {
+            const inTokens = usage.inputTokens ?? usage.input_tokens;
+            const outTokens = usage.outputTokens ?? usage.output_tokens;
+            if (inTokens == null && outTokens == null) return null;
+            return (
+              <div className="font-[family-name:var(--font-mono)] text-[10px] text-muted opacity-60">
+                {inTokens != null && <span>{formatTokens(inTokens)} in</span>}
+                {inTokens != null && outTokens != null && <span> · </span>}
+                {outTokens != null && <span>{formatTokens(outTokens)} out</span>}
+              </div>
+            );
+          })()}
       </div>
     </div>
   );
@@ -830,132 +831,6 @@ function PinnedTodoPanel({ todos }: { todos: TodoItem[] }): JSX.Element {
   );
 }
 
-const ConversationItem = memo(function ConversationItem({
-  conversation,
-  isSelected,
-  hasUnread,
-  onSelect,
-  onRename,
-  onDelete,
-}: {
-  conversation: { id: string; title: string; agentName: string };
-  isSelected: boolean;
-  hasUnread: boolean;
-  onSelect: () => void;
-  onRename: (title: string) => void;
-  onDelete: () => void;
-}): JSX.Element {
-  const [editing, setEditing] = useState(false);
-  const [editValue, setEditValue] = useState('');
-  const [confirmingDelete, setConfirmingDelete] = useState(false);
-  const inputRef = useRef<HTMLInputElement>(null);
-
-  const startRename = useCallback(() => {
-    setEditValue(conversation.title);
-    setEditing(true);
-    setConfirmingDelete(false);
-  }, [conversation.title]);
-
-  const commitRename = useCallback(() => {
-    const trimmed = editValue.trim();
-    if (trimmed && trimmed !== conversation.title) {
-      onRename(trimmed);
-    }
-    setEditing(false);
-  }, [editValue, conversation.title, onRename]);
-
-  useEffect(() => {
-    if (editing) inputRef.current?.focus();
-  }, [editing]);
-
-  if (editing) {
-    return (
-      <li className="px-4 py-2">
-        <input
-          ref={inputRef}
-          value={editValue}
-          onChange={(e) => setEditValue(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter') commitRename();
-            if (e.key === 'Escape') setEditing(false);
-          }}
-          onBlur={commitRename}
-          className="w-full border border-accent bg-card-bg px-2 py-1 text-xs text-foreground focus:outline-none"
-        />
-      </li>
-    );
-  }
-
-  return (
-    <li
-      className={`group flex items-start justify-between transition-colors hover:bg-sidebar-hover cursor-pointer ${
-        isSelected ? 'bg-[#141414] border-l-[3px] border-l-accent' : 'border-b border-border'
-      }`}
-    >
-      <button
-        type="button"
-        onClick={onSelect}
-        onDoubleClick={startRename}
-        className={`min-w-0 flex-1 px-4 py-3.5 text-left ${
-          isSelected ? 'text-foreground' : 'text-muted'
-        }`}
-      >
-        <p className="truncate font-[family-name:var(--font-display)] text-sm font-semibold text-foreground flex items-center gap-1.5">
-          {hasUnread && <span className="inline-block h-2 w-2 shrink-0 rounded-full bg-green" />}
-          {conversation.title}
-        </p>
-        <p className="truncate font-[family-name:var(--font-mono)] text-[10px] text-accent">
-          {conversation.agentName}
-        </p>
-      </button>
-      <div className="mr-2 mt-2 flex shrink-0 items-center gap-0.5">
-        {confirmingDelete ? (
-          <>
-            <button
-              type="button"
-              onClick={() => {
-                setConfirmingDelete(false);
-                onDelete();
-              }}
-              className="p-0.5 text-red hover:bg-red-900/30"
-              aria-label="Confirm delete"
-            >
-              <Check size={10} />
-            </button>
-            <button
-              type="button"
-              onClick={() => setConfirmingDelete(false)}
-              className="p-0.5 text-muted hover:bg-sidebar-hover"
-              aria-label="Cancel delete"
-            >
-              <X size={10} />
-            </button>
-          </>
-        ) : (
-          <>
-            <button
-              type="button"
-              onClick={startRename}
-              className="opacity-0 transition-opacity group-hover:opacity-100 p-0.5 text-muted hover:text-foreground"
-              aria-label={`Rename conversation ${conversation.title}`}
-            >
-              <Pencil size={10} />
-            </button>
-            <button
-              type="button"
-              onClick={() => setConfirmingDelete(true)}
-              className="opacity-0 transition-opacity group-hover:opacity-100 p-0.5 text-muted hover:text-red"
-              aria-label={`Delete conversation ${conversation.title}`}
-            >
-              <Trash2 size={10} />
-            </button>
-          </>
-        )}
-      </div>
-    </li>
-  );
-});
-
 function formatModelName(model: string): string {
   // Strip provider prefix (e.g. "anthropic/claude-sonnet-4-5" → "claude-sonnet-4-5")
   const name = model.includes('/') ? model.split('/').slice(1).join('/') : model;
@@ -1086,7 +961,8 @@ function AgentSelectionModal({
 
 export function Chat(): JSX.Element {
   const search = Route.useSearch();
-  const { agents, loadAgents } = useAgentsStore();
+  const { agents, loadAgents, updateAgent } = useAgentsStore();
+  const { models: availableModels } = useAvailableModels();
   const {
     conversations,
     selectedConversationId,
@@ -1097,7 +973,6 @@ export function Chat(): JSX.Element {
     loadAllConversations,
     selectConversation,
     createConversation,
-    renameConversation,
     deleteConversation,
     sendMessage,
     cancelMessage,
@@ -1113,7 +988,6 @@ export function Chat(): JSX.Element {
   >([]);
   const [answeredQuestions, setAnsweredQuestions] = useState<Record<string, string>>({});
   const [imageError, setImageError] = useState<string | null>(null);
-  const [conversationSearch, setConversationSearch] = useState('');
   const [showAgentModal, setShowAgentModal] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -1388,6 +1262,17 @@ export function Chat(): JSX.Element {
     return () => clearTimeout(t);
   }, [compactionToast]);
 
+  // Model change toast — fires when model is successfully changed
+  const [modelChangeToast, setModelChangeToast] = useState<{
+    modelName: string;
+    key: number;
+  } | null>(null);
+  useEffect(() => {
+    if (!modelChangeToast) return;
+    const t = setTimeout(() => setModelChangeToast(null), 3500);
+    return () => clearTimeout(t);
+  }, [modelChangeToast]);
+
   // Enrich conversations with agent names resolved from the agents store
   const enrichedConversations = useMemo(
     () =>
@@ -1398,45 +1283,8 @@ export function Chat(): JSX.Element {
     [conversations, agents],
   );
 
-  const filteredConversations = useMemo(
-    () =>
-      conversationSearch.trim()
-        ? enrichedConversations.filter(
-            (c) =>
-              c.title.toLowerCase().includes(conversationSearch.toLowerCase()) ||
-              c.agentName.toLowerCase().includes(conversationSearch.toLowerCase()),
-          )
-        : enrichedConversations,
-    [enrichedConversations, conversationSearch],
-  );
-
   return (
     <div className="flex flex-col h-full overflow-hidden">
-      {/* Page Header */}
-      <div className="bg-surface px-8 py-4 border-b border-border flex justify-between items-center shrink-0">
-        <div>
-          <span className="font-[family-name:var(--font-mono)] text-[11px] font-semibold uppercase tracking-[3px] text-accent">
-            Conversations
-          </span>
-          <h1 className="font-[family-name:var(--font-display)] text-[22px] font-semibold text-foreground">
-            Chat
-          </h1>
-        </div>
-        <button
-          type="button"
-          onClick={handleNewConversation}
-          disabled={availableAgents.length === 0}
-          className="inline-flex items-center gap-2 bg-accent px-4 py-2 text-sm font-semibold text-white transition-colors hover:opacity-90 disabled:opacity-40"
-          title="New conversation (⌘N)"
-        >
-          <Plus size={14} />
-          New conversation
-          <kbd className="text-[10px] font-medium text-white/80 bg-white/15 border border-white/25 px-1.5 py-0.5">
-            ⌘N
-          </kbd>
-        </button>
-      </div>
-
       {showAgentModal && (
         <AgentSelectionModal
           agents={availableAgents}
@@ -1446,258 +1294,289 @@ export function Chat(): JSX.Element {
         />
       )}
 
-      <div className="flex flex-1 min-h-0">
-        {/* Left: Conversation List */}
-        <div className="w-[300px] bg-surface border-r border-border flex flex-col shrink-0 overflow-hidden">
-          {/* Search bar */}
-          <div className="px-4 py-3 border-b border-border">
-            <div className="flex items-center gap-2 bg-[#141414] border border-border px-3 py-2">
-              <Search size={14} className="text-muted shrink-0" />
-              <input
-                type="text"
-                value={conversationSearch}
-                onChange={(e) => setConversationSearch(e.target.value)}
-                placeholder="Search conversations…"
-                className="flex-1 bg-transparent text-sm text-foreground placeholder:text-muted focus:outline-none"
-              />
-            </div>
-          </div>
-
-          {/* Conversation list */}
-          <ul className="flex-1 overflow-y-auto">
-            {filteredConversations.length === 0 ? (
-              <li className="px-4 py-3.5 text-xs text-muted">
-                {conversations.length === 0 ? 'No conversations yet.' : 'No results.'}
-              </li>
-            ) : (
-              filteredConversations.map((conv) => (
-                <ConversationItem
-                  key={conv.id}
-                  conversation={conv}
-                  isSelected={conv.id === selectedConversationId}
-                  hasUnread={unreadConversations.has(conv.id)}
-                  onSelect={() => selectConversation(conv.id)}
-                  onRename={(title) => renameConversation(conv.id, title)}
-                  onDelete={() => deleteConversation(conv.id)}
-                />
-              ))
-            )}
-          </ul>
-        </div>
-
-        {/* Right: Chat Panel */}
-        <div
-          className="relative flex flex-1 flex-col min-h-0 min-w-0"
-          onDrop={(e) => {
-            e.preventDefault();
-            if (e.dataTransfer.files.length > 0) addImageFiles(e.dataTransfer.files);
-          }}
-          onDragOver={(e) => e.preventDefault()}
-        >
-          {compactionToast && (
-            <CompactionToast key={compactionToast.key} overflow={compactionToast.overflow} />
-          )}
-          {(activeModel || selectedConversation) && (
-            <div className="flex items-center gap-3 border-b border-border px-6 py-1.5 shrink-0">
-              {selectedAgent && (
-                <span className="text-xs font-medium text-accent">{selectedAgent.name}</span>
-              )}
-              {activeModel && (
-                <span className="text-xs text-muted">{formatModelName(activeModel)}</span>
-              )}
-              {latestUsage && (
-                <ContextChip
-                  tokensUsed={contextStatus.tokensUsed}
-                  threshold={contextStatus.threshold}
-                  pct={contextStatus.pct}
-                />
-              )}
-              {activeWorkspace && (
-                <div className="ml-auto flex items-center gap-4">
-                  <button
-                    type="button"
-                    onClick={() => window.api.openPath(activeWorkspace)}
-                    className="flex items-center gap-1.5 text-xs text-muted transition-colors hover:text-foreground"
-                    title={`Workspace: ${activeWorkspace}`}
-                  >
-                    <FolderOpen size={12} />
-                    <span className="max-w-[300px] truncate">{activeWorkspace}</span>
-                  </button>
-                </div>
-              )}
-            </div>
-          )}
-
-          <div
-            ref={scrollContainerRef}
-            onScroll={handleScroll}
-            className="flex-1 overflow-y-auto overflow-x-hidden px-6 py-4"
-          >
-            {!selectedConversationId ? (
-              <p className="text-center text-sm text-muted mt-8">
-                {activeAgents.length === 0
-                  ? 'Deploy an agent first, then come back to chat.'
-                  : 'Select a conversation or press ⌘N to start a new one.'}
-              </p>
-            ) : (
-              <>
-                {selectedMessages.map((msg, i) => (
-                  <MessageBubble
-                    key={`${msg.role}-${i}`}
-                    message={msg}
-                    navigateToLogs={navigateToLogs}
-                    onAnswerQuestion={handleAnswerQuestion}
-                    answeredQuestions={answeredQuestions}
-                    onNavigateToConnections={() => navigate({ to: '/connections' })}
-                  />
-                ))}
-                {isStreaming && !liveEvents.some((e) => VISIBLE_EVENT_TYPES.has(e.type)) && (
-                  <ThinkingIndicator />
-                )}
-                {isStreaming && liveEvents.some((e) => VISIBLE_EVENT_TYPES.has(e.type)) && (
-                  <MessageBubble
-                    streamingEvents={liveEvents}
-                    navigateToLogs={navigateToLogs}
-                    onAnswerQuestion={handleAnswerQuestion}
-                    answeredQuestions={answeredQuestions}
-                    onNavigateToConnections={() => navigate({ to: '/connections' })}
-                  />
-                )}
-              </>
-            )}
-            <div ref={messagesEndRef} />
-          </div>
-
-          {latestTodos && latestTodos.length > 0 && <PinnedTodoPanel todos={latestTodos} />}
-
-          {/* MCP connector warning banner */}
-          {mcpIssue && (
-            <div className="bg-yellow-900/30 border-t border-yellow-700/50 px-6 py-3 flex items-center justify-between shrink-0">
-              <span className="text-sm text-yellow-200">
-                {mcpIssue.status === 'needs_reauth'
-                  ? `${mcpIssue.serverName} connector needs re-authorization`
-                  : `${mcpIssue.serverName} connector is offline`}
-              </span>
-              <button
-                type="button"
-                onClick={async () => {
-                  if (mcpIssue.status === 'needs_reauth') {
-                    await window.api.mcpReauthorize(mcpIssue.serverName);
-                  } else {
-                    await window.api.mcpReconnectConnector(mcpIssue.serverName);
-                  }
+      {/* Tab bar */}
+      <div className="flex items-center bg-surface border-b border-border shrink-0 overflow-hidden">
+        <div className="flex flex-1 items-end overflow-x-auto min-w-0" role="tablist">
+          {enrichedConversations.map((conv) => {
+            const isSelected = conv.id === selectedConversationId;
+            const hasUnread = unreadConversations.has(conv.id);
+            return (
+              <div
+                key={conv.id}
+                role="tab"
+                aria-selected={isSelected}
+                data-testid={`chat-tab-${conv.id}`}
+                className={`group relative flex items-center gap-1.5 shrink-0 max-w-[200px] cursor-pointer border-r border-border px-3 py-2 transition-colors ${
+                  isSelected
+                    ? 'bg-background text-foreground border-b-2 border-b-accent'
+                    : 'bg-surface text-muted hover:bg-sidebar-hover hover:text-foreground'
+                }`}
+                onClick={() => selectConversation(conv.id)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') selectConversation(conv.id);
                 }}
-                className="border border-yellow-700/50 bg-yellow-900/40 px-3 py-1 text-xs text-yellow-200 hover:bg-yellow-900/60"
+                tabIndex={0}
               >
-                {mcpIssue.status === 'needs_reauth' ? 'Re-authorize' : 'Reconnect'}
-              </button>
-            </div>
-          )}
-
-          {/* Input bar */}
-          <div className="bg-surface border-t border-border px-6 py-4 flex items-center gap-3 shrink-0">
-            <div className="flex-1 flex flex-col gap-2">
-              {attachedImages.length > 0 && (
-                <div className="flex gap-2">
-                  {attachedImages.map((img) => (
-                    <div key={img.id} className="relative">
-                      <img
-                        src={img.preview}
-                        alt="Attached"
-                        className="h-16 w-16 border border-border object-cover"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => removeImage(img.id)}
-                        className="absolute -right-1.5 -top-1.5 flex h-4 w-4 items-center justify-center rounded-full bg-red-900 text-[10px] text-white hover:bg-red-700"
-                      >
-                        ×
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              )}
-              {imageError && <p className="text-xs text-red">{imageError}</p>}
-              <form
-                className="flex items-center gap-3"
-                onSubmit={(e) => {
-                  e.preventDefault();
-                  handleSend();
-                }}
-                onDrop={(e) => {
-                  e.preventDefault();
-                  if (e.dataTransfer.files.length > 0) addImageFiles(e.dataTransfer.files);
-                }}
-                onDragOver={(e) => e.preventDefault()}
-              >
-                <textarea
-                  ref={textareaRef}
-                  rows={1}
-                  value={input}
-                  onChange={(e) => {
-                    setInput(e.target.value);
-                    resizeTextarea();
-                  }}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' && !e.shiftKey) {
-                      e.preventDefault();
-                      handleSend();
-                    }
-                  }}
-                  onPaste={(e) => {
-                    const files = Array.from(e.clipboardData.items)
-                      .filter((item) => item.kind === 'file')
-                      .map((item) => item.getAsFile())
-                      .filter((f): f is File => f !== null);
-                    if (files.length > 0) addImageFiles(files);
-                  }}
-                  placeholder={
-                    selectedConversationId ? 'Type a message…' : 'Select a conversation first'
-                  }
-                  disabled={!selectedConversationId || isStreaming}
-                  className="flex-1 bg-[#141414] border border-border px-4 py-3 text-sm text-foreground placeholder:text-muted focus:border-accent focus:outline-none disabled:opacity-50 resize-none"
-                />
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  accept="image/png,image/jpeg,image/gif,image/webp"
-                  multiple
-                  className="hidden"
-                  onChange={(e) => {
-                    if (e.target.files) addImageFiles(e.target.files);
-                    e.target.value = '';
-                  }}
-                />
+                {hasUnread && (
+                  <span className="inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-green" />
+                )}
+                <span className="truncate text-xs font-medium">{conv.title}</span>
                 <button
                   type="button"
-                  onClick={() => fileInputRef.current?.click()}
-                  disabled={!selectedConversationId || isStreaming}
-                  className="border border-border p-2.5 text-muted transition-colors hover:bg-sidebar-hover hover:text-foreground disabled:opacity-50 shrink-0"
-                  title="Attach image"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    deleteConversation(conv.id);
+                  }}
+                  className="shrink-0 p-0.5 text-muted opacity-0 transition-opacity group-hover:opacity-100 hover:text-red"
+                  aria-label={`Close ${conv.title}`}
                 >
-                  <Paperclip size={16} />
+                  <X size={10} />
                 </button>
-                {isStreaming ? (
-                  <button
-                    type="button"
-                    onClick={() => selectedConversationId && cancelMessage(selectedConversationId)}
-                    className="bg-red-900/50 p-2.5 text-red transition-colors hover:bg-red-900/70 shrink-0"
-                  >
-                    <Square size={16} />
-                  </button>
-                ) : (
-                  <button
-                    type="submit"
-                    disabled={
-                      (!input.trim() && attachedImages.length === 0) || !selectedConversationId
-                    }
-                    className="bg-accent text-white p-2.5 hover:bg-primary-hover disabled:opacity-50 transition-colors shrink-0"
-                  >
-                    <Send size={16} />
-                  </button>
-                )}
-              </form>
-            </div>
+              </div>
+            );
+          })}
+        </div>
+        <button
+          type="button"
+          onClick={handleNewConversation}
+          disabled={availableAgents.length === 0}
+          className="shrink-0 p-2 text-muted transition-colors hover:text-foreground disabled:opacity-40"
+          title="New conversation (⌘N)"
+          aria-label="New conversation"
+        >
+          <Plus size={16} />
+        </button>
+      </div>
+
+      {/* Chat Panel */}
+      <div
+        className="relative flex flex-1 flex-col min-h-0 min-w-0"
+        onDrop={(e) => {
+          e.preventDefault();
+          if (e.dataTransfer.files.length > 0) addImageFiles(e.dataTransfer.files);
+        }}
+        onDragOver={(e) => e.preventDefault()}
+      >
+        {compactionToast && (
+          <CompactionToast key={compactionToast.key} overflow={compactionToast.overflow} />
+        )}
+        {modelChangeToast && (
+          <ModelChangeToast key={modelChangeToast.key} modelName={modelChangeToast.modelName} />
+        )}
+        {(activeModel || selectedConversation) && (
+          <div className="flex items-center gap-3 border-b border-border px-6 py-1.5 shrink-0">
+            {selectedAgent && (
+              <span className="text-xs font-medium text-accent">{selectedAgent.name}</span>
+            )}
+            {activeModel && selectedAgent && (
+              <ChatModelPicker
+                value={activeModel}
+                models={availableModels}
+                onChange={async (model) => {
+                  try {
+                    await updateAgent(selectedAgent.id, { model });
+                    // Show success toast with the model name
+                    const modelOption = availableModels.find((m) => m.value === model);
+                    const modelName = modelOption?.label ?? model;
+                    setModelChangeToast({ modelName, key: Date.now() });
+                  } catch (err) {
+                    console.error('[Chat] Failed to update agent model:', err);
+                  }
+                }}
+              />
+            )}
+            {latestUsage && (
+              <ContextChip
+                tokensUsed={contextStatus.tokensUsed}
+                threshold={contextStatus.threshold}
+                pct={contextStatus.pct}
+              />
+            )}
+            {activeWorkspace && (
+              <div className="ml-auto flex items-center gap-4">
+                <button
+                  type="button"
+                  onClick={() => window.api.openPath(activeWorkspace)}
+                  className="flex items-center gap-1.5 text-xs text-muted transition-colors hover:text-foreground"
+                  title={`Workspace: ${activeWorkspace}`}
+                >
+                  <FolderOpen size={12} />
+                  <span className="max-w-[300px] truncate">{activeWorkspace}</span>
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+
+        <div
+          ref={scrollContainerRef}
+          onScroll={handleScroll}
+          className="flex-1 overflow-y-auto overflow-x-hidden px-6 py-4"
+        >
+          {!selectedConversationId ? (
+            <p className="text-center text-sm text-muted mt-8">
+              {activeAgents.length === 0
+                ? 'Deploy an agent first, then come back to chat.'
+                : 'Select a conversation or press ⌘N to start a new one.'}
+            </p>
+          ) : (
+            <>
+              {selectedMessages.map((msg, i) => (
+                <MessageBubble
+                  key={`${msg.role}-${i}`}
+                  message={msg}
+                  navigateToLogs={navigateToLogs}
+                  onAnswerQuestion={handleAnswerQuestion}
+                  answeredQuestions={answeredQuestions}
+                  onNavigateToConnections={() => navigate({ to: '/connections' })}
+                />
+              ))}
+              {isStreaming && !liveEvents.some((e) => VISIBLE_EVENT_TYPES.has(e.type)) && (
+                <ThinkingIndicator />
+              )}
+              {isStreaming && liveEvents.some((e) => VISIBLE_EVENT_TYPES.has(e.type)) && (
+                <MessageBubble
+                  streamingEvents={liveEvents}
+                  navigateToLogs={navigateToLogs}
+                  onAnswerQuestion={handleAnswerQuestion}
+                  answeredQuestions={answeredQuestions}
+                  onNavigateToConnections={() => navigate({ to: '/connections' })}
+                />
+              )}
+            </>
+          )}
+          <div ref={messagesEndRef} />
+        </div>
+
+        {latestTodos && latestTodos.length > 0 && <PinnedTodoPanel todos={latestTodos} />}
+
+        {/* MCP connector warning banner */}
+        {mcpIssue && (
+          <div className="bg-yellow-900/30 border-t border-yellow-700/50 px-6 py-3 flex items-center justify-between shrink-0">
+            <span className="text-sm text-yellow-200">
+              {mcpIssue.status === 'needs_reauth'
+                ? `${mcpIssue.serverName} connector needs re-authorization`
+                : `${mcpIssue.serverName} connector is offline`}
+            </span>
+            <button
+              type="button"
+              onClick={async () => {
+                if (mcpIssue.status === 'needs_reauth') {
+                  await window.api.mcpReauthorize(mcpIssue.serverName);
+                } else {
+                  await window.api.mcpReconnectConnector(mcpIssue.serverName);
+                }
+              }}
+              className="border border-yellow-700/50 bg-yellow-900/40 px-3 py-1 text-xs text-yellow-200 hover:bg-yellow-900/60"
+            >
+              {mcpIssue.status === 'needs_reauth' ? 'Re-authorize' : 'Reconnect'}
+            </button>
+          </div>
+        )}
+
+        {/* Input bar */}
+        <div className="bg-surface border-t border-border px-6 py-4 flex items-center gap-3 shrink-0">
+          <div className="flex-1 flex flex-col gap-2">
+            {attachedImages.length > 0 && (
+              <div className="flex gap-2">
+                {attachedImages.map((img) => (
+                  <div key={img.id} className="relative">
+                    <img
+                      src={img.preview}
+                      alt="Attached"
+                      className="h-16 w-16 border border-border object-cover"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => removeImage(img.id)}
+                      className="absolute -right-1.5 -top-1.5 flex h-4 w-4 items-center justify-center rounded-full bg-red-900 text-[10px] text-white hover:bg-red-700"
+                    >
+                      ×
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+            {imageError && <p className="text-xs text-red">{imageError}</p>}
+            <form
+              className="flex items-center gap-3"
+              onSubmit={(e) => {
+                e.preventDefault();
+                handleSend();
+              }}
+              onDrop={(e) => {
+                e.preventDefault();
+                if (e.dataTransfer.files.length > 0) addImageFiles(e.dataTransfer.files);
+              }}
+              onDragOver={(e) => e.preventDefault()}
+            >
+              <textarea
+                ref={textareaRef}
+                rows={1}
+                value={input}
+                onChange={(e) => {
+                  setInput(e.target.value);
+                  resizeTextarea();
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    handleSend();
+                  }
+                }}
+                onPaste={(e) => {
+                  const files = Array.from(e.clipboardData.items)
+                    .filter((item) => item.kind === 'file')
+                    .map((item) => item.getAsFile())
+                    .filter((f): f is File => f !== null);
+                  if (files.length > 0) addImageFiles(files);
+                }}
+                placeholder={
+                  selectedConversationId ? 'Type a message…' : 'Select a conversation first'
+                }
+                disabled={!selectedConversationId || isStreaming}
+                className="flex-1 bg-[#141414] border border-border px-4 py-3 text-sm text-foreground placeholder:text-muted focus:border-accent focus:outline-none disabled:opacity-50 resize-none"
+              />
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="image/png,image/jpeg,image/gif,image/webp"
+                multiple
+                className="hidden"
+                onChange={(e) => {
+                  if (e.target.files) addImageFiles(e.target.files);
+                  e.target.value = '';
+                }}
+              />
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={!selectedConversationId || isStreaming}
+                className="border border-border p-2.5 text-muted transition-colors hover:bg-sidebar-hover hover:text-foreground disabled:opacity-50 shrink-0"
+                title="Attach image"
+              >
+                <Paperclip size={16} />
+              </button>
+              {isStreaming ? (
+                <button
+                  type="button"
+                  onClick={() => selectedConversationId && cancelMessage(selectedConversationId)}
+                  className="bg-red-900/50 p-2.5 text-red transition-colors hover:bg-red-900/70 shrink-0"
+                >
+                  <Square size={16} />
+                </button>
+              ) : (
+                <button
+                  type="submit"
+                  disabled={
+                    (!input.trim() && attachedImages.length === 0) || !selectedConversationId
+                  }
+                  className="bg-accent text-white p-2.5 hover:bg-primary-hover disabled:opacity-50 transition-colors shrink-0"
+                >
+                  <Send size={16} />
+                </button>
+              )}
+            </form>
           </div>
         </div>
       </div>
