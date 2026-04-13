@@ -34,13 +34,14 @@ async function lsofPortOwner(port: number): Promise<number | undefined> {
     return undefined;
   }
 }
+import { type KeychainStore, createDefaultKeychainStore } from '../security/keychain-store.js';
 import { generateToken } from '../security/keygen.js';
 import {
   type GatewayHealthResponse,
   GatewayHttpError,
   GatewayManagementClient,
 } from './gateway-client.js';
-import { type GatewayState, GatewayStateStore } from './gateway-state.js';
+import { GatewayStateStore } from './gateway-state.js';
 
 /**
  * Classify an error thrown by the reuse-check (health + startedAt + listAgents)
@@ -228,6 +229,13 @@ export class GatewaySupervisor {
     private spawner: ProcessSpawner = defaultProcessSpawner,
     private killer: ProcessKiller = defaultProcessKiller,
     private portOwnerProbe: PortOwnerProbe = defaultPortOwnerProbe,
+    /**
+     * OS credential store for the gateway management + chat tokens.
+     * Defaults to a `@napi-rs/keyring`-backed implementation loaded
+     * lazily on first call. Tests inject `InMemoryKeychainStore` to
+     * avoid touching the real keychain.
+     */
+    private keychain: KeychainStore = createDefaultKeychainStore(),
   ) {}
 
   /**
@@ -244,22 +252,35 @@ export class GatewaySupervisor {
    * listener has a different PID would kill the wrong process and
    * still hit EADDRINUSE on the next spawn.
    *
+   * `token` is the bearer credential to use for the best-effort
+   * `/lifecycle/shutdown` call. When null (keychain empty or wiped),
+   * the method skips the graceful attempt and goes straight to
+   * SIGTERM. Pulling the token from the keychain at the caller keeps
+   * this method free of keychain I/O and makes it trivially unit
+   * testable with different auth states.
+   *
    * Escalates SIGTERM → SIGKILL after 5s so we never return with the
    * old process still holding the port.
    */
-  private async shutdownStaleProcess(targetPid: number, state: GatewayState): Promise<void> {
+  private async shutdownStaleProcess(
+    targetPid: number,
+    port: number,
+    token: string | null,
+  ): Promise<void> {
     // Attempt graceful shutdown via management API first. This will
     // fail silently if our token doesn't match the running gateway
     // (the common case that brings us here), which is why we still
     // fall through to SIGTERM.
-    try {
-      await fetch(`http://localhost:${state.port}/lifecycle/shutdown`, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${state.token}` },
-        signal: AbortSignal.timeout(2000),
-      });
-    } catch {
-      /* API unreachable or token mismatch — SIGTERM below will handle it */
+    if (token) {
+      try {
+        await fetch(`http://localhost:${port}/lifecycle/shutdown`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${token}` },
+          signal: AbortSignal.timeout(2000),
+        });
+      } catch {
+        /* API unreachable or token mismatch — SIGTERM below will handle it */
+      }
     }
     try {
       this.killer.signal(targetPid, 'SIGTERM');
@@ -322,6 +343,7 @@ export class GatewaySupervisor {
       opts.makeGatewayClient ?? ((url, token) => new GatewayManagementClient(url, token));
 
     const state = await store.read();
+    const keychainToken = await this.keychain.getGatewayToken();
 
     // Reconcile against reality BEFORE trusting state.json. The port
     // owner may be a completely different process from the one in
@@ -346,25 +368,25 @@ export class GatewaySupervisor {
       // Someone is on the port. The ONLY outcome of ensureRunning on a
       // held port is reuse — we never kill processes we don't
       // explicitly own. Reuse is gated on successful auth with our
-      // saved token (cryptographic proof the gateway is the one we
-      // spawned, since tokens are 256-bit random per spawn). Any
-      // other outcome throws with an actionable message and lets the
-      // operator decide what to do.
-      if (!state) {
-        // No recorded state but the port is occupied. This is either
-        // an orphan from a previous MC that crashed, a gateway from
-        // a different MC profile, or a manually-started gateway. We
-        // can't tell which and we don't have authorization to kill
-        // it. Fail loudly.
+      // keychain-stored token (cryptographic proof the gateway is one
+      // we spawned, since tokens are 256-bit random and the keychain
+      // entry is gated by the OS login session). Any other outcome
+      // throws with an actionable message and lets the operator
+      // decide what to do.
+      if (!state || !keychainToken) {
+        // Either no recorded state or no token in the OS keychain.
+        // Either way we can't authenticate against the running
+        // gateway, and we don't have authorization to kill it. Fail
+        // loudly with the recovery command.
         const pidHint = probe.pid !== undefined ? ` PID ${probe.pid}` : '';
         throw new Error(
           `Port ${managementPort} is already in use by another gateway${pidHint} that we did not spawn. ` +
             `Stop it manually before starting MC: lsof -ti :${managementPort} | xargs kill`,
         );
       }
-      // State exists — try to reuse with our token.
+      // State + keychain token both present — try to reuse.
       try {
-        const client = makeClient(`http://localhost:${state.port}`, state.token);
+        const client = makeClient(`http://localhost:${state.port}`, keychainToken);
         await client.listAgents();
         // Happy path — every new MC launch / poller tick goes
         // through here as long as the gateway we spawned is still
@@ -387,13 +409,25 @@ export class GatewaySupervisor {
     // probe.type === 'free' — port is truly empty.
     if (state) {
       // Stale state pointing at a gateway that's no longer there.
-      // Clear it so the spawn path writes a fresh record.
+      // Clear it so the spawn path writes a fresh record. Keychain
+      // tokens are NOT cleared — we want the new gateway to spawn
+      // with the same token so identity persists across crashes.
       await store.clear();
     }
 
+    // Reuse keychain tokens across spawns when available, so a
+    // gateway restarted by the supervisor inherits the same identity.
+    // First launch (empty keychain) generates fresh 256-bit tokens.
+    const token = keychainToken ?? generateToken();
+    const chatToken = (await this.keychain.getChatToken()) ?? generateToken();
+    // Persist tokens to keychain BEFORE spawning. If the keychain
+    // write fails, the error propagates and spawn never happens —
+    // avoids the split-brain state where a running gateway has a
+    // token we can no longer reach.
+    await this.keychain.setGatewayToken(token);
+    await this.keychain.setChatToken(chatToken);
+
     // Spawn fresh gateway daemon
-    const token = generateToken();
-    const chatToken = generateToken();
     const gatewayBin = join(opts.projectRoot, 'apps/gateway/dist/index.js');
     const spawnArgs = [
       gatewayBin,
@@ -460,10 +494,8 @@ export class GatewaySupervisor {
     await store.write({
       pid: gatewayPid,
       startedAt: health.startedAt,
-      token,
       port: managementPort,
       channelPort,
-      chatToken,
     });
 
     return newClient;
@@ -471,7 +503,9 @@ export class GatewaySupervisor {
 
   /**
    * Kill the running gateway process and spawn a fresh one.
-   * Returns a client connected to the new instance.
+   * Returns a client connected to the new instance. Keychain tokens
+   * are intentionally NOT cleared — the new gateway inherits the same
+   * management + chat tokens so that agents keep a stable identity.
    */
   async restart(): Promise<GatewayManagementClient> {
     const store = new GatewayStateStore(this.options.gatewayDataDir);
@@ -485,7 +519,8 @@ export class GatewaySupervisor {
       const probe = await this.portOwnerProbe(state.port);
       const killPid = probe.type === 'owner' ? (probe.pid ?? state.pid) : state.pid;
       if (this.killer.isAlive(killPid)) {
-        await this.shutdownStaleProcess(killPid, state);
+        const token = await this.keychain.getGatewayToken();
+        await this.shutdownStaleProcess(killPid, state.port, token);
       }
       await store.clear();
     }
@@ -496,8 +531,31 @@ export class GatewaySupervisor {
     const store = new GatewayStateStore(this.options.gatewayDataDir);
     const state = await store.read();
     if (!state) return null;
+    const token = await this.keychain.getGatewayToken();
+    if (!token) return null;
     const makeClient =
-      this.options.makeGatewayClient ?? ((url, token) => new GatewayManagementClient(url, token));
-    return makeClient(`http://localhost:${state.port}`, state.token);
+      this.options.makeGatewayClient ?? ((url, t) => new GatewayManagementClient(url, t));
+    return makeClient(`http://localhost:${state.port}`, token);
+  }
+
+  /**
+   * Read the chat-server token from the keychain. Used by MC's chat
+   * service to authenticate its WebSocket connection to the gateway's
+   * `/ws/chat` endpoint. Returns null if no chat token is stored yet
+   * (first-launch edge case before `ensureRunning()` has spawned).
+   */
+  async getChatToken(): Promise<string | null> {
+    return this.keychain.getChatToken();
+  }
+
+  /**
+   * Read the gateway management token from the keychain. Exposed for
+   * callers that need to construct their own HTTP clients (e.g. the
+   * Skills / MCP management clients in MC) rather than using the
+   * shared `getClient()` builder. Returns null when the keychain is
+   * empty (first launch or after an explicit reset).
+   */
+  async getGatewayToken(): Promise<string | null> {
+    return this.keychain.getGatewayToken();
   }
 }

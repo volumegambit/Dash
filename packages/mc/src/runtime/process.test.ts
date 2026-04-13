@@ -2,7 +2,9 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { InMemoryKeychainStore } from '../security/keychain-store.js';
 import { GatewayHttpError, type GatewayManagementClient } from './gateway-client.js';
+import { GatewayStateStore } from './gateway-state.js';
 import {
   GatewaySupervisor,
   type GatewaySupervisorOptions,
@@ -117,18 +119,31 @@ describe('GatewaySupervisor.ensureRunning()', () => {
     await rm(tmpDir, { recursive: true });
   });
 
-  async function writeState(pid: number, startedAt: string, token = 'tok') {
-    const { GatewayStateStore } = await import('./gateway-state.js');
+  /**
+   * Write a GatewayState file AND seed a fresh InMemoryKeychainStore
+   * with a matching gateway + chat token. Returns both so tests can
+   * assert against either the file or the keychain. Pass `token:
+   * undefined` to leave the keychain empty (simulates keychain-wiped
+   * edge cases).
+   */
+  async function setupRunningGateway(opts: {
+    pid: number;
+    startedAt: string;
+    token?: string | undefined;
+  }): Promise<{ store: GatewayStateStore; keychain: InMemoryKeychainStore }> {
     const store = new GatewayStateStore(tmpDir);
     await store.write({
-      pid,
-      startedAt,
-      token,
+      pid: opts.pid,
+      startedAt: opts.startedAt,
       port: 9300,
       channelPort: 9200,
-      chatToken: 'chat-tok',
     });
-    return store;
+    const keychain = new InMemoryKeychainStore();
+    if (opts.token !== undefined) {
+      await keychain.setGatewayToken(opts.token);
+      await keychain.setChatToken('chat-tok');
+    }
+    return { store, keychain };
   }
 
   // ------------------------------------------------------------------
@@ -139,12 +154,14 @@ describe('GatewaySupervisor.ensureRunning()', () => {
     const mockClient = createMockGatewayClient();
     const spawner = createMockSpawner();
     const probe = createMockProbe({ type: 'free' });
+    const keychain = new InMemoryKeychainStore();
 
     const gp = new GatewaySupervisor(
       makeOptions(tmpDir, { makeGatewayClient: () => mockClient }),
       spawner,
       undefined,
       probe,
+      keychain,
     );
 
     const client = await gp.ensureRunning();
@@ -156,11 +173,16 @@ describe('GatewaySupervisor.ensureRunning()', () => {
       expect.objectContaining({ detached: true }),
     );
     expect(client).toBe(mockClient);
+    // Clean spawn generates fresh keychain tokens — both gateway and
+    // chat tokens must land in the keychain after ensureRunning().
+    expect(await keychain.getGatewayToken()).toBeTruthy();
+    expect(await keychain.getChatToken()).toBeTruthy();
   });
 
   it('passes --data-dir when gatewayRuntimeDir is set', async () => {
     const spawner = createMockSpawner();
     const probe = createMockProbe({ type: 'free' });
+    const keychain = new InMemoryKeychainStore();
 
     const gp = new GatewaySupervisor(
       makeOptions(tmpDir, {
@@ -170,6 +192,7 @@ describe('GatewaySupervisor.ensureRunning()', () => {
       spawner,
       undefined,
       probe,
+      keychain,
     );
 
     await gp.ensureRunning();
@@ -190,7 +213,11 @@ describe('GatewaySupervisor.ensureRunning()', () => {
     // listAgents() is cryptographic proof this is the gateway we
     // spawned (tokens are 256-bit random per spawn). The supervisor
     // MUST reuse without spawning in this case.
-    await writeState(12345, '2026-01-01T00:00:00Z', 'existing-token');
+    const { keychain } = await setupRunningGateway({
+      pid: 12345,
+      startedAt: '2026-01-01T00:00:00Z',
+      token: 'existing-token',
+    });
 
     const mockClient = createMockGatewayClient('2026-01-01T00:00:00Z');
     const spawner = createMockSpawner();
@@ -202,6 +229,7 @@ describe('GatewaySupervisor.ensureRunning()', () => {
       spawner,
       killer,
       probe,
+      keychain,
     );
 
     const client = await gp.ensureRunning();
@@ -222,7 +250,11 @@ describe('GatewaySupervisor.ensureRunning()', () => {
     // (authoritative proof of identity), we should reuse even if
     // startedAt or pid in state.json have drifted for unrelated
     // reasons. Only a 401 should trigger a respawn.
-    await writeState(12345, '2026-01-01T00:00:00Z', 'still-valid-token');
+    const { keychain } = await setupRunningGateway({
+      pid: 12345,
+      startedAt: '2026-01-01T00:00:00Z',
+      token: 'still-valid-token',
+    });
 
     const mockClient = createMockGatewayClient('2026-02-02T02:02:02Z');
     const spawner = createMockSpawner();
@@ -235,6 +267,7 @@ describe('GatewaySupervisor.ensureRunning()', () => {
       spawner,
       killer,
       probe,
+      keychain,
     );
 
     const client = await gp.ensureRunning();
@@ -249,7 +282,11 @@ describe('GatewaySupervisor.ensureRunning()', () => {
   // ------------------------------------------------------------------
 
   it('respawns when state references a gateway that is no longer on the port', async () => {
-    await writeState(999999999, '2026-01-01T00:00:00Z');
+    const { keychain } = await setupRunningGateway({
+      pid: 999999999,
+      startedAt: '2026-01-01T00:00:00Z',
+      token: 'old-token',
+    });
 
     const mockClient = createMockGatewayClient('2026-02-01T00:00:00Z');
     const spawner = createMockSpawner(54321);
@@ -260,11 +297,21 @@ describe('GatewaySupervisor.ensureRunning()', () => {
       spawner,
       undefined,
       probe,
+      keychain,
     );
 
     await gp.ensureRunning();
 
     expect(spawner.spawn).toHaveBeenCalledOnce();
+    // Critical: the existing keychain token is reused for the new
+    // spawn rather than regenerated. Token stability across spawns
+    // is the whole reason the supervisor reads from keychain first.
+    expect(await keychain.getGatewayToken()).toBe('old-token');
+    // Verify the spawn call used the same token.
+    const spawnArgs = (spawner.spawn as unknown as { mock: { calls: unknown[][] } }).mock
+      .calls[0][1] as string[];
+    const tokenFlagIdx = spawnArgs.indexOf('--token');
+    expect(spawnArgs[tokenFlagIdx + 1]).toBe('old-token');
   });
 
   // ------------------------------------------------------------------
@@ -279,7 +326,11 @@ describe('GatewaySupervisor.ensureRunning()', () => {
     // manually-started gateway). The supervisor MUST NOT kill it —
     // killing processes MC didn't spawn is exactly the "creepy desktop
     // app" behaviour we removed.
-    await writeState(11111, '2026-01-01T00:00:00Z', 'stale-token');
+    const { keychain } = await setupRunningGateway({
+      pid: 11111,
+      startedAt: '2026-01-01T00:00:00Z',
+      token: 'stale-token',
+    });
 
     const staleClient = {
       listAgents: vi
@@ -296,6 +347,7 @@ describe('GatewaySupervisor.ensureRunning()', () => {
       spawner,
       killer,
       probe,
+      keychain,
     );
 
     await expect(gp.ensureRunning()).rejects.toThrow(/does not accept our token/);
@@ -305,7 +357,11 @@ describe('GatewaySupervisor.ensureRunning()', () => {
   });
 
   it('error message mentions the port owner PID and the lsof command', async () => {
-    await writeState(11111, '2026-01-01T00:00:00Z', 'stale-token');
+    const { keychain } = await setupRunningGateway({
+      pid: 11111,
+      startedAt: '2026-01-01T00:00:00Z',
+      token: 'stale-token',
+    });
 
     const staleClient = {
       listAgents: vi
@@ -320,6 +376,7 @@ describe('GatewaySupervisor.ensureRunning()', () => {
       createMockSpawner(),
       createMockKiller(new Set([99785])),
       probe,
+      keychain,
     );
 
     await expect(gp.ensureRunning()).rejects.toThrow(/PID 99785/);
@@ -335,6 +392,7 @@ describe('GatewaySupervisor.ensureRunning()', () => {
     const spawner = createMockSpawner();
     const killer = createMockKiller(new Set([88888]));
     const probe = createMockProbe(probeOwner('2026-01-01T00:00:00Z', 88888));
+    const keychain = new InMemoryKeychainStore();
 
     const gp = new GatewaySupervisor(
       makeOptions(tmpDir, {
@@ -343,11 +401,42 @@ describe('GatewaySupervisor.ensureRunning()', () => {
       spawner,
       killer,
       probe,
+      keychain,
     );
 
     await expect(gp.ensureRunning()).rejects.toThrow(/already in use by another gateway/);
     expect(killer.signal).not.toHaveBeenCalled();
     expect(spawner.spawn).not.toHaveBeenCalled();
+  });
+
+  it('throws when state exists but keychain is empty and the port is held', async () => {
+    // Keychain was wiped (e.g. OS login changed, user reset keychain)
+    // but state.json survived. We can't authenticate against the
+    // running gateway because we don't have its token, and we don't
+    // own it enough to kill it. Fail loud — same recovery as any
+    // other foreign-gateway case.
+    const { keychain } = await setupRunningGateway({
+      pid: 12345,
+      startedAt: '2026-01-01T00:00:00Z',
+      token: undefined, // Keychain deliberately left empty
+    });
+
+    const mockClient = createMockGatewayClient();
+    const spawner = createMockSpawner();
+    const killer = createMockKiller(new Set([12345]));
+    const probe = createMockProbe(probeOwner('2026-01-01T00:00:00Z', 12345));
+
+    const gp = new GatewaySupervisor(
+      makeOptions(tmpDir, { makeGatewayClient: () => mockClient }),
+      spawner,
+      killer,
+      probe,
+      keychain,
+    );
+
+    await expect(gp.ensureRunning()).rejects.toThrow(/already in use by another gateway/);
+    expect(spawner.spawn).not.toHaveBeenCalled();
+    expect(killer.signal).not.toHaveBeenCalled();
   });
 
   // ------------------------------------------------------------------
@@ -359,7 +448,11 @@ describe('GatewaySupervisor.ensureRunning()', () => {
     // timeout, non-JSON, missing startedAt, 5xx. Crucial that we do
     // NOT spawn or kill — acting on `unknown` is how the respawn
     // loop started in the first place.
-    const store = await writeState(33333, '2026-01-01T00:00:00Z');
+    const { store, keychain } = await setupRunningGateway({
+      pid: 33333,
+      startedAt: '2026-01-01T00:00:00Z',
+      token: 'tok',
+    });
 
     const mockClient = createMockGatewayClient('2026-01-01T00:00:00Z');
     const spawner = createMockSpawner();
@@ -371,6 +464,7 @@ describe('GatewaySupervisor.ensureRunning()', () => {
       spawner,
       killer,
       probe,
+      keychain,
     );
 
     await expect(gp.ensureRunning()).rejects.toThrow(/unresponsive/);
@@ -383,7 +477,11 @@ describe('GatewaySupervisor.ensureRunning()', () => {
   });
 
   it('propagates transient listAgents() 503 WITHOUT killing or respawning', async () => {
-    await writeState(44444, '2026-01-01T00:00:00Z', 'existing-token');
+    const { keychain } = await setupRunningGateway({
+      pid: 44444,
+      startedAt: '2026-01-01T00:00:00Z',
+      token: 'existing-token',
+    });
 
     const mockClient = {
       listAgents: vi
@@ -400,6 +498,7 @@ describe('GatewaySupervisor.ensureRunning()', () => {
       spawner,
       killer,
       probe,
+      keychain,
     );
 
     await expect(gp.ensureRunning()).rejects.toThrow(/503/);
@@ -421,12 +520,14 @@ describe('GatewaySupervisor.ensureRunning()', () => {
     const spawner = createMockSpawner(76543);
     const killer = createMockKiller(new Set([76543]));
     const probe = createMockProbe({ type: 'free' });
+    const keychain = new InMemoryKeychainStore();
 
     const gp = new GatewaySupervisor(
       makeOptions(tmpDir, { makeGatewayClient: () => failingClient }),
       spawner,
       killer,
       probe,
+      keychain,
     );
 
     await expect(gp.ensureRunning()).rejects.toThrow('Gateway failed to start within 10s');
@@ -443,12 +544,14 @@ describe('GatewaySupervisor.ensureRunning()', () => {
     const mockClient = createMockGatewayClient();
     const spawner = createMockSpawner();
     const probe = createMockProbe({ type: 'free' });
+    const keychain = new InMemoryKeychainStore();
 
     const gp = new GatewaySupervisor(
       makeOptions(tmpDir, { makeGatewayClient: () => mockClient }),
       spawner,
       undefined,
       probe,
+      keychain,
     );
 
     const [a, b, c] = await Promise.all([
@@ -482,16 +585,16 @@ describe('GatewaySupervisor.restart()', () => {
   it('gracefully shuts down our gateway and spawns a fresh one', async () => {
     // User explicitly clicked "Restart Gateway" — MC owns the gateway
     // (it has the token), so killing is authorized.
-    const { GatewayStateStore } = await import('./gateway-state.js');
     const store = new GatewayStateStore(tmpDir);
     await store.write({
       pid: 55555,
       startedAt: '2026-01-01T00:00:00Z',
-      token: 'our-token',
       port: 9300,
       channelPort: 9200,
-      chatToken: 'chat-tok',
     });
+    const keychain = new InMemoryKeychainStore();
+    await keychain.setGatewayToken('our-token');
+    await keychain.setChatToken('chat-tok');
 
     const spawner = createMockSpawner(77777);
     const killer = createMockKiller(new Set([55555]));
@@ -500,36 +603,41 @@ describe('GatewaySupervisor.restart()', () => {
     // after store.clear()) returns free because the mock killer
     // deleted the pid.
     let probeCall = 0;
-    const probe: PortOwnerProbe = vi.fn(async () => {
+    const probe = vi.fn(async (): Promise<PortOwnerProbeResult> => {
       probeCall++;
       if (probeCall === 1) return probeOwner('2026-01-01T00:00:00Z', 55555);
       return { type: 'free' };
-    });
+    }) as PortOwnerProbe & ReturnType<typeof vi.fn>;
 
     const gp = new GatewaySupervisor(
       makeOptions(tmpDir, { makeGatewayClient: () => createMockGatewayClient() }),
       spawner,
       killer,
       probe,
+      keychain,
     );
 
     await gp.restart();
 
     expect(killer.signal).toHaveBeenCalledWith(55555, 'SIGTERM');
     expect(spawner.spawn).toHaveBeenCalledOnce();
+    // Token stability: the fresh spawn reused the same keychain token
+    // rather than generating a new one. Agents don't lose identity
+    // across an explicit restart.
+    expect(await keychain.getGatewayToken()).toBe('our-token');
   });
 
   it('escalates SIGTERM to SIGKILL when the gateway ignores SIGTERM', async () => {
-    const { GatewayStateStore } = await import('./gateway-state.js');
     const store = new GatewayStateStore(tmpDir);
     await store.write({
       pid: 66666,
       startedAt: '2026-01-01T00:00:00Z',
-      token: 'our-token',
       port: 9300,
       channelPort: 9200,
-      chatToken: 'chat-tok',
     });
+    const keychain = new InMemoryKeychainStore();
+    await keychain.setGatewayToken('our-token');
+    await keychain.setChatToken('chat-tok');
 
     const aliveSet = new Set([66666]);
     const killer: ProcessKiller & {
@@ -545,17 +653,18 @@ describe('GatewaySupervisor.restart()', () => {
     };
 
     let probeCall = 0;
-    const probe: PortOwnerProbe = vi.fn(async () => {
+    const probe = vi.fn(async (): Promise<PortOwnerProbeResult> => {
       probeCall++;
       if (probeCall === 1) return probeOwner('2026-01-01T00:00:00Z', 66666);
       return { type: 'free' };
-    });
+    }) as PortOwnerProbe & ReturnType<typeof vi.fn>;
 
     const gp = new GatewaySupervisor(
       makeOptions(tmpDir, { makeGatewayClient: () => createMockGatewayClient() }),
       createMockSpawner(88888),
       killer,
       probe,
+      keychain,
     );
 
     await gp.restart();
@@ -581,41 +690,74 @@ describe('GatewaySupervisor.getClient()', () => {
   });
 
   it('returns null when no state exists', async () => {
-    const gp = new GatewaySupervisor(makeOptions(tmpDir));
+    const keychain = new InMemoryKeychainStore();
+    const gp = new GatewaySupervisor(
+      makeOptions(tmpDir),
+      undefined,
+      undefined,
+      undefined,
+      keychain,
+    );
     const client = await gp.getClient();
     expect(client).toBeNull();
   });
 
-  it('returns client when state exists', async () => {
-    const { GatewayStateStore } = await import('./gateway-state.js');
+  it('returns null when state exists but keychain token is missing', async () => {
     const store = new GatewayStateStore(tmpDir);
     await store.write({
       pid: process.pid,
       startedAt: '2026-01-01T00:00:00Z',
-      token: 'gw-tok',
       port: 9300,
       channelPort: 9200,
-      chatToken: 'gw-chat-tok',
     });
+    // Empty keychain — can't build a working client.
+    const keychain = new InMemoryKeychainStore();
+
+    const gp = new GatewaySupervisor(
+      makeOptions(tmpDir, { makeGatewayClient: () => createMockGatewayClient() }),
+      undefined,
+      undefined,
+      undefined,
+      keychain,
+    );
+    expect(await gp.getClient()).toBeNull();
+  });
+
+  it('returns client when state and keychain token both exist', async () => {
+    const store = new GatewayStateStore(tmpDir);
+    await store.write({
+      pid: process.pid,
+      startedAt: '2026-01-01T00:00:00Z',
+      port: 9300,
+      channelPort: 9200,
+    });
+    const keychain = new InMemoryKeychainStore();
+    await keychain.setGatewayToken('gw-tok');
+    await keychain.setChatToken('chat-tok');
 
     const mockClient = createMockGatewayClient();
-    const gp = new GatewaySupervisor(makeOptions(tmpDir, { makeGatewayClient: () => mockClient }));
+    const gp = new GatewaySupervisor(
+      makeOptions(tmpDir, { makeGatewayClient: () => mockClient }),
+      undefined,
+      undefined,
+      undefined,
+      keychain,
+    );
 
     const client = await gp.getClient();
     expect(client).toBe(mockClient);
   });
 
-  it('constructs client with correct base URL from state port', async () => {
-    const { GatewayStateStore } = await import('./gateway-state.js');
+  it('constructs client with correct base URL from state port and keychain token', async () => {
     const store = new GatewayStateStore(tmpDir);
     await store.write({
       pid: process.pid,
       startedAt: '2026-01-01T00:00:00Z',
-      token: 'my-token',
       port: 9400,
       channelPort: 9500,
-      chatToken: 'chat-tok',
     });
+    const keychain = new InMemoryKeychainStore();
+    await keychain.setGatewayToken('my-token');
 
     let capturedUrl = '';
     let capturedToken = '';
@@ -627,6 +769,10 @@ describe('GatewaySupervisor.getClient()', () => {
           return createMockGatewayClient();
         },
       }),
+      undefined,
+      undefined,
+      undefined,
+      keychain,
     );
 
     await gp.getClient();
