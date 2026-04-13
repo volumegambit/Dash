@@ -5,6 +5,7 @@ import type { McAgentEvent } from '../../../shared/ipc.js';
 interface ChatState {
   conversations: McConversation[];
   selectedConversationId: string | null;
+  openTabIds: string[];
   messages: Record<string, McMessage[]>;
   streamingEvents: Record<string, McAgentEvent[]>;
   sending: Record<string, boolean>;
@@ -13,6 +14,8 @@ interface ChatState {
   loadConversations(): Promise<void>;
   loadAllConversations(): Promise<void>;
   selectConversation(id: string): Promise<void>;
+  openTab(id: string): void;
+  closeTab(id: string): void;
   createConversation(agentId: string): Promise<McConversation>;
   renameConversation(id: string, title: string): Promise<void>;
   deleteConversation(id: string): Promise<void>;
@@ -57,6 +60,7 @@ function flushEventBuffer(set: (fn: (s: ChatState) => Partial<ChatState>) => voi
 export const useChatStore = create<ChatState>((set, get) => ({
   conversations: [],
   selectedConversationId: null,
+  openTabIds: [],
   messages: {},
   streamingEvents: {},
   sending: {},
@@ -77,17 +81,46 @@ export const useChatStore = create<ChatState>((set, get) => ({
   async selectConversation(id: string) {
     const unread = new Set(get().unreadConversations);
     unread.delete(id);
-    set({ selectedConversationId: id, unreadConversations: unread });
+    // Auto-open a tab when selecting a conversation
+    const openTabIds = get().openTabIds.includes(id) ? get().openTabIds : [...get().openTabIds, id];
+    set({ selectedConversationId: id, openTabIds, unreadConversations: unread });
     if (!get().messages[id]) {
       const messages = await window.api.chatGetMessages(id);
       set((s) => ({ messages: { ...s.messages, [id]: messages } }));
     }
   },
 
+  openTab(id: string) {
+    const state = get();
+    if (!state.openTabIds.includes(id)) {
+      set({ openTabIds: [...state.openTabIds, id] });
+    }
+  },
+
+  closeTab(id: string) {
+    const state = get();
+    const newTabs = state.openTabIds.filter((t) => t !== id);
+    const updates: Partial<ChatState> = { openTabIds: newTabs };
+    // If closing the selected tab, select the next adjacent tab
+    if (state.selectedConversationId === id) {
+      const oldIndex = state.openTabIds.indexOf(id);
+      const nextId = newTabs[Math.min(oldIndex, newTabs.length - 1)] ?? null;
+      updates.selectedConversationId = nextId;
+      if (nextId && !state.messages[nextId]) {
+        // Load messages for the newly selected tab
+        window.api.chatGetMessages(nextId).then((messages) => {
+          set((s) => ({ messages: { ...s.messages, [nextId]: messages } }));
+        });
+      }
+    }
+    set(updates);
+  },
+
   async createConversation(agentId: string) {
     const conversation = await window.api.chatCreateConversation(agentId);
     set((s) => ({
       conversations: [conversation, ...s.conversations],
+      openTabIds: [...s.openTabIds, conversation.id],
       messages: { ...s.messages, [conversation.id]: [] },
     }));
     return conversation;
@@ -111,9 +144,15 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const { [id]: _s, ...restSending } = s.sending;
       const unread = new Set(s.unreadConversations);
       unread.delete(id);
+      const newTabs = s.openTabIds.filter((t) => t !== id);
+      const wasSelected = s.selectedConversationId === id;
+      const oldIndex = s.openTabIds.indexOf(id);
       return {
         conversations: s.conversations.filter((c) => c.id !== id),
-        selectedConversationId: s.selectedConversationId === id ? null : s.selectedConversationId,
+        openTabIds: newTabs,
+        selectedConversationId: wasSelected
+          ? (newTabs[Math.min(oldIndex, newTabs.length - 1)] ?? null)
+          : s.selectedConversationId,
         messages: restMessages,
         streamingEvents: restEvents,
         sending: restSending,
