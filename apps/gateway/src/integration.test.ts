@@ -70,6 +70,83 @@ describe('Gateway integration', () => {
     expect(backend.stop).toHaveBeenCalled();
   });
 
+  it('propagates model updates to warm pool entries without eviction', async () => {
+    // Regression test for: model/fallbackModels changes made via
+    // `agentRegistry.update()` must take effect on the NEXT chat
+    // message in an already-warm conversation, without requiring
+    // the pool entry to be evicted. The fix is the DashAgent
+    // configResolver — it re-reads from the registry on every
+    // chat() call.
+    const registry = new AgentRegistry();
+    const observedModels: string[] = [];
+    const observedFallbacks: Array<string[] | undefined> = [];
+    const backend: AgentBackend = {
+      name: 'test',
+      start: vi.fn().mockResolvedValue(undefined),
+      stop: vi.fn().mockResolvedValue(undefined),
+      async *run(state: AgentState, _options: RunOptions): AsyncGenerator<AgentEvent> {
+        observedModels.push(state.model);
+        observedFallbacks.push(state.fallbackModels);
+        yield { type: 'text_delta', text: 'ok' };
+        yield { type: 'response', content: 'ok', usage: { inputTokens: 1, outputTokens: 1 } };
+      },
+      abort: vi.fn(),
+    };
+
+    const agents = createAgentChatCoordinator({
+      registry,
+      poolMaxSize: 10,
+      createBackend: vi.fn().mockResolvedValue(backend),
+    });
+
+    const { id } = registry.register({
+      name: 'model-switch-test',
+      model: 'anthropic/claude-sonnet-4-20250514',
+      fallbackModels: ['anthropic/claude-haiku-4-20250514'],
+      systemPrompt: 'You are a test agent.',
+    });
+
+    // First message — warms the pool, captures the initial model.
+    for await (const _ of agents.chat({ agentId: id, conversationId: 'conv-1', text: 'one' })) {
+      // drain
+    }
+    expect(agents.stats().size).toBe(1);
+    expect(observedModels[0]).toBe('anthropic/claude-sonnet-4-20250514');
+    expect(observedFallbacks[0]).toEqual(['anthropic/claude-haiku-4-20250514']);
+
+    // Update the registry — simulates `PUT /agents/:id` changing
+    // the model and fallbacks out from under the warm pool entry.
+    registry.update(id, {
+      model: 'anthropic/claude-opus-4-6',
+      fallbackModels: ['anthropic/claude-sonnet-4-6', 'anthropic/claude-haiku-4-5-20251001'],
+    });
+
+    // Second message on the SAME conversation — the pool entry has
+    // NOT been evicted, but the DashAgent resolver re-reads the
+    // registry and the new model + fallbacks should flow through.
+    for await (const _ of agents.chat({ agentId: id, conversationId: 'conv-1', text: 'two' })) {
+      // drain
+    }
+    // Pool still has the same one entry — no eviction happened.
+    expect(agents.stats().size).toBe(1);
+    // createBackend was called exactly once — the warm entry is
+    // being reused (if the fix regressed and the coordinator had to
+    // evict + respawn, createBackend would be called twice).
+    expect(agents.stats().size).toBe(1);
+
+    // Both messages observed — second one MUST see the updated model.
+    expect(observedModels).toEqual([
+      'anthropic/claude-sonnet-4-20250514',
+      'anthropic/claude-opus-4-6',
+    ]);
+    expect(observedFallbacks[1]).toEqual([
+      'anthropic/claude-sonnet-4-6',
+      'anthropic/claude-haiku-4-5-20251001',
+    ]);
+
+    await agents.stop();
+  });
+
   it('evict(agentId) clears pool entries and stops their backends', async () => {
     const registry = new AgentRegistry();
     const backend: AgentBackend = {

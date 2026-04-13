@@ -7,6 +7,7 @@ export type {
   DashAgentConfig,
 } from './types.js';
 export { DashAgent } from './agent.js';
+export type { DashAgentConfigResolver } from './agent.js';
 export { PiAgentBackend } from './backends/piagent.js';
 export type { AgentClient } from './client.js';
 export { FileLogger } from './logger.js';

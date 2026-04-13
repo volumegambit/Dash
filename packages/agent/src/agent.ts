@@ -8,24 +8,25 @@ import type {
   RunOptions,
 } from './types.js';
 
+/**
+ * Resolver that returns the live agent config. Called at the top of
+ * every `chat()` invocation so updates to the underlying source (the
+ * gateway's `AgentRegistry`, for example) take effect on the next
+ * message without having to evict the warm pool entry. The resolver
+ * is async so implementations can read from persistent stores.
+ *
+ * Should throw if the agent no longer exists — the coordinator that
+ * wires this up is responsible for checking existence before
+ * constructing the DashAgent, but a race between `DELETE /agents/:id`
+ * and an in-flight chat can legitimately invalidate the reference.
+ */
+export type DashAgentConfigResolver = () => Promise<DashAgentConfig>;
+
 export class DashAgent {
   constructor(
     private backend: AgentBackend,
-    private config: DashAgentConfig,
+    private configResolver: DashAgentConfigResolver,
   ) {}
-
-  /** Update agent config at runtime (e.g. model, fallbackModels, tools, systemPrompt). */
-  updateConfig(patch: {
-    model?: string;
-    fallbackModels?: string[];
-    tools?: string[];
-    systemPrompt?: string;
-  }): void {
-    if (patch.model !== undefined) this.config.model = patch.model;
-    if (patch.fallbackModels !== undefined) this.config.fallbackModels = patch.fallbackModels;
-    if (patch.tools !== undefined) this.config.tools = patch.tools;
-    if (patch.systemPrompt !== undefined) this.config.systemPrompt = patch.systemPrompt;
-  }
 
   async *chat(
     channelId: string,
@@ -33,14 +34,22 @@ export class DashAgent {
     userMessage: string,
     options: RunOptions & { images?: ImageBlock[] } = {},
   ): AsyncGenerator<AgentEvent> {
-    let systemPrompt = this.config.systemPrompt;
+    // Fresh read on every chat: picks up model / fallbackModels /
+    // systemPrompt / tools changes made via the gateway management
+    // API without requiring a pool eviction. The only fields that
+    // remain frozen at backend-construction time are those the
+    // backend captures into its start()-time session (tools
+    // registered at pi session init, MCP managers, etc.).
+    const config = await this.configResolver();
+
+    let systemPrompt = config.systemPrompt;
 
     // Note: Skills are injected by pi's system prompt builder via the DashResourceLoader,
     // not here. The backend's listSkills() feeds into resourceLoader.getSkills().
 
     // Memory preamble goes last — it's dynamic context from past conversations
-    if (this.config.workspace) {
-      const preamble = await buildMemoryPreamble(this.config.workspace);
+    if (config.workspace) {
+      const preamble = await buildMemoryPreamble(config.workspace);
       systemPrompt = `${systemPrompt}\n\n${preamble}`;
     }
 
@@ -48,11 +57,11 @@ export class DashAgent {
       channelId,
       conversationId,
       message: userMessage,
-      model: this.config.model,
-      fallbackModels: this.config.fallbackModels,
+      model: config.model,
+      fallbackModels: config.fallbackModels,
       systemPrompt,
-      tools: this.config.tools,
-      workspace: this.config.workspace,
+      tools: config.tools,
+      workspace: config.workspace,
       images: options.images,
     };
 
