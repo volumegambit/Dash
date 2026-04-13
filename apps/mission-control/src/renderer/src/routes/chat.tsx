@@ -39,6 +39,14 @@ import {
   toolLabel,
   truncate,
 } from './chat.helpers.js';
+import {
+  CompactionDivider,
+  CompactionToast,
+  ContextChip,
+  computeContextStatus,
+  latestUsageFromConversation,
+  messageEvents,
+} from './chat.context.js';
 
 /** Event types that produce visible rendered output in renderEvents / MessageBubble */
 const VISIBLE_EVENT_TYPES = new Set([
@@ -47,6 +55,7 @@ const VISIBLE_EVENT_TYPES = new Set([
   'tool_result',
   'error',
   'question',
+  'context_compacted',
 ]);
 
 // --- Event rendering helpers ---
@@ -127,6 +136,22 @@ function renderEvents(
           answer={answeredQuestions?.[event.id]}
           onAnswer={onAnswerQuestion}
         />,
+      );
+    } else if (event.type === 'context_compacted') {
+      if (textBuffer) {
+        elements.push(
+          <div key={`text-${blockCount++}`} className="mb-3">
+            <Markdown>{textBuffer}</Markdown>
+          </div>,
+        );
+        textBuffer = '';
+      }
+      if (thinkingBuffer) {
+        elements.push(<ThinkingBlock key={`think-${blockCount++}`} text={thinkingBuffer} />);
+        thinkingBuffer = '';
+      }
+      elements.push(
+        <CompactionDivider key={`compact-${blockCount++}`} overflow={event.overflow} />,
       );
     } else if (event.type === 'error') {
       const msg =
@@ -543,6 +568,7 @@ function extractUsage(events: Record<string, unknown>[]): Record<string, number>
   return null;
 }
 
+
 /** Extract plain text from assistant events for copying */
 function extractTextFromEvents(events: Record<string, unknown>[]): string {
   const parts: string[] = [];
@@ -651,13 +677,18 @@ const MessageBubble = memo(function MessageBubble({
         <div className="opacity-0 group-hover:opacity-100 transition-opacity">
           {assistantText && <CopyButton text={assistantText} />}
         </div>
-        {usage && (
-          <div className="font-[family-name:var(--font-mono)] text-[10px] text-muted opacity-60">
-            {usage.input_tokens != null && <span>{formatTokens(usage.input_tokens)} in</span>}
-            {usage.input_tokens != null && usage.output_tokens != null && <span> · </span>}
-            {usage.output_tokens != null && <span>{formatTokens(usage.output_tokens)} out</span>}
-          </div>
-        )}
+        {usage && (() => {
+          const inTokens = usage.inputTokens ?? usage.input_tokens;
+          const outTokens = usage.outputTokens ?? usage.output_tokens;
+          if (inTokens == null && outTokens == null) return null;
+          return (
+            <div className="font-[family-name:var(--font-mono)] text-[10px] text-muted opacity-60">
+              {inTokens != null && <span>{formatTokens(inTokens)} in</span>}
+              {inTokens != null && outTokens != null && <span> · </span>}
+              {outTokens != null && <span>{formatTokens(outTokens)} out</span>}
+            </div>
+          );
+        })()}
       </div>
     </div>
   );
@@ -1324,6 +1355,39 @@ export function Chat(): JSX.Element {
     [selectedMessages, liveEvents],
   );
 
+  // Most recent usage across history + live stream — drives the ctx chip.
+  const latestUsage = useMemo(
+    () => latestUsageFromConversation(selectedMessages, liveEvents),
+    [selectedMessages, liveEvents],
+  );
+  const contextStatus = useMemo(
+    () => computeContextStatus(latestUsage, activeModel),
+    [latestUsage, activeModel],
+  );
+
+  // Compaction toast — fires once per new context_compacted event.
+  const [compactionToast, setCompactionToast] = useState<{ overflow: boolean; key: number } | null>(
+    null,
+  );
+  const lastCompactionCountRef = useRef(0);
+  useEffect(() => {
+    const all = [...selectedMessages.flatMap(messageEvents), ...liveEvents];
+    const compactionEvents = all.filter(
+      (e): e is Extract<McAgentEvent, { type: 'context_compacted' }> =>
+        (e as McAgentEvent).type === 'context_compacted',
+    );
+    if (compactionEvents.length > lastCompactionCountRef.current) {
+      const latest = compactionEvents[compactionEvents.length - 1];
+      setCompactionToast({ overflow: latest.overflow, key: Date.now() });
+    }
+    lastCompactionCountRef.current = compactionEvents.length;
+  }, [selectedMessages, liveEvents]);
+  useEffect(() => {
+    if (!compactionToast) return;
+    const t = setTimeout(() => setCompactionToast(null), 3500);
+    return () => clearTimeout(t);
+  }, [compactionToast]);
+
   // Enrich conversations with agent names resolved from the agents store
   const enrichedConversations = useMemo(
     () =>
@@ -1423,13 +1487,16 @@ export function Chat(): JSX.Element {
 
         {/* Right: Chat Panel */}
         <div
-          className="flex flex-1 flex-col min-h-0 min-w-0"
+          className="relative flex flex-1 flex-col min-h-0 min-w-0"
           onDrop={(e) => {
             e.preventDefault();
             if (e.dataTransfer.files.length > 0) addImageFiles(e.dataTransfer.files);
           }}
           onDragOver={(e) => e.preventDefault()}
         >
+          {compactionToast && (
+            <CompactionToast key={compactionToast.key} overflow={compactionToast.overflow} />
+          )}
           {(activeModel || selectedConversation) && (
             <div className="flex items-center gap-3 border-b border-border px-6 py-1.5 shrink-0">
               {selectedAgent && (
@@ -1437,6 +1504,13 @@ export function Chat(): JSX.Element {
               )}
               {activeModel && (
                 <span className="text-xs text-muted">{formatModelName(activeModel)}</span>
+              )}
+              {latestUsage && (
+                <ContextChip
+                  tokensUsed={contextStatus.tokensUsed}
+                  threshold={contextStatus.threshold}
+                  pct={contextStatus.pct}
+                />
               )}
               {activeWorkspace && (
                 <div className="ml-auto flex items-center gap-4">
