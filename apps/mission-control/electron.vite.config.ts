@@ -18,7 +18,11 @@ export default defineConfig({
         // at runtime instead of being bundled (pino CJS breaks when bundled).
         // ws optional native addons must stay external so ws's try/catch
         // handles their absence gracefully at runtime.
-        external: ['@dash/channels', 'bufferutil', 'utf-8-validate'],
+        // @napi-rs/keyring is a native N-API binding used by @dash/mc's
+        // keychain store. It cannot be bundled by Rollup because it ships
+        // CommonJS with `commonjsRequire` patterns Rollup can't rewrite;
+        // keep it external so Node loads the .node file at runtime.
+        external: ['@dash/channels', '@napi-rs/keyring', 'bufferutil', 'utf-8-validate'],
       },
     },
   },

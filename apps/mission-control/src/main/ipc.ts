@@ -130,14 +130,6 @@ function getChatService(getWindow: () => BrowserWindow | undefined): ChatService
   return chatService;
 }
 
-async function getSkillsClient(): Promise<ManagementClient> {
-  const gatewayState = await new GatewayStateStore(DATA_DIR).read();
-  if (!gatewayState) {
-    throw new Error('Gateway not running — Skills API unavailable');
-  }
-  return new ManagementClient(`http://127.0.0.1:${gatewayState.port}`, gatewayState.token);
-}
-
 export async function registerIpcHandlers(
   getWindow: () => BrowserWindow | undefined,
 ): Promise<void> {
@@ -157,13 +149,34 @@ export async function registerIpcHandlers(
     console.error('Gateway startup failed on MC launch:', err);
   }
 
-  // Read gateway state and pass connection to ChatService
+  // Build a short-lived ManagementClient for the gateway — used by
+  // IPC handlers that want direct HTTP access to skills/MCP routes
+  // without going through the GatewayManagementClient abstraction.
+  // Reads the gateway port from state.json and the bearer token from
+  // the OS keychain (via the supervisor); both must be populated or
+  // the call throws.
+  const getSkillsClient = async (): Promise<ManagementClient> => {
+    const gatewayState = await new GatewayStateStore(DATA_DIR).read();
+    if (!gatewayState) {
+      throw new Error('Gateway not running — Skills API unavailable');
+    }
+    const token = await gw.getGatewayToken();
+    if (!token) {
+      throw new Error('Gateway not running — Skills API unavailable');
+    }
+    return new ManagementClient(`http://127.0.0.1:${gatewayState.port}`, token);
+  };
+
+  // Read gateway state and pass connection to ChatService. The chat
+  // token lives in the OS keychain (not gateway-state.json), so pull
+  // it from the supervisor rather than reaching into the state file.
   const refreshChatServiceConnection = async () => {
     const gatewayState = await new GatewayStateStore(DATA_DIR).read();
+    const chatToken = await gw.getChatToken();
     if (gatewayState) {
       getChatService(getWindow).setGatewayConnection({
         channelPort: gatewayState.channelPort,
-        chatToken: gatewayState.chatToken,
+        chatToken: chatToken ?? undefined,
       });
     }
   };
@@ -192,13 +205,15 @@ export async function registerIpcHandlers(
     sseAbort?.abort();
     const gatewayState = await new GatewayStateStore(DATA_DIR).read();
     if (!gatewayState) return;
+    const token = await gw.getGatewayToken();
+    if (!token) return;
 
     const abort = new AbortController();
     sseAbort = abort;
 
     try {
       const res = await fetch(`http://127.0.0.1:${gatewayState.port}/events`, {
-        headers: { Authorization: `Bearer ${gatewayState.token}` },
+        headers: { Authorization: `Bearer ${token}` },
         signal: abort.signal,
       });
       if (!res.ok || !res.body) return;
@@ -609,12 +624,14 @@ export async function registerIpcHandlers(
 
   ipcMain.handle('gateway:restart', async () => {
     await gw.restart();
-    // Update chat service connection with new gateway
+    // Update chat service connection with new gateway. Chat token
+    // is keychain-resident; read it via the supervisor.
     const state = await new GatewayStateStore(DATA_DIR).read();
+    const chatToken = await gw.getChatToken();
     if (state && chatService) {
       chatService.setGatewayConnection({
         channelPort: state.channelPort,
-        chatToken: state.chatToken,
+        chatToken: chatToken ?? undefined,
       });
     }
   });
@@ -685,7 +702,11 @@ export async function registerIpcHandlers(
     if (!gatewayState) {
       throw new Error('Gateway not running — Connectors unavailable');
     }
-    return new ManagementClient(`http://127.0.0.1:${gatewayState.port}`, gatewayState.token);
+    const token = await gw.getGatewayToken();
+    if (!token) {
+      throw new Error('Gateway not running — Connectors unavailable');
+    }
+    return new ManagementClient(`http://127.0.0.1:${gatewayState.port}`, token);
   }
 
   ipcMain.handle('mcp:listConnectors', async () => {
