@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useState } from 'react';
-import { AVAILABLE_MODELS } from '../components/deploy-options.js';
 import type { ModelOption } from '../components/deploy-options.js';
 
 interface UseAvailableModelsResult {
@@ -8,62 +7,57 @@ interface UseAvailableModelsResult {
   refresh: () => void;
 }
 
-function mergeModels(cached: { value: string; label: string; provider: string }[]): ModelOption[] {
-  const dynamic: ModelOption[] = cached.map((m) => ({
+/**
+ * Convert a gateway model into the ModelOption shape used by the
+ * dropdown components. `secretKey` is no longer used for filtering
+ * (gateway already returns only what the user can use), but the
+ * field is kept on the type for backwards compat with consumers
+ * that still reference it.
+ */
+function toModelOption(m: { value: string; label: string; provider: string }): ModelOption {
+  return {
     value: m.value,
     label: m.label,
     provider: m.provider as ModelOption['provider'],
     secretKey: `${m.provider}-api-key`,
-  }));
-  const dynamicValues = new Set(dynamic.map((m) => m.value));
-  return [...dynamic, ...AVAILABLE_MODELS.filter((m) => !dynamicValues.has(m.value))];
+  };
 }
 
+/**
+ * Hook: fetch the curated model list from the gateway.
+ *
+ * The gateway is the single source of truth — it persistently stores
+ * models, applies the SUPPORTED_MODELS allow-list filter, and returns
+ * the curated bootstrap list when no provider credentials are
+ * configured. MC just renders whatever it gets.
+ *
+ * No credential filter on the renderer side: the gateway already
+ * returns only providers with credentials (or the bootstrap fallback
+ * when zero credentials exist). On a cold start with no models.json
+ * yet, the dropdown briefly shows an empty state until the call
+ * resolves (~1-2s for a fresh provider fetch).
+ */
 export function useAvailableModels(): UseAvailableModelsResult {
-  const [keys, setKeys] = useState<string[]>([]);
-  const [allModels, setAllModels] = useState<ModelOption[]>(AVAILABLE_MODELS);
+  const [models, setModels] = useState<ModelOption[]>([]);
   const [refreshing, setRefreshing] = useState(false);
-
-  // Load credential keys from the gateway
-  useEffect(() => {
-    window.api
-      .credentialsList()
-      .then(setKeys)
-      .catch(() => {});
-  }, []);
 
   useEffect(() => {
     window.api
       .modelsList()
-      .then((cached) => {
-        if (cached.length > 0) {
-          setAllModels(mergeModels(cached));
-        }
-      })
-      .catch(() => {
-        // Keep fallback AVAILABLE_MODELS
-      });
+      .then((res) => setModels(res.models.map(toModelOption)))
+      .catch(() => setModels([]));
   }, []);
 
   const refresh = useCallback(() => {
     setRefreshing(true);
-    Promise.all([
-      window.api.modelsRefresh().then((fresh) => {
-        if (fresh.length > 0) {
-          setAllModels(mergeModels(fresh));
-        }
-      }),
-      window.api.credentialsList().then(setKeys),
-    ])
+    window.api
+      .modelsRefresh()
+      .then((res) => setModels(res.models.map(toModelOption)))
       .catch(() => {
-        // Keep current models on error
+        // Leave the current list in place on transient failures.
       })
-      .finally(() => {
-        setRefreshing(false);
-      });
+      .finally(() => setRefreshing(false));
   }, []);
-
-  const models = allModels.filter((m) => keys.some((k) => k.startsWith(`${m.secretKey}:`)));
 
   return { models, refreshing, refresh };
 }

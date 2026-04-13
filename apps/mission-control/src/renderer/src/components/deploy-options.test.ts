@@ -1,45 +1,11 @@
 import { AGENT_TOOL_NAMES } from '@dash/agent';
 import { describe, expect, it } from 'vitest';
-import {
-  AVAILABLE_MODELS,
-  AVAILABLE_TOOLS,
-  TOOL_DESCRIPTIONS,
-  TOOL_GROUPS,
-} from './deploy-options.js';
+import { AVAILABLE_TOOLS, TOOL_DESCRIPTIONS, TOOL_GROUPS } from './deploy-options.js';
 
-describe('AVAILABLE_MODELS', () => {
-  it('all models use provider/model-id format', () => {
-    for (const m of AVAILABLE_MODELS) {
-      expect(m.value, `${m.value} must contain a slash`).toContain('/');
-    }
-  });
-
-  it('all models have a provider field', () => {
-    for (const m of AVAILABLE_MODELS) {
-      expect(['anthropic', 'openai', 'google']).toContain(m.provider);
-    }
-  });
-
-  it('all models have a secretKey field', () => {
-    for (const m of AVAILABLE_MODELS) {
-      expect(m.secretKey).toBeTruthy();
-    }
-  });
-
-  it('includes Claude, GPT, and Gemini models', () => {
-    const providers = new Set(AVAILABLE_MODELS.map((m) => m.provider));
-    expect(providers.has('anthropic')).toBe(true);
-    expect(providers.has('openai')).toBe(true);
-    expect(providers.has('google')).toBe(true);
-  });
-
-  it('anthropic models use anthropic-api-key', () => {
-    const anthropicModels = AVAILABLE_MODELS.filter((m) => m.provider === 'anthropic');
-    for (const m of anthropicModels) {
-      expect(m.secretKey).toBe('anthropic-api-key');
-    }
-  });
-});
+// Note: AVAILABLE_MODELS was removed in the dynamic-model-discovery
+// rewrite. The model list is now served by the gateway's GET /models
+// endpoint with the curated allow-list in @dash/models. See
+// packages/models/src/supported-models.ts and bootstrap-models.ts.
 
 describe('AVAILABLE_TOOLS', () => {
   it('has at least one tool', () => {

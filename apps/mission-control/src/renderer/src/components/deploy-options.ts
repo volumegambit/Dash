@@ -32,44 +32,10 @@ export const TOOL_DESCRIPTIONS: Record<string, string> = {
   mcp_remove_server: 'Let the agent disconnect external tool servers',
 };
 
-export const AVAILABLE_MODELS: ModelOption[] = [
-  {
-    value: 'anthropic/claude-opus-4-20250514',
-    label: 'Claude Opus 4',
-    provider: 'anthropic',
-    secretKey: 'anthropic-api-key',
-  },
-  {
-    value: 'anthropic/claude-sonnet-4-20250514',
-    label: 'Claude Sonnet 4',
-    provider: 'anthropic',
-    secretKey: 'anthropic-api-key',
-  },
-  {
-    value: 'anthropic/claude-haiku-4-5-20251001',
-    label: 'Claude Haiku 4.5',
-    provider: 'anthropic',
-    secretKey: 'anthropic-api-key',
-  },
-  {
-    value: 'openai/gpt-4o',
-    label: 'GPT-4o',
-    provider: 'openai',
-    secretKey: 'openai-api-key',
-  },
-  {
-    value: 'openai/o3-mini',
-    label: 'o3 mini',
-    provider: 'openai',
-    secretKey: 'openai-api-key',
-  },
-  {
-    value: 'google/gemini-2.0-flash',
-    label: 'Gemini 2.0 Flash',
-    provider: 'google',
-    secretKey: 'google-api-key',
-  },
-];
+// AVAILABLE_MODELS removed: the model list now comes from the gateway's
+// GET /models endpoint via useAvailableModels(). The gateway owns the
+// curated allow-list and the bootstrap fallback. This file keeps only
+// the ModelOption type used by dropdown components.
 
 export interface ToolGroup {
   name: string;

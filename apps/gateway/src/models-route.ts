@@ -9,7 +9,7 @@ import {
 } from '@dash/models';
 import { Hono } from 'hono';
 import type { GatewayCredentialStore } from './credential-store.js';
-import { ModelsStore } from './models-store.js';
+import type { ModelsStore } from './models-store.js';
 
 /**
  * Response shape returned by `GET /models` and `POST /models/refresh`.
