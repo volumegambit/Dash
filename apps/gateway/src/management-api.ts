@@ -10,6 +10,7 @@ import type { AgentRegistry, GatewayAgentConfig, RegisteredAgent } from './agent
 import type { ChannelRegistry, ChannelRoutingRule } from './channel-registry.js';
 import type { GatewayCredentialStore } from './credential-store.js';
 import type { EventBus, GatewayEvent } from './event-bus.js';
+import type { EventLogStore } from './event-log-store.js';
 import type { DynamicGateway } from './gateway.js';
 import type { McpManagementDeps } from './mcp-management.js';
 import { mountMcpRoutes } from './mcp-management.js';
@@ -29,6 +30,13 @@ export interface GatewayManagementOptions {
    * `GET /models` triggers a fresh fetch with the new credential set.
    */
   modelsStore: ModelsStore;
+  /**
+   * Durable event log used by the chat-ws streaming path to record
+   * every outbound event. The management API exposes a replay
+   * endpoint that MC polls after a WebSocket drop. Optional only so
+   * tests that don't exercise replay can skip wiring it up.
+   */
+  eventLogStore?: EventLogStore;
   token?: string;
   startedAt?: string;
   eventBus?: EventBus;
@@ -329,6 +337,20 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
       agentRegistry.remove(id);
       await agentRegistry.save();
       await channelRegistry.save();
+      // Wipe the agent's durable event log last. If this throws we
+      // still return ok — the registry + channel removal has already
+      // happened and is the user-visible contract of DELETE; an
+      // orphaned event-log row for a removed agent is benign (no
+      // replay endpoint will return it because the agent lookup
+      // fails first).
+      try {
+        options.eventLogStore?.deleteAgent(id);
+      } catch (err) {
+        logger.warn?.('Failed to delete event logs for agent', {
+          agentId: id,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
       return c.json({ ok: true });
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Internal error';
@@ -612,6 +634,31 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
 
   // --- Models routes ---
   app.route('/models', createModelsRoute({ store: options.modelsStore, credentialStore }));
+
+  // --- Event-log replay ---
+  //
+  // Called by MC after a chat WebSocket drops to fetch any events it
+  // missed between the last seq it saw and the current tail. MC
+  // passes `sinceSeq` as a query param; the gateway returns every
+  // entry with `seq > sinceSeq` in seq order. Empty array when
+  // there's nothing to replay.
+  if (options.eventLogStore) {
+    const eventLogStore = options.eventLogStore;
+    app.get('/agents/:agentId/conversations/:conversationId/events', (c) => {
+      const agentId = c.req.param('agentId');
+      const conversationId = c.req.param('conversationId');
+      if (!agentRegistry.get(agentId)) {
+        return c.json({ error: 'agent not found' }, 404);
+      }
+      const sinceSeqRaw = c.req.query('sinceSeq');
+      const sinceSeq = sinceSeqRaw === undefined ? 0 : Number.parseInt(sinceSeqRaw, 10);
+      if (!Number.isFinite(sinceSeq) || sinceSeq < 0) {
+        return c.json({ error: 'invalid sinceSeq' }, 400);
+      }
+      const entries = eventLogStore.readSince(agentId, conversationId, sinceSeq);
+      return c.json({ entries });
+    });
+  }
 
   // --- MCP routes ---
   if (options.mcpDeps) {

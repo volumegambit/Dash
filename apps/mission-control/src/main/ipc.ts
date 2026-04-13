@@ -174,13 +174,32 @@ export async function registerIpcHandlers(
   // Read gateway state and pass connection to ChatService. The chat
   // token lives in the OS keychain (not gateway-state.json), so pull
   // it from the supervisor rather than reaching into the state file.
+  // Also forward the management API base URL + token — ChatService
+  // uses them to call the gateway's event-log replay endpoint after
+  // a dropped WebSocket.
   const refreshChatServiceConnection = async () => {
     const gatewayState = await new GatewayStateStore(DATA_DIR).read();
     const chatToken = await gw.getChatToken();
+    const managementToken = await gw.getGatewayToken();
     if (gatewayState) {
-      getChatService(getWindow).setGatewayConnection({
+      const svc = getChatService(getWindow);
+      svc.setGatewayConnection({
         channelPort: gatewayState.channelPort,
         chatToken: chatToken ?? undefined,
+        managementBaseUrl: `http://127.0.0.1:${gatewayState.port}`,
+        managementToken: managementToken ?? undefined,
+      });
+      // Fire-and-forget startup reconciliation: scan every
+      // conversation for incomplete turns (user message with no
+      // reply, or an assistant message missing a `response` event)
+      // and fetch whatever the gateway logged while MC was down.
+      // Catches the case where MC crashed or was force-quit before
+      // the WebSocket close handler's own reconciliation could run.
+      svc.reconcileAllConversations().catch((err) => {
+        console.error(
+          '[ChatService] Startup reconciliation failed:',
+          err instanceof Error ? err.message : err,
+        );
       });
     }
   };
@@ -645,13 +664,17 @@ export async function registerIpcHandlers(
   ipcMain.handle('gateway:restart', async () => {
     await gw.restart();
     // Update chat service connection with new gateway. Chat token
-    // is keychain-resident; read it via the supervisor.
+    // and management token are keychain-resident; read them via
+    // the supervisor.
     const state = await new GatewayStateStore(DATA_DIR).read();
     const chatToken = await gw.getChatToken();
+    const managementToken = await gw.getGatewayToken();
     if (state && chatService) {
       chatService.setGatewayConnection({
         channelPort: state.channelPort,
         chatToken: chatToken ?? undefined,
+        managementBaseUrl: `http://127.0.0.1:${state.port}`,
+        managementToken: managementToken ?? undefined,
       });
     }
   });

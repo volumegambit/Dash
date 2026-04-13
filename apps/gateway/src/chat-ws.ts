@@ -2,11 +2,20 @@ import type { AgentEvent, ImageBlock } from '@dash/agent';
 import type { Hono } from 'hono';
 import type { UpgradeWebSocket } from 'hono/ws';
 import type { AgentChatCoordinator } from './agent-chat-coordinator.js';
+import type { EventLogStore } from './event-log-store.js';
 
 export interface ChatWsOptions {
   agents: AgentChatCoordinator;
   token?: string;
   upgradeWebSocket: UpgradeWebSocket;
+  /**
+   * Durable event log. Every outbound WS frame is appended here
+   * BEFORE being sent, so MC can resume a dropped connection via
+   * the replay HTTP endpoint. Optional so tests that don't care
+   * about persistence can pass a no-op or omit it; the wire
+   * protocol is unchanged if `seq` is left out.
+   */
+  eventLogStore?: EventLogStore;
   /** When true, log every inbound and outbound WebSocket message. */
   verbose?: boolean;
 }
@@ -45,9 +54,9 @@ type WsClientMessage =
   | { type: 'cancel'; id: string };
 
 type WsServerMessage =
-  | { type: 'event'; id: string; event: AgentEvent }
-  | { type: 'done'; id: string }
-  | { type: 'error'; id: string; error: string };
+  | { type: 'event'; id: string; seq?: number; event: AgentEvent }
+  | { type: 'done'; id: string; seq?: number }
+  | { type: 'error'; id: string; seq?: number; error: string };
 
 function validateMessage(msg: unknown): msg is WsClientMessage {
   if (typeof msg !== 'object' || msg === null) return false;
@@ -82,7 +91,32 @@ function conversationKey(agentId: string, conversationId: string): string {
 }
 
 export function mountChatWs(app: Hono, options: ChatWsOptions): void {
-  const { agents, upgradeWebSocket, verbose = false } = options;
+  const { agents, upgradeWebSocket, verbose = false, eventLogStore } = options;
+
+  /**
+   * Append a payload to the durable event log and return the assigned
+   * seq, or `undefined` if no log is wired up. Swallows log errors —
+   * chat streaming MUST NOT fail because the log has a bad disk day.
+   * The ONLY cost of a failed append is that MC can't replay that
+   * specific event, which is already the existing failure mode.
+   */
+  const logPayload = (
+    agentId: string,
+    conversationId: string,
+    msgId: string,
+    payload: Parameters<EventLogStore['append']>[3],
+  ): number | undefined => {
+    if (!eventLogStore) return undefined;
+    try {
+      return eventLogStore.append(agentId, conversationId, msgId, payload);
+    } catch (err) {
+      console.error(
+        '[chat-ws] event log append failed:',
+        err instanceof Error ? err.message : String(err),
+      );
+      return undefined;
+    }
+  };
 
   const logInbound = (raw: string, parsed: unknown): void => {
     if (!verbose) return;
@@ -223,10 +257,19 @@ export function mountChatWs(app: Hono, options: ChatWsOptions): void {
                   if (agentEvent.type === 'error') {
                     (agentEvent as { timestamp?: string }).timestamp = new Date().toISOString();
                   }
-                  sendServerMessage(ws, { type: 'event', id: msg.id, event: agentEvent });
+                  // Append to the durable log FIRST, then send over
+                  // the WS. Order matters: if the WS is already
+                  // dead, the log still captures the event so MC
+                  // can replay it on reconnect.
+                  const seq = logPayload(agentId, convId, msg.id, {
+                    type: 'event',
+                    event: agentEvent,
+                  });
+                  sendServerMessage(ws, { type: 'event', id: msg.id, seq, event: agentEvent });
                 }
                 if (!controller.signal.aborted) {
-                  sendServerMessage(ws, { type: 'done', id: msg.id });
+                  const seq = logPayload(agentId, convId, msg.id, { type: 'done' });
+                  sendServerMessage(ws, { type: 'done', id: msg.id, seq });
                 }
               } catch (err) {
                 const errStr = err instanceof Error ? err.message : String(err);
@@ -235,7 +278,11 @@ export function mountChatWs(app: Hono, options: ChatWsOptions): void {
                 }
 
                 if (!controller.signal.aborted) {
-                  sendServerMessage(ws, { type: 'error', id: msg.id, error: errStr });
+                  const seq = logPayload(agentId, convId, msg.id, {
+                    type: 'error',
+                    error: errStr,
+                  });
+                  sendServerMessage(ws, { type: 'error', id: msg.id, seq, error: errStr });
                 }
               } finally {
                 activeStreams.delete(msg.id);
