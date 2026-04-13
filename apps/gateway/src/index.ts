@@ -25,6 +25,7 @@ import { GatewayCredentialStore } from './credential-store.js';
 import { EventBus } from './event-bus.js';
 import { createDynamicGateway } from './gateway.js';
 import { createGatewayManagementApp } from './management-api.js';
+import { ModelsStore } from './models-store.js';
 import { McpConfigStore } from './mcp-store.js';
 
 async function main() {
@@ -51,6 +52,10 @@ async function main() {
   // Initialize channel registry
   const channelRegistry = new ChannelRegistry(join(dataDir, 'channels.json'));
   await channelRegistry.load();
+
+  // Persistent model store. Lazily populated on first GET /models call;
+  // invalidated automatically on credential changes by management-api.
+  const modelsStore = new ModelsStore(dataDir);
 
   // MCP setup
   const mcpDir = resolve(dataDir, 'mcp');
@@ -253,6 +258,7 @@ async function main() {
     agentRegistry: registry,
     channelRegistry,
     credentialStore,
+    modelsStore,
     token: flags.token,
     startedAt,
     eventBus,
