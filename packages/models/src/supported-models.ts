@@ -58,6 +58,12 @@ const OPENAI: SupportedModelEntry[] = [
   { provider: 'openai', pattern: 'o1-pro', tier: 3 },
   { provider: 'openai', pattern: 'o1', tier: 4 },
   { provider: 'openai', pattern: 'o1-mini', tier: 5 },
+  // Codex variants — code-specialized GPT-5.x models exposed via the
+  // ChatGPT/Codex backend. Single broad pattern (added 2026-04-13)
+  // catches gpt-5-codex, gpt-5-codex-mini, gpt-5.1-codex,
+  // gpt-5.1-codex-mini, gpt-5.1-codex-max, gpt-5.2-codex,
+  // gpt-5.3-codex, and any future N-codex releases.
+  { provider: 'openai', pattern: 'gpt-*-codex*', tier: 9 },
   // GPT-5.x generation
   { provider: 'openai', pattern: 'gpt-5.4-pro', tier: 10 },
   { provider: 'openai', pattern: 'gpt-5.4', tier: 11 },

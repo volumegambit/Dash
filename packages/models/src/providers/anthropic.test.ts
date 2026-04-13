@@ -93,4 +93,54 @@ describe('Anthropic provider', () => {
       expect.objectContaining({ signal: ac.signal }),
     );
   });
+
+  // ------------------------------------------------------------------
+  // Claude Code OAuth token fallback
+  // ------------------------------------------------------------------
+
+  it('routes sk-ant-oat OAuth tokens to Bearer auth + oauth-beta header', async () => {
+    fetchSpy.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        data: [{ id: 'claude-opus-4-6', display_name: 'Claude Opus 4.6' }],
+      }),
+      text: async () => '',
+    });
+
+    const oauthToken = 'sk-ant-oat01-aBcDeFgHiJkLmNoPqRsTuVwXyZ1234567890';
+    const models = await Anthropic.fetchModels(oauthToken);
+
+    expect(fetchSpy).toHaveBeenCalledWith(
+      'https://api.anthropic.com/v1/models',
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          Authorization: `Bearer ${oauthToken}`,
+          'anthropic-beta': 'oauth-2025-04-20',
+          'anthropic-version': '2023-06-01',
+        }),
+      }),
+    );
+    // Must NOT send x-api-key — that header on an OAuth token returns 401.
+    const headers = fetchSpy.mock.calls[0][1].headers as Record<string, string>;
+    expect(headers['x-api-key']).toBeUndefined();
+
+    expect(models).toEqual([
+      { provider: 'anthropic', id: 'claude-opus-4-6', label: 'Claude Opus 4.6' },
+    ]);
+  });
+
+  it('classic sk-ant-api03 keys still use x-api-key (regression)', async () => {
+    fetchSpy.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: async () => ({ data: [] }),
+      text: async () => '',
+    });
+    await Anthropic.fetchModels('sk-ant-api03-classic-key');
+    const headers = fetchSpy.mock.calls[0][1].headers as Record<string, string>;
+    expect(headers['x-api-key']).toBe('sk-ant-api03-classic-key');
+    expect(headers.Authorization).toBeUndefined();
+    expect(headers['anthropic-beta']).toBeUndefined();
+  });
 });

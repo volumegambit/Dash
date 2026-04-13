@@ -74,12 +74,25 @@ describe('isModelSupported', () => {
     ['tts-1', false],
     ['whisper-1', false],
     ['gpt-4o-2024-05-13', false], // dated variant
-    ['gpt-5.3-codex', false], // codex model
     ['gpt-5.4-nano', false], // nano model
     ['gpt-5.1-chat', false], // chat suffix duplicate
     ['chatgpt-image-latest', false],
     ['gpt-4o-realtime-preview', false],
     ['o4-mini-deep-research', false], // not in allow-list
+  ])('openai/%s → %s', (modelId, expected) => {
+    expect(isModelSupported('openai', modelId)).toBe(expected);
+  });
+
+  // OpenAI — Codex variants (allow-listed via `gpt-*-codex*` pattern
+  // added 2026-04-13 after audit-models surfaced them as unmatched).
+  it.each([
+    ['gpt-5-codex', true],
+    ['gpt-5-codex-mini', true],
+    ['gpt-5.1-codex', true],
+    ['gpt-5.1-codex-mini', true],
+    ['gpt-5.1-codex-max', true],
+    ['gpt-5.2-codex', true],
+    ['gpt-5.3-codex', true],
   ])('openai/%s → %s', (modelId, expected) => {
     expect(isModelSupported('openai', modelId)).toBe(expected);
   });
