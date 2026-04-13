@@ -61,7 +61,14 @@ docs/plans/
 # Temp / working files
 *.tmp
 .clone/
-.claude/worktrees/
+
+# Claude Code personal workflow files — agents, commands, skills,
+# settings, worktrees, agent memory. Local only; scrubbed from history
+# 2026-04-13.
+.claude/
+
+# Superpowers brainstorm session artifacts — local scratch only.
+.superpowers/brainstorm/
 
 # Generated design assets
 designs/images/
