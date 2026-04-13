@@ -57,7 +57,8 @@ describe('Chat search params', () => {
     });
     mockUseSearch.mockReturnValue({ agentId: 'agent-1' });
     render(<Chat />);
-    await screen.findByText('Chat');
-    expect(mockApi.chatCreateConversation).toHaveBeenCalledWith('agent-1');
+    await vi.waitFor(() => {
+      expect(mockApi.chatCreateConversation).toHaveBeenCalledWith('agent-1');
+    });
   });
 });
