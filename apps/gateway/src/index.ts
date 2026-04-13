@@ -23,6 +23,8 @@ import { mountChatWs } from './chat-ws.js';
 import { parseFlags } from './config.js';
 import { GatewayCredentialStore } from './credential-store.js';
 import { EventBus } from './event-bus.js';
+import { SqliteEventLogStore } from './event-log-store-sqlite.js';
+import type { EventLogStore } from './event-log-store.js';
 import { createDynamicGateway } from './gateway.js';
 import { createGatewayManagementApp } from './management-api.js';
 import { McpConfigStore } from './mcp-store.js';
@@ -56,6 +58,14 @@ async function main() {
   // Persistent model store. Lazily populated on first GET /models call;
   // invalidated automatically on credential changes by management-api.
   const modelsStore = new ModelsStore(dataDir);
+
+  // Durable event log for chat streaming events. Lives in
+  // `<dataDir>/agent-stream-events.db`. Wired into chat-ws (append
+  // before sending each frame) and into the management API (replay
+  // endpoint + GC on agent deletion). Kept behind the `EventLogStore`
+  // interface so future backends (LMDB, Postgres, etc.) only need a
+  // new adapter class in this one spot.
+  const eventLogStore: EventLogStore = new SqliteEventLogStore({ dataDir });
 
   // MCP setup
   const mcpDir = resolve(dataDir, 'mcp');
@@ -259,6 +269,7 @@ async function main() {
     channelRegistry,
     credentialStore,
     modelsStore,
+    eventLogStore,
     token: flags.token,
     startedAt,
     eventBus,
@@ -288,6 +299,7 @@ async function main() {
     agents,
     token: flags.chatToken,
     upgradeWebSocket,
+    eventLogStore,
     verbose: verboseWs,
   });
   if (verboseWs) {
@@ -313,6 +325,11 @@ async function main() {
     await gateway.stop();
     managementServer.close();
     channelServer.close();
+    // Close the event-log DB last so any in-flight appends from the
+    // agents/gateway shutdown path land cleanly. WAL checkpoints are
+    // flushed on close, so the next gateway start sees a consistent
+    // database.
+    eventLogStore.close();
     process.exit(0);
   };
 

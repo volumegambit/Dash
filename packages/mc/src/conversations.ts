@@ -31,7 +31,21 @@ export interface McMessage {
   role: 'user' | 'assistant';
   content:
     | { type: 'user'; text: string; images?: McMessageImage[] }
-    | { type: 'assistant'; events: Record<string, unknown>[] };
+    | {
+        type: 'assistant';
+        events: Record<string, unknown>[];
+        /**
+         * Highest gateway event-log `seq` observed for this assistant
+         * message. Used as the resume cursor for startup reconciliation:
+         * on next MC launch the chat service asks the gateway for
+         * entries with `seq > lastSeq` so it can fill in any events
+         * that arrived on the gateway side while MC was down. Optional
+         * — older messages persisted before this field existed will
+         * simply reconcile from seq 0, which still returns the correct
+         * delta because the replay endpoint is idempotent.
+         */
+        lastSeq?: number;
+      };
   timestamp: string;
 }
 
