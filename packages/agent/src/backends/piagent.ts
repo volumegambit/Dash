@@ -552,11 +552,15 @@ export class PiAgentBackend implements AgentBackend {
       }
     }
 
-    // Build the model chain: primary (from state) + operator-configured fallbacks.
-    // On failures that occur BEFORE any event has been yielded, we transparently
-    // retry with the next model. Once any output has been committed to the stream,
-    // errors propagate normally — we can't safely retry mid-response.
-    const modelChain = [state.model, ...(this.config.fallbackModels ?? [])];
+    // Build the model chain: primary + operator-configured fallbacks.
+    // Both come from `state`, which DashAgent rebuilds on every chat()
+    // from a fresh registry read — so model + fallbackModels changes
+    // made via `PUT /agents/:id` take effect on the next message
+    // without a pool eviction. On failures that occur BEFORE any
+    // event has been yielded, we transparently retry with the next
+    // model. Once any output has been committed to the stream, errors
+    // propagate normally — we can't safely retry mid-response.
+    const modelChain = [state.model, ...(state.fallbackModels ?? [])];
 
     for (let attempt = 0; attempt < modelChain.length; attempt++) {
       const modelStr = modelChain[attempt];

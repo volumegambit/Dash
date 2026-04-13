@@ -73,21 +73,42 @@ export function createAgentChatCoordinator(
 ): AgentChatCoordinator {
   const { registry } = options;
 
+  /**
+   * Build a `DashAgentConfig` from the current registry snapshot.
+   * Centralised so both the backend factory (which needs the initial
+   * config at backend start() time) and the DashAgent's per-chat
+   * resolver read from the same source of truth.
+   *
+   * Throws if the agent no longer exists — the caller (either the
+   * factory or the resolver) decides how to handle that.
+   */
+  function buildDashConfig(agentId: string): DashAgentConfig {
+    const entry = registry.get(agentId);
+    if (!entry) throw new Error(`Agent '${agentId}' not found`);
+    // Prepend agent identity so the model knows its name
+    const systemPrompt = `You are "${entry.config.name}".\n\n${entry.config.systemPrompt}`;
+    // `workspace` is intentionally NOT included here: it's passed to
+    // `backend.start(workspace)` at pool-entry creation time (so the
+    // backend can set up its tools against the right dir) and is
+    // also what DashAgent uses to build the memory preamble. The
+    // memory preamble path is only taken when `config.workspace` is
+    // set — leaving it undefined in the resolved config means
+    // non-workspace tests and simple chats skip the preamble build.
+    return {
+      model: entry.config.model,
+      systemPrompt,
+      fallbackModels: entry.config.fallbackModels,
+      tools: entry.config.tools,
+      skills: entry.config.skills,
+    };
+  }
+
   const pool = new ConversationPool({
     maxSize: options.poolMaxSize,
     backendFactory: async (agentId, conversationId) => {
       const entry = registry.get(agentId);
       if (!entry) throw new Error(`Agent '${agentId}' not found`);
       const backend = await options.createBackend(entry.config, conversationId);
-      // Prepend agent identity so the model knows its name
-      const systemPrompt = `You are "${entry.config.name}".\n\n${entry.config.systemPrompt}`;
-      const dashConfig: DashAgentConfig = {
-        model: entry.config.model,
-        systemPrompt,
-        fallbackModels: entry.config.fallbackModels,
-        tools: entry.config.tools,
-        skills: entry.config.skills,
-      };
       // Resolve the workspace and ensure it exists on disk before any tool
       // can touch it. The registry is expected to have assigned a default
       // workspace at register() time via its `defaultWorkspace` resolver, so
@@ -100,7 +121,15 @@ export function createAgentChatCoordinator(
         await mkdir(workspace, { recursive: true });
       }
       await backend.start(workspace);
-      const agent = new DashAgent(backend, dashConfig);
+      // The DashAgent receives a *resolver* rather than a static config.
+      // On every chat() invocation the resolver re-reads the registry,
+      // so model / fallbackModels / systemPrompt / tools changes made
+      // via `PUT /agents/:id` propagate on the next message without
+      // requiring the pool entry to be evicted. Backend-captured state
+      // (pi session's registered tools, MCP managers) still requires
+      // eviction — that's an acceptable trade-off because those
+      // changes are infrequent and the warm pool protects throughput.
+      const agent = new DashAgent(backend, async () => buildDashConfig(agentId));
       registry.setActive(agentId);
       return { backend, agent };
     },

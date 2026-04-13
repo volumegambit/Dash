@@ -857,10 +857,7 @@ describe('PiAgentBackend model fallback chain', () => {
     cb({ type: 'agent_end', messages: [] });
   }
 
-  async function mountBackend(
-    session: ReturnType<typeof makeSequencedSession>,
-    fallbackModels?: string[],
-  ) {
+  async function mountBackend(session: ReturnType<typeof makeSequencedSession>) {
     const { createAgentSession } = await import('@mariozechner/pi-coding-agent');
     vi.mocked(createAgentSession).mockResolvedValueOnce({
       // biome-ignore lint/suspicious/noExplicitAny: test mock
@@ -873,7 +870,6 @@ describe('PiAgentBackend model fallback chain', () => {
       {
         model: 'anthropic/claude-sonnet-4-20250514',
         systemPrompt: 'Test',
-        fallbackModels,
       },
       { anthropic: 'test-key' },
     );
@@ -881,11 +877,19 @@ describe('PiAgentBackend model fallback chain', () => {
     return backend;
   }
 
-  function makeState() {
+  /**
+   * Build an AgentState. `fallbackModels` lives on the state rather
+   * than on the backend's constructor config because PiAgentBackend
+   * reads the fallback chain from `state.fallbackModels` on each
+   * run() call — this lets `PUT /agents/:id` changes propagate on
+   * the next message without evicting the warm pool entry.
+   */
+  function makeState(fallbackModels?: string[]) {
     return {
       channelId: 'ch-1',
       conversationId: 'conv-1',
       model: 'anthropic/claude-sonnet-4-20250514',
+      fallbackModels,
       message: 'hello',
       systemPrompt: 'Test',
     };
@@ -922,10 +926,10 @@ describe('PiAgentBackend model fallback chain', () => {
       },
       (cb) => fireSuccess(cb, 'from-fallback'),
     ]);
-    const backend = await mountBackend(session, ['anthropic/claude-haiku-4-20250514']);
+    const backend = await mountBackend(session);
 
     const events: AgentEvent[] = [];
-    for await (const ev of backend.run(makeState(), {})) {
+    for await (const ev of backend.run(makeState(['anthropic/claude-haiku-4-20250514']), {})) {
       events.push(ev);
     }
 
@@ -959,13 +963,13 @@ describe('PiAgentBackend model fallback chain', () => {
         throw new Error('fallback-2: auth failed');
       },
     ]);
-    const backend = await mountBackend(session, [
-      'anthropic/claude-haiku-4-20250514',
-      'openai/gpt-4o',
-    ]);
+    const backend = await mountBackend(session);
 
     const events: AgentEvent[] = [];
-    for await (const ev of backend.run(makeState(), {})) {
+    for await (const ev of backend.run(
+      makeState(['anthropic/claude-haiku-4-20250514', 'openai/gpt-4o']),
+      {},
+    )) {
       events.push(ev);
     }
 
@@ -1002,10 +1006,10 @@ describe('PiAgentBackend model fallback chain', () => {
       // This behavior should NEVER run
       (cb) => fireSuccess(cb, 'should-not-appear'),
     ]);
-    const backend = await mountBackend(session, ['anthropic/claude-haiku-4-20250514']);
+    const backend = await mountBackend(session);
 
     const events: AgentEvent[] = [];
-    for await (const ev of backend.run(makeState(), {})) {
+    for await (const ev of backend.run(makeState(['anthropic/claude-haiku-4-20250514']), {})) {
       events.push(ev);
     }
 
