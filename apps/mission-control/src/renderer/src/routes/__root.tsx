@@ -5,6 +5,7 @@ import { SetupWizard } from '../components/SetupWizard';
 import { Sidebar } from '../components/Sidebar';
 import { useAgentsStore } from '../stores/agents.js';
 import { initChatListeners } from '../stores/chat';
+import { useUIStore } from '../stores/ui.js';
 
 export const Route = createRootRoute({
   component: RootLayout,
@@ -59,6 +60,19 @@ function RootLayout(): JSX.Element {
       setUpdateVersion(info.version);
     });
   }, []);
+
+  // Keyboard shortcut: Cmd+B / Ctrl+B to toggle sidebar
+  const toggleSidebar = useUIStore((s) => s.toggleSidebar);
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === 'b') {
+        e.preventDefault();
+        toggleSidebar();
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [toggleSidebar]);
 
   if (checking) {
     return (
