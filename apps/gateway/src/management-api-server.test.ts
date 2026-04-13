@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { AgentRegistry, RegisteredAgent } from './agent-registry.js';
 import type { AgentChatCoordinator } from './agent-chat-coordinator.js';
+import type { AgentRegistry, RegisteredAgent } from './agent-registry.js';
 import type { ChannelRegistry, RegisteredChannel } from './channel-registry.js';
 import type { GatewayCredentialStore } from './credential-store.js';
 import { EventBus } from './event-bus.js';
@@ -78,8 +78,7 @@ function makeChannelRegistry(): ChannelRegistry {
         entry.routing = patch.routing as RegisteredChannel['routing'];
       if (patch.globalDenyList !== undefined)
         entry.globalDenyList = patch.globalDenyList as string[];
-      if (patch.allowedUsers !== undefined)
-        entry.allowedUsers = patch.allowedUsers as string[];
+      if (patch.allowedUsers !== undefined) entry.allowedUsers = patch.allowedUsers as string[];
       return entry;
     }),
     remove: vi.fn((name: string) => channels.delete(name)),
@@ -507,9 +506,7 @@ describe('createGatewayManagementApp', () => {
           name: 'tg1',
           adapter: 'telegram',
           allowedUsers: ['@alice', '12345'],
-          routing: [
-            { condition: { type: 'default' }, agentId: 'a1', allowList: [], denyList: [] },
-          ],
+          routing: [{ condition: { type: 'default' }, agentId: 'a1', allowList: [], denyList: [] }],
         }),
       });
       expect(res.status).toBe(201);

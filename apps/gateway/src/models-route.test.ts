@@ -3,8 +3,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { GatewayCredentialStore } from './credential-store.js';
-import { ModelsStore } from './models-store.js';
 import { createModelsRoute } from './models-route.js';
+import { ModelsStore } from './models-store.js';
 
 function makeCredentialStore(keys: Record<string, string> = {}): GatewayCredentialStore {
   return {
@@ -31,9 +31,7 @@ describe('createModelsRoute', () => {
   });
 
   it('GET /models returns BOOTSTRAP_MODELS with source=bootstrap when no credentials', async () => {
-    const discover = vi
-      .fn()
-      .mockResolvedValue({ models: [], errors: {}, providersConfigured: 0 });
+    const discover = vi.fn().mockResolvedValue({ models: [], errors: {}, providersConfigured: 0 });
     const app = createModelsRoute({
       store,
       credentialStore: makeCredentialStore({}),
@@ -51,7 +49,9 @@ describe('createModelsRoute', () => {
 
   it('GET /models calls discover when store is empty and credentials exist', async () => {
     const discover = vi.fn().mockResolvedValue({
-      models: [{ value: 'anthropic/claude-opus-4-5', label: 'Claude Opus 4.5', provider: 'anthropic' }],
+      models: [
+        { value: 'anthropic/claude-opus-4-5', label: 'Claude Opus 4.5', provider: 'anthropic' },
+      ],
       errors: {},
       providersConfigured: 1,
     });

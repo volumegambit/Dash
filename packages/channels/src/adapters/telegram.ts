@@ -42,8 +42,7 @@ export class TelegramAdapter implements ChannelAdapter {
 
   constructor(token: string, allowedUsers: TelegramAllowedUsers = []) {
     // Normalize once — the hot path just calls `this.getAllowedUsers()`.
-    this.getAllowedUsers =
-      typeof allowedUsers === 'function' ? allowedUsers : () => allowedUsers;
+    this.getAllowedUsers = typeof allowedUsers === 'function' ? allowedUsers : () => allowedUsers;
     this.bot = new Bot(token);
 
     this.bot.on('message:text', async (ctx) => {

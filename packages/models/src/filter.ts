@@ -1,7 +1,7 @@
 import {
+  SUPPORTED_MODELS,
   type SupportedModelEntry,
   findSupportedModel,
-  SUPPORTED_MODELS,
 } from './supported-models.js';
 import type { FilteredModel, RawModel } from './types.js';
 

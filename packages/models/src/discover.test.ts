@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { discoverModels, type CredentialResolver } from './discover.js';
+import { type CredentialResolver, discoverModels } from './discover.js';
 import { FetcherError } from './types.js';
 
 describe('discoverModels', () => {

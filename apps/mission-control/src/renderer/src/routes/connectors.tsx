@@ -293,7 +293,7 @@ function AddConnectorModal({
                 type="button"
                 onClick={handleSubmit}
                 disabled={!canSubmit}
-                className="flex items-center gap-1.5 border border-primary/40 bg-primary/10 px-4 py-2 text-sm text-primary transition-colors hover:bg-primary/20 hover:border-primary/60 disabled:opacity-50"
+                className="inline-flex items-center gap-2 bg-accent px-4 py-2 text-sm font-semibold text-white transition-colors hover:opacity-90 disabled:opacity-50"
               >
                 {submitting ? <Loader size={14} className="animate-spin" /> : 'Connect'}
               </button>
@@ -583,9 +583,9 @@ function ConnectorsPage(): JSX.Element {
         <button
           type="button"
           onClick={() => setModalOpen(true)}
-          className="flex items-center gap-1.5 border border-primary/40 bg-primary/10 px-3 py-1.5 text-xs text-primary transition-colors hover:bg-primary/20 hover:border-primary/60"
+          className="inline-flex items-center gap-2 bg-accent px-4 py-2 text-sm font-semibold text-white transition-colors hover:opacity-90"
         >
-          <Plus size={12} />
+          <Plus size={14} />
           Add Connector
         </button>
       </div>

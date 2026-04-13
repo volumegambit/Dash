@@ -211,7 +211,10 @@ describe('GatewaySupervisor.ensureRunning()', () => {
     expect(client).toBe(mockClient);
     // Verify auth actually ran — the reuse decision must be based on
     // a real auth check, not optimistic state.json trust.
-    expect((mockClient as unknown as { listAgents: { mock: { calls: unknown[] } } }).listAgents.mock.calls.length).toBe(1);
+    expect(
+      (mockClient as unknown as { listAgents: { mock: { calls: unknown[] } } }).listAgents.mock
+        .calls.length,
+    ).toBe(1);
   });
 
   it('reuses even when state.startedAt does not match probe.startedAt, as long as auth works', async () => {
@@ -459,7 +462,6 @@ describe('GatewaySupervisor.ensureRunning()', () => {
     expect(b).toBe(mockClient);
     expect(c).toBe(mockClient);
   });
-
 });
 
 // ---------------------------------------------------------------------------

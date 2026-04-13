@@ -4,10 +4,10 @@
 
 @theme {
   /* Core */
-  --color-background: #0f172a;
+  --color-background: #0a0a0a;
   --color-foreground: #f8fafc;
-  --color-surface: #1e293b;
-  --color-border: #334155;
+  --color-surface: #111111;
+  --color-border: #262626;
   --color-muted: #94a3b8;
 
   /* Brand */
@@ -17,13 +17,13 @@
   --color-accent-tint: #2563eb18;
 
   /* Cards */
-  --color-card-bg: #1e293b;
-  --color-card-hover: #334155;
+  --color-card-bg: #141414;
+  --color-card-hover: #1f1f1f;
 
   /* Sidebar */
-  --color-sidebar-bg: #0f172a;
-  --color-sidebar-hover: #1e293b;
-  --color-sidebar-active: #1e293b;
+  --color-sidebar-bg: #000000;
+  --color-sidebar-hover: #141414;
+  --color-sidebar-active: #1a1a1a;
 
   /* Status */
   --color-green: #22c55e;

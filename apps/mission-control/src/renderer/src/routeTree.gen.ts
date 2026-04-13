@@ -10,6 +10,7 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as WebSearchRouteImport } from './routes/web-search'
+import { Route as UnderTheHoodRouteImport } from './routes/under-the-hood'
 import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as MessagingAppsRouteImport } from './routes/messaging-apps'
 import { Route as DeployRouteImport } from './routes/deploy'
@@ -28,6 +29,11 @@ import { Route as AgentsIdRouteImport } from './routes/agents/$id'
 const WebSearchRoute = WebSearchRouteImport.update({
   id: '/web-search',
   path: '/web-search',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const UnderTheHoodRoute = UnderTheHoodRouteImport.update({
+  id: '/under-the-hood',
+  path: '/under-the-hood',
   getParentRoute: () => rootRouteImport,
 } as any)
 const SettingsRoute = SettingsRouteImport.update({
@@ -112,6 +118,7 @@ export interface FileRoutesByFullPath {
   '/deploy': typeof DeployRoute
   '/messaging-apps': typeof MessagingAppsRouteWithChildren
   '/settings': typeof SettingsRoute
+  '/under-the-hood': typeof UnderTheHoodRoute
   '/web-search': typeof WebSearchRoute
   '/agents/$id': typeof AgentsIdRoute
   '/messaging-apps/$id': typeof MessagingAppsIdRoute
@@ -127,6 +134,7 @@ export interface FileRoutesByTo {
   '/connectors': typeof ConnectorsRoute
   '/deploy': typeof DeployRoute
   '/settings': typeof SettingsRoute
+  '/under-the-hood': typeof UnderTheHoodRoute
   '/web-search': typeof WebSearchRoute
   '/agents/$id': typeof AgentsIdRoute
   '/messaging-apps/$id': typeof MessagingAppsIdRoute
@@ -145,6 +153,7 @@ export interface FileRoutesById {
   '/deploy': typeof DeployRoute
   '/messaging-apps': typeof MessagingAppsRouteWithChildren
   '/settings': typeof SettingsRoute
+  '/under-the-hood': typeof UnderTheHoodRoute
   '/web-search': typeof WebSearchRoute
   '/agents/$id': typeof AgentsIdRoute
   '/messaging-apps/$id': typeof MessagingAppsIdRoute
@@ -164,6 +173,7 @@ export interface FileRouteTypes {
     | '/deploy'
     | '/messaging-apps'
     | '/settings'
+    | '/under-the-hood'
     | '/web-search'
     | '/agents/$id'
     | '/messaging-apps/$id'
@@ -179,6 +189,7 @@ export interface FileRouteTypes {
     | '/connectors'
     | '/deploy'
     | '/settings'
+    | '/under-the-hood'
     | '/web-search'
     | '/agents/$id'
     | '/messaging-apps/$id'
@@ -196,6 +207,7 @@ export interface FileRouteTypes {
     | '/deploy'
     | '/messaging-apps'
     | '/settings'
+    | '/under-the-hood'
     | '/web-search'
     | '/agents/$id'
     | '/messaging-apps/$id'
@@ -214,6 +226,7 @@ export interface RootRouteChildren {
   DeployRoute: typeof DeployRoute
   MessagingAppsRoute: typeof MessagingAppsRouteWithChildren
   SettingsRoute: typeof SettingsRoute
+  UnderTheHoodRoute: typeof UnderTheHoodRoute
   WebSearchRoute: typeof WebSearchRoute
 }
 
@@ -224,6 +237,13 @@ declare module '@tanstack/react-router' {
       path: '/web-search'
       fullPath: '/web-search'
       preLoaderRoute: typeof WebSearchRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/under-the-hood': {
+      id: '/under-the-hood'
+      path: '/under-the-hood'
+      fullPath: '/under-the-hood'
+      preLoaderRoute: typeof UnderTheHoodRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/settings': {
@@ -367,6 +387,7 @@ const rootRouteChildren: RootRouteChildren = {
   DeployRoute: DeployRoute,
   MessagingAppsRoute: MessagingAppsRouteWithChildren,
   SettingsRoute: SettingsRoute,
+  UnderTheHoodRoute: UnderTheHoodRoute,
   WebSearchRoute: WebSearchRoute,
 }
 export const routeTree = rootRouteImport

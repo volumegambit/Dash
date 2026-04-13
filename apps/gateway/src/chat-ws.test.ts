@@ -1,8 +1,8 @@
 import type { AgentBackend, AgentEvent, AgentState, RunOptions } from '@dash/agent';
 import { describe, expect, it } from 'vitest';
-import { AgentRegistry } from './agent-registry.js';
 import type { AgentChatCoordinator } from './agent-chat-coordinator.js';
 import { createAgentChatCoordinator } from './agent-chat-coordinator.js';
+import { AgentRegistry } from './agent-registry.js';
 
 /**
  * These tests verify that the AgentChatCoordinator — the core dependency

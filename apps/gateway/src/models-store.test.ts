@@ -34,9 +34,7 @@ describe('ModelsStore', () => {
   });
 
   it('atomic write: file content is fully formed (no half-written file)', async () => {
-    const models = [
-      { value: 'openai/gpt-5.4', label: 'GPT-5.4', provider: 'openai' },
-    ];
+    const models = [{ value: 'openai/gpt-5.4', label: 'GPT-5.4', provider: 'openai' }];
     await store.save(models);
     const raw = await readFile(join(dataDir, 'models.json'), 'utf-8');
     // Either fully parseable or absent — never partial.
@@ -51,9 +49,7 @@ describe('ModelsStore', () => {
       JSON.stringify({
         fetchedAt: '2025-01-01T00:00:00Z',
         supportedModelsReviewedAt: '2020-01-01', // stale
-        models: [
-          { value: 'anthropic/claude-opus-4-5', label: 'X', provider: 'anthropic' },
-        ],
+        models: [{ value: 'anthropic/claude-opus-4-5', label: 'X', provider: 'anthropic' }],
       }),
     );
     expect(await store.load()).toBeNull();
@@ -65,9 +61,7 @@ describe('ModelsStore', () => {
   });
 
   it('clear deletes the file', async () => {
-    await store.save([
-      { value: 'anthropic/claude-opus-4-5', label: 'X', provider: 'anthropic' },
-    ]);
+    await store.save([{ value: 'anthropic/claude-opus-4-5', label: 'X', provider: 'anthropic' }]);
     expect(await store.load()).not.toBeNull();
     await store.clear();
     expect(await store.load()).toBeNull();

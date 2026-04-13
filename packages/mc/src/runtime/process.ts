@@ -23,7 +23,10 @@ async function lsofPortOwner(port: number): Promise<number | undefined> {
       ['-nP', '-ti', `TCP@127.0.0.1:${port}`, '-sTCP:LISTEN'],
       { timeout: 2000 },
     );
-    const line = stdout.trim().split('\n').find((l) => l.length > 0);
+    const line = stdout
+      .trim()
+      .split('\n')
+      .find((l) => l.length > 0);
     if (!line) return undefined;
     const pid = Number.parseInt(line, 10);
     return Number.isFinite(pid) ? pid : undefined;
@@ -244,10 +247,7 @@ export class GatewaySupervisor {
    * Escalates SIGTERM → SIGKILL after 5s so we never return with the
    * old process still holding the port.
    */
-  private async shutdownStaleProcess(
-    targetPid: number,
-    state: GatewayState,
-  ): Promise<void> {
+  private async shutdownStaleProcess(targetPid: number, state: GatewayState): Promise<void> {
     // Attempt graceful shutdown via management API first. This will
     // fail silently if our token doesn't match the running gateway
     // (the common case that brings us here), which is why we still
@@ -379,9 +379,7 @@ export class GatewaySupervisor {
         // information they need to decide.
         const pidHint = probe.pid !== undefined ? ` PID ${probe.pid}` : '';
         throw new Error(
-          `Port ${managementPort} is held by a gateway${pidHint} that does not accept our token. ` +
-            `This is not the gateway MC spawned. Stop it manually and restart: ` +
-            `lsof -ti :${managementPort} | xargs kill`,
+          `Port ${managementPort} is held by a gateway${pidHint} that does not accept our token. This is not the gateway MC spawned. Stop it manually and restart: lsof -ti :${managementPort} | xargs kill`,
         );
       }
     }
