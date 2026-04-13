@@ -146,6 +146,9 @@ function createMockApi(): Record<keyof MissionControlAPI, ReturnType<typeof vi.f
     setupStatus: vi.fn().mockResolvedValue({ needsSetup: false, gatewayReady: true }),
     setupEnsureGateway: vi.fn().mockResolvedValue(undefined),
 
+    // App lifecycle
+    appQuit: vi.fn().mockResolvedValue(undefined),
+
     // WhatsApp
     whatsappStartPairing: vi.fn().mockResolvedValue(undefined),
     whatsappOnQr: vi.fn().mockReturnValue(() => {}),
