@@ -84,7 +84,30 @@ The exhaustive manual test plan lives at `apps/mission-control/TEST_PLAN.md`. It
 
 ## CI
 
-GitHub Actions runs on every push to `main` and on PRs. The workflow (`.github/workflows/ci.yml`) runs lint, build, and test on `ubuntu-latest` with Node.js 22.
+GitHub Actions runs on every push to `main` and on PRs. The workflow (`.github/workflows/ci.yml`) runs lint, build, model-list freshness check, and test on `ubuntu-latest` with Node.js 22.
+
+## Model list maintenance
+
+The agent model dropdown is populated by querying provider `/v1/models` endpoints (Anthropic, OpenAI, Google), then filtering through a curated allow-list at `packages/models/src/supported-models.ts`. The gateway owns all model logic at runtime; MC just renders what the gateway returns.
+
+That allow-list has a `MODELS_REVIEWED_AT` constant. `npm run models:check` warns when it's more than 30 days old and CI hard-fails the build at 60 days. The check imports the constant from `@dash/models`.
+
+**Before any of the following actions, check `MODELS_REVIEWED_AT` (or run `npm run models:check`):**
+
+- Cutting a release / version bump
+- Working on model-selection or deploy-wizard UI
+- Bumping provider SDKs (`@anthropic-ai/sdk`, `openai`, `@google/genai`)
+- Adding a new provider to `packages/models/src/providers/`
+
+If `MODELS_REVIEWED_AT` is more than 30 days old, run `/update-models` (or `npm run models:audit:apply`) before proceeding. The audit script calls each provider's `/v1/models` endpoint, diffs against the curated list, proposes pattern + bootstrap updates, applies them on user confirmation, runs tests, and shows the diff for review. It does not auto-commit.
+
+Adding a new provider:
+1. Create `packages/models/src/providers/<id>.ts` with a `ProviderDefinition` matching the existing files
+2. Append it to the `PROVIDERS` array in `packages/models/src/providers/index.ts`
+3. Add patterns to `SUPPORTED_MODELS` in `supported-models.ts`
+4. Run `npm run models:audit:apply` to populate `BOOTSTRAP_MODELS` and bump `MODELS_REVIEWED_AT`
+
+The provider registry is consumed by the gateway (`GET /models`), the audit script, and the CI freshness check — adding a provider requires no further wiring.
 
 ## Git Workflow
 
