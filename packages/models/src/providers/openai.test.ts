@@ -76,4 +76,63 @@ describe('OpenAI provider', () => {
       expect.objectContaining({ signal: ac.signal }),
     );
   });
+
+  // ------------------------------------------------------------------
+  // Codex / ChatGPT OAuth token fallback
+  // ------------------------------------------------------------------
+
+  it('routes JWT-shaped tokens to the Codex backend models endpoint', async () => {
+    fetchSpy.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        models: [
+          { slug: 'gpt-5.4', display_name: 'gpt-5.4' },
+          { slug: 'gpt-5-codex', display_name: 'gpt-5-codex' },
+        ],
+      }),
+      text: async () => '',
+    });
+
+    // A token that looks like a JWT (3 base64 segments, eyJ prefix)
+    const codexToken =
+      'eyJhbGciOi.eyJzdWIiOiJ1c2VyIiwiYXVkIjoiYXBpLm9wZW5haS5jb20vdjEifQ.signature';
+    const models = await OpenAI.fetchModels(codexToken);
+
+    // Must have hit the Codex backend, not api.openai.com
+    const calledUrl = fetchSpy.mock.calls[0][0];
+    const url = calledUrl instanceof URL ? calledUrl : new URL(String(calledUrl));
+    expect(url.hostname).toBe('chatgpt.com');
+    expect(url.pathname).toBe('/backend-api/codex/models');
+    expect(url.searchParams.get('client_version')).toBeTruthy();
+
+    expect(models).toEqual([
+      { provider: 'openai', id: 'gpt-5.4', label: 'gpt-5.4' },
+      { provider: 'openai', id: 'gpt-5-codex', label: 'gpt-5-codex' },
+    ]);
+  });
+
+  it('falls back to display_name when slug is missing a label', async () => {
+    fetchSpy.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: async () => ({ models: [{ slug: 'gpt-no-name' }] }),
+      text: async () => '',
+    });
+    const codexToken = 'eyJhbGciOi.eyJzdWIiOiJ1In0.sig';
+    const models = await OpenAI.fetchModels(codexToken);
+    expect(models).toEqual([{ provider: 'openai', id: 'gpt-no-name', label: 'gpt-no-name' }]);
+  });
+
+  it('classic sk- keys still go to the public /v1/models endpoint', async () => {
+    fetchSpy.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: async () => ({ data: [{ id: 'gpt-5.4' }] }),
+      text: async () => '',
+    });
+    await OpenAI.fetchModels('sk-classic-key');
+    const calledUrl = fetchSpy.mock.calls[0][0];
+    expect(String(calledUrl)).toBe('https://api.openai.com/v1/models');
+  });
 });
