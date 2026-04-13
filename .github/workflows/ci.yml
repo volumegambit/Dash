@@ -24,4 +24,12 @@ jobs:
 
       - run: npm run lint
 
+      # Hard-fails the build at 60 days since MODELS_REVIEWED_AT.
+      # Warns at 30 days. To unblock, run `/update-models` (or
+      # `npm run models:audit:apply`) and commit the refreshed
+      # packages/models/ files. Positioned after build so the
+      # @dash/models package is available for the import.
+      - run: npm run models:check
+
       - run: npm test
+
