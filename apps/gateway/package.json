@@ -22,6 +22,7 @@
     "@dash/chat": "*",
     "@dash/logging": "*",
     "@dash/management": "*",
+    "@dash/models": "*",
     "@hono/node-server": "^1",
     "@hono/node-ws": "^1",
     "dotenv": "^16.4.0",
