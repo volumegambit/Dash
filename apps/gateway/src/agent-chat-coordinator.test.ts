@@ -1,7 +1,7 @@
 import type { AgentBackend, AgentEvent, AgentState, RunOptions } from '@dash/agent';
 import { describe, expect, it } from 'vitest';
-import { AgentRegistry } from './agent-registry.js';
 import { createAgentChatCoordinator } from './agent-chat-coordinator.js';
+import { AgentRegistry } from './agent-registry.js';
 
 function makeMockBackend(events: AgentEvent[]): AgentBackend {
   return {

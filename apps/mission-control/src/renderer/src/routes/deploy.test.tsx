@@ -151,9 +151,7 @@ describe('DeployWizard model validation', () => {
 
   it('Next button is enabled when gateway returns models', async () => {
     mockApi.modelsList.mockResolvedValue({
-      models: [
-        { value: 'openai/gpt-5.4', label: 'GPT-5.4', provider: 'openai' },
-      ],
+      models: [{ value: 'openai/gpt-5.4', label: 'GPT-5.4', provider: 'openai' }],
       source: 'live',
       errors: {},
       fetchedAt: '2026-04-13T00:00:00Z',

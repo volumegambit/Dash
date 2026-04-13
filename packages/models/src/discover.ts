@@ -9,9 +9,7 @@ import { FetcherError, type FilteredModel } from './types.js';
  * the audit script reads from .env.local at the repo root. The interface
  * stays the same so `discoverModels` is provider/source agnostic.
  */
-export type CredentialResolver = (
-  provider: ProviderDefinition,
-) => Promise<string | null>;
+export type CredentialResolver = (provider: ProviderDefinition) => Promise<string | null>;
 
 export interface DiscoverResult {
   /** Filtered, curated, sorted by tier within provider */

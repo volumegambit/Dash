@@ -6,8 +6,8 @@ import { ManagementClient } from '@dash/management';
 import {
   ConversationStore,
   type GatewayManagementClient,
-  GatewaySupervisor,
   GatewayStateStore,
+  GatewaySupervisor,
   SettingsStore,
   defaultProcessSpawner,
   getPlatformDataDir,
@@ -47,9 +47,18 @@ function initMcLogging(): void {
     mcLogStream?.write(line);
   };
 
-  console.log = (...args: unknown[]) => { origLog(...args); write('INFO', args); };
-  console.warn = (...args: unknown[]) => { origWarn(...args); write('WARN', args); };
-  console.error = (...args: unknown[]) => { origError(...args); write('ERROR', args); };
+  console.log = (...args: unknown[]) => {
+    origLog(...args);
+    write('INFO', args);
+  };
+  console.warn = (...args: unknown[]) => {
+    origWarn(...args);
+    write('WARN', args);
+  };
+  console.error = (...args: unknown[]) => {
+    origError(...args);
+    write('ERROR', args);
+  };
 }
 
 let chatService: ChatService | undefined;

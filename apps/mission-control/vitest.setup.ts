@@ -90,7 +90,9 @@ function createMockApi(): Record<keyof MissionControlAPI, ReturnType<typeof vi.f
 
     // Logs
     logsRead: vi.fn().mockResolvedValue(''),
-    logsPaths: vi.fn().mockResolvedValue({ mc: '/tmp/mc.log', gateway: '/tmp/gateway.log', dataDir: '/tmp' }),
+    logsPaths: vi
+      .fn()
+      .mockResolvedValue({ mc: '/tmp/mc.log', gateway: '/tmp/gateway.log', dataDir: '/tmp' }),
 
     // Models & Tools — gateway-shaped responses (see GatewayModelsResponse)
     modelsList: vi.fn().mockResolvedValue({

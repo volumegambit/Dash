@@ -53,7 +53,9 @@ describe('Anthropic provider', () => {
     });
 
     const models = await Anthropic.fetchModels('sk-ant-fake');
-    expect(models).toEqual([{ provider: 'anthropic', id: 'claude-no-name', label: 'claude-no-name' }]);
+    expect(models).toEqual([
+      { provider: 'anthropic', id: 'claude-no-name', label: 'claude-no-name' },
+    ]);
   });
 
   it('throws FetcherError with status on non-2xx', async () => {

@@ -1,12 +1,12 @@
 import type { AgentClient } from '@dash/agent';
 import type { ChannelAdapter } from '@dash/channels';
 import { TelegramAdapter, WhatsAppAdapter } from '@dash/channels';
-import { createConsoleLogger, type StructuredLogger } from '@dash/logging';
+import { type StructuredLogger, createConsoleLogger } from '@dash/logging';
 import { Hono } from 'hono';
 import type { Context } from 'hono';
 
-import type { AgentRegistry, GatewayAgentConfig, RegisteredAgent } from './agent-registry.js';
 import type { AgentChatCoordinator } from './agent-chat-coordinator.js';
+import type { AgentRegistry, GatewayAgentConfig, RegisteredAgent } from './agent-registry.js';
 import type { ChannelRegistry, ChannelRoutingRule } from './channel-registry.js';
 import type { GatewayCredentialStore } from './credential-store.js';
 import type { EventBus, GatewayEvent } from './event-bus.js';
@@ -48,7 +48,8 @@ export interface GatewayManagementOptions {
  * stay visible, while `providerApiKeys`, `value` (credentials payload),
  * `token`, etc. get redacted.
  */
-const SECRET_KEY_PATTERN = /^(providerApiKeys|token|secret|password|apiKey|apikey|value|credentials?)$/i;
+const SECRET_KEY_PATTERN =
+  /^(providerApiKeys|token|secret|password|apiKey|apikey|value|credentials?)$/i;
 
 /**
  * Deep-clone a request body with any secret-keyed values replaced by
@@ -390,9 +391,7 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
     // that don't exist. This is symmetric with `DELETE /agents/:id`,
     // which cascades to remove channel rules for the deleted agent.
     // Without this check, channels.json could accumulate dangling refs.
-    const missingAgents = routing
-      .map((r) => r.agentId)
-      .filter((id) => !agentRegistry.get(id));
+    const missingAgents = routing.map((r) => r.agentId).filter((id) => !agentRegistry.get(id));
     if (missingAgents.length > 0) {
       return c.json(
         {
@@ -519,9 +518,7 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
     // `agent_not_found` forever.
     if (patch.routing !== undefined) {
       const newRouting = patch.routing as ChannelRoutingRule[];
-      const missingAgents = newRouting
-        .map((r) => r.agentId)
-        .filter((id) => !agentRegistry.get(id));
+      const missingAgents = newRouting.map((r) => r.agentId).filter((id) => !agentRegistry.get(id));
       if (missingAgents.length > 0) {
         return c.json(
           {

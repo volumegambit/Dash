@@ -214,9 +214,7 @@ describe('ChannelRegistry', () => {
 
   it('persists and reloads allowedUsers', async () => {
     const registry = new ChannelRegistry(filePath);
-    registry.register(
-      makeConfig({ name: 'allow-persist', allowedUsers: ['@alice', '12345'] }),
-    );
+    registry.register(makeConfig({ name: 'allow-persist', allowedUsers: ['@alice', '12345'] }));
     await registry.save();
 
     const registry2 = new ChannelRegistry(filePath);

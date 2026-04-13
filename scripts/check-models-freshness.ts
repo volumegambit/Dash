@@ -36,18 +36,10 @@ const ageMs = Date.now() - reviewedAt.getTime();
 const ageDays = Math.floor(ageMs / 86_400_000);
 
 if (ageDays >= FAIL_DAYS) {
-  console.error(
-    `❌ MODELS_REVIEWED_AT is ${ageDays} days old (hard limit: ${FAIL_DAYS} days).`,
-  );
-  console.error(
-    '   The curated model allow-list and bootstrap list need a refresh.',
-  );
-  console.error(
-    '   Run `/update-models` (or `npm run models:audit:apply`) to refresh,',
-  );
-  console.error(
-    '   then commit the resulting changes to packages/models/.',
-  );
+  console.error(`❌ MODELS_REVIEWED_AT is ${ageDays} days old (hard limit: ${FAIL_DAYS} days).`);
+  console.error('   The curated model allow-list and bootstrap list need a refresh.');
+  console.error('   Run `/update-models` (or `npm run models:audit:apply`) to refresh,');
+  console.error('   then commit the resulting changes to packages/models/.');
   process.exit(1);
 }
 

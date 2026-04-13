@@ -25,8 +25,8 @@ import { GatewayCredentialStore } from './credential-store.js';
 import { EventBus } from './event-bus.js';
 import { createDynamicGateway } from './gateway.js';
 import { createGatewayManagementApp } from './management-api.js';
-import { ModelsStore } from './models-store.js';
 import { McpConfigStore } from './mcp-store.js';
+import { ModelsStore } from './models-store.js';
 
 async function main() {
   const flags = parseFlags(process.argv.slice(2));
