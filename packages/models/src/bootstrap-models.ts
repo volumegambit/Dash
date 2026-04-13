@@ -14,25 +14,32 @@ import type { FilteredModel } from './types.js';
  * the audit script picks the top tier-N model per provider from live API
  * responses (typically flagship + mid + budget = ~3 per provider). Manual
  * edits are accepted as the initial seed; subsequent audits will overwrite.
+ *
+ * Anthropic entries verified against live api.anthropic.com/v1/models on
+ * 2026-04-13. OpenAI entries are partially verified: gpt-5.4 confirmed
+ * via the ChatGPT/Codex backend on 2026-04-13; o3-pro and gpt-4o are
+ * placeholders that the Codex backend doesn't expose but are real public
+ * OpenAI models reachable via a classic sk- key. Google entries are
+ * placeholders pending working credentials.
  */
 export const BOOTSTRAP_MODELS: FilteredModel[] = [
-  // Anthropic
+  // Anthropic — verified against live API 2026-04-13
   {
-    value: 'anthropic/claude-opus-4-5',
-    label: 'Claude Opus 4.5',
+    value: 'anthropic/claude-opus-4-6',
+    label: 'Claude Opus 4.6',
     provider: 'anthropic',
   },
   {
-    value: 'anthropic/claude-sonnet-4-5',
-    label: 'Claude Sonnet 4.5',
+    value: 'anthropic/claude-sonnet-4-6',
+    label: 'Claude Sonnet 4.6',
     provider: 'anthropic',
   },
   {
-    value: 'anthropic/claude-haiku-4-5',
+    value: 'anthropic/claude-haiku-4-5-20251001',
     label: 'Claude Haiku 4.5',
     provider: 'anthropic',
   },
-  // OpenAI
+  // OpenAI — placeholders, NOT verified against live API
   {
     value: 'openai/o3-pro',
     label: 'o3-pro',
@@ -48,7 +55,7 @@ export const BOOTSTRAP_MODELS: FilteredModel[] = [
     label: 'GPT-4o',
     provider: 'openai',
   },
-  // Google
+  // Google — placeholders, NOT verified against live API
   {
     value: 'google/gemini-2.5-pro',
     label: 'Gemini 2.5 Pro',

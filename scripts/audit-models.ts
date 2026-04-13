@@ -221,8 +221,20 @@ function printReport(reports: ProviderReport[]): void {
 
 /**
  * Compute the new BOOTSTRAP_MODELS as "top-N-per-tier-per-provider" from
- * live data. For each provider, take the alphabetically-smallest model
- * id within each distinct tier, keeping at most 3 entries per provider.
+ * live data. For each provider, take the alphabetically-LARGEST model id
+ * within each distinct tier, keeping at most 3 entries per provider.
+ *
+ * Why "largest": current Anthropic / OpenAI / Google model id shapes use
+ * monotone-increasing version + date suffixes, so the alphabetically
+ * largest id within a tier is also the newest. E.g. `claude-opus-4-6` >
+ * `claude-opus-4-5-20251101` > `claude-opus-4-1-20250805`. This is what
+ * users expect to see in the dropdown — the most capable available model
+ * from each tier band, not the oldest.
+ *
+ * Limitation: this comparator is not semver-aware. `claude-opus-4-10`
+ * would sort BEFORE `claude-opus-4-2`, which is wrong. No current model
+ * uses two-digit minor versions; revisit if/when that changes.
+ *
  * Deterministic so a re-audit produces identical output unless the
  * upstream provider list changed.
  */
@@ -240,7 +252,7 @@ function computeBootstrap(reports: ProviderReport[]): FilteredModel[] {
       const entry = findSupportedModel(report.provider, id);
       if (!entry) continue;
       const existing = byTier.get(entry.tier);
-      if (!existing || fm.value < existing.value) {
+      if (!existing || fm.value > existing.value) {
         byTier.set(entry.tier, fm);
       }
     }
