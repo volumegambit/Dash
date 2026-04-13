@@ -13,6 +13,8 @@ import type { EventBus, GatewayEvent } from './event-bus.js';
 import type { DynamicGateway } from './gateway.js';
 import type { McpManagementDeps } from './mcp-management.js';
 import { mountMcpRoutes } from './mcp-management.js';
+import { createModelsRoute } from './models-route.js';
+import type { ModelsStore } from './models-store.js';
 
 export interface GatewayManagementOptions {
   gateway: DynamicGateway;
@@ -20,6 +22,13 @@ export interface GatewayManagementOptions {
   agentRegistry: AgentRegistry;
   channelRegistry: ChannelRegistry;
   credentialStore: GatewayCredentialStore;
+  /**
+   * Persistent model store. Created in `apps/gateway/src/index.ts` from
+   * the gateway data dir. Mounted by the models route below; also
+   * cleared by the credential POST/DELETE handlers so the next
+   * `GET /models` triggers a fresh fetch with the new credential set.
+   */
+  modelsStore: ModelsStore;
   token?: string;
   startedAt?: string;
   eventBus?: EventBus;
@@ -576,6 +585,11 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
       return c.json({ error: 'Missing required fields: key, value' }, 400);
     }
     await credentialStore.set(body.key, body.value);
+    // If this is a provider API key, invalidate the model store so the
+    // next GET /models triggers a fresh fetch with the new credential.
+    if (/^[^:]+-api-key:/.test(body.key)) {
+      await options.modelsStore.clear();
+    }
     // Telegram token rotation: if this credential keys a running
     // Telegram channel, restart its adapter so the grammy Bot captures
     // the new token. No-op for other keys; no-op if no such channel
@@ -592,8 +606,15 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
   app.delete('/credentials/:key', async (c) => {
     const key = decodeURIComponent(c.req.param('key'));
     await credentialStore.delete(key);
+    // Same invalidation as POST: provider key removed → model store stale.
+    if (/^[^:]+-api-key:/.test(key)) {
+      await options.modelsStore.clear();
+    }
     return c.json({ ok: true });
   });
+
+  // --- Models routes ---
+  app.route('/models', createModelsRoute({ store: options.modelsStore, credentialStore }));
 
   // --- MCP routes ---
   if (options.mcpDeps) {

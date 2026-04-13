@@ -141,6 +141,14 @@ function makeAgents(): AgentChatCoordinator {
   };
 }
 
+function makeModelsStore() {
+  return {
+    load: vi.fn().mockResolvedValue(null),
+    save: vi.fn().mockResolvedValue(undefined),
+    clear: vi.fn().mockResolvedValue(undefined),
+  } as unknown as import('./models-store.js').ModelsStore;
+}
+
 function createApp(overrides: Record<string, unknown> = {}) {
   const deps = {
     gateway: makeGateway(),
@@ -148,6 +156,7 @@ function createApp(overrides: Record<string, unknown> = {}) {
     agentRegistry: makeAgentRegistry(),
     channelRegistry: makeChannelRegistry(),
     credentialStore: makeCredentialStore(),
+    modelsStore: makeModelsStore(),
     startedAt: '2026-04-03T00:00:00Z',
     token: 'test-token',
     ...overrides,
