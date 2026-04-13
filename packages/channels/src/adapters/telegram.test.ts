@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { InboundMessage } from '../types.js';
 import { TelegramAdapter } from './telegram.js';
 
@@ -23,6 +23,8 @@ interface MockBot {
   api: {
     deleteWebhook: ReturnType<typeof vi.fn>;
     sendMessage: ReturnType<typeof vi.fn>;
+    sendChatAction: ReturnType<typeof vi.fn>;
+    setMessageReaction: ReturnType<typeof vi.fn>;
   };
 }
 
@@ -48,6 +50,8 @@ vi.mock('grammy', () => {
       api: {
         deleteWebhook: vi.fn().mockResolvedValue(undefined),
         sendMessage: vi.fn().mockResolvedValue(undefined),
+        sendChatAction: vi.fn().mockResolvedValue(undefined),
+        setMessageReaction: vi.fn().mockResolvedValue(undefined),
       },
     };
     lastBot = bot;
@@ -63,11 +67,16 @@ function makeCtx(opts: {
   firstName?: string;
   chatId: number;
   text: string;
+  messageId?: number;
 }): Record<string, unknown> {
   return {
     from: { id: opts.fromId, username: opts.username, first_name: opts.firstName ?? 'User' },
     chat: { id: opts.chatId },
-    message: { text: opts.text, date: Math.floor(Date.now() / 1000) },
+    message: {
+      message_id: opts.messageId ?? 555,
+      text: opts.text,
+      date: Math.floor(Date.now() / 1000),
+    },
     reply: replyMock,
   };
 }
@@ -418,5 +427,221 @@ describe('TelegramAdapter lifecycle', () => {
     // biome-ignore lint/suspicious/noExplicitAny: accessing private method for test
     (adapter as any).setHealth('connecting');
     expect(changes).toEqual([]);
+  });
+});
+
+// ── Acknowledgement: reaction + typing indicator ─────────────────────────
+
+describe('TelegramAdapter acknowledgement', () => {
+  async function trigger(ctx: Record<string, unknown>): Promise<void> {
+    if (!capturedTextHandler) throw new Error('handler not captured');
+    await capturedTextHandler(ctx);
+  }
+
+  beforeEach(() => {
+    capturedTextHandler = null;
+    replyMock.mockClear();
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    // Restore real timers so later suites aren't affected. Also flush any
+    // pending timers to avoid warnings about unfinished fake timers.
+    vi.clearAllTimers();
+    vi.useRealTimers();
+  });
+
+  it('posts the default 👀 reaction on message receipt', async () => {
+    const adapter = new TelegramAdapter('fake-token');
+    adapter.onMessage(async () => {});
+    await trigger(makeCtx({ fromId: 1, chatId: 42, text: 'hi', messageId: 777 }));
+
+    expect(lastBot?.api.setMessageReaction).toHaveBeenCalledWith(42, 777, [
+      { type: 'emoji', emoji: '👀' },
+    ]);
+  });
+
+  it('supports a custom reaction emoji via ackOptions', async () => {
+    const adapter = new TelegramAdapter('fake-token', [], { reaction: '🔥' });
+    adapter.onMessage(async () => {});
+    await trigger(makeCtx({ fromId: 1, chatId: 10, text: 'hi', messageId: 999 }));
+
+    expect(lastBot?.api.setMessageReaction).toHaveBeenCalledWith(10, 999, [
+      { type: 'emoji', emoji: '🔥' },
+    ]);
+  });
+
+  it('skips the reaction entirely when ackOptions.reaction is false', async () => {
+    const adapter = new TelegramAdapter('fake-token', [], { reaction: false });
+    adapter.onMessage(async () => {});
+    await trigger(makeCtx({ fromId: 1, chatId: 10, text: 'hi' }));
+
+    expect(lastBot?.api.setMessageReaction).not.toHaveBeenCalled();
+  });
+
+  it('starts a typing loop that fires immediately then refreshes every ~4s', async () => {
+    const adapter = new TelegramAdapter('fake-token');
+    adapter.onMessage(async () => {});
+    await trigger(makeCtx({ fromId: 1, chatId: 100, text: 'hi' }));
+
+    // Initial fire happens synchronously during the handler call
+    expect(lastBot?.api.sendChatAction).toHaveBeenCalledTimes(1);
+    expect(lastBot?.api.sendChatAction).toHaveBeenCalledWith(100, 'typing');
+
+    // Advance past one refresh interval → second tick
+    await vi.advanceTimersByTimeAsync(4_000);
+    expect(lastBot?.api.sendChatAction).toHaveBeenCalledTimes(2);
+
+    // And another → third tick
+    await vi.advanceTimersByTimeAsync(4_000);
+    expect(lastBot?.api.sendChatAction).toHaveBeenCalledTimes(3);
+  });
+
+  it('send() stops the typing loop so no further ticks fire', async () => {
+    const adapter = new TelegramAdapter('fake-token');
+    adapter.onMessage(async () => {});
+    await trigger(makeCtx({ fromId: 1, chatId: 50, text: 'hi' }));
+    expect(lastBot?.api.sendChatAction).toHaveBeenCalledTimes(1);
+
+    await adapter.send('50', { text: 'agent reply' });
+
+    // After send(), subsequent interval fires are cancelled
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(lastBot?.api.sendChatAction).toHaveBeenCalledTimes(1);
+  });
+
+  it('send() stops the typing loop BEFORE the network call so a rejection does not leak it', async () => {
+    const adapter = new TelegramAdapter('fake-token');
+    adapter.onMessage(async () => {});
+    await trigger(makeCtx({ fromId: 1, chatId: 60, text: 'hi' }));
+    expect(lastBot?.api.sendChatAction).toHaveBeenCalledTimes(1);
+
+    if (!lastBot) throw new Error('bot not captured');
+    lastBot.api.sendMessage.mockRejectedValueOnce(new Error('network down'));
+
+    await expect(adapter.send('60', { text: 'reply' })).rejects.toThrow('network down');
+
+    // Loop was cancelled even though sendMessage rejected
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(lastBot.api.sendChatAction).toHaveBeenCalledTimes(1);
+  });
+
+  it('safety cap stops the typing loop after 2 minutes', async () => {
+    const adapter = new TelegramAdapter('fake-token');
+    adapter.onMessage(async () => {});
+    await trigger(makeCtx({ fromId: 1, chatId: 70, text: 'hi' }));
+
+    // Advance 1m 58s — still firing
+    await vi.advanceTimersByTimeAsync(118_000);
+    const callsBeforeCap = lastBot?.api.sendChatAction.mock.calls.length ?? 0;
+    expect(callsBeforeCap).toBeGreaterThan(1);
+
+    // Advance past the 2-minute cap
+    await vi.advanceTimersByTimeAsync(5_000);
+    const callsAtCap = lastBot?.api.sendChatAction.mock.calls.length ?? 0;
+
+    // Advance much further — no new fires after the cap
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(lastBot?.api.sendChatAction.mock.calls.length).toBe(callsAtCap);
+  });
+
+  it('typing off via ackOptions skips sendChatAction entirely', async () => {
+    const adapter = new TelegramAdapter('fake-token', [], { typing: false });
+    adapter.onMessage(async () => {});
+    await trigger(makeCtx({ fromId: 1, chatId: 10, text: 'hi' }));
+
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(lastBot?.api.sendChatAction).not.toHaveBeenCalled();
+  });
+
+  it('a second inbound message before send() restarts the loop without piling up timers', async () => {
+    const adapter = new TelegramAdapter('fake-token');
+    adapter.onMessage(async () => {});
+
+    await trigger(makeCtx({ fromId: 1, chatId: 80, text: 'one' }));
+    await trigger(makeCtx({ fromId: 1, chatId: 80, text: 'two' }));
+
+    // Two initial ticks (one per message) — but only one live interval
+    expect(lastBot?.api.sendChatAction).toHaveBeenCalledTimes(2);
+
+    // Advance one interval: exactly ONE tick should fire, not two
+    await vi.advanceTimersByTimeAsync(4_000);
+    expect(lastBot?.api.sendChatAction).toHaveBeenCalledTimes(3);
+  });
+
+  it('reaction failures are logged but do not break the handler chain', async () => {
+    if (!lastBot) {
+      // lastBot is populated at construction time via the grammy mock; bail
+      // loudly if something changed the ordering.
+      // (handled below — adapter constructs a fresh bot)
+    }
+    const adapter = new TelegramAdapter('fake-token');
+    const received: InboundMessage[] = [];
+    adapter.onMessage(async (msg) => {
+      received.push(msg);
+    });
+
+    if (!lastBot) throw new Error('bot not captured');
+    lastBot.api.setMessageReaction.mockRejectedValueOnce(new Error('reaction rejected'));
+
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await trigger(makeCtx({ fromId: 1, chatId: 90, text: 'hi', messageId: 123 }));
+      // Handler chain still ran — message reached the registered consumer
+      expect(received).toHaveLength(1);
+
+      // Flush the microtask that fires the fire-and-forget .catch() branch.
+      // Under fake timers we need an explicit tick to let the rejection
+      // handler settle — real code treats this as a dangling promise.
+      await vi.advanceTimersByTimeAsync(0);
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining('setMessageReaction failed'),
+        expect.anything(),
+      );
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('typing failures stop the loop rather than spam warnings', async () => {
+    const adapter = new TelegramAdapter('fake-token');
+    adapter.onMessage(async () => {});
+
+    if (!lastBot) throw new Error('bot not captured');
+    // Every sendChatAction call rejects — the first (tick) will stop the loop.
+    lastBot.api.sendChatAction.mockRejectedValue(new Error('rate limited'));
+
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await trigger(makeCtx({ fromId: 1, chatId: 11, text: 'hi' }));
+      // Let the first tick's rejection propagate
+      await vi.advanceTimersByTimeAsync(0);
+
+      const callsAfterFirstFailure = lastBot.api.sendChatAction.mock.calls.length;
+
+      // Advance several intervals — no new calls after the loop was cancelled
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(lastBot.api.sendChatAction.mock.calls.length).toBe(callsAfterFirstFailure);
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining('sendChatAction failed'),
+        expect.anything(),
+      );
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('stop() clears in-flight typing loops', async () => {
+    const adapter = new TelegramAdapter('fake-token');
+    adapter.onMessage(async () => {});
+
+    await trigger(makeCtx({ fromId: 1, chatId: 300, text: 'hi' }));
+    expect(lastBot?.api.sendChatAction).toHaveBeenCalledTimes(1);
+
+    await adapter.stop();
+
+    // After stop(), subsequent intervals should not fire
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(lastBot?.api.sendChatAction).toHaveBeenCalledTimes(1);
   });
 });
