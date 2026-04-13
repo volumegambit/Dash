@@ -12,6 +12,7 @@
     "packages/mc",
     "packages/mcp",
     "packages/models",
+    "packages/voice",
     "apps/*"
   ],
   "scripts": {
