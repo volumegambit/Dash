@@ -9,12 +9,15 @@ import {
   Circle,
   Copy,
   FolderOpen,
+  List,
   Loader,
   Paperclip,
+  Pencil,
   Plus,
   Search,
   Send,
   Square,
+  Trash2,
   X,
   XCircle,
 } from 'lucide-react';
@@ -957,6 +960,233 @@ function AgentSelectionModal({
   );
 }
 
+// --- Conversation Browser Modal (⌘O) ---
+
+function ConversationBrowser({
+  conversations,
+  openTabIds,
+  onOpen,
+  onDelete,
+  onRename,
+  onClose,
+}: {
+  conversations: { id: string; title: string; agentName: string }[];
+  openTabIds: string[];
+  onOpen: (id: string) => void;
+  onDelete: (id: string) => void;
+  onRename: (id: string, title: string) => void;
+  onClose: () => void;
+}): JSX.Element {
+  const [searchTerm, setSearchTerm] = useState('');
+  const [selectedIndex, setSelectedIndex] = useState(0);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editValue, setEditValue] = useState('');
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  const renameInputRef = useRef<HTMLInputElement>(null);
+
+  const filtered = searchTerm.trim()
+    ? conversations.filter(
+        (c) =>
+          c.title.toLowerCase().includes(searchTerm.toLowerCase()) ||
+          c.agentName.toLowerCase().includes(searchTerm.toLowerCase()),
+      )
+    : conversations;
+
+  useEffect(() => {
+    searchInputRef.current?.focus();
+  }, []);
+
+  useEffect(() => {
+    if (editingId) renameInputRef.current?.focus();
+  }, [editingId]);
+
+  const isInitialRender = useRef(true);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: searchTerm is the trigger
+  useEffect(() => {
+    if (isInitialRender.current) {
+      isInitialRender.current = false;
+      return;
+    }
+    setSelectedIndex(0);
+  }, [searchTerm]);
+
+  const startRename = useCallback((id: string, currentTitle: string) => {
+    setEditingId(id);
+    setEditValue(currentTitle);
+    setConfirmDeleteId(null);
+  }, []);
+
+  const commitRename = useCallback(() => {
+    if (!editingId) return;
+    const trimmed = editValue.trim();
+    const conv = conversations.find((c) => c.id === editingId);
+    if (trimmed && conv && trimmed !== conv.title) {
+      onRename(editingId, trimmed);
+    }
+    setEditingId(null);
+  }, [editingId, editValue, conversations, onRename]);
+
+  const handleKeyDown = useCallback(
+    (e: React.KeyboardEvent) => {
+      if (editingId) return; // let rename input handle keys
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        setSelectedIndex((i) => Math.min(i + 1, filtered.length - 1));
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        setSelectedIndex((i) => Math.max(i - 1, 0));
+      } else if (e.key === 'Enter') {
+        e.preventDefault();
+        if (filtered[selectedIndex]) {
+          onOpen(filtered[selectedIndex].id);
+        }
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        onClose();
+      }
+    },
+    [filtered, selectedIndex, onOpen, onClose, editingId],
+  );
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-start justify-center pt-[20vh]">
+      {/* biome-ignore lint/a11y/useKeyWithClickEvents: backdrop click to close */}
+      <div className="absolute inset-0 bg-black/50" onClick={onClose} />
+      <div
+        className="relative z-10 w-[480px] border border-border bg-surface shadow-2xl"
+        onKeyDown={handleKeyDown}
+      >
+        <div className="border-b border-border px-4 py-3">
+          <p className="mb-2 font-[family-name:var(--font-mono)] text-[11px] font-semibold uppercase tracking-[3px] text-accent">
+            Conversations
+          </p>
+          <div className="flex items-center gap-2 bg-[#141414] border border-border px-3 py-2">
+            <Search size={14} className="text-muted shrink-0" />
+            <input
+              ref={searchInputRef}
+              type="text"
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              placeholder="Search conversations…"
+              className="flex-1 bg-transparent text-sm text-foreground placeholder:text-muted focus:outline-none"
+              data-testid="conversation-browser-search"
+            />
+          </div>
+          <p className="mt-2 text-[10px] text-muted font-[family-name:var(--font-mono)]">
+            ↑↓ to navigate · Enter to open · Esc to close
+          </p>
+        </div>
+        <ul className="max-h-[400px] overflow-y-auto py-1" data-testid="conversation-browser-list">
+          {filtered.length === 0 ? (
+            <li className="px-4 py-3 text-xs text-muted">
+              {conversations.length === 0 ? 'No conversations yet.' : 'No results.'}
+            </li>
+          ) : (
+            filtered.map((conv, i) => {
+              const isOpen = openTabIds.includes(conv.id);
+              return (
+                <li key={conv.id} className="group">
+                  {editingId === conv.id ? (
+                    <div className="px-4 py-2">
+                      <input
+                        ref={renameInputRef}
+                        value={editValue}
+                        onChange={(e) => setEditValue(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') commitRename();
+                          if (e.key === 'Escape') setEditingId(null);
+                          e.stopPropagation();
+                        }}
+                        onBlur={commitRename}
+                        className="w-full border border-accent bg-card-bg px-2 py-1 text-xs text-foreground focus:outline-none"
+                      />
+                    </div>
+                  ) : confirmDeleteId === conv.id ? (
+                    <div className="flex items-center justify-between px-4 py-2.5 bg-red-900/10 border-b border-border">
+                      <span className="text-xs text-red">Delete "{conv.title}"?</span>
+                      <div className="flex items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            onDelete(conv.id);
+                            setConfirmDeleteId(null);
+                          }}
+                          className="px-2 py-0.5 text-xs text-red hover:bg-red-900/30"
+                        >
+                          Delete
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setConfirmDeleteId(null)}
+                          className="px-2 py-0.5 text-xs text-muted hover:text-foreground"
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div
+                      className={`flex items-center justify-between px-4 py-2.5 cursor-pointer transition-colors ${
+                        i === selectedIndex
+                          ? 'bg-[#141414] border-l-[3px] border-l-accent'
+                          : 'border-b border-border hover:bg-sidebar-hover'
+                      }`}
+                      onClick={() => onOpen(conv.id)}
+                      onMouseEnter={() => setSelectedIndex(i)}
+                      onKeyDown={() => {}}
+                      role="option"
+                      aria-selected={i === selectedIndex}
+                    >
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate font-[family-name:var(--font-display)] text-sm font-semibold text-foreground flex items-center gap-1.5">
+                          {conv.title}
+                          {isOpen && (
+                            <span className="text-[9px] font-normal text-accent">open</span>
+                          )}
+                        </p>
+                        <p className="truncate font-[family-name:var(--font-mono)] text-[10px] text-accent">
+                          {conv.agentName}
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity shrink-0 ml-2">
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            startRename(conv.id, conv.title);
+                          }}
+                          className="p-1 text-muted hover:text-foreground"
+                          aria-label={`Rename ${conv.title}`}
+                          title="Rename"
+                        >
+                          <Pencil size={12} />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setConfirmDeleteId(conv.id);
+                          }}
+                          className="p-1 text-muted hover:text-red"
+                          aria-label={`Delete ${conv.title}`}
+                          title="Delete"
+                        >
+                          <Trash2 size={12} />
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </li>
+              );
+            })
+          )}
+        </ul>
+      </div>
+    </div>
+  );
+}
+
 // --- Main Chat component ---
 
 export function Chat(): JSX.Element {
@@ -966,13 +1196,16 @@ export function Chat(): JSX.Element {
   const {
     conversations,
     selectedConversationId,
+    openTabIds,
     messages,
     streamingEvents,
     sending,
     unreadConversations,
     loadAllConversations,
     selectConversation,
+    closeTab,
     createConversation,
+    renameConversation,
     deleteConversation,
     sendMessage,
     cancelMessage,
@@ -989,6 +1222,10 @@ export function Chat(): JSX.Element {
   const [answeredQuestions, setAnsweredQuestions] = useState<Record<string, string>>({});
   const [imageError, setImageError] = useState<string | null>(null);
   const [showAgentModal, setShowAgentModal] = useState(false);
+  const [showBrowser, setShowBrowser] = useState(false);
+  const [renamingTitle, setRenamingTitle] = useState<string | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const renameRef = useRef<HTMLInputElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -1072,11 +1309,13 @@ export function Chat(): JSX.Element {
     }
   }, [selectedMessages.length, liveEvents.length]);
 
-  // Reset message count tracking when conversation changes
+  // Reset UI state when conversation changes
   // biome-ignore lint/correctness/useExhaustiveDependencies: intentionally reset on conversation change
   useEffect(() => {
     prevMessageCount.current = 0;
     isNearBottom.current = true;
+    setRenamingTitle(null);
+    setConfirmDelete(false);
   }, [selectedConversationId]);
 
   // Build available agents list from active agents
@@ -1107,12 +1346,16 @@ export function Chat(): JSX.Element {
     [createConversation, selectConversation],
   );
 
-  // Keyboard shortcut: Cmd+N / Ctrl+N for new conversation
+  // Keyboard shortcuts: Cmd+N new conversation, Cmd+O browse conversations
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === 'n') {
         e.preventDefault();
         handleNewConversation();
+      }
+      if ((e.metaKey || e.ctrlKey) && e.key === 'o') {
+        e.preventDefault();
+        setShowBrowser((prev) => !prev);
       }
     };
     window.addEventListener('keydown', handler);
@@ -1294,26 +1537,42 @@ export function Chat(): JSX.Element {
         />
       )}
 
+      {showBrowser && (
+        <ConversationBrowser
+          conversations={enrichedConversations}
+          openTabIds={openTabIds}
+          onOpen={(id) => {
+            setShowBrowser(false);
+            selectConversation(id);
+          }}
+          onDelete={deleteConversation}
+          onRename={renameConversation}
+          onClose={() => setShowBrowser(false)}
+        />
+      )}
+
       {/* Tab bar */}
       <div className="flex items-center bg-surface border-b border-border shrink-0 overflow-hidden">
-        <div className="flex flex-1 items-end overflow-x-auto min-w-0" role="tablist">
-          {enrichedConversations.map((conv) => {
-            const isSelected = conv.id === selectedConversationId;
-            const hasUnread = unreadConversations.has(conv.id);
+        <div className="flex flex-1 items-end min-w-0" role="tablist">
+          {openTabIds.map((tabId) => {
+            const conv = enrichedConversations.find((c) => c.id === tabId);
+            if (!conv) return null;
+            const isSelected = tabId === selectedConversationId;
+            const hasUnread = unreadConversations.has(tabId);
             return (
               <div
-                key={conv.id}
+                key={tabId}
                 role="tab"
                 aria-selected={isSelected}
-                data-testid={`chat-tab-${conv.id}`}
-                className={`group relative flex items-center gap-1.5 shrink-0 max-w-[200px] cursor-pointer border-r border-border px-3 py-2 transition-colors ${
+                data-testid={`chat-tab-${tabId}`}
+                className={`group relative flex items-center gap-1.5 min-w-0 flex-1 max-w-[200px] cursor-pointer border-r border-border px-3 py-2 transition-colors ${
                   isSelected
                     ? 'bg-background text-foreground border-b-2 border-b-accent'
                     : 'bg-surface text-muted hover:bg-sidebar-hover hover:text-foreground'
                 }`}
-                onClick={() => selectConversation(conv.id)}
+                onClick={() => selectConversation(tabId)}
                 onKeyDown={(e) => {
-                  if (e.key === 'Enter' || e.key === ' ') selectConversation(conv.id);
+                  if (e.key === 'Enter' || e.key === ' ') selectConversation(tabId);
                 }}
                 tabIndex={0}
               >
@@ -1325,9 +1584,9 @@ export function Chat(): JSX.Element {
                   type="button"
                   onClick={(e) => {
                     e.stopPropagation();
-                    deleteConversation(conv.id);
+                    closeTab(tabId);
                   }}
-                  className="shrink-0 p-0.5 text-muted opacity-0 transition-opacity group-hover:opacity-100 hover:text-red"
+                  className="shrink-0 p-0.5 text-muted opacity-0 transition-opacity group-hover:opacity-100 hover:text-foreground"
                   aria-label={`Close ${conv.title}`}
                 >
                   <X size={10} />
@@ -1336,16 +1595,27 @@ export function Chat(): JSX.Element {
             );
           })}
         </div>
-        <button
-          type="button"
-          onClick={handleNewConversation}
-          disabled={availableAgents.length === 0}
-          className="shrink-0 p-2 text-muted transition-colors hover:text-foreground disabled:opacity-40"
-          title="New conversation (⌘N)"
-          aria-label="New conversation"
-        >
-          <Plus size={16} />
-        </button>
+        <div className="flex items-center shrink-0">
+          <button
+            type="button"
+            onClick={() => setShowBrowser(true)}
+            className="p-2 text-muted transition-colors hover:text-foreground"
+            title="Browse conversations (⌘O)"
+            aria-label="Browse conversations"
+          >
+            <List size={16} />
+          </button>
+          <button
+            type="button"
+            onClick={handleNewConversation}
+            disabled={availableAgents.length === 0}
+            className="p-2 text-muted transition-colors hover:text-foreground disabled:opacity-40"
+            title="New conversation (⌘N)"
+            aria-label="New conversation"
+          >
+            <Plus size={16} />
+          </button>
+        </div>
       </div>
 
       {/* Chat Panel */}
@@ -1375,7 +1645,6 @@ export function Chat(): JSX.Element {
                 onChange={async (model) => {
                   try {
                     await updateAgent(selectedAgent.id, { model });
-                    // Show success toast with the model name
                     const modelOption = availableModels.find((m) => m.value === model);
                     const modelName = modelOption?.label ?? model;
                     setModelChangeToast({ modelName, key: Date.now() });
@@ -1392,8 +1661,8 @@ export function Chat(): JSX.Element {
                 pct={contextStatus.pct}
               />
             )}
-            {activeWorkspace && (
-              <div className="ml-auto flex items-center gap-4">
+            <div className="ml-auto flex items-center gap-2">
+              {activeWorkspace && (
                 <button
                   type="button"
                   onClick={() => window.api.openPath(activeWorkspace)}
@@ -1401,10 +1670,85 @@ export function Chat(): JSX.Element {
                   title={`Workspace: ${activeWorkspace}`}
                 >
                   <FolderOpen size={12} />
-                  <span className="max-w-[300px] truncate">{activeWorkspace}</span>
+                  <span className="max-w-[200px] truncate">{activeWorkspace}</span>
                 </button>
-              </div>
-            )}
+              )}
+              {selectedConversationId &&
+                (renamingTitle !== null ? (
+                  <input
+                    ref={renameRef}
+                    value={renamingTitle}
+                    onChange={(e) => setRenamingTitle(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        const trimmed = renamingTitle.trim();
+                        if (trimmed && trimmed !== selectedConversation?.title) {
+                          renameConversation(selectedConversationId, trimmed);
+                        }
+                        setRenamingTitle(null);
+                      }
+                      if (e.key === 'Escape') setRenamingTitle(null);
+                    }}
+                    onBlur={() => {
+                      const trimmed = renamingTitle.trim();
+                      if (trimmed && trimmed !== selectedConversation?.title) {
+                        renameConversation(selectedConversationId, trimmed);
+                      }
+                      setRenamingTitle(null);
+                    }}
+                    className="w-40 border border-accent bg-[#141414] px-2 py-0.5 text-xs text-foreground focus:outline-none"
+                    data-testid="status-bar-rename-input"
+                  />
+                ) : confirmDelete ? (
+                  <div className="flex items-center gap-1 text-xs">
+                    <span className="text-red">Delete?</span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        deleteConversation(selectedConversationId);
+                        setConfirmDelete(false);
+                      }}
+                      className="px-1.5 py-0.5 text-red hover:bg-red-900/30"
+                      data-testid="status-bar-confirm-delete"
+                    >
+                      Yes
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setConfirmDelete(false)}
+                      className="px-1.5 py-0.5 text-muted hover:text-foreground"
+                    >
+                      No
+                    </button>
+                  </div>
+                ) : (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setRenamingTitle(selectedConversation?.title ?? '');
+                        requestAnimationFrame(() => renameRef.current?.focus());
+                      }}
+                      className="p-1 text-muted transition-colors hover:text-foreground"
+                      title="Rename conversation"
+                      aria-label="Rename conversation"
+                      data-testid="status-bar-rename"
+                    >
+                      <Pencil size={12} />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setConfirmDelete(true)}
+                      className="p-1 text-muted transition-colors hover:text-red"
+                      title="Delete conversation"
+                      aria-label="Delete conversation"
+                      data-testid="status-bar-delete"
+                    >
+                      <Trash2 size={12} />
+                    </button>
+                  </>
+                ))}
+            </div>
           </div>
         )}
 
