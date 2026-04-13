@@ -201,6 +201,9 @@ export interface MissionControlAPI {
   setupStatus(): Promise<{ needsSetup: boolean; gatewayReady: boolean }>;
   setupEnsureGateway(): Promise<void>;
 
+  // App lifecycle
+  appQuit(): Promise<void>;
+
   // WhatsApp
   whatsappStartPairing(appId: string): Promise<void>;
   whatsappOnQr(callback: (appId: string, qrDataUrl: string) => void): () => void;

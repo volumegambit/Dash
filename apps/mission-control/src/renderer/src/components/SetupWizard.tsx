@@ -1,9 +1,9 @@
-import { ArrowRight, Bot, CheckCircle, ExternalLink, KeyRound, Loader } from 'lucide-react';
+import { ArrowRight, Bot, CheckCircle, ExternalLink, KeyRound, Loader, Lock } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { DashSquadMark } from './DashSquadLogo.js';
 import { PROVIDERS, PROVIDER_CONFIG, type Provider } from './providers.js';
 
-type Step = 'setting-up' | 'provider' | 'api-key' | 'done';
+type Step = 'keychain-consent' | 'setting-up' | 'provider' | 'api-key' | 'done';
 
 interface SetupWizardProps {
   needsSetup: boolean;
@@ -11,13 +11,28 @@ interface SetupWizardProps {
 }
 
 export function SetupWizard({ needsSetup, onComplete }: SetupWizardProps): JSX.Element {
-  const initialStep: Step = needsSetup ? 'setting-up' : 'done';
+  // First-time users land on the keychain-consent step so they see a
+  // Dash-branded explanation BEFORE the OS surfaces its native
+  // keychain access prompt. Users with setup already complete skip
+  // straight to 'done'.
+  const initialStep: Step = needsSetup ? 'keychain-consent' : 'done';
   const [step, setStep] = useState<Step>(initialStep);
   const [provider, setProvider] = useState<Provider>('anthropic');
 
   return (
     <div className="flex h-full items-center justify-center bg-background text-foreground">
       <div className="w-full max-w-md px-4">
+        {step === 'keychain-consent' && (
+          <KeychainConsentStep
+            onContinue={() => setStep('setting-up')}
+            onCancel={() => {
+              window.api.appQuit().catch(() => {
+                // If the IPC call fails we can't force-quit from the
+                // renderer; leave the user on the same screen.
+              });
+            }}
+          />
+        )}
         {step === 'setting-up' && (
           <SettingUpStep onReady={() => setStep('provider')} onSkip={onComplete} />
         )}
@@ -37,6 +52,52 @@ export function SetupWizard({ needsSetup, onComplete }: SetupWizardProps): JSX.E
         )}
         {step === 'done' && <DoneStep onFinish={onComplete} />}
       </div>
+    </div>
+  );
+}
+
+function KeychainConsentStep({
+  onContinue,
+  onCancel,
+}: {
+  onContinue: () => void;
+  onCancel: () => void;
+}): JSX.Element {
+  return (
+    <div className="text-center">
+      <div className="mx-auto mb-6">
+        <DashSquadMark size={48} />
+      </div>
+      <div className="mx-auto mb-4 inline-flex size-12 items-center justify-center rounded-full bg-accent-tint text-accent">
+        <Lock size={24} />
+      </div>
+      <h1 className="font-[family-name:var(--font-display)] text-3xl font-extrabold tracking-tight">
+        Welcome to Dash
+      </h1>
+      <p className="mt-3 text-sm text-muted">
+        Dash stores its gateway access tokens in your system's secure credential store (macOS
+        Keychain, Windows Credential Manager, or libsecret on Linux), so they're encrypted at rest
+        and gated by your login session.
+      </p>
+      <p className="mt-3 text-sm text-muted">
+        In a moment, your system will ask you to allow Dash to access these credentials. You only
+        need to approve this once.
+      </p>
+      <button
+        type="button"
+        onClick={onContinue}
+        className="mt-8 inline-flex w-full items-center justify-center gap-2 rounded-lg bg-accent px-6 py-3 text-sm font-medium text-white transition-colors hover:bg-primary-hover"
+      >
+        Continue
+        <ArrowRight size={16} />
+      </button>
+      <button
+        type="button"
+        onClick={onCancel}
+        className="mt-3 inline-flex w-full items-center justify-center rounded-lg border border-border px-6 py-3 text-sm font-medium text-muted transition-colors hover:text-foreground"
+      >
+        Cancel and quit
+      </button>
     </div>
   );
 }

@@ -142,12 +142,16 @@ export async function registerIpcHandlers(
   };
   const gw = getGatewaySupervisor(gwOptions);
 
-  // Start shared gateway
-  try {
-    await gw.ensureRunning();
-  } catch (err) {
-    console.error('Gateway startup failed on MC launch:', err);
-  }
+  // First-run detection: if there's no gateway-state.json yet, we
+  // have never successfully started the gateway on this machine and
+  // the OS keychain has not yet been touched by the Electron binary.
+  // Defer BOTH `gw.ensureRunning()` AND `refreshChatServiceConnection()`
+  // until after the setup wizard's keychain-consent step fires
+  // `setup:ensureGateway` — otherwise macOS would surface a raw
+  // "Electron wants to access your keychain" prompt before any Dash UI
+  // has rendered, with no explanation of why.
+  const gatewayStateJsonPath = join(DATA_DIR, 'gateway-state.json');
+  const hasExistingGatewayState = existsSync(gatewayStateJsonPath);
 
   // Build a short-lived ManagementClient for the gateway — used by
   // IPC handlers that want direct HTTP access to skills/MCP routes
@@ -180,7 +184,23 @@ export async function registerIpcHandlers(
       });
     }
   };
-  await refreshChatServiceConnection();
+
+  if (hasExistingGatewayState) {
+    // Returning user — keychain has already been approved for this
+    // Electron binary, so accessing it is silent. Eagerly start the
+    // gateway and wire up the chat service so the main UI is live
+    // before the window renders.
+    try {
+      await gw.ensureRunning();
+    } catch (err) {
+      console.error('Gateway startup failed on MC launch:', err);
+    }
+    await refreshChatServiceConnection();
+  } else {
+    console.log(
+      '[mc] first-run detected (no gateway-state.json) — deferring gateway start until wizard consents',
+    );
+  }
 
   // Start gateway health poller.
   //
@@ -651,9 +671,20 @@ export async function registerIpcHandlers(
   // -----------------------------------------------------------------------
 
   ipcMain.handle('setup:status', async () => {
+    // First-run short-circuit: when `gateway-state.json` does not exist
+    // the gateway has never been started by this install AND the OS
+    // keychain has not yet been touched by the Electron binary. We
+    // must NOT call `getClient(gw)` here — doing so would trigger
+    // `gw.ensureRunning()` → native keychain prompt before the user
+    // has seen any Dash-branded UI. Return needsSetup without touching
+    // the gateway; the wizard will call `setup:ensureGateway` after
+    // the user has acknowledged the keychain-consent modal.
+    if (!existsSync(gatewayStateJsonPath)) {
+      return { needsSetup: true, gatewayReady: false };
+    }
     try {
       const client = await getClient(gw);
-      const health = await client.health();
+      await client.health();
       const creds = await client.listCredentials();
       return { needsSetup: creds.length === 0, gatewayReady: true };
     } catch {
@@ -663,6 +694,14 @@ export async function registerIpcHandlers(
 
   ipcMain.handle('setup:ensureGateway', async () => {
     await getClient(gw); // ensureRunning is called inside
+    // Now that the keychain has been touched (and on first run,
+    // approved by the user), wire up the chat service connection
+    // that was deferred at startup.
+    await refreshChatServiceConnection();
+  });
+
+  ipcMain.handle('app:quit', () => {
+    app.quit();
   });
 
   // -----------------------------------------------------------------------

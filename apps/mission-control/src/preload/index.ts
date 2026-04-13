@@ -136,6 +136,9 @@ const api: MissionControlAPI = {
   setupStatus: () => ipcRenderer.invoke('setup:status'),
   setupEnsureGateway: () => ipcRenderer.invoke('setup:ensureGateway'),
 
+  // App lifecycle
+  appQuit: () => ipcRenderer.invoke('app:quit'),
+
   // Logs
   logsRead: (source: 'mc' | 'gateway', tailLines?: number) =>
     ipcRenderer.invoke('logs:read', source, tailLines),
