@@ -892,15 +892,34 @@ export async function registerIpcHandlers(
 
   app.on('before-quit', async () => {
     gatewayPoller?.stop();
-    // Kill gateway so next MC launch spawns a fresh one (picks up code changes)
-    const gatewayState = await new GatewayStateStore(DATA_DIR).read();
-    if (gatewayState) {
-      try {
-        process.kill(gatewayState.pid, 'SIGTERM');
-      } catch {
-        // Already dead
-      }
-      await new GatewayStateStore(DATA_DIR).clear();
-    }
+    await shutdownGatewayOnQuit(DATA_DIR);
   });
+}
+
+/**
+ * Terminate the running gateway process at MC shutdown, but leave
+ * `gateway-state.json` on disk.
+ *
+ * Why keep the state file around? The file doubles as the "has this user
+ * ever completed Dash setup?" signal at the top of `registerIpcHandlers`
+ * — deleting it here would make every subsequent launch look like a
+ * first run, re-triggering the wizard-consent deferral path even though
+ * the keychain and the rest of the data dir are fully populated.
+ *
+ * Leaving the stale record behind is safe: `GatewaySupervisor.ensureRunning`
+ * probes the port on next launch, finds it free (because we just killed
+ * the process), and calls `store.clear()` itself before spawning a fresh
+ * gateway. Exporting this as a named function so the quit-handler
+ * contract is unit-testable without simulating the whole Electron app.
+ */
+export async function shutdownGatewayOnQuit(dataDir: string): Promise<void> {
+  const store = new GatewayStateStore(dataDir);
+  const gatewayState = await store.read();
+  if (!gatewayState) return;
+  try {
+    process.kill(gatewayState.pid, 'SIGTERM');
+  } catch {
+    // Already dead — SIGTERM on a missing PID throws ESRCH; expected.
+  }
+  // Deliberately NOT clearing the state file here. See docstring above.
 }
