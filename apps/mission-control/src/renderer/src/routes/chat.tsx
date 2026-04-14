@@ -51,6 +51,7 @@ import {
   truncate,
 } from './chat.helpers.js';
 import { ChatModelPicker } from './chat.model-picker.js';
+import { EmptyChatState } from './chat.empty-state.js';
 
 /** Event types that produce visible rendered output in renderEvents / MessageBubble */
 const VISIBLE_EVENT_TYPES = new Set([
@@ -1565,7 +1566,7 @@ export function Chat(): JSX.Element {
                 role="tab"
                 aria-selected={isSelected}
                 data-testid={`chat-tab-${tabId}`}
-                className={`group relative flex items-center gap-1.5 min-w-0 flex-1 max-w-[200px] cursor-pointer border-r border-border px-3 py-2 transition-colors ${
+                className={`group relative flex items-center justify-between gap-1.5 min-w-0 flex-1 max-w-[200px] cursor-pointer border-r border-border px-3 py-2 transition-colors ${
                   isSelected
                     ? 'bg-background text-foreground border-b-2 border-b-accent'
                     : 'bg-surface text-muted hover:bg-sidebar-hover hover:text-foreground'
@@ -1758,11 +1759,22 @@ export function Chat(): JSX.Element {
           className="flex-1 overflow-y-auto overflow-x-hidden px-6 py-4"
         >
           {!selectedConversationId ? (
-            <p className="text-center text-sm text-muted mt-8">
-              {activeAgents.length === 0
-                ? 'Deploy an agent first, then come back to chat.'
-                : 'Select a conversation or press ⌘N to start a new one.'}
-            </p>
+            <EmptyChatState
+              recentConversations={enrichedConversations.slice(0, 3).map((c) => ({
+                id: c.id,
+                title: c.title,
+                agentName: c.agentName,
+                updatedAt: c.updatedAt,
+              }))}
+              agents={activeAgents.map((a) => ({
+                id: a.id,
+                name: a.name,
+                model: a.config.model,
+              }))}
+              onSelectConversation={selectConversation}
+              onStartWithAgent={handleAgentSelected}
+              onNavigateToAgents={() => navigate({ to: '/agents' })}
+            />
           ) : (
             <>
               {selectedMessages.map((msg, i) => (
