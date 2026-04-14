@@ -428,7 +428,7 @@ export class GatewaySupervisor {
     await this.keychain.setChatToken(chatToken);
 
     // Spawn fresh gateway daemon
-    const gatewayBin = join(opts.projectRoot, 'apps/gateway/dist/index.js');
+    const gatewayBin = join(opts.projectRoot, 'apps/squad-space-gateway/dist/index.js');
     const spawnArgs = [
       gatewayBin,
       '--management-port',

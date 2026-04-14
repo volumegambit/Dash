@@ -10,8 +10,8 @@ files:
   - out/**/*
 
 extraResources:
-  - from: ../../apps/gateway/dist
-    to: apps/gateway/dist
+  - from: ../../apps/squad-space-gateway/dist
+    to: apps/squad-space-gateway/dist
     filter:
       - "**/*"
   - from: ../../packages/agent/dist
@@ -38,7 +38,7 @@ extraResources:
     to: node_modules
     filter:
       # Runtime dependencies only — dev/build tools are excluded.
-      # To regenerate: check production deps of apps/gateway,
+      # To regenerate: check production deps of apps/squad-space-gateway,
       # packages/agent, packages/channels, packages/chat, packages/management.
       - "@cacheable/**"
       - "@hapi/**"

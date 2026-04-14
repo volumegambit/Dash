@@ -1,4 +1,4 @@
-// apps/gateway/src/health-reporter.ts
+// apps/squad-space-gateway/src/health-reporter.ts
 import type { ChannelAdapter } from '@dash/channels';
 import type { ChannelHealthEntry } from '@dash/management';
 import { ManagementClient } from '@dash/management';

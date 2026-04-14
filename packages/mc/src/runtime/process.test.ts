@@ -169,7 +169,7 @@ describe('GatewaySupervisor.ensureRunning()', () => {
     expect(spawner.spawn).toHaveBeenCalledOnce();
     expect(spawner.spawn).toHaveBeenCalledWith(
       'node',
-      expect.arrayContaining([expect.stringContaining('apps/gateway/dist/index.js')]),
+      expect.arrayContaining([expect.stringContaining('apps/squad-space-gateway/dist/index.js')]),
       expect.objectContaining({ detached: true }),
     );
     expect(client).toBe(mockClient);

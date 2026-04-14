@@ -24,7 +24,7 @@ export interface GatewayManagementOptions {
   channelRegistry: ChannelRegistry;
   credentialStore: GatewayCredentialStore;
   /**
-   * Persistent model store. Created in `apps/gateway/src/index.ts` from
+   * Persistent model store. Created in `apps/squad-space-gateway/src/index.ts` from
    * the gateway data dir. Mounted by the models route below; also
    * cleared by the credential POST/DELETE handlers so the next
    * `GET /models` triggers a fresh fetch with the new credential set.
@@ -591,7 +591,7 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
   //
   // Writes only mutate the store; running agent backends pick up changes on
   // their next `run()` because they pull from the store via a credential
-  // provider function (see apps/gateway/src/index.ts `createBackend`). This
+  // provider function (see apps/squad-space-gateway/src/index.ts `createBackend`). This
   // means OAuth refresh, token rotation, and raw key set/delete all "just
   // work" without any propagation plumbing — the store is the single source
   // of truth.

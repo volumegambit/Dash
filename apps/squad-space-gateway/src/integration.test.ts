@@ -186,7 +186,7 @@ describe('Gateway integration', () => {
 });
 
 describe('Pull-based credential propagation (end-to-end)', () => {
-  // Simulates the full loop the gateway sets up in apps/gateway/src/index.ts:
+  // Simulates the full loop the gateway sets up in apps/squad-space-gateway/src/index.ts:
   //
   //   1. GatewayCredentialStore holds encrypted provider keys on disk.
   //   2. `createBackend` passes a provider function that reads from the store

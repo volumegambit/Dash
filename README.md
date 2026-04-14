@@ -33,7 +33,7 @@ npm run mc:dev
 
 On first launch, Mission Control walks you through three steps. The whole thing takes under a minute.
 
-1. **Gateway start.** MC spawns the background gateway process (`apps/gateway`) as a detached child. You'll see a brief spinner while it comes up on port 9300 (management) and 9200 (channels). No prompts — the gateway is MC's child and is supervised automatically across restarts. Its management + chat tokens live in the OS keychain (macOS Keychain / Windows Credential Manager / libsecret on Linux), never in a plaintext file on disk.
+1. **Gateway start.** MC spawns the background gateway process (`apps/squad-space-gateway`) as a detached child. You'll see a brief spinner while it comes up on port 9300 (management) and 9200 (channels). No prompts — the gateway is MC's child and is supervised automatically across restarts. Its management + chat tokens live in the OS keychain (macOS Keychain / Windows Credential Manager / libsecret on Linux), never in a plaintext file on disk.
 2. **Pick a provider.** Choose Anthropic, OpenAI, or Google. You can add more providers later from the *AI Providers* tab.
 3. **Paste your API key.** MC sends the key directly to the gateway's encrypted credential store (AES-256-GCM, key derived via OS keychain). MC itself never stores it. The key is masked in the input field to block shoulder-surfing.
 
@@ -114,7 +114,7 @@ For the full development guide — coding conventions, testing strategy, git wor
 
 | App | Purpose |
 |-----|---------|
-| `apps/gateway` | Agent runtime + channel gateway (Node process spawned by MC) |
+| `apps/squad-space-gateway` | Agent runtime + channel gateway (Node process spawned by MC) |
 | `apps/mission-control` | Electron desktop app (main + renderer + preload) |
 | `apps/mc-cli` | Command-line companion for scripted operations |
 
