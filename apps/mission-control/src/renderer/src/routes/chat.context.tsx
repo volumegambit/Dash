@@ -145,7 +145,11 @@ export function CompactionDivider({ overflow }: { overflow: boolean }): JSX.Elem
   const lineTone = overflow ? 'border-red/40' : 'border-border';
   const label = overflow ? 'context compacted (overflow)' : 'context compacted';
   return (
-    <div data-testid="compaction-divider" data-overflow={overflow} className={`my-4 flex items-center gap-3 ${tone}`}>
+    <div
+      data-testid="compaction-divider"
+      data-overflow={overflow}
+      className={`my-4 flex items-center gap-3 ${tone}`}
+    >
       <div className={`flex-1 border-t ${lineTone}`} />
       <span className="font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[2px]">
         {label}
@@ -175,6 +179,23 @@ export function CompactionToast({ overflow }: { overflow: boolean }): JSX.Elemen
       className={`pointer-events-none absolute right-6 top-4 z-20 border ${tone} px-3 py-2 text-xs font-medium shadow-lg`}
     >
       {label}
+    </div>
+  );
+}
+
+/**
+ * Transient toast announcing a successful model change. Re-keyed by the parent on
+ * each fire so the fade-in restarts when a second model change happens within
+ * the visible window.
+ */
+export function ModelChangeToast({ modelName }: { modelName: string }): JSX.Element {
+  return (
+    <div
+      role="status"
+      data-testid="model-change-toast"
+      className="pointer-events-none absolute right-6 top-16 z-20 border border-accent bg-accent/15 text-accent px-3 py-2 text-xs font-medium shadow-lg"
+    >
+      Model changed to {modelName}
     </div>
   );
 }

@@ -8,6 +8,7 @@ import {
   CompactionToast,
   ContextChip,
   DEFAULT_RESERVE_TOKENS,
+  ModelChangeToast,
   computeContextStatus,
   inferContextWindow,
   latestUsageFromConversation,
@@ -201,10 +202,7 @@ describe('computeContextStatus', () => {
 
   it('computes percentage against (window - reserve)', () => {
     // sonnet → 200k, threshold = 183_616, half of that ≈ 91_808
-    const s = computeContextStatus(
-      { inputTokens: 91_808, outputTokens: 0 },
-      'claude-sonnet-4-6',
-    );
+    const s = computeContextStatus({ inputTokens: 91_808, outputTokens: 0 }, 'claude-sonnet-4-6');
     expect(s.tokensUsed).toBe(91_808);
     expect(s.threshold).toBe(183_616);
     expect(s.pct).toBe(50);
@@ -331,5 +329,28 @@ describe('CompactionToast', () => {
   it('uses accent tone for normal compaction', () => {
     render(<CompactionToast overflow={false} />);
     expect(screen.getByRole('status').className).toContain('text-accent');
+  });
+});
+
+describe('ModelChangeToast', () => {
+  it('renders model change message with status role', () => {
+    render(<ModelChangeToast modelName="Claude 3.5 Sonnet" />);
+    const toast = screen.getByRole('status');
+    expect(toast).toHaveAttribute('data-testid', 'model-change-toast');
+    expect(toast.textContent).toContain('Model changed to Claude 3.5 Sonnet');
+  });
+
+  it('uses accent tone styling', () => {
+    render(<ModelChangeToast modelName="GPT-4" />);
+    const toast = screen.getByRole('status');
+    expect(toast.className).toContain('text-accent');
+    expect(toast.className).toContain('border-accent');
+    expect(toast.className).toContain('bg-accent/15');
+  });
+
+  it('displays the provided model name', () => {
+    render(<ModelChangeToast modelName="Custom Model Name" />);
+    const toast = screen.getByRole('status');
+    expect(toast.textContent).toBe('Model changed to Custom Model Name');
   });
 });
