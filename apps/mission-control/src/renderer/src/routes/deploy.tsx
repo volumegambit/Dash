@@ -238,7 +238,7 @@ export function DeployWizard(): JSX.Element {
 
               <div>
                 <span className="mb-1 block font-[family-name:var(--font-mono)] text-[11px] uppercase tracking-[2px] text-muted">
-                  Workspace
+                  Working Directory
                 </span>
                 <div className="flex items-center gap-2">
                   <input
@@ -266,7 +266,7 @@ export function DeployWizard(): JSX.Element {
                   </button>
                 </div>
                 <p className="mt-1 text-xs text-muted">
-                  The directory where this agent's file tools will be sandboxed.
+                  The working directory for this agent's file and shell tools.
                 </p>
               </div>
 
@@ -309,7 +309,7 @@ export function DeployWizard(): JSX.Element {
                       : '(none)'
                   }
                 />
-                <ReviewRow label="Workspace" value={agent.workspace || 'Auto-generated'} />
+                <ReviewRow label="Working Directory" value={agent.workspace || 'Auto-generated'} />
               </div>
 
               {deployError && (

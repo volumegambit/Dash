@@ -1,5 +1,5 @@
 import type { GatewayAgent } from '@dash/mc';
-import { ChevronDown, ChevronUp, FolderOpen, X } from 'lucide-react';
+import { ChevronDown, ChevronUp, FolderOpen, RotateCcw, X } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
 import type { McpConnectorInfo } from '../../../../shared/ipc.js';
 import { HealthDot } from '../../../components/HealthDot.js';
@@ -14,6 +14,7 @@ type ConfigPatch = {
   fallbackModels?: string[];
   tools?: string[];
   systemPrompt?: string;
+  workspace?: string;
   mcpServers?: string[];
 };
 
@@ -37,9 +38,13 @@ export function AgentConfigTab({
   } = useAvailableModels();
 
   // Which card is open (null = all collapsed). Opening goes straight to edit mode.
-  const [openCard, setOpenCard] = useState<'models' | 'prompt' | 'tools' | 'connectors' | null>(
-    null,
-  );
+  const [openCard, setOpenCard] = useState<
+    'workspace' | 'models' | 'prompt' | 'tools' | 'connectors' | null
+  >(null);
+
+  // Workspace editing state
+  const [workspaceDraft, setWorkspaceDraft] = useState('');
+  const [workspaceSaving, setWorkspaceSaving] = useState(false);
 
   // Model chain editing state
   const [chainModel, setChainModel] = useState('');
@@ -135,6 +140,23 @@ export function AgentConfigTab({
     }
   };
 
+  const handleSaveWorkspace = async (): Promise<void> => {
+    setWorkspaceSaving(true);
+    try {
+      await updateConfig(agentId, { workspace: workspaceDraft || undefined });
+      setOpenCard(null);
+    } finally {
+      setWorkspaceSaving(false);
+    }
+  };
+
+  const handleBrowseWorkspace = async (): Promise<void> => {
+    const selected = await window.api.dialogOpenDirectory();
+    if (selected) {
+      setWorkspaceDraft(selected);
+    }
+  };
+
   const toggleDraftTool = (tool: string): void => {
     setToolsDraft((prev) =>
       prev.includes(tool) ? prev.filter((t) => t !== tool) : [...prev, tool],
@@ -174,27 +196,93 @@ export function AgentConfigTab({
 
   return (
     <div className="space-y-4">
-      {/* Workspace card (read-only) */}
-      {workspace && (
-        <div className="rounded-lg border border-border bg-card-bg">
-          <div className="flex items-center justify-between p-4">
-            <div className="min-w-0">
-              <h3 className="text-sm font-medium">Workspace</h3>
-              <p className="mt-0.5 min-w-0 truncate font-mono text-xs text-muted" title={workspace}>
-                {workspace}
-              </p>
-            </div>
-            <button
-              type="button"
-              onClick={() => window.api.openPath(workspace)}
-              className="shrink-0 rounded p-1 text-muted transition-colors hover:text-foreground"
-              title="Open in Finder"
-            >
-              <FolderOpen size={14} />
-            </button>
+      {/* Working Directory card */}
+      <div className="rounded-lg border border-border bg-card-bg">
+        <button
+          type="button"
+          onClick={() => {
+            if (openCard !== 'workspace') setWorkspaceDraft(workspace ?? '');
+            setOpenCard(openCard === 'workspace' ? null : 'workspace');
+          }}
+          className="flex w-full items-center justify-between p-4 text-left"
+        >
+          <div className="min-w-0 flex-1">
+            <h3 className="text-sm font-medium">Working Directory</h3>
+            <p className="text-xs text-muted mt-0.5 truncate">{workspace || 'Auto-generated'}</p>
           </div>
-        </div>
-      )}
+          <div className="flex items-center gap-1 ml-2 shrink-0">
+            {workspace && (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  window.api.openPath(workspace);
+                }}
+                className="rounded p-1 text-muted transition-colors hover:text-foreground"
+                title="Open in Finder"
+              >
+                <FolderOpen size={14} />
+              </button>
+            )}
+            {openCard === 'workspace' ? (
+              <ChevronUp size={16} className="text-muted" />
+            ) : (
+              <ChevronDown size={16} className="text-muted" />
+            )}
+          </div>
+        </button>
+        {openCard === 'workspace' && (
+          <div className="border-t border-border p-4">
+            <div className="flex items-center gap-2">
+              <input
+                type="text"
+                readOnly
+                value={workspaceDraft}
+                placeholder="Auto-generated"
+                className="flex-1 rounded-lg border border-border bg-card-bg px-4 py-2 text-sm text-foreground placeholder:text-muted focus:outline-none"
+              />
+              {workspaceDraft && (
+                <button
+                  type="button"
+                  onClick={() => setWorkspaceDraft('')}
+                  className="rounded-lg border border-border px-3 py-2 text-sm text-muted transition-colors hover:bg-sidebar-hover hover:text-foreground"
+                  title="Reset to auto-generated"
+                >
+                  <RotateCcw size={14} />
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={handleBrowseWorkspace}
+                className="rounded-lg border border-border px-3 py-2 text-sm text-muted transition-colors hover:bg-sidebar-hover hover:text-foreground"
+              >
+                Browse…
+              </button>
+            </div>
+            <p className="mt-1.5 text-[11px] text-muted">
+              The working directory for this agent's file and shell tools. Changes take effect on
+              new conversations.
+            </p>
+            <div className="mt-3 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={handleSaveWorkspace}
+                disabled={workspaceSaving}
+                className="rounded-lg bg-accent px-3 py-1.5 text-xs text-white hover:bg-primary-hover disabled:opacity-50"
+              >
+                {workspaceSaving ? 'Saving...' : 'Save'}
+              </button>
+              <button
+                type="button"
+                onClick={() => setOpenCard(null)}
+                className="rounded-lg border border-border px-3 py-1.5 text-xs text-muted hover:text-foreground"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
 
       {/* Models card */}
       <div className="rounded-lg border border-border bg-card-bg">
