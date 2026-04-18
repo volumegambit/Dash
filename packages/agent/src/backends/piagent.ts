@@ -272,7 +272,13 @@ export class PiAgentBackend implements AgentBackend {
     const provider = modelStr.slice(0, slash);
     const modelId = modelStr.slice(slash + 1);
     // biome-ignore lint/suspicious/noExplicitAny: getModel requires generic provider/modelId that are not statically known
-    return getModel(provider as any, modelId as any);
+    const model = getModel(provider as any, modelId as any);
+    if (!model) {
+      throw new Error(
+        `Unknown model "${modelStr}". Check that the provider and model ID are correct.`,
+      );
+    }
+    return model;
   }
 
   /**
@@ -811,13 +817,13 @@ export class PiAgentBackend implements AgentBackend {
         };
       }
 
-      case 'auto_compaction_start': {
-        const e = event as Extract<AgentSessionEvent, { type: 'auto_compaction_start' }>;
-        this.lastCompactionReason = e.reason ?? 'threshold';
+      case 'compaction_start': {
+        const e = event as Extract<AgentSessionEvent, { type: 'compaction_start' }>;
+        this.lastCompactionReason = e.reason === 'overflow' ? 'overflow' : 'threshold';
         return null;
       }
 
-      case 'auto_compaction_end': {
+      case 'compaction_end': {
         return {
           type: 'context_compacted',
           overflow: this.lastCompactionReason === 'overflow',
@@ -876,7 +882,12 @@ export class PiAgentBackend implements AgentBackend {
       description: s.description,
       filePath: s.location,
       baseDir: dirname(s.location),
-      source: s.source,
+      sourceInfo: {
+        path: s.location,
+        source: s.source,
+        scope: 'temporary' as const,
+        origin: 'top-level' as const,
+      },
       disableModelInvocation: false,
     }));
   }
