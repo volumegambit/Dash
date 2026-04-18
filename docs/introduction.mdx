@@ -20,7 +20,7 @@ Whether you're a solo operator or running a team, Dash puts a crew of AI agents 
     Manage your agent team from a desktop app. Monitor activity, chat directly, and deploy new teammates in minutes.
   </Card>
   <Card title="Private by default" icon="lock">
-    Your machine, a VPS, or private cloud. Your data stays yours — except what goes to your AI provider.
+    Everything runs on your machine. Your data stays yours — the only outbound traffic is to your AI provider.
   </Card>
   <Card title="Reach agents anywhere" icon="users">
     Chat with your agents through Telegram, the built-in interface, or integrate via WebSocket API.
@@ -36,32 +36,30 @@ Agents that coordinate, delegate subtasks, and work in parallel — it's coming.
 
 ## Learn How It Works
 
-New to Atrium? Start with the overview to understand how all the pieces fit together.
+New to Dash? Start with the overview to understand how all the pieces fit together.
 
-<Card title="How Atrium Works" icon="map" href="/how-atrium-works">
+<Card title="How Dash Works" icon="map" href="/how-dash-works">
   A complete walkthrough of agents, Mission Control, messaging apps, and more.
 </Card>
 
 ## Get Started
 
 <Steps>
-  <Step title="Set up your team">
+  <Step title="Clone and build">
     ```bash
     git clone <repo-url> Dash
     cd Dash
     npm install && npm run build
     ```
   </Step>
-  <Step title="Configure credentials">
+  <Step title="Launch Mission Control">
     ```bash
-    cp -r config.example config
+    npm run mc:dev
     ```
-    Edit `config/credentials.json` and add your API key.
+    The setup wizard walks you through connecting an AI provider and deploying your first agent.
   </Step>
-  <Step title="Meet your first agent">
-    ```bash
-    npm run tui
-    ```
+  <Step title="Chat with your agent">
+    Open the **Chat** tab, start a conversation, and your agent is ready to work.
   </Step>
 </Steps>
 

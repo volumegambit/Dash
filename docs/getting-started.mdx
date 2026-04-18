@@ -51,39 +51,37 @@ Mission Control is the recommended way to manage your agents. It gives you a des
 npm run mc:dev
 ```
 
-The app opens automatically. From here, you will connect an AI provider and deploy your first agent.
+The app opens automatically. On first launch, the setup wizard walks you through three quick steps.
 
-## Connect your AI provider
-
-Before deploying an agent, you need to connect at least one AI provider. Mission Control stores your API key in an encrypted file on your machine.
+## First-run setup wizard
 
 <Steps>
-  <Step title="Open Connections">
-    In the Mission Control sidebar, click **Connections**.
+  <Step title="Gateway start">
+    Mission Control spawns the background gateway process automatically. You'll see a brief spinner while it comes up. The gateway's management and chat tokens are stored in the OS keychain (macOS Keychain / Windows Credential Manager / libsecret on Linux) — never in plaintext files.
   </Step>
-  <Step title="Add your API key">
-    Select your provider (Anthropic, OpenAI, or Google) and paste your API key. If this is your first time, you will be asked to create an encryption password. This password protects all your stored secrets.
+  <Step title="Pick a provider">
+    Choose Anthropic, OpenAI, or Google. You can add more providers later from the **AI Providers** tab.
   </Step>
-  <Step title="Verify">
-    Once saved, the provider shows a connected status. All agents that use this provider will share the key automatically.
+  <Step title="Paste your API key">
+    Paste your API key. Mission Control sends it directly to the gateway's encrypted credential store (AES-256-GCM, key derived via OS keychain). The key is masked in the input field.
   </Step>
 </Steps>
 
-Dash also supports OpenAI and Google models. See [AI Providers](/ai-providers) for details on connecting additional providers.
+When the wizard finishes, you're in Mission Control proper.
 
 ## Deploy your first agent
 
 Now that your provider is connected, you can deploy an agent.
 
 <Steps>
-  <Step title="Open the Deploy wizard">
-    Click **Deploy** in the sidebar. This opens the deployment wizard.
+  <Step title="Open the Agents page">
+    Click **Agents** in the sidebar, then click **Deploy**. This opens the deployment wizard.
   </Step>
   <Step title="Choose a name">
     Give your agent a descriptive name, like "assistant" or "code-reviewer".
   </Step>
   <Step title="Select a model">
-    Pick the model your agent will use. If you are not sure, Claude Sonnet 4 is a great starting point — it balances speed and capability.
+    Pick the model your agent will use. If you are not sure, Claude Sonnet 4 is a great starting point — it balances speed and capability. The model dropdown is populated live from the provider's API, filtered through a curated allow-list.
   </Step>
   <Step title="Write a system prompt">
     Tell your agent who it is and how to behave. For example:
@@ -97,15 +95,15 @@ Now that your provider is connected, you can deploy an agent.
     Select which tools your agent can use. A good starter set is **bash**, **read**, and **write**. See [Tools](/tools) for the full list.
   </Step>
   <Step title="Deploy">
-    Click **Deploy**. Mission Control starts your agent as a background process with its own workspace and ports.
+    Click **Deploy**. The gateway creates the agent in-process with its own workspace at `~/dash-workspaces/<agent-id>/`.
   </Step>
 </Steps>
 
-Your agent appears in the sidebar. Click it to check that the status shows "running".
+Your agent appears in the agents list. Click it to check that the status shows "running".
 
 ## Chat with your agent
 
-Click **Chat** in the sidebar, select your agent, and type a message. You will see the agent thinking, using tools, and responding in real time.
+Open the **Chat** tab, start a new conversation, select your agent, and type a message. You will see the agent thinking, using tools, and responding in real time.
 
 That is it — your first agent is deployed and ready to work.
 
@@ -113,8 +111,7 @@ That is it — your first agent is deployed and ready to work.
 
 Mission Control is the recommended approach, but Dash also supports other interfaces for specific use cases.
 
-- **TUI** — a terminal interface for quick interactions: `npm run tui`
-- **Agent Server** — run agents headlessly for automation: `npm run dev`
+- **Gateway standalone** — run the gateway headlessly for automation: `npm run gateway -- --config <path>`
 - **CLI** — manage deployments from the terminal: `npm run mc-cli -- <command>`
 
 See [Mission Control](/mission-control) and [CLI Reference](/cli-reference) for details.

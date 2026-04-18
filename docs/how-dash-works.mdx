@@ -1,10 +1,10 @@
 ---
-title: "How Atrium Works"
-description: "A complete overview of how Atrium's components fit together — agents, Mission Control, messaging apps, and more."
+title: "How Dash Works"
+description: "A complete overview of how Dash's components fit together — agents, Mission Control, messaging apps, and more."
 ---
 
 <Warning>
-  **Alpha Software** — Dash is under heavy development. APIs, configuration, and features may change without notice.
+  **Early Access** — Dash is under active development. Expect rough edges and breaking changes.
 </Warning>
 
 ## The Big Picture
@@ -14,10 +14,9 @@ You define AI agents, deploy them through Mission Control, optionally connect th
 ```mermaid
 graph LR
     User -->|manages| MC[Mission Control]
-    MC -->|deploys| AS[Agent Server]
-    AS --- A1[Agents]
-    MA[Messaging Apps] -->|messages| GW[Gateway]
-    GW -->|routes to| AS
+    MC -->|deploys & chats| GW[Gateway]
+    GW --- A1[Agents]
+    MA[Messaging Apps] -->|messages| GW
 ```
 
 ## Agents
@@ -28,7 +27,7 @@ An agent is an AI model paired with a system prompt, tools, and skills. Agents r
 
 ## Mission Control
 
-Mission Control is your command center for the entire system. Deploy new agents, monitor running ones, view logs, and edit configuration — all from a desktop app. It includes a built-in chat interface to talk to your agents directly. Mission Control is also available as a CLI for terminal users and automation.
+Mission Control is your command center for the entire system. It's a desktop app that spawns a background gateway process and gives you a UI to deploy agents, chat with them, monitor activity, and connect messaging platforms. Mission Control is also available as a CLI for terminal users and automation.
 
 [Learn more about Mission Control](/mission-control)
 
@@ -40,7 +39,7 @@ Agents need an AI model to think — you bring your own API key. Dash supports A
 
 ## Deploying an Agent
 
-When you deploy an agent through Mission Control, it starts as a background process with its own workspace, ports, and log stream. You can start, stop, restart, and remove deployments at any time. Configuration changes — model, tools, system prompt — can be made on the fly.
+When you deploy an agent through Mission Control, the gateway creates it in-process with its own workspace. You can start, stop, restart, and remove deployments at any time. Configuration changes — model, tools, system prompt — can be made on the fly.
 
 [Deploy Your First Agent](/deploy-your-first-agent)
 
@@ -64,13 +63,13 @@ Tools are capabilities agents use to interact with the outside world — run she
 
 ## Secrets & Security
 
-API keys and sensitive credentials are encrypted at rest using AES-256-GCM. The encryption key is derived from a password you set and cached in your OS keychain. Agents run in sandboxed workspace directories, and your data never leaves your machine except to your chosen AI provider.
+API keys and sensitive credentials are encrypted at rest using AES-256-GCM. The encryption key is derived from a password you set and cached in your OS keychain. Gateway management tokens also live in the OS keychain, never in plaintext files. Agents run in sandboxed workspace directories, and your data never leaves your machine except to your chosen AI provider.
 
 [Learn more about Secrets](/secrets)
 
 ## Chat
 
-Talk to your agents through Mission Control's built-in chat, through connected messaging apps like Telegram, or programmatically via the WebSocket API. Messages stream in real time — you see the agent thinking, using tools, and building its response as it goes. Conversations persist as sessions, so agents remember previous context.
+Talk to your agents through Mission Control's built-in tabbed chat, through connected messaging apps like Telegram, or programmatically via the WebSocket API. Messages stream in real time — you see the agent thinking, using tools, and building its response as it goes. Conversations persist as sessions, so agents remember previous context.
 
 [Chat with Your Agent](/chat-with-your-agent)
 

@@ -3,40 +3,41 @@ title: "Architecture"
 description: "How Dash is structured, how data flows, and how agents process messages."
 ---
 
-Dash is made up of three pieces that work together to keep your agent team running.
+Dash is made up of two main pieces that work together to keep your agent team running.
 
 ## System overview
 
 ```mermaid
 graph TB
-  platforms["Chat platforms<br/><small>Telegram, etc.</small>"]
+  platforms["Chat platforms<br/><small>Telegram, WhatsApp</small>"]
 
-  subgraph infra ["Your infrastructure"]
-    agent-server["Agent Server<br/><small>Chat API :9101 · Management API :9100</small>"]
-    gateway["Gateway<br/><small>Channel routing :9200</small>"]
-    gateway -- "WebSocket" --> agent-server
+  subgraph infra ["Your Machine"]
+    gateway["Gateway<br/><small>Hosts agents in-process<br/>Management :9300 · Channels :9200</small>"]
+    keychain["OS Keychain<br/><small>Gateway tokens</small>"]
+    enc["credentials.enc<br/><small>Provider API keys</small>"]
   end
 
-  mc["Mission Control<br/><small>Desktop app / CLI</small>"]
+  mc["Mission Control<br/><small>Desktop app</small>"]
 
   platforms -- "Bot API" --> gateway
-  mc -- "HTTP / WebSocket" --> agent-server
-  mc -- "WebSocket" --> gateway
+  mc -- "Deploy & manage (HTTP)" --> gateway
+  mc -- "Chat (WebSocket)" --> gateway
+  mc -- "Read/write tokens" --> keychain
+  gateway -- "Read/write provider keys" --> enc
 ```
 
-Dash has three main components that can run on different machines:
+Dash has two main components:
 
-- **Agent server** — The engine behind your agents. The agent server runs on your computer and handles all AI interactions, tool execution, and conversation history. It reads your config, creates agents with their assigned models and tools, and starts two APIs: the Chat API (WebSocket, port 9101) for real-time interaction, and the Management API (HTTP, port 9100) for health checks, server info, and shutdown.
-- **Gateway** — Connects your agents to the outside world. The gateway routes messages from platforms like Telegram to your agent team. It runs alongside the agent server, owns all channel connections, and routes messages to agents via the Chat API. Mission Control's chat panel also connects through the gateway over WebSocket. Every channel is handled the same way: one process, one config file, one message path to the agent.
-- **Mission Control** — Your command center. Mission Control is a desktop app (and CLI) for deploying agents, monitoring their status, and chatting with them directly. Connects to the gateway for chat (WebSocket, port 9200) and to agent servers for monitoring (HTTP, port 9100). Includes a built-in TUI for terminal-based interaction.
+- **Gateway** — Single long-running process that hosts all agents in memory, serves a WebSocket channel server at port 9200, exposes an HTTP management API at port 9300, and connects to external messaging platforms. Mission Control spawns it automatically on first launch and reuses it across MC restarts — the bearer token lives in the OS keychain, so a relaunched MC recognizes its own gateway without a fresh spawn.
+- **Mission Control** — Electron desktop app. Main process hosts the supervisor that manages the gateway lifecycle, renderer is a React + Vite UI talking to the main process over IPC. Also available as a CLI for terminal users and automation.
 
 ### Deployment options
 
 Dash is flexible about where each piece runs.
 
-**Single machine** — run everything locally. Start the agent server and gateway, then use the TUI or Mission Control from `localhost`. Good for development and personal use.
+**Single machine** — run everything locally. Launch Mission Control, which spawns the gateway as a child process. Good for development and personal use.
 
-**Multi-machine** — run the agent server and gateway on a VPS or private cloud, and use Mission Control from your laptop to manage and chat. The Chat API, Management API, and gateway are the only network-facing surfaces, each protected by its own auth token. You can manage multiple agent servers from a single Mission Control instance.
+**Headless** — run the gateway standalone on a VPS or server: `npm run gateway -- --config <path>`. Use the CLI or point Mission Control at the management URL for remote management.
 
 ## How your team is organized
 
@@ -47,36 +48,30 @@ Dash is flexible about where each piece runs.
   <Accordion title="Agent" icon="robot">
     The core runtime. An agent manages conversations: it loads session history, sends messages to the LLM, executes tools when the model requests them, and persists everything to disk. Agents loop automatically — if the model asks to run a tool, the agent executes it and sends the result back until the model produces a final response (up to 25 rounds).
   </Accordion>
-  <Accordion title="Chat API" icon="comments">
-    WebSocket server (port 9101) for real-time agent interaction. Clients connect, send messages, and receive a stream of events (text deltas, tool executions, final responses) as they happen. Supports multiple concurrent conversations on a single connection via message ID correlation.
+  <Accordion title="Channel server" icon="comments">
+    WebSocket server (port 9200) for real-time agent interaction. Clients connect, send messages, and receive a stream of events (text deltas, tool executions, final responses) as they happen. Supports multiple concurrent conversations on a single connection via message ID correlation.
   </Accordion>
   <Accordion title="Management API" icon="tower-control">
-    HTTP server (port 9100) for operational control. Provides health checks (`/health`), server info (`/info`), and graceful shutdown (`/lifecycle/shutdown`). Used by Mission Control to monitor and manage remote deployments.
+    HTTP server (port 9300) for operational control. Provides health checks (`/health`), server info (`/info`), agent deployment, and graceful shutdown (`/lifecycle/shutdown`). Used by Mission Control to deploy and manage agents.
   </Accordion>
-  <Accordion title="Agent server" icon="server">
-    The main entry point. Reads config files and environment variables, creates agents with their assigned models and tools, and starts both the Chat API and Management API. Supports `--config` and `--secrets` CLI flags for production deployments. When deployed via Mission Control, secrets from the encrypted store are injected as a temporary `--secrets` file that is deleted after reading.
-  </Accordion>
-  <Accordion title="Gateway" icon="shuffle">
-    A separate process that owns all channel connections. Reads a JSON config that maps channels to agents, then routes messages through the Chat API. The gateway is a client of the agent server — it connects to the Chat API like any other client. External chat platforms connect through platform-specific adapters: the Telegram adapter runs a bot that polls the Telegram Bot API for incoming messages, converts them into a common format, and forwards them to the agent. Mission Control's chat panel connects over WebSocket (port 9200) using the same adapter pattern. Adding a new platform means writing a new adapter — the routing and agent interaction stay the same.
-  </Accordion>
-  <Accordion title="TUI" icon="terminal">
-    An interactive terminal interface. Connects directly to an agent in-process — no server needed. Useful for local development and quick experimentation. Renders streaming output with formatting, shows tool executions, and displays token usage.
+  <Accordion title="Gateway" icon="server">
+    The main entry point. A single process that hosts agents in memory, runs both the channel server and management API, and owns all messaging platform connections. Reads config, creates agents with their assigned models and tools, and routes messages from external platforms (Telegram, WhatsApp) to agents. When deployed via Mission Control, secrets from the encrypted store are injected via the management API. Supports `--config` and `--token` CLI flags for standalone use.
   </Accordion>
   <Accordion title="Mission Control" icon="grid-2">
-    Desktop app (Electron) and CLI for managing agent deployments across machines. Stores deployment records locally and secrets in an AES-256-GCM encrypted file (`~/.mission-control/secrets.enc`). Connects to remote agent servers via their management APIs. The CLI provides commands for deployment management (`deploy`, `status`, `stop`, `remove`, `logs`) and secret management (`secrets list`, `secrets set`, `secrets get`, `secrets delete`). The desktop app adds a visual interface with a secrets management page.
+    Desktop app (Electron) and CLI for managing the gateway and agents. Spawns the gateway on first launch, stores the management token in the OS keychain, and communicates with the gateway over HTTP (management) and WebSocket (chat). Includes a tabbed chat interface, agent deployment wizard, and connector management. Provider API keys are stored in an AES-256-GCM encrypted file (`credentials.enc`).
   </Accordion>
 </AccordionGroup>
 
-## Two-server model
+## Gateway APIs
 
-The agent server runs two separate servers with independent authentication:
+The gateway runs two servers with independent authentication:
 
 | Server | Protocol | Default port | Auth | Purpose |
 |--------|----------|-------------|------|---------|
-| Management API | HTTP | 9100 | Bearer token (`MANAGEMENT_API_TOKEN`) | Health checks, info, shutdown |
-| Chat API | WebSocket | 9101 | Query param (`?token=`, `CHAT_API_TOKEN`) | Real-time agent chat |
+| Management API | HTTP | 9300 | Bearer token | Health, info, deploy, shutdown |
+| Channel server | WebSocket | 9200 | Query param (`?token=`) | Real-time agent chat |
 
-Both servers bind to `127.0.0.1` by default. Each has its own token — a management token cannot be used on the chat port, and vice versa.
+Both servers bind to `127.0.0.1` by default. Each has its own token — a management token cannot be used on the channel port, and vice versa.
 
 ## Message flow
 
@@ -84,7 +79,7 @@ Here's what happens when you send a message to one of your agents.
 
 <Steps>
   <Step title="Connect and authenticate">
-    Client opens a WebSocket to `ws://host:9101/ws?token=...`
+    Client opens a WebSocket to `ws://host:9200/ws/chat?token=...`
   </Step>
   <Step title="Send a message">
     Client sends a JSON message with the agent name, conversation ID, and text
@@ -132,22 +127,6 @@ data/sessions/{channelId}/{conversationId}/session.jsonl
 
 Each line records a timestamped event — user messages, assistant responses, and tool results. When an agent loads a session, it replays these entries to reconstruct the conversation history. This format is simple, crash-safe (partial writes don't corrupt earlier entries), and easy to inspect.
 
-## Docker
+## Event log and chat replay
 
-Multi-stage build using `node:22-slim`:
-
-<Steps>
-  <Step title="Builder stage">
-    Install dependencies, compile TypeScript
-  </Step>
-  <Step title="Production stage">
-    Production dependencies only, compiled output from builder
-  </Step>
-  <Step title="Entry point">
-    Starts the agent server
-  </Step>
-</Steps>
-
-Volumes:
-- `./data/sessions:/app/data/sessions` — persist session data
-- `./config:/app/config:ro` — mount config (read-only)
+The gateway maintains a durable event log for each conversation. When a client reconnects (e.g. after Mission Control restarts), it can replay missed events from the log without re-sending the message to the LLM. This ensures chat continuity across reconnections.

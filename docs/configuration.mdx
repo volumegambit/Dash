@@ -131,7 +131,7 @@ When no config file is found, Dash uses these defaults:
 
 ## API keys and secrets
 
-API keys are provided through the `--secrets` flag or via Mission Control's encrypted secret store. The agent server does not load from `credentials.json` or environment variables for provider API keys — the secrets file (delivered via `--secrets`) is the single source of truth.
+API keys are provided through Mission Control's encrypted secret store or the `--secrets` flag when running the gateway standalone.
 
 For local development or standalone use, environment variables can still configure tokens and logging.
 
@@ -140,9 +140,9 @@ For local development or standalone use, environment variables can still configu
 | Variable | Description |
 |----------|-------------|
 | `MANAGEMENT_API_TOKEN` | Enables the Management API when set |
-| `MANAGEMENT_API_PORT` | Management API port (default: `9100`) |
+| `MANAGEMENT_API_PORT` | Management API port (default: `9300`) |
 | `CHAT_API_TOKEN` | Enables the Chat API when set |
-| `CHAT_API_PORT` | Chat API port (default: `9101`) |
+| `CHAT_API_PORT` | Chat API port (default: `9200`) |
 | `LOG_LEVEL` | Log level override |
 
 <Note>
@@ -151,10 +151,10 @@ For local development or standalone use, environment variables can still configu
 
 ## CLI flags
 
-The agent server accepts `--config` and `--secrets` flags for deployment scenarios where environment variables and project-relative config files aren't practical.
+The gateway accepts `--config` and `--secrets` flags for standalone deployment scenarios.
 
 ```bash
-node apps/dash/dist/index.js --config /path/to/dash.json --secrets /path/to/secrets.json
+npm run gateway -- --config /path/to/dash.json --secrets /path/to/secrets.json
 ```
 
 ### `--config <path>`
@@ -164,11 +164,11 @@ Load configuration from an explicit path. This can be either:
 - **A file** — load that JSON file directly (same as before). If an `agents/` sibling directory exists, agent definitions are loaded from it.
 - **A directory** — load `dash.json` from the directory for non-agent settings, and load individual agent definitions from the `agents/` subdirectory.
 
-When `--config` is omitted, Dash searches for `config/dash.json` or `dash.json` at the project root, and additionally checks `config/agents/` for per-agent files.
+When `--config` is omitted, the gateway searches for `config/dash.json` or `dash.json` at the project root, and additionally checks `config/agents/` for per-agent files.
 
 ### `--secrets <path>`
 
-Load secrets from a JSON file. The file is read once and then **deleted** immediately. This is designed for deployment systems that write a temporary secrets file for the agent to consume.
+Load secrets from a JSON file. The file is read once and then **deleted** immediately. This is designed for deployment systems that write a temporary secrets file for the gateway to consume.
 
 ```json
 {
@@ -211,7 +211,7 @@ If you have an existing `~/.mission-control/secrets.json` from before encryption
 
 ### Credential precedence
 
-When Mission Control deploys an agent, secrets are injected via a temporary file (read once, then deleted). The agent server resolves credentials in this order:
+When Mission Control manages agents, secrets are delivered to the gateway's encrypted credential store. For standalone gateway usage, credentials are resolved in this order:
 
 1. `--secrets` file (highest priority)
 2. Environment variables (`.env` or shell)

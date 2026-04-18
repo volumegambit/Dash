@@ -22,7 +22,7 @@ Returns the current health status and uptime of the agent server.
 **Request**
 
 ```bash
-curl http://localhost:9100/health \
+curl http://localhost:9300/health \
   -H "Authorization: Bearer $MANAGEMENT_API_TOKEN"
 ```
 
@@ -51,7 +51,7 @@ Returns information about the configured agents.
 **Request**
 
 ```bash
-curl http://localhost:9100/info \
+curl http://localhost:9300/info \
   -H "Authorization: Bearer $MANAGEMENT_API_TOKEN"
 ```
 
@@ -85,7 +85,7 @@ Gracefully shuts down the agent server.
 **Request**
 
 ```bash
-curl -X POST http://localhost:9100/lifecycle/shutdown \
+curl -X POST http://localhost:9300/lifecycle/shutdown \
   -H "Authorization: Bearer $MANAGEMENT_API_TOKEN"
 ```
 
@@ -115,8 +115,8 @@ All endpoints return the same error shape on failure:
 
 ## Binding
 
-The Management API binds to `127.0.0.1` by default, so it is not accessible from other machines without a reverse proxy or tunnel.
+The Management API binds to `127.0.0.1` by default (port 9300), so it is not accessible from other machines without a reverse proxy or tunnel.
 
 <Note>
-  The Management API and Chat API use separate tokens and separate ports. A management token cannot be used on the chat port, and vice versa.
+  The Management API and Channel server use separate tokens and separate ports (9300 and 9200 respectively). A management token cannot be used on the channel port, and vice versa.
 </Note>

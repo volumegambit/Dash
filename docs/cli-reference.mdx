@@ -26,8 +26,8 @@ On first run, you'll be prompted for your Anthropic API key if it hasn't been st
 ```
 Deployment abc123 created.
   Status: running
-  Management API: http://localhost:9100
-  Chat API: ws://localhost:9101/ws
+  Management API: http://localhost:9300
+  Channel server: ws://localhost:9200/ws/chat
   Agent server PID: 12345
 ```
 
@@ -53,8 +53,8 @@ abc123  my-config  running  2026-03-07T12:00:00.000Z
 ```
 Deployment: abc123
   State: running
-  Management port: 9100
-  Chat port: 9101
+  Management port: 9300
+  Channel port: 9200
   Agent server PID: 12345
   Gateway PID: 12346
   Uptime: 300s
@@ -76,7 +76,7 @@ Stop a running deployment.
 mc stop abc123
 ```
 
-Sends a shutdown signal to the agent server and gateway. Does not remove the deployment record — use `mc status` to confirm it stopped, and `mc remove` to clean up.
+Sends a shutdown signal to the gateway. Does not remove the deployment record — use `mc status` to confirm it stopped, and `mc remove` to clean up.
 
 ---
 
@@ -104,11 +104,11 @@ Streams log lines until interrupted (Ctrl+C). Only works for locally running dep
 
 ### mc health \<target\>
 
-Check the health of a Dash agent server.
+Check the health of a Dash gateway.
 
 ```bash
 mc health abc123                          # by deployment ID
-mc health http://localhost:9100 -t $TOKEN # by URL
+mc health http://localhost:9300 -t $TOKEN # by URL
 ```
 
 `target` can be a deployment ID (token is looked up automatically) or a full URL (token required via `--token`).
@@ -137,7 +137,7 @@ Get agent configuration info from a running server.
 
 ```bash
 mc info abc123
-mc info http://localhost:9100 -t $TOKEN
+mc info http://localhost:9300 -t $TOKEN
 ```
 
 **Options:**
