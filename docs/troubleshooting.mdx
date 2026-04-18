@@ -17,16 +17,16 @@ Something not working? Here are the most common issues and how to fix them.
     **Fix:** Set `ANTHROPIC_API_KEY` in your `.env` file or `config/credentials.json`. See [getting started](/getting-started#configuration).
   </Accordion>
 
-  <Accordion title="Chat API connection refused">
-    **Symptom:** WebSocket connection to `ws://localhost:9101/ws` is refused.
+  <Accordion title="Chat connection refused">
+    **Symptom:** WebSocket connection to `ws://localhost:9200/ws/chat` is refused.
 
-    **Fix:** Make sure `CHAT_API_TOKEN` is set in your environment or secrets file. The Chat API only starts when a token is configured. Check the server logs for "Chat API listening on port 9101".
+    **Fix:** Make sure the gateway is running. If using Mission Control, check that the gateway process is healthy from the app. If running standalone, check the server logs for "Gateway channel server listening on port 9200".
   </Accordion>
 
-  <Accordion title="Chat API unauthorized (4001)">
+  <Accordion title="Chat unauthorized (4001)">
     **Symptom:** WebSocket connection closes immediately with code `4001`.
 
-    **Fix:** Include the correct token as a query parameter: `ws://localhost:9101/ws?token=your-chat-token`. Make sure you're using the chat token, not the management token — they are separate.
+    **Fix:** Include the correct token as a query parameter: `ws://localhost:9200/ws/chat?token=your-chat-token`. Make sure you're using the chat token, not the management token — they are separate.
   </Accordion>
 
   <Accordion title="Unknown agent error">
@@ -38,16 +38,16 @@ Something not working? Here are the most common issues and how to fix them.
     **Fix:** The `agent` field in your message references an agent name that doesn't exist in the config. Check `config/dash.json` and make sure the agent name matches a key in the `agents` object.
   </Accordion>
 
-  <Accordion title="Config not found (TUI)">
+  <Accordion title="Config not found (standalone gateway)">
     **Error:**
     ```
     config/dash.json not found
     ```
 
-    **Fix:** The TUI requires a `config/dash.json` file. Copy the example:
+    **Fix:** The standalone gateway requires a config file. Pass it explicitly with `--config`:
 
     ```bash
-    cp config.example/dash.json config/dash.json
+    npm run gateway -- --config path/to/dash.json
     ```
   </Accordion>
 </AccordionGroup>

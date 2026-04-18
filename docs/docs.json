@@ -1,7 +1,7 @@
 {
   "$schema": "https://mintlify.com/docs/mint-schema.json",
   "theme": "maple",
-  "name": "Atrium",
+  "name": "Dash",
   "colors": {
     "primary": "#3A8B6B"
   },
@@ -12,7 +12,7 @@
         "groups": [
           {
             "group": "Getting Started",
-            "pages": ["introduction", "how-atrium-works", "getting-started"]
+            "pages": ["introduction", "how-dash-works", "getting-started"]
           },
           {
             "group": "Core Concepts",

@@ -19,25 +19,9 @@ For example, `anthropic/claude-sonnet-4-20250514` routes to Anthropic and `opena
 
 ## Configuring credentials
 
-Each provider needs an API key. Set it via environment variable, `credentials.json`, or a `--secrets` file (see [CLI flags](/configuration#cli-flags)).
+Each provider needs an API key. The recommended approach is through **Mission Control**, which stores keys in an AES-256-GCM encrypted credential store. Open the **AI Providers** page, select your provider, and paste your key.
 
-### credentials.json
-
-```json
-{
-  "anthropic": {
-    "apiKey": "sk-ant-..."
-  },
-  "openai": {
-    "apiKey": "sk-..."
-  },
-  "google": {
-    "apiKey": "AIza..."
-  }
-}
-```
-
-You only need to include providers you're actually using.
+For standalone gateway usage, you can also set credentials via environment variables or a `--secrets` file (see [CLI flags](/configuration#cli-flags)).
 
 ### Environment variables
 
@@ -46,8 +30,6 @@ You only need to include providers you're actually using.
 | `ANTHROPIC_API_KEY` | Anthropic |
 | `OPENAI_API_KEY` | OpenAI |
 | `GOOGLE_API_KEY` | Google |
-
-Environment variables take precedence over `credentials.json`.
 
 ## Anthropic
 

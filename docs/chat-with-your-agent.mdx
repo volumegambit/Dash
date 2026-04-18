@@ -15,16 +15,18 @@ Once your agent is deployed, there are three ways to talk to it: the built-in Mi
 
 ## Mission Control chat
 
-The fastest way to talk to your agent. Open a chat from the agent detail page or the chat section in the sidebar.
+The fastest way to talk to your agent. Open the **Chat** tab in Mission Control and start a new conversation.
+
+**Tabbed interface** — open multiple conversations at once and switch between them like browser tabs. Use ⌘T to open a new tab, ⌘W to close, and ⌘1–9 to switch.
 
 **What you see while chatting:**
 
 - **Real-time streaming** — responses appear token by token as the agent generates them
-- **Thinking indicators** — see when the agent is reasoning through a problem
+- **Thinking indicators** — see when the agent is reasoning through a problem (including context compaction status)
 - **Tool use** — watch the agent call tools, see the inputs it sends, and the results it gets back
 - **Image support** — send images to your agent for analysis or discussion
 
-Every conversation is automatically saved. Come back later and pick up where you left off.
+The empty chat panel shows your recent conversations and deployed agents for quick access. Every conversation is automatically saved. Come back later and pick up where you left off.
 
 ## Telegram and WhatsApp
 
@@ -49,7 +51,7 @@ For developers who want to integrate agents into their own applications, the Web
 ### Connecting
 
 ```
-ws://localhost:9101/ws?token=<your-chat-token>
+ws://localhost:9200/ws/chat?token=<your-chat-token>
 ```
 
 Authenticate with a token in the query string. See [API Reference](/api-reference) for full connection details.

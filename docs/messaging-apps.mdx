@@ -12,10 +12,8 @@ Messages flow through a simple chain:
 ```mermaid
 graph LR
     P["Messaging Platform<br/><small>Telegram, WhatsApp</small>"] -->|Bot API| GW["Gateway"]
-    GW -->|routes to| AS["Agent Server"]
-    AS --- A["Agent"]
-    A -->|response| AS
-    AS -->|response| GW
+    GW --- A["Agents"]
+    A -->|response| GW
     GW -->|Bot API| P
 ```
 
@@ -58,7 +56,7 @@ More platforms are planned. The Gateway uses an adapter pattern, so adding a new
 </Steps>
 
 <Accordion title="Manual setup (without Mission Control)">
-  If you prefer to configure the Gateway directly, create a `gateway.json` file:
+  If you prefer to configure the Gateway directly, create a config directory with a `dash.json` and agent definitions:
 
   ```json
   {
@@ -69,12 +67,6 @@ More platforms are planned. The Gateway uses an adapter pattern, so adding a new
         "allowedUsers": ["@yourusername"],
         "agent": "default"
       }
-    },
-    "agents": {
-      "default": {
-        "url": "ws://localhost:9101/ws",
-        "token": "your-chat-api-token"
-      }
     }
   }
   ```
@@ -82,13 +74,7 @@ More platforms are planned. The Gateway uses an adapter pattern, so adding a new
   Then start the Gateway:
 
   ```bash
-  npm run gateway -- --config gateway.json
-  ```
-
-  For secure token handling, use the `--secrets` flag:
-
-  ```bash
-  npm run gateway -- --config gateway.json --secrets secrets.json
+  npm run gateway -- --config path/to/config
   ```
 
   See [Architecture](/architecture) for the full gateway configuration reference.
@@ -149,7 +135,7 @@ Each messaging app also has access control lists:
 
 ## The Gateway
 
-The Gateway is a separate process that handles all messaging platform connections. It runs alongside your agent server and takes care of:
+The Gateway is the process that hosts agents and handles all messaging platform connections. It takes care of:
 
 - Connecting to each platform's bot API
 - Receiving incoming messages
@@ -157,7 +143,7 @@ The Gateway is a separate process that handles all messaging platform connection
 - Forwarding messages to the correct agent via the Chat API
 - Sending agent responses back to the platform
 
-The Gateway is a client of the agent server — it connects to the Chat API (WebSocket, port 9101) just like any other client. Mission Control's built-in chat also connects through the Gateway using the same mechanism (WebSocket, port 9200).
+The Gateway hosts agents in-process and serves the channel server on port 9200. Mission Control's built-in chat connects to the same channel server over WebSocket.
 
 <AccordionGroup>
   <Accordion title="Gateway configuration">
@@ -171,27 +157,12 @@ The Gateway is a client of the agent server — it connects to the Chat API (Web
           "token": "bot-token-here",
           "allowedUsers": ["@admin"],
           "agent": "support-agent"
-        },
-        "mission-control": {
-          "adapter": "mission-control",
-          "port": 9200,
-          "agent": "default"
-        }
-      },
-      "agents": {
-        "support-agent": {
-          "url": "ws://localhost:9101/ws",
-          "token": "chat-api-token"
-        },
-        "default": {
-          "url": "ws://localhost:9101/ws",
-          "token": "chat-api-token"
         }
       }
     }
     ```
 
-    Each channel specifies an adapter type and which agent to route to. The `agents` section defines WebSocket connection details for each agent server.
+    Each channel specifies an adapter type and which agent to route to. The gateway hosts agents in-process, so no separate agent server URLs are needed.
   </Accordion>
   <Accordion title="Running the Gateway manually">
     ```bash
@@ -213,7 +184,7 @@ The Gateway is a client of the agent server — it connects to the Chat API (Web
 
     1. Generates the Gateway config from your messaging app settings
     2. Injects tokens from the encrypted secret store
-    3. Starts the Gateway process alongside the agent server
+    3. Starts the Gateway process
     4. Routes Mission Control's built-in chat through the Gateway
 
     You do not need to create or edit `gateway.json` manually when using Mission Control.
@@ -233,6 +204,6 @@ The Gateway is a client of the agent server — it connects to the Chat API (Web
     Deploy agents and manage messaging apps from the desktop app.
   </Card>
   <Card title="Architecture" icon="sitemap" href="/architecture">
-    How the Agent Server, Gateway, and Mission Control fit together.
+    How the Gateway and Mission Control fit together.
   </Card>
 </CardGroup>
