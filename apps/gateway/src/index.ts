@@ -1,4 +1,5 @@
 import type { Server } from 'node:http';
+import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { config } from 'dotenv';
@@ -100,13 +101,15 @@ async function main() {
   const eventBus = new EventBus();
   const registryPath = resolve(dataDir, 'agents.json');
   // Agents without an explicit workspace get a per-agent directory under
-  // `<dataDir>/workspaces/<agentId>`. This is resolved at register() time
+  // `~/dash-workspaces/<agentId>`. We live under the user's home rather
+  // than the gateway dataDir so these directories are easy to discover
+  // in Finder/Explorer — users can drop files into them, open them in
+  // their editor, etc. The path is resolved at register() time
   // (synchronously, no mkdir) and actually created on disk when a chat
-  // starts — see agent-chat-coordinator.ts. The path is persisted to
-  // agents.json so it survives restarts and is visible on the MC agent
-  // detail page.
+  // starts — see agent-chat-coordinator.ts. It's persisted to agents.json
+  // so it survives restarts and is visible on the MC agent detail page.
   const registry = new AgentRegistry(registryPath, {
-    defaultWorkspace: (id) => resolve(dataDir, 'workspaces', id),
+    defaultWorkspace: (id) => resolve(homedir(), 'dash-workspaces', id),
   });
   await registry.load();
   if (registry.list().length > 0) {

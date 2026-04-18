@@ -62,10 +62,7 @@ async function fetchFromOpenAI(apiKey: string, signal?: AbortSignal): Promise<Ra
  * common case where a user authenticated via the OpenAI OAuth flow in
  * MC and stored a JWT under `openai-api-key:default`.
  */
-async function fetchFromCodexBackend(
-  apiKey: string,
-  signal?: AbortSignal,
-): Promise<RawModel[]> {
+async function fetchFromCodexBackend(apiKey: string, signal?: AbortSignal): Promise<RawModel[]> {
   const url = new URL('https://chatgpt.com/backend-api/codex/models');
   // The endpoint requires a client_version query param; any value works
   // but newer versions return richer response shapes. We only consume

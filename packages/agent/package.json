@@ -16,9 +16,9 @@
   },
   "dependencies": {
     "@dash/mcp": "*",
-    "@mariozechner/pi-agent-core": "^0.58.3",
-    "@mariozechner/pi-ai": "^0.58.3",
-    "@mariozechner/pi-coding-agent": "^0.58.3",
+    "@mariozechner/pi-agent-core": "^0.67.68",
+    "@mariozechner/pi-ai": "^0.67.68",
+    "@mariozechner/pi-coding-agent": "^0.67.68",
     "@sinclair/typebox": "^0.34.0"
   }
 }

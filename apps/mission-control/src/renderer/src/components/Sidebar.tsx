@@ -114,9 +114,7 @@ export function Sidebar(): JSX.Element {
                 {section.label}
               </span>
             )}
-            {collapsed && sectionIndex > 0 && (
-              <div className="my-2 border-t border-border" />
-            )}
+            {collapsed && sectionIndex > 0 && <div className="my-2 border-t border-border" />}
             {section.items.map((item) => (
               <Link
                 key={item.to}
@@ -137,17 +135,13 @@ export function Sidebar(): JSX.Element {
       </nav>
 
       {/* Footer */}
-      <div
-        className={`flex items-center gap-2 py-3 ${collapsed ? 'flex-col px-0' : 'px-3'}`}
-      >
+      <div className={`flex items-center gap-2 py-3 ${collapsed ? 'flex-col px-0' : 'px-3'}`}>
         {!collapsed && (
           <>
             <LifeBuoy size={14} className="text-muted" />
             <button
               type="button"
-              onClick={() =>
-                window.api.openExternal('https://discord.gg/REPLACE_WITH_REAL_INVITE')
-              }
+              onClick={() => window.api.openExternal('https://discord.gg/REPLACE_WITH_REAL_INVITE')}
               className="font-[family-name:var(--font-mono)] text-[11px] text-muted tracking-wide hover:text-foreground transition-colors"
             >
               Feedback

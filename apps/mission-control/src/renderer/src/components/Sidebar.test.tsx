@@ -1,8 +1,8 @@
 import '@testing-library/jest-dom/vitest';
 import { act, fireEvent, render, screen } from '@testing-library/react';
 import type { ReactNode } from 'react';
-import { Sidebar } from './Sidebar.js';
 import { useUIStore } from '../stores/ui.js';
+import { Sidebar } from './Sidebar.js';
 
 vi.mock('@tanstack/react-router', () => ({
   Link: ({ to, children }: { to: string; children: ReactNode }) => <a href={to}>{children}</a>,

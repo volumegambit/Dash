@@ -1,4 +1,13 @@
-import { ArrowRight, Bot, CheckCircle, ExternalLink, KeyRound, Loader, Lock } from 'lucide-react';
+import {
+  ArrowRight,
+  Bot,
+  CheckCircle,
+  ExternalLink,
+  KeyRound,
+  Loader,
+  Lock,
+  LogIn,
+} from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { DashSquadMark } from './DashSquadLogo.js';
 import { PROVIDERS, PROVIDER_CONFIG, type Provider } from './providers.js';
@@ -65,7 +74,7 @@ function KeychainConsentStep({
 }): JSX.Element {
   return (
     <div className="text-center">
-      <div className="mx-auto mb-6">
+      <div className="mb-6 flex justify-center">
         <DashSquadMark size={48} />
       </div>
       <div className="mx-auto mb-4 inline-flex size-12 items-center justify-center rounded-full bg-accent-tint text-accent">
@@ -125,7 +134,7 @@ function SettingUpStep({
   if (error) {
     return (
       <div className="text-center">
-        <div className="mx-auto mb-6">
+        <div className="mb-6 flex justify-center">
           <DashSquadMark size={48} />
         </div>
         <h1 className="font-[family-name:var(--font-display)] text-3xl font-extrabold tracking-tight">
@@ -146,7 +155,7 @@ function SettingUpStep({
 
   return (
     <div className="text-center">
-      <div className="mx-auto mb-6">
+      <div className="mb-6 flex justify-center">
         <DashSquadMark size={48} />
       </div>
       <h1 className="font-[family-name:var(--font-display)] text-3xl font-extrabold tracking-tight">
@@ -219,6 +228,11 @@ function ProviderStep({
   );
 }
 
+const OAUTH_LABEL: Partial<Record<Provider, string>> = {
+  anthropic: 'Sign in with Claude (Pro/Max)',
+  openai: 'Sign in with ChatGPT (Codex)',
+};
+
 function ApiKeyStep({
   provider,
   onBack,
@@ -228,6 +242,12 @@ function ApiKeyStep({
   const [apiKey, setApiKey] = useState('');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const oauthLabel = OAUTH_LABEL[provider];
+  const [oauthLoading, setOauthLoading] = useState(false);
+  const [oauthError, setOauthError] = useState<string | null>(null);
+  const [claudeFlow, setClaudeFlow] = useState<{ state: string; verifier: string } | null>(null);
+  const [claudeCode, setClaudeCode] = useState('');
 
   const handleSubmit = async (e: React.FormEvent): Promise<void> => {
     e.preventDefault();
@@ -245,6 +265,63 @@ function ApiKeyStep({
     }
   };
 
+  const handleClaudeOAuthStart = async (): Promise<void> => {
+    setOauthError(null);
+    setOauthLoading(true);
+    try {
+      const { state, verifier } = await window.api.claudePrepareOAuth();
+      setClaudeFlow({ state, verifier });
+      setClaudeCode('');
+    } catch (err) {
+      setOauthError((err as Error).message);
+    } finally {
+      setOauthLoading(false);
+    }
+  };
+
+  const handleClaudeOAuthSubmit = async (e: React.FormEvent): Promise<void> => {
+    e.preventDefault();
+    if (!claudeFlow) return;
+    const code = claudeCode.trim();
+    if (!code) return;
+    setOauthLoading(true);
+    setOauthError(null);
+    try {
+      const result = await window.api.claudeCompleteOAuth(
+        'default',
+        code,
+        claudeFlow.state,
+        claudeFlow.verifier,
+      );
+      if (result.success) {
+        onDone();
+      } else {
+        setOauthError(result.error ?? 'Login failed');
+      }
+    } catch (err) {
+      setOauthError((err as Error).message);
+    } finally {
+      setOauthLoading(false);
+    }
+  };
+
+  const handleCodexOAuth = async (): Promise<void> => {
+    setOauthError(null);
+    setOauthLoading(true);
+    try {
+      const result = await window.api.codexStartOAuth('default');
+      if (result.success) {
+        onDone();
+      } else {
+        setOauthError(result.error ?? 'Login failed');
+      }
+    } catch (err) {
+      setOauthError((err as Error).message);
+    } finally {
+      setOauthLoading(false);
+    }
+  };
+
   const handleOpenUrl = async (url: string): Promise<void> => {
     try {
       await window.api.openExternal(url);
@@ -255,6 +332,51 @@ function ApiKeyStep({
   };
 
   const consoleDomain = config.consoleUrl.replace(/^https?:\/\//, '');
+
+  if (claudeFlow) {
+    return (
+      <div>
+        <button
+          type="button"
+          onClick={() => {
+            setClaudeFlow(null);
+            setClaudeCode('');
+            setOauthError(null);
+          }}
+          className="mb-6 inline-flex items-center gap-1 text-xs text-muted hover:text-foreground"
+        >
+          Back
+        </button>
+        <div className="text-center">
+          <LogIn size={36} className="mx-auto mb-4 text-muted" />
+          <h1 className="text-2xl font-bold">Finish Claude login</h1>
+          <p className="mt-2 text-sm text-muted">
+            A browser window opened. Sign in to your Claude account, then paste the authorization
+            code below.
+          </p>
+          <form onSubmit={handleClaudeOAuthSubmit} className="mt-5 space-y-4 text-left">
+            <input
+              type="text"
+              value={claudeCode}
+              onChange={(e) => setClaudeCode(e.target.value)}
+              placeholder="Paste authorization code"
+              className="w-full rounded-lg border border-border bg-card-bg px-4 py-2 text-sm font-mono text-foreground placeholder:text-muted focus:border-accent focus:outline-none"
+              aria-label="Authorization code"
+            />
+            {oauthError && <p className="text-sm text-red">{oauthError}</p>}
+            <button
+              type="submit"
+              disabled={oauthLoading || !claudeCode.trim()}
+              className="inline-flex w-full items-center justify-center gap-2 rounded-lg bg-accent px-4 py-2 text-sm text-white transition-colors hover:bg-primary-hover disabled:opacity-50"
+            >
+              {oauthLoading && <Loader size={14} className="animate-spin" />}
+              {oauthLoading ? 'Verifying...' : 'Verify and continue'}
+            </button>
+          </form>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div>
@@ -269,6 +391,41 @@ function ApiKeyStep({
         <KeyRound size={36} className="mx-auto mb-4 text-muted" />
         <h1 className="text-2xl font-bold">{config.title}</h1>
         <p className="mt-2 text-sm text-muted">{config.explanation}</p>
+
+        {oauthLabel && (
+          <div className="mt-5 space-y-3 text-left">
+            <button
+              type="button"
+              onClick={provider === 'anthropic' ? handleClaudeOAuthStart : handleCodexOAuth}
+              disabled={oauthLoading || saving}
+              className="inline-flex w-full items-center justify-center gap-2 rounded-lg border border-accent bg-accent-tint px-4 py-3 text-sm font-semibold text-accent transition-colors hover:bg-accent/20 disabled:opacity-50"
+            >
+              {oauthLoading ? <Loader size={16} className="animate-spin" /> : <LogIn size={16} />}
+              {oauthLoading
+                ? provider === 'openai'
+                  ? 'Waiting for browser sign-in…'
+                  : 'Opening browser…'
+                : oauthLabel}
+            </button>
+            <p className="text-center text-[11px] text-muted">
+              {provider === 'anthropic'
+                ? 'Use your Claude Pro or Max subscription — no API key required.'
+                : 'Use your ChatGPT Plus or Pro subscription — no API key required.'}
+            </p>
+            {oauthError && (
+              <p className="rounded border border-red-900/50 bg-red-900/20 px-3 py-2 text-center text-xs text-red">
+                {oauthError}
+              </p>
+            )}
+            <div className="flex items-center gap-3">
+              <div className="h-px flex-1 bg-border" />
+              <span className="font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-widest text-muted">
+                or use an API key
+              </span>
+              <div className="h-px flex-1 bg-border" />
+            </div>
+          </div>
+        )}
 
         <div className="mt-4 rounded-lg border border-border bg-card-bg p-4 text-left">
           <p className="mb-3 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-widest text-muted">

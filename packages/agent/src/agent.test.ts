@@ -26,11 +26,13 @@ function staticResolver(config: DashAgentConfig): () => Promise<DashAgentConfig>
 function makeBackend(events: AgentEvent[] = [], captureState?: (s: AgentState) => void) {
   return {
     name: 'mock',
+    async start(_workspace: string): Promise<void> {},
     async *run(state: AgentState, _options: RunOptions): AsyncGenerator<AgentEvent> {
       captureState?.(state);
       for (const e of events) yield e;
     },
     abort: vi.fn(),
+    async stop(): Promise<void> {},
   };
 }
 

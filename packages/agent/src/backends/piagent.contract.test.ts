@@ -136,7 +136,6 @@ describe('pi-coding-agent SDK contract', () => {
     expect(typeof loader.getPrompts).toBe('function');
     expect(typeof loader.getThemes).toBe('function');
     expect(typeof loader.getAgentsFiles).toBe('function');
-    expect(typeof loader.getPathMetadata).toBe('function');
     expect(typeof loader.extendResources).toBe('function');
   });
 
@@ -167,8 +166,8 @@ describe('pi-coding-agent SDK contract', () => {
   });
 
   it('tool factories return objects with a name property', () => {
-    const bash = createBashTool();
-    const read = createReadTool();
+    const bash = createBashTool('/tmp');
+    const read = createReadTool('/tmp');
     expect(typeof bash.name).toBe('string');
     expect(typeof read.name).toBe('string');
     // These specific names are relied on by PiAgentBackend's allowedNames
@@ -223,12 +222,17 @@ describe('pi-coding-agent SDK type surface', () => {
       description: '',
       filePath: '',
       baseDir: '',
-      source: 'managed' as const,
+      sourceInfo: {
+        path: '',
+        source: 'managed',
+        scope: 'temporary' as const,
+        origin: 'top-level' as const,
+      },
       disableModelInvocation: false,
     } satisfies Skill;
 
     expect(skill.name).toBe('');
-    expect(skill.source).toBe('managed');
+    expect(skill.sourceInfo.source).toBe('managed');
   });
 
   it('locks in the type imports used by piagent.ts', () => {
