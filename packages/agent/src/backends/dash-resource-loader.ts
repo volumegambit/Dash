@@ -73,10 +73,6 @@ export class DashResourceLoader implements ResourceLoader {
     return this.inner.getAgentsFiles();
   }
 
-  getPathMetadata() {
-    return this.inner.getPathMetadata();
-  }
-
   extendResources(paths: ResourceExtensionPaths): void {
     this.inner.extendResources(paths);
   }

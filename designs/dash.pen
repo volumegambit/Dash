@@ -1,5 +1,5 @@
 {
-  "version": "2.9",
+  "version": "2.10",
   "children": [
     {
       "type": "frame",
@@ -2114,16 +2114,14 @@
                   "type": "frame",
                   "id": "YVvci",
                   "name": "newConversationBtn",
-                  "fill": "#2563EB1a",
+                  "fill": "$mc-accent",
                   "stroke": {
-                    "align": "inside",
-                    "thickness": 1,
-                    "fill": "#2563EB66"
+                    "thickness": 0
                   },
-                  "gap": 6,
+                  "gap": 8,
                   "padding": [
-                    6,
-                    12
+                    8,
+                    16
                   ],
                   "alignItems": "center",
                   "children": [
@@ -2131,31 +2129,31 @@
                       "type": "icon_font",
                       "id": "bgHt0",
                       "name": "plusIcon",
-                      "width": 12,
-                      "height": 12,
+                      "width": 14,
+                      "height": 14,
                       "iconFontName": "plus",
                       "iconFontFamily": "lucide",
-                      "fill": "$mc-accent"
+                      "fill": "#FFFFFF"
                     },
                     {
                       "type": "text",
                       "id": "SWBED",
                       "name": "btnLabel",
-                      "fill": "$mc-accent",
+                      "fill": "#FFFFFF",
                       "content": "New conversation",
                       "fontFamily": "Inter",
-                      "fontSize": 12,
-                      "fontWeight": "normal"
+                      "fontSize": 13,
+                      "fontWeight": "600"
                     },
                     {
                       "type": "frame",
                       "id": "DhbTf",
                       "name": "shortcutBadge",
-                      "fill": "#2563EB1a",
+                      "fill": "#FFFFFF22",
                       "stroke": {
                         "align": "inside",
                         "thickness": 1,
-                        "fill": "#2563EB33"
+                        "fill": "#FFFFFF44"
                       },
                       "padding": [
                         2,
@@ -2167,7 +2165,7 @@
                           "type": "text",
                           "id": "D7B6W",
                           "name": "shortcutText",
-                          "fill": "#2563EB99",
+                          "fill": "#FFFFFFCC",
                           "content": "⌘N",
                           "fontFamily": "Inter",
                           "fontSize": 10,
@@ -24891,19 +24889,19 @@
     },
     "mc-background": {
       "type": "color",
-      "value": "#0F172A"
+      "value": "#0A0A0A"
     },
     "mc-border": {
       "type": "color",
-      "value": "#334155"
+      "value": "#262626"
     },
     "mc-card-bg": {
       "type": "color",
-      "value": "#1E293B"
+      "value": "#141414"
     },
     "mc-card-hover": {
       "type": "color",
-      "value": "#334155"
+      "value": "#1F1F1F"
     },
     "mc-foreground": {
       "type": "color",
@@ -24939,15 +24937,15 @@
     },
     "mc-sidebar-active": {
       "type": "color",
-      "value": "#1E293B"
+      "value": "#1A1A1A"
     },
     "mc-sidebar-bg": {
       "type": "color",
-      "value": "#0F172A"
+      "value": "#000000"
     },
     "mc-sidebar-hover": {
       "type": "color",
-      "value": "#1E293B"
+      "value": "#141414"
     },
     "mc-sidebar-width": {
       "type": "number",
@@ -24955,7 +24953,7 @@
     },
     "mc-surface": {
       "type": "color",
-      "value": "#1E293B"
+      "value": "#111111"
     },
     "mc-yellow": {
       "type": "color",

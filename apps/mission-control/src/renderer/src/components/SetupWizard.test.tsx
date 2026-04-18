@@ -176,4 +176,94 @@ describe('SetupWizard', () => {
       expect(mockApi.openExternal).toHaveBeenCalledWith('https://console.anthropic.com');
     });
   });
+
+  describe('api key step — OAuth', () => {
+    it('shows Claude OAuth button and opens code-entry view on click', async () => {
+      const user = userEvent.setup();
+      render(<SetupWizard needsSetup={true} onComplete={noop} />);
+
+      await clickThroughConsent(user);
+      await screen.findByText('Choose Your AI Provider');
+      await user.click(screen.getByText(/Continue with Claude by Anthropic/));
+
+      // The OAuth CTA is visible above the API-key instructions
+      const oauthBtn = screen.getByRole('button', { name: /Sign in with Claude/ });
+      await user.click(oauthBtn);
+
+      expect(mockApi.claudePrepareOAuth).toHaveBeenCalledOnce();
+      await screen.findByText('Finish Claude login');
+      expect(screen.getByLabelText('Authorization code')).toBeInTheDocument();
+    });
+
+    it('calls claudeCompleteOAuth with default label and advances to done on success', async () => {
+      const user = userEvent.setup();
+      render(<SetupWizard needsSetup={true} onComplete={noop} />);
+
+      await clickThroughConsent(user);
+      await screen.findByText('Choose Your AI Provider');
+      await user.click(screen.getByText(/Continue with Claude by Anthropic/));
+      await user.click(screen.getByRole('button', { name: /Sign in with Claude/ }));
+
+      await screen.findByText('Finish Claude login');
+      await user.type(screen.getByLabelText('Authorization code'), 'auth-code-xyz');
+      await user.click(screen.getByRole('button', { name: /Verify and continue/ }));
+
+      expect(mockApi.claudeCompleteOAuth).toHaveBeenCalledWith(
+        'default',
+        'auth-code-xyz',
+        's', // state from mockApi.claudePrepareOAuth
+        'v', // verifier from mockApi.claudePrepareOAuth
+      );
+      await screen.findByText("You're All Set!");
+    });
+
+    it('surfaces Claude OAuth error from completeOAuth result', async () => {
+      const user = userEvent.setup();
+      mockApi.claudeCompleteOAuth.mockResolvedValue({ success: false, error: 'Invalid code' });
+      render(<SetupWizard needsSetup={true} onComplete={noop} />);
+
+      await clickThroughConsent(user);
+      await screen.findByText('Choose Your AI Provider');
+      await user.click(screen.getByText(/Continue with Claude by Anthropic/));
+      await user.click(screen.getByRole('button', { name: /Sign in with Claude/ }));
+      await screen.findByText('Finish Claude login');
+      await user.type(screen.getByLabelText('Authorization code'), 'bad-code');
+      await user.click(screen.getByRole('button', { name: /Verify and continue/ }));
+
+      await screen.findByText('Invalid code');
+      // User stays on the code-entry view so they can retry.
+      expect(screen.getByText('Finish Claude login')).toBeInTheDocument();
+    });
+
+    it('calls codexStartOAuth when OpenAI is selected and Sign in clicked', async () => {
+      const user = userEvent.setup();
+      render(<SetupWizard needsSetup={true} onComplete={noop} />);
+
+      await clickThroughConsent(user);
+      await screen.findByText('Choose Your AI Provider');
+      await user.click(screen.getByText(/OpenAI \(GPT-4o, o3\)/));
+      await user.click(screen.getByText(/Continue with OpenAI/));
+      expect(screen.getByText('Connect to OpenAI')).toBeInTheDocument();
+
+      await user.click(screen.getByRole('button', { name: /Sign in with ChatGPT/ }));
+
+      expect(mockApi.codexStartOAuth).toHaveBeenCalledWith('default');
+      await screen.findByText("You're All Set!");
+    });
+
+    it('does NOT show an OAuth button for Google', async () => {
+      const user = userEvent.setup();
+      render(<SetupWizard needsSetup={true} onComplete={noop} />);
+
+      await clickThroughConsent(user);
+      await screen.findByText('Choose Your AI Provider');
+      await user.click(screen.getByText(/Google Gemini/));
+      await user.click(screen.getByText(/Continue with Google Gemini/));
+      expect(screen.getByText('Connect to Google Gemini')).toBeInTheDocument();
+
+      expect(screen.queryByRole('button', { name: /Sign in with/ })).not.toBeInTheDocument();
+      // The API key input is still present.
+      expect(screen.getByPlaceholderText('AIza...')).toBeInTheDocument();
+    });
+  });
 });

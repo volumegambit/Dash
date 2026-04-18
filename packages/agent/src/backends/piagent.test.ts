@@ -857,7 +857,7 @@ describe('PiAgentBackend model fallback chain', () => {
     cb({ type: 'agent_end', messages: [] });
   }
 
-  async function mountBackend(session: ReturnType<typeof makeSequencedSession>) {
+  async function mountBackend(session: ReturnType<typeof makeSequencedSession>, _fallbackModels?: string[]) {
     const { createAgentSession } = await import('@mariozechner/pi-coding-agent');
     vi.mocked(createAgentSession).mockResolvedValueOnce({
       // biome-ignore lint/suspicious/noExplicitAny: test mock

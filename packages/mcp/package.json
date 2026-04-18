@@ -15,7 +15,7 @@
     "dev": "tsup --watch"
   },
   "dependencies": {
-    "@mariozechner/pi-agent-core": "^0.58.3",
+    "@mariozechner/pi-agent-core": "^0.67.68",
     "@modelcontextprotocol/sdk": "^1.27.0",
     "@sinclair/typebox": "^0.34.0"
   },
