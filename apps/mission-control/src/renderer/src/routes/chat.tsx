@@ -1226,6 +1226,8 @@ export function Chat(): JSX.Element {
   const [showBrowser, setShowBrowser] = useState(false);
   const [renamingTitle, setRenamingTitle] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [inlineRenameTabId, setInlineRenameTabId] = useState<string | null>(null);
+  const [inlineRenameTitle, setInlineRenameTitle] = useState('');
   const renameRef = useRef<HTMLInputElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -1347,21 +1349,40 @@ export function Chat(): JSX.Element {
     [createConversation, selectConversation],
   );
 
-  // Keyboard shortcuts: Cmd+N new conversation, Cmd+O browse conversations
+  // Keyboard shortcuts: Cmd+T/Cmd+N new tab, Cmd+W close tab,
+  // Cmd+Option+Left/Right switch tabs, Cmd+O browse conversations
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key === 'n') {
+      const mod = e.metaKey || e.ctrlKey;
+      if (mod && (e.key === 'n' || e.key === 't')) {
         e.preventDefault();
         handleNewConversation();
       }
-      if ((e.metaKey || e.ctrlKey) && e.key === 'o') {
+      if (mod && e.key === 'o') {
         e.preventDefault();
         setShowBrowser((prev) => !prev);
+      }
+      if (mod && e.key === 'w') {
+        e.preventDefault();
+        if (selectedConversationId) {
+          closeTab(selectedConversationId);
+        }
+      }
+      if (mod && e.altKey && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
+        e.preventDefault();
+        if (openTabIds.length > 1 && selectedConversationId) {
+          const currentIndex = openTabIds.indexOf(selectedConversationId);
+          const nextIndex =
+            e.key === 'ArrowLeft'
+              ? (currentIndex - 1 + openTabIds.length) % openTabIds.length
+              : (currentIndex + 1) % openTabIds.length;
+          selectConversation(openTabIds[nextIndex]);
+        }
       }
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [handleNewConversation]);
+  }, [handleNewConversation, selectedConversationId, openTabIds, closeTab, selectConversation]);
 
   // If navigated with search params, auto-create conversation — intentionally run once on mount
   // biome-ignore lint/correctness/useExhaustiveDependencies: intentionally run once on mount
@@ -1560,6 +1581,14 @@ export function Chat(): JSX.Element {
             if (!conv) return null;
             const isSelected = tabId === selectedConversationId;
             const hasUnread = unreadConversations.has(tabId);
+            const isRenaming = inlineRenameTabId === tabId;
+            const commitInlineRename = (): void => {
+              const trimmed = inlineRenameTitle.trim();
+              if (trimmed && trimmed !== conv.title) {
+                renameConversation(tabId, trimmed);
+              }
+              setInlineRenameTabId(null);
+            };
             return (
               <div
                 key={tabId}
@@ -1571,27 +1600,62 @@ export function Chat(): JSX.Element {
                     ? 'bg-background text-foreground border-b-2 border-b-accent'
                     : 'bg-surface text-muted hover:bg-sidebar-hover hover:text-foreground'
                 }`}
-                onClick={() => selectConversation(tabId)}
+                onClick={() => {
+                  if (!isRenaming) selectConversation(tabId);
+                }}
+                onDoubleClick={() => {
+                  selectConversation(tabId);
+                  setInlineRenameTabId(tabId);
+                  setInlineRenameTitle(conv.title);
+                }}
                 onKeyDown={(e) => {
+                  if (isRenaming) return;
                   if (e.key === 'Enter' || e.key === ' ') selectConversation(tabId);
+                  if (e.key === 'F2') {
+                    setInlineRenameTabId(tabId);
+                    setInlineRenameTitle(conv.title);
+                  }
                 }}
                 tabIndex={0}
               >
-                {hasUnread && (
+                {hasUnread && !isRenaming && (
                   <span className="inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-green" />
                 )}
-                <span className="truncate text-xs font-medium">{conv.title}</span>
-                <button
-                  type="button"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    closeTab(tabId);
-                  }}
-                  className="shrink-0 p-0.5 text-muted opacity-0 transition-opacity group-hover:opacity-100 hover:text-foreground"
-                  aria-label={`Close ${conv.title}`}
-                >
-                  <X size={10} />
-                </button>
+                {isRenaming ? (
+                  <input
+                    value={inlineRenameTitle}
+                    onChange={(e) => setInlineRenameTitle(e.target.value)}
+                    onClick={(e) => e.stopPropagation()}
+                    onDoubleClick={(e) => e.stopPropagation()}
+                    onKeyDown={(e) => {
+                      e.stopPropagation();
+                      if (e.key === 'Enter') commitInlineRename();
+                      if (e.key === 'Escape') setInlineRenameTabId(null);
+                    }}
+                    onBlur={commitInlineRename}
+                    // biome-ignore lint/a11y/noAutofocus: entering rename mode should focus the input
+                    autoFocus
+                    className="min-w-0 flex-1 border border-accent bg-background px-1 text-xs text-foreground focus:outline-none"
+                    data-testid={`chat-tab-rename-input-${tabId}`}
+                    aria-label={`Rename ${conv.title}`}
+                  />
+                ) : (
+                  <span className="truncate text-xs font-medium">{conv.title}</span>
+                )}
+                {!isRenaming && (
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      closeTab(tabId);
+                    }}
+                    onDoubleClick={(e) => e.stopPropagation()}
+                    className="shrink-0 p-0.5 text-muted opacity-0 transition-opacity group-hover:opacity-100 hover:text-foreground"
+                    aria-label={`Close ${conv.title}`}
+                  >
+                    <X size={10} />
+                  </button>
+                )}
               </div>
             );
           })}
@@ -1662,18 +1726,19 @@ export function Chat(): JSX.Element {
                 pct={contextStatus.pct}
               />
             )}
+            {activeWorkspace && (
+              <button
+                type="button"
+                onClick={() => window.api.openPath(activeWorkspace)}
+                className="flex min-w-0 items-center gap-1.5 text-xs text-muted transition-colors hover:text-foreground"
+                title={`Working Directory: ${activeWorkspace}`}
+                aria-label="Open working directory"
+              >
+                <FolderOpen size={12} className="shrink-0" />
+                <span className="max-w-[260px] truncate">{activeWorkspace}</span>
+              </button>
+            )}
             <div className="ml-auto flex items-center gap-2">
-              {activeWorkspace && (
-                <button
-                  type="button"
-                  onClick={() => window.api.openPath(activeWorkspace)}
-                  className="flex items-center gap-1.5 text-xs text-muted transition-colors hover:text-foreground"
-                  title={`Workspace: ${activeWorkspace}`}
-                >
-                  <FolderOpen size={12} />
-                  <span className="max-w-[200px] truncate">{activeWorkspace}</span>
-                </button>
-              )}
               {selectedConversationId &&
                 (renamingTitle !== null ? (
                   <input
