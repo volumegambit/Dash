@@ -143,7 +143,7 @@ function ShortcutHint(): JSX.Element {
       <span className="text-xs text-muted">
         or press{' '}
         <kbd className="bg-white/5 border border-border px-1.5 py-0.5 font-[family-name:var(--font-mono)] text-[10px]">
-          ⌘N
+          ⌘T
         </kbd>{' '}
         for the full agent picker
       </span>

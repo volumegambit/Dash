@@ -171,7 +171,7 @@ describe('EmptyChatState', () => {
       expect(onStartWithAgent).toHaveBeenCalledWith('agent-2');
     });
 
-    it('shows the ⌘N shortcut hint', () => {
+    it('shows the ⌘T shortcut hint', () => {
       render(
         <EmptyChatState
           recentConversations={recents}
@@ -181,7 +181,7 @@ describe('EmptyChatState', () => {
           onNavigateToAgents={vi.fn()}
         />,
       );
-      expect(screen.getByText(/⌘N/)).toBeInTheDocument();
+      expect(screen.getByText(/⌘T/)).toBeInTheDocument();
     });
   });
 
