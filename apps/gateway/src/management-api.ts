@@ -1,6 +1,6 @@
 import type { AgentClient } from '@dash/agent';
-import type { ChannelAdapter } from '@dash/channels';
-import { TelegramAdapter, WhatsAppAdapter } from '@dash/channels';
+import type { ChannelAdapter, ChannelAdapterRegistry } from '@dash/channels';
+import { ChannelCredentialMissingError, createDefaultChannelAdapterRegistry } from '@dash/channels';
 import { type StructuredLogger, createConsoleLogger } from '@dash/logging';
 import { Hono } from 'hono';
 import type { Context } from 'hono';
@@ -22,6 +22,23 @@ export interface GatewayManagementOptions {
   agents: AgentChatCoordinator;
   agentRegistry: AgentRegistry;
   channelRegistry: ChannelRegistry;
+  /**
+   * Open registry of channel adapter factories. The POST /channels
+   * handler and the credential-rotation hook both look up adapters
+   * here by id, so adding a new adapter type is a single new factory
+   * — no edits to this file.
+   *
+   * Optional only so existing tests (which never exercise channel
+   * registration) can omit it; defaults to the built-in registry.
+   */
+  channelAdapterRegistry?: ChannelAdapterRegistry;
+  /**
+   * Gateway data directory, threaded through to adapter factories so
+   * on-disk session state (e.g. WhatsApp pairing data) lives under the
+   * gateway's working tree. Defaults to `.` to preserve the previous
+   * relative-path behavior for tests.
+   */
+  dataDir?: string;
   credentialStore: GatewayCredentialStore;
   /**
    * Persistent model store. Created in `apps/gateway/src/index.ts` from
@@ -104,6 +121,9 @@ async function parseJsonBody<T = Record<string, unknown>>(
 export function createGatewayManagementApp(options: GatewayManagementOptions): Hono {
   const { gateway, agents, agentRegistry, channelRegistry, credentialStore, token, eventBus } =
     options;
+  const channelAdapterRegistry =
+    options.channelAdapterRegistry ?? createDefaultChannelAdapterRegistry();
+  const dataDir = options.dataDir ?? '.';
   const logger = options.logger ?? createConsoleLogger('info', 'text', 'gateway-api');
   const startedAt = options.startedAt ?? new Date().toISOString();
   const app = new Hono();
@@ -170,12 +190,16 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
   }
 
   /**
-   * Telegram token-rotation helper: when `POST /credentials` sets a key
-   * matching `channel:<name>:token` and the named channel already exists,
-   * stop the old adapter and re-register with a fresh `TelegramAdapter`
-   * that captures the new token. Idempotent: if the channel doesn't
-   * exist yet (initial setup flow), no-op and the credential is simply
-   * staged for when POST /channels runs.
+   * Credential-rotation helper: when `POST /credentials` sets a key any
+   * registered adapter factory claims (via its `matchRotatedCredential`
+   * hook), stop the affected channel and re-register a fresh adapter so
+   * the new credential takes effect on the next message.
+   *
+   * Today only Telegram opts in (token rotation). Adapters that don't
+   * implement the hook are skipped, which preserves the previous
+   * "rotation only affects Telegram" behavior. Idempotent: if the
+   * channel doesn't exist yet (initial setup flow), no-op and the
+   * credential is simply staged for when POST /channels runs.
    *
    * Errors are logged but not re-raised — the credential itself has been
    * persisted successfully, which is what the HTTP caller asked for;
@@ -183,21 +207,34 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
    * that a subsequent gateway restart (or manual DELETE+POST) will heal.
    */
   async function restartChannelForTokenRotation(credentialKey: string): Promise<void> {
-    const match = credentialKey.match(/^channel:(.+):token$/);
+    const match = channelAdapterRegistry.matchRotatedCredential(credentialKey);
     if (!match) return;
-    const channelName = match[1];
+    const { factoryId, channelName } = match;
     const entry = channelRegistry.get(channelName);
-    if (!entry || entry.adapter !== 'telegram') return;
+    if (!entry || entry.adapter !== factoryId) return;
 
-    const newToken = await credentialStore.get(credentialKey);
-    if (!newToken) return;
+    const factory = channelAdapterRegistry.get(factoryId);
+    if (!factory) return;
+
+    let adapter: ChannelAdapter;
+    try {
+      adapter = await factory.create({
+        channelName,
+        credentialStore,
+        channelRegistry,
+        dataDir,
+      });
+    } catch (err) {
+      // Silently no-op when the credential is missing (race with delete,
+      // or initial setup writing partial state) — matches the previous
+      // `if (!newToken) return;` short-circuit. Any other error falls
+      // through to the outer catch and is logged.
+      if (err instanceof ChannelCredentialMissingError) return;
+      throw err;
+    }
 
     try {
       await gateway.stopChannel(channelName);
-      const adapter = new TelegramAdapter(
-        newToken,
-        () => channelRegistry.get(channelName)?.allowedUsers ?? [],
-      );
       await gateway.registerChannel(channelName, adapter, {
         globalDenyList: entry.globalDenyList,
         routing: entry.routing,
@@ -438,41 +475,41 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
     if (channelRegistry.has(channelName)) {
       return c.json({ error: `Channel '${channelName}' already exists` }, 409);
     }
+
+    // Look up the factory before mutating any state so an unknown
+    // adapter id fails fast with no rollback needed.
+    const factory = channelAdapterRegistry.get(body.adapter);
+    if (!factory) {
+      return c.json({ error: `Unknown adapter type: ${body.adapter}` }, 400);
+    }
+
     channelRegistry.register({
       name: channelName,
-      adapter: body.adapter as 'telegram' | 'whatsapp',
+      adapter: body.adapter,
       globalDenyList,
       allowedUsers,
       routing,
     });
 
-    // Create adapter from credentials. Telegram uses a pull-based closure
-    // over the registry so runtime edits to allowedUsers take effect on
-    // the next message without restarting the bot.
+    // Build the adapter through the registry. Factories may capture the
+    // channel registry in pull-based closures (Telegram does this for
+    // its allow-list) so live PUT /channels edits take effect without
+    // a restart.
     let adapter: ChannelAdapter;
-    if (body.adapter === 'telegram') {
-      const credKey = `channel:${channelName}:token`;
-      const tok = await credentialStore.get(credKey);
-      if (!tok) {
-        channelRegistry.remove(channelName); // rollback
-        return c.json({ error: `No credential found for key '${credKey}'` }, 400);
-      }
-      adapter = new TelegramAdapter(
-        tok,
-        () => channelRegistry.get(channelName)?.allowedUsers ?? [],
-      );
-    } else if (body.adapter === 'whatsapp') {
-      const credKey = `channel:${channelName}:whatsapp-auth`;
-      const authJson = await credentialStore.get(credKey);
-      if (!authJson) {
-        channelRegistry.remove(channelName); // rollback
-        return c.json({ error: `No credential found for key '${credKey}'` }, 400);
-      }
-      const auth = JSON.parse(authJson) as Record<string, string>;
-      adapter = new WhatsAppAdapter(auth, `data/whatsapp/${channelName}`);
-    } else {
+    try {
+      adapter = await factory.create({
+        channelName,
+        credentialStore,
+        channelRegistry,
+        dataDir,
+      });
+    } catch (err) {
       channelRegistry.remove(channelName); // rollback
-      return c.json({ error: `Unknown adapter type: ${body.adapter}` }, 400);
+      if (err instanceof ChannelCredentialMissingError) {
+        return c.json({ error: err.message }, 400);
+      }
+      const message = err instanceof Error ? err.message : 'Failed to build adapter';
+      return c.json({ error: message }, 500);
     }
 
     try {
@@ -609,10 +646,11 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
     if (/^[^:]+-api-key:/.test(body.key)) {
       await options.modelsStore.clear();
     }
-    // Telegram token rotation: if this credential keys a running
-    // Telegram channel, restart its adapter so the grammy Bot captures
-    // the new token. No-op for other keys; no-op if no such channel
-    // exists yet. Errors are logged but do not fail the request.
+    // Channel credential rotation: if this key matches an adapter
+    // factory's rotation pattern and a channel using that adapter
+    // exists, restart its adapter so it captures the new credential.
+    // No-op for other keys; no-op if no such channel exists yet.
+    // Errors are logged but do not fail the request.
     await restartChannelForTokenRotation(body.key);
     return c.json({ ok: true }, 201);
   });

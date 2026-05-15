@@ -8,10 +8,21 @@ export type {
 export type { RouterRoutingRule, RouterConfig, MessageLogEntry, MessageLogger } from './types.js';
 export { MessageRouter } from './router.js';
 export { MissionControlAdapter } from './adapters/mission-control.js';
-export { TelegramAdapter } from './adapters/telegram.js';
+export { TelegramAdapter, telegramChannelAdapter } from './adapters/telegram.js';
 export type { TelegramAllowedUsers } from './adapters/telegram.js';
-export { WhatsAppAdapter } from './adapters/whatsapp.js';
+export { WhatsAppAdapter, whatsappChannelAdapter } from './adapters/whatsapp.js';
 export { makeBaileysAuthState } from './adapters/whatsapp-auth.js';
 export type { BaileysAuthState } from './adapters/whatsapp-auth.js';
 export { startWhatsAppPairing } from './adapters/whatsapp-pairing.js';
 export type { PairingCallbacks } from './adapters/whatsapp-pairing.js';
+export {
+  ChannelAdapterRegistry,
+  ChannelCredentialMissingError,
+} from './registry.js';
+export type {
+  ChannelAdapterFactory,
+  ChannelCredentialReader,
+  ChannelFactoryContext,
+  ChannelRegistryReader,
+} from './registry.js';
+export { createDefaultChannelAdapterRegistry } from './default-registry.js';

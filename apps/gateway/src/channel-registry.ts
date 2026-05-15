@@ -13,7 +13,13 @@ export interface ChannelRoutingRule {
 
 export interface ChannelConfig {
   name: string;
-  adapter: 'telegram' | 'whatsapp';
+  /**
+   * Adapter id, e.g. `'telegram'` or `'whatsapp'`. Resolved against the
+   * gateway's {@link ChannelAdapterRegistry} at construction time —
+   * stored as a free string so adding a new adapter does not require
+   * editing this type.
+   */
+  adapter: string;
   globalDenyList: string[];
   /**
    * Optional adapter-level allow-list. When non-empty, the channel adapter
@@ -32,7 +38,8 @@ export interface ChannelConfig {
 
 export interface RegisteredChannel {
   name: string;
-  adapter: 'telegram' | 'whatsapp';
+  /** Adapter id resolved against the gateway's adapter registry. */
+  adapter: string;
   globalDenyList: string[];
   allowedUsers: string[];
   routing: ChannelRoutingRule[];

@@ -17,7 +17,12 @@ export interface GatewayAgent {
 
 export interface GatewayChannel {
   name: string;
-  adapter: 'telegram' | 'whatsapp';
+  /**
+   * Adapter id resolved against the gateway's adapter registry, e.g.
+   * `'telegram'` or `'whatsapp'`. Kept as a free string so adding a new
+   * adapter does not require editing this type or downstream MC code.
+   */
+  adapter: string;
   globalDenyList: string[];
   /**
    * Adapter-level allow-list (Telegram). When non-empty, the adapter itself
