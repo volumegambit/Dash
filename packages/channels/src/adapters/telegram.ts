@@ -1,5 +1,6 @@
 import { Bot } from 'grammy';
 import type { ReactionTypeEmoji } from 'grammy/types';
+import { type ChannelAdapterFactory, ChannelCredentialMissingError } from '../registry.js';
 import type { ChannelAdapter, ChannelHealth, MessageHandler, OutboundMessage } from '../types.js';
 
 /**
@@ -296,3 +297,31 @@ export class TelegramAdapter implements ChannelAdapter {
     this.typingLoops.delete(conversationId);
   }
 }
+
+/** Credential store key holding the bot token for a Telegram channel. */
+const telegramTokenKey = (channelName: string): string => `channel:${channelName}:token`;
+
+/**
+ * Factory for Telegram channel adapters. Registered by
+ * {@link createDefaultChannelAdapterRegistry} so the gateway can
+ * construct Telegram adapters by id without hardcoding the import or
+ * the credential key layout.
+ */
+export const telegramChannelAdapter: ChannelAdapterFactory = {
+  id: 'telegram',
+  label: 'Telegram',
+  credentialKeys: { token: telegramTokenKey },
+  async create({ channelName, credentialStore, channelRegistry }) {
+    const credKey = telegramTokenKey(channelName);
+    const token = await credentialStore.get(credKey);
+    if (!token) throw new ChannelCredentialMissingError(credKey);
+    // Pull-based allow-list: the closure reads from the channel registry
+    // on every inbound message, so runtime edits via PUT /channels take
+    // effect without restarting the bot.
+    return new TelegramAdapter(token, () => channelRegistry.get(channelName)?.allowedUsers ?? []);
+  },
+  matchRotatedCredential(credentialKey) {
+    const match = credentialKey.match(/^channel:(.+):token$/);
+    return match?.[1];
+  },
+};

@@ -15,7 +15,13 @@ export interface RoutingRule {
 export interface MessagingApp {
   id: string;
   name: string; // user-given, e.g. "Family Group Bot"
-  type: 'telegram' | 'whatsapp';
+  /**
+   * Adapter id resolved against the gateway's adapter registry, e.g.
+   * `'telegram'` or `'whatsapp'`. Stored as a free string so adding a new
+   * adapter requires no edits here; UI surfaces fall back gracefully on
+   * unknown ids.
+   */
+  type: string;
   credentialsKey: string; // key in the credentials store, e.g. 'messaging-app:abc:token'
   enabled: boolean;
   createdAt: string;

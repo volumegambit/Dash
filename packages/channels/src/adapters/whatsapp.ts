@@ -4,6 +4,7 @@ import { dirname, join } from 'node:path';
 import makeWASocket, { DisconnectReason } from '@whiskeysockets/baileys';
 import type { ConnectionState, WASocket } from '@whiskeysockets/baileys';
 import qrcode from 'qrcode';
+import { type ChannelAdapterFactory, ChannelCredentialMissingError } from '../registry.js';
 import type {
   ChannelAdapter,
   ChannelHealth,
@@ -199,3 +200,24 @@ export class WhatsAppAdapter implements ChannelAdapter {
     await this.sock.sendMessage(conversationId, { text: message.text });
   }
 }
+
+/** Credential store key holding the Baileys auth blob for a WhatsApp channel. */
+const whatsappAuthKey = (channelName: string): string => `channel:${channelName}:whatsapp-auth`;
+
+/**
+ * Factory for WhatsApp channel adapters. Auth state lives under
+ * `<dataDir>/whatsapp-sessions/<channelName>` so multiple gateways with
+ * distinct data dirs don't collide.
+ */
+export const whatsappChannelAdapter: ChannelAdapterFactory = {
+  id: 'whatsapp',
+  label: 'WhatsApp',
+  credentialKeys: { auth: whatsappAuthKey },
+  async create({ channelName, credentialStore, dataDir }) {
+    const credKey = whatsappAuthKey(channelName);
+    const authJson = await credentialStore.get(credKey);
+    if (!authJson) throw new ChannelCredentialMissingError(credKey);
+    const auth = JSON.parse(authJson) as Record<string, string>;
+    return new WhatsAppAdapter(auth, join(dataDir, 'whatsapp-sessions', channelName));
+  },
+};

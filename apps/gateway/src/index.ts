@@ -9,7 +9,7 @@ config({ path: resolve(__dirname, '../../../.env') });
 
 import type { AgentClient } from '@dash/agent';
 import { PiAgentBackend } from '@dash/agent';
-import { TelegramAdapter, WhatsAppAdapter } from '@dash/channels';
+import { createDefaultChannelAdapterRegistry } from '@dash/channels';
 import type { ChannelAdapter } from '@dash/channels';
 import { createConsoleLogger } from '@dash/logging';
 import { FileTokenStore, McpManager } from '@dash/mcp';
@@ -204,30 +204,35 @@ async function main() {
     }
   }
 
+  // Open registry of channel adapter factories. Adding a new adapter is
+  // a single `registry.register(...)` call in `@dash/channels` — the
+  // restore loop and management API both look factories up by id, with
+  // no hardcoded `if (adapter === '...')` branches.
+  const channelAdapters = createDefaultChannelAdapterRegistry();
+
   // Restore persisted channels
   for (const channel of channelRegistry.list()) {
     try {
-      let adapter: ChannelAdapter;
-      if (channel.adapter === 'telegram') {
-        const token = await credentialStore.get(`channel:${channel.name}:token`);
-        if (!token) {
-          console.warn(`[gateway] skipping channel ${channel.name}: no token`);
-          continue;
-        }
-        // Pull-based allow-list: the closure reads from the channel
-        // registry on every inbound message, so runtime edits via
-        // PUT /channels/:name take effect without a restart. Captures
-        // the channel name by value (loop-scoped `const channel`).
-        const channelName = channel.name;
-        adapter = new TelegramAdapter(
-          token,
-          () => channelRegistry.get(channelName)?.allowedUsers ?? [],
+      const factory = channelAdapters.get(channel.adapter);
+      if (!factory) {
+        console.warn(
+          `[gateway] skipping channel ${channel.name}: unknown adapter '${channel.adapter}'`,
         );
-      } else if (channel.adapter === 'whatsapp') {
-        const authRaw = await credentialStore.get(`channel:${channel.name}:whatsapp-auth`);
-        const auth = authRaw ? (JSON.parse(authRaw) as Record<string, string>) : {};
-        adapter = new WhatsAppAdapter(auth, join(dataDir, 'whatsapp-sessions', channel.name));
-      } else {
+        continue;
+      }
+      let adapter: ChannelAdapter;
+      try {
+        adapter = await factory.create({
+          channelName: channel.name,
+          credentialStore,
+          channelRegistry,
+          dataDir,
+        });
+      } catch (err) {
+        console.warn(
+          `[gateway] skipping channel ${channel.name}:`,
+          err instanceof Error ? err.message : err,
+        );
         continue;
       }
 
@@ -270,6 +275,7 @@ async function main() {
     agents,
     agentRegistry: registry,
     channelRegistry,
+    channelAdapterRegistry: channelAdapters,
     credentialStore,
     modelsStore,
     eventLogStore,
@@ -277,6 +283,7 @@ async function main() {
     startedAt,
     eventBus,
     logger,
+    dataDir,
     mcpDeps: {
       manager: mcpManager,
       configStore: mcpConfigStore,
