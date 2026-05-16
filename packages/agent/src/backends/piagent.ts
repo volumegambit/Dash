@@ -8,34 +8,20 @@ import {
   DefaultResourceLoader,
   SessionManager,
   createAgentSession,
-  createBashTool,
-  createEditTool,
-  createFindTool,
-  createGrepTool,
-  createLsTool,
-  createReadTool,
-  createWriteTool,
 } from '@mariozechner/pi-coding-agent';
 import type { AgentSession, AgentSessionEvent, Skill } from '@mariozechner/pi-coding-agent';
 
 import type { McpAgentContext, McpConfigStoreInterface, McpManager } from '@dash/mcp';
-import {
-  createMcpAddServerTool,
-  createMcpListServersTool,
-  createMcpRemoveServerTool,
-} from '@dash/mcp';
 
 import type { Logger } from '../logger.js';
-import {
-  createCreateSkillTool,
-  createLoadSkillTool,
-  scanSkillsDirectory,
-} from '../skills/index.js';
+import { scanSkillsDirectory } from '../skills/index.js';
 import type { SkillDiscoveryResult } from '../skills/types.js';
-import { BraveSearchProvider } from '../tools/search-providers/brave.js';
-import { createTodoWriteTool } from '../tools/todowrite.js';
-import { createWebFetchTool } from '../tools/web-fetch.js';
-import { createWebSearchTool } from '../tools/web-search.js';
+import {
+  DEFAULT_ALLOWED_TOOL_NAMES,
+  createDefaultToolRegistry,
+  resolveAllowedToolNames,
+} from '../tools/default-registry.js';
+import type { ToolFactoryContext, ToolRegistry } from '../tools/registry.js';
 import type {
   AgentBackend,
   AgentEvent,
@@ -45,8 +31,10 @@ import type {
 } from '../types.js';
 import { DashResourceLoader } from './dash-resource-loader.js';
 
-/** All built-in tool names supported by PiAgent */
-const DEFAULT_TOOL_NAMES = ['read', 'bash', 'edit', 'write', 'grep', 'find', 'ls'] as const;
+/** All built-in tool names supported by PiAgent (re-exported for callers that
+ * still depend on this constant by name; the canonical list now lives in
+ * `tools/default-registry.ts`). */
+const DEFAULT_TOOL_NAMES = DEFAULT_ALLOWED_TOOL_NAMES;
 
 /**
  * Provider API keys can be supplied either as a static snapshot (tests,
@@ -88,6 +76,14 @@ export class PiAgentBackend implements AgentBackend {
   private lastCompactionReason: 'threshold' | 'overflow' = 'threshold';
 
   /**
+   * Workspace directory the session was started with. Cached at `start()`
+   * so `syncMcpToolsToSession()` can rebuild the tool list (which needs a
+   * context with the workspace, even though no custom tool actually uses
+   * it today).
+   */
+  private currentWorkspace = '';
+
+  /**
    * Current provider API keys — populated from the source (snapshot or
    * function) on each resolve. Used by `setupAuth()` and redaction logs.
    */
@@ -113,6 +109,14 @@ export class PiAgentBackend implements AgentBackend {
    */
   private lastAppliedKeys: Record<string, string> = {};
 
+  /**
+   * Registry of tool factories used to build the built-in and custom tool
+   * lists for every session. Defaults to `createDefaultToolRegistry()` —
+   * pass a custom registry to add, replace, or remove tools without
+   * subclassing.
+   */
+  private readonly toolRegistry: ToolRegistry;
+
   constructor(
     private config: DashAgentConfig,
     private providerApiKeysSource: ProviderApiKeysSource,
@@ -122,7 +126,10 @@ export class PiAgentBackend implements AgentBackend {
     private mcpManager?: McpManager,
     private mcpConfigStore?: McpConfigStoreInterface,
     private mcpAgentContext?: McpAgentContext,
-  ) {}
+    toolRegistry?: ToolRegistry,
+  ) {
+    this.toolRegistry = toolRegistry ?? createDefaultToolRegistry();
+  }
 
   /**
    * Resolve the current provider keys from the source. Snapshot callers get
@@ -282,153 +289,48 @@ export class PiAgentBackend implements AgentBackend {
   }
 
   /**
-   * Build the built-in PiAgent tools based on the config's tool names.
-   * These go in createAgentSession({ tools }) — PiAgent recognizes them by name.
+   * Build the `ToolFactoryContext` used by every registry call. Capturing
+   * this once per build keeps the gating logic in one place.
    */
-  private buildBuiltinTools(workspace: string) {
-    const allowedNames = this.config.tools
-      ? new Set(this.config.tools)
-      : new Set(DEFAULT_TOOL_NAMES);
-
-    // biome-ignore lint/suspicious/noExplicitAny: Tool type not exported from pi-coding-agent top-level
-    const toolBuilders: Record<string, () => any> = {
-      read: () => createReadTool(workspace),
-      bash: () => createBashTool(workspace),
-      edit: () => createEditTool(workspace),
-      write: () => createWriteTool(workspace),
-      grep: () => createGrepTool(workspace),
-      find: () => createFindTool(workspace),
-      ls: () => createLsTool(workspace),
+  private buildToolFactoryContext(workspace: string): ToolFactoryContext {
+    return {
+      workspace,
+      config: this.config,
+      providerApiKeys: this.providerApiKeys,
+      managedSkillsDir: this.managedSkillsDir,
+      mcpManager: this.mcpManager,
+      mcpConfigStore: this.mcpConfigStore,
+      mcpAgentContext: this.mcpAgentContext,
+      logger: this.logger,
+      listSkills: () => this.listSkills(),
+      onMcpToolsChanged: () => this.syncMcpToolsToSession(),
+      allowedToolNames: resolveAllowedToolNames(this.config.tools),
     };
-
-    const tools = [];
-    for (const name of DEFAULT_TOOL_NAMES) {
-      if (allowedNames.has(name) && toolBuilders[name]) {
-        tools.push(toolBuilders[name]());
-      }
-    }
-
-    return tools;
   }
 
   /**
-   * Build custom tools (web, task, skills).
+   * Build the built-in PiAgent tools (pi-coding-agent shape).
+   * These go in createAgentSession({ tools }) — PiAgent recognizes them by name.
+   * Returns `any[]` because pi-coding-agent does not export its `Tool` type
+   * from the package top-level; the registry stores them as `unknown`.
+   */
+  // biome-ignore lint/suspicious/noExplicitAny: pi-coding-agent does not export its Tool type
+  private buildBuiltinTools(workspace: string): any[] {
+    const ctx = this.buildToolFactoryContext(workspace);
+    // biome-ignore lint/suspicious/noExplicitAny: same as above
+    return this.toolRegistry.buildBuiltin(ctx) as any[];
+  }
+
+  /**
+   * Build custom tools (task, skills, web, MCP).
    * These go in createAgentSession({ customTools }) — registered via the extension system.
    * AgentTool instances are wrapped as ToolDefinition (adds unused ctx parameter).
    */
-  // biome-ignore lint/suspicious/noExplicitAny: tool types from pi-coding-agent SDK lack exported interfaces
-  private buildCustomTools(): any[] {
-    const allowedNames = this.config.tools
-      ? new Set(this.config.tools)
-      : new Set(DEFAULT_TOOL_NAMES);
-    // biome-ignore lint/suspicious/noExplicitAny: tool types from pi-coding-agent SDK lack exported interfaces
-    const customs: any[] = [];
-
-    // biome-ignore lint/suspicious/noExplicitAny: tool types from pi-coding-agent SDK lack exported interfaces
-    const wrap = (tool: any) => ({
-      name: tool.name,
-      label: tool.label,
-      description: tool.description,
-      parameters: tool.parameters,
-      execute: (
-        toolCallId: string,
-        // biome-ignore lint/suspicious/noExplicitAny: tool param types from SDK are not exported
-        params: any,
-        signal?: AbortSignal,
-        // biome-ignore lint/suspicious/noExplicitAny: onUpdate callback type from SDK is not exported
-        onUpdate?: any,
-        // biome-ignore lint/suspicious/noExplicitAny: ctx type from SDK is not exported
-        _ctx?: any,
-      ) => tool.execute(toolCallId, params, signal, onUpdate),
-    });
-
-    // ── Core tools (always registered, not user-configurable) ──────────
-    // These are essential agent capabilities that are always available
-    // regardless of the operator's tool selection.
-    customs.push(wrap(createTodoWriteTool())); // task tracking
-
-    const hasSkillPaths = this.config.skills?.paths && this.config.skills.paths.length > 0;
-    if (hasSkillPaths || this.managedSkillsDir) {
-      customs.push(wrap(createLoadSkillTool(() => this.listSkills()))); // skill loading
-    }
-
-    // ── User-configurable tools (gated by allowedNames) ──────────────
-    if (allowedNames.has('web_fetch')) {
-      customs.push(wrap(createWebFetchTool()));
-    }
-    if (allowedNames.has('web_search')) {
-      const braveKey = this.providerApiKeys.brave ?? this.providerApiKeys['brave-api-key'];
-      const provider = braveKey ? new BraveSearchProvider(braveKey) : null;
-      customs.push(wrap(createWebSearchTool(provider)));
-    }
-
-    // Skill creation (opt-in)
-    if (allowedNames.has('create_skill') && this.managedSkillsDir) {
-      customs.push(wrap(createCreateSkillTool(this.managedSkillsDir)));
-    }
-
-    // MCP server tools (from connected MCP servers, filtered by agent's assigned servers)
-    if (allowedNames.has('mcp') && this.mcpManager) {
-      const assigned = this.config.assignedMcpServers;
-      if (assigned && assigned.length > 0) {
-        const assignedSet = new Set(assigned);
-        customs.push(
-          ...this.mcpManager.getTools().filter((t) => {
-            const serverName = t.name.split('__')[0];
-            return assignedSet.has(serverName);
-          }),
-        );
-      } else if (!assigned) {
-        // No assignedMcpServers field = legacy/standalone mode, show all
-        customs.push(...this.mcpManager.getTools());
-      }
-      // assignedMcpServers = [] means explicitly no servers assigned
-    }
-
-    // MCP management tools (add/remove/list servers)
-    if (this.mcpManager && this.mcpConfigStore && this.mcpAgentContext) {
-      const onToolsChanged = () => this.syncMcpToolsToSession();
-
-      if (allowedNames.has('mcp_add_server')) {
-        customs.push(
-          wrap(
-            createMcpAddServerTool({
-              manager: this.mcpManager,
-              configStore: this.mcpConfigStore,
-              agentContext: this.mcpAgentContext,
-              logger: this.logger,
-              onToolsChanged,
-            }),
-          ),
-        );
-      }
-      if (allowedNames.has('mcp_list_servers')) {
-        customs.push(
-          wrap(
-            createMcpListServersTool({
-              manager: this.mcpManager,
-              configStore: this.mcpConfigStore,
-              agentContext: this.mcpAgentContext,
-            }),
-          ),
-        );
-      }
-      if (allowedNames.has('mcp_remove_server')) {
-        customs.push(
-          wrap(
-            createMcpRemoveServerTool({
-              manager: this.mcpManager,
-              configStore: this.mcpConfigStore,
-              agentContext: this.mcpAgentContext,
-              logger: this.logger,
-              onToolsChanged,
-            }),
-          ),
-        );
-      }
-    }
-
-    return customs;
+  // biome-ignore lint/suspicious/noExplicitAny: pi-coding-agent's ToolDefinition is not exported
+  private buildCustomTools(workspace: string = this.currentWorkspace): any[] {
+    const ctx = this.buildToolFactoryContext(workspace);
+    // biome-ignore lint/suspicious/noExplicitAny: same as above
+    return this.toolRegistry.buildCustom(ctx) as any[];
   }
 
   /**
@@ -459,6 +361,11 @@ export class PiAgentBackend implements AgentBackend {
    * Start the backend by creating a PiAgent session.
    */
   async start(workspace: string): Promise<void> {
+    // Cache workspace so syncMcpToolsToSession() (which has no workspace
+    // arg of its own) can rebuild custom tools with the same context the
+    // session was started with.
+    this.currentWorkspace = workspace;
+
     // Resolve credentials from the source (snapshot or provider function).
     const keys = await this.resolveProviderKeys();
     this.logger?.info(`[PiAgent] Starting with credentials: ${PiAgentBackend.redactKeys(keys)}`);
@@ -479,7 +386,7 @@ export class PiAgentBackend implements AgentBackend {
     }
 
     const builtinTools = this.buildBuiltinTools(workspace);
-    const customTools = this.buildCustomTools();
+    const customTools = this.buildCustomTools(workspace);
     this.logger?.info(
       `[PiAgent] Registering ${builtinTools.length} built-in tools: ${builtinTools.map((t: { name: string }) => t.name).join(', ')}`,
     );

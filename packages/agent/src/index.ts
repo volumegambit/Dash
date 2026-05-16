@@ -23,6 +23,41 @@ export type { SkillDiscoveryResult, SkillFrontmatter } from './skills/index.js';
 export { parseFrontmatter, generateFrontmatter, scanSkillsDirectory } from './skills/index.js';
 export type { ParsedSkill } from './skills/index.js';
 
+// Tool registry — open extension point for the tools handed to PiAgent sessions.
+export { ToolRegistry, wrapAgentTool } from './tools/registry.js';
+export type {
+  BuiltinTool,
+  BuiltinToolFactory,
+  CustomTool,
+  CustomToolFactory,
+  ToolFactory,
+  ToolFactoryContext,
+} from './tools/registry.js';
+export {
+  BUILTIN_TOOL_NAMES,
+  DEFAULT_ALLOWED_TOOL_NAMES,
+  createDefaultToolRegistry,
+  resolveAllowedToolNames,
+  // Individual factories — exposed so callers can compose their own registry
+  // (e.g. start from defaults but drop or override specific tools).
+  bashToolFactory,
+  createSkillToolFactory,
+  editToolFactory,
+  findToolFactory,
+  grepToolFactory,
+  loadSkillToolFactory,
+  lsToolFactory,
+  mcpAddServerToolFactory,
+  mcpListServersToolFactory,
+  mcpRemoveServerToolFactory,
+  mcpToolsFactory,
+  readToolFactory,
+  taskToolFactory,
+  webFetchToolFactory,
+  webSearchToolFactory,
+  writeToolFactory,
+} from './tools/default-registry.js';
+
 /**
  * Canonical list of user-configurable tool names supported by PiAgentBackend.
  * This is the single source of truth — import this in MC and model-cache
