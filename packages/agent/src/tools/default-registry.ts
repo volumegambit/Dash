@@ -26,16 +26,12 @@ import {
 } from '@dash/mcp';
 
 import { createCreateSkillTool, createLoadSkillTool } from '../skills/index.js';
+import { ToolRegistry, wrapAgentTool } from './registry.js';
+import type { BuiltinToolFactory, CustomTool, CustomToolFactory } from './registry.js';
 import { BraveSearchProvider } from './search-providers/brave.js';
 import { createTodoWriteTool } from './todowrite.js';
 import { createWebFetchTool } from './web-fetch.js';
 import { createWebSearchTool } from './web-search.js';
-import { ToolRegistry, wrapAgentTool } from './registry.js';
-import type {
-  BuiltinToolFactory,
-  CustomToolFactory,
-  ToolFactoryContext,
-} from './registry.js';
 
 // ───────── built-in (pi-coding-agent) tool factories ─────────
 
@@ -163,14 +159,19 @@ export const mcpToolsFactory: CustomToolFactory = {
     if (!ctx.mcpManager) return null;
     const assigned = ctx.config.assignedMcpServers;
     const all = ctx.mcpManager.getTools();
+    // MCP tools come from `@mariozechner/pi-agent-core` as `AgentTool<TSchema, unknown>[]`
+    // which is structurally a `CustomTool` (name/execute/etc.) — cast through unknown
+    // because the SDK's TSchema generic doesn't line up with our minimal interface.
     if (assigned && assigned.length > 0) {
       const assignedSet = new Set(assigned);
-      return all.filter((t) => {
-        const serverName = t.name.split('__')[0];
-        return assignedSet.has(serverName);
-      });
+      return all
+        .filter((t) => {
+          const serverName = t.name.split('__')[0];
+          return assignedSet.has(serverName);
+        })
+        .map((t) => t as unknown as CustomTool);
     }
-    if (!assigned) return all;
+    if (!assigned) return all.map((t) => t as unknown as CustomTool);
     return null;
   },
 };

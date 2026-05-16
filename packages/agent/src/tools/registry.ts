@@ -16,8 +16,8 @@
  * `ctx` shim once.
  */
 
-import type { AgentTool } from '@mariozechner/pi-agent-core';
 import type { McpAgentContext, McpConfigStoreInterface, McpManager } from '@dash/mcp';
+import type { AgentTool } from '@mariozechner/pi-agent-core';
 import type { Logger } from '../logger.js';
 import type { SkillDiscoveryResult } from '../skills/types.js';
 import type { DashAgentConfig } from '../types.js';
@@ -142,13 +142,7 @@ export function wrapAgentTool(tool: AgentTool<any>): CustomTool {
       // biome-ignore lint/suspicious/noExplicitAny: onUpdate callback from SDK is not exported
       onUpdate?: any,
       _ctx?: unknown,
-    ) =>
-      tool.execute(
-        toolCallId as string,
-        params,
-        signal as AbortSignal | undefined,
-        onUpdate,
-      ),
+    ) => tool.execute(toolCallId as string, params, signal as AbortSignal | undefined, onUpdate),
   };
 }
 

@@ -13,11 +13,11 @@ import {
   webSearchToolFactory,
 } from './default-registry.js';
 import {
-  ToolRegistry,
-  wrapAgentTool,
   type BuiltinToolFactory,
   type CustomToolFactory,
   type ToolFactoryContext,
+  ToolRegistry,
+  wrapAgentTool,
 } from './registry.js';
 
 function makeContext(overrides: Partial<ToolFactoryContext> = {}): ToolFactoryContext {
@@ -26,14 +26,14 @@ function makeContext(overrides: Partial<ToolFactoryContext> = {}): ToolFactoryCo
     systemPrompt: 'sys',
     ...(overrides.config ?? {}),
   };
+  const { config: _omitConfig, ...rest } = overrides;
   return {
     workspace: '/tmp/ws',
-    config,
     providerApiKeys: {},
     listSkills: async () => [],
     onMcpToolsChanged: () => {},
     allowedToolNames: new Set(BUILTIN_TOOL_NAMES),
-    ...overrides,
+    ...rest,
     config,
   };
 }

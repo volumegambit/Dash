@@ -81,7 +81,7 @@ export class PiAgentBackend implements AgentBackend {
    * context with the workspace, even though no custom tool actually uses
    * it today).
    */
-  private currentWorkspace: string = '';
+  private currentWorkspace = '';
 
   /**
    * Current provider API keys — populated from the source (snapshot or
@@ -311,10 +311,13 @@ export class PiAgentBackend implements AgentBackend {
   /**
    * Build the built-in PiAgent tools (pi-coding-agent shape).
    * These go in createAgentSession({ tools }) — PiAgent recognizes them by name.
+   * Returns `any[]` because pi-coding-agent does not export its `Tool` type
+   * from the package top-level; the registry stores them as `unknown`.
    */
-  // biome-ignore lint/suspicious/noExplicitAny: pi-coding-agent does not export its tool type
+  // biome-ignore lint/suspicious/noExplicitAny: pi-coding-agent does not export its Tool type
   private buildBuiltinTools(workspace: string): any[] {
     const ctx = this.buildToolFactoryContext(workspace);
+    // biome-ignore lint/suspicious/noExplicitAny: same as above
     return this.toolRegistry.buildBuiltin(ctx) as any[];
   }
 
@@ -323,9 +326,10 @@ export class PiAgentBackend implements AgentBackend {
    * These go in createAgentSession({ customTools }) — registered via the extension system.
    * AgentTool instances are wrapped as ToolDefinition (adds unused ctx parameter).
    */
-  // biome-ignore lint/suspicious/noExplicitAny: pi-coding-agent does not export its tool type
+  // biome-ignore lint/suspicious/noExplicitAny: pi-coding-agent's ToolDefinition is not exported
   private buildCustomTools(workspace: string = this.currentWorkspace): any[] {
     const ctx = this.buildToolFactoryContext(workspace);
+    // biome-ignore lint/suspicious/noExplicitAny: same as above
     return this.toolRegistry.buildCustom(ctx) as any[];
   }
 
