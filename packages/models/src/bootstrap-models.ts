@@ -25,8 +25,8 @@ import type { FilteredModel } from './types.js';
 export const BOOTSTRAP_MODELS: FilteredModel[] = [
   // Anthropic — verified against live API 2026-04-13
   {
-    value: 'anthropic/claude-opus-4-6',
-    label: 'Claude Opus 4.6',
+    value: 'anthropic/claude-opus-4-7',
+    label: 'Claude Opus 4.7',
     provider: 'anthropic',
   },
   {
