@@ -1,4 +1,7 @@
 import { Button } from '@/components/ui/button';
+import { Apple } from 'lucide-react';
+
+const RELEASES_URL = 'https://github.com/volumegambit/Dash/releases/latest';
 
 export function Nav() {
   return (
@@ -43,26 +46,13 @@ export function Nav() {
         </span>
       </a>
 
-      {/* Right: nav links + CTA */}
-      <div className="flex items-center gap-6">
-        <a
-          href="#about"
-          className="hidden md:block text-[15px] text-text-secondary hover:text-white transition-colors"
-        >
-          About
+      {/* Right: download CTA */}
+      <Button size="pill" variant="default" asChild>
+        <a href={RELEASES_URL} target="_blank" rel="noreferrer">
+          <Apple size={14} className="mr-1.5" />
+          Download
         </a>
-        <a
-          href="#early-access"
-          className="hidden md:block text-[15px] text-text-secondary hover:text-white transition-colors"
-        >
-          Early Access
-        </a>
-        <a href="#waitlist">
-          <Button size="pill" variant="default">
-            Join the Alpha
-          </Button>
-        </a>
-      </div>
+      </Button>
     </nav>
   );
 }
