@@ -21,12 +21,8 @@
     "@dash/agent": "*"
   },
   "tsup": {
-    "entry": [
-      "src/index.ts"
-    ],
-    "format": [
-      "esm"
-    ],
+    "entry": ["src/index.ts"],
+    "format": ["esm"],
     "dts": true,
     "clean": true,
     "sourcemap": true

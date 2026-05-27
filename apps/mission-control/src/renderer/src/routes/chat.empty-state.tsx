@@ -114,10 +114,7 @@ export function EmptyChatState({
       <div className="flex w-full max-w-[720px] items-start justify-center gap-12">
         <div className="w-[300px] shrink-0">
           <SectionHeader>Recent</SectionHeader>
-          <RecentList
-            items={recentConversations}
-            onSelectConversation={onSelectConversation}
-          />
+          <RecentList items={recentConversations} onSelectConversation={onSelectConversation} />
         </div>
         <div className="w-[260px] shrink-0">
           <SectionHeader>Start with</SectionHeader>

@@ -172,6 +172,7 @@ export function CompactionToast({ overflow }: { overflow: boolean }): JSX.Elemen
     ? 'Context overflow — older turns summarized'
     : 'Context compacted — older turns summarized';
   return (
+    // biome-ignore lint/a11y/useSemanticElements: toast wrapper retains data-* hooks used by tests
     <div
       role="status"
       data-testid="compaction-toast"
@@ -190,6 +191,7 @@ export function CompactionToast({ overflow }: { overflow: boolean }): JSX.Elemen
  */
 export function ModelChangeToast({ modelName }: { modelName: string }): JSX.Element {
   return (
+    // biome-ignore lint/a11y/useSemanticElements: toast wrapper retains data-testid used by tests
     <div
       role="status"
       data-testid="model-change-toast"

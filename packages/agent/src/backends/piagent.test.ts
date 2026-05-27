@@ -286,13 +286,13 @@ describe('PiAgentBackend.normalizeEvent', () => {
     });
   });
 
-  it('returns context_compacted for auto_compaction_end', () => {
+  it('returns context_compacted for compaction_end', () => {
     const backend = makeBackend();
-    // Simulate auto_compaction_start with overflow reason
+    // Simulate compaction_start with overflow reason
     // biome-ignore lint/suspicious/noExplicitAny: test mock for partial event object
-    backend.normalizeEvent({ type: 'auto_compaction_start', reason: 'overflow' } as any);
+    backend.normalizeEvent({ type: 'compaction_start', reason: 'overflow' } as any);
     const result = backend.normalizeEvent({
-      type: 'auto_compaction_end',
+      type: 'compaction_end',
       result: undefined,
       aborted: false,
       willRetry: false,
@@ -304,9 +304,9 @@ describe('PiAgentBackend.normalizeEvent', () => {
   it('returns context_compacted with overflow=false for threshold reason', () => {
     const backend = makeBackend();
     // biome-ignore lint/suspicious/noExplicitAny: test mock for partial event object
-    backend.normalizeEvent({ type: 'auto_compaction_start', reason: 'threshold' } as any);
+    backend.normalizeEvent({ type: 'compaction_start', reason: 'threshold' } as any);
     const result = backend.normalizeEvent({
-      type: 'auto_compaction_end',
+      type: 'compaction_end',
       result: undefined,
       aborted: false,
       willRetry: false,
@@ -857,7 +857,10 @@ describe('PiAgentBackend model fallback chain', () => {
     cb({ type: 'agent_end', messages: [] });
   }
 
-  async function mountBackend(session: ReturnType<typeof makeSequencedSession>, _fallbackModels?: string[]) {
+  async function mountBackend(
+    session: ReturnType<typeof makeSequencedSession>,
+    _fallbackModels?: string[],
+  ) {
     const { createAgentSession } = await import('@mariozechner/pi-coding-agent');
     vi.mocked(createAgentSession).mockResolvedValueOnce({
       // biome-ignore lint/suspicious/noExplicitAny: test mock

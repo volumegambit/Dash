@@ -117,9 +117,12 @@ export function ChatModelPicker({
       </button>
 
       {open && (
+        // biome-ignore lint/a11y/useSemanticElements: custom popup retains styling, not a native <select>
+        // biome-ignore lint/a11y/useFocusableInteractive: focus is managed on the button trigger; arrow keys handled at parent
         <div
           role="listbox"
           data-testid="chat-model-picker-menu"
+          tabIndex={-1}
           className="absolute left-0 top-full z-30 mt-1 max-h-[60vh] min-w-[220px] overflow-y-auto border border-border bg-[#141414] py-1 shadow-xl"
         >
           {groups.length === 0 ? (
@@ -137,6 +140,7 @@ export function ChatModelPicker({
                     <button
                       key={m.value}
                       type="button"
+                      // biome-ignore lint/a11y/useSemanticElements: <button> is needed for click/keyboard handling; native <option> doesn't support custom content
                       role="option"
                       aria-selected={isSelected}
                       data-testid={`chat-model-picker-option-${m.value}`}

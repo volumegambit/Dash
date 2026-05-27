@@ -81,7 +81,12 @@ describe('shutdownGatewayOnQuit', () => {
   }
 
   it('leaves gateway-state.json on disk so first-run detection stays stable', async () => {
-    await writeState({ pid: 12345, startedAt: '2026-01-01T00:00:00Z', port: 9100, channelPort: 9101 });
+    await writeState({
+      pid: 12345,
+      startedAt: '2026-01-01T00:00:00Z',
+      port: 9100,
+      channelPort: 9101,
+    });
     expect(existsSync(stateFile)).toBe(true);
 
     await shutdownGatewayOnQuit(tmpDir);
@@ -99,7 +104,12 @@ describe('shutdownGatewayOnQuit', () => {
   });
 
   it('sends SIGTERM to the recorded pid', async () => {
-    await writeState({ pid: 99999, startedAt: '2026-01-01T00:00:00Z', port: 9100, channelPort: 9101 });
+    await writeState({
+      pid: 99999,
+      startedAt: '2026-01-01T00:00:00Z',
+      port: 9100,
+      channelPort: 9101,
+    });
 
     await shutdownGatewayOnQuit(tmpDir);
 
@@ -120,7 +130,12 @@ describe('shutdownGatewayOnQuit', () => {
       err.code = 'ESRCH';
       throw err;
     });
-    await writeState({ pid: 123, startedAt: '2026-01-01T00:00:00Z', port: 9100, channelPort: 9101 });
+    await writeState({
+      pid: 123,
+      startedAt: '2026-01-01T00:00:00Z',
+      port: 9100,
+      channelPort: 9101,
+    });
 
     // Must not throw — the handler treats "already dead" as normal.
     await expect(shutdownGatewayOnQuit(tmpDir)).resolves.toBeUndefined();

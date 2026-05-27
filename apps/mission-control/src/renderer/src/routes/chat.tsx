@@ -41,6 +41,7 @@ import {
   latestUsageFromConversation,
   messageEvents,
 } from './chat.context.js';
+import { EmptyChatState } from './chat.empty-state.js';
 import {
   type TodoItem,
   formatDetails,
@@ -51,7 +52,6 @@ import {
   truncate,
 } from './chat.helpers.js';
 import { ChatModelPicker } from './chat.model-picker.js';
-import { EmptyChatState } from './chat.empty-state.js';
 
 /** Event types that produce visible rendered output in renderEvents / MessageBubble */
 const VISIBLE_EVENT_TYPES = new Set([
@@ -1127,6 +1127,8 @@ function ConversationBrowser({
                       </div>
                     </div>
                   ) : (
+                    // biome-ignore lint/a11y/useFocusableInteractive: list-level keyboard navigation is handled by the parent
+                    // biome-ignore lint/a11y/useSemanticElements: native <option> can't host the rich row layout
                     <div
                       className={`flex items-center justify-between px-4 py-2.5 cursor-pointer transition-colors ${
                         i === selectedIndex
@@ -1136,6 +1138,7 @@ function ConversationBrowser({
                       onClick={() => onOpen(conv.id)}
                       onMouseEnter={() => setSelectedIndex(i)}
                       onKeyDown={() => {}}
+                      // biome-ignore lint/a11y/useSemanticElements: native <option> can't host the rich row layout
                       role="option"
                       aria-selected={i === selectedIndex}
                     >

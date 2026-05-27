@@ -59,6 +59,7 @@ function UnderTheHood(): JSX.Element {
   }, [autoRefresh, activeTab, loadLogs]);
 
   // Auto-scroll to bottom when logs change
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `logs` is intentionally the trigger even though it's not read inside
   useEffect(() => {
     if (logContainerRef.current && activeTab !== 'models') {
       logContainerRef.current.scrollTop = logContainerRef.current.scrollHeight;
