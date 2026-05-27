@@ -5,7 +5,7 @@ export function Nav() {
     <nav className="flex flex-row items-center justify-between py-5 px-8 lg:px-20">
       {/* Left: logo + wordmark */}
       <a href="/" className="flex items-center gap-3">
-        <span className="shadow-[0_0_16px_rgba(255,85,0,0.25)] rounded-md">
+        <span className="shadow-[0_0_16px_rgba(37,99,235,0.25)] rounded-md">
           <svg
             width="28"
             height="28"
@@ -14,7 +14,7 @@ export function Nav() {
             aria-label="DashSquad logo"
             role="img"
           >
-            <rect width="28" height="28" rx="6" fill="#FF5500" />
+            <rect width="28" height="28" rx="6" fill="#2563eb" />
             <path
               d="M17.5 11L21 14L17.5 17"
               stroke="white"
