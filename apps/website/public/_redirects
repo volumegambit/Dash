@@ -1,0 +1,5 @@
+# Cloudflare Pages redirects
+# Format: <from-path> <to-url> <status>
+# Docs: https://developers.cloudflare.com/pages/configuration/redirects/
+
+/install.sh  https://raw.githubusercontent.com/volumegambit/Dash/main/install.sh  302
