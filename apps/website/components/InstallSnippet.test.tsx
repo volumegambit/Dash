@@ -10,7 +10,11 @@ const INSTALL_COMMAND = 'curl -fsSL dashsquad.ai/install.sh | sh';
 // assign the mock directly onto the post-render clipboard instance.
 function mockWriteText() {
   const writeText = vi.fn().mockResolvedValue(undefined);
-  (navigator.clipboard as any).writeText = writeText;
+  Object.defineProperty(navigator.clipboard, 'writeText', {
+    value: writeText,
+    writable: true,
+    configurable: true,
+  });
   return writeText;
 }
 

@@ -1,6 +1,6 @@
+import { InstallSnippet } from '@/components/InstallSnippet';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { InstallSnippet } from '@/components/InstallSnippet';
 import { Apple } from 'lucide-react';
 import Image from 'next/image';
 
