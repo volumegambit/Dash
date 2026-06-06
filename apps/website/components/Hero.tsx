@@ -10,9 +10,9 @@ export function Hero() {
   return (
     <section className="bg-command flex flex-col gap-6 pt-20 pb-15 px-8 lg:px-[120px]">
       {/* Two-column hero */}
-      <div className="flex flex-col lg:flex-row items-center gap-12 lg:gap-16">
+      <div className="flex flex-col lg:flex-row lg:items-center gap-12 lg:gap-16">
         {/* Left: text content */}
-        <div className="flex flex-col gap-6 lg:flex-1">
+        <div className="flex flex-col gap-6 w-full min-w-0 lg:flex-1">
           <Badge variant="default" className="w-fit">
             <span className="w-2 h-2 rounded-full bg-brand" />
             Now in Alpha — v0.2.0
