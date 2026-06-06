@@ -1,0 +1,50 @@
+name: Deploy Website
+
+# Deploys apps/website (Next.js static export) to Cloudflare Pages.
+# Production deploy runs on push to main when website files change.
+#
+# Required GitHub config (Settings -> Secrets and variables -> Actions):
+#   secret  CLOUDFLARE_API_TOKEN    - token with "Account / Cloudflare Pages / Edit"
+#   secret  CLOUDFLARE_ACCOUNT_ID   - Cloudflare account id
+#   variable CF_PAGES_PROJECT       - the Cloudflare Pages project name
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'apps/website/**'
+      - '.github/workflows/deploy-website.yml'
+  workflow_dispatch: {}
+
+# Cancel an in-flight deploy if a newer push lands.
+concurrency:
+  group: deploy-website
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Build static site
+        run: npm run website:build
+
+      - name: Deploy to Cloudflare Pages
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: >-
+            pages deploy apps/website/out
+            --project-name=${{ vars.CF_PAGES_PROJECT }}
+            --branch=main
