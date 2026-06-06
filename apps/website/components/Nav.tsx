@@ -1,3 +1,4 @@
+import { Logo } from '@/components/Logo';
 import { Button } from '@/components/ui/button';
 import { Apple } from 'lucide-react';
 
@@ -9,37 +10,7 @@ export function Nav() {
       {/* Left: logo + wordmark */}
       <a href="/" className="flex items-center gap-3">
         <span className="shadow-[0_0_16px_rgba(37,99,235,0.25)] rounded-md">
-          <svg
-            width="28"
-            height="28"
-            viewBox="0 0 28 28"
-            fill="none"
-            aria-label="DashSquad logo"
-            role="img"
-          >
-            <rect width="28" height="28" rx="6" fill="#2563eb" />
-            <path
-              d="M17.5 11L21 14L17.5 17"
-              stroke="white"
-              strokeWidth="2.5"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            />
-            <path
-              d="M11 8L15 11L11 14"
-              stroke="white"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            />
-            <path
-              d="M11 14L15 17L11 20"
-              stroke="white"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            />
-          </svg>
+          <Logo size={28} className="rounded-md" />
         </span>
         <span className="font-outfit text-xl font-extrabold text-white tracking-tight">
           dashsquad
