@@ -12,6 +12,7 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as WebSearchRouteImport } from './routes/web-search'
 import { Route as UnderTheHoodRouteImport } from './routes/under-the-hood'
 import { Route as SettingsRouteImport } from './routes/settings'
+import { Route as ProjectsRouteImport } from './routes/projects'
 import { Route as MessagingAppsRouteImport } from './routes/messaging-apps'
 import { Route as DeployRouteImport } from './routes/deploy'
 import { Route as ConnectorsRouteImport } from './routes/connectors'
@@ -19,8 +20,12 @@ import { Route as ConnectionsRouteImport } from './routes/connections'
 import { Route as ChatRouteImport } from './routes/chat'
 import { Route as AgentsRouteImport } from './routes/agents'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as ProjectsIndexRouteImport } from './routes/projects/index'
 import { Route as MessagingAppsIndexRouteImport } from './routes/messaging-apps/index'
 import { Route as AgentsIndexRouteImport } from './routes/agents/index'
+import { Route as ProjectsMyWorkRouteImport } from './routes/projects/my-work'
+import { Route as ProjectsInboxRouteImport } from './routes/projects/inbox'
+import { Route as ProjectsAllRouteImport } from './routes/projects/all'
 import { Route as MessagingAppsNewWhatsappRouteImport } from './routes/messaging-apps/new-whatsapp'
 import { Route as MessagingAppsNewTelegramRouteImport } from './routes/messaging-apps/new-telegram'
 import { Route as MessagingAppsIdRouteImport } from './routes/messaging-apps/$id'
@@ -39,6 +44,11 @@ const UnderTheHoodRoute = UnderTheHoodRouteImport.update({
 const SettingsRoute = SettingsRouteImport.update({
   id: '/settings',
   path: '/settings',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ProjectsRoute = ProjectsRouteImport.update({
+  id: '/projects',
+  path: '/projects',
   getParentRoute: () => rootRouteImport,
 } as any)
 const MessagingAppsRoute = MessagingAppsRouteImport.update({
@@ -76,6 +86,11 @@ const IndexRoute = IndexRouteImport.update({
   path: '/',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ProjectsIndexRoute = ProjectsIndexRouteImport.update({
+  id: '/',
+  path: '/',
+  getParentRoute: () => ProjectsRoute,
+} as any)
 const MessagingAppsIndexRoute = MessagingAppsIndexRouteImport.update({
   id: '/',
   path: '/',
@@ -85,6 +100,21 @@ const AgentsIndexRoute = AgentsIndexRouteImport.update({
   id: '/',
   path: '/',
   getParentRoute: () => AgentsRoute,
+} as any)
+const ProjectsMyWorkRoute = ProjectsMyWorkRouteImport.update({
+  id: '/my-work',
+  path: '/my-work',
+  getParentRoute: () => ProjectsRoute,
+} as any)
+const ProjectsInboxRoute = ProjectsInboxRouteImport.update({
+  id: '/inbox',
+  path: '/inbox',
+  getParentRoute: () => ProjectsRoute,
+} as any)
+const ProjectsAllRoute = ProjectsAllRouteImport.update({
+  id: '/all',
+  path: '/all',
+  getParentRoute: () => ProjectsRoute,
 } as any)
 const MessagingAppsNewWhatsappRoute =
   MessagingAppsNewWhatsappRouteImport.update({
@@ -117,6 +147,7 @@ export interface FileRoutesByFullPath {
   '/connectors': typeof ConnectorsRoute
   '/deploy': typeof DeployRoute
   '/messaging-apps': typeof MessagingAppsRouteWithChildren
+  '/projects': typeof ProjectsRouteWithChildren
   '/settings': typeof SettingsRoute
   '/under-the-hood': typeof UnderTheHoodRoute
   '/web-search': typeof WebSearchRoute
@@ -124,8 +155,12 @@ export interface FileRoutesByFullPath {
   '/messaging-apps/$id': typeof MessagingAppsIdRoute
   '/messaging-apps/new-telegram': typeof MessagingAppsNewTelegramRoute
   '/messaging-apps/new-whatsapp': typeof MessagingAppsNewWhatsappRoute
+  '/projects/all': typeof ProjectsAllRoute
+  '/projects/inbox': typeof ProjectsInboxRoute
+  '/projects/my-work': typeof ProjectsMyWorkRoute
   '/agents/': typeof AgentsIndexRoute
   '/messaging-apps/': typeof MessagingAppsIndexRoute
+  '/projects/': typeof ProjectsIndexRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -140,8 +175,12 @@ export interface FileRoutesByTo {
   '/messaging-apps/$id': typeof MessagingAppsIdRoute
   '/messaging-apps/new-telegram': typeof MessagingAppsNewTelegramRoute
   '/messaging-apps/new-whatsapp': typeof MessagingAppsNewWhatsappRoute
+  '/projects/all': typeof ProjectsAllRoute
+  '/projects/inbox': typeof ProjectsInboxRoute
+  '/projects/my-work': typeof ProjectsMyWorkRoute
   '/agents': typeof AgentsIndexRoute
   '/messaging-apps': typeof MessagingAppsIndexRoute
+  '/projects': typeof ProjectsIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -152,6 +191,7 @@ export interface FileRoutesById {
   '/connectors': typeof ConnectorsRoute
   '/deploy': typeof DeployRoute
   '/messaging-apps': typeof MessagingAppsRouteWithChildren
+  '/projects': typeof ProjectsRouteWithChildren
   '/settings': typeof SettingsRoute
   '/under-the-hood': typeof UnderTheHoodRoute
   '/web-search': typeof WebSearchRoute
@@ -159,8 +199,12 @@ export interface FileRoutesById {
   '/messaging-apps/$id': typeof MessagingAppsIdRoute
   '/messaging-apps/new-telegram': typeof MessagingAppsNewTelegramRoute
   '/messaging-apps/new-whatsapp': typeof MessagingAppsNewWhatsappRoute
+  '/projects/all': typeof ProjectsAllRoute
+  '/projects/inbox': typeof ProjectsInboxRoute
+  '/projects/my-work': typeof ProjectsMyWorkRoute
   '/agents/': typeof AgentsIndexRoute
   '/messaging-apps/': typeof MessagingAppsIndexRoute
+  '/projects/': typeof ProjectsIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -172,6 +216,7 @@ export interface FileRouteTypes {
     | '/connectors'
     | '/deploy'
     | '/messaging-apps'
+    | '/projects'
     | '/settings'
     | '/under-the-hood'
     | '/web-search'
@@ -179,8 +224,12 @@ export interface FileRouteTypes {
     | '/messaging-apps/$id'
     | '/messaging-apps/new-telegram'
     | '/messaging-apps/new-whatsapp'
+    | '/projects/all'
+    | '/projects/inbox'
+    | '/projects/my-work'
     | '/agents/'
     | '/messaging-apps/'
+    | '/projects/'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -195,8 +244,12 @@ export interface FileRouteTypes {
     | '/messaging-apps/$id'
     | '/messaging-apps/new-telegram'
     | '/messaging-apps/new-whatsapp'
+    | '/projects/all'
+    | '/projects/inbox'
+    | '/projects/my-work'
     | '/agents'
     | '/messaging-apps'
+    | '/projects'
   id:
     | '__root__'
     | '/'
@@ -206,6 +259,7 @@ export interface FileRouteTypes {
     | '/connectors'
     | '/deploy'
     | '/messaging-apps'
+    | '/projects'
     | '/settings'
     | '/under-the-hood'
     | '/web-search'
@@ -213,8 +267,12 @@ export interface FileRouteTypes {
     | '/messaging-apps/$id'
     | '/messaging-apps/new-telegram'
     | '/messaging-apps/new-whatsapp'
+    | '/projects/all'
+    | '/projects/inbox'
+    | '/projects/my-work'
     | '/agents/'
     | '/messaging-apps/'
+    | '/projects/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -225,6 +283,7 @@ export interface RootRouteChildren {
   ConnectorsRoute: typeof ConnectorsRoute
   DeployRoute: typeof DeployRoute
   MessagingAppsRoute: typeof MessagingAppsRouteWithChildren
+  ProjectsRoute: typeof ProjectsRouteWithChildren
   SettingsRoute: typeof SettingsRoute
   UnderTheHoodRoute: typeof UnderTheHoodRoute
   WebSearchRoute: typeof WebSearchRoute
@@ -251,6 +310,13 @@ declare module '@tanstack/react-router' {
       path: '/settings'
       fullPath: '/settings'
       preLoaderRoute: typeof SettingsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/projects': {
+      id: '/projects'
+      path: '/projects'
+      fullPath: '/projects'
+      preLoaderRoute: typeof ProjectsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/messaging-apps': {
@@ -302,6 +368,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/projects/': {
+      id: '/projects/'
+      path: '/'
+      fullPath: '/projects/'
+      preLoaderRoute: typeof ProjectsIndexRouteImport
+      parentRoute: typeof ProjectsRoute
+    }
     '/messaging-apps/': {
       id: '/messaging-apps/'
       path: '/'
@@ -315,6 +388,27 @@ declare module '@tanstack/react-router' {
       fullPath: '/agents/'
       preLoaderRoute: typeof AgentsIndexRouteImport
       parentRoute: typeof AgentsRoute
+    }
+    '/projects/my-work': {
+      id: '/projects/my-work'
+      path: '/my-work'
+      fullPath: '/projects/my-work'
+      preLoaderRoute: typeof ProjectsMyWorkRouteImport
+      parentRoute: typeof ProjectsRoute
+    }
+    '/projects/inbox': {
+      id: '/projects/inbox'
+      path: '/inbox'
+      fullPath: '/projects/inbox'
+      preLoaderRoute: typeof ProjectsInboxRouteImport
+      parentRoute: typeof ProjectsRoute
+    }
+    '/projects/all': {
+      id: '/projects/all'
+      path: '/all'
+      fullPath: '/projects/all'
+      preLoaderRoute: typeof ProjectsAllRouteImport
+      parentRoute: typeof ProjectsRoute
     }
     '/messaging-apps/new-whatsapp': {
       id: '/messaging-apps/new-whatsapp'
@@ -378,6 +472,24 @@ const MessagingAppsRouteWithChildren = MessagingAppsRoute._addFileChildren(
   MessagingAppsRouteChildren,
 )
 
+interface ProjectsRouteChildren {
+  ProjectsAllRoute: typeof ProjectsAllRoute
+  ProjectsInboxRoute: typeof ProjectsInboxRoute
+  ProjectsMyWorkRoute: typeof ProjectsMyWorkRoute
+  ProjectsIndexRoute: typeof ProjectsIndexRoute
+}
+
+const ProjectsRouteChildren: ProjectsRouteChildren = {
+  ProjectsAllRoute: ProjectsAllRoute,
+  ProjectsInboxRoute: ProjectsInboxRoute,
+  ProjectsMyWorkRoute: ProjectsMyWorkRoute,
+  ProjectsIndexRoute: ProjectsIndexRoute,
+}
+
+const ProjectsRouteWithChildren = ProjectsRoute._addFileChildren(
+  ProjectsRouteChildren,
+)
+
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   AgentsRoute: AgentsRouteWithChildren,
@@ -386,6 +498,7 @@ const rootRouteChildren: RootRouteChildren = {
   ConnectorsRoute: ConnectorsRoute,
   DeployRoute: DeployRoute,
   MessagingAppsRoute: MessagingAppsRouteWithChildren,
+  ProjectsRoute: ProjectsRouteWithChildren,
   SettingsRoute: SettingsRoute,
   UnderTheHoodRoute: UnderTheHoodRoute,
   WebSearchRoute: WebSearchRoute,

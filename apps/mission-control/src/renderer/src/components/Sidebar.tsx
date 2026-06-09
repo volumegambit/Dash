@@ -2,6 +2,7 @@ import { Link } from '@tanstack/react-router';
 import {
   Bot,
   Cable,
+  FolderKanban,
   Globe,
   LifeBuoy,
   MessageCircle,
@@ -44,6 +45,10 @@ const sections: NavSection[] = [
       { to: '/agents', label: 'Agents', icon: Bot },
       { to: '/messaging-apps', label: 'Messaging Apps', icon: MessageSquare },
     ],
+  },
+  {
+    label: 'PLAN',
+    items: [{ to: '/projects', label: 'Projects', icon: FolderKanban }],
   },
   {
     label: 'CONFIGURE',
