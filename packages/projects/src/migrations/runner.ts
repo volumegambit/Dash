@@ -1,9 +1,16 @@
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Database as DatabaseType } from 'better-sqlite3';
 
-const MIGRATIONS_DIR = dirname(fileURLToPath(import.meta.url));
+const here = dirname(fileURLToPath(import.meta.url));
+// Resolve the migrations dir for BOTH layouts:
+//  - Source/dev (tsx, vitest): runner.ts sits in src/migrations/ next to the
+//    .sql files, so `here` already is the migrations dir.
+//  - Bundled (tsup): the package flattens to dist/index.js, so `here` is dist/
+//    and the onSuccess hook copies the .sql into dist/migrations/.
+// Probe for the first migration to pick the right dir; same dir serves all.
+const MIGRATIONS_DIR = existsSync(join(here, '001_init.sql')) ? here : join(here, 'migrations');
 
 interface Migration {
   version: number;
