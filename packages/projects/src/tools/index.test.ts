@@ -153,3 +153,69 @@ describe('issues_list', () => {
     expect(res.details).toMatchObject({ isError: true });
   });
 });
+
+describe('issues_update', () => {
+  it('updates status and links the session', async () => {
+    const created = JSON.parse(text(await run('issues_create', { title: 'Move me' })));
+    const res = await run('issues_update', { id: created.id, patch: { status: 'todo' } });
+    const updated = JSON.parse(text(res));
+    expect(updated.status).toBe('todo');
+    expect(db.sessionLinks.listByIssue(created.id).length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('errors on missing id', async () => {
+    const res = await run('issues_update', { patch: { status: 'todo' } });
+    expect(res.details).toMatchObject({ isError: true });
+  });
+
+  it('errors on unknown issue', async () => {
+    const res = await run('issues_update', { id: 'issue_missing', patch: { status: 'todo' } });
+    expect(res.details).toMatchObject({ isError: true });
+  });
+});
+
+describe('issues_comment', () => {
+  it('adds a comment and links the session', async () => {
+    const created = JSON.parse(text(await run('issues_create', { title: 'Discuss' })));
+    const res = await run('issues_comment', { issue_id: created.id, body: 'Looks good' });
+    const comment = JSON.parse(text(res));
+    expect(comment.id).toMatch(/^cmt_/);
+    expect(comment.body).toBe('Looks good');
+    expect(db.sessionLinks.listByIssue(created.id).length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('errors on empty body', async () => {
+    const created = JSON.parse(text(await run('issues_create', { title: 'X' })));
+    const res = await run('issues_comment', { issue_id: created.id, body: '' });
+    expect(res.details).toMatchObject({ isError: true });
+  });
+});
+
+describe('issues_comment_edit', () => {
+  it('edits a comment', async () => {
+    const created = JSON.parse(text(await run('issues_create', { title: 'Edit flow' })));
+    const c = JSON.parse(text(await run('issues_comment', { issue_id: created.id, body: 'v1' })));
+    const res = await run('issues_comment_edit', { comment_id: c.id, body: 'v2' });
+    const edited = JSON.parse(text(res));
+    expect(edited.body).toBe('v2');
+  });
+
+  it('errors on unknown comment', async () => {
+    const res = await run('issues_comment_edit', { comment_id: 'cmt_missing', body: 'x' });
+    expect(res.details).toMatchObject({ isError: true });
+  });
+});
+
+describe('issues_comment_delete', () => {
+  it('soft-deletes a comment', async () => {
+    const created = JSON.parse(text(await run('issues_create', { title: 'Delete flow' })));
+    const c = JSON.parse(text(await run('issues_comment', { issue_id: created.id, body: 'bye' })));
+    const res = await run('issues_comment_delete', { comment_id: c.id });
+    expect(res.details).not.toHaveProperty('isError');
+  });
+
+  it('errors on missing comment_id', async () => {
+    const res = await run('issues_comment_delete', {});
+    expect(res.details).toMatchObject({ isError: true });
+  });
+});

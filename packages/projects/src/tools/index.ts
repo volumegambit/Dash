@@ -70,6 +70,11 @@ export function linkSession(deps: ProjectsToolsDeps, issueId: string): void {
   deps.db.sessionLinks.link(sessionId, issueId, deps.getAgentId() ?? undefined);
 }
 
+const AGENT_ACTOR = (deps: ProjectsToolsDeps) => ({
+  type: 'agent' as const,
+  id: deps.getAgentId() ?? deps.getSessionId() ?? 'agent',
+});
+
 const projectsListSchema = Type.Object({
   status: Type.Optional(
     Type.Union(
@@ -315,6 +320,144 @@ function createIssuesCreateTool(
   };
 }
 
+const issuesUpdateSchema = Type.Object({
+  id: Type.String({ description: 'Issue id to update.' }),
+  patch: Type.Object(
+    {
+      title: Type.Optional(Type.String()),
+      description: Type.Optional(Type.String()),
+      status: Type.Optional(Type.Union(ISSUE_STATUSES.map((s) => Type.Literal(s)))),
+      sub_status: Type.Optional(
+        Type.Union([...ISSUE_SUB_STATUSES.map((s) => Type.Literal(s)), Type.Null()]),
+      ),
+      assignee_user_id: Type.Optional(Type.String()),
+      project_id: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+    },
+    {
+      description:
+        'Fields to change. Each changed field writes a timeline event (status_change, assignee_change, field_change, …). Setting status to in_progress should be paired with a sub_status.',
+    },
+  ),
+});
+
+function createIssuesUpdateTool(
+  deps: ProjectsToolsDeps,
+): ProjectsAgentTool<typeof issuesUpdateSchema> {
+  return {
+    name: 'issues_update',
+    label: 'Update Issue',
+    description:
+      'Update fields on an existing task: status, sub-status, title, description, assignee, or project. Each change is recorded as a timeline event so humans can see what the agent did. Move a task to in_progress with sub_status "agent_working" while you work it, and to "waiting_on_human" when you need input. Reading the issue first (issues_read) is recommended. This session is linked to the issue automatically.',
+    parameters: issuesUpdateSchema,
+    execute: async (_id, params) => {
+      if (!params.id) return errorResult('id is required.');
+      if (!params.patch || Object.keys(params.patch).length === 0) {
+        return errorResult('patch must contain at least one field.');
+      }
+      const existing = deps.db.issues.getByIdOrKey(params.id);
+      if (!existing) return errorResult(`Issue "${params.id}" not found.`);
+      try {
+        const updated = deps.db.issues.update(existing.id, params.patch, AGENT_ACTOR(deps));
+        linkSession(deps, updated.id);
+        return jsonResult(updated);
+      } catch (err) {
+        return errorResult(err instanceof Error ? err.message : String(err));
+      }
+    },
+  };
+}
+
+const issuesCommentSchema = Type.Object({
+  issue_id: Type.String({ description: 'Issue id to comment on.' }),
+  body: Type.String({ description: 'Markdown comment body.' }),
+});
+
+function createIssuesCommentTool(
+  deps: ProjectsToolsDeps,
+): ProjectsAgentTool<typeof issuesCommentSchema> {
+  return {
+    name: 'issues_comment',
+    label: 'Comment on Issue',
+    description:
+      'Post a comment on a task. Comments appear in the task timeline interleaved with status changes and agent runs. Use comments to leave findings, ask the human a question, or summarize what you did. Posting also writes a comment_added timeline event and links this session to the issue.',
+    parameters: issuesCommentSchema,
+    execute: async (_id, params) => {
+      if (!params.issue_id) return errorResult('issue_id is required.');
+      if (!params.body || !params.body.trim()) return errorResult('body must not be empty.');
+      const existing = deps.db.issues.getByIdOrKey(params.issue_id);
+      if (!existing) return errorResult(`Issue "${params.issue_id}" not found.`);
+      try {
+        const comment = deps.db.comments.add({
+          issue_id: existing.id,
+          author_type: 'agent',
+          author_id: deps.getAgentId() ?? deps.getSessionId() ?? 'agent',
+          body: params.body,
+        });
+        linkSession(deps, existing.id);
+        return jsonResult(comment);
+      } catch (err) {
+        return errorResult(err instanceof Error ? err.message : String(err));
+      }
+    },
+  };
+}
+
+const issuesCommentEditSchema = Type.Object({
+  comment_id: Type.String({ description: 'Id of the comment to edit (cmt_…).' }),
+  body: Type.String({ description: 'New markdown body.' }),
+});
+
+function createIssuesCommentEditTool(
+  deps: ProjectsToolsDeps,
+): ProjectsAgentTool<typeof issuesCommentEditSchema> {
+  return {
+    name: 'issues_comment_edit',
+    label: 'Edit Comment',
+    description:
+      "Edit the body of a comment you (or someone) previously posted. Writes a comment_edited timeline event. Only edit to correct or clarify — do not rewrite history. Links this session to the comment's issue.",
+    parameters: issuesCommentEditSchema,
+    execute: async (_id, params) => {
+      if (!params.comment_id) return errorResult('comment_id is required.');
+      if (!params.body || !params.body.trim()) return errorResult('body must not be empty.');
+      try {
+        const comment = deps.db.comments.edit(params.comment_id, params.body);
+        linkSession(deps, comment.issue_id);
+        return jsonResult(comment);
+      } catch (err) {
+        return errorResult(err instanceof Error ? err.message : String(err));
+      }
+    },
+  };
+}
+
+const issuesCommentDeleteSchema = Type.Object({
+  comment_id: Type.String({ description: 'Id of the comment to delete (cmt_…).' }),
+});
+
+function createIssuesCommentDeleteTool(
+  deps: ProjectsToolsDeps,
+): ProjectsAgentTool<typeof issuesCommentDeleteSchema> {
+  return {
+    name: 'issues_comment_delete',
+    label: 'Delete Comment',
+    description:
+      'Soft-delete a comment. The comment is hidden and shown as "deleted" in the timeline, but the record is retained for audit. Writes a comment_deleted timeline event. Use sparingly — only for mistaken or obsolete comments.',
+    parameters: issuesCommentDeleteSchema,
+    execute: async (_id, params) => {
+      if (!params.comment_id) return errorResult('comment_id is required.');
+      try {
+        // softDelete returns { issue_id } — use it to link the session to the
+        // owning issue so the deletion is attributed to this session/agent.
+        const { issue_id } = deps.db.comments.softDelete(params.comment_id);
+        linkSession(deps, issue_id);
+        return jsonResult({ ok: true, comment_id: params.comment_id });
+      } catch (err) {
+        return errorResult(err instanceof Error ? err.message : String(err));
+      }
+    },
+  };
+}
+
 /**
  * Build all projects_* agent tools over an injected ProjectsDb. The returned
  * objects are structurally compatible with @mariozechner/pi-agent-core's
@@ -328,6 +471,12 @@ export function createProjectsTools(deps: ProjectsToolsDeps): ProjectsAgentTool[
     createIssuesListTool(deps),
     createIssuesReadTool(deps),
     createIssuesCreateTool(deps),
+    createIssuesUpdateTool(deps),
+    createIssuesCommentTool(deps),
+    createIssuesCommentEditTool(deps),
+    createIssuesCommentDeleteTool(deps),
+    // Each tool is built with a concrete TypeBox schema, so its execute params
+    // are invariant; widen to the default ProjectsAgentTool via unknown.
   ] as unknown as ProjectsAgentTool[];
 }
 
