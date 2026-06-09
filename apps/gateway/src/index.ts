@@ -203,10 +203,13 @@ async function main() {
           // backend's in-flight conversation id so each link write uses the
           // right id without rebuilding tools per run.
           getSessionId: () => backend.getCurrentSessionId(),
-          // The agent/deployment id the factory already closes over: the
-          // agent's registry name. This is the same id used as `agentId` when
-          // bridging agents into the gateway, and what the `agents_involved`
-          // filter matches against created_by_agent_id + session_issue_link.
+          // Projects identifies an agent by config.name (NOT the registry
+          // entry.id used for chat addressing). name is unique + immutable and
+          // is already the gateway's on-disk identity key (sessions/<name>/,
+          // skills/<name>/), so created_by_agent_id and
+          // session_issue_link.agent_id are keyed on name. CONTRACT: any
+          // consumer of the `agents_involved` filter (e.g. MC's "Tasks (n)"
+          // deep-link) must pass config.name.
           getAgentId: () => agentConfig.name,
         }),
       );
