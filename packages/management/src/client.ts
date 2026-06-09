@@ -1,10 +1,21 @@
 import type {
   ChannelHealthEntry,
+  CreateIssueInput,
+  CreateProjectInput,
   HealthResponse,
+  InboxItem,
   InfoResponse,
+  Issue,
+  IssueComment,
+  IssueDetail,
+  IssueEvent,
+  IssueFilters,
   McpAddServerRequest,
   McpAddServerResponse,
   McpServerInfo,
+  Project,
+  ProjectWithCounts,
+  SessionIssueLink,
   ShutdownResponse,
   SkillContent,
   SkillInfo,
@@ -49,6 +60,17 @@ export class ManagementClient {
     }
 
     return response.json() as Promise<T>;
+  }
+
+  private async requestDelete(path: string): Promise<void> {
+    const response = await fetch(`${this.baseUrl}${path}`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${this.token}` },
+    });
+    if (!response.ok) {
+      const body = await response.text();
+      throw new Error(`Management API error ${response.status}: ${body}`);
+    }
   }
 
   async health(): Promise<HealthResponse> {
@@ -234,5 +256,95 @@ export class ManagementClient {
 
   async mcpSetAllowlist(patterns: string[]): Promise<void> {
     await this.requestWithBody<{ ok: boolean }>('PUT', '/runtime/mcp/allowlist', patterns);
+  }
+
+  // --- Projects ---
+
+  async listProjects(status?: Project['status']): Promise<Project[]> {
+    const qs = status ? `?status=${encodeURIComponent(status)}` : '';
+    return this.request<Project[]>('GET', `/projects${qs}`);
+  }
+
+  async createProject(input: CreateProjectInput): Promise<Project> {
+    return this.requestWithBody<Project>('POST', '/projects', input);
+  }
+
+  async getProject(id: string): Promise<ProjectWithCounts> {
+    return this.request<ProjectWithCounts>('GET', `/projects/${encodeURIComponent(id)}`);
+  }
+
+  async patchProject(id: string, patch: Partial<Project>): Promise<Project> {
+    return this.requestWithBody<Project>('PATCH', `/projects/${encodeURIComponent(id)}`, patch);
+  }
+
+  async listProjectIssues(id: string): Promise<Issue[]> {
+    return this.request<Issue[]>('GET', `/projects/${encodeURIComponent(id)}/issues`);
+  }
+
+  // --- Issues ---
+
+  async listIssues(filters: IssueFilters = {}): Promise<Issue[]> {
+    const params = new URLSearchParams();
+    for (const [k, v] of Object.entries(filters)) {
+      if (v !== undefined && v !== null && v !== '') params.set(k, String(v));
+    }
+    const qs = params.toString();
+    return this.request<Issue[]>('GET', `/issues${qs ? `?${qs}` : ''}`);
+  }
+
+  async createIssue(input: CreateIssueInput): Promise<Issue> {
+    return this.requestWithBody<Issue>('POST', '/issues', input);
+  }
+
+  async getIssue(id: string): Promise<IssueDetail> {
+    return this.request<IssueDetail>('GET', `/issues/${encodeURIComponent(id)}`);
+  }
+
+  async patchIssue(id: string, patch: Partial<Issue>): Promise<Issue> {
+    return this.requestWithBody<Issue>('PATCH', `/issues/${encodeURIComponent(id)}`, patch);
+  }
+
+  async addComment(issueId: string, body: string): Promise<IssueComment> {
+    return this.requestWithBody<IssueComment>(
+      'POST',
+      `/issues/${encodeURIComponent(issueId)}/comments`,
+      { body },
+    );
+  }
+
+  async editComment(issueId: string, commentId: string, body: string): Promise<IssueComment> {
+    return this.requestWithBody<IssueComment>(
+      'PATCH',
+      `/issues/${encodeURIComponent(issueId)}/comments/${encodeURIComponent(commentId)}`,
+      { body },
+    );
+  }
+
+  async deleteComment(issueId: string, commentId: string): Promise<void> {
+    await this.requestDelete(
+      `/issues/${encodeURIComponent(issueId)}/comments/${encodeURIComponent(commentId)}`,
+    );
+  }
+
+  async getIssueEvents(id: string): Promise<IssueEvent[]> {
+    return this.request<IssueEvent[]>('GET', `/issues/${encodeURIComponent(id)}/events`);
+  }
+
+  async getIssueSessions(id: string): Promise<SessionIssueLink[]> {
+    return this.request<SessionIssueLink[]>('GET', `/issues/${encodeURIComponent(id)}/sessions`);
+  }
+
+  // --- Inbox ---
+
+  async listInbox(): Promise<InboxItem[]> {
+    return this.request<InboxItem[]>('GET', '/inbox');
+  }
+
+  async markInboxRead(issueId: string): Promise<void> {
+    await this.requestWithBody<{ ok: boolean }>(
+      'POST',
+      `/inbox/${encodeURIComponent(issueId)}/mark-read`,
+      {},
+    );
   }
 }

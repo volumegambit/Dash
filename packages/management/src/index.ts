@@ -13,6 +13,20 @@ export type {
   McpServerInfo,
   McpAddServerRequest,
   McpAddServerResponse,
+  IssueStatus,
+  IssueSubStatus,
+  Project,
+  ProjectWithCounts,
+  Issue,
+  IssueComment,
+  IssueEventType,
+  IssueEvent,
+  SessionIssueLink,
+  IssueDetail,
+  InboxItem,
+  CreateProjectInput,
+  CreateIssueInput,
+  IssueFilters,
 } from './types.js';
 export { createManagementApp, startManagementServer } from './server.js';
 export type { ManagementServerOptions, SkillsHandlers } from './server.js';

@@ -1,5 +1,6 @@
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
-import type { Server } from 'node:http';
+import { createServer } from 'node:http';
+import type { IncomingMessage, Server, ServerResponse } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -252,6 +253,217 @@ describe('ManagementClient', () => {
       const lines = await logClient.logs({ since: '2026-03-07T10:00:01.000Z' });
       expect(lines).toHaveLength(2);
       expect(lines[0]).toContain('Line two');
+    });
+  });
+
+  describe('Projects methods', () => {
+    interface RecordedRequest {
+      method: string;
+      url: string;
+      body: unknown;
+    }
+
+    let recording: RecordedRequest[];
+    let nextResponse: unknown;
+    let rawServer: Server;
+    let projClose: () => Promise<void>;
+    let projClient: ManagementClient;
+    let projBaseUrl: string;
+
+    beforeEach(async () => {
+      recording = [];
+      nextResponse = {};
+
+      rawServer = createServer((req: IncomingMessage, res: ServerResponse) => {
+        const chunks: Buffer[] = [];
+        req.on('data', (c) => chunks.push(c as Buffer));
+        req.on('end', () => {
+          const raw = Buffer.concat(chunks).toString('utf-8');
+          let body: unknown;
+          try {
+            body = raw ? JSON.parse(raw) : undefined;
+          } catch {
+            body = raw;
+          }
+          recording.push({ method: req.method ?? '', url: req.url ?? '', body });
+          if (req.headers.authorization !== `Bearer ${TEST_TOKEN}`) {
+            res.statusCode = 401;
+            res.end('unauthorized');
+            return;
+          }
+          res.statusCode = 200;
+          res.setHeader('content-type', 'application/json');
+          res.end(JSON.stringify(nextResponse));
+        });
+      });
+
+      await new Promise<void>((resolve) => rawServer.listen(0, resolve));
+      const addr = rawServer.address();
+      const projPort = typeof addr === 'object' && addr ? addr.port : 0;
+      projClose = () =>
+        new Promise<void>((resolve, reject) =>
+          rawServer.close((err) => (err ? reject(err) : resolve())),
+        );
+      projBaseUrl = `http://localhost:${projPort}`;
+      projClient = new ManagementClient(projBaseUrl, TEST_TOKEN);
+    });
+
+    afterEach(async () => {
+      await projClose();
+    });
+
+    it('listProjects() GETs /projects', async () => {
+      nextResponse = [];
+      await projClient.listProjects();
+      expect(recording[0].method).toBe('GET');
+      expect(recording[0].url).toBe('/projects');
+    });
+
+    it('listProjects(status) appends a status querystring', async () => {
+      nextResponse = [];
+      await projClient.listProjects('active');
+      expect(recording[0].url).toBe('/projects?status=active');
+    });
+
+    it('createProject() POSTs /projects with JSON body', async () => {
+      nextResponse = { id: 'p1' };
+      await projClient.createProject({ name: 'P', key: 'P' });
+      expect(recording[0].method).toBe('POST');
+      expect(recording[0].url).toBe('/projects');
+      expect(recording[0].body).toEqual({ name: 'P', key: 'P' });
+    });
+
+    it('getProject() GETs /projects/:id', async () => {
+      nextResponse = { id: 'p1' };
+      await projClient.getProject('p1');
+      expect(recording[0].method).toBe('GET');
+      expect(recording[0].url).toBe('/projects/p1');
+    });
+
+    it('patchProject() PATCHes /projects/:id', async () => {
+      nextResponse = { id: 'p1' };
+      await projClient.patchProject('p1', { name: 'X' });
+      expect(recording[0].method).toBe('PATCH');
+      expect(recording[0].url).toBe('/projects/p1');
+      expect(recording[0].body).toEqual({ name: 'X' });
+    });
+
+    it('listProjectIssues() GETs /projects/:id/issues', async () => {
+      nextResponse = [];
+      await projClient.listProjectIssues('p1');
+      expect(recording[0].method).toBe('GET');
+      expect(recording[0].url).toBe('/projects/p1/issues');
+    });
+
+    it('listIssues() with no filters GETs bare /issues', async () => {
+      nextResponse = [];
+      await projClient.listIssues();
+      expect(recording[0].url).toBe('/issues');
+    });
+
+    it('listIssues(filters) builds a querystring including agents_involved', async () => {
+      nextResponse = [];
+      await projClient.listIssues({
+        project_id: 'p1',
+        status: 'todo',
+        agents_involved: 'agent-9',
+      });
+      const url = new URL(`http://x${recording[0].url}`);
+      expect(url.pathname).toBe('/issues');
+      expect(url.searchParams.get('project_id')).toBe('p1');
+      expect(url.searchParams.get('status')).toBe('todo');
+      expect(url.searchParams.get('agents_involved')).toBe('agent-9');
+    });
+
+    it('listIssues() drops undefined/null/empty filter values', async () => {
+      nextResponse = [];
+      await projClient.listIssues({ project_id: 'p1', status: undefined });
+      expect(recording[0].url).toBe('/issues?project_id=p1');
+    });
+
+    it('createIssue() POSTs /issues with JSON body', async () => {
+      nextResponse = { id: 'i1' };
+      await projClient.createIssue({ title: 'T' });
+      expect(recording[0].method).toBe('POST');
+      expect(recording[0].url).toBe('/issues');
+      expect(recording[0].body).toEqual({ title: 'T' });
+    });
+
+    it('getIssue() GETs /issues/:id', async () => {
+      nextResponse = { id: 'i1' };
+      await projClient.getIssue('i1');
+      expect(recording[0].method).toBe('GET');
+      expect(recording[0].url).toBe('/issues/i1');
+    });
+
+    it('patchIssue() PATCHes /issues/:id', async () => {
+      nextResponse = { id: 'i1' };
+      await projClient.patchIssue('i1', { status: 'done' });
+      expect(recording[0].method).toBe('PATCH');
+      expect(recording[0].url).toBe('/issues/i1');
+      expect(recording[0].body).toEqual({ status: 'done' });
+    });
+
+    it('addComment() POSTs /issues/:id/comments with { body }', async () => {
+      nextResponse = { id: 'c1' };
+      await projClient.addComment('i1', 'hello');
+      expect(recording[0].method).toBe('POST');
+      expect(recording[0].url).toBe('/issues/i1/comments');
+      expect(recording[0].body).toEqual({ body: 'hello' });
+    });
+
+    it('editComment() PATCHes /issues/:id/comments/:commentId', async () => {
+      nextResponse = { id: 'c1' };
+      await projClient.editComment('i1', 'c1', 'edited');
+      expect(recording[0].method).toBe('PATCH');
+      expect(recording[0].url).toBe('/issues/i1/comments/c1');
+      expect(recording[0].body).toEqual({ body: 'edited' });
+    });
+
+    it('deleteComment() DELETEs /issues/:id/comments/:commentId', async () => {
+      nextResponse = {};
+      await projClient.deleteComment('i1', 'c1');
+      expect(recording[0].method).toBe('DELETE');
+      expect(recording[0].url).toBe('/issues/i1/comments/c1');
+    });
+
+    it('listInbox() GETs /inbox', async () => {
+      nextResponse = [];
+      await projClient.listInbox();
+      expect(recording[0].method).toBe('GET');
+      expect(recording[0].url).toBe('/inbox');
+    });
+
+    it('markInboxRead() POSTs /inbox/:id/mark-read', async () => {
+      nextResponse = { ok: true };
+      await projClient.markInboxRead('i1');
+      expect(recording[0].method).toBe('POST');
+      expect(recording[0].url).toBe('/inbox/i1/mark-read');
+    });
+
+    it('getIssueEvents() GETs /issues/:id/events', async () => {
+      nextResponse = [];
+      await projClient.getIssueEvents('i1');
+      expect(recording[0].method).toBe('GET');
+      expect(recording[0].url).toBe('/issues/i1/events');
+    });
+
+    it('getIssueSessions() GETs /issues/:id/sessions', async () => {
+      nextResponse = [];
+      await projClient.getIssueSessions('i1');
+      expect(recording[0].method).toBe('GET');
+      expect(recording[0].url).toBe('/issues/i1/sessions');
+    });
+
+    it('URL-encodes ids with special characters', async () => {
+      nextResponse = { id: 'i 1' };
+      await projClient.getIssue('i 1');
+      expect(recording[0].url).toBe('/issues/i%201');
+    });
+
+    it('deleteComment() throws on non-ok response', async () => {
+      const bad = new ManagementClient(projBaseUrl, 'wrong-token');
+      await expect(bad.deleteComment('i1', 'c1')).rejects.toThrow('Management API error 401');
     });
   });
 });
