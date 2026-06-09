@@ -2,7 +2,7 @@ import { mkdtemp, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { openProjectsDb, type ProjectsDb } from './open.js';
+import { type ProjectsDb, openProjectsDb } from './open.js';
 
 describe('openProjectsDb', () => {
   let dir: string;
@@ -69,7 +69,9 @@ describe('openProjectsDb', () => {
     const issue = pdb.issues.create({ title: 'in my inbox', assignee_user_id: 'local' });
     pdb.issues.update(issue.id, { status: 'in_progress', sub_status: 'waiting_on_human' });
     const items = pdb.inbox.list('local');
-    expect(items.some((i) => i.issue.id === issue.id && i.reason === 'waiting_on_human')).toBe(true);
+    expect(items.some((i) => i.issue.id === issue.id && i.reason === 'waiting_on_human')).toBe(
+      true,
+    );
     pdb.inbox.markRead(issue.id);
     expect(
       pdb.inbox.list('local').some((i) => i.issue.id === issue.id && i.reason === 'new_activity'),

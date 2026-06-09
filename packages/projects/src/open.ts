@@ -4,16 +4,16 @@ import Database, { type Database as DatabaseType } from 'better-sqlite3';
 import { ProjectsEmitter } from './events.js';
 import { runMigrations } from './migrations/runner.js';
 import { InboxStoreSqlite } from './stores/inbox-store-sqlite.js';
-import { IssueCommentStoreSqlite } from './stores/issue-comment-store-sqlite.js';
-import { IssueEventStoreSqlite } from './stores/issue-event-store-sqlite.js';
-import { IssueStoreSqlite } from './stores/issue-store-sqlite.js';
-import { ProjectStoreSqlite } from './stores/project-store-sqlite.js';
-import { SessionLinkStoreSqlite } from './stores/session-link-store-sqlite.js';
 import type { InboxStore } from './stores/inbox-store.js';
+import { IssueCommentStoreSqlite } from './stores/issue-comment-store-sqlite.js';
 import type { IssueCommentStore } from './stores/issue-comment-store.js';
+import { IssueEventStoreSqlite } from './stores/issue-event-store-sqlite.js';
 import type { IssueEventStore } from './stores/issue-event-store.js';
+import { IssueStoreSqlite } from './stores/issue-store-sqlite.js';
 import type { IssueStore } from './stores/issue-store.js';
+import { ProjectStoreSqlite } from './stores/project-store-sqlite.js';
 import type { ProjectStore } from './stores/project-store.js';
+import { SessionLinkStoreSqlite } from './stores/session-link-store-sqlite.js';
 import type { SessionLinkStore } from './stores/session-link-store.js';
 
 export interface ProjectsDb {
