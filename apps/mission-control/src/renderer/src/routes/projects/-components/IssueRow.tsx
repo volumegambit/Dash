@@ -1,3 +1,4 @@
+import { Bot } from 'lucide-react';
 import type { Issue, Project } from '../../../../../shared/projects-ipc.js';
 import { StatusPill, SubStatusPill } from './StatusPill.js';
 
@@ -28,6 +29,7 @@ export function IssueRow({
       onKeyDown={(e) => {
         if (e.key === 'Enter') onOpen(issue.id);
       }}
+      tabIndex={0}
     >
       <td className="px-3 py-2">
         <StatusPill status={issue.status} />
@@ -36,7 +38,9 @@ export function IssueRow({
         {issue.key}
       </td>
       <td className="px-3 py-2 text-sm text-foreground">
-        {issue.created_by === 'agent' && <span title="Created by agent">🤖 </span>}
+        {issue.created_by === 'agent' && (
+          <Bot size={12} className="mr-1 inline text-muted" aria-label="Created by agent" />
+        )}
         {issue.title}
       </td>
       <td className="px-3 py-2 text-sm text-muted">{project?.name ?? '—'}</td>

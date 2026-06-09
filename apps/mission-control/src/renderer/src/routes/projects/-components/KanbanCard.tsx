@@ -1,3 +1,4 @@
+import { Bot } from 'lucide-react';
 import type { Issue, Project } from '../../../../../shared/projects-ipc.js';
 import { SubStatusPill } from './StatusPill.js';
 
@@ -30,7 +31,9 @@ export function KanbanCard({
         <span className="font-[family-name:var(--font-mono)] text-[10px] text-muted">
           {issue.key}
         </span>
-        {issue.created_by === 'agent' && <span title="Created by agent">🤖</span>}
+        {issue.created_by === 'agent' && (
+          <Bot size={12} className="text-muted" aria-label="Created by agent" />
+        )}
       </div>
       <p className="mb-2 text-sm text-foreground">{issue.title}</p>
       <div className="flex flex-wrap items-center gap-1">
