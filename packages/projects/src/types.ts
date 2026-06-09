@@ -1,10 +1,4 @@
-export type IssueStatus =
-  | 'backlog'
-  | 'todo'
-  | 'in_progress'
-  | 'review'
-  | 'done'
-  | 'cancelled';
+export type IssueStatus = 'backlog' | 'todo' | 'in_progress' | 'review' | 'done' | 'cancelled';
 
 export type IssueSubStatus = 'waiting_on_human' | 'agent_working' | 'blocked' | null;
 
@@ -81,7 +75,7 @@ export interface IssueEvent {
 export interface SessionIssueLink {
   session_id: string;
   issue_id: string;
-  agent_id: string | null;     // deployment id of the agent that referenced the issue, if any
+  agent_id: string | null; // deployment id of the agent that referenced the issue, if any
   first_referenced_at: string;
   last_referenced_at: string;
   reference_count: number;

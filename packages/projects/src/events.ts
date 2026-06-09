@@ -29,7 +29,10 @@ export type ProjectsEventName = keyof ProjectsEventMap;
 export class ProjectsEmitter {
   private readonly inner = new EventEmitter();
 
-  on<E extends ProjectsEventName>(event: E, listener: (payload: ProjectsEventMap[E]) => void): this {
+  on<E extends ProjectsEventName>(
+    event: E,
+    listener: (payload: ProjectsEventMap[E]) => void,
+  ): this {
     this.inner.on(event, listener as (...args: unknown[]) => void);
     return this;
   }

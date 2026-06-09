@@ -26,6 +26,6 @@
     "dts": true,
     "clean": true,
     "sourcemap": true,
-    "onSuccess": "mkdir -p dist/migrations && (cp src/migrations/*.sql dist/migrations/ 2>/dev/null || true)"
+    "onSuccess": "mkdir -p dist/migrations && cp src/migrations/*.sql dist/migrations/"
   }
 }

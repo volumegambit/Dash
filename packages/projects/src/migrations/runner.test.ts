@@ -57,15 +57,15 @@ describe('runMigrations', () => {
     expect(row.c).toBe(1);
   });
 
-  it('adds the agent_id column and index to session_issue_link', () => {
+  it('001 schema includes agent_id column and index in session_issue_link', () => {
     runMigrations(db);
-    const cols = db
-      .prepare("SELECT name FROM pragma_table_info('session_issue_link')")
-      .all() as { name: string }[];
+    const cols = db.prepare("SELECT name FROM pragma_table_info('session_issue_link')").all() as {
+      name: string;
+    }[];
     expect(cols.map((c) => c.name)).toContain('agent_id');
-    const indexes = db
-      .prepare("SELECT name FROM sqlite_master WHERE type = 'index'")
-      .all() as { name: string }[];
+    const indexes = db.prepare("SELECT name FROM sqlite_master WHERE type = 'index'").all() as {
+      name: string;
+    }[];
     expect(indexes.map((i) => i.name)).toContain('session_link_by_agent');
   });
 });

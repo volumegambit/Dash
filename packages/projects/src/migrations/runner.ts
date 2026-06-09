@@ -43,9 +43,13 @@ export function runMigrations(db: DatabaseType): void {
     const sql = readFileSync(join(MIGRATIONS_DIR, migration.file), 'utf8');
     const apply = db.transaction(() => {
       db.exec(sql);
-      // 001 creates schema_version itself; INSERT OR IGNORE makes that
-      // self-creation harmless and keeps every later migration uniform.
-      db.prepare('INSERT OR IGNORE INTO schema_version (version) VALUES (?)').run(migration.version);
+      // Migration 001 creates the schema_version table itself, so on the
+      // first run the version row is inserted into a table the same SQL just
+      // made; INSERT OR IGNORE guards that special case (and keeps every later
+      // migration uniform). Do not replace it with a plain INSERT.
+      db.prepare('INSERT OR IGNORE INTO schema_version (version) VALUES (?)').run(
+        migration.version,
+      );
     });
     apply();
   }
