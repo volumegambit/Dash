@@ -18,3 +18,10 @@ export { createManagementApp, startManagementServer } from './server.js';
 export type { ManagementServerOptions, SkillsHandlers } from './server.js';
 export { ManagementClient } from './client.js';
 export { mountProjectsRoutes, type ProjectsRoutesDeps } from './projects-routes.js';
+export {
+  mountProjectsWs,
+  normalizeForWire,
+  PROJECTS_WS_TOPICS,
+  type ProjectsWsDeps,
+  type ProjectsWsTopic,
+} from './projects-ws.js';
