@@ -85,10 +85,12 @@ describe('SessionLinkStoreSqlite', () => {
   it('lists links by issue and by session', () => {
     links.link('sess_1', 'issue_1');
     links.link('sess_2', 'issue_1');
-    expect(links.listByIssue('issue_1').map((l) => l.session_id).sort()).toEqual([
-      'sess_1',
-      'sess_2',
-    ]);
+    expect(
+      links
+        .listByIssue('issue_1')
+        .map((l) => l.session_id)
+        .sort(),
+    ).toEqual(['sess_1', 'sess_2']);
     expect(links.listBySession('sess_1').map((l) => l.issue_id)).toEqual(['issue_1']);
   });
 });

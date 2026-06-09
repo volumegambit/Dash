@@ -69,7 +69,9 @@ describe('IssueCommentStoreSqlite', () => {
       body: 'keep me',
     });
     comments.softDelete(c.id);
-    const raw = h.db.prepare('SELECT body, deleted_at FROM issue_comment WHERE id = ?').get(c.id) as {
+    const raw = h.db
+      .prepare('SELECT body, deleted_at FROM issue_comment WHERE id = ?')
+      .get(c.id) as {
       body: string;
       deleted_at: string | null;
     };

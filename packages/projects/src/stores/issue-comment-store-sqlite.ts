@@ -2,8 +2,8 @@ import type { Database as DatabaseType, Statement } from 'better-sqlite3';
 import type { ProjectsEmitter } from '../events.js';
 import type { AuthorType, IssueComment } from '../types.js';
 import { commentId } from '../ulid.js';
-import type { IssueEventStore } from './issue-event-store.js';
 import type { AddCommentInput, IssueCommentStore } from './issue-comment-store.js';
+import type { IssueEventStore } from './issue-event-store.js';
 
 interface IssueCommentRow {
   id: string;
