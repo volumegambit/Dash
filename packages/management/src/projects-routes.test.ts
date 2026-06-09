@@ -99,6 +99,35 @@ describe('projects HTTP routes', () => {
     expect(res.status).toBe(200);
     expect((await res.json()).status).toBe('paused');
   });
+
+  it('drops unknown patch fields and rejects an invalid status on project PATCH', async () => {
+    const created = await (
+      await fetch(url('/projects'), {
+        method: 'POST',
+        headers: auth(),
+        body: JSON.stringify({ name: 'Gateway', key: 'GATEWAY' }),
+      })
+    ).json();
+
+    const bad = await fetch(url(`/projects/${created.id}`), {
+      method: 'PATCH',
+      headers: auth(),
+      body: JSON.stringify({ status: 'not_a_status' }),
+    });
+    expect(bad.status).toBe(400);
+
+    const ok = await fetch(url(`/projects/${created.id}`), {
+      method: 'PATCH',
+      headers: auth(),
+      body: JSON.stringify({ name: 'Renamed', key: 'HACKED', id: 'project_hacked' }),
+    });
+    expect(ok.status).toBe(200);
+    const updated = await ok.json();
+    expect(updated.name).toBe('Renamed');
+    // key/id are not part of UpdateProjectInput, so they are dropped.
+    expect(updated.key).toBe('GATEWAY');
+    expect(updated.id).toBe(created.id);
+  });
 });
 
 async function createProject(): Promise<{ id: string; key: string }> {
@@ -197,6 +226,55 @@ describe('issues HTTP routes', () => {
   it('404s an unknown issue', async () => {
     const res = await fetch(url('/issues/issue_missing'), { headers: auth() });
     expect(res.status).toBe(404);
+  });
+
+  it('404s comment edit/delete on an unknown issue id', async () => {
+    const issue = await createIssue();
+    const comment = await (
+      await fetch(url(`/issues/${issue.id}/comments`), {
+        method: 'POST',
+        headers: auth(),
+        body: JSON.stringify({ body: 'hello' }),
+      })
+    ).json();
+
+    const editRes = await fetch(url(`/issues/issue_missing/comments/${comment.id}`), {
+      method: 'PATCH',
+      headers: auth(),
+      body: JSON.stringify({ body: 'edited' }),
+    });
+    expect(editRes.status).toBe(404);
+
+    const delRes = await fetch(url(`/issues/issue_missing/comments/${comment.id}`), {
+      method: 'DELETE',
+      headers: auth(),
+    });
+    expect(delRes.status).toBe(404);
+  });
+
+  it('drops unknown patch fields and ignores them on update', async () => {
+    const issue = await createIssue();
+    const res = await fetch(url(`/issues/${issue.id}`), {
+      method: 'PATCH',
+      headers: auth(),
+      body: JSON.stringify({ status: 'todo', bogus_field: 'x', id: 'issue_hacked' }),
+    });
+    expect(res.status).toBe(200);
+    const updated = await res.json();
+    expect(updated.status).toBe('todo');
+    // The injected id/bogus_field never reach the store.
+    expect(updated.id).toBe(issue.id);
+    expect(updated.bogus_field).toBeUndefined();
+  });
+
+  it('rejects an invalid status on issue PATCH', async () => {
+    const issue = await createIssue();
+    const res = await fetch(url(`/issues/${issue.id}`), {
+      method: 'PATCH',
+      headers: auth(),
+      body: JSON.stringify({ status: 'not_a_status' }),
+    });
+    expect(res.status).toBe(400);
   });
 });
 

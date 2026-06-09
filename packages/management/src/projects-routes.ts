@@ -1,5 +1,43 @@
-import type { IssueStatus, IssueSubStatus, ProjectStatus, ProjectsDb } from '@dash/projects';
+import type {
+  IssueStatus,
+  IssueSubStatus,
+  ProjectStatus,
+  ProjectsDb,
+  UpdateIssueInput,
+  UpdateProjectInput,
+} from '@dash/projects';
 import type { Hono } from 'hono';
+
+/** Pick only the keys the project store accepts from an arbitrary patch body. */
+function pickProjectPatch(body: Record<string, unknown>): UpdateProjectInput {
+  const patch: UpdateProjectInput = {};
+  if (typeof body.name === 'string') patch.name = body.name;
+  if (typeof body.description === 'string') patch.description = body.description;
+  if (typeof body.status === 'string') patch.status = body.status as ProjectStatus;
+  if (body.archived_at === null || typeof body.archived_at === 'string') {
+    patch.archived_at = body.archived_at as string | null;
+  }
+  return patch;
+}
+
+/** Pick only the keys the issue store accepts from an arbitrary patch body. */
+function pickIssuePatch(body: Record<string, unknown>): UpdateIssueInput {
+  const patch: UpdateIssueInput = {};
+  if (typeof body.title === 'string') patch.title = body.title;
+  if (typeof body.description === 'string') patch.description = body.description;
+  if (typeof body.status === 'string') patch.status = body.status as IssueStatus;
+  if (body.sub_status === null || typeof body.sub_status === 'string') {
+    patch.sub_status = body.sub_status as IssueSubStatus;
+  }
+  if (typeof body.assignee_user_id === 'string') patch.assignee_user_id = body.assignee_user_id;
+  if (body.project_id === null || typeof body.project_id === 'string') {
+    patch.project_id = body.project_id as string | null;
+  }
+  if (body.completed_at === null || typeof body.completed_at === 'string') {
+    patch.completed_at = body.completed_at as string | null;
+  }
+  return patch;
+}
 
 export interface ProjectsRoutesDeps {
   db: ProjectsDb;
@@ -61,16 +99,22 @@ export function mountProjectsRoutes(app: Hono, deps: ProjectsRoutesDeps): void {
   });
 
   app.patch('/projects/:id', async (c) => {
-    let patch: Record<string, unknown>;
+    let body: Record<string, unknown>;
     try {
-      patch = await c.req.json();
+      body = await c.req.json();
     } catch {
       return c.json({ error: 'Invalid JSON' }, 400);
+    }
+    if (
+      typeof body.status === 'string' &&
+      !PROJECT_STATUSES.includes(body.status as ProjectStatus)
+    ) {
+      return c.json({ error: `Invalid status "${body.status}"` }, 400);
     }
     const existing = db.projects.getByIdOrKey(c.req.param('id'));
     if (!existing) return c.json({ error: 'Project not found' }, 404);
     try {
-      const updated = db.projects.update(existing.id, patch);
+      const updated = db.projects.update(existing.id, pickProjectPatch(body));
       return c.json(updated);
     } catch (err) {
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
@@ -166,16 +210,25 @@ function mountIssueRoutes(
   });
 
   app.patch('/issues/:id', async (c) => {
-    let patch: Record<string, unknown>;
+    let body: Record<string, unknown>;
     try {
-      patch = await c.req.json();
+      body = await c.req.json();
     } catch {
       return c.json({ error: 'Invalid JSON' }, 400);
+    }
+    if (typeof body.status === 'string' && !ISSUE_STATUSES.includes(body.status as IssueStatus)) {
+      return c.json({ error: `Invalid status "${body.status}"` }, 400);
+    }
+    if (
+      typeof body.sub_status === 'string' &&
+      !ISSUE_SUB_STATUSES.includes(body.sub_status as IssueSubStatus)
+    ) {
+      return c.json({ error: `Invalid sub_status "${body.sub_status}"` }, 400);
     }
     const existing = db.issues.getByIdOrKey(c.req.param('id'));
     if (!existing) return c.json({ error: 'Issue not found' }, 404);
     try {
-      return c.json(db.issues.update(existing.id, patch, actor));
+      return c.json(db.issues.update(existing.id, pickIssuePatch(body), actor));
     } catch (err) {
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
     }
@@ -217,6 +270,9 @@ function mountIssueRoutes(
     if (!body.body || !body.body.trim()) {
       return c.json({ error: 'body is required' }, 400);
     }
+    if (!db.issues.getByIdOrKey(c.req.param('id'))) {
+      return c.json({ error: 'Issue not found' }, 404);
+    }
     try {
       return c.json(db.comments.edit(c.req.param('commentId'), body.body));
     } catch (err) {
@@ -226,6 +282,9 @@ function mountIssueRoutes(
   });
 
   app.delete('/issues/:id/comments/:commentId', (c) => {
+    if (!db.issues.getByIdOrKey(c.req.param('id'))) {
+      return c.json({ error: 'Issue not found' }, 404);
+    }
     try {
       // Returns { issue_id }; surfaced in the response for the MC layer.
       const { issue_id } = db.comments.softDelete(c.req.param('commentId'));
