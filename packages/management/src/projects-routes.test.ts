@@ -100,3 +100,102 @@ describe('projects HTTP routes', () => {
     expect((await res.json()).status).toBe('paused');
   });
 });
+
+async function createProject(): Promise<{ id: string; key: string }> {
+  return (
+    await fetch(url('/projects'), {
+      method: 'POST',
+      headers: auth(),
+      body: JSON.stringify({ name: 'Gateway', key: 'GATEWAY' }),
+    })
+  ).json();
+}
+
+async function createIssue(extra: Record<string, unknown> = {}): Promise<Record<string, unknown>> {
+  return (
+    await fetch(url('/issues'), {
+      method: 'POST',
+      headers: auth(),
+      body: JSON.stringify({ title: 'Task', ...extra }),
+    })
+  ).json();
+}
+
+describe('issues HTTP routes', () => {
+  it('creates, lists, and reads an issue (detail = getDetail output, no server timeline)', async () => {
+    const issue = await createIssue();
+    expect(String(issue.id)).toMatch(/^issue_/);
+
+    // GET /issues returns a BARE ARRAY.
+    const list = await (await fetch(url('/issues'), { headers: auth() })).json();
+    expect(Array.isArray(list)).toBe(true);
+    expect(list.length).toBe(1);
+
+    const detailRes = await fetch(url(`/issues/${issue.id}`), { headers: auth() });
+    expect(detailRes.status).toBe(200);
+    const detail = await detailRes.json();
+    // No server-side `timeline` — the MC layer merges. Detail carries the raw
+    // arrays plus subtasks.
+    expect(detail.timeline).toBeUndefined();
+    expect(Array.isArray(detail.comments)).toBe(true);
+    expect(Array.isArray(detail.events)).toBe(true);
+    expect(Array.isArray(detail.linked_sessions)).toBe(true);
+    expect(Array.isArray(detail.subtasks)).toBe(true);
+  });
+
+  it('lists issues within a project (bare array)', async () => {
+    const proj = await createProject();
+    await createIssue({ project_id: proj.id });
+    const res = await fetch(url(`/projects/${proj.id}/issues`), { headers: auth() });
+    expect(res.status).toBe(200);
+    const out = await res.json();
+    expect(Array.isArray(out)).toBe(true);
+    expect(out.length).toBe(1);
+  });
+
+  it('patches an issue status', async () => {
+    const issue = await createIssue();
+    const res = await fetch(url(`/issues/${issue.id}`), {
+      method: 'PATCH',
+      headers: auth(),
+      body: JSON.stringify({ status: 'todo' }),
+    });
+    expect(res.status).toBe(200);
+    expect((await res.json()).status).toBe('todo');
+  });
+
+  it('adds, edits, and soft-deletes comments', async () => {
+    const issue = await createIssue();
+    const addRes = await fetch(url(`/issues/${issue.id}/comments`), {
+      method: 'POST',
+      headers: auth(),
+      body: JSON.stringify({ body: 'hello' }),
+    });
+    expect(addRes.status).toBe(201);
+    const comment = await addRes.json();
+
+    const editRes = await fetch(url(`/issues/${issue.id}/comments/${comment.id}`), {
+      method: 'PATCH',
+      headers: auth(),
+      body: JSON.stringify({ body: 'edited' }),
+    });
+    expect(editRes.status).toBe(200);
+    expect((await editRes.json()).body).toBe('edited');
+
+    const delRes = await fetch(url(`/issues/${issue.id}/comments/${comment.id}`), {
+      method: 'DELETE',
+      headers: auth(),
+    });
+    expect(delRes.status).toBe(200);
+
+    // After delete the pre-merged feed shows a deleted placeholder.
+    const detail = await (await fetch(url(`/issues/${issue.id}`), { headers: auth() })).json();
+    const deleted = detail.comments.find((x: { id: string }) => x.id === comment.id);
+    expect(deleted.deleted_at).not.toBeNull();
+  });
+
+  it('404s an unknown issue', async () => {
+    const res = await fetch(url('/issues/issue_missing'), { headers: auth() });
+    expect(res.status).toBe(404);
+  });
+});
