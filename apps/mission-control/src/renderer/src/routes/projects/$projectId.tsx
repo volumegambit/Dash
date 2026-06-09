@@ -1,9 +1,10 @@
 import { createFileRoute, useNavigate } from '@tanstack/react-router';
-import { ArrowLeft, Pencil } from 'lucide-react';
+import { ArrowLeft, Pencil, Plus } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import { Markdown } from '../../components/Markdown.js';
 import { useProjectsStore } from '../../stores/projects.js';
 import { IssueRow } from './-components/IssueRow.js';
+import { NewTaskModal } from './-components/NewTaskModal.js';
 
 function ProjectDetail(): JSX.Element {
   const { projectId } = Route.useParams();
@@ -17,6 +18,7 @@ function ProjectDetail(): JSX.Element {
   const project = projectsById[projectId];
   const [editingDesc, setEditingDesc] = useState(false);
   const [draft, setDraft] = useState('');
+  const [creating, setCreating] = useState(false);
 
   useEffect(() => {
     loadProjects();
@@ -59,6 +61,13 @@ function ProjectDetail(): JSX.Element {
         <span className="ml-2 bg-sidebar-hover px-1.5 py-0.5 text-[10px] capitalize text-muted">
           {project.status}
         </span>
+        <button
+          type="button"
+          onClick={() => setCreating(true)}
+          className="ml-auto flex items-center gap-1.5 bg-accent px-3 py-1.5 text-sm text-white hover:opacity-90"
+        >
+          <Plus size={14} /> New task
+        </button>
       </div>
 
       <div className="flex-1 overflow-auto px-8 pb-6">
@@ -139,6 +148,16 @@ function ProjectDetail(): JSX.Element {
           </tbody>
         </table>
       </div>
+
+      <NewTaskModal
+        open={creating}
+        presetProjectId={projectId}
+        onCancel={() => setCreating(false)}
+        onCreated={(issueId) => {
+          setCreating(false);
+          navigate({ to: '/projects/issues/$issueId', params: { issueId } });
+        }}
+      />
     </div>
   );
 }

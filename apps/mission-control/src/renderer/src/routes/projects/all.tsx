@@ -1,9 +1,10 @@
 import { createFileRoute, useNavigate } from '@tanstack/react-router';
-import { Search } from 'lucide-react';
+import { Plus, Search } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import type { IssueStatus } from '../../../../shared/projects-ipc.js';
 import { useProjectsStore } from '../../stores/projects.js';
 import { IssueRow } from './-components/IssueRow.js';
+import { NewTaskModal } from './-components/NewTaskModal.js';
 
 const STATUS_CHIPS: { value: IssueStatus | 'all'; label: string }[] = [
   { value: 'all', label: 'All' },
@@ -23,6 +24,7 @@ function AllTasks(): JSX.Element {
   const loadProjects = useProjectsStore((s) => s.loadProjects);
   const [statusFilter, setStatusFilter] = useState<IssueStatus | 'all'>('all');
   const [query, setQuery] = useState('');
+  const [creating, setCreating] = useState(false);
 
   useEffect(() => {
     loadProjects();
@@ -72,6 +74,13 @@ function AllTasks(): JSX.Element {
             className="w-64 border border-border bg-card-bg py-1.5 pl-7 pr-3 text-sm text-foreground placeholder:text-muted focus:border-accent focus:outline-none"
           />
         </div>
+        <button
+          type="button"
+          onClick={() => setCreating(true)}
+          className="flex items-center gap-1.5 bg-accent px-3 py-1.5 text-sm text-white hover:opacity-90"
+        >
+          <Plus size={14} /> New task
+        </button>
       </div>
       {agentId && (
         <div className="px-8 pb-2 text-xs text-muted">
@@ -108,6 +117,15 @@ function AllTasks(): JSX.Element {
           <p className="mt-8 text-center text-sm text-muted">No tasks match.</p>
         )}
       </div>
+
+      <NewTaskModal
+        open={creating}
+        onCancel={() => setCreating(false)}
+        onCreated={(issueId) => {
+          setCreating(false);
+          navigate({ to: '/projects/issues/$issueId', params: { issueId } });
+        }}
+      />
     </div>
   );
 }
