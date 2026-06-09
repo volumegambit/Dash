@@ -3,6 +3,7 @@ import { Link, createFileRoute, useNavigate } from '@tanstack/react-router';
 import {
   ArrowLeft,
   Check,
+  FolderKanban,
   Loader,
   MessageSquare,
   Pencil,
@@ -29,6 +30,7 @@ export function AgentDetail(): JSX.Element {
   const [activeTab, setActiveTab] = useState<TabId>('overview');
   const [editingName, setEditingName] = useState(false);
   const [newName, setNewName] = useState('');
+  const [taskCount, setTaskCount] = useState<number | null>(null);
   const nameInputRef = useRef<HTMLInputElement>(null);
 
   const agent = agents.find((a) => a.id === id);
@@ -40,6 +42,14 @@ export function AgentDetail(): JSX.Element {
   useEffect(() => {
     loadChannels();
   }, [loadChannels]);
+
+  useEffect(() => {
+    if (!agent) return;
+    window.api
+      .projectsListIssues({ agents_involved: agent.name })
+      .then((issues) => setTaskCount(issues.length))
+      .catch(() => setTaskCount(null));
+  }, [agent]);
 
   useEffect(() => {
     if (editingName && nameInputRef.current) {
@@ -184,6 +194,14 @@ export function AgentDetail(): JSX.Element {
         )}
         <StatusBadge status={agent.status} />
         <div className="ml-auto flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => navigate({ to: '/projects/all', search: { agentId: agent.name } })}
+            className="inline-flex items-center gap-2 rounded-lg border border-border px-3 py-2 text-sm text-muted transition-colors hover:bg-sidebar-hover hover:text-foreground"
+          >
+            <FolderKanban size={14} />
+            Tasks{taskCount !== null ? ` (${taskCount})` : ''}
+          </button>
           {isActive && (
             <button
               type="button"
