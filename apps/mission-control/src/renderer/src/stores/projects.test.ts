@@ -143,7 +143,11 @@ describe('useProjectsStore.subscribe', () => {
     let captured: ((e: { topic: string; payload: Record<string, unknown> }) => void) | null = null;
     mockApi.onProjectsEvent.mockImplementation((cb: typeof captured) => {
       captured = cb;
-      return () => {};
+      // The real preload removes the IPC listener on unsub; model that by
+      // detaching the captured callback so later frames no longer dispatch.
+      return () => {
+        captured = null;
+      };
     });
 
     const unsub = useProjectsStore.getState().subscribe();
@@ -162,5 +166,12 @@ describe('useProjectsStore.subscribe', () => {
 
     unsub();
     expect(useProjectsStore.getState().subscribed).toBe(false);
+
+    // After unsub, frames no longer reach the store (listener detached).
+    captured?.({
+      topic: 'issue.created',
+      payload: issue('8') as unknown as Record<string, unknown>,
+    });
+    expect(useProjectsStore.getState().issuesById['8']).toBeUndefined();
   });
 });

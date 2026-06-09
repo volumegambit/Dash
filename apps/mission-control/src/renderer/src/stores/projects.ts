@@ -154,17 +154,17 @@ export const useProjectsStore = create<ProjectsState>((set, get) => ({
 
   async addComment(issueId, body) {
     await window.api.projectsAddComment(issueId, body);
-    await get().loadIssueDetail(issueId);
+    // Detail refresh is driven by the WS comment.added broadcast.
   },
 
   async editComment(issueId, commentId, body) {
     await window.api.projectsEditComment(issueId, commentId, body);
-    await get().loadIssueDetail(issueId);
+    // Detail refresh is driven by the WS comment.edited broadcast.
   },
 
   async deleteComment(issueId, commentId) {
     await window.api.projectsDeleteComment(issueId, commentId);
-    await get().loadIssueDetail(issueId);
+    // Detail refresh is driven by the WS comment.deleted broadcast.
   },
 
   async markInboxRead(issueId) {
@@ -214,10 +214,10 @@ export const useProjectsStore = create<ProjectsState>((set, get) => ({
 
   subscribe() {
     if (get().subscribed) return () => {};
-    set({ subscribed: true });
     const unsub = window.api.onProjectsEvent((event) => {
       get().applyEvent(event);
     });
+    set({ subscribed: true });
     return () => {
       set({ subscribed: false });
       unsub();
