@@ -79,6 +79,7 @@ export class InboxStoreSqlite implements InboxStore {
     this.waitingStmt = db.prepare(`
       SELECT * FROM issue
       WHERE assignee_user_id = ? AND sub_status = 'waiting_on_human'
+        AND status NOT IN ('done', 'cancelled')
       ORDER BY updated_at DESC, rowid DESC
     `);
     // New activity: assignee = user AND the issue changed since it was last
@@ -87,6 +88,7 @@ export class InboxStoreSqlite implements InboxStore {
       SELECT i.* FROM issue i
       LEFT JOIN inbox_read r ON r.issue_id = i.id
       WHERE i.assignee_user_id = ?
+        AND i.status NOT IN ('done', 'cancelled')
         AND i.updated_at > COALESCE(r.last_seen_at, '')
       ORDER BY i.updated_at DESC, i.rowid DESC
     `);

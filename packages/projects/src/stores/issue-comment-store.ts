@@ -13,6 +13,9 @@ export interface IssueCommentStore {
   /** All comments for an issue in chronological order, including soft-deleted ones (flagged). */
   listByIssue(issueId: string): IssueComment[];
   edit(id: string, body: string): IssueComment;
-  /** Soft delete: sets deleted_at, retains body for audit. Returns the issue id for event correlation. */
+  /**
+   * Soft delete: sets deleted_at, retains body for audit. Returns the issue id
+   * for event correlation.
+   */
   softDelete(id: string): { issue_id: string };
 }

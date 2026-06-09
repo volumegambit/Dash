@@ -80,4 +80,17 @@ describe('InboxStoreSqlite', () => {
     const item = inbox.list('local').find((i) => i.issue.id === issue.id);
     expect(item?.project?.id).toBe(p.id);
   });
+
+  it('excludes done/cancelled issues from both reasons', () => {
+    // waiting_on_human but already done → must not linger in the action queue.
+    const finished = issues.create({ title: 'finished', assignee_user_id: 'local' });
+    issues.update(finished.id, { sub_status: 'waiting_on_human', status: 'done' });
+    // A done issue with recent activity → must not show as new_activity either.
+    const closed = issues.create({ title: 'closed', assignee_user_id: 'local' });
+    issues.update(closed.id, { status: 'done' });
+
+    const ids = inbox.list('local').map((i) => i.issue.id);
+    expect(ids).not.toContain(finished.id);
+    expect(ids).not.toContain(closed.id);
+  });
 });

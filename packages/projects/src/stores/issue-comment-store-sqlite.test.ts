@@ -115,4 +115,44 @@ describe('IssueCommentStoreSqlite', () => {
     comments.softDelete(c.id);
     expect(deleted).toHaveBeenCalledWith({ issueId: 'issue_1', commentId: c.id });
   });
+
+  it('rejects editing a soft-deleted comment without emitting or appending', () => {
+    const c = comments.add({
+      issue_id: 'issue_1',
+      author_type: 'human',
+      author_id: 'local',
+      body: 'original',
+    });
+    comments.softDelete(c.id);
+    const edited = vi.fn();
+    emitter.on('comment.edited', edited);
+    expect(() => comments.edit(c.id, 'tampered')).toThrow(/deleted/);
+    expect(edited).not.toHaveBeenCalled();
+    const raw = h.db.prepare('SELECT body FROM issue_comment WHERE id = ?').get(c.id) as {
+      body: string;
+    };
+    expect(raw.body).toBe('original'); // audit trail intact
+    expect(events.listByIssue('issue_1').map((e) => e.type)).toEqual([
+      'comment_added',
+      'comment_deleted',
+    ]);
+  });
+
+  it('rejects double soft-delete without emitting or appending again', () => {
+    const c = comments.add({
+      issue_id: 'issue_1',
+      author_type: 'human',
+      author_id: 'local',
+      body: 'x',
+    });
+    comments.softDelete(c.id);
+    const deleted = vi.fn();
+    emitter.on('comment.deleted', deleted);
+    expect(() => comments.softDelete(c.id)).toThrow(/already deleted/);
+    expect(deleted).not.toHaveBeenCalled();
+    expect(events.listByIssue('issue_1').map((e) => e.type)).toEqual([
+      'comment_added',
+      'comment_deleted',
+    ]);
+  });
 });

@@ -44,7 +44,9 @@ export class IssueCommentStoreSqlite implements IssueCommentStore {
     this.insertStmt = db.prepare(`
       INSERT INTO issue_comment
         (id, issue_id, author_type, author_id, body, created_at, updated_at, deleted_at)
-      VALUES (@id, @issue_id, @author_type, @author_id, @body, @created_at, @updated_at, @deleted_at)
+      VALUES
+        (@id, @issue_id, @author_type, @author_id,
+         @body, @created_at, @updated_at, @deleted_at)
     `);
     this.getStmt = db.prepare('SELECT * FROM issue_comment WHERE id = ?');
     this.listStmt = db.prepare(
@@ -95,6 +97,7 @@ export class IssueCommentStoreSqlite implements IssueCommentStore {
   edit(id: string, body: string): IssueComment {
     const current = this.get(id);
     if (!current) throw new Error(`comment not found: ${id}`);
+    if (current.deleted_at) throw new Error(`comment is deleted: ${id}`);
     const updatedAt = new Date().toISOString();
     this.editStmt.run({ id, body, updated_at: updatedAt });
     const next: IssueComment = { ...current, body, updated_at: updatedAt };
@@ -112,6 +115,7 @@ export class IssueCommentStoreSqlite implements IssueCommentStore {
   softDelete(id: string): { issue_id: string } {
     const current = this.get(id);
     if (!current) throw new Error(`comment not found: ${id}`);
+    if (current.deleted_at) throw new Error(`comment already deleted: ${id}`);
     const deletedAt = new Date().toISOString();
     this.deleteStmt.run({ id, deleted_at: deletedAt, updated_at: deletedAt });
     this.eventStore.append({
