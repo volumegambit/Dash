@@ -137,6 +137,7 @@ function createMockApi(): Record<keyof MissionControlAPI, ReturnType<typeof vi.f
 
     // Gateway
     gatewayGetStatus: vi.fn().mockResolvedValue('healthy'),
+    gatewayRestart: vi.fn().mockResolvedValue(undefined),
     gatewayOnStatus: vi.fn().mockReturnValue(() => {}),
 
     // Gateway events (SSE)

@@ -1,7 +1,7 @@
 import { createWriteStream, existsSync, mkdirSync } from 'node:fs';
 import { mkdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import type { SkillsConfig } from '@dash/management';
+import type { Project, SkillsConfig } from '@dash/management';
 import { ManagementClient } from '@dash/management';
 import {
   ConversationStore,
@@ -160,22 +160,24 @@ export async function registerIpcHandlers(
   const hasExistingGatewayState = existsSync(gatewayStateJsonPath);
 
   // Build a short-lived ManagementClient for the gateway — used by
-  // IPC handlers that want direct HTTP access to skills/MCP routes
-  // without going through the GatewayManagementClient abstraction.
+  // IPC handlers that want direct HTTP access to skills/MCP/projects
+  // routes without going through the GatewayManagementClient abstraction.
   // Reads the gateway port from state.json and the bearer token from
-  // the OS keychain (via the supervisor); both must be populated or
-  // the call throws.
-  const getSkillsClient = async (): Promise<ManagementClient> => {
+  // the OS keychain (via the supervisor); both must be populated or the
+  // call throws with the given feature name in the error message.
+  const getDirectManagementClient = async (feature: string): Promise<ManagementClient> => {
     const gatewayState = await new GatewayStateStore(DATA_DIR).read();
     if (!gatewayState) {
-      throw new Error('Gateway not running — Skills API unavailable');
+      throw new Error(`Gateway not running — ${feature} unavailable`);
     }
     const token = await gw.getGatewayToken();
     if (!token) {
-      throw new Error('Gateway not running — Skills API unavailable');
+      throw new Error(`Gateway not running — ${feature} unavailable`);
     }
     return new ManagementClient(`http://127.0.0.1:${gatewayState.port}`, token);
   };
+
+  const getSkillsClient = (): Promise<ManagementClient> => getDirectManagementClient('Skills API');
 
   // Read gateway state and pass connection to ChatService. The chat
   // token lives in the OS keychain (not gateway-state.json), so pull
@@ -809,17 +811,7 @@ export async function registerIpcHandlers(
   // MCP Connectors
   // -----------------------------------------------------------------------
 
-  async function getMcpClient(): Promise<ManagementClient> {
-    const gatewayState = await new GatewayStateStore(DATA_DIR).read();
-    if (!gatewayState) {
-      throw new Error('Gateway not running — Connectors unavailable');
-    }
-    const token = await gw.getGatewayToken();
-    if (!token) {
-      throw new Error('Gateway not running — Connectors unavailable');
-    }
-    return new ManagementClient(`http://127.0.0.1:${gatewayState.port}`, token);
-  }
+  const getMcpClient = (): Promise<ManagementClient> => getDirectManagementClient('Connectors');
 
   ipcMain.handle('mcp:listConnectors', async () => {
     const client = await getMcpClient();
@@ -865,20 +857,10 @@ export async function registerIpcHandlers(
   // Projects
   // -----------------------------------------------------------------------
 
-  async function getProjectsClient(): Promise<ManagementClient> {
-    const gatewayState = await new GatewayStateStore(DATA_DIR).read();
-    if (!gatewayState) {
-      throw new Error('Gateway not running — Projects unavailable');
-    }
-    const token = await gw.getGatewayToken();
-    if (!token) {
-      throw new Error('Gateway not running — Projects unavailable');
-    }
-    return new ManagementClient(`http://127.0.0.1:${gatewayState.port}`, token);
-  }
+  const getProjectsClient = (): Promise<ManagementClient> => getDirectManagementClient('Projects');
 
   ipcMain.handle('projects:listProjects', async (_e, status?: string) =>
-    (await getProjectsClient()).listProjects(status as never),
+    (await getProjectsClient()).listProjects(status as Project['status'] | undefined),
   );
   ipcMain.handle('projects:createProject', async (_e, input) =>
     (await getProjectsClient()).createProject(input),
