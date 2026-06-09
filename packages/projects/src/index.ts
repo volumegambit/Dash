@@ -58,3 +58,11 @@ export { InboxStoreSqlite } from './stores/inbox-store-sqlite.js';
 
 // Composition root
 export { openProjectsDb, type ProjectsDb } from './open.js';
+
+// Agent tools
+export {
+  createProjectsTools,
+  type ProjectsToolsDeps,
+  type ProjectsAgentTool,
+  type ProjectsAgentToolResult,
+} from './tools/index.js';

@@ -15,6 +15,7 @@
     "dev": "tsup --watch"
   },
   "dependencies": {
+    "@sinclair/typebox": "^0.34.0",
     "better-sqlite3": "^12.9.0"
   },
   "devDependencies": {
