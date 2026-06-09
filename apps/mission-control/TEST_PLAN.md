@@ -1032,6 +1032,110 @@ Take screenshots of every page and evaluate against these criteria. This section
 
 ---
 
+## Section 27: Projects
+
+**Precondition:** App running, gateway healthy, at least one agent created. For seeded data, ask an agent in Chat to "create a project called Gateway with key GATEWAY, then create three tasks in it" (the agent uses the `projects_*` tools), or create tasks via the UI as the steps below allow.
+
+### 27.1 Sidebar entry & subnav
+1. **Verify:** The sidebar has a "PLAN" group with a "Projects" entry (folder-kanban icon).
+2. Click "Projects".
+3. **Verify:** Header reads "Projects" with a "Manage Work" eyebrow.
+4. **Verify:** A subnav shows: Inbox, My work, All tasks, Kanban, Projects.
+5. **Verify:** The view lands on Inbox (URL `/projects/inbox`).
+
+### 27.2 Inbox grouping & mark-read
+1. Open Projects → Inbox.
+2. **Verify:** Items needing you appear under "Waiting on you"; recently-updated items appear under "New activity". (If empty, "Inbox zero" placeholder shows.)
+3. **Verify:** Each row shows status pill, key, title, project, sub-status.
+4. **Verify:** The Inbox subnav tab shows a count badge equal to the number of inbox items.
+5. Click a row.
+6. **Verify:** Task detail opens AND that row no longer appears in the inbox (badge count drops by one).
+
+### 27.3 All tasks — filter, search, sort
+1. Open Projects → All tasks.
+2. **Verify:** A chip bar (All / Backlog / Todo / In Progress / Review / Done) and a search box are present.
+3. **Verify:** A table lists tasks with columns: Status, Key, Title, Project, Sub-status, Assignee, Updated. Agent-created tasks show a 🤖 before the title.
+4. Click the "In Progress" chip.
+5. **Verify:** Only in-progress tasks remain.
+6. Click "All", type part of a task title in search.
+7. **Verify:** The table filters live to matching titles/keys.
+8. Click a row.
+9. **Verify:** Task detail opens.
+
+### 27.4 My work
+1. Open Projects → My work.
+2. **Verify:** Only tasks assigned to the local user appear.
+
+### 27.5 Kanban — default mode (status + sub-status)
+1. Open Projects → Kanban.
+2. **Verify:** Five columns in order: Backlog, Todo, In Progress, Review, Done (each with a count).
+3. **Verify:** The "In Progress" column contains three labeled sections IN ORDER: "Waiting on human" (top), "Agent working", "Blocked".
+4. **Verify:** Cards show key, title, project key badge, sub-status pill, and 🤖 when agent-created.
+
+### 27.6 Kanban — view modes (persistence)
+1. In the Kanban header, switch the view toggle to "Flat".
+2. **Verify:** In Progress no longer shows sub-status sections (flat list of cards).
+3. Switch to "By project".
+4. **Verify:** Swimlanes appear, one per project (plus "Standalone tasks"), each with the full status-column set.
+5. Restart the app, return to Kanban.
+6. **Verify:** The last-selected view mode is remembered.
+
+### 27.7 Kanban — drag and drop
+1. Switch back to the default ("Status + sub-status") mode.
+2. Drag a card from "Todo" to "Done".
+3. **Verify:** The card moves to Done and stays there after a refresh.
+4. Drag a card into "In Progress".
+5. **Verify:** A "Set sub-status" picker appears with Waiting on human / Agent working / Blocked.
+6. Pick "Blocked".
+7. **Verify:** The card appears under the "Blocked" section of In Progress.
+
+### 27.8 Project list & detail
+1. Open Projects → Projects.
+2. **Verify:** A card grid; each card shows key, name, and status.
+3. Click a project card.
+4. **Verify:** Project detail shows a header (key, name, status), a Description block, and a task table scoped to that project.
+5. Click "Edit" on the Description, change the text, click "Save".
+6. **Verify:** The description re-renders as markdown.
+
+### 27.9 Task detail — timeline
+1. Open any task.
+2. **Verify:** Two-pane layout. Left: description, a "Timeline" stream, and a comment composer. Right: Assignee, Sub-status, Project, Parent, Created by, Linked sessions, Subtasks.
+3. **Verify:** The timeline interleaves status changes (plain rows) and comments chronologically.
+4. **Verify:** Agent-run rows have a chevron; clicking expands tool-call detail.
+5. **Verify:** Human comments are visually highlighted (accent left border) vs system/agent rows.
+
+### 27.10 Task detail — comments
+1. Type a comment in the composer and click "Comment".
+2. **Verify:** The comment appears in the timeline, highlighted as human.
+3. Click "Delete" on that comment.
+4. **Verify:** It is replaced by an italic "Comment deleted by …" placeholder (the row remains).
+
+### 27.11 Task detail — subtasks (depth rule)
+1. On a top-level task (no parent), type a title in the "+ Subtask" input and press Enter.
+2. **Verify:** The subtask appears in the Subtasks list.
+3. Click the subtask to open it.
+4. **Verify:** On the subtask's detail, the Subtasks section and "+ Subtask" input are HIDDEN (one-level depth).
+
+### 27.12 Task detail — status & linked sessions
+1. On a task detail, change the header Status dropdown to "Review".
+2. **Verify:** The status pill/state updates and persists after navigating away and back.
+3. **Verify:** "Linked sessions" lists session chips (if the task has been touched by an agent in a session). The chips are display-only in v1 (muted, non-clickable, with an "Open-in-chat coming soon" tooltip on hover) — they do NOT navigate.
+
+### 27.13 Reactivity (no polling)
+1. Open Projects → Kanban in MC.
+2. In a separate Chat conversation, ask an agent to "create a new task titled Reactivity Test" (uses `projects_*` tools), or create one via another MC window.
+3. **Verify:** The new card appears in the Kanban board WITHOUT manually refreshing (driven by the `/projects/ws` broadcast).
+4. Have the agent move/update that task.
+5. **Verify:** The board reflects the change live.
+
+### 27.14 Agent detail — Tasks deep-link
+1. Open an Agent's detail page.
+2. **Verify:** A "Tasks (n)" button appears in the header (n = task count for that agent; may be blank while loading).
+3. Click it.
+4. **Verify:** All tasks opens with a "Filtered to tasks involving agent …" banner and only that agent's tasks listed.
+
+---
+
 ## Appendix: Test Run Log
 
 | Run # | Date | Sections Tested | Pass | Fail | Bugs Filed | Notes |
