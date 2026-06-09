@@ -89,6 +89,7 @@ describe('ProjectStoreSqlite', () => {
     expect(updated.name).toBe('Renamed');
     expect(updated.status).toBe('completed');
     expect(updated.updated_at >= p.updated_at).toBe(true);
+    expect(store.get(p.id)).toEqual(updated);
   });
 
   it('emits project.created and project.updated', () => {

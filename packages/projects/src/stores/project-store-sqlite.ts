@@ -49,6 +49,7 @@ export class ProjectStoreSqlite implements ProjectStore {
   private readonly listAllStmt: Statement;
   private readonly listByStatusStmt: Statement;
   private readonly countsStmt: Statement;
+  private readonly updateStmt: Statement;
 
   constructor(
     private readonly db: DatabaseType,
@@ -66,6 +67,10 @@ export class ProjectStoreSqlite implements ProjectStore {
     );
     this.countsStmt = db.prepare(
       'SELECT status, COUNT(*) AS count FROM issue WHERE project_id = ? GROUP BY status',
+    );
+    this.updateStmt = db.prepare(
+      `UPDATE project SET name = @name, description = @description, status = @status,
+       archived_at = @archived_at, updated_at = @updated_at WHERE id = @id`,
     );
   }
 
@@ -132,12 +137,7 @@ export class ProjectStoreSqlite implements ProjectStore {
       archived_at: patch.archived_at !== undefined ? patch.archived_at : current.archived_at,
       updated_at: new Date().toISOString(),
     };
-    this.db
-      .prepare(
-        `UPDATE project SET name = @name, description = @description, status = @status,
-         archived_at = @archived_at, updated_at = @updated_at WHERE id = @id`,
-      )
-      .run(next);
+    this.updateStmt.run(next);
     this.emitter.emit('project.updated', { project: next });
     return next;
   }
