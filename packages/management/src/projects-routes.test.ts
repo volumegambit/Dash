@@ -199,3 +199,41 @@ describe('issues HTTP routes', () => {
     expect(res.status).toBe(404);
   });
 });
+
+describe('inbox HTTP routes', () => {
+  it('returns an InboxItem[] including a waiting_on_human item', async () => {
+    const issue = await createIssue({ status: 'in_progress', sub_status: 'waiting_on_human' });
+    const res = await fetch(url('/inbox'), { headers: auth() });
+    expect(res.status).toBe(200);
+    const inbox = await res.json();
+    expect(Array.isArray(inbox)).toBe(true);
+    // A freshly-assigned waiting_on_human issue surfaces under both the
+    // waiting_on_human and new_activity reasons (never-seen → new activity).
+    // Match the waiting_on_human entry specifically.
+    const item = inbox.find(
+      (x: { issue: { id: string }; reason: string }) =>
+        x.issue.id === issue.id && x.reason === 'waiting_on_human',
+    );
+    expect(item).toBeDefined();
+    expect(item.reason).toBe('waiting_on_human');
+    expect(typeof item.trigger_at).toBe('string');
+  });
+
+  it('marks an issue read', async () => {
+    const issue = await createIssue();
+    const res = await fetch(url(`/inbox/${issue.id}/mark-read`), {
+      method: 'POST',
+      headers: auth(),
+    });
+    expect(res.status).toBe(200);
+    expect((await res.json()).ok).toBe(true);
+  });
+
+  it('404s mark-read for an unknown issue', async () => {
+    const res = await fetch(url('/inbox/issue_missing/mark-read'), {
+      method: 'POST',
+      headers: auth(),
+    });
+    expect(res.status).toBe(404);
+  });
+});
