@@ -34,6 +34,10 @@ export function AgentDetail(): JSX.Element {
   const nameInputRef = useRef<HTMLInputElement>(null);
 
   const agent = agents.find((a) => a.id === id);
+  // CONTRACT: projects key on the agent's config.name, NOT the registry id.
+  // `agents.find()` returns a fresh object each time the array is replaced, so
+  // keying the count fetch on the stable name avoids redundant refetches.
+  const agentName = agent?.name;
 
   useEffect(() => {
     loadAgents().then(() => setLoading(false));
@@ -44,12 +48,12 @@ export function AgentDetail(): JSX.Element {
   }, [loadChannels]);
 
   useEffect(() => {
-    if (!agent) return;
+    if (!agentName) return;
     window.api
-      .projectsListIssues({ agents_involved: agent.name })
+      .projectsListIssues({ agents_involved: agentName })
       .then((issues) => setTaskCount(issues.length))
       .catch(() => setTaskCount(null));
-  }, [agent]);
+  }, [agentName]);
 
   useEffect(() => {
     if (editingName && nameInputRef.current) {

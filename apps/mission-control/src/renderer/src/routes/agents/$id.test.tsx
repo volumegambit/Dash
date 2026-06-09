@@ -74,4 +74,27 @@ describe('AgentDetail', () => {
     await screen.findByText('Developer');
     expect(screen.queryByRole('button', { name: /chat/i })).not.toBeInTheDocument();
   });
+
+  // CONTRACT: the Tasks deep-link filters on the agent's config.name (here
+  // 'Developer'), NOT its registry id ('agent-1'). The gateway keys
+  // created_by_agent_id and session_issue_link.agent_id on config.name, so
+  // passing the id would silently match zero issues.
+  it('fetches the task count by config.name (not registry id)', async () => {
+    mockApi.projectsListIssues.mockResolvedValue([{}, {}, {}]);
+    render(<AgentDetail />);
+    await waitFor(() =>
+      expect(mockApi.projectsListIssues).toHaveBeenCalledWith({ agents_involved: 'Developer' }),
+    );
+    expect(await screen.findByRole('button', { name: /tasks \(3\)/i })).toBeInTheDocument();
+  });
+
+  it('Tasks button navigates to /projects/all with agentId = config.name', async () => {
+    const user = userEvent.setup();
+    render(<AgentDetail />);
+    await user.click(await screen.findByRole('button', { name: /tasks/i }));
+    expect(mockNavigate).toHaveBeenCalledWith({
+      to: '/projects/all',
+      search: { agentId: 'Developer' },
+    });
+  });
 });
