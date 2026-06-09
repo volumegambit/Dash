@@ -24,6 +24,7 @@ import { Route as ProjectsIndexRouteImport } from './routes/projects/index'
 import { Route as MessagingAppsIndexRouteImport } from './routes/messaging-apps/index'
 import { Route as AgentsIndexRouteImport } from './routes/agents/index'
 import { Route as ProjectsMyWorkRouteImport } from './routes/projects/my-work'
+import { Route as ProjectsKanbanRouteImport } from './routes/projects/kanban'
 import { Route as ProjectsInboxRouteImport } from './routes/projects/inbox'
 import { Route as ProjectsAllRouteImport } from './routes/projects/all'
 import { Route as MessagingAppsNewWhatsappRouteImport } from './routes/messaging-apps/new-whatsapp'
@@ -106,6 +107,11 @@ const ProjectsMyWorkRoute = ProjectsMyWorkRouteImport.update({
   path: '/my-work',
   getParentRoute: () => ProjectsRoute,
 } as any)
+const ProjectsKanbanRoute = ProjectsKanbanRouteImport.update({
+  id: '/kanban',
+  path: '/kanban',
+  getParentRoute: () => ProjectsRoute,
+} as any)
 const ProjectsInboxRoute = ProjectsInboxRouteImport.update({
   id: '/inbox',
   path: '/inbox',
@@ -157,6 +163,7 @@ export interface FileRoutesByFullPath {
   '/messaging-apps/new-whatsapp': typeof MessagingAppsNewWhatsappRoute
   '/projects/all': typeof ProjectsAllRoute
   '/projects/inbox': typeof ProjectsInboxRoute
+  '/projects/kanban': typeof ProjectsKanbanRoute
   '/projects/my-work': typeof ProjectsMyWorkRoute
   '/agents/': typeof AgentsIndexRoute
   '/messaging-apps/': typeof MessagingAppsIndexRoute
@@ -177,6 +184,7 @@ export interface FileRoutesByTo {
   '/messaging-apps/new-whatsapp': typeof MessagingAppsNewWhatsappRoute
   '/projects/all': typeof ProjectsAllRoute
   '/projects/inbox': typeof ProjectsInboxRoute
+  '/projects/kanban': typeof ProjectsKanbanRoute
   '/projects/my-work': typeof ProjectsMyWorkRoute
   '/agents': typeof AgentsIndexRoute
   '/messaging-apps': typeof MessagingAppsIndexRoute
@@ -201,6 +209,7 @@ export interface FileRoutesById {
   '/messaging-apps/new-whatsapp': typeof MessagingAppsNewWhatsappRoute
   '/projects/all': typeof ProjectsAllRoute
   '/projects/inbox': typeof ProjectsInboxRoute
+  '/projects/kanban': typeof ProjectsKanbanRoute
   '/projects/my-work': typeof ProjectsMyWorkRoute
   '/agents/': typeof AgentsIndexRoute
   '/messaging-apps/': typeof MessagingAppsIndexRoute
@@ -226,6 +235,7 @@ export interface FileRouteTypes {
     | '/messaging-apps/new-whatsapp'
     | '/projects/all'
     | '/projects/inbox'
+    | '/projects/kanban'
     | '/projects/my-work'
     | '/agents/'
     | '/messaging-apps/'
@@ -246,6 +256,7 @@ export interface FileRouteTypes {
     | '/messaging-apps/new-whatsapp'
     | '/projects/all'
     | '/projects/inbox'
+    | '/projects/kanban'
     | '/projects/my-work'
     | '/agents'
     | '/messaging-apps'
@@ -269,6 +280,7 @@ export interface FileRouteTypes {
     | '/messaging-apps/new-whatsapp'
     | '/projects/all'
     | '/projects/inbox'
+    | '/projects/kanban'
     | '/projects/my-work'
     | '/agents/'
     | '/messaging-apps/'
@@ -396,6 +408,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ProjectsMyWorkRouteImport
       parentRoute: typeof ProjectsRoute
     }
+    '/projects/kanban': {
+      id: '/projects/kanban'
+      path: '/kanban'
+      fullPath: '/projects/kanban'
+      preLoaderRoute: typeof ProjectsKanbanRouteImport
+      parentRoute: typeof ProjectsRoute
+    }
     '/projects/inbox': {
       id: '/projects/inbox'
       path: '/inbox'
@@ -475,6 +494,7 @@ const MessagingAppsRouteWithChildren = MessagingAppsRoute._addFileChildren(
 interface ProjectsRouteChildren {
   ProjectsAllRoute: typeof ProjectsAllRoute
   ProjectsInboxRoute: typeof ProjectsInboxRoute
+  ProjectsKanbanRoute: typeof ProjectsKanbanRoute
   ProjectsMyWorkRoute: typeof ProjectsMyWorkRoute
   ProjectsIndexRoute: typeof ProjectsIndexRoute
 }
@@ -482,6 +502,7 @@ interface ProjectsRouteChildren {
 const ProjectsRouteChildren: ProjectsRouteChildren = {
   ProjectsAllRoute: ProjectsAllRoute,
   ProjectsInboxRoute: ProjectsInboxRoute,
+  ProjectsKanbanRoute: ProjectsKanbanRoute,
   ProjectsMyWorkRoute: ProjectsMyWorkRoute,
   ProjectsIndexRoute: ProjectsIndexRoute,
 }
