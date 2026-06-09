@@ -17,3 +17,4 @@ export type {
 export { createManagementApp, startManagementServer } from './server.js';
 export type { ManagementServerOptions, SkillsHandlers } from './server.js';
 export { ManagementClient } from './client.js';
+export { mountProjectsRoutes, type ProjectsRoutesDeps } from './projects-routes.js';

@@ -10,6 +10,7 @@ export default defineConfig({
       '@dash/mc': resolve(__dirname, 'packages/mc/dist/index.js'),
       '@dash/channels': resolve(__dirname, 'packages/channels/dist/index.js'),
       '@dash/management': resolve(__dirname, 'packages/management/src/index.ts'),
+      '@dash/projects': resolve(__dirname, 'packages/projects/src/index.ts'),
     },
   },
   test: {
