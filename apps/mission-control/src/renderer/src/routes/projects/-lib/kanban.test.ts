@@ -3,6 +3,7 @@ import type { Issue, IssueStatus, IssueSubStatus } from '../../../../../shared/p
 import {
   IN_PROGRESS_SECTIONS,
   KANBAN_COLUMNS,
+  bucketByProject,
   bucketByStatus,
   bucketInProgress,
 } from './kanban.js';
@@ -51,5 +52,17 @@ describe('kanban columns', () => {
     expect(sections.waiting_on_human.map((i) => i.id)).toEqual(['2']);
     expect(sections.agent_working.map((i) => i.id)).toEqual(['3']);
     expect(sections.blocked.map((i) => i.id)).toEqual(['1']);
+  });
+
+  it('puts an in_progress issue with null sub_status into the agent_working bucket', () => {
+    const sections = bucketInProgress([issue('1', 'in_progress', null)]);
+    expect(sections.agent_working.map((i) => i.id)).toEqual(['1']);
+    expect(sections.waiting_on_human).toEqual([]);
+    expect(sections.blocked).toEqual([]);
+  });
+
+  it('puts a standalone issue (project_id null) into the empty-string lane', () => {
+    const lanes = bucketByProject([issue('1', 'todo')]);
+    expect(lanes.get('')?.map((i) => i.id)).toEqual(['1']);
   });
 });
