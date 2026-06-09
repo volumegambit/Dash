@@ -159,6 +159,162 @@ function createProjectsCreateTool(
   };
 }
 
+const issuesListSchema = Type.Object({
+  project_id: Type.Optional(Type.String({ description: 'Only issues in this project id.' })),
+  status: Type.Optional(
+    Type.Union(
+      ISSUE_STATUSES.map((s) => Type.Literal(s)),
+      {
+        description: 'Filter by status: backlog, todo, in_progress, review, done, cancelled.',
+      },
+    ),
+  ),
+  sub_status: Type.Optional(
+    Type.Union(
+      ISSUE_SUB_STATUSES.map((s) => Type.Literal(s)),
+      {
+        description:
+          'Filter in_progress issues by sub-status: waiting_on_human, agent_working, blocked.',
+      },
+    ),
+  ),
+  assignee_user_id: Type.Optional(Type.String({ description: 'Filter by assignee user id.' })),
+  created_by: Type.Optional(
+    Type.Union([Type.Literal('human'), Type.Literal('agent')], {
+      description: 'Filter by who created the issue.',
+    }),
+  ),
+  parent_issue_id: Type.Optional(
+    Type.String({ description: 'Only subtasks of this parent issue id.' }),
+  ),
+  limit: Type.Optional(Type.Integer({ description: 'Max issues to return (default 50).' })),
+  cursor: Type.Optional(
+    Type.String({ description: 'Opaque pagination cursor from a prior call.' }),
+  ),
+});
+
+function createIssuesListTool(deps: ProjectsToolsDeps): ProjectsAgentTool<typeof issuesListSchema> {
+  return {
+    name: 'issues_list',
+    label: 'List Issues',
+    description:
+      'List issues (tasks), optionally filtered by project, status, sub-status, assignee, creator, or parent. Returns { issues, next_cursor }. Use this to find work: e.g. issues assigned to a user, issues waiting on a human, or subtasks of a parent. Paginate with the returned next_cursor. Prefer narrow filters over listing everything.',
+    parameters: issuesListSchema,
+    execute: async (_id, params) => {
+      if (params.status && !ISSUE_STATUSES.includes(params.status)) {
+        return errorResult(`Invalid status "${params.status}".`);
+      }
+      if (params.sub_status && !ISSUE_SUB_STATUSES.includes(params.sub_status)) {
+        return errorResult(`Invalid sub_status "${params.sub_status}".`);
+      }
+      // The domain store returns a BARE ARRAY and does not paginate. The tool
+      // layer wraps it as { issues, next_cursor }: fetch the full filtered set,
+      // drop everything up to and including the cursor id, then slice to limit
+      // and over-fetch by one to decide whether more pages exist.
+      const limit = params.limit ?? 50;
+      const all = deps.db.issues.list({
+        project_id: params.project_id,
+        status: params.status,
+        sub_status: params.sub_status ?? undefined,
+        assignee_user_id: params.assignee_user_id,
+        created_by: params.created_by,
+        parent_issue_id: params.parent_issue_id,
+      });
+      const start = params.cursor ? all.findIndex((i) => i.id === params.cursor) + 1 : 0;
+      const page = all.slice(start, start + limit + 1);
+      const hasMore = page.length > limit;
+      const issues = hasMore ? page.slice(0, limit) : page;
+      const next_cursor = hasMore ? issues[issues.length - 1]?.id : undefined;
+      return jsonResult({ issues, next_cursor });
+    },
+  };
+}
+
+const issuesReadSchema = Type.Object({
+  id_or_key: Type.String({ description: 'Issue id (issue_…) or key (e.g. "GATEWAY-42").' }),
+});
+
+function createIssuesReadTool(deps: ProjectsToolsDeps): ProjectsAgentTool<typeof issuesReadSchema> {
+  return {
+    name: 'issues_read',
+    label: 'Read Issue',
+    description:
+      'Read a single issue (task) by id or key, including its full activity: comments, timeline events, and linked sessions. Use this before commenting on or updating an issue so you have the current state and history. Reading an issue automatically records that this session referenced it.',
+    parameters: issuesReadSchema,
+    execute: async (_id, params) => {
+      if (!params.id_or_key) return errorResult('id_or_key is required.');
+      const detail = deps.db.issues.getDetail(params.id_or_key);
+      if (!detail) return errorResult(`Issue "${params.id_or_key}" not found.`);
+      linkSession(deps, detail.id);
+      return jsonResult(detail);
+    },
+  };
+}
+
+const issuesCreateSchema = Type.Object({
+  title: Type.String({ description: 'Short imperative title of the task.' }),
+  project_id: Type.Optional(
+    Type.String({ description: 'Project id to file under. Omit for a standalone task.' }),
+  ),
+  parent_issue_id: Type.Optional(
+    Type.String({
+      description:
+        'Parent issue id to make this a subtask. Only one level of nesting is allowed (a parent cannot itself be a subtask).',
+    }),
+  ),
+  description: Type.Optional(Type.String({ description: 'Markdown body describing the task.' })),
+  assignee_user_id: Type.Optional(
+    Type.String({ description: 'User id to assign. Defaults to the single local user.' }),
+  ),
+  status: Type.Optional(
+    Type.Union(
+      ISSUE_STATUSES.map((s) => Type.Literal(s)),
+      { description: 'Initial status. Defaults to backlog.' },
+    ),
+  ),
+  sub_status: Type.Optional(
+    Type.Union(
+      ISSUE_SUB_STATUSES.map((s) => Type.Literal(s)),
+      { description: 'Sub-status, only valid when status is in_progress.' },
+    ),
+  ),
+});
+
+function createIssuesCreateTool(
+  deps: ProjectsToolsDeps,
+): ProjectsAgentTool<typeof issuesCreateSchema> {
+  return {
+    name: 'issues_create',
+    label: 'Create Issue',
+    description:
+      'Create a new task. Provide a title; optionally file it under a project (project_id) or make it a subtask (parent_issue_id, one level deep only). You may create subtasks of your own work, peer follow-up tasks, or tasks for other agents/humans to pick up. The task — not the chat session — is the durable record of work. The issue is recorded as created_by the agent, and this session is linked to it automatically.',
+    parameters: issuesCreateSchema,
+    execute: async (_id, params) => {
+      if (!params.title) return errorResult('title is required.');
+      if (params.sub_status && params.status !== 'in_progress') {
+        return errorResult('sub_status is only valid when status is "in_progress".');
+      }
+      try {
+        const issue = deps.db.issues.create({
+          title: params.title,
+          project_id: params.project_id ?? null,
+          parent_issue_id: params.parent_issue_id ?? null,
+          description: params.description,
+          assignee_user_id: params.assignee_user_id,
+          status: params.status,
+          sub_status: params.sub_status ?? null,
+          created_by: 'agent',
+          created_by_agent_id: deps.getAgentId(),
+        });
+        linkSession(deps, issue.id);
+        return jsonResult(issue);
+      } catch (err) {
+        return errorResult(err instanceof Error ? err.message : String(err));
+      }
+    },
+  };
+}
+
 /**
  * Build all projects_* agent tools over an injected ProjectsDb. The returned
  * objects are structurally compatible with @mariozechner/pi-agent-core's
@@ -169,6 +325,9 @@ export function createProjectsTools(deps: ProjectsToolsDeps): ProjectsAgentTool[
     createProjectsListTool(deps),
     createProjectsReadTool(deps),
     createProjectsCreateTool(deps),
+    createIssuesListTool(deps),
+    createIssuesReadTool(deps),
+    createIssuesCreateTool(deps),
   ] as unknown as ProjectsAgentTool[];
 }
 

@@ -93,3 +93,63 @@ describe('projects_create', () => {
     expect(res.details).toMatchObject({ isError: true });
   });
 });
+
+describe('issues_create', () => {
+  it('creates a standalone issue and links the session', async () => {
+    const res = await run('issues_create', { title: 'Fix login' });
+    const issue = JSON.parse(text(res));
+    expect(issue.id).toMatch(/^issue_/);
+    expect(issue.title).toBe('Fix login');
+
+    const links = db.sessionLinks.listByIssue(issue.id);
+    expect(links).toHaveLength(1);
+    expect(links[0].session_id).toBe('chat-session-1');
+    expect(links[0].reference_count).toBeGreaterThanOrEqual(1);
+  });
+
+  it('records created_by = agent', async () => {
+    const res = await run('issues_create', { title: 'Agent task' });
+    const issue = JSON.parse(text(res));
+    expect(issue.created_by).toBe('agent');
+  });
+
+  it('errors on missing title', async () => {
+    const res = await run('issues_create', {});
+    expect(res.details).toMatchObject({ isError: true });
+  });
+});
+
+describe('issues_read', () => {
+  it('returns issue with comments, events, linked_sessions and links the session', async () => {
+    const created = JSON.parse(text(await run('issues_create', { title: 'Read me' })));
+    sessionId = 'chat-session-2';
+    const res = await run('issues_read', { id_or_key: created.key });
+    const detail = JSON.parse(text(res));
+    expect(detail.id).toBe(created.id);
+    expect(Array.isArray(detail.comments)).toBe(true);
+    expect(Array.isArray(detail.events)).toBe(true);
+    expect(Array.isArray(detail.linked_sessions)).toBe(true);
+    // Reading from a second session creates a second link.
+    expect(db.sessionLinks.listByIssue(created.id)).toHaveLength(2);
+    sessionId = 'chat-session-1';
+  });
+
+  it('errors for an unknown issue', async () => {
+    const res = await run('issues_read', { id_or_key: 'NOPE-1' });
+    expect(res.details).toMatchObject({ isError: true });
+  });
+});
+
+describe('issues_list', () => {
+  it('lists issues with a status filter', async () => {
+    await run('issues_create', { title: 'One' });
+    const res = await run('issues_list', { status: 'backlog' });
+    const out = JSON.parse(text(res));
+    expect(Array.isArray(out.issues)).toBe(true);
+  });
+
+  it('errors on an invalid status', async () => {
+    const res = await run('issues_list', { status: 'bogus' });
+    expect(res.details).toMatchObject({ isError: true });
+  });
+});
