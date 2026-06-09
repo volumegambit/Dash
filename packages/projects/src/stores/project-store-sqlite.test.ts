@@ -73,7 +73,12 @@ describe('ProjectStoreSqlite', () => {
   it('lists projects, optionally filtered by status', () => {
     const a = store.create({ key: 'A', name: 'A' });
     const b = store.create({ key: 'B', name: 'B', status: 'paused' });
-    expect(store.list().map((p) => p.id).sort()).toEqual([a.id, b.id].sort());
+    expect(
+      store
+        .list()
+        .map((p) => p.id)
+        .sort(),
+    ).toEqual([a.id, b.id].sort());
     expect(store.list({ status: 'paused' }).map((p) => p.id)).toEqual([b.id]);
   });
 
