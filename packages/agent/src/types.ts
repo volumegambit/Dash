@@ -92,6 +92,27 @@ export interface RunOptions {
   signal?: AbortSignal;
 }
 
+/**
+ * Structurally-typed agent tool injected into the backend at construction
+ * (e.g. the projects_* tools from @dash/projects). Kept loose so @dash/agent
+ * has no dependency on @dash/projects or the pi SDK. Matches the AgentTool
+ * shape PiAgent duck-types.
+ */
+export interface ExtraTool {
+  name: string;
+  label: string;
+  description: string;
+  // biome-ignore lint/suspicious/noExplicitAny: TypeBox schema shape varies per tool
+  parameters: any;
+  execute: (
+    toolCallId: string,
+    // biome-ignore lint/suspicious/noExplicitAny: per-tool param types are not statically known
+    params: any,
+    signal?: AbortSignal,
+    onUpdate?: unknown,
+  ) => Promise<{ content: Array<{ type: 'text'; text: string }>; details: unknown }>;
+}
+
 export interface AgentBackend {
   readonly name: string;
   start(workspace: string): Promise<void>;

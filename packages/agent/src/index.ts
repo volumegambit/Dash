@@ -2,6 +2,7 @@ export type {
   AgentBackend,
   AgentState,
   AgentEvent,
+  ExtraTool,
   ImageBlock,
   RunOptions,
   DashAgentConfig,

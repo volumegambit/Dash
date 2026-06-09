@@ -41,6 +41,7 @@ import type {
   AgentEvent,
   AgentState,
   DashAgentConfig,
+  ExtraTool,
   RunOptions,
 } from '../types.js';
 import { DashResourceLoader } from './dash-resource-loader.js';
@@ -80,6 +81,16 @@ export class PiAgentBackend implements AgentBackend {
   private abortRequested = false;
   private ownsMcpManager = false;
   private resourceLoader: DashResourceLoader | null = null;
+
+  /** Tools injected by the host (e.g. projects_* from @dash/projects). */
+  private extraTools: ExtraTool[] = [];
+
+  /**
+   * Conversation id of the in-flight run, exposed to injected tools via
+   * getCurrentSessionId(). Set at the top of run(); null when idle. This is
+   * the session_id used for session_issue_link upserts.
+   */
+  private currentSessionId: string | null = null;
 
   /** Accumulated full text during a response, for the `response` event */
   private fullText = '';
@@ -122,7 +133,25 @@ export class PiAgentBackend implements AgentBackend {
     private mcpManager?: McpManager,
     private mcpConfigStore?: McpConfigStoreInterface,
     private mcpAgentContext?: McpAgentContext,
-  ) {}
+    extraTools: ExtraTool[] = [],
+  ) {
+    this.extraTools = extraTools;
+  }
+
+  /** Current conversation/session id for the in-flight run, or null when idle. */
+  getCurrentSessionId(): string | null {
+    return this.currentSessionId;
+  }
+
+  /** Test/host hook to set the current session id outside run(). */
+  setCurrentSessionId(sessionId: string | null): void {
+    this.currentSessionId = sessionId;
+  }
+
+  /** Names of injected extra tools (for diagnostics/tests). */
+  listExtraToolNames(): string[] {
+    return this.extraTools.map((t) => t.name);
+  }
 
   /**
    * Resolve the current provider keys from the source. Snapshot callers get
@@ -428,6 +457,13 @@ export class PiAgentBackend implements AgentBackend {
       }
     }
 
+    // Host-injected tools (e.g. projects_* from @dash/projects). Wrapped
+    // identically to the other custom tools so PiAgent's ctx parameter is
+    // tolerated.
+    for (const tool of this.extraTools) {
+      customs.push(wrap(tool));
+    }
+
     return customs;
   }
 
@@ -545,6 +581,7 @@ export class PiAgentBackend implements AgentBackend {
     this.abortRequested = false;
     this.fullText = '';
     this.lastCompactionReason = 'threshold';
+    this.currentSessionId = state.conversationId;
 
     // Pull fresh credentials from the source. When the source is a function
     // (e.g. the gateway credential store reader), this picks up rotation,
