@@ -29,8 +29,11 @@ describe('PiAgentBackend extra tools + session id', () => {
       undefined,
       [makeProbeTool({ sessionId: null }, () => backend.getCurrentSessionId())],
     );
-    // buildCustomTools is private; assert via the public accessor that the
-    // backend stored the extra tools.
+    // This asserts only that the backend STORED the injected tools via the
+    // constructor seam (listExtraToolNames reflects the extraTools field). It
+    // does NOT prove buildCustomTools() actually includes them in the live tool
+    // set — that path needs a started session and is covered indirectly by the
+    // existing piagent suite.
     expect(backend.listExtraToolNames()).toContain('probe_session');
   });
 

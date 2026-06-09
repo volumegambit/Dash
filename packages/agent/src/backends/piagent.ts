@@ -583,6 +583,26 @@ export class PiAgentBackend implements AgentBackend {
     this.lastCompactionReason = 'threshold';
     this.currentSessionId = state.conversationId;
 
+    try {
+      yield* this.runModelChain(state, options);
+    } finally {
+      // Clear the in-flight session id so consumers calling getCurrentSessionId()
+      // during async teardown after run() returns don't observe a stale id. Only
+      // resets the field — does not affect the generator's return/throw semantics.
+      this.currentSessionId = null;
+    }
+  }
+
+  /**
+   * Drive the model chain (primary + fallbacks) for a single run. Extracted from
+   * run() so run() can wrap it in a try/finally that resets currentSessionId
+   * without re-indenting the whole body.
+   */
+  private async *runModelChain(state: AgentState, options: RunOptions): AsyncGenerator<AgentEvent> {
+    if (!this.session) {
+      throw new Error('PiAgentBackend not started. Call start() first.');
+    }
+
     // Pull fresh credentials from the source. When the source is a function
     // (e.g. the gateway credential store reader), this picks up rotation,
     // OAuth refresh, and key deletion without any explicit update call.
