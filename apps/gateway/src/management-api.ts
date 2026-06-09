@@ -2,6 +2,8 @@ import type { AgentClient } from '@dash/agent';
 import type { ChannelAdapter } from '@dash/channels';
 import { TelegramAdapter, WhatsAppAdapter } from '@dash/channels';
 import { type StructuredLogger, createConsoleLogger } from '@dash/logging';
+import { mountProjectsRoutes } from '@dash/management';
+import type { ProjectsDb } from '@dash/projects';
 import { Hono } from 'hono';
 import type { Context } from 'hono';
 
@@ -37,6 +39,8 @@ export interface GatewayManagementOptions {
    * tests that don't exercise replay can skip wiring it up.
    */
   eventLogStore?: EventLogStore;
+  /** Shared projects DB. When present, mounts /projects + /issues + /inbox. */
+  projectsDb?: ProjectsDb;
   token?: string;
   startedAt?: string;
   eventBus?: EventBus;
@@ -663,6 +667,14 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
   // --- MCP routes ---
   if (options.mcpDeps) {
     mountMcpRoutes(app, options.mcpDeps);
+  }
+
+  // --- Projects routes (HTTP: /projects, /issues, /inbox) ---
+  // Mounted behind the bearer middleware registered above. The /projects/ws
+  // WebSocket mount lives in index.ts (it needs createNodeWebSocket at the
+  // serve() site); mountProjectsRoutes only adds HTTP routes.
+  if (options.projectsDb) {
+    mountProjectsRoutes(app, { db: options.projectsDb });
   }
 
   // --- SSE event stream ---

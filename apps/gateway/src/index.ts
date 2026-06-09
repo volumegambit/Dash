@@ -12,8 +12,10 @@ import { PiAgentBackend } from '@dash/agent';
 import { TelegramAdapter, WhatsAppAdapter } from '@dash/channels';
 import type { ChannelAdapter } from '@dash/channels';
 import { createConsoleLogger } from '@dash/logging';
+import { mountProjectsWs } from '@dash/management';
 import { FileTokenStore, McpManager } from '@dash/mcp';
 import type { McpAgentContext } from '@dash/mcp';
+import { createProjectsTools, openProjectsDb } from '@dash/projects';
 import { serve } from '@hono/node-server';
 import { createNodeWebSocket } from '@hono/node-ws';
 import { Hono } from 'hono';
@@ -67,6 +69,11 @@ async function main() {
   // interface so future backends (LMDB, Postgres, etc.) only need a
   // new adapter class in this one spot.
   const eventLogStore: EventLogStore = new SqliteEventLogStore({ dataDir });
+
+  // Projects DB — durable task/issue records. Opened once and shared by the
+  // agent tools (via createBackend) and the management API (routes + WS).
+  // openProjectsDb runs migrations internally on open.
+  const projectsDb = openProjectsDb(dataDir);
 
   // MCP setup
   const mcpDir = resolve(dataDir, 'mcp');
@@ -172,7 +179,7 @@ async function main() {
         },
       };
 
-      return new PiAgentBackend(
+      const backend = new PiAgentBackend(
         {
           model: agentConfig.model,
           systemPrompt: agentConfig.systemPrompt,
@@ -187,7 +194,20 @@ async function main() {
         mcpManager,
         mcpConfigStore,
         mcpAgentContext,
+        createProjectsTools({
+          db: projectsDb,
+          // The session id changes per run(); the accessor closure reads the
+          // backend's in-flight conversation id so each link write uses the
+          // right id without rebuilding tools per run.
+          getSessionId: () => backend.getCurrentSessionId(),
+          // The agent/deployment id the factory already closes over: the
+          // agent's registry name. This is the same id used as `agentId` when
+          // bridging agents into the gateway, and what the `agents_involved`
+          // filter matches against created_by_agent_id + session_issue_link.
+          getAgentId: () => agentConfig.name,
+        }),
       );
+      return backend;
     },
   });
 
@@ -264,7 +284,7 @@ async function main() {
     }
   }
 
-  // Management API (HTTP)
+  // Management API (HTTP + WebSocket for /projects/ws)
   const managementApp = createGatewayManagementApp({
     gateway,
     agents,
@@ -277,6 +297,7 @@ async function main() {
     startedAt,
     eventBus,
     logger,
+    projectsDb,
     mcpDeps: {
       manager: mcpManager,
       configStore: mcpConfigStore,
@@ -286,11 +307,26 @@ async function main() {
     },
   });
 
+  // Wrap the management app with WebSocket support so /projects/ws can upgrade.
+  // createNodeWebSocket must be called against the same Hono app instance
+  // before serve(), and injectWebSocket must run against the returned server —
+  // mirroring the channel app pattern below. The management bearer token
+  // doubles as the /projects/ws ?token= credential.
+  const { injectWebSocket: injectMgmtWs, upgradeWebSocket: mgmtUpgradeWebSocket } =
+    createNodeWebSocket({ app: managementApp });
+  mountProjectsWs(managementApp, {
+    emitter: projectsDb.emitter,
+    token: flags.token,
+    upgradeWebSocket: mgmtUpgradeWebSocket,
+  });
+
   const managementServer = serve({
     fetch: managementApp.fetch,
     port: managementPort,
     hostname: '127.0.0.1',
-  });
+  }) as Server;
+
+  injectMgmtWs(managementServer);
 
   // Channel server (HTTP + WebSocket for /ws/chat)
   const channelApp = new Hono();
@@ -333,6 +369,7 @@ async function main() {
     // flushed on close, so the next gateway start sees a consistent
     // database.
     eventLogStore.close();
+    projectsDb.db.close();
     process.exit(0);
   };
 

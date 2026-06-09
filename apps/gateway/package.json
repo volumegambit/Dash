@@ -23,6 +23,7 @@
     "@dash/logging": "*",
     "@dash/management": "*",
     "@dash/models": "*",
+    "@dash/projects": "*",
     "@hono/node-server": "^1",
     "@hono/node-ws": "^1",
     "better-sqlite3": "^12.9.0",
