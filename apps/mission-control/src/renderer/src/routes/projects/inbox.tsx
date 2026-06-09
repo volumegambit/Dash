@@ -19,7 +19,7 @@ function InboxView(): JSX.Element {
   const { waitingOnYou, newActivity } = groupInbox(inbox);
 
   const open = (issueId: string) => {
-    markInboxRead(issueId);
+    void markInboxRead(issueId);
     navigate({ to: '/projects/issues/$issueId', params: { issueId } });
   };
 

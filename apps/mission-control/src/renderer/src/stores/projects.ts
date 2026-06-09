@@ -168,8 +168,13 @@ export const useProjectsStore = create<ProjectsState>((set, get) => ({
   },
 
   async markInboxRead(issueId) {
-    await window.api.projectsMarkInboxRead(issueId);
+    // Optimistically remove the item so the UI updates immediately.
     set((s) => ({ inbox: s.inbox.filter((it) => it.issue.id !== issueId) }));
+    try {
+      await window.api.projectsMarkInboxRead(issueId);
+    } catch (err) {
+      set({ error: (err as Error).message });
+    }
   },
 
   // The `onProjectsEvent` frames are already normalized by the gateway
