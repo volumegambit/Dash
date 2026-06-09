@@ -8,6 +8,18 @@ import type {
   McConversation,
   McMessage,
 } from '@dash/mc';
+import type {
+  CreateIssueInput,
+  CreateProjectInput,
+  InboxItem,
+  Issue,
+  IssueComment,
+  IssueDetail,
+  IssueFilters,
+  Project,
+  ProjectWithCounts,
+  ProjectsEvent,
+} from './projects-ipc.js';
 
 // Serializable AgentEvent (error is string, not Error object, for IPC transport)
 export type McAgentEvent =
@@ -216,4 +228,23 @@ export interface MissionControlAPI {
 
   // Updates
   onUpdateAvailable(callback: (info: { version: string }) => void): () => void;
+
+  // Projects (gateway passthrough)
+  projectsListProjects(status?: Project['status']): Promise<Project[]>;
+  projectsCreateProject(input: CreateProjectInput): Promise<Project>;
+  projectsGetProject(id: string): Promise<ProjectWithCounts>;
+  projectsPatchProject(id: string, patch: Partial<Project>): Promise<Project>;
+  projectsListProjectIssues(id: string): Promise<Issue[]>;
+  projectsListIssues(filters?: IssueFilters): Promise<Issue[]>;
+  projectsCreateIssue(input: CreateIssueInput): Promise<Issue>;
+  projectsGetIssue(id: string): Promise<IssueDetail>;
+  projectsPatchIssue(id: string, patch: Partial<Issue>): Promise<Issue>;
+  projectsAddComment(issueId: string, body: string): Promise<IssueComment>;
+  projectsEditComment(issueId: string, commentId: string, body: string): Promise<IssueComment>;
+  projectsDeleteComment(issueId: string, commentId: string): Promise<void>;
+  projectsListInbox(): Promise<InboxItem[]>;
+  projectsMarkInboxRead(issueId: string): Promise<void>;
+
+  // Projects events (push from main -> renderer)
+  onProjectsEvent(callback: (event: ProjectsEvent) => void): () => void;
 }

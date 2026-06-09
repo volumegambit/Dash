@@ -157,6 +157,23 @@ function createMockApi(): Record<keyof MissionControlAPI, ReturnType<typeof vi.f
 
     // Updates
     onUpdateAvailable: vi.fn().mockReturnValue(() => {}),
+
+    // Projects (gateway passthrough)
+    projectsListProjects: vi.fn().mockResolvedValue([]),
+    projectsCreateProject: vi.fn().mockResolvedValue(null),
+    projectsGetProject: vi.fn().mockResolvedValue(null),
+    projectsPatchProject: vi.fn().mockResolvedValue(null),
+    projectsListProjectIssues: vi.fn().mockResolvedValue([]),
+    projectsListIssues: vi.fn().mockResolvedValue([]),
+    projectsCreateIssue: vi.fn().mockResolvedValue(null),
+    projectsGetIssue: vi.fn().mockResolvedValue(null),
+    projectsPatchIssue: vi.fn().mockResolvedValue(null),
+    projectsAddComment: vi.fn().mockResolvedValue(null),
+    projectsEditComment: vi.fn().mockResolvedValue(null),
+    projectsDeleteComment: vi.fn().mockResolvedValue(undefined),
+    projectsListInbox: vi.fn().mockResolvedValue([]),
+    projectsMarkInboxRead: vi.fn().mockResolvedValue(undefined),
+    onProjectsEvent: vi.fn().mockReturnValue(() => {}),
   };
 }
 

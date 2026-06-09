@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import type { McAgentEvent, McpStatusChange, MissionControlAPI } from '../shared/ipc.js';
+import type { ProjectsEvent } from '../shared/projects-ipc.js';
 
 const api: MissionControlAPI = {
   getVersion: () => ipcRenderer.invoke('app:getVersion'),
@@ -169,6 +170,30 @@ const api: MissionControlAPI = {
     const handler = (_: Electron.IpcRendererEvent, info: { version: string }) => callback(info);
     ipcRenderer.on('update:available', handler);
     return () => ipcRenderer.removeListener('update:available', handler);
+  },
+
+  // Projects
+  projectsListProjects: (status) => ipcRenderer.invoke('projects:listProjects', status),
+  projectsCreateProject: (input) => ipcRenderer.invoke('projects:createProject', input),
+  projectsGetProject: (id) => ipcRenderer.invoke('projects:getProject', id),
+  projectsPatchProject: (id, patch) => ipcRenderer.invoke('projects:patchProject', id, patch),
+  projectsListProjectIssues: (id) => ipcRenderer.invoke('projects:listProjectIssues', id),
+  projectsListIssues: (filters) => ipcRenderer.invoke('projects:listIssues', filters),
+  projectsCreateIssue: (input) => ipcRenderer.invoke('projects:createIssue', input),
+  projectsGetIssue: (id) => ipcRenderer.invoke('projects:getIssue', id),
+  projectsPatchIssue: (id, patch) => ipcRenderer.invoke('projects:patchIssue', id, patch),
+  projectsAddComment: (issueId, body) => ipcRenderer.invoke('projects:addComment', issueId, body),
+  projectsEditComment: (issueId, commentId, body) =>
+    ipcRenderer.invoke('projects:editComment', issueId, commentId, body),
+  projectsDeleteComment: (issueId, commentId) =>
+    ipcRenderer.invoke('projects:deleteComment', issueId, commentId),
+  projectsListInbox: () => ipcRenderer.invoke('projects:listInbox'),
+  projectsMarkInboxRead: (issueId) => ipcRenderer.invoke('projects:markInboxRead', issueId),
+
+  onProjectsEvent: (callback) => {
+    const handler = (_: Electron.IpcRendererEvent, event: ProjectsEvent) => callback(event);
+    ipcRenderer.on('projects:event', handler);
+    return () => ipcRenderer.removeListener('projects:event', handler);
   },
 };
 
