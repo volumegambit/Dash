@@ -98,13 +98,78 @@ function createProjectsListTool(
   };
 }
 
+const projectsReadSchema = Type.Object({
+  id_or_key: Type.String({
+    description: 'The project id (e.g. "proj_01H…") or human key (e.g. "GATEWAY").',
+  }),
+});
+
+function createProjectsReadTool(
+  deps: ProjectsToolsDeps,
+): ProjectsAgentTool<typeof projectsReadSchema> {
+  return {
+    name: 'projects_read',
+    label: 'Read Project',
+    description:
+      'Read a single project by id or key. Returns the full project record plus issue_counts_by_status (how many issues sit in each status). Use this to inspect a project before planning work under it.',
+    parameters: projectsReadSchema,
+    execute: async (_id, params) => {
+      if (!params.id_or_key) return errorResult('id_or_key is required.');
+      const project = deps.db.projects.getWithCounts(params.id_or_key);
+      if (!project) return errorResult(`Project "${params.id_or_key}" not found.`);
+      return jsonResult(project);
+    },
+  };
+}
+
+const projectsCreateSchema = Type.Object({
+  name: Type.String({ description: 'Human-readable project name.' }),
+  key: Type.String({
+    description:
+      'Short uppercase key used to prefix issue keys (e.g. "GATEWAY" → "GATEWAY-1"). Must be unique.',
+  }),
+  description: Type.Optional(
+    Type.String({ description: 'Optional markdown description of the project.' }),
+  ),
+});
+
+function createProjectsCreateTool(
+  deps: ProjectsToolsDeps,
+): ProjectsAgentTool<typeof projectsCreateSchema> {
+  return {
+    name: 'projects_create',
+    label: 'Create Project',
+    description:
+      'Create a new project (a planning container above tasks). Provide a name and a unique uppercase key; issues created under the project get keys like "KEY-1", "KEY-2". Use this when starting a new body of work that will hold multiple related tasks. For one-off tasks, create a standalone issue instead (no project_id).',
+    parameters: projectsCreateSchema,
+    execute: async (_id, params) => {
+      if (!params.name) return errorResult('name is required.');
+      if (!params.key) return errorResult('key is required.');
+      try {
+        const project = deps.db.projects.create({
+          name: params.name,
+          key: params.key,
+          description: params.description,
+        });
+        return jsonResult(project);
+      } catch (err) {
+        return errorResult(err instanceof Error ? err.message : String(err));
+      }
+    },
+  };
+}
+
 /**
  * Build all projects_* agent tools over an injected ProjectsDb. The returned
  * objects are structurally compatible with @mariozechner/pi-agent-core's
  * AgentTool and are registered into PiAgentBackend's custom-tool list.
  */
 export function createProjectsTools(deps: ProjectsToolsDeps): ProjectsAgentTool[] {
-  return [createProjectsListTool(deps)] as unknown as ProjectsAgentTool[];
+  return [
+    createProjectsListTool(deps),
+    createProjectsReadTool(deps),
+    createProjectsCreateTool(deps),
+  ] as unknown as ProjectsAgentTool[];
 }
 
 // Re-exported literal unions for downstream schema reuse / tests.

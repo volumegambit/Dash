@@ -58,3 +58,38 @@ describe('projects_list', () => {
     expect(res.details).toMatchObject({ isError: true });
   });
 });
+
+describe('projects_read', () => {
+  it('returns a project with issue counts', async () => {
+    db.projects.create({ name: 'Gateway', key: 'GATEWAY' });
+    const res = await run('projects_read', { id_or_key: 'GATEWAY' });
+    const proj = JSON.parse(text(res));
+    expect(proj.key).toBe('GATEWAY');
+    expect(proj.issue_counts_by_status).toBeDefined();
+  });
+
+  it('errors for an unknown project', async () => {
+    const res = await run('projects_read', { id_or_key: 'NOPE' });
+    expect(res.details).toMatchObject({ isError: true });
+  });
+
+  it('errors when id_or_key is missing', async () => {
+    const res = await run('projects_read', {});
+    expect(res.details).toMatchObject({ isError: true });
+  });
+});
+
+describe('projects_create', () => {
+  it('creates a project', async () => {
+    const res = await run('projects_create', { name: 'Gateway', key: 'GATEWAY' });
+    const proj = JSON.parse(text(res));
+    expect(proj.key).toBe('GATEWAY');
+    expect(proj.id).toMatch(/^proj_/);
+    expect(db.projects.getByIdOrKey('GATEWAY')).not.toBeNull();
+  });
+
+  it('errors on missing name', async () => {
+    const res = await run('projects_create', { key: 'GATEWAY' });
+    expect(res.details).toMatchObject({ isError: true });
+  });
+});
