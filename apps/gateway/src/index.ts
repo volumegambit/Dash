@@ -179,7 +179,10 @@ async function main() {
         },
       };
 
-      const backend = new PiAgentBackend(
+      // Explicit annotation breaks the circular type inference: the projects
+      // tools close over `backend` (getSessionId) while `backend` is still
+      // being constructed, which otherwise trips TS7022 in the .dts build.
+      const backend: PiAgentBackend = new PiAgentBackend(
         {
           model: agentConfig.model,
           systemPrompt: agentConfig.systemPrompt,
