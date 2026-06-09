@@ -24,6 +24,13 @@ async function run(name: string, params: unknown) {
   return tool(name).execute('call-1', params as never);
 }
 
+// Error paths THROW (the pi-agent loop turns a thrown Error into the isError
+// tool result — it never inspects details.isError), so error tests assert the
+// execute promise rejects.
+async function expectReject(name: string, params: unknown, matcher: RegExp) {
+  await expect(tool(name).execute('call-1', params as never)).rejects.toThrow(matcher);
+}
+
 function text(result: { content: Array<{ type: string; text?: string }> }): string {
   return result.content.map((b) => b.text ?? '').join('');
 }
@@ -53,9 +60,8 @@ describe('projects_list', () => {
     expect(projects[0].key).toBe('GATEWAY');
   });
 
-  it('flags an invalid status filter as an error', async () => {
-    const res = await run('projects_list', { status: 'not-a-status' });
-    expect(res.details).toMatchObject({ isError: true });
+  it('throws on an invalid status filter', async () => {
+    await expectReject('projects_list', { status: 'not-a-status' }, /Invalid status/);
   });
 });
 
@@ -68,14 +74,12 @@ describe('projects_read', () => {
     expect(proj.issue_counts_by_status).toBeDefined();
   });
 
-  it('errors for an unknown project', async () => {
-    const res = await run('projects_read', { id_or_key: 'NOPE' });
-    expect(res.details).toMatchObject({ isError: true });
+  it('throws for an unknown project', async () => {
+    await expectReject('projects_read', { id_or_key: 'NOPE' }, /not found/);
   });
 
-  it('errors when id_or_key is missing', async () => {
-    const res = await run('projects_read', {});
-    expect(res.details).toMatchObject({ isError: true });
+  it('throws when id_or_key is missing', async () => {
+    await expectReject('projects_read', {}, /id_or_key is required/);
   });
 });
 
@@ -88,9 +92,8 @@ describe('projects_create', () => {
     expect(db.projects.getByIdOrKey('GATEWAY')).not.toBeNull();
   });
 
-  it('errors on missing name', async () => {
-    const res = await run('projects_create', { key: 'GATEWAY' });
-    expect(res.details).toMatchObject({ isError: true });
+  it('throws on missing name', async () => {
+    await expectReject('projects_create', { key: 'GATEWAY' }, /name is required/);
   });
 });
 
@@ -113,9 +116,8 @@ describe('issues_create', () => {
     expect(issue.created_by).toBe('agent');
   });
 
-  it('errors on missing title', async () => {
-    const res = await run('issues_create', {});
-    expect(res.details).toMatchObject({ isError: true });
+  it('throws on missing title', async () => {
+    await expectReject('issues_create', {}, /title is required/);
   });
 });
 
@@ -134,9 +136,8 @@ describe('issues_read', () => {
     sessionId = 'chat-session-1';
   });
 
-  it('errors for an unknown issue', async () => {
-    const res = await run('issues_read', { id_or_key: 'NOPE-1' });
-    expect(res.details).toMatchObject({ isError: true });
+  it('throws for an unknown issue', async () => {
+    await expectReject('issues_read', { id_or_key: 'NOPE-1' }, /not found/);
   });
 });
 
@@ -148,9 +149,8 @@ describe('issues_list', () => {
     expect(Array.isArray(out.issues)).toBe(true);
   });
 
-  it('errors on an invalid status', async () => {
-    const res = await run('issues_list', { status: 'bogus' });
-    expect(res.details).toMatchObject({ isError: true });
+  it('throws on an invalid status', async () => {
+    await expectReject('issues_list', { status: 'bogus' }, /Invalid status/);
   });
 });
 
@@ -163,14 +163,16 @@ describe('issues_update', () => {
     expect(db.sessionLinks.listByIssue(created.id).length).toBeGreaterThanOrEqual(1);
   });
 
-  it('errors on missing id', async () => {
-    const res = await run('issues_update', { patch: { status: 'todo' } });
-    expect(res.details).toMatchObject({ isError: true });
+  it('throws on missing id', async () => {
+    await expectReject('issues_update', { patch: { status: 'todo' } }, /id is required/);
   });
 
-  it('errors on unknown issue', async () => {
-    const res = await run('issues_update', { id: 'issue_missing', patch: { status: 'todo' } });
-    expect(res.details).toMatchObject({ isError: true });
+  it('throws on unknown issue', async () => {
+    await expectReject(
+      'issues_update',
+      { id: 'issue_missing', patch: { status: 'todo' } },
+      /not found/,
+    );
   });
 });
 
@@ -184,10 +186,13 @@ describe('issues_comment', () => {
     expect(db.sessionLinks.listByIssue(created.id).length).toBeGreaterThanOrEqual(1);
   });
 
-  it('errors on empty body', async () => {
+  it('throws on empty body', async () => {
     const created = JSON.parse(text(await run('issues_create', { title: 'X' })));
-    const res = await run('issues_comment', { issue_id: created.id, body: '' });
-    expect(res.details).toMatchObject({ isError: true });
+    await expectReject(
+      'issues_comment',
+      { issue_id: created.id, body: '' },
+      /body must not be empty/,
+    );
   });
 });
 
@@ -200,9 +205,8 @@ describe('issues_comment_edit', () => {
     expect(edited.body).toBe('v2');
   });
 
-  it('errors on unknown comment', async () => {
-    const res = await run('issues_comment_edit', { comment_id: 'cmt_missing', body: 'x' });
-    expect(res.details).toMatchObject({ isError: true });
+  it('throws on unknown comment', async () => {
+    await expectReject('issues_comment_edit', { comment_id: 'cmt_missing', body: 'x' }, /.+/);
   });
 });
 
@@ -214,8 +218,7 @@ describe('issues_comment_delete', () => {
     expect(res.details).not.toHaveProperty('isError');
   });
 
-  it('errors on missing comment_id', async () => {
-    const res = await run('issues_comment_delete', {});
-    expect(res.details).toMatchObject({ isError: true });
+  it('throws on missing comment_id', async () => {
+    await expectReject('issues_comment_delete', {}, /comment_id is required/);
   });
 });

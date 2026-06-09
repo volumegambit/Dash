@@ -48,12 +48,14 @@ const ISSUE_STATUSES = ['backlog', 'todo', 'in_progress', 'review', 'done', 'can
 const ISSUE_SUB_STATUSES = ['waiting_on_human', 'agent_working', 'blocked'] as const;
 const PROJECT_STATUSES = ['active', 'paused', 'completed', 'cancelled'] as const;
 
-/** Shape an error result (validation or store failure). */
-export function errorResult(message: string): ProjectsAgentToolResult {
-  return { content: [{ type: 'text', text: `Error: ${message}` }], details: { isError: true } };
-}
-
-/** Shape a success result with a JSON-serialized payload. */
+/**
+ * Shape a success result with a JSON-serialized payload. Error paths do NOT
+ * return a result — they THROW. The pi-agent-core loop only marks a tool
+ * result as an error when execute() throws (it never inspects details.isError),
+ * so validation/not-found/store failures must propagate as thrown Errors for
+ * the runtime isError flag, tool_execution_end event, and telemetry to be
+ * correct.
+ */
 export function jsonResult(payload: unknown): ProjectsAgentToolResult {
   return { content: [{ type: 'text', text: JSON.stringify(payload) }], details: {} };
 }
@@ -95,7 +97,7 @@ function createProjectsListTool(
     parameters: projectsListSchema,
     execute: async (_id, params) => {
       if (params.status && !PROJECT_STATUSES.includes(params.status)) {
-        return errorResult(`Invalid status "${params.status}".`);
+        throw new Error(`Invalid status "${params.status}".`);
       }
       const projects = deps.db.projects.list({ status: params.status });
       return jsonResult(projects);
@@ -119,9 +121,9 @@ function createProjectsReadTool(
       'Read a single project by id or key. Returns the full project record plus issue_counts_by_status (how many issues sit in each status). Use this to inspect a project before planning work under it.',
     parameters: projectsReadSchema,
     execute: async (_id, params) => {
-      if (!params.id_or_key) return errorResult('id_or_key is required.');
+      if (!params.id_or_key) throw new Error('id_or_key is required.');
       const project = deps.db.projects.getWithCounts(params.id_or_key);
-      if (!project) return errorResult(`Project "${params.id_or_key}" not found.`);
+      if (!project) throw new Error(`Project "${params.id_or_key}" not found.`);
       return jsonResult(project);
     },
   };
@@ -148,18 +150,14 @@ function createProjectsCreateTool(
       'Create a new project (a planning container above tasks). Provide a name and a unique uppercase key; issues created under the project get keys like "KEY-1", "KEY-2". Use this when starting a new body of work that will hold multiple related tasks. For one-off tasks, create a standalone issue instead (no project_id).',
     parameters: projectsCreateSchema,
     execute: async (_id, params) => {
-      if (!params.name) return errorResult('name is required.');
-      if (!params.key) return errorResult('key is required.');
-      try {
-        const project = deps.db.projects.create({
-          name: params.name,
-          key: params.key,
-          description: params.description,
-        });
-        return jsonResult(project);
-      } catch (err) {
-        return errorResult(err instanceof Error ? err.message : String(err));
-      }
+      if (!params.name) throw new Error('name is required.');
+      if (!params.key) throw new Error('key is required.');
+      const project = deps.db.projects.create({
+        name: params.name,
+        key: params.key,
+        description: params.description,
+      });
+      return jsonResult(project);
     },
   };
 }
@@ -207,10 +205,10 @@ function createIssuesListTool(deps: ProjectsToolsDeps): ProjectsAgentTool<typeof
     parameters: issuesListSchema,
     execute: async (_id, params) => {
       if (params.status && !ISSUE_STATUSES.includes(params.status)) {
-        return errorResult(`Invalid status "${params.status}".`);
+        throw new Error(`Invalid status "${params.status}".`);
       }
       if (params.sub_status && !ISSUE_SUB_STATUSES.includes(params.sub_status)) {
-        return errorResult(`Invalid sub_status "${params.sub_status}".`);
+        throw new Error(`Invalid sub_status "${params.sub_status}".`);
       }
       // The domain store returns a BARE ARRAY and does not paginate. The tool
       // layer wraps it as { issues, next_cursor }: fetch the full filtered set,
@@ -247,9 +245,9 @@ function createIssuesReadTool(deps: ProjectsToolsDeps): ProjectsAgentTool<typeof
       'Read a single issue (task) by id or key, including its full activity: comments, timeline events, and linked sessions. Use this before commenting on or updating an issue so you have the current state and history. Reading an issue automatically records that this session referenced it.',
     parameters: issuesReadSchema,
     execute: async (_id, params) => {
-      if (!params.id_or_key) return errorResult('id_or_key is required.');
+      if (!params.id_or_key) throw new Error('id_or_key is required.');
       const detail = deps.db.issues.getDetail(params.id_or_key);
-      if (!detail) return errorResult(`Issue "${params.id_or_key}" not found.`);
+      if (!detail) throw new Error(`Issue "${params.id_or_key}" not found.`);
       linkSession(deps, detail.id);
       return jsonResult(detail);
     },
@@ -274,7 +272,7 @@ const issuesCreateSchema = Type.Object({
   status: Type.Optional(
     Type.Union(
       ISSUE_STATUSES.map((s) => Type.Literal(s)),
-      { description: 'Initial status. Defaults to backlog.' },
+      { description: 'Initial status. Defaults to todo.' },
     ),
   ),
   sub_status: Type.Optional(
@@ -295,27 +293,23 @@ function createIssuesCreateTool(
       'Create a new task. Provide a title; optionally file it under a project (project_id) or make it a subtask (parent_issue_id, one level deep only). You may create subtasks of your own work, peer follow-up tasks, or tasks for other agents/humans to pick up. The task — not the chat session — is the durable record of work. The issue is recorded as created_by the agent, and this session is linked to it automatically.',
     parameters: issuesCreateSchema,
     execute: async (_id, params) => {
-      if (!params.title) return errorResult('title is required.');
+      if (!params.title) throw new Error('title is required.');
       if (params.sub_status && params.status !== 'in_progress') {
-        return errorResult('sub_status is only valid when status is "in_progress".');
+        throw new Error('sub_status is only valid when status is "in_progress".');
       }
-      try {
-        const issue = deps.db.issues.create({
-          title: params.title,
-          project_id: params.project_id ?? null,
-          parent_issue_id: params.parent_issue_id ?? null,
-          description: params.description,
-          assignee_user_id: params.assignee_user_id,
-          status: params.status,
-          sub_status: params.sub_status ?? null,
-          created_by: 'agent',
-          created_by_agent_id: deps.getAgentId(),
-        });
-        linkSession(deps, issue.id);
-        return jsonResult(issue);
-      } catch (err) {
-        return errorResult(err instanceof Error ? err.message : String(err));
-      }
+      const issue = deps.db.issues.create({
+        title: params.title,
+        project_id: params.project_id ?? null,
+        parent_issue_id: params.parent_issue_id ?? null,
+        description: params.description,
+        assignee_user_id: params.assignee_user_id,
+        status: params.status,
+        sub_status: params.sub_status ?? null,
+        created_by: 'agent',
+        created_by_agent_id: deps.getAgentId(),
+      });
+      linkSession(deps, issue.id);
+      return jsonResult(issue);
     },
   };
 }
@@ -350,19 +344,15 @@ function createIssuesUpdateTool(
       'Update fields on an existing task: status, sub-status, title, description, assignee, or project. Each change is recorded as a timeline event so humans can see what the agent did. Move a task to in_progress with sub_status "agent_working" while you work it, and to "waiting_on_human" when you need input. Reading the issue first (issues_read) is recommended. This session is linked to the issue automatically.',
     parameters: issuesUpdateSchema,
     execute: async (_id, params) => {
-      if (!params.id) return errorResult('id is required.');
+      if (!params.id) throw new Error('id is required.');
       if (!params.patch || Object.keys(params.patch).length === 0) {
-        return errorResult('patch must contain at least one field.');
+        throw new Error('patch must contain at least one field.');
       }
       const existing = deps.db.issues.getByIdOrKey(params.id);
-      if (!existing) return errorResult(`Issue "${params.id}" not found.`);
-      try {
-        const updated = deps.db.issues.update(existing.id, params.patch, AGENT_ACTOR(deps));
-        linkSession(deps, updated.id);
-        return jsonResult(updated);
-      } catch (err) {
-        return errorResult(err instanceof Error ? err.message : String(err));
-      }
+      if (!existing) throw new Error(`Issue "${params.id}" not found.`);
+      const updated = deps.db.issues.update(existing.id, params.patch, AGENT_ACTOR(deps));
+      linkSession(deps, updated.id);
+      return jsonResult(updated);
     },
   };
 }
@@ -382,22 +372,18 @@ function createIssuesCommentTool(
       'Post a comment on a task. Comments appear in the task timeline interleaved with status changes and agent runs. Use comments to leave findings, ask the human a question, or summarize what you did. Posting also writes a comment_added timeline event and links this session to the issue.',
     parameters: issuesCommentSchema,
     execute: async (_id, params) => {
-      if (!params.issue_id) return errorResult('issue_id is required.');
-      if (!params.body || !params.body.trim()) return errorResult('body must not be empty.');
+      if (!params.issue_id) throw new Error('issue_id is required.');
+      if (!params.body || !params.body.trim()) throw new Error('body must not be empty.');
       const existing = deps.db.issues.getByIdOrKey(params.issue_id);
-      if (!existing) return errorResult(`Issue "${params.issue_id}" not found.`);
-      try {
-        const comment = deps.db.comments.add({
-          issue_id: existing.id,
-          author_type: 'agent',
-          author_id: deps.getAgentId() ?? deps.getSessionId() ?? 'agent',
-          body: params.body,
-        });
-        linkSession(deps, existing.id);
-        return jsonResult(comment);
-      } catch (err) {
-        return errorResult(err instanceof Error ? err.message : String(err));
-      }
+      if (!existing) throw new Error(`Issue "${params.issue_id}" not found.`);
+      const comment = deps.db.comments.add({
+        issue_id: existing.id,
+        author_type: 'agent',
+        author_id: deps.getAgentId() ?? deps.getSessionId() ?? 'agent',
+        body: params.body,
+      });
+      linkSession(deps, existing.id);
+      return jsonResult(comment);
     },
   };
 }
@@ -417,15 +403,11 @@ function createIssuesCommentEditTool(
       "Edit the body of a comment you (or someone) previously posted. Writes a comment_edited timeline event. Only edit to correct or clarify — do not rewrite history. Links this session to the comment's issue.",
     parameters: issuesCommentEditSchema,
     execute: async (_id, params) => {
-      if (!params.comment_id) return errorResult('comment_id is required.');
-      if (!params.body || !params.body.trim()) return errorResult('body must not be empty.');
-      try {
-        const comment = deps.db.comments.edit(params.comment_id, params.body);
-        linkSession(deps, comment.issue_id);
-        return jsonResult(comment);
-      } catch (err) {
-        return errorResult(err instanceof Error ? err.message : String(err));
-      }
+      if (!params.comment_id) throw new Error('comment_id is required.');
+      if (!params.body || !params.body.trim()) throw new Error('body must not be empty.');
+      const comment = deps.db.comments.edit(params.comment_id, params.body);
+      linkSession(deps, comment.issue_id);
+      return jsonResult(comment);
     },
   };
 }
@@ -444,16 +426,12 @@ function createIssuesCommentDeleteTool(
       'Soft-delete a comment. The comment is hidden and shown as "deleted" in the timeline, but the record is retained for audit. Writes a comment_deleted timeline event. Use sparingly — only for mistaken or obsolete comments.',
     parameters: issuesCommentDeleteSchema,
     execute: async (_id, params) => {
-      if (!params.comment_id) return errorResult('comment_id is required.');
-      try {
-        // softDelete returns { issue_id } — use it to link the session to the
-        // owning issue so the deletion is attributed to this session/agent.
-        const { issue_id } = deps.db.comments.softDelete(params.comment_id);
-        linkSession(deps, issue_id);
-        return jsonResult({ ok: true, comment_id: params.comment_id });
-      } catch (err) {
-        return errorResult(err instanceof Error ? err.message : String(err));
-      }
+      if (!params.comment_id) throw new Error('comment_id is required.');
+      // softDelete returns { issue_id } — use it to link the session to the
+      // owning issue so the deletion is attributed to this session/agent.
+      const { issue_id } = deps.db.comments.softDelete(params.comment_id);
+      linkSession(deps, issue_id);
+      return jsonResult({ ok: true, comment_id: params.comment_id });
     },
   };
 }
