@@ -20,6 +20,7 @@ import type {
 } from '@dash/mc';
 import { app, dialog, ipcMain, shell } from 'electron';
 import type { BrowserWindow } from 'electron';
+import WebSocket from 'ws';
 import { ChatService } from './chat-service.js';
 import { completeClaudeOAuth, prepareClaudeOAuth } from './claude-auth.js';
 import { refreshCodexToken, startCodexOAuth } from './codex-auth.js';
@@ -64,6 +65,11 @@ function initMcLogging(): void {
 let chatService: ChatService | undefined;
 let gatewayPoller: GatewayPoller | undefined;
 let gatewaySupervisor: GatewaySupervisor | undefined;
+// Long-lived WebSocket to the gateway's /projects/ws. Re-broadcasts each
+// { topic, payload } frame to the renderer over the `projects:event` IPC
+// channel. Reconnected from the gateway health poller's `healthy` branch
+// when null; torn down on quit.
+let projectsWs: WebSocket | null = null;
 
 function getGatewaySupervisor(options: GatewaySupervisorOptions): GatewaySupervisor {
   if (!gatewaySupervisor) {
@@ -292,11 +298,55 @@ export async function registerIpcHandlers(
     }
   }
 
+  // Long-lived WebSocket subscription to the gateway's /projects/ws. Each
+  // frame is `{ topic, payload }` where `payload` is already normalized by the
+  // gateway to the shape the renderer's reducer expects (bare Issue/Project for
+  // entity topics, `{ issue_id }` for detail-mutating topics). We forward
+  // `payload` UNCHANGED — do NOT re-wrap it. Mirrors the chat-service WS pattern
+  // (`addEventListener`); reconnect is driven by the poller's `healthy` branch.
+  function connectToProjectsWs(): void {
+    projectsWs?.close();
+    projectsWs = null;
+    void (async () => {
+      const gatewayState = await new GatewayStateStore(DATA_DIR).read();
+      if (!gatewayState) return;
+      const token = await gw.getGatewayToken();
+      if (!token) return;
+      const url = `ws://127.0.0.1:${gatewayState.port}/projects/ws?token=${encodeURIComponent(token)}`;
+      const ws = new WebSocket(url);
+      projectsWs = ws;
+      ws.addEventListener('message', (event) => {
+        let frame: { topic?: string; payload?: unknown };
+        try {
+          frame = JSON.parse(String(event.data));
+        } catch {
+          return;
+        }
+        if (!frame.topic) return;
+        const win = getWindow();
+        if (win && !win.isDestroyed()) {
+          win.webContents.send('projects:event', {
+            topic: frame.topic,
+            payload: frame.payload ?? {},
+          });
+        }
+      });
+      ws.addEventListener('close', () => {
+        if (projectsWs === ws) projectsWs = null;
+      });
+      ws.addEventListener('error', () => {
+        // The close handler clears the ref; reconnect happens on the next
+        // 'healthy' poll tick.
+      });
+    })();
+  }
+
   gatewayPoller.start(
     (status: string) => {
       sendGatewayStatus(status);
       if (status === 'healthy') {
         connectToGatewayEvents().catch(() => {});
+        if (!projectsWs) connectToProjectsWs();
       }
     },
     (serverName: string, mcpStatus: string) => {
@@ -812,6 +862,67 @@ export async function registerIpcHandlers(
   });
 
   // -----------------------------------------------------------------------
+  // Projects
+  // -----------------------------------------------------------------------
+
+  async function getProjectsClient(): Promise<ManagementClient> {
+    const gatewayState = await new GatewayStateStore(DATA_DIR).read();
+    if (!gatewayState) {
+      throw new Error('Gateway not running — Projects unavailable');
+    }
+    const token = await gw.getGatewayToken();
+    if (!token) {
+      throw new Error('Gateway not running — Projects unavailable');
+    }
+    return new ManagementClient(`http://127.0.0.1:${gatewayState.port}`, token);
+  }
+
+  ipcMain.handle('projects:listProjects', async (_e, status?: string) =>
+    (await getProjectsClient()).listProjects(status as never),
+  );
+  ipcMain.handle('projects:createProject', async (_e, input) =>
+    (await getProjectsClient()).createProject(input),
+  );
+  ipcMain.handle('projects:getProject', async (_e, id: string) =>
+    (await getProjectsClient()).getProject(id),
+  );
+  ipcMain.handle('projects:patchProject', async (_e, id: string, patch) =>
+    (await getProjectsClient()).patchProject(id, patch),
+  );
+  ipcMain.handle('projects:listProjectIssues', async (_e, id: string) =>
+    (await getProjectsClient()).listProjectIssues(id),
+  );
+
+  ipcMain.handle('projects:listIssues', async (_e, filters) =>
+    (await getProjectsClient()).listIssues(filters ?? {}),
+  );
+  ipcMain.handle('projects:createIssue', async (_e, input) =>
+    (await getProjectsClient()).createIssue(input),
+  );
+  ipcMain.handle('projects:getIssue', async (_e, id: string) =>
+    (await getProjectsClient()).getIssue(id),
+  );
+  ipcMain.handle('projects:patchIssue', async (_e, id: string, patch) =>
+    (await getProjectsClient()).patchIssue(id, patch),
+  );
+  ipcMain.handle('projects:addComment', async (_e, issueId: string, body: string) =>
+    (await getProjectsClient()).addComment(issueId, body),
+  );
+  ipcMain.handle(
+    'projects:editComment',
+    async (_e, issueId: string, commentId: string, body: string) =>
+      (await getProjectsClient()).editComment(issueId, commentId, body),
+  );
+  ipcMain.handle('projects:deleteComment', async (_e, issueId: string, commentId: string) =>
+    (await getProjectsClient()).deleteComment(issueId, commentId),
+  );
+
+  ipcMain.handle('projects:listInbox', async () => (await getProjectsClient()).listInbox());
+  ipcMain.handle('projects:markInboxRead', async (_e, issueId: string) =>
+    (await getProjectsClient()).markInboxRead(issueId),
+  );
+
+  // -----------------------------------------------------------------------
   // WhatsApp pairing
   // -----------------------------------------------------------------------
 
@@ -891,6 +1002,7 @@ export async function registerIpcHandlers(
   // -----------------------------------------------------------------------
 
   app.on('before-quit', async () => {
+    projectsWs?.close();
     gatewayPoller?.stop();
     await shutdownGatewayOnQuit(DATA_DIR);
   });
