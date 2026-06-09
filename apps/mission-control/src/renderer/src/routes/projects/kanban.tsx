@@ -87,10 +87,10 @@ function KanbanView(): JSX.Element {
     ));
   };
 
-  const renderBoard = (boardIssues: Issue[], keyPrefix: string) => {
+  const renderBoard = (boardIssues: Issue[]) => {
     const cols = bucketByStatus(boardIssues);
     return (
-      <div className="flex gap-3" key={keyPrefix}>
+      <div className="flex gap-3">
         {KANBAN_COLUMNS.map((status) => (
           <div
             key={status}
@@ -138,12 +138,12 @@ function KanbanView(): JSX.Element {
                 <p className="mb-2 text-sm font-semibold text-foreground">
                   {projectId ? (projectsById[projectId]?.name ?? projectId) : 'Standalone tasks'}
                 </p>
-                {renderBoard(laneIssues, projectId || 'standalone')}
+                {renderBoard(laneIssues)}
               </div>
             ))}
           </div>
         ) : (
-          renderBoard(issues, 'flat')
+          renderBoard(issues)
         )}
       </div>
 
