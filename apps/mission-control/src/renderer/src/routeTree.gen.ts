@@ -24,13 +24,16 @@ import { Route as ProjectsIndexRouteImport } from './routes/projects/index'
 import { Route as MessagingAppsIndexRouteImport } from './routes/messaging-apps/index'
 import { Route as AgentsIndexRouteImport } from './routes/agents/index'
 import { Route as ProjectsMyWorkRouteImport } from './routes/projects/my-work'
+import { Route as ProjectsListRouteImport } from './routes/projects/list'
 import { Route as ProjectsKanbanRouteImport } from './routes/projects/kanban'
 import { Route as ProjectsInboxRouteImport } from './routes/projects/inbox'
 import { Route as ProjectsAllRouteImport } from './routes/projects/all'
+import { Route as ProjectsProjectIdRouteImport } from './routes/projects/$projectId'
 import { Route as MessagingAppsNewWhatsappRouteImport } from './routes/messaging-apps/new-whatsapp'
 import { Route as MessagingAppsNewTelegramRouteImport } from './routes/messaging-apps/new-telegram'
 import { Route as MessagingAppsIdRouteImport } from './routes/messaging-apps/$id'
 import { Route as AgentsIdRouteImport } from './routes/agents/$id'
+import { Route as ProjectsIssuesIssueIdRouteImport } from './routes/projects/issues.$issueId'
 
 const WebSearchRoute = WebSearchRouteImport.update({
   id: '/web-search',
@@ -107,6 +110,11 @@ const ProjectsMyWorkRoute = ProjectsMyWorkRouteImport.update({
   path: '/my-work',
   getParentRoute: () => ProjectsRoute,
 } as any)
+const ProjectsListRoute = ProjectsListRouteImport.update({
+  id: '/list',
+  path: '/list',
+  getParentRoute: () => ProjectsRoute,
+} as any)
 const ProjectsKanbanRoute = ProjectsKanbanRouteImport.update({
   id: '/kanban',
   path: '/kanban',
@@ -120,6 +128,11 @@ const ProjectsInboxRoute = ProjectsInboxRouteImport.update({
 const ProjectsAllRoute = ProjectsAllRouteImport.update({
   id: '/all',
   path: '/all',
+  getParentRoute: () => ProjectsRoute,
+} as any)
+const ProjectsProjectIdRoute = ProjectsProjectIdRouteImport.update({
+  id: '/$projectId',
+  path: '/$projectId',
   getParentRoute: () => ProjectsRoute,
 } as any)
 const MessagingAppsNewWhatsappRoute =
@@ -144,6 +157,11 @@ const AgentsIdRoute = AgentsIdRouteImport.update({
   path: '/$id',
   getParentRoute: () => AgentsRoute,
 } as any)
+const ProjectsIssuesIssueIdRoute = ProjectsIssuesIssueIdRouteImport.update({
+  id: '/issues/$issueId',
+  path: '/issues/$issueId',
+  getParentRoute: () => ProjectsRoute,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
@@ -161,13 +179,16 @@ export interface FileRoutesByFullPath {
   '/messaging-apps/$id': typeof MessagingAppsIdRoute
   '/messaging-apps/new-telegram': typeof MessagingAppsNewTelegramRoute
   '/messaging-apps/new-whatsapp': typeof MessagingAppsNewWhatsappRoute
+  '/projects/$projectId': typeof ProjectsProjectIdRoute
   '/projects/all': typeof ProjectsAllRoute
   '/projects/inbox': typeof ProjectsInboxRoute
   '/projects/kanban': typeof ProjectsKanbanRoute
+  '/projects/list': typeof ProjectsListRoute
   '/projects/my-work': typeof ProjectsMyWorkRoute
   '/agents/': typeof AgentsIndexRoute
   '/messaging-apps/': typeof MessagingAppsIndexRoute
   '/projects/': typeof ProjectsIndexRoute
+  '/projects/issues/$issueId': typeof ProjectsIssuesIssueIdRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -182,13 +203,16 @@ export interface FileRoutesByTo {
   '/messaging-apps/$id': typeof MessagingAppsIdRoute
   '/messaging-apps/new-telegram': typeof MessagingAppsNewTelegramRoute
   '/messaging-apps/new-whatsapp': typeof MessagingAppsNewWhatsappRoute
+  '/projects/$projectId': typeof ProjectsProjectIdRoute
   '/projects/all': typeof ProjectsAllRoute
   '/projects/inbox': typeof ProjectsInboxRoute
   '/projects/kanban': typeof ProjectsKanbanRoute
+  '/projects/list': typeof ProjectsListRoute
   '/projects/my-work': typeof ProjectsMyWorkRoute
   '/agents': typeof AgentsIndexRoute
   '/messaging-apps': typeof MessagingAppsIndexRoute
   '/projects': typeof ProjectsIndexRoute
+  '/projects/issues/$issueId': typeof ProjectsIssuesIssueIdRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -207,13 +231,16 @@ export interface FileRoutesById {
   '/messaging-apps/$id': typeof MessagingAppsIdRoute
   '/messaging-apps/new-telegram': typeof MessagingAppsNewTelegramRoute
   '/messaging-apps/new-whatsapp': typeof MessagingAppsNewWhatsappRoute
+  '/projects/$projectId': typeof ProjectsProjectIdRoute
   '/projects/all': typeof ProjectsAllRoute
   '/projects/inbox': typeof ProjectsInboxRoute
   '/projects/kanban': typeof ProjectsKanbanRoute
+  '/projects/list': typeof ProjectsListRoute
   '/projects/my-work': typeof ProjectsMyWorkRoute
   '/agents/': typeof AgentsIndexRoute
   '/messaging-apps/': typeof MessagingAppsIndexRoute
   '/projects/': typeof ProjectsIndexRoute
+  '/projects/issues/$issueId': typeof ProjectsIssuesIssueIdRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -233,13 +260,16 @@ export interface FileRouteTypes {
     | '/messaging-apps/$id'
     | '/messaging-apps/new-telegram'
     | '/messaging-apps/new-whatsapp'
+    | '/projects/$projectId'
     | '/projects/all'
     | '/projects/inbox'
     | '/projects/kanban'
+    | '/projects/list'
     | '/projects/my-work'
     | '/agents/'
     | '/messaging-apps/'
     | '/projects/'
+    | '/projects/issues/$issueId'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -254,13 +284,16 @@ export interface FileRouteTypes {
     | '/messaging-apps/$id'
     | '/messaging-apps/new-telegram'
     | '/messaging-apps/new-whatsapp'
+    | '/projects/$projectId'
     | '/projects/all'
     | '/projects/inbox'
     | '/projects/kanban'
+    | '/projects/list'
     | '/projects/my-work'
     | '/agents'
     | '/messaging-apps'
     | '/projects'
+    | '/projects/issues/$issueId'
   id:
     | '__root__'
     | '/'
@@ -278,13 +311,16 @@ export interface FileRouteTypes {
     | '/messaging-apps/$id'
     | '/messaging-apps/new-telegram'
     | '/messaging-apps/new-whatsapp'
+    | '/projects/$projectId'
     | '/projects/all'
     | '/projects/inbox'
     | '/projects/kanban'
+    | '/projects/list'
     | '/projects/my-work'
     | '/agents/'
     | '/messaging-apps/'
     | '/projects/'
+    | '/projects/issues/$issueId'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -408,6 +444,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ProjectsMyWorkRouteImport
       parentRoute: typeof ProjectsRoute
     }
+    '/projects/list': {
+      id: '/projects/list'
+      path: '/list'
+      fullPath: '/projects/list'
+      preLoaderRoute: typeof ProjectsListRouteImport
+      parentRoute: typeof ProjectsRoute
+    }
     '/projects/kanban': {
       id: '/projects/kanban'
       path: '/kanban'
@@ -427,6 +470,13 @@ declare module '@tanstack/react-router' {
       path: '/all'
       fullPath: '/projects/all'
       preLoaderRoute: typeof ProjectsAllRouteImport
+      parentRoute: typeof ProjectsRoute
+    }
+    '/projects/$projectId': {
+      id: '/projects/$projectId'
+      path: '/$projectId'
+      fullPath: '/projects/$projectId'
+      preLoaderRoute: typeof ProjectsProjectIdRouteImport
       parentRoute: typeof ProjectsRoute
     }
     '/messaging-apps/new-whatsapp': {
@@ -456,6 +506,13 @@ declare module '@tanstack/react-router' {
       fullPath: '/agents/$id'
       preLoaderRoute: typeof AgentsIdRouteImport
       parentRoute: typeof AgentsRoute
+    }
+    '/projects/issues/$issueId': {
+      id: '/projects/issues/$issueId'
+      path: '/issues/$issueId'
+      fullPath: '/projects/issues/$issueId'
+      preLoaderRoute: typeof ProjectsIssuesIssueIdRouteImport
+      parentRoute: typeof ProjectsRoute
     }
   }
 }
@@ -492,19 +549,25 @@ const MessagingAppsRouteWithChildren = MessagingAppsRoute._addFileChildren(
 )
 
 interface ProjectsRouteChildren {
+  ProjectsProjectIdRoute: typeof ProjectsProjectIdRoute
   ProjectsAllRoute: typeof ProjectsAllRoute
   ProjectsInboxRoute: typeof ProjectsInboxRoute
   ProjectsKanbanRoute: typeof ProjectsKanbanRoute
+  ProjectsListRoute: typeof ProjectsListRoute
   ProjectsMyWorkRoute: typeof ProjectsMyWorkRoute
   ProjectsIndexRoute: typeof ProjectsIndexRoute
+  ProjectsIssuesIssueIdRoute: typeof ProjectsIssuesIssueIdRoute
 }
 
 const ProjectsRouteChildren: ProjectsRouteChildren = {
+  ProjectsProjectIdRoute: ProjectsProjectIdRoute,
   ProjectsAllRoute: ProjectsAllRoute,
   ProjectsInboxRoute: ProjectsInboxRoute,
   ProjectsKanbanRoute: ProjectsKanbanRoute,
+  ProjectsListRoute: ProjectsListRoute,
   ProjectsMyWorkRoute: ProjectsMyWorkRoute,
   ProjectsIndexRoute: ProjectsIndexRoute,
+  ProjectsIssuesIssueIdRoute: ProjectsIssuesIssueIdRoute,
 }
 
 const ProjectsRouteWithChildren = ProjectsRoute._addFileChildren(
