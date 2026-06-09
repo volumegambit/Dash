@@ -132,6 +132,7 @@ function TaskDetail(): JSX.Element {
 
   const [draft, setDraft] = useState('');
   const [subtaskTitle, setSubtaskTitle] = useState('');
+  const [savingSubtask, setSavingSubtask] = useState(false);
 
   useEffect(() => {
     loadProjects();
@@ -154,10 +155,20 @@ function TaskDetail(): JSX.Element {
 
   const submitSubtask = async () => {
     const title = subtaskTitle.trim();
-    if (!title) return;
+    // Guard against double-submit: a fast second Enter while a create is
+    // in flight would otherwise spawn a duplicate subtask.
+    if (!title || savingSubtask) return;
+    setSavingSubtask(true);
     setSubtaskTitle('');
-    await createIssue({ title, parent_issue_id: issueId, project_id: detail.project_id });
-    await loadIssueDetail(issueId);
+    try {
+      await createIssue({ title, parent_issue_id: issueId, project_id: detail.project_id });
+      // Explicit refetch is intentional belt-and-suspenders: the WS
+      // subtask_added → issue.event.appended broadcast also refreshes detail,
+      // but this awaited reload guarantees the new subtask shows immediately.
+      await loadIssueDetail(issueId);
+    } finally {
+      setSavingSubtask(false);
+    }
   };
 
   return (
@@ -299,8 +310,9 @@ function TaskDetail(): JSX.Element {
                   value={subtaskTitle}
                   onChange={(e) => setSubtaskTitle(e.target.value)}
                   onKeyDown={(e) => e.key === 'Enter' && submitSubtask()}
+                  disabled={savingSubtask}
                   placeholder="+ Subtask"
-                  className="flex-1 border border-border bg-card-bg px-2 py-1 text-xs text-foreground placeholder:text-muted focus:border-accent focus:outline-none"
+                  className="flex-1 border border-border bg-card-bg px-2 py-1 text-xs text-foreground placeholder:text-muted focus:border-accent focus:outline-none disabled:opacity-50"
                 />
               </div>
             </>
