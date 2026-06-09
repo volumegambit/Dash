@@ -87,6 +87,10 @@ export function normalizeForWire<E extends ProjectsWsTopic>(
  * NORMALIZED entity (bare Issue/Project, or { issue_id }). The MC renderer
  * reads `payload`; forwarding the raw wrapped emitter payload would deliver
  * shapes MC ignores and no view would update.
+ *
+ * Call this exactly once per emitter instance — calling it twice attaches
+ * duplicate listeners and doubles broadcast delivery. The Task 10 gateway
+ * wiring is the single intended caller.
  */
 export function mountProjectsWs(app: Hono, deps: ProjectsWsDeps): void {
   const { emitter, upgradeWebSocket } = deps;
