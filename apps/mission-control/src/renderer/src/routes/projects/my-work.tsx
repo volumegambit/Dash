@@ -1,9 +1,8 @@
 import { createFileRoute, useNavigate } from '@tanstack/react-router';
 import { useEffect, useMemo } from 'react';
+import { LOCAL_USER_ID } from '../../../../shared/projects-ipc.js';
 import { useProjectsStore } from '../../stores/projects.js';
 import { IssueRow } from './-components/IssueRow.js';
-
-const LOCAL_USER = 'me';
 
 function MyWork(): JSX.Element {
   const navigate = useNavigate();
@@ -14,13 +13,13 @@ function MyWork(): JSX.Element {
 
   useEffect(() => {
     loadProjects();
-    loadIssues({ assignee_user_id: LOCAL_USER });
+    loadIssues({ assignee_user_id: LOCAL_USER_ID });
   }, [loadIssues, loadProjects]);
 
   const rows = useMemo(
     () =>
       Object.values(issuesById)
-        .filter((i) => i.assignee_user_id === LOCAL_USER)
+        .filter((i) => i.assignee_user_id === LOCAL_USER_ID)
         .sort((a, b) => b.updated_at.localeCompare(a.updated_at)),
     [issuesById],
   );

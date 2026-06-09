@@ -1,5 +1,7 @@
 // apps/mission-control/src/shared/projects-ipc.ts
 
+export const LOCAL_USER_ID = 'local'; // must match @dash/projects LOCAL_USER_ID — the assignee id the gateway gives human-created issues
+
 export type IssueStatus = 'backlog' | 'todo' | 'in_progress' | 'review' | 'done' | 'cancelled';
 
 export type IssueSubStatus = 'waiting_on_human' | 'agent_working' | 'blocked' | null;
