@@ -152,6 +152,24 @@ describe('issues_list', () => {
   it('throws on an invalid status', async () => {
     await expectReject('issues_list', { status: 'bogus' }, /Invalid status/);
   });
+
+  it('filters by agents_involved', async () => {
+    const mine = db.issues.create({
+      title: 'Mine',
+      created_by: 'agent',
+      created_by_agent_id: 'agent-1',
+    });
+    db.issues.create({ title: 'Theirs', created_by: 'agent', created_by_agent_id: 'agent-2' });
+    const res = await run('issues_list', { agents_involved: 'agent-1' });
+    const out = JSON.parse(text(res));
+    expect(out.issues).toHaveLength(1);
+    expect(out.issues[0].id).toBe(mine.id);
+  });
+
+  it('throws on a stale cursor', async () => {
+    await run('issues_create', { title: 'One' });
+    await expectReject('issues_list', { cursor: 'issue_bogus' }, /no longer valid/);
+  });
 });
 
 describe('issues_update', () => {
@@ -206,7 +224,11 @@ describe('issues_comment_edit', () => {
   });
 
   it('throws on unknown comment', async () => {
-    await expectReject('issues_comment_edit', { comment_id: 'cmt_missing', body: 'x' }, /.+/);
+    await expectReject(
+      'issues_comment_edit',
+      { comment_id: 'cmt_missing', body: 'x' },
+      /not found/i,
+    );
   });
 });
 

@@ -190,6 +190,12 @@ const issuesListSchema = Type.Object({
   parent_issue_id: Type.Optional(
     Type.String({ description: 'Only subtasks of this parent issue id.' }),
   ),
+  agents_involved: Type.Optional(
+    Type.String({
+      description:
+        'Filter to issues this agent created or referenced in a session (pass an agent/deployment id).',
+    }),
+  ),
   limit: Type.Optional(Type.Integer({ description: 'Max issues to return (default 50).' })),
   cursor: Type.Optional(
     Type.String({ description: 'Opaque pagination cursor from a prior call.' }),
@@ -222,8 +228,14 @@ function createIssuesListTool(deps: ProjectsToolsDeps): ProjectsAgentTool<typeof
         assignee_user_id: params.assignee_user_id,
         created_by: params.created_by,
         parent_issue_id: params.parent_issue_id,
+        agents_involved: params.agents_involved,
       });
       const start = params.cursor ? all.findIndex((i) => i.id === params.cursor) + 1 : 0;
+      // findIndex returns -1 for a missing cursor id, so start would be 0 and
+      // silently restart at page 1. Reject a stale/invalid cursor instead.
+      if (params.cursor && start === 0) {
+        throw new Error(`Cursor "${params.cursor}" is no longer valid.`);
+      }
       const page = all.slice(start, start + limit + 1);
       const hasMore = page.length > limit;
       const issues = hasMore ? page.slice(0, limit) : page;
