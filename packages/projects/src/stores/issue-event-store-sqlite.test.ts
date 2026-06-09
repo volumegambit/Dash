@@ -52,7 +52,12 @@ describe('IssueEventStoreSqlite', () => {
   });
 
   it('lists events for an issue in chronological order', () => {
-    store.append({ issue_id: 'issue_1', type: 'status_change', actor_type: 'human', actor_id: 'x' });
+    store.append({
+      issue_id: 'issue_1',
+      type: 'status_change',
+      actor_type: 'human',
+      actor_id: 'x',
+    });
     store.append({ issue_id: 'issue_1', type: 'field_change', actor_type: 'human', actor_id: 'x' });
     const events = store.listByIssue('issue_1');
     expect(events.map((e) => e.type)).toEqual(['status_change', 'field_change']);
