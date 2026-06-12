@@ -20,17 +20,17 @@
 
 ---
 
-## Cross-plan reconciliation needed (cross-reviewer: check these against Plan 2)
+## Cross-plan reconciliation — RESOLVED (cross-review 2026-06-12)
 
-These are the only places where this plan had to fix a wire detail the pinned contracts leave open. Each is marked inline at the task that uses it. **Flag mismatches, don't silently adapt.**
+All five open wire details below were adjudicated at cross-review and the gateway plan was amended to match. They are settled contracts now — implement as this plan specifies; no further reconciliation needed.
 
-1. **Provider listing endpoint + client method name.** Pinned: "existing endpoint, extended" with entry shape `{ id, label, credentialPrefix, source? }`. MC currently has NO provider-listing fetch (the AI Providers page renders a static `PROVIDERS` array in `src/renderer/src/components/providers.ts`). This plan assumes `ManagementClient.listProviders(): Promise<ProviderListingEntry[]>` against `GET /providers`. If Plan 2 named the method differently or hung the entries off another endpoint (e.g. `/models?debug=true`), adapt ONLY the main-process handler in Task 4 — the shared type and all renderer code stay unchanged.
-2. **Plugin channel config on channel CRUD.** The channel factory receives validated channel config, so `POST /channels` must carry it. This plan extends the existing `channels:create` IPC + `GatewayManagementClient.registerChannel` body with `config?: Record<string, unknown>`. Plan 2 must accept a `config` field on `POST /channels` (validate against the adapter's configSchema, persist). Field name `config` is this plan's choice — reconcile.
-3. **Errored-channel wire shape.** Spec: "Missing factory at startup → channel marked errored with reason, config preserved, visible in MC." Not pinned. This plan adds optional `status?: 'active' | 'error'` and `error?: string` to `GatewayChannel` (in `packages/mc/src/runtime/gateway-client.ts`) and renders them defensively (absent ⇒ behave exactly as today). Reconcile field names with Plan 2's `GET /channels` payload.
-4. **Reset-to-all plugins wire encoding.** `plugins?: string[]` — unset = all. To go from a subset back to "all", the agent-update patch must *delete* the field. This plan sends `{ plugins: null }` in the `PUT /agents/:id` patch and expects the gateway to clear the field on explicit `null`. Reconcile with Plan 2's agent routes.
-5. **`listPlugins()` return shape.** Pinned IPC: `plugins:list → PluginView[]` while the HTTP envelope is `{ plugins: PluginView[] }`. This plan assumes the client method unwraps the envelope and returns `PluginView[]` (same for `listChannelAdapters` unwrapping `{ adapters }`). If Plan 2's methods return envelopes, unwrap in the Task 4 handlers.
+1. **Provider listing.** ✅ CONFIRMED: gateway plan owns `GET /providers` → `{ providers: [{ id, label, credentialPrefix, source? }] }` AND `ManagementClient.listProviders()` + the `ProviderListingEntry` type (gateway plan Task 13/14, byte-identical to this plan's Task 4 fallback). Once the gateway plan has landed, this plan's Task 4 fallback (all FOUR methods + type) is deleted as a pure deletion.
+2. **Plugin channel config.** ✅ CONFIRMED: gateway plan accepts, validates (adapter configSchema), and persists `config` on both `POST /channels` and `PUT /channels/:name`. Field name `config` is the settled contract.
+3. **Errored-channel wire shape.** ✅ RESOLVED in this plan's favor: gateway emits FLAT `status?: 'active' | 'error'` and `error?: string` on GET /channels entries (gateway plan amended; no nesting, no 'running'). Render exactly as this plan specifies.
+4. **Reset-to-all plugins.** ✅ CONFIRMED: `{ plugins: null }` in the PUT /agents/:id body deletes the field (gateway plan Task 10 amended with null→delete in `agentRegistry.update()` + test).
+5. **`listPlugins()` envelope.** ✅ CONFIRMED: gateway plan's client methods unwrap envelopes and return bare arrays, byte-identical to this plan's fallbacks.
 
-**Prerequisite:** Plan 2's `@dash/management` client methods must exist before Task 4 compiles. If executing before Plan 2 lands, Task 4 includes fallback client-method code (matching the pinned wire contract exactly) with a marker comment so cross-review can dedupe.
+**Prerequisite:** the gateway plan's `@dash/management` client methods must exist before Task 4 compiles. If executing before the gateway plan lands, Task 4 includes fallback client-method code (byte-identical to the gateway plan's) with a marker comment; dedupe is a pure deletion afterward.
 
 ---
 
@@ -368,7 +368,7 @@ describe('registerChannel plugin config passthrough', () => {
 ```ts
   /** Adapter key. Built-ins: 'telegram' | 'whatsapp'; plugin adapters widen this to any string. */
   adapter: string;
-  /** RECONCILE WITH PLAN 2 (errored-channel wire shape): set when the
+  /** SETTLED at cross-review (flat shape; gateway emits these): set when the
    *  channel's adapter factory is missing at startup (plugin disabled or
    *  uninstalled). Absent on healthy channels — render defensively. */
   status?: 'active' | 'error';
@@ -568,7 +568,7 @@ and append to `ManagementClient` in `packages/management/src/client.ts` (import 
     return result.adapters;
   }
 
-  // RECONCILE WITH PLAN 2: endpoint path + method name for the extended
+  // SETTLED at cross-review: GET /providers + listProviders() are owned by the gateway plan; this fallback is byte-identical. Original note: endpoint path + method name for the extended
   // provider listing. Entry shape is pinned; the path is this plan's choice.
   async listProviders(): Promise<ProviderListingEntry[]> {
     const result = await this.request<{ providers: ProviderListingEntry[] }>('GET', '/providers');
@@ -2550,7 +2550,7 @@ type ConfigPatch = {
   workspace?: string;
   mcpServers?: string[];
   /** unset = all plugin tools; [] = none. `null` on the wire requests
-   *  clearing the field (reset to "all") — RECONCILE WITH PLAN 2. */
+   *  clearing the field (reset to "all") — SETTLED: gateway deletes the field on explicit null. */
   plugins?: string[] | null;
 };
 ```

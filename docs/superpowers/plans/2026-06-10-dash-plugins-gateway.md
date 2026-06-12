@@ -19,7 +19,7 @@
 
 ## Pinned cross-plan contracts consumed here (import from `@dash/plugins`; never redefine)
 
-`loadPlugins(opts: { pluginsDir, entries, dashVersion, getCredential, logger })` → `LoadedPlugins { tools: Array<{pluginName, tool}>, channelFactories: Map<string, {pluginName, factory(config), configSchema?}>, providerCatalogs: ProviderCatalog[], hookBus, registry: { list(), get(name) }, shutdown() }`; `PluginConfigStore(dataDir)` → file `<dataDir>/plugins/config.json`, `load()`, `setEnabled(name, enabled)`; `createModelCatalog(catalogs)` → `{ lookup(provider, modelId) }`. HookBus verdicts: `beforeToolCall` → `{params} | {blocked: true, reason}` (reason pre-formatted `policy (<plugin>): <raw>`; backend throws `denied by ${reason}`), `afterToolCall` → `{result}`, `messageReceived` → `{message} | {dropped: true}`, `messageSending` → `{content} | {cancelled: true}`, `agentRunStart/End` → void, `counters()`. `PluginRecord.config` arrives UNmasked — this plan masks at the route layer.
+`loadPlugins(opts: { pluginsDir, entries, dashVersion, getCredential, logger })` → `LoadedPlugins { tools: Array<{pluginName, tool}>, channelFactories: Map<string, {pluginName, factory(config), configSchema?}>, providerCatalogs: Array<{pluginName, catalog: ProviderCatalog}>, hookBus, registry: { list(), get(name) }, shutdown() }`; `PluginConfigStore(dataDir)` → file `<dataDir>/plugins/config.json`, `load()`, `setEnabled(name, enabled)`; `createModelCatalog(catalogs)` → `{ lookup(provider, modelId) }`. HookBus verdicts: `beforeToolCall` → `{params} | {blocked: true, reason}` (reason pre-formatted `policy (<plugin>): <raw>`; backend throws `denied by ${reason}`), `afterToolCall` → `{result}`, `messageReceived` → `{message} | {dropped: true}`, `messageSending` → `{content} | {cancelled: true}`, `agentRunStart/End` → void, `counters()`. `PluginRecord.config` arrives UNmasked — this plan masks at the route layer.
 
 Wire contract Plan 3 renders: `PluginView` and `GET /channels/adapters` (Task 12), `GET /models` item `source?` and provider-listing `source?` (Task 14).
 
@@ -27,7 +27,7 @@ Wire contract Plan 3 renders: `PluginView` and `GET /channels/adapters` (Task 12
 
 1. `@dash/plugin-sdk` / `@dash/plugins` internals (Plan 1).
 2. MC UI, IPC, `src/shared/plugins-ipc.ts` (Plan 3).
-3. User docs (`docs/plugins.mdx` etc.) and the `examples/plugins/` reference plugin — coordinate ownership at cross-review.
+3. ~~User docs and the reference plugin~~ — OWNED BY THIS PLAN per cross-review: Task 16 (reference plugin) and Task 17 (user docs).
 4. MC chat (`chat-ws`) message hooks — explicitly v1-deferred by the spec; channel path only.
 
 ## File map
@@ -1304,7 +1304,7 @@ Expected: FAIL — cannot resolve `./plugin-channel-config.js`.
 - [ ] **Step 4: Implement `apps/gateway/src/plugin-channel-config.ts`**
 
 ```ts
-import type { TSchema } from '@sinclair/typebox';
+import { type TSchema, Type } from '@sinclair/typebox';
 import { TypeCompiler } from '@sinclair/typebox/compiler';
 
 /**
@@ -1332,16 +1332,88 @@ export function interpolateEnvVars(value: unknown): unknown {
 }
 
 /**
+ * Manifest/channel configSchema is plain JSON Schema, but TypeBox's compiler
+ * dispatches on the [Kind] symbol that plain JSON lacks (verified against
+ * typebox 0.34: TypeCompiler.Compile on a raw schema throws
+ * TypeCompilerUnknownTypeError). Convert the supported JSON Schema subset to
+ * TypeBox types first, then Compile.
+ *
+ * NOTE: deliberately a copy of @dash/plugins' converter (packages/plugins/
+ * src/config.ts toTypeBox) so apps/gateway Tasks 1-14 stay buildable before
+ * Plan 1 lands. Keep the two in sync; cross-review accepted the duplication
+ * over the package dependency.
+ *
+ * Supported subset: type object/string/number/integer/boolean/array, enum,
+ * properties, required, items, default, additionalProperties. Foreign
+ * keywords (sensitive, title, description, …) pass through as options.
+ */
+function toTypeBox(node: Record<string, unknown>): TSchema {
+  const {
+    type,
+    properties,
+    required,
+    items,
+    enum: enumValues,
+    additionalProperties,
+    ...rest
+  } = node;
+  if (Array.isArray(enumValues)) {
+    const literals = enumValues.map((v) => Type.Literal(v as string | number | boolean));
+    return Type.Union(literals, rest);
+  }
+  switch (type) {
+    case 'object': {
+      const props: Record<string, TSchema> = {};
+      const req = new Set(Array.isArray(required) ? (required as string[]) : []);
+      const propEntries = Object.entries(
+        (properties ?? {}) as Record<string, Record<string, unknown>>,
+      );
+      for (const [key, sub] of propEntries) {
+        const t = toTypeBox(sub);
+        props[key] = req.has(key) ? t : Type.Optional(t);
+      }
+      return Type.Object(props, { ...rest, additionalProperties: additionalProperties === true });
+    }
+    case 'string':
+      return Type.String(rest);
+    case 'number':
+      return Type.Number(rest);
+    case 'integer':
+      return Type.Integer(rest);
+    case 'boolean':
+      return Type.Boolean(rest);
+    case 'array': {
+      if (typeof items !== 'object' || items === null) {
+        throw new Error("unsupported configSchema: array requires an 'items' schema");
+      }
+      return Type.Array(toTypeBox(items as Record<string, unknown>), rest);
+    }
+    default:
+      throw new Error(
+        `unsupported configSchema construct (type '${String(type)}'); supported: object, ` +
+          'string, number, integer, boolean, array, enum',
+      );
+  }
+}
+
+/**
  * Validate a plugin channel config against the factory's JSON-schema
- * configSchema (TypeBox-compiled, same approach as the plugin loader's
- * manifest config validation). Returns readable errors for the HTTP layer.
+ * configSchema (converted to TypeBox, then compiled — same approach as the
+ * plugin loader's manifest config validation). Returns readable errors for
+ * the HTTP layer; an unsupported schema construct is reported as an error
+ * rather than thrown.
  */
 export function validateChannelConfig(
   schema: Record<string, unknown> | undefined,
   config: Record<string, unknown>,
 ): { ok: true } | { ok: false; errors: string } {
   if (!schema) return { ok: true };
-  const compiled = TypeCompiler.Compile(schema as unknown as TSchema);
+  let compiled: ReturnType<typeof TypeCompiler.Compile>;
+  try {
+    compiled = TypeCompiler.Compile(toTypeBox(schema));
+  } catch (err) {
+    return { ok: false, errors: (err as Error).message };
+  }
   if (compiled.Check(config)) return { ok: true };
   const errors = [...compiled.Errors(config)]
     .map((e) => `${e.path || '/'}: ${e.message}`)
@@ -1749,7 +1821,7 @@ describe('restorePersistedChannels', () => {
       expect.objectContaining({ routing: expect.any(Array) }),
     );
     expect(gateway.registerAgent).toHaveBeenCalledWith('a1', bridge);
-    expect(statuses.get('tg1')).toEqual({ status: 'running' });
+    expect(statuses.get('tg1')).toEqual({ status: 'active' });
   });
 
   it('marks channels with a missing factory errored, preserves config, continues', async () => {
@@ -1780,12 +1852,12 @@ describe('restorePersistedChannels', () => {
 
     expect(statuses.get('disc1')).toEqual({
       status: 'error',
-      reason: "adapter not available (plugin disabled or not installed): 'discord'",
+      error: "adapter not available (plugin disabled or not installed): 'discord'",
     });
     // Config preserved — the registry entry is untouched.
     expect(channelRegistry.get('disc1')?.config).toEqual({ botToken: 't' });
     // The other channel still started.
-    expect(statuses.get('tg1')).toEqual({ status: 'running' });
+    expect(statuses.get('tg1')).toEqual({ status: 'active' });
   });
 
   it('marks channels whose factory.create throws as errored with the thrown reason', async () => {
@@ -1807,7 +1879,7 @@ describe('restorePersistedChannels', () => {
       resolveAgentClient: () => null,
     });
 
-    expect(statuses.get('tg1')).toEqual({ status: 'error', reason: 'no credential for tg1' });
+    expect(statuses.get('tg1')).toEqual({ status: 'error', error: 'no credential for tg1' });
     expect(gateway.registerChannel).not.toHaveBeenCalled();
   });
 });
@@ -1827,8 +1899,8 @@ import type { ChannelRegistry } from './channel-registry.js';
 
 /** Runtime (non-persisted) health of a configured channel. */
 export interface ChannelRuntimeStatus {
-  status: 'running' | 'error';
-  reason?: string;
+  status: 'active' | 'error';
+  error?: string;
 }
 
 export interface RestoreChannelsDeps {
@@ -1869,7 +1941,7 @@ export async function restorePersistedChannels(
     const factory = deps.factories.get(channel.adapter);
     if (!factory) {
       const reason = `adapter not available (plugin disabled or not installed): '${channel.adapter}'`;
-      statuses.set(channel.name, { status: 'error', reason });
+      statuses.set(channel.name, { status: 'error', error: reason });
       deps.log?.(`[gateway] channel ${channel.name} errored: ${reason}`);
       continue;
     }
@@ -1883,11 +1955,11 @@ export async function restorePersistedChannels(
         const client = deps.resolveAgentClient(rule.agentId);
         if (client) deps.gateway.registerAgent(rule.agentId, client);
       }
-      statuses.set(channel.name, { status: 'running' });
+      statuses.set(channel.name, { status: 'active' });
       deps.log?.(`[gateway] restored channel: ${channel.name} (${channel.adapter})`);
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
-      statuses.set(channel.name, { status: 'error', reason });
+      statuses.set(channel.name, { status: 'error', error: reason });
       deps.log?.(`[gateway] failed to restore channel ${channel.name}: ${reason}`);
     }
   }
@@ -2001,7 +2073,7 @@ Append to `apps/gateway/src/management-api-server.test.ts` (inside the top-level
   describe('channel runtime status', () => {
     it('merges runtime status into GET /channels when provided', async () => {
       const channelRuntimeStatus = new Map([
-        ['tg1', { status: 'error' as const, reason: 'adapter not available' }],
+        ['tg1', { status: 'error' as const, error: 'adapter not available' }],
       ]);
       const { app, channelRegistry } = createApp({ channelRuntimeStatus });
       (channelRegistry.register as ReturnType<typeof vi.fn>)({
@@ -2012,7 +2084,8 @@ Append to `apps/gateway/src/management-api-server.test.ts` (inside the top-level
       });
       const res = await app.request('/channels', { headers: AUTH });
       const body = await res.json();
-      expect(body[0].runtime).toEqual({ status: 'error', reason: 'adapter not available' });
+      expect(body[0].status).toBe('error');
+      expect(body[0].error).toBe('adapter not available');
     });
   });
 ```
@@ -2174,7 +2247,7 @@ import { interpolateEnvVars, validateChannelConfig } from './plugin-channel-conf
         }
       }
       await channelRegistry.save();
-      options.channelRuntimeStatus?.set(channelName, { status: 'running' });
+      options.channelRuntimeStatus?.set(channelName, { status: 'active' });
       eventBus?.emit({ type: 'channel:created', channel: channelName });
       return c.json({ ok: true }, 201);
     } catch (err) {
@@ -2194,7 +2267,8 @@ import { interpolateEnvVars, validateChannelConfig } from './plugin-channel-conf
     return c.json(
       channelRegistry.list().map((entry) => {
         const runtime = statuses?.get(entry.name);
-        return runtime ? { ...entry, runtime } : entry;
+        // FLAT wire shape (mc-ui contract): status/error spread onto the entry
+        return runtime ? { ...entry, ...runtime } : entry;
       }),
     );
   });
@@ -2270,7 +2344,6 @@ import {
   buildPluginProviders,
   filterPluginTools,
   overrideRegistry,
-  resolveCatalogOwners,
   resolvePluginProviderKeys,
 } from './plugin-wiring.js';
 
@@ -2500,43 +2573,6 @@ describe('applyBuiltinCollisionGuard', () => {
     expect(result.tools).toHaveLength(1);
     expect(result.channelFactories).toEqual(factories);
     expect(result.providerCatalogs).toEqual([groqCatalog]);
-  });
-});
-
-describe('resolveCatalogOwners', () => {
-  function registryWith(
-    records: Array<{ name: string; status: 'loaded' | 'disabled' | 'error'; providers: number }>,
-  ): PluginRegistryLike {
-    const list = records.map((r) => ({
-      name: r.name,
-      version: '1.0.0',
-      status: r.status,
-      capabilities: ['providers' as const],
-      registrations: { tools: 0, channels: 0, providers: r.providers, hooks: 0 },
-    }));
-    return { list: () => list, get: (name) => list.find((r) => r.name === name) };
-  }
-
-  it('attributes all catalogs when exactly one loaded plugin registered providers', () => {
-    const owners = resolveCatalogOwners(
-      registryWith([
-        { name: 'groq-provider', status: 'loaded', providers: 1 },
-        { name: 'audit', status: 'loaded', providers: 0 },
-      ]),
-      [groqCatalog],
-    );
-    expect(owners.get('groq')).toBe('groq-provider');
-  });
-
-  it('leaves catalogs unattributed when several provider plugins are loaded', () => {
-    const owners = resolveCatalogOwners(
-      registryWith([
-        { name: 'a', status: 'loaded', providers: 1 },
-        { name: 'b', status: 'loaded', providers: 1 },
-      ]),
-      [groqCatalog, ollamaCatalog],
-    );
-    expect(owners.size).toBe(0);
   });
 });
 
@@ -2842,7 +2878,7 @@ export interface GuardInput<TFactory extends { pluginName: string }, TCatalog ex
   tools: LoadedPluginTool[];
   channelFactories: Map<string, TFactory>;
   providerCatalogs: TCatalog[];
-  /** catalog.id → owning plugin name (see resolveCatalogOwners). */
+  /** catalog.id → owning plugin name (derived from LoadedPlugins.providerCatalogs). */
   catalogOwners: Map<string, string>;
   builtins: BuiltinNames;
   log?: (msg: string) => void;
@@ -2923,30 +2959,6 @@ export function applyBuiltinCollisionGuard<
 }
 
 /**
- * Best-effort catalog → plugin attribution.
- *
- * ADAPTATION POINT (cross-review): LoadedPlugins.providerCatalogs carries no
- * per-catalog pluginName (unlike tools and channelFactories). Until Plan 1
- * adds it, attribution is only possible when exactly one loaded plugin
- * registered providers; otherwise catalogs stay unattributed and their
- * models/providers are tagged `source: 'plugin'` without a name. When Plan 1
- * ships per-catalog owners, replace this function's body with a direct map.
- */
-export function resolveCatalogOwners(
-  registry: PluginRegistryLike,
-  catalogs: ProviderCatalogLike[],
-): Map<string, string> {
-  const owners = new Map<string, string>();
-  const providerPlugins = registry
-    .list()
-    .filter((p) => p.status === 'loaded' && p.registrations.providers > 0);
-  if (providerPlugins.length === 1) {
-    for (const catalog of catalogs) owners.set(catalog.id, providerPlugins[0].name);
-  }
-  return owners;
-}
-
-/**
  * Decorate the (read-only) plugin registry with the gateway's collision
  * failures so GET /plugins, /info, and the startup summary all see one
  * truth. The simplest honest approach given the loader can't know built-ins.
@@ -2979,8 +2991,8 @@ export interface PluginModelEntry {
 
 /**
  * Catalog models for the GET /models merge, provenance-tagged
- * `plugin:<name>` (or plain `plugin` when the owner is unknown — see
- * resolveCatalogOwners). dynamicModels providers list catalog.models only:
+ * `plugin:<name>` (owners always known — attribution ships in
+ * LoadedPlugins.providerCatalogs). dynamicModels providers list catalog.models only:
  * dynamic ids resolve at runtime via createModelCatalog, not in listings.
  */
 export function buildPluginModels(
@@ -3078,6 +3090,18 @@ describe('per-agent plugin assignment', () => {
       reloaded.update(entry.id, { plugins: undefined });
       // explicit undefined in a PUT body means "field not patched" at the
       // route layer; update() spreads it, restoring the unset default
+
+      // `plugins: null` is the wire encoding MC sends for "reset to all"
+      // (mc-ui plan, reconciliation point 4): update() must DELETE the field,
+      // never persist null (the field type is string[] | undefined).
+      reloaded.update(entry.id, { plugins: ['audit-log'] });
+      // biome-ignore lint/suspicious/noExplicitAny: wire shape sends null
+      reloaded.update(entry.id, { plugins: null as any });
+      expect(reloaded.get(entry.id)?.config.plugins).toBeUndefined();
+      await reloaded.save();
+      const reloaded2 = new AgentRegistry(filePath);
+      await reloaded2.load();
+      expect('plugins' in (reloaded2.get(entry.id)?.config ?? {})).toBe(false);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
@@ -3102,9 +3126,26 @@ In `apps/gateway/src/agent-registry.ts`, add to `GatewayAgentConfig` after `mcpS
    * `undefined` = all plugin tools (default); `[]` = none. Mirrors the
    * mcpServers contract: flows through POST /agents and PUT /agents/:id
    * bodies via the generic update() merge and persists to agents.json.
+   * Wire note: MC sends `plugins: null` to mean "reset to all" — update()
+   * deletes the field on explicit null (never persists null).
    */
   plugins?: string[];
 ```
+
+Then modify `update()` in `apps/gateway/src/agent-registry.ts` (the existing `entry.config = { ...entry.config, ...patch }` merge) to translate explicit `null` into field deletion:
+
+```ts
+    const next = { ...entry.config, ...patch };
+    // `plugins: null` is the wire encoding for "reset to all plugin tools"
+    // (sent by MC): delete the field so the unset default is restored and no
+    // null is persisted to agents.json (field type is string[] | undefined).
+    if ((patch as Record<string, unknown>).plugins === null) {
+      delete (next as Record<string, unknown>).plugins;
+    }
+    entry.config = next;
+```
+
+(Adapt to the method's existing shape — the only behavioral change is the null→delete branch. The PUT /agents/:id route passes the body through untouched, so no route edit is needed; the registry is the single enforcement point.)
 
 - [ ] **Step 4: Run tests to verify they pass**
 
@@ -3834,7 +3875,27 @@ describe('ManagementClient plugins methods', () => {
   it('listChannelAdapters unwraps the adapters array', async () => {
     expect(await client.listChannelAdapters()).toEqual([{ name: 'telegram', builtIn: true }]);
   });
+
+  it('listProviders unwraps the providers array', async () => {
+    expect(await client.listProviders()).toEqual([
+      { id: 'anthropic', label: 'Anthropic', credentialPrefix: 'anthropic-api-key' },
+      { id: 'groq', label: 'Groq', credentialPrefix: 'groq-api-key', source: 'plugin:groq-provider' },
+    ]);
+  });
 });
+```
+
+(Add a matching stub route to the test app in Step 1's `beforeEach`:)
+
+```ts
+    app.get('/providers', (c) =>
+      c.json({
+        providers: [
+          { id: 'anthropic', label: 'Anthropic', credentialPrefix: 'anthropic-api-key' },
+          { id: 'groq', label: 'Groq', credentialPrefix: 'groq-api-key', source: 'plugin:groq-provider' },
+        ],
+      }),
+    );
 ```
 
 - [ ] **Step 2: Run the test to verify it fails**
@@ -3854,7 +3915,23 @@ export interface InfoResponse {
 }
 ```
 
-2. In `packages/management/src/client.ts`, add `ChannelAdapterInfo` and `PluginView` to the type-import list, then append before the closing brace of the class (after the Inbox section):
+Also append `ProviderListingEntry` to `packages/management/src/types.ts` (consumed by MC's AI Providers page — CONTRACT: must match the mc-ui plan's `shared/plugins-ipc.ts` copy byte-for-byte):
+
+```ts
+/** Entry in GET /providers: built-in providers have no `source`; plugin
+ *  providers carry source: 'plugin:<name>'. */
+export interface ProviderListingEntry {
+  id: string;
+  label: string;
+  /** Credential key prefix, e.g. 'groq-api-key'. */
+  credentialPrefix: string;
+  source?: string; // 'plugin:<name>'
+}
+```
+
+and export it from `packages/management/src/index.ts` alongside the other plugin types.
+
+2. In `packages/management/src/client.ts`, add `ChannelAdapterInfo`, `PluginView`, and `ProviderListingEntry` to the type-import list, then append before the closing brace of the class (after the Inbox section):
 
 ```ts
   // --- Plugins ---
@@ -3882,12 +3959,19 @@ export interface InfoResponse {
     );
     return result.adapters;
   }
+
+  async listProviders(): Promise<ProviderListingEntry[]> {
+    const result = await this.request<{ providers: ProviderListingEntry[] }>('GET', '/providers');
+    return result.providers;
+  }
 ```
+
+(`listProviders` is owned HERE, not by the MC plan — the mc-ui plan's Task 4 fallback duplicates all four methods and deletes them as a pure deletion once this task has landed.)
 
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `npx vitest run packages/management`
-Expected: PASS — 3 new tests; existing client/server tests unaffected (`InfoResponse.plugins` is optional).
+Expected: PASS — 4 new tests; existing client/server tests unaffected (`InfoResponse.plugins` is optional).
 
 - [ ] **Step 5: Commit**
 
@@ -4350,7 +4434,6 @@ import {
   buildPluginProviders,
   filterPluginTools,
   overrideRegistry,
-  resolveCatalogOwners,
   resolvePluginProviderKeys,
 } from './plugin-wiring.js';
 ```
@@ -4382,6 +4465,11 @@ import {
     },
   });
 
+  // Per-catalog attribution comes straight from the loader output
+  // (LoadedPlugins.providerCatalogs is Array<{ pluginName, catalog }>).
+  const catalogs = loaded.providerCatalogs.map((e) => e.catalog);
+  const catalogOwners = new Map(loaded.providerCatalogs.map((e) => [e.catalog.id, e.pluginName]));
+
   // Built-in collision guard: the loader can't know Dash built-ins, so the
   // gateway marks colliding plugins errored (failurePhase 'register') and
   // drops all their registrations. overrideRegistry projects those failures
@@ -4389,8 +4477,8 @@ import {
   const guard = applyBuiltinCollisionGuard({
     tools: loaded.tools,
     channelFactories: loaded.channelFactories,
-    providerCatalogs: loaded.providerCatalogs,
-    catalogOwners: resolveCatalogOwners(loaded.registry, loaded.providerCatalogs),
+    providerCatalogs: catalogs,
+    catalogOwners,
     builtins: {
       channelAdapters: ['telegram', 'whatsapp'],
       providerIds: PROVIDERS.map((p) => p.id),
@@ -4399,7 +4487,6 @@ import {
     log: (msg) => logger.warn(msg),
   });
   const pluginRegistry = overrideRegistry(loaded.registry, guard.errored);
-  const catalogOwners = resolveCatalogOwners(pluginRegistry, guard.providerCatalogs);
   const modelCatalog = createModelCatalog(guard.providerCatalogs);
   const loadedSummary = pluginRegistry.list();
   if (loadedSummary.length > 0) {
@@ -4607,7 +4694,130 @@ git commit -m "feat(gateway): load plugins at startup and wire them into agents 
 
 ---
 
-### Task 16: Final verification
+### Task 16: Reference provider-catalog plugin at `examples/plugins/`
+
+**Files:**
+- Create: `examples/plugins/groq-provider/dash.plugin.json`
+- Create: `examples/plugins/groq-provider/package.json`
+- Create: `examples/plugins/groq-provider/src/index.ts`
+- Create: `examples/plugins/groq-provider/README.md`
+- Create: `examples/plugins/groq-provider/.gitignore` (`dist/`, `node_modules/`)
+
+A provider-catalog plugin (Groq) — the least code that exercises manifest, configSchema, credentials, the `resolveModel()` path, and `dynamicModels: false`. Doubles as living documentation and a loader smoke target. (Cross-review finding 6: ownership assigned to this plan.)
+
+- [ ] **Step 1: Create `examples/plugins/groq-provider/dash.plugin.json`**
+
+```json
+{
+  "name": "groq-provider",
+  "version": "0.1.0",
+  "description": "Adds Groq as an LLM provider via the OpenAI-compatible catalog.",
+  "entry": "./dist/index.js",
+  "compat": { "dash": ">=0.2.0" },
+  "capabilities": ["providers"]
+}
+```
+
+- [ ] **Step 2: Create `examples/plugins/groq-provider/package.json`**
+
+```json
+{
+  "name": "@dash-example/groq-provider",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": { "build": "tsup src/index.ts --format esm --clean" },
+  "devDependencies": { "@dash/plugin-sdk": "*", "tsup": "^8" }
+}
+```
+
+- [ ] **Step 3: Create `examples/plugins/groq-provider/src/index.ts`**
+
+```ts
+import { definePlugin } from '@dash/plugin-sdk';
+
+export default definePlugin({
+  register(api) {
+    api.registerProvider({
+      id: 'groq',
+      label: 'Groq',
+      credentialPrefix: 'groq-api-key',
+      baseUrl: 'https://api.groq.com/openai/v1',
+      api: 'openai-completions',
+      models: [
+        {
+          id: 'llama-3.3-70b-versatile',
+          name: 'Llama 3.3 70B',
+          contextWindow: 131072,
+          maxTokens: 32768,
+        },
+        { id: 'qwq-32b', name: 'QwQ 32B', contextWindow: 131072, maxTokens: 32768 },
+      ],
+    });
+    api.logger.info('groq provider registered');
+  },
+});
+```
+
+- [ ] **Step 4: Create `README.md`**
+
+Cover: what it is; the trust model (in-process, full gateway permissions); how to build (`npm install && npm run build`); how to install (copy/symlink into `<dataDir>/plugins/groq-provider`, or add a `path` override entry to `<dataDir>/plugins/config.json`); and that the API key is stored via MC's AI Providers page under `groq-api-key:<label>`.
+
+- [ ] **Step 5: Verify it loads**
+
+Run: `npm run gateway -- --data-dir /tmp/dash-ref` with a `config.json` enabling it via `path`. Then `curl -H "Authorization: Bearer <token>" localhost:9300/providers` lists `groq` with `source: 'plugin:groq-provider'`, and `/models` lists `groq/llama-3.3-70b-versatile`.
+
+- [ ] **Step 6: Confirm `examples/` is not pulled into the workspace build**
+
+The root `workspaces` glob is `packages/*`/`apps/*`, not `examples/*` — verify it does not break `npm install`/`npm run build`; if the root globs `examples/*`, exclude it or keep the example out of `workspaces`.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add examples/plugins/groq-provider
+git commit -m "docs(plugins): add Groq reference provider-catalog plugin"
+```
+
+---
+
+### Task 17: User-facing plugin docs
+
+**Files:**
+- Create: `docs/plugins.mdx`
+- Modify: `docs/configuration.mdx`, `docs/channels.mdx`, `docs/troubleshooting.mdx`
+- Modify: `docs/docs.json` (or the mintlify nav config — add `plugins` to the nav)
+
+Per CLAUDE.md, docs are user-facing only (no CI/dev tooling). (Cross-review finding 6.)
+
+- [ ] **Step 1: Create `docs/plugins.mdx`**
+
+Cover: what plugins are; **trust model stated plainly** (in-process, full gateway permissions — install only code you trust; MCP is the isolated alternative); how to install/enable (drop into `<dataDir>/plugins/<name>/`, enable in MC Settings → Plugins or `config.json`); the complete worked example pointing at `examples/plugins/groq-provider`; the four capabilities (tools, channels, providers, hooks) at a user level; that enable/disable and config changes apply on **gateway restart**; and the v1 hook-coverage caveat: "`before_tool_call`/`after_tool_call` hooks cover plugin, MCP, and built-in management tools; the agent's filesystem/shell tools (read/bash/edit/…) are not yet hookable."
+
+- [ ] **Step 2: `docs/configuration.mdx`**
+
+Document the `plugins.entries` config block (`{ enabled, config?, path? }` per plugin) and `${ENV_VAR}` interpolation in plugin config values.
+
+- [ ] **Step 3: `docs/channels.mdx`**
+
+Note that channel adapters can come from plugins; a channel whose plugin is disabled/uninstalled shows as **errored** in MC with its config preserved.
+
+- [ ] **Step 4: `docs/troubleshooting.mdx`**
+
+The five failure phases (`manifest`, `compat`, `config`, `import`, `register`) and what each means; "plugin shows disabled" = discovered but not enabled; "errored channel" remediation (re-enable the plugin in Settings → Plugins).
+
+- [ ] **Step 5: Add `plugins` to the docs nav.**
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add docs/plugins.mdx docs/configuration.mdx docs/channels.mdx docs/troubleshooting.mdx docs/docs.json
+git commit -m "docs(plugins): user-facing plugin documentation"
+```
+
+---
+
+### Task 18: Final verification
 
 - [ ] **Step 1: Full local gate**
 

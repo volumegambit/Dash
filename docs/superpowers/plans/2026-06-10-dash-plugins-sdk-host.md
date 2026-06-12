@@ -877,7 +877,9 @@ export interface LoadedPlugins {
     string,
     { pluginName: string; factory: ChannelAdapterFactory; configSchema?: Record<string, unknown> }
   >;
-  providerCatalogs: ProviderCatalog[];
+  /** Per-plugin attribution required for source tags + collision marking
+   *  (cross-review finding 5): catalog plus its owning plugin name. */
+  providerCatalogs: Array<{ pluginName: string; catalog: ProviderCatalog }>;
   hookBus: HookBus;
   registry: PluginRegistry;
   shutdown(): Promise<void>;
@@ -3188,7 +3190,9 @@ describe('loadPlugins (happy path)', () => {
         'kitchen-sink:sink_echo',
       ]);
       expect(loaded.channelFactories.get('sink-chat')?.pluginName).toBe('kitchen-sink');
-      expect(loaded.providerCatalogs.map((c) => c.id)).toEqual(['sinkai']);
+      expect(loaded.providerCatalogs.map((c) => `${c.pluginName}:${c.catalog.id}`)).toEqual([
+        'kitchen-sink:sinkai',
+      ]);
     } finally {
       delete process.env.SINK_TOKEN;
     }
@@ -3351,7 +3355,7 @@ export async function loadPlugins(opts: LoadPluginsOptions): Promise<LoadedPlugi
   const hookBus = new PluginHookBus(opts.logger);
   const tools: LoadedPlugins['tools'] = [];
   const channelFactories: LoadedPlugins['channelFactories'] = new Map();
-  const providerCatalogs: ProviderCatalog[] = [];
+  const providerCatalogs: Array<{ pluginName: string; catalog: ProviderCatalog }> = [];
   const committed: CommittedNames = {
     toolNames: new Map(),
     channelNames: new Map(),
@@ -3524,7 +3528,7 @@ export async function loadPlugins(opts: LoadPluginsOptions): Promise<LoadedPlugi
       committed.channelNames.set(ch.adapterName, manifest.name);
     }
     for (const catalog of buffer.providers) {
-      providerCatalogs.push(catalog);
+      providerCatalogs.push({ pluginName: manifest.name, catalog });
       committed.providerIds.set(catalog.id, manifest.name);
     }
     for (const h of buffer.hooks) {
@@ -3994,7 +3998,9 @@ describe('loadPlugins (bundled dist layout)', () => {
     });
     expect(loaded.registry.get('kitchen-sink')?.status).toBe('loaded');
     expect(loaded.tools.map((t) => t.tool.name)).toEqual(['sink_echo']);
-    expect(loaded.providerCatalogs.map((c) => c.id)).toEqual(['sinkai']);
+    expect(loaded.providerCatalogs.map((c) => `${c.pluginName}:${c.catalog.id}`)).toEqual([
+        'kitchen-sink:sinkai',
+      ]);
     await loaded.shutdown();
   });
 });
@@ -4029,5 +4035,5 @@ git commit -m "test(plugins): dist-import regression test for the built loader"
 
 1. Gateway: channel factory registry, `hookRunner`/`modelCatalog` structural params in `PiAgentBackend`, `GET /models` merging, message-router hook calls, shutdown wiring, built-in collision checks, `GET /plugins` / `PATCH /plugins/:name` management routes (Plan 2).
 2. MC: Plugins settings page, schema-driven config form, Messaging Apps / AI Providers / agent-detail integration, IPC (Plan 3).
-3. `examples/plugins/` reference plugin and `docs/plugins.mdx` user docs (ship with Plan 2, which makes them runnable).
+3. `examples/plugins/` reference plugin and `docs/plugins.mdx` user docs — owned by the gateway plan, Tasks 16–17 (per cross-review).
 
