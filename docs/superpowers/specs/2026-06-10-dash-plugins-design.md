@@ -177,8 +177,10 @@ interface HookContext {
 | `before_tool_call` | `{ toolName, toolCallId, params }` | `{ params? }` \| `{ block: true, reason }` \| void |
 | `after_tool_call` | `{ toolName, toolCallId, params, result, isError }` | `{ result? }` \| void (no block — tool already ran) |
 | `message_sending` | `{ conversationId, content, channel }` | `{ content? }` \| `{ cancel: true, reason? }` \| void |
-| `agent_run_start` | `{ agentName, sessionId, trigger }` | void (observe-only) |
+| `agent_run_start` | `{ agentName, sessionId }` | void (observe-only) |
 | `agent_run_end` | `{ agentName, sessionId, usage?, error? }` | void (observe-only) |
+
+> **Hook coverage (v1):** `before_tool_call`/`after_tool_call` fire for plugin tools, MCP tools, and built-in management tools — i.e. everything routed through the custom-tool wrapper. The agent's pi-native filesystem/shell tools (`read`/`bash`/`edit`/`write`/`grep`/`find`/`ls`) are constructed and handed to the pi session directly and are **not** hookable in v1. A policy that needs to gate `bash` (e.g. "block `rm`") is therefore out of scope for v1 — see Future work. (`trigger` on `agent_run_start` was dropped: the backend cannot distinguish channel vs MC-chat runs without plumbing not worth adding in v1.)
 
 ### Dispatch semantics
 
@@ -298,3 +300,4 @@ Three plans (projects pattern), cross-reviewed for contract drift before executi
 5. **Provider stream escape hatch** (`createStreamFn`) for native-protocol providers.
 6. **Hot reload; MC plugin-config editing** (requires a config-file mutation API).
 7. **MC chat through message hooks** (v1: channel path only).
+8. **Hook coverage for pi-native tools** (`bash`/`read`/`edit`/…) so tool-policy plugins can gate the agent's filesystem/shell access — the "block `rm`" use case. Feasible (the pi-native tool factories expose an `execute` surface the gateway can wrap before handing them to the pi session) but carries its own test matrix and a `Tool`-vs-`ToolDefinition` shape difference; deferred from v1.
