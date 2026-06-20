@@ -99,6 +99,9 @@ const GOOGLE: SupportedModelEntry[] = [
   { provider: 'google', pattern: 'gemini-*-flash*', tier: 1 },
   { provider: 'google', pattern: 'gemini-pro*', tier: 2 },
   { provider: 'google', pattern: 'gemini-*', tier: 3 },
+  // Gemma open-weights models (e.g. gemma-4-26b-a4b-it, gemma-4-31b-it).
+  // Sort below all Gemini models; tool-use support is newer/less consistent.
+  { provider: 'google', pattern: 'gemma-*', tier: 4 },
 ];
 
 // ---------------------------------------------------------------------------
