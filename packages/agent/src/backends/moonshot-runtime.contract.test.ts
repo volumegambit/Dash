@@ -19,7 +19,7 @@ import { getModel } from '@earendil-works/pi-ai';
 describe('Moonshot runtime resolution (pi-ai)', () => {
   // These ids are seeded in @dash/models BOOTSTRAP_MODELS — they MUST resolve
   // or the bootstrap dropdown advertises unrunnable models.
-  const bootstrapIds = ['kimi-k2-thinking', 'kimi-k2.6', 'kimi-k2-0905-preview'];
+  const bootstrapIds = ['kimi-k2.6', 'kimi-k2.7-code', 'kimi-k2.5'];
 
   it.each(bootstrapIds)('getModel("moonshotai", "%s") resolves to a Model with an id', (id) => {
     const model = getModel('moonshotai', id);

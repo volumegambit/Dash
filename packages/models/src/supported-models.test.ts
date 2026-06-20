@@ -115,11 +115,15 @@ describe('isModelSupported', () => {
     ['kimi-k2-thinking-turbo', true],
     ['kimi-k2-0905-preview', true],
     ['kimi-k2-turbo-preview', true],
+    // Live api.moonshot.ai ids (audited 2026-06-21):
+    ['kimi-k2.5', true],
     ['kimi-k2.6', true],
     ['kimi-k2.7-code', true],
+    ['kimi-k2.7-code-highspeed', true],
     ['kimi-latest', false], // resolves to undefined in pi-ai → not runnable
     ['kimi-for-coding', false], // not in pi-ai runtime set
-    ['moonshot-v1-128k', false], // legacy, not in pi-ai runtime set
+    ['moonshot-v1-128k', false], // legacy chat, not in pi-ai runtime set
+    ['moonshot-v1-8k-vision-preview', false], // vision, not a chat/tool model
     ['gpt-4o', false], // not a Moonshot id
   ])('moonshotai/%s → %s', (modelId, expected) => {
     expect(isModelSupported('moonshotai', modelId)).toBe(expected);
