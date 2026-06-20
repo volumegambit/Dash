@@ -2,6 +2,9 @@
   "name": "@dash/agent",
   "version": "0.2.0",
   "type": "module",
+  "engines": {
+    "node": ">=22.19.0"
+  },
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "exports": {
@@ -16,9 +19,9 @@
   },
   "dependencies": {
     "@dash/mcp": "*",
-    "@mariozechner/pi-agent-core": "^0.67.68",
-    "@mariozechner/pi-ai": "^0.67.68",
-    "@mariozechner/pi-coding-agent": "^0.67.68",
+    "@earendil-works/pi-agent-core": "^0.79.8",
+    "@earendil-works/pi-ai": "^0.79.8",
+    "@earendil-works/pi-coding-agent": "^0.79.8",
     "@sinclair/typebox": "^0.34.0"
   }
 }

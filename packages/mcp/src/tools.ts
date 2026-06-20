@@ -1,4 +1,4 @@
-import type { AgentTool, AgentToolResult } from '@mariozechner/pi-agent-core';
+import type { AgentTool, AgentToolResult } from '@earendil-works/pi-agent-core';
 import type { TSchema } from '@sinclair/typebox';
 import { NAMESPACE_SEPARATOR } from './types.js';
 

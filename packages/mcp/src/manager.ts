@@ -1,4 +1,4 @@
-import type { AgentTool } from '@mariozechner/pi-agent-core';
+import type { AgentTool } from '@earendil-works/pi-agent-core';
 import type { TSchema } from '@sinclair/typebox';
 import { McpClient } from './client.js';
 import type { McpLogger, McpServerConfig, McpServerStatus } from './types.js';

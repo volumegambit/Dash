@@ -1,22 +1,15 @@
-import { homedir } from 'node:os';
-import { dirname } from 'node:path';
-import type { AgentEvent as PiAgentEvent } from '@mariozechner/pi-agent-core';
-import { getModel } from '@mariozechner/pi-ai';
-import type { Api, AssistantMessage, ImageContent, Model, Usage } from '@mariozechner/pi-ai';
+import { homedir, tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
+import type { AgentEvent as PiAgentEvent } from '@earendil-works/pi-agent-core';
+import { getModel } from '@earendil-works/pi-ai';
+import type { Api, AssistantMessage, ImageContent, Model, Usage } from '@earendil-works/pi-ai';
 import {
   AuthStorage,
   DefaultResourceLoader,
   SessionManager,
   createAgentSession,
-  createBashTool,
-  createEditTool,
-  createFindTool,
-  createGrepTool,
-  createLsTool,
-  createReadTool,
-  createWriteTool,
-} from '@mariozechner/pi-coding-agent';
-import type { AgentSession, AgentSessionEvent, Skill } from '@mariozechner/pi-coding-agent';
+} from '@earendil-works/pi-coding-agent';
+import type { AgentSession, AgentSessionEvent, Skill } from '@earendil-works/pi-coding-agent';
 
 import type { McpAgentContext, McpConfigStoreInterface, McpManager } from '@dash/mcp';
 import {
@@ -63,7 +56,7 @@ export type ProviderApiKeysSource =
 
 /**
  * PiAgentBackend - AgentBackend implementation using the PiAgent SDK
- * (@mariozechner/pi-coding-agent).
+ * (@earendil-works/pi-coding-agent).
  *
  * Key design:
  * - Uses in-memory auth (no filesystem credential storage)
@@ -311,33 +304,20 @@ export class PiAgentBackend implements AgentBackend {
   }
 
   /**
-   * Build the built-in PiAgent tools based on the config's tool names.
-   * These go in createAgentSession({ tools }) — PiAgent recognizes them by name.
+   * The built-in file-tool names this agent should have active, filtered by the
+   * config's tool allowlist.
+   *
+   * pi (@earendil-works/pi-coding-agent) creates the built-in tools itself,
+   * scoped to the session `cwd`, from `createAllToolDefinitions(cwd)` — we just
+   * name which ones to activate. (In older pi we passed the tool *objects* via
+   * `createAgentSession({ tools })`; that option is now a name allowlist, so we
+   * activate by name via `setActiveToolsByName` instead — see start().)
    */
-  private buildBuiltinTools(workspace: string) {
+  private allowedBuiltinToolNames(): string[] {
     const allowedNames = this.config.tools
       ? new Set(this.config.tools)
-      : new Set(DEFAULT_TOOL_NAMES);
-
-    // biome-ignore lint/suspicious/noExplicitAny: Tool type not exported from pi-coding-agent top-level
-    const toolBuilders: Record<string, () => any> = {
-      read: () => createReadTool(workspace),
-      bash: () => createBashTool(workspace),
-      edit: () => createEditTool(workspace),
-      write: () => createWriteTool(workspace),
-      grep: () => createGrepTool(workspace),
-      find: () => createFindTool(workspace),
-      ls: () => createLsTool(workspace),
-    };
-
-    const tools = [];
-    for (const name of DEFAULT_TOOL_NAMES) {
-      if (allowedNames.has(name) && toolBuilders[name]) {
-        tools.push(toolBuilders[name]());
-      }
-    }
-
-    return tools;
+      : new Set<string>(DEFAULT_TOOL_NAMES);
+    return DEFAULT_TOOL_NAMES.filter((name) => allowedNames.has(name));
   }
 
   /**
@@ -514,14 +494,21 @@ export class PiAgentBackend implements AgentBackend {
       this.ownsMcpManager = true;
     }
 
-    const builtinTools = this.buildBuiltinTools(workspace);
+    const builtinToolNames = this.allowedBuiltinToolNames();
     const customTools = this.buildCustomTools();
     this.logger?.info(
-      `[PiAgent] Registering ${builtinTools.length} built-in tools: ${builtinTools.map((t: { name: string }) => t.name).join(', ')}`,
+      `[PiAgent] Activating ${builtinToolNames.length} built-in tools: ${builtinToolNames.join(', ')}`,
     );
     this.logger?.info(
       `[PiAgent] Registering ${customTools.length} custom tools: ${customTools.map((t: { name: string }) => t.name).join(', ')}`,
     );
+
+    // Isolate pi's config/state (settings.json, models.json) under a Dash-owned
+    // directory instead of the user's ~/.pi/agent, so the operator's personal
+    // pi CLI settings never leak into deployed agents. Required by the resource
+    // loader; also steers the session's default SettingsManager/ModelRegistry.
+    // The dir need not exist — pi falls back to defaults for anything missing.
+    const agentDir = join(tmpdir(), 'dash-pi-agent');
 
     // Create a resource loader that pi will use to build the system prompt.
     // We wrap it with DashResourceLoader so we can inject Dash's system prompt
@@ -533,6 +520,7 @@ export class PiAgentBackend implements AgentBackend {
     // agent behavior in unpredictable ways. All skill injection goes through
     // DashResourceLoader.setExtraSkills() instead.
     const innerLoader = new DefaultResourceLoader({
+      agentDir,
       cwd: workspace,
       systemPrompt: this.config.systemPrompt,
       noSkills: true,
@@ -549,10 +537,15 @@ export class PiAgentBackend implements AgentBackend {
     this.logger?.info(`[PiAgent] Injecting ${dashSkills.length} Dash skills into resource loader`);
 
     const { session } = await createAgentSession({
+      agentDir,
       cwd: workspace,
       authStorage: this.auth,
       model,
-      tools: builtinTools,
+      // Preserve Dash's prior behavior: thinking off by default. (The new pi
+      // SDK defaults to 'medium'; Dash has historically run every model with
+      // thinking off. Opus 4.8 / Fable 5 still resolve and run correctly — the
+      // new pi-ai omits/uses adaptive thinking for them rather than 400-ing.)
+      thinkingLevel: 'off',
       customTools,
       resourceLoader: this.resourceLoader,
       sessionManager: this.sessionDir
@@ -561,6 +554,17 @@ export class PiAgentBackend implements AgentBackend {
     });
 
     this.session = session;
+
+    // pi creates the built-in file tools (read/bash/edit/write/grep/find/ls)
+    // scoped to `cwd`, but only read/bash/edit/write are active by default.
+    // Activate exactly Dash's set — allowed built-ins plus all custom tools —
+    // by name. We intentionally do NOT pass a `tools` allowlist to
+    // createAgentSession: that becomes a global filter that would also drop
+    // MCP tools added dynamically at runtime. Unknown names here are ignored.
+    this.session.setActiveToolsByName([
+      ...builtinToolNames,
+      ...customTools.map((t: { name: string }) => t.name),
+    ]);
     this.logger?.info('[PiAgent] Session created successfully');
   }
 

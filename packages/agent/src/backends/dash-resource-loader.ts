@@ -7,8 +7,8 @@
  * This wrapper lets Dash update those values at runtime so they're picked
  * up on the next system prompt rebuild.
  */
-import type { ResourceLoader } from '@mariozechner/pi-coding-agent';
-import type { Skill } from '@mariozechner/pi-coding-agent';
+import type { ResourceLoader } from '@earendil-works/pi-coding-agent';
+import type { Skill } from '@earendil-works/pi-coding-agent';
 
 type ResourceExtensionPaths = Parameters<ResourceLoader['extendResources']>[0];
 

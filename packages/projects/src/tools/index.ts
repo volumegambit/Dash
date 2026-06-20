@@ -3,7 +3,7 @@ import type { Static, TSchema } from '@sinclair/typebox';
 import type { ProjectsDb } from '../index.js';
 
 /**
- * Minimal structural copy of @mariozechner/pi-agent-core's AgentTool so this
+ * Minimal structural copy of @earendil-works/pi-agent-core's AgentTool so this
  * package does not depend on @dash/agent or pi packages. The gateway injects
  * the built tools into PiAgentBackend's custom-tool list, where they are
  * duck-typed against the SDK's AgentTool shape.
@@ -450,7 +450,7 @@ function createIssuesCommentDeleteTool(
 
 /**
  * Build all projects_* agent tools over an injected ProjectsDb. The returned
- * objects are structurally compatible with @mariozechner/pi-agent-core's
+ * objects are structurally compatible with @earendil-works/pi-agent-core's
  * AgentTool and are registered into PiAgentBackend's custom-tool list.
  */
 export function createProjectsTools(deps: ProjectsToolsDeps): ProjectsAgentTool[] {
