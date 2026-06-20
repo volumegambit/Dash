@@ -68,4 +68,24 @@ export const BOOTSTRAP_MODELS: FilteredModel[] = [
     label: 'Gemini 2.5 Flash',
     provider: 'google',
   },
+  // Moonshot (Kimi) — verified against live api.moonshot.ai/v1/models on
+  // 2026-06-21. Every id here is both returned by the live endpoint AND
+  // resolvable by the pi-ai runtime (getModel), so they are runnable, not just
+  // discoverable. Run `npm run models:audit:apply` with MOONSHOT_API_KEY set to
+  // refresh.
+  {
+    value: 'moonshotai/kimi-k2.6',
+    label: 'Kimi K2.6',
+    provider: 'moonshotai',
+  },
+  {
+    value: 'moonshotai/kimi-k2.7-code',
+    label: 'Kimi K2.7 Code',
+    provider: 'moonshotai',
+  },
+  {
+    value: 'moonshotai/kimi-k2.5',
+    label: 'Kimi K2.5',
+    provider: 'moonshotai',
+  },
 ];

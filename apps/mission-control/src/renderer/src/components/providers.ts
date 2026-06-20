@@ -1,6 +1,8 @@
 import { providerSecretKey } from '@dash/mc/provider-keys';
 
-export type Provider = 'anthropic' | 'openai' | 'google';
+// 'moonshotai' (not 'kimi'/'moonshot') matches the gateway credential key and
+// the pi-ai runtime provider id — keep it consistent end-to-end.
+export type Provider = 'anthropic' | 'openai' | 'google' | 'moonshotai';
 
 export interface ProviderOption {
   id: Provider;
@@ -38,6 +40,12 @@ export const PROVIDERS: ProviderOption[] = [
     id: 'google',
     name: 'Google Gemini',
     description: 'Fast and capable models from Google DeepMind.',
+    available: true,
+  },
+  {
+    id: 'moonshotai',
+    name: 'Kimi by Moonshot',
+    description: 'Kimi K2 — strong agentic and coding models from Moonshot AI.',
     available: true,
   },
 ];
@@ -85,6 +93,21 @@ export const PROVIDER_CONFIG: Record<Provider, ProviderConfig> = {
     steps: [
       'Click "Create API key", select a project, and copy the key.',
       'Paste it below. It starts with AIza.',
+    ],
+  },
+  moonshotai: {
+    title: 'Connect to Kimi (Moonshot)',
+    secretKey: providerSecretKey('moonshotai'),
+    placeholder: 'sk-...',
+    consoleUrl: 'https://platform.moonshot.ai',
+    apiKeysUrl: 'https://platform.moonshot.ai/console/api-keys',
+    helpUrl: 'https://platform.moonshot.ai/docs/api/overview',
+    helpLabel: 'Moonshot (Kimi) API docs',
+    explanation:
+      'To use Kimi models, you need an API key from the Moonshot AI platform (the Kimi Open Platform).',
+    steps: [
+      'Open the API Keys page, click "Create", and copy the key.',
+      'Paste it below. It starts with sk-.',
     ],
   },
 };

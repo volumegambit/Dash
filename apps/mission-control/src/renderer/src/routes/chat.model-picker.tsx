@@ -25,6 +25,7 @@ const PROVIDER_LABELS: Record<string, string> = {
   anthropic: 'Anthropic',
   openai: 'OpenAI',
   google: 'Google',
+  moonshotai: 'Moonshot',
 };
 
 /** Group models by provider while preserving the incoming order per group. */

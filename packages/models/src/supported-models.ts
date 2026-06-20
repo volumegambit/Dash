@@ -24,7 +24,7 @@
  *
  * Format: YYYY-MM-DD.
  */
-export const MODELS_REVIEWED_AT = '2026-06-20';
+export const MODELS_REVIEWED_AT = '2026-06-21';
 
 export interface SupportedModelEntry {
   /** Provider ID (e.g. "anthropic", "openai", "google") */
@@ -105,9 +105,37 @@ const GOOGLE: SupportedModelEntry[] = [
 ];
 
 // ---------------------------------------------------------------------------
+// Moonshot (Kimi)
+// ---------------------------------------------------------------------------
+// Provider id MUST be 'moonshotai' to match the pi-ai runtime + credential key.
+// Restricted to the Kimi K2 family — the intersection of "in live /v1/models"
+// and "resolvable by the pinned @earendil-works/pi-ai runtime" (getModel).
+// Verified against a live api.moonshot.ai audit on 2026-06-21: the global
+// endpoint returns the dotted ids kimi-k2.5 / kimi-k2.6 / kimi-k2.7-code /
+// kimi-k2.7-code-highspeed (all pi-ai-runnable), plus moonshot-v1-* (legacy +
+// vision) which pi-ai canNOT resolve and are therefore excluded. pi-ai also
+// resolves dash-dated ids (kimi-k2-thinking, kimi-k2-0905-preview) not in this
+// account's live list — kept allow-listed so they surface on tiers/regions that
+// do expose them. Tiers order newest-version-first; reasoning flagship on top.
+// Ordered specific → general (findSupportedModel returns the first match's tier).
+const MOONSHOT: SupportedModelEntry[] = [
+  { provider: 'moonshotai', pattern: 'kimi-k2-thinking*', tier: 0 },
+  { provider: 'moonshotai', pattern: 'kimi-k2.7*', tier: 1 },
+  { provider: 'moonshotai', pattern: 'kimi-k2.6', tier: 2 },
+  { provider: 'moonshotai', pattern: 'kimi-k2.5', tier: 3 },
+  { provider: 'moonshotai', pattern: 'kimi-k2.*', tier: 3 },
+  { provider: 'moonshotai', pattern: 'kimi-k2*', tier: 4 },
+];
+
+// ---------------------------------------------------------------------------
 // Exports
 // ---------------------------------------------------------------------------
-export const SUPPORTED_MODELS: SupportedModelEntry[] = [...ANTHROPIC, ...OPENAI, ...GOOGLE];
+export const SUPPORTED_MODELS: SupportedModelEntry[] = [
+  ...ANTHROPIC,
+  ...OPENAI,
+  ...GOOGLE,
+  ...MOONSHOT,
+];
 
 /**
  * Convert a glob pattern (with `*` wildcards) to a RegExp.

@@ -1,5 +1,6 @@
 import { Anthropic } from './anthropic.js';
 import { Google } from './google.js';
+import { Moonshot } from './moonshot.js';
 import { OpenAI } from './openai.js';
 import type { ProviderDefinition } from './types.js';
 
@@ -15,7 +16,12 @@ import type { ProviderDefinition } from './types.js';
  * Under the Hood debug page all iterate this array, so adding one
  * provider becomes invisibly plumbed everywhere downstream.
  */
-export const PROVIDERS: readonly ProviderDefinition[] = [Anthropic, OpenAI, Google] as const;
+export const PROVIDERS: readonly ProviderDefinition[] = [
+  Anthropic,
+  OpenAI,
+  Google,
+  Moonshot,
+] as const;
 
-export { Anthropic, OpenAI, Google };
+export { Anthropic, OpenAI, Google, Moonshot };
 export type { ProviderDefinition } from './types.js';
