@@ -21,7 +21,10 @@ routeTree.gen.ts
 # Runtime data & user config
 data/
 config/
-skills/
+# Runtime managed-skills storage at the repo root (not the packages/skills
+# source package, nor packages/agent/src/skills). Anchored so it only matches
+# a top-level ./skills/ directory.
+/skills/
 
 # OS files
 .DS_Store
