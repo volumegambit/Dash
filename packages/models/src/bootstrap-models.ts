@@ -15,18 +15,20 @@ import type { FilteredModel } from './types.js';
  * responses (typically flagship + mid + budget = ~3 per provider). Manual
  * edits are accepted as the initial seed; subsequent audits will overwrite.
  *
- * Anthropic entries verified against live api.anthropic.com/v1/models on
- * 2026-04-13. OpenAI entries are partially verified: gpt-5.4 confirmed
- * via the ChatGPT/Codex backend on 2026-04-13; o3-pro and gpt-4o are
- * placeholders that the Codex backend doesn't expose but are real public
- * OpenAI models reachable via a classic sk- key. Google entries are
- * placeholders pending working credentials.
+ * Anthropic entries re-verified against live api.anthropic.com/v1/models on
+ * 2026-06-20 (flagship is now claude-opus-4-8). OpenAI entries were NOT
+ * re-verified on 2026-06-20 — the Codex backend token was expired (401), so
+ * these are carried forward from the 2026-04-13 audit: gpt-5.4 was confirmed
+ * via the ChatGPT/Codex backend then; o3-pro and gpt-4o are placeholders the
+ * Codex backend doesn't expose but are real public OpenAI models reachable
+ * via a classic sk- key. Google entries are placeholders pending working
+ * credentials.
  */
 export const BOOTSTRAP_MODELS: FilteredModel[] = [
-  // Anthropic — verified against live API 2026-04-13
+  // Anthropic — re-verified against live API 2026-06-20
   {
-    value: 'anthropic/claude-opus-4-7',
-    label: 'Claude Opus 4.7',
+    value: 'anthropic/claude-opus-4-8',
+    label: 'Claude Opus 4.8',
     provider: 'anthropic',
   },
   {

@@ -24,7 +24,7 @@
  *
  * Format: YYYY-MM-DD.
  */
-export const MODELS_REVIEWED_AT = '2026-04-13';
+export const MODELS_REVIEWED_AT = '2026-06-20';
 
 export interface SupportedModelEntry {
   /** Provider ID (e.g. "anthropic", "openai", "google") */
@@ -42,6 +42,9 @@ export interface SupportedModelEntry {
 // Anthropic
 // ---------------------------------------------------------------------------
 const ANTHROPIC: SupportedModelEntry[] = [
+  // Fable is Anthropic's most capable widely released model — flagship-class
+  // alongside Opus (both tier 0; Fable sorts first within the tier by id).
+  { provider: 'anthropic', pattern: 'claude-fable-*', tier: 0 },
   { provider: 'anthropic', pattern: 'claude-opus-*', tier: 0 },
   { provider: 'anthropic', pattern: 'claude-sonnet-*', tier: 1 },
   { provider: 'anthropic', pattern: 'claude-haiku-*', tier: 2 },
