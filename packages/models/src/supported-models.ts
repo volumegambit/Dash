@@ -105,9 +105,34 @@ const GOOGLE: SupportedModelEntry[] = [
 ];
 
 // ---------------------------------------------------------------------------
+// Moonshot (Kimi)
+// ---------------------------------------------------------------------------
+// Provider id MUST be 'moonshotai' to match the pi-ai runtime + credential key.
+// Patterns are intentionally restricted to the Kimi K2 family — those are the
+// ONLY Moonshot ids the pinned @earendil-works/pi-ai runtime can resolve
+// (verified against pi-ai@0.79.8 via getModel('moonshotai', …)). Live
+// /v1/models also returns kimi-latest, kimi-for-coding, and moonshot-v1-*, but
+// getModel returns undefined for those — allow-listing them would surface
+// selectable-but-unrunnable models (the discovery/runtime dual-namespace trap).
+// Keep aligned with pi-ai's curated set; widen only after a live audit confirms
+// BOTH discovery and runtime resolution. Ordered specific → general
+// (findSupportedModel returns the first match's tier). All Kimi K2 chat models
+// support tool use + streaming (OpenAI-compatible).
+const MOONSHOT: SupportedModelEntry[] = [
+  { provider: 'moonshotai', pattern: 'kimi-k2-thinking*', tier: 0 },
+  { provider: 'moonshotai', pattern: 'kimi-k2.*', tier: 0 },
+  { provider: 'moonshotai', pattern: 'kimi-k2*', tier: 1 },
+];
+
+// ---------------------------------------------------------------------------
 // Exports
 // ---------------------------------------------------------------------------
-export const SUPPORTED_MODELS: SupportedModelEntry[] = [...ANTHROPIC, ...OPENAI, ...GOOGLE];
+export const SUPPORTED_MODELS: SupportedModelEntry[] = [
+  ...ANTHROPIC,
+  ...OPENAI,
+  ...GOOGLE,
+  ...MOONSHOT,
+];
 
 /**
  * Convert a glob pattern (with `*` wildcards) to a RegExp.

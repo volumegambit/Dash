@@ -87,6 +87,8 @@ const ENV_KEYS: Record<string, string> = {
   anthropic: 'ANTHROPIC_API_KEY',
   openai: 'OPENAI_API_KEY',
   google: 'GOOGLE_API_KEY',
+  // Keyed by provider.id — must be 'moonshotai' (matches the registry id).
+  moonshotai: 'MOONSHOT_API_KEY',
 };
 
 function resolveCredential(

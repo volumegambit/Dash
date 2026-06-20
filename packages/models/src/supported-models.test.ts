@@ -106,6 +106,25 @@ describe('isModelSupported', () => {
     expect(isModelSupported('google', modelId)).toBe(expected);
   });
 
+  // Moonshot (Kimi) — only the Kimi K2 family is allow-listed (the set the
+  // pi-ai runtime can resolve). kimi-latest / kimi-for-coding / moonshot-v1-*
+  // are intentionally rejected: live /v1/models returns them but pi-ai cannot
+  // run them, so they must not appear in the dropdown.
+  it.each([
+    ['kimi-k2-thinking', true],
+    ['kimi-k2-thinking-turbo', true],
+    ['kimi-k2-0905-preview', true],
+    ['kimi-k2-turbo-preview', true],
+    ['kimi-k2.6', true],
+    ['kimi-k2.7-code', true],
+    ['kimi-latest', false], // resolves to undefined in pi-ai → not runnable
+    ['kimi-for-coding', false], // not in pi-ai runtime set
+    ['moonshot-v1-128k', false], // legacy, not in pi-ai runtime set
+    ['gpt-4o', false], // not a Moonshot id
+  ])('moonshotai/%s → %s', (modelId, expected) => {
+    expect(isModelSupported('moonshotai', modelId)).toBe(expected);
+  });
+
   // Unknown provider
   it('rejects unknown providers', () => {
     expect(isModelSupported('unknown', 'some-model')).toBe(false);
@@ -127,6 +146,12 @@ describe('findSupportedModel', () => {
 
   it('returns null for unsupported model', () => {
     expect(findSupportedModel('openai', 'text-embedding-3-large')).toBeNull();
+  });
+
+  it('tiers Moonshot reasoning flagship above dated previews', () => {
+    const thinking = findSupportedModel('moonshotai', 'kimi-k2-thinking');
+    const preview = findSupportedModel('moonshotai', 'kimi-k2-0905-preview');
+    expect(thinking?.tier).toBeLessThan(preview?.tier);
   });
 });
 

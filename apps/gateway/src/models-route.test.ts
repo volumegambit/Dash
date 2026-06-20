@@ -173,7 +173,7 @@ describe('createModelsRoute', () => {
     expect(body.bootstrap.length).toBeGreaterThan(0);
     expect(body.patterns.length).toBeGreaterThan(0);
     expect(body.providersConfigured).toEqual([]);
-    expect(body.providersAvailable).toEqual(['anthropic', 'openai', 'google']);
+    expect(body.providersAvailable).toEqual(['anthropic', 'openai', 'google', 'moonshotai']);
   });
 
   it('passes through per-provider errors from discover', async () => {
