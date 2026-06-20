@@ -1,7 +1,8 @@
+import { execFileSync } from 'node:child_process';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fetchSkill, parseSkillSource } from './install.js';
 
 describe('parseSkillSource', () => {
@@ -88,5 +89,85 @@ describe('fetchSkill (local)', () => {
     const skillDir = join(root, 'empty');
     await mkdir(skillDir, { recursive: true });
     await expect(fetchSkill({ kind: 'local', path: skillDir })).rejects.toThrow(/No SKILL.md/);
+  });
+});
+
+describe('fetchSkill (git, via local fixture repo)', () => {
+  let repo: string;
+  let sha: string;
+
+  beforeEach(async () => {
+    repo = await mkdtemp(join(tmpdir(), 'dash-fixrepo-'));
+    const git = (...args: string[]): void => {
+      execFileSync('git', [
+        '-C',
+        repo,
+        '-c',
+        'user.email=t@e.com',
+        '-c',
+        'user.name=Test',
+        ...args,
+      ]);
+    };
+    execFileSync('git', ['init', '-q', repo]);
+    const skillDir = join(repo, 'skills', 'demo');
+    await mkdir(join(skillDir, 'scripts'), { recursive: true });
+    await mkdir(join(skillDir, 'references'), { recursive: true });
+    await writeFile(
+      join(skillDir, 'SKILL.md'),
+      '---\nname: demo-skill\ndescription: d\n---\n\nbody\n',
+    );
+    await writeFile(join(skillDir, 'references', 'notes.md'), '# notes');
+    await writeFile(join(skillDir, 'scripts', 'run.sh'), 'echo hi');
+    git('add', '-A');
+    git('commit', '-q', '-m', 'init');
+    sha = execFileSync('git', ['-C', repo, 'rev-parse', 'HEAD']).toString().trim();
+  });
+
+  afterEach(async () => {
+    await rm(repo, { recursive: true, force: true });
+  });
+
+  it('clones a subpath, keeps .md, and strips scripts', async () => {
+    const fetched = await fetchSkill(
+      { kind: 'git', owner: 'x', repo: 'y', subpath: 'skills/demo' },
+      undefined,
+      { resolveGitRemote: () => repo },
+    );
+    expect(fetched.name).toBe('demo-skill');
+    const paths = fetched.files.map((f) => f.path).sort();
+    expect(paths).toContain('SKILL.md');
+    expect(paths).toContain(join('references', 'notes.md'));
+    expect(paths.some((p) => p.endsWith('.sh'))).toBe(false);
+  });
+
+  it('falls back to a full clone + checkout for a commit SHA ref', async () => {
+    const fetched = await fetchSkill(
+      { kind: 'git', owner: 'x', repo: 'y', subpath: 'skills/demo', ref: sha },
+      undefined,
+      { resolveGitRemote: () => repo },
+    );
+    expect(fetched.name).toBe('demo-skill');
+  });
+});
+
+describe('fetchSkill (url)', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('fetches a single SKILL.md', async () => {
+    const md = '---\nname: web-skill\ndescription: d\n---\n\nbody\n';
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, text: async () => md }));
+    const fetched = await fetchSkill({ kind: 'url', url: 'https://example.com/SKILL.md' });
+    expect(fetched.name).toBe('web-skill');
+    expect(fetched.files).toEqual([{ path: 'SKILL.md', content: md }]);
+  });
+
+  it('rejects on a non-ok response', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 404 }));
+    await expect(fetchSkill({ kind: 'url', url: 'https://example.com/SKILL.md' })).rejects.toThrow(
+      /404/,
+    );
   });
 });

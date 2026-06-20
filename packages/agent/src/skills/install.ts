@@ -93,6 +93,15 @@ async function collectMarkdown(skillDir: string): Promise<SkillFile[]> {
   return files;
 }
 
+export interface FetchSkillOptions {
+  /** Override how a git owner/repo maps to a clone URL (used by tests). */
+  resolveGitRemote?: (owner: string, repo: string) => string;
+}
+
+function defaultGitRemote(owner: string, repo: string): string {
+  return `https://github.com/${owner}/${repo}.git`;
+}
+
 /**
  * Fetch a skill from a parsed source, returning its text-only files (SKILL.md +
  * any `.md`) and resolved name. Executable scripts and binary assets are
@@ -101,6 +110,7 @@ async function collectMarkdown(skillDir: string): Promise<SkillFile[]> {
 export async function fetchSkill(
   source: ParsedSkillSource,
   nameOverride?: string,
+  opts: FetchSkillOptions = {},
 ): Promise<FetchedSkill> {
   if (source.kind === 'url') {
     const res = await fetch(source.url);
@@ -114,7 +124,7 @@ export async function fetchSkill(
   if (source.kind === 'git') {
     const tmp = await mkdtemp(join(tmpdir(), 'dash-skill-git-'));
     try {
-      const repoUrl = `https://github.com/${source.owner}/${source.repo}.git`;
+      const repoUrl = (opts.resolveGitRemote ?? defaultGitRemote)(source.owner, source.repo);
       try {
         const args = ['clone', '--depth', '1'];
         if (source.ref) args.push('--branch', source.ref);

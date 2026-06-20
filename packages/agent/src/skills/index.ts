@@ -11,7 +11,7 @@ export {
   createRemoveSkillTool,
 } from './tools.js';
 export { parseSkillSource, fetchSkill } from './install.js';
-export type { ParsedSkillSource, FetchedSkill, SkillFile } from './install.js';
+export type { ParsedSkillSource, FetchedSkill, SkillFile, FetchSkillOptions } from './install.js';
 export { heuristicScan, createLlmScanner } from './security.js';
 export type {
   SkillScanLevel,

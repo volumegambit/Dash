@@ -1,3 +1,6 @@
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { join } from 'node:path';
+import { getBundledSkillsDir } from '@dash/skills';
 import { describe, expect, it, vi } from 'vitest';
 import { createLlmScanner, heuristicScan } from './security.js';
 
@@ -47,5 +50,24 @@ describe('createLlmScanner', () => {
     const classify = vi.fn().mockRejectedValue(new Error('model down'));
     const scanner = createLlmScanner({ classify });
     await expect(scanner('benign content')).rejects.toThrow('model down');
+  });
+});
+
+describe('heuristicScan on bundled skills', () => {
+  it('does not flag any shipped bundled skill as dangerous', () => {
+    const root = getBundledSkillsDir();
+    const offenders: string[] = [];
+    for (const suite of readdirSync(root, { withFileTypes: true })) {
+      if (!suite.isDirectory()) continue;
+      for (const skill of readdirSync(join(root, suite.name), { withFileTypes: true })) {
+        if (!skill.isDirectory()) continue;
+        const file = join(root, suite.name, skill.name, 'SKILL.md');
+        if (!existsSync(file)) continue;
+        if (heuristicScan(readFileSync(file, 'utf-8')).verdict === 'dangerous') {
+          offenders.push(`${suite.name}/${skill.name}`);
+        }
+      }
+    }
+    expect(offenders).toEqual([]);
   });
 });

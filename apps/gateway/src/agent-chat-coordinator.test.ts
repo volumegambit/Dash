@@ -1,3 +1,6 @@
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { AgentBackend, AgentEvent, AgentState, RunOptions } from '@dash/agent';
 import { describe, expect, it } from 'vitest';
 import { createAgentChatCoordinator } from './agent-chat-coordinator.js';
@@ -106,6 +109,52 @@ describe('AgentChatCoordinator', () => {
     expect(collected[0].type).toBe('error');
     const errorEvent = collected[0] as { type: 'error'; error: Error };
     expect(errorEvent.error.message).toMatch(/disabled/);
+    await agents.stop();
+  });
+});
+
+describe('AgentChatCoordinator.listSkills', () => {
+  it('returns an agent managed skill alongside the bundled tier', async () => {
+    const managed = await mkdtemp(join(tmpdir(), 'dash-coord-skills-'));
+    try {
+      const skillDir = join(managed, 'my-skill');
+      await mkdir(skillDir, { recursive: true });
+      await writeFile(
+        join(skillDir, 'SKILL.md'),
+        '---\nname: my-skill\ndescription: d\n---\n\nbody\n',
+      );
+
+      const registry = new AgentRegistry();
+      const { id } = registry.register({
+        name: 'skill-agent',
+        model: 'anthropic/claude-sonnet-4-20250514',
+        systemPrompt: 'x',
+      });
+
+      const agents = createAgentChatCoordinator({
+        registry,
+        poolMaxSize: 10,
+        createBackend: async () => makeMockBackend([]),
+        managedSkillsDir: (config) => (config.name === 'skill-agent' ? managed : undefined),
+      });
+
+      const skills = await agents.listSkills(id);
+      expect(skills.map((s) => s.name)).toContain('my-skill');
+      expect(skills.some((s) => s.source === 'bundled')).toBe(true);
+      await agents.stop();
+    } finally {
+      await rm(managed, { recursive: true, force: true });
+    }
+  });
+
+  it('returns [] for an unknown agent', async () => {
+    const registry = new AgentRegistry();
+    const agents = createAgentChatCoordinator({
+      registry,
+      poolMaxSize: 10,
+      createBackend: async () => makeMockBackend([]),
+    });
+    expect(await agents.listSkills('nope')).toEqual([]);
     await agents.stop();
   });
 });

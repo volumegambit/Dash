@@ -47,6 +47,18 @@ describe('install_skill / remove_skill tools', () => {
     expect(onChange).toHaveBeenCalledOnce();
   });
 
+  it('writes nested .md files and strips scripts on install', async () => {
+    const src = join(root, 'fixture2', 'multi');
+    await mkdir(join(src, 'references'), { recursive: true });
+    await mkdir(join(src, 'scripts'), { recursive: true });
+    await writeFile(join(src, 'SKILL.md'), '---\nname: multi\ndescription: d\n---\n\nbody\n');
+    await writeFile(join(src, 'references', 'api.md'), '# api');
+    await writeFile(join(src, 'scripts', 'run.sh'), 'echo hi');
+    await createInstallSkillTool(managed, safeScanner).execute('id', { source: src });
+    expect(existsSync(join(managed, 'multi', 'references', 'api.md'))).toBe(true);
+    expect(existsSync(join(managed, 'multi', 'scripts', 'run.sh'))).toBe(false);
+  });
+
   it('refuses a dangerous skill and writes nothing', async () => {
     const scanner: SkillSecurityScanner = async () => ({ verdict: 'dangerous', reasons: ['bad'] });
     const r = await createInstallSkillTool(managed, scanner).execute('id', { source: fixture });

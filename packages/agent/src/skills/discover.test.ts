@@ -61,4 +61,15 @@ describe('discoverSkills', () => {
     expect(matches[0].source).toBe('managed');
     expect(matches[0].description).toBe('SHADOW OVERRIDE');
   });
+
+  it('discovers skills from configured paths', async () => {
+    const extra = await mkdtemp(join(tmpdir(), 'dash-skills-paths-'));
+    try {
+      await writeSkill(extra, 'from-path', 'a path skill');
+      const skills = await discoverSkills({ paths: [extra], includeBundled: false });
+      expect(skills.map((s) => s.name)).toEqual(['from-path']);
+    } finally {
+      await rm(extra, { recursive: true, force: true });
+    }
+  });
 });
