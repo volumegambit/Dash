@@ -177,13 +177,13 @@ Natural language works too — "what skills do you have?" or "install the arxiv 
 
 ## Managing skills in Mission Control
 
-The Skills tab on the agent detail page lets you:
+Mission Control's deploy / edit-agent wizard has a **Skills** tool group where you choose what an agent can do with skills:
 
-- **View** all discovered skills with their source (Managed / Agent / Remote)
-- **Edit** local skill content inline
-- **Create** new skills with a name, description, and content
-- **Configure** discovery paths and remote URLs
-- **Delete** skills you no longer need
+- **Create Skill** — let the agent save new skills from a conversation
+- **Install Skill** — let the agent install skills from the ecosystem (git / URL / local)
+- **Remove Skill** — let the agent uninstall skills it created or installed
+
+Enable the tools you want, then deploy. The skills themselves are managed over chat (`/skills` to list, `/skill:<name>` to run, or plain language to install and remove) and on disk in the managed directory — there is no dedicated skills page in Mission Control yet.
 
 Changes take effect on the agent's next message — no restart needed.
 
