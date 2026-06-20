@@ -1,9 +1,9 @@
 ---
 title: "AI Providers"
-description: "Connect to Anthropic, OpenAI, Google, or any major LLM provider."
+description: "Connect to Anthropic, OpenAI, Google, Moonshot (Kimi), or any major LLM provider."
 ---
 
-Each agent in your team can use a different AI provider and model. Mix and match Anthropic, OpenAI, and Google — or use the same provider for everyone.
+Each agent in your team can use a different AI provider and model. Mix and match Anthropic, OpenAI, Google, and Moonshot (Kimi) — or use the same provider for everyone.
 
 ## Provider routing
 
@@ -14,6 +14,7 @@ Model names use a `provider/model` format. The prefix before the slash tells Das
 | `anthropic/` | Anthropic |
 | `openai/` | OpenAI |
 | `google/` | Google |
+| `moonshotai/` | Moonshot (Kimi) |
 
 For example, `anthropic/claude-sonnet-4-20250514` routes to Anthropic and `openai/gpt-4o` routes to OpenAI.
 
@@ -30,6 +31,7 @@ For standalone gateway usage, you can also set credentials via environment varia
 | `ANTHROPIC_API_KEY` | Anthropic |
 | `OPENAI_API_KEY` | OpenAI |
 | `GOOGLE_API_KEY` | Google |
+| `MOONSHOT_API_KEY` | Moonshot (Kimi) |
 
 ## Anthropic
 
@@ -89,6 +91,30 @@ or in `credentials.json`:
 
 ```json
 { "google": { "apiKey": "AIza..." } }
+```
+
+## Moonshot (Kimi)
+
+Sign up at [platform.moonshot.ai](https://platform.moonshot.ai) to get an API key. Moonshot's API is OpenAI-compatible and Kimi models support tool use and streaming.
+
+**Example models:**
+- `moonshotai/kimi-k2-thinking` — agentic reasoning
+- `moonshotai/kimi-k2.6` — general-purpose Kimi K2
+
+<Note>
+  Use the `moonshotai/` prefix (not `kimi/` or `moonshot/`) — it routes to Moonshot's global endpoint (`api.moonshot.ai`). Dash currently surfaces the Kimi K2 family.
+</Note>
+
+**Configuration:**
+
+```env
+MOONSHOT_API_KEY=sk-...
+```
+
+or in `credentials.json`:
+
+```json
+{ "moonshotai": { "apiKey": "sk-..." } }
 ```
 
 ## Using a provider in an agent
