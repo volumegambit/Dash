@@ -11,7 +11,7 @@ let lastAuthStorage: {
   _providers: Set<string>;
 } | null = null;
 
-vi.mock('@mariozechner/pi-coding-agent', () => ({
+vi.mock('@earendil-works/pi-coding-agent', () => ({
   AuthStorage: {
     inMemory: vi.fn(() => {
       const providers = new Set<string>();
@@ -57,7 +57,7 @@ vi.mock('@mariozechner/pi-coding-agent', () => ({
   createWriteTool: vi.fn(() => ({ name: 'write' })),
 }));
 
-vi.mock('@mariozechner/pi-ai', () => ({
+vi.mock('@earendil-works/pi-ai', () => ({
   getModel: vi.fn(() => ({
     id: 'claude-sonnet-4-20250514',
     provider: 'anthropic',
@@ -355,7 +355,7 @@ describe('PiAgentBackend.normalizeEvent', () => {
 
 describe('PiAgentBackend lifecycle', () => {
   it('start() creates session and stop() disposes it', async () => {
-    const { createAgentSession } = await import('@mariozechner/pi-coding-agent');
+    const { createAgentSession } = await import('@earendil-works/pi-coding-agent');
     const mockDispose = vi.fn();
     const mockSetModel = vi.fn().mockResolvedValue(undefined);
     const mockAgent = { setSystemPrompt: vi.fn() };
@@ -389,7 +389,7 @@ describe('PiAgentBackend lifecycle', () => {
   });
 
   it('run() yields events from session and completes on agent_end', async () => {
-    const { createAgentSession } = await import('@mariozechner/pi-coding-agent');
+    const { createAgentSession } = await import('@earendil-works/pi-coding-agent');
 
     // biome-ignore lint/suspicious/noExplicitAny: test mock callback type
     let subscribeCb: ((event: any) => void) | null = null;
@@ -486,7 +486,7 @@ describe('PiAgentBackend sessionDir', () => {
   });
 
   it('uses SessionManager.continueRecent when sessionDir is provided', async () => {
-    const { SessionManager, createAgentSession } = await import('@mariozechner/pi-coding-agent');
+    const { SessionManager, createAgentSession } = await import('@earendil-works/pi-coding-agent');
     vi.mocked(createAgentSession).mockResolvedValueOnce({
       session: {
         dispose: vi.fn(),
@@ -518,7 +518,7 @@ describe('PiAgentBackend sessionDir', () => {
   });
 
   it('uses SessionManager.inMemory when no sessionDir is provided', async () => {
-    const { SessionManager, createAgentSession } = await import('@mariozechner/pi-coding-agent');
+    const { SessionManager, createAgentSession } = await import('@earendil-works/pi-coding-agent');
     vi.mocked(createAgentSession).mockResolvedValueOnce({
       session: {
         dispose: vi.fn(),
@@ -547,7 +547,7 @@ describe('PiAgentBackend sessionDir', () => {
 
 describe('PiAgentBackend pull-based credential source', () => {
   async function stubSession(): Promise<void> {
-    const { createAgentSession } = await import('@mariozechner/pi-coding-agent');
+    const { createAgentSession } = await import('@earendil-works/pi-coding-agent');
     vi.mocked(createAgentSession).mockResolvedValueOnce({
       session: {
         dispose: vi.fn(),
@@ -861,7 +861,7 @@ describe('PiAgentBackend model fallback chain', () => {
     session: ReturnType<typeof makeSequencedSession>,
     _fallbackModels?: string[],
   ) {
-    const { createAgentSession } = await import('@mariozechner/pi-coding-agent');
+    const { createAgentSession } = await import('@earendil-works/pi-coding-agent');
     vi.mocked(createAgentSession).mockResolvedValueOnce({
       // biome-ignore lint/suspicious/noExplicitAny: test mock
       session: session as any,

@@ -21,8 +21,8 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import { getModel } from '@mariozechner/pi-ai';
-import type { Api, Model } from '@mariozechner/pi-ai';
+import { getModel } from '@earendil-works/pi-ai';
+import type { Api, Model } from '@earendil-works/pi-ai';
 // If any of these imports change name, TypeScript compilation fails before
 // the test runner even starts — which is itself a fast-failing contract check.
 import {
@@ -37,14 +37,14 @@ import {
   createLsTool,
   createReadTool,
   createWriteTool,
-} from '@mariozechner/pi-coding-agent';
+} from '@earendil-works/pi-coding-agent';
 // Type-only imports — any rename here is caught at compile time too.
 import type {
   AgentSession,
   AgentSessionEvent,
   ResourceLoader,
   Skill,
-} from '@mariozechner/pi-coding-agent';
+} from '@earendil-works/pi-coding-agent';
 
 describe('pi-coding-agent SDK contract', () => {
   it('exports createAgentSession as a function', () => {
@@ -121,6 +121,9 @@ describe('pi-coding-agent SDK contract', () => {
     // DashResourceLoader wraps a DefaultResourceLoader and delegates these
     // methods. If any are renamed, DashResourceLoader silently breaks.
     const loader = new DefaultResourceLoader({
+      // agentDir is required as of @earendil-works/pi-coding-agent — omitting
+      // it throws in normalizePath. PiAgentBackend.start() passes one too.
+      agentDir: '/tmp/contract-test-agent-dir',
       cwd: '/tmp/contract-test-workspace',
       noSkills: true,
       noExtensions: true,
@@ -141,6 +144,9 @@ describe('pi-coding-agent SDK contract', () => {
 
   it('DefaultResourceLoader.getSkills() returns { skills, diagnostics } when noSkills is true', () => {
     const loader = new DefaultResourceLoader({
+      // agentDir is required as of @earendil-works/pi-coding-agent — omitting
+      // it throws in normalizePath. PiAgentBackend.start() passes one too.
+      agentDir: '/tmp/contract-test-agent-dir',
       cwd: '/tmp/contract-test-workspace',
       noSkills: true,
       noExtensions: true,
@@ -154,8 +160,9 @@ describe('pi-coding-agent SDK contract', () => {
   });
 
   it('exports all built-in tool factories as functions', () => {
-    // PiAgentBackend.buildBuiltinTools() calls these by name. If any
-    // disappear or get renamed, the backend silently omits that tool.
+    // PiAgentBackend activates these built-in tools by name (read/bash/edit/
+    // write/grep/find/ls); pi creates them from these factories scoped to cwd.
+    // If any disappear or get renamed, the backend silently omits that tool.
     expect(typeof createBashTool).toBe('function');
     expect(typeof createEditTool).toBe('function');
     expect(typeof createFindTool).toBe('function');

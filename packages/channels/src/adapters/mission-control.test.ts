@@ -12,18 +12,40 @@ function makeAgent(events: AgentEvent[]): AgentClient {
   };
 }
 
+type WsBuffer = {
+  queue: Record<string, unknown>[];
+  waiters: ((m: Record<string, unknown>) => void)[];
+};
+const wsBuffers = new WeakMap<WebSocket, WsBuffer>();
+
 function connectWs(port: number, token?: string): Promise<WebSocket> {
   const url = token ? `ws://127.0.0.1:${port}?token=${token}` : `ws://127.0.0.1:${port}`;
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(url);
+    // Buffer every message from connect onward. The previous per-call
+    // `{ once: true }` listener raced under load: a message arriving between
+    // two nextMessage() calls (after the prior listener fired, before the next
+    // attached) was dropped, shifting the sequence and flaking the test.
+    const buffer: WsBuffer = { queue: [], waiters: [] };
+    wsBuffers.set(ws, buffer);
+    ws.addEventListener('message', (e) => {
+      const msg = JSON.parse(String(e.data)) as Record<string, unknown>;
+      const waiter = buffer.waiters.shift();
+      if (waiter) waiter(msg);
+      else buffer.queue.push(msg);
+    });
     ws.addEventListener('open', () => resolve(ws));
     ws.addEventListener('error', reject);
   });
 }
 
 function nextMessage(ws: WebSocket): Promise<Record<string, unknown>> {
+  const buffer = wsBuffers.get(ws);
+  if (!buffer) throw new Error('nextMessage: ws must be created via connectWs');
   return new Promise((resolve) => {
-    ws.addEventListener('message', (e) => resolve(JSON.parse(String(e.data))), { once: true });
+    const msg = buffer.queue.shift();
+    if (msg) resolve(msg);
+    else buffer.waiters.push(resolve);
   });
 }
 

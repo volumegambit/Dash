@@ -24,7 +24,7 @@
  *
  * Format: YYYY-MM-DD.
  */
-export const MODELS_REVIEWED_AT = '2026-04-13';
+export const MODELS_REVIEWED_AT = '2026-06-20';
 
 export interface SupportedModelEntry {
   /** Provider ID (e.g. "anthropic", "openai", "google") */
@@ -42,6 +42,9 @@ export interface SupportedModelEntry {
 // Anthropic
 // ---------------------------------------------------------------------------
 const ANTHROPIC: SupportedModelEntry[] = [
+  // Fable is Anthropic's most capable widely released model — flagship-class
+  // alongside Opus (both tier 0; Fable sorts first within the tier by id).
+  { provider: 'anthropic', pattern: 'claude-fable-*', tier: 0 },
   { provider: 'anthropic', pattern: 'claude-opus-*', tier: 0 },
   { provider: 'anthropic', pattern: 'claude-sonnet-*', tier: 1 },
   { provider: 'anthropic', pattern: 'claude-haiku-*', tier: 2 },
@@ -65,24 +68,25 @@ const OPENAI: SupportedModelEntry[] = [
   // gpt-5.3-codex, and any future N-codex releases.
   { provider: 'openai', pattern: 'gpt-*-codex*', tier: 9 },
   // GPT-5.x generation
-  { provider: 'openai', pattern: 'gpt-5.4-pro', tier: 10 },
-  { provider: 'openai', pattern: 'gpt-5.4', tier: 11 },
-  { provider: 'openai', pattern: 'gpt-5.4-mini', tier: 12 },
-  { provider: 'openai', pattern: 'gpt-5.3', tier: 13 },
-  { provider: 'openai', pattern: 'gpt-5.3-mini', tier: 14 },
-  { provider: 'openai', pattern: 'gpt-5.2', tier: 15 },
-  { provider: 'openai', pattern: 'gpt-5.1', tier: 16 },
-  { provider: 'openai', pattern: 'gpt-5.1-mini', tier: 17 },
-  { provider: 'openai', pattern: 'gpt-5', tier: 18 },
-  { provider: 'openai', pattern: 'gpt-5-pro', tier: 18 },
-  { provider: 'openai', pattern: 'gpt-5-mini', tier: 19 },
+  { provider: 'openai', pattern: 'gpt-5.5', tier: 10 },
+  { provider: 'openai', pattern: 'gpt-5.4-pro', tier: 11 },
+  { provider: 'openai', pattern: 'gpt-5.4', tier: 12 },
+  { provider: 'openai', pattern: 'gpt-5.4-mini', tier: 13 },
+  { provider: 'openai', pattern: 'gpt-5.3', tier: 14 },
+  { provider: 'openai', pattern: 'gpt-5.3-mini', tier: 15 },
+  { provider: 'openai', pattern: 'gpt-5.2', tier: 16 },
+  { provider: 'openai', pattern: 'gpt-5.1', tier: 17 },
+  { provider: 'openai', pattern: 'gpt-5.1-mini', tier: 18 },
+  { provider: 'openai', pattern: 'gpt-5', tier: 19 },
+  { provider: 'openai', pattern: 'gpt-5-pro', tier: 19 },
+  { provider: 'openai', pattern: 'gpt-5-mini', tier: 20 },
   // GPT-4.x generation
-  { provider: 'openai', pattern: 'gpt-4.1', tier: 20 },
-  { provider: 'openai', pattern: 'gpt-4.1-mini', tier: 21 },
-  { provider: 'openai', pattern: 'gpt-4o', tier: 22 },
-  { provider: 'openai', pattern: 'gpt-4o-mini', tier: 23 },
-  { provider: 'openai', pattern: 'gpt-4-turbo', tier: 24 },
-  { provider: 'openai', pattern: 'gpt-4', tier: 25 },
+  { provider: 'openai', pattern: 'gpt-4.1', tier: 21 },
+  { provider: 'openai', pattern: 'gpt-4.1-mini', tier: 22 },
+  { provider: 'openai', pattern: 'gpt-4o', tier: 23 },
+  { provider: 'openai', pattern: 'gpt-4o-mini', tier: 24 },
+  { provider: 'openai', pattern: 'gpt-4-turbo', tier: 25 },
+  { provider: 'openai', pattern: 'gpt-4', tier: 26 },
   // Legacy
   { provider: 'openai', pattern: 'gpt-3.5-turbo', tier: 30 },
 ];
@@ -95,6 +99,9 @@ const GOOGLE: SupportedModelEntry[] = [
   { provider: 'google', pattern: 'gemini-*-flash*', tier: 1 },
   { provider: 'google', pattern: 'gemini-pro*', tier: 2 },
   { provider: 'google', pattern: 'gemini-*', tier: 3 },
+  // Gemma open-weights models (e.g. gemma-4-26b-a4b-it, gemma-4-31b-it).
+  // Sort below all Gemini models; tool-use support is newer/less consistent.
+  { provider: 'google', pattern: 'gemma-*', tier: 4 },
 ];
 
 // ---------------------------------------------------------------------------
