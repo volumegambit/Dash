@@ -1,7 +1,7 @@
 export interface ModelOption {
   value: string; // e.g. 'anthropic/claude-sonnet-4-20250514'
   label: string; // e.g. 'Claude Sonnet 4'
-  provider: 'anthropic' | 'openai' | 'google';
+  provider: 'anthropic' | 'openai' | 'google' | 'moonshotai';
   secretKey: string; // e.g. 'anthropic-api-key'
 }
 

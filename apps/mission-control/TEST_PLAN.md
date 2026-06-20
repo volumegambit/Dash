@@ -30,7 +30,7 @@ MC_DATA_DIR=/tmp/mc-test-$(date +%s) npm run mc:dev
 
 ### 1.2 Provider Selection
 1. After gateway init, a provider selection screen should appear
-2. **Verify:** Three provider cards visible: Anthropic, OpenAI, Google
+2. **Verify:** Four provider cards visible: Anthropic, OpenAI, Google, Kimi by Moonshot
 3. Click the Anthropic card
 4. **Verify:** The Anthropic card has a selected/highlighted visual state; the others do not
 5. Click the OpenAI card
@@ -83,10 +83,11 @@ MC_DATA_DIR=/tmp/mc-test-$(date +%s) npm run mc:dev
 ### 3.1 Page Layout
 1. Navigate to AI Providers
 2. Take a screenshot of the full page
-3. **Verify:** Provider sections visible (Anthropic, OpenAI, Google)
+3. **Verify:** Provider sections visible (Anthropic, OpenAI, Google, Kimi by Moonshot)
 4. **Verify:** The key added during setup (`default`) appears under Anthropic
 5. **Verify:** An "Add Key" or "+" button is visible for each provider
 6. **Verify:** Buttons use bordered style (not plain text links)
+7. **Verify (Moonshot):** The Kimi by Moonshot section shows an `sk-...` placeholder and links to platform.moonshot.ai; adding a key under `moonshotai` makes Kimi K2 models (e.g. `moonshotai/kimi-k2-thinking`) selectable in the model dropdown
 
 ### 3.2 Add a Second Key
 1. Click the "Add Key" button for Anthropic

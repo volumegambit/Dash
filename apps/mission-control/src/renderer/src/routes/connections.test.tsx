@@ -21,7 +21,17 @@ describe('AiProviders page', () => {
     render(<AiProviders />);
     await waitFor(() => {
       const addButtons = screen.getAllByText('Add Key');
-      expect(addButtons).toHaveLength(3); // one per provider
+      expect(addButtons).toHaveLength(4); // one per provider (anthropic, openai, google, moonshotai)
+    });
+  });
+
+  it('surfaces Moonshot as an API-key-only provider (label shown, no OAuth login button)', async () => {
+    render(<AiProviders />);
+    expect(await screen.findByText('Kimi by Moonshot')).toBeInTheDocument();
+    // Only Anthropic + OpenAI expose an OAuth "...Login Key" button; Moonshot
+    // (and Google) are API-key only, so the count must stay at 2.
+    await waitFor(() => {
+      expect(screen.getAllByText(/Login Key$/)).toHaveLength(2);
     });
   });
 
