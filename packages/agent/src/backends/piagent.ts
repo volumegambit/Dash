@@ -45,6 +45,7 @@ import type {
   RunOptions,
 } from '../types.js';
 import { DashResourceLoader } from './dash-resource-loader.js';
+import { getModelOverride } from './model-overrides.js';
 
 /** All built-in tool names supported by PiAgent */
 const DEFAULT_TOOL_NAMES = ['read', 'bash', 'edit', 'write', 'grep', 'find', 'ls'] as const;
@@ -300,8 +301,13 @@ export class PiAgentBackend implements AgentBackend {
     }
     const provider = modelStr.slice(0, slash);
     const modelId = modelStr.slice(slash + 1);
+    // pi-ai's getModel() is the source of truth, but its model registry is a
+    // static build-time table that lags new provider releases. When a model
+    // the allow-list happily lists (e.g. anthropic/claude-opus-4-8) is missing
+    // from that table, fall back to a Dash-supplied definition so the agent can
+    // still run it. See model-overrides.ts for the rationale.
     // biome-ignore lint/suspicious/noExplicitAny: getModel requires generic provider/modelId that are not statically known
-    const model = getModel(provider as any, modelId as any);
+    const model = getModel(provider as any, modelId as any) ?? getModelOverride(provider, modelId);
     if (!model) {
       throw new Error(
         `Unknown model "${modelStr}". Check that the provider and model ID are correct.`,
