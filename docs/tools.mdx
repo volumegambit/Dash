@@ -135,6 +135,25 @@ Tools are what your agents can *do*. Each tool gives an agent a real-world capab
 
     The agent creates skills when the user asks it to remember a process, save a workflow, or build reusable instructions. Skills are persisted to the managed skills directory and available in future conversations.
   </Tab>
+  <Tab title="install_skill">
+    Install a text-only skill from the public ecosystem.
+
+    | Parameter | Type | Required | Description |
+    |-----------|------|----------|-------------|
+    | `source` | `string` | yes | `git:owner/repo[/subpath][@ref]`, an https URL to a `SKILL.md`, or a local path |
+    | `name` | `string` | no | Override the installed skill's name |
+
+    Bundled scripts are stripped (skills are text-only), and every install passes a security scan that refuses prompt-injection, secret-exfiltration, or destructive instructions. See [Skills](/skills) for details.
+  </Tab>
+  <Tab title="remove_skill">
+    Uninstall a managed, installed, or agent-created skill.
+
+    | Parameter | Type | Required | Description |
+    |-----------|------|----------|-------------|
+    | `name` | `string` | yes | The skill name to remove |
+
+    Bundled skills are read-only and cannot be removed.
+  </Tab>
 </Tabs>
 
 ## Integrations
