@@ -1,4 +1,4 @@
-import { homedir, tmpdir } from 'node:os';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import type { AgentEvent as PiAgentEvent } from '@earendil-works/pi-agent-core';
 import { getModel } from '@earendil-works/pi-ai';
@@ -21,9 +21,13 @@ import {
 import type { Logger } from '../logger.js';
 import {
   createCreateSkillTool,
+  createInstallSkillTool,
   createLoadSkillTool,
-  scanSkillsDirectory,
+  createRemoveSkillTool,
+  discoverSkills,
+  heuristicScan,
 } from '../skills/index.js';
+import type { SkillSecurityScanner } from '../skills/index.js';
 import type { SkillDiscoveryResult } from '../skills/types.js';
 import { BraveSearchProvider } from '../tools/search-providers/brave.js';
 import { createTodoWriteTool } from '../tools/todowrite.js';
@@ -374,6 +378,28 @@ export class PiAgentBackend implements AgentBackend {
     // Skill creation (opt-in)
     if (allowedNames.has('create_skill') && this.managedSkillsDir) {
       customs.push(wrap(createCreateSkillTool(this.managedSkillsDir)));
+    }
+
+    // Skill install/remove from the public ecosystem (opt-in)
+    if (allowedNames.has('install_skill') && this.managedSkillsDir) {
+      customs.push(
+        wrap(
+          createInstallSkillTool(this.managedSkillsDir, this.skillScanner(), () =>
+            this.refreshSkills(),
+          ),
+        ),
+      );
+    }
+    if (allowedNames.has('remove_skill') && this.managedSkillsDir) {
+      customs.push(
+        wrap(
+          createRemoveSkillTool(
+            this.managedSkillsDir,
+            () => this.listSkills(),
+            () => this.refreshSkills(),
+          ),
+        ),
+      );
     }
 
     // MCP server tools (from connected MCP servers, filtered by agent's assigned servers)
@@ -954,31 +980,28 @@ export class PiAgentBackend implements AgentBackend {
   }
 
   /**
-   * Discover skills from the managed directory and configured paths.
+   * Build the skill security scanner used by install_skill. v1 uses the
+   * deterministic heuristic prefilter; an LLM classifier can be layered in via
+   * createLlmScanner once a one-shot model call is wired.
+   */
+  private skillScanner(): SkillSecurityScanner {
+    return async (content: string) => heuristicScan(content);
+  }
+
+  /** Re-inject the current skill set into the live session's system prompt. */
+  private async refreshSkills(): Promise<void> {
+    if (!this.resourceLoader) return;
+    this.resourceLoader.setExtraSkills(await this.listSkillsAsPiSkills());
+  }
+
+  /**
+   * Discover skills across all tiers (managed > configured paths > bundled).
    */
   async listSkills(): Promise<SkillDiscoveryResult[]> {
-    const results: SkillDiscoveryResult[] = [];
-
-    // Scan managed directory
-    if (this.managedSkillsDir) {
-      const managed = await scanSkillsDirectory(this.managedSkillsDir, 'managed');
-      results.push(...managed);
-    }
-
-    // Scan configured paths
-    const paths = this.config.skills?.paths ?? [];
-    const existingNames = new Set(results.map((r) => r.name));
-    for (const p of paths) {
-      const expanded = p.startsWith('~/') ? p.replace('~', homedir()) : p;
-      const scanned = await scanSkillsDirectory(expanded, 'managed');
-      for (const skill of scanned) {
-        if (!existingNames.has(skill.name)) {
-          results.push(skill);
-          existingNames.add(skill.name);
-        }
-      }
-    }
-
-    return results;
+    return discoverSkills({
+      managedSkillsDir: this.managedSkillsDir,
+      paths: this.config.skills?.paths,
+      includeBundled: this.config.skills?.includeBundled,
+    });
   }
 }

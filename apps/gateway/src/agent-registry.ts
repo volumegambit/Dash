@@ -8,7 +8,7 @@ export interface GatewayAgentConfig {
   systemPrompt: string;
   fallbackModels?: string[];
   tools?: string[];
-  skills?: { paths?: string[]; urls?: string[] };
+  skills?: { paths?: string[]; urls?: string[]; includeBundled?: boolean };
   providerApiKeys?: Record<string, string>;
   workspace?: string;
   maxTokens?: number;

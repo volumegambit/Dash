@@ -13,10 +13,11 @@
     "packages/mcp",
     "packages/models",
     "packages/projects",
+    "packages/skills",
     "apps/*"
   ],
   "scripts": {
-    "build": "npm run build -w packages/models -w packages/projects -w packages/mcp -w packages/agent -w packages/channels -w packages/logging -w packages/management -w packages/chat -w packages/mc -w apps/gateway -w apps/mc-cli",
+    "build": "npm run build -w packages/models -w packages/skills -w packages/projects -w packages/mcp -w packages/agent -w packages/channels -w packages/logging -w packages/management -w packages/chat -w packages/mc -w apps/gateway -w apps/mc-cli",
     "mc-cli": "node --import tsx apps/mc-cli/src/index.ts",
     "gateway": "node --import tsx apps/gateway/src/index.ts",
     "mc:dev": "npm run dev --workspace=apps/mission-control",

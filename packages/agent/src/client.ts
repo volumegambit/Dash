@@ -20,4 +20,10 @@ export interface AgentClient {
     options?: RunOptions & { images?: ImageBlock[] },
   ): AsyncGenerator<AgentEvent>;
   answerQuestion?(id: string, answers: string[][]): Promise<void>;
+  /**
+   * List the skills available to this agent (bundled + per-agent). Optional:
+   * implementations that can't introspect skills omit it, and the router then
+   * skips deterministic `/skills` listing.
+   */
+  listSkills?(): Promise<import('./skills/types.js').SkillDiscoveryResult[]>;
 }

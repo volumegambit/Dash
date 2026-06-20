@@ -125,6 +125,7 @@ async function main() {
   const agents = createAgentChatCoordinator({
     registry,
     poolMaxSize: Number(process.env.POOL_MAX_SIZE ?? '200'),
+    managedSkillsDir: (config) => resolve(dataDir, 'skills', config.name),
     createBackend: async (agentConfig, conversationId) => {
       const sessionDir = resolve(dataDir, 'sessions', agentConfig.name, conversationId);
       await mkdir(sessionDir, { recursive: true });
@@ -225,6 +226,9 @@ async function main() {
         chat(channelId: string, conversationId: string, text: string) {
           return agents.chat({ agentId, conversationId, channelId, text });
         },
+        listSkills() {
+          return agents.listSkills(agentId);
+        },
       };
       gateway.registerAgent(agentId, bridgeClient);
     }
@@ -275,6 +279,9 @@ async function main() {
                 channelId,
                 text,
               });
+            },
+            listSkills() {
+              return agents.listSkills(ruleAgentId);
             },
           };
           gateway.registerAgent(ruleAgentId, bridgeClient);

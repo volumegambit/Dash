@@ -70,6 +70,8 @@ export interface DashAgentConfig {
   skills?: {
     paths?: string[];
     urls?: string[];
+    /** Include the @dash/skills bundled library (default: true). */
+    includeBundled?: boolean;
   };
   mcpServers?: import('@dash/mcp').McpServerConfig[];
   /** Names of MCP servers assigned to this agent from the gateway pool */

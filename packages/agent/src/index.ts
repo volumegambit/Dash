@@ -21,8 +21,13 @@ export type {
   PoolBackendFactory,
 } from './conversation-pool.js';
 export type { SkillDiscoveryResult, SkillFrontmatter } from './skills/index.js';
-export { parseFrontmatter, generateFrontmatter, scanSkillsDirectory } from './skills/index.js';
-export type { ParsedSkill } from './skills/index.js';
+export {
+  parseFrontmatter,
+  generateFrontmatter,
+  scanSkillsDirectory,
+  discoverSkills,
+} from './skills/index.js';
+export type { ParsedSkill, DiscoverSkillsOptions } from './skills/index.js';
 
 /**
  * Canonical list of user-configurable tool names supported by PiAgentBackend.
@@ -46,6 +51,8 @@ export const AGENT_TOOL_NAMES = [
   'web_fetch',
   // Skill tools
   'create_skill',
+  'install_skill',
+  'remove_skill',
   // MCP
   'mcp',
   'mcp_add_server',
