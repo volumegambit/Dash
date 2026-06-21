@@ -155,6 +155,7 @@ async function main() {
   let wiringState = await rebuildWiringState(loadedPlugins, pluginEntries, coreProviderIds, {
     logger,
     dataDir,
+    pluginsDir,
   });
 
   // Surface provider catalogs dropped for colliding with a built-in provider id
@@ -177,7 +178,15 @@ async function main() {
   // tied to plugin trust: configs.json is reconnected and listed (above, and via
   // GET /runtime/mcp/servers) before the trust gate runs, so a persisted plugin
   // server would survive untrust/disable/remove + reboot.
-  await registerPluginMcpServers(mcpManager, wiringState.mcpConfigs, logger);
+  // Track the plugin MCP server names the gateway ACTUALLY registered (not the
+  // ones it skipped because they collided with a pre-existing operator server).
+  // On reload we remove only THIS set, never an operator-owned name (F4). `let`
+  // because `onWiringRebuilt` updates it after each reconcile.
+  let registeredPluginMcpServers = await registerPluginMcpServers(
+    mcpManager,
+    wiringState.mcpConfigs,
+    logger,
+  );
 
   // Trusted plugin bin/ dirs are prepended to PATH so plugin executables
   // (and MCP/command processes spawned by the agent) resolve them first.
@@ -397,18 +406,27 @@ async function main() {
   // BEFORE it evicts warm backends), so re-warmed backends observe both the new
   // `wiringState` AND the re-registered MCP servers.
   const onWiringRebuilt = async (newWiring: PluginWiringState): Promise<void> => {
-    // Capture the CURRENT plugin MCP server names BEFORE reassigning, so we
-    // remove exactly the set we previously registered (the new wiring may add,
-    // drop, or rename them). `addServer` REJECTS duplicate names, so old plugin
-    // servers must be torn down before the additive re-register below.
-    const oldServerNames = wiringState.mcpConfigs.map((m) => m.config.name);
+    // Remove exactly the set the gateway ACTUALLY registered last time — NOT the
+    // declared configs. A plugin server whose name collided with an operator's
+    // persistent server was skipped at registration and is absent from this set,
+    // so reconcile never tears down an operator-owned server (F4). `addServer`
+    // REJECTS duplicate names, so surviving plugin servers must be torn down
+    // before the additive re-register below.
+    const oldServerNames = [...registeredPluginMcpServers];
 
     wiringState = newWiring;
 
     // MCP hot-reload: remove every previously-registered plugin server, then
     // additively re-register the new set (remove-first because `addServer`
-    // rejects duplicate names). Fail-isolated per server — see the helper.
-    await reconcilePluginMcpServers(mcpManager, oldServerNames, newWiring.mcpConfigs, logger);
+    // rejects duplicate names). Fail-isolated per server — see the helper. The
+    // returned set (names that actually registered) becomes the next reload's
+    // teardown set.
+    registeredPluginMcpServers = await reconcilePluginMcpServers(
+      mcpManager,
+      oldServerNames,
+      newWiring.mcpConfigs,
+      logger,
+    );
 
     // Re-log any provider catalogs dropped for colliding with a built-in id —
     // the same boot-time helper, so the warning surfaces on every reload too.
