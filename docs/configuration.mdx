@@ -151,13 +151,25 @@ Plugins not listed in `config.json`, or listed with `"enabled": false`, are igno
 
 An enabled-but-untrusted plugin still contributes its skills and commands, but its hooks, MCP servers, `bin/` directory, and provider catalogs are skipped. Only set `trusted` for plugins whose code you have reviewed and trust to run inside the gateway process.
 
+### Loading a plugin from a path
+
+A `config.json` entry can point at a plugin directory anywhere on disk with a `path` field, instead of requiring the plugin to live under `<dataDir>/plugins/`. This is handy for local development — you can keep a plugin in your own working tree and load it without copying it in:
+
+```json
+{
+  "my-dev-plugin": { "path": "/abs/or/relative/dir", "trusted": true }
+}
+```
+
+A `path` entry is **enabled automatically** — you do not need `"enabled": true`. It still requires `"trusted": true` to run code components (hooks, MCP servers, `bin/` executables, and provider catalogs); skills and commands load from `enabled` alone, just like any other plugin.
+
 ### Commands
 
-Each `commands/<name>.md` file becomes a slash command named `/<plugin>:<name>`. For example, a plugin called `my-skills` with `commands/triage.md` exposes `/my-skills:triage`. The command body is the markdown content; optional frontmatter (`name`, `description`) overrides the command name and supplies a description. Commands need only `enabled`.
+Each `commands/<name>.md` file becomes a slash command named `/<plugin>:<name>`. For example, a plugin called `my-skills` with `commands/triage.md` exposes `/my-skills:triage`. The command body is the markdown content; optional frontmatter (`name`, `description`) overrides the command name and supplies a description. The slash name is `<plugin>:<frontmatter-name>` when `name:` frontmatter is present, otherwise `<plugin>:<filename-without-.md>`. Commands need only `enabled`.
 
 ### Subagents (specialists)
 
-Each `agents/<name>.md` file (Claude Code subagent format — frontmatter `name`/`description` plus a markdown body) is exposed as a **loadable specialist**. For example, a plugin called `my-skills` with `agents/reviewer.md` is invocable as `/my-skills:reviewer` or via the agent's `load_skill` tool. When loaded, the specialist contributes its instructions to the conversation on demand. Like commands, subagents are markdown — they need only `enabled` (not `trusted`).
+Each `agents/<name>.md` file (Claude Code subagent format — frontmatter `name`/`description` plus a markdown body) is exposed as a **loadable specialist**. For example, a plugin called `my-skills` with `agents/reviewer.md` is invocable as `/my-skills:reviewer` or via the agent's `load_skill` tool. As with commands, the loadable name is `<plugin>:<frontmatter-name>` when `name:` frontmatter is present, otherwise `<plugin>:<filename-without-.md>`. When loaded, the specialist contributes its instructions to the conversation on demand. Like commands, subagents are markdown — they need only `enabled` (not `trusted`).
 
 **Limitation:** subagents run in the **main session**, not as isolated child agents. The `tools` frontmatter field is therefore **advisory, not enforced** — a loaded specialist can use the agent's full tool set. True isolated subagent spawning (a separate context with a restricted tool subset) is a future enhancement.
 

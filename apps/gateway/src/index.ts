@@ -14,6 +14,7 @@ import { createConsoleLogger } from '@dash/logging';
 import { mountProjectsWs } from '@dash/management';
 import { FileTokenStore, McpManager } from '@dash/mcp';
 import type { McpAgentContext } from '@dash/mcp';
+import { PROVIDERS } from '@dash/models';
 import { gatewayDir, migrateLegacyLayout, workspacesDir } from '@dash/paths';
 import { PluginConfigStore, createHookEngine, loadPlugins } from '@dash/plugins';
 import { createProjectsTools, openProjectsDb } from '@dash/projects';
@@ -35,7 +36,11 @@ import { McpConfigStore } from './mcp-store.js';
 import { ModelsStore } from './models-store.js';
 import { OAuthRefreshCoordinator } from './oauth-refresh.js';
 import { registerPluginMcpServers } from './plugin-mcp.js';
-import { createPluginModelCatalog, expandPluginModelsForRoute } from './plugin-providers.js';
+import {
+  createPluginModelCatalog,
+  excludeCoreProviderCollisions,
+  expandPluginModelsForRoute,
+} from './plugin-providers.js';
 
 async function main() {
   const flags = parseFlags(process.argv.slice(2));
@@ -175,8 +180,23 @@ async function main() {
   // for the gateway's lifetime, so build once and share across all agents and
   // the models route. `pluginModels` is the dropdown-facing flattening of the
   // statically-known models, merged into GET /models at render time.
-  const pluginModelCatalog = createPluginModelCatalog(loadedPlugins.providerConfigs);
-  const pluginModels = expandPluginModelsForRoute(loadedPlugins.providerConfigs);
+  //
+  // Defense-in-depth: a plugin id is only validated kebab-case, so a trusted
+  // plugin could declare a built-in provider id (e.g. `anthropic`) and shadow
+  // its namespace. Drop any such collision before the catalogs are consumed
+  // anywhere downstream, computed once and reused.
+  const { safe: pluginProviderConfigs, dropped: droppedProviderConfigs } =
+    excludeCoreProviderCollisions(
+      loadedPlugins.providerConfigs,
+      PROVIDERS.map((p) => p.id),
+    );
+  for (const { pluginName, catalog } of droppedProviderConfigs) {
+    logger.warn(
+      `plugin '${pluginName}' provider catalog id '${catalog.id}' collides with a built-in provider — ignored`,
+    );
+  }
+  const pluginModelCatalog = createPluginModelCatalog(pluginProviderConfigs);
+  const pluginModels = expandPluginModelsForRoute(pluginProviderConfigs);
 
   // Create gateway + agent service.
   //
@@ -252,8 +272,10 @@ async function main() {
         const keys = await credentialStore.readProviderApiKeys();
         // Keyless local providers (e.g. Ollama) declare a `placeholderKey` so
         // the backend's AuthStorage has an entry for their provider id even when
-        // no real credential is stored. A stored key always wins.
-        for (const { catalog } of loadedPlugins.providerConfigs) {
+        // no real credential is stored. A stored key always wins. Uses the
+        // collision-filtered list so a plugin can't inject a placeholder under a
+        // built-in provider id.
+        for (const { catalog } of pluginProviderConfigs) {
           if (catalog.placeholderKey && !keys[catalog.id]) {
             keys[catalog.id] = catalog.placeholderKey;
           }

@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   appendPluginModels,
   createPluginModelCatalog,
+  excludeCoreProviderCollisions,
   expandPluginModelsForRoute,
 } from './plugin-providers.js';
 
@@ -178,6 +179,46 @@ describe('appendPluginModels', () => {
 
   it('returns the response unchanged when plugin models are undefined', () => {
     expect(appendPluginModels(baseResp, undefined)).toBe(baseResp);
+  });
+});
+
+describe('excludeCoreProviderCollisions', () => {
+  function cat(id: string): ProviderConfigEntry {
+    return entry({
+      id,
+      label: id,
+      credentialPrefix: `${id}-api-key`,
+      baseUrl: 'https://x/v1',
+      api: 'openai-completions',
+      models: [],
+    });
+  }
+
+  it('drops catalogs whose id collides with a core provider id and keeps the rest', () => {
+    const { safe, dropped } = excludeCoreProviderCollisions(
+      [cat('anthropic'), cat('myllm')],
+      ['anthropic', 'openai', 'google'],
+    );
+    expect(safe.map((e) => e.catalog.id)).toEqual(['myllm']);
+    expect(dropped.map((e) => e.catalog.id)).toEqual(['anthropic']);
+  });
+
+  it('compares ids case-insensitively', () => {
+    const { safe, dropped } = excludeCoreProviderCollisions(
+      [cat('Anthropic'), cat('myllm')],
+      ['anthropic', 'openai', 'google'],
+    );
+    expect(safe.map((e) => e.catalog.id)).toEqual(['myllm']);
+    expect(dropped.map((e) => e.catalog.id)).toEqual(['Anthropic']);
+  });
+
+  it('returns all entries as safe when none collide', () => {
+    const { safe, dropped } = excludeCoreProviderCollisions(
+      [cat('myllm'), cat('acme')],
+      ['anthropic', 'openai', 'google'],
+    );
+    expect(safe.map((e) => e.catalog.id)).toEqual(['myllm', 'acme']);
+    expect(dropped).toEqual([]);
   });
 });
 

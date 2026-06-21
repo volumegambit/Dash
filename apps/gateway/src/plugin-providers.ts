@@ -30,6 +30,36 @@ export function buildModel(catalog: ProviderCatalog, model: CatalogModel): Model
 }
 
 /**
+ * Defense-in-depth: drop plugin provider catalogs whose `catalog.id` collides
+ * with a built-in (core) provider id. A plugin id is only validated kebab-case,
+ * so nothing stops a trusted plugin declaring `id: 'anthropic'` — which would
+ * let it shadow the core provider's namespace (injecting a `placeholderKey`
+ * under the core id, or intercepting unknown `anthropic/<model>` ids via the
+ * plugin catalog's `baseUrl`). A plugin must never occupy a built-in provider's
+ * namespace, even when trusted. Returns the non-colliding catalogs as `safe`
+ * and the colliding ones as `dropped`. Comparison is case-insensitive. Pure.
+ */
+export function excludeCoreProviderCollisions(
+  providerConfigs: ProviderConfigEntry[],
+  coreProviderIds: Iterable<string>,
+): { safe: ProviderConfigEntry[]; dropped: ProviderConfigEntry[] } {
+  const core = new Set<string>();
+  for (const id of coreProviderIds) {
+    core.add(id.toLowerCase());
+  }
+  const safe: ProviderConfigEntry[] = [];
+  const dropped: ProviderConfigEntry[] = [];
+  for (const entry of providerConfigs) {
+    if (core.has(entry.catalog.id.toLowerCase())) {
+      dropped.push(entry);
+    } else {
+      safe.push(entry);
+    }
+  }
+  return { safe, dropped };
+}
+
+/**
  * Assemble a `PluginModelCatalog` from the loaded plugins' provider catalogs.
  * Catalogs are indexed by `catalog.id` (the `<provider>/<model>` provider
  * segment). `resolve(provider, modelId)` finds the catalog for the provider,
