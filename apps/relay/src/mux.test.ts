@@ -12,6 +12,7 @@ describe('mux frame codec', () => {
       headers: { authorization: 'Bearer t' },
     },
     { t: 'open', streamId: 2, target: 'chat', kind: 'ws', path: '/ws/chat?token=x', headers: {} },
+    { t: 'head', streamId: 1, status: 200, headers: { 'content-type': 'application/json' } },
     { t: 'data', streamId: 1, chunk: 'aGk=' },
     { t: 'end', streamId: 1 },
     { t: 'close', streamId: 1, code: 4001, reason: 'Unauthorized' },

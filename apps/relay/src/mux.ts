@@ -11,6 +11,7 @@ export type Target = 'mgmt' | 'chat';
 export type StreamKind = 'http' | 'ws';
 
 export type Frame =
+  // relay → gateway: start a stream (HTTP request line / WS upgrade)
   | {
       t: 'open';
       streamId: number;
@@ -20,15 +21,22 @@ export type Frame =
       path: string;
       headers: Record<string, string>;
     }
+  // gateway → relay: response status + headers (HTTP), or 101 (WS upgrade ok)
+  | { t: 'head'; streamId: number; status: number; headers: Record<string, string> }
+  // either direction: body bytes / WS frame payload (base64 in `chunk`)
   | { t: 'data'; streamId: number; chunk: string }
+  // either direction: half-close (no more body / done)
   | { t: 'end'; streamId: number }
+  // either direction: abort/teardown (carries a WS/HTTP close code when relevant)
   | { t: 'close'; streamId: number; code?: number; reason?: string }
+  // either direction: flow-control grant (backpressure)
   | { t: 'credit'; streamId: number; bytes: number }
   | { t: 'ping' }
   | { t: 'pong' };
 
 const FRAME_TYPES: ReadonlySet<string> = new Set([
   'open',
+  'head',
   'data',
   'end',
   'close',
