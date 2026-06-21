@@ -1,3 +1,4 @@
+import { join } from 'node:path';
 import type { PluginModelCatalog } from '@dash/agent';
 import type { Logger } from '@dash/logging';
 import type { McpServerConfig } from '@dash/mcp';
@@ -57,29 +58,45 @@ export interface PluginStatusRecord {
   /** 'loaded' | 'error' | 'disabled' — plugin status. */
   status: 'loaded' | 'error' | 'disabled';
   enabled: boolean;
-  trusted: boolean | undefined;
+  /**
+   * Always a concrete boolean (never absent): `true` only when the config entry
+   * explicitly trusts the plugin. A present key is lower-surprise for the UI
+   * trust toggle.
+   */
+  trusted: boolean;
   /** Component kinds activated, e.g. ['skills']. */
   activated: string[];
   /** Component kinds present on disk but not activated (deferred / untrusted). */
   noop: string[];
   /** If status === 'error', the failure reason (message only). */
   failure?: string;
-  /** If installed via an explicit config `path`, the installed directory. */
-  installed?: string;
+  /**
+   * For an API-installed plugin (`entry.installed === true`), the absolute path
+   * to the managed directory under `pluginsDir` (the exact dir DELETE removes).
+   * Absent for linked (`path:`) or manually-dropped plugins.
+   */
+  installedPath?: string;
   /** Version from manifest, if present. */
   version?: string;
-  /** Display name from manifest (derived from `description`). */
+  /** Display name from manifest. Falls back to the plugin `name` (never the description). */
   displayName?: string;
+  /** Description from manifest, if present. */
+  description?: string;
 }
 
 /**
  * Build a UI-facing `PluginStatusRecord` from a loader record plus its config
  * entry. The loader record owns status/activated/noop/failure/version/
- * description; the config entry owns enabled/trusted/installed-path.
+ * displayName/description; the config entry owns enabled/trusted/installed.
+ *
+ * `pluginsDir` is the API-managed plugins root; `installedPath` is set only for
+ * an `installed` entry, to `<pluginsDir>/<name>` (the same dir DELETE removes),
+ * so it never holds the dev-link `path:` value (which had the opposite meaning).
  */
 function toStatusRecord(
   loaded: LoaderPluginRecord,
   entry: PluginEntryConfig | undefined,
+  pluginsDir: string,
 ): PluginStatusRecord {
   return {
     name: loaded.name,
@@ -87,13 +104,17 @@ function toStatusRecord(
     // A `path:` entry is auto-enabled (explicit dev intent); otherwise honor the
     // persisted `enabled` flag. A `disabled` record always means enabled=false.
     enabled: loaded.status !== 'disabled' && (entry?.enabled === true || entry?.path !== undefined),
-    trusted: entry?.trusted,
+    // Normalize to a concrete boolean so the key is always present.
+    trusted: entry?.trusted === true,
     activated: loaded.activated,
     noop: loaded.noop,
     failure: loaded.failure?.error,
-    installed: entry?.path,
+    // Only API-installed plugins expose a managed dir path (matches DELETE's
+    // dir-delete gate); linked/manual plugins leave it undefined.
+    installedPath: entry?.installed === true ? join(pluginsDir, loaded.name) : undefined,
     version: loaded.version,
-    displayName: loaded.description,
+    displayName: loaded.displayName ?? loaded.name,
+    description: loaded.description,
   };
 }
 
@@ -120,12 +141,14 @@ function toStatusRecord(
  *   hook engine is built IDENTICALLY to index.ts (logger for matcher/invalid-hook
  *   warnings; dataDir for the ${CLAUDE_PLUGIN_DATA} substitution). This keeps the
  *   rebuilt-on-reload engine faithful to the boot-time one.
+ * - options.pluginsDir: the API-managed plugins root, used to compute an
+ *   installed plugin's `installedPath` in its status record.
  */
 export async function rebuildWiringState(
   loadedPlugins: Awaited<ReturnType<typeof loadPlugins>>,
   pluginConfigEntries: Record<string, PluginEntryConfig>,
   coreProviderIds: string[],
-  options: { logger: Logger; dataDir: string },
+  options: { logger: Logger; dataDir: string; pluginsDir: string },
 ): Promise<PluginWiringState> {
   // Skill dirs flatten straight through (markdown — no trust needed).
   const skillDirs = loadedPlugins.skillDirs;
@@ -160,7 +183,11 @@ export async function rebuildWiringState(
   // Per-plugin status records, keyed by plugin name, for API responses.
   const pluginRecords: Record<string, PluginStatusRecord> = {};
   for (const record of loadedPlugins.records) {
-    pluginRecords[record.name] = toStatusRecord(record, pluginConfigEntries[record.name]);
+    pluginRecords[record.name] = toStatusRecord(
+      record,
+      pluginConfigEntries[record.name],
+      options.pluginsDir,
+    );
   }
 
   return {
@@ -176,38 +203,54 @@ export async function rebuildWiringState(
   };
 }
 
-// Module-level promise mutex so concurrent reloads serialize instead of racing.
-// A single in-flight reload is shared by all callers that arrive while it runs;
-// the slot is cleared (success OR failure) once it settles so the next caller
-// runs fresh. Mirrors the models-route `inFlight` pattern.
+// Module-level reload serialization with QUEUE-DEPTH-1 coalescing.
+//
+// `inFlight` is the currently-running reload. `pending` is set when a NEW reload
+// is requested while one is running: instead of joining the in-flight promise
+// (whose load() may have already snapshotted config BEFORE the new caller's
+// write), we schedule exactly ONE more fresh reload after the current one
+// settles, and resolve the waiting callers from that fresh run. This guarantees
+// every persisted mutation is observed by a reload whose load() ran AFTER the
+// write. Multiple overlapping requests collapse to a single trailing reload (so
+// N writes ⇒ at most 2 reload bodies, not N), while still re-reading the latest
+// on-disk config. With no contention this degrades to a single plain reload.
 let inFlight: Promise<PluginWiringState> | null = null;
+let pending: {
+  promise: Promise<PluginWiringState>;
+  resolve: (v: PluginWiringState) => void;
+  reject: (e: unknown) => void;
+} | null = null;
 
 /**
  * Reload loop. The full flow on a successful reload is:
- *   loadPlugins → rebuildWiringState → onWiringRebuilt → modelsStore.clear →
- *   agents.evictAll
+ *   loadPlugins → rebuildWiringState → onWiringRebuilt (swap) → modelsStore.clear
+ *   → agents.evictAll
  * i.e. re-run discovery, rebuild the derived wiring snapshot, let the caller swap
  * the live wiring reference + re-register MCP servers, invalidate the models
  * cache, then evict idle warm backends so they re-warm against the new wiring.
  *
- * IN-FLIGHT MUTEX: a module-level `inFlight` promise serializes reloads so
- * concurrent requests do not race. The FIRST caller runs the reload body; every
- * caller that arrives while it is running shares that one in-flight promise (and
- * thus the same resolved `PluginWiringState`). The slot is reset in `finally`
- * (on success OR failure), so the next caller after settlement runs a fresh
- * reload — a failed reload does not wedge the mutex.
+ * SERIALIZATION (F1, queue-depth-1): a module-level `inFlight` promise serializes
+ * reloads. The FIRST caller runs the reload body. A caller that arrives WHILE one
+ * is running does NOT join the in-flight promise (its load() may predate that
+ * caller's config write); instead it sets a `pending` flag and is resolved by ONE
+ * fresh reload that runs after the current one settles, re-reading the latest
+ * persisted config. Any number of concurrent arrivals coalesce into that single
+ * trailing reload. So a distinct 2nd mutation is always reflected in the wiring
+ * the 2nd caller awaits.
  *
- * DOCUMENTED RISK — config is persisted BEFORE reload: the caller (the PUT/DELETE
- * route) writes the enable/trust/remove change to the config store BEFORE invoking
- * this, and we re-`load()` those persisted entries so the rebuild reflects them.
- * If a reload step then throws, this function rejects WITHOUT having swapped the
- * live wiring — so the on-disk config is already changed but the running wiring
- * stays on the PREVIOUS (now-stale) snapshot. The config and the live wiring are
- * out of sync until the next SUCCESSFUL reload (a retry, another mutation, or a
- * restart) reconciles them. The route surfaces this as a 409 ('config persisted;
- * wiring unchanged') rather than silently rolling back the config write.
+ * FAILURE CONTRACT (F3): config is persisted by the PUT/DELETE route BEFORE this
+ * runs, and we re-`load()` it so the rebuild reflects it. The
+ * loadPlugins/rebuildWiringState/onWiringRebuilt (swap) steps run BEFORE the
+ * best-effort clear/evict. If ANY of those swap-or-earlier steps throws, this
+ * REJECTS without having committed the swap — the live wiring is GENUINELY
+ * unchanged (the route's 409 'wiring unchanged' is accurate). Once the swap has
+ * committed, the reload is considered APPLIED: a failing `modelsStore.clear()` is
+ * logged and swallowed (it must not make a successful reload falsely report
+ * 'unchanged'), and `agents.evictAll()` runs in a `finally` so idle backends are
+ * always evicted and never retain stale wiring. Net: a thrown reload ⇒ wiring
+ * truly unchanged; a resolved reload ⇒ wiring applied (best-effort clear/evict).
  *
- * Returns the rebuilt wiring state, or throws if any reload step fails.
+ * Returns the rebuilt wiring state, or throws if a swap-or-earlier step fails.
  *
  * - pluginConfigStore: to load() the persisted entries before reload
  * - pluginsDir: the plugins directory to scan
@@ -218,8 +261,8 @@ let inFlight: Promise<PluginWiringState> | null = null;
  * - agents: the coordinator, for evicting idle warm backends so they re-warm
  *   against the new wiring (plugin wiring is global to all agents)
  * - coreProviderIds: built-in provider ids for collision detection
- * - onWiringRebuilt: fired after wiring is rebuilt (before eviction), e.g. to
- *   swap the live wiring reference and re-register MCP servers
+ * - onWiringRebuilt: fired after wiring is rebuilt (the live swap), before
+ *   eviction, e.g. to swap the live wiring reference and re-register MCP servers
  */
 export async function reloadPluginsUnderMutex(
   pluginConfigStore: PluginConfigStore,
@@ -231,9 +274,9 @@ export async function reloadPluginsUnderMutex(
   coreProviderIds: string[],
   onWiringRebuilt?: (newWiring: PluginWiringState) => Promise<void>,
 ): Promise<PluginWiringState> {
-  if (inFlight) return inFlight;
-
-  inFlight = (async () => {
+  // The actual reload body. The swap (onWiringRebuilt) and everything before it
+  // can reject (→ wiring unchanged); clear/evict after the swap are best-effort.
+  const runReload = async (): Promise<PluginWiringState> => {
     logger.info('[plugins] reload starting');
 
     // Re-read the persisted enable/trust entries (the caller persisted any
@@ -242,35 +285,87 @@ export async function reloadPluginsUnderMutex(
     const loaded = await loadPlugins({ pluginsDir, entries, logger });
 
     // Rebuild the derived wiring snapshot (pure construction, no I/O). Thread
-    // logger + dataDir so the rebuilt hook engine matches the boot-time one.
+    // logger + dataDir + pluginsDir so the rebuilt records/hook engine match boot.
     const wiring = await rebuildWiringState(loaded, entries, coreProviderIds, {
       logger,
       dataDir,
+      pluginsDir,
     });
 
-    // Let the caller swap the live wiring reference + re-register MCP servers
-    // BEFORE we evict, so re-warmed backends pick up the new wiring.
+    // The LIVE SWAP. Up to and including this step, a throw means wiring is
+    // genuinely unchanged → reject so the route reports 409 'wiring unchanged'.
     if (onWiringRebuilt) {
       await onWiringRebuilt(wiring);
     }
 
-    // Invalidate the models cache so the next GET /models refetches (plugin
-    // models are merged at render time, but a reload may change them).
-    await modelsStore.clear();
-
-    // Evict ALL idle warm backends so the next chat re-warms with the new
-    // wiring. Plugin wiring (skill dirs, hooks, model catalog) is global to
-    // every agent, so this is a single pool-wide eviction — NOT per-plugin.
-    // Pinned in-flight conversations are left to drain on their old wiring.
-    await agents.evictAll();
+    // --- Past the swap: the reload is APPLIED. clear/evict are best-effort and
+    // must NOT turn a committed reload into a rejection. ---
+    try {
+      // Invalidate the models cache so the next GET /models refetches.
+      await modelsStore.clear();
+    } catch (err) {
+      logger.warn(
+        `[plugins] reload: models cache clear failed (wiring already applied): ${(err as Error).message}`,
+      );
+    } finally {
+      // Evict ALL idle warm backends so the next chat re-warms with the new
+      // wiring (global to every agent — a single pool-wide eviction, NOT
+      // per-plugin). In `finally` so a clear() failure never skips eviction and
+      // leaves a backend retaining stale wiring. Pinned in-flight conversations
+      // drain on their old wiring.
+      await agents.evictAll();
+    }
 
     logger.info('[plugins] reload complete');
     return wiring;
-  })();
+  };
 
+  // If a reload is already running, request ONE trailing fresh reload (coalesced)
+  // and wait for it — guarantees this caller's just-persisted config is re-read.
+  if (inFlight) {
+    if (!pending) {
+      let resolve!: (v: PluginWiringState) => void;
+      let reject!: (e: unknown) => void;
+      const promise = new Promise<PluginWiringState>((res, rej) => {
+        resolve = res;
+        reject = rej;
+      });
+      pending = { promise, resolve, reject };
+    }
+    return pending.promise;
+  }
+
+  // Drive the in-flight slot, then drain any pending trailing reload(s).
+  inFlight = runReload();
   try {
     return await inFlight;
   } finally {
     inFlight = null;
+    // If callers queued while we ran, fulfil them with ONE fresh reload that
+    // re-reads the latest persisted config. Done OUTSIDE this caller's await
+    // chain so this caller's result is unaffected by the trailing run.
+    if (pending) {
+      const queued = pending;
+      pending = null;
+      // Run the trailing reload through the same mutex entry so further arrivals
+      // coalesce onto it too.
+      void (async () => {
+        try {
+          const state = await reloadPluginsUnderMutex(
+            pluginConfigStore,
+            pluginsDir,
+            dataDir,
+            logger,
+            modelsStore,
+            agents,
+            coreProviderIds,
+            onWiringRebuilt,
+          );
+          queued.resolve(state);
+        } catch (err) {
+          queued.reject(err);
+        }
+      })();
+    }
   }
 }
