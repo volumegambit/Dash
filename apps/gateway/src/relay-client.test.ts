@@ -136,4 +136,71 @@ describe('relay-client (HTTP replay)', () => {
     await waitFor(() => received.some((f) => f.t === 'close'));
     expect(received.find((f) => f.t === 'close')?.t).toBe('close');
   });
+
+  it('streams SSE chunks as they arrive (no buffering, keepalive passthrough)', async () => {
+    let releaseB: (() => void) | undefined;
+    const bGate = new Promise<void>((r) => {
+      releaseB = r;
+    });
+    loopback = http.createServer((_req, res) => {
+      res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });
+      res.flushHeaders();
+      res.write('data: a\n\n');
+      void bGate.then(() => {
+        res.write(': keepalive\n\n');
+        res.write('data: b\n\n');
+      });
+    });
+    const mgmtPort = await listen(loopback);
+
+    relay = new WebSocketServer({ port: 0, host: '127.0.0.1' });
+    await new Promise<void>((r) => relay.on('listening', () => r()));
+    const relayPort = (relay.address() as AddressInfo).port;
+
+    const received: Frame[] = [];
+    const gwSocket = new Promise<WebSocket>((resolve) => {
+      relay.on('connection', (ws) => {
+        ws.on('message', (raw: Buffer) => received.push(decodeFrame(raw.toString())));
+        resolve(ws);
+      });
+    });
+
+    client = startRelayClient({
+      relayUrl: `ws://127.0.0.1:${relayPort}`,
+      relayToken: 'rt',
+      gatewayId: 'g1',
+      managementPort: mgmtPort,
+      channelPort: 9999,
+    });
+
+    const ws = await gwSocket;
+    ws.send(
+      encodeFrame({
+        t: 'open',
+        streamId: 1,
+        target: 'mgmt',
+        kind: 'http',
+        method: 'GET',
+        path: '/events',
+        headers: {},
+      }),
+    );
+    ws.send(encodeFrame({ t: 'end', streamId: 1 }));
+
+    const dataText = () =>
+      received
+        .filter((f): f is Extract<Frame, { t: 'data' }> => f.t === 'data')
+        .map((f) => decodeChunk(f.chunk).toString())
+        .join('');
+
+    // The first event must surface while the response is still open (B is gated):
+    // proof the client streams rather than buffering the whole response.
+    await waitFor(() => dataText().includes('data: a\n\n'));
+    expect(dataText()).not.toContain('data: b');
+    expect(received.some((f) => f.t === 'end')).toBe(false); // SSE stays open
+
+    releaseB?.();
+    await waitFor(() => dataText().includes('data: b\n\n'));
+    expect(dataText()).toContain(': keepalive\n\n');
+  });
 });

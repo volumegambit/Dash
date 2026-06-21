@@ -170,6 +170,16 @@ function handlePhoneHttp(
     },
   });
 
+  // If the phone disconnects mid-stream (e.g. drops a long-lived SSE/chat
+  // connection), tear down the upstream loopback request via the gateway.
+  // `delete` returns false once the stream completed normally, so a normal
+  // res `close` does not double-send.
+  res.on('close', () => {
+    if (conn.streams.delete(streamId)) {
+      conn.socket.send(encodeFrame({ t: 'close', streamId }));
+    }
+  });
+
   // All plain HTTP (REST + SSE /events) targets the management server (9300).
   conn.socket.send(
     encodeFrame({
