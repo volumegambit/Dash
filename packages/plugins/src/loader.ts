@@ -1,7 +1,13 @@
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { readHooksJson } from './hooks-manifest.js';
-import { readManifest, resolveBinDir, resolveCommandFiles, resolveSkillDirs } from './manifest.js';
+import {
+  readManifest,
+  resolveAgentFiles,
+  resolveBinDir,
+  resolveCommandFiles,
+  resolveSkillDirs,
+} from './manifest.js';
 import { translateMcpJson } from './mcp-translate.js';
 import type {
   HookConfigEntry,
@@ -59,6 +65,7 @@ export async function loadPlugins(opts: LoadPluginsOptions): Promise<LoadedPlugi
   const records: PluginRecord[] = [];
   const skillDirs: string[] = [];
   const commandFiles: Array<{ pluginName: string; file: string }> = [];
+  const agentFiles: Array<{ pluginName: string; file: string }> = [];
   const binDirs: string[] = [];
   const mcpConfigs: McpConfigEntry[] = [];
   const hookConfigs: HookConfigEntry[] = [];
@@ -95,23 +102,27 @@ export async function loadPlugins(opts: LoadPluginsOptions): Promise<LoadedPlugi
       // NOTHING from this plugin leaks into the aggregate output.
       const localSkillDirs: string[] = [];
       const localCommandFiles: Array<{ pluginName: string; file: string }> = [];
+      const localAgentFiles: Array<{ pluginName: string; file: string }> = [];
       const localBinDirs: string[] = [];
       const localMcpConfigs: McpConfigEntry[] = [];
       const localHookConfigs: HookConfigEntry[] = [];
 
       // Markdown components need no trust. Skills (default skills/ + manifest
-      // entries) and commands (flat .md files) are discovered for any enabled
-      // plugin.
+      // entries), commands (flat .md files), and agents (loadable specialist
+      // .md files) are discovered for any enabled plugin.
       const sDirs = resolveSkillDirs(dir, manifest);
       const cmdFiles = resolveCommandFiles(dir, manifest);
+      const agtFiles = resolveAgentFiles(dir, manifest);
       localSkillDirs.push(...sDirs);
       localCommandFiles.push(...cmdFiles.map((file) => ({ pluginName: manifest.name, file })));
+      localAgentFiles.push(...agtFiles.map((file) => ({ pluginName: manifest.name, file })));
 
       const activated: string[] = [];
       const noop: string[] = [];
       if (sDirs.length) activated.push('skills');
       else noop.push('skills');
       if (cmdFiles.length) activated.push('commands');
+      if (agtFiles.length) activated.push('agents');
 
       // Code-execution components (bin/, MCP servers) require explicit trust.
       // Path entries are auto-ENABLED (dev intent) but NOT auto-trusted.
@@ -166,6 +177,7 @@ export async function loadPlugins(opts: LoadPluginsOptions): Promise<LoadedPlugi
       // Plugin fully succeeded — commit its components to the aggregates.
       skillDirs.push(...localSkillDirs);
       commandFiles.push(...localCommandFiles);
+      agentFiles.push(...localAgentFiles);
       binDirs.push(...localBinDirs);
       mcpConfigs.push(...localMcpConfigs);
       hookConfigs.push(...localHookConfigs);
@@ -198,5 +210,5 @@ export async function loadPlugins(opts: LoadPluginsOptions): Promise<LoadedPlugi
     }
   }
 
-  return { records, skillDirs, commandFiles, binDirs, mcpConfigs, hookConfigs };
+  return { records, skillDirs, commandFiles, agentFiles, binDirs, mcpConfigs, hookConfigs };
 }

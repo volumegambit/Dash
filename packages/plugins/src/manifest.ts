@@ -1,4 +1,4 @@
-import { existsSync, readdirSync } from 'node:fs';
+import { existsSync, readdirSync, statSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { basename, isAbsolute, join, relative, resolve } from 'node:path';
 import type { PluginAuthor, PluginManifest } from '@dash/plugin-sdk';
@@ -67,6 +67,7 @@ export function validateManifest(raw: unknown, dir: string): PluginManifest {
     keywords: stringArray(m.keywords),
     skills: normalizePaths(m.skills),
     commands: normalizePaths(m.commands),
+    agents: normalizePaths(m.agents),
   };
 }
 
@@ -130,6 +131,35 @@ export function resolveCommandFiles(dir: string, manifest: PluginManifest): stri
   for (const root of roots) {
     for (const entry of readdirSync(root, { withFileTypes: true })) {
       if (entry.isFile() && entry.name.endsWith('.md')) files.push(join(root, entry.name));
+    }
+  }
+  return files;
+}
+
+/**
+ * Resolves the subagent `*.md` files a plugin contributes: the default
+ * `agents/` dir (when present) PLUS any `agents` manifest entries (relative,
+ * './'-prefixed, contained). Claude Code semantics: `agents` ADDS to the
+ * default, never replaces it. A manifest entry may point at a directory (scanned
+ * for flat `*.md` files) or directly at an `.md` file. Markdown only — no code
+ * execution, so no trust is required.
+ */
+export function resolveAgentFiles(dir: string, manifest: PluginManifest): string[] {
+  const roots: string[] = [];
+  const def = join(dir, 'agents');
+  if (existsSync(def)) roots.push(def);
+  for (const p of manifest.agents ?? []) {
+    const abs = containedPath(dir, p);
+    if (abs) roots.push(abs);
+  }
+  const files: string[] = [];
+  for (const root of roots) {
+    if (statSync(root).isDirectory()) {
+      for (const entry of readdirSync(root, { withFileTypes: true })) {
+        if (entry.isFile() && entry.name.endsWith('.md')) files.push(join(root, entry.name));
+      }
+    } else if (root.endsWith('.md')) {
+      files.push(root);
     }
   }
   return files;

@@ -5,6 +5,7 @@ import {
   MANIFEST_DIR,
   MANIFEST_FILENAME,
   readManifest,
+  resolveAgentFiles,
   resolveBinDir,
   resolveCommandFiles,
   resolveSkillDirs,
@@ -34,6 +35,11 @@ describe('validateManifest', () => {
   it('normalizes string skills to an array', () => {
     const m = validateManifest({ name: 'p', skills: './extra-skills' }, '/x/p');
     expect(m.skills).toEqual(['./extra-skills']);
+  });
+
+  it('normalizes string agents to an array', () => {
+    const m = validateManifest({ name: 'p', agents: './a' }, '/x/p');
+    expect(m.agents).toEqual(['./a']);
   });
 
   it('preserves all recognized optional fields', () => {
@@ -89,6 +95,10 @@ describe('validateManifest', () => {
     const m = validateManifest({ name: 'p', skills: 1, commands: 2 }, '/x/p');
     expect(m.skills).toBeUndefined();
     expect(m.commands).toBeUndefined();
+  });
+
+  it('drops agents when given a non-array, non-string value', () => {
+    expect(validateManifest({ name: 'p', agents: 1 }, '/x/p').agents).toBeUndefined();
   });
 });
 
@@ -203,6 +213,51 @@ describe('resolveCommandFiles', () => {
 
   it('returns [] when no commands dir exists', () => {
     expect(resolveCommandFiles(dir, { name: 'p' })).toEqual([]);
+  });
+});
+
+describe('resolveAgentFiles', () => {
+  let dir: string;
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'cc-agent-'));
+  });
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it('finds flat .md files under the default agents/ dir', async () => {
+    await mkdir(join(dir, 'agents'), { recursive: true });
+    await writeFile(join(dir, 'agents', 'reviewer.md'), '# reviewer');
+    await writeFile(join(dir, 'agents', 'planner.md'), '# planner');
+    await writeFile(join(dir, 'agents', 'notes.txt'), 'ignore me');
+    const files = resolveAgentFiles(dir, { name: 'p' }).sort();
+    expect(files).toEqual([join(dir, 'agents', 'planner.md'), join(dir, 'agents', 'reviewer.md')]);
+  });
+
+  it('manifest agents ADDS to the default dir', async () => {
+    await mkdir(join(dir, 'agents'), { recursive: true });
+    await writeFile(join(dir, 'agents', 'default.md'), 'x');
+    await mkdir(join(dir, 'custom'), { recursive: true });
+    await writeFile(join(dir, 'custom', 'special.md'), 'y');
+    const files = resolveAgentFiles(dir, { name: 'p', agents: ['./custom'] }).sort();
+    expect(files).toEqual([join(dir, 'agents', 'default.md'), join(dir, 'custom', 'special.md')]);
+  });
+
+  it('uses a manifest agents path that points directly at an .md file', async () => {
+    await writeFile(join(dir, 'lone.md'), 'z');
+    const files = resolveAgentFiles(dir, { name: 'p', agents: ['./lone.md'] });
+    expect(files).toEqual([join(dir, 'lone.md')]);
+  });
+
+  it('returns [] when no agents dir exists', () => {
+    expect(resolveAgentFiles(dir, { name: 'p' })).toEqual([]);
+  });
+
+  it('ignores non-relative or missing manifest agent paths', async () => {
+    await mkdir(join(dir, 'agents'), { recursive: true });
+    await writeFile(join(dir, 'agents', 'a.md'), 'a');
+    const files = resolveAgentFiles(dir, { name: 'p', agents: ['/abs/path', './missing'] });
+    expect(files).toEqual([join(dir, 'agents', 'a.md')]);
   });
 });
 

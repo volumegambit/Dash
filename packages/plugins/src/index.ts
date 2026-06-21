@@ -13,6 +13,7 @@ export {
   MANIFEST_DIR,
   MANIFEST_FILENAME,
   readManifest,
+  resolveAgentFiles,
   resolveBinDir,
   resolveCommandFiles,
   resolveSkillDirs,

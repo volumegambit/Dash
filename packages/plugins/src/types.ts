@@ -68,6 +68,12 @@ export interface LoadedPlugins {
    * the derived skill as `<plugin>:<command>`.
    */
   commandFiles: Array<{ pluginName: string; file: string }>;
+  /**
+   * Flat agent .md files from enabled plugins (markdown loadable specialists —
+   * no trust needed), each tagged with the plugin that contributed it so the
+   * host can namespace the derived subagent as `<plugin>:<agent>`.
+   */
+  agentFiles: Array<{ pluginName: string; file: string }>;
   /** bin/ dirs from enabled+trusted plugins (code execution — requires trust). */
   binDirs: string[];
   /** Translated MCP servers from enabled+trusted plugins, tagged by plugin. */

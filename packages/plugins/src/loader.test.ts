@@ -12,6 +12,7 @@ async function writePlugin(
     skill?: string;
     manifest?: Record<string, unknown> | false;
     command?: string;
+    agent?: string;
     bin?: boolean;
     mcp?: Record<string, unknown>;
     hooks?: Record<string, unknown> | string;
@@ -37,6 +38,10 @@ async function writePlugin(
   if (opts.command) {
     await mkdir(join(dir, 'commands'), { recursive: true });
     await writeFile(join(dir, 'commands', `${opts.command}.md`), `# ${opts.command}\nbody`);
+  }
+  if (opts.agent) {
+    await mkdir(join(dir, 'agents'), { recursive: true });
+    await writeFile(join(dir, 'agents', `${opts.agent}.md`), `# ${opts.agent}\nbody`);
   }
   if (opts.bin) {
     await mkdir(join(dir, 'bin'), { recursive: true });
@@ -179,6 +184,15 @@ describe('loadPlugins', () => {
       { pluginName: 'p', file: join(dir, 'commands', 'deploy.md') },
     ]);
     expect(loaded.records[0].activated).toEqual(expect.arrayContaining(['skills', 'commands']));
+  });
+
+  it('collects agents for an enabled plugin (markdown — no trust needed)', async () => {
+    const dir = await writePlugin(pluginsDir, 'p', { skill: 'g', agent: 'reviewer' });
+    const loaded = await loadPlugins({ pluginsDir, entries: { p: { enabled: true } } });
+    expect(loaded.agentFiles).toEqual([
+      { pluginName: 'p', file: join(dir, 'agents', 'reviewer.md') },
+    ]);
+    expect(loaded.records[0].activated).toEqual(expect.arrayContaining(['skills', 'agents']));
   });
 
   it('withholds mcp + bin from an enabled-but-untrusted plugin', async () => {

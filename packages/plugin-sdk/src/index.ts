@@ -39,6 +39,12 @@ export interface PluginManifest {
    * REPLACES the default `commands/` scan. Parsed in Plan 2.
    */
   commands?: string[];
+  /**
+   * Subagent directories/files (`*.md`, loadable specialists). Relative,
+   * starting with './'. ADDS to the default `agents/` scan (never replaces it).
+   * Parsed in Plan 4.
+   */
+  agents?: string[];
 }
 
 /**
