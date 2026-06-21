@@ -15,6 +15,7 @@ import { createConsoleLogger } from '@dash/logging';
 import { mountProjectsWs } from '@dash/management';
 import { FileTokenStore, McpManager } from '@dash/mcp';
 import type { McpAgentContext } from '@dash/mcp';
+import { PluginConfigStore, loadPlugins } from '@dash/plugins';
 import { createProjectsTools, openProjectsDb } from '@dash/projects';
 import { serve } from '@hono/node-server';
 import { createNodeWebSocket } from '@hono/node-ws';
@@ -96,6 +97,25 @@ async function main() {
   if (mcpConfigs.length > 0) {
     console.log(`[MCP] Restoring ${mcpConfigs.length} persisted server(s)...`);
     await mcpManager.start();
+  }
+
+  // Plugin host — discover Claude Code plugins under <dataDir>/plugins and
+  // route their skills. Skills are markdown (no code execution), so they load
+  // for any `enabled` plugin; `trusted` gates code-execution components in
+  // later increments. The loader never throws — a bad plugin is recorded and
+  // skipped so the gateway always starts.
+  const pluginConfigStore = new PluginConfigStore(dataDir);
+  const pluginEntries = await pluginConfigStore.load();
+  const loadedPlugins = await loadPlugins({
+    pluginsDir: resolve(dataDir, 'plugins'),
+    entries: pluginEntries,
+    logger,
+  });
+  const pluginSkillDirs = loadedPlugins.skillDirs;
+  for (const r of loadedPlugins.records) {
+    if (r.status === 'error') {
+      console.warn(`[plugins] '${r.name}' failed: ${r.failure?.error}`);
+    }
   }
 
   // Create gateway + agent service.
@@ -206,7 +226,10 @@ async function main() {
           systemPrompt: agentConfig.systemPrompt,
           fallbackModels: agentConfig.fallbackModels,
           tools: agentConfig.tools,
-          skills: agentConfig.skills,
+          skills: {
+            ...agentConfig.skills,
+            paths: [...(agentConfig.skills?.paths ?? []), ...pluginSkillDirs],
+          },
         },
         credentialProvider,
         undefined,

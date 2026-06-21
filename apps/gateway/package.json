@@ -17,6 +17,7 @@
   },
   "dependencies": {
     "@dash/agent": "*",
+    "@dash/plugins": "*",
     "@dash/channels": "*",
     "@dash/mcp": "*",
     "@dash/chat": "*",
