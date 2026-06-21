@@ -13,12 +13,13 @@
     "packages/mcp",
     "packages/models",
     "packages/plugin-sdk",
+    "packages/plugins",
     "packages/projects",
     "packages/skills",
     "apps/*"
   ],
   "scripts": {
-    "build": "npm run build -w packages/models -w packages/plugin-sdk -w packages/skills -w packages/projects -w packages/mcp -w packages/agent -w packages/channels -w packages/logging -w packages/management -w packages/chat -w packages/mc -w apps/gateway -w apps/mc-cli",
+    "build": "npm run build -w packages/models -w packages/plugin-sdk -w packages/plugins -w packages/skills -w packages/projects -w packages/mcp -w packages/agent -w packages/channels -w packages/logging -w packages/management -w packages/chat -w packages/mc -w apps/gateway -w apps/mc-cli",
     "mc-cli": "node --import tsx apps/mc-cli/src/index.ts",
     "gateway": "node --import tsx apps/gateway/src/index.ts",
     "mc:dev": "npm run dev --workspace=apps/mission-control",
@@ -35,7 +36,7 @@
     "models:check": "tsx scripts/check-models-freshness.ts",
     "preflight": "npm run lint && npm run build && npm test && npm run models:check",
     "test": "vitest run",
-    "lint": "biome check . && npm run typecheck --workspace=apps/mission-control && npm run typecheck --workspace=packages/plugin-sdk",
+    "lint": "biome check . && npm run typecheck --workspace=apps/mission-control && npm run typecheck --workspace=packages/plugin-sdk && npm run typecheck --workspace=packages/plugins",
     "lint:fix": "biome check --write .",
     "clean": "rm -rf packages/*/dist apps/*/dist apps/*/out",
     "version:sync": "V=$(node -p \"require('./package.json').version\") && for f in packages/*/package.json apps/*/package.json; do node -e \"const fs=require('fs');const p=JSON.parse(fs.readFileSync('$f'));p.version='$V';fs.writeFileSync('$f',JSON.stringify(p,null,2)+'\\n')\"; done"
