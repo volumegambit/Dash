@@ -1,5 +1,5 @@
 import { type KeyObject, timingSafeEqual } from 'node:crypto';
-import type { PairingCredentialStore } from './credential-store.js';
+import type { CredentialStore, PairingCredentialStore } from './credential-store.js';
 import { verifyDialToken } from './dial-token.js';
 
 /**
@@ -63,7 +63,7 @@ export function credentialStoreAuth(relayToken: string, store: PairingCredential
  */
 export function hostedRelayAuth(opts: {
   publicKey: KeyObject;
-  store: PairingCredentialStore;
+  store: CredentialStore;
   now?: () => number;
 }): RelayDeps {
   const now = opts.now ?? (() => Math.floor(Date.now() / 1000));

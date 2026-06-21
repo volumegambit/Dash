@@ -16,6 +16,12 @@ describe('parseRelayFlags', () => {
     expect(parseRelayFlags(['--admin-secret', 'sek'])).toEqual({ adminSecret: 'sek' });
   });
 
+  it('parses --dial-token-public-key and --store-path', () => {
+    expect(
+      parseRelayFlags(['--dial-token-public-key', '/k/pub.pem', '--store-path', '/d/creds.db']),
+    ).toEqual({ dialTokenPublicKeyPath: '/k/pub.pem', storePath: '/d/creds.db' });
+  });
+
   it('ignores flags without values', () => {
     expect(parseRelayFlags(['--relay-token'])).toEqual({});
   });
@@ -57,6 +63,41 @@ describe('loadRelayConfig', () => {
     ).toBe('envsek');
     // Absent → undefined (admin API disabled).
     expect(loadRelayConfig({ env: { RELAY_TOKEN: 't' } }).adminSecret).toBeUndefined();
+  });
+
+  it('reads hosted-mode paths from flags', () => {
+    const cfg = loadRelayConfig({
+      argv: ['--dial-token-public-key', '/k/pub.pem', '--store-path', '/d/creds.db'],
+      env: { RELAY_TOKEN: 't' },
+    });
+    expect(cfg.dialTokenPublicKeyPath).toBe('/k/pub.pem');
+    expect(cfg.storePath).toBe('/d/creds.db');
+  });
+
+  it('reads hosted-mode paths from env', () => {
+    const cfg = loadRelayConfig({
+      env: {
+        RELAY_TOKEN: 't',
+        RELAY_DIAL_TOKEN_PUBLIC_KEY: '/env/pub.pem',
+        RELAY_STORE_PATH: '/env/creds.db',
+      },
+    });
+    expect(cfg.dialTokenPublicKeyPath).toBe('/env/pub.pem');
+    expect(cfg.storePath).toBe('/env/creds.db');
+  });
+
+  it('lets hosted-mode flags override env', () => {
+    const cfg = loadRelayConfig({
+      argv: ['--dial-token-public-key', '/flag/pub.pem'],
+      env: { RELAY_TOKEN: 't', RELAY_DIAL_TOKEN_PUBLIC_KEY: '/env/pub.pem' },
+    });
+    expect(cfg.dialTokenPublicKeyPath).toBe('/flag/pub.pem');
+  });
+
+  it('does not require a relay token when a dial-token public key is supplied', () => {
+    expect(() =>
+      loadRelayConfig({ argv: ['--dial-token-public-key', '/k/pub.pem'], env: {} }),
+    ).not.toThrow();
   });
 
   it('throws when no relay token is provided', () => {

@@ -1,7 +1,9 @@
+import { createPublicKey } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { createConsoleLogger } from '@dash/logging';
-import { credentialStoreAuth, staticRelayAuth } from './auth.js';
+import { credentialStoreAuth, hostedRelayAuth, staticRelayAuth } from './auth.js';
 import { loadRelayConfig } from './config.js';
-import { PairingCredentialStore } from './credential-store.js';
+import { DurableCredentialStore, PairingCredentialStore } from './credential-store.js';
 import { type RelayServerOptions, createRelayServer } from './relay-server.js';
 
 /**
@@ -13,13 +15,26 @@ async function main(): Promise<void> {
   const config = loadRelayConfig({ argv: process.argv.slice(2), env: process.env });
   const logger = createConsoleLogger('info', 'text', 'relay');
 
-  // The shared relay token always gates gateway registration. When an admin
-  // secret is configured, the relay also validates real per-pairing credentials
-  // (provisioned/revoked via /admin/*); otherwise pairing credentials are
-  // accepted permissively (dev mode — gateway tokens remain the real auth).
+  // Mode selection:
+  //  - Hosted (multi-tenant): a dial-token public key is supplied. Gateways dial
+  //    in with control-plane-signed, gatewayId-bound tokens (no shared secret),
+  //    and pairings live in a durable, hashed SQLite store that survives restarts.
+  //  - Self-hosted: the shared relay token gates gateway registration. When an
+  //    admin secret is configured the relay also validates real per-pairing
+  //    credentials (provisioned/revoked via /admin/*); otherwise they are
+  //    accepted permissively (dev mode — gateway tokens remain the real auth).
   let options: RelayServerOptions = {};
   let deps = staticRelayAuth(config.relayToken);
-  if (config.adminSecret) {
+  let mode = 'self-hosted';
+  if (config.dialTokenPublicKeyPath) {
+    const publicKey = createPublicKey(readFileSync(config.dialTokenPublicKeyPath, 'utf8'));
+    const store = new DurableCredentialStore(config.storePath ?? 'relay-creds.db');
+    deps = hostedRelayAuth({ publicKey, store });
+    if (config.adminSecret) {
+      options = { admin: { secret: config.adminSecret, store } };
+    }
+    mode = 'hosted';
+  } else if (config.adminSecret) {
     const store = new PairingCredentialStore();
     deps = credentialStoreAuth(config.relayToken, store);
     options = { admin: { secret: config.adminSecret, store } };
@@ -29,7 +44,7 @@ async function main(): Promise<void> {
   await new Promise<void>((resolve) => {
     relay.httpServer.listen(config.port, config.host, () => resolve());
   });
-  logger.info(`relay listening on ${config.host}:${config.port}`);
+  logger.info(`relay listening on ${config.host}:${config.port} (${mode} mode)`);
   logger.info(`admin API ${config.adminSecret ? 'enabled' : 'disabled'}`);
 
   // Last-resort net for a multi-tenant relay: the per-stream code already

@@ -2,7 +2,7 @@ import http from 'node:http';
 import type { Duplex } from 'node:stream';
 import { type RawData, type WebSocket, WebSocketServer } from 'ws';
 import { type RelayDeps, safeEqual } from './auth.js';
-import type { PairingCredentialStore } from './credential-store.js';
+import type { CredentialStore } from './credential-store.js';
 import {
   type Frame,
   type Target,
@@ -36,7 +36,7 @@ export interface RelayAdminConfig {
   /** Master secret a caller (Mission Control) presents to the /admin routes. */
   secret: string;
   /** Backing store the admin routes provision/revoke against. */
-  store: PairingCredentialStore;
+  store: CredentialStore;
 }
 
 export interface RelayServerOptions extends RelayLimits {
