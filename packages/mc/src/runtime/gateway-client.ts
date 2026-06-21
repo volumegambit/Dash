@@ -61,8 +61,15 @@ export interface CreateAgentRequest {
    * gateway-wide. `undefined` / omitted = all loaded plugins (backward-compat);
    * a non-empty list scopes the agent to those plugins. Flows to POST /agents
    * and PUT /agents/:id, where the gateway accepts the `plugins?` field.
+   *
+   * `null` is the WRITE-ONLY clear sentinel: sent on a PUT to clear a scoped
+   * selection back to "all". It survives JSON.stringify (unlike `undefined`,
+   * which is dropped — making the clear a silent no-op over the wire); the
+   * gateway treats null as "delete the key". The READ type
+   * (`GatewayAgent.config.plugins`) intentionally stays `string[] | undefined`
+   * — the gateway never persists or returns null.
    */
-  plugins?: string[];
+  plugins?: string[] | null;
 }
 
 /**

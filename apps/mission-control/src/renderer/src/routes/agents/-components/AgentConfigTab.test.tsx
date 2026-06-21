@@ -79,7 +79,7 @@ describe('AgentConfigTab plugins card', () => {
     );
   });
 
-  it('unassigning the last plugin saves plugins: undefined (empty → all)', async () => {
+  it('unassigning the last plugin saves plugins: null (clear → all)', async () => {
     const user = userEvent.setup();
     mockApi.plugins.list.mockResolvedValue([
       pluginRecord('alpha', { displayName: 'Alpha Plugin' }),
@@ -100,9 +100,65 @@ describe('AgentConfigTab plugins card', () => {
     const remove = await screen.findByRole('button', { name: /remove alpha/i });
     await user.click(remove);
 
-    await waitFor(() =>
-      expect(updateConfig).toHaveBeenCalledWith('agent-1', { plugins: undefined }),
+    // Clearing must send `null`, NOT `undefined`. `undefined` is dropped by
+    // JSON.stringify over the wire so the gateway merges nothing and the
+    // selection sticks; `null` survives and the gateway treats it as
+    // "clear to all". After clearing, the "All plugins" display returns.
+    await waitFor(() => expect(updateConfig).toHaveBeenCalledWith('agent-1', { plugins: null }));
+    expect(
+      await screen.findByText(/all plugins \(default\)\. this agent sees every loaded plugin/i),
+    ).toBeInTheDocument();
+  });
+
+  it('does not offer disabled/error plugins as assignable options', async () => {
+    const user = userEvent.setup();
+    mockApi.plugins.list.mockResolvedValue([
+      pluginRecord('alpha', { displayName: 'Alpha Plugin' }),
+      pluginRecord('broken', { displayName: 'Broken Plugin', status: 'disabled' }),
+      pluginRecord('crashed', { displayName: 'Crashed Plugin', status: 'error' }),
+    ]);
+    const updateConfig = vi.fn().mockResolvedValue(undefined);
+
+    render(
+      <AgentConfigTab agentId="agent-1" agentConfig={baseConfig} updateConfig={updateConfig} />,
     );
+
+    await user.click(screen.getByRole('button', { name: /plugins/i }));
+
+    // Only the loaded plugin is assignable; disabled/error plugins contribute
+    // nothing to routing, so they must not appear in the picker.
+    expect(await screen.findByRole('option', { name: /Alpha Plugin/i })).toBeInTheDocument();
+    expect(screen.queryByRole('option', { name: /Broken Plugin/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('option', { name: /Crashed Plugin/i })).not.toBeInTheDocument();
+  });
+
+  it('keeps an already-assigned plugin visible+removable even if it is not loaded', async () => {
+    const user = userEvent.setup();
+    // 'alpha' is assigned to the agent but is currently in error state. The
+    // user must still be able to SEE and REMOVE it (so they can recover from a
+    // plugin that errored after being scoped in).
+    mockApi.plugins.list.mockResolvedValue([
+      pluginRecord('alpha', { displayName: 'Alpha Plugin', status: 'error' }),
+      pluginRecord('beta', { displayName: 'Beta Plugin' }),
+    ]);
+    const updateConfig = vi.fn().mockResolvedValue(undefined);
+
+    render(
+      <AgentConfigTab
+        agentId="agent-1"
+        agentConfig={{ ...baseConfig, plugins: ['alpha'] }}
+        updateConfig={updateConfig}
+      />,
+    );
+
+    await user.click(screen.getByRole('button', { name: /plugins/i }));
+
+    // The assigned (errored) plugin chip + its remove button are present.
+    expect(await screen.findByRole('button', { name: /remove alpha/i })).toBeInTheDocument();
+    // It is NOT re-offered in the assignable picker (already assigned).
+    expect(screen.queryByRole('option', { name: /Alpha Plugin/i })).not.toBeInTheDocument();
+    // The loaded, unassigned 'beta' is still assignable.
+    expect(screen.getByRole('option', { name: /Beta Plugin/i })).toBeInTheDocument();
   });
 
   it('shows the "All plugins" indicator for a legacy agent (plugins undefined)', async () => {

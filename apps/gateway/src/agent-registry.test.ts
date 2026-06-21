@@ -267,7 +267,13 @@ describe('AgentRegistry (file-backed)', () => {
       expect(reg.get(entry.id)?.config.plugins).toEqual(['alpha']);
     });
 
-    it('update() can clear plugins back to all by replacing the list', () => {
+    it('update() clears plugins back to all via the null sentinel (key deleted)', () => {
+      // The MC clear path sends `plugins: null` (a value that survives
+      // JSON.stringify, unlike `undefined`). The registry treats null as
+      // "clear to default": it DELETES the key so the config reads back as
+      // genuinely undefined (= all loaded plugins). It must NOT persist null —
+      // filterPluginsByAgent only handles `string[] | undefined`, so a stored
+      // null would break routing.
       const reg = new AgentRegistry();
       const entry = reg.register({
         name: 'a',
@@ -275,9 +281,11 @@ describe('AgentRegistry (file-backed)', () => {
         systemPrompt: 's',
         plugins: ['alpha'],
       });
-      // A wholesale replacement to undefined restores "all plugins".
-      reg.update(entry.id, { plugins: undefined });
-      expect(reg.get(entry.id)?.config.plugins).toBeUndefined();
+      reg.update(entry.id, { plugins: null });
+      const config = reg.get(entry.id)?.config ?? {};
+      expect(config.plugins).toBeUndefined();
+      // The key must be genuinely absent, not present-and-null.
+      expect('plugins' in config).toBe(false);
     });
   });
 

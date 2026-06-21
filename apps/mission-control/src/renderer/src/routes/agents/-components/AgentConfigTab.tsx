@@ -17,7 +17,10 @@ type ConfigPatch = {
   systemPrompt?: string;
   workspace?: string;
   mcpServers?: string[];
-  plugins?: string[];
+  // `null` is the clear-to-all sentinel: it survives JSON.stringify (unlike
+  // `undefined`, which the wire drops, making the clear a no-op) and the gateway
+  // treats it as "delete the key → all loaded plugins". A non-empty array scopes.
+  plugins?: string[] | null;
 };
 
 interface AgentConfigTabProps {
@@ -119,15 +122,23 @@ export function AgentConfigTab({
       .catch(() => {});
   }, [agentConfig]);
 
-  const unassignedPlugins = poolPlugins.filter((p) => !assignedPlugins.includes(p.name));
+  // Assignable options: only LOADED plugins (a disabled/error plugin
+  // contributes nothing to routing). Already-assigned names are excluded from
+  // the picker but stay visible as chips below — including ones that aren't
+  // loaded — so a user can still SEE and remove a selection for a plugin that
+  // errored after being scoped in.
+  const unassignedPlugins = poolPlugins.filter(
+    (p) => p.status === 'loaded' && !assignedPlugins.includes(p.name),
+  );
 
   const handleAssignPlugin = useCallback(
     async (name: string) => {
-      // Empty = all (undefined): a non-empty selection scopes the agent to
-      // those plugins; clearing back to empty writes undefined (= all).
+      // Empty = all: a non-empty selection scopes the agent to those plugins;
+      // clearing back to empty writes `null` (= all). `null` survives the wire;
+      // `undefined` would be dropped by JSON.stringify, making the clear a no-op.
       const next = [...assignedPlugins, name];
       setAssignedPlugins(next);
-      await updateConfig(agentId, { plugins: next.length > 0 ? next : undefined });
+      await updateConfig(agentId, { plugins: next.length > 0 ? next : null });
     },
     [assignedPlugins, agentId, updateConfig],
   );
@@ -136,7 +147,7 @@ export function AgentConfigTab({
     async (name: string) => {
       const next = assignedPlugins.filter((p) => p !== name);
       setAssignedPlugins(next);
-      await updateConfig(agentId, { plugins: next.length > 0 ? next : undefined });
+      await updateConfig(agentId, { plugins: next.length > 0 ? next : null });
     },
     [assignedPlugins, agentId, updateConfig],
   );

@@ -1,7 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { AgentChatCoordinator } from './agent-chat-coordinator.js';
-import type { AgentRegistry, RegisteredAgent } from './agent-registry.js';
+import { AgentRegistry } from './agent-registry.js';
+import type { RegisteredAgent } from './agent-registry.js';
 import type { ChannelRegistry, RegisteredChannel } from './channel-registry.js';
 import type { GatewayCredentialStore } from './credential-store.js';
 import { EventBus } from './event-bus.js';
@@ -419,6 +420,51 @@ describe('createGatewayManagementApp', () => {
 
       const fetched = await app.request(`/agents/${entry.id}`, { headers: AUTH });
       expect((await fetched.json()).config.plugins).toEqual(['alpha']);
+    });
+
+    // Regression for the "clear scoped plugins back to all no-ops over HTTP"
+    // bug. This uses a REAL AgentRegistry (not the in-test mock) and goes
+    // through the JSON body path so it exercises the actual serialization +
+    // merge. The MC client clears a selection by sending `plugins: null` — a
+    // value that survives JSON.stringify, unlike `undefined` (which would drop
+    // the key and make the PUT a no-op). The gateway must treat null as
+    // "clear to default" and DELETE the key so it reads back as undefined.
+    it('PUT /agents/:id with plugins: null clears the selection back to all (real registry, JSON path)', async () => {
+      const realRegistry = new AgentRegistry();
+      const { app } = createApp({ agentRegistry: realRegistry });
+
+      // Scope the agent to ['alpha'] first (the narrow that the bug couldn't undo).
+      const created = await app.request('/agents', {
+        method: 'POST',
+        headers: JSON_HEADERS,
+        body: JSON.stringify({
+          name: 'scoped',
+          model: 'm',
+          systemPrompt: 'p',
+          plugins: ['alpha'],
+        }),
+      });
+      expect(created.status).toBe(201);
+      const createdBody = await created.json();
+      expect(createdBody.config.plugins).toEqual(['alpha']);
+
+      // Clear via the null sentinel — body literally carries `"plugins":null`.
+      const cleared = await app.request(`/agents/${createdBody.id}`, {
+        method: 'PUT',
+        headers: JSON_HEADERS,
+        body: JSON.stringify({ plugins: null }),
+      });
+      expect(cleared.status).toBe(200);
+      const clearedBody = await cleared.json();
+      // Read back: the key must be GONE (undefined = "all loaded plugins"),
+      // not null (which would break filterPluginsByAgent) and not ['alpha'].
+      expect(clearedBody.config.plugins).toBeUndefined();
+      expect('plugins' in clearedBody.config).toBe(false);
+
+      const fetched = await app.request(`/agents/${createdBody.id}`, { headers: AUTH });
+      const fetchedBody = await fetched.json();
+      expect(fetchedBody.config.plugins).toBeUndefined();
+      expect('plugins' in fetchedBody.config).toBe(false);
     });
   });
 
