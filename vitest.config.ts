@@ -11,6 +11,7 @@ export default defineConfig({
       '@dash/channels': resolve(__dirname, 'packages/channels/dist/index.js'),
       '@dash/management': resolve(__dirname, 'packages/management/src/index.ts'),
       '@dash/projects': resolve(__dirname, 'packages/projects/src/index.ts'),
+      '@dash/plugin-sdk': resolve(__dirname, 'packages/plugin-sdk/src/index.ts'),
     },
   },
   test: {
