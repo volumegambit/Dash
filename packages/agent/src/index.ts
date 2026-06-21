@@ -26,8 +26,23 @@ export {
   generateFrontmatter,
   scanSkillsDirectory,
   discoverSkills,
+  heuristicScan,
+  createLlmScanner,
+  SkillOpError,
+  createSkillInDir,
+  updateSkillBody,
+  installSkillToDir,
+  removeSkillFromDir,
 } from './skills/index.js';
-export type { ParsedSkill, DiscoverSkillsOptions } from './skills/index.js';
+export type {
+  ParsedSkill,
+  DiscoverSkillsOptions,
+  SkillScanVerdict,
+  SkillSecurityScanner,
+  WrittenSkill,
+  InstalledSkill,
+  SkillOpCode,
+} from './skills/index.js';
 
 /**
  * Canonical list of user-configurable tool names supported by PiAgentBackend.

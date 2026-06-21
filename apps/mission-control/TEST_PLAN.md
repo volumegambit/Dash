@@ -1197,6 +1197,23 @@ Take screenshots of every page and evaluate against these criteria. This section
 3. Ask the agent to remove a bundled skill (e.g. "remove summarize-thread").
 4. **Verify:** The agent refuses — bundled skills cannot be removed.
 
+### 28.7 Skills tab in Mission Control
+**Precondition:** App running, gateway healthy, at least one agent created.
+1. Open an agent's detail page and click the **Skills** tab.
+2. **Verify:** A list of skills shows, each with a source badge (Bundled / Managed / Agent / Remote). Bundled skills (e.g. `deep-research`) appear by default.
+3. Click a bundled skill.
+4. **Verify:** Its `SKILL.md` content expands, read-only (no Edit/Remove buttons on bundled skills).
+5. Click **+ Create**, fill in a name / description / content, submit.
+6. **Verify:** The new skill appears in the list with an **Agent** badge and **Edit** / **Remove** actions.
+7. Click **Edit** on that skill, change the body, Save.
+8. **Verify:** Reopening the skill shows the updated content.
+9. Click **+ Install**, enter a public source (e.g. `git:NousResearch/hermes-agent/skills/research/arxiv@main`), Install.
+10. **Verify:** The skill appears with a **Remote** badge. (Try a known-dangerous local skill and **verify** the install is refused with a scan message.)
+11. Click **Remove** on the installed or created skill.
+12. **Verify:** It disappears from the list.
+13. In the **Skills settings** strip, toggle **Include bundled skill library** off and Save.
+14. **Verify:** Bundled skills no longer appear in the list (re-enable to restore).
+
 ## Appendix: Test Run Log
 
 | Run # | Date | Sections Tested | Pass | Fail | Bugs Filed | Notes |

@@ -30,9 +30,11 @@ export interface LogsResponse {
 export interface SkillInfo {
   name: string;
   description: string;
+  trigger?: string;
   location: string; // file path or URL
-  editable: boolean; // true for local file paths, false for URL-sourced
-  source?: 'managed' | 'agent' | 'remote';
+  content?: string; // full SKILL.md text (included in list responses)
+  editable: boolean; // true for local file paths, false for URL/bundled
+  source: 'managed' | 'agent' | 'remote' | 'bundled';
 }
 
 export interface SkillContent extends SkillInfo {
@@ -40,8 +42,9 @@ export interface SkillContent extends SkillInfo {
 }
 
 export interface SkillsConfig {
-  paths: string[];
-  urls: string[];
+  paths?: string[];
+  urls?: string[];
+  includeBundled?: boolean;
 }
 
 export interface ChannelHealthEntry {

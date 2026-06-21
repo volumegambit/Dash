@@ -88,6 +88,9 @@ const api: MissionControlAPI = {
   skillsGetConfig: (agentId) => ipcRenderer.invoke('skills:getConfig', agentId),
   skillsUpdateConfig: (agentId, config) =>
     ipcRenderer.invoke('skills:updateConfig', agentId, config),
+  skillsInstall: (agentId, source, name) =>
+    ipcRenderer.invoke('skills:install', agentId, source, name),
+  skillsRemove: (agentId, skillName) => ipcRenderer.invoke('skills:remove', agentId, skillName),
 
   // Settings
   settingsGet: () => ipcRenderer.invoke('settings:get'),

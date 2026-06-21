@@ -710,6 +710,14 @@ export async function registerIpcHandlers(
       (await getSkillsClient()).updateSkillContent(agentId, skillName, content),
   );
 
+  ipcMain.handle('skills:install', async (_e, agentId: string, source: string, name?: string) =>
+    (await getSkillsClient()).installSkill(agentId, source, name),
+  );
+
+  ipcMain.handle('skills:remove', async (_e, agentId: string, skillName: string) =>
+    (await getSkillsClient()).removeSkill(agentId, skillName),
+  );
+
   ipcMain.handle(
     'skills:create',
     async (_e, agentId: string, name: string, description: string, content: string) =>

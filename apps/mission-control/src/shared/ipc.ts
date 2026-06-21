@@ -180,7 +180,9 @@ export interface MissionControlAPI {
     content: string,
   ): Promise<SkillContent>;
   skillsGetConfig(agentId: string): Promise<SkillsConfig>;
-  skillsUpdateConfig(agentId: string, config: SkillsConfig): Promise<{ requiresRestart: boolean }>;
+  skillsUpdateConfig(agentId: string, config: SkillsConfig): Promise<SkillsConfig>;
+  skillsInstall(agentId: string, source: string, name?: string): Promise<SkillInfo>;
+  skillsRemove(agentId: string, skillName: string): Promise<void>;
 
   // Settings
   settingsGet(): Promise<AppSettings>;
