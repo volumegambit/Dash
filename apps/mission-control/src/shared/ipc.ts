@@ -218,7 +218,7 @@ export interface MissionControlAPI {
   onGatewayEvent(callback: (eventType: string, data: string) => void): () => void;
 
   // Setup (simplified — no password)
-  setupStatus(): Promise<{ needsSetup: boolean; gatewayReady: boolean }>;
+  setupStatus(): Promise<SetupStatus>;
   setupEnsureGateway(): Promise<void>;
 
   // App lifecycle
