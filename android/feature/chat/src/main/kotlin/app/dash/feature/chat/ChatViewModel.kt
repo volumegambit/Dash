@@ -70,7 +70,9 @@ class ChatViewModel(
     }
 
     fun stop() {
-        currentId?.let { outgoing.tryEmit(WsClientMessage.Cancel(it)) }
+        // Cancelling the collector closes the socket; the gateway aborts the
+        // active stream on disconnect (chat-server `onClose`), so no explicit
+        // cancel frame is required.
         streamJob?.cancel()
         _state.update { it.copy(streaming = false) }
     }

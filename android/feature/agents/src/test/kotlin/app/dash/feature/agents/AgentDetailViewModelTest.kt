@@ -34,11 +34,12 @@ class AgentDetailViewModelTest {
         val vm = AgentDetailViewModel("a", repo)
         advanceUntilIdle()
         vm.toggleEnabled()
-        // optimistic flip happens synchronously, before the gated network call returns
-        assertEquals(AgentStatus.ACTIVE, vm.state.value.agent?.status)
+        // optimistic flip happens synchronously, before the gated network call returns;
+        // enable() yields `registered` server-side, so the optimistic state matches.
+        assertEquals(AgentStatus.REGISTERED, vm.state.value.agent?.status)
         gate.complete(Unit)
         advanceUntilIdle()
-        assertEquals(AgentStatus.ACTIVE, vm.state.value.agent?.status)
+        assertEquals(AgentStatus.REGISTERED, vm.state.value.agent?.status)
         assertNull(vm.state.value.toggleError)
         assertEquals("a" to true, repo.lastSetEnabled)
     }

@@ -47,8 +47,11 @@ class AgentDetailViewModel(
     fun toggleEnabled() {
         val current = _state.value.agent ?: return
         val makeEnabled = current.status == AgentStatus.DISABLED
+        // Gateway enable() sets status to `registered` (it becomes `active`
+        // lazily on first use), so reflect `registered` optimistically to avoid
+        // disagreeing with the server on the next refresh.
         val optimistic = current.copy(
-            status = if (makeEnabled) AgentStatus.ACTIVE else AgentStatus.DISABLED,
+            status = if (makeEnabled) AgentStatus.REGISTERED else AgentStatus.DISABLED,
         )
         _state.update { it.copy(agent = optimistic, toggleError = null) }
         viewModelScope.launch {
