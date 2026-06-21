@@ -29,7 +29,21 @@ Skills become loadable by any agent; commands and subagents are available as `/<
 </Step>
 </Steps>
 
-The rest of this page is the reference behind each of those steps. Prefer files over clicks? You can also drop a plugin directory under `<dataDir>/plugins/` and edit `config.json` by hand — see [Configuration → Plugins](/configuration#plugins) and the [complete example](#a-complete-example-plugin) below.
+The rest of this page is the reference behind each of those steps. Prefer files over clicks? You can also drop a plugin directory under your gateway's plugins folder (`~/.dash/gateway/plugins/`) and edit `config.json` by hand — see [Where plugins live](#where-plugins-live), [Configuration → Plugins](/configuration#plugins), and the [complete example](#a-complete-example-plugin) below.
+
+## Where plugins live
+
+Installed plugins live in your gateway's managed plugins folder:
+
+```
+~/.dash/gateway/plugins/
+├── config.json          # per-plugin state (enabled / trusted / source / installed)
+└── <plugin-name>/       # one directory per plugin (its skills, commands, etc.)
+```
+
+This is the default. The gateway stores everything under `~/.dash` (overridable with `$DASH_HOME`), and its own data lives in `~/.dash/gateway` — so plugins land in `~/.dash/gateway/plugins/`. Running the gateway standalone with `--data-dir <path>` puts them in `<path>/plugins/` instead. See the [data directory layout](/configuration#data-directory) for the full picture.
+
+You rarely need to touch this folder — Mission Control's **Plugins** screen and the management API manage it for you. But it's there if you want to drop in a plugin by hand or inspect `config.json` directly.
 
 ## What's in a plugin
 
@@ -55,7 +69,7 @@ Already comfortable with skills? A plugin is the next step up: instead of instal
 
 ## Installing a plugin
 
-You install a plugin **by source** from the **Plugins** screen in Mission Control (under **CONFIGURE**) — fill in the **Install Plugin** form and click **Install** — or, if you're scripting, by calling the management API's `POST /plugins/install` endpoint directly. Either way the installer fetches the plugin, scans it, and drops it into your gateway's managed plugins directory at `<dataDir>/plugins/<name>` — no restart needed; the gateway hot-reloads.
+You install a plugin **by source** from the **Plugins** screen in Mission Control (under **CONFIGURE**) — fill in the **Install Plugin** form and click **Install** — or, if you're scripting, by calling the management API's `POST /plugins/install` endpoint directly. Either way the installer fetches the plugin, scans it, and drops it into your gateway's managed plugins directory at `~/.dash/gateway/plugins/<name>` — no restart needed; the gateway hot-reloads.
 
 A plugin install takes a single `source` string in one of three forms:
 
@@ -252,14 +266,14 @@ Each entry's `source` is just an ordinary install source. When you install a mar
 
 ## Config flags
 
-Each plugin has an entry in `<dataDir>/plugins/config.json` describing its state. You may see these fields:
+Each plugin has an entry in `~/.dash/gateway/plugins/config.json` describing its state. You may see these fields:
 
 | Flag | Meaning |
 |------|---------|
 | `enabled` | The plugin's skills and commands load. Set `true` on install. |
 | `trusted` | The plugin's code components (MCP, hooks, `bin/`, providers) are allowed to run. Defaults to off — set deliberately after review. |
 | `source` | Where the plugin was installed from, recorded for reinstall/update. |
-| `installed` | `true` when the management API installed the plugin into `<dataDir>/plugins/<name>`. Determines whether uninstalling also deletes the directory. |
+| `installed` | `true` when the management API installed the plugin into `~/.dash/gateway/plugins/<name>`. Determines whether uninstalling also deletes the directory. |
 
 For the full config-file format — directory layout, manual enabling, loading a plugin from an arbitrary `path`, and per-component details — see [Configuration → Plugins](/configuration#plugins).
 
