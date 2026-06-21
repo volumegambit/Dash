@@ -246,11 +246,11 @@ async function main() {
     // Same plugin inputs the backend factory injects (skill dirs merged into
     // `skills.paths`, command/agent files as extra flat skills) so the HTTP
     // skills route (GET /agents/:id/skills) lists what chat can actually load.
-    // This is a boot snapshot for the read-only `listSkills` route; the
-    // chat-path backend factory below reads the LIVE `wiringState` so reloads
-    // take effect on the next re-warmed backend.
-    pluginSkillDirs: wiringState.skillDirs,
-    pluginCommandFiles: wiringState.commandFiles,
+    // Read LIVE through the mutable `wiringState` holder (same as the chat-path
+    // backend factory below) so a plugin hot-reload is reflected by the
+    // read-only `listSkills` route immediately — no boot snapshot.
+    getPluginSkillDirs: () => wiringState.skillDirs,
+    getPluginCommandFiles: () => wiringState.commandFiles,
     createBackend: async (agentConfig, conversationId) => {
       const sessionDir = resolve(dataDir, 'sessions', agentConfig.name, conversationId);
       await mkdir(sessionDir, { recursive: true });
@@ -527,11 +527,6 @@ async function main() {
     channelRegistry,
     credentialStore,
     modelsStore,
-    // Boot snapshot of the plugin dropdown models. NOTE: the management API
-    // captures this array once; Task 3 (reload) will need a live getter here so
-    // GET /models reflects reloaded plugin providers. Until then a reload
-    // refreshes warm backends but not this route's plugin-model merge.
-    pluginModels: wiringState.pluginModels,
     // Plugin management routes (GET/PUT/DELETE /plugins, POST /plugins/reload,
     // GET /runtime/plugins). The wiring is read through a LIVE getter so the
     // routes always see the current state after a reload; the store + reload

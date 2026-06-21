@@ -42,12 +42,14 @@ export interface ModelsRouteOptions {
    */
   discover?: typeof discoverModels;
   /**
-   * Plugin-contributed models, expanded from loaded provider catalogs.
-   * Merged into the response at render time only (core models win on a
-   * value clash). Never persisted to the store, so removing a plugin
-   * cleanly drops its models. Empty/undefined → no merge.
+   * Live getter for plugin-contributed models, expanded from the currently
+   * loaded provider catalogs. Read PER-REQUEST (not captured) so a plugin
+   * hot-reload that adds/removes a provider is reflected on the next
+   * `GET /models` without a restart. Merged into the response at render time
+   * only (core models win on a value clash); never persisted to the store, so
+   * removing a plugin cleanly drops its models. Undefined → no merge.
    */
-  pluginModels?: FilteredModel[];
+  getPluginModels?: () => FilteredModel[];
 }
 
 /**
@@ -67,9 +69,13 @@ export interface ModelsRouteOptions {
  * fetch instead of all racing to hit provider /v1/models endpoints.
  */
 export function createModelsRoute(options: ModelsRouteOptions): Hono {
-  const { store, credentialStore, pluginModels } = options;
+  const { store, credentialStore } = options;
   const discover = options.discover ?? discoverModels;
   const app = new Hono();
+
+  // Read the plugin models LIVE on each request so a hot-reload is reflected.
+  // Undefined getter → no plugin models (e.g. tests/embedders without plugins).
+  const pluginModels = (): FilteredModel[] | undefined => options.getPluginModels?.();
 
   // Promise mutex — when a refresh is in flight, all callers share it.
   let inFlight: Promise<ModelsRouteResponse> | null = null;
@@ -138,7 +144,7 @@ export function createModelsRoute(options: ModelsRouteOptions): Hono {
     if (c.req.query('debug') === 'true') {
       // Merge plugin models at the response boundary (render-time only, never
       // persisted) so the debug view shows exactly what callers receive.
-      const response = appendPluginModels(await getOrRefresh(), pluginModels);
+      const response = appendPluginModels(await getOrRefresh(), pluginModels());
       const credentials = await credentialStore.readProviderApiKeys();
       const providersConfigured = Object.keys(credentials);
       const debug: ModelsDebugResponse = {
@@ -154,14 +160,14 @@ export function createModelsRoute(options: ModelsRouteOptions): Hono {
       };
       return c.json(debug);
     }
-    return c.json(appendPluginModels(await getOrRefresh(), pluginModels));
+    return c.json(appendPluginModels(await getOrRefresh(), pluginModels()));
   });
 
   app.post('/refresh', async (c) => {
     // Force-fresh: clear in-flight (so a stale refresh from before a
     // credential change doesn't get joined) and run a new discover.
     inFlight = null;
-    return c.json(appendPluginModels(await refreshNow(), pluginModels));
+    return c.json(appendPluginModels(await refreshNow(), pluginModels()));
   });
 
   return app;

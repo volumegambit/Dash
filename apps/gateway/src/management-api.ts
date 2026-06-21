@@ -5,7 +5,6 @@ import type { ChannelAdapter } from '@dash/channels';
 import { TelegramAdapter, WhatsAppAdapter } from '@dash/channels';
 import { type StructuredLogger, createConsoleLogger } from '@dash/logging';
 import { mountProjectsRoutes } from '@dash/management';
-import type { FilteredModel } from '@dash/models';
 import type { PluginConfigStore } from '@dash/plugins';
 import { realpathContained } from '@dash/plugins';
 import type { ProjectsDb } from '@dash/projects';
@@ -38,13 +37,6 @@ export interface GatewayManagementOptions {
    * `GET /models` triggers a fresh fetch with the new credential set.
    */
   modelsStore: ModelsStore;
-  /**
-   * Plugin-contributed models, expanded from loaded provider catalogs in
-   * `apps/gateway/src/index.ts`. Merged into the `GET /models` response at
-   * render time (core models win on a value clash); never persisted to the
-   * store. Empty/undefined when no trusted plugin contributes providers.
-   */
-  pluginModels?: FilteredModel[];
   /**
    * Durable event log used by the chat-ws streaming path to record
    * every outbound event. The management API exposes a replay
@@ -787,7 +779,12 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
     createModelsRoute({
       store: options.modelsStore,
       credentialStore,
-      pluginModels: options.pluginModels,
+      // Read plugin models LIVE through the wiring getter so a hot-reload that
+      // adds/removes a plugin provider is reflected on the next GET /models —
+      // not a boot snapshot. Undefined when plugins aren't wired (tests).
+      getPluginModels: options.getPluginWiringState
+        ? () => options.getPluginWiringState?.().pluginModels ?? []
+        : undefined,
     }),
   );
 
