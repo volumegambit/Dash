@@ -132,4 +132,27 @@ describe('selectCompanionSessions', () => {
       'done1',
     ]);
   });
+
+  it('ranks error before needs even when the error is less recent', () => {
+    const s = base({
+      conversations: [
+        conv('need1', 'a1', '2026-06-21T10:05:00.000Z'),
+        conv('err1', 'a1', '2026-06-21T10:00:00.000Z'),
+      ],
+      streamingEvents: {
+        need1: [{ type: 'question', id: 'q', question: 'Q?', options: [] }],
+      },
+      messages: {
+        err1: [
+          {
+            id: 'm',
+            role: 'assistant',
+            content: { type: 'assistant', events: [{ type: 'error', error: 'Boom' }] },
+            timestamp: '2026-06-21T10:00:00.000Z',
+          },
+        ],
+      },
+    });
+    expect(selectCompanionSessions(s).map((r) => r.conversationId)).toEqual(['err1', 'need1']);
+  });
 });

@@ -38,8 +38,9 @@ function workingPreview(ev: McAgentEvent[]): string {
     if (e.type === 'tool_use_start') open.set(e.id, { name: e.name, input: e.input });
     else if (e.type === 'tool_result') open.delete(e.id);
   }
-  if (open.size > 0) {
-    const last = [...open.values()][open.size - 1];
+  let last: { name: string; input?: Record<string, unknown> } | undefined;
+  for (const v of open.values()) last = v;
+  if (last) {
     const detail = summarize(last.name, JSON.stringify(last.input ?? {}));
     return detail ? `${toolLabel(last.name)}: ${detail}` : toolLabel(last.name);
   }
