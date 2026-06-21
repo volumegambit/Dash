@@ -224,15 +224,17 @@ Plugins let you drop extra skills into any Dash agent without touching the confi
 
 ```
 <dataDir>/
-├── plugins/
-│   └── <plugin-name>/
-│       └── skills/
-│           └── <skill-name>/
-│               └── SKILL.md
-└── plugins/config.json
+└── plugins/
+    ├── config.json
+    └── <plugin-name>/
+        ├── .claude-plugin/
+        │   └── plugin.json          (optional)
+        └── skills/
+            └── <skill-name>/
+                └── SKILL.md
 ```
 
-Each plugin follows the Claude Code layout: a `skills/` folder containing one subdirectory per skill, each with a `SKILL.md` file in standard frontmatter format (`name`, `description`, body).
+Each plugin follows the Claude Code layout: a `skills/` folder containing one subdirectory per skill, each with a `SKILL.md` file in standard frontmatter format (`name`, `description`, body). The `.claude-plugin/plugin.json` manifest is optional; when present it can set `name`, `displayName`, `description`, and `version`. When absent, the plugin's directory name is used as its name.
 
 ### Enabling a plugin
 
@@ -265,7 +267,7 @@ echo '{ "my-skills": { "enabled": true } }' \
   > /path/to/data/plugins/config.json
 ```
 
-When the gateway starts, it logs `[plugins] loaded 'my-skills' (skills)` and the agent's `load_skill` tool can reference any skill from that plugin.
+When the gateway starts, it logs `[plugins] loaded 'my-skills' (skills)` and the agent's `load_skill` tool (see [Tools](/tools) — requires `load_skill` in the agent's tools list) can reference any skill from that plugin.
 
 <Note>
   Only `skills/` is active in this release. Additional plugin components — MCP servers, custom commands, hooks — are coming in a future release.
