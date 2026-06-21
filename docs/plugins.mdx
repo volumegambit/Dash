@@ -31,14 +31,14 @@ Already comfortable with skills? A plugin is the next step up: instead of instal
 
 ## Installing a plugin
 
-You install a plugin **by name or source**, either from Mission Control or by calling the management API's `POST /plugins/install` endpoint. The installer fetches the plugin, scans it, and drops it into your gateway's managed plugins directory at `<dataDir>/plugins/<name>` — no restart needed; the gateway hot-reloads.
+You install a plugin **by name or source** by calling the management API's `POST /plugins/install` endpoint (a Mission Control screen for this is coming). The installer fetches the plugin, scans it, and drops it into your gateway's managed plugins directory at `<dataDir>/plugins/<name>` — no restart needed; the gateway hot-reloads.
 
 A plugin install takes a single `source` string in one of three forms:
 
 | Source form | Example | What it means |
 |-------------|---------|---------------|
 | **Git** | `git:owner/repo[/subpath][@ref]` | A GitHub repo (optionally a subdirectory and a pinned ref) |
-| **URL** | `https://example.com/my-plugin.tar.gz` | A direct link to a `.tar.gz` archive |
+| **URL** | `https://example.com/my-plugin.tar.gz` | A direct link to a `.tar.gz` archive (`http://` is also accepted) |
 | **Local** | `/path/to/plugin` or `/path/to/plugin.tar.gz` | A folder or archive already on the gateway host |
 
 For example, installing from git:
@@ -72,7 +72,7 @@ Installing a plugin brings someone else's instructions — and potentially their
 
 2. **Trust is a separate, deliberate action.** Marking a plugin `trusted` is a distinct step you take *after* you've reviewed it — never something an install, a marketplace entry, or the plugin itself can do on your behalf. Only trust plugins whose code you've read and are willing to run inside the gateway process.
 
-3. **A heuristic scan, fail-closed.** Before a plugin is installed, its manifest and code payloads (`bin/`, `hooks/hooks.json`, `.mcp.json`, `providers/`) are scanned for dangerous patterns — downloads piped into a shell, destructive deletes, prompt-injection, secret exfiltration, embedded private keys, and prototype-pollution attempts. A plugin the scan flags as **dangerous is refused** (the install fails; nothing lands on disk). The scan is fail-closed: if it can't complete, the install is rejected rather than waved through.
+3. **A heuristic scan, fail-closed.** Before a plugin is installed, its manifest and code payloads (`bin/`, `hooks/hooks.json`, `.mcp.json`, `providers/`) are scanned for **dangerous** patterns — downloads piped into a shell, destructive deletes, prompt-injection, secret exfiltration, and embedded private keys. A plugin the scan flags as **dangerous is refused** (the install fails; nothing lands on disk), and the scan is fail-closed: if it can't complete, the install is rejected rather than waved through. Softer **suspicious** signals — reading environment variables, base64 decoding, or prototype-pollution keys in a config file — are noted but do **not** block the install; treat them as a prompt to review the plugin before you trust it.
 
 4. **Path-traversal (zip-slip) protection.** Archives are extracted with hard guards: any entry whose path would escape the destination — via `../`, an absolute path, or a symlink pointing outside — is rejected and the whole install fails. A malicious archive can't write files outside its own plugin directory.
 
