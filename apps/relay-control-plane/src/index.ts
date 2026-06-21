@@ -19,3 +19,4 @@ export {
   type ProvisioningDeps,
 } from './provisioning.js';
 export { StubAuthenticator, type Authenticator } from './auth.js';
+export { createApi, type ApiDeps } from './api.js';

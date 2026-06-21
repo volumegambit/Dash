@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 import type { DialTokenSigner } from './dial-token-signer.js';
 import type { RelayAdminClient } from './relay-admin-client.js';
-import type { GatewayRecord, Store } from './store.js';
+import type { GatewayRecord, PairingRecord, Store } from './store.js';
 
 /** Result of provisioning a new gateway: its id, subdomain, and a dial token. */
 export interface CreatedGateway {
@@ -60,6 +60,28 @@ export class ProvisioningService {
   /** List the gateways owned by `accountId`. */
   listGateways(accountId: string): GatewayRecord[] {
     return this.#store.listGateways(accountId);
+  }
+
+  /**
+   * Re-sign a dial token for one of `accountId`'s gateways (token refresh).
+   * Ownership is checked first: a gateway the caller does not own — or an
+   * unknown id — returns `null` and mints nothing.
+   */
+  refreshDialToken(accountId: string, gatewayId: string): string | null {
+    const gateway = this.#store.getGateway(gatewayId);
+    if (!gateway || gateway.accountId !== accountId) return null;
+    return this.#signer.signFor(accountId, gatewayId);
+  }
+
+  /**
+   * List the pairings for one of `accountId`'s gateways. Returns `null` (not an
+   * empty array) when the gateway is unknown or owned by another account, so the
+   * caller can distinguish "no pairings" from "not yours".
+   */
+  listPairings(accountId: string, gatewayId: string): PairingRecord[] | null {
+    const gateway = this.#store.getGateway(gatewayId);
+    if (!gateway || gateway.accountId !== accountId) return null;
+    return this.#store.listPairings(gatewayId);
   }
 
   /**
