@@ -35,6 +35,7 @@ import { createGatewayManagementApp } from './management-api.js';
 import { McpConfigStore } from './mcp-store.js';
 import { ModelsStore } from './models-store.js';
 import { OAuthRefreshCoordinator } from './oauth-refresh.js';
+import { filterPluginsByAgent } from './plugin-filtering.js';
 import { reconcilePluginMcpServers, registerPluginMcpServers } from './plugin-mcp.js';
 import {
   type PluginWiringState,
@@ -341,7 +342,27 @@ async function main() {
       // catalog. (In-flight pinned backends keep their captured wiring until
       // they drain — intended.) Capturing a field into a boot const would make
       // reload a silent no-op for that field.
-      const { skillDirs, commandFiles, hookEngine, pluginModelCatalog } = wiringState;
+      const {
+        skillDirs: allSkillDirs,
+        commandFiles: allCommandFiles,
+        hookEngine,
+        pluginModelCatalog,
+      } = wiringState;
+      // Per-agent plugin selection: restrict the global plugin contributions to
+      // the agent's `plugins` list. `undefined` = all loaded plugins (backward
+      // compat: legacy + default agents get everything). VISIBILITY/ROUTING
+      // ONLY — a plugin's trust (enabled/trusted) is gateway-wide and already
+      // applied when wiringState was built; this filter NEVER re-enables
+      // untrusted code (untrusted components are already absent from
+      // skillDirs/commandFiles). pluginModelCatalog is passed AS-IS: the catalog
+      // is shared and per-agent routing happens via skill/command filtering.
+      // Reload-correct: reads wiringState.* live inside this per-call closure.
+      const { skillDirs, commandFiles } = filterPluginsByAgent(
+        agentConfig.plugins,
+        allSkillDirs,
+        allCommandFiles,
+        wiringState.skillDirsByPlugin,
+      );
 
       // Explicit annotation breaks the circular type inference: the projects
       // tools close over `backend` (getSessionId) while `backend` is still
