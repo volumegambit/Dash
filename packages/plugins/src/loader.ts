@@ -51,7 +51,7 @@ export async function loadPlugins(opts: LoadPluginsOptions): Promise<LoadedPlugi
 
   const records: PluginRecord[] = [];
   const skillDirs: string[] = [];
-  const commandFiles: string[] = [];
+  const commandFiles: Array<{ pluginName: string; file: string }> = [];
   const binDirs: string[] = [];
   const mcpConfigs: McpConfigEntry[] = [];
 
@@ -86,7 +86,7 @@ export async function loadPlugins(opts: LoadPluginsOptions): Promise<LoadedPlugi
       // atomic: if anything below throws, the catch records an `error` and
       // NOTHING from this plugin leaks into the aggregate output.
       const localSkillDirs: string[] = [];
-      const localCommandFiles: string[] = [];
+      const localCommandFiles: Array<{ pluginName: string; file: string }> = [];
       const localBinDirs: string[] = [];
       const localMcpConfigs: McpConfigEntry[] = [];
 
@@ -96,7 +96,7 @@ export async function loadPlugins(opts: LoadPluginsOptions): Promise<LoadedPlugi
       const sDirs = resolveSkillDirs(dir, manifest);
       const cmdFiles = resolveCommandFiles(dir, manifest);
       localSkillDirs.push(...sDirs);
-      localCommandFiles.push(...cmdFiles);
+      localCommandFiles.push(...cmdFiles.map((file) => ({ pluginName: manifest.name, file })));
 
       const activated: string[] = [];
       const noop: string[] = [];

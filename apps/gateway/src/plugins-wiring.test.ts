@@ -31,19 +31,22 @@ describe('gateway plugin → skill wiring', () => {
     expect(skills.map((s) => s.name)).toContain('greeter');
   });
 
-  it("a plugin's commands/foo.md is discoverable as a flat skill named foo", async () => {
+  it("a plugin bar's commands/foo.md is discoverable as flat skill bar:foo", async () => {
     const pluginsDir = join(dataDir, 'plugins');
-    const dir = join(pluginsDir, 'cmdr');
+    const dir = join(pluginsDir, 'bar');
     await mkdir(join(dir, MANIFEST_DIR), { recursive: true });
-    await writeFile(join(dir, MANIFEST_DIR, MANIFEST_FILENAME), JSON.stringify({ name: 'cmdr' }));
+    await writeFile(join(dir, MANIFEST_DIR, MANIFEST_FILENAME), JSON.stringify({ name: 'bar' }));
     await mkdir(join(dir, 'commands'), { recursive: true });
     await writeFile(join(dir, 'commands', 'foo.md'), '# Foo\nDo the foo.');
 
-    const loaded = await loadPlugins({ pluginsDir, entries: { cmdr: { enabled: true } } });
+    const loaded = await loadPlugins({ pluginsDir, entries: { bar: { enabled: true } } });
 
-    // Mirror the gateway: plugin command files become flat agent skills.
-    const flat = await loadFlatSkills(loaded.commandFiles);
-    expect(flat.map((s) => s.name)).toContain('foo');
+    // Mirror the gateway: plugin command files become flat agent skills,
+    // namespaced as <plugin>:<command> so `/bar:foo` is an exact match.
+    const flat = await loadFlatSkills(
+      loaded.commandFiles.map(({ pluginName, file }) => ({ file, namespace: pluginName })),
+    );
+    expect(flat.map((s) => s.name)).toContain('bar:foo');
   });
 
   it('an enabled-but-untrusted plugin contributes no mcpConfigs or binDirs', async () => {

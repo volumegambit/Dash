@@ -167,7 +167,9 @@ describe('loadPlugins', () => {
   it('collects commands for an enabled plugin (markdown — no trust needed)', async () => {
     const dir = await writePlugin(pluginsDir, 'p', { skill: 'g', command: 'deploy' });
     const loaded = await loadPlugins({ pluginsDir, entries: { p: { enabled: true } } });
-    expect(loaded.commandFiles).toEqual([join(dir, 'commands', 'deploy.md')]);
+    expect(loaded.commandFiles).toEqual([
+      { pluginName: 'p', file: join(dir, 'commands', 'deploy.md') },
+    ]);
     expect(loaded.records[0].activated).toEqual(expect.arrayContaining(['skills', 'commands']));
   });
 
@@ -242,13 +244,17 @@ describe('loadPlugins', () => {
 
     // Nothing from `bad` leaked into the aggregates.
     expect(loaded.skillDirs).not.toContain(join(badDir, 'skills'));
-    expect(loaded.commandFiles).not.toContain(join(badDir, 'commands', 'bcmd.md'));
+    expect(loaded.commandFiles.some((c) => c.file === join(badDir, 'commands', 'bcmd.md'))).toBe(
+      false,
+    );
     expect(loaded.binDirs).not.toContain(join(badDir, 'bin'));
     expect(loaded.mcpConfigs.some((c) => c.pluginName === 'bad')).toBe(false);
 
     // `good` is fully present in the aggregates.
     expect(loaded.skillDirs).toContain(join(goodDir, 'skills'));
-    expect(loaded.commandFiles).toContain(join(goodDir, 'commands', 'gcmd.md'));
+    expect(loaded.commandFiles.some((c) => c.file === join(goodDir, 'commands', 'gcmd.md'))).toBe(
+      true,
+    );
     expect(loaded.binDirs).toContain(join(goodDir, 'bin'));
     expect(loaded.mcpConfigs.some((c) => c.pluginName === 'good')).toBe(true);
   });

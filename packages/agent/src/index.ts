@@ -22,7 +22,7 @@ export type {
   PoolEntry,
   PoolBackendFactory,
 } from './conversation-pool.js';
-export type { SkillDiscoveryResult, SkillFrontmatter } from './skills/index.js';
+export type { SkillDiscoveryResult, SkillFrontmatter, FlatSkillFile } from './skills/index.js';
 export {
   parseFrontmatter,
   generateFrontmatter,

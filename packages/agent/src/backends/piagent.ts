@@ -28,7 +28,7 @@ import {
   heuristicScan,
   loadFlatSkills,
 } from '../skills/index.js';
-import type { SkillSecurityScanner } from '../skills/index.js';
+import type { FlatSkillFile, SkillSecurityScanner } from '../skills/index.js';
 import type { SkillDiscoveryResult } from '../skills/types.js';
 import { BraveSearchProvider } from '../tools/search-providers/brave.js';
 import { createTodoWriteTool } from '../tools/todowrite.js';
@@ -84,11 +84,13 @@ export class PiAgentBackend implements AgentBackend {
   private extraTools: ExtraTool[] = [];
 
   /**
-   * Flat single-file skill/command paths (Claude Code `commands/*.md`) injected
-   * by the host (e.g. the gateway plugin loader's `commandFiles`). Loaded via
-   * `loadFlatSkills()` and merged into `listSkills()` after discovered skills.
+   * Flat single-file skill/command entries (Claude Code `commands/*.md`) injected
+   * by the host (e.g. the gateway plugin loader's `commandFiles`). Each entry
+   * carries an optional `namespace` so plugin commands register as the namespaced
+   * skill `<plugin>:<command>`. Loaded via `loadFlatSkills()` and merged into
+   * `listSkills()` after discovered skills.
    */
-  private extraSkillFiles: string[] = [];
+  private extraSkillFiles: FlatSkillFile[] = [];
 
   /**
    * Conversation id of the in-flight run, exposed to injected tools via
@@ -139,7 +141,7 @@ export class PiAgentBackend implements AgentBackend {
     private mcpConfigStore?: McpConfigStoreInterface,
     private mcpAgentContext?: McpAgentContext,
     extraTools: ExtraTool[] = [],
-    extraSkillFiles: string[] = [],
+    extraSkillFiles: FlatSkillFile[] = [],
   ) {
     this.extraTools = extraTools;
     this.extraSkillFiles = extraSkillFiles;

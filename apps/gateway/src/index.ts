@@ -143,7 +143,12 @@ async function main() {
 
   // Plugin commands (commands/*.md) are flat single-file skills routed into the
   // agent as extra skill files; they surface as `/plugin:command` slash commands.
-  const pluginCommandFiles = loadedPlugins.commandFiles;
+  // Namespace each by its plugin so the derived skill name is `<plugin>:<command>`
+  // — an exact match for the `/plugin:command` slash form (no LLM leniency).
+  const pluginCommandFiles = loadedPlugins.commandFiles.map(({ pluginName, file }) => ({
+    file,
+    namespace: pluginName,
+  }));
 
   // Create gateway + agent service.
   //

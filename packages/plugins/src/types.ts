@@ -50,8 +50,12 @@ export interface LoadedPlugins {
   records: PluginRecord[];
   /** Flattened skill dirs across all loaded plugins (for config.skills.paths). */
   skillDirs: string[];
-  /** Flat command .md files from enabled plugins (markdown — no trust needed). */
-  commandFiles: string[];
+  /**
+   * Flat command .md files from enabled plugins (markdown — no trust needed),
+   * each tagged with the plugin that contributed it so the host can namespace
+   * the derived skill as `<plugin>:<command>`.
+   */
+  commandFiles: Array<{ pluginName: string; file: string }>;
   /** bin/ dirs from enabled+trusted plugins (code execution — requires trust). */
   binDirs: string[];
   /** Translated MCP servers from enabled+trusted plugins, tagged by plugin. */
