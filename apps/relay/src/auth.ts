@@ -21,13 +21,17 @@ export function safeEqual(a: string, b: string): boolean {
 }
 
 /**
- * v1 static auth: one shared relay token gates gateway registration. The
- * per-pairing credential check accepts any non-empty value until R10 wires real
- * per-gateway credentials with revocation.
+ * v1 static auth: one shared relay token gates gateway registration
+ * (constant-time compared). The per-pairing credential is accepted permissively
+ * — in v1 the gateway's own management/chat tokens (forwarded end-to-end) are
+ * the real authentication; the relay credential becomes a meaningful gate only
+ * once a real per-pairing store with revocation is injected (R12 control API).
+ * The relay still *calls* this on every phone request, so swapping in a strict
+ * implementation enforces it with no routing-layer change.
  */
 export function staticRelayAuth(relayToken: string): RelayDeps {
   return {
     relayTokenValid: (token) => safeEqual(token, relayToken),
-    pairingCredentialValid: (_gatewayId, credential) => credential.length > 0,
+    pairingCredentialValid: () => true,
   };
 }

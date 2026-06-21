@@ -2,7 +2,7 @@ import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { WebSocket } from 'ws';
 import { type Frame, decodeFrame, encodeChunk, encodeFrame } from './mux.js';
-import { type RelayServer, createRelayServer } from './relay-server.js';
+import { type RelayDeps, type RelayServer, createRelayServer } from './relay-server.js';
 
 const deps = {
   relayTokenValid: (t: string) => t === 'good',
@@ -194,16 +194,24 @@ describe('relay-server', () => {
     expect(code).toBe(4001);
   });
 
+  /** Swap the beforeEach server for one with custom deps and/or limits. */
+  async function restartWith(
+    customDeps: RelayDeps,
+    limits: { maxStreamsPerGateway?: number; ratePerSec?: number; rateBurst?: number } = {},
+  ): Promise<void> {
+    await server.close();
+    server = createRelayServer(customDeps, limits);
+    await new Promise<void>((r) => server.httpServer.listen(0, '127.0.0.1', () => r()));
+    port = (server.httpServer.address() as AddressInfo).port;
+  }
+
   /** Swap the default-limits server (from beforeEach) for one with tight limits. */
-  async function restartWithLimits(limits: {
+  function restartWithLimits(limits: {
     maxStreamsPerGateway?: number;
     ratePerSec?: number;
     rateBurst?: number;
   }): Promise<void> {
-    await server.close();
-    server = createRelayServer(deps, limits);
-    await new Promise<void>((r) => server.httpServer.listen(0, '127.0.0.1', () => r()));
-    port = (server.httpServer.address() as AddressInfo).port;
+    return restartWith(deps, limits);
   }
 
   it('throttles phone HTTP with 429 once the per-gateway rate limit is exhausted', async () => {
@@ -250,6 +258,73 @@ describe('relay-server', () => {
       phone.on('close', (c) => resolve(c));
     });
     expect(code).toBe(4429);
+    gw.close();
+  });
+
+  it('rejects phone HTTP with 401 when the pairing credential is invalid', async () => {
+    let seen: { gatewayId: string; credential: string } | undefined;
+    await restartWith({
+      relayTokenValid: (t) => t === 'good',
+      pairingCredentialValid: (gatewayId, credential) => {
+        seen = { gatewayId, credential };
+        return false;
+      },
+    });
+    const gw = await connectGateway('g1', 'good');
+    await waitFor(() => server.hasGateway('g1'));
+
+    const { status } = await httpGet('/agents', {
+      host: 'g1.relay.local',
+      'x-dash-relay-credential': 'cred',
+    });
+    expect(status).toBe(401);
+    // The relay forwards the gatewayId (from Host) and the credential header.
+    expect(seen).toEqual({ gatewayId: 'g1', credential: 'cred' });
+    gw.close();
+  });
+
+  it('rejects a phone WebSocket with 4401 when the pairing credential is invalid', async () => {
+    await restartWith({
+      relayTokenValid: (t) => t === 'good',
+      pairingCredentialValid: () => false,
+    });
+    const gw = await connectGateway('g1', 'good');
+    await waitFor(() => server.hasGateway('g1'));
+
+    const phone = new WebSocket(`ws://127.0.0.1:${port}/ws/chat?token=t`, {
+      headers: { host: 'g1.relay.local', 'x-dash-relay-credential': 'cred' },
+    });
+    const code = await new Promise<number>((resolve) => {
+      phone.on('close', (c) => resolve(c));
+    });
+    expect(code).toBe(4401);
+    gw.close();
+  });
+
+  it('proxies the request when the pairing credential is accepted', async () => {
+    await restartWith({
+      relayTokenValid: (t) => t === 'good',
+      pairingCredentialValid: (_gatewayId, credential) => credential === 'secret',
+    });
+    const gw = await connectGateway('g1', 'good');
+    gw.on('message', (raw: Buffer) => {
+      const f = decodeFrame(raw.toString());
+      if (f.t === 'open') {
+        gw.send(encodeFrame({ t: 'head', streamId: f.streamId, status: 200, headers: {} }));
+        gw.send(
+          encodeFrame({ t: 'data', streamId: f.streamId, chunk: encodeChunk(Buffer.from('ok')) }),
+        );
+        gw.send(encodeFrame({ t: 'end', streamId: f.streamId }));
+      }
+    });
+    await waitFor(() => server.hasGateway('g1'));
+
+    const { status, body } = await httpGet('/agents', {
+      host: 'g1.relay.local',
+      'x-dash-relay-credential': 'secret',
+    });
+    expect(status).toBe(200);
+    expect(body).toBe('ok');
     gw.close();
   });
 });

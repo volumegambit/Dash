@@ -34,6 +34,8 @@ export interface RelayLimits {
 const RELAY_AUTH_CLOSE = 4401;
 /** WebSocket close code for a phone throttled by the rate limiter / stream cap. */
 const RELAY_RATE_LIMIT_CLOSE = 4429;
+/** Header carrying the phone's per-pairing relay credential (set by the app). */
+const PAIRING_CREDENTIAL_HEADER = 'x-dash-relay-credential';
 
 /** A phone-originated stream's callbacks, driven by frames from the gateway. */
 interface PhoneStream {
@@ -64,14 +66,14 @@ export function createRelayServer(deps: RelayDeps, limits: RelayLimits = {}): Re
   const limiter = new RateLimiter(limits.rateBurst ?? 100, limits.ratePerSec ?? 50);
 
   const httpServer = http.createServer((req, res) => {
-    handlePhoneHttp(gateways, limiter, maxStreams, req, res);
+    handlePhoneHttp(gateways, deps, limiter, maxStreams, req, res);
   });
 
   httpServer.on('upgrade', (req, socket, head) => {
     const path = (req.url ?? '/').split('?')[0];
     const gwMatch = path.match(/^\/gw\/([^/]+)$/);
     if (!gwMatch) {
-      handlePhoneWsUpgrade(gateways, wss, limiter, maxStreams, req, socket, head);
+      handlePhoneWsUpgrade(gateways, deps, wss, limiter, maxStreams, req, socket, head);
       return;
     }
     const gatewayId = decodeURIComponent(gwMatch[1]);
@@ -160,6 +162,7 @@ function routeFromGateway(conn: GatewayConn, frame: Frame): void {
 
 function handlePhoneHttp(
   gateways: Map<string, GatewayConn>,
+  deps: RelayDeps,
   limiter: RateLimiter,
   maxStreams: number,
   req: http.IncomingMessage,
@@ -179,6 +182,16 @@ function handlePhoneHttp(
   if (!limiter.allow(gatewayId) || conn.streams.size >= maxStreams) {
     res.writeHead(429, { 'content-type': 'text/plain', 'retry-after': '1' });
     res.end('Too Many Requests');
+    return;
+  }
+
+  // Per-pairing relay credential. The relay never inspects gateway tokens; this
+  // is a separate gate authorizing the phone to reach THIS gateway at all.
+  if (
+    !deps.pairingCredentialValid(gatewayId, headerValue(req.headers[PAIRING_CREDENTIAL_HEADER]))
+  ) {
+    res.writeHead(401, { 'content-type': 'text/plain' });
+    res.end('Unauthorized');
     return;
   }
 
@@ -261,6 +274,7 @@ function handlePhoneHttp(
 /** Bridge a phone WebSocket (/ws/chat → chat:9200, /projects/ws → mgmt:9300). */
 function handlePhoneWsUpgrade(
   gateways: Map<string, GatewayConn>,
+  deps: RelayDeps,
   wss: WebSocketServer,
   limiter: RateLimiter,
   maxStreams: number,
@@ -280,6 +294,16 @@ function handlePhoneWsUpgrade(
   if (!limiter.allow(gatewayId) || conn.streams.size >= maxStreams) {
     wss.handleUpgrade(req, socket, head, (ws) => {
       ws.close(RELAY_RATE_LIMIT_CLOSE, 'Too Many Requests');
+    });
+    return;
+  }
+
+  // Per-pairing relay credential (see handlePhoneHttp). Reject with 4401.
+  if (
+    !deps.pairingCredentialValid(gatewayId, headerValue(req.headers[PAIRING_CREDENTIAL_HEADER]))
+  ) {
+    wss.handleUpgrade(req, socket, head, (ws) => {
+      ws.close(RELAY_AUTH_CLOSE, 'Unauthorized');
     });
     return;
   }
@@ -348,6 +372,12 @@ function bearer(authHeader: string | undefined): string | undefined {
   if (!authHeader) return undefined;
   const m = authHeader.match(/^Bearer\s+(.+)$/i);
   return m ? m[1] : undefined;
+}
+
+/** Normalize a possibly-array request header to a single string ('' if absent). */
+function headerValue(value: string | string[] | undefined): string {
+  if (Array.isArray(value)) return value[0] ?? '';
+  return value ?? '';
 }
 
 /** `<gatewayId>.relay.zone[:port]` → `gatewayId`. */
