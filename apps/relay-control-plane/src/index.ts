@@ -13,3 +13,8 @@ export {
 } from './store.js';
 export { DialTokenSigner } from './dial-token-signer.js';
 export { RelayAdminClient } from './relay-admin-client.js';
+export {
+  ProvisioningService,
+  type CreatedGateway,
+  type ProvisioningDeps,
+} from './provisioning.js';
