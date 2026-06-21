@@ -18,3 +18,4 @@ export {
   type CreatedGateway,
   type ProvisioningDeps,
 } from './provisioning.js';
+export { StubAuthenticator, type Authenticator } from './auth.js';
