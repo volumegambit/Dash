@@ -133,6 +133,7 @@ const api: MissionControlAPI = {
     install: (req) => ipcRenderer.invoke('plugins:install', req),
     remove: (name) => ipcRenderer.invoke('plugins:remove', name),
     reload: () => ipcRenderer.invoke('plugins:reload'),
+    runtime: () => ipcRenderer.invoke('plugins:runtime'),
   },
 
   // Gateway

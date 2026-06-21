@@ -12,6 +12,7 @@ import {
   pluginInstallHandler,
   pluginReloadHandler,
   pluginRemoveHandler,
+  pluginRuntimeHandler,
   pluginSetStateHandler,
   pluginsListHandler,
   resolveSetupStatus,
@@ -289,5 +290,16 @@ describe('plugin IPC handlers', () => {
     const result = await pluginReloadHandler(client);
     expect(client.pluginReload).toHaveBeenCalledOnce();
     expect(result).toEqual({ ok: true, reloadedAt: '2026-06-21T00:00:00Z' });
+  });
+
+  it('pluginRuntimeHandler calls runtimePlugins() and returns its result', async () => {
+    const runtime = {
+      providers: [{ id: 'acme', label: 'Acme', credentialPrefix: 'ACME_' }],
+      plugins: [{ name: 'acme', displayName: 'Acme', version: '1.2.3' }],
+    };
+    const client = { runtimePlugins: vi.fn().mockResolvedValue(runtime) };
+    const result = await pluginRuntimeHandler(client);
+    expect(client.runtimePlugins).toHaveBeenCalledOnce();
+    expect(result).toBe(runtime);
   });
 });

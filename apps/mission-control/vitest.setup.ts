@@ -172,6 +172,7 @@ function createMockApi(): MockApi {
       install: vi.fn(),
       remove: vi.fn().mockResolvedValue({ ok: true }),
       reload: vi.fn().mockResolvedValue({ ok: true }),
+      runtime: vi.fn().mockResolvedValue({ providers: [], plugins: [] }),
     },
 
     // Gateway

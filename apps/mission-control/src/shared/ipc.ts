@@ -3,6 +3,7 @@ import type {
   PluginInstallResponse,
   PluginRecord,
   PluginSetStateRequest,
+  RuntimePluginsResponse,
   SkillContent,
   SkillInfo,
   SkillsConfig,
@@ -276,6 +277,7 @@ export interface MissionControlAPI {
     install(req: PluginInstallRequest): Promise<PluginInstallResponse>;
     remove(name: string): Promise<{ ok: boolean; path?: string }>;
     reload(): Promise<{ ok: boolean; reloadedAt?: string }>;
+    runtime(): Promise<RuntimePluginsResponse>;
   };
 
   // Gateway

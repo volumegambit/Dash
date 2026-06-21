@@ -19,6 +19,7 @@ import type {
   PluginSetStateRequest,
   Project,
   ProjectWithCounts,
+  RuntimePluginsResponse,
   SessionIssueLink,
   ShutdownResponse,
   SkillContent,
@@ -302,11 +303,8 @@ export class ManagementClient {
     return this.request<{ ok: boolean; reloadedAt?: string }>('POST', '/plugins/reload');
   }
 
-  async runtimePlugins(): Promise<{
-    providers: Array<{ id: string; label: string; credentialPrefix: string }>;
-    plugins: Array<{ name: string; displayName?: string; version?: string }>;
-  }> {
-    return this.request('GET', '/runtime/plugins');
+  async runtimePlugins(): Promise<RuntimePluginsResponse> {
+    return this.request<RuntimePluginsResponse>('GET', '/runtime/plugins');
   }
 
   // --- Projects ---

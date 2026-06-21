@@ -8,6 +8,7 @@ import type {
   PluginRecord,
   PluginSetStateRequest,
   Project,
+  RuntimePluginsResponse,
   SkillsConfig,
 } from '@dash/management';
 import { ManagementClient } from '@dash/management';
@@ -1027,6 +1028,8 @@ export async function registerIpcHandlers(
 
   ipcMain.handle('plugins:reload', async () => pluginReloadHandler(await getPluginsClient()));
 
+  ipcMain.handle('plugins:runtime', async () => pluginRuntimeHandler(await getPluginsClient()));
+
   // -----------------------------------------------------------------------
   // Projects
   // -----------------------------------------------------------------------
@@ -1222,6 +1225,12 @@ export async function pluginReloadHandler(
   client: Pick<ManagementClient, 'pluginReload'>,
 ): Promise<{ ok: boolean; reloadedAt?: string }> {
   return client.pluginReload();
+}
+
+export async function pluginRuntimeHandler(
+  client: Pick<ManagementClient, 'runtimePlugins'>,
+): Promise<RuntimePluginsResponse> {
+  return client.runtimePlugins();
 }
 
 export async function shutdownGatewayOnQuit(dataDir: string): Promise<void> {

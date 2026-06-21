@@ -167,6 +167,30 @@ export type PluginInstallResponse =
   | InstalledPlugin
   | { ok: true; installed: InstalledPlugin; note: string; error?: string };
 
+/**
+ * A custom-provider entry contributed by a loaded plugin, surfaced by the
+ * gateway's GET /runtime/plugins route. `credentialPrefix` is the env-var
+ * prefix MC uses to scope credentials for the provider.
+ */
+export interface RuntimePluginProvider {
+  id: string;
+  label: string;
+  credentialPrefix: string;
+}
+
+/** A loaded plugin's identity, as reported by GET /runtime/plugins. */
+export interface RuntimePlugin {
+  name: string;
+  displayName?: string;
+  version?: string;
+}
+
+/** Body of the gateway's GET /runtime/plugins route. */
+export interface RuntimePluginsResponse {
+  providers: RuntimePluginProvider[];
+  plugins: RuntimePlugin[];
+}
+
 // --- Projects ---
 //
 // Wire types for the gateway's /projects, /issues, and /inbox routes. The
