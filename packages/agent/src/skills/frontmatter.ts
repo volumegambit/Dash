@@ -24,17 +24,23 @@ function parseValue(raw: string): string | string[] {
   return trimmed;
 }
 
+/** Raw frontmatter fields plus the body, without requiring a `name`. */
+export interface ParsedFrontmatterFields {
+  fields: Record<string, string | string[]>;
+  content: string;
+}
+
 /**
- * Parse YAML frontmatter from a skill file.
+ * Parse YAML frontmatter fields from a skill/command file WITHOUT requiring a
+ * `name`. Returns the raw field map and the body, or null if the frontmatter
+ * delimiters are missing/unterminated.
  *
  * Supports:
  * - Key-value pairs: `key: value`
  * - Inline arrays: `key: [a, b, c]`
  * - Multi-line arrays: `key:\n  - item`
- *
- * Returns null if frontmatter is missing or name is empty.
  */
-export function parseFrontmatter(raw: string): ParsedSkill | null {
+export function parseFrontmatterFields(raw: string): ParsedFrontmatterFields | null {
   const normalized = raw.replace(/\r\n/g, '\n');
 
   // Must start with ---
@@ -52,7 +58,7 @@ export function parseFrontmatter(raw: string): ParsedSkill | null {
   const rest = afterOpen.slice(closeIdx + 4); // skip \n---
 
   // Parse YAML key-value pairs with multi-line array support
-  const fm: Record<string, string | string[]> = {};
+  const fields: Record<string, string | string[]> = {};
   const lines = yamlBlock.split('\n');
   let i = 0;
   while (i < lines.length) {
@@ -93,13 +99,33 @@ export function parseFrontmatter(raw: string): ParsedSkill | null {
           break;
         }
       }
-      fm[key] = items;
+      fields[key] = items;
       continue;
     }
 
-    fm[key] = parseValue(valueRaw);
+    fields[key] = parseValue(valueRaw);
     i++;
   }
+
+  return { fields, content: rest.trimStart().trimEnd() };
+}
+
+/**
+ * Parse YAML frontmatter from a skill file.
+ *
+ * Supports:
+ * - Key-value pairs: `key: value`
+ * - Inline arrays: `key: [a, b, c]`
+ * - Multi-line arrays: `key:\n  - item`
+ *
+ * Returns null if frontmatter is missing or name is empty.
+ */
+export function parseFrontmatter(raw: string): ParsedSkill | null {
+  const parsed = parseFrontmatterFields(raw);
+  if (!parsed) {
+    return null;
+  }
+  const fm = parsed.fields;
 
   // Validate required fields
   const name = typeof fm.name === 'string' ? fm.name : '';
@@ -133,9 +159,7 @@ export function parseFrontmatter(raw: string): ParsedSkill | null {
     frontmatter.dependencies = fm.dependencies;
   }
 
-  const content = rest.trimStart().trimEnd();
-
-  return { frontmatter, content };
+  return { frontmatter, content: parsed.content };
 }
 
 /**

@@ -1,6 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { basename } from 'node:path';
-import { parseFrontmatter } from './frontmatter.js';
+import { parseFrontmatterFields } from './frontmatter.js';
 import type { SkillDiscoveryResult } from './types.js';
 
 /**
@@ -17,9 +17,14 @@ export async function loadFlatSkills(files: string[]): Promise<SkillDiscoveryRes
     } catch {
       continue;
     }
-    const parsed = parseFrontmatter(raw);
-    const name = parsed?.frontmatter.name || basename(file).replace(/\.md$/, '');
-    const description = parsed?.frontmatter.description ?? '';
+    // Parse frontmatter fields WITHOUT requiring `name`: Claude Code command
+    // files commonly carry `description:` but no `name:` (name defaults to the
+    // filename). We still want to keep their description.
+    const parsed = parseFrontmatterFields(raw);
+    const fmName = parsed && typeof parsed.fields.name === 'string' ? parsed.fields.name : '';
+    const name = fmName || basename(file).replace(/\.md$/, '');
+    const description =
+      parsed && typeof parsed.fields.description === 'string' ? parsed.fields.description : '';
     const content = parsed?.content ?? raw;
     out.push({ name, description, location: file, content, editable: false, source: 'agent' });
   }

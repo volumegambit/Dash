@@ -212,4 +212,44 @@ describe('loadPlugins', () => {
     expect(byName.bad.status).toBe('error');
     expect(byName.bad.failure?.phase).toBe('route');
   });
+
+  it('does not leak a failing trusted plugin components into the aggregates', async () => {
+    // Trusted plugin with valid skills/, commands/, bin/, BUT a malformed
+    // .mcp.json that translate rejects. Its components must NOT survive in the
+    // returned aggregates — per-plugin activation is atomic.
+    const badDir = await writePlugin(pluginsDir, 'bad', {
+      skill: 'bskill',
+      command: 'bcmd',
+      bin: true,
+      mcp: { mcpServers: { s: { type: 'ws', url: 'wss://x' } } },
+    });
+    const goodDir = await writePlugin(pluginsDir, 'good', {
+      skill: 'gskill',
+      command: 'gcmd',
+      bin: true,
+      mcp: { mcpServers: { db: { command: 'node' } } },
+    });
+    const loaded = await loadPlugins({
+      pluginsDir,
+      entries: {
+        bad: { enabled: true, trusted: true },
+        good: { enabled: true, trusted: true },
+      },
+    });
+    const byName = Object.fromEntries(loaded.records.map((r) => [r.name, r]));
+    expect(byName.bad.status).toBe('error');
+    expect(byName.good.status).toBe('loaded');
+
+    // Nothing from `bad` leaked into the aggregates.
+    expect(loaded.skillDirs).not.toContain(join(badDir, 'skills'));
+    expect(loaded.commandFiles).not.toContain(join(badDir, 'commands', 'bcmd.md'));
+    expect(loaded.binDirs).not.toContain(join(badDir, 'bin'));
+    expect(loaded.mcpConfigs.some((c) => c.pluginName === 'bad')).toBe(false);
+
+    // `good` is fully present in the aggregates.
+    expect(loaded.skillDirs).toContain(join(goodDir, 'skills'));
+    expect(loaded.commandFiles).toContain(join(goodDir, 'commands', 'gcmd.md'));
+    expect(loaded.binDirs).toContain(join(goodDir, 'bin'));
+    expect(loaded.mcpConfigs.some((c) => c.pluginName === 'good')).toBe(true);
+  });
 });

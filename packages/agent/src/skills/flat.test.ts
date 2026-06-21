@@ -28,6 +28,16 @@ describe('loadFlatSkills', () => {
     expect(skills[0].location).toBe(f);
   });
 
+  it('keeps the description when frontmatter has no name (name = basename)', async () => {
+    const f = join(dir, 'release.md');
+    await writeFile(f, '---\ndescription: ship a release\n---\nDo the release.');
+    const skills = await loadFlatSkills([f]);
+    expect(skills).toHaveLength(1);
+    expect(skills[0].name).toBe('release');
+    expect(skills[0].description).toBe('ship a release');
+    expect(skills[0].content).toBe('Do the release.');
+  });
+
   it('skips files that cannot be read without throwing', async () => {
     const skills = await loadFlatSkills([join(dir, 'missing.md')]);
     expect(skills).toEqual([]);

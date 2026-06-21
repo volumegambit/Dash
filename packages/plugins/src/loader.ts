@@ -80,13 +80,23 @@ export async function loadPlugins(opts: LoadPluginsOptions): Promise<LoadedPlugi
       // From here on, failures are 'route' failures (component resolution).
       phase = 'route';
 
+      // Accumulate this plugin's components into LOCALS first. We only merge
+      // them into the returned aggregates once the WHOLE plugin succeeds
+      // (including .mcp.json parse+translate). That keeps per-plugin activation
+      // atomic: if anything below throws, the catch records an `error` and
+      // NOTHING from this plugin leaks into the aggregate output.
+      const localSkillDirs: string[] = [];
+      const localCommandFiles: string[] = [];
+      const localBinDirs: string[] = [];
+      const localMcpConfigs: McpConfigEntry[] = [];
+
       // Markdown components need no trust. Skills (default skills/ + manifest
       // entries) and commands (flat .md files) are discovered for any enabled
       // plugin.
       const sDirs = resolveSkillDirs(dir, manifest);
       const cmdFiles = resolveCommandFiles(dir, manifest);
-      skillDirs.push(...sDirs);
-      commandFiles.push(...cmdFiles);
+      localSkillDirs.push(...sDirs);
+      localCommandFiles.push(...cmdFiles);
 
       const activated: string[] = [];
       const noop: string[] = [];
@@ -101,7 +111,7 @@ export async function loadPlugins(opts: LoadPluginsOptions): Promise<LoadedPlugi
       const binDir = resolveBinDir(dir);
       if (binDir) {
         if (trusted) {
-          binDirs.push(binDir);
+          localBinDirs.push(binDir);
           activated.push('bin');
         } else {
           noop.push('bin');
@@ -112,16 +122,23 @@ export async function loadPlugins(opts: LoadPluginsOptions): Promise<LoadedPlugi
       if (existsSync(mcpPath)) {
         if (trusted) {
           // parse + translate may throw on malformed config → caught below as a
-          // 'route' failure for THIS plugin only (loop is fail-isolated).
+          // 'route' failure for THIS plugin only (loop is fail-isolated). Because
+          // we accumulate into locals, a throw here discards every component above.
           const raw = JSON.parse(readFileSync(mcpPath, 'utf8'));
           const cfgs = translateMcpJson(raw, manifest.name);
-          for (const config of cfgs) mcpConfigs.push({ pluginName: manifest.name, config });
+          for (const config of cfgs) localMcpConfigs.push({ pluginName: manifest.name, config });
           if (cfgs.length) activated.push('mcp');
           else noop.push('mcp');
         } else {
           noop.push('mcp');
         }
       }
+
+      // Plugin fully succeeded — commit its components to the aggregates.
+      skillDirs.push(...localSkillDirs);
+      commandFiles.push(...localCommandFiles);
+      binDirs.push(...localBinDirs);
+      mcpConfigs.push(...localMcpConfigs);
 
       records.push({
         name: manifest.name,
