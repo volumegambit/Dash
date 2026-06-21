@@ -22,13 +22,15 @@ import { createDynamicGateway } from './gateway.js';
 async function writeHookPlugin(
   pluginsDir: string,
   name: string,
-  hooks: Record<string, unknown>,
+  // `eventMap` is the Claude Code event→groups map; real hooks.json nests it
+  // under a top-level "hooks" key (see hooks-manifest validateHooksJson).
+  eventMap: Record<string, unknown>,
 ): Promise<void> {
   const dir = join(pluginsDir, name);
   await mkdir(join(dir, '.claude-plugin'), { recursive: true });
   await writeFile(join(dir, '.claude-plugin', 'plugin.json'), JSON.stringify({ name }));
   await mkdir(join(dir, 'hooks'), { recursive: true });
-  await writeFile(join(dir, 'hooks', 'hooks.json'), JSON.stringify(hooks));
+  await writeFile(join(dir, 'hooks', 'hooks.json'), JSON.stringify({ hooks: eventMap }));
 }
 
 function makeFakeAgent(): AgentClient {
