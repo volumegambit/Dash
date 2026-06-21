@@ -20,9 +20,9 @@ function fakes() {
 }
 
 describe('registerPluginMcpServers', () => {
-  it('registers each config with the running manager', async () => {
+  it('registers each config with the running manager and returns the registered set', async () => {
     const f = fakes();
-    await registerPluginMcpServers(
+    const registered = await registerPluginMcpServers(
       f.mgr,
       [
         {
@@ -33,11 +33,13 @@ describe('registerPluginMcpServers', () => {
       f.logger,
     );
     expect(f.added).toEqual(['p-db']);
+    // F4: the return set is exactly what actually registered.
+    expect([...registered]).toEqual(['p-db']);
   });
 
-  it('isolates a failing registration and continues', async () => {
+  it('isolates a failing registration and excludes it from the returned set (F4)', async () => {
     const f = fakes();
-    await registerPluginMcpServers(
+    const registered = await registerPluginMcpServers(
       f.mgr,
       [
         { pluginName: 'p', config: { name: 'p-boom', transport: { type: 'stdio', command: 'x' } } },
@@ -46,6 +48,9 @@ describe('registerPluginMcpServers', () => {
       f.logger,
     );
     expect(f.added).toEqual(['p-ok']);
+    // The skipped 'p-boom' (a collision/spawn failure stand-in) is NOT in the
+    // returned set, so a later reload won't try to tear it down (F4).
+    expect([...registered]).toEqual(['p-ok']);
   });
 
   // Regression: a once-trusted plugin's MCP server must not survive an untrusted
@@ -152,5 +157,57 @@ describe('reconcilePluginMcpServers (hot-reload remove-then-add)', () => {
     await reconcilePluginMcpServers(f.mgr, ['p-a', 'p-b'], [], f.logger);
     expect(f.removed).toEqual(['p-a', 'p-b']);
     expect(f.added).toEqual([]);
+  });
+
+  it('returns the actually-registered set as the next reload teardown set', async () => {
+    const f = reconcileFakes();
+    const next = await reconcilePluginMcpServers(
+      f.mgr,
+      ['p-old'],
+      [{ pluginName: 'p', config: { name: 'p-new', transport: { type: 'stdio', command: 'b' } } }],
+      f.logger,
+    );
+    expect([...next]).toEqual(['p-new']);
+  });
+
+  // T-d (F4): an OPERATOR server 'x' already exists; a plugin also declares 'x'.
+  // At registration the plugin's 'x' collides (addServer rejects) and is skipped,
+  // so it is NOT in the registered set. On the NEXT reload, the teardown set is
+  // that registered set — so reconcile must NOT removeServer('x'), leaving the
+  // operator's server alive.
+  it('never tears down an operator-owned server that shares a plugin server name (T-d, F4)', async () => {
+    const operatorServers = new Set(['x']); // operator started 'x' from the persistent store
+    const removed: string[] = [];
+    const mgr = {
+      addServer: async (c: McpServerConfig) => {
+        // addServer rejects a duplicate name — exactly the boot collision case.
+        if (operatorServers.has(c.name)) throw new Error(`server '${c.name}' already exists`);
+        operatorServers.add(c.name);
+      },
+      removeServer: async (name: string) => {
+        removed.push(name);
+        operatorServers.delete(name);
+      },
+    };
+    const logger = { info() {}, warn() {} };
+
+    // Boot-equivalent: register the plugin's 'x' (collides → skipped) and 'y'.
+    const registered = await registerPluginMcpServers(
+      mgr,
+      [
+        { pluginName: 'p', config: { name: 'x', transport: { type: 'stdio', command: 'a' } } },
+        { pluginName: 'p', config: { name: 'y', transport: { type: 'stdio', command: 'b' } } },
+      ],
+      logger,
+    );
+    // Only 'y' actually registered; 'x' belongs to the operator.
+    expect([...registered].sort()).toEqual(['y']);
+
+    // Reload with the plugin now declaring nothing. Teardown set = registered set.
+    await reconcilePluginMcpServers(mgr, [...registered], [], logger);
+
+    // The operator's 'x' was NEVER removed; only the gateway-owned 'y' was.
+    expect(removed).toEqual(['y']);
+    expect(operatorServers.has('x')).toBe(true);
   });
 });

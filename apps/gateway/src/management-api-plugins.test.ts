@@ -81,7 +81,8 @@ function record(over: Partial<PluginStatusRecord> & { name: string }): PluginSta
   return {
     status: 'loaded',
     enabled: true,
-    trusted: undefined,
+    // F9: trusted is always a concrete boolean on the record.
+    trusted: false,
     activated: [],
     noop: [],
     ...over,
@@ -301,6 +302,32 @@ describe('plugin management routes', () => {
       expect(entries.disco.enabled).toBe(true);
       expect(stale.pluginRecords.disco.enabled).toBe(false);
     });
+
+    // F8: a successful reload that no longer contains the plugin (e.g. its dir
+    // vanished between the write and the reload) must return a structured 409 —
+    // never a 200 with a null/undefined body.
+    it('returns 409 with a body when the plugin is absent after a successful reload (F8)', async () => {
+      const { store } = stubConfigStore({ disco: { enabled: false } });
+      // Reload "succeeds" but the plugin is gone from the rebuilt records.
+      let current = wiring({
+        pluginRecords: { disco: record({ name: 'disco', enabled: false }) },
+      });
+      const reloadPlugins = vi.fn(async () => {
+        current = wiring({ pluginRecords: {} });
+        return current;
+      });
+      const { app } = createApp({ getWiring: () => current, configStore: store, reloadPlugins });
+      const res = await app.request('/plugins/disco', {
+        method: 'PUT',
+        headers: JSON_HEADERS,
+        body: JSON.stringify({ enabled: true }),
+      });
+      expect(res.status).toBe(409);
+      const body = await res.json();
+      // A real JSON body, not c.json(undefined).
+      expect(body).toMatchObject({ plugin: 'disco' });
+      expect(typeof body.error).toBe('string');
+    });
   });
 
   describe('DELETE /plugins/:name', () => {
@@ -352,6 +379,35 @@ describe('plugin management routes', () => {
       expect(body.path).toBe(pluginDir);
       // Directory actually gone.
       await expect(stat(pluginDir)).rejects.toBeTruthy();
+
+      await rm(dir, { recursive: true, force: true });
+    });
+
+    // T-f (F7): DELETE's reload failing must NOT yield a raw 500. The entry (and,
+    // for an installed plugin, its dir) is already removed; return a structured
+    // 409 saying so, and still emit plugin:removed.
+    it('returns a structured 409 (entry/dir removed) when the reload fails after deletion (T-f, F7)', async () => {
+      const dir = await mkdtemp(join(tmpdir(), 'plugins-del-fail-'));
+      const pluginDir = join(dir, 'disco');
+      await mkdir(pluginDir, { recursive: true });
+      await writeFile(join(pluginDir, 'marker.txt'), 'x');
+
+      const { store, entries } = stubConfigStore({ disco: { enabled: true, installed: true } });
+      const reloadPlugins = vi.fn().mockRejectedValue(new Error('reload exploded'));
+      const { app, events } = createApp({ configStore: store, reloadPlugins, pluginsDir: dir });
+
+      const res = await app.request('/plugins/disco', { method: 'DELETE', headers: AUTH });
+      expect(res.status).toBe(409);
+      const body = await res.json();
+      expect(body).toMatchObject({ ok: true, removed: true, plugin: 'disco', path: pluginDir });
+      expect(body.error).toContain('reload exploded');
+      expect(typeof body.note).toBe('string');
+      // The removal genuinely happened despite the failing reload.
+      expect(store.remove).toHaveBeenCalledWith('disco');
+      expect(entries.disco).toBeUndefined();
+      await expect(stat(pluginDir)).rejects.toBeTruthy();
+      // plugin:removed still emitted (the entry IS gone).
+      expect(events.find((e) => e.type === 'plugin:removed')).toMatchObject({ plugin: 'disco' });
 
       await rm(dir, { recursive: true, force: true });
     });

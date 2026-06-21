@@ -6,6 +6,7 @@ import type { Logger } from '@dash/logging';
 import { MANIFEST_DIR, MANIFEST_FILENAME, PluginConfigStore, loadPlugins } from '@dash/plugins';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import type { McpServerConfig } from '@dash/mcp';
 import { createAgentChatCoordinator } from './agent-chat-coordinator.js';
 import { AgentRegistry } from './agent-registry.js';
 import { GatewayCredentialStore } from './credential-store.js';
@@ -13,12 +14,41 @@ import { EventBus, type GatewayEvent } from './event-bus.js';
 import type { DynamicGateway } from './gateway.js';
 import { createGatewayManagementApp } from './management-api.js';
 import { ModelsStore } from './models-store.js';
+import { reconcilePluginMcpServers, registerPluginMcpServers } from './plugin-mcp.js';
 import {
   type PluginStatusRecord,
   type PluginWiringState,
   rebuildWiringState,
   reloadPluginsUnderMutex,
 } from './plugins-wiring.js';
+
+/**
+ * Recording McpManager stand-in: tracks live server names and records every
+ * add/remove. addServer rejects a duplicate name (matches the real manager and
+ * the boot-collision case), so seeding an operator server lets us prove the
+ * teardown never removes it (T-d/F4).
+ */
+function recordingMcpManager(seed: string[] = []) {
+  const live = new Set<string>(seed);
+  const added: string[] = [];
+  const removed: string[] = [];
+  return {
+    live,
+    added,
+    removed,
+    mgr: {
+      addServer: async (c: McpServerConfig) => {
+        if (live.has(c.name)) throw new Error(`server '${c.name}' already exists`);
+        live.add(c.name);
+        added.push(c.name);
+      },
+      removeServer: async (name: string) => {
+        removed.push(name);
+        live.delete(name);
+      },
+    },
+  };
+}
 
 // ===========================================================================
 // Real end-to-end integration test for P1's headline feature: mutate a plugin
@@ -128,7 +158,7 @@ async function writeProviderPlugin(pluginsDir: string, name: string): Promise<vo
  * a mutable `wiringState` holder, a reload closure that reassigns it via
  * onWiringRebuilt, and a getter the routes read live.
  */
-async function boot(dataDir: string) {
+async function boot(dataDir: string, opts: { mcp?: ReturnType<typeof recordingMcpManager> } = {}) {
   const pluginsDir = join(dataDir, 'plugins');
   const pluginConfigStore = new PluginConfigStore(dataDir);
   const modelsStore = new ModelsStore(dataDir);
@@ -141,6 +171,7 @@ async function boot(dataDir: string) {
   let wiringState = await rebuildWiringState(loaded, entries, CORE_PROVIDER_IDS, {
     logger: NOOP_LOGGER,
     dataDir,
+    pluginsDir,
   });
 
   const agents = createAgentChatCoordinator({
@@ -153,10 +184,32 @@ async function boot(dataDir: string) {
     getPluginCommandFiles: () => wiringState.commandFiles,
   });
 
+  // When a recording McpManager is supplied, register plugin MCP servers at boot
+  // and reconcile them on reload EXACTLY as index.ts does — tracking the
+  // actually-registered set so reload teardown never touches an operator server.
+  let registeredPluginMcpServers = new Set<string>();
+  if (opts.mcp) {
+    registeredPluginMcpServers = await registerPluginMcpServers(
+      opts.mcp.mgr,
+      wiringState.mcpConfigs,
+      NOOP_LOGGER,
+    );
+  }
+
   const onWiringRebuilt = async (newWiring: PluginWiringState): Promise<void> => {
-    // index.ts also re-registers MCP servers here; this test has no live
-    // McpManager, so swapping the holder is the relevant behavior to mirror.
-    wiringState = newWiring;
+    if (opts.mcp) {
+      const oldServerNames = [...registeredPluginMcpServers];
+      wiringState = newWiring;
+      registeredPluginMcpServers = await reconcilePluginMcpServers(
+        opts.mcp.mgr,
+        oldServerNames,
+        newWiring.mcpConfigs,
+        NOOP_LOGGER,
+      );
+    } else {
+      // No live McpManager in this boot — swapping the holder is enough.
+      wiringState = newWiring;
+    }
   };
 
   const reloadPlugins = (): Promise<PluginWiringState> =>
@@ -273,6 +326,77 @@ describe('plugin mutate → hot-reload end-to-end', () => {
       // Event emitted with the patched field.
       const evt = events.find((e) => e.type === 'plugin:config-changed');
       expect(evt).toMatchObject({ type: 'plugin:config-changed', plugin: 'disco' });
+    } finally {
+      await cleanup();
+    }
+  });
+
+  // T-e (F4 / Security-2): live trust-drop teardown through a recording
+  // McpManager. PUT trusted:true registers the plugin's MCP server; PUT
+  // trusted:false reloads → the server is removed and gone from the live set.
+  it('registers then tears down a plugin MCP server across a trust toggle (T-e)', async () => {
+    await writeMcpPlugin(join(dataDir, 'plugins'), 'disco');
+    const cfg = new PluginConfigStore(dataDir);
+    await cfg.setEnabled('disco', true);
+
+    const mcp = recordingMcpManager();
+    const { app, cleanup } = await boot(dataDir, { mcp });
+    try {
+      // Untrusted boot: nothing registered.
+      expect(mcp.live.size).toBe(0);
+
+      // Trust it → reload registers the server live.
+      const on = await app.request('/plugins/disco', {
+        method: 'PUT',
+        headers: JSON_HEADERS,
+        body: JSON.stringify({ trusted: true }),
+      });
+      expect(on.status).toBe(200);
+      expect(mcp.added.length).toBeGreaterThan(0);
+      const serverName = mcp.added[0];
+      expect(mcp.live.has(serverName)).toBe(true);
+
+      // Drop trust → reload tears the server down; it is gone from the live set.
+      const off = await app.request('/plugins/disco', {
+        method: 'PUT',
+        headers: JSON_HEADERS,
+        body: JSON.stringify({ trusted: false }),
+      });
+      expect(off.status).toBe(200);
+      expect(mcp.removed).toContain(serverName);
+      expect(mcp.live.has(serverName)).toBe(false);
+    } finally {
+      await cleanup();
+    }
+  });
+
+  // T-d at the e2e level: an operator server sharing the plugin's MCP server name
+  // must survive a plugin trust drop. The plugin's server collides at register
+  // time (skipped), so reconcile never removes the operator's server.
+  it('never tears down an operator MCP server colliding with a plugin server name (T-d/F4 e2e)', async () => {
+    await writeMcpPlugin(join(dataDir, 'plugins'), 'disco');
+    const cfg = new PluginConfigStore(dataDir);
+    await cfg.setEnabled('disco', true);
+    await cfg.setTrusted('disco', true);
+
+    // The plugin's .mcp.json declares a server named 'db'. Seed an operator 'db'.
+    const mcp = recordingMcpManager(['db']);
+    const { app, cleanup } = await boot(dataDir, { mcp });
+    try {
+      // Boot registered the plugin's 'db'? No — it collides with the operator's,
+      // so addServer rejected it and it is NOT tracked as gateway-owned.
+      expect(mcp.live.has('db')).toBe(true);
+
+      // Drop trust → reload. The teardown set excludes the operator's 'db'.
+      const off = await app.request('/plugins/disco', {
+        method: 'PUT',
+        headers: JSON_HEADERS,
+        body: JSON.stringify({ trusted: false }),
+      });
+      expect(off.status).toBe(200);
+      // Operator's 'db' was never removed.
+      expect(mcp.removed).not.toContain('db');
+      expect(mcp.live.has('db')).toBe(true);
     } finally {
       await cleanup();
     }

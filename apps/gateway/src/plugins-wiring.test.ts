@@ -112,7 +112,11 @@ const NOOP_LOGGER: Logger = {
 
 const CORE_PROVIDER_IDS = ['anthropic', 'openai', 'google'];
 
-const WIRING_OPTIONS = { logger: NOOP_LOGGER, dataDir: '/tmp/wiring-test-data' };
+const WIRING_OPTIONS = {
+  logger: NOOP_LOGGER,
+  dataDir: '/tmp/wiring-test-data',
+  pluginsDir: '/tmp/wiring-test-data/plugins',
+};
 
 async function writePlugin(
   root: string,
@@ -326,9 +330,14 @@ describe('PluginStatusRecord snapshots', () => {
     return loadPlugins({ pluginsDir, entries, logger: NOOP_LOGGER });
   }
 
-  it('captures status/enabled/trusted/activated/noop and version/displayName for a loaded plugin', async () => {
+  it('captures status/enabled/trusted/activated/noop and version/displayName/description for a loaded plugin', async () => {
     await writePlugin(pluginsDir, 'alpha', {
-      manifest: { name: 'alpha', version: '1.2.3', description: 'Alpha Plugin' },
+      manifest: {
+        name: 'alpha',
+        version: '1.2.3',
+        displayName: 'Alpha Plugin',
+        description: 'The alpha plugin',
+      },
       skill: 'doit',
     });
     const entries: Record<string, PluginEntryConfig> = { alpha: { enabled: true, trusted: true } };
@@ -344,11 +353,28 @@ describe('PluginStatusRecord snapshots', () => {
     expect(rec.activated).toContain('skills');
     expect(rec.noop).not.toContain('skills');
     expect(rec.version).toBe('1.2.3');
+    // displayName comes from the manifest displayName (F5), NOT the description.
     expect(rec.displayName).toBe('Alpha Plugin');
+    expect(rec.description).toBe('The alpha plugin');
     expect(rec.failure).toBeUndefined();
   });
 
-  it('marks a disabled plugin enabled=false with status disabled', async () => {
+  it('falls back displayName to the plugin name when the manifest omits it (F5)', async () => {
+    await writePlugin(pluginsDir, 'nodisplay', {
+      manifest: { name: 'nodisplay', description: 'has a description but no displayName' },
+      skill: 'doit',
+    });
+    const entries: Record<string, PluginEntryConfig> = { nodisplay: { enabled: true } };
+    const loaded = await load(entries);
+
+    const state = await rebuildWiringState(loaded, entries, CORE_PROVIDER_IDS, WIRING_OPTIONS);
+    const rec = state.pluginRecords.nodisplay;
+    // Never the description — falls back to the name.
+    expect(rec.displayName).toBe('nodisplay');
+    expect(rec.description).toBe('has a description but no displayName');
+  });
+
+  it('marks a disabled plugin enabled=false with status disabled (trusted is a concrete false)', async () => {
     await writePlugin(pluginsDir, 'sleepy', { skill: 'doit' });
     const entries: Record<string, PluginEntryConfig> = { sleepy: { enabled: false } };
     const loaded = await load(entries);
@@ -358,6 +384,9 @@ describe('PluginStatusRecord snapshots', () => {
 
     expect(rec.status).toBe('disabled');
     expect(rec.enabled).toBe(false);
+    // F9: trusted is always a concrete boolean (never absent), here false.
+    expect(rec.trusted).toBe(false);
+    expect('trusted' in rec).toBe(true);
   });
 
   it('captures the failure reason as a string for an error plugin', async () => {
@@ -376,7 +405,23 @@ describe('PluginStatusRecord snapshots', () => {
     expect(rec.failure).toContain('kebab-case');
   });
 
-  it('reflects the installed path from the config entry when present', async () => {
+  it('sets installedPath to the managed dir ONLY for an API-installed entry (F6)', async () => {
+    await writePlugin(pluginsDir, 'shipped', { manifest: { name: 'shipped' }, skill: 'doit' });
+    const entries: Record<string, PluginEntryConfig> = {
+      shipped: { enabled: true, installed: true },
+    };
+    const loaded = await load(entries);
+
+    // Use the REAL per-test pluginsDir so installedPath resolves to the dir DELETE removes.
+    const state = await rebuildWiringState(loaded, entries, CORE_PROVIDER_IDS, {
+      ...WIRING_OPTIONS,
+      pluginsDir,
+    });
+    const rec = state.pluginRecords.shipped;
+    expect(rec.installedPath).toBe(join(pluginsDir, 'shipped'));
+  });
+
+  it('leaves installedPath undefined for a linked (path:) entry — never the dev-link path (F6)', async () => {
     const linkedDir = await writePlugin(tmp, 'linked-plugin', {
       manifest: { name: 'linked-plugin' },
       skill: 'doit',
@@ -386,10 +431,13 @@ describe('PluginStatusRecord snapshots', () => {
     };
     const loaded = await load(entries);
 
-    const state = await rebuildWiringState(loaded, entries, CORE_PROVIDER_IDS, WIRING_OPTIONS);
+    const state = await rebuildWiringState(loaded, entries, CORE_PROVIDER_IDS, {
+      ...WIRING_OPTIONS,
+      pluginsDir,
+    });
     const rec = state.pluginRecords['linked-plugin'];
-
-    expect(rec.installed).toBe(linkedDir);
+    // The old `installed` field held the dev-link path — that collision is gone.
+    expect(rec.installedPath).toBeUndefined();
   });
 });
 
@@ -440,7 +488,61 @@ describe('reloadPluginsUnderMutex', () => {
     expect(agents.evictAll).toHaveBeenCalledTimes(1);
   });
 
-  it('serializes concurrent reloads — the second shares the first in-flight promise', async () => {
+  // F1 (queue-depth-1): a 2nd reload requested WHILE the first is in-flight must
+  // NOT just join the first promise — its load() may predate the 2nd caller's
+  // config write. Instead it is satisfied by ONE trailing fresh reload that
+  // re-reads the latest persisted config, so a distinct 2nd change is reflected.
+  it('coalesces concurrent reloads but reflects a distinct 2nd config change (F1)', async () => {
+    await writePlugin(pluginsDir, 'alpha', { skill: 'doit' });
+    await writePlugin(pluginsDir, 'beta', { skill: 'doit' });
+    const store = new PluginConfigStore(tmp);
+    await store.setEnabled('alpha', true); // beta still disabled at this point
+
+    const modelsStore = new ModelsStore(tmp);
+    let clearCalls = 0;
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    vi.spyOn(modelsStore, 'clear').mockImplementation(async () => {
+      clearCalls += 1;
+      if (clearCalls === 1) await gate; // hold ONLY the first reload open.
+    });
+    const agents = fakeCoordinator();
+
+    const reload = () =>
+      reloadPluginsUnderMutex(
+        store,
+        pluginsDir,
+        tmp,
+        NOOP_LOGGER,
+        modelsStore,
+        agents,
+        CORE_PROVIDER_IDS,
+      );
+
+    // Reload 1 starts and blocks in clear(). While it is held, a 2nd config
+    // mutation lands (beta enabled) and a 2nd reload is requested — it must be
+    // resolved by a FRESH reload that re-reads the now-updated config.
+    const p1 = reload();
+    await store.setEnabled('beta', true);
+    const p2 = reload();
+
+    release?.();
+    const s1 = await p1;
+    const s2 = await p2;
+
+    // The 1st caller's reload may or may not see beta (its load() raced the
+    // write) — but the 2nd caller is guaranteed a reload that ran AFTER the
+    // write, so beta is enabled in its result.
+    expect(s2.pluginRecords.beta?.enabled).toBe(true);
+    // Coalesced: the trailing reload is ONE fresh run, not one-per-caller.
+    expect(s1).not.toBe(s2);
+    // 1 (held) + 1 (trailing) = 2 reload bodies for two overlapping requests.
+    expect(clearCalls).toBe(2);
+  });
+
+  it('a 3rd concurrent request coalesces onto the single trailing reload (F1)', async () => {
     await writePlugin(pluginsDir, 'alpha', { skill: 'doit' });
     const store = new PluginConfigStore(tmp);
     await store.setEnabled('alpha', true);
@@ -453,35 +555,28 @@ describe('reloadPluginsUnderMutex', () => {
     });
     vi.spyOn(modelsStore, 'clear').mockImplementation(async () => {
       clearCalls += 1;
-      await gate; // hold the first reload open until we release it.
+      if (clearCalls === 1) await gate;
     });
     const agents = fakeCoordinator();
+    const reload = () =>
+      reloadPluginsUnderMutex(
+        store,
+        pluginsDir,
+        tmp,
+        NOOP_LOGGER,
+        modelsStore,
+        agents,
+        CORE_PROVIDER_IDS,
+      );
 
-    const p1 = reloadPluginsUnderMutex(
-      store,
-      pluginsDir,
-      tmp,
-      NOOP_LOGGER,
-      modelsStore,
-      agents,
-      CORE_PROVIDER_IDS,
-    );
-    const p2 = reloadPluginsUnderMutex(
-      store,
-      pluginsDir,
-      tmp,
-      NOOP_LOGGER,
-      modelsStore,
-      agents,
-      CORE_PROVIDER_IDS,
-    );
-
-    // Both calls share one in-flight reload → only ONE reload body runs while
-    // the first is held open, and both resolve to the SAME state object.
+    const p1 = reload();
+    const p2 = reload();
+    const p3 = reload();
     release?.();
-    const [s1, s2] = await Promise.all([p1, p2]);
-    expect(s1).toBe(s2);
-    expect(clearCalls).toBe(1);
+    const [, s2, s3] = await Promise.all([p1, p2, p3]);
+    // p2 and p3 both resolve from the SAME single trailing reload.
+    expect(s2).toBe(s3);
+    expect(clearCalls).toBe(2);
   });
 
   it('runs a fresh reload after the previous one settles', async () => {
@@ -516,13 +611,16 @@ describe('reloadPluginsUnderMutex', () => {
     expect(clearSpy).toHaveBeenCalledTimes(2);
   });
 
-  it('throws when a reload step fails, leaves the in-flight slot clear, but config stays persisted', async () => {
+  // F3: a failure in a SWAP-OR-EARLIER step (here: onWiringRebuilt, the live
+  // swap) rejects → wiring genuinely unchanged (the route reports 409). The
+  // in-flight slot is reset so a later reload runs cleanly.
+  it('rejects when the swap fails (wiring unchanged) but config stays persisted', async () => {
     await writePlugin(pluginsDir, 'alpha', { skill: 'doit' });
     const store = new PluginConfigStore(tmp);
     await store.setEnabled('alpha', true);
 
     const modelsStore = new ModelsStore(tmp);
-    vi.spyOn(modelsStore, 'clear').mockRejectedValueOnce(new Error('boom'));
+    const clearSpy = vi.spyOn(modelsStore, 'clear');
     const agents = fakeCoordinator();
 
     await expect(
@@ -534,8 +632,15 @@ describe('reloadPluginsUnderMutex', () => {
         modelsStore,
         agents,
         CORE_PROVIDER_IDS,
+        async () => {
+          throw new Error('swap boom');
+        },
       ),
-    ).rejects.toThrow('boom');
+    ).rejects.toThrow('swap boom');
+
+    // The swap threw BEFORE clear/evict — best-effort steps never ran.
+    expect(clearSpy).not.toHaveBeenCalled();
+    expect(agents.evictAllCalls).toBe(0);
 
     // Config the caller persisted before the failure is still on disk.
     const persisted = JSON.parse(await readFile(join(tmp, 'plugins', 'config.json'), 'utf8'));
@@ -553,5 +658,39 @@ describe('reloadPluginsUnderMutex', () => {
       CORE_PROVIDER_IDS,
     );
     expect(Object.keys(ok.pluginRecords)).toEqual(['alpha']);
+  });
+
+  // T-c (F3): a step failing AFTER the swap (modelsStore.clear throws) must NOT
+  // reject the reload — the wiring is already applied. Idle backends are still
+  // evicted (in a finally), and the reload RESOLVES with the new state so the
+  // route does not falsely report 'wiring unchanged'.
+  it('resolves (wiring applied) when a post-swap step fails, still evicting idle backends (T-c, F3)', async () => {
+    await writePlugin(pluginsDir, 'alpha', { skill: 'doit' });
+    const store = new PluginConfigStore(tmp);
+    await store.setEnabled('alpha', true);
+
+    const modelsStore = new ModelsStore(tmp);
+    vi.spyOn(modelsStore, 'clear').mockRejectedValueOnce(new Error('clear boom'));
+    const agents = fakeCoordinator();
+
+    let swapped = false;
+    const state = await reloadPluginsUnderMutex(
+      store,
+      pluginsDir,
+      tmp,
+      NOOP_LOGGER,
+      modelsStore,
+      agents,
+      CORE_PROVIDER_IDS,
+      async () => {
+        swapped = true;
+      },
+    );
+
+    // The reload RESOLVED (not rejected) with the applied wiring.
+    expect(swapped).toBe(true);
+    expect(Object.keys(state.pluginRecords)).toEqual(['alpha']);
+    // evictAll ran despite clear() throwing (finally), so no backend keeps stale wiring.
+    expect(agents.evictAllCalls).toBe(1);
   });
 });
