@@ -24,6 +24,8 @@ export interface RelayClientOptions {
   reconnectMaxMs?: number;
   /** Heartbeat ping interval in ms; a missed pong forces a reconnect. Default 20000. */
   heartbeatMs?: number;
+  /** A connection must stay up this long before the backoff resets. Default 5000. */
+  reconnectResetMs?: number;
 }
 
 export interface RelayClient {
@@ -63,8 +65,13 @@ export function startRelayClient(opts: RelayClientOptions): RelayClient {
   const reconnectBaseMs = opts.reconnectBaseMs ?? 1000;
   const reconnectMaxMs = opts.reconnectMaxMs ?? 30000;
   const heartbeatMs = opts.heartbeatMs ?? 20000;
+  // Only reset the backoff once a connection has stayed up this long. A relay
+  // that accepts the WS handshake then immediately closes (e.g. 4401 bad token)
+  // would otherwise reset the backoff on every 'open' and get hammered ~1×/s.
+  const reconnectResetMs = opts.reconnectResetMs ?? 5000;
 
   const streams = new Map<number, LocalConn>();
+  let stableTimer: ReturnType<typeof setTimeout> | undefined;
   let socket: WebSocket | null = null;
   let stopped = false;
   let reconnectAttempt = 0;
@@ -111,9 +118,12 @@ export function startRelayClient(opts: RelayClientOptions): RelayClient {
     socket = ws;
 
     ws.on('open', () => {
-      reconnectAttempt = 0;
       opts.logger?.info(`[relay] connected to ${opts.relayUrl}`);
       startHeartbeat(ws);
+      // Reset backoff only after the connection has proven stable (see above).
+      stableTimer = setTimeout(() => {
+        reconnectAttempt = 0;
+      }, reconnectResetMs);
     });
     ws.on('message', (raw: Buffer) => {
       let frame: Frame;
@@ -126,6 +136,10 @@ export function startRelayClient(opts: RelayClientOptions): RelayClient {
     });
     ws.on('error', (err) => opts.logger?.warn(`[relay] socket error: ${err.message}`));
     ws.on('close', () => {
+      if (stableTimer) {
+        clearTimeout(stableTimer);
+        stableTimer = undefined;
+      }
       stopHeartbeat();
       resetStreams();
       scheduleReconnect();
@@ -194,6 +208,19 @@ export function startRelayClient(opts: RelayClientOptions): RelayClient {
       return;
     }
 
+    // Tear a stream down once, reporting it to the relay. Idempotent: the map
+    // delete guards against a normal `end` having already removed it (which
+    // would otherwise double-send a close).
+    const failStream = (streamId: number, reason: string): void => {
+      if (streams.delete(streamId)) {
+        try {
+          ws.send(encodeFrame({ t: 'close', streamId, reason }));
+        } catch {
+          // relay socket already gone
+        }
+      }
+    };
+
     const req = http.request(
       {
         hostname: '127.0.0.1',
@@ -225,12 +252,15 @@ export function startRelayClient(opts: RelayClientOptions): RelayClient {
           ws.send(encodeFrame({ t: 'end', streamId: frame.streamId }));
           streams.delete(frame.streamId);
         });
+        // If the loopback server resets/aborts the connection AFTER the head is
+        // sent, Node emits 'error' (and/or 'aborted') on the response stream —
+        // without a listener 'error' throws (unhandled 'error' on a Readable).
+        // Tell the relay the stream closed and drop it so the phone never hangs.
+        res.on('error', (err: Error) => failStream(frame.streamId, err.message));
+        res.on('aborted', () => failStream(frame.streamId, 'aborted'));
       },
     );
-    req.on('error', (err) => {
-      ws.send(encodeFrame({ t: 'close', streamId: frame.streamId, reason: err.message }));
-      streams.delete(frame.streamId);
-    });
+    req.on('error', (err) => failStream(frame.streamId, err.message));
     streams.set(frame.streamId, { kind: 'http', req, unacked: 0 });
   };
 
@@ -290,6 +320,7 @@ export function startRelayClient(opts: RelayClientOptions): RelayClient {
     stop(): void {
       stopped = true;
       if (reconnectTimer) clearTimeout(reconnectTimer);
+      if (stableTimer) clearTimeout(stableTimer);
       stopHeartbeat();
       resetStreams();
       socket?.close();

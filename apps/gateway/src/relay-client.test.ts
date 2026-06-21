@@ -467,4 +467,85 @@ describe('relay-client', () => {
     await waitFor(() => pinged, 2000);
     expect(pinged).toBe(true);
   });
+
+  it('backs off instead of tight-looping when the relay closes right after handshake', async () => {
+    // A relay that accepts the upgrade then immediately closes (like a 4401 bad
+    // token). The backoff must GROW; it must not reset on every brief 'open'.
+    relay = new WebSocketServer({ port: 0, host: '127.0.0.1' });
+    await new Promise<void>((r) => relay?.on('listening', () => r()));
+    const relayPort = (relay.address() as AddressInfo).port;
+    let connects = 0;
+    relay.on('connection', (ws) => {
+      connects += 1;
+      ws.close(4401, 'Unauthorized');
+    });
+
+    client = startRelayClient({
+      relayUrl: `ws://127.0.0.1:${relayPort}`,
+      relayToken: 'rt',
+      gatewayId: 'g1',
+      managementPort: 9999,
+      channelPort: 9998,
+      reconnectBaseMs: 20,
+      reconnectMaxMs: 5000,
+      reconnectResetMs: 100000, // long enough that it never resets during the test
+      heartbeatMs: 100000,
+    });
+
+    await new Promise((r) => setTimeout(r, 700));
+    // Exponential backoff (20,40,80,160,320,640) fits ~5-6 attempts in 700ms.
+    // The old bug reset the backoff on each 'open' → ~35 tight-loop attempts.
+    expect(connects).toBeGreaterThanOrEqual(2);
+    expect(connects).toBeLessThan(12);
+  });
+
+  it('reports a mid-stream loopback failure (after head) as a close frame', async () => {
+    // Promise 100 bytes, send 7, then reset — a premature close AFTER the head
+    // is sent, which Node surfaces as 'error'/'aborted' on the response stream.
+    loopback = http.createServer((_req, res) => {
+      res.writeHead(200, { 'content-length': '100' });
+      res.write('partial');
+      setTimeout(() => res.socket?.destroy(), 30);
+    });
+    const mgmtPort = await listen(loopback);
+
+    relay = new WebSocketServer({ port: 0, host: '127.0.0.1' });
+    await new Promise<void>((r) => relay?.on('listening', () => r()));
+    const relayPort = (relay.address() as AddressInfo).port;
+
+    const received: Frame[] = [];
+    const gwSocket = new Promise<WebSocket>((resolve) => {
+      relay?.on('connection', (ws) => {
+        ws.on('message', (raw: Buffer) => received.push(decodeFrame(raw.toString())));
+        resolve(ws);
+      });
+    });
+
+    client = startRelayClient({
+      relayUrl: `ws://127.0.0.1:${relayPort}`,
+      relayToken: 'rt',
+      gatewayId: 'g1',
+      managementPort: mgmtPort,
+      channelPort: 9998,
+    });
+
+    const ws = await gwSocket;
+    ws.send(
+      encodeFrame({
+        t: 'open',
+        streamId: 1,
+        target: 'mgmt',
+        kind: 'http',
+        path: '/x',
+        headers: {},
+      }),
+    );
+    ws.send(encodeFrame({ t: 'end', streamId: 1 }));
+
+    // The mid-stream failure must surface as a `close` frame — not a hung stream
+    // and not an uncaught 'error' on the response (which would crash the client).
+    await waitFor(() => received.some((f) => f.t === 'close'), 3000);
+    expect(received.some((f) => f.t === 'head')).toBe(true); // failed AFTER the head
+    expect(received.some((f) => f.t === 'close')).toBe(true);
+  });
 });
