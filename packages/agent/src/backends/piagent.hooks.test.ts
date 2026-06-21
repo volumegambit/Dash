@@ -247,4 +247,40 @@ describe('composeToolHooks', () => {
       { type: 'text', text: 'plugin-add' },
     ]);
   });
+
+  it("sends pi's prior afterToolCall override as the PostToolUse toolResponse, not the raw executed result", async () => {
+    // pi's prior after-handler rewrites the tool output (truncation/redaction).
+    // The PostToolUse hook must observe the rewritten result, not the raw one —
+    // mirroring the baseContent precedence (piRes over ctx.result).
+    const prior = vi.fn().mockResolvedValue({ content: [{ type: 'text', text: 'pi-redacted' }] });
+    const agent = makeFakeAgent({ after: prior });
+    const runPostToolUse = vi.fn().mockResolvedValue({ block: false });
+    const runner = makeRunner({ runPostToolUse });
+
+    composeToolHooks(agent, runner, {});
+
+    const result = { content: [{ type: 'text', text: 'raw-secret' }], details: {} };
+    await agent.afterToolCall?.(afterCtx('read', {}, result));
+
+    expect(runPostToolUse).toHaveBeenCalledWith(
+      expect.objectContaining({ toolResponse: 'pi-redacted' }),
+    );
+  });
+
+  it('falls back to the executed result for toolResponse when there is no prior after-override', async () => {
+    // No prior after-handler (piRes undefined) — toolResponse must fall back to
+    // the raw executed result so the hook still sees the tool's real output.
+    const agent = makeFakeAgent();
+    const runPostToolUse = vi.fn().mockResolvedValue({ block: false });
+    const runner = makeRunner({ runPostToolUse });
+
+    composeToolHooks(agent, runner, {});
+
+    const result = { content: [{ type: 'text', text: 'executed-output' }], details: {} };
+    await agent.afterToolCall?.(afterCtx('read', {}, result));
+
+    expect(runPostToolUse).toHaveBeenCalledWith(
+      expect.objectContaining({ toolResponse: 'executed-output' }),
+    );
+  });
 });

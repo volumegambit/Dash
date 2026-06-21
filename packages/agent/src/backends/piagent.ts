@@ -187,7 +187,10 @@ export function composeToolHooks(
       decision = await hookRunner.runPostToolUse({
         toolName: ctx?.toolCall?.name,
         toolInput: ctx?.args,
-        toolResponse: stringifyToolResult(ctx?.result),
+        // Prefer pi's prior after-handler override (truncation/redaction) over
+        // the raw executed result, mirroring the baseContent precedence below —
+        // so a PostToolUse hook observes the same output the model will see.
+        toolResponse: stringifyToolResult(piRes ?? ctx?.result),
         sessionId: resolveSessionId(),
         cwd,
       });
