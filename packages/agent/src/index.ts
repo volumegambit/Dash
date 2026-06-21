@@ -4,6 +4,7 @@ export type {
   AgentEvent,
   ExtraTool,
   ImageBlock,
+  PluginModelCatalog,
   RunOptions,
   DashAgentConfig,
 } from './types.js';

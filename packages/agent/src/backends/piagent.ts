@@ -41,6 +41,7 @@ import type {
   DashAgentConfig,
   ExtraTool,
   HookRunner,
+  PluginModelCatalog,
   RunOptions,
 } from '../types.js';
 import { DashResourceLoader } from './dash-resource-loader.js';
@@ -301,6 +302,13 @@ export class PiAgentBackend implements AgentBackend {
      * each run. Zero overhead when undefined.
      */
     private hookRunner?: HookRunner,
+    /**
+     * Optional catalog of plugin-contributed LLM models (built by the gateway,
+     * duck-typed via `PluginModelCatalog`). Consulted by `resolveModel` ONLY as
+     * a fallback when the static pi-ai registry doesn't know a provider/model.
+     * Zero behavior change when undefined.
+     */
+    private pluginModelCatalog?: PluginModelCatalog,
   ) {
     this.extraTools = extraTools;
     this.extraSkillFiles = extraSkillFiles;
@@ -470,12 +478,16 @@ export class PiAgentBackend implements AgentBackend {
     const modelId = modelStr.slice(slash + 1);
     // biome-ignore lint/suspicious/noExplicitAny: getModel requires generic provider/modelId that are not statically known
     const model = getModel(provider as any, modelId as any);
-    if (!model) {
-      throw new Error(
-        `Unknown model "${modelStr}". Check that the provider and model ID are correct.`,
-      );
+    // Static pi-ai registry wins. Only when it doesn't know the model do we
+    // fall back to a plugin-contributed catalog (if one was injected).
+    if (model) return model;
+    if (this.pluginModelCatalog) {
+      const m = this.pluginModelCatalog.resolve(provider, modelId);
+      if (m) return m as Model<Api>;
     }
-    return model;
+    throw new Error(
+      `Unknown model "${modelStr}". Check that the provider and model ID are correct.`,
+    );
   }
 
   /**

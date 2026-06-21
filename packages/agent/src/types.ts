@@ -159,6 +159,22 @@ export interface HookRunner {
   readonly hasHooks: boolean;
 }
 
+/**
+ * Structurally-typed catalog of plugin-contributed LLM models, injected into
+ * the backend at construction. Duck-typed so @dash/agent has NO dependency on
+ * @dash/plugins — the gateway builds the concrete catalog (Task 3) and the
+ * agent only calls `resolve`.
+ *
+ * `resolve` is consulted by `resolveModel` ONLY as a fallback: when the static
+ * pi-ai registry does not know a `provider/modelId`. It returns a pi-ai
+ * `Model<Api>`-shaped object (typed `unknown` here to keep this interface free
+ * of a pi-ai type leak; the backend casts the result) or `null` when the
+ * catalog doesn't recognize the model either.
+ */
+export interface PluginModelCatalog {
+  resolve(provider: string, modelId: string): unknown | null;
+}
+
 export interface AgentBackend {
   readonly name: string;
   start(workspace: string): Promise<void>;
