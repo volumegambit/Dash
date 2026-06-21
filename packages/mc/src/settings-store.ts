@@ -6,6 +6,13 @@ export interface AppSettings {
   defaultModel?: string;
   defaultFallbackModels?: string[];
   setupCompletedAt?: string;
+  /**
+   * Relay domain for remote access, e.g. `relay.example.com`. When set (together
+   * with a relay token + admin secret in the keychain), the gateway is launched
+   * in relay mode and Pair Device produces a relay QR. Non-secret, so it lives
+   * here rather than the keychain. A gateway is reachable at `<gatewayId>.<zone>`.
+   */
+  relayZone?: string;
 }
 
 export class SettingsStore {

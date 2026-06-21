@@ -49,13 +49,19 @@ describe('InMemoryKeychainStore', () => {
     expect(await store.getGatewayId()).toBeNull();
   });
 
-  it('round-trips relay token and gateway id independently', async () => {
+  it('round-trips relay token, gateway id and admin secret independently', async () => {
     await store.setRelayToken('relay-secret');
     await store.setGatewayId('gw-abc123');
+    await store.setRelayAdminSecret('admin-secret');
     expect(await store.getRelayToken()).toBe('relay-secret');
     expect(await store.getGatewayId()).toBe('gw-abc123');
+    expect(await store.getRelayAdminSecret()).toBe('admin-secret');
     // The relay identity must not collide with the management/chat tokens.
     expect(await store.getGatewayToken()).toBeNull();
+  });
+
+  it('returns null for an unset relay admin secret', async () => {
+    expect(await store.getRelayAdminSecret()).toBeNull();
   });
 
   it('clearAllGatewayTokens removes every secret', async () => {
@@ -63,11 +69,13 @@ describe('InMemoryKeychainStore', () => {
     await store.setChatToken('c');
     await store.setRelayToken('r');
     await store.setGatewayId('gw-1');
+    await store.setRelayAdminSecret('a');
     await store.clearAllGatewayTokens();
     expect(await store.getGatewayToken()).toBeNull();
     expect(await store.getChatToken()).toBeNull();
     expect(await store.getRelayToken()).toBeNull();
     expect(await store.getGatewayId()).toBeNull();
+    expect(await store.getRelayAdminSecret()).toBeNull();
   });
 
   it('clearAllGatewayTokens is idempotent on empty store', async () => {
@@ -175,6 +183,16 @@ describe('DefaultKeychainStore', () => {
 
     expect(entryConstructorCalls).toContainEqual(['dash-mission-control', 'gateway-relay-token']);
     expect(entryConstructorCalls).toContainEqual(['dash-mission-control', 'gateway-relay-id']);
+  });
+
+  it('reads/writes the relay admin secret under its own account', async () => {
+    const store = createDefaultKeychainStore();
+    await store.setRelayAdminSecret('admin-9');
+    expect(await store.getRelayAdminSecret()).toBe('admin-9');
+    expect(entryConstructorCalls).toContainEqual([
+      'dash-mission-control',
+      'gateway-relay-admin-secret',
+    ]);
   });
 
   it('caches Entry instances per account so the native ctor runs once', async () => {
