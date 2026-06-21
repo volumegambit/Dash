@@ -873,9 +873,11 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
       try {
         await reloadPlugins();
       } catch (err) {
-        // The config write already happened; the live wiring is unchanged (the
-        // reload threw before swapping it). Surface this as a 409 so the caller
-        // knows persisted config and running wiring have diverged.
+        // The config write already happened; the live wiring is genuinely
+        // unchanged — a thrown reload rejects BEFORE swapping the live reference
+        // (loadPlugins/rebuild run before the swap; post-swap clear/evict
+        // failures are best-effort and do NOT reject). Surface this as a 409 so
+        // the caller knows persisted config and running wiring have diverged.
         const message = err instanceof Error ? err.message : 'reload failed';
         return c.json(
           { error: message, plugin: name, note: 'config persisted; wiring unchanged' },
@@ -884,7 +886,20 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
       }
 
       eventBus?.emit({ type: 'plugin:config-changed', plugin: name, fields });
+      // After a successful reload the plugin should be in the rebuilt records.
+      // If it vanished (e.g. its dir disappeared between the write and the
+      // reload), return a structured 409 rather than a 200 with a null body.
       const updated = getWiring().pluginRecords[name];
+      if (!updated) {
+        return c.json(
+          {
+            error: 'plugin not present after reload',
+            plugin: name,
+            note: 'config persisted; plugin no longer in wiring',
+          },
+          409,
+        );
+      }
       return c.json(updated);
     });
 
@@ -917,7 +932,27 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
         }
       }
 
-      await reloadPlugins();
+      // Mirror PUT's failure contract: the entry (and, for an installed plugin,
+      // its dir) is already removed. If the reload then fails, surface a
+      // structured 409 — the removal stuck; the live wiring reconciles on the
+      // next successful reload — rather than a raw 500.
+      try {
+        await reloadPlugins();
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'reload failed';
+        eventBus?.emit({ type: 'plugin:removed', plugin: name });
+        return c.json(
+          {
+            ok: true,
+            removed: true,
+            ...(deletedPath ? { path: deletedPath } : {}),
+            error: message,
+            plugin: name,
+            note: 'entry/dir removed; wiring reconciles on next reload',
+          },
+          409,
+        );
+      }
       eventBus?.emit({ type: 'plugin:removed', plugin: name });
       return c.json(deletedPath ? { ok: true, path: deletedPath } : { ok: true });
     });
