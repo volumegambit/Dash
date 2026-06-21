@@ -1,4 +1,9 @@
-import type { PluginInstallRequest, PluginInstallResponse, PluginRecord } from '@dash/management';
+import type {
+  PluginInstallRequest,
+  PluginInstallResponse,
+  PluginRecord,
+  PluginSetStateRequest,
+} from '@dash/management';
 import { create } from 'zustand';
 
 interface PluginsState {
@@ -7,7 +12,7 @@ interface PluginsState {
   error: string | null;
 
   loadPlugins(): Promise<void>;
-  setState(name: string, patch: { enabled?: boolean; trusted?: boolean }): Promise<void>;
+  setState(name: string, patch: PluginSetStateRequest): Promise<void>;
   install(req: PluginInstallRequest): Promise<PluginInstallResponse>;
   remove(name: string): Promise<void>;
   reload(): Promise<void>;
@@ -68,6 +73,13 @@ export const usePluginsStore = create<PluginsState>((set, get) => ({
         records: state.records.filter((r) => r.name !== name),
       }));
     } catch (err) {
+      // The gateway returns 409 when the plugin was removed on disk + config
+      // but the post-remove reload failed (body: { ok, removed, ..., note }).
+      // ManagementClient throws on the non-2xx, so the catch fires even though
+      // the plugin is gone server-side. Reconcile the list with server truth
+      // first (mirrors install()'s converge-on-truth refresh), then surface the
+      // error and re-throw so the screen still shows the reload-failure message.
+      await get().loadPlugins();
       set({ error: (err as Error).message });
       throw err;
     }

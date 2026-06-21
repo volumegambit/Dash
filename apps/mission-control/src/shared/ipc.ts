@@ -2,6 +2,7 @@ import type {
   PluginInstallRequest,
   PluginInstallResponse,
   PluginRecord,
+  PluginSetStateRequest,
   SkillContent,
   SkillInfo,
   SkillsConfig,
@@ -271,7 +272,7 @@ export interface MissionControlAPI {
   // union (flat InstalledPlugin or reload-pending body); the store narrows it.
   plugins: {
     list(): Promise<PluginRecord[]>;
-    setState(name: string, patch: { enabled?: boolean; trusted?: boolean }): Promise<PluginRecord>;
+    setState(name: string, patch: PluginSetStateRequest): Promise<PluginRecord>;
     install(req: PluginInstallRequest): Promise<PluginInstallResponse>;
     remove(name: string): Promise<{ ok: boolean; path?: string }>;
     reload(): Promise<{ ok: boolean; reloadedAt?: string }>;

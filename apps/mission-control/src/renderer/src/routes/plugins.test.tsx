@@ -98,6 +98,27 @@ describe('PluginsScreen', () => {
     });
   });
 
+  it('surfaces the reload-pending note when install returns a reload-pending envelope', async () => {
+    const user = userEvent.setup();
+    mockApi.plugins.list.mockResolvedValue([]);
+    // The install endpoint returns the reload-pending union variant (200):
+    // { ok, installed, note } — the plugin landed but the post-install reload
+    // failed, so the screen must surface the note banner.
+    mockApi.plugins.install.mockResolvedValue({
+      ok: true,
+      installed: makeInstalled(),
+      note: 'wiring reconciles on next reload',
+    });
+    render(<PluginsScreen />);
+
+    await screen.findByText(/No plugins installed/);
+    await user.type(screen.getByLabelText('Source'), 'git:owner/repo');
+    await user.click(screen.getByRole('button', { name: /^Install$/ }));
+
+    expect(await screen.findByText(/reload pending/i)).toBeInTheDocument();
+    expect(screen.getByText(/wiring reconciles on next reload/)).toBeInTheDocument();
+  });
+
   it('surfaces a warning when the install scan verdict is suspicious', async () => {
     const user = userEvent.setup();
     mockApi.plugins.list.mockResolvedValue([]);

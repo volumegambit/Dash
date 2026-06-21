@@ -151,15 +151,25 @@ describe('usePluginsStore.remove', () => {
     expect(usePluginsStore.getState().error).toBeNull();
   });
 
-  it('sets error and re-throws on failure without removing', async () => {
+  it('sets error and re-throws on failure but reconciles the list from the server', async () => {
+    // A DELETE that throws (e.g. the gateway returns 409: the plugin was
+    // removed on disk + config but the post-remove reload failed) must still
+    // converge on server truth. remove() reloads in its catch block, so a
+    // server-side-removed plugin disappears even though the error surfaces.
     const before = [record('alpha'), record('beta')];
     usePluginsStore.setState({ records: before });
-    mockApi.plugins.remove.mockRejectedValueOnce(new Error('remove failed'));
+    mockApi.plugins.remove.mockRejectedValueOnce(new Error('409 reload failed'));
+    // Server truth after the failed remove: alpha is gone, beta remains.
+    mockApi.plugins.list.mockResolvedValueOnce([record('beta')]);
 
-    await expect(usePluginsStore.getState().remove('alpha')).rejects.toThrow('remove failed');
+    await expect(usePluginsStore.getState().remove('alpha')).rejects.toThrow('409 reload failed');
 
-    expect(usePluginsStore.getState().error).toBe('remove failed');
-    expect(usePluginsStore.getState().records).toEqual(before);
+    const state = usePluginsStore.getState();
+    // Error surfaced (the reload-failure message reaches the screen)...
+    expect(state.error).toBe('409 reload failed');
+    // ...but the list reconciled: the removed plugin is gone.
+    expect(mockApi.plugins.list).toHaveBeenCalledTimes(1);
+    expect(state.records.map((r) => r.name)).toEqual(['beta']);
   });
 });
 
