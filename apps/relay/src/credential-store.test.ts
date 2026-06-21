@@ -43,6 +43,18 @@ describe('PairingCredentialStore', () => {
     expect(store.revoke('gw-1', a)).toBe(false);
   });
 
+  it('caps stored credentials per gateway, evicting the oldest', () => {
+    const store = new PairingCredentialStore(3); // small cap for the test
+    const first = store.provision('gw-1');
+    const second = store.provision('gw-1');
+    store.provision('gw-1');
+    const fourth = store.provision('gw-1'); // exceeds the cap of 3
+
+    expect(store.isValid('gw-1', first)).toBe(false); // oldest evicted
+    expect(store.isValid('gw-1', second)).toBe(true); // still within the window
+    expect(store.isValid('gw-1', fourth)).toBe(true); // newest kept
+  });
+
   it('revokeAll drops every credential for a gateway', () => {
     const store = new PairingCredentialStore();
     const a = store.provision('gw-1');

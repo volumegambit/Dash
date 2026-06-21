@@ -16,6 +16,14 @@ import { safeEqual } from './auth.js';
 export class PairingCredentialStore {
   private readonly byGateway = new Map<string, Set<string>>();
 
+  /**
+   * Cap on stored credentials per gateway. Mission Control mints a credential
+   * each time the Pair Device screen opens — even if the user never scans it —
+   * so without a bound those orphans would accumulate forever. We keep the most
+   * recent N (oldest evicted); N is generous for a personal multi-device setup.
+   */
+  constructor(private readonly maxPerGateway = 16) {}
+
   /** Mint and store a new credential for a gateway; returns it once. */
   provision(gatewayId: string): string {
     const credential = randomBytes(32).toString('base64url');
@@ -25,6 +33,13 @@ export class PairingCredentialStore {
       this.byGateway.set(gatewayId, set);
     }
     set.add(credential);
+    // Evict oldest (Sets preserve insertion order) so orphaned credentials from
+    // re-opening the pairing screen can't grow without bound.
+    while (set.size > this.maxPerGateway) {
+      const oldest = set.values().next().value;
+      if (oldest === undefined) break;
+      set.delete(oldest);
+    }
     return credential;
   }
 
