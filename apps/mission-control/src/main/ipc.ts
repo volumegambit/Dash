@@ -24,7 +24,7 @@ import WebSocket from 'ws';
 import type { SetupStatus } from '../shared/ipc.js';
 import { ChatService } from './chat-service.js';
 import { completeClaudeOAuth, prepareClaudeOAuth } from './claude-auth.js';
-import { refreshCodexToken, startCodexOAuth } from './codex-auth.js';
+import { startCodexOAuth } from './codex-auth.js';
 import { GatewayPoller } from './gateway-poller.js';
 
 const DATA_DIR = process.env.MC_DATA_DIR || getPlatformDataDir('dash');
@@ -556,9 +556,11 @@ export async function registerIpcHandlers(
         return { success: false, error: 'OAuth flow was cancelled or timed out' };
       }
       const client = await getClient(gw);
+      // Access token feeds the agent; refresh + expiry let the gateway keep it
+      // fresh (see OAuthRefreshCoordinator). Standardized {provider}-oauth-* slots.
       await client.setCredential(`openai-api-key:${keyName}`, result.accessToken);
-      await client.setCredential(`openai-codex-refresh:${keyName}`, result.refreshToken);
-      await client.setCredential(`openai-codex-expires:${keyName}`, String(result.expiresAt));
+      await client.setCredential(`openai-oauth-refresh:${keyName}`, result.refreshToken);
+      await client.setCredential(`openai-oauth-expires:${keyName}`, String(result.expiresAt));
       // OAuth onboarding stores credentials directly (not via credentials:set),
       // so mark setup complete here too — otherwise an OAuth-only user has no
       // durable setupCompletedAt and can be mistaken for a first run.
@@ -572,25 +574,15 @@ export async function registerIpcHandlers(
     }
   });
 
-  ipcMain.handle('codex:refreshToken', async (_event, keyName: string) => {
-    try {
-      const client = await getClient(gw);
-      // Retrieve refresh token from gateway credentials
-      // The gateway credentials API only lists keys, not values — so we store
-      // the refresh token as a credential and retrieve it via a convention.
-      // For now, the codex refresh flow requires the token to have been stored.
-      const result = await refreshCodexToken(''); // TODO: retrieve refresh token from gateway
-      if (!result) {
-        return { success: false, error: 'Token refresh failed' };
-      }
-      await client.setCredential(`openai-api-key:${keyName}`, result.accessToken);
-      await client.setCredential(`openai-codex-refresh:${keyName}`, result.refreshToken);
-      await client.setCredential(`openai-codex-expires:${keyName}`, String(result.expiresAt));
-      return { success: true };
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      return { success: false, error: message };
-    }
+  // Token refresh is now owned by the gateway, which proactively refreshes
+  // near-expiry OAuth tokens (and persists the rotated refresh tokens) before
+  // each agent run — see OAuthRefreshCoordinator. The gateway can read stored
+  // credential values directly; Mission Control cannot (the management API only
+  // lists keys), which is why the old MC-side refresh never worked. This handler
+  // is retained for preload-API compatibility and simply reports success; the
+  // refresh happens gateway-side on the next chat turn.
+  ipcMain.handle('codex:refreshToken', async () => {
+    return { success: true };
   });
 
   // -----------------------------------------------------------------------
@@ -607,12 +599,17 @@ export async function registerIpcHandlers(
     'claude:completeOAuth',
     async (_event, keyName: string, code: string, state: string, verifier: string) => {
       try {
-        const apiKey = await completeClaudeOAuth(code, state, verifier);
-        if (!apiKey) {
+        const result = await completeClaudeOAuth(code, state, verifier);
+        if (!result) {
           return { success: false, error: 'Failed to create API key' };
         }
         const client = await getClient(gw);
-        await client.setCredential(`anthropic-api-key:${keyName}`, apiKey);
+        // Access token feeds the agent; refresh + expiry let the gateway keep it
+        // fresh (see OAuthRefreshCoordinator). All three use the standardized
+        // {provider}-oauth-* slot convention.
+        await client.setCredential(`anthropic-api-key:${keyName}`, result.accessToken);
+        await client.setCredential(`anthropic-oauth-refresh:${keyName}`, result.refreshToken);
+        await client.setCredential(`anthropic-oauth-expires:${keyName}`, String(result.expiresAt));
         // See codex:startOAuth — OAuth onboarding bypasses credentials:set, so
         // record onboarding completion here too.
         await markSetupCompleted();
