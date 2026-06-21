@@ -21,3 +21,4 @@ export { PluginConfigStore } from './config-store.js';
 export { loadPlugins } from './loader.js';
 export type { LoadPluginsOptions } from './loader.js';
 export { translateMcpJson } from './mcp-translate.js';
+export { hookEnv, substituteVars } from './substitute.js';
