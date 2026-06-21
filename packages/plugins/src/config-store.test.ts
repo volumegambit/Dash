@@ -115,4 +115,27 @@ describe('PluginConfigStore', () => {
     expect(loaded.disco.enabled).toBe(true);
     expect(loaded.disco.trusted).toBe(true);
   });
+
+  it('removes a named entry, leaving others intact', async () => {
+    const store = new PluginConfigStore(dataDir);
+    await store.setEnabled('disco', true);
+    await store.setEnabled('keep', true);
+    await store.remove('disco');
+    const loaded = await store.load();
+    expect(loaded.disco).toBeUndefined();
+    expect(loaded.keep.enabled).toBe(true);
+    // Persisted atomically — the on-disk file no longer contains the entry.
+    const onDisk = JSON.parse(await readFile(join(dataDir, 'plugins', 'config.json'), 'utf8'));
+    expect(onDisk.disco).toBeUndefined();
+    expect(onDisk.keep.enabled).toBe(true);
+  });
+
+  it('remove is a no-op for an absent entry', async () => {
+    const store = new PluginConfigStore(dataDir);
+    await store.setEnabled('keep', true);
+    await store.remove('nope');
+    const loaded = await store.load();
+    expect(loaded.keep.enabled).toBe(true);
+    expect(loaded.nope).toBeUndefined();
+  });
 });

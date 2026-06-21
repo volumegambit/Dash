@@ -39,6 +39,7 @@ export class PluginConfigStore {
             ? (v.config as Record<string, unknown>)
             : undefined,
         path: typeof v.path === 'string' ? v.path : undefined,
+        installed: v.installed === true ? true : undefined,
       };
     }
     return entries;
@@ -53,6 +54,17 @@ export class PluginConfigStore {
   async setTrusted(name: string, trusted: boolean): Promise<void> {
     const entries = await this.load();
     entries[name] = { ...(entries[name] ?? { enabled: false }), trusted };
+    await this.save(entries);
+  }
+
+  /**
+   * Delete a plugin's enable/trust entry from the config. No-op (still
+   * persists) when the name is absent. Uses the same atomic temp+rename
+   * pattern as the setters so a concurrent save() can't corrupt the file.
+   */
+  async remove(name: string): Promise<void> {
+    const entries = await this.load();
+    delete entries[name];
     await this.save(entries);
   }
 

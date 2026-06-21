@@ -14,6 +14,7 @@ export {
   MANIFEST_DIR,
   MANIFEST_FILENAME,
   readManifest,
+  realpathContained,
   resolveAgentFiles,
   resolveBinDir,
   resolveCommandFiles,
