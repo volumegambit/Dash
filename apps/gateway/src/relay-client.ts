@@ -39,6 +39,13 @@ interface LocalConn {
   req?: http.ClientRequest;
   res?: http.IncomingMessage;
   ws?: WebSocket;
+  /**
+   * Frames that arrived while the loopback ws was still CONNECTING. The phone is
+   * upgraded at the relay edge immediately, so its first messages can reach us
+   * before our local ws to the gateway opens; we queue them here and flush in
+   * order on `open` (raw `ws.send` throws on a non-OPEN socket).
+   */
+  wsPending?: Array<Buffer | string>;
   /** Bytes sent to the relay but not yet credited back (HTTP/SSE flow control). */
   unacked: number;
 }
@@ -141,7 +148,15 @@ export function startRelayClient(opts: RelayClientOptions): RelayClient {
         if (!conn) break;
         if (conn.kind === 'ws') {
           const bytes = decodeChunk(frame.chunk);
-          conn.ws?.send(frame.binary ? bytes : bytes.toString('utf8'));
+          const payload = frame.binary ? bytes : bytes.toString('utf8');
+          // Send straight through once open; otherwise queue until `open`
+          // flushes the backlog — preserves order and avoids a throw on a
+          // CONNECTING socket.
+          if (conn.ws?.readyState === WebSocket.OPEN) {
+            conn.ws.send(payload);
+          } else {
+            conn.wsPending?.push(payload);
+          }
         } else {
           conn.req?.write(decodeChunk(frame.chunk));
         }
@@ -227,12 +242,17 @@ export function startRelayClient(opts: RelayClientOptions): RelayClient {
   ): void => {
     // frame.path includes the `?token=` query the gateway's auth checks.
     const local = new WebSocket(`ws://127.0.0.1:${port}${frame.path}`);
-    streams.set(frame.streamId, { kind: 'ws', ws: local, unacked: 0 });
+    const conn: LocalConn = { kind: 'ws', ws: local, unacked: 0, wsPending: [] };
+    streams.set(frame.streamId, conn);
 
     local.on('open', () => {
       relaySocket.send(
         encodeFrame({ t: 'head', streamId: frame.streamId, status: 101, headers: {} }),
       );
+      // Flush anything the phone sent before the loopback ws finished opening,
+      // in arrival order, then send directly from here on.
+      for (const m of conn.wsPending ?? []) local.send(m);
+      conn.wsPending = undefined;
     });
     local.on('message', (data: RawData, isBinary: boolean) => {
       relaySocket.send(
