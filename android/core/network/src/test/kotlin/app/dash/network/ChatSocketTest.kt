@@ -83,6 +83,32 @@ class ChatSocketTest {
         }
     }
 
+    @Test fun relayCredentialRejectionFailsWithAuthError() = runTest {
+        server.enqueue(
+            MockResponse().withWebSocketUpgrade(object : WebSocketListener() {
+                override fun onOpen(webSocket: WebSocket, response: Response) {
+                    webSocket.close(4401, "Unauthorized") // relay bad pairing credential
+                }
+            }),
+        )
+        socket().stream(message()).test {
+            assertTrue(awaitError() is GatewayAuthError)
+        }
+    }
+
+    @Test fun relayRateLimitFailsWithRateLimitError() = runTest {
+        server.enqueue(
+            MockResponse().withWebSocketUpgrade(object : WebSocketListener() {
+                override fun onOpen(webSocket: WebSocket, response: Response) {
+                    webSocket.close(4429, "Too Many Requests") // relay throttle
+                }
+            }),
+        )
+        socket().stream(message()).test {
+            assertTrue(awaitError() is GatewayRateLimitError)
+        }
+    }
+
     @Test fun sendsRelayCredentialHeaderOnUpgrade() = runTest {
         server.enqueue(
             MockResponse().withWebSocketUpgrade(object : WebSocketListener() {

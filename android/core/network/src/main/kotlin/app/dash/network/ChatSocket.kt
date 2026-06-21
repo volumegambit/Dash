@@ -13,8 +13,14 @@ import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 
-/** Raised when the gateway closes the chat socket with code 4001 (bad token). */
+/**
+ * Raised when the connection is rejected as unauthorized: the gateway's 4001
+ * (bad chat token) or the relay's 4401 (bad/missing pairing credential).
+ */
 class GatewayAuthError(message: String = "Unauthorized") : RuntimeException(message)
+
+/** Raised when the relay throttles the device (close 4429). */
+class GatewayRateLimitError(message: String = "Too Many Requests") : RuntimeException(message)
 
 /** Raised when the gateway sends an `error` frame for the active stream. */
 class GatewayStreamError(message: String) : RuntimeException(message)
@@ -64,10 +70,12 @@ class ChatSocket(
                 }
 
                 override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
-                    if (code == 4001) {
-                        close(GatewayAuthError(reason.ifBlank { "Unauthorized" }))
-                    } else {
-                        close()
+                    // 4001 gateway bad token, 4401 relay bad pairing credential → auth.
+                    // 4429 relay rate limit. Other codes are a normal end of turn.
+                    when (code) {
+                        4001, 4401 -> close(GatewayAuthError(reason.ifBlank { "Unauthorized" }))
+                        4429 -> close(GatewayRateLimitError(reason.ifBlank { "Too Many Requests" }))
+                        else -> close()
                     }
                     webSocket.close(NORMAL_CLOSURE, null)
                 }
