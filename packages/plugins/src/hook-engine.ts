@@ -227,6 +227,15 @@ export function createHookEngine(
       child.stdout?.on('data', (c: Buffer) => outChunks.push(c));
       child.stderr?.on('data', (c: Buffer) => errChunks.push(c));
 
+      // Swallow async stdin errors (fail-open). If the child doesn't drain stdin
+      // and the payload exceeds the OS pipe buffer (~64 KB), or the child exits /
+      // is SIGKILLed while a write is pending, the stdin write emits an async
+      // EPIPE. Without this listener Node escalates it to uncaughtException and
+      // crashes the host. The close/timeout/error handlers settle the outcome.
+      child.stdin?.on('error', () => {
+        /* fail-open: child closed/ignored stdin; close/timeout handler settles. */
+      });
+
       child.on('error', (err) => {
         logger?.warn(`[hooks] ${entry.pluginName}: spawn error: ${err.message}`);
         settle(NEUTRAL);
@@ -285,6 +294,8 @@ export function createHookEngine(
     const o = hso as HookSpecificOutput;
 
     const outcome: HookOutcome = { blocked: false };
+    // 'ask' is intentionally treated as a conservative block: Dash has no
+    // interactive prompt surface to ask the user, so we deny rather than allow.
     if (o.permissionDecision === 'deny' || o.permissionDecision === 'ask') {
       outcome.blocked = true;
       if (typeof o.permissionDecisionReason === 'string') {

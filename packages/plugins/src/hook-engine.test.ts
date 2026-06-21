@@ -199,6 +199,68 @@ describe('runStop', () => {
   });
 });
 
+describe('large undrained stdin payloads (async EPIPE fail-open)', () => {
+  // A payload comfortably larger than the OS pipe buffer (~64 KB). When the
+  // child never reads stdin, the engine's pending stdin.end() write blocks,
+  // then emits an async EPIPE once the child closes the read end. Without an
+  // error listener on child.stdin, Node escalates that to uncaughtException
+  // and crashes the host. These tests assert the run resolves fail-open AND
+  // that no uncaughtException/unhandledRejection fires during the run.
+  const BIG = 'x'.repeat(200 * 1024); // ~200 KB, well past 64 KB pipe buffer.
+
+  /** Run `fn` while asserting no uncaught error / unhandled rejection fires. */
+  async function withNoUncaught<T>(fn: () => Promise<T>): Promise<T> {
+    const events: unknown[] = [];
+    const onUncaught = (e: unknown) => events.push(e);
+    const onUnhandled = (e: unknown) => events.push(e);
+    process.on('uncaughtException', onUncaught);
+    process.on('unhandledRejection', onUnhandled);
+    try {
+      const result = await fn();
+      // Give a microtask + macrotask gap for any async stdin error to surface.
+      await new Promise((r) => setTimeout(r, 50));
+      expect(events).toEqual([]);
+      return result;
+    } finally {
+      process.off('uncaughtException', onUncaught);
+      process.off('unhandledRejection', onUnhandled);
+    }
+  }
+
+  it('PostToolUse with >64KB toolResponse and a hook that ignores stdin → fail-open, no crash', async () => {
+    const { warnings, logger } = makeLogger();
+    const e = createHookEngine([entry({ PostToolUse: [{ hooks: [cmd('ignore-stdin.js')] }] })], {
+      logger,
+    });
+    const d = await withNoUncaught(() =>
+      e.runPostToolUse({ toolName: 'Write', toolInput: {}, toolResponse: BIG }),
+    );
+    expect(d.block).toBe(false);
+    void warnings; // a swallowed stdin error may or may not log; behavior is what matters.
+  });
+
+  it('PreToolUse with >64KB toolInput and a hook that ignores stdin → fail-open, no crash', async () => {
+    const e = createHookEngine([entry({ PreToolUse: [{ hooks: [cmd('ignore-stdin.js')] }] })]);
+    const d = await withNoUncaught(() =>
+      e.runPreToolUse({ toolName: 'Write', toolInput: { content: BIG } }),
+    );
+    expect(d.block).toBe(false);
+  });
+
+  it('timeout variant: hook ignores stdin and sleeps past timeout with >64KB payload → fail-open, no crash', async () => {
+    const { warnings, logger } = makeLogger();
+    const e = createHookEngine(
+      [entry({ PostToolUse: [{ hooks: [cmd('slow-ignore-stdin.js')] }] })],
+      { logger, defaultTimeoutMs: 300 },
+    );
+    const d = await withNoUncaught(() =>
+      e.runPostToolUse({ toolName: 'Write', toolInput: {}, toolResponse: BIG }),
+    );
+    expect(d.block).toBe(false);
+    expect(warnings.length).toBeGreaterThan(0); // timeout is logged.
+  });
+});
+
 describe('stdin payload shape', () => {
   let dir: string;
   beforeEach(async () => {
