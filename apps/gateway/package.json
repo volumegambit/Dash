@@ -23,6 +23,7 @@
     "@dash/logging": "*",
     "@dash/management": "*",
     "@dash/models": "*",
+    "@dash/paths": "*",
     "@dash/projects": "*",
     "@hono/node-server": "^1",
     "@hono/node-ws": "^1",
