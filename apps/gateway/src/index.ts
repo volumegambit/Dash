@@ -15,7 +15,7 @@ import { mountProjectsWs } from '@dash/management';
 import { FileTokenStore, McpManager } from '@dash/mcp';
 import type { McpAgentContext } from '@dash/mcp';
 import { gatewayDir, migrateLegacyLayout, workspacesDir } from '@dash/paths';
-import { PluginConfigStore, loadPlugins } from '@dash/plugins';
+import { PluginConfigStore, createHookEngine, loadPlugins } from '@dash/plugins';
 import { createProjectsTools, openProjectsDb } from '@dash/projects';
 import { serve } from '@hono/node-server';
 import { createNodeWebSocket } from '@hono/node-ws';
@@ -150,6 +150,16 @@ async function main() {
     namespace: pluginName,
   }));
 
+  // Plugin hook engine — runs the Claude-Code-format hooks declared by trusted
+  // plugins (`hooks/hooks.json`). It's shared two ways:
+  //   1. as the backend's `hookRunner` (tool + SessionStart/Stop events fire on
+  //      every agent run, whether reached via MC chat or a channel), and
+  //   2. as the channel gateway's `messageHook` (UserPromptSubmit fires only on
+  //      the inbound-channel path — see the messageHook wiring below).
+  // `hasHooks` is false when no trusted plugin declares any hook, so both the
+  // backend and the gateway short-circuit to zero overhead.
+  const hookEngine = createHookEngine(loadedPlugins.hookConfigs, { logger, dataDir });
+
   // Create gateway + agent service.
   //
   // `resolveRouting` is the live link to the persisted channel registry:
@@ -165,6 +175,20 @@ async function main() {
       if (!entry) return null;
       return { globalDenyList: entry.globalDenyList, routing: entry.routing };
     },
+    // UserPromptSubmit fires only on the inbound-channel path. Adapt the
+    // engine's runUserPromptSubmit({ prompt, sessionId, cwd }) to the channel
+    // MessageHook signature. sessionId is the prefixed conversation id; cwd
+    // falls back to the gateway dataDir (channel agents have per-agent
+    // workspaces resolved per run, not a single gateway-wide cwd). Only set
+    // when hooks exist so there's zero overhead otherwise.
+    messageHook: hookEngine.hasHooks
+      ? (i) =>
+          hookEngine.runUserPromptSubmit({
+            prompt: i.prompt,
+            sessionId: i.conversationId,
+            cwd: dataDir,
+          })
+      : undefined,
   });
   const eventBus = new EventBus();
   const registryPath = resolve(dataDir, 'agents.json');
@@ -286,6 +310,10 @@ async function main() {
           getAgentId: () => agentConfig.name,
         }),
         pluginCommandFiles,
+        // Plugin hook engine — composes tool hooks onto pi's agent and fires
+        // SessionStart/Stop around each run. Shared across all agents; a no-op
+        // when no trusted plugin declares hooks (hookEngine.hasHooks === false).
+        hookEngine,
       );
       return backend;
     },

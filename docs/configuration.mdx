@@ -104,6 +104,8 @@ Plugins let you drop extra skills into any Dash agent without touching the confi
         │       └── SKILL.md
         ├── commands/
         │   └── <command-name>.md    (optional)
+        ├── hooks/
+        │   └── hooks.json           (optional, trusted only)
         ├── .mcp.json                (optional, trusted only)
         └── bin/                     (optional, trusted only)
             └── <executable>
@@ -113,6 +115,7 @@ Each plugin follows the Claude Code layout:
 
 - **`skills/`** — one subdirectory per skill, each with a `SKILL.md` file in standard frontmatter format (`name`, `description`, body).
 - **`commands/`** — flat `<name>.md` files. Each becomes a `/<plugin>:<command>` slash command (see below).
+- **`hooks/hooks.json`** — event hooks that run shell commands at key points in a run (see [Hooks](#hooks) below). Code execution, so it requires `trusted`.
 - **`.mcp.json`** — extra MCP servers to register with the gateway. Code execution, so it requires `trusted` (see below).
 - **`bin/`** — executables prepended to the gateway's `PATH`. Code execution, so it requires `trusted`.
 
@@ -132,7 +135,7 @@ Plugins not listed in `config.json`, or listed with `"enabled": false`, are igno
 
 ### Trusting a plugin
 
-`enabled` is enough for markdown components — `skills/` and `commands/`, which never run code. Components that **execute code** — `.mcp.json` servers and `bin/` executables — additionally require `"trusted": true`:
+`enabled` is enough for markdown components — `skills/` and `commands/`, which never run code. Components that **execute code** — `hooks/hooks.json`, `.mcp.json` servers, and `bin/` executables — additionally require `"trusted": true`:
 
 ```json
 {
@@ -140,7 +143,7 @@ Plugins not listed in `config.json`, or listed with `"enabled": false`, are igno
 }
 ```
 
-An enabled-but-untrusted plugin still contributes its skills and commands, but its MCP servers and `bin/` directory are skipped. Only set `trusted` for plugins whose code you have reviewed and trust to run inside the gateway process.
+An enabled-but-untrusted plugin still contributes its skills and commands, but its hooks, MCP servers, and `bin/` directory are skipped. Only set `trusted` for plugins whose code you have reviewed and trust to run inside the gateway process.
 
 ### Commands
 
@@ -149,6 +152,53 @@ Each `commands/<name>.md` file becomes a slash command named `/<plugin>:<name>`.
 ### MCP servers and executables
 
 A trusted plugin's `.mcp.json` is read at startup and its servers are registered with the gateway's MCP manager and persisted alongside your other MCP servers. Registration is fail-isolated: a server that fails to start is logged and skipped without affecting the rest of the gateway. A trusted plugin's `bin/` directory is prepended to the gateway's `PATH`, so its executables resolve ahead of system binaries.
+
+### Hooks
+
+A trusted plugin can register **hooks** — shell commands that run at key points in an agent run — via a `hooks/hooks.json` file in the [Claude Code hooks format](https://docs.claude.com/en/docs/claude-code/hooks). Hooks run shell commands, so they require `"trusted": true`; an untrusted plugin's hooks are skipped.
+
+Supported events:
+
+| Event | When it fires | What it can do |
+| --- | --- | --- |
+| `SessionStart` | Before the model runs, at the start of a run | Add context to the system prompt |
+| `UserPromptSubmit` | After an inbound channel message passes routing, before the agent runs | Block the message, or prepend context to the prompt |
+| `PreToolUse` | Before a tool executes (matched by tool name) | Allow or deny the tool call |
+| `PostToolUse` | After a tool executes (matched by tool name) | Block the result, or append context |
+| `Stop` | After the run completes | Cleanup (its output is logged, not injected) |
+
+Each event maps to an array of matcher groups; each group has an optional `matcher` (a tool name, a `|`-separated list, or a regex — omit or use `*` to match everything) and a `hooks` array of `{ "type": "command", "command": "...", "timeout": <seconds> }` entries.
+
+```json
+{
+  "PreToolUse": [
+    {
+      "matcher": "bash",
+      "hooks": [
+        { "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/scripts/guard.sh" }
+      ]
+    }
+  ],
+  "UserPromptSubmit": [
+    {
+      "hooks": [
+        { "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/scripts/inject-context.sh" }
+      ]
+    }
+  ]
+}
+```
+
+Hook commands receive the Claude Code event payload (`tool_name`, `tool_input`, `prompt`, `session_id`, `cwd`, …) as JSON on **stdin**, and communicate back through their exit code and stdout:
+
+- **Exit `0`** — allowed. To deny, add context, or replace tool input, print a JSON object with a `hookSpecificOutput` field (e.g. `{"hookSpecificOutput":{"permissionDecision":"deny","permissionDecisionReason":"..."}}` or `{"hookSpecificOutput":{"additionalContext":"..."}}`).
+- **Exit `2`** — blocking error. Standard error becomes the block reason.
+
+The string `${CLAUDE_PLUGIN_ROOT}` in a command is substituted with the plugin's absolute directory, so hooks can reference scripts bundled with the plugin. `${CLAUDE_PROJECT_DIR}` and `${CLAUDE_PLUGIN_DATA}` (a per-plugin scratch directory) are also available.
+
+**Fail-open by design.** A hook that errors, times out, exits non-zero (other than `2`), or prints malformed JSON is ignored — the run proceeds as if the hook had allowed it. Hooks never crash the gateway.
+
+**Where each event fires.** `SessionStart`, `PreToolUse`, `PostToolUse`, and `Stop` fire on **every** agent run, whether the run was reached through Mission Control chat or an inbound channel. `UserPromptSubmit` fires **only on the channel path** (Telegram, WhatsApp); it does not run for Mission Control chat messages.
 
 ### Example
 
@@ -172,5 +222,5 @@ echo '{ "my-skills": { "enabled": true } }' \
 When the gateway starts, it logs `[plugins] loaded 'my-skills' (skills)` and the agent's `load_skill` tool (see [Tools](/tools) — requires `load_skill` in the agent's tools list) can reference any skill from that plugin.
 
 <Note>
-  Skills, commands, MCP servers, and `bin/` executables are active. Additional plugin components — hooks, subagents, providers — are coming in a future release.
+  Skills, commands, hooks, MCP servers, and `bin/` executables are active. Additional plugin components — subagents and providers — are coming in a future release.
 </Note>

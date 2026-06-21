@@ -3,6 +3,7 @@ import { SLASH_HELP, formatSkillList, parseSlashCommand, skillPrompt } from './c
 import type {
   ChannelAdapter,
   InboundMessage,
+  MessageHook,
   MessageLogEntry,
   MessageLogger,
   RouterConfig,
@@ -12,11 +13,21 @@ import type {
 export class MessageRouter {
   private adapters: { adapter: ChannelAdapter; config: RouterConfig; channelName: string }[] = [];
   private logger: MessageLogger | null = null;
+  /**
+   * Optional per-message hook (e.g. the plugin engine's UserPromptSubmit).
+   * Fires after allow/deny + the slash shim, before the agent runs. Fail-open.
+   */
+  private messageHook: MessageHook | null = null;
 
   constructor(private agents: Map<string, AgentClient>) {}
 
   setLogger(logger: MessageLogger): void {
     this.logger = logger;
+  }
+
+  /** Set (or clear) the per-message hook fired before dispatch. */
+  setMessageHook(hook: MessageHook | null): void {
+    this.messageHook = hook;
   }
 
   // Accepts a simple agent name (backwards compat) or a full RouterConfig
@@ -143,6 +154,31 @@ export class MessageRouter {
     } catch (err) {
       console.warn(`[router] slash-command shim error: ${(err as Error).message}`);
       promptText = msg.text;
+    }
+
+    // UserPromptSubmit hook (e.g. plugins). Fires after allow/deny + the slash
+    // shim, before the message reaches the agent. FAIL-OPEN: any throw falls
+    // through to normal dispatch with the prompt unchanged.
+    if (this.messageHook) {
+      try {
+        const decision = await this.messageHook({
+          prompt: promptText,
+          channel: channelName,
+          conversationId: msg.conversationId,
+          senderId: msg.senderId,
+        });
+        if (decision.block) {
+          if (decision.reason) {
+            await adapter.send(msg.conversationId, { text: decision.reason });
+          }
+          return;
+        }
+        if (decision.additionalContext) {
+          promptText = `${decision.additionalContext}\n\n${promptText}`;
+        }
+      } catch (err) {
+        console.warn(`[router] messageHook error (failing open): ${(err as Error).message}`);
+      }
     }
 
     let fullResponse = '';

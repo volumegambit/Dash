@@ -277,3 +277,74 @@ describe('MessageRouter — missing agent at runtime', () => {
     expect(warnSpy).not.toHaveBeenCalled();
   });
 });
+
+describe('MessageRouter — messageHook (UserPromptSubmit)', () => {
+  function setup() {
+    const agent = makeAgent();
+    const agents = new Map([['default', agent]]);
+    const router = new MessageRouter(agents);
+    const adapter = makeAdapter();
+    router.addAdapter(adapter, {
+      globalDenyList: [],
+      rules: [
+        { condition: { type: 'default' }, agentName: 'default', allowList: [], denyList: [] },
+      ],
+    });
+    return { agent, router, adapter };
+  }
+
+  it('blocks dispatch and sends the reason when the hook returns block:true', async () => {
+    const { agent, router, adapter } = setup();
+    router.setMessageHook(async () => ({ block: true, reason: 'denied by policy' }));
+
+    await adapter.trigger({ senderId: 'user-1', text: 'hi' });
+
+    expect(agent.chat).not.toHaveBeenCalled();
+    expect(adapter.send).toHaveBeenCalledWith('conv-1', { text: 'denied by policy' });
+  });
+
+  it('blocks dispatch without sending when block:true has no reason', async () => {
+    const { agent, router, adapter } = setup();
+    router.setMessageHook(async () => ({ block: true }));
+
+    await adapter.trigger({ senderId: 'user-1', text: 'hi' });
+
+    expect(agent.chat).not.toHaveBeenCalled();
+    expect(adapter.send).not.toHaveBeenCalled();
+  });
+
+  it('prepends additionalContext to the prompt text', async () => {
+    const { agent, router, adapter } = setup();
+    router.setMessageHook(async () => ({ block: false, additionalContext: 'CONTEXT' }));
+
+    await adapter.trigger({ senderId: 'user-1', text: 'hello world' });
+
+    expect(agent.chat).toHaveBeenCalledTimes(1);
+    const promptArg = (agent.chat as ReturnType<typeof vi.fn>).mock.calls[0][2] as string;
+    expect(promptArg.startsWith('CONTEXT')).toBe(true);
+    expect(promptArg).toContain('hello world');
+  });
+
+  it('fails open: dispatches unchanged when the hook throws', async () => {
+    const { agent, router, adapter } = setup();
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    router.setMessageHook(async () => {
+      throw new Error('boom');
+    });
+
+    await adapter.trigger({ senderId: 'user-1', text: 'hello' });
+
+    expect(agent.chat).toHaveBeenCalledTimes(1);
+    expect((agent.chat as ReturnType<typeof vi.fn>).mock.calls[0][2]).toBe('hello');
+    warnSpy.mockRestore();
+  });
+
+  it('dispatches unchanged when no messageHook is set', async () => {
+    const { agent, adapter } = setup();
+
+    await adapter.trigger({ senderId: 'user-1', text: 'hello' });
+
+    expect(agent.chat).toHaveBeenCalledTimes(1);
+    expect((agent.chat as ReturnType<typeof vi.fn>).mock.calls[0][2]).toBe('hello');
+  });
+});

@@ -400,3 +400,102 @@ describe('createDynamicGateway', () => {
     expect(gw.agentCount()).toBe(1);
   });
 });
+
+describe('createDynamicGateway — messageHook (UserPromptSubmit on channel path)', () => {
+  async function setup(
+    messageHook?: Parameters<typeof createDynamicGateway>[0] extends infer O
+      ? O extends { messageHook?: infer H }
+        ? H
+        : never
+      : never,
+  ) {
+    const gw = createDynamicGateway({ messageHook });
+    const agent = makeFakeAgent();
+    gw.registerAgent('agent1', agent);
+    const adapter = makeFakeAdapter('telegram');
+    await gw.registerChannel('tg1', adapter, {
+      globalDenyList: [],
+      routing: [{ condition: { type: 'default' }, agentId: 'agent1', allowList: [], denyList: [] }],
+    });
+    return { gw, agent, adapter };
+  }
+
+  const baseMsg: InboundMessage = {
+    channelId: 'tg1',
+    conversationId: 'conv1',
+    senderId: 'user1',
+    senderName: 'User',
+    text: 'hi',
+    timestamp: new Date(),
+  };
+
+  it('blocks dispatch and sends the reason when the hook returns block:true', async () => {
+    const { agent, adapter } = await setup(async () => ({ block: true, reason: 'blocked!' }));
+
+    await adapter.trigger(baseMsg);
+
+    expect(agent.chat).not.toHaveBeenCalled();
+    expect(adapter.send).toHaveBeenCalledWith('conv1', { text: 'blocked!' });
+  });
+
+  it('blocks dispatch without sending when block:true has no reason', async () => {
+    const { agent, adapter } = await setup(async () => ({ block: true }));
+
+    await adapter.trigger(baseMsg);
+
+    expect(agent.chat).not.toHaveBeenCalled();
+    expect(adapter.send).not.toHaveBeenCalled();
+  });
+
+  it('prepends additionalContext to the prompt text', async () => {
+    const { agent, adapter } = await setup(async () => ({
+      block: false,
+      additionalContext: 'CTX',
+    }));
+
+    await adapter.trigger({ ...baseMsg, text: 'hello' });
+
+    expect(agent.chat).toHaveBeenCalledTimes(1);
+    const promptArg = (agent.chat as ReturnType<typeof vi.fn>).mock.calls[0][2] as string;
+    expect(promptArg.startsWith('CTX')).toBe(true);
+    expect(promptArg).toContain('hello');
+  });
+
+  it('passes prompt + prefixed conversation id to the hook', async () => {
+    const hook = vi.fn().mockResolvedValue({ block: false });
+    const { adapter } = await setup(hook);
+
+    await adapter.trigger({ ...baseMsg, text: 'ping' });
+
+    expect(hook).toHaveBeenCalledWith(
+      expect.objectContaining({
+        prompt: 'ping',
+        channel: 'tg1',
+        conversationId: 'tg1:conv1',
+        senderId: 'user1',
+      }),
+    );
+  });
+
+  it('fails open: dispatches unchanged when the hook throws', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { agent, adapter } = await setup(async () => {
+      throw new Error('boom');
+    });
+
+    await adapter.trigger({ ...baseMsg, text: 'hello' });
+
+    expect(agent.chat).toHaveBeenCalledTimes(1);
+    expect((agent.chat as ReturnType<typeof vi.fn>).mock.calls[0][2]).toBe('hello');
+    warnSpy.mockRestore();
+  });
+
+  it('dispatches unchanged when no messageHook is provided', async () => {
+    const { agent, adapter } = await setup();
+
+    await adapter.trigger({ ...baseMsg, text: 'hello' });
+
+    expect(agent.chat).toHaveBeenCalledTimes(1);
+    expect((agent.chat as ReturnType<typeof vi.fn>).mock.calls[0][2]).toBe('hello');
+  });
+});
