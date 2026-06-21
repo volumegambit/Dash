@@ -80,29 +80,33 @@ export function CompanionStack({
   onToggle: () => void;
   onOpen: (conversationId: string) => void;
 }): JSX.Element {
-  const { shown, overflow } = visibleCards(sessions);
+  let expandedCards: JSX.Element | null = null;
+  if (expanded && sessions.length > 0) {
+    const { shown, overflow } = visibleCards(sessions);
+    expandedCards = (
+      <>
+        <button
+          type="button"
+          onClick={onToggle}
+          aria-label="Collapse companion"
+          className="flex h-7 w-7 items-center justify-center rounded-full border border-border bg-card-bg text-muted hover:text-foreground"
+        >
+          <ChevronDown size={14} />
+        </button>
+        {shown.map((s) => (
+          <Card key={s.conversationId} session={s} now={now} onOpen={onOpen} />
+        ))}
+        {overflow > 0 && (
+          <div className="rounded-full border border-border bg-card-bg px-2.5 py-0.5 text-[11px] font-medium text-muted">
+            +{overflow} more
+          </div>
+        )}
+      </>
+    );
+  }
   return (
     <div className="flex flex-col items-end gap-2">
-      {expanded && sessions.length > 0 && (
-        <>
-          <button
-            type="button"
-            onClick={onToggle}
-            aria-label="Collapse companion"
-            className="flex h-7 w-7 items-center justify-center rounded-full border border-border bg-card-bg text-muted hover:text-foreground"
-          >
-            <ChevronDown size={14} />
-          </button>
-          {shown.map((s) => (
-            <Card key={s.conversationId} session={s} now={now} onOpen={onOpen} />
-          ))}
-          {overflow > 0 && (
-            <div className="rounded-full border border-border bg-card-bg px-2.5 py-0.5 text-[11px] font-medium text-muted">
-              +{overflow} more
-            </div>
-          )}
-        </>
-      )}
+      {expandedCards}
       <button
         type="button"
         onClick={onToggle}

@@ -17,6 +17,7 @@ export function Companion(): JSX.Element | null {
   // Auto-expand when a session newly enters needs/error/done.
   const prevAttention = useRef<Set<string>>(new Set());
   useEffect(() => {
+    if (!companionVisible) return;
     const fresh = newAttentionIds(prevAttention.current, sessions);
     prevAttention.current = attentionIds(sessions);
     if (fresh.length > 0) {
