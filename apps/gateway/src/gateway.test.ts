@@ -1,5 +1,6 @@
 import type { AgentClient } from '@dash/agent';
 import type { ChannelAdapter, InboundMessage } from '@dash/channels';
+import { SLASH_HELP, formatSkillList } from '@dash/channels';
 import { describe, expect, it, vi } from 'vitest';
 import { createDynamicGateway } from './gateway.js';
 
@@ -85,6 +86,107 @@ describe('createDynamicGateway', () => {
     });
 
     expect(agent.chat).toHaveBeenCalledWith('tg1', 'tg1:conv1', 'hi');
+  });
+
+  it('answers /help deterministically — no agent run, native conversation id', async () => {
+    const gw = createDynamicGateway();
+    const agent = makeFakeAgent();
+    gw.registerAgent('agent1', agent);
+    const adapter = makeFakeAdapter('tg1');
+    await gw.registerChannel('tg1', adapter, {
+      globalDenyList: [],
+      routing: [{ condition: { type: 'default' }, agentId: 'agent1', allowList: [], denyList: [] }],
+    });
+
+    await adapter.trigger({
+      channelId: 'tg1',
+      conversationId: 'conv1',
+      senderId: 'user1',
+      senderName: 'User',
+      text: '/help',
+      timestamp: new Date(),
+    });
+
+    expect(agent.chat).not.toHaveBeenCalled();
+    expect(adapter.send).toHaveBeenCalledWith('conv1', { text: SLASH_HELP });
+  });
+
+  it('answers /skills from the agent skill list (listSkills), no LLM call', async () => {
+    const gw = createDynamicGateway();
+    const skills = [{ name: 'summarize', description: 'Summarize text' }];
+    const agent = {
+      chat: vi.fn().mockImplementation(async function* () {
+        yield { type: 'response', content: 'x' };
+      }),
+      listSkills: vi.fn().mockResolvedValue(skills),
+    } as unknown as AgentClient;
+    gw.registerAgent('agent1', agent);
+    const adapter = makeFakeAdapter('tg1');
+    await gw.registerChannel('tg1', adapter, {
+      globalDenyList: [],
+      routing: [{ condition: { type: 'default' }, agentId: 'agent1', allowList: [], denyList: [] }],
+    });
+
+    await adapter.trigger({
+      channelId: 'tg1',
+      conversationId: 'conv1',
+      senderId: 'user1',
+      senderName: 'User',
+      text: '/skills',
+      timestamp: new Date(),
+    });
+
+    expect(agent.chat).not.toHaveBeenCalled();
+    expect(agent.listSkills).toHaveBeenCalled();
+    expect(adapter.send).toHaveBeenCalledWith('conv1', { text: formatSkillList(skills) });
+  });
+
+  it('passes /skill:<name> through in canonical form for pi to expand', async () => {
+    const gw = createDynamicGateway();
+    const agent = makeFakeAgent();
+    gw.registerAgent('agent1', agent);
+    const adapter = makeFakeAdapter('tg1');
+    await gw.registerChannel('tg1', adapter, {
+      globalDenyList: [],
+      routing: [{ condition: { type: 'default' }, agentId: 'agent1', allowList: [], denyList: [] }],
+    });
+
+    await adapter.trigger({
+      channelId: 'tg1',
+      conversationId: 'conv1',
+      senderId: 'user1',
+      senderName: 'User',
+      text: '/skill:summarize go',
+      timestamp: new Date(),
+    });
+
+    // Reaches the agent as `/skill:<name> [input]` (with the prefixed conversation
+    // id) so pi's native prompt expander runs it deterministically.
+    expect(agent.chat).toHaveBeenCalledWith('tg1', 'tg1:conv1', '/skill:summarize go');
+  });
+
+  it('normalizes a bare /<plugin>:<command> to pi canonical /skill:<plugin>:<command>', async () => {
+    const gw = createDynamicGateway();
+    const agent = makeFakeAgent();
+    gw.registerAgent('agent1', agent);
+    const adapter = makeFakeAdapter('tg1');
+    await gw.registerChannel('tg1', adapter, {
+      globalDenyList: [],
+      routing: [{ condition: { type: 'default' }, agentId: 'agent1', allowList: [], denyList: [] }],
+    });
+
+    await adapter.trigger({
+      channelId: 'tg1',
+      conversationId: 'conv1',
+      senderId: 'user1',
+      senderName: 'User',
+      text: '/demo:triage hello there',
+      timestamp: new Date(),
+    });
+
+    // A bare plugin command would NOT match pi's `/skill:`-only expander, so the
+    // gateway rewrites it to the canonical form before dispatch.
+    expect(agent.chat).toHaveBeenCalledWith('tg1', 'tg1:conv1', '/skill:demo:triage hello there');
   });
 
   it('deregisterAgent stops adapter when no rules remain', async () => {

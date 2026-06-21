@@ -1,6 +1,7 @@
 import { appendFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import type { AgentClient } from '@dash/agent';
+import { SLASH_HELP, formatSkillList, parseSlashCommand } from '@dash/channels';
 import type { ChannelAdapter, InboundMessage, MessageHook, MessageLogEntry } from '@dash/channels';
 
 interface RoutingRule {
@@ -198,13 +199,35 @@ export function createDynamicGateway(options?: DynamicGatewayOptions): DynamicGa
 
       logMessage({ ...baseLog, outcome: 'routed', agentName });
 
+      // Channel slash-commands, handled before the prompt hook / LLM.
+      //  - /skills, /help → answered deterministically via the adapter's native
+      //    conversation id (no hook, no model round-trip).
+      //  - /skill:<name> and /<plugin>:<command> → normalized to pi's canonical
+      //    `/skill:<name>` form so pi's native prompt expander runs the skill
+      //    deterministically. (pi only expands text starting with `/skill:`, so a
+      //    bare `/<plugin>:<command>` would otherwise reach the model as plain
+      //    text — see AgentSession._expandSkillCommand.)
+      const slash = parseSlashCommand(msg.text);
+      if (slash?.kind === 'help') {
+        await adapter.send(msg.conversationId, { text: SLASH_HELP });
+        return;
+      }
+      if (slash?.kind === 'skills') {
+        const skills = (await agent.listSkills?.()) ?? [];
+        await adapter.send(msg.conversationId, { text: formatSkillList(skills) });
+        return;
+      }
+
       const prefixedConvId = `${channelName}:${msg.conversationId}`;
 
       // UserPromptSubmit hook (e.g. plugins). Fires after allow/deny, before
       // the agent runs. FAIL-OPEN: any throw falls through to normal dispatch
       // with the prompt unchanged. block:true drops the message (sending the
       // reason back if present); additionalContext is prepended to the prompt.
-      let promptText = msg.text;
+      let promptText =
+        slash?.kind === 'skill'
+          ? `/skill:${slash.name}${slash.input ? ` ${slash.input}` : ''}`
+          : msg.text;
       if (messageHook) {
         try {
           const decision = await messageHook({
