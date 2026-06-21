@@ -30,6 +30,7 @@ class ProfileStore(
             mgmtToken = cipher.decrypt(mgmtEnc),
             chatToken = cipher.decrypt(chatEnc),
             secure = prefs[SECURE] ?: false,
+            relayCredential = prefs[RELAY_CRED]?.let { cipher.decrypt(it) },
         )
     }
 
@@ -42,6 +43,9 @@ class ProfileStore(
             prefs[MGMT_TOKEN] = cipher.encrypt(profile.mgmtToken)
             prefs[CHAT_TOKEN] = cipher.encrypt(profile.chatToken)
             prefs[SECURE] = profile.secure
+            // Encrypt the relay credential too; clear any stale value for LAN profiles.
+            val cred = profile.relayCredential
+            if (cred != null) prefs[RELAY_CRED] = cipher.encrypt(cred) else prefs.remove(RELAY_CRED)
         }
     }
 
@@ -57,5 +61,6 @@ class ProfileStore(
         val MGMT_TOKEN = stringPreferencesKey("mgmt_token_enc")
         val CHAT_TOKEN = stringPreferencesKey("chat_token_enc")
         val SECURE = booleanPreferencesKey("secure")
+        val RELAY_CRED = stringPreferencesKey("relay_credential_enc")
     }
 }

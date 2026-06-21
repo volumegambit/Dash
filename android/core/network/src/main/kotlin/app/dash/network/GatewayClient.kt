@@ -21,6 +21,9 @@ class GatewayClient(
     baseUrl: String,
     private val mgmtToken: String,
     private val client: OkHttpClient = OkHttpClient(),
+    /** Per-device relay credential; when set, sent on every request so the relay
+     *  admits this device. Null for LAN/adb connections. */
+    private val relayCredential: String? = null,
 ) {
     private val base = baseUrl.trimEnd('/')
     private val json = DashJson.instance
@@ -50,21 +53,19 @@ class GatewayClient(
     suspend fun disable(id: String): Unit = post("/agents/${id.enc()}/disable")
 
     private suspend fun post(path: String): Unit = withContext(Dispatchers.IO) {
-        val req = Request.Builder()
-            .url(base + path)
-            .header("Authorization", "Bearer $mgmtToken")
-            .post(ByteArray(0).toRequestBody(null))
-            .build()
+        val req = authed(path).post(ByteArray(0).toRequestBody(null)).build()
         client.newCall(req).execute().use { resp -> bodyOrThrow(resp) }
         Unit
     }
 
-    private fun get(path: String): Request =
-        Request.Builder()
-            .url(base + path)
-            .header("Authorization", "Bearer $mgmtToken")
-            .get()
-            .build()
+    private fun get(path: String): Request = authed(path).get().build()
+
+    /** A request builder with the gateway Bearer and, when relayed, the relay credential. */
+    private fun authed(path: String): Request.Builder {
+        val b = Request.Builder().url(base + path).header("Authorization", "Bearer $mgmtToken")
+        relayCredential?.let { b.header(RELAY_CREDENTIAL_HEADER, it) }
+        return b
+    }
 
     private fun bodyOrThrow(resp: Response): String {
         val text = resp.body?.string().orEmpty()
@@ -73,4 +74,9 @@ class GatewayClient(
     }
 
     private fun String.enc(): String = URLEncoder.encode(this, "UTF-8")
+
+    companion object {
+        /** Header the relay reads to authorize a paired device. */
+        const val RELAY_CREDENTIAL_HEADER = "x-dash-relay-credential"
+    }
 }

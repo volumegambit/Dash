@@ -6,6 +6,7 @@ import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Before
@@ -73,5 +74,19 @@ class GatewayClientTest {
     @Test fun healthFalseOn500() = runTest {
         server.enqueue(MockResponse().setResponseCode(500))
         assertTrue(!client().health())
+    }
+
+    @Test fun sendsRelayCredentialHeaderWhenSet() = runTest {
+        server.enqueue(MockResponse().setResponseCode(200).setBody("[]"))
+        GatewayClient(server.url("/").toString(), "tok", ok, "relay-cred").listAgents()
+        val req = server.takeRequest()
+        assertEquals("relay-cred", req.getHeader("x-dash-relay-credential"))
+        assertEquals("Bearer tok", req.getHeader("Authorization"))
+    }
+
+    @Test fun omitsRelayCredentialHeaderForLan() = runTest {
+        server.enqueue(MockResponse().setResponseCode(200).setBody("[]"))
+        client().listAgents() // no relay credential
+        assertNull(server.takeRequest().getHeader("x-dash-relay-credential"))
     }
 }

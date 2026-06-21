@@ -27,6 +27,9 @@ class GatewayStreamError(message: String) : RuntimeException(message)
 class ChatSocket(
     private val chatUrl: String,
     private val client: OkHttpClient = OkHttpClient(),
+    /** Per-device relay credential; when set, sent on the upgrade so the relay
+     *  admits this device. Null for LAN/adb connections. */
+    private val relayCredential: String? = null,
 ) {
     private val json = DashJson.instance
 
@@ -36,7 +39,9 @@ class ChatSocket(
      * 4001 close. Cancelling the collector tears the socket down.
      */
     fun stream(message: WsClientMessage.Message): Flow<AgentEvent> = callbackFlow {
-        val request = Request.Builder().url(chatUrl).build()
+        val request = Request.Builder().url(chatUrl)
+            .apply { relayCredential?.let { header(RELAY_CREDENTIAL_HEADER, it) } }
+            .build()
         val socket = client.newWebSocket(
             request,
             object : WebSocketListener() {
@@ -77,5 +82,8 @@ class ChatSocket(
 
     private companion object {
         const val NORMAL_CLOSURE = 1000
+
+        /** Header the relay reads to authorize a paired device. */
+        const val RELAY_CREDENTIAL_HEADER = "x-dash-relay-credential"
     }
 }

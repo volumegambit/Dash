@@ -27,7 +27,33 @@ class PairingPayloadTest {
     }
 
     @Test fun rejectsUnsupportedVersion() {
-        assertTrue(PairingPayload.parse("""{"v":2,"host":"h","mgmtToken":"m","chatToken":"c"}""").isFailure)
+        assertTrue(PairingPayload.parse("""{"v":99,"host":"h","mgmtToken":"m","chatToken":"c"}""").isFailure)
+    }
+
+    @Test fun parsesV2RelayPayload() {
+        val p = PairingPayload.parse(
+            """{"v":2,"host":"gw-1.relay.example.com","secure":true,"mgmtToken":"m","chatToken":"c","relayCredential":"cred-xyz"}""",
+        ).getOrThrow()
+        assertEquals("gw-1.relay.example.com", p.host)
+        assertEquals("cred-xyz", p.relayCredential)
+        assertTrue(p.secure) // relay is always TLS
+        assertEquals(443, p.mgmtPort) // standard TLS port at the relay subdomain
+        assertEquals(443, p.chatPort)
+    }
+
+    @Test fun rejectsV2WithoutRelayCredential() {
+        assertTrue(
+            PairingPayload.parse(
+                """{"v":2,"host":"gw-1.relay.example.com","secure":true,"mgmtToken":"m","chatToken":"c"}""",
+            ).isFailure,
+        )
+    }
+
+    @Test fun v1HasNoRelayCredential() {
+        val p = PairingPayload.parse(
+            """{"v":1,"host":"10.0.0.5","mgmtToken":"m","chatToken":"c"}""",
+        ).getOrThrow()
+        assertEquals(null, p.relayCredential)
     }
 
     @Test fun rejectsMissingMgmtToken() {

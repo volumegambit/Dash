@@ -82,4 +82,18 @@ class ChatSocketTest {
             assertTrue(awaitError() is GatewayAuthError)
         }
     }
+
+    @Test fun sendsRelayCredentialHeaderOnUpgrade() = runTest {
+        server.enqueue(
+            MockResponse().withWebSocketUpgrade(object : WebSocketListener() {
+                override fun onOpen(webSocket: WebSocket, response: Response) {
+                    webSocket.send("""{"type":"done","id":"1"}""")
+                }
+            }),
+        )
+        val url = server.url("/ws").toString().replaceFirst("http", "ws")
+        ChatSocket(url, ok, "relay-cred").stream(message()).test { awaitComplete() }
+        // The upgrade HTTP request must carry the relay credential header.
+        assertEquals("relay-cred", server.takeRequest().getHeader("x-dash-relay-credential"))
+    }
 }

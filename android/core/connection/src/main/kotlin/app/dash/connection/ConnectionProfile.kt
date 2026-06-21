@@ -16,8 +16,14 @@ data class ConnectionProfile(
     val chatPort: Int = DEFAULT_CHAT_PORT,
     val mgmtToken: String,
     val chatToken: String,
-    /** When true, use https/wss (set by the relay later); LAN/adb use false. */
+    /** When true, use https/wss (set by the relay); LAN/adb use false. */
     val secure: Boolean = false,
+    /**
+     * Per-device relay credential, set only for relay (v2) pairing; null for
+     * LAN/adb. Sent as the `x-dash-relay-credential` header so the relay admits
+     * this device. A secret — stored encrypted, never shown.
+     */
+    val relayCredential: String? = null,
 ) {
     val mgmtBaseUrl: String
         get() = "${if (secure) "https" else "http"}://$host:$mgmtPort"

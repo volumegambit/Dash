@@ -37,10 +37,10 @@ class AppContainer(context: Context) {
     val profileStore: ProfileStore = ProfileStore(dataStore, cipher)
 
     fun gatewayClient(profile: ConnectionProfile): GatewayClient =
-        GatewayClient(profile.mgmtBaseUrl, profile.mgmtToken, okHttp)
+        GatewayClient(profile.mgmtBaseUrl, profile.mgmtToken, okHttp, profile.relayCredential)
 
     fun chatSocket(profile: ConnectionProfile): ChatSocket =
-        ChatSocket(profile.chatWsUrl, okHttp)
+        ChatSocket(profile.chatWsUrl, okHttp, profile.relayCredential)
 
     suspend fun healthCheck(profile: ConnectionProfile): Boolean =
         gatewayClient(profile).health()

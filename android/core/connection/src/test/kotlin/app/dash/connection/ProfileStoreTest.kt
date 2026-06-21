@@ -64,4 +64,37 @@ class ProfileStoreTest {
         assertEquals("secret-c", read.chatToken)
         scope.cancel()
     }
+
+    @Test fun roundTripsEncryptedRelayCredential() = runBlocking {
+        val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+        val store = newStore(scope)
+        store.save(
+            ConnectionProfile(
+                "l", "gw.relay", mgmtToken = "m", chatToken = "c",
+                secure = true, relayCredential = "rc-secret",
+            ),
+        )
+        assertEquals("rc-secret", store.profile().first()!!.relayCredential)
+        scope.cancel()
+    }
+
+    @Test fun lanProfileHasNullRelayCredential() = runBlocking {
+        val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+        val store = newStore(scope)
+        store.save(ConnectionProfile("l", "h", mgmtToken = "m", chatToken = "c"))
+        assertNull(store.profile().first()!!.relayCredential)
+        scope.cancel()
+    }
+
+    @Test fun savingLanProfileClearsStaleRelayCredential() = runBlocking {
+        val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+        val store = newStore(scope)
+        store.save(
+            ConnectionProfile("l", "gw.relay", mgmtToken = "m", chatToken = "c", relayCredential = "rc"),
+        )
+        // Re-pairing over LAN must not leave the old relay credential behind.
+        store.save(ConnectionProfile("l", "h", mgmtToken = "m", chatToken = "c"))
+        assertNull(store.profile().first()!!.relayCredential)
+        scope.cancel()
+    }
 }
