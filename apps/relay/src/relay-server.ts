@@ -167,22 +167,35 @@ function routeFromGateway(conn: GatewayConn, frame: Frame): void {
   if (frame.t === 'pong' || !('streamId' in frame)) return;
   const stream = conn.streams.get(frame.streamId);
   if (!stream) return;
-  switch (frame.t) {
-    case 'head':
-      stream.onHead(frame.status, frame.headers);
-      break;
-    case 'data':
-      stream.onData(decodeChunk(frame.chunk), frame.binary ?? false);
-      break;
-    case 'end':
-      stream.onEnd();
-      break;
-    case 'close':
-      stream.onClose(frame.code, frame.reason);
-      conn.streams.delete(frame.streamId);
-      break;
-    default:
-      break; // 'open'/'credit' from gateway are not expected on the response path
+  // A misbehaving (buggy or hostile) gateway must never crash the relay. The
+  // stream callbacks touch Node res/ws which throw on misuse (a duplicate
+  // `head`, a write after end); the callbacks guard themselves, but this catch
+  // is the backstop — on any throw, tear down just this one stream.
+  try {
+    switch (frame.t) {
+      case 'head':
+        stream.onHead(frame.status, frame.headers);
+        break;
+      case 'data':
+        stream.onData(decodeChunk(frame.chunk), frame.binary ?? false);
+        break;
+      case 'end':
+        stream.onEnd();
+        break;
+      case 'close':
+        stream.onClose(frame.code, frame.reason);
+        conn.streams.delete(frame.streamId);
+        break;
+      default:
+        break; // 'open'/'credit' from gateway are not expected on the response path
+    }
+  } catch {
+    conn.streams.delete(frame.streamId);
+    try {
+      stream.onClose();
+    } catch {
+      // already torn down
+    }
   }
 }
 
@@ -202,22 +215,24 @@ function handlePhoneHttp(
     return;
   }
 
+  // Per-pairing relay credential. The relay never inspects gateway tokens; this
+  // is a separate gate authorizing the phone to reach THIS gateway at all.
+  // Checked BEFORE the rate limiter so an unauthenticated caller can't spend a
+  // gateway's shared token budget and throttle its legitimately paired phones.
+  if (
+    !deps.pairingCredentialValid(gatewayId, headerValue(req.headers[PAIRING_CREDENTIAL_HEADER]))
+  ) {
+    res.writeHead(401, { 'content-type': 'text/plain' });
+    res.end('Unauthorized');
+    return;
+  }
+
   // Abuse limits on the public edge: a per-gateway token bucket caps sustained
   // request rate, and a concurrent-stream cap bounds in-flight work. Both reject
   // with 429 so a flood can't exhaust the gateway's loopback or the relay.
   if (!limiter.allow(gatewayId) || conn.streams.size >= maxStreams) {
     res.writeHead(429, { 'content-type': 'text/plain', 'retry-after': '1' });
     res.end('Too Many Requests');
-    return;
-  }
-
-  // Per-pairing relay credential. The relay never inspects gateway tokens; this
-  // is a separate gate authorizing the phone to reach THIS gateway at all.
-  if (
-    !deps.pairingCredentialValid(gatewayId, headerValue(req.headers[PAIRING_CREDENTIAL_HEADER]))
-  ) {
-    res.writeHead(401, { 'content-type': 'text/plain' });
-    res.end('Unauthorized');
     return;
   }
 
@@ -235,10 +250,15 @@ function handlePhoneHttp(
 
   conn.streams.set(streamId, {
     onHead(status, headers) {
+      // Guard against a duplicate/late `head` frame: writeHead after headers are
+      // already sent throws ERR_HTTP_HEADERS_SENT (which would otherwise crash
+      // the relay — see routeFromGateway's catch).
+      if (res.headersSent) return;
       responded = true;
       res.writeHead(status, headers);
     },
     onData(chunk) {
+      if (res.writableEnded) return;
       const flushed = res.write(chunk);
       pendingCredit += chunk.length;
       // Credit immediately if the phone socket accepted it; otherwise wait for
@@ -246,15 +266,13 @@ function handlePhoneHttp(
       if (flushed) grantCredit();
     },
     onEnd() {
-      res.end();
+      if (!res.writableEnded) res.end();
       conn.streams.delete(streamId);
     },
     onClose(_code, reason) {
-      if (!responded) {
-        res.writeHead(502, { 'content-type': 'text/plain' });
-        res.end(reason ?? 'Upstream closed');
-      } else {
-        res.end();
+      if (!res.writableEnded) {
+        if (!responded) res.writeHead(502, { 'content-type': 'text/plain' });
+        res.end(responded ? undefined : (reason ?? 'Upstream closed'));
       }
       conn.streams.delete(streamId);
     },
@@ -315,21 +333,23 @@ function handlePhoneWsUpgrade(
     return;
   }
 
-  // Same abuse limits as the HTTP edge; a throttled phone is upgraded then
-  // immediately closed with 4429 so the client gets a distinguishable signal.
-  if (!limiter.allow(gatewayId) || conn.streams.size >= maxStreams) {
-    wss.handleUpgrade(req, socket, head, (ws) => {
-      ws.close(RELAY_RATE_LIMIT_CLOSE, 'Too Many Requests');
-    });
-    return;
-  }
-
-  // Per-pairing relay credential (see handlePhoneHttp). Reject with 4401.
+  // Per-pairing relay credential (see handlePhoneHttp). Checked before the rate
+  // limiter so an unauthenticated caller can't spend the gateway's token budget.
+  // Reject with 4401.
   if (
     !deps.pairingCredentialValid(gatewayId, headerValue(req.headers[PAIRING_CREDENTIAL_HEADER]))
   ) {
     wss.handleUpgrade(req, socket, head, (ws) => {
       ws.close(RELAY_AUTH_CLOSE, 'Unauthorized');
+    });
+    return;
+  }
+
+  // Same abuse limits as the HTTP edge; a throttled phone is upgraded then
+  // immediately closed with 4429 so the client gets a distinguishable signal.
+  if (!limiter.allow(gatewayId) || conn.streams.size >= maxStreams) {
+    wss.handleUpgrade(req, socket, head, (ws) => {
+      ws.close(RELAY_RATE_LIMIT_CLOSE, 'Too Many Requests');
     });
     return;
   }
@@ -344,7 +364,9 @@ function handlePhoneWsUpgrade(
         // 101 — the phone connection is already upgraded at the relay edge.
       },
       onData(chunk, binary) {
-        phoneWs.send(binary ? chunk : chunk.toString('utf8'));
+        if (phoneWs.readyState === phoneWs.OPEN) {
+          phoneWs.send(binary ? chunk : chunk.toString('utf8'));
+        }
       },
       onEnd() {
         conn.streams.delete(streamId);
@@ -352,7 +374,7 @@ function handlePhoneWsUpgrade(
       },
       onClose(code, reason) {
         conn.streams.delete(streamId);
-        phoneWs.close(safeCloseCode(code), reason);
+        phoneWs.close(safeCloseCode(code), truncateCloseReason(reason));
       },
     });
 
@@ -378,6 +400,18 @@ function handlePhoneWsUpgrade(
       }
     });
   });
+}
+
+/**
+ * The WebSocket close `reason` must be ≤123 UTF-8 bytes or `ws` throws a
+ * synchronous RangeError. Truncate on a byte boundary (dropping any partial
+ * trailing multibyte char) so a long upstream reason can't crash the relay.
+ */
+function truncateCloseReason(reason?: string): string | undefined {
+  if (reason === undefined) return undefined;
+  const buf = Buffer.from(reason, 'utf8');
+  if (buf.length <= 123) return reason;
+  return buf.subarray(0, 123).toString('utf8').replace(/�+$/, '');
 }
 
 /** Forward normal + app-range (4001 etc.) close codes; coerce reserved/abnormal to 1000. */

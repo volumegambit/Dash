@@ -32,6 +32,16 @@ async function main(): Promise<void> {
   logger.info(`relay listening on ${config.host}:${config.port}`);
   logger.info(`admin API ${config.adminSecret ? 'enabled' : 'disabled'}`);
 
+  // Last-resort net for a multi-tenant relay: the per-stream code already
+  // isolates faults (see routeFromGateway), but a relay must not take every
+  // tenant down on one unforeseen throw. Log and keep serving rather than exit.
+  process.on('uncaughtException', (err) => {
+    logger.error(`uncaught exception (kept alive): ${err instanceof Error ? err.stack : err}`);
+  });
+  process.on('unhandledRejection', (reason) => {
+    logger.error(`unhandled rejection (kept alive): ${String(reason)}`);
+  });
+
   const shutdown = async (signal: string): Promise<void> => {
     logger.info(`received ${signal}, shutting down`);
     await relay.close();

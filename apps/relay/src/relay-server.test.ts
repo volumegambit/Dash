@@ -462,4 +462,57 @@ describe('relay-server', () => {
     expect(after.status).toBe(401);
     gw.close();
   });
+
+  it('survives a malformed gateway response (duplicate head) and keeps serving', async () => {
+    const gw = await connectGateway('g1', 'good');
+    gw.on('message', (raw: Buffer) => {
+      const f = decodeFrame(raw.toString());
+      if (f.t === 'open') {
+        // A duplicate `head` after a `data` would throw in the response handler;
+        // the relay must isolate it (not crash the whole process).
+        gw.send(encodeFrame({ t: 'head', streamId: f.streamId, status: 200, headers: {} }));
+        gw.send(
+          encodeFrame({ t: 'data', streamId: f.streamId, chunk: encodeChunk(Buffer.from('ok')) }),
+        );
+        gw.send(encodeFrame({ t: 'head', streamId: f.streamId, status: 500, headers: {} }));
+        gw.send(encodeFrame({ t: 'end', streamId: f.streamId }));
+      }
+    });
+    await waitFor(() => server.hasGateway('g1'));
+    await httpGet('/agents', { host: 'g1.relay.local' }); // triggers the bad sequence
+
+    // The relay is still alive: a fresh request to the same gateway succeeds.
+    gw.removeAllListeners('message');
+    respondOk(gw);
+    const second = await httpGet('/agents', { host: 'g1.relay.local' });
+    expect(second.status).toBe(200);
+    expect(second.body).toBe('ok');
+    gw.close();
+  });
+
+  it('does not spend the rate-limit budget on unauthenticated requests', async () => {
+    await restartWith(
+      {
+        relayTokenValid: (t) => t === 'good',
+        pairingCredentialValid: (_gatewayId, cred) => cred === 'valid',
+      },
+      { rateBurst: 1, ratePerSec: 0 },
+    );
+    const gw = await connectGateway('g1', 'good');
+    respondOk(gw);
+    await waitFor(() => server.hasGateway('g1'));
+
+    // Unauthenticated → 401, and must NOT consume the single rate-limit token.
+    const unauth = await httpGet('/agents', { host: 'g1.relay.local' });
+    expect(unauth.status).toBe(401);
+
+    // The paired phone still has its token → served (would be 429 under the old
+    // order where the rate limiter ran before the credential check).
+    const authed = await httpGet('/agents', {
+      host: 'g1.relay.local',
+      'x-dash-relay-credential': 'valid',
+    });
+    expect(authed.status).toBe(200);
+    gw.close();
+  });
 });
