@@ -97,6 +97,10 @@ export function scanText(content: string): PluginScanVerdict {
  *    every string value (command, args, ...) is scanned with {@link scanText}.
  * 5. `providers/*.json` — parsed; must be a plain object (pollution keys →
  *    suspicious). Providers are DATA-ONLY: no shell/command scanning.
+ * 6. `skills/**`, `commands/**`, `agents/**` `*.md` — text scanned with
+ *    {@link scanText} (these load IMMEDIATELY since plugins install enabled), so
+ *    a prompt-injection or other dangerous string in markdown escalates the
+ *    verdict just like a bin payload. Matches the standalone skill installer.
  *
  * Severity choice: a prototype-pollution key in a config is treated as
  * `suspicious` (a structural red flag worth surfacing, but not a confirmed
@@ -128,8 +132,65 @@ export async function heuristicPluginScan(
   escalate(await scanHooks(pluginDir, logger));
   escalate(await scanMcp(pluginDir, logger));
   escalate(await scanProviders(pluginDir, logger));
+  escalate(await scanMarkdown(pluginDir, logger));
 
   return { verdict, reasons };
+}
+
+/** The plugin subdirectories whose `*.md` text is scanned for prompt-injection. */
+const MARKDOWN_ROOTS = ['skills', 'commands', 'agents'] as const;
+
+/**
+ * Scans the text of every `*.md` under `skills/`, `commands/`, and `agents/`
+ * (recursively) with {@link scanText}. Plugins install ENABLED, so this markdown
+ * loads immediately — a prompt-injection string (a DANGEROUS pattern) in a
+ * SKILL.md / command / agent must escalate the verdict exactly as a bin payload
+ * does. This aligns the plugin scanner with the standalone skill installer and
+ * with docs/plugins.mdx's prompt-injection promise.
+ *
+ * Fail-safe: an unreadable file is skipped (optional `logger.warn`); a missing
+ * root is `safe`. Never throws.
+ */
+async function scanMarkdown(pluginDir: string, logger?: ScanLogger): Promise<PluginScanVerdict> {
+  const reasons: string[] = [];
+  let verdict: PluginScanLevel = 'safe';
+  for (const root of MARKDOWN_ROOTS) {
+    const dir = join(pluginDir, root);
+    for (const file of collectMarkdownFiles(dir)) {
+      let content: string;
+      try {
+        content = await readFile(file, 'utf8');
+      } catch (err) {
+        logger?.warn(`plugin scan: unreadable markdown ${file}: ${errMsg(err)}`);
+        continue;
+      }
+      const v = scanText(content);
+      const rel = file.slice(pluginDir.length + 1);
+      for (const r of v.reasons) reasons.push(`${rel}: ${r}`);
+      if (LEVEL_ORDER[v.verdict] > LEVEL_ORDER[verdict]) verdict = v.verdict;
+    }
+  }
+  return { verdict, reasons };
+}
+
+/** Recursively collect every `*.md` file under `dir`. Missing/unreadable → []. */
+function collectMarkdownFiles(dir: string, out: string[] = []): string[] {
+  let entries: Dirent[];
+  try {
+    if (!statSync(dir).isDirectory()) return out;
+    entries = readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return out;
+  }
+  for (const entry of entries) {
+    const abs = join(dir, entry.name);
+    if (entry.isDirectory()) {
+      collectMarkdownFiles(abs, out);
+    } else if (entry.isFile() && entry.name.toLowerCase().endsWith('.md')) {
+      out.push(abs);
+    }
+  }
+  return out;
 }
 
 /** Re-validates the manifest `name` is kebab-case. A bad name is a note only. */

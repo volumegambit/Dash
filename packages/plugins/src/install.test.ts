@@ -1,9 +1,9 @@
 import { existsSync } from 'node:fs';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Header } from 'tar';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   PluginOpError,
   type PluginScanVerdict,
@@ -82,6 +82,31 @@ describe('parsePluginSource', () => {
   it('rejects an empty source', () => {
     expect(() => parsePluginSource('')).toThrow();
     expect(() => parsePluginSource('   ')).toThrow();
+  });
+
+  // C1 (security): a git subpath must never contain a `..` segment or be
+  // absolute — otherwise `join(clone.dir, subpath)` escapes the clone and the
+  // installer can rename/delete an arbitrary host directory (/etc, ~/.ssh, ...).
+  it('rejects a git source whose subpath escapes via ..', () => {
+    expect(() => parsePluginSource('git:owner/repo/../../etc')).toThrow(/subpath/i);
+  });
+
+  it('rejects a git source whose subpath has an interior .. segment', () => {
+    expect(() => parsePluginSource('git:owner/repo/plugins/../../../etc')).toThrow(/subpath/i);
+  });
+
+  it('rejects a git source whose subpath ends with a .. segment', () => {
+    expect(() => parsePluginSource('git:owner/repo/plugins/..')).toThrow(/subpath/i);
+  });
+
+  it('still accepts a legitimate multi-segment git subpath', () => {
+    expect(parsePluginSource('git:owner/repo/plugins/my-plugin')).toEqual({
+      kind: 'git',
+      owner: 'owner',
+      repo: 'repo',
+      subpath: 'plugins/my-plugin',
+      ref: undefined,
+    });
   });
 });
 
@@ -232,6 +257,87 @@ describe('installPluginToDir', () => {
     expect(existsSync(join(dataDir, 'plugins', 'my-plugin'))).toBe(false);
   });
 
+  // C1 (security): a git source whose subpath escapes the clone (`..`) MUST be
+  // rejected at parse time — BEFORE any clone runs — and MUST NOT move/remove any
+  // directory outside the clone. Without the fix, the parsed subpath
+  // `../../sentinel` makes the plugin root `join(clone.dir, '../../sentinel')`,
+  // which `moveDir` renames (or cp+rm's) into the plugins dir — destroying an
+  // arbitrary host dir the gateway can write.
+  //
+  // The destructive end-to-end requires cloning a real remote (network), so this
+  // offline test pins the two observable guarantees: (1) the install rejects, and
+  // (2) a sentinel dir laid down where the escape would point is untouched.
+  it('rejects a git source whose subpath escapes the clone and leaves outside dirs untouched', async () => {
+    // A sentinel directory the destructive bug would relocate/delete. It sits at
+    // the place a `../../<dataDir-parent>` escape would resolve to.
+    const sentinel = join(work, 'sentinel');
+    await mkdir(sentinel, { recursive: true });
+    await writeFile(join(sentinel, 'keep.txt'), 'precious');
+
+    // Rejects at the PARSE gate (message references the subpath) — before any
+    // clone. On vulnerable code this either network-clones or escapes; either
+    // way it does NOT reject for an invalid-subpath reason.
+    await expect(
+      installPluginToDir({
+        dataDir,
+        source: 'git:owner/repo/../../sentinel',
+        scanner: safe,
+      }),
+    ).rejects.toThrow(/subpath/i);
+
+    // The sentinel dir and its contents are untouched; nothing was installed.
+    expect(existsSync(sentinel)).toBe(true);
+    expect(existsSync(join(sentinel, 'keep.txt'))).toBe(true);
+    expect(existsSync(join(dataDir, 'plugins', 'sentinel'))).toBe(false);
+  });
+
+  // M1: a local-directory source that contains a symlink escaping the tree must
+  // be rejected (symmetry with the tarball symlink sweep), and nothing may be
+  // installed.
+  it('rejects a local dir containing a symlink whose target escapes the tree', async () => {
+    const outside = join(work, 'outside');
+    await mkdir(outside, { recursive: true });
+    await writeFile(join(outside, 'secret.txt'), 'top secret');
+
+    const src = join(work, 'sneaky-src');
+    await mkdir(join(src, '.claude-plugin'), { recursive: true });
+    await writeFile(join(src, '.claude-plugin', 'plugin.json'), JSON.stringify({ name: 'sneaky' }));
+    // A symlink inside the plugin tree pointing OUT of it.
+    await symlink(outside, join(src, 'escape-link'));
+
+    await expect(
+      installPluginToDir({ dataDir, source: src, scanner: safe }),
+    ).rejects.toBeInstanceOf(PluginOpError);
+    expect(existsSync(join(dataDir, 'plugins', 'sneaky'))).toBe(false);
+    // The user's source + the outside dir are untouched.
+    expect(existsSync(join(outside, 'secret.txt'))).toBe(true);
+  });
+
+  // M2: a duplicate that wins the dup-check race (target dir created AFTER the
+  // existence check, BEFORE the move) surfaces as a structured `duplicate`
+  // (→409) rather than an unmapped ENOTEMPTY 500.
+  it('maps a move-collision (target already exists) to duplicate', async () => {
+    const src = join(work, 'race-src');
+    await mkdir(join(src, '.claude-plugin'), { recursive: true });
+    await writeFile(join(src, '.claude-plugin', 'plugin.json'), JSON.stringify({ name: 'racer' }));
+
+    // Pre-create a NON-EMPTY target dir so `rename` fails with ENOTEMPTY. The
+    // pre-existence dup check sees an empty dir? No — make it match the timing by
+    // using a scanner that creates the collision just before the move.
+    const collide = join(dataDir, 'plugins', 'racer');
+    const scanner = async (): Promise<PluginScanVerdict> => {
+      // Create the colliding (non-empty) target dir during the scan, i.e. AFTER
+      // the installer's pre-move existence check has already passed.
+      await mkdir(collide, { recursive: true });
+      await writeFile(join(collide, 'existing.txt'), 'i was here first');
+      return { verdict: 'safe', reasons: [] };
+    };
+
+    await expect(installPluginToDir({ dataDir, source: src, scanner })).rejects.toMatchObject({
+      code: 'duplicate',
+    });
+  });
+
   it('installs a valid .tar.gz, using the manifest name, with files on disk', async () => {
     const tar = buildTar({
       'pkg/.claude-plugin/plugin.json': JSON.stringify({
@@ -249,7 +355,8 @@ describe('installPluginToDir', () => {
     expect(result.name).toBe('cool-plugin');
     expect(result.version).toBe('1.2.3');
     expect(result.description).toBe('a cool plugin');
-    expect(result.verdict).toEqual({ verdict: 'safe', reasons: [] });
+    expect(result.scanVerdict).toBe('safe');
+    expect(result.scanReasons).toEqual([]);
     expect(result.source).toBe(tgz);
 
     const installDir = join(dataDir, 'plugins', 'cool-plugin');
@@ -360,7 +467,8 @@ describe('installPluginToDir', () => {
 
     const result = await installPluginToDir({ dataDir, source: src, scanner: suspicious });
     expect(result.name).toBe('sus-plugin');
-    expect(result.verdict.verdict).toBe('suspicious');
+    expect(result.scanVerdict).toBe('suspicious');
+    expect(result.scanReasons).toEqual(['reads environment variables']);
     expect(existsSync(join(dataDir, 'plugins', 'sus-plugin'))).toBe(true);
   });
 
@@ -405,6 +513,52 @@ describe('installPluginToDir', () => {
         scanner: safe,
       }),
     ).rejects.toMatchObject({ code: 'not_found' });
+  });
+
+  // I2 (DoS): an archive whose declared Content-Length exceeds the cap is
+  // rejected before the body is buffered.
+  it('rejects a remote archive whose Content-Length exceeds the size cap', async () => {
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(Buffer.from('x'), {
+          status: 200,
+          headers: { 'content-length': String(100 * 1024 * 1024) }, // > 50 MiB cap
+        }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      await expect(
+        installPluginToDir({ dataDir, source: 'https://example.com/big.tar.gz', scanner: safe }),
+      ).rejects.toMatchObject({ code: 'corrupt_archive' });
+      // The bounded fetch passes an AbortController signal.
+      expect(fetchMock).toHaveBeenCalledWith(
+        'https://example.com/big.tar.gz',
+        expect.objectContaining({ signal: expect.any(AbortSignal) }),
+      );
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  // I2 (DoS): a body that lies about (or omits) Content-Length is still capped by
+  // the streamed byte counter.
+  it('rejects a remote archive that streams more bytes than the cap', async () => {
+    // A ReadableStream that emits 1 MiB chunks forever (no Content-Length).
+    const chunk = new Uint8Array(1024 * 1024);
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        controller.enqueue(chunk);
+      },
+    });
+    const fetchMock = vi.fn(async () => new Response(body, { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      await expect(
+        installPluginToDir({ dataDir, source: 'https://example.com/stream.tar.gz', scanner: safe }),
+      ).rejects.toMatchObject({ code: 'corrupt_archive' });
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it('throws not_found for a missing local path', async () => {

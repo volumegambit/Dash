@@ -6,6 +6,21 @@ import { promisify } from 'node:util';
 
 const execFileAsync = promisify(execFile);
 
+/**
+ * Bound a single git invocation: kill a hanging clone after this many ms (I2 —
+ * a stalled/slow remote must not tie up the gateway indefinitely).
+ */
+const GIT_TIMEOUT_MS = 120_000;
+
+/**
+ * Cap git's captured stdout/stderr (I2). git writes progress to stderr; 10 MiB
+ * is generous for output while still bounding memory if a remote floods it.
+ */
+const GIT_MAX_BUFFER = 10 * 1024 * 1024;
+
+/** Common bounds applied to every git `execFile` (timeout + maxBuffer). */
+const GIT_EXEC_OPTS = { timeout: GIT_TIMEOUT_MS, maxBuffer: GIT_MAX_BUFFER } as const;
+
 /** A repository cloned into a temp dir, plus a cleanup for its temp root. */
 export interface ClonedRepo {
   /** Absolute path to the freshly cloned working tree (an `mkdtemp` root). */
@@ -43,13 +58,14 @@ export async function gitCloneToTemp(
       const args = ['clone', '--depth', '1'];
       if (ref) args.push('--branch', ref);
       args.push(remote, tmp);
-      await execFileAsync('git', args);
+      // Bounded (timeout + maxBuffer); argv form, never a shell — no injection.
+      await execFileAsync('git', args, GIT_EXEC_OPTS);
     } catch {
       // `--branch` rejects commit SHAs; fall back to a full clone + checkout.
       await rm(tmp, { recursive: true, force: true });
       await mkdir(tmp, { recursive: true });
-      await execFileAsync('git', ['clone', remote, tmp]);
-      if (ref) await execFileAsync('git', ['-C', tmp, 'checkout', ref]);
+      await execFileAsync('git', ['clone', remote, tmp], GIT_EXEC_OPTS);
+      if (ref) await execFileAsync('git', ['-C', tmp, 'checkout', ref], GIT_EXEC_OPTS);
     }
     return { dir: tmp, cleanup };
   } catch (err) {

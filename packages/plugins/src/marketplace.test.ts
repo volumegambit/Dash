@@ -154,9 +154,28 @@ describe('readMarketplace — url', () => {
     vi.stubGlobal('fetch', fetchMock);
 
     const cfg = await readMarketplace('https://example.com/marketplace.json');
-    expect(fetchMock).toHaveBeenCalledWith('https://example.com/marketplace.json');
+    // I2: the fetch is now bounded by an AbortController signal.
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://example.com/marketplace.json',
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
     expect(cfg.name).toBe('acme-marketplace');
     expect(cfg.plugins).toHaveLength(2);
+  });
+
+  it('rejects a marketplace document whose Content-Length exceeds the cap', async () => {
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(JSON.stringify(SAMPLE), {
+          status: 200,
+          headers: { 'content-length': String(5 * 1024 * 1024) }, // > 2 MiB cap
+        }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(readMarketplace('https://example.com/marketplace.json')).rejects.toMatchObject({
+      code: 'corrupt_archive',
+    });
   });
 
   it('throws not_found on a 404 response', async () => {
@@ -238,6 +257,34 @@ describe('readMarketplace — git', () => {
     await execFileAsync('git', ['commit', '-qm', 'init'], { cwd: repo });
 
     await expect(readMarketplace(`git:${repo}`)).rejects.toMatchObject({ code: 'not_found' });
+  });
+
+  // C1 (security): a direct-remote `#subpath` that escapes the clone (`..`) must
+  // NOT let `join(clone.dir, subpath)` read a marketplace.json from an arbitrary
+  // host directory. The containment guard rejects it before any read. The clone
+  // lands under `tmpdir()`, so `#../<victim>` resolves to a sibling of the clone
+  // under `tmpdir()` — we plant a marketplace.json there to prove it is NOT read.
+  it('rejects a marketplace git subpath that escapes the clone', async () => {
+    await writeFile(join(repo, 'marketplace.json'), JSON.stringify(SAMPLE));
+    await execFileAsync('git', ['add', 'marketplace.json'], { cwd: repo });
+    await execFileAsync('git', ['commit', '-qm', 'init'], { cwd: repo });
+
+    // Plant a real marketplace.json at a sibling-of-the-clone path under tmpdir()
+    // — exactly where `#../<victim>` would escape to. A successful read of THIS
+    // (instead of a rejection) would be the vulnerability.
+    const victim = join(tmpdir(), 'dash-mp-c1-victim');
+    await mkdir(victim, { recursive: true });
+    await writeFile(
+      join(victim, 'marketplace.json'),
+      JSON.stringify({ ...SAMPLE, name: 'evil-escaped-marketplace' }),
+    );
+    try {
+      await expect(readMarketplace(`git:${repo}#../dash-mp-c1-victim`)).rejects.toMatchObject({
+        code: 'not_found',
+      });
+    } finally {
+      await rm(victim, { recursive: true, force: true });
+    }
   });
 });
 

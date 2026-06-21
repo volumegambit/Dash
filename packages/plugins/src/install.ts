@@ -13,11 +13,12 @@ import {
 import { homedir, tmpdir } from 'node:os';
 import { basename, isAbsolute, join, resolve } from 'node:path';
 import { extract } from 'tar';
+import { MAX_ARCHIVE_BYTES, fetchBufferCapped } from './fetch.js';
 import { gitCloneToTemp } from './git.js';
 import { readManifest, realpathContained } from './manifest.js';
-import type { PluginScanVerdict } from './scanner.js';
+import type { PluginScanLevel, PluginScanVerdict } from './scanner.js';
 
-export type { PluginScanVerdict } from './scanner.js';
+export type { PluginScanLevel, PluginScanVerdict } from './scanner.js';
 
 /**
  * Plugin install error codes. Used by {@link PluginOpError} and mapped to HTTP
@@ -57,13 +58,26 @@ export type ParsedPluginSource =
   | { kind: 'local'; path: string };
 
 /**
+ * True if `subpath` is a safe, contained relative path: not absolute and with no
+ * `..` segment. Used to reject git-subpath path-traversal at the parse gate
+ * (C1). Backslashes are treated as separators too, so a Windows-style `..\\`
+ * cannot slip past the POSIX split.
+ */
+export function isSafeSubpath(subpath: string): boolean {
+  if (isAbsolute(subpath)) return false;
+  const segments = subpath.split(/[/\\]/);
+  return !segments.includes('..');
+}
+
+/**
  * Parse a plugin install source. Supported forms (identical to the skill
  * installer):
  * - `git:owner/repo[/subpath][@ref]`
  * - `http(s)://…` URL
  * - a local filesystem path (absolute, relative, or `~/`)
  *
- * Empty or malformed git input throws.
+ * Empty or malformed git input throws. A git subpath containing a `..` segment
+ * or an absolute path is rejected (path-traversal defense, C1).
  */
 export function parsePluginSource(raw: string): ParsedPluginSource {
   const s = raw.trim();
@@ -85,7 +99,16 @@ export function parsePluginSource(raw: string): ParsedPluginSource {
       throw new Error(`Invalid git source "${raw}". Expected git:owner/repo[/subpath][@ref].`);
     }
     const [owner, repo, ...sub] = parts;
-    return { kind: 'git', owner, repo, subpath: sub.length ? sub.join('/') : undefined, ref };
+    const subpath = sub.length ? sub.join('/') : undefined;
+    // C1 (security): a `..` segment or an absolute subpath lets
+    // `join(clone.dir, subpath)` escape the clone and have the installer
+    // rename/delete an arbitrary host directory. Reject at the parse gate.
+    if (subpath !== undefined && !isSafeSubpath(subpath)) {
+      throw new Error(
+        `Invalid git source "${raw}": subpath must be a relative path without '..' segments.`,
+      );
+    }
+    return { kind: 'git', owner, repo, subpath, ref };
   }
 
   if (s.startsWith('http://') || s.startsWith('https://')) {
@@ -138,8 +161,14 @@ export interface InstalledPlugin {
   description?: string;
   /** Absolute path to the installed plugin (`<dataDir>/plugins/<name>`). */
   location: string;
-  /** The scan verdict the plugin landed with (may be `suspicious`). */
-  verdict: PluginScanVerdict;
+  /**
+   * The scan level the plugin landed with (may be `suspicious`). Flattened from
+   * the scan verdict so the install RESULT shape matches what P3 consumes
+   * (`scanVerdict`/`scanReasons`) rather than a nested `verdict.verdict`.
+   */
+  scanVerdict: PluginScanLevel;
+  /** The scan reasons the plugin landed with (empty for a clean `safe`). */
+  scanReasons: string[];
   /** The original `source` string passed to {@link installPluginToDir}. */
   source: string;
 }
@@ -240,6 +269,37 @@ async function resolveExtractedRoot(extractDir: string): Promise<string> {
   return extractDir;
 }
 
+/**
+ * Walk `root` recursively and throw `PluginOpError('corrupt_archive')` if ANY
+ * entry's realpath escapes `root`. Mirrors the tarball symlink-sweep: a copied
+ * symlink that resolves outside the managed tree is rejected at install time
+ * (M1). Directories are descended into only when they are real, contained dirs
+ * (a symlinked dir is checked but not followed, so we never traverse outside).
+ */
+async function assertNoEscapingSymlinks(root: string): Promise<void> {
+  const walk = async (current: string): Promise<void> => {
+    let entries: Dirent[];
+    try {
+      entries = await readdir(current, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      const abs = join(current, entry.name);
+      if (!realpathContained(root, abs)) {
+        throw new PluginOpError(
+          'corrupt_archive',
+          `local plugin contains a symlink escaping its directory at ${entry.name}`,
+        );
+      }
+      // Descend only into REAL directories (not symlinks) so we never follow a
+      // link out of the tree even after it passed the containment check.
+      if (entry.isDirectory()) await walk(abs);
+    }
+  };
+  await walk(root);
+}
+
 /** Canonicalize `p`, tolerating a not-yet-canonicalizable path. */
 async function realpathOrSelf(p: string): Promise<string> {
   try {
@@ -262,6 +322,16 @@ async function realpathOrSelf(p: string): Promise<string> {
  * On any failure the temp dir is cleaned up. HTTP / clone / missing-path
  * failures throw `not_found`; extraction failures throw `corrupt_archive`.
  */
+/**
+ * Fetch a remote `.tar.gz` into memory with an abort timeout AND a size cap
+ * (I2): a hung remote is aborted after {@link FETCH_TIMEOUT_MS}; a body larger
+ * than {@link MAX_ARCHIVE_BYTES} is rejected (Content-Length pre-check + streamed
+ * byte cap). Network/HTTP failures → `not_found`; oversize → `corrupt_archive`.
+ */
+async function fetchArchiveBuffer(url: string): Promise<Buffer> {
+  return fetchBufferCapped(url, MAX_ARCHIVE_BYTES, 'archive');
+}
+
 async function fetchPlugin(source: ParsedPluginSource): Promise<FetchedPlugin> {
   if (source.kind === 'git') {
     const repoUrl = defaultGitRemote(source.owner, source.repo);
@@ -275,24 +345,27 @@ async function fetchPlugin(source: ParsedPluginSource): Promise<FetchedPlugin> {
       );
     }
     const fallbackName = source.subpath ? basename(source.subpath) : source.repo;
+    const dir = source.subpath ? join(cloned.dir, source.subpath) : cloned.dir;
+    // C1 (defense-in-depth): even though `parsePluginSource` already rejects a
+    // `..`/absolute subpath, re-verify the joined dir is still inside the clone
+    // (realpath-resolved, so a symlinked subpath can't escape either). A failure
+    // here means we'd be operating outside the clone — refuse.
+    if (source.subpath && !realpathContained(cloned.dir, dir)) {
+      await rm(cloned.dir, { recursive: true, force: true });
+      throw new PluginOpError(
+        'not_found',
+        `git subpath '${source.subpath}' escapes the cloned repository`,
+      );
+    }
     return {
-      dir: source.subpath ? join(cloned.dir, source.subpath) : cloned.dir,
+      dir,
       cleanupRoot: cloned.dir,
       fallbackName,
     };
   }
 
   if (source.kind === 'url') {
-    let res: Response;
-    try {
-      res = await fetch(source.url);
-    } catch (err) {
-      throw new PluginOpError('not_found', `failed to fetch ${source.url}: ${errMsg(err)}`);
-    }
-    if (!res.ok) {
-      throw new PluginOpError('not_found', `failed to fetch ${source.url}: HTTP ${res.status}`);
-    }
-    const buf = Buffer.from(await res.arrayBuffer());
+    const buf = await fetchArchiveBuffer(source.url);
     const tmp = await mkdtemp(join(tmpdir(), 'dash-plugin-url-'));
     try {
       await extractTarball(buf, tmp);
@@ -322,9 +395,15 @@ async function fetchPlugin(source: ParsedPluginSource): Promise<FetchedPlugin> {
     const tmp = await mkdtemp(join(tmpdir(), 'dash-plugin-local-'));
     try {
       await cp(expanded, tmp, { recursive: true });
+      // M1 (symlink symmetry with the tarball path): `cp` copies symlinks
+      // verbatim (no dereference), so an escaping symlink could land in the
+      // managed tree. Sweep the copy and reject any entry whose realpath leaves
+      // the temp root.
+      await assertNoEscapingSymlinks(tmp);
       return { dir: tmp, cleanupRoot: tmp, fallbackName: basename(expanded) };
     } catch (err) {
       await rm(tmp, { recursive: true, force: true });
+      if (err instanceof PluginOpError) throw err;
       throw new PluginOpError(
         'not_found',
         `failed to copy local plugin ${expanded}: ${errMsg(err)}`,
@@ -413,14 +492,26 @@ export async function installPluginToDir(opts: PluginInstallOptions): Promise<In
     }
 
     await mkdir(join(opts.dataDir, 'plugins'), { recursive: true });
-    await moveDir(tempDir, installDir);
+    try {
+      await moveDir(tempDir, installDir);
+    } catch (err) {
+      // M2 (dup-check→move TOCTOU): the pre-move existence check passed but the
+      // target appeared (non-empty) before the rename. Surface it as a structured
+      // `duplicate` (→409) rather than an unmapped ENOTEMPTY/EEXIST 500.
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === 'EEXIST' || code === 'ENOTEMPTY') {
+        throw new PluginOpError('duplicate', `a plugin named '${finalName}' is already installed`);
+      }
+      throw err;
+    }
 
     return {
       name: finalName,
       ...(manifest.version !== undefined ? { version: manifest.version } : {}),
       ...(manifest.description !== undefined ? { description: manifest.description } : {}),
       location: installDir,
-      verdict,
+      scanVerdict: verdict.verdict,
+      scanReasons: verdict.reasons,
       source: opts.source,
     };
   } finally {

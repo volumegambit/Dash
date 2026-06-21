@@ -1,8 +1,10 @@
 import { readFile, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { MAX_MARKETPLACE_BYTES, fetchTextCapped } from './fetch.js';
 import { gitCloneToTemp } from './git.js';
 import { PluginOpError, defaultGitRemote, parsePluginSource } from './install.js';
+import { realpathContained } from './manifest.js';
 
 /**
  * One plugin advertised by a marketplace. `source` is what a caller passes to
@@ -106,18 +108,13 @@ async function readLocalMarketplaceText(path: string): Promise<string> {
   }
 }
 
-/** Fetch the marketplace document text from a URL. */
+/**
+ * Fetch the marketplace document text from a URL with an abort timeout AND a
+ * size cap (I2): a hung remote is aborted; a body larger than
+ * {@link MAX_MARKETPLACE_BYTES} is rejected. Failures → `not_found`/`corrupt_archive`.
+ */
 async function fetchMarketplaceText(url: string): Promise<string> {
-  let res: Response;
-  try {
-    res = await fetch(url);
-  } catch (err) {
-    throw new PluginOpError('not_found', `failed to fetch marketplace ${url}: ${errMsg(err)}`);
-  }
-  if (!res.ok) {
-    throw new PluginOpError('not_found', `failed to fetch marketplace ${url}: HTTP ${res.status}`);
-  }
-  return res.text();
+  return fetchTextCapped(url, MAX_MARKETPLACE_BYTES, 'marketplace');
 }
 
 /**
@@ -150,6 +147,16 @@ async function readMarketplaceFromGit(
   }
   try {
     const dir = effectiveSubpath ? join(cloned.dir, effectiveSubpath) : cloned.dir;
+    // C1 (security): a `#subpath` on a direct remote bypasses `parsePluginSource`
+    // (it is split off the raw source here), so guard the join: the resolved dir
+    // must stay inside the clone (realpath-resolved). A `../escape` reads an
+    // arbitrary host marketplace.json otherwise.
+    if (effectiveSubpath && !realpathContained(cloned.dir, dir)) {
+      throw new PluginOpError(
+        'not_found',
+        `marketplace subpath '${effectiveSubpath}' escapes the cloned repository`,
+      );
+    }
     const file = join(dir, MARKETPLACE_FILE);
     let text: string;
     try {
