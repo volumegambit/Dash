@@ -13,6 +13,21 @@ export interface GatewayAgentConfig {
   workspace?: string;
   maxTokens?: number;
   mcpServers?: string[];
+  /**
+   * Per-agent plugin selection (Plan P5). `undefined` = ALL loaded plugins
+   * (backward compat — legacy agents persisted before P5 have no key and MUST
+   * load as `undefined`, never `[]`/`null`). An explicit `[]` means "none".
+   *
+   * VISIBILITY / ROUTING ONLY. This narrows which loaded plugins an agent sees
+   * (its skill dirs + namespaced commands); it does NOT grant or revoke trust.
+   * Trust (enabled/trusted, and thus whether code components — MCP/hooks/bin/
+   * providers — were activated vs left `noop`) is decided gateway-wide upstream.
+   * An untrusted plugin's code stays `noop` regardless of any agent selecting it.
+   *
+   * Flows through `update()` exactly like `mcpServers`: a partial-update patch
+   * replaces the list wholesale (set to `undefined` to restore "all").
+   */
+  plugins?: string[];
 }
 
 export type AgentStatus = 'registered' | 'active' | 'disabled';

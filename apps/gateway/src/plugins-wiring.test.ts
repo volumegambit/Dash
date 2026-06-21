@@ -231,6 +231,41 @@ describe('rebuildWiringState', () => {
 
     // Records map keyed by plugin name.
     expect(Object.keys(state.pluginRecords)).toEqual(['alpha']);
+
+    // P5: per-plugin skill-dir attribution for per-agent filtering.
+    expect(state.skillDirsByPlugin).toEqual({ alpha: loaded.skillDirs });
+  });
+
+  it('skillDirsByPlugin maps each loaded plugin name \u2192 its own skill dirs (2 plugins)', async () => {
+    // Two plugins each contributing a skill dir; attribution must split them.
+    const alphaDir = await writePlugin(pluginsDir, 'alpha', { skill: 'doit' });
+    const betaDir = await writePlugin(pluginsDir, 'beta', { skill: 'other' });
+    const entries: Record<string, PluginEntryConfig> = {
+      alpha: { enabled: true },
+      beta: { enabled: true },
+    };
+    const loaded = await load(entries);
+
+    const state = await rebuildWiringState(loaded, entries, CORE_PROVIDER_IDS, WIRING_OPTIONS);
+
+    // Each plugin maps to exactly its own skill dir (under that plugin's root).
+    expect(Object.keys(state.skillDirsByPlugin).sort()).toEqual(['alpha', 'beta']);
+    expect(state.skillDirsByPlugin.alpha).toEqual([join(alphaDir, 'skills')]);
+    expect(state.skillDirsByPlugin.beta).toEqual([join(betaDir, 'skills')]);
+
+    // The union of per-plugin dirs equals the flat aggregate.
+    const union = [...state.skillDirsByPlugin.alpha, ...state.skillDirsByPlugin.beta].sort();
+    expect(union).toEqual([...state.skillDirs].sort());
+  });
+
+  it('a plugin with no skill dirs maps to an empty array in skillDirsByPlugin', async () => {
+    // command-only plugin contributes no skill dirs, but is still a key.
+    await writePlugin(pluginsDir, 'cmdonly', { command: 'go' });
+    const entries: Record<string, PluginEntryConfig> = { cmdonly: { enabled: true } };
+    const loaded = await load(entries);
+
+    const state = await rebuildWiringState(loaded, entries, CORE_PROVIDER_IDS, WIRING_OPTIONS);
+    expect(state.skillDirsByPlugin.cmdonly).toEqual([]);
   });
 
   it('flattens trusted plugin provider models into pluginModels and the catalog', async () => {

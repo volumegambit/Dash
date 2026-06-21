@@ -42,6 +42,18 @@ export interface PluginWiringState {
   droppedProviderCollisions: ProviderConfigEntry[];
   /** Map plugin name → loaded plugin record snapshot. */
   pluginRecords: Record<string, PluginStatusRecord>;
+  /**
+   * Per-plugin skill-dir attribution: plugin name → that plugin's own skill
+   * dirs. The flat `skillDirs` above is the aggregate across all plugins (with
+   * no provenance); this map carries the provenance the per-agent plugin filter
+   * needs to narrow skill dirs to a selected subset (P5). Built from each loader
+   * record's `.skillDirs`, so it rebuilds automatically on reload.
+   *
+   * Visibility/routing only — it does NOT re-gate trust. A skill dir is in this
+   * map iff its plugin was loaded (enabled); untrusted code components stay
+   * `noop` upstream regardless of any agent's selection.
+   */
+  skillDirsByPlugin: Record<string, string[]>;
 }
 
 /**
@@ -191,13 +203,19 @@ export async function rebuildWiringState(
   const pluginModels = expandPluginModelsForRoute(pluginProviderConfigs);
 
   // Per-plugin status records, keyed by plugin name, for API responses.
+  // Also build per-plugin skill-dir attribution (plugin name → its own skill
+  // dirs) in the SAME pass over loader records, so the per-agent plugin filter
+  // (P5) can narrow the flat `skillDirs` to a selected subset. Pure: reads each
+  // record's `.skillDirs`; no I/O.
   const pluginRecords: Record<string, PluginStatusRecord> = {};
+  const skillDirsByPlugin: Record<string, string[]> = {};
   for (const record of loadedPlugins.records) {
     pluginRecords[record.name] = toStatusRecord(
       record,
       pluginConfigEntries[record.name],
       options.pluginsDir,
     );
+    skillDirsByPlugin[record.name] = record.skillDirs;
   }
 
   return {
@@ -210,6 +228,7 @@ export async function rebuildWiringState(
     pluginProviderConfigs,
     droppedProviderCollisions,
     pluginRecords,
+    skillDirsByPlugin,
   };
 }
 
