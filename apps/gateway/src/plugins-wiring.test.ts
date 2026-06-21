@@ -112,6 +112,8 @@ const NOOP_LOGGER: Logger = {
 
 const CORE_PROVIDER_IDS = ['anthropic', 'openai', 'google'];
 
+const WIRING_OPTIONS = { logger: NOOP_LOGGER, dataDir: '/tmp/wiring-test-data' };
+
 async function writePlugin(
   root: string,
   name: string,
@@ -168,14 +170,14 @@ function providerCatalog(id: string): Record<string, unknown> {
   };
 }
 
-function fakeCoordinator(): Pick<AgentChatCoordinator, 'evict'> & { evicted: string[] } {
-  const evicted: string[] = [];
-  return {
-    evicted,
-    evict: vi.fn(async (id: string) => {
-      evicted.push(id);
+function fakeCoordinator(): Pick<AgentChatCoordinator, 'evictAll'> & { evictAllCalls: number } {
+  const coordinator = {
+    evictAllCalls: 0,
+    evictAll: vi.fn(async () => {
+      coordinator.evictAllCalls += 1;
     }),
   };
+  return coordinator;
 }
 
 describe('rebuildWiringState', () => {
@@ -200,7 +202,7 @@ describe('rebuildWiringState', () => {
     const entries: Record<string, PluginEntryConfig> = { alpha: { enabled: true } };
     const loaded = await load(entries);
 
-    const state = await rebuildWiringState(loaded, entries, CORE_PROVIDER_IDS);
+    const state = await rebuildWiringState(loaded, entries, CORE_PROVIDER_IDS, WIRING_OPTIONS);
 
     // Skill dirs flattened straight from the loader.
     expect(state.skillDirs).toEqual(loaded.skillDirs);
@@ -235,7 +237,7 @@ describe('rebuildWiringState', () => {
     const entries: Record<string, PluginEntryConfig> = { beta: { enabled: true, trusted: true } };
     const loaded = await load(entries);
 
-    const state = await rebuildWiringState(loaded, entries, CORE_PROVIDER_IDS);
+    const state = await rebuildWiringState(loaded, entries, CORE_PROVIDER_IDS, WIRING_OPTIONS);
 
     expect(state.pluginProviderConfigs).toHaveLength(1);
     expect(state.pluginModels).toEqual([
@@ -252,10 +254,48 @@ describe('rebuildWiringState', () => {
     const entries: Record<string, PluginEntryConfig> = { evil: { enabled: true, trusted: true } };
     const loaded = await load(entries);
 
-    const state = await rebuildWiringState(loaded, entries, CORE_PROVIDER_IDS);
+    const state = await rebuildWiringState(loaded, entries, CORE_PROVIDER_IDS, WIRING_OPTIONS);
 
     expect(state.pluginProviderConfigs).toHaveLength(0);
     expect(state.pluginModels).toHaveLength(0);
+    // CF3: dropped collisions are surfaced so the caller can log them at
+    // boot AND reload (rebuild stays side-effect-free).
+    expect(state.droppedProviderCollisions).toHaveLength(1);
+    expect(state.droppedProviderCollisions[0]?.pluginName).toBe('evil');
+    expect(state.droppedProviderCollisions[0]?.catalog.id).toBe('anthropic');
+  });
+
+  it('reports no dropped collisions when no plugin shadows a core provider', async () => {
+    await writePlugin(pluginsDir, 'beta', {
+      providers: { myllm: providerCatalog('myllm') },
+    });
+    const entries: Record<string, PluginEntryConfig> = { beta: { enabled: true, trusted: true } };
+    const loaded = await load(entries);
+
+    const state = await rebuildWiringState(loaded, entries, CORE_PROVIDER_IDS, WIRING_OPTIONS);
+    expect(state.droppedProviderCollisions).toHaveLength(0);
+  });
+
+  it('builds the hook engine with the supplied dataDir/logger (CF2 fidelity)', async () => {
+    // A trusted plugin declaring a hook makes hasHooks true; the engine is built
+    // identically to index.ts (logger + dataDir threaded through).
+    const dir = join(pluginsDir, 'hooky');
+    await mkdir(join(dir, MANIFEST_DIR), { recursive: true });
+    await writeFile(join(dir, MANIFEST_DIR, MANIFEST_FILENAME), JSON.stringify({ name: 'hooky' }));
+    await mkdir(join(dir, 'hooks'), { recursive: true });
+    await writeFile(
+      join(dir, 'hooks', 'hooks.json'),
+      JSON.stringify({
+        hooks: {
+          SessionStart: [{ hooks: [{ type: 'command', command: 'echo hi' }] }],
+        },
+      }),
+    );
+    const entries: Record<string, PluginEntryConfig> = { hooky: { enabled: true, trusted: true } };
+    const loaded = await load(entries);
+
+    const state = await rebuildWiringState(loaded, entries, CORE_PROVIDER_IDS, WIRING_OPTIONS);
+    expect(state.hookEngine.hasHooks).toBe(true);
   });
 
   it('does NOT register MCP servers (side-effect-free state construction)', async () => {
@@ -264,7 +304,7 @@ describe('rebuildWiringState', () => {
     await writePlugin(pluginsDir, 'gamma', { skill: 'doit' });
     const entries: Record<string, PluginEntryConfig> = { gamma: { enabled: true } };
     const loaded = await load(entries);
-    const state = await rebuildWiringState(loaded, entries, CORE_PROVIDER_IDS);
+    const state = await rebuildWiringState(loaded, entries, CORE_PROVIDER_IDS, WIRING_OPTIONS);
     expect(state.mcpConfigs).toEqual(loaded.mcpConfigs);
   });
 });
@@ -294,7 +334,7 @@ describe('PluginStatusRecord snapshots', () => {
     const entries: Record<string, PluginEntryConfig> = { alpha: { enabled: true, trusted: true } };
     const loaded = await load(entries);
 
-    const state = await rebuildWiringState(loaded, entries, CORE_PROVIDER_IDS);
+    const state = await rebuildWiringState(loaded, entries, CORE_PROVIDER_IDS, WIRING_OPTIONS);
     const rec = state.pluginRecords.alpha;
 
     expect(rec.name).toBe('alpha');
@@ -313,7 +353,7 @@ describe('PluginStatusRecord snapshots', () => {
     const entries: Record<string, PluginEntryConfig> = { sleepy: { enabled: false } };
     const loaded = await load(entries);
 
-    const state = await rebuildWiringState(loaded, entries, CORE_PROVIDER_IDS);
+    const state = await rebuildWiringState(loaded, entries, CORE_PROVIDER_IDS, WIRING_OPTIONS);
     const rec = state.pluginRecords.sleepy;
 
     expect(rec.status).toBe('disabled');
@@ -328,7 +368,7 @@ describe('PluginStatusRecord snapshots', () => {
     const entries: Record<string, PluginEntryConfig> = { broken: { enabled: true } };
     const loaded = await load(entries);
 
-    const state = await rebuildWiringState(loaded, entries, CORE_PROVIDER_IDS);
+    const state = await rebuildWiringState(loaded, entries, CORE_PROVIDER_IDS, WIRING_OPTIONS);
     const rec = state.pluginRecords.broken;
 
     expect(rec.status).toBe('error');
@@ -346,7 +386,7 @@ describe('PluginStatusRecord snapshots', () => {
     };
     const loaded = await load(entries);
 
-    const state = await rebuildWiringState(loaded, entries, CORE_PROVIDER_IDS);
+    const state = await rebuildWiringState(loaded, entries, CORE_PROVIDER_IDS, WIRING_OPTIONS);
     const rec = state.pluginRecords['linked-plugin'];
 
     expect(rec.installed).toBe(linkedDir);
@@ -380,6 +420,7 @@ describe('reloadPluginsUnderMutex', () => {
     const state = await reloadPluginsUnderMutex(
       store,
       pluginsDir,
+      tmp,
       NOOP_LOGGER,
       modelsStore,
       agents,
@@ -393,8 +434,10 @@ describe('reloadPluginsUnderMutex', () => {
     expect(clearSpy).toHaveBeenCalledTimes(1);
     // onWiringRebuilt fires after wiring is rebuilt, before eviction.
     expect(rebuiltSeen).toEqual(['alpha']);
-    // Each loaded plugin's name drives an evict call.
-    expect(agents.evicted).toContain('alpha');
+    // CF1: plugin wiring is global, so reload evicts ALL idle backends ONCE
+    // (not per-plugin). Pinned in-flight conversations drain on their old wiring.
+    expect(agents.evictAllCalls).toBe(1);
+    expect(agents.evictAll).toHaveBeenCalledTimes(1);
   });
 
   it('serializes concurrent reloads — the second shares the first in-flight promise', async () => {
@@ -417,6 +460,7 @@ describe('reloadPluginsUnderMutex', () => {
     const p1 = reloadPluginsUnderMutex(
       store,
       pluginsDir,
+      tmp,
       NOOP_LOGGER,
       modelsStore,
       agents,
@@ -425,6 +469,7 @@ describe('reloadPluginsUnderMutex', () => {
     const p2 = reloadPluginsUnderMutex(
       store,
       pluginsDir,
+      tmp,
       NOOP_LOGGER,
       modelsStore,
       agents,
@@ -451,6 +496,7 @@ describe('reloadPluginsUnderMutex', () => {
     await reloadPluginsUnderMutex(
       store,
       pluginsDir,
+      tmp,
       NOOP_LOGGER,
       modelsStore,
       agents,
@@ -459,6 +505,7 @@ describe('reloadPluginsUnderMutex', () => {
     await reloadPluginsUnderMutex(
       store,
       pluginsDir,
+      tmp,
       NOOP_LOGGER,
       modelsStore,
       agents,
@@ -482,6 +529,7 @@ describe('reloadPluginsUnderMutex', () => {
       reloadPluginsUnderMutex(
         store,
         pluginsDir,
+        tmp,
         NOOP_LOGGER,
         modelsStore,
         agents,
@@ -498,6 +546,7 @@ describe('reloadPluginsUnderMutex', () => {
     const ok = await reloadPluginsUnderMutex(
       store,
       pluginsDir,
+      tmp,
       NOOP_LOGGER,
       okStore,
       agents,

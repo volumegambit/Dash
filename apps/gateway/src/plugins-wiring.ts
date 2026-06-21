@@ -32,6 +32,13 @@ export interface PluginWiringState {
   pluginModels: FilteredModel[];
   mcpConfigs: Array<{ pluginName: string; config: McpServerConfig }>;
   pluginProviderConfigs: ProviderConfigEntry[];
+  /**
+   * Provider catalogs dropped because their id collides with a built-in
+   * provider. Surfaced (not silently discarded) so the caller can log the
+   * collision at boot AND on every reload — `rebuildWiringState` itself stays
+   * side-effect-free. See `excludeCoreProviderCollisions`.
+   */
+  droppedProviderCollisions: ProviderConfigEntry[];
   /** Map plugin name → loaded plugin record snapshot. */
   pluginRecords: Record<string, PluginStatusRecord>;
 }
@@ -109,11 +116,16 @@ function toStatusRecord(
  * - loadedPlugins: result from loadPlugins() (includes failure records)
  * - pluginConfigEntries: enable/trust entries already loaded from the store
  * - coreProviderIds: built-in provider ids for collision detection
+ * - options.logger / options.dataDir: threaded into `createHookEngine` so the
+ *   hook engine is built IDENTICALLY to index.ts (logger for matcher/invalid-hook
+ *   warnings; dataDir for the ${CLAUDE_PLUGIN_DATA} substitution). This keeps the
+ *   rebuilt-on-reload engine faithful to the boot-time one.
  */
 export async function rebuildWiringState(
   loadedPlugins: Awaited<ReturnType<typeof loadPlugins>>,
   pluginConfigEntries: Record<string, PluginEntryConfig>,
   coreProviderIds: string[],
+  options: { logger: Logger; dataDir: string },
 ): Promise<PluginWiringState> {
   // Skill dirs flatten straight through (markdown — no trust needed).
   const skillDirs = loadedPlugins.skillDirs;
@@ -126,22 +138,22 @@ export async function rebuildWiringState(
   );
 
   // Hook engine — runs trusted plugins' Claude-Code-format hooks. Always built
-  // (its `hasHooks` is false when no trusted plugin declares any hook).
+  // (its `hasHooks` is false when no trusted plugin declares any hook). The
+  // logger + dataDir are threaded through so this matches index.ts's boot-time
+  // `createHookEngine(..., { logger, dataDir })` exactly — dataDir feeds the
+  // ${CLAUDE_PLUGIN_DATA} substitution for hook commands.
   const hookEngine = createHookEngine(loadedPlugins.hookConfigs, {
-    logger: undefined,
-    // dataDir is only used to compute ${CLAUDE_PLUGIN_DATA} for hook commands;
-    // it is intentionally left to the engine default here so this builder takes
-    // no extra inputs. index.ts retains its own dataDir-bound engine if needed.
+    logger: options.logger,
+    dataDir: options.dataDir,
   });
 
   // Provider catalogs — drop any that collide with a built-in provider id
   // (defense-in-depth: a trusted plugin could declare a core provider id and
-  // shadow its namespace). Collisions are silently excluded here; index.ts logs
-  // the dropped ones at boot via its own derivation when applicable.
-  const { safe: pluginProviderConfigs } = excludeCoreProviderCollisions(
-    loadedPlugins.providerConfigs,
-    coreProviderIds,
-  );
+  // shadow its namespace). The dropped set is returned (not logged here) so the
+  // caller surfaces collisions at boot AND on reload while this builder stays
+  // side-effect-free.
+  const { safe: pluginProviderConfigs, dropped: droppedProviderCollisions } =
+    excludeCoreProviderCollisions(loadedPlugins.providerConfigs, coreProviderIds);
   const pluginModelCatalog = createPluginModelCatalog(pluginProviderConfigs);
   const pluginModels = expandPluginModelsForRoute(pluginProviderConfigs);
 
@@ -159,6 +171,7 @@ export async function rebuildWiringState(
     pluginModels,
     mcpConfigs: loadedPlugins.mcpConfigs,
     pluginProviderConfigs,
+    droppedProviderCollisions,
     pluginRecords,
   };
 }
@@ -182,9 +195,12 @@ let inFlight: Promise<PluginWiringState> | null = null;
  *
  * - pluginConfigStore: to load() the persisted entries before reload
  * - pluginsDir: the plugins directory to scan
- * - logger: for logging the reload flow
+ * - dataDir: host data dir, threaded into the rebuilt hook engine (for the
+ *   ${CLAUDE_PLUGIN_DATA} substitution — matches boot-time fidelity)
+ * - logger: for logging the reload flow + threaded into the rebuilt hook engine
  * - modelsStore: invalidated (clear) so the next GET /models refetches
- * - agents: the coordinator, for evicting warm backends per affected agent
+ * - agents: the coordinator, for evicting idle warm backends so they re-warm
+ *   against the new wiring (plugin wiring is global to all agents)
  * - coreProviderIds: built-in provider ids for collision detection
  * - onWiringRebuilt: fired after wiring is rebuilt (before eviction), e.g. to
  *   swap the live wiring reference and re-register MCP servers
@@ -192,9 +208,10 @@ let inFlight: Promise<PluginWiringState> | null = null;
 export async function reloadPluginsUnderMutex(
   pluginConfigStore: PluginConfigStore,
   pluginsDir: string,
+  dataDir: string,
   logger: Logger,
   modelsStore: ModelsStore,
-  agents: Pick<AgentChatCoordinator, 'evict'>,
+  agents: Pick<AgentChatCoordinator, 'evictAll'>,
   coreProviderIds: string[],
   onWiringRebuilt?: (newWiring: PluginWiringState) => Promise<void>,
 ): Promise<PluginWiringState> {
@@ -208,8 +225,12 @@ export async function reloadPluginsUnderMutex(
     const entries = await pluginConfigStore.load();
     const loaded = await loadPlugins({ pluginsDir, entries, logger });
 
-    // Rebuild the derived wiring snapshot (pure construction, no I/O).
-    const wiring = await rebuildWiringState(loaded, entries, coreProviderIds);
+    // Rebuild the derived wiring snapshot (pure construction, no I/O). Thread
+    // logger + dataDir so the rebuilt hook engine matches the boot-time one.
+    const wiring = await rebuildWiringState(loaded, entries, coreProviderIds, {
+      logger,
+      dataDir,
+    });
 
     // Let the caller swap the live wiring reference + re-register MCP servers
     // BEFORE we evict, so re-warmed backends pick up the new wiring.
@@ -221,12 +242,11 @@ export async function reloadPluginsUnderMutex(
     // models are merged at render time, but a reload may change them).
     await modelsStore.clear();
 
-    // Evict warm backends so the next chat re-warms with the new wiring. Drive
-    // eviction off the loaded plugin records (each plugin name keys the pool's
-    // affected agents).
-    for (const record of loaded.records) {
-      await agents.evict(record.name);
-    }
+    // Evict ALL idle warm backends so the next chat re-warms with the new
+    // wiring. Plugin wiring (skill dirs, hooks, model catalog) is global to
+    // every agent, so this is a single pool-wide eviction — NOT per-plugin.
+    // Pinned in-flight conversations are left to drain on their old wiring.
+    await agents.evictAll();
 
     logger.info('[plugins] reload complete');
     return wiring;

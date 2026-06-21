@@ -16,7 +16,7 @@ import { FileTokenStore, McpManager } from '@dash/mcp';
 import type { McpAgentContext } from '@dash/mcp';
 import { PROVIDERS } from '@dash/models';
 import { gatewayDir, migrateLegacyLayout, workspacesDir } from '@dash/paths';
-import { PluginConfigStore, createHookEngine, loadPlugins } from '@dash/plugins';
+import { PluginConfigStore, loadPlugins } from '@dash/plugins';
 import { createProjectsTools, openProjectsDb } from '@dash/projects';
 import { serve } from '@hono/node-server';
 import { createNodeWebSocket } from '@hono/node-ws';
@@ -36,11 +36,7 @@ import { McpConfigStore } from './mcp-store.js';
 import { ModelsStore } from './models-store.js';
 import { OAuthRefreshCoordinator } from './oauth-refresh.js';
 import { registerPluginMcpServers } from './plugin-mcp.js';
-import {
-  createPluginModelCatalog,
-  excludeCoreProviderCollisions,
-  expandPluginModelsForRoute,
-} from './plugin-providers.js';
+import { rebuildWiringState } from './plugins-wiring.js';
 import { type RelayClient, startRelayClient } from './relay-client.js';
 
 async function main() {
@@ -135,7 +131,36 @@ async function main() {
     entries: pluginEntries,
     logger,
   });
-  const pluginSkillDirs = loadedPlugins.skillDirs;
+  const coreProviderIds = PROVIDERS.map((p) => p.id);
+
+  // Derive ALL plugin wiring (skill dirs, namespaced command/agent files, hook
+  // engine, model catalog + dropdown models, MCP configs, provider configs with
+  // core-collision exclusion, status records) in ONE place. Stored in a MUTABLE
+  // holder so a later hot-reload (Task 3) can reassign it; every downstream
+  // consumer that must observe reloaded wiring reads through `wiringState.*`
+  // LAZILY (at backend/hook construction time) rather than capturing a field
+  // into a boot-time const. The hook engine is built with the same
+  // `{ logger, dataDir }` the gateway used previously, so behavior is identical.
+  //
+  // MUST be `let` (not `const`): Task 3's reload callback reassigns this holder.
+  // biome-ignore lint/style/useConst: reassigned by the plugin hot-reload (Task 3)
+  let wiringState = await rebuildWiringState(loadedPlugins, pluginEntries, coreProviderIds, {
+    logger,
+    dataDir,
+  });
+
+  // Surface provider catalogs dropped for colliding with a built-in provider id
+  // (defense-in-depth — a trusted plugin could declare e.g. `anthropic` and
+  // shadow its namespace). rebuildWiringState returns the dropped set so this is
+  // logged at boot AND on every reload (the builder itself stays side-effect-free).
+  const logDroppedCollisions = (dropped: typeof wiringState.droppedProviderCollisions): void => {
+    for (const { pluginName, catalog } of dropped) {
+      logger.warn(
+        `plugin '${pluginName}' provider catalog id '${catalog.id}' collides with a built-in provider — ignored`,
+      );
+    }
+  };
+  logDroppedCollisions(wiringState.droppedProviderCollisions);
 
   // Code-execution plugin components (trusted only — gated in the loader).
   // MCP servers from trusted plugins are registered with the running manager
@@ -144,64 +169,14 @@ async function main() {
   // tied to plugin trust: configs.json is reconnected and listed (above, and via
   // GET /runtime/mcp/servers) before the trust gate runs, so a persisted plugin
   // server would survive untrust/disable/remove + reboot.
-  await registerPluginMcpServers(mcpManager, loadedPlugins.mcpConfigs, logger);
+  await registerPluginMcpServers(mcpManager, wiringState.mcpConfigs, logger);
 
   // Trusted plugin bin/ dirs are prepended to PATH so plugin executables
   // (and MCP/command processes spawned by the agent) resolve them first.
+  // (binDirs are process-global PATH state — not part of the reloadable wiring.)
   if (loadedPlugins.binDirs.length) {
     process.env.PATH = [...loadedPlugins.binDirs, process.env.PATH ?? ''].join(delimiter);
   }
-
-  // Plugin commands (commands/*.md) and agents (agents/*.md) are flat single-file
-  // skills routed into the agent as extra skill files. Commands surface as
-  // `/plugin:command` slash commands; agents are loadable specialists invocable as
-  // `/plugin:agent` or via the agent's `load_skill` — they contribute the
-  // specialist's instructions on demand. Both are namespaced by plugin so the
-  // derived skill name is `<plugin>:<name>` — an exact match for the slash form
-  // (no LLM leniency). Agents run in the main session (the `tools` frontmatter is
-  // advisory, not enforced); isolated subagent spawning is a future enhancement.
-  // Name collisions resolve first-wins (commands precede agents; discovered
-  // skills win over both); a duplicate `<plugin>:<name>` is cosmetic, not fatal.
-  const pluginCommandFiles = [...loadedPlugins.commandFiles, ...loadedPlugins.agentFiles].map(
-    ({ pluginName, file }) => ({
-      file,
-      namespace: pluginName,
-    }),
-  );
-
-  // Plugin hook engine — runs the Claude-Code-format hooks declared by trusted
-  // plugins (`hooks/hooks.json`). It's shared two ways:
-  //   1. as the backend's `hookRunner` (tool + SessionStart/Stop events fire on
-  //      every agent run, whether reached via MC chat or a channel), and
-  //   2. as the channel gateway's `messageHook` (UserPromptSubmit fires only on
-  //      the inbound-channel path — see the messageHook wiring below).
-  // `hasHooks` is false when no trusted plugin declares any hook, so both the
-  // backend and the gateway short-circuit to zero overhead.
-  const hookEngine = createHookEngine(loadedPlugins.hookConfigs, { logger, dataDir });
-
-  // Plugin LLM providers — trusted plugins' `providers/*.json` catalogs. The
-  // catalog resolves `<id>/<model>` to a pi-ai Model the backend's resolveModel
-  // fallback routes to (credential-bearing → trust-gated in the loader). Static
-  // for the gateway's lifetime, so build once and share across all agents and
-  // the models route. `pluginModels` is the dropdown-facing flattening of the
-  // statically-known models, merged into GET /models at render time.
-  //
-  // Defense-in-depth: a plugin id is only validated kebab-case, so a trusted
-  // plugin could declare a built-in provider id (e.g. `anthropic`) and shadow
-  // its namespace. Drop any such collision before the catalogs are consumed
-  // anywhere downstream, computed once and reused.
-  const { safe: pluginProviderConfigs, dropped: droppedProviderConfigs } =
-    excludeCoreProviderCollisions(
-      loadedPlugins.providerConfigs,
-      PROVIDERS.map((p) => p.id),
-    );
-  for (const { pluginName, catalog } of droppedProviderConfigs) {
-    logger.warn(
-      `plugin '${pluginName}' provider catalog id '${catalog.id}' collides with a built-in provider — ignored`,
-    );
-  }
-  const pluginModelCatalog = createPluginModelCatalog(pluginProviderConfigs);
-  const pluginModels = expandPluginModelsForRoute(pluginProviderConfigs);
 
   // Create gateway + agent service.
   //
@@ -222,16 +197,22 @@ async function main() {
     // engine's runUserPromptSubmit({ prompt, sessionId, cwd }) to the channel
     // MessageHook signature. sessionId is the prefixed conversation id; cwd
     // falls back to the gateway dataDir (channel agents have per-agent
-    // workspaces resolved per run, not a single gateway-wide cwd). Only set
-    // when hooks exist so there's zero overhead otherwise.
-    messageHook: hookEngine.hasHooks
-      ? (i) =>
-          hookEngine.runUserPromptSubmit({
-            prompt: i.prompt,
-            sessionId: i.conversationId,
-            cwd: dataDir,
-          })
-      : undefined,
+    // workspaces resolved per run, not a single gateway-wide cwd).
+    //
+    // Read the hook engine LAZILY through the live `wiringState` holder on every
+    // inbound message — never captured into a boot-time const — so a reload that
+    // reassigns `wiringState` is observed immediately by the channel path. The
+    // wrapper is always installed (cheap); it short-circuits to the engine's own
+    // zero-overhead path when `hasHooks` is false.
+    messageHook: (i) => {
+      const { hookEngine } = wiringState;
+      if (!hookEngine.hasHooks) return Promise.resolve({ block: false });
+      return hookEngine.runUserPromptSubmit({
+        prompt: i.prompt,
+        sessionId: i.conversationId,
+        cwd: dataDir,
+      });
+    },
   });
   const eventBus = new EventBus();
   const registryPath = resolve(dataDir, 'agents.json');
@@ -257,8 +238,11 @@ async function main() {
     // Same plugin inputs the backend factory injects (skill dirs merged into
     // `skills.paths`, command/agent files as extra flat skills) so the HTTP
     // skills route (GET /agents/:id/skills) lists what chat can actually load.
-    pluginSkillDirs,
-    pluginCommandFiles,
+    // This is a boot snapshot for the read-only `listSkills` route; the
+    // chat-path backend factory below reads the LIVE `wiringState` so reloads
+    // take effect on the next re-warmed backend.
+    pluginSkillDirs: wiringState.skillDirs,
+    pluginCommandFiles: wiringState.commandFiles,
     createBackend: async (agentConfig, conversationId) => {
       const sessionDir = resolve(dataDir, 'sessions', agentConfig.name, conversationId);
       await mkdir(sessionDir, { recursive: true });
@@ -282,10 +266,10 @@ async function main() {
         const keys = await credentialStore.readProviderApiKeys();
         // Keyless local providers (e.g. Ollama) declare a `placeholderKey` so
         // the backend's AuthStorage has an entry for their provider id even when
-        // no real credential is stored. A stored key always wins. Uses the
-        // collision-filtered list so a plugin can't inject a placeholder under a
-        // built-in provider id.
-        for (const { catalog } of pluginProviderConfigs) {
+        // no real credential is stored. A stored key always wins. Reads the LIVE
+        // wiring's collision-filtered list (so reloads are observed) and a plugin
+        // can't inject a placeholder under a built-in provider id.
+        for (const { catalog } of wiringState.pluginProviderConfigs) {
           if (catalog.placeholderKey && !keys[catalog.id]) {
             keys[catalog.id] = catalog.placeholderKey;
           }
@@ -332,6 +316,16 @@ async function main() {
         },
       };
 
+      // Snapshot the LIVE plugin wiring at the moment this backend is created.
+      // CRITICAL: read through the mutable `wiringState` holder HERE (inside the
+      // factory), never from a boot-time const. A reload reassigns `wiringState`
+      // and evicts idle backends; when they rebuild, this factory re-runs and
+      // observes the NEW skill dirs / command files / hook engine / model
+      // catalog. (In-flight pinned backends keep their captured wiring until
+      // they drain — intended.) Capturing a field into a boot const would make
+      // reload a silent no-op for that field.
+      const { skillDirs, commandFiles, hookEngine, pluginModelCatalog } = wiringState;
+
       // Explicit annotation breaks the circular type inference: the projects
       // tools close over `backend` (getSessionId) while `backend` is still
       // being constructed, which otherwise trips TS7022 in the .dts build.
@@ -343,7 +337,7 @@ async function main() {
           tools: agentConfig.tools,
           skills: {
             ...agentConfig.skills,
-            paths: [...(agentConfig.skills?.paths ?? []), ...pluginSkillDirs],
+            paths: [...(agentConfig.skills?.paths ?? []), ...skillDirs],
           },
         },
         credentialProvider,
@@ -368,14 +362,14 @@ async function main() {
           // deep-link) must pass config.name.
           getAgentId: () => agentConfig.name,
         }),
-        pluginCommandFiles,
+        commandFiles,
         // Plugin hook engine — composes tool hooks onto pi's agent and fires
         // SessionStart/Stop around each run. Shared across all agents; a no-op
         // when no trusted plugin declares hooks (hookEngine.hasHooks === false).
         hookEngine,
         // Plugin LLM provider catalog — consulted by resolveModel ONLY as a
         // fallback when pi's static registry doesn't know a `<provider>/<model>`.
-        // Shared across all agents (static for the gateway's lifetime).
+        // Snapshotted from the live wiring at backend-creation time.
         pluginModelCatalog,
       );
       return backend;
@@ -469,7 +463,11 @@ async function main() {
     channelRegistry,
     credentialStore,
     modelsStore,
-    pluginModels,
+    // Boot snapshot of the plugin dropdown models. NOTE: the management API
+    // captures this array once; Task 3 (reload) will need a live getter here so
+    // GET /models reflects reloaded plugin providers. Until then a reload
+    // refreshes warm backends but not this route's plugin-model merge.
+    pluginModels: wiringState.pluginModels,
     eventLogStore,
     token: flags.token,
     startedAt,
