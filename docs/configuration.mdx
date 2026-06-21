@@ -109,6 +109,8 @@ Plugins let you drop extra skills into any Dash agent without touching the confi
         ├── hooks/
         │   └── hooks.json           (optional, trusted only)
         ├── .mcp.json                (optional, trusted only)
+        ├── providers/
+        │   └── <provider>.json      (optional, trusted only)
         └── bin/                     (optional, trusted only)
             └── <executable>
 ```
@@ -120,6 +122,7 @@ Each plugin follows the Claude Code layout:
 - **`agents/`** — flat `<name>.md` files (Claude Code subagent format). Each becomes a loadable specialist (see below).
 - **`hooks/hooks.json`** — event hooks that run shell commands at key points in a run (see [Hooks](#hooks) below). Code execution, so it requires `trusted`.
 - **`.mcp.json`** — extra MCP servers to register with the gateway. Code execution, so it requires `trusted` (see below).
+- **`providers/`** — flat `<provider>.json` LLM provider catalogs that add selectable models. Credential-bearing, so they require `trusted` (see [LLM providers](#llm-providers) below).
 - **`bin/`** — executables prepended to the gateway's `PATH`. Code execution, so it requires `trusted`.
 
 The `.claude-plugin/plugin.json` manifest is optional; when present it can set `name`, `displayName`, `description`, and `version`. When absent, the plugin's directory name is used as its name.
@@ -138,7 +141,7 @@ Plugins not listed in `config.json`, or listed with `"enabled": false`, are igno
 
 ### Trusting a plugin
 
-`enabled` is enough for markdown components — `skills/` and `commands/`, which never run code. Components that **execute code** — `hooks/hooks.json`, `.mcp.json` servers, and `bin/` executables — additionally require `"trusted": true`:
+`enabled` is enough for markdown components — `skills/` and `commands/`, which never run code. Components that **execute code or handle credentials** — `hooks/hooks.json`, `.mcp.json` servers, `bin/` executables, and `providers/` LLM catalogs — additionally require `"trusted": true`:
 
 ```json
 {
@@ -146,7 +149,7 @@ Plugins not listed in `config.json`, or listed with `"enabled": false`, are igno
 }
 ```
 
-An enabled-but-untrusted plugin still contributes its skills and commands, but its hooks, MCP servers, and `bin/` directory are skipped. Only set `trusted` for plugins whose code you have reviewed and trust to run inside the gateway process.
+An enabled-but-untrusted plugin still contributes its skills and commands, but its hooks, MCP servers, `bin/` directory, and provider catalogs are skipped. Only set `trusted` for plugins whose code you have reviewed and trust to run inside the gateway process.
 
 ### Commands
 
@@ -209,6 +212,56 @@ The string `${CLAUDE_PLUGIN_ROOT}` in a command is substituted with the plugin's
 
 **Where each event fires.** `SessionStart`, `PreToolUse`, `PostToolUse`, and `Stop` fire on **every** agent run, whether the run was reached through Mission Control chat or an inbound channel. `UserPromptSubmit` fires **only on the channel path** (Telegram, WhatsApp); it does not run for Mission Control chat messages.
 
+### LLM providers
+
+A trusted plugin can add a whole **LLM provider** — a base URL, a wire protocol, and a list of models — through one or more `providers/<provider>.json` catalog files. Once loaded, its models appear in Mission Control's model dropdown as `<id>/<model-id>` and any agent can be pointed at them, exactly like the built-in providers.
+
+<Warning>
+  A provider catalog requires `"trusted": true`. A provider sees **every prompt** you send to its models, **receives your API key**, and **chooses the network endpoint** requests go to. Only add provider plugins you trust with all three.
+</Warning>
+
+Each catalog file is a single JSON object:
+
+```json
+{
+  "id": "myllm",
+  "label": "My LLM",
+  "credentialPrefix": "myllm-api-key",
+  "baseUrl": "https://api.myllm.example/v1",
+  "api": "openai-completions",
+  "models": [
+    {
+      "id": "my-fast",
+      "name": "My Fast",
+      "contextWindow": 128000,
+      "maxTokens": 8192,
+      "reasoning": false,
+      "cost": { "input": 0.5, "output": 1.5, "cacheRead": 0, "cacheWrite": 0 }
+    }
+  ]
+}
+```
+
+| Field | Required | Description |
+| --- | --- | --- |
+| `id` | yes | Provider id and the `<id>/<model>` prefix. Also the credential lookup name. |
+| `label` | yes | Human-readable provider name. |
+| `baseUrl` | yes | API base URL the gateway calls. |
+| `api` | yes | Wire protocol: `openai-completions` or `anthropic-messages`. |
+| `credentialPrefix` | yes | Prefix the API key is stored under (e.g. `myllm-api-key`). |
+| `models[]` | yes | Statically-known models. Each needs `id`, `contextWindow`, `maxTokens`; `name`, `reasoning`, `cost`, `input`, `headers`, and `compat` are optional. |
+| `dynamicModels` | no | OpenRouter-style "accept any model id" — see below. |
+| `dynamicModelDefaults` | no | `{ "contextWindow", "maxTokens" }` applied to dynamically-accepted ids. |
+| `placeholderKey` | no | Stand-in key for keyless local servers — see below. |
+
+**Storing the API key.** Save it in the credential store under `<id>-api-key:<name>`, for example `myllm-api-key:default`. The simplest way is Mission Control's **AI Providers** screen, which writes that key for you; you can also set it directly with the gateway's credentials API. The first key stored for a provider id wins.
+
+**Accept-any-model providers.** Set `"dynamicModels": true` together with `"dynamicModelDefaults": { "contextWindow": ..., "maxTokens": ... }` to allow any model id the provider supports — useful for aggregators like OpenRouter where the catalog can't list everything. Listed `models` still appear in the dropdown; an unlisted id is accepted on demand and sized from the defaults. (Without `dynamicModelDefaults`, an unlisted id is rejected — the gateway can't size it.)
+
+**Keyless local servers.** For a local server that needs no real key (such as Ollama), set `"placeholderKey": "ollama"` (any non-empty string). The gateway uses it whenever no real key is stored, so the provider authenticates out of the box.
+
+If you already run an OpenAI- or Anthropic-compatible endpoint (OpenRouter, OpenClaw, a self-hosted gateway, …), porting it is just filling in this catalog — `baseUrl`, `api`, and the model list.
+
 ### Example
 
 ```bash
@@ -231,5 +284,5 @@ echo '{ "my-skills": { "enabled": true } }' \
 When the gateway starts, it logs `[plugins] loaded 'my-skills' (skills)` and the agent's `load_skill` tool (see [Tools](/tools) — requires `load_skill` in the agent's tools list) can reference any skill from that plugin.
 
 <Note>
-  Skills, commands, subagents, hooks, MCP servers, and `bin/` executables are active. Subagents currently run in the main session (see the limitation above); isolated subagent spawning and providers are coming in a future release.
+  Skills, commands, subagents, hooks, MCP servers, `bin/` executables, and LLM providers are active. Subagents currently run in the main session (see the limitation above); isolated subagent spawning is coming in a future release.
 </Note>

@@ -35,6 +35,7 @@ import { McpConfigStore } from './mcp-store.js';
 import { ModelsStore } from './models-store.js';
 import { OAuthRefreshCoordinator } from './oauth-refresh.js';
 import { registerPluginMcpServers } from './plugin-mcp.js';
+import { createPluginModelCatalog, expandPluginModelsForRoute } from './plugin-providers.js';
 
 async function main() {
   const flags = parseFlags(process.argv.slice(2));
@@ -168,6 +169,15 @@ async function main() {
   // backend and the gateway short-circuit to zero overhead.
   const hookEngine = createHookEngine(loadedPlugins.hookConfigs, { logger, dataDir });
 
+  // Plugin LLM providers — trusted plugins' `providers/*.json` catalogs. The
+  // catalog resolves `<id>/<model>` to a pi-ai Model the backend's resolveModel
+  // fallback routes to (credential-bearing → trust-gated in the loader). Static
+  // for the gateway's lifetime, so build once and share across all agents and
+  // the models route. `pluginModels` is the dropdown-facing flattening of the
+  // statically-known models, merged into GET /models at render time.
+  const pluginModelCatalog = createPluginModelCatalog(loadedPlugins.providerConfigs);
+  const pluginModels = expandPluginModelsForRoute(loadedPlugins.providerConfigs);
+
   // Create gateway + agent service.
   //
   // `resolveRouting` is the live link to the persisted channel registry:
@@ -239,7 +249,16 @@ async function main() {
       // and trigger the UI's re-auth path.
       const credentialProvider = async (): Promise<Record<string, string>> => {
         await oauthRefreshCoordinator.refreshExpiring();
-        return credentialStore.readProviderApiKeys();
+        const keys = await credentialStore.readProviderApiKeys();
+        // Keyless local providers (e.g. Ollama) declare a `placeholderKey` so
+        // the backend's AuthStorage has an entry for their provider id even when
+        // no real credential is stored. A stored key always wins.
+        for (const { catalog } of loadedPlugins.providerConfigs) {
+          if (catalog.placeholderKey && !keys[catalog.id]) {
+            keys[catalog.id] = catalog.placeholderKey;
+          }
+        }
+        return keys;
       };
 
       // MCP agent context — allows agents to manage their own MCP server assignments
@@ -322,6 +341,10 @@ async function main() {
         // SessionStart/Stop around each run. Shared across all agents; a no-op
         // when no trusted plugin declares hooks (hookEngine.hasHooks === false).
         hookEngine,
+        // Plugin LLM provider catalog — consulted by resolveModel ONLY as a
+        // fallback when pi's static registry doesn't know a `<provider>/<model>`.
+        // Shared across all agents (static for the gateway's lifetime).
+        pluginModelCatalog,
       );
       return backend;
     },
@@ -414,6 +437,7 @@ async function main() {
     channelRegistry,
     credentialStore,
     modelsStore,
+    pluginModels,
     eventLogStore,
     token: flags.token,
     startedAt,

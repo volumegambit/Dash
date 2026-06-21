@@ -3,6 +3,7 @@ import type { ChannelAdapter } from '@dash/channels';
 import { TelegramAdapter, WhatsAppAdapter } from '@dash/channels';
 import { type StructuredLogger, createConsoleLogger } from '@dash/logging';
 import { mountProjectsRoutes } from '@dash/management';
+import type { FilteredModel } from '@dash/models';
 import type { ProjectsDb } from '@dash/projects';
 import { Hono } from 'hono';
 import type { Context } from 'hono';
@@ -32,6 +33,13 @@ export interface GatewayManagementOptions {
    * `GET /models` triggers a fresh fetch with the new credential set.
    */
   modelsStore: ModelsStore;
+  /**
+   * Plugin-contributed models, expanded from loaded provider catalogs in
+   * `apps/gateway/src/index.ts`. Merged into the `GET /models` response at
+   * render time (core models win on a value clash); never persisted to the
+   * store. Empty/undefined when no trusted plugin contributes providers.
+   */
+  pluginModels?: FilteredModel[];
   /**
    * Durable event log used by the chat-ws streaming path to record
    * every outbound event. The management API exposes a replay
@@ -747,7 +755,14 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
   });
 
   // --- Models routes ---
-  app.route('/models', createModelsRoute({ store: options.modelsStore, credentialStore }));
+  app.route(
+    '/models',
+    createModelsRoute({
+      store: options.modelsStore,
+      credentialStore,
+      pluginModels: options.pluginModels,
+    }),
+  );
 
   // --- Event-log replay ---
   //
