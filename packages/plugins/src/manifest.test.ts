@@ -1,6 +1,6 @@
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import {
   MANIFEST_DIR,
   MANIFEST_FILENAME,
@@ -94,5 +94,22 @@ describe('resolveSkillDirs', () => {
     await mkdir(join(dir, 'skills'), { recursive: true });
     const dirs = resolveSkillDirs(dir, { name: 'p', skills: ['/abs/path', './missing'] });
     expect(dirs).toEqual([join(dir, 'skills')]);
+  });
+
+  it('rejects a manifest skill path that escapes the plugin root via path traversal', async () => {
+    // Set up: <tmpParent>/plug/ as the plugin root (with skills/) and
+    // <tmpParent>/escape/ as the escape target outside the plugin root.
+    const tmpParent = await mkdtemp(join(tmpdir(), 'cc-escape-'));
+    const plugDir = join(tmpParent, 'plug');
+    const escapeDir = join(tmpParent, 'escape');
+    await mkdir(join(plugDir, 'skills'), { recursive: true });
+    await mkdir(escapeDir, { recursive: true });
+    try {
+      // './../escape' resolves to <tmpParent>/escape — outside plugDir
+      const dirs = resolveSkillDirs(plugDir, { name: 'p', skills: ['./../escape'] });
+      expect(dirs).toEqual([join(plugDir, 'skills')]);
+    } finally {
+      await rm(tmpParent, { recursive: true, force: true });
+    }
   });
 });

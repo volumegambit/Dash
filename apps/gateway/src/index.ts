@@ -112,11 +112,6 @@ async function main() {
     logger,
   });
   const pluginSkillDirs = loadedPlugins.skillDirs;
-  for (const r of loadedPlugins.records) {
-    if (r.status === 'error') {
-      console.warn(`[plugins] '${r.name}' failed: ${r.failure?.error}`);
-    }
-  }
 
   // Create gateway + agent service.
   //

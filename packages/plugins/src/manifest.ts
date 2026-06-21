@@ -1,6 +1,6 @@
 import { existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
-import { basename, join, resolve } from 'node:path';
+import { basename, isAbsolute, join, relative, resolve } from 'node:path';
 import type { PluginManifest } from '@dash/plugin-sdk';
 
 /** Claude Code: the manifest lives at `<pluginRoot>/.claude-plugin/plugin.json`. */
@@ -75,6 +75,8 @@ export function resolveSkillDirs(dir: string, manifest: PluginManifest): string[
   for (const p of manifest.skills ?? []) {
     if (!p.startsWith('./')) continue;
     const abs = resolve(dir, p);
+    const rel = relative(dir, abs);
+    if (rel === '' || rel.startsWith('..') || isAbsolute(rel)) continue;
     if (existsSync(abs)) dirs.push(abs);
   }
   return dirs;
