@@ -25,6 +25,8 @@ export {
 export { validateProviderCatalog } from './provider-catalog.js';
 export { HOOKS_FILE, readHooksJson, validateHooksJson } from './hooks-manifest.js';
 export { PluginConfigStore } from './config-store.js';
+export { heuristicPluginScan, scanText } from './scanner.js';
+export type { PluginScanLevel, PluginScanVerdict } from './scanner.js';
 export { loadPlugins } from './loader.js';
 export type { LoadPluginsOptions } from './loader.js';
 export { translateMcpJson } from './mcp-translate.js';
