@@ -646,9 +646,9 @@ describe('PiAgentBackend plugin hooks', () => {
     await backend.stop();
   });
 
-  it('skips lifecycle hooks when hasHooks is false', async () => {
+  it('skips lifecycle hooks and tool-hook composition when hasHooks is false', async () => {
     const { createAgentSession } = await import('@earendil-works/pi-coding-agent');
-    const { mockSession } = makeMockSession();
+    const { mockSession, mockAgent } = makeMockSession();
     vi.mocked(createAgentSession).mockResolvedValueOnce({
       // biome-ignore lint/suspicious/noExplicitAny: test mock
       session: mockSession as any,
@@ -676,6 +676,112 @@ describe('PiAgentBackend plugin hooks', () => {
 
     expect(hookRunner.runSessionStart).not.toHaveBeenCalled();
     expect(hookRunner.runStop).not.toHaveBeenCalled();
+    // Composition was skipped — the agent's hook fields remain untouched.
+    expect(mockAgent.beforeToolCall).toBeUndefined();
+    expect(mockAgent.afterToolCall).toBeUndefined();
+
+    await backend.stop();
+  });
+});
+
+describe('PiAgentBackend SessionStart additionalContext per-run isolation', () => {
+  // A mock session whose prompt() snapshots the resource loader's effective
+  // append-system-prompt at fire-time, so each run's contribution can be
+  // asserted independently. Records one snapshot per prompt() call.
+  function makeSnapshotSession(getAppend: () => string[]) {
+    // biome-ignore lint/suspicious/noExplicitAny: test mock callback type
+    let subscribeCb: ((event: any) => void) | null = null;
+    const appendSnapshots: string[][] = [];
+    const mockSession = {
+      dispose: vi.fn(),
+      // biome-ignore lint/suspicious/noExplicitAny: test mock callback type
+      subscribe: vi.fn((cb: any) => {
+        subscribeCb = cb;
+        return vi.fn();
+      }),
+      prompt: vi.fn(async () => {
+        appendSnapshots.push([...getAppend()]);
+        subscribeCb?.({
+          type: 'message_end',
+          message: { role: 'assistant', usage: { input: 1, output: 1 } },
+        });
+        subscribeCb?.({ type: 'agent_end', messages: [] });
+      }),
+      abort: vi.fn(),
+      setModel: vi.fn().mockResolvedValue(undefined),
+      getActiveToolNames: vi.fn(() => ['read']),
+      setActiveToolsByName: vi.fn(),
+      agent: {},
+    };
+    return { mockSession, appendSnapshots };
+  }
+
+  it("does not leak run N's SessionStart additionalContext into run N+1 (run 2 returns none)", async () => {
+    const { createAgentSession } = await import('@earendil-works/pi-coding-agent');
+
+    // Build the backend first so we can read its (real) DashResourceLoader for
+    // the snapshot. The mocked DefaultResourceLoader contributes an empty base.
+    const hookRunner = {
+      runPreToolUse: vi.fn().mockResolvedValue({ block: false }),
+      runPostToolUse: vi.fn().mockResolvedValue({ block: false }),
+      runSessionStart: vi
+        .fn()
+        .mockResolvedValueOnce({ additionalContext: 'CTX1' })
+        .mockResolvedValueOnce({}),
+      runStop: vi.fn().mockResolvedValue({}),
+      hasHooks: true,
+    };
+    const backend = new PiAgentBackend(
+      { model: 'anthropic/claude-sonnet-4-20250514', systemPrompt: 'Test' },
+      { anthropic: 'test-key' },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      [],
+      [],
+      // biome-ignore lint/suspicious/noExplicitAny: structural HookRunner stub
+      hookRunner as any,
+    );
+
+    const { mockSession, appendSnapshots } = makeSnapshotSession(
+      () =>
+        // biome-ignore lint/suspicious/noExplicitAny: read real DashResourceLoader from private field
+        ((backend as any).resourceLoader?.getAppendSystemPrompt() as string[]) ?? [],
+    );
+    vi.mocked(createAgentSession).mockResolvedValueOnce({
+      // biome-ignore lint/suspicious/noExplicitAny: test mock
+      session: mockSession as any,
+      // biome-ignore lint/suspicious/noExplicitAny: test mock
+      extensionsResult: {} as any,
+    });
+
+    await backend.start('/tmp/test');
+
+    const runState = {
+      channelId: 'ch-1',
+      conversationId: 'conv-1',
+      model: 'anthropic/claude-sonnet-4-20250514',
+      message: 'hello',
+      systemPrompt: 'Test',
+    };
+
+    // Run 1: SessionStart returns CTX1.
+    for await (const _ of backend.run(runState, {})) {
+      // drain
+    }
+    // Run 2: SessionStart returns nothing.
+    for await (const _ of backend.run(runState, {})) {
+      // drain
+    }
+
+    expect(appendSnapshots).toHaveLength(2);
+    // Run 1 saw CTX1.
+    expect(appendSnapshots[0]).toContain('CTX1');
+    // Run 2 must NOT inherit CTX1 — the per-run contribution is reset.
+    expect(appendSnapshots[1]).not.toContain('CTX1');
 
     await backend.stop();
   });

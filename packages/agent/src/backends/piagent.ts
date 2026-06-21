@@ -130,13 +130,22 @@ export function composeToolHooks(
     // pi's prior block wins — skip the plugin pre-hook entirely.
     if (piRes?.block) return piRes;
 
-    // Tool name lives at ctx.toolCall.name (pi-ai ToolCall.name), NOT toolName.
-    const decision = await hookRunner.runPreToolUse({
-      toolName: ctx?.toolCall?.name,
-      toolInput: ctx?.args,
-      sessionId: resolveSessionId(),
-      cwd,
-    });
+    // The HookRunner is duck-typed (the createHookEngine result from
+    // @dash/plugins). The engine never throws, but defend the composition
+    // anyway: a throwing runner must not break the tool call. Fail open —
+    // allow, returning pi's prior result.
+    let decision: Awaited<ReturnType<HookRunner['runPreToolUse']>>;
+    try {
+      // Tool name lives at ctx.toolCall.name (pi-ai ToolCall.name), NOT toolName.
+      decision = await hookRunner.runPreToolUse({
+        toolName: ctx?.toolCall?.name,
+        toolInput: ctx?.args,
+        sessionId: resolveSessionId(),
+        cwd,
+      });
+    } catch {
+      return piRes;
+    }
     if (decision.block) {
       return { block: true, reason: decision.reason };
     }
@@ -150,13 +159,21 @@ export function composeToolHooks(
   agent.afterToolCall = async (ctx: any, signal?: AbortSignal) => {
     const piRes = await priorAfter?.(ctx, signal);
 
-    const decision = await hookRunner.runPostToolUse({
-      toolName: ctx?.toolCall?.name,
-      toolInput: ctx?.args,
-      toolResponse: stringifyToolResult(ctx?.result),
-      sessionId: resolveSessionId(),
-      cwd,
-    });
+    // Defend the composition against a throwing (duck-typed) HookRunner: a
+    // throw here must not break the tool result. Fail open — return the
+    // prior/base result unchanged so the plugin simply contributes nothing.
+    let decision: Awaited<ReturnType<HookRunner['runPostToolUse']>>;
+    try {
+      decision = await hookRunner.runPostToolUse({
+        toolName: ctx?.toolCall?.name,
+        toolInput: ctx?.args,
+        toolResponse: stringifyToolResult(ctx?.result),
+        sessionId: resolveSessionId(),
+        cwd,
+      });
+    } catch {
+      return piRes;
+    }
 
     // Working content/isError: pi's override (if any) layered over the executed
     // result. Clone the content array so we never mutate pi's internal state.
@@ -166,7 +183,10 @@ export function composeToolHooks(
         ? ctx.result.content
         : [];
     const content = [...baseContent];
-    let isError: boolean | undefined = piRes?.isError;
+    // When there's no prior after-handler (piRes undefined), fall back to the
+    // executed result's error flag so a plugin contribution doesn't silently
+    // drop the tool's own isError.
+    let isError: boolean | undefined = piRes?.isError ?? ctx?.result?.isError;
 
     if (decision.block) {
       isError = true;
@@ -791,8 +811,14 @@ export class PiAgentBackend implements AgentBackend {
           cwd: hookCwd,
           source: 'startup',
         });
-        if (start.additionalContext && this.resourceLoader) {
-          this.resourceLoader.setAppendSystemPrompt([start.additionalContext]);
+        // Reset the append slot every run so a prior run's SessionStart context
+        // can't leak into a later run that returns none. setAppendSystemPrompt
+        // has no co-tenant — the memory preamble is folded into systemPrompt in
+        // DashAgent.chat() (a different slot), so a plain reset is safe.
+        if (this.resourceLoader) {
+          this.resourceLoader.setAppendSystemPrompt(
+            start.additionalContext ? [start.additionalContext] : [],
+          );
         }
       }
 

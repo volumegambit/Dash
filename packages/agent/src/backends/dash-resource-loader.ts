@@ -24,7 +24,12 @@ export class DashResourceLoader implements ResourceLoader {
     this._systemPrompt = prompt;
   }
 
-  /** Set additional system prompt sections (e.g. memory preamble). */
+  /**
+   * Replace the additional system-prompt sections appended after the base
+   * prompt (currently the plugin SessionStart hook's additionalContext).
+   * This is a full replacement, not an append — callers that want per-run
+   * isolation reset it every run (see PiAgentBackend.run()).
+   */
   setAppendSystemPrompt(sections: string[]): void {
     this._appendSystemPrompt = sections;
   }

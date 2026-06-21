@@ -136,6 +136,56 @@ describe('composeToolHooks', () => {
     expect(text).toContain('post-deny');
   });
 
+  it('preserves the executed result isError when there is no prior after-handler', async () => {
+    // No prior afterToolCall (priorAfter undefined). The executed result is an
+    // error; the plugin adds additionalContext. isError must survive into the
+    // returned object rather than being dropped.
+    const agent = makeFakeAgent();
+    const runner = makeRunner({
+      runPostToolUse: vi.fn().mockResolvedValue({ block: false, additionalContext: 'note' }),
+    });
+
+    composeToolHooks(agent, runner, {});
+
+    // The executed pi ToolResult carries its own isError flag.
+    const result = { content: [{ type: 'text', text: 'boom' }], details: {}, isError: true };
+    const res = await agent.afterToolCall?.(afterCtx('bash', {}, result));
+
+    expect(res?.isError).toBe(true);
+    expect(res?.content).toEqual([
+      { type: 'text', text: 'boom' },
+      { type: 'text', text: 'note' },
+    ]);
+  });
+
+  it('fails open when runPreToolUse throws — beforeToolCall resolves (allow), does not reject', async () => {
+    const prior = vi.fn().mockResolvedValue(undefined);
+    const agent = makeFakeAgent({ before: prior });
+    const runner = makeRunner({
+      runPreToolUse: vi.fn().mockRejectedValue(new Error('hook engine exploded')),
+    });
+
+    composeToolHooks(agent, runner, {});
+
+    // Must not reject; must allow the tool (return pi's prior result).
+    const res = await agent.beforeToolCall?.(beforeCtx('bash', {}));
+    expect(res).toBeUndefined();
+  });
+
+  it('fails open when runPostToolUse throws — afterToolCall resolves to the base result', async () => {
+    const agent = makeFakeAgent();
+    const runner = makeRunner({
+      runPostToolUse: vi.fn().mockRejectedValue(new Error('post hook exploded')),
+    });
+
+    composeToolHooks(agent, runner, {});
+
+    const result = { content: [{ type: 'text', text: 'ok' }], details: {} };
+    // Must not reject; returns the prior/base result unchanged.
+    const res = await agent.afterToolCall?.(afterCtx('read', {}, result));
+    expect(res).toBeUndefined();
+  });
+
   it("merges plugin post-hook on top of pi's prior afterToolCall override", async () => {
     // pi's prior handler replaces content; the plugin hook then appends to it.
     const prior = vi.fn().mockResolvedValue({ content: [{ type: 'text', text: 'pi-override' }] });
