@@ -1,10 +1,12 @@
 // Plugin functional E2E smoke.
 //
 // Boots a REAL gateway with a self-contained demo plugin (skills/, commands/,
-// bin/, .mcp.json → a bundled fixture MCP server), registers an agent, drives
-// four prompts over the chat WebSocket, and asserts that each plugin component
-// actually triggers the right tool / skill. Fully isolated under a temp
-// DASH_HOME; real provider credentials are copied in and deleted on teardown.
+// bin/, .mcp.json → a bundled fixture MCP server, hooks/ → a PreToolUse block,
+// agents/ → a loadable specialist), registers an agent, drives six prompts over
+// the chat WebSocket, and asserts that each plugin component actually triggers
+// the right tool / skill / hook — covering plugin Plans 1-4. Fully isolated
+// under a temp DASH_HOME; real provider credentials are copied in and deleted
+// on teardown.
 //
 // Run: npm run plugins:e2e   (Node >= 22.12 required — the gateway needs it)
 // Model: $PLUGINS_E2E_MODEL, else the first model from ~/.dash/gateway/agents.json.
@@ -78,6 +80,8 @@ try {
     'plugins/demo/skills/greet',
     'plugins/demo/commands',
     'plugins/demo/bin',
+    'plugins/demo/agents',
+    'plugins/demo/hooks',
   ])
     await mkdir(join(DATA, d), { recursive: true });
   await writeFile(
@@ -102,6 +106,31 @@ try {
   await writeFile(
     join(DATA, 'plugins/demo/.mcp.json'),
     JSON.stringify({ mcpServers: { fixture: { command: process.execPath, args: [FIXTURE] } } }),
+  );
+  // agents/ → a loadable specialist (Plan 4), namespaced demo:reviewer
+  await writeFile(
+    join(DATA, 'plugins/demo/agents/reviewer.md'),
+    '---\nname: reviewer\ndescription: A meticulous code reviewer specialist. Use when asked to review code.\n---\nYou are the DEMO reviewer specialist. Begin every reply with "DEMO-REVIEWER-OK" then a one-line review.',
+  );
+  // hooks/ → a PreToolUse hook (Plan 3) that blocks a matched bash call ONLY
+  // when the command contains the DENYME sentinel (so the bin/ test, which runs
+  // demo-tool via bash, is unaffected). Exit 2 → block; stderr → deny reason.
+  await writeFile(
+    join(DATA, 'plugins/demo/hooks/hooks.json'),
+    JSON.stringify({
+      hooks: {
+        PreToolUse: [
+          {
+            matcher: 'bash',
+            hooks: [{ type: 'command', command: 'node ${CLAUDE_PLUGIN_ROOT}/hooks/block.js' }],
+          },
+        ],
+      },
+    }),
+  );
+  await writeFile(
+    join(DATA, 'plugins/demo/hooks/block.js'),
+    "let d='';process.stdin.on('data',(c)=>{d+=c;});process.stdin.on('end',()=>{if(d.includes('DENYME')){process.stderr.write('DEMO-BLOCK: bash denied by demo hook.');process.exit(2);}process.exit(0);});\n",
   );
   await writeFile(
     join(DATA, 'plugins/config.json'),
@@ -259,6 +288,22 @@ try {
         ev.some((e) => e.type === 'tool_use_start' && e.name === 'load_skill') &&
         !!tres(ev, /Summarize the issue/),
       (ev) => tres(ev, /Summarize the issue/),
+    ],
+    [
+      'agents/   plugin agent specialist loaded (demo:reviewer body delivered)',
+      "Use your load_skill tool to load the skill named 'demo:reviewer', then review this code: function f(){return 1}",
+      (ev) =>
+        ev.some((e) => e.type === 'tool_use_start' && e.name === 'load_skill') &&
+        !!tres(ev, /DEMO-REVIEWER-OK/),
+      (ev) => tres(ev, /DEMO-REVIEWER-OK/),
+    ],
+    [
+      'hooks/    PreToolUse hook blocks a matched bash call (deny reason surfaced)',
+      'Use your bash tool to run exactly this command: echo DENYME',
+      (ev) =>
+        ev.some((e) => e.type === 'tool_use_start' && e.name === 'bash') &&
+        !!tres(ev, /DEMO-BLOCK/),
+      (ev) => tres(ev, /DEMO-BLOCK/),
     ],
   ];
 
