@@ -229,12 +229,24 @@ Plugins let you drop extra skills into any Dash agent without touching the confi
     └── <plugin-name>/
         ├── .claude-plugin/
         │   └── plugin.json          (optional)
-        └── skills/
-            └── <skill-name>/
-                └── SKILL.md
+        ├── skills/
+        │   └── <skill-name>/
+        │       └── SKILL.md
+        ├── commands/
+        │   └── <command-name>.md    (optional)
+        ├── .mcp.json                (optional, trusted only)
+        └── bin/                     (optional, trusted only)
+            └── <executable>
 ```
 
-Each plugin follows the Claude Code layout: a `skills/` folder containing one subdirectory per skill, each with a `SKILL.md` file in standard frontmatter format (`name`, `description`, body). The `.claude-plugin/plugin.json` manifest is optional; when present it can set `name`, `displayName`, `description`, and `version`. When absent, the plugin's directory name is used as its name.
+Each plugin follows the Claude Code layout:
+
+- **`skills/`** — one subdirectory per skill, each with a `SKILL.md` file in standard frontmatter format (`name`, `description`, body).
+- **`commands/`** — flat `<name>.md` files. Each becomes a `/<plugin>:<command>` slash command (see below).
+- **`.mcp.json`** — extra MCP servers to register with the gateway. Code execution, so it requires `trusted` (see below).
+- **`bin/`** — executables prepended to the gateway's `PATH`. Code execution, so it requires `trusted`.
+
+The `.claude-plugin/plugin.json` manifest is optional; when present it can set `name`, `displayName`, `description`, and `version`. When absent, the plugin's directory name is used as its name.
 
 ### Enabling a plugin
 
@@ -247,6 +259,26 @@ Create or edit `<dataDir>/plugins/config.json`:
 ```
 
 Plugins not listed in `config.json`, or listed with `"enabled": false`, are ignored.
+
+### Trusting a plugin
+
+`enabled` is enough for markdown components — `skills/` and `commands/`, which never run code. Components that **execute code** — `.mcp.json` servers and `bin/` executables — additionally require `"trusted": true`:
+
+```json
+{
+  "<plugin-name>": { "enabled": true, "trusted": true }
+}
+```
+
+An enabled-but-untrusted plugin still contributes its skills and commands, but its MCP servers and `bin/` directory are skipped. Only set `trusted` for plugins whose code you have reviewed and trust to run inside the gateway process.
+
+### Commands
+
+Each `commands/<name>.md` file becomes a slash command named `/<plugin>:<name>`. For example, a plugin called `my-skills` with `commands/triage.md` exposes `/my-skills:triage`. The command body is the markdown content; optional frontmatter (`name`, `description`) overrides the command name and supplies a description. Commands need only `enabled`.
+
+### MCP servers and executables
+
+A trusted plugin's `.mcp.json` is read at startup and its servers are registered with the gateway's MCP manager and persisted alongside your other MCP servers. Registration is fail-isolated: a server that fails to start is logged and skipped without affecting the rest of the gateway. A trusted plugin's `bin/` directory is prepended to the gateway's `PATH`, so its executables resolve ahead of system binaries.
 
 ### Example
 
@@ -270,7 +302,7 @@ echo '{ "my-skills": { "enabled": true } }' \
 When the gateway starts, it logs `[plugins] loaded 'my-skills' (skills)` and the agent's `load_skill` tool (see [Tools](/tools) — requires `load_skill` in the agent's tools list) can reference any skill from that plugin.
 
 <Note>
-  Only `skills/` is active in this release. Additional plugin components — MCP servers, custom commands, hooks — are coming in a future release.
+  Skills, commands, MCP servers, and `bin/` executables are active. Additional plugin components — hooks, subagents, providers — are coming in a future release.
 </Note>
 
 ## Deep merge behavior

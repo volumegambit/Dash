@@ -1,6 +1,6 @@
 import type { Server } from 'node:http';
 import { homedir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { delimiter, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { config } from 'dotenv';
 
@@ -34,6 +34,7 @@ import { createGatewayManagementApp } from './management-api.js';
 import { McpConfigStore } from './mcp-store.js';
 import { ModelsStore } from './models-store.js';
 import { OAuthRefreshCoordinator } from './oauth-refresh.js';
+import { registerPluginMcpServers } from './plugin-mcp.js';
 
 async function main() {
   const flags = parseFlags(process.argv.slice(2));
@@ -112,6 +113,21 @@ async function main() {
     logger,
   });
   const pluginSkillDirs = loadedPlugins.skillDirs;
+
+  // Code-execution plugin components (trusted only — gated in the loader).
+  // MCP servers from trusted plugins are registered with the running manager
+  // and persisted, fail-isolated so a bad server never aborts startup.
+  await registerPluginMcpServers(mcpManager, mcpConfigStore, loadedPlugins.mcpConfigs, logger);
+
+  // Trusted plugin bin/ dirs are prepended to PATH so plugin executables
+  // (and MCP/command processes spawned by the agent) resolve them first.
+  if (loadedPlugins.binDirs.length) {
+    process.env.PATH = [...loadedPlugins.binDirs, process.env.PATH ?? ''].join(delimiter);
+  }
+
+  // Plugin commands (commands/*.md) are flat single-file skills routed into the
+  // agent as extra skill files; they surface as `/plugin:command` slash commands.
+  const pluginCommandFiles = loadedPlugins.commandFiles;
 
   // Create gateway + agent service.
   //
@@ -248,6 +264,7 @@ async function main() {
           // deep-link) must pass config.name.
           getAgentId: () => agentConfig.name,
         }),
+        pluginCommandFiles,
       );
       return backend;
     },
