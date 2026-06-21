@@ -104,3 +104,12 @@ designs/*.png
 # Website build artifacts
 apps/website/.next/
 apps/website/next-env.d.ts
+
+# Android (Gradle project) — build outputs & machine-specific config
+android/.gradle/
+android/**/build/
+android/local.properties
+android/.kotlin/
+android/captures/
+*.apk
+*.aab
