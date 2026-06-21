@@ -348,6 +348,80 @@ describe('createGatewayManagementApp', () => {
     });
   });
 
+  // Per-agent plugin selection (Plan P5). The registry round-trip is unit-
+  // covered in agent-registry.test.ts ("plugins field" describe); these tests
+  // assert the management-API ROUTES carry `plugins` through verbatim — no
+  // strip, no transform, no default-to-[] — POST/PUT in, GET out.
+  describe('agent plugins field (P5) round-trips through the routes', () => {
+    it('POST /agents with plugins persists and GET /agents/:id returns it', async () => {
+      const { app } = createApp();
+      const created = await app.request('/agents', {
+        method: 'POST',
+        headers: JSON_HEADERS,
+        body: JSON.stringify({
+          name: 'bot',
+          model: 'claude',
+          systemPrompt: 'hi',
+          plugins: ['alpha', 'beta'],
+        }),
+      });
+      expect(created.status).toBe(201);
+      const createdBody = await created.json();
+      expect(createdBody.config.plugins).toEqual(['alpha', 'beta']);
+
+      const fetched = await app.request(`/agents/${createdBody.id}`, { headers: AUTH });
+      expect(fetched.status).toBe(200);
+      const fetchedBody = await fetched.json();
+      expect(fetchedBody.config.plugins).toEqual(['alpha', 'beta']);
+    });
+
+    it('POST /agents WITHOUT plugins stores undefined (not [] / null)', async () => {
+      const { app } = createApp();
+      const created = await app.request('/agents', {
+        method: 'POST',
+        headers: JSON_HEADERS,
+        body: JSON.stringify({ name: 'legacy', model: 'claude', systemPrompt: 'hi' }),
+      });
+      expect(created.status).toBe(201);
+      const body = await created.json();
+      // No selection → backward compat: the agent sees ALL loaded plugins. The
+      // key must be absent (undefined), never coerced to an empty array.
+      expect(body.config.plugins).toBeUndefined();
+      expect('plugins' in body.config).toBe(false);
+    });
+
+    it('POST /agents with an explicit empty plugins array preserves [] (literal "none")', async () => {
+      const { app } = createApp();
+      const created = await app.request('/agents', {
+        method: 'POST',
+        headers: JSON_HEADERS,
+        body: JSON.stringify({ name: 'none', model: 'claude', systemPrompt: 'hi', plugins: [] }),
+      });
+      expect(created.status).toBe(201);
+      const body = await created.json();
+      expect(body.config.plugins).toEqual([]);
+    });
+
+    it('PUT /agents/:id patches plugins and GET reflects the new selection', async () => {
+      const { app, agentRegistry } = createApp();
+      const entry = (agentRegistry.register as ReturnType<typeof vi.fn>)({
+        name: 'x',
+        model: 'm',
+        systemPrompt: 'p',
+      });
+      const updated = await app.request(`/agents/${entry.id}`, {
+        method: 'PUT',
+        headers: JSON_HEADERS,
+        body: JSON.stringify({ plugins: ['alpha'] }),
+      });
+      expect(updated.status).toBe(200);
+      expect((await updated.json()).config.plugins).toEqual(['alpha']);
+
+      const fetched = await app.request(`/agents/${entry.id}`, { headers: AUTH });
+      expect((await fetched.json()).config.plugins).toEqual(['alpha']);
+    });
+  });
+
   describe('DELETE /agents/:id', () => {
     it('removes agent and cleans up channels, pool, and registry', async () => {
       const { app, agentRegistry, gateway, channelRegistry, agents } = createApp();
