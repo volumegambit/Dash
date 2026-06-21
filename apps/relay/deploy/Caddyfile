@@ -1,0 +1,28 @@
+# Dash relay — wildcard TLS for *.relay.<zone> via ACME DNS-01.
+#
+# Each gateway is reachable at https://<gatewayId>.relay.<zone> (and
+# wss://<gatewayId>.relay.<zone>/ws/chat). A wildcard cert covers every gateway
+# subdomain, so ACME must use DNS-01 — HTTP-01 cannot issue wildcards.
+#
+# Requires a Caddy build that includes your DNS provider plugin, e.g.
+#   xcaddy build --with github.com/caddy-dns/cloudflare
+# (swap in the plugin for your DNS host; the `dns` directive name changes too).
+#
+# Environment (systemd reads /etc/dash-relay/relay.env — see relay.env.example):
+#   RELAY_ZONE      apex zone, e.g. example.com  →  serves *.relay.example.com
+#   RELAY_PORT      local port the relay listens on (default 8443)
+#   CF_API_TOKEN    DNS provider API token for the DNS-01 challenge
+
+*.relay.{$RELAY_ZONE} {
+	tls {
+		# Replace `cloudflare` with your provider's plugin name. The token env
+		# var name is provider-specific; CF_API_TOKEN matches caddy-dns/cloudflare.
+		dns cloudflare {env.CF_API_TOKEN}
+		resolvers 1.1.1.1
+	}
+
+	# Forward HTTP and WebSocket upgrades to the loopback relay. Caddy preserves
+	# the Host header by default, which the relay parses (<gatewayId>.relay.zone)
+	# to route to the right gateway. WebSocket upgrades are proxied transparently.
+	reverse_proxy 127.0.0.1:{$RELAY_PORT:8443}
+}
