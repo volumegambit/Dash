@@ -132,7 +132,7 @@ function AllTasks(): JSX.Element {
 
 export const Route = createFileRoute('/projects/all')({
   component: AllTasks,
-  validateSearch: (search: Record<string, unknown>) => ({
+  validateSearch: (search: Record<string, unknown>): { agentId?: string } => ({
     agentId: typeof search.agentId === 'string' ? search.agentId : undefined,
   }),
 });

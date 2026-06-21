@@ -212,8 +212,9 @@ export function AiProviders(): JSX.Element {
           {PROVIDERS.map((p) => {
             const keys = providerKeys[p.id] ?? [];
             const hasKeys = keys.length > 0;
-            const oauthSupported = hasOAuthSupport(p.id);
-            const oauthConfig = oauthSupported ? OAUTH_CONFIG[p.id] : null;
+            const oauthProviderId = hasOAuthSupport(p.id) ? p.id : null;
+            const oauthSupported = oauthProviderId !== null;
+            const oauthConfig = oauthProviderId ? OAUTH_CONFIG[oauthProviderId] : null;
             const isThisOAuthLoading = oauthLoading === p.id;
             const isAnyOAuthLoading = oauthLoading !== null;
 
@@ -335,10 +336,10 @@ export function AiProviders(): JSX.Element {
                           <div className="flex items-center gap-2">
                             {!isConfirming && (
                               <>
-                                {entry.isOAuth && oauthSupported ? (
+                                {entry.isOAuth && oauthProviderId ? (
                                   <button
                                     type="button"
-                                    onClick={() => handleOAuthLogin(p.id, entry.name)}
+                                    onClick={() => handleOAuthLogin(oauthProviderId, entry.name)}
                                     disabled={isAnyOAuthLoading}
                                     className="text-xs text-accent hover:underline disabled:opacity-50"
                                   >

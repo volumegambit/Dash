@@ -19,7 +19,11 @@ interface ChatState {
   createConversation(agentId: string): Promise<McConversation>;
   renameConversation(id: string, title: string): Promise<void>;
   deleteConversation(id: string): Promise<void>;
-  sendMessage(conversationId: string, text: string): Promise<void>;
+  sendMessage(
+    conversationId: string,
+    text: string,
+    images?: { mediaType: string; data: string }[],
+  ): Promise<void>;
   cancelMessage(conversationId: string): void;
 
   // Called by IPC event listeners
@@ -204,7 +208,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     eventBuffer.get(conversationId)?.push(event);
 
     if (!flushTimer) {
-      flushTimer = window.setTimeout(() => {
+      flushTimer = setTimeout(() => {
         flushTimer = null;
         flushEventBuffer(set);
       }, 100);
