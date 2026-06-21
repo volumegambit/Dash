@@ -1,0 +1,24 @@
+# Dependencies and build output (reinstalled / recompiled inside the image)
+node_modules
+**/node_modules
+dist
+**/dist
+out
+**/out
+
+# Apps that are not part of the gateway runtime image
+apps/mission-control
+apps/website
+apps/waitlist
+
+# Local data, secrets, and logs
+data
+.env
+*.log
+
+# VCS, CI, tooling, docs, and designs
+.git
+.github
+.claude
+docs
+designs
