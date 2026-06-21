@@ -139,13 +139,11 @@ function makeAgents(): AgentChatCoordinator {
     getSkill: vi.fn().mockResolvedValue(null),
     createSkill: vi.fn().mockResolvedValue({ name: 'x', location: '/x/SKILL.md' }),
     updateSkillContent: vi.fn().mockResolvedValue({ name: 'x', location: '/x/SKILL.md' }),
-    installSkill: vi
-      .fn()
-      .mockResolvedValue({
-        name: 'x',
-        location: '/x/SKILL.md',
-        verdict: { verdict: 'safe', reasons: [] },
-      }),
+    installSkill: vi.fn().mockResolvedValue({
+      name: 'x',
+      location: '/x/SKILL.md',
+      verdict: { verdict: 'safe', reasons: [] },
+    }),
     removeSkill: vi.fn().mockResolvedValue({ name: 'x' }),
     stats: vi.fn().mockReturnValue({ size: 0, maxSize: 0, pinned: 0, agents: {} }),
     stop: vi.fn().mockResolvedValue(undefined),
