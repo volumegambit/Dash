@@ -27,6 +27,6 @@ include(":core:network")
 include(":core:connection")
 include(":core:designsystem")
 include(":feature:agents")
-include(":feature:chat")
+include(":feature:chat") // streaming chat
 include(":feature:pairing")
 include(":app")
