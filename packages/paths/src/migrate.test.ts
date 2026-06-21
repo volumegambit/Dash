@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -112,6 +112,42 @@ describe('migrateLegacyLayout', () => {
     const result = await migrateLegacyLayout(opts());
     expect(result.moved).toEqual([]);
     expect(await exists(newRoot)).toBe(false);
+  });
+
+  it('rewrites agents.json workspace paths into the new locations', async () => {
+    await mkdir(join(legacyGatewayDir, 'workspaces', 'a'), { recursive: true });
+    await mkdir(legacyWorkspacesDir, { recursive: true });
+    const agents = [
+      // workspace inside the gateway dir (moves with the gateway dir)
+      { id: 'a', config: { workspace: join(legacyGatewayDir, 'workspaces', 'a') } },
+      // workspace under ~/dash-workspaces (moves to the workspaces dir)
+      { id: 'b', config: { workspace: join(legacyWorkspacesDir, 'b') } },
+      // explicit external workspace (must be left untouched)
+      { id: 'c', config: { workspace: '/some/external/project' } },
+    ];
+    await writeFile(join(legacyGatewayDir, 'agents.json'), JSON.stringify(agents));
+
+    await migrateLegacyLayout(opts());
+
+    const rewritten = JSON.parse(await readFile(join(newRoot, 'gateway', 'agents.json'), 'utf-8'));
+    expect(rewritten[0].config.workspace).toBe(join(newRoot, 'gateway', 'workspaces', 'a'));
+    expect(rewritten[1].config.workspace).toBe(join(newRoot, 'workspaces', 'b'));
+    expect(rewritten[2].config.workspace).toBe('/some/external/project');
+  });
+
+  it('moves individual log files even when the logs dir already exists', async () => {
+    await mkdir(join(legacyDesktopDir, 'logs'), { recursive: true });
+    await writeFile(join(legacyDesktopDir, 'logs', 'mc.log'), 'mc');
+    await writeFile(join(legacyDesktopDir, 'logs', 'gateway.log'), 'gw');
+    // Pre-existing logs dir (e.g. from a prior run) must not block the move.
+    await mkdir(join(newRoot, 'logs'), { recursive: true });
+    await writeFile(join(newRoot, 'logs', 'existing.log'), 'keep');
+
+    await migrateLegacyLayout(opts());
+
+    expect(await exists(join(newRoot, 'logs', 'mc.log'))).toBe(true);
+    expect(await exists(join(newRoot, 'logs', 'gateway.log'))).toBe(true);
+    expect(await exists(join(newRoot, 'logs', 'existing.log'))).toBe(true);
   });
 
   it('skips when DASH_HOME is set and no newRoot override is given', async () => {

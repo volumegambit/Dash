@@ -143,9 +143,15 @@ export async function registerIpcHandlers(
   // opening any store. Idempotent; skipped when running against a custom
   // MC_DATA_DIR (tests/QA) or a custom DASH_HOME.
   if (!process.env.MC_DATA_DIR && !process.env.DASH_HOME) {
-    const migration = await migrateLegacyLayout();
-    for (const line of [...migration.moved, ...migration.notes]) {
-      console.log(`[migrate] ${line}`);
+    try {
+      const migration = await migrateLegacyLayout();
+      for (const line of [...migration.moved, ...migration.notes]) {
+        console.log(`[migrate] ${line}`);
+      }
+    } catch (err) {
+      // Never block launch on migration — log and continue. The move is
+      // idempotent, so the next launch retries any incomplete step.
+      console.error(`[migrate] failed: ${(err as Error).message}`);
     }
   }
 

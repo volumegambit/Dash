@@ -50,9 +50,15 @@ async function main() {
   // --data-dir is passed, first migrate any data left by older versions into
   // the ~/.dash layout. Idempotent and skipped when DASH_HOME is customized.
   if (!flags.dataDir) {
-    const migration = await migrateLegacyLayout();
-    for (const line of [...migration.moved, ...migration.notes]) {
-      logger.info(`[migrate] ${line}`);
+    try {
+      const migration = await migrateLegacyLayout();
+      for (const line of [...migration.moved, ...migration.notes]) {
+        logger.info(`[migrate] ${line}`);
+      }
+    } catch (err) {
+      // Never block startup on migration — log loudly and continue. The move
+      // is idempotent, so the next launch retries any incomplete step.
+      logger.error(`[migrate] failed: ${(err as Error).message}`);
     }
   }
   const dataDir = flags.dataDir ?? gatewayDir();

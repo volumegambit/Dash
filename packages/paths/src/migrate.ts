@@ -1,6 +1,6 @@
-import { cp, mkdir, rename, rm, stat } from 'node:fs/promises';
+import { cp, mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { join, sep } from 'node:path';
 import { dashHome } from './paths.js';
 import { getPlatformDataDir } from './platform.js';
 
@@ -43,35 +43,88 @@ async function exists(p: string): Promise<boolean> {
 }
 
 /**
- * Move `src` to `dest`. Uses an atomic rename (instant, even for large dirs, on
- * the same filesystem) and falls back to a recursive copy + remove when the
- * source and destination live on different devices (`EXDEV`).
+ * Move `src` to `dest` atomically.
+ *
+ * Tries a rename first (instant, even for large dirs, on the same filesystem).
+ * On a cross-device move (`EXDEV`) it copies to a sibling temp dir and then
+ * renames that into place, so `dest` only ever appears once it is complete and
+ * `src` is removed only after `dest` exists — a crash mid-copy leaves a
+ * `.migrating` temp (cleaned on the next run) rather than a partial `dest`.
  */
 async function move(src: string, dest: string): Promise<void> {
   try {
     await rename(src, dest);
+    return;
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'EXDEV') {
-      await cp(src, dest, { recursive: true });
-      await rm(src, { recursive: true, force: true });
-    } else {
-      throw err;
+    if ((err as NodeJS.ErrnoException).code !== 'EXDEV') throw err;
+  }
+  const tmp = `${dest}.migrating`;
+  await rm(tmp, { recursive: true, force: true });
+  await cp(src, tmp, { recursive: true });
+  await rename(tmp, dest);
+  await rm(src, { recursive: true, force: true });
+}
+
+/** Replace a known legacy directory prefix in an absolute path. Returns the
+ * path unchanged when it doesn't live under any migrated location (e.g. an
+ * agent pointed at an external project directory). */
+function remapPrefix(p: string, pairs: Array<[string, string]>): string {
+  for (const [from, to] of pairs) {
+    if (p === from) return to;
+    if (p.startsWith(from + sep)) return to + p.slice(from.length);
+  }
+  return p;
+}
+
+/**
+ * Rewrite absolute `config.workspace` paths in a migrated `agents.json` so that
+ * agents whose workspaces lived under a moved location point at the new one.
+ * Best-effort: silently skips a missing/unparseable/unexpected file.
+ */
+async function rewriteAgentWorkspaces(
+  agentsPath: string,
+  pairs: Array<[string, string]>,
+  result: MigrationResult,
+): Promise<void> {
+  if (!(await exists(agentsPath))) return;
+  let data: unknown;
+  try {
+    data = JSON.parse(await readFile(agentsPath, 'utf-8'));
+  } catch {
+    return;
+  }
+  if (!Array.isArray(data)) return;
+
+  let changed = false;
+  for (const agent of data) {
+    const ws = (agent as { config?: { workspace?: unknown } })?.config?.workspace;
+    if (typeof ws !== 'string') continue;
+    const next = remapPrefix(ws, pairs);
+    if (next !== ws) {
+      (agent as { config: { workspace: string } }).config.workspace = next;
+      changed = true;
     }
+  }
+  if (changed) {
+    await writeFile(agentsPath, `${JSON.stringify(data, null, 2)}\n`);
+    result.moved.push('agents.json: rewrote workspace paths to the new layout');
   }
 }
 
 /**
  * One-time, idempotent migration of legacy on-disk data into the `~/.dash`
  * layout. Safe to call on every startup: each move only runs when its
- * destination is absent and its source exists.
+ * destination is absent and its source exists, and each move is atomic.
  *
  * - Gateway data and agent workspaces move wholesale (everything there is
  *   current).
  * - The desktop dir moves selectively — only the files Mission Control reads
  *   today — and its `logs/` is split out to the shared logs dir.
+ * - Absolute workspace paths in the migrated `agents.json` are rewritten so
+ *   existing agents keep pointing at their (now-moved) files.
  *
- * Skipped entirely when `$DASH_HOME` is set (a custom root signals the user is
- * managing their own layout), unless `newRoot` is passed explicitly.
+ * Skipped when `$DASH_HOME` is set (a custom root signals the user is managing
+ * their own layout), unless `newRoot` is passed explicitly.
  */
 export async function migrateLegacyLayout(opts: MigrateOptions = {}): Promise<MigrationResult> {
   const result: MigrationResult = { skipped: false, moved: [], notes: [] };
@@ -91,11 +144,15 @@ export async function migrateLegacyLayout(opts: MigrateOptions = {}): Promise<Mi
   const logsDest = join(newRoot, 'logs');
   const workspacesDest = join(newRoot, 'workspaces');
 
+  let gatewayMoved = false;
+  let workspacesMoved = false;
+
   // 1. Gateway data — entirely current; move the whole directory.
   if (!(await exists(gatewayDest)) && (await exists(legacyGateway))) {
     await mkdir(newRoot, { recursive: true });
     await move(legacyGateway, gatewayDest);
     result.moved.push(`gateway: ${legacyGateway} -> ${gatewayDest}`);
+    gatewayMoved = true;
   }
 
   // 2. Agent workspaces — move the whole directory.
@@ -103,6 +160,7 @@ export async function migrateLegacyLayout(opts: MigrateOptions = {}): Promise<Mi
     await mkdir(newRoot, { recursive: true });
     await move(legacyWorkspaces, workspacesDest);
     result.moved.push(`workspaces: ${legacyWorkspaces} -> ${workspacesDest}`);
+    workspacesMoved = true;
   }
 
   // 3. Desktop (Mission Control) data — move only what MC reads today; leave
@@ -120,13 +178,20 @@ export async function migrateLegacyLayout(opts: MigrateOptions = {}): Promise<Mi
       }
     }
 
-    // Logs split out to the shared logs dir.
+    // Logs split out to the shared logs dir, file by file so a pre-existing
+    // logs dir (e.g. created by a prior gateway run) doesn't strand them.
     const legacyLogs = join(legacyDesktop, 'logs');
-    if (!(await exists(logsDest)) && (await exists(legacyLogs))) {
-      await mkdir(newRoot, { recursive: true });
-      await move(legacyLogs, logsDest);
-      result.moved.push(`logs: ${legacyLogs} -> ${logsDest}`);
-      movedFromDesktop = true;
+    if (await exists(legacyLogs)) {
+      for (const name of await readdir(legacyLogs)) {
+        const src = join(legacyLogs, name);
+        const dest = join(logsDest, name);
+        if (!(await exists(dest))) {
+          await mkdir(logsDest, { recursive: true });
+          await move(src, dest);
+          result.moved.push(`logs/${name}: ${src} -> ${dest}`);
+          movedFromDesktop = true;
+        }
+      }
     }
 
     if (movedFromDesktop) {
@@ -134,6 +199,20 @@ export async function migrateLegacyLayout(opts: MigrateOptions = {}): Promise<Mi
         `Legacy files may remain at ${legacyDesktop} (old secrets, caches, etc.) and are safe to delete.`,
       );
     }
+  }
+
+  // 4. Fix up absolute workspace paths in the migrated agents.json so existing
+  //    agents follow their relocated files (gateway-dir-relative workspaces and
+  //    ~/dash-workspaces both move; external paths are left untouched).
+  if (gatewayMoved || workspacesMoved) {
+    await rewriteAgentWorkspaces(
+      join(gatewayDest, 'agents.json'),
+      [
+        [legacyGateway, gatewayDest],
+        [legacyWorkspaces, workspacesDest],
+      ],
+      result,
+    );
   }
 
   return result;
