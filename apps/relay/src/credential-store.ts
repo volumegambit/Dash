@@ -1,6 +1,17 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
-import { DatabaseSync } from 'node:sqlite';
+import { createRequire } from 'node:module';
+import type { DatabaseSync } from 'node:sqlite';
 import { safeEqual } from './auth.js';
+
+// `node:sqlite` is loaded through createRequire rather than a static
+// `import ... from 'node:sqlite'`. The bundler (esbuild, via tsup) does not
+// recognize this newer builtin and rewrites a static import to a bare `sqlite`
+// specifier that Node cannot resolve at runtime — breaking every consumer of
+// the built @dash/relay (e.g. the gateway's relay e2e). Routing the load
+// through createRequire keeps the specifier opaque to the bundler, so the real
+// `node:sqlite` builtin is resolved at runtime. The `import type` above is
+// erased at build time and exists only for the static `DatabaseSync` type.
+const nodeRequire = createRequire(import.meta.url);
 
 /**
  * Shared shape for the relay's per-pairing credential stores.
@@ -112,6 +123,7 @@ export class DurableCredentialStore implements CredentialStore {
 
   constructor(path: string, opts: { maxPerGateway?: number } = {}) {
     this.maxPerGateway = opts.maxPerGateway ?? 16;
+    const { DatabaseSync } = nodeRequire('node:sqlite') as typeof import('node:sqlite');
     this.db = new DatabaseSync(path);
     this.db.exec(`CREATE TABLE IF NOT EXISTS pairings (
       tenant_id TEXT NOT NULL, gateway_id TEXT NOT NULL,
