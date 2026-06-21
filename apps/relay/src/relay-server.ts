@@ -10,6 +10,7 @@ import {
   encodeChunk,
   encodeFrame,
 } from './mux.js';
+import { RateLimiter } from './rate-limit.js';
 
 export type { RelayDeps };
 
@@ -19,8 +20,20 @@ export interface RelayServer {
   close(): Promise<void>;
 }
 
+/** Abuse limits for the public phone-facing edge. Sensible defaults below. */
+export interface RelayLimits {
+  /** Max concurrent phone streams per gateway. Default 256. */
+  maxStreamsPerGateway?: number;
+  /** Sustained phone requests/sec per gateway (token refill). Default 50. */
+  ratePerSec?: number;
+  /** Burst capacity per gateway (token bucket size). Default 100. */
+  rateBurst?: number;
+}
+
 /** WebSocket close code for a gateway that presents a bad relay token. */
 const RELAY_AUTH_CLOSE = 4401;
+/** WebSocket close code for a phone throttled by the rate limiter / stream cap. */
+const RELAY_RATE_LIMIT_CLOSE = 4429;
 
 /** A phone-originated stream's callbacks, driven by frames from the gateway. */
 interface PhoneStream {
@@ -43,19 +56,22 @@ interface GatewayConn {
  * against its loopback servers. The relay pipes opaque bytes — it never inspects
  * or persists app payloads.
  */
-export function createRelayServer(deps: RelayDeps): RelayServer {
+export function createRelayServer(deps: RelayDeps, limits: RelayLimits = {}): RelayServer {
   const gateways = new Map<string, GatewayConn>();
   const wss = new WebSocketServer({ noServer: true });
 
+  const maxStreams = limits.maxStreamsPerGateway ?? 256;
+  const limiter = new RateLimiter(limits.rateBurst ?? 100, limits.ratePerSec ?? 50);
+
   const httpServer = http.createServer((req, res) => {
-    handlePhoneHttp(gateways, req, res);
+    handlePhoneHttp(gateways, limiter, maxStreams, req, res);
   });
 
   httpServer.on('upgrade', (req, socket, head) => {
     const path = (req.url ?? '/').split('?')[0];
     const gwMatch = path.match(/^\/gw\/([^/]+)$/);
     if (!gwMatch) {
-      handlePhoneWsUpgrade(gateways, wss, req, socket, head);
+      handlePhoneWsUpgrade(gateways, wss, limiter, maxStreams, req, socket, head);
       return;
     }
     const gatewayId = decodeURIComponent(gwMatch[1]);
@@ -65,7 +81,7 @@ export function createRelayServer(deps: RelayDeps): RelayServer {
         ws.close(RELAY_AUTH_CLOSE, 'Unauthorized');
         return;
       }
-      registerGateway(gateways, gatewayId, ws);
+      registerGateway(gateways, limiter, gatewayId, ws);
     });
   });
 
@@ -84,6 +100,7 @@ export function createRelayServer(deps: RelayDeps): RelayServer {
 
 function registerGateway(
   gateways: Map<string, GatewayConn>,
+  limiter: RateLimiter,
   gatewayId: string,
   socket: WebSocket,
 ): void {
@@ -104,7 +121,10 @@ function registerGateway(
   });
 
   socket.on('close', () => {
-    if (gateways.get(gatewayId) === conn) gateways.delete(gatewayId);
+    if (gateways.get(gatewayId) === conn) {
+      gateways.delete(gatewayId);
+      limiter.forget(gatewayId); // release the rate-limit bucket for this gateway
+    }
     for (const stream of conn.streams.values()) stream.onClose();
     conn.streams.clear();
   });
@@ -140,14 +160,25 @@ function routeFromGateway(conn: GatewayConn, frame: Frame): void {
 
 function handlePhoneHttp(
   gateways: Map<string, GatewayConn>,
+  limiter: RateLimiter,
+  maxStreams: number,
   req: http.IncomingMessage,
   res: http.ServerResponse,
 ): void {
   const gatewayId = gatewayIdFromHost(req.headers.host);
   const conn = gatewayId ? gateways.get(gatewayId) : undefined;
-  if (!conn) {
+  if (!gatewayId || !conn) {
     res.writeHead(502, { 'content-type': 'text/plain' });
     res.end('No gateway connected');
+    return;
+  }
+
+  // Abuse limits on the public edge: a per-gateway token bucket caps sustained
+  // request rate, and a concurrent-stream cap bounds in-flight work. Both reject
+  // with 429 so a flood can't exhaust the gateway's loopback or the relay.
+  if (!limiter.allow(gatewayId) || conn.streams.size >= maxStreams) {
+    res.writeHead(429, { 'content-type': 'text/plain', 'retry-after': '1' });
+    res.end('Too Many Requests');
     return;
   }
 
@@ -231,16 +262,28 @@ function handlePhoneHttp(
 function handlePhoneWsUpgrade(
   gateways: Map<string, GatewayConn>,
   wss: WebSocketServer,
+  limiter: RateLimiter,
+  maxStreams: number,
   req: http.IncomingMessage,
   socket: Duplex,
   head: Buffer,
 ): void {
   const gatewayId = gatewayIdFromHost(req.headers.host);
   const conn = gatewayId ? gateways.get(gatewayId) : undefined;
-  if (!conn) {
+  if (!gatewayId || !conn) {
     socket.destroy();
     return;
   }
+
+  // Same abuse limits as the HTTP edge; a throttled phone is upgraded then
+  // immediately closed with 4429 so the client gets a distinguishable signal.
+  if (!limiter.allow(gatewayId) || conn.streams.size >= maxStreams) {
+    wss.handleUpgrade(req, socket, head, (ws) => {
+      ws.close(RELAY_RATE_LIMIT_CLOSE, 'Too Many Requests');
+    });
+    return;
+  }
+
   const fullPath = req.url ?? '/';
   const target: Target = fullPath.split('?')[0].startsWith('/ws/chat') ? 'chat' : 'mgmt';
 

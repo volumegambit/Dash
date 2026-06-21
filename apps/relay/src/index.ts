@@ -4,5 +4,5 @@
 // server). The frame codec, the server factory, and the auth helpers are public
 // so the gateway-side e2e test and the deploy runner can consume them.
 export { encodeFrame, decodeFrame, type Frame } from './mux.js';
-export { createRelayServer, type RelayServer } from './relay-server.js';
+export { createRelayServer, type RelayServer, type RelayLimits } from './relay-server.js';
 export { staticRelayAuth, safeEqual, type RelayDeps } from './auth.js';

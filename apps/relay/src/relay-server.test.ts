@@ -193,4 +193,63 @@ describe('relay-server', () => {
     });
     expect(code).toBe(4001);
   });
+
+  /** Swap the default-limits server (from beforeEach) for one with tight limits. */
+  async function restartWithLimits(limits: {
+    maxStreamsPerGateway?: number;
+    ratePerSec?: number;
+    rateBurst?: number;
+  }): Promise<void> {
+    await server.close();
+    server = createRelayServer(deps, limits);
+    await new Promise<void>((r) => server.httpServer.listen(0, '127.0.0.1', () => r()));
+    port = (server.httpServer.address() as AddressInfo).port;
+  }
+
+  it('throttles phone HTTP with 429 once the per-gateway rate limit is exhausted', async () => {
+    // Burst of 1, no refill → the 2nd request in the same instant is throttled.
+    await restartWithLimits({ rateBurst: 1, ratePerSec: 0 });
+    const gw = await connectGateway('g1', 'good');
+    gw.on('message', (raw: Buffer) => {
+      const f = decodeFrame(raw.toString());
+      if (f.t === 'open') {
+        gw.send(encodeFrame({ t: 'head', streamId: f.streamId, status: 200, headers: {} }));
+        gw.send(encodeFrame({ t: 'end', streamId: f.streamId }));
+      }
+    });
+    await waitFor(() => server.hasGateway('g1'));
+
+    const first = await httpGet('/agents', { host: 'g1.relay.local' });
+    expect(first.status).toBe(200); // consumes the single token
+    const second = await httpGet('/agents', { host: 'g1.relay.local' });
+    expect(second.status).toBe(429); // pre-empted by the limiter, never reaches the gateway
+    gw.close();
+  });
+
+  it('rejects phone HTTP with 429 when the per-gateway stream cap is reached', async () => {
+    // A cap of 0 makes every new stream exceed the limit — exercises the
+    // `streams.size >= maxStreams` branch deterministically.
+    await restartWithLimits({ maxStreamsPerGateway: 0 });
+    const gw = await connectGateway('g1', 'good');
+    await waitFor(() => server.hasGateway('g1'));
+
+    const { status } = await httpGet('/agents', { host: 'g1.relay.local' });
+    expect(status).toBe(429);
+    gw.close();
+  });
+
+  it('closes a throttled phone WebSocket with 4429', async () => {
+    await restartWithLimits({ maxStreamsPerGateway: 0 });
+    const gw = await connectGateway('g1', 'good');
+    await waitFor(() => server.hasGateway('g1'));
+
+    const phone = new WebSocket(`ws://127.0.0.1:${port}/ws/chat?token=t`, {
+      headers: { host: 'g1.relay.local' },
+    });
+    const code = await new Promise<number>((resolve) => {
+      phone.on('close', (c) => resolve(c));
+    });
+    expect(code).toBe(4429);
+    gw.close();
+  });
 });
