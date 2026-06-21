@@ -57,6 +57,23 @@ MC_DATA_DIR=/tmp/mc-test-$(date +%s) npm run mc:dev
 1. **Verify:** The dashboard loads after the wizard completes
 2. **Verify:** The sidebar is visible with navigation links
 
+### 1.5 Gateway Fails to Start (Configured User)
+
+**Precondition:** Setup previously completed — `settings.json` has `setupCompletedAt`, or a
+`gateway-state.json` exists in the MC data dir. Simulate a gateway that cannot start (e.g. launch MC
+under a Node version missing a required symbol, or otherwise force the gateway spawn to throw).
+
+1. Launch MC. **Verify:** The **"Gateway failed to start"** screen appears — NOT the onboarding
+   wizard / "Welcome to Dash" keychain-consent screen.
+2. Click **Retry** while the gateway still can't start. **Verify:** The screen stays and shows the
+   error text.
+3. Resolve the underlying cause, then click **Retry**. **Verify:** MC proceeds to the main app and
+   chat is live.
+4. Relaunch and click **Quit** on the failure screen. **Verify:** The app exits.
+5. **Regression:** A genuinely new install (no `setupCompletedAt`, no `gateway-state.json`) still
+   shows the keychain-consent wizard first and does not touch the keychain until the user clicks
+   Continue.
+
 ---
 
 ## Section 2: Sidebar & Navigation
