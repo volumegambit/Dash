@@ -104,6 +104,8 @@ Plugins let you drop extra skills into any Dash agent without touching the confi
         │       └── SKILL.md
         ├── commands/
         │   └── <command-name>.md    (optional)
+        ├── agents/
+        │   └── <agent-name>.md      (optional)
         ├── hooks/
         │   └── hooks.json           (optional, trusted only)
         ├── .mcp.json                (optional, trusted only)
@@ -115,6 +117,7 @@ Each plugin follows the Claude Code layout:
 
 - **`skills/`** — one subdirectory per skill, each with a `SKILL.md` file in standard frontmatter format (`name`, `description`, body).
 - **`commands/`** — flat `<name>.md` files. Each becomes a `/<plugin>:<command>` slash command (see below).
+- **`agents/`** — flat `<name>.md` files (Claude Code subagent format). Each becomes a loadable specialist (see below).
 - **`hooks/hooks.json`** — event hooks that run shell commands at key points in a run (see [Hooks](#hooks) below). Code execution, so it requires `trusted`.
 - **`.mcp.json`** — extra MCP servers to register with the gateway. Code execution, so it requires `trusted` (see below).
 - **`bin/`** — executables prepended to the gateway's `PATH`. Code execution, so it requires `trusted`.
@@ -148,6 +151,12 @@ An enabled-but-untrusted plugin still contributes its skills and commands, but i
 ### Commands
 
 Each `commands/<name>.md` file becomes a slash command named `/<plugin>:<name>`. For example, a plugin called `my-skills` with `commands/triage.md` exposes `/my-skills:triage`. The command body is the markdown content; optional frontmatter (`name`, `description`) overrides the command name and supplies a description. Commands need only `enabled`.
+
+### Subagents (specialists)
+
+Each `agents/<name>.md` file (Claude Code subagent format — frontmatter `name`/`description` plus a markdown body) is exposed as a **loadable specialist**. For example, a plugin called `my-skills` with `agents/reviewer.md` is invocable as `/my-skills:reviewer` or via the agent's `load_skill` tool. When loaded, the specialist contributes its instructions to the conversation on demand. Like commands, subagents are markdown — they need only `enabled` (not `trusted`).
+
+**Limitation:** subagents run in the **main session**, not as isolated child agents. The `tools` frontmatter field is therefore **advisory, not enforced** — a loaded specialist can use the agent's full tool set. True isolated subagent spawning (a separate context with a restricted tool subset) is a future enhancement.
 
 ### MCP servers and executables
 
@@ -222,5 +231,5 @@ echo '{ "my-skills": { "enabled": true } }' \
 When the gateway starts, it logs `[plugins] loaded 'my-skills' (skills)` and the agent's `load_skill` tool (see [Tools](/tools) — requires `load_skill` in the agent's tools list) can reference any skill from that plugin.
 
 <Note>
-  Skills, commands, hooks, MCP servers, and `bin/` executables are active. Additional plugin components — subagents and providers — are coming in a future release.
+  Skills, commands, subagents, hooks, MCP servers, and `bin/` executables are active. Subagents currently run in the main session (see the limitation above); isolated subagent spawning and providers are coming in a future release.
 </Note>

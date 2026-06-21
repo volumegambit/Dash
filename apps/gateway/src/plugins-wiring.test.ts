@@ -49,6 +49,30 @@ describe('gateway plugin → skill wiring', () => {
     expect(flat.map((s) => s.name)).toContain('bar:foo');
   });
 
+  it("a plugin bar's agents/reviewer.md is discoverable as flat skill bar:reviewer", async () => {
+    const pluginsDir = join(dataDir, 'plugins');
+    const dir = join(pluginsDir, 'bar');
+    await mkdir(join(dir, MANIFEST_DIR), { recursive: true });
+    await writeFile(join(dir, MANIFEST_DIR, MANIFEST_FILENAME), JSON.stringify({ name: 'bar' }));
+    await mkdir(join(dir, 'agents'), { recursive: true });
+    await writeFile(
+      join(dir, 'agents', 'reviewer.md'),
+      '---\nname: reviewer\ndescription: reviews code\n---\nReview the code.',
+    );
+
+    const loaded = await loadPlugins({ pluginsDir, entries: { bar: { enabled: true } } });
+
+    // Mirror the gateway: plugin agent files become flat agent skills alongside
+    // commands, namespaced as <plugin>:<agent> so `/bar:reviewer` is an exact match.
+    const flat = await loadFlatSkills(
+      [...loaded.commandFiles, ...loaded.agentFiles].map(({ pluginName, file }) => ({
+        file,
+        namespace: pluginName,
+      })),
+    );
+    expect(flat.map((s) => s.name)).toContain('bar:reviewer');
+  });
+
   it('an enabled-but-untrusted plugin contributes no mcpConfigs or binDirs', async () => {
     const pluginsDir = join(dataDir, 'plugins');
     const dir = join(pluginsDir, 'risky');

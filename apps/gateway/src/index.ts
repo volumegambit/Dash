@@ -141,14 +141,21 @@ async function main() {
     process.env.PATH = [...loadedPlugins.binDirs, process.env.PATH ?? ''].join(delimiter);
   }
 
-  // Plugin commands (commands/*.md) are flat single-file skills routed into the
-  // agent as extra skill files; they surface as `/plugin:command` slash commands.
-  // Namespace each by its plugin so the derived skill name is `<plugin>:<command>`
-  // — an exact match for the `/plugin:command` slash form (no LLM leniency).
-  const pluginCommandFiles = loadedPlugins.commandFiles.map(({ pluginName, file }) => ({
-    file,
-    namespace: pluginName,
-  }));
+  // Plugin commands (commands/*.md) and agents (agents/*.md) are flat single-file
+  // skills routed into the agent as extra skill files. Commands surface as
+  // `/plugin:command` slash commands; agents are loadable specialists invocable as
+  // `/plugin:agent` or via the agent's `load_skill` — they contribute the
+  // specialist's instructions on demand. Both are namespaced by plugin so the
+  // derived skill name is `<plugin>:<name>` — an exact match for the slash form
+  // (no LLM leniency). Agents run in the main session (the `tools` frontmatter is
+  // advisory, not enforced); isolated subagent spawning is a future enhancement.
+  // `loadFlatSkills` dedups by name, so the combined list is safe.
+  const pluginCommandFiles = [...loadedPlugins.commandFiles, ...loadedPlugins.agentFiles].map(
+    ({ pluginName, file }) => ({
+      file,
+      namespace: pluginName,
+    }),
+  );
 
   // Plugin hook engine — runs the Claude-Code-format hooks declared by trusted
   // plugins (`hooks/hooks.json`). It's shared two ways:
