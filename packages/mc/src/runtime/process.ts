@@ -213,12 +213,18 @@ export interface GatewaySupervisorOptions {
   managementPort?: number;
   channelPort?: number;
   /**
-   * Relay base URL (e.g. `wss://relay.example.com`). When set, the gateway is
-   * spawned in relay mode: it dials OUT to this URL and the supervisor passes
-   * the stable relay identity (token + gatewayId from the keychain) as flags.
-   * Absent → no relay flags, no identity generated.
+   * Explicit relay base URL (e.g. `ws://127.0.0.1:8788` for local dev). When
+   * set, the gateway is spawned in relay mode dialing this URL verbatim. Takes
+   * precedence over `relayZone`.
    */
   relayUrl?: string;
+  /**
+   * Relay domain for production (e.g. `relay.example.com`). When set (and no
+   * explicit `relayUrl`), the gateway dials `wss://<gatewayId>.<zone>` — its own
+   * wildcard subdomain — and is reachable to phones at the same host. The relay
+   * token comes from the keychain (user-configured to match the relay).
+   */
+  relayZone?: string;
 }
 
 export class GatewaySupervisor {
@@ -451,18 +457,20 @@ export class GatewaySupervisor {
     if (opts.gatewayRuntimeDir) {
       spawnArgs.push('--data-dir', opts.gatewayRuntimeDir);
     }
-    // Relay mode: dial OUT to the configured relay. The identity (token +
-    // gatewayId) is generated once and persisted in the keychain so a restarted
-    // gateway keeps the same address — phones pair to `<gatewayId>`, so it must
-    // be stable. Only touched when relay mode is actually configured.
-    if (opts.relayUrl) {
+    // Relay mode: dial OUT to the configured relay. Enabled by an explicit
+    // relayUrl (dev) or a relayZone (production → dial wss://<gatewayId>.<zone>).
+    // A stable gatewayId is generated + persisted so phones keep a fixed address;
+    // the relay token comes from the keychain (user-configured to match the
+    // relay, or generated for local dev). Only touched when relay mode is on.
+    if (opts.relayUrl || opts.relayZone) {
       const relayToken = (await this.keychain.getRelayToken()) ?? generateToken();
       const gatewayId = (await this.keychain.getGatewayId()) ?? generateGatewayId();
       await this.keychain.setRelayToken(relayToken);
       await this.keychain.setGatewayId(gatewayId);
+      const relayUrl = opts.relayUrl ?? `wss://${gatewayId}.${opts.relayZone}`;
       spawnArgs.push(
         '--relay-url',
-        opts.relayUrl,
+        relayUrl,
         '--relay-token',
         relayToken,
         '--gateway-id',
@@ -583,5 +591,22 @@ export class GatewaySupervisor {
    */
   async getGatewayToken(): Promise<string | null> {
     return this.keychain.getGatewayToken();
+  }
+
+  /**
+   * Read the stable relay gateway id from the keychain. The pairing flow uses it
+   * to build the relay host (`<gatewayId>.<zone>`) and to provision a per-device
+   * credential. Null before relay mode has ever been configured.
+   */
+  async getGatewayId(): Promise<string | null> {
+    return this.keychain.getGatewayId();
+  }
+
+  /**
+   * Read the relay admin master secret from the keychain. The pairing flow uses
+   * it to call the relay's /admin API. Null when relay mode is not set up.
+   */
+  async getRelayAdminSecret(): Promise<string | null> {
+    return this.keychain.getRelayAdminSecret();
   }
 }

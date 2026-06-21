@@ -291,6 +291,71 @@ describe('GatewaySupervisor.ensureRunning()', () => {
     expect(args[args.indexOf('--gateway-id') + 1]).toBe('gw-stable123');
   });
 
+  it('derives the relay URL from relayZone as wss://<gatewayId>.<zone>', async () => {
+    const spawner = createMockSpawner();
+    const probe = createMockProbe({ type: 'free' });
+    const keychain = new InMemoryKeychainStore();
+    await keychain.setGatewayId('gw-fixed');
+
+    const gp = new GatewaySupervisor(
+      makeOptions(tmpDir, {
+        makeGatewayClient: () => createMockGatewayClient(),
+        relayZone: 'relay.example.com',
+      }),
+      spawner,
+      undefined,
+      probe,
+      keychain,
+    );
+
+    await gp.ensureRunning();
+
+    const args = (spawner.spawn as unknown as { mock: { calls: unknown[][] } }).mock
+      .calls[0][1] as string[];
+    expect(args[args.indexOf('--relay-url') + 1]).toBe('wss://gw-fixed.relay.example.com');
+    expect(args[args.indexOf('--gateway-id') + 1]).toBe('gw-fixed');
+  });
+
+  it('prefers an explicit relayUrl over relayZone', async () => {
+    const spawner = createMockSpawner();
+    const probe = createMockProbe({ type: 'free' });
+    const keychain = new InMemoryKeychainStore();
+
+    const gp = new GatewaySupervisor(
+      makeOptions(tmpDir, {
+        makeGatewayClient: () => createMockGatewayClient(),
+        relayUrl: 'ws://127.0.0.1:8788',
+        relayZone: 'relay.example.com',
+      }),
+      spawner,
+      undefined,
+      probe,
+      keychain,
+    );
+
+    await gp.ensureRunning();
+
+    const args = (spawner.spawn as unknown as { mock: { calls: unknown[][] } }).mock
+      .calls[0][1] as string[];
+    expect(args[args.indexOf('--relay-url') + 1]).toBe('ws://127.0.0.1:8788');
+  });
+
+  it('exposes the gateway id and relay admin secret from the keychain', async () => {
+    const keychain = new InMemoryKeychainStore();
+    await keychain.setGatewayId('gw-xyz');
+    await keychain.setRelayAdminSecret('admin-xyz');
+    const gp = new GatewaySupervisor(
+      makeOptions(tmpDir),
+      createMockSpawner(),
+      undefined,
+      undefined,
+      keychain,
+    );
+
+    expect(await gp.getGatewayId()).toBe('gw-xyz');
+    expect(await gp.getRelayAdminSecret()).toBe('admin-xyz');
+  });
+
   // ------------------------------------------------------------------
   // Reuse path: token works — don't spawn, don't kill
   // ------------------------------------------------------------------
