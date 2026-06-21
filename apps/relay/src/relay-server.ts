@@ -105,7 +105,7 @@ export function createRelayServer(deps: RelayDeps, options: RelayServerOptions =
     const gatewayId = decodeURIComponent(gwMatch[1]);
     const token = bearer(req.headers.authorization);
     wss.handleUpgrade(req, socket, head, (ws) => {
-      if (!token || !deps.relayTokenValid(token)) {
+      if (!token || !deps.relayTokenValid(gatewayId, token)) {
         ws.close(RELAY_AUTH_CLOSE, 'Unauthorized');
         return;
       }
