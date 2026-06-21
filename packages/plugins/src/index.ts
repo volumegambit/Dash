@@ -1,5 +1,6 @@
 export type {
   LoadedPlugins,
+  McpConfigEntry,
   PluginEntryConfig,
   PluginFailure,
   PluginFailurePhase,

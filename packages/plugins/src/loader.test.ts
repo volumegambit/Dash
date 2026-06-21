@@ -8,7 +8,13 @@ import { MANIFEST_DIR, MANIFEST_FILENAME } from './manifest.js';
 async function writePlugin(
   root: string,
   name: string,
-  opts: { skill?: string; manifest?: Record<string, unknown> | false } = {},
+  opts: {
+    skill?: string;
+    manifest?: Record<string, unknown> | false;
+    command?: string;
+    bin?: boolean;
+    mcp?: Record<string, unknown>;
+  } = {},
 ): Promise<string> {
   const dir = join(root, name);
   if (opts.manifest !== false) {
@@ -26,6 +32,17 @@ async function writePlugin(
       join(dir, 'skills', opts.skill, 'SKILL.md'),
       `---\nname: ${opts.skill}\ndescription: test skill\n---\nbody`,
     );
+  }
+  if (opts.command) {
+    await mkdir(join(dir, 'commands'), { recursive: true });
+    await writeFile(join(dir, 'commands', `${opts.command}.md`), `# ${opts.command}\nbody`);
+  }
+  if (opts.bin) {
+    await mkdir(join(dir, 'bin'), { recursive: true });
+    await writeFile(join(dir, 'bin', 'tool'), '#!/bin/sh\necho hi');
+  }
+  if (opts.mcp) {
+    await writeFile(join(dir, '.mcp.json'), JSON.stringify(opts.mcp));
   }
   return dir;
 }
@@ -145,5 +162,54 @@ describe('loadPlugins', () => {
     });
     expect(loaded.skillDirs).toEqual([join(pathDir, 'skills'), join(dirDir, 'skills')]);
     await rm(root, { recursive: true, force: true });
+  });
+
+  it('collects commands for an enabled plugin (markdown — no trust needed)', async () => {
+    const dir = await writePlugin(pluginsDir, 'p', { skill: 'g', command: 'deploy' });
+    const loaded = await loadPlugins({ pluginsDir, entries: { p: { enabled: true } } });
+    expect(loaded.commandFiles).toEqual([join(dir, 'commands', 'deploy.md')]);
+    expect(loaded.records[0].activated).toEqual(expect.arrayContaining(['skills', 'commands']));
+  });
+
+  it('withholds mcp + bin from an enabled-but-untrusted plugin', async () => {
+    await writePlugin(pluginsDir, 'p', {
+      mcp: { mcpServers: { db: { command: 'node' } } },
+      bin: true,
+    });
+    const loaded = await loadPlugins({ pluginsDir, entries: { p: { enabled: true } } });
+    expect(loaded.mcpConfigs).toEqual([]);
+    expect(loaded.binDirs).toEqual([]);
+    expect(loaded.records[0].noop).toEqual(expect.arrayContaining(['mcp', 'bin']));
+  });
+
+  it('activates mcp + bin for an enabled+trusted plugin', async () => {
+    const dir = await writePlugin(pluginsDir, 'p', {
+      mcp: { mcpServers: { db: { command: 'node' } } },
+      bin: true,
+    });
+    const loaded = await loadPlugins({
+      pluginsDir,
+      entries: { p: { enabled: true, trusted: true } },
+    });
+    expect(loaded.mcpConfigs).toEqual([
+      { pluginName: 'p', config: { name: 'p-db', transport: { type: 'stdio', command: 'node' } } },
+    ]);
+    expect(loaded.binDirs).toEqual([join(dir, 'bin')]);
+    expect(loaded.records[0].activated).toEqual(expect.arrayContaining(['mcp', 'bin']));
+  });
+
+  it('records an mcp translation failure without aborting (status error, others load)', async () => {
+    await writePlugin(pluginsDir, 'bad', {
+      mcp: { mcpServers: { s: { type: 'ws', url: 'wss://x' } } },
+    });
+    await writePlugin(pluginsDir, 'good', { skill: 'g' });
+    const loaded = await loadPlugins({
+      pluginsDir,
+      entries: { bad: { enabled: true, trusted: true }, good: { enabled: true } },
+    });
+    const byName = Object.fromEntries(loaded.records.map((r) => [r.name, r]));
+    expect(byName.good.status).toBe('loaded');
+    expect(byName.bad.status).toBe('error');
+    expect(byName.bad.failure?.phase).toBe('route');
   });
 });

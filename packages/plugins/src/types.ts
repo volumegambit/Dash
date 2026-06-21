@@ -1,3 +1,5 @@
+import type { McpServerConfig } from '@dash/mcp';
+
 export type PluginStatus = 'loaded' | 'disabled' | 'error';
 
 export type PluginFailurePhase = 'discovery' | 'manifest' | 'route';
@@ -38,8 +40,20 @@ export interface PluginRecord {
   failure?: PluginFailure;
 }
 
+/** A translated MCP server config, tagged with the plugin that contributed it. */
+export interface McpConfigEntry {
+  pluginName: string;
+  config: McpServerConfig;
+}
+
 export interface LoadedPlugins {
   records: PluginRecord[];
   /** Flattened skill dirs across all loaded plugins (for config.skills.paths). */
   skillDirs: string[];
+  /** Flat command .md files from enabled plugins (markdown — no trust needed). */
+  commandFiles: string[];
+  /** bin/ dirs from enabled+trusted plugins (code execution — requires trust). */
+  binDirs: string[];
+  /** Translated MCP servers from enabled+trusted plugins, tagged by plugin. */
+  mcpConfigs: McpConfigEntry[];
 }
