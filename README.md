@@ -117,6 +117,14 @@ For the full development guide — coding conventions, testing strategy, git wor
 | `apps/gateway` | Agent runtime + channel gateway (Node process spawned by MC) |
 | `apps/mission-control` | Electron desktop app (main + renderer + preload) |
 | `apps/mc-cli` | Command-line companion for scripted operations |
+| `android/` | Native Android client (chat + agent monitoring) — see [`android/README.md`](android/README.md) |
+
+### Android app
+
+`android/` is a native Kotlin/Jetpack Compose app — a thin remote client to a running
+gateway for chatting with and monitoring your agents from a phone. It's a separate Gradle
+project (not part of the npm workspace). Pair it from Mission Control's **Pair Device**
+screen. See [`android/README.md`](android/README.md) for build/test/pairing instructions.
 
 ## Documentation
 
