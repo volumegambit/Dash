@@ -1,7 +1,7 @@
 import { existsSync, readdirSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { basename, isAbsolute, join, relative, resolve } from 'node:path';
-import type { PluginManifest } from '@dash/plugin-sdk';
+import type { PluginAuthor, PluginManifest } from '@dash/plugin-sdk';
 
 /** Claude Code: the manifest lives at `<pluginRoot>/.claude-plugin/plugin.json`. */
 export const MANIFEST_DIR = '.claude-plugin';
@@ -11,8 +11,34 @@ const KEBAB_CASE = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 
 function normalizePaths(v: unknown): string[] | undefined {
   if (typeof v === 'string') return [v];
+  return stringArray(v);
+}
+
+/** An array of strings, or `undefined` if `v` is anything else. */
+function stringArray(v: unknown): string[] | undefined {
   if (Array.isArray(v) && v.every((x) => typeof x === 'string')) return v as string[];
   return undefined;
+}
+
+/** Keep a recognized string field, or `undefined`. */
+function optString(v: unknown): string | undefined {
+  return typeof v === 'string' ? v : undefined;
+}
+
+/**
+ * Reconstructs a `PluginAuthor` field-by-field (never spreads the raw object —
+ * keeps the prototype-pollution-safe reconstruction this module uses). Requires
+ * a non-null, non-array object with a string `name`; otherwise `undefined`.
+ */
+function normalizeAuthor(v: unknown): PluginAuthor | undefined {
+  if (typeof v !== 'object' || v === null || Array.isArray(v)) return undefined;
+  const a = v as Record<string, unknown>;
+  if (typeof a.name !== 'string') return undefined;
+  return {
+    name: a.name,
+    ...(typeof a.email === 'string' ? { email: a.email } : {}),
+    ...(typeof a.url === 'string' ? { url: a.url } : {}),
+  };
 }
 
 /**
@@ -31,9 +57,14 @@ export function validateManifest(raw: unknown, dir: string): PluginManifest {
   }
   return {
     name,
-    displayName: typeof m.displayName === 'string' ? m.displayName : undefined,
-    version: typeof m.version === 'string' ? m.version : undefined,
-    description: typeof m.description === 'string' ? m.description : undefined,
+    displayName: optString(m.displayName),
+    version: optString(m.version),
+    description: optString(m.description),
+    author: normalizeAuthor(m.author),
+    homepage: optString(m.homepage),
+    repository: optString(m.repository),
+    license: optString(m.license),
+    keywords: stringArray(m.keywords),
     skills: normalizePaths(m.skills),
     commands: normalizePaths(m.commands),
   };

@@ -35,6 +35,61 @@ describe('validateManifest', () => {
     const m = validateManifest({ name: 'p', skills: './extra-skills' }, '/x/p');
     expect(m.skills).toEqual(['./extra-skills']);
   });
+
+  it('preserves all recognized optional fields', () => {
+    const m = validateManifest(
+      {
+        name: 'p',
+        author: { name: 'A', email: 'a@x', url: 'u' },
+        homepage: 'https://h',
+        repository: 'https://r',
+        license: 'MIT',
+        keywords: ['a', 'b'],
+      },
+      '/x/p',
+    );
+    expect(m.author).toEqual({ name: 'A', email: 'a@x', url: 'u' });
+    expect(m.homepage).toBe('https://h');
+    expect(m.repository).toBe('https://r');
+    expect(m.license).toBe('MIT');
+    expect(m.keywords).toEqual(['a', 'b']);
+  });
+
+  it('drops author when its name is not a string', () => {
+    const m = validateManifest({ name: 'p', author: { name: 42 } }, '/x/p');
+    expect(m.author).toBeUndefined();
+  });
+
+  it('drops keywords when not an array of strings', () => {
+    expect(validateManifest({ name: 'p', keywords: 'x' }, '/x/p').keywords).toBeUndefined();
+    expect(validateManifest({ name: 'p', keywords: [1, 2] }, '/x/p').keywords).toBeUndefined();
+  });
+
+  it('does not pollute Object.prototype via __proto__/constructor keys', () => {
+    const m = validateManifest(
+      { name: 'p', ['__proto__']: { polluted: true }, constructor: { x: 1 } },
+      '/x/p',
+    );
+    expect((m as unknown as Record<string, unknown>).polluted).toBeUndefined();
+    expect(({} as Record<string, unknown>).polluted).toBeUndefined();
+    expect((Object.prototype as unknown as Record<string, unknown>).polluted).toBeUndefined();
+  });
+
+  it('rejects a name containing a newline (no multiline regex bypass)', () => {
+    expect(() => validateManifest({ name: 'good\n../../etc' }, '/x/p')).toThrow(/kebab-case/);
+  });
+
+  it('drops version/description when not a string', () => {
+    const m = validateManifest({ name: 'p', version: 1, description: ['x'] }, '/x/p');
+    expect(m.version).toBeUndefined();
+    expect(m.description).toBeUndefined();
+  });
+
+  it('drops skills/commands when given a non-array, non-string value', () => {
+    const m = validateManifest({ name: 'p', skills: 1, commands: 2 }, '/x/p');
+    expect(m.skills).toBeUndefined();
+    expect(m.commands).toBeUndefined();
+  });
 });
 
 describe('readManifest', () => {
