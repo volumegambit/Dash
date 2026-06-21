@@ -68,6 +68,9 @@ The unit suite covers serialization round-trips, the REST client + WebSocket Flo
 pairing parser + encrypted store, and every ViewModel/reducer. **Instrumented Compose UI
 tests require a device/emulator and are not part of `./gradlew test`.**
 
+CI runs `./gradlew test` + `assembleDebug` via `.github/workflows/android.yml`, triggered
+only on `android/**` changes (separate from the Node CI so each toolchain stays isolated).
+
 ## Connecting in development (before the relay exists)
 
 The app needs a gateway **host + management token + chat token**. Two ways to get them:
