@@ -356,6 +356,28 @@ describe('GatewaySupervisor.ensureRunning()', () => {
     expect(await gp.getRelayAdminSecret()).toBe('admin-xyz');
   });
 
+  it('persists then clears the user-configured relay credentials', async () => {
+    const keychain = new InMemoryKeychainStore();
+    await keychain.setGatewayId('gw-keep');
+    const gp = new GatewaySupervisor(
+      makeOptions(tmpDir),
+      createMockSpawner(),
+      undefined,
+      undefined,
+      keychain,
+    );
+
+    await gp.setRelayCredentials('user-relay-token', 'user-admin-secret');
+    expect(await gp.getRelayToken()).toBe('user-relay-token');
+    expect(await gp.getRelayAdminSecret()).toBe('user-admin-secret');
+
+    await gp.clearRelayConfig();
+    expect(await gp.getRelayToken()).toBe(''); // forgotten
+    expect(await gp.getRelayAdminSecret()).toBe('');
+    // The stable gateway id is intentionally preserved across enable/disable.
+    expect(await gp.getGatewayId()).toBe('gw-keep');
+  });
+
   // ------------------------------------------------------------------
   // Reuse path: token works — don't spawn, don't kill
   // ------------------------------------------------------------------

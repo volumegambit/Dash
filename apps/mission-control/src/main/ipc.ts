@@ -23,7 +23,12 @@ import { desktopDir, gatewayDir, logsDir, migrateLegacyLayout } from '@dash/path
 import { app, dialog, ipcMain, shell } from 'electron';
 import type { BrowserWindow } from 'electron';
 import WebSocket from 'ws';
-import type { PairingInfo, SetupStatus } from '../shared/ipc.js';
+import type {
+  PairingInfo,
+  RelayConfigInput,
+  RelayConfigStatus,
+  SetupStatus,
+} from '../shared/ipc.js';
 import { ChatService } from './chat-service.js';
 import { completeClaudeOAuth, prepareClaudeOAuth } from './claude-auth.js';
 import { startCodexOAuth } from './codex-auth.js';
@@ -177,6 +182,11 @@ export async function registerIpcHandlers(
     logsDir: logsDir(),
     projectRoot: resolveProjectRoot(),
   };
+  // Start the gateway in relay mode if the user has configured a relay domain.
+  // gwOptions is the live object the supervisor reads at each (re)spawn, so the
+  // relay:setConfig/clearConfig handlers mutate gwOptions.relayZone + restart.
+  const persistedSettings = await getSettingsStore().get();
+  if (persistedSettings.relayZone) gwOptions.relayZone = persistedSettings.relayZone;
   const gw = getGatewaySupervisor(gwOptions);
 
   // First-run detection: if there's no gateway-state.json yet, we
@@ -498,6 +508,37 @@ export async function registerIpcHandlers(
       (adminBaseUrl, secret, gid) =>
         createRelayAdminClient(adminBaseUrl, secret).provisionCredential(gid),
     );
+  });
+
+  // -----------------------------------------------------------------------
+  // Relay (remote access) configuration
+  // -----------------------------------------------------------------------
+
+  ipcMain.handle('relay:getConfig', async (): Promise<RelayConfigStatus> => {
+    const settings = await getSettingsStore().get();
+    const zone = settings.relayZone ?? null;
+    const [token, adminSecret] = await Promise.all([gw.getRelayToken(), gw.getRelayAdminSecret()]);
+    return { zone, configured: Boolean(zone && token && adminSecret) };
+  });
+
+  ipcMain.handle('relay:setConfig', async (_e, config: RelayConfigInput) => {
+    const zone = config.zone.trim();
+    if (!zone || !config.relayToken || !config.adminSecret) {
+      throw new Error('Relay domain, relay token and admin secret are all required');
+    }
+    // Secrets → keychain; non-secret zone → settings. Then flip the live options
+    // and restart so the gateway dials the relay.
+    await gw.setRelayCredentials(config.relayToken, config.adminSecret);
+    await getSettingsStore().set({ relayZone: zone });
+    gwOptions.relayZone = zone;
+    await gw.restart();
+  });
+
+  ipcMain.handle('relay:clearConfig', async () => {
+    await gw.clearRelayConfig();
+    await getSettingsStore().set({ relayZone: undefined });
+    gwOptions.relayZone = undefined;
+    await gw.restart();
   });
 
   ipcMain.handle('agents:disable', async (_e, id: string) => {

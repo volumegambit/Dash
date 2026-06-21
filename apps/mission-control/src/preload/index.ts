@@ -99,6 +99,11 @@ const api: MissionControlAPI = {
   settingsGet: () => ipcRenderer.invoke('settings:get'),
   settingsSet: (patch) => ipcRenderer.invoke('settings:set', patch),
 
+  // Relay (remote access)
+  relayGetConfig: () => ipcRenderer.invoke('relay:getConfig'),
+  relaySetConfig: (config) => ipcRenderer.invoke('relay:setConfig', config),
+  relayClearConfig: () => ipcRenderer.invoke('relay:clearConfig'),
+
   // Models & Tools
   modelsList: () => ipcRenderer.invoke('models:list'),
   modelsRefresh: () => ipcRenderer.invoke('models:refresh'),

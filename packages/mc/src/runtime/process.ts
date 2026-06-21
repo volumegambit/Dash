@@ -609,4 +609,29 @@ export class GatewaySupervisor {
   async getRelayAdminSecret(): Promise<string | null> {
     return this.keychain.getRelayAdminSecret();
   }
+
+  /** Read the shared relay token (admission secret) from the keychain. */
+  async getRelayToken(): Promise<string | null> {
+    return this.keychain.getRelayToken();
+  }
+
+  /**
+   * Persist the user's relay credentials (the shared relay token + admin secret
+   * configured in MC to match their self-hosted relay). Relay mode takes effect
+   * on the next gateway (re)start.
+   */
+  async setRelayCredentials(relayToken: string, adminSecret: string): Promise<void> {
+    await this.keychain.setRelayToken(relayToken);
+    await this.keychain.setRelayAdminSecret(adminSecret);
+  }
+
+  /**
+   * Disable relay mode: forget the relay token + admin secret. The stable
+   * gatewayId is intentionally kept so re-enabling relay reuses the same address
+   * (and any still-valid pairings).
+   */
+  async clearRelayConfig(): Promise<void> {
+    await this.keychain.setRelayToken('');
+    await this.keychain.setRelayAdminSecret('');
+  }
 }

@@ -122,6 +122,21 @@ export interface RelayPairingInfo {
 
 export type PairingInfo = LanPairingInfo | RelayPairingInfo;
 
+/** Current relay (remote access) configuration state, safe to show the renderer. */
+export interface RelayConfigStatus {
+  /** Relay domain, e.g. `relay.example.com`, or null when relay mode is off. */
+  zone: string | null;
+  /** True only when zone + relay token + admin secret are all present. */
+  configured: boolean;
+}
+
+/** User-supplied relay config (must match their self-hosted relay). */
+export interface RelayConfigInput {
+  zone: string;
+  relayToken: string;
+  adminSecret: string;
+}
+
 export interface MissionControlAPI {
   getVersion(): Promise<string>;
 
@@ -214,6 +229,12 @@ export interface MissionControlAPI {
   // Settings
   settingsGet(): Promise<AppSettings>;
   settingsSet(patch: Partial<AppSettings>): Promise<void>;
+
+  // Relay (remote access) config. Secrets (token, admin secret) live in the OS
+  // keychain and are never read back to the renderer — only whether they're set.
+  relayGetConfig(): Promise<RelayConfigStatus>;
+  relaySetConfig(config: RelayConfigInput): Promise<void>;
+  relayClearConfig(): Promise<void>;
 
   // Models & Tools — gateway is the source of truth for the model list.
   // `modelsList` reads the gateway's persistent store (or its bootstrap
