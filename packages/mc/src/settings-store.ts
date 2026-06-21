@@ -5,6 +5,7 @@ import { join } from 'node:path';
 export interface AppSettings {
   defaultModel?: string;
   defaultFallbackModels?: string[];
+  setupCompletedAt?: string;
 }
 
 export class SettingsStore {
