@@ -13,3 +13,4 @@ export {
   resolveSkillDirs,
   validateManifest,
 } from './manifest.js';
+export { PluginConfigStore } from './config-store.js';
