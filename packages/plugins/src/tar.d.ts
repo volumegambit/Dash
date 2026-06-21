@@ -39,6 +39,8 @@ declare module 'tar' {
     size?: number;
     type?: string;
     mtime?: Date;
+    /** Link target for `SymbolicLink`/`Link` entries (used to craft archives in tests). */
+    linkpath?: string;
   }
 
   /** A single 512-byte tar header block (used to craft archives in tests). */
