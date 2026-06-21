@@ -55,4 +55,54 @@ describe('translateMcpJson', () => {
   it('throws on a stdio server missing command', () => {
     expect(() => translateMcpJson({ mcpServers: { s: {} } }, 'p')).toThrow(/command/);
   });
+
+  it('throws on args with a non-string element', () => {
+    expect(() =>
+      translateMcpJson({ mcpServers: { s: { command: 'node', args: ['ok', 123, null] } } }, 'p'),
+    ).toThrow(/args must be an array of strings/);
+  });
+
+  it('carries through a valid string args array', () => {
+    const out = translateMcpJson({ mcpServers: { s: { command: 'node', args: ['a', 'b'] } } }, 'p');
+    expect(out[0].transport).toEqual({ type: 'stdio', command: 'node', args: ['a', 'b'] });
+  });
+
+  it('throws on env with a non-string value', () => {
+    expect(() =>
+      translateMcpJson({ mcpServers: { s: { command: 'node', env: { K: 123 } } } }, 'p'),
+    ).toThrow(/env/);
+  });
+
+  it('throws on headers with a non-string value', () => {
+    expect(() =>
+      translateMcpJson(
+        { mcpServers: { s: { type: 'http', url: 'https://x', headers: { A: [] } } } },
+        'p',
+      ),
+    ).toThrow(/headers/);
+  });
+
+  it('passes through an explicit streamable-http type', () => {
+    const out = translateMcpJson(
+      { mcpServers: { s: { type: 'streamable-http', url: 'https://x' } } },
+      'p',
+    );
+    expect(out[0].transport).toEqual({ type: 'streamable-http', url: 'https://x' });
+  });
+
+  it('throws on a prototype-polluting server key and does not pollute Object.prototype', () => {
+    // JSON.parse produces a real "__proto__" own-key (unlike an object literal),
+    // matching the real .mcp.json input path. Namespaced 'p-__proto__' contains '__' → invalid.
+    const raw = JSON.parse('{"mcpServers":{"__proto__":{"command":"x"}}}');
+    expect(() => translateMcpJson(raw, 'p')).toThrow(/invalid/i);
+    expect(({} as Record<string, unknown>).command).toBeUndefined();
+  });
+
+  it('throws on a non-object server value', () => {
+    expect(() => translateMcpJson({ mcpServers: { x: 'str' } }, 'p')).toThrow();
+  });
+
+  it('returns [] when mcpServers is an array', () => {
+    expect(translateMcpJson({ mcpServers: [] }, 'p')).toEqual([]);
+  });
 });

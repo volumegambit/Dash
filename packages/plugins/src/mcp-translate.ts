@@ -30,7 +30,8 @@ export function translateMcpJson(raw: unknown, pluginName: string): McpServerCon
         `invalid MCP server name '${name}' (from plugin '${pluginName}', key '${key}') — must match ${SERVER_NAME_PATTERN} and not contain '${NAMESPACE_SEPARATOR}'`,
       );
     }
-    out.push({ name, transport: toTransport(s, key), ...(toEnv(s) ? { env: toEnv(s) } : {}) });
+    const env = toEnv(s, key);
+    out.push({ name, transport: toTransport(s, key), ...(env ? { env } : {}) });
   }
   return out;
 }
@@ -41,26 +42,29 @@ function toTransport(s: Record<string, unknown>, key: string): TransportConfig {
     if (typeof s.command !== 'string' || s.command.length === 0) {
       throw new Error(`mcp server '${key}': stdio transport requires a 'command' string`);
     }
+    const args = toArgs(s, key);
     return {
       type: 'stdio',
       command: s.command,
-      ...(Array.isArray(s.args) ? { args: s.args as string[] } : {}),
+      ...(args ? { args } : {}),
     };
   }
   if (type === 'http' || type === 'streamable-http') {
     requireUrl(s, key);
+    const headers = toHeaders(s, key);
     return {
       type: 'streamable-http',
       url: s.url as string,
-      ...(toHeaders(s) ? { headers: toHeaders(s) } : {}),
+      ...(headers ? { headers } : {}),
     };
   }
   if (type === 'sse') {
     requireUrl(s, key);
+    const headers = toHeaders(s, key);
     return {
       type: 'sse',
       url: s.url as string,
-      ...(toHeaders(s) ? { headers: toHeaders(s) } : {}),
+      ...(headers ? { headers } : {}),
     };
   }
   throw new Error(
@@ -74,14 +78,39 @@ function requireUrl(s: Record<string, unknown>, key: string): void {
   }
 }
 
-function toHeaders(s: Record<string, unknown>): Record<string, string> | undefined {
-  return isStringRecord(s.headers) ? (s.headers as Record<string, string>) : undefined;
+function toArgs(s: Record<string, unknown>, key: string): string[] | undefined {
+  if (s.args === undefined) return undefined;
+  if (!Array.isArray(s.args) || !s.args.every((a) => typeof a === 'string')) {
+    throw new Error(`mcp server '${key}': args must be an array of strings`);
+  }
+  return s.args as string[];
 }
 
-function toEnv(s: Record<string, unknown>): Record<string, string> | undefined {
-  return isStringRecord(s.env) ? (s.env as Record<string, string>) : undefined;
+function toHeaders(s: Record<string, unknown>, key: string): Record<string, string> | undefined {
+  return toStringRecord(s.headers, key, 'headers');
 }
 
-function isStringRecord(v: unknown): boolean {
-  return typeof v === 'object' && v !== null && !Array.isArray(v);
+function toEnv(s: Record<string, unknown>, key: string): Record<string, string> | undefined {
+  return toStringRecord(s.env, key, 'env');
+}
+
+function toStringRecord(
+  v: unknown,
+  key: string,
+  field: 'env' | 'headers',
+): Record<string, string> | undefined {
+  if (v === undefined) return undefined;
+  if (!isStringRecord(v)) {
+    throw new Error(`mcp server '${key}': ${field} values must be strings`);
+  }
+  return v as Record<string, string>;
+}
+
+function isStringRecord(v: unknown): v is Record<string, string> {
+  return (
+    typeof v === 'object' &&
+    v !== null &&
+    !Array.isArray(v) &&
+    Object.values(v).every((val) => typeof val === 'string')
+  );
 }
