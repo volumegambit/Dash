@@ -7,9 +7,12 @@ export type {
   PluginStatus,
 } from './types.js';
 export {
+  containedPath,
   MANIFEST_DIR,
   MANIFEST_FILENAME,
   readManifest,
+  resolveBinDir,
+  resolveCommandFiles,
   resolveSkillDirs,
   validateManifest,
 } from './manifest.js';

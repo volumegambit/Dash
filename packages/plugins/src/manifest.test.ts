@@ -5,6 +5,8 @@ import {
   MANIFEST_DIR,
   MANIFEST_FILENAME,
   readManifest,
+  resolveBinDir,
+  resolveCommandFiles,
   resolveSkillDirs,
   validateManifest,
 } from './manifest.js';
@@ -111,5 +113,56 @@ describe('resolveSkillDirs', () => {
     } finally {
       await rm(tmpParent, { recursive: true, force: true });
     }
+  });
+});
+
+describe('resolveCommandFiles', () => {
+  let dir: string;
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'cc-cmd-'));
+  });
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it('finds flat .md files under the default commands/ dir', async () => {
+    await mkdir(join(dir, 'commands'), { recursive: true });
+    await writeFile(join(dir, 'commands', 'deploy.md'), '# deploy');
+    await writeFile(join(dir, 'commands', 'rollback.md'), '# rollback');
+    await writeFile(join(dir, 'commands', 'notes.txt'), 'ignore me');
+    const files = resolveCommandFiles(dir, { name: 'p' }).sort();
+    expect(files).toEqual([
+      join(dir, 'commands', 'deploy.md'),
+      join(dir, 'commands', 'rollback.md'),
+    ]);
+  });
+
+  it('manifest commands REPLACES the default dir', async () => {
+    await mkdir(join(dir, 'commands'), { recursive: true });
+    await writeFile(join(dir, 'commands', 'default.md'), 'x');
+    await mkdir(join(dir, 'custom'), { recursive: true });
+    await writeFile(join(dir, 'custom', 'special.md'), 'y');
+    const files = resolveCommandFiles(dir, { name: 'p', commands: ['./custom'] });
+    expect(files).toEqual([join(dir, 'custom', 'special.md')]);
+  });
+
+  it('returns [] when no commands dir exists', () => {
+    expect(resolveCommandFiles(dir, { name: 'p' })).toEqual([]);
+  });
+});
+
+describe('resolveBinDir', () => {
+  let dir: string;
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'cc-bin-'));
+  });
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it('returns the bin/ dir when present, undefined otherwise', async () => {
+    expect(resolveBinDir(dir)).toBeUndefined();
+    await mkdir(join(dir, 'bin'), { recursive: true });
+    expect(resolveBinDir(dir)).toBe(join(dir, 'bin'));
   });
 });

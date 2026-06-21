@@ -1,4 +1,4 @@
-import { existsSync } from 'node:fs';
+import { existsSync, readdirSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { basename, isAbsolute, join, relative, resolve } from 'node:path';
 import type { PluginManifest } from '@dash/plugin-sdk';
@@ -63,6 +63,15 @@ export async function readManifest(dir: string): Promise<PluginManifest> {
   return validateManifest(raw, dir);
 }
 
+/** Absolute path of `rel` resolved against `dir`, but only if it exists AND stays within `dir`. */
+export function containedPath(dir: string, rel: string): string | undefined {
+  if (!rel.startsWith('./')) return undefined;
+  const abs = resolve(dir, rel);
+  const r = relative(dir, abs);
+  if (r.startsWith('..') || isAbsolute(r)) return undefined;
+  return existsSync(abs) ? abs : undefined;
+}
+
 /**
  * Resolves the skill directories a plugin contributes: the default `skills/`
  * dir (when present) PLUS any `skills` manifest entries (relative, './'-prefixed,
@@ -73,11 +82,30 @@ export function resolveSkillDirs(dir: string, manifest: PluginManifest): string[
   const def = join(dir, 'skills');
   if (existsSync(def)) dirs.push(def);
   for (const p of manifest.skills ?? []) {
-    if (!p.startsWith('./')) continue;
-    const abs = resolve(dir, p);
-    const rel = relative(dir, abs);
-    if (rel === '' || rel.startsWith('..') || isAbsolute(rel)) continue;
-    if (existsSync(abs)) dirs.push(abs);
+    const abs = containedPath(dir, p);
+    if (abs) dirs.push(abs);
   }
   return dirs;
+}
+
+/** Flat `commands/*.md` files. Manifest `commands` REPLACES the default `commands/` scan. */
+export function resolveCommandFiles(dir: string, manifest: PluginManifest): string[] {
+  const roots = manifest.commands?.length
+    ? manifest.commands.map((p) => containedPath(dir, p)).filter((p): p is string => !!p)
+    : existsSync(join(dir, 'commands'))
+      ? [join(dir, 'commands')]
+      : [];
+  const files: string[] = [];
+  for (const root of roots) {
+    for (const entry of readdirSync(root, { withFileTypes: true })) {
+      if (entry.isFile() && entry.name.endsWith('.md')) files.push(join(root, entry.name));
+    }
+  }
+  return files;
+}
+
+/** The plugin's `bin/` dir, if present. */
+export function resolveBinDir(dir: string): string | undefined {
+  const bin = join(dir, 'bin');
+  return existsSync(bin) ? bin : undefined;
 }
