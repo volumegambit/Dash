@@ -151,16 +151,25 @@ export class ChatService {
     // path can persist the assistant message in one place. Captures
     // `lastSeq` so startup reconciliation on the next MC launch can
     // resume from exactly where this message left off.
-    const persistAssistantMessage = (): void => {
+    //
+    // Awaits the store write and swallows its own errors so callers
+    // can `await` it before firing the terminal callback — that makes
+    // `onDone`/`onError` a reliable "message persisted" signal rather
+    // than racing the fire-and-forget write. (The previous
+    // fire-and-forget version let the write land after a consumer had
+    // already torn down the conversation directory.)
+    const persistAssistantMessage = async (): Promise<void> => {
       const assistantMessage: McMessage = {
         id: randomUUID(),
         role: 'assistant',
         content: { type: 'assistant', events: [...accumulatedEvents], lastSeq },
         timestamp: new Date().toISOString(),
       };
-      this.store.appendMessage(conversationId, assistantMessage).catch((err) => {
+      try {
+        await this.store.appendMessage(conversationId, assistantMessage);
+      } catch (err) {
         console.error('[ChatService] Failed to persist assistant message:', err);
-      });
+      }
     };
 
     ws.addEventListener('open', () => {
@@ -202,8 +211,8 @@ export class ChatService {
         terminated = true;
         this.activeStreams.delete(conversationId);
         ws.close();
-        persistAssistantMessage();
-        this.onDone(conversationId);
+        // Persist first, then fire onDone — see persistAssistantMessage.
+        void persistAssistantMessage().then(() => this.onDone(conversationId));
       } else if (msg.type === 'error') {
         terminated = true;
         this.activeStreams.delete(conversationId);
@@ -250,7 +259,7 @@ export class ChatService {
           }
 
           if (replayedTerminal === 'done') {
-            persistAssistantMessage();
+            await persistAssistantMessage();
             this.onDone(conversationId);
             return;
           }
@@ -263,12 +272,12 @@ export class ChatService {
           // gone. Save the events we reconciled so the UI shows
           // them, and surface a connection-dropped error so the
           // user knows the response is incomplete.
-          if (accumulatedEvents.length > 0) persistAssistantMessage();
+          if (accumulatedEvents.length > 0) await persistAssistantMessage();
           this.onError(conversationId, 'WebSocket connection dropped');
         } catch {
           // Reconciliation itself failed — fall back to the old
           // "save partial events" behaviour.
-          if (accumulatedEvents.length > 0) persistAssistantMessage();
+          if (accumulatedEvents.length > 0) await persistAssistantMessage();
           this.onError(conversationId, 'WebSocket connection dropped');
         }
       })();
