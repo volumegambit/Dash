@@ -316,4 +316,92 @@ describe('relay-client', () => {
 
     await new Promise<void>((r) => chat.close(() => r()));
   });
+
+  it('pauses the loopback source under backpressure, then drains fully on credit', async () => {
+    const total = 16 * 64 * 1024; // 1 MiB, well above the 256 KiB flow window
+    loopback = http.createServer((_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/octet-stream' });
+      const chunk = Buffer.alloc(64 * 1024, 0x78);
+      let n = 0;
+      const pump = (): void => {
+        while (n < 16) {
+          n++;
+          if (!res.write(chunk)) {
+            res.once('drain', pump);
+            return;
+          }
+        }
+        res.end();
+      };
+      pump();
+    });
+    const mgmtPort = await listen(loopback);
+
+    relay = new WebSocketServer({ port: 0, host: '127.0.0.1' });
+    await new Promise<void>((r) => relay?.on('listening', () => r()));
+    const relayPort = (relay.address() as AddressInfo).port;
+
+    const received: Frame[] = [];
+    let crediting = false;
+    const gwSocket = new Promise<WebSocket>((resolve) => {
+      relay?.on('connection', (ws) => {
+        ws.on('message', (raw: Buffer) => {
+          const f = decodeFrame(raw.toString());
+          received.push(f);
+          if (crediting && f.t === 'data') {
+            ws.send(
+              encodeFrame({
+                t: 'credit',
+                streamId: f.streamId,
+                bytes: decodeChunk(f.chunk).length,
+              }),
+            );
+          }
+        });
+        resolve(ws);
+      });
+    });
+
+    client = startRelayClient({
+      relayUrl: `ws://127.0.0.1:${relayPort}`,
+      relayToken: 'rt',
+      gatewayId: 'g1',
+      managementPort: mgmtPort,
+      channelPort: 9999,
+    });
+
+    const ws = await gwSocket;
+    ws.send(
+      encodeFrame({
+        t: 'open',
+        streamId: 1,
+        target: 'mgmt',
+        kind: 'http',
+        method: 'GET',
+        path: '/big',
+        headers: {},
+      }),
+    );
+    ws.send(encodeFrame({ t: 'end', streamId: 1 }));
+
+    const bytes = () =>
+      received
+        .filter((f): f is Extract<Frame, { t: 'data' }> => f.t === 'data')
+        .reduce((sum, f) => sum + decodeChunk(f.chunk).length, 0);
+
+    // No credit yet → the client pauses once unacked passes the window, so it
+    // must NOT deliver the whole body.
+    await waitFor(() => bytes() >= 256 * 1024);
+    await new Promise((r) => setTimeout(r, 100));
+    const paused = bytes();
+    expect(paused).toBeLessThan(total);
+    expect(received.some((f) => f.t === 'end')).toBe(false);
+
+    // Start crediting (per-frame) and kick the accumulated unacked to resume.
+    crediting = true;
+    ws.send(encodeFrame({ t: 'credit', streamId: 1, bytes: paused }));
+
+    await waitFor(() => received.some((f) => f.t === 'end'), 4000);
+    expect(bytes()).toBe(total); // every byte delivered, nothing dropped
+  });
 });

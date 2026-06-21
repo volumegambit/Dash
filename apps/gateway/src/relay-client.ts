@@ -24,11 +24,17 @@ export interface RelayClient {
   stop(): void;
 }
 
+/** Per-stream flow-control window (bytes); the loopback source pauses past it. */
+const FLOW_WINDOW = 256 * 1024;
+
 /** A phone stream replayed against the gateway's loopback servers. */
 interface LocalConn {
   kind: 'http' | 'ws';
   req?: http.ClientRequest;
+  res?: http.IncomingMessage;
   ws?: WebSocket;
+  /** Bytes sent to the relay but not yet credited back (HTTP/SSE flow control). */
+  unacked: number;
 }
 
 /**
@@ -100,8 +106,18 @@ export function startRelayClient(opts: RelayClientOptions): RelayClient {
         streams.delete(frame.streamId);
         break;
       }
+      case 'credit': {
+        // The relay acknowledges bytes the phone has drained; release the
+        // loopback source if it was paused past the flow-control window.
+        const conn = streams.get(frame.streamId);
+        if (conn) {
+          conn.unacked = Math.max(0, conn.unacked - frame.bytes);
+          if (conn.res?.isPaused() && conn.unacked < FLOW_WINDOW) conn.res.resume();
+        }
+        break;
+      }
       default:
-        break; // 'head'/'credit' from the relay are not expected on the request path
+        break; // 'head' from the relay is not expected on the request path
     }
   };
 
@@ -121,6 +137,8 @@ export function startRelayClient(opts: RelayClientOptions): RelayClient {
         headers: { ...frame.headers, host: `127.0.0.1:${port}` },
       },
       (res) => {
+        const conn = streams.get(frame.streamId);
+        if (conn) conn.res = res;
         ws.send(
           encodeFrame({
             t: 'head',
@@ -131,6 +149,11 @@ export function startRelayClient(opts: RelayClientOptions): RelayClient {
         );
         res.on('data', (chunk: Buffer) => {
           ws.send(encodeFrame({ t: 'data', streamId: frame.streamId, chunk: encodeChunk(chunk) }));
+          if (conn) {
+            conn.unacked += chunk.length;
+            // Pause the source when the relay is behind; resumed on a credit frame.
+            if (conn.unacked >= FLOW_WINDOW) res.pause();
+          }
         });
         res.on('end', () => {
           ws.send(encodeFrame({ t: 'end', streamId: frame.streamId }));
@@ -142,7 +165,7 @@ export function startRelayClient(opts: RelayClientOptions): RelayClient {
       ws.send(encodeFrame({ t: 'close', streamId: frame.streamId, reason: err.message }));
       streams.delete(frame.streamId);
     });
-    streams.set(frame.streamId, { kind: 'http', req });
+    streams.set(frame.streamId, { kind: 'http', req, unacked: 0 });
   };
 
   /** Bridge a phone WebSocket onto a loopback ws client (/ws/chat, /projects/ws). */
@@ -153,7 +176,7 @@ export function startRelayClient(opts: RelayClientOptions): RelayClient {
   ): void => {
     // frame.path includes the `?token=` query the gateway's auth checks.
     const local = new WebSocket(`ws://127.0.0.1:${port}${frame.path}`);
-    streams.set(frame.streamId, { kind: 'ws', ws: local });
+    streams.set(frame.streamId, { kind: 'ws', ws: local, unacked: 0 });
 
     local.on('open', () => {
       relaySocket.send(

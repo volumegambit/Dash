@@ -153,6 +153,15 @@ function handlePhoneHttp(
 
   const streamId = conn.nextStreamId++;
   let responded = false;
+  // Bytes written to the phone but not yet credited back to the gateway.
+  let pendingCredit = 0;
+
+  const grantCredit = (): void => {
+    if (pendingCredit > 0) {
+      conn.socket.send(encodeFrame({ t: 'credit', streamId, bytes: pendingCredit }));
+      pendingCredit = 0;
+    }
+  };
 
   conn.streams.set(streamId, {
     onHead(status, headers) {
@@ -160,7 +169,11 @@ function handlePhoneHttp(
       res.writeHead(status, headers);
     },
     onData(chunk) {
-      res.write(chunk);
+      const flushed = res.write(chunk);
+      pendingCredit += chunk.length;
+      // Credit immediately if the phone socket accepted it; otherwise wait for
+      // `drain` so a slow phone throttles the upstream via withheld credit.
+      if (flushed) grantCredit();
     },
     onEnd() {
       res.end();
@@ -176,6 +189,8 @@ function handlePhoneHttp(
       conn.streams.delete(streamId);
     },
   });
+
+  res.on('drain', grantCredit);
 
   // If the phone disconnects mid-stream (e.g. drops a long-lived SSE/chat
   // connection), tear down the upstream loopback request via the gateway.
