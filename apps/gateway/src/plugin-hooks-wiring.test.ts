@@ -184,6 +184,46 @@ describe('gateway plugin hook assembly (Task 7)', () => {
     expect(adapter.send).toHaveBeenCalledWith('conv1', { text: 'DENIED-BY-HOOK' });
   });
 
+  it('engine drives the channel messageHook: a non-blocking UserPromptSubmit with no output passes the message through unchanged', async () => {
+    // A hook that allows with no decision and no context (exit 0, empty stdout
+    // → NEUTRAL): the message must dispatch to the agent with the ORIGINAL text.
+    const engine = await buildEngine({
+      UserPromptSubmit: [{ hooks: [{ type: 'command', command: 'true' }] }],
+    });
+
+    const gw = createDynamicGateway({
+      messageHook: engine.hasHooks
+        ? (i) =>
+            engine.runUserPromptSubmit({
+              prompt: i.prompt,
+              sessionId: i.conversationId,
+              cwd: dataDir,
+            })
+        : undefined,
+    });
+    const agent = makeFakeAgent();
+    gw.registerAgent('agent1', agent);
+    const adapter = makeFakeAdapter('tg1');
+    await gw.registerChannel('tg1', adapter, {
+      globalDenyList: [],
+      routing: [{ condition: { type: 'default' }, agentId: 'agent1', allowList: [], denyList: [] }],
+    });
+
+    await adapter.trigger({
+      channelId: 'tg1',
+      conversationId: 'conv1',
+      senderId: 'user1',
+      senderName: 'User',
+      text: 'hello',
+      timestamp: new Date(),
+    });
+
+    // Not blocked, not modified: dispatched to the agent with the original prompt.
+    expect(agent.chat).toHaveBeenCalledTimes(1);
+    const promptArg = (agent.chat as ReturnType<typeof vi.fn>).mock.calls[0][2] as string;
+    expect(promptArg).toBe('hello');
+  });
+
   it('engine satisfies the backend HookRunner shape (tool + lifecycle methods)', async () => {
     const engine = await buildEngine({
       PreToolUse: [
