@@ -40,6 +40,7 @@ import type {
   AgentState,
   DashAgentConfig,
   ExtraTool,
+  HookRunner,
   RunOptions,
 } from '../types.js';
 import { DashResourceLoader } from './dash-resource-loader.js';
@@ -60,6 +61,135 @@ export type ProviderApiKeysSource =
   | (() => Promise<Record<string, string>>);
 
 /**
+ * Stringify a pi tool result for the PostToolUse `toolResponse` payload.
+ * Prefers the joined text content blocks (what the model actually sees); falls
+ * back to a JSON dump of the whole result.
+ */
+function stringifyToolResult(result: unknown): string {
+  if (
+    result &&
+    typeof result === 'object' &&
+    Array.isArray((result as { content?: unknown }).content)
+  ) {
+    const content = (result as { content: Array<{ type?: string; text?: string }> }).content;
+    const text = content
+      .filter((c) => c.type === 'text' && typeof c.text === 'string')
+      .map((c) => c.text as string)
+      .join('\n');
+    if (text) return text;
+  }
+  try {
+    return JSON.stringify(result ?? '');
+  } catch {
+    return String(result ?? '');
+  }
+}
+
+/**
+ * Compose plugin tool hooks onto a live pi `Agent`, preserving pi's own
+ * handlers. pi installs its OWN `beforeToolCall`/`afterToolCall` in the
+ * AgentSession ctor, so this MUST run AFTER `createAgentSession(...)` returns —
+ * it saves pi's prior handler, then sets a wrapper that awaits the prior one
+ * first and composes the plugin decision around it.
+ *
+ * Exported for unit testing with a fake agent + fake HookRunner.
+ *
+ * Composition rules:
+ * - beforeToolCall: await pi's prior handler; if it blocks, return its block
+ *   verbatim (pi wins, plugin pre-hook is skipped). Otherwise run the plugin
+ *   PreToolUse hook; if it blocks, return `{ block: true, reason }`. Else return
+ *   pi's prior result unchanged.
+ * - afterToolCall: await pi's prior handler (its override, if any, becomes the
+ *   working result). Run the plugin PostToolUse hook; if it blocks, set
+ *   `isError` and append the block reason to the content; if it returns
+ *   `additionalContext`, append it as a text block. Omitted fields keep pi's /
+ *   the executed result's values (pi's field-by-field merge semantics).
+ *
+ * Limitation: pi's `BeforeToolCallResult` only carries `block`/`reason` — there
+ * is NO way to feed modified args back into the tool call. So PreToolUse is
+ * allow/deny only here; the engine's `updatedInput` is intentionally ignored.
+ */
+export function composeToolHooks(
+  // biome-ignore lint/suspicious/noExplicitAny: pi Agent's hook fields are not exported as a usable type
+  agent: any,
+  hookRunner: HookRunner,
+  ctxInfo: { sessionId?: string | (() => string | undefined); cwd?: string },
+): void {
+  const { cwd } = ctxInfo;
+  // sessionId may be a static value (tests) or a thunk read at fire-time, so
+  // the per-run conversation id is current when each hook fires.
+  const resolveSessionId = (): string | undefined =>
+    typeof ctxInfo.sessionId === 'function' ? ctxInfo.sessionId() : ctxInfo.sessionId;
+
+  // biome-ignore lint/suspicious/noExplicitAny: pi BeforeToolCall context/result types are not exported
+  const priorBefore: ((ctx: any, signal?: AbortSignal) => Promise<any>) | undefined =
+    agent.beforeToolCall;
+  // biome-ignore lint/suspicious/noExplicitAny: pi BeforeToolCall context/result types are not exported
+  agent.beforeToolCall = async (ctx: any, signal?: AbortSignal) => {
+    const piRes = await priorBefore?.(ctx, signal);
+    // pi's prior block wins — skip the plugin pre-hook entirely.
+    if (piRes?.block) return piRes;
+
+    // Tool name lives at ctx.toolCall.name (pi-ai ToolCall.name), NOT toolName.
+    const decision = await hookRunner.runPreToolUse({
+      toolName: ctx?.toolCall?.name,
+      toolInput: ctx?.args,
+      sessionId: resolveSessionId(),
+      cwd,
+    });
+    if (decision.block) {
+      return { block: true, reason: decision.reason };
+    }
+    return piRes;
+  };
+
+  // biome-ignore lint/suspicious/noExplicitAny: pi AfterToolCall context/result types are not exported
+  const priorAfter: ((ctx: any, signal?: AbortSignal) => Promise<any>) | undefined =
+    agent.afterToolCall;
+  // biome-ignore lint/suspicious/noExplicitAny: pi AfterToolCall context/result types are not exported
+  agent.afterToolCall = async (ctx: any, signal?: AbortSignal) => {
+    const piRes = await priorAfter?.(ctx, signal);
+
+    const decision = await hookRunner.runPostToolUse({
+      toolName: ctx?.toolCall?.name,
+      toolInput: ctx?.args,
+      toolResponse: stringifyToolResult(ctx?.result),
+      sessionId: resolveSessionId(),
+      cwd,
+    });
+
+    // Working content/isError: pi's override (if any) layered over the executed
+    // result. Clone the content array so we never mutate pi's internal state.
+    const baseContent: Array<{ type: string; text?: string }> = Array.isArray(piRes?.content)
+      ? piRes.content
+      : Array.isArray(ctx?.result?.content)
+        ? ctx.result.content
+        : [];
+    const content = [...baseContent];
+    let isError: boolean | undefined = piRes?.isError;
+
+    if (decision.block) {
+      isError = true;
+      content.push({ type: 'text', text: decision.reason ?? 'Tool blocked by plugin hook' });
+    }
+    if (decision.additionalContext) {
+      content.push({ type: 'text', text: decision.additionalContext });
+    }
+
+    // Nothing for the plugin to contribute: return pi's prior result untouched.
+    if (!decision.block && !decision.additionalContext) {
+      return piRes;
+    }
+
+    return {
+      ...(piRes ?? {}),
+      content,
+      ...(isError !== undefined ? { isError } : {}),
+    };
+  };
+}
+
+/**
  * PiAgentBackend - AgentBackend implementation using the PiAgent SDK
  * (@earendil-works/pi-coding-agent).
  *
@@ -77,6 +207,8 @@ export class PiAgentBackend implements AgentBackend {
   private session: AgentSession | null = null;
   private auth: AuthStorage | null = null;
   private abortRequested = false;
+  /** Workspace cwd captured in start(); used as the hook cwd in run(). */
+  private workspace: string | null = null;
   private ownsMcpManager = false;
   private resourceLoader: DashResourceLoader | null = null;
 
@@ -142,6 +274,13 @@ export class PiAgentBackend implements AgentBackend {
     private mcpAgentContext?: McpAgentContext,
     extraTools: ExtraTool[] = [],
     extraSkillFiles: FlatSkillFile[] = [],
+    /**
+     * Optional plugin hook runner (the `createHookEngine` result from
+     * @dash/plugins, duck-typed). When present and `hasHooks` is true, tool
+     * hooks are composed onto the pi agent and SessionStart/Stop fire around
+     * each run. Zero overhead when undefined.
+     */
+    private hookRunner?: HookRunner,
   ) {
     this.extraTools = extraTools;
     this.extraSkillFiles = extraSkillFiles;
@@ -513,6 +652,7 @@ export class PiAgentBackend implements AgentBackend {
    * Start the backend by creating a PiAgent session.
    */
   async start(workspace: string): Promise<void> {
+    this.workspace = workspace;
     // Resolve credentials from the source (snapshot or provider function).
     const keys = await this.resolveProviderKeys();
     this.logger?.info(`[PiAgent] Starting with credentials: ${PiAgentBackend.redactKeys(keys)}`);
@@ -593,6 +733,19 @@ export class PiAgentBackend implements AgentBackend {
 
     this.session = session;
 
+    // Compose plugin tool hooks onto pi's agent. MUST run AFTER
+    // createAgentSession(...) returns — pi installs its own beforeToolCall/
+    // afterToolCall in the session ctor, and composeToolHooks saves+wraps them.
+    // This covers built-in + custom + MCP tools. Zero overhead when there's no
+    // runner or no hooks registered. sessionId is read at fire-time (it's the
+    // per-run conversation id); cwd is the static workspace.
+    if (this.hookRunner?.hasHooks) {
+      composeToolHooks((session as unknown as { agent: unknown }).agent, this.hookRunner, {
+        sessionId: () => this.currentSessionId ?? undefined,
+        cwd: workspace,
+      });
+    }
+
     // pi creates the built-in file tools (read/bash/edit/write/grep/find/ls)
     // scoped to `cwd`, but only read/bash/edit/write are active by default.
     // Activate exactly Dash's set — allowed built-ins plus all custom tools —
@@ -625,9 +778,47 @@ export class PiAgentBackend implements AgentBackend {
     this.lastCompactionReason = 'threshold';
     this.currentSessionId = state.conversationId;
 
+    const hookCwd = state.workspace ?? this.workspace ?? undefined;
+
     try {
+      // Fire the SessionStart lifecycle hook (plugins) before the model runs.
+      // Its additionalContext is appended to pi's system prompt via the resource
+      // loader; setActiveToolsByName() inside runModelChain forces a rebuild so
+      // the appended sections take effect on this run. No-op when no runner.
+      if (this.hookRunner?.hasHooks) {
+        const start = await this.hookRunner.runSessionStart({
+          sessionId: state.conversationId,
+          cwd: hookCwd,
+          source: 'startup',
+        });
+        if (start.additionalContext && this.resourceLoader) {
+          this.resourceLoader.setAppendSystemPrompt([start.additionalContext]);
+        }
+      }
+
       yield* this.runModelChain(state, options);
     } finally {
+      // Fire the Stop lifecycle hook (plugins). Stop's additionalContext has
+      // nowhere to go after the run completes (the turn is over), so we log it
+      // and otherwise ignore it. No-op when no runner.
+      if (this.hookRunner?.hasHooks) {
+        try {
+          const stop = await this.hookRunner.runStop({
+            sessionId: state.conversationId,
+            cwd: hookCwd,
+          });
+          if (stop.additionalContext) {
+            this.logger?.info(
+              `[PiAgent] Stop hook additionalContext ignored (run already complete): ${stop.additionalContext.slice(0, 200)}`,
+            );
+          }
+        } catch (err) {
+          this.logger?.warn(
+            `[PiAgent] Stop hook failed: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+      }
+
       // Clear the in-flight session id so consumers calling getCurrentSessionId()
       // during async teardown after run() returns don't observe a stale id. Only
       // resets the field — does not affect the generator's return/throw semantics.

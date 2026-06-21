@@ -473,6 +473,214 @@ describe('PiAgentBackend lifecycle', () => {
   });
 });
 
+describe('PiAgentBackend plugin hooks', () => {
+  // Build a mocked session whose prompt() emits a single message_end + agent_end
+  // so run() completes promptly. Records the agent object so we can assert the
+  // tool-hook composition wired our wrappers onto it.
+  function makeMockSession() {
+    // biome-ignore lint/suspicious/noExplicitAny: test mock callback type
+    let subscribeCb: ((event: any) => void) | null = null;
+    const mockAgent: {
+      // biome-ignore lint/suspicious/noExplicitAny: fake pi Agent hook fields
+      beforeToolCall?: (ctx: any, signal?: AbortSignal) => Promise<any>;
+      // biome-ignore lint/suspicious/noExplicitAny: fake pi Agent hook fields
+      afterToolCall?: (ctx: any, signal?: AbortSignal) => Promise<any>;
+    } = {};
+    const activeTools = ['read', 'bash', 'edit', 'write'];
+    const mockSession = {
+      dispose: vi.fn(),
+      // biome-ignore lint/suspicious/noExplicitAny: test mock callback type
+      subscribe: vi.fn((cb: any) => {
+        subscribeCb = cb;
+        return vi.fn();
+      }),
+      prompt: vi.fn(async () => {
+        subscribeCb?.({
+          type: 'message_end',
+          message: {
+            role: 'assistant',
+            usage: {
+              input: 1,
+              output: 1,
+              cacheRead: 0,
+              cacheWrite: 0,
+              totalTokens: 2,
+              cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+            },
+          },
+        });
+        subscribeCb?.({ type: 'agent_end', messages: [] });
+      }),
+      abort: vi.fn(),
+      setModel: vi.fn().mockResolvedValue(undefined),
+      getActiveToolNames: vi.fn(() => activeTools),
+      setActiveToolsByName: vi.fn(),
+      agent: mockAgent,
+    };
+    return { mockSession, mockAgent };
+  }
+
+  function makeHookRunner(hasHooks: boolean) {
+    return {
+      runPreToolUse: vi.fn().mockResolvedValue({ block: false }),
+      runPostToolUse: vi.fn().mockResolvedValue({ block: false }),
+      runUserPromptSubmit: vi.fn().mockResolvedValue({ block: false }),
+      runSessionStart: vi.fn().mockResolvedValue({}),
+      runStop: vi.fn().mockResolvedValue({}),
+      hasHooks,
+    };
+  }
+
+  async function runOnce(backend: PiAgentBackend) {
+    await backend.start('/tmp/test');
+    for await (const _ev of backend.run(
+      {
+        channelId: 'ch-1',
+        conversationId: 'conv-1',
+        model: 'anthropic/claude-sonnet-4-20250514',
+        message: 'hello',
+        systemPrompt: 'Test',
+      },
+      {},
+    )) {
+      // drain
+    }
+  }
+
+  it('fires SessionStart and Stop once per run when hooks are present', async () => {
+    const { createAgentSession } = await import('@earendil-works/pi-coding-agent');
+    const { mockSession } = makeMockSession();
+    vi.mocked(createAgentSession).mockResolvedValueOnce({
+      // biome-ignore lint/suspicious/noExplicitAny: test mock
+      session: mockSession as any,
+      // biome-ignore lint/suspicious/noExplicitAny: test mock
+      extensionsResult: {} as any,
+    });
+
+    const hookRunner = makeHookRunner(true);
+    const backend = new PiAgentBackend(
+      { model: 'anthropic/claude-sonnet-4-20250514', systemPrompt: 'Test' },
+      { anthropic: 'test-key' },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      [],
+      [],
+      // biome-ignore lint/suspicious/noExplicitAny: structural HookRunner stub
+      hookRunner as any,
+    );
+
+    await runOnce(backend);
+
+    expect(hookRunner.runSessionStart).toHaveBeenCalledTimes(1);
+    expect(hookRunner.runSessionStart).toHaveBeenCalledWith({
+      sessionId: 'conv-1',
+      cwd: '/tmp/test',
+      source: 'startup',
+    });
+    expect(hookRunner.runStop).toHaveBeenCalledTimes(1);
+    expect(hookRunner.runStop).toHaveBeenCalledWith({ sessionId: 'conv-1', cwd: '/tmp/test' });
+
+    await backend.stop();
+  });
+
+  it('composes tool hooks onto the pi agent when hooks are present', async () => {
+    const { createAgentSession } = await import('@earendil-works/pi-coding-agent');
+    const { mockSession, mockAgent } = makeMockSession();
+    vi.mocked(createAgentSession).mockResolvedValueOnce({
+      // biome-ignore lint/suspicious/noExplicitAny: test mock
+      session: mockSession as any,
+      // biome-ignore lint/suspicious/noExplicitAny: test mock
+      extensionsResult: {} as any,
+    });
+
+    const hookRunner = makeHookRunner(true);
+    const backend = new PiAgentBackend(
+      { model: 'anthropic/claude-sonnet-4-20250514', systemPrompt: 'Test' },
+      { anthropic: 'test-key' },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      [],
+      [],
+      // biome-ignore lint/suspicious/noExplicitAny: structural HookRunner stub
+      hookRunner as any,
+    );
+
+    await backend.start('/tmp/test');
+
+    // composeToolHooks installed our wrappers onto the agent's mutable fields.
+    expect(typeof mockAgent.beforeToolCall).toBe('function');
+    expect(typeof mockAgent.afterToolCall).toBe('function');
+
+    await backend.stop();
+  });
+
+  it('does not wire hooks or fire lifecycle when hookRunner is absent', async () => {
+    const { createAgentSession } = await import('@earendil-works/pi-coding-agent');
+    const { mockSession, mockAgent } = makeMockSession();
+    vi.mocked(createAgentSession).mockResolvedValueOnce({
+      // biome-ignore lint/suspicious/noExplicitAny: test mock
+      session: mockSession as any,
+      // biome-ignore lint/suspicious/noExplicitAny: test mock
+      extensionsResult: {} as any,
+    });
+
+    const backend = new PiAgentBackend(
+      { model: 'anthropic/claude-sonnet-4-20250514', systemPrompt: 'Test' },
+      { anthropic: 'test-key' },
+    );
+
+    await runOnce(backend);
+
+    // No composition occurred — the agent's hook fields remain untouched.
+    expect(mockAgent.beforeToolCall).toBeUndefined();
+    expect(mockAgent.afterToolCall).toBeUndefined();
+
+    await backend.stop();
+  });
+
+  it('skips lifecycle hooks when hasHooks is false', async () => {
+    const { createAgentSession } = await import('@earendil-works/pi-coding-agent');
+    const { mockSession } = makeMockSession();
+    vi.mocked(createAgentSession).mockResolvedValueOnce({
+      // biome-ignore lint/suspicious/noExplicitAny: test mock
+      session: mockSession as any,
+      // biome-ignore lint/suspicious/noExplicitAny: test mock
+      extensionsResult: {} as any,
+    });
+
+    const hookRunner = makeHookRunner(false);
+    const backend = new PiAgentBackend(
+      { model: 'anthropic/claude-sonnet-4-20250514', systemPrompt: 'Test' },
+      { anthropic: 'test-key' },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      [],
+      [],
+      // biome-ignore lint/suspicious/noExplicitAny: structural HookRunner stub
+      hookRunner as any,
+    );
+
+    await runOnce(backend);
+
+    expect(hookRunner.runSessionStart).not.toHaveBeenCalled();
+    expect(hookRunner.runStop).not.toHaveBeenCalled();
+
+    await backend.stop();
+  });
+});
+
 describe('PiAgentBackend sessionDir', () => {
   it('accepts optional sessionDir parameter', () => {
     const backend = new PiAgentBackend(
