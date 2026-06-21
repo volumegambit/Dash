@@ -92,6 +92,22 @@ describe('validateProviderCatalog', () => {
     );
   });
 
+  it('throws when credentialPrefix does not equal `${id}-api-key`', () => {
+    expect(() =>
+      validateProviderCatalog({ ...minimalRaw(), id: 'myllm', credentialPrefix: 'wrong-api-key' }),
+    ).toThrow(/credentialPrefix must be "myllm-api-key" \(got "wrong-api-key"\)/);
+  });
+
+  it('accepts a credentialPrefix that equals `${id}-api-key`', () => {
+    const cat = validateProviderCatalog({
+      ...minimalRaw(),
+      id: 'myllm',
+      credentialPrefix: 'myllm-api-key',
+    });
+    expect(cat.id).toBe('myllm');
+    expect(cat.credentialPrefix).toBe('myllm-api-key');
+  });
+
   it('throws when baseUrl is not a string', () => {
     expect(() => validateProviderCatalog({ ...minimalRaw(), baseUrl: 1 })).toThrow(/baseUrl/);
   });

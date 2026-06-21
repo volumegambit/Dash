@@ -152,6 +152,17 @@ export function validateProviderCatalog(raw: unknown): ProviderCatalog {
   if (typeof c.credentialPrefix !== 'string' || c.credentialPrefix.length === 0) {
     throw new Error("provider catalog 'credentialPrefix' must be a non-empty string");
   }
+  // At runtime the provider's API key is always looked up by `id` (the gateway
+  // extracts the prefix-before-`-api-key` from stored keys and pi-ai attaches
+  // auth keyed by `model.provider` === `id`; placeholder-key injection also uses
+  // `id`). So `credentialPrefix` is effectively required to equal
+  // `${id}-api-key` — otherwise the stored key silently never attaches and the
+  // provider can't authenticate, with no error. Enforce it here.
+  if (c.credentialPrefix !== `${c.id}-api-key`) {
+    throw new Error(
+      `provider catalog "${c.id}": credentialPrefix must be "${c.id}-api-key" (got "${c.credentialPrefix}")`,
+    );
+  }
   if (typeof c.baseUrl !== 'string' || c.baseUrl.length === 0) {
     throw new Error("provider catalog 'baseUrl' must be a non-empty string");
   }
