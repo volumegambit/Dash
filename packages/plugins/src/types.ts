@@ -35,6 +35,8 @@ export interface PluginEntryConfig {
 
 export interface PluginRecord {
   name: string;
+  /** Human-readable name from the manifest, for pickers/cards. Falls back to `name` at the UI layer. */
+  displayName?: string;
   version?: string;
   description?: string;
   status: PluginStatus;

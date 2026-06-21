@@ -117,6 +117,28 @@ describe('loadPlugins', () => {
     expect(loaded.skillDirs).toEqual([]);
   });
 
+  // F5: the loader record must carry the manifest's displayName (distinct from
+  // description) so the gateway status record can title pickers/cards with it.
+  it('carries manifest displayName through loaded + disabled records', async () => {
+    await writePlugin(pluginsDir, 'disco', {
+      manifest: { name: 'disco', displayName: 'Disco Ball', description: 'A disco plugin' },
+      skill: 'greet',
+    });
+    const loadedOn = await loadPlugins({ pluginsDir, entries: { disco: { enabled: true } } });
+    expect(loadedOn.records[0].displayName).toBe('Disco Ball');
+    expect(loadedOn.records[0].description).toBe('A disco plugin');
+
+    const loadedOff = await loadPlugins({ pluginsDir, entries: {} });
+    expect(loadedOff.records[0].status).toBe('disabled');
+    expect(loadedOff.records[0].displayName).toBe('Disco Ball');
+  });
+
+  it('leaves displayName undefined when the manifest omits it', async () => {
+    await writePlugin(pluginsDir, 'plain', { manifest: { name: 'plain' }, skill: 'x' });
+    const loaded = await loadPlugins({ pluginsDir, entries: { plain: { enabled: true } } });
+    expect(loaded.records[0].displayName).toBeUndefined();
+  });
+
   it('auto-enables a path: entry (explicit dev intent)', async () => {
     const root = await mkdtemp(join(tmpdir(), 'devplug-'));
     const dir = await writePlugin(root, 'devkit', { skill: 'x' });

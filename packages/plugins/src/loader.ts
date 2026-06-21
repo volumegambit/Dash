@@ -85,6 +85,7 @@ export async function loadPlugins(opts: LoadPluginsOptions): Promise<LoadedPlugi
       if (!enabled) {
         records.push({
           name: manifest.name,
+          displayName: manifest.displayName,
           version: manifest.version,
           description: manifest.description,
           status: 'disabled',
@@ -220,6 +221,7 @@ export async function loadPlugins(opts: LoadPluginsOptions): Promise<LoadedPlugi
 
       records.push({
         name: manifest.name,
+        displayName: manifest.displayName,
         version: manifest.version,
         description: manifest.description,
         status: 'loaded',
