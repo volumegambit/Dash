@@ -1,4 +1,11 @@
-import type { SkillContent, SkillInfo, SkillsConfig } from '@dash/management';
+import type {
+  PluginInstallRequest,
+  PluginInstallResponse,
+  PluginRecord,
+  SkillContent,
+  SkillInfo,
+  SkillsConfig,
+} from '@dash/management';
 import type {
   CreateAgentRequest,
   GatewayAgent,
@@ -258,6 +265,17 @@ export interface MissionControlAPI {
 
   // MCP status events (push from main -> renderer)
   onMcpStatusChanged(callback: (change: McpStatusChange) => void): () => void;
+
+  // Plugins (gateway passthrough). Types are owned by @dash/management to avoid
+  // drift with the gateway routes. `install` returns the PluginInstallResponse
+  // union (flat InstalledPlugin or reload-pending body); the store narrows it.
+  plugins: {
+    list(): Promise<PluginRecord[]>;
+    setState(name: string, patch: { enabled?: boolean; trusted?: boolean }): Promise<PluginRecord>;
+    install(req: PluginInstallRequest): Promise<PluginInstallResponse>;
+    remove(name: string): Promise<{ ok: boolean; path?: string }>;
+    reload(): Promise<{ ok: boolean; reloadedAt?: string }>;
+  };
 
   // Gateway
   gatewayGetStatus(): Promise<GatewayStatus>;

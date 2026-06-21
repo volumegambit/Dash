@@ -2,7 +2,14 @@ import { createWriteStream, existsSync, mkdirSync } from 'node:fs';
 import { mkdir, readFile } from 'node:fs/promises';
 import { networkInterfaces } from 'node:os';
 import { join } from 'node:path';
-import type { Project, SkillsConfig } from '@dash/management';
+import type {
+  PluginInstallRequest,
+  PluginInstallResponse,
+  PluginRecord,
+  PluginSetStateRequest,
+  Project,
+  SkillsConfig,
+} from '@dash/management';
 import { ManagementClient } from '@dash/management';
 import {
   ConversationStore,
@@ -998,6 +1005,29 @@ export async function registerIpcHandlers(
   });
 
   // -----------------------------------------------------------------------
+  // Plugins (gateway passthrough)
+  // -----------------------------------------------------------------------
+
+  const getPluginsClient = (): Promise<ManagementClient> =>
+    getDirectManagementClient('Plugins API');
+
+  ipcMain.handle('plugins:list', async () => pluginsListHandler(await getPluginsClient()));
+
+  ipcMain.handle('plugins:setState', async (_e, name: string, patch: PluginSetStateRequest) =>
+    pluginSetStateHandler(await getPluginsClient(), name, patch),
+  );
+
+  ipcMain.handle('plugins:install', async (_e, req: PluginInstallRequest) =>
+    pluginInstallHandler(await getPluginsClient(), req),
+  );
+
+  ipcMain.handle('plugins:remove', async (_e, name: string) =>
+    pluginRemoveHandler(await getPluginsClient(), name),
+  );
+
+  ipcMain.handle('plugins:reload', async () => pluginReloadHandler(await getPluginsClient()));
+
+  // -----------------------------------------------------------------------
   // Projects
   // -----------------------------------------------------------------------
 
@@ -1150,6 +1180,50 @@ export async function registerIpcHandlers(
  * gateway. Exporting this as a named function so the quit-handler
  * contract is unit-testable without simulating the whole Electron app.
  */
+// ---------------------------------------------------------------------------
+// Plugin management handlers (gateway passthrough)
+//
+// Extracted as pure functions over a ManagementClient so the bridge logic
+// (record unwrapping, argument forwarding) is unit-testable without booting
+// Electron. registerIpcHandlers wires them to the `plugins:*` IPC channels.
+// ---------------------------------------------------------------------------
+
+/** Unwrap the gateway's `{ records }` envelope into a flat list for the UI. */
+export async function pluginsListHandler(
+  client: Pick<ManagementClient, 'pluginsList'>,
+): Promise<PluginRecord[]> {
+  const resp = await client.pluginsList();
+  return resp.records;
+}
+
+export async function pluginSetStateHandler(
+  client: Pick<ManagementClient, 'pluginSetState'>,
+  name: string,
+  patch: PluginSetStateRequest,
+): Promise<PluginRecord> {
+  return client.pluginSetState(name, patch);
+}
+
+export async function pluginInstallHandler(
+  client: Pick<ManagementClient, 'pluginInstall'>,
+  req: PluginInstallRequest,
+): Promise<PluginInstallResponse> {
+  return client.pluginInstall(req.source, req.name);
+}
+
+export async function pluginRemoveHandler(
+  client: Pick<ManagementClient, 'pluginRemove'>,
+  name: string,
+): Promise<{ ok: boolean; path?: string }> {
+  return client.pluginRemove(name);
+}
+
+export async function pluginReloadHandler(
+  client: Pick<ManagementClient, 'pluginReload'>,
+): Promise<{ ok: boolean; reloadedAt?: string }> {
+  return client.pluginReload();
+}
+
 export async function shutdownGatewayOnQuit(dataDir: string): Promise<void> {
   const store = new GatewayStateStore(dataDir);
   const gatewayState = await store.read();
