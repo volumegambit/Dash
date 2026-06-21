@@ -891,13 +891,16 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
       if (typeof source !== 'string' || source.trim() === '') {
         return c.json({ error: 'source must be a non-empty string' }, 400);
       }
+      let installed: Awaited<ReturnType<typeof installPluginToDir>>;
       try {
         // Pure functions (no @dash/agent dep): heuristicPluginScan + the installer.
-        const installed = await installPluginToDir({
+        // M4: thread the gateway logger so unreadable/malformed payload notices
+        // surface in the gateway log.
+        installed = await installPluginToDir({
           dataDir,
           source,
           name,
-          scanner: heuristicPluginScan,
+          scanner: (dir) => heuristicPluginScan(dir, logger),
         });
         // Persist the four config fields BEFORE reload so the rebuild sees them.
         await pluginConfigStore.setEnabled(installed.name, true); // visible
@@ -905,13 +908,34 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
         await pluginConfigStore.setInstalled(installed.name, true); // gates P1 DELETE dir removal
         // Do NOT set trusted — it stays false; code components remain noop until
         // the user trusts the plugin via PUT /plugins/:name (P1).
-        await reloadPlugins();
-        eventBus?.emit({ type: 'plugin:installed', plugin: installed.name });
-        return c.json(installed, 201);
       } catch (err) {
+        // Pre-persist failure (fetch/scan/move/config write): nothing committed
+        // beyond what the installer cleans up; map to the structured HTTP error.
         const m = mapPluginError(err);
         return c.json(m.body, m.status);
       }
+
+      // I4: the dir is moved + config persisted. If the reload then fails, the
+      // install LANDED — mirror PUT/DELETE's structured contract so the client
+      // knows the plugin is installed and the wiring reconciles on next reload,
+      // instead of a bare 500 that implies the install failed.
+      try {
+        await reloadPlugins();
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'reload failed';
+        eventBus?.emit({ type: 'plugin:installed', plugin: installed.name });
+        return c.json(
+          {
+            ok: true,
+            installed,
+            note: 'installed and persisted; wiring reconciles on next reload',
+            error: message,
+          },
+          200,
+        );
+      }
+      eventBus?.emit({ type: 'plugin:installed', plugin: installed.name });
+      return c.json(installed, 201);
     });
 
     // PUT /plugins/:name → patch enabled/trusted, then reload. 404 if unknown,

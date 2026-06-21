@@ -627,6 +627,8 @@ describe('plugin mutate → hot-reload end-to-end', () => {
       expect(disco?.activated).toContain('skills');
       expect(disco?.noop).toContain('mcp');
       expect(disco?.installedPath).toBe(installedDir);
+      // I5: the install source is surfaced on the status record (provenance).
+      expect(disco?.source).toBe(src);
 
       // Untrusted → MCP withheld from live wiring.
       expect(getWiringState().mcpConfigs).toHaveLength(0);

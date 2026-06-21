@@ -439,6 +439,29 @@ describe('PluginStatusRecord snapshots', () => {
     // The old `installed` field held the dev-link path — that collision is gone.
     expect(rec.installedPath).toBeUndefined();
   });
+
+  it('surfaces the install source from the config entry (I5 provenance)', async () => {
+    await writePlugin(pluginsDir, 'sourced', { manifest: { name: 'sourced' }, skill: 'doit' });
+    const entries: Record<string, PluginEntryConfig> = {
+      sourced: { enabled: true, installed: true, source: 'git:acme/sourced' },
+    };
+    const loaded = await load(entries);
+
+    const state = await rebuildWiringState(loaded, entries, CORE_PROVIDER_IDS, {
+      ...WIRING_OPTIONS,
+      pluginsDir,
+    });
+    expect(state.pluginRecords.sourced.source).toBe('git:acme/sourced');
+  });
+
+  it('leaves source undefined when the config entry has no source', async () => {
+    await writePlugin(pluginsDir, 'nosource', { manifest: { name: 'nosource' }, skill: 'doit' });
+    const entries: Record<string, PluginEntryConfig> = { nosource: { enabled: true } };
+    const loaded = await load(entries);
+
+    const state = await rebuildWiringState(loaded, entries, CORE_PROVIDER_IDS, WIRING_OPTIONS);
+    expect(state.pluginRecords.nosource.source).toBeUndefined();
+  });
 });
 
 describe('reloadPluginsUnderMutex', () => {

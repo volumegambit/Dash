@@ -82,6 +82,13 @@ export interface PluginStatusRecord {
   displayName?: string;
   /** Description from manifest, if present. */
   description?: string;
+  /**
+   * The install source recorded in the config entry (`git:`/`http(s):`/local
+   * path), if any. Surfaced so a UI can show a plugin's provenance after the
+   * one-shot 201 (the scan VERDICT is deliberately NOT persisted — a P3 design
+   * decision). Absent for linked/manually-dropped plugins with no source.
+   */
+  source?: string;
 }
 
 /**
@@ -115,6 +122,9 @@ function toStatusRecord(
     version: loaded.version,
     displayName: loaded.displayName ?? loaded.name,
     description: loaded.description,
+    // I5: surface the persisted install source so a UI can show provenance after
+    // the one-shot 201 install response. Absent when the entry has no source.
+    source: entry?.source,
   };
 }
 

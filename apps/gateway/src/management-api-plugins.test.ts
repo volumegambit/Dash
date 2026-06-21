@@ -496,10 +496,20 @@ describe('plugin management routes', () => {
           body: JSON.stringify({ source: src }),
         });
         expect(res.status).toBe(201);
-        const body = (await res.json()) as { name: string; location: string; source: string };
+        const body = (await res.json()) as {
+          name: string;
+          location: string;
+          source: string;
+          scanVerdict: string;
+          scanReasons: string[];
+        };
         expect(body.name).toBe('disco');
         expect(body.location).toBe(join(pluginsDir, 'disco'));
         expect(body.source).toBe(src);
+        // I6: the install result carries a flattened scan verdict (not a nested
+        // `verdict.verdict`).
+        expect(body.scanVerdict).toBe('safe');
+        expect(body.scanReasons).toEqual([]);
 
         // The plugin landed on disk.
         await expect(
@@ -615,6 +625,54 @@ describe('plugin management routes', () => {
         body: JSON.stringify({ source: '/tmp/x' }),
       });
       expect(res.status).toBe(500);
+    });
+
+    // I4: the install lands (dir moved + config persisted) but the reload fails.
+    // Mirror PUT/DELETE's structured contract: a 200 saying installed+persisted,
+    // wiring reconciles on next reload — NOT a bare 500 implying install failure.
+    it('returns a structured "installed, pending reload" when reload fails after install', async () => {
+      const dataDir = await mkdtemp(join(tmpdir(), 'plugins-install-reloadfail-'));
+      const pluginsDir = join(dataDir, 'plugins');
+      try {
+        const src = await writeLocalPlugin(dataDir, 'disco');
+        const { store, entries } = stubConfigStore({});
+        const reloadPlugins = vi.fn().mockRejectedValue(new Error('reload boom'));
+        const { app, events } = createApp({
+          configStore: store,
+          reloadPlugins,
+          pluginsDir,
+          dataDir,
+        });
+
+        const res = await app.request('/plugins/install', {
+          method: 'POST',
+          headers: JSON_HEADERS,
+          body: JSON.stringify({ source: src }),
+        });
+        expect(res.status).toBe(200);
+        const body = (await res.json()) as {
+          ok: boolean;
+          installed: { name: string };
+          note: string;
+          error: string;
+        };
+        expect(body.ok).toBe(true);
+        expect(body.installed.name).toBe('disco');
+        expect(body.error).toBe('reload boom');
+        expect(body.note).toMatch(/installed and persisted/i);
+
+        // The config entry AND the directory are still present (the install stuck).
+        expect(entries.disco).toMatchObject({ enabled: true, installed: true, source: src });
+        await expect(
+          stat(join(pluginsDir, 'disco', '.claude-plugin', 'plugin.json')),
+        ).resolves.toBeTruthy();
+        // The install event still fired so subscribers learn about the new plugin.
+        expect(events.find((e) => e.type === 'plugin:installed')).toMatchObject({
+          plugin: 'disco',
+        });
+      } finally {
+        await rm(dataDir, { recursive: true, force: true });
+      }
     });
   });
 
