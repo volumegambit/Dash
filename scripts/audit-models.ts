@@ -45,6 +45,7 @@ import {
   SUPPORTED_MODELS,
   applySupportedFilter,
   findSupportedModel,
+  isModelExcluded,
 } from '@dash/models';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -112,6 +113,8 @@ interface ProviderReport {
   raw: RawModel[];
   filtered: FilteredModel[];
   unmatched: RawModel[];
+  /** Live ids removed by the EXCLUDED_MODELS deny-list — intentional, not additions. */
+  excluded: RawModel[];
   bootstrapInList: FilteredModel[];
   bootstrapMissing: FilteredModel[];
 }
@@ -129,6 +132,7 @@ async function gatherReport(): Promise<ProviderReport[]> {
         raw: [],
         filtered: [],
         unmatched: [],
+        excluded: [],
         bootstrapInList: BOOTSTRAP_MODELS.filter((m) => m.provider === provider.id),
         bootstrapMissing: [],
       });
@@ -144,7 +148,14 @@ async function gatherReport(): Promise<ProviderReport[]> {
     }
 
     const filtered = applySupportedFilter(raw);
-    const unmatched = raw.filter((m) => !findSupportedModel(m.provider, m.id));
+    // Deny-listed ids match no allow pattern after exclusion, so bucket them
+    // separately rather than surfacing them as "potential additions" — they are
+    // intentionally filtered out (non-chat modalities). `unmatched` is then only
+    // the genuinely-new ids a human might want to allow-list.
+    const excluded = raw.filter((m) => isModelExcluded(m.provider, m.id));
+    const unmatched = raw.filter(
+      (m) => !isModelExcluded(m.provider, m.id) && !findSupportedModel(m.provider, m.id),
+    );
 
     const liveValues = new Set(raw.map((m) => `${m.provider}/${m.id}`));
     const bootstrapInList = BOOTSTRAP_MODELS.filter((m) => m.provider === provider.id);
@@ -157,6 +168,7 @@ async function gatherReport(): Promise<ProviderReport[]> {
       raw,
       filtered,
       unmatched,
+      excluded,
       bootstrapInList,
       bootstrapMissing,
     });
@@ -206,6 +218,15 @@ function printReport(reports: ProviderReport[]): void {
         console.log(`    • ${m.id.padEnd(40)} ${m.label}`);
       }
       console.log(`    ... and ${report.unmatched.length - 20} more`);
+    }
+    if (report.excluded.length > 0) {
+      console.log(`  Excluded by deny-list (intentional): ${report.excluded.length}`);
+      for (const m of report.excluded.slice(0, 20)) {
+        console.log(`    – ${m.id.padEnd(40)} ${m.label}`);
+      }
+      if (report.excluded.length > 20) {
+        console.log(`    ... and ${report.excluded.length - 20} more`);
+      }
     }
     console.log(`  Bootstrap entries:     ${report.bootstrapInList.length}`);
     if (report.bootstrapMissing.length > 0) {

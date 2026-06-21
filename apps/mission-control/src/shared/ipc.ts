@@ -21,6 +21,14 @@ import type {
   ProjectsEvent,
 } from './projects-ipc.js';
 
+// Top-level setup/onboarding status. Distinguishes a genuine first run
+// (`needs-setup`) from a configured user whose gateway cannot start
+// (`gateway-failed`) — the latter must NOT be shown the onboarding wizard.
+export type SetupStatus =
+  | { state: 'needs-setup' }
+  | { state: 'ready' }
+  | { state: 'gateway-failed'; error: string };
+
 // Serializable AgentEvent (error is string, not Error object, for IPC transport)
 export type McAgentEvent =
   | { type: 'text_delta'; text: string }
@@ -172,7 +180,9 @@ export interface MissionControlAPI {
     content: string,
   ): Promise<SkillContent>;
   skillsGetConfig(agentId: string): Promise<SkillsConfig>;
-  skillsUpdateConfig(agentId: string, config: SkillsConfig): Promise<{ requiresRestart: boolean }>;
+  skillsUpdateConfig(agentId: string, config: SkillsConfig): Promise<SkillsConfig>;
+  skillsInstall(agentId: string, source: string, name?: string): Promise<SkillInfo>;
+  skillsRemove(agentId: string, skillName: string): Promise<void>;
 
   // Settings
   settingsGet(): Promise<AppSettings>;
@@ -210,7 +220,7 @@ export interface MissionControlAPI {
   onGatewayEvent(callback: (eventType: string, data: string) => void): () => void;
 
   // Setup (simplified — no password)
-  setupStatus(): Promise<{ needsSetup: boolean; gatewayReady: boolean }>;
+  setupStatus(): Promise<SetupStatus>;
   setupEnsureGateway(): Promise<void>;
 
   // App lifecycle

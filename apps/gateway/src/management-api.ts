@@ -391,6 +391,113 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
     }
   });
 
+  // --- Skill routes ---
+  const mapSkillError = (
+    err: unknown,
+  ): { status: 404 | 409 | 422 | 500; body: { error: string } } => {
+    const code =
+      err instanceof Error && 'code' in err ? (err as { code?: string }).code : undefined;
+    const message = err instanceof Error ? err.message : 'Internal error';
+    const status: 404 | 409 | 422 | 500 =
+      code === 'not_found'
+        ? 404
+        : code === 'duplicate'
+          ? 409
+          : code === 'bundled' ||
+              code === 'dangerous' ||
+              code === 'invalid' ||
+              code === 'scan_failed'
+            ? 422
+            : 500;
+    return { status, body: { error: message } };
+  };
+
+  app.get('/agents/:id/skills', async (c) => {
+    const id = c.req.param('id');
+    if (!agentRegistry.get(id)) return c.json({ error: 'not found' }, 404);
+    return c.json(await agents.listSkills(id));
+  });
+
+  app.get('/agents/:id/skills/config', (c) => {
+    const entry = agentRegistry.get(c.req.param('id'));
+    if (!entry) return c.json({ error: 'not found' }, 404);
+    return c.json(entry.config.skills ?? {});
+  });
+
+  app.patch('/agents/:id/skills/config', async (c) => {
+    const id = c.req.param('id');
+    const entry = agentRegistry.get(id);
+    if (!entry) return c.json({ error: 'not found' }, 404);
+    const parsed = await parseJsonBody<{
+      paths?: string[];
+      urls?: string[];
+      includeBundled?: boolean;
+    }>(c);
+    if (!parsed.ok) return parsed.response;
+    const skills = { ...entry.config.skills, ...parsed.body };
+    agentRegistry.update(id, { skills });
+    await agentRegistry.save();
+    return c.json(skills);
+  });
+
+  app.get('/agents/:id/skills/:name', async (c) => {
+    const id = c.req.param('id');
+    if (!agentRegistry.get(id)) return c.json({ error: 'not found' }, 404);
+    const skill = await agents.getSkill(id, c.req.param('name'));
+    if (!skill) return c.json({ error: 'not found' }, 404);
+    return c.json(skill);
+  });
+
+  app.post('/agents/:id/skills', async (c) => {
+    const id = c.req.param('id');
+    if (!agentRegistry.get(id)) return c.json({ error: 'not found' }, 404);
+    const parsed = await parseJsonBody<{ name: string; description: string; content: string }>(c);
+    if (!parsed.ok) return parsed.response;
+    try {
+      return c.json(await agents.createSkill(id, parsed.body), 201);
+    } catch (err) {
+      const m = mapSkillError(err);
+      return c.json(m.body, m.status);
+    }
+  });
+
+  app.put('/agents/:id/skills/:name', async (c) => {
+    const id = c.req.param('id');
+    if (!agentRegistry.get(id)) return c.json({ error: 'not found' }, 404);
+    const parsed = await parseJsonBody<{ content: string }>(c);
+    if (!parsed.ok) return parsed.response;
+    try {
+      return c.json(await agents.updateSkillContent(id, c.req.param('name'), parsed.body.content));
+    } catch (err) {
+      const m = mapSkillError(err);
+      return c.json(m.body, m.status);
+    }
+  });
+
+  app.delete('/agents/:id/skills/:name', async (c) => {
+    const id = c.req.param('id');
+    if (!agentRegistry.get(id)) return c.json({ error: 'not found' }, 404);
+    try {
+      return c.json(await agents.removeSkill(id, c.req.param('name')));
+    } catch (err) {
+      const m = mapSkillError(err);
+      return c.json(m.body, m.status);
+    }
+  });
+
+  app.post('/agents/:id/skills/install', async (c) => {
+    const id = c.req.param('id');
+    if (!agentRegistry.get(id)) return c.json({ error: 'not found' }, 404);
+    const parsed = await parseJsonBody<{ source: string; name?: string }>(c);
+    if (!parsed.ok) return parsed.response;
+    try {
+      return c.json(await agents.installSkill(id, parsed.body.source, parsed.body.name));
+    } catch (err) {
+      const m = mapSkillError(err);
+      return c.json(m.body, m.status);
+    }
+  });
+
   // --- Channel routes ---
 
   app.post('/channels', async (c) => {

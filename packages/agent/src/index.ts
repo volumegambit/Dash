@@ -10,6 +10,8 @@ export type {
 export { DashAgent } from './agent.js';
 export type { DashAgentConfigResolver } from './agent.js';
 export { PiAgentBackend } from './backends/piagent.js';
+export { createOAuthRefreshers } from './oauth-refreshers.js';
+export type { OAuthTokenRefresher, RefreshedOAuthTokens } from './oauth-refreshers.js';
 export type { AgentClient } from './client.js';
 export { FileLogger } from './logger.js';
 export type { LogLevel, Logger } from './logger.js';
@@ -26,8 +28,23 @@ export {
   generateFrontmatter,
   scanSkillsDirectory,
   discoverSkills,
+  heuristicScan,
+  createLlmScanner,
+  SkillOpError,
+  createSkillInDir,
+  updateSkillBody,
+  installSkillToDir,
+  removeSkillFromDir,
 } from './skills/index.js';
-export type { ParsedSkill, DiscoverSkillsOptions } from './skills/index.js';
+export type {
+  ParsedSkill,
+  DiscoverSkillsOptions,
+  SkillScanVerdict,
+  SkillSecurityScanner,
+  WrittenSkill,
+  InstalledSkill,
+  SkillOpCode,
+} from './skills/index.js';
 
 /**
  * Canonical list of user-configurable tool names supported by PiAgentBackend.

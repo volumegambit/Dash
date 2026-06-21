@@ -144,7 +144,7 @@ function createMockApi(): Record<keyof MissionControlAPI, ReturnType<typeof vi.f
     onGatewayEvent: vi.fn().mockReturnValue(() => {}),
 
     // Setup (simplified)
-    setupStatus: vi.fn().mockResolvedValue({ needsSetup: false, gatewayReady: true }),
+    setupStatus: vi.fn().mockResolvedValue({ state: 'ready' }),
     setupEnsureGateway: vi.fn().mockResolvedValue(undefined),
 
     // App lifecycle

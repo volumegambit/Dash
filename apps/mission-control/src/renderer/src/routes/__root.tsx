@@ -1,6 +1,7 @@
 import { Outlet, createRootRoute } from '@tanstack/react-router';
 import { Loader } from 'lucide-react';
 import { useEffect, useState } from 'react';
+import { GatewayFailedScreen } from '../components/GatewayFailedScreen';
 import { SetupWizard } from '../components/SetupWizard';
 import { Sidebar } from '../components/Sidebar';
 import { useAgentsStore } from '../stores/agents.js';
@@ -14,19 +15,22 @@ export const Route = createRootRoute({
 function RootLayout(): JSX.Element {
   const [ready, setReady] = useState(false);
   const [checking, setChecking] = useState(true);
-  const [needsSetup, setNeedsSetup] = useState(false);
+  const [setupState, setSetupState] = useState<'needs-setup' | 'ready' | 'gateway-failed'>(
+    'needs-setup',
+  );
   const [updateVersion, setUpdateVersion] = useState<string | null>(null);
 
   useEffect(() => {
     window.api
       .setupStatus()
       .then((status) => {
-        setNeedsSetup(status.needsSetup);
-        setReady(!status.needsSetup);
+        setSetupState(status.state);
+        setReady(status.state === 'ready');
         setChecking(false);
       })
       .catch(() => {
-        setNeedsSetup(true);
+        setSetupState('needs-setup');
+        setReady(false);
         setChecking(false);
       });
   }, []);
@@ -83,7 +87,17 @@ function RootLayout(): JSX.Element {
   }
 
   if (!ready) {
-    return <SetupWizard needsSetup={needsSetup} onComplete={() => setReady(true)} />;
+    if (setupState === 'gateway-failed') {
+      return (
+        <GatewayFailedScreen
+          onRecovered={() => {
+            setSetupState('ready');
+            setReady(true);
+          }}
+        />
+      );
+    }
+    return <SetupWizard needsSetup={true} onComplete={() => setReady(true)} />;
   }
 
   return (

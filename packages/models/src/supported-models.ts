@@ -98,6 +98,11 @@ const GOOGLE: SupportedModelEntry[] = [
   { provider: 'google', pattern: 'gemini-*-pro*', tier: 0 },
   { provider: 'google', pattern: 'gemini-*-flash*', tier: 1 },
   { provider: 'google', pattern: 'gemini-pro*', tier: 2 },
+  // Broad catch-all so future Gemini chat models surface without a code change.
+  // Non-chat Gemini modalities (image gen, TTS, embeddings, robotics,
+  // computer-use) share these same prefixes — they are removed by
+  // EXCLUDED_MODELS below, which wins over any allow match (see
+  // findSupportedModel). Keep the catch-all; deny by modality instead.
   { provider: 'google', pattern: 'gemini-*', tier: 3 },
   // Gemma open-weights models (e.g. gemma-4-26b-a4b-it, gemma-4-31b-it).
   // Sort below all Gemini models; tool-use support is newer/less consistent.
@@ -199,6 +204,35 @@ const OPENROUTER: SupportedModelEntry[] = [
 ];
 
 // ---------------------------------------------------------------------------
+// Exclusions (deny-list)
+// ---------------------------------------------------------------------------
+// A model id can match an allow-list pattern yet still NOT be a chat / tool-use
+// / streaming text model — so it must never reach the agent dropdown. The broad
+// Google patterns are the main offenders: `gemini-*` (and even `gemini-*-pro*`
+// / `gemini-*-flash*`) sweep in same-prefixed non-chat modalities — image
+// generation (Nano Banana), text-to-speech, embeddings, robotics (ER), and
+// computer-use. Listing them here removes them regardless of which allow
+// pattern matched: an exclusion wins over every allow match (see
+// findSupportedModel), so the catch-all stays future-proof for real chat models
+// while these modality families stay filtered out.
+//
+// Verified against a live generativelanguage.googleapis.com audit on 2026-06-21.
+export interface ExcludedModelEntry {
+  /** Provider ID (e.g. "google") */
+  provider: string;
+  /** Glob pattern matched against model ID (e.g. "gemini-*-image*") */
+  pattern: string;
+}
+
+export const EXCLUDED_MODELS: ExcludedModelEntry[] = [
+  { provider: 'google', pattern: 'gemini-embedding-*' }, // embeddings, not chat
+  { provider: 'google', pattern: 'gemini-*-image*' }, // image generation (Nano Banana, etc.)
+  { provider: 'google', pattern: 'gemini-*-tts*' }, // text-to-speech
+  { provider: 'google', pattern: 'gemini-robotics-*' }, // robotics (ER) models
+  { provider: 'google', pattern: 'gemini-*-computer-use*' }, // computer-use, not a chat model
+];
+
+// ---------------------------------------------------------------------------
 // Exports
 // ---------------------------------------------------------------------------
 export const SUPPORTED_MODELS: SupportedModelEntry[] = [
@@ -232,10 +266,25 @@ export function globToRegex(pattern: string): RegExp {
 }
 
 /**
+ * Check if a model ID is on the exclusion deny-list for the given provider.
+ * Exclusions win over allow-list matches (see `findSupportedModel`): a model
+ * that matches both an allow pattern and an exclude pattern is NOT supported.
+ */
+export function isModelExcluded(provider: string, modelId: string): boolean {
+  for (const entry of EXCLUDED_MODELS) {
+    if (entry.provider !== provider) continue;
+    if (globToRegex(entry.pattern).test(modelId)) return true;
+  }
+  return false;
+}
+
+/**
  * Check if a model ID is supported for the given provider.
- * Returns the matching entry (with tier info) or null.
+ * Returns the matching entry (with tier info) or null. Exclusions are checked
+ * first, so a deny-list match short-circuits every allow pattern.
  */
 export function findSupportedModel(provider: string, modelId: string): SupportedModelEntry | null {
+  if (isModelExcluded(provider, modelId)) return null;
   for (const entry of SUPPORTED_MODELS) {
     if (entry.provider !== provider) continue;
     if (globToRegex(entry.pattern).test(modelId)) return entry;

@@ -16,13 +16,12 @@ import type { FilteredModel } from './types.js';
  * edits are accepted as the initial seed; subsequent audits will overwrite.
  *
  * Anthropic entries re-verified against live api.anthropic.com/v1/models on
- * 2026-06-20 (flagship is now claude-opus-4-8). OpenAI entries were NOT
- * re-verified on 2026-06-20 — the Codex backend token was expired (401), so
- * these are carried forward from the 2026-04-13 audit: gpt-5.4 was confirmed
- * via the ChatGPT/Codex backend then; o3-pro and gpt-4o are placeholders the
- * Codex backend doesn't expose but are real public OpenAI models reachable
- * via a classic sk- key. Google entries are placeholders pending working
- * credentials.
+ * 2026-06-20 (flagship is now claude-opus-4-8). OpenAI entries re-verified on
+ * 2026-06-21 via the ChatGPT/Codex backend token, which returned only
+ * gpt-5.5 / gpt-5.4 / gpt-5.4-mini — the prior o3-pro and gpt-4o placeholders
+ * (not exposed by the Codex backend) were dropped. Note the Codex token sees a
+ * narrow slice of OpenAI's catalog; a classic sk- key would surface more.
+ * Google entries are placeholders pending working credentials.
  */
 export const BOOTSTRAP_MODELS: FilteredModel[] = [
   // Anthropic — re-verified against live API 2026-06-20
@@ -41,10 +40,13 @@ export const BOOTSTRAP_MODELS: FilteredModel[] = [
     label: 'Claude Haiku 4.5',
     provider: 'anthropic',
   },
-  // OpenAI — placeholders, NOT verified against live API
+  // OpenAI — re-verified against live API 2026-06-21 (ChatGPT/Codex backend
+  // token returned only gpt-5.5 / gpt-5.4 / gpt-5.4-mini). flagship + mid +
+  // budget. The prior o3-pro and gpt-4o placeholders were dropped — the Codex
+  // token doesn't expose them.
   {
-    value: 'openai/o3-pro',
-    label: 'o3-pro',
+    value: 'openai/gpt-5.5',
+    label: 'GPT-5.5',
     provider: 'openai',
   },
   {
@@ -53,8 +55,8 @@ export const BOOTSTRAP_MODELS: FilteredModel[] = [
     provider: 'openai',
   },
   {
-    value: 'openai/gpt-4o',
-    label: 'GPT-4o',
+    value: 'openai/gpt-5.4-mini',
+    label: 'GPT-5.4-Mini',
     provider: 'openai',
   },
   // Google — placeholders, NOT verified against live API

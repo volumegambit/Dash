@@ -21,9 +21,10 @@ import type {
 import { app, dialog, ipcMain, shell } from 'electron';
 import type { BrowserWindow } from 'electron';
 import WebSocket from 'ws';
+import type { SetupStatus } from '../shared/ipc.js';
 import { ChatService } from './chat-service.js';
 import { completeClaudeOAuth, prepareClaudeOAuth } from './claude-auth.js';
-import { refreshCodexToken, startCodexOAuth } from './codex-auth.js';
+import { startCodexOAuth } from './codex-auth.js';
 import { GatewayPoller } from './gateway-poller.js';
 
 const DATA_DIR = process.env.MC_DATA_DIR || getPlatformDataDir('dash');
@@ -212,11 +213,34 @@ export async function registerIpcHandlers(
     }
   };
 
-  if (hasExistingGatewayState) {
-    // Returning user — keychain has already been approved for this
-    // Electron binary, so accessing it is silent. Eagerly start the
-    // gateway and wire up the chat service so the main UI is live
-    // before the window renders.
+  // Idempotently record that onboarding is complete. Monotonic: written
+  // once and never overwritten. Gateway-independent and keychain-free, so
+  // it survives a gateway crash that deletes gateway-state.json — that is
+  // what stops a configured user from being mistaken for a first run.
+  //
+  // Best-effort: a failure to persist the flag (e.g. read-only data dir,
+  // disk full) must never bubble up and downgrade an otherwise-healthy
+  // launch to `gateway-failed`. It will simply be retried on a later launch.
+  const markSetupCompleted = async (): Promise<void> => {
+    try {
+      const settings = await getSettingsStore().get();
+      if (!settings.setupCompletedAt) {
+        await getSettingsStore().set({ setupCompletedAt: new Date().toISOString() });
+      }
+    } catch (err) {
+      console.error('[mc] failed to persist setupCompletedAt:', err);
+    }
+  };
+
+  // A configured install (durable flag, or legacy gateway-state.json) starts
+  // the gateway eagerly — its keychain was already approved in a prior
+  // session, so access is silent. Only a genuine first run is deferred until
+  // the wizard's keychain-consent step fires `setup:ensureGateway`.
+  const configuredAtLaunch = isSetupConfigured(
+    await getSettingsStore().get(),
+    hasExistingGatewayState,
+  );
+  if (configuredAtLaunch) {
     try {
       await gw.ensureRunning();
     } catch (err) {
@@ -225,7 +249,7 @@ export async function registerIpcHandlers(
     await refreshChatServiceConnection();
   } else {
     console.log(
-      '[mc] first-run detected (no gateway-state.json) — deferring gateway start until wizard consents',
+      '[mc] first-run detected (not configured) — deferring gateway start until wizard consents',
     );
   }
 
@@ -506,6 +530,9 @@ export async function registerIpcHandlers(
   ipcMain.handle('credentials:set', async (_e, key: string, value: string) => {
     const client = await getClient(gw);
     await client.setCredential(key, value);
+    // Storing a credential is the reliable "onboarding finished" moment —
+    // the wizard's API-key step lands here with a live gateway.
+    await markSetupCompleted();
   });
 
   ipcMain.handle('credentials:list', async () => {
@@ -529,9 +556,15 @@ export async function registerIpcHandlers(
         return { success: false, error: 'OAuth flow was cancelled or timed out' };
       }
       const client = await getClient(gw);
+      // Access token feeds the agent; refresh + expiry let the gateway keep it
+      // fresh (see OAuthRefreshCoordinator). Standardized {provider}-oauth-* slots.
       await client.setCredential(`openai-api-key:${keyName}`, result.accessToken);
-      await client.setCredential(`openai-codex-refresh:${keyName}`, result.refreshToken);
-      await client.setCredential(`openai-codex-expires:${keyName}`, String(result.expiresAt));
+      await client.setCredential(`openai-oauth-refresh:${keyName}`, result.refreshToken);
+      await client.setCredential(`openai-oauth-expires:${keyName}`, String(result.expiresAt));
+      // OAuth onboarding stores credentials directly (not via credentials:set),
+      // so mark setup complete here too — otherwise an OAuth-only user has no
+      // durable setupCompletedAt and can be mistaken for a first run.
+      await markSetupCompleted();
 
       return { success: true };
     } catch (err) {
@@ -541,25 +574,15 @@ export async function registerIpcHandlers(
     }
   });
 
-  ipcMain.handle('codex:refreshToken', async (_event, keyName: string) => {
-    try {
-      const client = await getClient(gw);
-      // Retrieve refresh token from gateway credentials
-      // The gateway credentials API only lists keys, not values — so we store
-      // the refresh token as a credential and retrieve it via a convention.
-      // For now, the codex refresh flow requires the token to have been stored.
-      const result = await refreshCodexToken(''); // TODO: retrieve refresh token from gateway
-      if (!result) {
-        return { success: false, error: 'Token refresh failed' };
-      }
-      await client.setCredential(`openai-api-key:${keyName}`, result.accessToken);
-      await client.setCredential(`openai-codex-refresh:${keyName}`, result.refreshToken);
-      await client.setCredential(`openai-codex-expires:${keyName}`, String(result.expiresAt));
-      return { success: true };
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      return { success: false, error: message };
-    }
+  // Token refresh is now owned by the gateway, which proactively refreshes
+  // near-expiry OAuth tokens (and persists the rotated refresh tokens) before
+  // each agent run — see OAuthRefreshCoordinator. The gateway can read stored
+  // credential values directly; Mission Control cannot (the management API only
+  // lists keys), which is why the old MC-side refresh never worked. This handler
+  // is retained for preload-API compatibility and simply reports success; the
+  // refresh happens gateway-side on the next chat turn.
+  ipcMain.handle('codex:refreshToken', async () => {
+    return { success: true };
   });
 
   // -----------------------------------------------------------------------
@@ -576,12 +599,20 @@ export async function registerIpcHandlers(
     'claude:completeOAuth',
     async (_event, keyName: string, code: string, state: string, verifier: string) => {
       try {
-        const apiKey = await completeClaudeOAuth(code, state, verifier);
-        if (!apiKey) {
+        const result = await completeClaudeOAuth(code, state, verifier);
+        if (!result) {
           return { success: false, error: 'Failed to create API key' };
         }
         const client = await getClient(gw);
-        await client.setCredential(`anthropic-api-key:${keyName}`, apiKey);
+        // Access token feeds the agent; refresh + expiry let the gateway keep it
+        // fresh (see OAuthRefreshCoordinator). All three use the standardized
+        // {provider}-oauth-* slot convention.
+        await client.setCredential(`anthropic-api-key:${keyName}`, result.accessToken);
+        await client.setCredential(`anthropic-oauth-refresh:${keyName}`, result.refreshToken);
+        await client.setCredential(`anthropic-oauth-expires:${keyName}`, String(result.expiresAt));
+        // See codex:startOAuth — OAuth onboarding bypasses credentials:set, so
+        // record onboarding completion here too.
+        await markSetupCompleted();
 
         return { success: true };
       } catch (err) {
@@ -676,6 +707,14 @@ export async function registerIpcHandlers(
       (await getSkillsClient()).updateSkillContent(agentId, skillName, content),
   );
 
+  ipcMain.handle('skills:install', async (_e, agentId: string, source: string, name?: string) =>
+    (await getSkillsClient()).installSkill(agentId, source, name),
+  );
+
+  ipcMain.handle('skills:remove', async (_e, agentId: string, skillName: string) =>
+    (await getSkillsClient()).removeSkill(agentId, skillName),
+  );
+
   ipcMain.handle(
     'skills:create',
     async (_e, agentId: string, name: string, description: string, content: string) =>
@@ -745,26 +784,27 @@ export async function registerIpcHandlers(
   // Setup (simplified — no password)
   // -----------------------------------------------------------------------
 
-  ipcMain.handle('setup:status', async () => {
-    // First-run short-circuit: when `gateway-state.json` does not exist
-    // the gateway has never been started by this install AND the OS
-    // keychain has not yet been touched by the Electron binary. We
-    // must NOT call `getClient(gw)` here — doing so would trigger
-    // `gw.ensureRunning()` → native keychain prompt before the user
-    // has seen any Dash-branded UI. Return needsSetup without touching
-    // the gateway; the wizard will call `setup:ensureGateway` after
-    // the user has acknowledged the keychain-consent modal.
-    if (!existsSync(gatewayStateJsonPath)) {
-      return { needsSetup: true, gatewayReady: false };
-    }
-    try {
-      const client = await getClient(gw);
-      await client.health();
-      const creds = await client.listCredentials();
-      return { needsSetup: creds.length === 0, gatewayReady: true };
-    } catch {
-      return { needsSetup: true, gatewayReady: false };
-    }
+  ipcMain.handle('setup:status', async (): Promise<SetupStatus> => {
+    // Genuine first run is decided WITHOUT touching the gateway/keychain:
+    // the durable `setupCompletedAt` flag, or a legacy `gateway-state.json`.
+    // Returning `needs-setup` here short-circuits before `getClient(gw)` →
+    // `gw.ensureRunning()`, so a brand-new install never surfaces a native
+    // keychain prompt before the wizard's consent step.
+    //
+    // A configured user DOES reach `ensureHealthyClient` — but their keychain
+    // was approved in a prior session, so access is silent. If the gateway
+    // can't start, this returns `gateway-failed` (the recovery screen), NOT
+    // `needs-setup` (the onboarding wizard).
+    return resolveSetupStatus({
+      isConfigured: async () =>
+        isSetupConfigured(await getSettingsStore().get(), existsSync(gatewayStateJsonPath)),
+      ensureHealthyClient: async () => {
+        const client = await getClient(gw);
+        await client.health();
+        return client;
+      },
+      markSetupCompleted,
+    });
   });
 
   ipcMain.handle('setup:ensureGateway', async () => {
@@ -1016,4 +1056,44 @@ export async function shutdownGatewayOnQuit(dataDir: string): Promise<void> {
     // Already dead — SIGTERM on a missing PID throws ESRCH; expected.
   }
   // Deliberately NOT clearing the state file here. See docstring above.
+}
+
+/**
+ * Whether this install has completed onboarding, independent of whether the
+ * gateway is currently running. The durable signal is the `setupCompletedAt`
+ * flag in MC settings; an existing `gateway-state.json` is accepted as a
+ * legacy fallback so healthy pre-flag installs are never re-onboarded.
+ */
+export function isSetupConfigured(
+  settings: { setupCompletedAt?: string },
+  legacyStateExists: boolean,
+): boolean {
+  return Boolean(settings.setupCompletedAt) || legacyStateExists;
+}
+
+export interface SetupStatusDeps {
+  isConfigured: () => Promise<boolean>;
+  ensureHealthyClient: () => Promise<{ listCredentials: () => Promise<string[]> }>;
+  markSetupCompleted: () => Promise<void>;
+}
+
+/**
+ * Decide which top-level screen MC should show. Pure + dependency-injected so
+ * every branch is unit-testable without Electron or a live gateway.
+ *
+ * The genuine-first-run path returns BEFORE `ensureHealthyClient` is called,
+ * preserving the invariant that a brand-new install never touches the gateway
+ * or OS keychain before the consent UI.
+ */
+export async function resolveSetupStatus(deps: SetupStatusDeps): Promise<SetupStatus> {
+  if (!(await deps.isConfigured())) return { state: 'needs-setup' };
+  try {
+    const client = await deps.ensureHealthyClient();
+    const creds = await client.listCredentials();
+    if (creds.length === 0) return { state: 'needs-setup' };
+    await deps.markSetupCompleted();
+    return { state: 'ready' };
+  } catch (err) {
+    return { state: 'gateway-failed', error: err instanceof Error ? err.message : String(err) };
+  }
 }

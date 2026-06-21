@@ -20,3 +20,11 @@ export type {
   LlmScannerOptions,
 } from './security.js';
 export { isValidSkillName } from './validate.js';
+export {
+  SkillOpError,
+  createSkillInDir,
+  updateSkillBody,
+  installSkillToDir,
+  removeSkillFromDir,
+} from './manage.js';
+export type { SkillOpCode, WrittenSkill, InstalledSkill } from './manage.js';

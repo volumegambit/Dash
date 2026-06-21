@@ -61,4 +61,21 @@ describe('applySupportedFilter', () => {
   it('returns empty array for empty input', () => {
     expect(applySupportedFilter([])).toEqual([]);
   });
+
+  it('drops Google non-chat modalities that match a broad allow pattern', () => {
+    // gemini-2.5-flash-image / -preview-tts / -embedding all match a broad
+    // gemini-* allow pattern but are excluded via EXCLUDED_MODELS; the plain
+    // chat models must survive.
+    const raw: RawModel[] = [
+      { provider: 'google', id: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash' },
+      { provider: 'google', id: 'gemini-2.5-flash-image', label: 'Nano Banana' },
+      { provider: 'google', id: 'gemini-2.5-pro-preview-tts', label: 'TTS' },
+      { provider: 'google', id: 'gemini-embedding-001', label: 'Embedding' },
+      { provider: 'google', id: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro' },
+    ];
+    expect(applySupportedFilter(raw).map((m) => m.value)).toEqual([
+      'google/gemini-2.5-pro',
+      'google/gemini-2.5-flash',
+    ]);
+  });
 });
