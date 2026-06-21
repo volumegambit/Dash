@@ -6,3 +6,10 @@ export type {
   PluginRecord,
   PluginStatus,
 } from './types.js';
+export {
+  MANIFEST_DIR,
+  MANIFEST_FILENAME,
+  readManifest,
+  resolveSkillDirs,
+  validateManifest,
+} from './manifest.js';
