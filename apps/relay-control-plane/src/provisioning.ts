@@ -1,4 +1,4 @@
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import type { DialTokenSigner } from './dial-token-signer.js';
 import type { RelayAdminClient } from './relay-admin-client.js';
 import type { GatewayRecord, Store } from './store.js';
@@ -8,6 +8,11 @@ export interface CreatedGateway {
   gatewayId: string;
   subdomain: string;
   dialToken: string;
+}
+
+/** Result of provisioning a pairing: the one-time credential for the device. */
+export interface CreatedPairing {
+  credential: string;
 }
 
 /** Collaborators the {@link ProvisioningService} orchestrates. */
@@ -68,9 +73,60 @@ export class ProvisioningService {
     await this.#relay.revokeGateway(accountId, gatewayId);
     return true;
   }
+
+  /**
+   * Provision a pairing credential for one of `accountId`'s gateways. Ownership
+   * is enforced first (the gateway must belong to the caller) — a cross-account
+   * or unknown-gateway request throws and never reaches the relay. The relay
+   * mints the credential; only its SHA-256 hash is persisted, never the raw
+   * secret, which is returned once to the caller.
+   */
+  async createPairing(
+    accountId: string,
+    gatewayId: string,
+    deviceLabel?: string,
+  ): Promise<CreatedPairing> {
+    const gateway = this.#store.getGateway(gatewayId);
+    if (!gateway || gateway.accountId !== accountId) {
+      throw new Error(`gateway ${gatewayId} not found for account ${accountId}`);
+    }
+    const credential = await this.#relay.provisionPairing(accountId, gatewayId);
+    this.#store.addPairing({
+      id: generatePairingId(),
+      gatewayId,
+      credentialHash: sha256(credential),
+      deviceLabel: deviceLabel ?? null,
+    });
+    return { credential };
+  }
+
+  /**
+   * Revoke a pairing. Ownership is checked in the store first; only on a real
+   * revocation does the relay invalidate the credential. Returns false (and
+   * skips the relay) when the caller does not own the gateway or the pairing is
+   * unknown.
+   */
+  async deletePairing(accountId: string, gatewayId: string, pairingId: string): Promise<boolean> {
+    const gateway = this.#store.getGateway(gatewayId);
+    if (!gateway || gateway.accountId !== accountId) return false;
+    const revoked = this.#store.revokePairing(gatewayId, pairingId);
+    if (!revoked) return false;
+    await this.#relay.revokePairing(accountId, gatewayId);
+    return true;
+  }
 }
 
 /** A DNS-safe, lowercase `gw-<hex>` id well under the 63-char label limit. */
 function generateGatewayId(): string {
   return `gw-${randomBytes(12).toString('hex')}`;
+}
+
+/** A unique pairing id. */
+function generatePairingId(): string {
+  return `pr-${randomBytes(12).toString('hex')}`;
+}
+
+/** SHA-256 hex digest — the only form a credential is stored in at rest. */
+function sha256(value: string): string {
+  return createHash('sha256').update(value).digest('hex');
 }
