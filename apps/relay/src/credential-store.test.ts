@@ -43,16 +43,28 @@ describe('PairingCredentialStore', () => {
     expect(store.revoke('gw-1', a)).toBe(false);
   });
 
-  it('caps stored credentials per gateway, evicting the oldest', () => {
+  it('caps stored credentials per gateway, evicting the never-validated oldest', () => {
     const store = new PairingCredentialStore(3); // small cap for the test
     const first = store.provision('gw-1');
     const second = store.provision('gw-1');
     store.provision('gw-1');
     const fourth = store.provision('gw-1'); // exceeds the cap of 3
 
-    expect(store.isValid('gw-1', first)).toBe(false); // oldest evicted
+    expect(store.isValid('gw-1', first)).toBe(false); // oldest, never validated → evicted
     expect(store.isValid('gw-1', second)).toBe(true); // still within the window
     expect(store.isValid('gw-1', fourth)).toBe(true); // newest kept
+  });
+
+  it('evicts least-recently-validated, sparing an actively-connecting device', () => {
+    const store = new PairingCredentialStore(2);
+    const active = store.provision('gw-1'); // order: active
+    const orphan = store.provision('gw-1'); // order: active, orphan
+    expect(store.isValid('gw-1', active)).toBe(true); // used → order: orphan, active
+    const fresh = store.provision('gw-1'); // size 3 > 2 → evict the front (orphan)
+
+    expect(store.isValid('gw-1', orphan)).toBe(false); // never-validated orphan evicted
+    expect(store.isValid('gw-1', active)).toBe(true); // active device kept despite being older
+    expect(store.isValid('gw-1', fresh)).toBe(true);
   });
 
   it('revokeAll drops every credential for a gateway', () => {

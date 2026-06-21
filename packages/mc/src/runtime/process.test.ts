@@ -801,6 +801,49 @@ describe('GatewaySupervisor.restart()', () => {
     expect(await keychain.getGatewayToken()).toBe('our-token');
   });
 
+  it('respawns with the current relay config (relay applied through restart)', async () => {
+    // After relay:setConfig (zone → options, secrets → keychain), MC calls
+    // restart(); the fresh spawn must carry the relay flags.
+    const store = new GatewayStateStore(tmpDir);
+    await store.write({
+      pid: 55555,
+      startedAt: '2026-01-01T00:00:00Z',
+      port: 9300,
+      channelPort: 9200,
+    });
+    const keychain = new InMemoryKeychainStore();
+    await keychain.setGatewayToken('our-token');
+    await keychain.setChatToken('chat-tok');
+    await keychain.setGatewayId('gw-stable');
+    await keychain.setRelayToken('user-relay-token');
+
+    const spawner = createMockSpawner(77777);
+    const killer = createMockKiller(new Set([55555]));
+    let probeCall = 0;
+    const probe = vi.fn(async (): Promise<PortOwnerProbeResult> => {
+      probeCall++;
+      return probeCall === 1 ? probeOwner('2026-01-01T00:00:00Z', 55555) : { type: 'free' };
+    }) as PortOwnerProbe & ReturnType<typeof vi.fn>;
+
+    const gp = new GatewaySupervisor(
+      makeOptions(tmpDir, {
+        makeGatewayClient: () => createMockGatewayClient(),
+        relayZone: 'relay.example.com',
+      }),
+      spawner,
+      killer,
+      probe,
+      keychain,
+    );
+
+    await gp.restart();
+
+    const args = (spawner.spawn as unknown as { mock: { calls: unknown[][] } }).mock
+      .calls[0][1] as string[];
+    expect(args[args.indexOf('--relay-url') + 1]).toBe('wss://gw-stable.relay.example.com');
+    expect(args[args.indexOf('--relay-token') + 1]).toBe('user-relay-token');
+  });
+
   it('escalates SIGTERM to SIGKILL when the gateway ignores SIGTERM', async () => {
     const store = new GatewayStateStore(tmpDir);
     await store.write({

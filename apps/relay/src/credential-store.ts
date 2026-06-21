@@ -19,8 +19,10 @@ export class PairingCredentialStore {
   /**
    * Cap on stored credentials per gateway. Mission Control mints a credential
    * each time the Pair Device screen opens — even if the user never scans it —
-   * so without a bound those orphans would accumulate forever. We keep the most
-   * recent N (oldest evicted); N is generous for a personal multi-device setup.
+   * so without a bound those orphans would accumulate forever. We keep N per
+   * gateway and evict by least-recently-VALIDATED (see {@link isValid}), so an
+   * unscanned orphan is shed before an actively-connecting device. N is generous
+   * for a personal multi-device setup.
    */
   constructor(private readonly maxPerGateway = 16) {}
 
@@ -33,12 +35,13 @@ export class PairingCredentialStore {
       this.byGateway.set(gatewayId, set);
     }
     set.add(credential);
-    // Evict oldest (Sets preserve insertion order) so orphaned credentials from
-    // re-opening the pairing screen can't grow without bound.
+    // Over the cap → evict the front, which (because isValid re-inserts on a
+    // match) is the credential not validated in the longest time: orphaned
+    // never-scanned codes go before devices that are actually connecting.
     while (set.size > this.maxPerGateway) {
-      const oldest = set.values().next().value;
-      if (oldest === undefined) break;
-      set.delete(oldest);
+      const lruCredential = set.values().next().value;
+      if (lruCredential === undefined) break;
+      set.delete(lruCredential);
     }
     return credential;
   }
@@ -62,7 +65,13 @@ export class PairingCredentialStore {
     const set = this.byGateway.get(gatewayId);
     if (!set || credential.length === 0) return false;
     for (const known of set) {
-      if (safeEqual(known, credential)) return true;
+      if (safeEqual(known, credential)) {
+        // Mark recently used: re-insert moves it to the back of the iteration
+        // order, so the cap evicts least-recently-validated (orphan) codes first.
+        set.delete(known);
+        set.add(known);
+        return true;
+      }
     }
     return false;
   }

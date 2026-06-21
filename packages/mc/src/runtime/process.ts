@@ -463,8 +463,15 @@ export class GatewaySupervisor {
     // the relay token comes from the keychain (user-configured to match the
     // relay, or generated for local dev). Only touched when relay mode is on.
     if (opts.relayUrl || opts.relayZone) {
-      const relayToken = (await this.keychain.getRelayToken()) ?? generateToken();
-      const gatewayId = (await this.keychain.getGatewayId()) ?? generateGatewayId();
+      // Treat an empty stored token/id as absent: clearRelayConfig() persists ''
+      // rather than deleting, and `??` only substitutes null/undefined — so a
+      // bare `??` could spawn with `--relay-token ''` (an empty admission secret).
+      const storedRelayToken = await this.keychain.getRelayToken();
+      const relayToken =
+        storedRelayToken && storedRelayToken.length > 0 ? storedRelayToken : generateToken();
+      const storedGatewayId = await this.keychain.getGatewayId();
+      const gatewayId =
+        storedGatewayId && storedGatewayId.length > 0 ? storedGatewayId : generateGatewayId();
       await this.keychain.setRelayToken(relayToken);
       await this.keychain.setGatewayId(gatewayId);
       const relayUrl = opts.relayUrl ?? `wss://${gatewayId}.${opts.relayZone}`;
@@ -542,6 +549,20 @@ export class GatewaySupervisor {
    * management + chat tokens so that agents keep a stable identity.
    */
   async restart(): Promise<GatewayManagementClient> {
+    // Let any in-flight ensureRunning() settle before we kill + respawn.
+    // Otherwise restart() would (a) join a spawn started BEFORE a config change
+    // (e.g. relay:setConfig set gwOptions.relayZone) and miss the new options,
+    // silently not applying relay mode, or (b) kill a half-spawned gateway
+    // mid-flight (EADDRINUSE / drifted state.json). We discard the result and
+    // respawn fresh below; any ensureRunning started AFTER this point reads the
+    // already-updated options.
+    if (this.ensureRunningPromise) {
+      try {
+        await this.ensureRunningPromise;
+      } catch {
+        // about to kill + respawn regardless
+      }
+    }
     const store = new GatewayStateStore(this.options.gatewayDataDir);
     const state = await store.read();
     if (state) {
