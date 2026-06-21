@@ -11,3 +11,4 @@ export {
   type PairingRecord,
   type Store,
 } from './store.js';
+export { DialTokenSigner } from './dial-token-signer.js';
