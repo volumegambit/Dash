@@ -138,4 +138,49 @@ describe('PluginConfigStore', () => {
     expect(loaded.keep.enabled).toBe(true);
     expect(loaded.nope).toBeUndefined();
   });
+
+  // T-b (F2): concurrent setEnabled('a') + setTrusted('b') both survive. Without
+  // a write queue, each setter does load→mutate→save against a stale snapshot, so
+  // the second save clobbers the first key (read-modify-write race; atomic rename
+  // prevents corruption, not lost updates).
+  it('serializes concurrent writes so neither update is lost', async () => {
+    const store = new PluginConfigStore(dataDir);
+    await Promise.all([store.setEnabled('a', true), store.setTrusted('b', true)]);
+    const loaded = await store.load();
+    expect(loaded.a?.enabled).toBe(true);
+    expect(loaded.b?.trusted).toBe(true);
+  });
+
+  it('serializes a burst of concurrent writes without dropping any entry', async () => {
+    const store = new PluginConfigStore(dataDir);
+    const names = Array.from({ length: 20 }, (_, i) => `p${i}`);
+    await Promise.all(names.map((n) => store.setEnabled(n, true)));
+    const loaded = await store.load();
+    for (const n of names) expect(loaded[n]?.enabled).toBe(true);
+  });
+
+  // F10: the setters/remove must reject the prototype-pollution keys the same way
+  // load() does, so a crafted name can never reparent the on-disk map or pollute
+  // globals (defense-in-depth — not currently route-reachable).
+  it('setEnabled ignores prototype-pollution keys', async () => {
+    const store = new PluginConfigStore(dataDir);
+    await store.setEnabled('__proto__', true);
+    await store.setEnabled('constructor', true);
+    await store.setEnabled('prototype', true);
+    expect(({} as Record<string, unknown>).enabled).toBeUndefined();
+    expect((Object.prototype as Record<string, unknown>).enabled).toBeUndefined();
+    const loaded = await store.load();
+    expect(Object.keys(loaded)).not.toContain('__proto__');
+    expect(Object.keys(loaded)).not.toContain('constructor');
+    expect(Object.keys(loaded)).not.toContain('prototype');
+  });
+
+  it('setTrusted and remove ignore prototype-pollution keys', async () => {
+    const store = new PluginConfigStore(dataDir);
+    await store.setTrusted('__proto__', true);
+    await store.remove('constructor');
+    expect((Object.prototype as Record<string, unknown>).trusted).toBeUndefined();
+    const loaded = await store.load();
+    expect(Object.keys(loaded)).not.toContain('__proto__');
+  });
 });
