@@ -1,6 +1,12 @@
 import { mkdir } from 'node:fs/promises';
-import { ConversationPool, DashAgent } from '@dash/agent';
-import type { AgentBackend, AgentEvent, DashAgentConfig, ImageBlock } from '@dash/agent';
+import { ConversationPool, DashAgent, discoverSkills } from '@dash/agent';
+import type {
+  AgentBackend,
+  AgentEvent,
+  DashAgentConfig,
+  ImageBlock,
+  SkillDiscoveryResult,
+} from '@dash/agent';
 import type { AgentRegistry, GatewayAgentConfig } from './agent-registry.js';
 
 export type BackendFactory = (
@@ -12,6 +18,8 @@ export interface AgentChatCoordinatorOptions {
   registry: AgentRegistry;
   poolMaxSize: number;
   createBackend: BackendFactory;
+  /** Resolve an agent's managed skills directory (for `listSkills`). */
+  managedSkillsDir?: (config: GatewayAgentConfig) => string | undefined;
 }
 
 export interface ChatRequest {
@@ -64,6 +72,8 @@ export interface AgentChatCoordinator {
    * by agent ID independently of the registry.
    */
   evict(agentId: string): Promise<void>;
+  /** List the skills available to an agent (bundled + per-agent). */
+  listSkills(agentId: string): Promise<SkillDiscoveryResult[]>;
   stats(): AgentChatCoordinatorStats;
   stop(): Promise<void>;
 }
@@ -160,6 +170,18 @@ export function createAgentChatCoordinator(
       } finally {
         pool.unpin(request.agentId, request.conversationId);
       }
+    },
+
+    async listSkills(agentId: string): Promise<SkillDiscoveryResult[]> {
+      const entry = registry.get(agentId);
+      if (!entry) return [];
+      // Computed directly (no pool/backend spin-up): skill discovery is a pure
+      // filesystem scan over the managed dir, configured paths, and bundle.
+      return discoverSkills({
+        managedSkillsDir: options.managedSkillsDir?.(entry.config),
+        paths: entry.config.skills?.paths,
+        includeBundled: entry.config.skills?.includeBundled,
+      });
     },
 
     async steer(agentId, conversationId, text, images) {

@@ -1,11 +1,14 @@
 import { existsSync } from 'node:fs';
-import { mkdir, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { mkdir, rm, writeFile } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
 import type { AgentTool, AgentToolResult } from '@earendil-works/pi-agent-core';
 import { Type } from '@sinclair/typebox';
 import type { Static } from '@sinclair/typebox';
 import { generateFrontmatter } from './frontmatter.js';
+import { fetchSkill, parseSkillSource } from './install.js';
+import type { SkillSecurityScanner } from './security.js';
 import type { SkillDiscoveryResult, SkillFrontmatter } from './types.js';
+import { isValidSkillName } from './validate.js';
 
 const loadSkillSchema = Type.Object({
   name: Type.String({ description: 'The skill name to load' }),
@@ -87,11 +90,6 @@ const createSkillSchema = Type.Object({
 });
 
 type CreateSkillInput = Static<typeof createSkillSchema>;
-
-/** Validate a skill name: lowercase alphanumeric + hyphens, max 64 chars */
-function isValidSkillName(name: string): boolean {
-  return /^[a-z0-9][a-z0-9-]*$/.test(name) && name.length <= 64;
-}
 
 /**
  * Create the create_skill tool.
@@ -183,6 +181,146 @@ export function createCreateSkillTool(
         ],
         details: {},
       };
+    },
+  };
+}
+
+/** Build a plain text tool result. */
+function textResult(text: string): AgentToolResult<Record<string, never>> {
+  return { content: [{ type: 'text', text }], details: {} };
+}
+
+const installSkillSchema = Type.Object({
+  source: Type.String({
+    description:
+      'Where to install from: git:owner/repo[/subpath][@ref], an https URL to a SKILL.md, or a local path.',
+  }),
+  name: Type.Optional(
+    Type.String({
+      description: "Optional name override (defaults to the skill's frontmatter name).",
+    }),
+  ),
+});
+
+type InstallSkillInput = Static<typeof installSkillSchema>;
+
+/**
+ * Create the install_skill tool. Fetches a text-only skill from the public
+ * ecosystem (git/URL/local), security-scans it, and writes it to the managed
+ * directory. Fails closed: a dangerous verdict or a scan error blocks install.
+ */
+export function createInstallSkillTool(
+  managedSkillsDir: string,
+  scanner: SkillSecurityScanner,
+  onChange?: () => void | Promise<void>,
+): AgentTool<typeof installSkillSchema> {
+  return {
+    name: 'install_skill',
+    label: 'Install Skill',
+    description:
+      'Install a new skill from the public ecosystem so it becomes available in future turns. Source can be git:owner/repo[/subpath][@ref], an https URL to a SKILL.md, or a local path. The skill is text-only (executable scripts are stripped) and is security-scanned before install; dangerous skills are refused.',
+    parameters: installSkillSchema,
+    execute: async (
+      _toolCallId: string,
+      params: InstallSkillInput,
+    ): Promise<AgentToolResult<Record<string, never>>> => {
+      let fetched: Awaited<ReturnType<typeof fetchSkill>>;
+      try {
+        fetched = await fetchSkill(parseSkillSource(params.source), params.name);
+      } catch (e) {
+        return textResult(`Could not fetch skill: ${(e as Error).message}`);
+      }
+
+      const skillDir = join(managedSkillsDir, fetched.name);
+      if (existsSync(skillDir)) {
+        return textResult(
+          `Skill "${fetched.name}" is already installed. Remove it first to reinstall.`,
+        );
+      }
+
+      // Security scan — fail closed on a dangerous verdict OR a scan error.
+      const skillMd = fetched.files.find((f) => f.path === 'SKILL.md')?.content ?? '';
+      let verdict: Awaited<ReturnType<SkillSecurityScanner>>;
+      try {
+        verdict = await scanner(skillMd);
+      } catch (e) {
+        return textResult(
+          `Skill "${fetched.name}" was not installed: the security scan failed (${(e as Error).message}). Install is blocked when the scan cannot complete.`,
+        );
+      }
+      if (verdict.verdict === 'dangerous') {
+        return textResult(
+          `Refused to install "${fetched.name}": the security scan flagged it as dangerous (${verdict.reasons.join('; ') || 'no details'}).`,
+        );
+      }
+
+      try {
+        await mkdir(skillDir, { recursive: true });
+        for (const file of fetched.files) {
+          const dest = join(skillDir, file.path);
+          await mkdir(dirname(dest), { recursive: true });
+          await writeFile(dest, file.content, 'utf-8');
+        }
+        await writeFile(join(skillDir, '.source'), 'remote', 'utf-8');
+      } catch (e) {
+        await rm(skillDir, { recursive: true, force: true });
+        return textResult(`Failed to write skill "${fetched.name}": ${(e as Error).message}`);
+      }
+
+      await onChange?.();
+
+      const warning =
+        verdict.verdict === 'suspicious'
+          ? ` Note: the security scan flagged it as suspicious (${verdict.reasons.join('; ')}). Review it before relying on it.`
+          : '';
+      return textResult(`Installed skill "${fetched.name}". It's available now.${warning}`);
+    },
+  };
+}
+
+const removeSkillSchema = Type.Object({
+  name: Type.String({ description: 'The skill name to remove.' }),
+});
+
+type RemoveSkillInput = Static<typeof removeSkillSchema>;
+
+/**
+ * Create the remove_skill tool. Deletes a managed/installed/created skill.
+ * Bundled skills are read-only and cannot be removed.
+ */
+export function createRemoveSkillTool(
+  managedSkillsDir: string,
+  listSkillsFn: () => Promise<SkillDiscoveryResult[]>,
+  onChange?: () => void | Promise<void>,
+): AgentTool<typeof removeSkillSchema> {
+  return {
+    name: 'remove_skill',
+    label: 'Remove Skill',
+    description:
+      'Uninstall a previously installed or created skill by name. Bundled skills cannot be removed.',
+    parameters: removeSkillSchema,
+    execute: async (
+      _toolCallId: string,
+      params: RemoveSkillInput,
+    ): Promise<AgentToolResult<Record<string, never>>> => {
+      const match = (await listSkillsFn()).find((s) => s.name === params.name);
+      if (!match) {
+        return textResult(`Skill "${params.name}" not found.`);
+      }
+      if (match.source === 'bundled') {
+        return textResult(
+          `Skill "${params.name}" is a bundled skill and cannot be removed. You can shadow it by installing a skill with the same name.`,
+        );
+      }
+      const skillDir = join(managedSkillsDir, params.name);
+      if (!existsSync(skillDir)) {
+        return textResult(
+          `Skill "${params.name}" is not in this agent's managed directory, so it can't be removed here.`,
+        );
+      }
+      await rm(skillDir, { recursive: true, force: true });
+      await onChange?.();
+      return textResult(`Removed skill "${params.name}".`);
     },
   };
 }

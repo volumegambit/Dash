@@ -1050,3 +1050,75 @@ describe('PiAgentBackend model fallback chain', () => {
     await backend.stop();
   });
 });
+
+describe('PiAgentBackend skill tool registration', () => {
+  it('registers install_skill and remove_skill when allow-listed with a managed dir', async () => {
+    const { createAgentSession } = await import('@earendil-works/pi-coding-agent');
+    const setActiveToolsByName = vi.fn();
+    vi.mocked(createAgentSession).mockResolvedValueOnce({
+      session: {
+        dispose: vi.fn(),
+        subscribe: vi.fn(),
+        prompt: vi.fn(),
+        abort: vi.fn(),
+        setModel: vi.fn().mockResolvedValue(undefined),
+        agent: { setSystemPrompt: vi.fn() },
+        getActiveToolNames: vi.fn(() => []),
+        setActiveToolsByName,
+        // biome-ignore lint/suspicious/noExplicitAny: test mock for partial session object
+      } as any,
+      // biome-ignore lint/suspicious/noExplicitAny: test mock
+      extensionsResult: {} as any,
+    });
+
+    const backend = new PiAgentBackend(
+      {
+        model: 'anthropic/claude-sonnet-4-20250514',
+        systemPrompt: '',
+        tools: ['install_skill', 'remove_skill'],
+      },
+      { anthropic: 'k' },
+      undefined,
+      undefined,
+      '/tmp/dash-managed-skills',
+    );
+    await backend.start('/tmp/test');
+
+    const activated = setActiveToolsByName.mock.calls[0]?.[0] as string[];
+    expect(activated).toContain('install_skill');
+    expect(activated).toContain('remove_skill');
+  });
+
+  it('omits install_skill/remove_skill when they are not allow-listed', async () => {
+    const { createAgentSession } = await import('@earendil-works/pi-coding-agent');
+    const setActiveToolsByName = vi.fn();
+    vi.mocked(createAgentSession).mockResolvedValueOnce({
+      session: {
+        dispose: vi.fn(),
+        subscribe: vi.fn(),
+        prompt: vi.fn(),
+        abort: vi.fn(),
+        setModel: vi.fn().mockResolvedValue(undefined),
+        agent: { setSystemPrompt: vi.fn() },
+        getActiveToolNames: vi.fn(() => []),
+        setActiveToolsByName,
+        // biome-ignore lint/suspicious/noExplicitAny: test mock for partial session object
+      } as any,
+      // biome-ignore lint/suspicious/noExplicitAny: test mock
+      extensionsResult: {} as any,
+    });
+
+    const backend = new PiAgentBackend(
+      { model: 'anthropic/claude-sonnet-4-20250514', systemPrompt: '', tools: ['read'] },
+      { anthropic: 'k' },
+      undefined,
+      undefined,
+      '/tmp/dash-managed-skills',
+    );
+    await backend.start('/tmp/test');
+
+    const activated = setActiveToolsByName.mock.calls[0]?.[0] as string[];
+    expect(activated).not.toContain('install_skill');
+    expect(activated).not.toContain('remove_skill');
+  });
+});

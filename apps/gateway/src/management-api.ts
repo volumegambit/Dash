@@ -170,6 +170,9 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
       chat(channelId, conversationId, text) {
         return agents.chat({ agentId, conversationId, channelId, text });
       },
+      listSkills() {
+        return agents.listSkills(agentId);
+      },
     };
   }
 

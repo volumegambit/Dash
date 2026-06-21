@@ -5,6 +5,8 @@ description: "Reusable instructions that agents discover and load on demand."
 
 Skills are reusable instructions that persist across conversations. An agent can load a skill when it recognizes a matching task, giving it step-by-step guidance without you repeating yourself every time.
 
+Dash ships with a **bundled library** of ready-made skills (research, drafting, summarizing, code review, and more), and agents can **install more** from the public skill ecosystem — by chat or config. Users can also list and run skills directly from a chat channel with slash commands.
+
 ## How skills work
 
 Each skill is a directory containing a `SKILL.md` file with metadata (frontmatter) and instructions (content). When an agent starts processing a message, it sees a compact index of available skills in its system prompt — just names and descriptions. When it identifies a relevant skill, it loads the full instructions on demand.
@@ -77,7 +79,7 @@ Write the `description` as if answering "when should an agent use this?" — it'
 
 ## Skill storage
 
-Skills are discovered from two locations:
+Skills are discovered from three tiers, in precedence order — a per-agent skill overrides a bundled skill with the same name:
 
 ### Managed directory
 
@@ -107,6 +109,20 @@ You can add extra directories to scan via the `skills.paths` config:
 
 If a path is inside the agent's workspace, the agent's file tools can read and write to it. This is an opt-in choice for power users who want to manage skills alongside project files.
 
+### Bundled library
+
+Dash ships a curated library of ready-made skills covering assistant, dev, creative, and communication tasks. These are available to every agent by default and are read-only — to stop using one, install a same-named skill to shadow it, or disable the whole library:
+
+```json
+{
+  "agents": {
+    "default": {
+      "skills": { "includeBundled": false }
+    }
+  }
+}
+```
+
 ## Agent skill creation
 
 Agents can create their own skills when given the `create_skill` tool. This is opt-in — include `create_skill` in the agent's tool list when deploying.
@@ -123,15 +139,51 @@ Agent-created skills:
 The `create_skill` tool lets the agent write persistent instructions that affect its own future behavior. Only enable it for agents you trust to self-modify responsibly.
 </Warning>
 
+## Installing skills from the ecosystem
+
+Skills use the open `SKILL.md` standard, so an agent can install skills published by the wider ecosystem (for example `anthropics/skills`, `openai/skills`, or `NousResearch/hermes-agent`). Give an agent the `install_skill` tool, then ask it in chat:
+
+> "Install the arxiv skill from NousResearch/hermes-agent"
+
+Skills can be installed from any of these sources:
+
+- **Git** — `git:owner/repo[/subpath][@ref]` (e.g. `git:NousResearch/hermes-agent/skills/research/arxiv@main`)
+- **URL** — a direct link to a `SKILL.md`
+- **Local path** — a folder on the gateway host
+
+Installed skills land in the managed directory and are labeled **Remote**.
+
+<Warning>
+Installing a skill adds instructions the agent will follow. Two safeguards keep this safe:
+- Skills are **text-only** — any bundled scripts are stripped on install, so an installed skill can never run code on your gateway.
+- Every install passes through a **security scan** that refuses skills containing prompt-injection, secret-exfiltration, or destructive instructions. If the scan can't run, the install is refused.
+
+Only enable `install_skill` for agents whose audience you trust.
+</Warning>
+
+Use the `remove_skill` tool to uninstall a skill the agent installed or created. Bundled skills can't be removed.
+
+## Chat commands
+
+When an agent serves a messaging channel, users can manage skills inline:
+
+| Command | What it does |
+|---------|--------------|
+| `/skills` | List the agent's available skills |
+| `/skill:<name> [input]` | Run a specific skill (e.g. `/skill:summarize-thread`) |
+| `/help` | Show the available commands |
+
+Natural language works too — "what skills do you have?" or "install the arxiv skill from …" — when the agent has the relevant tools.
+
 ## Managing skills in Mission Control
 
-The Skills tab on the agent detail page lets you:
+Mission Control's deploy / edit-agent wizard has a **Skills** tool group where you choose what an agent can do with skills:
 
-- **View** all discovered skills with their source (Managed / Agent / Remote)
-- **Edit** local skill content inline
-- **Create** new skills with a name, description, and content
-- **Configure** discovery paths and remote URLs
-- **Delete** skills you no longer need
+- **Create Skill** — let the agent save new skills from a conversation
+- **Install Skill** — let the agent install skills from the ecosystem (git / URL / local)
+- **Remove Skill** — let the agent uninstall skills it created or installed
+
+Enable the tools you want, then deploy. The skills themselves are managed over chat (`/skills` to list, `/skill:<name>` to run, or plain language to install and remove) and on disk in the managed directory — there is no dedicated skills page in Mission Control yet.
 
 Changes take effect on the agent's next message — no restart needed.
 
@@ -161,3 +213,20 @@ Creates a new skill in the managed directory. Only available when included in th
 | `context` | `string` | No | `"fork"` for subagent execution |
 | `allowed_tools` | `string[]` | No | Tool restrictions |
 | `dependencies` | `string[]` | No | Related skills to load together |
+
+### `install_skill`
+
+Installs a text-only skill from a git repo, URL, or local path, after a security scan. Only available when included in the agent's tool list.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `source` | `string` | Yes | `git:owner/repo[/subpath][@ref]`, an https URL to a `SKILL.md`, or a local path |
+| `name` | `string` | No | Override the installed skill's name |
+
+### `remove_skill`
+
+Uninstalls a managed, installed, or agent-created skill. Bundled skills cannot be removed. Only available when included in the agent's tool list.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `name` | `string` | Yes | The skill name to remove |

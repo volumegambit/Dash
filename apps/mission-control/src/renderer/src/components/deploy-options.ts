@@ -26,6 +26,8 @@ export const TOOL_DESCRIPTIONS: Record<string, string> = {
   web_search: 'Search the internet for information',
   web_fetch: 'Download content from web pages',
   create_skill: 'Create reusable skills the agent remembers across conversations',
+  install_skill: 'Let the agent install new skills from a git repo, URL, or local path',
+  remove_skill: 'Let the agent uninstall skills it previously installed or created',
   mcp: 'Connect to external MCP servers for additional tools',
   mcp_add_server: 'Let the agent connect to new external tool servers',
   mcp_list_servers: 'Let the agent see which external tool servers are available',
@@ -66,8 +68,8 @@ export const TOOL_GROUPS: ToolGroup[] = [
   },
   {
     name: 'Skills',
-    description: 'Create and manage reusable agent skills',
-    tools: ['create_skill'],
+    description: 'Create, install, and manage reusable agent skills',
+    tools: ['create_skill', 'install_skill', 'remove_skill'],
   },
   {
     name: 'Manage Connectors / MCP Servers',
@@ -90,6 +92,8 @@ export const AVAILABLE_TOOLS: ToolOption[] = [
   { value: 'web_search', label: 'Web Search', description: TOOL_DESCRIPTIONS.web_search },
   { value: 'web_fetch', label: 'Web Fetch', description: TOOL_DESCRIPTIONS.web_fetch },
   { value: 'create_skill', label: 'Create Skill', description: TOOL_DESCRIPTIONS.create_skill },
+  { value: 'install_skill', label: 'Install Skill', description: TOOL_DESCRIPTIONS.install_skill },
+  { value: 'remove_skill', label: 'Remove Skill', description: TOOL_DESCRIPTIONS.remove_skill },
   { value: 'mcp', label: 'MCP', description: TOOL_DESCRIPTIONS.mcp },
   {
     value: 'mcp_add_server',

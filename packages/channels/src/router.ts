@@ -1,4 +1,5 @@
 import type { AgentClient } from '@dash/agent';
+import { SLASH_HELP, formatSkillList, parseSlashCommand, skillPrompt } from './commands.js';
 import type {
   ChannelAdapter,
   InboundMessage,
@@ -122,8 +123,30 @@ export class MessageRouter {
 
     this.logger?.({ ...baseLog, outcome: 'routed', agentName: matchedRule.agentName });
 
+    // Slash-command shim: handle a known command set deterministically before
+    // the message reaches the LLM. Any error falls through to normal routing.
+    let promptText = msg.text;
+    try {
+      const command = parseSlashCommand(msg.text);
+      if (command?.kind === 'skills') {
+        const skills = (await agent.listSkills?.()) ?? [];
+        await adapter.send(msg.conversationId, { text: formatSkillList(skills) });
+        return;
+      }
+      if (command?.kind === 'help') {
+        await adapter.send(msg.conversationId, { text: SLASH_HELP });
+        return;
+      }
+      if (command?.kind === 'skill') {
+        promptText = skillPrompt(command.name, command.input);
+      }
+    } catch (err) {
+      console.warn(`[router] slash-command shim error: ${(err as Error).message}`);
+      promptText = msg.text;
+    }
+
     let fullResponse = '';
-    for await (const event of agent.chat(msg.channelId, msg.conversationId, msg.text)) {
+    for await (const event of agent.chat(msg.channelId, msg.conversationId, promptText)) {
       if (event.type === 'response') {
         fullResponse = event.content;
       } else if (event.type === 'error') {
