@@ -12,6 +12,10 @@ describe('parseRelayFlags', () => {
     );
   });
 
+  it('parses --admin-secret', () => {
+    expect(parseRelayFlags(['--admin-secret', 'sek'])).toEqual({ adminSecret: 'sek' });
+  });
+
   it('ignores flags without values', () => {
     expect(parseRelayFlags(['--relay-token'])).toEqual({});
   });
@@ -41,6 +45,18 @@ describe('loadRelayConfig', () => {
         env: { RELAY_PORT: '9100', RELAY_TOKEN: 'envtoken' },
       }),
     ).toEqual({ port: 9200, host: '127.0.0.1', relayToken: 'flagtoken' });
+  });
+
+  it('reads the optional admin secret from flag or env', () => {
+    expect(
+      loadRelayConfig({ argv: ['--admin-secret', 'flagsek'], env: { RELAY_TOKEN: 't' } })
+        .adminSecret,
+    ).toBe('flagsek');
+    expect(
+      loadRelayConfig({ env: { RELAY_TOKEN: 't', RELAY_ADMIN_SECRET: 'envsek' } }).adminSecret,
+    ).toBe('envsek');
+    // Absent → undefined (admin API disabled).
+    expect(loadRelayConfig({ env: { RELAY_TOKEN: 't' } }).adminSecret).toBeUndefined();
   });
 
   it('throws when no relay token is provided', () => {

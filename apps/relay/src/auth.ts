@@ -1,4 +1,5 @@
 import { timingSafeEqual } from 'node:crypto';
+import type { PairingCredentialStore } from './credential-store.js';
 
 /**
  * Auth decisions the relay needs. The real per-gateway implementation lands in
@@ -33,5 +34,18 @@ export function staticRelayAuth(relayToken: string): RelayDeps {
   return {
     relayTokenValid: (token) => safeEqual(token, relayToken),
     pairingCredentialValid: () => true,
+  };
+}
+
+/**
+ * Production auth: the shared relay token still gates gateway registration
+ * (constant-time), and the per-pairing credential is validated against a real
+ * store provisioned via the relay's admin API. Revoking a credential there
+ * invalidates the pairing on the next request.
+ */
+export function credentialStoreAuth(relayToken: string, store: PairingCredentialStore): RelayDeps {
+  return {
+    relayTokenValid: (token) => safeEqual(token, relayToken),
+    pairingCredentialValid: (gatewayId, credential) => store.isValid(gatewayId, credential),
   };
 }

@@ -1,7 +1,8 @@
 import http from 'node:http';
 import type { Duplex } from 'node:stream';
 import { type RawData, type WebSocket, WebSocketServer } from 'ws';
-import type { RelayDeps } from './auth.js';
+import { type RelayDeps, safeEqual } from './auth.js';
+import type { PairingCredentialStore } from './credential-store.js';
 import {
   type Frame,
   type Target,
@@ -28,6 +29,24 @@ export interface RelayLimits {
   ratePerSec?: number;
   /** Burst capacity per gateway (token bucket size). Default 100. */
   rateBurst?: number;
+}
+
+/** Admin API config for the pairing-credential lifecycle (Bearer-gated). */
+export interface RelayAdminConfig {
+  /** Master secret a caller (Mission Control) presents to the /admin routes. */
+  secret: string;
+  /** Backing store the admin routes provision/revoke against. */
+  store: PairingCredentialStore;
+}
+
+export interface RelayServerOptions extends RelayLimits {
+  /**
+   * When set, the relay exposes a Bearer-gated admin API on the same listener:
+   *   POST /admin/pairings          { gatewayId }            → { credential }
+   *   POST /admin/pairings/revoke   { gatewayId, credential? } → { ok: true }
+   * Mission Control calls these to provision/revoke per-device pairings.
+   */
+  admin?: RelayAdminConfig;
 }
 
 /** WebSocket close code for a gateway that presents a bad relay token. */
@@ -58,14 +77,21 @@ interface GatewayConn {
  * against its loopback servers. The relay pipes opaque bytes — it never inspects
  * or persists app payloads.
  */
-export function createRelayServer(deps: RelayDeps, limits: RelayLimits = {}): RelayServer {
+export function createRelayServer(deps: RelayDeps, options: RelayServerOptions = {}): RelayServer {
   const gateways = new Map<string, GatewayConn>();
   const wss = new WebSocketServer({ noServer: true });
 
-  const maxStreams = limits.maxStreamsPerGateway ?? 256;
-  const limiter = new RateLimiter(limits.rateBurst ?? 100, limits.ratePerSec ?? 50);
+  const maxStreams = options.maxStreamsPerGateway ?? 256;
+  const limiter = new RateLimiter(options.rateBurst ?? 100, options.ratePerSec ?? 50);
+  const admin = options.admin;
 
   const httpServer = http.createServer((req, res) => {
+    // The admin API shares the listener but is matched by path before any
+    // Host-based gateway routing, and is gated by the admin Bearer secret.
+    if ((req.url ?? '/').split('?')[0].startsWith('/admin/')) {
+      handleAdmin(admin, req, res);
+      return;
+    }
     handlePhoneHttp(gateways, deps, limiter, maxStreams, req, res);
   });
 
@@ -366,6 +392,82 @@ function toBuffer(data: RawData): Buffer {
   if (Buffer.isBuffer(data)) return data;
   if (Array.isArray(data)) return Buffer.concat(data);
   return Buffer.from(data as ArrayBuffer);
+}
+
+/**
+ * Bearer-gated admin API for the pairing-credential lifecycle. Matched by the
+ * `/admin/` path prefix (ahead of gateway routing), so Host is irrelevant — a
+ * caller reaches it at any subdomain that resolves to the relay.
+ */
+function handleAdmin(
+  admin: RelayAdminConfig | undefined,
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+): void {
+  if (!admin) {
+    respondJson(res, 404, { error: 'Admin API not enabled' });
+    return;
+  }
+  const token = bearer(req.headers.authorization);
+  if (!token || !safeEqual(token, admin.secret)) {
+    respondJson(res, 401, { error: 'Unauthorized' });
+    return;
+  }
+  if (req.method !== 'POST') {
+    respondJson(res, 405, { error: 'Method Not Allowed' });
+    return;
+  }
+  const path = (req.url ?? '/').split('?')[0];
+  readJsonBody(req)
+    .then((body) => {
+      const gatewayId = stringField(body, 'gatewayId');
+      if (path === '/admin/pairings') {
+        if (!gatewayId) return respondJson(res, 400, { error: 'gatewayId required' });
+        const credential = admin.store.provision(gatewayId);
+        return respondJson(res, 200, { gatewayId, credential });
+      }
+      if (path === '/admin/pairings/revoke') {
+        if (!gatewayId) return respondJson(res, 400, { error: 'gatewayId required' });
+        const credential = stringField(body, 'credential');
+        if (credential) admin.store.revoke(gatewayId, credential);
+        else admin.store.revokeAll(gatewayId);
+        return respondJson(res, 200, { ok: true });
+      }
+      respondJson(res, 404, { error: 'Unknown admin route' });
+    })
+    .catch(() => respondJson(res, 400, { error: 'Invalid JSON body' }));
+}
+
+/** Read a request body as JSON ({} when empty); caps size to 64 KiB. */
+function readJsonBody(req: http.IncomingMessage): Promise<unknown> {
+  return new Promise((resolve, reject) => {
+    let data = '';
+    req.on('data', (chunk: Buffer) => {
+      data += chunk;
+      if (data.length > 64 * 1024) req.destroy();
+    });
+    req.on('end', () => {
+      if (!data) return resolve({});
+      try {
+        resolve(JSON.parse(data));
+      } catch {
+        reject(new Error('invalid JSON'));
+      }
+    });
+    req.on('error', reject);
+  });
+}
+
+function respondJson(res: http.ServerResponse, status: number, body: unknown): void {
+  res.writeHead(status, { 'content-type': 'application/json' });
+  res.end(JSON.stringify(body));
+}
+
+/** Extract a non-empty string field from a parsed JSON object. */
+function stringField(body: unknown, key: string): string | undefined {
+  if (typeof body !== 'object' || body === null) return undefined;
+  const value = (body as Record<string, unknown>)[key];
+  return typeof value === 'string' && value.length > 0 ? value : undefined;
 }
 
 function bearer(authHeader: string | undefined): string | undefined {

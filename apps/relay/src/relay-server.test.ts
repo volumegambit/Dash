@@ -1,8 +1,15 @@
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { WebSocket } from 'ws';
+import { credentialStoreAuth } from './auth.js';
+import { PairingCredentialStore } from './credential-store.js';
 import { type Frame, decodeFrame, encodeChunk, encodeFrame } from './mux.js';
-import { type RelayDeps, type RelayServer, createRelayServer } from './relay-server.js';
+import {
+  type RelayDeps,
+  type RelayServer,
+  type RelayServerOptions,
+  createRelayServer,
+} from './relay-server.js';
 
 const deps = {
   relayTokenValid: (t: string) => t === 'good',
@@ -57,6 +64,49 @@ function httpGet(
     );
     req.on('error', reject);
     req.end();
+  });
+}
+
+function httpPost(
+  path: string,
+  headers: Record<string, string>,
+  body?: unknown,
+): Promise<{ status: number; body: string }> {
+  return new Promise((resolve, reject) => {
+    const payload = body === undefined ? '' : JSON.stringify(body);
+    const req = http.request(
+      {
+        hostname: '127.0.0.1',
+        port,
+        path,
+        method: 'POST',
+        headers: { 'content-type': 'application/json', ...headers },
+      },
+      (res) => {
+        let data = '';
+        res.on('data', (c) => {
+          data += c;
+        });
+        res.on('end', () => resolve({ status: res.statusCode ?? 0, body: data }));
+      },
+    );
+    req.on('error', reject);
+    if (payload) req.write(payload);
+    req.end();
+  });
+}
+
+/** Make a gateway reply 200 'ok' to every proxied request. */
+function respondOk(gw: WebSocket): void {
+  gw.on('message', (raw: Buffer) => {
+    const f = decodeFrame(raw.toString());
+    if (f.t === 'open') {
+      gw.send(encodeFrame({ t: 'head', streamId: f.streamId, status: 200, headers: {} }));
+      gw.send(
+        encodeFrame({ t: 'data', streamId: f.streamId, chunk: encodeChunk(Buffer.from('ok')) }),
+      );
+      gw.send(encodeFrame({ t: 'end', streamId: f.streamId }));
+    }
   });
 }
 
@@ -194,13 +244,13 @@ describe('relay-server', () => {
     expect(code).toBe(4001);
   });
 
-  /** Swap the beforeEach server for one with custom deps and/or limits. */
+  /** Swap the beforeEach server for one with custom deps and/or options. */
   async function restartWith(
     customDeps: RelayDeps,
-    limits: { maxStreamsPerGateway?: number; ratePerSec?: number; rateBurst?: number } = {},
+    options: RelayServerOptions = {},
   ): Promise<void> {
     await server.close();
-    server = createRelayServer(customDeps, limits);
+    server = createRelayServer(customDeps, options);
     await new Promise<void>((r) => server.httpServer.listen(0, '127.0.0.1', () => r()));
     port = (server.httpServer.address() as AddressInfo).port;
   }
@@ -212,6 +262,15 @@ describe('relay-server', () => {
     rateBurst?: number;
   }): Promise<void> {
     return restartWith(deps, limits);
+  }
+
+  /** Stand up a relay backed by a real credential store + admin API. */
+  async function restartWithCredentialStore(): Promise<PairingCredentialStore> {
+    const store = new PairingCredentialStore();
+    await restartWith(credentialStoreAuth('good', store), {
+      admin: { secret: 'admin-secret', store },
+    });
+    return store;
   }
 
   it('throttles phone HTTP with 429 once the per-gateway rate limit is exhausted', async () => {
@@ -325,6 +384,82 @@ describe('relay-server', () => {
     });
     expect(status).toBe(200);
     expect(body).toBe('ok');
+    gw.close();
+  });
+
+  it('provisions a pairing credential via the admin API and enforces it end to end', async () => {
+    await restartWithCredentialStore();
+    const gw = await connectGateway('g1', 'good');
+    respondOk(gw);
+    await waitFor(() => server.hasGateway('g1'));
+
+    const prov = await httpPost(
+      '/admin/pairings',
+      { authorization: 'Bearer admin-secret' },
+      { gatewayId: 'g1' },
+    );
+    expect(prov.status).toBe(200);
+    const { credential } = JSON.parse(prov.body) as { credential: string };
+    expect(credential).toBeTruthy();
+
+    // The provisioned credential lets the phone through.
+    const ok = await httpGet('/agents', {
+      host: 'g1.relay.local',
+      'x-dash-relay-credential': credential,
+    });
+    expect(ok.status).toBe(200);
+
+    // No credential (or a wrong one) is rejected with 401.
+    const denied = await httpGet('/agents', { host: 'g1.relay.local' });
+    expect(denied.status).toBe(401);
+    gw.close();
+  });
+
+  it('rejects admin calls without the admin secret', async () => {
+    await restartWithCredentialStore();
+    const noAuth = await httpPost('/admin/pairings', {}, { gatewayId: 'g1' });
+    expect(noAuth.status).toBe(401);
+    const badAuth = await httpPost(
+      '/admin/pairings',
+      { authorization: 'Bearer wrong' },
+      { gatewayId: 'g1' },
+    );
+    expect(badAuth.status).toBe(401);
+  });
+
+  it('revoke invalidates a pairing credential immediately', async () => {
+    await restartWithCredentialStore();
+    const gw = await connectGateway('g1', 'good');
+    respondOk(gw);
+    await waitFor(() => server.hasGateway('g1'));
+
+    const prov = await httpPost(
+      '/admin/pairings',
+      { authorization: 'Bearer admin-secret' },
+      { gatewayId: 'g1' },
+    );
+    const { credential } = JSON.parse(prov.body) as { credential: string };
+
+    // Works before revoke.
+    const before = await httpGet('/agents', {
+      host: 'g1.relay.local',
+      'x-dash-relay-credential': credential,
+    });
+    expect(before.status).toBe(200);
+
+    const rev = await httpPost(
+      '/admin/pairings/revoke',
+      { authorization: 'Bearer admin-secret' },
+      { gatewayId: 'g1', credential },
+    );
+    expect(rev.status).toBe(200);
+
+    // Rejected immediately after revoke.
+    const after = await httpGet('/agents', {
+      host: 'g1.relay.local',
+      'x-dash-relay-credential': credential,
+    });
+    expect(after.status).toBe(401);
     gw.close();
   });
 });

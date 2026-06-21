@@ -8,6 +8,12 @@ export interface RelayConfig {
   host: string;
   /** Shared admission secret a gateway must present on dial-in. */
   relayToken: string;
+  /**
+   * Master secret for the admin API (pairing-credential lifecycle). When set,
+   * the relay validates real per-pairing credentials and exposes /admin/*; when
+   * absent, pairing credentials are accepted permissively (dev mode).
+   */
+  adminSecret?: string;
 }
 
 /** A subset of {@link RelayConfig} parsed from CLI flags. */
@@ -15,6 +21,7 @@ export interface RelayFlags {
   port?: number;
   host?: string;
   relayToken?: string;
+  adminSecret?: string;
 }
 
 export interface RelayConfigSources {
@@ -37,6 +44,9 @@ export function parseRelayFlags(argv: string[]): RelayFlags {
     } else if (argv[i] === '--relay-token' && argv[i + 1]) {
       flags.relayToken = argv[i + 1];
       i++;
+    } else if (argv[i] === '--admin-secret' && argv[i + 1]) {
+      flags.adminSecret = argv[i + 1];
+      i++;
     }
   }
   return flags;
@@ -54,10 +64,11 @@ export function loadRelayConfig(sources: RelayConfigSources = {}): RelayConfig {
   const port = flags.port ?? (env.RELAY_PORT ? Number(env.RELAY_PORT) : DEFAULT_PORT);
   const host = flags.host ?? env.RELAY_HOST ?? DEFAULT_HOST;
   const relayToken = flags.relayToken ?? env.RELAY_TOKEN ?? '';
+  const adminSecret = flags.adminSecret ?? env.RELAY_ADMIN_SECRET ?? undefined;
 
   if (!relayToken) {
     throw new Error('Relay token required: pass --relay-token <token> or set RELAY_TOKEN');
   }
 
-  return { port, host, relayToken };
+  return { port, host, relayToken, adminSecret };
 }

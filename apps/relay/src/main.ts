@@ -1,7 +1,8 @@
 import { createConsoleLogger } from '@dash/logging';
-import { staticRelayAuth } from './auth.js';
+import { credentialStoreAuth, staticRelayAuth } from './auth.js';
 import { loadRelayConfig } from './config.js';
-import { createRelayServer } from './relay-server.js';
+import { PairingCredentialStore } from './credential-store.js';
+import { type RelayServerOptions, createRelayServer } from './relay-server.js';
 
 /**
  * Executable entrypoint for the relay server. Kept separate from index.ts (the
@@ -12,14 +13,24 @@ async function main(): Promise<void> {
   const config = loadRelayConfig({ argv: process.argv.slice(2), env: process.env });
   const logger = createConsoleLogger('info', 'text', 'relay');
 
-  // v1 admission: one shared relay token gates gateway registration. Real
-  // per-pairing credentials with revocation land in R10.
-  const relay = createRelayServer(staticRelayAuth(config.relayToken));
+  // The shared relay token always gates gateway registration. When an admin
+  // secret is configured, the relay also validates real per-pairing credentials
+  // (provisioned/revoked via /admin/*); otherwise pairing credentials are
+  // accepted permissively (dev mode — gateway tokens remain the real auth).
+  let options: RelayServerOptions = {};
+  let deps = staticRelayAuth(config.relayToken);
+  if (config.adminSecret) {
+    const store = new PairingCredentialStore();
+    deps = credentialStoreAuth(config.relayToken, store);
+    options = { admin: { secret: config.adminSecret, store } };
+  }
+  const relay = createRelayServer(deps, options);
 
   await new Promise<void>((resolve) => {
     relay.httpServer.listen(config.port, config.host, () => resolve());
   });
   logger.info(`relay listening on ${config.host}:${config.port}`);
+  logger.info(`admin API ${config.adminSecret ? 'enabled' : 'disabled'}`);
 
   const shutdown = async (signal: string): Promise<void> => {
     logger.info(`received ${signal}, shutting down`);
