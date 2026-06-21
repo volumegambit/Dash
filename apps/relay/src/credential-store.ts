@@ -1,5 +1,21 @@
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
+import { DatabaseSync } from 'node:sqlite';
 import { safeEqual } from './auth.js';
+
+/**
+ * Shared shape for the relay's per-pairing credential stores.
+ *
+ * `isValid` takes only `(gatewayId, credential)` to keep the hot-path call site
+ * in `relay-server.ts` unchanged — credentials are globally unique random
+ * 256-bit values, so gatewayId scoping plus credential uniqueness is sufficient.
+ * `tenantId` is required only on the mutating admin paths.
+ */
+export interface CredentialStore {
+  provision(tenantId: string, gatewayId: string): string;
+  revoke(tenantId: string, gatewayId: string, credential: string): boolean;
+  revokeAll(tenantId: string, gatewayId: string): void;
+  isValid(gatewayId: string, credential: string): boolean;
+}
 
 /**
  * Per-pairing credential store for the relay.
@@ -11,9 +27,10 @@ import { safeEqual } from './auth.js';
  * In-memory by design: a self-hosted relay serves a single user's gateways, and
  * Mission Control (which holds the admin secret) re-provisions on reconnect, so
  * a restart dropping all pairings is a recoverable inconvenience — not worth the
- * standing-access risk of persisting credentials to disk.
+ * standing-access risk of persisting credentials to disk. The hosted relay uses
+ * {@link DurableCredentialStore} instead.
  */
-export class PairingCredentialStore {
+export class PairingCredentialStore implements CredentialStore {
   private readonly byGateway = new Map<string, Set<string>>();
 
   /**
@@ -27,7 +44,7 @@ export class PairingCredentialStore {
   constructor(private readonly maxPerGateway = 16) {}
 
   /** Mint and store a new credential for a gateway; returns it once. */
-  provision(gatewayId: string): string {
+  provision(_tenantId: string, gatewayId: string): string {
     const credential = randomBytes(32).toString('base64url');
     let set = this.byGateway.get(gatewayId);
     if (!set) {
@@ -47,7 +64,7 @@ export class PairingCredentialStore {
   }
 
   /** Remove one credential. Returns true if it existed (was revoked). */
-  revoke(gatewayId: string, credential: string): boolean {
+  revoke(_tenantId: string, gatewayId: string, credential: string): boolean {
     const set = this.byGateway.get(gatewayId);
     if (!set) return false;
     const removed = set.delete(credential);
@@ -56,7 +73,7 @@ export class PairingCredentialStore {
   }
 
   /** Revoke every credential for a gateway (e.g. un-pair-all). */
-  revokeAll(gatewayId: string): void {
+  revokeAll(_tenantId: string, gatewayId: string): void {
     this.byGateway.delete(gatewayId);
   }
 
@@ -74,5 +91,79 @@ export class PairingCredentialStore {
       }
     }
     return false;
+  }
+}
+
+function hashCred(credential: string): string {
+  return createHash('sha256').update(credential).digest('base64url');
+}
+
+/**
+ * Durable, hashed, pure-read credential store backed by SQLite.
+ *
+ * The hosted relay must survive restarts (no re-provision channel) and must not
+ * keep raw credentials at rest — it stores SHA-256 hashes only. `isValid` is a
+ * pure read (no LRU mutation) so the hot path never writes; the per-gateway cap
+ * is enforced on `provision` instead, evicting the oldest by `created_at`.
+ */
+export class DurableCredentialStore implements CredentialStore {
+  private readonly db: DatabaseSync;
+  private readonly maxPerGateway: number;
+
+  constructor(path: string, opts: { maxPerGateway?: number } = {}) {
+    this.maxPerGateway = opts.maxPerGateway ?? 16;
+    this.db = new DatabaseSync(path);
+    this.db.exec(`CREATE TABLE IF NOT EXISTS pairings (
+      tenant_id TEXT NOT NULL, gateway_id TEXT NOT NULL,
+      cred_hash TEXT NOT NULL, created_at INTEGER NOT NULL,
+      PRIMARY KEY (gateway_id, cred_hash));`);
+  }
+
+  provision(tenantId: string, gatewayId: string): string {
+    const credential = randomBytes(32).toString('base64url');
+    this.db
+      .prepare(
+        'INSERT INTO pairings (tenant_id, gateway_id, cred_hash, created_at) VALUES (?, ?, ?, ?)',
+      )
+      .run(tenantId, gatewayId, hashCred(credential), Date.now());
+    // Enforce cap: delete oldest beyond maxPerGateway for this gateway.
+    // `created_at` is millisecond-resolution and rapid synchronous inserts can
+    // collide in the same millisecond, so `rowid` (SQLite's monotonic insertion
+    // counter) is the deterministic tiebreak — newest rowid kept, oldest evicted.
+    this.db
+      .prepare(
+        `DELETE FROM pairings WHERE gateway_id = ? AND cred_hash NOT IN (
+           SELECT cred_hash FROM pairings WHERE gateway_id = ?
+           ORDER BY created_at DESC, rowid DESC LIMIT ?)`,
+      )
+      .run(gatewayId, gatewayId, this.maxPerGateway);
+    return credential;
+  }
+
+  revoke(_tenantId: string, gatewayId: string, credential: string): boolean {
+    const r = this.db
+      .prepare('DELETE FROM pairings WHERE gateway_id = ? AND cred_hash = ?')
+      .run(gatewayId, hashCred(credential));
+    return r.changes > 0;
+  }
+
+  revokeAll(_tenantId: string, gatewayId: string): void {
+    this.db.prepare('DELETE FROM pairings WHERE gateway_id = ?').run(gatewayId);
+  }
+
+  /** Pure read — no mutation on the hot path. Constant-time compare via hash equality. */
+  isValid(gatewayId: string, credential: string): boolean {
+    if (!credential) return false;
+    const want = hashCred(credential);
+    const rows = this.db
+      .prepare('SELECT cred_hash FROM pairings WHERE gateway_id = ?')
+      .all(gatewayId) as Array<{ cred_hash: string }>;
+    const wantBuf = Buffer.from(want);
+    let ok = false;
+    for (const row of rows) {
+      const got = Buffer.from(row.cred_hash);
+      if (got.length === wantBuf.length && timingSafeEqual(got, wantBuf)) ok = true;
+    }
+    return ok;
   }
 }
