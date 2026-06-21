@@ -12,7 +12,6 @@ export type {
   MessageLogger,
   MessageHook,
 } from './types.js';
-export { MessageRouter } from './router.js';
 export { MissionControlAdapter } from './adapters/mission-control.js';
 export { TelegramAdapter } from './adapters/telegram.js';
 export type { TelegramAllowedUsers } from './adapters/telegram.js';
