@@ -129,6 +129,35 @@ describe('isModelSupported', () => {
     expect(isModelSupported('moonshotai', modelId)).toBe(expected);
   });
 
+  // OpenRouter — patterns match the NAMESPACED id and use exact ids (no broad
+  // globs) so every allow-listed model is pi-ai-resolvable. Frontier families
+  // Dash lacks natively are curated alongside flagship big-three-via-OpenRouter.
+  it.each([
+    // Frontier families (the reason to use OpenRouter)
+    ['deepseek/deepseek-r1', true],
+    ['deepseek/deepseek-v3.2', true],
+    ['qwen/qwen3-max', true],
+    ['meta-llama/llama-4-maverick', true],
+    ['mistralai/codestral-2508', true],
+    ['x-ai/grok-4.3', true],
+    ['z-ai/glm-5', true],
+    // Big-three routed via OpenRouter (flagship only)
+    ['anthropic/claude-opus-4.8', true],
+    ['openai/gpt-4o', true],
+    ['google/gemini-2.5-pro', true],
+    // Exact-match discipline: a longer sibling id must NOT match (anchored)
+    ['deepseek/deepseek-v3.2-exp', false],
+    ['anthropic/claude-opus-4.8-fast', false],
+    // `:free` (and other `:` variants) are excluded
+    ['deepseek/deepseek-r1:free', false],
+    // Non-curated namespaced id
+    ['qwen/qwen3-0.6b', false],
+    // A bare slug without the vendor namespace must not match
+    ['deepseek-r1', false],
+  ])('openrouter/%s → %s', (modelId, expected) => {
+    expect(isModelSupported('openrouter', modelId)).toBe(expected);
+  });
+
   // Unknown provider
   it('rejects unknown providers', () => {
     expect(isModelSupported('unknown', 'some-model')).toBe(false);
@@ -156,6 +185,12 @@ describe('findSupportedModel', () => {
     const thinking = findSupportedModel('moonshotai', 'kimi-k2-thinking');
     const preview = findSupportedModel('moonshotai', 'kimi-k2-0905-preview');
     expect(thinking?.tier).toBeLessThan(preview?.tier);
+  });
+
+  it('sorts OpenRouter frontier families above big-three-via-OpenRouter', () => {
+    const deepseek = findSupportedModel('openrouter', 'deepseek/deepseek-r1');
+    const claudeViaOr = findSupportedModel('openrouter', 'anthropic/claude-opus-4.8');
+    expect(deepseek?.tier).toBeLessThan(claudeViaOr?.tier);
   });
 });
 

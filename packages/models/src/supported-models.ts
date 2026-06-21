@@ -128,6 +128,77 @@ const MOONSHOT: SupportedModelEntry[] = [
 ];
 
 // ---------------------------------------------------------------------------
+// OpenRouter
+// ---------------------------------------------------------------------------
+// OpenRouter is a single OpenAI-compatible gateway fronting many vendors. It is
+// its own provider group, distinct from the native Anthropic/OpenAI/Google
+// providers above — choosing a model here routes it through OpenRouter (one key,
+// one bill, automatic upstream failover) instead of the vendor's direct API.
+//
+// Patterns match the NAMESPACED id (`<vendor>/<slug>`) and use EXACT ids, not
+// broad globs: the binding constraint is the pinned `@earendil-works/pi-ai`
+// runtime, whose `getModel('openrouter', id)` is a registry lookup that returns
+// nothing for unbundled ids — so every entry here is verified present in pi-ai
+// 0.79.8's OpenRouter registry, guaranteeing it resolves at chat time. The
+// `fetchModels` capability filter (tools + text-output + no `:` variant) handles
+// quality gating; these patterns express family curation + sort order.
+//
+// Tiers order the single OpenRouter group: the frontier families Dash has no
+// native provider for (DeepSeek, Qwen, Llama, Mistral, Grok, GLM) sort first;
+// the big-three routed via OpenRouter sort last since they duplicate native
+// providers and are usually best used directly. `:free` variants are excluded
+// (rate-limited and not pi-ai-resolvable). Re-verify with `npm run
+// models:audit:apply` (OPENROUTER_API_KEY set) when bumping pi-ai.
+const OPENROUTER: SupportedModelEntry[] = [
+  // DeepSeek
+  { provider: 'openrouter', pattern: 'deepseek/deepseek-v4-pro', tier: 0 },
+  { provider: 'openrouter', pattern: 'deepseek/deepseek-v4-flash', tier: 1 },
+  { provider: 'openrouter', pattern: 'deepseek/deepseek-v3.2', tier: 2 },
+  { provider: 'openrouter', pattern: 'deepseek/deepseek-v3.1-terminus', tier: 3 },
+  { provider: 'openrouter', pattern: 'deepseek/deepseek-r1', tier: 4 },
+  { provider: 'openrouter', pattern: 'deepseek/deepseek-chat', tier: 5 },
+  // Qwen
+  { provider: 'openrouter', pattern: 'qwen/qwen3.7-max', tier: 10 },
+  { provider: 'openrouter', pattern: 'qwen/qwen3-max', tier: 11 },
+  { provider: 'openrouter', pattern: 'qwen/qwen3-coder', tier: 12 },
+  { provider: 'openrouter', pattern: 'qwen/qwen3-235b-a22b', tier: 13 },
+  { provider: 'openrouter', pattern: 'qwen/qwen3.5-122b-a10b', tier: 14 },
+  // Meta Llama
+  { provider: 'openrouter', pattern: 'meta-llama/llama-4-maverick', tier: 20 },
+  { provider: 'openrouter', pattern: 'meta-llama/llama-4-scout', tier: 21 },
+  { provider: 'openrouter', pattern: 'meta-llama/llama-3.3-70b-instruct', tier: 22 },
+  { provider: 'openrouter', pattern: 'meta-llama/llama-3.1-70b-instruct', tier: 23 },
+  // Mistral
+  { provider: 'openrouter', pattern: 'mistralai/mistral-large-2512', tier: 30 },
+  { provider: 'openrouter', pattern: 'mistralai/mistral-medium-3.1', tier: 31 },
+  { provider: 'openrouter', pattern: 'mistralai/codestral-2508', tier: 32 },
+  { provider: 'openrouter', pattern: 'mistralai/devstral-2512', tier: 33 },
+  // xAI (Grok)
+  { provider: 'openrouter', pattern: 'x-ai/grok-4.3', tier: 40 },
+  { provider: 'openrouter', pattern: 'x-ai/grok-4.20', tier: 41 },
+  // Z.ai (GLM)
+  { provider: 'openrouter', pattern: 'z-ai/glm-5.2', tier: 50 },
+  { provider: 'openrouter', pattern: 'z-ai/glm-5', tier: 51 },
+  { provider: 'openrouter', pattern: 'z-ai/glm-4.7', tier: 52 },
+  { provider: 'openrouter', pattern: 'z-ai/glm-4.6', tier: 53 },
+  // Anthropic via OpenRouter (duplicates native Anthropic — flagship only)
+  { provider: 'openrouter', pattern: 'anthropic/claude-opus-4.8', tier: 60 },
+  { provider: 'openrouter', pattern: 'anthropic/claude-sonnet-4.6', tier: 61 },
+  { provider: 'openrouter', pattern: 'anthropic/claude-haiku-4.5', tier: 62 },
+  { provider: 'openrouter', pattern: 'anthropic/claude-fable-5', tier: 63 },
+  // OpenAI via OpenRouter (duplicates native OpenAI — flagship only)
+  { provider: 'openrouter', pattern: 'openai/gpt-5.5', tier: 70 },
+  { provider: 'openrouter', pattern: 'openai/gpt-5.4', tier: 71 },
+  { provider: 'openrouter', pattern: 'openai/gpt-4o', tier: 72 },
+  { provider: 'openrouter', pattern: 'openai/o3', tier: 73 },
+  // Google via OpenRouter (duplicates native Google — flagship only)
+  { provider: 'openrouter', pattern: 'google/gemini-3.5-flash', tier: 80 },
+  { provider: 'openrouter', pattern: 'google/gemini-3.1-pro-preview', tier: 81 },
+  { provider: 'openrouter', pattern: 'google/gemini-2.5-pro', tier: 82 },
+  { provider: 'openrouter', pattern: 'google/gemini-2.5-flash', tier: 83 },
+];
+
+// ---------------------------------------------------------------------------
 // Exports
 // ---------------------------------------------------------------------------
 export const SUPPORTED_MODELS: SupportedModelEntry[] = [
@@ -135,15 +206,29 @@ export const SUPPORTED_MODELS: SupportedModelEntry[] = [
   ...OPENAI,
   ...GOOGLE,
   ...MOONSHOT,
+  ...OPENROUTER,
 ];
+
+/**
+ * Memoized compiled patterns. `findSupportedModel` runs `globToRegex` for every
+ * allow-list entry against every raw model on every discover; with OpenRouter's
+ * large live catalog (hundreds of models) that is thousands of compilations per
+ * fetch. The pattern set is small and fixed, so caching by pattern string
+ * collapses all the repeated `new RegExp` work to one compile per pattern.
+ */
+const globRegexCache = new Map<string, RegExp>();
 
 /**
  * Convert a glob pattern (with `*` wildcards) to a RegExp.
  * The pattern must match the full model ID.
  */
 export function globToRegex(pattern: string): RegExp {
+  const cached = globRegexCache.get(pattern);
+  if (cached) return cached;
   const escaped = pattern.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*');
-  return new RegExp(`^${escaped}$`, 'i');
+  const regex = new RegExp(`^${escaped}$`, 'i');
+  globRegexCache.set(pattern, regex);
+  return regex;
 }
 
 /**

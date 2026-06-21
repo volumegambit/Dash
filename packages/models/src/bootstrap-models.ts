@@ -88,4 +88,39 @@ export const BOOTSTRAP_MODELS: FilteredModel[] = [
     label: 'Kimi K2.5',
     provider: 'moonshotai',
   },
+  // OpenRouter — a cross-section of the frontier families Dash has no native
+  // provider for (the reason to reach for OpenRouter). Every id is present in
+  // the pinned pi-ai 0.79.8 OpenRouter registry, so it's runnable once an
+  // OPENROUTER_API_KEY is added — not just discoverable. Refresh with
+  // `npm run models:audit:apply`.
+  {
+    value: 'openrouter/deepseek/deepseek-v3.2',
+    label: 'DeepSeek V3.2',
+    provider: 'openrouter',
+  },
+  {
+    value: 'openrouter/qwen/qwen3-max',
+    label: 'Qwen3 Max',
+    provider: 'openrouter',
+  },
+  {
+    value: 'openrouter/meta-llama/llama-4-maverick',
+    label: 'Llama 4 Maverick',
+    provider: 'openrouter',
+  },
+  {
+    value: 'openrouter/mistralai/mistral-large-2512',
+    label: 'Mistral Large 3',
+    provider: 'openrouter',
+  },
+  {
+    value: 'openrouter/x-ai/grok-4.3',
+    label: 'Grok 4.3',
+    provider: 'openrouter',
+  },
+  {
+    value: 'openrouter/z-ai/glm-5',
+    label: 'GLM 5',
+    provider: 'openrouter',
+  },
 ];
