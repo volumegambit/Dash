@@ -206,6 +206,9 @@ describe('resolveSetupStatus', () => {
       },
       markSetupCompleted: vi.fn(),
     });
-    expect(result).toEqual({ state: 'gateway-failed', error: 'Gateway failed to start within 10s' });
+    expect(result).toEqual({
+      state: 'gateway-failed',
+      error: 'Gateway failed to start within 10s',
+    });
   });
 });
