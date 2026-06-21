@@ -30,6 +30,13 @@ export interface ClaudeOAuthFlow {
   verifier: string;
 }
 
+export interface ClaudeTokenResult {
+  accessToken: string;
+  refreshToken: string;
+  /** Absolute expiry as epoch milliseconds. */
+  expiresAt: number;
+}
+
 /**
  * Prepare the Claude OAuth flow: generate PKCE + authorize URL.
  * Uses the manual redirect flow — the user is sent to platform.claude.com
@@ -57,14 +64,18 @@ export async function prepareClaudeOAuth(): Promise<ClaudeOAuthFlow> {
 }
 
 /**
- * Complete the Claude OAuth flow: exchange auth code for an access token.
- * The access token is used directly for API inference (setup-token style).
+ * Complete the Claude OAuth flow: exchange auth code for a token set.
+ *
+ * Returns the access token plus the refresh token and absolute expiry, so the
+ * gateway can keep the short-lived access token fresh (see
+ * OAuthRefreshCoordinator). The earlier version discarded refresh/expiry,
+ * which left the token un-refreshable — it 401'd a few hours after login.
  */
 export async function completeClaudeOAuth(
   rawCode: string,
   state: string,
   verifier: string,
-): Promise<string | null> {
+): Promise<ClaudeTokenResult | null> {
   // The callback page may show the code with a '#state' suffix — strip it
   const code = rawCode.includes('#') ? rawCode.split('#')[0] : rawCode;
 
@@ -85,10 +96,21 @@ export async function completeClaudeOAuth(
     console.error('[claude-auth] Token exchange failed:', tokenRes.status, text);
     throw new Error(`Token exchange failed (${tokenRes.status}): ${text}`);
   }
-  const tokenJson = (await tokenRes.json()) as { access_token?: string };
-  if (!tokenJson?.access_token) {
-    throw new Error('Token response missing access_token');
+  const tokenJson = (await tokenRes.json()) as {
+    access_token?: string;
+    refresh_token?: string;
+    expires_in?: number;
+  };
+  if (!tokenJson?.access_token || !tokenJson?.refresh_token) {
+    throw new Error('Token response missing access_token or refresh_token');
   }
 
-  return tokenJson.access_token;
+  // `expires_in` is seconds-from-now; store an absolute timestamp. Default to
+  // 8h if the provider omits it (Anthropic OAuth access tokens are ~8h).
+  const expiresInSec = typeof tokenJson.expires_in === 'number' ? tokenJson.expires_in : 8 * 3600;
+  return {
+    accessToken: tokenJson.access_token,
+    refreshToken: tokenJson.refresh_token,
+    expiresAt: Date.now() + expiresInSec * 1000,
+  };
 }

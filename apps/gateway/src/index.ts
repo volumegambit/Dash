@@ -8,7 +8,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 config({ path: resolve(__dirname, '../../../.env') });
 
 import type { AgentClient } from '@dash/agent';
-import { PiAgentBackend } from '@dash/agent';
+import { PiAgentBackend, createOAuthRefreshers } from '@dash/agent';
 import { TelegramAdapter, WhatsAppAdapter } from '@dash/channels';
 import type { ChannelAdapter } from '@dash/channels';
 import { createConsoleLogger } from '@dash/logging';
@@ -32,6 +32,7 @@ import { createDynamicGateway } from './gateway.js';
 import { createGatewayManagementApp } from './management-api.js';
 import { McpConfigStore } from './mcp-store.js';
 import { ModelsStore } from './models-store.js';
+import { OAuthRefreshCoordinator } from './oauth-refresh.js';
 
 async function main() {
   const flags = parseFlags(process.argv.slice(2));
@@ -53,6 +54,14 @@ async function main() {
   // Initialize credential store
   const credentialStore = new GatewayCredentialStore(dataDir);
   await credentialStore.init();
+
+  // One shared coordinator keeps OAuth access tokens fresh by refreshing
+  // near-expiry tokens (and persisting the rotated refresh tokens) before each
+  // agent run. Shared so its single-flight dedupe spans all conversations.
+  const oauthRefreshCoordinator = new OAuthRefreshCoordinator(credentialStore, {
+    refreshers: createOAuthRefreshers(),
+    logger,
+  });
 
   // Initialize channel registry
   const channelRegistry = new ChannelRegistry(join(dataDir, 'channels.json'));
@@ -138,8 +147,16 @@ async function main() {
       // in the store simply get an empty map and will fail their first
       // model call with an auth error (which is now surfaced to the UI via
       // the `message_end` error path in PiAgentBackend.normalizeEvent).
-      const credentialProvider = (): Promise<Record<string, string>> =>
-        credentialStore.readProviderApiKeys();
+      //
+      // Before reading, refresh any near-expiry OAuth access tokens and persist
+      // the rotated tokens back to the store, so the agent always receives a
+      // valid token. Dash is the sole refresher (see OAuthRefreshCoordinator);
+      // a refresh failure is swallowed there, leaving the stale token to 401
+      // and trigger the UI's re-auth path.
+      const credentialProvider = async (): Promise<Record<string, string>> => {
+        await oauthRefreshCoordinator.refreshExpiring();
+        return credentialStore.readProviderApiKeys();
+      };
 
       // MCP agent context — allows agents to manage their own MCP server assignments
       const agentMcpServers = agentConfig.mcpServers ?? [];

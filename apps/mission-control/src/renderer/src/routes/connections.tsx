@@ -47,27 +47,16 @@ export function AiProviders(): JSX.Element {
 
   const loadKeys = useCallback(async (): Promise<void> => {
     const allKeys = await window.api.credentialsList();
-    // Codex OAuth keys have a matching refresh token
-    const codexRefreshKeys = new Set(
-      allKeys
-        .filter((k: string) => k.startsWith('openai-codex-refresh:'))
-        .map((k: string) => k.slice('openai-codex-refresh:'.length)),
-    );
-    // Claude OAuth keys: we mark keys created via OAuth by storing a marker
-    const claudeOAuthKeys = new Set(
-      allKeys
-        .filter((k: string) => k.startsWith('anthropic-oauth-marker:'))
-        .map((k: string) => k.slice('anthropic-oauth-marker:'.length)),
-    );
+    // OAuth keys (any provider) have a matching `{provider}-oauth-refresh:{name}`
+    // slot. This is the standardized convention the gateway refreshes against.
+    const oauthRefreshSlots = new Set(allKeys.filter((k: string) => k.includes('-oauth-refresh:')));
     const grouped: Record<string, ProviderKeyEntry[]> = {};
     for (const p of PROVIDERS) {
       const prefix = `${p.id}-api-key:`;
       const matching = allKeys.filter((k: string) => k.startsWith(prefix));
       const entries: ProviderKeyEntry[] = matching.map((key) => {
         const name = key.slice(prefix.length);
-        const isOAuth =
-          (p.id === 'openai' && codexRefreshKeys.has(name)) ||
-          (p.id === 'anthropic' && claudeOAuthKeys.has(name));
+        const isOAuth = oauthRefreshSlots.has(`${p.id}-oauth-refresh:${name}`);
         return { name, isOAuth };
       });
       grouped[p.id] = entries;
@@ -86,10 +75,9 @@ export function AiProviders(): JSX.Element {
 
   const handleDisconnect = async (provider: Provider, keyName: string): Promise<void> => {
     await window.api.credentialsRemove(providerSecretKey(provider, keyName));
-    // Clean up OAuth metadata
-    await window.api.credentialsRemove(`openai-codex-refresh:${keyName}`).catch(() => {});
-    await window.api.credentialsRemove(`openai-codex-expires:${keyName}`).catch(() => {});
-    await window.api.credentialsRemove(`anthropic-oauth-marker:${keyName}`).catch(() => {});
+    // Clean up OAuth metadata (standardized {provider}-oauth-* slots)
+    await window.api.credentialsRemove(`${provider}-oauth-refresh:${keyName}`).catch(() => {});
+    await window.api.credentialsRemove(`${provider}-oauth-expires:${keyName}`).catch(() => {});
     setDisconnectConfirm(null);
     loadKeys();
   };
