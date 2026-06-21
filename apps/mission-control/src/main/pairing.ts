@@ -33,7 +33,15 @@ export async function buildPairingInfo(
   const { relay } = inputs;
   if (relay?.zone && relay.gatewayId && relay.adminSecret) {
     const host = `${relay.gatewayId}.${relay.zone}`;
-    const relayCredential = await provision(`https://${host}`, relay.adminSecret, relay.gatewayId);
+    let relayCredential: string;
+    try {
+      relayCredential = await provision(`https://${host}`, relay.adminSecret, relay.gatewayId);
+    } catch (err) {
+      // Surface a clear, actionable reason rather than an opaque fetch error —
+      // the Pair Device screen renders this message.
+      const reason = err instanceof Error ? err.message : String(err);
+      throw new Error(`Could not reach the relay to provision a pairing credential: ${reason}`);
+    }
     return {
       mode: 'relay',
       host,

@@ -37,6 +37,16 @@ describe('buildPairingInfo', () => {
     expect(provision).toHaveBeenCalledWith('https://gw-1.relay.example.com', 'sek', 'gw-1');
   });
 
+  it('wraps a relay provision failure in a clear, actionable error', async () => {
+    const provision = vi.fn().mockRejectedValue(new Error('ECONNREFUSED'));
+    await expect(
+      buildPairingInfo(
+        { ...base, relay: { zone: 'relay.example.com', gatewayId: 'gw-1', adminSecret: 'sek' } },
+        provision,
+      ),
+    ).rejects.toThrow(/Could not reach the relay.*ECONNREFUSED/);
+  });
+
   it('falls back to LAN when relay config is incomplete', async () => {
     const provision = vi.fn();
     // Missing adminSecret → not fully configured.

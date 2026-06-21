@@ -53,10 +53,10 @@ export interface KeychainStore {
   setRelayAdminSecret(value: string): Promise<void>;
   /**
    * Remove all gateway secrets (management + chat tokens, relay token, gateway
-   * id) from the OS credential store. Used by explicit teardown (e.g. "Reset
-   * Gateway" in MC settings). Never called during normal `ensureRunning()`
-   * flows — we prefer the existing identity across spawns so a restarted
-   * gateway stays compatible with prior state and paired phones.
+   * id, relay admin secret) from the OS credential store. Used by explicit
+   * teardown (e.g. "Reset Gateway" in MC settings). Never called during normal
+   * `ensureRunning()` flows — we prefer the existing identity across spawns so a
+   * restarted gateway stays compatible with prior state and paired phones.
    */
   clearAllGatewayTokens(): Promise<void>;
 }

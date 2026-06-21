@@ -478,7 +478,13 @@ function readJsonBody(req: http.IncomingMessage): Promise<unknown> {
     let data = '';
     req.on('data', (chunk: Buffer) => {
       data += chunk;
-      if (data.length > 64 * 1024) req.destroy();
+      if (data.length > 64 * 1024) {
+        // Reject explicitly before destroying — otherwise the promise would
+        // never settle (no 'end'), leaking the handler. The caller maps the
+        // rejection to a 400.
+        reject(new Error('admin request body too large'));
+        req.destroy();
+      }
     });
     req.on('end', () => {
       if (!data) return resolve({});
