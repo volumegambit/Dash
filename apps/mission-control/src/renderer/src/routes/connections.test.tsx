@@ -81,3 +81,57 @@ describe('AiProviders page', () => {
     expect(keyNameInput).toHaveValue('default');
   });
 });
+
+describe('AiProviders page — plugin providers', () => {
+  beforeEach(() => {
+    mockApi.credentialsList.mockResolvedValue(['anthropic-api-key:default']);
+    mockApi.plugins.runtime.mockResolvedValue({
+      providers: [{ id: 'myprov', label: 'My Provider', credentialPrefix: 'myprov-api-key' }],
+      plugins: [],
+    });
+  });
+
+  it('renders both a core provider and a plugin provider', async () => {
+    render(<AiProviders />);
+    // Core provider still rendered.
+    expect(await screen.findByText('Claude by Anthropic')).toBeInTheDocument();
+    // Plugin provider rendered alongside core.
+    expect(await screen.findByText('My Provider')).toBeInTheDocument();
+  });
+
+  it('shows existing plugin keys loaded from credentialsList', async () => {
+    mockApi.credentialsList.mockResolvedValue([
+      'anthropic-api-key:default',
+      'myprov-api-key:default',
+    ]);
+    render(<AiProviders />);
+    await screen.findByText('My Provider');
+    // The plugin key name appears in the key entry list (alongside the core one).
+    const defaults = await screen.findAllByText('default');
+    expect(defaults.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('saves a plugin credential under {pluginId}-api-key:{keyName}', async () => {
+    const user = userEvent.setup();
+    render(<AiProviders />);
+    await screen.findByText('My Provider');
+    // Open the plugin provider's connect modal.
+    const addButton = await screen.findByRole('button', { name: /Add key for My Provider/i });
+    await user.click(addButton);
+    // Synthesized config title.
+    expect(await screen.findByText('Connect to My Provider')).toBeInTheDocument();
+    await user.type(screen.getByLabelText('API key'), 'plugin-secret');
+    await user.click(screen.getByText('Save API Key'));
+    expect(mockApi.credentialsSet).toHaveBeenCalledWith('myprov-api-key:default', 'plugin-secret');
+  });
+
+  it('still renders core providers when plugin runtime errors (graceful)', async () => {
+    mockApi.plugins.runtime.mockRejectedValue(new Error('gateway down'));
+    render(<AiProviders />);
+    // Core providers must still render despite the plugin-runtime failure.
+    expect(await screen.findByText('Claude by Anthropic')).toBeInTheDocument();
+    expect(await screen.findByText('Kimi by Moonshot')).toBeInTheDocument();
+    // No plugin provider shown.
+    expect(screen.queryByText('My Provider')).not.toBeInTheDocument();
+  });
+});

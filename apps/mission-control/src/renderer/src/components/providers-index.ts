@@ -14,7 +14,25 @@ export interface PluginProviderOption {
   credentialPrefix: string;
 }
 
+/**
+ * Either a static core provider or a plugin-contributed one. Used by the AI
+ * Providers UI, which renders both kinds in a single list.
+ *
+ * Lives here (not in `providers.ts`) so {@link isPluginProvider} can reference
+ * {@link PluginProviderOption} without `providers.ts` importing back from this
+ * module — that would create an import cycle.
+ */
+export type AllProviderOption = ProviderOption | PluginProviderOption;
+
 const CORE_PROVIDER_IDS = new Set<string>(PROVIDERS.map((p) => p.id));
+
+/**
+ * Narrow an {@link AllProviderOption} to a {@link PluginProviderOption}: true
+ * when the option's id is NOT one of the core {@link Provider} ids.
+ */
+export function isPluginProvider(p: AllProviderOption): p is PluginProviderOption {
+  return !CORE_PROVIDER_IDS.has(p.id);
+}
 
 /**
  * Split the gateway's runtime providers into the static core providers and the

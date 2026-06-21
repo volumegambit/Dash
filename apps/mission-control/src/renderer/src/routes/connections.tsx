@@ -1,9 +1,11 @@
 import { providerSecretKey } from '@dash/mc/provider-keys';
 import { createFileRoute } from '@tanstack/react-router';
 import { KeyRound, Loader, LogIn, Plus, Trash2, X } from 'lucide-react';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ProviderConnectModal } from '../components/ProviderConnectModal.js';
-import { PROVIDERS, type Provider } from '../components/providers.js';
+import { type PluginProviderOption, separateProviders } from '../components/providers-index.js';
+import { PROVIDERS, type Provider, type ProviderConfig } from '../components/providers.js';
+import { useRuntimeProviders } from '../hooks/useRuntimeProviders.js';
 
 const KEY_NAME_PATTERN = /^[a-zA-Z0-9-]+$/;
 
@@ -23,11 +25,47 @@ interface ProviderKeyEntry {
   isOAuth?: boolean;
 }
 
+/**
+ * Build a {@link ProviderConfig} for a plugin-contributed provider. Plugin
+ * providers aren't in PROVIDER_CONFIG, so the modal needs a synthesized config:
+ * a generic explanation, a single paste step, and no console/help URLs (which
+ * the modal renders conditionally). `secretKey` uses the standard
+ * `{id}-api-key:default` slot.
+ */
+function pluginProviderConfig(p: PluginProviderOption): ProviderConfig {
+  return {
+    title: `Connect to ${p.name}`,
+    secretKey: providerSecretKey(p.id, 'default'),
+    placeholder: 'API key',
+    consoleUrl: '',
+    apiKeysUrl: '',
+    helpUrl: '',
+    helpLabel: '',
+    explanation: `Paste your ${p.name} API key to connect it. This provider is contributed by a plugin.`,
+    steps: ['Paste your API key below.'],
+  };
+}
+
 export function AiProviders(): JSX.Element {
+  // Runtime plugin providers (from the gateway via T1 IPC). Degrades gracefully:
+  // on load/error, `plugin` is empty and the core providers still render.
+  const { providers: runtimeProviders } = useRuntimeProviders();
+  const { plugin: pluginProviders } = useMemo(
+    () => separateProviders(runtimeProviders),
+    [runtimeProviders],
+  );
+
   const [providerKeys, setProviderKeys] = useState<Record<string, ProviderKeyEntry[]>>({});
-  const [modal, setModal] = useState<{ provider: Provider; keyName?: string } | null>(null);
+  // `provider` is widened to string to also carry plugin provider ids. Plugin
+  // entries pass a synthesized `config`; core entries leave it undefined and the
+  // modal falls back to PROVIDER_CONFIG.
+  const [modal, setModal] = useState<{
+    provider: Provider | string;
+    keyName?: string;
+    config?: ProviderConfig;
+  } | null>(null);
   const [disconnectConfirm, setDisconnectConfirm] = useState<{
-    provider: Provider;
+    provider: Provider | string;
     keyName: string;
   } | null>(null);
   const [oauthLoading, setOauthLoading] = useState<OAuthProvider | null>(null);
@@ -51,18 +89,22 @@ export function AiProviders(): JSX.Element {
     // slot. This is the standardized convention the gateway refreshes against.
     const oauthRefreshSlots = new Set(allKeys.filter((k: string) => k.includes('-oauth-refresh:')));
     const grouped: Record<string, ProviderKeyEntry[]> = {};
-    for (const p of PROVIDERS) {
-      const prefix = `${p.id}-api-key:`;
+    // Load keys for both core providers and plugin-contributed ones. Plugin keys
+    // use the same `{id}-api-key:{name}` convention via providerSecretKey, so the
+    // grouping logic is identical — only the id set differs.
+    const ids = [...PROVIDERS.map((p) => p.id), ...pluginProviders.map((p) => p.id)];
+    for (const id of ids) {
+      const prefix = `${id}-api-key:`;
       const matching = allKeys.filter((k: string) => k.startsWith(prefix));
       const entries: ProviderKeyEntry[] = matching.map((key) => {
         const name = key.slice(prefix.length);
-        const isOAuth = oauthRefreshSlots.has(`${p.id}-oauth-refresh:${name}`);
+        const isOAuth = oauthRefreshSlots.has(`${id}-oauth-refresh:${name}`);
         return { name, isOAuth };
       });
-      grouped[p.id] = entries;
+      grouped[id] = entries;
     }
     setProviderKeys(grouped);
-  }, []);
+  }, [pluginProviders]);
 
   useEffect(() => {
     loadKeys();
@@ -73,7 +115,7 @@ export function AiProviders(): JSX.Element {
     loadKeys();
   };
 
-  const handleDisconnect = async (provider: Provider, keyName: string): Promise<void> => {
+  const handleDisconnect = async (provider: Provider | string, keyName: string): Promise<void> => {
     await window.api.credentialsRemove(providerSecretKey(provider, keyName));
     // Clean up OAuth metadata (standardized {provider}-oauth-* slots)
     await window.api.credentialsRemove(`${provider}-oauth-refresh:${keyName}`).catch(() => {});
@@ -149,7 +191,10 @@ export function AiProviders(): JSX.Element {
     }
   };
 
-  const handleDisconnectRequest = async (provider: Provider, keyName: string): Promise<void> => {
+  const handleDisconnectRequest = async (
+    provider: Provider | string,
+    keyName: string,
+  ): Promise<void> => {
     await handleDisconnect(provider, keyName);
   };
 
@@ -398,11 +443,162 @@ export function AiProviders(): JSX.Element {
             );
           })}
         </div>
+
+        {/* Plugin-contributed providers. Rendered only when present; their
+            absence (loading or gateway error) leaves the core list above
+            untouched, so the page never blocks on the runtime fetch. */}
+        {pluginProviders.length > 0 && (
+          <>
+            <p className="mt-8 font-[family-name:var(--font-mono)] text-[11px] uppercase tracking-[2px] text-accent">
+              Plugin Providers
+            </p>
+            <div className="flex flex-col gap-3 mt-4">
+              {pluginProviders.map((p) => {
+                const keys = providerKeys[p.id] ?? [];
+                const hasKeys = keys.length > 0;
+
+                return (
+                  <div key={p.id} className="bg-card-bg border border-border">
+                    {/* Provider row */}
+                    <div className="px-5 py-4 flex items-center gap-4 hover:bg-card-hover transition-colors">
+                      <div className="flex-1 min-w-0">
+                        <p className="font-semibold text-foreground">{p.name}</p>
+                        <p className="font-[family-name:var(--font-mono)] text-xs text-muted mt-0.5">
+                          {hasKeys ? keys.map((k) => k.name).join(', ') : 'No key configured'}
+                        </p>
+                      </div>
+
+                      <div className="flex items-center gap-3">
+                        {/* Status badge */}
+                        {hasKeys ? (
+                          <span className="bg-green-tint text-green rounded px-2 py-0.5 text-[10px] font-[family-name:var(--font-mono)] font-semibold">
+                            Active
+                          </span>
+                        ) : (
+                          <span className="bg-red-tint text-red rounded px-2 py-0.5 text-[10px] font-[family-name:var(--font-mono)] font-semibold">
+                            Disabled
+                          </span>
+                        )}
+
+                        {/* Add Key button */}
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setModal({
+                              provider: p.id,
+                              keyName: hasKeys ? undefined : 'default',
+                              config: pluginProviderConfig(p),
+                            })
+                          }
+                          className="inline-flex items-center gap-1 rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-muted hover:text-foreground hover:bg-card-hover transition-colors"
+                          aria-label={`Add key for ${p.name}`}
+                        >
+                          <Plus size={14} />
+                          Add Key
+                        </button>
+
+                        {/* Delete button */}
+                        {hasKeys && keys.length === 1 && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setDisconnectConfirm({ provider: p.id, keyName: keys[0].name })
+                            }
+                            className="text-muted hover:text-foreground transition-colors"
+                            aria-label={`Remove ${p.name}`}
+                          >
+                            <Trash2 size={15} />
+                          </button>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Key entries */}
+                    {keys.length > 0 && (
+                      <div className="px-5 pb-4 space-y-2">
+                        {keys.map((entry) => {
+                          const isConfirming =
+                            disconnectConfirm?.provider === p.id &&
+                            disconnectConfirm?.keyName === entry.name;
+
+                          return (
+                            <div
+                              key={entry.name}
+                              className="flex items-center justify-between rounded border border-border bg-background px-3 py-2"
+                            >
+                              <div className="flex items-center gap-2">
+                                <span className="text-xs font-medium text-foreground">
+                                  {entry.name}
+                                </span>
+                                <span className="text-xs text-muted">••••••••</span>
+                              </div>
+                              <div className="flex items-center gap-2">
+                                {!isConfirming && (
+                                  <>
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        setModal({
+                                          provider: p.id,
+                                          keyName: entry.name,
+                                          config: pluginProviderConfig(p),
+                                        })
+                                      }
+                                      className="text-xs text-accent hover:underline"
+                                    >
+                                      Update
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        setDisconnectConfirm({
+                                          provider: p.id,
+                                          keyName: entry.name,
+                                        })
+                                      }
+                                      className="text-xs text-muted hover:text-foreground"
+                                    >
+                                      Remove
+                                    </button>
+                                  </>
+                                )}
+                                {isConfirming && (
+                                  <div className="flex items-center gap-2">
+                                    <span className="text-xs text-muted">Remove key?</span>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleDisconnectRequest(p.id, entry.name)}
+                                      className="text-xs text-red hover:underline"
+                                    >
+                                      Yes, remove
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => setDisconnectConfirm(null)}
+                                      className="text-xs text-muted hover:text-foreground"
+                                    >
+                                      Cancel
+                                    </button>
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </>
+        )}
       </div>
 
       {modal && (
         <ProviderConnectModal
           provider={modal.provider}
+          providerConfig={modal.config}
           keyName={modal.keyName}
           onClose={() => setModal(null)}
           onSaved={handleSaved}

@@ -1,12 +1,22 @@
 import { providerSecretKey } from '@dash/mc/provider-keys';
 import { ExternalLink, KeyRound, X } from 'lucide-react';
 import { useState } from 'react';
-import { PROVIDER_CONFIG, type Provider } from './providers.js';
+import { PROVIDER_CONFIG, type Provider, type ProviderConfig } from './providers.js';
 
 const KEY_NAME_PATTERN = /^[a-zA-Z0-9-]+$/;
 
 interface ProviderConnectModalProps {
-  provider: Provider;
+  /**
+   * Provider id. Core providers use the {@link Provider} union; plugin
+   * providers pass a free-form runtime provider id (a plain string).
+   */
+  provider: Provider | string;
+  /**
+   * Optional UI config. Omit for core providers — the modal falls back to
+   * {@link PROVIDER_CONFIG} keyed by `provider`. Plugin providers pass a
+   * synthesized {@link ProviderConfig} since they aren't in PROVIDER_CONFIG.
+   */
+  providerConfig?: ProviderConfig;
   keyName?: string;
   onClose: () => void;
   onSaved: () => void;
@@ -14,16 +24,20 @@ interface ProviderConnectModalProps {
 
 export function ProviderConnectModal({
   provider,
+  providerConfig,
   keyName,
   onClose,
   onSaved,
 }: ProviderConnectModalProps): JSX.Element {
-  const config = PROVIDER_CONFIG[provider];
+  const config = providerConfig ?? PROVIDER_CONFIG[provider as Provider];
   const [keyNameInput, setKeyNameInput] = useState(keyName ?? '');
   const [apiKey, setApiKey] = useState('');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const consoleDomain = config.consoleUrl.replace(/^https?:\/\//, '');
+  // How many of the leading URL-based steps render (console + API keys). Plugin
+  // providers omit these, so provider-specific steps renumber from 1.
+  const urlStepCount = (config.consoleUrl ? 1 : 0) + (config.apiKeysUrl ? 1 : 0);
 
   const handleSubmit = async (e: React.FormEvent): Promise<void> => {
     e.preventDefault();
@@ -96,57 +110,66 @@ export function ProviderConnectModal({
             How to get your key
           </p>
           <ol className="space-y-2">
-            <li className="flex gap-2 text-xs text-muted">
-              <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-accent/20 text-[10px] font-bold text-accent">
-                1
-              </span>
-              <span className="pt-0.5">
-                Go to{' '}
-                <button
-                  type="button"
-                  onClick={() => handleOpenUrl(config.consoleUrl)}
-                  className="inline-flex items-center gap-0.5 font-medium text-accent hover:underline"
-                >
-                  {consoleDomain}
-                  <ExternalLink size={10} />
-                </button>{' '}
-                and create a free account (or sign in).
-              </span>
-            </li>
-            <li className="flex gap-2 text-xs text-muted">
-              <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-accent/20 text-[10px] font-bold text-accent">
-                2
-              </span>
-              <span className="pt-0.5">
-                Navigate to{' '}
-                <button
-                  type="button"
-                  onClick={() => handleOpenUrl(config.apiKeysUrl)}
-                  className="inline-flex items-center gap-0.5 font-medium text-accent hover:underline"
-                >
-                  API Keys
-                  <ExternalLink size={10} />
-                </button>{' '}
-                in the dashboard.
-              </span>
-            </li>
+            {/* URL-based steps only render when the provider supplies the URLs.
+                Plugin providers leave them empty, so the list starts at the
+                provider-specific steps below. */}
+            {config.consoleUrl && (
+              <li className="flex gap-2 text-xs text-muted">
+                <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-accent/20 text-[10px] font-bold text-accent">
+                  1
+                </span>
+                <span className="pt-0.5">
+                  Go to{' '}
+                  <button
+                    type="button"
+                    onClick={() => handleOpenUrl(config.consoleUrl)}
+                    className="inline-flex items-center gap-0.5 font-medium text-accent hover:underline"
+                  >
+                    {consoleDomain}
+                    <ExternalLink size={10} />
+                  </button>{' '}
+                  and create a free account (or sign in).
+                </span>
+              </li>
+            )}
+            {config.apiKeysUrl && (
+              <li className="flex gap-2 text-xs text-muted">
+                <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-accent/20 text-[10px] font-bold text-accent">
+                  {config.consoleUrl ? 2 : 1}
+                </span>
+                <span className="pt-0.5">
+                  Navigate to{' '}
+                  <button
+                    type="button"
+                    onClick={() => handleOpenUrl(config.apiKeysUrl)}
+                    className="inline-flex items-center gap-0.5 font-medium text-accent hover:underline"
+                  >
+                    API Keys
+                    <ExternalLink size={10} />
+                  </button>{' '}
+                  in the dashboard.
+                </span>
+              </li>
+            )}
             {config.steps.map((step, i) => (
               <li key={step} className="flex gap-2 text-xs text-muted">
                 <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-accent/20 text-[10px] font-bold text-accent">
-                  {i + 3}
+                  {i + 1 + urlStepCount}
                 </span>
                 <span className="pt-0.5">{step}</span>
               </li>
             ))}
           </ol>
-          <button
-            type="button"
-            onClick={() => handleOpenUrl(config.helpUrl)}
-            className="mt-3 inline-flex items-center gap-1 text-xs font-medium text-accent hover:underline"
-          >
-            <ExternalLink size={12} />
-            {config.helpLabel}
-          </button>
+          {config.helpUrl && (
+            <button
+              type="button"
+              onClick={() => handleOpenUrl(config.helpUrl)}
+              className="mt-3 inline-flex items-center gap-1 text-xs font-medium text-accent hover:underline"
+            >
+              <ExternalLink size={12} />
+              {config.helpLabel}
+            </button>
+          )}
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-3">
