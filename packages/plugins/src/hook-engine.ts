@@ -72,6 +72,13 @@ export interface HookEngineOptions {
 }
 
 const DEFAULT_TIMEOUT_MS = 60_000;
+/**
+ * Cap on combined stdout+stderr bytes buffered per hook run. A runaway (even
+ * trusted) hook that floods its output would otherwise grow `outChunks`/
+ * `errChunks` unbounded and OOM the gateway — only the timeout bounds it today.
+ * On exceeding the cap the child is killed and the outcome fails open (NEUTRAL).
+ */
+const MAX_HOOK_OUTPUT_BYTES = 4 * 1024 * 1024;
 /** Matchers using only these characters are treated as exact / pipe-lists. */
 const EXACT_MATCHER = /^[A-Za-z0-9_|]+$/;
 
@@ -194,41 +201,78 @@ export function createHookEngine(
 
     return new Promise<HookOutcome>((resolveOutcome) => {
       let settled = false;
+      // Declared with `let` ABOVE settle so a SYNCHRONOUS spawn() throw (whose
+      // catch calls settle(NEUTRAL) before the timer is assigned) does not read
+      // `timer` in its temporal dead zone — that ReferenceError would reject the
+      // promise and defeat the engine's fail-open contract. The `let` (assigned
+      // once, later) is intentional: it must be hoisted above `settle`.
+      // biome-ignore lint/style/useConst: must be a hoisted `let` to avoid the TDZ described above.
+      let timer: ReturnType<typeof setTimeout> | undefined;
       const settle = (o: HookOutcome) => {
         if (settled) return;
         settled = true;
-        clearTimeout(timer);
+        if (timer) clearTimeout(timer);
         resolveOutcome(o);
       };
 
       let child: ReturnType<typeof spawn>;
       try {
+        // detached: true puts the child in its own process group so a timeout /
+        // output-cap kill can take down the whole group (sh + any descendants),
+        // not just the direct `sh` child (which would orphan grandchildren).
         child = spawn('sh', ['-c', cmdLine], {
           cwd,
           env: hookEnv(vars),
           stdio: ['pipe', 'pipe', 'pipe'],
+          detached: true,
         });
       } catch (err) {
         logger?.warn(`[hooks] ${entry.pluginName}: spawn failed: ${(err as Error).message}`);
         return settle(NEUTRAL);
       }
 
-      const timer = setTimeout(() => {
+      // Kill the whole process group (negative pid). Falls back to a direct
+      // child.kill if the group signal throws (e.g. pid already reaped).
+      const killChild = () => {
+        try {
+          if (child.pid) process.kill(-child.pid, 'SIGKILL');
+          else child.kill('SIGKILL');
+        } catch {
+          try {
+            child.kill('SIGKILL');
+          } catch {
+            // ignore — settling NEUTRAL regardless.
+          }
+        }
+      };
+
+      timer = setTimeout(() => {
         logger?.warn(
           `[hooks] ${entry.pluginName}: '${command.command}' timed out after ${timeoutMs}ms — killed (fail-open)`,
         );
-        try {
-          child.kill('SIGKILL');
-        } catch {
-          // ignore — settling NEUTRAL regardless.
-        }
+        killChild();
         settle(NEUTRAL);
       }, timeoutMs);
 
       const outChunks: Buffer[] = [];
       const errChunks: Buffer[] = [];
-      child.stdout?.on('data', (c: Buffer) => outChunks.push(c));
-      child.stderr?.on('data', (c: Buffer) => errChunks.push(c));
+      let totalBytes = 0;
+      // Bound buffered output: a runaway hook flooding stdout/stderr would
+      // otherwise OOM the host. On exceeding the cap, kill and fail open.
+      const onChunk = (chunks: Buffer[], c: Buffer) => {
+        if (settled) return;
+        chunks.push(c);
+        totalBytes += c.length;
+        if (totalBytes > MAX_HOOK_OUTPUT_BYTES) {
+          logger?.warn(
+            `[hooks] ${entry.pluginName}: '${command.command}' exceeded ${MAX_HOOK_OUTPUT_BYTES}-byte output cap — killed (fail-open)`,
+          );
+          killChild();
+          settle(NEUTRAL);
+        }
+      };
+      child.stdout?.on('data', (c: Buffer) => onChunk(outChunks, c));
+      child.stderr?.on('data', (c: Buffer) => onChunk(errChunks, c));
 
       // Swallow async stdin errors (fail-open). If the child doesn't drain stdin
       // and the payload exceeds the OS pipe buffer (~64 KB), or the child exits /
@@ -268,11 +312,7 @@ export function createHookEngine(
         child.stdin?.end(JSON.stringify(payload));
       } catch (err) {
         logger?.warn(`[hooks] ${entry.pluginName}: stdin write failed: ${(err as Error).message}`);
-        try {
-          child.kill('SIGKILL');
-        } catch {
-          // ignore.
-        }
+        killChild();
         settle(NEUTRAL);
       }
     });

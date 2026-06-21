@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, statSync } from 'node:fs';
+import { type Dirent, existsSync, readdirSync, realpathSync, statSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { basename, isAbsolute, join, relative, resolve } from 'node:path';
 import type { PluginAuthor, PluginManifest } from '@dash/plugin-sdk';
@@ -96,13 +96,41 @@ export async function readManifest(dir: string): Promise<PluginManifest> {
   return validateManifest(raw, dir);
 }
 
-/** Absolute path of `rel` resolved against `dir`, but only if it exists AND stays within `dir`. */
+/**
+ * Realpath-based containment: true only if the CANONICAL (symlink-resolved)
+ * `candidateAbs` lives inside the CANONICAL `baseDir`. This closes the
+ * symlink-escape hole left by a purely lexical check — a path whose lexical
+ * form stays inside the plugin dir but whose realpath resolves outside (e.g. a
+ * `skills` symlink pointing at `/etc`) is rejected. Fail-isolated: a throwing
+ * `realpathSync` (dangling/broken symlink, unreadable, ENOENT) returns `false`
+ * (treated as not-contained) and never crashes the loader.
+ */
+export function realpathContained(baseDir: string, candidateAbs: string): boolean {
+  try {
+    const realBase = realpathSync(baseDir);
+    const realCand = realpathSync(candidateAbs);
+    const r = relative(realBase, realCand);
+    return r === '' || (!r.startsWith('..') && !isAbsolute(r));
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Absolute path of `rel` resolved against `dir`, but only if it exists AND
+ * stays within `dir` BOTH lexically and after symlink resolution. Returns the
+ * ORIGINAL lexical `abs` (never the canonicalized realpath) so legitimate paths
+ * like `/tmp/...` are not rewritten to `/private/tmp/...` on macOS — realpath is
+ * used ONLY for the containment guard.
+ */
 export function containedPath(dir: string, rel: string): string | undefined {
   if (!rel.startsWith('./')) return undefined;
   const abs = resolve(dir, rel);
   const r = relative(dir, abs);
   if (r.startsWith('..') || isAbsolute(r)) return undefined;
-  return existsSync(abs) ? abs : undefined;
+  if (!existsSync(abs)) return undefined;
+  if (!realpathContained(dir, abs)) return undefined;
+  return abs;
 }
 
 /**
@@ -113,7 +141,9 @@ export function containedPath(dir: string, rel: string): string | undefined {
 export function resolveSkillDirs(dir: string, manifest: PluginManifest): string[] {
   const dirs: string[] = [];
   const def = join(dir, 'skills');
-  if (existsSync(def)) dirs.push(def);
+  // Default root bypasses containedPath, so guard it directly: a `skills`
+  // symlink whose realpath escapes the plugin dir must NOT be scanned.
+  if (existsSync(def) && realpathContained(dir, def)) dirs.push(def);
   for (const p of manifest.skills ?? []) {
     const abs = containedPath(dir, p);
     if (abs) dirs.push(abs);
@@ -121,18 +151,59 @@ export function resolveSkillDirs(dir: string, manifest: PluginManifest): string[
   return dirs;
 }
 
+/**
+ * Flat `*.<ext>` files directly under `root`, skipping any per-file entry whose
+ * own realpath escapes `pluginDir` (a per-file symlink inside an otherwise
+ * contained dir). Hardened: a missing / unreadable / non-dir (ENOTDIR) `root`
+ * yields no files instead of throwing, so one bad component is DROPPED rather
+ * than downgrading the whole plugin to an `error` record.
+ */
+function scanFlatFiles(pluginDir: string, root: string, ext: string): string[] {
+  let entries: Dirent[];
+  try {
+    if (!statSync(root).isDirectory()) return [];
+    entries = readdirSync(root, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  const files: string[] = [];
+  for (const entry of entries) {
+    if (!entry.name.endsWith(ext)) continue;
+    const abs = join(root, entry.name);
+    // Regular file → fast path. Symlink (or anything non-file) → only accept if
+    // it resolves to a real file still contained within the plugin dir.
+    if (entry.isFile()) {
+      files.push(abs);
+    } else if (realpathContained(pluginDir, abs) && safeIsFile(abs)) {
+      files.push(abs);
+    }
+  }
+  return files;
+}
+
+/** True if `abs` resolves to a regular file; false on any stat error. */
+function safeIsFile(abs: string): boolean {
+  try {
+    return statSync(abs).isFile();
+  } catch {
+    return false;
+  }
+}
+
 /** Flat `commands/*.md` files. Manifest `commands` REPLACES the default `commands/` scan. */
 export function resolveCommandFiles(dir: string, manifest: PluginManifest): string[] {
-  const roots = manifest.commands?.length
-    ? manifest.commands.map((p) => containedPath(dir, p)).filter((p): p is string => !!p)
-    : existsSync(join(dir, 'commands'))
-      ? [join(dir, 'commands')]
-      : [];
+  let roots: string[];
+  if (manifest.commands?.length) {
+    roots = manifest.commands.map((p) => containedPath(dir, p)).filter((p): p is string => !!p);
+  } else {
+    const def = join(dir, 'commands');
+    // Default root bypasses containedPath — guard against a `commands` symlink
+    // whose realpath escapes the plugin dir.
+    roots = existsSync(def) && realpathContained(dir, def) ? [def] : [];
+  }
   const files: string[] = [];
   for (const root of roots) {
-    for (const entry of readdirSync(root, { withFileTypes: true })) {
-      if (entry.isFile() && entry.name.endsWith('.md')) files.push(join(root, entry.name));
-    }
+    files.push(...scanFlatFiles(dir, root, '.md'));
   }
   return files;
 }
@@ -148,17 +219,25 @@ export function resolveCommandFiles(dir: string, manifest: PluginManifest): stri
 export function resolveAgentFiles(dir: string, manifest: PluginManifest): string[] {
   const roots: string[] = [];
   const def = join(dir, 'agents');
-  if (existsSync(def)) roots.push(def);
+  // Default root bypasses containedPath — guard against an `agents` symlink
+  // whose realpath escapes the plugin dir.
+  if (existsSync(def) && realpathContained(dir, def)) roots.push(def);
   for (const p of manifest.agents ?? []) {
     const abs = containedPath(dir, p);
     if (abs) roots.push(abs);
   }
   const files: string[] = [];
   for (const root of roots) {
-    if (statSync(root).isDirectory()) {
-      for (const entry of readdirSync(root, { withFileTypes: true })) {
-        if (entry.isFile() && entry.name.endsWith('.md')) files.push(join(root, entry.name));
-      }
+    // A root may be a directory (scanned for flat *.md) or a direct *.md file.
+    let isDir = false;
+    try {
+      isDir = statSync(root).isDirectory();
+    } catch {
+      // Broken/unreadable/ENOTDIR root — drop this component, don't throw.
+      continue;
+    }
+    if (isDir) {
+      files.push(...scanFlatFiles(dir, root, '.md'));
     } else if (root.endsWith('.md')) {
       files.push(root);
     }
@@ -175,13 +254,16 @@ export function resolveAgentFiles(dir: string, manifest: PluginManifest): string
  * list is deduped, preserving first-seen order. Provider catalogs are
  * credential-bearing, so the loader only honors these for TRUSTED plugins.
  *
- * The directory scan is hardened (try/catch around `readdirSync`): a symlinked
- * or unreadable provider dir must NOT crash the loader.
+ * The directory scan is hardened (try/catch around stat/readdir): a symlinked
+ * or unreadable provider dir must NOT crash the loader. Per-file symlinks that
+ * escape the plugin dir are skipped (see `scanFlatFiles`).
  */
 export function resolveProviderFiles(dir: string, manifest: PluginManifest): string[] {
   const roots: string[] = [];
   const def = join(dir, 'providers');
-  if (existsSync(def)) roots.push(def);
+  // Default root bypasses containedPath — guard against a `providers` symlink
+  // whose realpath escapes the plugin dir.
+  if (existsSync(def) && realpathContained(dir, def)) roots.push(def);
   for (const p of manifest.providers ?? []) {
     const abs = containedPath(dir, p);
     if (abs) roots.push(abs);
@@ -202,13 +284,7 @@ export function resolveProviderFiles(dir: string, manifest: PluginManifest): str
       continue;
     }
     if (isDir) {
-      try {
-        for (const entry of readdirSync(root, { withFileTypes: true })) {
-          if (entry.isFile() && entry.name.endsWith('.json')) add(join(root, entry.name));
-        }
-      } catch {
-        // Unreadable/symlinked dir — skip without crashing the loader.
-      }
+      for (const file of scanFlatFiles(dir, root, '.json')) add(file);
     } else if (root.endsWith('.json')) {
       add(root);
     }

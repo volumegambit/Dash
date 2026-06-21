@@ -5,6 +5,25 @@ import { fileURLToPath } from 'node:url';
 import { createHookEngine } from './hook-engine.js';
 import type { HookConfigEntry } from './types.js';
 
+// Mock node:child_process so a single test can make spawn() throw synchronously
+// (simulating EMFILE / bad cwd). By default it delegates to the real spawn, so
+// every other test exercises real child processes. `spawnThrowsOnce` flips the
+// next spawn() call to a synchronous throw.
+let spawnThrowsOnce = false;
+vi.mock('node:child_process', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:child_process')>();
+  return {
+    ...actual,
+    spawn: (...args: Parameters<typeof actual.spawn>) => {
+      if (spawnThrowsOnce) {
+        spawnThrowsOnce = false;
+        throw new Error('synchronous spawn boom');
+      }
+      return actual.spawn(...args);
+    },
+  };
+});
+
 const HERE = dirname(fileURLToPath(import.meta.url));
 const FIX = resolve(HERE, '..', 'test', 'fixtures', 'hooks');
 const fix = (name: string) => join(FIX, name);
@@ -135,7 +154,65 @@ describe('runPreToolUse', () => {
   });
 });
 
+describe('synchronous spawn failure (TDZ fail-open)', () => {
+  // A synchronous throw from spawn() (e.g. EMFILE / bad cwd) hits the catch in
+  // runOne while the timeout `timer` was still in its temporal dead zone, which
+  // raised a ReferenceError and REJECTED the promise instead of failing open.
+  // These assert the engine resolves to the neutral outcome, never throws.
+  afterEach(() => {
+    spawnThrowsOnce = false;
+  });
+
+  it('runPreToolUse resolves NEUTRAL when spawn throws synchronously', async () => {
+    spawnThrowsOnce = true;
+    const { warnings, logger } = makeLogger();
+    const e = createHookEngine([entry({ PreToolUse: [{ hooks: [cmd('deny.js')] }] })], { logger });
+    const d = await e.runPreToolUse({ toolName: 'Bash', toolInput: {} });
+    expect(d.block).toBe(false);
+    expect(d.updatedInput).toBeUndefined();
+    expect(warnings.some((w) => /spawn failed/.test(w))).toBe(true);
+  });
+
+  it('runUserPromptSubmit resolves NEUTRAL when spawn throws synchronously', async () => {
+    spawnThrowsOnce = true;
+    const e = createHookEngine([entry({ UserPromptSubmit: [{ hooks: [cmd('addctx.js', 'X')] }] })]);
+    const d = await e.runUserPromptSubmit({ prompt: 'hi' });
+    expect(d.block).toBe(false);
+    expect(d.additionalContext).toBeUndefined();
+  });
+});
+
+describe('runaway hook output (OOM cap)', () => {
+  it('a hook that floods stdout past the cap is killed and fails open', async () => {
+    const { warnings, logger } = makeLogger();
+    const e = createHookEngine([entry({ PreToolUse: [{ hooks: [cmd('flood.js')] }] })], {
+      logger,
+      defaultTimeoutMs: 30_000, // generous: the CAP must fire well before this.
+    });
+    const start = Date.now();
+    const d = await e.runPreToolUse({ toolName: 'Bash', toolInput: {} });
+    // Must not hang until the timeout — the output cap kills it quickly.
+    expect(Date.now() - start).toBeLessThan(20_000);
+    expect(d.block).toBe(false);
+    expect(warnings.some((w) => /output/i.test(w))).toBe(true);
+  }, 25_000);
+});
+
 describe('runPostToolUse', () => {
+  it('blocks via top-level decision:block JSON output', async () => {
+    const e = createHookEngine([entry({ PostToolUse: [{ hooks: [cmd('decision-block.js')] }] })]);
+    const d = await e.runPostToolUse({ toolName: 'Bash', toolInput: {}, toolResponse: 'ok' });
+    expect(d.block).toBe(true);
+    expect(d.reason).toBe('top-level block');
+  });
+
+  it('blocks via exit 2 with stderr reason', async () => {
+    const e = createHookEngine([entry({ PostToolUse: [{ hooks: [cmd('block2.js')] }] })]);
+    const d = await e.runPostToolUse({ toolName: 'Bash', toolInput: {}, toolResponse: 'ok' });
+    expect(d.block).toBe(true);
+    expect(d.reason).toMatch(/block2/);
+  });
+
   it('concatenates additionalContext across two hooks', async () => {
     const e = createHookEngine([
       entry({ PostToolUse: [{ hooks: [cmd('addctx.js', 'AAA'), cmd('addctx.js', 'BBB')] }] }),

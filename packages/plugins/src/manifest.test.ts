@@ -1,4 +1,5 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { symlinkSync } from 'node:fs';
+import { chmod, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import {
@@ -364,6 +365,181 @@ describe('resolveProviderFiles', () => {
       expect(files).toEqual([join(plugDir, 'providers', 'a.json')]);
     } finally {
       await rm(tmpParent, { recursive: true, force: true });
+    }
+  });
+
+  it('skips a providers/ dir that is a symlink to an external dir (no throw)', async () => {
+    const tmpParent = await mkdtemp(join(tmpdir(), 'cc-prov-symlink-'));
+    const plugDir = join(tmpParent, 'plug');
+    const external = join(tmpParent, 'external');
+    await mkdir(plugDir, { recursive: true });
+    await mkdir(external, { recursive: true });
+    await writeFile(join(external, 'evil.json'), '{}');
+    try {
+      // Default providers/ root is a symlink pointing OUTSIDE the plugin dir.
+      symlinkSync(external, join(plugDir, 'providers'));
+      const files = resolveProviderFiles(plugDir, { name: 'p' });
+      expect(files).toEqual([]);
+    } finally {
+      await rm(tmpParent, { recursive: true, force: true });
+    }
+  });
+
+  it('skips an unreadable providers/ dir (no throw)', async () => {
+    const tmpParent = await mkdtemp(join(tmpdir(), 'cc-prov-unreadable-'));
+    const plugDir = join(tmpParent, 'plug');
+    const provDir = join(plugDir, 'providers');
+    await mkdir(provDir, { recursive: true });
+    await writeFile(join(provDir, 'a.json'), '{}');
+    try {
+      await chmod(provDir, 0o000);
+      expect(() => resolveProviderFiles(plugDir, { name: 'p' })).not.toThrow();
+    } finally {
+      await chmod(provDir, 0o755).catch(() => {});
+      await rm(tmpParent, { recursive: true, force: true });
+    }
+  });
+});
+
+/**
+ * Symlink-based sandbox-escape guards: a purely lexical containment check is
+ * defeated by a symlink whose LEXICAL path stays inside the plugin dir but
+ * whose REALPATH resolves outside. The resolvers must drop such components.
+ */
+describe('realpath containment (symlink sandbox escape)', () => {
+  let tmpParent: string;
+  let plugDir: string;
+  let external: string;
+  beforeEach(async () => {
+    tmpParent = await mkdtemp(join(tmpdir(), 'cc-realpath-'));
+    plugDir = join(tmpParent, 'plug');
+    external = join(tmpParent, 'external');
+    await mkdir(plugDir, { recursive: true });
+    await mkdir(external, { recursive: true });
+  });
+  afterEach(async () => {
+    await rm(tmpParent, { recursive: true, force: true });
+  });
+
+  it('drops a default skills/ that is a symlink to an external dir', async () => {
+    await writeFile(join(external, 'leak.md'), '# secret');
+    symlinkSync(external, join(plugDir, 'skills'));
+    expect(resolveSkillDirs(plugDir, { name: 'p' })).toEqual([]);
+  });
+
+  it('drops a default commands/ that is a symlink to an external dir', async () => {
+    await writeFile(join(external, 'leak.md'), '# secret');
+    symlinkSync(external, join(plugDir, 'commands'));
+    expect(resolveCommandFiles(plugDir, { name: 'p' })).toEqual([]);
+  });
+
+  it('drops a default agents/ that is a symlink to an external dir', async () => {
+    await writeFile(join(external, 'leak.md'), '# secret');
+    symlinkSync(external, join(plugDir, 'agents'));
+    expect(resolveAgentFiles(plugDir, { name: 'p' })).toEqual([]);
+  });
+
+  it('drops a manifest skills entry "./leak" symlinked to an external dir', async () => {
+    await writeFile(join(external, 'leak.md'), '# secret');
+    symlinkSync(external, join(plugDir, 'leak'));
+    expect(resolveSkillDirs(plugDir, { name: 'p', skills: ['./leak'] })).toEqual([]);
+  });
+
+  it('drops a manifest commands entry "./leak" symlinked to an external dir', async () => {
+    await writeFile(join(external, 'leak.md'), '# secret');
+    symlinkSync(external, join(plugDir, 'leak'));
+    expect(resolveCommandFiles(plugDir, { name: 'p', commands: ['./leak'] })).toEqual([]);
+  });
+
+  it('drops a manifest agents entry "./leak" symlinked to an external dir', async () => {
+    await writeFile(join(external, 'leak.md'), '# secret');
+    symlinkSync(external, join(plugDir, 'leak'));
+    expect(resolveAgentFiles(plugDir, { name: 'p', agents: ['./leak'] })).toEqual([]);
+  });
+
+  it('drops a manifest providers entry "./leak" symlinked to an external dir', async () => {
+    await writeFile(join(external, 'leak.json'), '{}');
+    symlinkSync(external, join(plugDir, 'leak'));
+    expect(resolveProviderFiles(plugDir, { name: 'p', providers: ['./leak'] })).toEqual([]);
+  });
+
+  it('skips a per-file symlink inside an otherwise-valid commands/ dir that escapes', async () => {
+    const cmdDir = join(plugDir, 'commands');
+    await mkdir(cmdDir, { recursive: true });
+    await writeFile(join(cmdDir, 'real.md'), '# real');
+    await writeFile(join(external, 'evil.md'), '# evil');
+    // A per-file symlink inside the contained dir whose target escapes.
+    symlinkSync(join(external, 'evil.md'), join(cmdDir, 'evil.md'));
+    const files = resolveCommandFiles(plugDir, { name: 'p' });
+    expect(files).toEqual([join(cmdDir, 'real.md')]);
+  });
+
+  it('skips a per-file symlink inside an otherwise-valid agents/ dir that escapes', async () => {
+    const agentDir = join(plugDir, 'agents');
+    await mkdir(agentDir, { recursive: true });
+    await writeFile(join(agentDir, 'real.md'), '# real');
+    await writeFile(join(external, 'evil.md'), '# evil');
+    symlinkSync(join(external, 'evil.md'), join(agentDir, 'evil.md'));
+    const files = resolveAgentFiles(plugDir, { name: 'p' });
+    expect(files).toEqual([join(agentDir, 'real.md')]);
+  });
+
+  it('skips a per-file symlink inside an otherwise-valid providers/ dir that escapes', async () => {
+    const provDir = join(plugDir, 'providers');
+    await mkdir(provDir, { recursive: true });
+    await writeFile(join(provDir, 'real.json'), '{}');
+    await writeFile(join(external, 'evil.json'), '{}');
+    symlinkSync(join(external, 'evil.json'), join(provDir, 'evil.json'));
+    const files = resolveProviderFiles(plugDir, { name: 'p' });
+    expect(files).toEqual([join(provDir, 'real.json')]);
+  });
+
+  it('still resolves a normal nested (non-symlink) path correctly (no regression)', async () => {
+    const skillsDir = join(plugDir, 'skills');
+    const extra = join(plugDir, 'extra');
+    await mkdir(skillsDir, { recursive: true });
+    await mkdir(extra, { recursive: true });
+    const dirs = resolveSkillDirs(plugDir, { name: 'p', skills: ['./extra'] });
+    expect(dirs).toEqual([skillsDir, extra]);
+  });
+
+  it('skips a dangling/broken symlink without throwing', async () => {
+    // skills/ → a target that does not exist (broken symlink).
+    symlinkSync(join(external, 'does-not-exist'), join(plugDir, 'skills'));
+    expect(() => resolveSkillDirs(plugDir, { name: 'p' })).not.toThrow();
+    expect(resolveSkillDirs(plugDir, { name: 'p' })).toEqual([]);
+  });
+});
+
+/**
+ * Scan-hardening for commands/agents resolvers: a broken / unreadable / non-dir
+ * (ENOTDIR) path must DROP that component, not throw (which would downgrade the
+ * whole plugin to an `error` record).
+ */
+describe('command/agent scan hardening (no throw on bad dir)', () => {
+  let dir: string;
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'cc-scanguard-'));
+  });
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it('resolveCommandFiles: a commands entry pointing at a regular file (ENOTDIR) is skipped', async () => {
+    await writeFile(join(dir, 'x.md'), '# x');
+    // './x.md' is contained + exists but is a FILE — readdirSync would throw ENOTDIR.
+    expect(() => resolveCommandFiles(dir, { name: 'p', commands: ['./x.md'] })).not.toThrow();
+    expect(resolveCommandFiles(dir, { name: 'p', commands: ['./x.md'] })).toEqual([]);
+  });
+
+  it('resolveAgentFiles: an unreadable agents/ dir is skipped (other components still resolve)', async () => {
+    await mkdir(join(dir, 'agents'), { recursive: true });
+    await writeFile(join(dir, 'agents', 'a.md'), '# a');
+    try {
+      await chmod(join(dir, 'agents'), 0o000);
+      expect(() => resolveAgentFiles(dir, { name: 'p' })).not.toThrow();
+    } finally {
+      await chmod(join(dir, 'agents'), 0o755).catch(() => {});
     }
   });
 });
