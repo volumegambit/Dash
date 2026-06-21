@@ -42,9 +42,11 @@ export interface RelayAdminConfig {
 export interface RelayServerOptions extends RelayLimits {
   /**
    * When set, the relay exposes a Bearer-gated admin API on the same listener:
-   *   POST /admin/pairings          { gatewayId }            → { credential }
-   *   POST /admin/pairings/revoke   { gatewayId, credential? } → { ok: true }
-   * Mission Control calls these to provision/revoke per-device pairings.
+   *   POST /admin/pairings          { tenantId, gatewayId }            → { credential }
+   *   POST /admin/pairings/revoke   { tenantId, gatewayId, credential? } → { ok: true }
+   *   POST /admin/gateways/revoke   { tenantId, gatewayId }            → { ok: true }
+   * Mission Control calls these to provision/revoke per-device pairings and to
+   * force-close a revoked gateway's live tunnel.
    */
   admin?: RelayAdminConfig;
 }
@@ -89,7 +91,7 @@ export function createRelayServer(deps: RelayDeps, options: RelayServerOptions =
     // The admin API shares the listener but is matched by path before any
     // Host-based gateway routing, and is gated by the admin Bearer secret.
     if ((req.url ?? '/').split('?')[0].startsWith('/admin/')) {
-      handleAdmin(admin, req, res);
+      handleAdmin(admin, gateways, req, res);
       return;
     }
     handlePhoneHttp(gateways, deps, limiter, maxStreams, req, res);
@@ -435,6 +437,7 @@ function toBuffer(data: RawData): Buffer {
  */
 function handleAdmin(
   admin: RelayAdminConfig | undefined,
+  gateways: Map<string, GatewayConn>,
   req: http.IncomingMessage,
   res: http.ServerResponse,
 ): void {
@@ -454,17 +457,34 @@ function handleAdmin(
   const path = (req.url ?? '/').split('?')[0];
   readJsonBody(req)
     .then((body) => {
+      // Every admin mutation is tenant-scoped: the caller must name the tenant
+      // the gateway belongs to, so the store can key pairings by (tenant, gateway).
+      const tenantId = stringField(body, 'tenantId');
       const gatewayId = stringField(body, 'gatewayId');
       if (path === '/admin/pairings') {
-        if (!gatewayId) return respondJson(res, 400, { error: 'gatewayId required' });
-        const credential = admin.store.provision(gatewayId);
+        if (!tenantId || !gatewayId) {
+          return respondJson(res, 400, { error: 'tenantId and gatewayId required' });
+        }
+        const credential = admin.store.provision(tenantId, gatewayId);
         return respondJson(res, 200, { gatewayId, credential });
       }
       if (path === '/admin/pairings/revoke') {
-        if (!gatewayId) return respondJson(res, 400, { error: 'gatewayId required' });
+        if (!tenantId || !gatewayId) {
+          return respondJson(res, 400, { error: 'tenantId and gatewayId required' });
+        }
         const credential = stringField(body, 'credential');
-        if (credential) admin.store.revoke(gatewayId, credential);
-        else admin.store.revokeAll(gatewayId);
+        if (credential) admin.store.revoke(tenantId, gatewayId, credential);
+        else admin.store.revokeAll(tenantId, gatewayId);
+        return respondJson(res, 200, { ok: true });
+      }
+      if (path === '/admin/gateways/revoke') {
+        if (!tenantId || !gatewayId) {
+          return respondJson(res, 400, { error: 'tenantId and gatewayId required' });
+        }
+        // Force-close the live tunnel so a revoked gateway drops immediately. The
+        // close fires registerGateway's `socket.on('close')`, which deletes the
+        // gateway and tears down its streams — force-close is atomic with deregister.
+        gateways.get(gatewayId)?.socket.close(RELAY_AUTH_CLOSE, 'Revoked');
         return respondJson(res, 200, { ok: true });
       }
       respondJson(res, 404, { error: 'Unknown admin route' });

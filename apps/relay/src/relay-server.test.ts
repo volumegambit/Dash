@@ -421,7 +421,7 @@ describe('relay-server', () => {
     const prov = await httpPost(
       '/admin/pairings',
       { authorization: 'Bearer admin-secret' },
-      { gatewayId: 'g1' },
+      { tenantId: 't1', gatewayId: 'g1' },
     );
     expect(prov.status).toBe(200);
     const { credential } = JSON.parse(prov.body) as { credential: string };
@@ -461,7 +461,7 @@ describe('relay-server', () => {
     const prov = await httpPost(
       '/admin/pairings',
       { authorization: 'Bearer admin-secret' },
-      { gatewayId: 'g1' },
+      { tenantId: 't1', gatewayId: 'g1' },
     );
     const { credential } = JSON.parse(prov.body) as { credential: string };
 
@@ -475,7 +475,7 @@ describe('relay-server', () => {
     const rev = await httpPost(
       '/admin/pairings/revoke',
       { authorization: 'Bearer admin-secret' },
-      { gatewayId: 'g1', credential },
+      { tenantId: 't1', gatewayId: 'g1', credential },
     );
     expect(rev.status).toBe(200);
 
@@ -486,6 +486,37 @@ describe('relay-server', () => {
     });
     expect(after.status).toBe(401);
     gw.close();
+  });
+
+  it('admin /admin/gateways/revoke force-closes the live gateway socket', async () => {
+    await restartWithCredentialStore();
+    const gw = await connectGateway('gw-1', 'good');
+    await waitFor(() => server.hasGateway('gw-1'));
+    expect(server.hasGateway('gw-1')).toBe(true);
+
+    const res = await httpPost(
+      '/admin/gateways/revoke',
+      { authorization: 'Bearer admin-secret' },
+      { tenantId: 't1', gatewayId: 'gw-1' },
+    );
+    expect(res.status).toBe(200);
+
+    const code = await new Promise<number>((resolve) => {
+      gw.on('close', (c) => resolve(c));
+    });
+    expect(code).toBe(4401);
+    await waitFor(() => !server.hasGateway('gw-1'));
+    expect(server.hasGateway('gw-1')).toBe(false);
+  });
+
+  it('admin pairing routes require tenantId', async () => {
+    await restartWithCredentialStore();
+    const res = await httpPost(
+      '/admin/pairings',
+      { authorization: 'Bearer admin-secret' },
+      { gatewayId: 'gw-1' }, // no tenantId
+    );
+    expect(res.status).toBe(400);
   });
 
   it('survives a malformed gateway response (duplicate head) and keeps serving', async () => {
