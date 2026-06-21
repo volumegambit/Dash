@@ -213,11 +213,26 @@ export async function registerIpcHandlers(
     }
   };
 
-  if (hasExistingGatewayState) {
-    // Returning user — keychain has already been approved for this
-    // Electron binary, so accessing it is silent. Eagerly start the
-    // gateway and wire up the chat service so the main UI is live
-    // before the window renders.
+  // Idempotently record that onboarding is complete. Monotonic: written
+  // once and never overwritten. Gateway-independent and keychain-free, so
+  // it survives a gateway crash that deletes gateway-state.json — that is
+  // what stops a configured user from being mistaken for a first run.
+  const markSetupCompleted = async (): Promise<void> => {
+    const settings = await getSettingsStore().get();
+    if (!settings.setupCompletedAt) {
+      await getSettingsStore().set({ setupCompletedAt: new Date().toISOString() });
+    }
+  };
+
+  // A configured install (durable flag, or legacy gateway-state.json) starts
+  // the gateway eagerly — its keychain was already approved in a prior
+  // session, so access is silent. Only a genuine first run is deferred until
+  // the wizard's keychain-consent step fires `setup:ensureGateway`.
+  const configuredAtLaunch = isSetupConfigured(
+    await getSettingsStore().get(),
+    hasExistingGatewayState,
+  );
+  if (configuredAtLaunch) {
     try {
       await gw.ensureRunning();
     } catch (err) {
@@ -226,7 +241,7 @@ export async function registerIpcHandlers(
     await refreshChatServiceConnection();
   } else {
     console.log(
-      '[mc] first-run detected (no gateway-state.json) — deferring gateway start until wizard consents',
+      '[mc] first-run detected (not configured) — deferring gateway start until wizard consents',
     );
   }
 
@@ -507,6 +522,9 @@ export async function registerIpcHandlers(
   ipcMain.handle('credentials:set', async (_e, key: string, value: string) => {
     const client = await getClient(gw);
     await client.setCredential(key, value);
+    // Storing a credential is the reliable "onboarding finished" moment —
+    // the wizard's API-key step lands here with a live gateway.
+    await markSetupCompleted();
   });
 
   ipcMain.handle('credentials:list', async () => {
@@ -746,26 +764,27 @@ export async function registerIpcHandlers(
   // Setup (simplified — no password)
   // -----------------------------------------------------------------------
 
-  ipcMain.handle('setup:status', async () => {
-    // First-run short-circuit: when `gateway-state.json` does not exist
-    // the gateway has never been started by this install AND the OS
-    // keychain has not yet been touched by the Electron binary. We
-    // must NOT call `getClient(gw)` here — doing so would trigger
-    // `gw.ensureRunning()` → native keychain prompt before the user
-    // has seen any Dash-branded UI. Return needsSetup without touching
-    // the gateway; the wizard will call `setup:ensureGateway` after
-    // the user has acknowledged the keychain-consent modal.
-    if (!existsSync(gatewayStateJsonPath)) {
-      return { needsSetup: true, gatewayReady: false };
-    }
-    try {
-      const client = await getClient(gw);
-      await client.health();
-      const creds = await client.listCredentials();
-      return { needsSetup: creds.length === 0, gatewayReady: true };
-    } catch {
-      return { needsSetup: true, gatewayReady: false };
-    }
+  ipcMain.handle('setup:status', async (): Promise<SetupStatus> => {
+    // Genuine first run is decided WITHOUT touching the gateway/keychain:
+    // the durable `setupCompletedAt` flag, or a legacy `gateway-state.json`.
+    // Returning `needs-setup` here short-circuits before `getClient(gw)` →
+    // `gw.ensureRunning()`, so a brand-new install never surfaces a native
+    // keychain prompt before the wizard's consent step.
+    //
+    // A configured user DOES reach `ensureHealthyClient` — but their keychain
+    // was approved in a prior session, so access is silent. If the gateway
+    // can't start, this returns `gateway-failed` (the recovery screen), NOT
+    // `needs-setup` (the onboarding wizard).
+    return resolveSetupStatus({
+      isConfigured: async () =>
+        isSetupConfigured(await getSettingsStore().get(), existsSync(gatewayStateJsonPath)),
+      ensureHealthyClient: async () => {
+        const client = await getClient(gw);
+        await client.health();
+        return client;
+      },
+      markSetupCompleted,
+    });
   });
 
   ipcMain.handle('setup:ensureGateway', async () => {
