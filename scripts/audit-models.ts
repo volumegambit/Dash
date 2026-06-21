@@ -90,6 +90,7 @@ const ENV_KEYS: Record<string, string> = {
   google: 'GOOGLE_API_KEY',
   // Keyed by provider.id — must be 'moonshotai' (matches the registry id).
   moonshotai: 'MOONSHOT_API_KEY',
+  openrouter: 'OPENROUTER_API_KEY',
 };
 
 function resolveCredential(

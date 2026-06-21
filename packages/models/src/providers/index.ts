@@ -2,6 +2,7 @@ import { Anthropic } from './anthropic.js';
 import { Google } from './google.js';
 import { Moonshot } from './moonshot.js';
 import { OpenAI } from './openai.js';
+import { OpenRouter } from './openrouter.js';
 import type { ProviderDefinition } from './types.js';
 
 /**
@@ -21,7 +22,8 @@ export const PROVIDERS: readonly ProviderDefinition[] = [
   OpenAI,
   Google,
   Moonshot,
+  OpenRouter,
 ] as const;
 
-export { Anthropic, OpenAI, Google, Moonshot };
+export { Anthropic, OpenAI, Google, Moonshot, OpenRouter };
 export type { ProviderDefinition } from './types.js';

@@ -1,9 +1,9 @@
 ---
 title: "AI Providers"
-description: "Connect to Anthropic, OpenAI, Google, Moonshot (Kimi), or any major LLM provider."
+description: "Connect to Anthropic, OpenAI, Google, Moonshot (Kimi), OpenRouter, or any major LLM provider."
 ---
 
-Each agent in your team can use a different AI provider and model. Mix and match Anthropic, OpenAI, Google, and Moonshot (Kimi) — or use the same provider for everyone.
+Each agent in your team can use a different AI provider and model. Mix and match Anthropic, OpenAI, Google, and Moonshot (Kimi) directly — or use OpenRouter to reach hundreds of models (DeepSeek, Llama, Qwen, Grok, GLM, and more) through a single key.
 
 ## Provider routing
 
@@ -15,8 +15,11 @@ Model names use a `provider/model` format. The prefix before the slash tells Das
 | `openai/` | OpenAI |
 | `google/` | Google |
 | `moonshotai/` | Moonshot (Kimi) |
+| `openrouter/` | OpenRouter |
 
 For example, `anthropic/claude-sonnet-4-20250514` routes to Anthropic and `openai/gpt-4o` routes to OpenAI.
+
+OpenRouter models keep the upstream vendor in the name, so they carry a second prefix: `openrouter/<vendor>/<model>`, e.g. `openrouter/deepseek/deepseek-r1` or `openrouter/anthropic/claude-opus-4.8`.
 
 ## Configuring credentials
 
@@ -32,6 +35,7 @@ For standalone gateway usage, you can also set credentials via environment varia
 | `OPENAI_API_KEY` | OpenAI |
 | `GOOGLE_API_KEY` | Google |
 | `MOONSHOT_API_KEY` | Moonshot (Kimi) |
+| `OPENROUTER_API_KEY` | OpenRouter |
 
 ## Anthropic
 
@@ -115,6 +119,32 @@ or in `credentials.json`:
 
 ```json
 { "moonshotai": { "apiKey": "sk-..." } }
+```
+
+## OpenRouter
+
+[OpenRouter](https://openrouter.ai) is a single OpenAI-compatible gateway that fronts many upstream providers. With one OpenRouter key you can reach models Dash doesn't connect to directly — DeepSeek, Llama, Qwen, Grok, GLM, and more — and OpenRouter automatically fails over to a healthy upstream provider if one is down. Sign up at [openrouter.ai](https://openrouter.ai) and create a key on the [Keys page](https://openrouter.ai/settings/keys).
+
+**Example models:**
+- `openrouter/deepseek/deepseek-r1` — DeepSeek R1 reasoning
+- `openrouter/qwen/qwen3-max` — Qwen3 Max
+- `openrouter/x-ai/grok-4.3` — xAI Grok
+- `openrouter/anthropic/claude-opus-4.8` — Claude, billed through OpenRouter
+
+<Note>
+  OpenRouter model names carry the upstream vendor: `openrouter/<vendor>/<model>`. Your OpenRouter key starts with `sk-or-v1-` — a plain `sk-...` key is an OpenAI key and won't route here. Routing a model you also have natively (e.g. Claude) through OpenRouter bills per token from your OpenRouter credits rather than your direct provider subscription.
+</Note>
+
+**Configuration:**
+
+```env
+OPENROUTER_API_KEY=sk-or-v1-...
+```
+
+or in `credentials.json`:
+
+```json
+{ "openrouter": { "apiKey": "sk-or-v1-..." } }
 ```
 
 ## Using a provider in an agent

@@ -1,8 +1,9 @@
 import { providerSecretKey } from '@dash/mc/provider-keys';
 
-// 'moonshotai' (not 'kimi'/'moonshot') matches the gateway credential key and
-// the pi-ai runtime provider id — keep it consistent end-to-end.
-export type Provider = 'anthropic' | 'openai' | 'google' | 'moonshotai';
+// 'moonshotai' (not 'kimi'/'moonshot') and 'openrouter' match the gateway
+// credential key and the pi-ai runtime provider id — keep it consistent
+// end-to-end.
+export type Provider = 'anthropic' | 'openai' | 'google' | 'moonshotai' | 'openrouter';
 
 export interface ProviderOption {
   id: Provider;
@@ -46,6 +47,13 @@ export const PROVIDERS: ProviderOption[] = [
     id: 'moonshotai',
     name: 'Kimi by Moonshot',
     description: 'Kimi K2 — strong agentic and coding models from Moonshot AI.',
+    available: true,
+  },
+  {
+    id: 'openrouter',
+    name: 'OpenRouter',
+    description:
+      'One key for many models — DeepSeek, Llama, Qwen, Grok, GLM, and more, with automatic upstream failover.',
     available: true,
   },
 ];
@@ -108,6 +116,24 @@ export const PROVIDER_CONFIG: Record<Provider, ProviderConfig> = {
     steps: [
       'Open the API Keys page, click "Create", and copy the key.',
       'Paste it below. It starts with sk-.',
+    ],
+  },
+  openrouter: {
+    title: 'Connect to OpenRouter',
+    secretKey: providerSecretKey('openrouter'),
+    // OpenRouter keys are prefixed sk-or-v1- — a plain sk- key is an OpenAI key
+    // that won't route here, so the placeholder + steps steer users to the
+    // right one.
+    placeholder: 'sk-or-v1-...',
+    consoleUrl: 'https://openrouter.ai',
+    apiKeysUrl: 'https://openrouter.ai/settings/keys',
+    helpUrl: 'https://openrouter.ai/docs/quickstart',
+    helpLabel: 'OpenRouter quickstart',
+    explanation:
+      'OpenRouter routes your agents to models from many providers through a single key — reach models like DeepSeek, Llama, Qwen, Grok, and GLM without a separate account for each.',
+    steps: [
+      'Open the Keys page, click "Create Key", and copy the key.',
+      'Paste it below. It starts with sk-or-v1-.',
     ],
   },
 };

@@ -19,14 +19,7 @@
 
 import { Check, ChevronDown } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { ModelOption } from '../components/deploy-options.js';
-
-const PROVIDER_LABELS: Record<string, string> = {
-  anthropic: 'Anthropic',
-  openai: 'OpenAI',
-  google: 'Google',
-  moonshotai: 'Moonshot',
-};
+import { type ModelOption, PROVIDER_LABELS } from '../components/deploy-options.js';
 
 /** Group models by provider while preserving the incoming order per group. */
 export function groupModelsByProvider(models: ModelOption[]): Array<[string, ModelOption[]]> {
