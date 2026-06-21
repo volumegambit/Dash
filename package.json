@@ -36,6 +36,7 @@
     "models:check": "tsx scripts/check-models-freshness.ts",
     "preflight": "npm run lint && npm run build && npm test && npm run models:check",
     "test": "vitest run",
+    "plugins:e2e": "node scripts/plugins-e2e/run.mjs",
     "lint": "biome check . && npm run typecheck --workspace=apps/mission-control && npm run typecheck --workspace=packages/plugin-sdk && npm run typecheck --workspace=packages/plugins",
     "lint:fix": "biome check --write .",
     "clean": "rm -rf packages/*/dist apps/*/dist apps/*/out",
