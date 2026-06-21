@@ -840,11 +840,18 @@ export class PiAgentBackend implements AgentBackend {
       // Its additionalContext is appended to pi's system prompt via the resource
       // loader; setActiveToolsByName() inside runModelChain forces a rebuild so
       // the appended sections take effect on this run. No-op when no runner.
+      //
+      // Derive `source` from the session-persistence mode so a plugin's
+      // SessionStart matcher can target it: a persisted session (sessionDir set
+      // → SessionManager.continueRecent) reports 'resume'; a fresh in-memory
+      // session reports 'startup'. Note: this fires on every run() (every turn),
+      // not once per session, so the source reflects the backend's mode rather
+      // than a true first-vs-subsequent-turn distinction.
       if (this.hookRunner?.hasHooks) {
         const start = await this.hookRunner.runSessionStart({
           sessionId: state.conversationId,
           cwd: hookCwd,
-          source: 'startup',
+          source: this.sessionDir ? 'resume' : 'startup',
         });
         // Reset the append slot every run so a prior run's SessionStart context
         // can't leak into a later run that returns none. setAppendSystemPrompt

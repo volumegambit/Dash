@@ -587,6 +587,43 @@ describe('PiAgentBackend plugin hooks', () => {
     await backend.stop();
   });
 
+  it("fires SessionStart with source 'resume' for a persisted (sessionDir) session", async () => {
+    const { createAgentSession } = await import('@earendil-works/pi-coding-agent');
+    const { mockSession } = makeMockSession();
+    vi.mocked(createAgentSession).mockResolvedValueOnce({
+      // biome-ignore lint/suspicious/noExplicitAny: test mock
+      session: mockSession as any,
+      // biome-ignore lint/suspicious/noExplicitAny: test mock
+      extensionsResult: {} as any,
+    });
+
+    const hookRunner = makeHookRunner(true);
+    const backend = new PiAgentBackend(
+      { model: 'anthropic/claude-sonnet-4-20250514', systemPrompt: 'Test' },
+      { anthropic: 'test-key' },
+      undefined,
+      '/tmp/sessions', // sessionDir set → SessionManager.continueRecent → resume
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      [],
+      [],
+      // biome-ignore lint/suspicious/noExplicitAny: structural HookRunner stub
+      hookRunner as any,
+    );
+
+    await runOnce(backend);
+
+    expect(hookRunner.runSessionStart).toHaveBeenCalledWith({
+      sessionId: 'conv-1',
+      cwd: '/tmp/test',
+      source: 'resume',
+    });
+
+    await backend.stop();
+  });
+
   it('composes tool hooks onto the pi agent when hooks are present', async () => {
     const { createAgentSession } = await import('@earendil-works/pi-coding-agent');
     const { mockSession, mockAgent } = makeMockSession();
