@@ -469,12 +469,15 @@ export async function registerIpcHandlers(
     const gatewayState = await new GatewayStateStore(DATA_DIR).read();
     const chatToken = await gw.getChatToken();
     const managementToken = await gw.getGatewayToken();
+    if (!managementToken || !chatToken) {
+      throw new Error('Gateway not running — start it before pairing a device');
+    }
     return {
       host: getLanIp(),
       mgmtPort: gatewayState?.port ?? 9300,
       chatPort: gatewayState?.channelPort ?? 9200,
-      mgmtToken: managementToken ?? '',
-      chatToken: chatToken ?? '',
+      mgmtToken: managementToken,
+      chatToken: chatToken,
     };
   });
 
