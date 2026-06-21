@@ -41,6 +41,9 @@
     "format": ["esm"],
     "dts": true,
     "clean": true,
-    "sourcemap": true
+    "sourcemap": true,
+    "banner": {
+      "js": "import { createRequire as _createRequire } from 'module'; const require = _createRequire(import.meta.url);"
+    }
   }
 }
