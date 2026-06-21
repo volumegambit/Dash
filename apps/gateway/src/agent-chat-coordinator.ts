@@ -99,6 +99,14 @@ export interface AgentChatCoordinator {
    * by agent ID independently of the registry.
    */
   evict(agentId: string): Promise<void>;
+  /**
+   * Evict all idle warm backends so they rebuild with current wiring on next
+   * use; pinned in-flight conversations drain. Used by plugin hot-reload, where
+   * the rebuilt wiring is global to every agent — resetting idle backends makes
+   * the next chat re-warm against the new skill dirs / hooks / model catalog,
+   * while mid-stream conversations finish on their old wiring undisturbed.
+   */
+  evictAll(): Promise<void>;
   /** List the skills available to an agent (bundled + per-agent). */
   listSkills(agentId: string): Promise<SkillDiscoveryResult[]>;
   /** Get one skill (with content) by name, or null. */
@@ -321,6 +329,10 @@ export function createAgentChatCoordinator(
 
     async evict(agentId) {
       await pool.evictAgent(agentId);
+    },
+
+    async evictAll() {
+      await pool.evictIdle();
     },
 
     stats() {
