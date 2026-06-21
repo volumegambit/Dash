@@ -312,8 +312,16 @@ export async function reloadPluginsUnderMutex(
       // wiring (global to every agent — a single pool-wide eviction, NOT
       // per-plugin). In `finally` so a clear() failure never skips eviction and
       // leaves a backend retaining stale wiring. Pinned in-flight conversations
-      // drain on their old wiring.
-      await agents.evictAll();
+      // drain on their old wiring. Best-effort: a backend.stop() throw here is
+      // post-swap, so it must NOT turn the committed reload into a rejection
+      // (which would make the route falsely report 409 'wiring unchanged').
+      try {
+        await agents.evictAll();
+      } catch (err) {
+        logger.warn(
+          `[plugins] reload: evictAll failed (wiring already applied): ${(err as Error).message}`,
+        );
+      }
     }
 
     logger.info('[plugins] reload complete');

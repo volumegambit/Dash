@@ -536,6 +536,8 @@ describe('reloadPluginsUnderMutex', () => {
     // write) — but the 2nd caller is guaranteed a reload that ran AFTER the
     // write, so beta is enabled in its result.
     expect(s2.pluginRecords.beta?.enabled).toBe(true);
+    // ...and the 1st caller's change (alpha) is NOT lost — both are reflected.
+    expect(s2.pluginRecords.alpha?.enabled).toBe(true);
     // Coalesced: the trailing reload is ONE fresh run, not one-per-caller.
     expect(s1).not.toBe(s2);
     // 1 (held) + 1 (trailing) = 2 reload bodies for two overlapping requests.
@@ -692,5 +694,40 @@ describe('reloadPluginsUnderMutex', () => {
     expect(Object.keys(state.pluginRecords)).toEqual(['alpha']);
     // evictAll ran despite clear() throwing (finally), so no backend keeps stale wiring.
     expect(agents.evictAllCalls).toBe(1);
+  });
+
+  // T-c sibling (F3): if eviction ITSELF fails after the swap, the reload must
+  // STILL resolve with the applied wiring — a post-swap evictAll() throw must not
+  // reject a committed reload (which would make the route falsely report 409).
+  it('resolves (wiring applied) even when post-swap evictAll() throws (T-c, F3)', async () => {
+    await writePlugin(pluginsDir, 'alpha', { skill: 'doit' });
+    const store = new PluginConfigStore(tmp);
+    await store.setEnabled('alpha', true);
+
+    const modelsStore = new ModelsStore(tmp);
+    const agents: Pick<AgentChatCoordinator, 'evictAll'> = {
+      evictAll: vi.fn(async () => {
+        throw new Error('evict boom');
+      }),
+    };
+
+    let swapped = false;
+    const state = await reloadPluginsUnderMutex(
+      store,
+      pluginsDir,
+      tmp,
+      NOOP_LOGGER,
+      modelsStore,
+      agents,
+      CORE_PROVIDER_IDS,
+      async () => {
+        swapped = true;
+      },
+    );
+
+    // The reload RESOLVED with the applied wiring despite evictAll throwing.
+    expect(swapped).toBe(true);
+    expect(Object.keys(state.pluginRecords)).toEqual(['alpha']);
+    expect(agents.evictAll).toHaveBeenCalledTimes(1);
   });
 });
