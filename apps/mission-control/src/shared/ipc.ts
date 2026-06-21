@@ -98,13 +98,29 @@ export interface McpStatusChange {
   status: 'connected' | 'disconnected' | 'reconnecting' | 'error' | 'needs_reauth';
 }
 
-export interface PairingInfo {
+/** LAN pairing: phone and gateway on the same network, direct connection. */
+export interface LanPairingInfo {
+  mode: 'lan';
   host: string;
   mgmtPort: number;
   chatPort: number;
   mgmtToken: string;
   chatToken: string;
 }
+
+/** Relay pairing: phone reaches the gateway over the internet via the relay. */
+export interface RelayPairingInfo {
+  mode: 'relay';
+  /** `<gatewayId>.<zone>` — both HTTPS and WSS resolve here through the relay. */
+  host: string;
+  secure: true;
+  mgmtToken: string;
+  chatToken: string;
+  /** Per-device credential the phone presents to the relay (x-dash-relay-credential). */
+  relayCredential: string;
+}
+
+export type PairingInfo = LanPairingInfo | RelayPairingInfo;
 
 export interface MissionControlAPI {
   getVersion(): Promise<string>;

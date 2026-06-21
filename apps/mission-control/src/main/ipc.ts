@@ -10,6 +10,7 @@ import {
   GatewayStateStore,
   GatewaySupervisor,
   SettingsStore,
+  createRelayAdminClient,
   defaultProcessSpawner,
 } from '@dash/mc';
 import type {
@@ -27,6 +28,7 @@ import { ChatService } from './chat-service.js';
 import { completeClaudeOAuth, prepareClaudeOAuth } from './claude-auth.js';
 import { startCodexOAuth } from './codex-auth.js';
 import { GatewayPoller } from './gateway-poller.js';
+import { buildPairingInfo } from './pairing.js';
 
 const DATA_DIR = process.env.MC_DATA_DIR || desktopDir();
 
@@ -472,13 +474,30 @@ export async function registerIpcHandlers(
     if (!managementToken || !chatToken) {
       throw new Error('Gateway not running — start it before pairing a device');
     }
-    return {
-      host: getLanIp(),
-      mgmtPort: gatewayState?.port ?? 9300,
-      chatPort: gatewayState?.channelPort ?? 9200,
-      mgmtToken: managementToken,
-      chatToken: chatToken,
-    };
+    // Relay mode requires all three: the zone (settings) plus the gateway id and
+    // admin secret (keychain). Any missing → LAN pairing.
+    const settings = await getSettingsStore().get();
+    const [gatewayId, adminSecret] = await Promise.all([
+      gw.getGatewayId(),
+      gw.getRelayAdminSecret(),
+    ]);
+    return buildPairingInfo(
+      {
+        mgmtToken: managementToken,
+        chatToken,
+        lan: {
+          host: getLanIp(),
+          mgmtPort: gatewayState?.port ?? 9300,
+          chatPort: gatewayState?.channelPort ?? 9200,
+        },
+        relay:
+          settings.relayZone && gatewayId && adminSecret
+            ? { zone: settings.relayZone, gatewayId, adminSecret }
+            : undefined,
+      },
+      (adminBaseUrl, secret, gid) =>
+        createRelayAdminClient(adminBaseUrl, secret).provisionCredential(gid),
+    );
   });
 
   ipcMain.handle('agents:disable', async (_e, id: string) => {

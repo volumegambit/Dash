@@ -3,11 +3,34 @@ import QRCode from 'qrcode';
 import { useEffect, useState } from 'react';
 import type { PairingInfo } from '../../../shared/ipc.js';
 
+/** Build the scannable QR payload from the pairing info (v1 LAN or v2 relay). */
+function qrPayload(i: PairingInfo): string {
+  if (i.mode === 'relay') {
+    return JSON.stringify({
+      v: 2,
+      host: i.host,
+      secure: i.secure,
+      mgmtToken: i.mgmtToken,
+      chatToken: i.chatToken,
+      relayCredential: i.relayCredential,
+    });
+  }
+  return JSON.stringify({
+    v: 1,
+    host: i.host,
+    mgmtToken: i.mgmtToken,
+    chatToken: i.chatToken,
+    mgmtPort: i.mgmtPort,
+    chatPort: i.chatPort,
+  });
+}
+
 /**
  * Read-only screen that renders a QR code the Dash Android app scans to pair.
- * The QR encodes the gateway host + both tokens; the tokens are never shown as
- * plaintext on screen. The QR is built as an SVG data URI (pure JS, no canvas)
- * so it renders identically in Electron and under test.
+ * The QR encodes the gateway host + both tokens (and, over relay, the per-device
+ * relay credential); secrets are never shown as plaintext on screen. The QR is
+ * built as an SVG data URI (pure JS, no canvas) so it renders identically in
+ * Electron and under test.
  */
 export function PairDevice(): JSX.Element {
   const [info, setInfo] = useState<PairingInfo | null>(null);
@@ -19,15 +42,7 @@ export function PairDevice(): JSX.Element {
       .pairingGetInfo()
       .then(async (i) => {
         setInfo(i);
-        const payload = JSON.stringify({
-          v: 1,
-          host: i.host,
-          mgmtToken: i.mgmtToken,
-          chatToken: i.chatToken,
-          mgmtPort: i.mgmtPort,
-          chatPort: i.chatPort,
-        });
-        const svg = await QRCode.toString(payload, { type: 'svg', margin: 1, width: 280 });
+        const svg = await QRCode.toString(qrPayload(i), { type: 'svg', margin: 1, width: 280 });
         setQrSrc(`data:image/svg+xml;utf8,${encodeURIComponent(svg)}`);
       })
       .catch((e: unknown) => {
@@ -64,15 +79,29 @@ export function PairDevice(): JSX.Element {
           <p className="mt-4 text-sm text-foreground">
             Gateway:{' '}
             <span className="font-mono">
-              {info.host}:{info.mgmtPort}
+              {info.mode === 'lan' ? `${info.host}:${info.mgmtPort}` : info.host}
+            </span>
+            <span
+              data-testid="pairing-mode"
+              className="ml-2 rounded bg-surface px-2 py-0.5 text-xs text-muted"
+            >
+              {info.mode === 'relay' ? 'relay' : 'local network'}
             </span>
           </p>
         )}
 
-        <p className="mt-2 max-w-md text-xs text-muted">
-          Your phone must be on the same Wi-Fi network. The connection tokens are embedded in the QR
-          code and are never displayed here. Pairing over the internet arrives with the Dash relay.
-        </p>
+        {info?.mode === 'relay' ? (
+          <p className="mt-2 max-w-md text-xs text-muted">
+            This code connects your phone over the internet through your relay. The connection
+            tokens and a per-device relay credential are embedded in the QR code and are never
+            displayed here.
+          </p>
+        ) : (
+          <p className="mt-2 max-w-md text-xs text-muted">
+            Your phone must be on the same Wi-Fi network. The connection tokens are embedded in the
+            QR code and are never displayed here. To pair over the internet, set up a Dash relay.
+          </p>
+        )}
       </div>
     </div>
   );
