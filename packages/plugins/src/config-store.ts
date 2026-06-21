@@ -1,4 +1,5 @@
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import type { PluginEntryConfig } from './types.js';
 
@@ -24,6 +25,10 @@ export class PluginConfigStore {
     if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return {};
     const entries: Record<string, PluginEntryConfig> = {};
     for (const [name, value] of Object.entries(raw as Record<string, unknown>)) {
+      // Skip dangerous keys: assigning entries['__proto__'] = {...} reparents the
+      // map (its prototype becomes the attacker object), which would make it inherit
+      // enabled/trusted and silently bypass the trust gate.
+      if (name === '__proto__' || name === 'constructor' || name === 'prototype') continue;
       if (typeof value !== 'object' || value === null || Array.isArray(value)) continue;
       const v = value as Record<string, unknown>;
       entries[name] = {
@@ -53,8 +58,16 @@ export class PluginConfigStore {
 
   private async save(entries: Record<string, PluginEntryConfig>): Promise<void> {
     await mkdir(dirname(this.filePath), { recursive: true });
-    const tmpPath = `${this.filePath}.tmp`;
+    // Randomize the temp path so concurrent save()s don't write the same file and
+    // corrupt/interleave each other's contents before rename.
+    const tmpPath = `${this.filePath}.${randomUUID()}.tmp`;
     await writeFile(tmpPath, JSON.stringify(entries, null, 2));
-    await rename(tmpPath, this.filePath);
+    try {
+      await rename(tmpPath, this.filePath);
+    } catch (err) {
+      // Don't leave the temp file behind if the rename fails.
+      await unlink(tmpPath).catch(() => {});
+      throw err;
+    }
   }
 }
