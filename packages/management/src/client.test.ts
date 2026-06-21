@@ -6,7 +6,16 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ManagementClient } from './client.js';
 import { startManagementServer } from './server.js';
-import type { InfoResponse, SkillContent, SkillInfo, SkillsConfig } from './types.js';
+import type {
+  InfoResponse,
+  InstalledPlugin,
+  PluginListResponse,
+  PluginRecord,
+  PluginSetStateRequest,
+  SkillContent,
+  SkillInfo,
+  SkillsConfig,
+} from './types.js';
 
 const TEST_TOKEN = 'client-test-token';
 
@@ -464,6 +473,203 @@ describe('ManagementClient', () => {
     it('deleteComment() throws on non-ok response', async () => {
       const bad = new ManagementClient(projBaseUrl, 'wrong-token');
       await expect(bad.deleteComment('i1', 'c1')).rejects.toThrow('Management API error 401');
+    });
+  });
+
+  describe('Plugin methods', () => {
+    interface RecordedRequest {
+      method: string;
+      url: string;
+      body: unknown;
+    }
+
+    let recording: RecordedRequest[];
+    let nextResponse: unknown;
+    let nextStatus: number;
+    let rawServer: Server;
+    let pluginClose: () => Promise<void>;
+    let pluginClient: ManagementClient;
+    let pluginBaseUrl: string;
+
+    beforeEach(async () => {
+      recording = [];
+      nextResponse = {};
+      nextStatus = 200;
+
+      rawServer = createServer((req: IncomingMessage, res: ServerResponse) => {
+        const chunks: Buffer[] = [];
+        req.on('data', (c) => chunks.push(c as Buffer));
+        req.on('end', () => {
+          const raw = Buffer.concat(chunks).toString('utf-8');
+          let body: unknown;
+          try {
+            body = raw ? JSON.parse(raw) : undefined;
+          } catch {
+            body = raw;
+          }
+          recording.push({ method: req.method ?? '', url: req.url ?? '', body });
+          if (req.headers.authorization !== `Bearer ${TEST_TOKEN}`) {
+            res.statusCode = 401;
+            res.end('unauthorized');
+            return;
+          }
+          res.statusCode = nextStatus;
+          res.setHeader('content-type', 'application/json');
+          res.end(JSON.stringify(nextResponse));
+        });
+      });
+
+      await new Promise<void>((resolve) => rawServer.listen(0, resolve));
+      const addr = rawServer.address();
+      const pluginPort = typeof addr === 'object' && addr ? addr.port : 0;
+      pluginClose = () =>
+        new Promise<void>((resolve, reject) =>
+          rawServer.close((err) => (err ? reject(err) : resolve())),
+        );
+      pluginBaseUrl = `http://localhost:${pluginPort}`;
+      pluginClient = new ManagementClient(pluginBaseUrl, TEST_TOKEN);
+    });
+
+    afterEach(async () => {
+      await pluginClose();
+    });
+
+    const sampleRecord: PluginRecord = {
+      name: 'acme',
+      status: 'loaded',
+      enabled: true,
+      trusted: false,
+      activated: ['skills'],
+      noop: ['hooks'],
+      version: '1.2.3',
+      displayName: 'Acme',
+      description: 'An acme plugin',
+      source: 'git:acme/acme',
+    };
+
+    it('pluginsList() GETs /plugins and returns { records }', async () => {
+      nextResponse = { records: [sampleRecord] } satisfies PluginListResponse;
+      const res = await pluginClient.pluginsList();
+      expect(recording[0].method).toBe('GET');
+      expect(recording[0].url).toBe('/plugins');
+      expect(res.records).toHaveLength(1);
+      expect(res.records[0]).toEqual(sampleRecord);
+    });
+
+    it('pluginSetState() PUTs /plugins/:name with the patch body', async () => {
+      nextResponse = { ...sampleRecord, trusted: true } satisfies PluginRecord;
+      const patch: PluginSetStateRequest = { trusted: true };
+      const res = await pluginClient.pluginSetState('acme', patch);
+      expect(recording[0].method).toBe('PUT');
+      expect(recording[0].url).toBe('/plugins/acme');
+      expect(recording[0].body).toEqual({ trusted: true });
+      expect(res.trusted).toBe(true);
+    });
+
+    it('pluginSetState() URL-encodes the plugin name', async () => {
+      nextResponse = sampleRecord;
+      await pluginClient.pluginSetState('@scope/name', { enabled: false });
+      expect(recording[0].url).toBe('/plugins/%40scope%2Fname');
+      expect(recording[0].body).toEqual({ enabled: false });
+    });
+
+    it('pluginInstall() POSTs /plugins/install with { source } and parses the 201 InstalledPlugin', async () => {
+      const installed: InstalledPlugin = {
+        name: 'acme',
+        version: '1.2.3',
+        description: 'An acme plugin',
+        location: '/data/plugins/acme',
+        scanVerdict: 'safe',
+        scanReasons: [],
+        source: 'git:acme/acme',
+      };
+      nextResponse = installed;
+      nextStatus = 201;
+      const res = await pluginClient.pluginInstall('git:acme/acme');
+      expect(recording[0].method).toBe('POST');
+      expect(recording[0].url).toBe('/plugins/install');
+      expect(recording[0].body).toEqual({ source: 'git:acme/acme' });
+      expect(res).toEqual(installed);
+    });
+
+    it('pluginInstall() includes name when provided', async () => {
+      nextResponse = {
+        name: 'override',
+        location: '/data/plugins/override',
+        scanVerdict: 'safe',
+        scanReasons: [],
+        source: 'git:acme/acme',
+      } satisfies InstalledPlugin;
+      nextStatus = 201;
+      await pluginClient.pluginInstall('git:acme/acme', 'override');
+      expect(recording[0].body).toEqual({ source: 'git:acme/acme', name: 'override' });
+    });
+
+    it('pluginInstall() parses the reload-pending 200 body', async () => {
+      const installed: InstalledPlugin = {
+        name: 'acme',
+        location: '/data/plugins/acme',
+        scanVerdict: 'suspicious',
+        scanReasons: ['network access'],
+        source: 'git:acme/acme',
+      };
+      nextResponse = {
+        ok: true,
+        installed,
+        note: 'installed and persisted; wiring reconciles on next reload',
+        error: 'reload failed',
+      };
+      nextStatus = 200;
+      const res = await pluginClient.pluginInstall('git:acme/acme');
+      expect(recording[0].url).toBe('/plugins/install');
+      // Reload-pending shape: discriminated by `ok`.
+      expect('ok' in res && res.ok).toBe(true);
+      if ('ok' in res) {
+        expect(res.installed).toEqual(installed);
+        expect(res.note).toContain('reconciles on next reload');
+        expect(res.error).toBe('reload failed');
+      }
+    });
+
+    it('pluginRemove() DELETEs /plugins/:name and returns { ok, path? }', async () => {
+      nextResponse = { ok: true, path: '/data/plugins/acme' };
+      const res = await pluginClient.pluginRemove('acme');
+      expect(recording[0].method).toBe('DELETE');
+      expect(recording[0].url).toBe('/plugins/acme');
+      expect(res).toEqual({ ok: true, path: '/data/plugins/acme' });
+    });
+
+    it('pluginRemove() handles the no-path body', async () => {
+      nextResponse = { ok: true };
+      const res = await pluginClient.pluginRemove('acme');
+      expect(res.ok).toBe(true);
+      expect(res.path).toBeUndefined();
+    });
+
+    it('pluginReload() POSTs /plugins/reload and returns { ok, reloadedAt? }', async () => {
+      nextResponse = { ok: true, reloadedAt: '2026-06-22T00:00:00.000Z' };
+      const res = await pluginClient.pluginReload();
+      expect(recording[0].method).toBe('POST');
+      expect(recording[0].url).toBe('/plugins/reload');
+      expect(res.ok).toBe(true);
+      expect(res.reloadedAt).toBe('2026-06-22T00:00:00.000Z');
+    });
+
+    it('runtimePlugins() GETs /runtime/plugins and returns providers + plugins', async () => {
+      nextResponse = {
+        providers: [{ id: 'acme', label: 'Acme', credentialPrefix: 'ACME_' }],
+        plugins: [{ name: 'acme', displayName: 'Acme', version: '1.2.3' }],
+      };
+      const res = await pluginClient.runtimePlugins();
+      expect(recording[0].method).toBe('GET');
+      expect(recording[0].url).toBe('/runtime/plugins');
+      expect(res.providers[0]).toEqual({ id: 'acme', label: 'Acme', credentialPrefix: 'ACME_' });
+      expect(res.plugins[0]).toEqual({ name: 'acme', displayName: 'Acme', version: '1.2.3' });
+    });
+
+    it('pluginsList() throws on non-ok response', async () => {
+      const bad = new ManagementClient(pluginBaseUrl, 'wrong-token');
+      await expect(bad.pluginsList()).rejects.toThrow('Management API error 401');
     });
   });
 });

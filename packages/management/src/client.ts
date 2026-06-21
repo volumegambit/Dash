@@ -13,6 +13,10 @@ import type {
   McpAddServerRequest,
   McpAddServerResponse,
   McpServerInfo,
+  PluginInstallResponse,
+  PluginListResponse,
+  PluginRecord,
+  PluginSetStateRequest,
   Project,
   ProjectWithCounts,
   SessionIssueLink,
@@ -268,6 +272,41 @@ export class ManagementClient {
 
   async mcpSetAllowlist(patterns: string[]): Promise<void> {
     await this.requestWithBody<{ ok: boolean }>('PUT', '/runtime/mcp/allowlist', patterns);
+  }
+
+  // --- Plugins ---
+
+  async pluginsList(): Promise<PluginListResponse> {
+    return this.request<PluginListResponse>('GET', '/plugins');
+  }
+
+  async pluginSetState(name: string, patch: PluginSetStateRequest): Promise<PluginRecord> {
+    return this.requestWithBody<PluginRecord>('PUT', `/plugins/${encodeURIComponent(name)}`, patch);
+  }
+
+  async pluginInstall(source: string, name?: string): Promise<PluginInstallResponse> {
+    return this.requestWithBody<PluginInstallResponse>('POST', '/plugins/install', {
+      source,
+      ...(name ? { name } : {}),
+    });
+  }
+
+  async pluginRemove(name: string): Promise<{ ok: boolean; path?: string }> {
+    return this.request<{ ok: boolean; path?: string }>(
+      'DELETE',
+      `/plugins/${encodeURIComponent(name)}`,
+    );
+  }
+
+  async pluginReload(): Promise<{ ok: boolean; reloadedAt?: string }> {
+    return this.request<{ ok: boolean; reloadedAt?: string }>('POST', '/plugins/reload');
+  }
+
+  async runtimePlugins(): Promise<{
+    providers: Array<{ id: string; label: string; credentialPrefix: string }>;
+    plugins: Array<{ name: string; displayName?: string; version?: string }>;
+  }> {
+    return this.request('GET', '/runtime/plugins');
   }
 
   // --- Projects ---
