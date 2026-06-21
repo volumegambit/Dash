@@ -14,3 +14,5 @@ export {
   validateManifest,
 } from './manifest.js';
 export { PluginConfigStore } from './config-store.js';
+export { loadPlugins } from './loader.js';
+export type { LoadPluginsOptions } from './loader.js';
