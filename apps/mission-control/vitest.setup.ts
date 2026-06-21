@@ -26,6 +26,15 @@ function createMockApi(): Record<keyof MissionControlAPI, ReturnType<typeof vi.f
     agentsDisable: vi.fn().mockResolvedValue(undefined),
     agentsEnable: vi.fn().mockResolvedValue(undefined),
 
+    // Pairing
+    pairingGetInfo: vi.fn().mockResolvedValue({
+      host: '127.0.0.1',
+      mgmtPort: 9300,
+      chatPort: 9200,
+      mgmtToken: 'test-mgmt',
+      chatToken: 'test-chat',
+    }),
+
     // Channels (gateway passthrough)
     channelsList: vi.fn().mockResolvedValue([]),
     channelsGet: vi.fn().mockResolvedValue(null),

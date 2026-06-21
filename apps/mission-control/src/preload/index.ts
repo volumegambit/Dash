@@ -19,6 +19,9 @@ const api: MissionControlAPI = {
   agentsDisable: (id) => ipcRenderer.invoke('agents:disable', id),
   agentsEnable: (id) => ipcRenderer.invoke('agents:enable', id),
 
+  // Pairing
+  pairingGetInfo: () => ipcRenderer.invoke('pairing:getInfo'),
+
   // Channels
   channelsList: () => ipcRenderer.invoke('channels:list'),
   channelsGet: (name) => ipcRenderer.invoke('channels:get', name),

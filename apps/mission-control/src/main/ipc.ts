@@ -1,5 +1,6 @@
 import { createWriteStream, existsSync, mkdirSync } from 'node:fs';
 import { mkdir, readFile } from 'node:fs/promises';
+import { networkInterfaces } from 'node:os';
 import { join } from 'node:path';
 import type { Project, SkillsConfig } from '@dash/management';
 import { ManagementClient } from '@dash/management';
@@ -21,13 +22,24 @@ import { desktopDir, gatewayDir, logsDir, migrateLegacyLayout } from '@dash/path
 import { app, dialog, ipcMain, shell } from 'electron';
 import type { BrowserWindow } from 'electron';
 import WebSocket from 'ws';
-import type { SetupStatus } from '../shared/ipc.js';
+import type { PairingInfo, SetupStatus } from '../shared/ipc.js';
 import { ChatService } from './chat-service.js';
 import { completeClaudeOAuth, prepareClaudeOAuth } from './claude-auth.js';
 import { startCodexOAuth } from './codex-auth.js';
 import { GatewayPoller } from './gateway-poller.js';
 
 const DATA_DIR = process.env.MC_DATA_DIR || desktopDir();
+
+/** Best-effort LAN IPv4 so a phone on the same Wi-Fi can reach the gateway. */
+function getLanIp(): string {
+  const ifaces = networkInterfaces();
+  for (const name of Object.keys(ifaces)) {
+    for (const net of ifaces[name] ?? []) {
+      if (net.family === 'IPv4' && !net.internal) return net.address;
+    }
+  }
+  return '127.0.0.1';
+}
 
 // Capture MC main process logs to a file (shared ~/.dash/logs)
 const MC_LOG_PATH = join(logsDir(), 'mc.log');
@@ -451,6 +463,19 @@ export async function registerIpcHandlers(
   ipcMain.handle('agents:remove', async (_e, id: string) => {
     const client = await getClient(gw);
     await client.removeAgent(id);
+  });
+
+  ipcMain.handle('pairing:getInfo', async (): Promise<PairingInfo> => {
+    const gatewayState = await new GatewayStateStore(DATA_DIR).read();
+    const chatToken = await gw.getChatToken();
+    const managementToken = await gw.getGatewayToken();
+    return {
+      host: getLanIp(),
+      mgmtPort: gatewayState?.port ?? 9300,
+      chatPort: gatewayState?.channelPort ?? 9200,
+      mgmtToken: managementToken ?? '',
+      chatToken: chatToken ?? '',
+    };
   });
 
   ipcMain.handle('agents:disable', async (_e, id: string) => {

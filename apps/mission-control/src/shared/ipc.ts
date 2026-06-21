@@ -98,6 +98,14 @@ export interface McpStatusChange {
   status: 'connected' | 'disconnected' | 'reconnecting' | 'error' | 'needs_reauth';
 }
 
+export interface PairingInfo {
+  host: string;
+  mgmtPort: number;
+  chatPort: number;
+  mgmtToken: string;
+  chatToken: string;
+}
+
 export interface MissionControlAPI {
   getVersion(): Promise<string>;
 
@@ -114,6 +122,9 @@ export interface MissionControlAPI {
   agentsRemove(id: string): Promise<void>;
   agentsDisable(id: string): Promise<void>;
   agentsEnable(id: string): Promise<void>;
+
+  // Pairing (Android app)
+  pairingGetInfo(): Promise<PairingInfo>;
 
   // Channels (gateway passthrough)
   channelsList(): Promise<GatewayChannel[]>;
