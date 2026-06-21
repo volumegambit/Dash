@@ -78,7 +78,7 @@ export function createPluginModelCatalog(
   }
 
   return {
-    resolve(provider: string, modelId: string): unknown | null {
+    resolve(provider: string, modelId: string): unknown {
       const catalog = byId.get(provider);
       if (!catalog) return null;
 

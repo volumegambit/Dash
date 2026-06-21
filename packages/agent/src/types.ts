@@ -172,7 +172,13 @@ export interface HookRunner {
  * catalog doesn't recognize the model either.
  */
 export interface PluginModelCatalog {
-  resolve(provider: string, modelId: string): unknown | null;
+  /**
+   * Returns the resolved pi-ai `Model<Api>`-shaped object, or `null` when the
+   * catalog doesn't recognize the model. (`unknown` already subsumes `null`, so
+   * the return type is plain `unknown`; the null = not-found contract lives in
+   * this comment and the interface doc above.)
+   */
+  resolve(provider: string, modelId: string): unknown;
 }
 
 export interface AgentBackend {
