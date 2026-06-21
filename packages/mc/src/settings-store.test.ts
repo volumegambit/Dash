@@ -42,4 +42,12 @@ describe('SettingsStore', () => {
     const settings = await store.get();
     expect(settings.defaultModel).toBe('openai/gpt-4o');
   });
+
+  it('round-trips setupCompletedAt without clobbering other fields', async () => {
+    await store.set({ defaultModel: 'claude-opus-4-8' });
+    await store.set({ setupCompletedAt: '2026-06-21T12:00:00.000Z' });
+    const settings = await store.get();
+    expect(settings.setupCompletedAt).toBe('2026-06-21T12:00:00.000Z');
+    expect(settings.defaultModel).toBe('claude-opus-4-8');
+  });
 });
