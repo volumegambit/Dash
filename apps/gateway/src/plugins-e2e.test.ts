@@ -1,6 +1,8 @@
+import { execFile } from 'node:child_process';
 import { mkdir, mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { promisify } from 'node:util';
 import type { AgentBackend, AgentEvent, AgentState, RunOptions } from '@dash/agent';
 import type { Logger } from '@dash/logging';
 import { MANIFEST_DIR, MANIFEST_FILENAME, PluginConfigStore, loadPlugins } from '@dash/plugins';
@@ -153,6 +155,29 @@ async function writeLocalSourcePlugin(root: string, name: string): Promise<strin
     JSON.stringify({ mcpServers: { db: { command: 'node', args: ['server.js'] } } }),
   );
   return src;
+}
+
+const execFileAsync = promisify(execFile);
+
+/**
+ * Write a plugin SOURCE tree, then pack it into a real `.tar.gz` the install
+ * route can install FROM. Exercises the tarball-extraction install path (the
+ * existing round-trip test covers a local DIRECTORY source; this covers an
+ * archive source through the same route + reload). The archive is built with the
+ * system `tar` so it is a genuine gzipped tar, not a hand-rolled buffer; `-C src
+ * .` places the plugin contents at the archive root, matching how a packed
+ * plugin is published. Returns the `.tar.gz` path to pass as `source`.
+ */
+async function writeTarballSourcePlugin(root: string, name: string): Promise<string> {
+  const src = await writeLocalSourcePlugin(root, `tar-${name}`);
+  // Re-stamp the manifest name: writeLocalSourcePlugin names it after the dir.
+  await writeFile(
+    join(src, MANIFEST_DIR, MANIFEST_FILENAME),
+    JSON.stringify({ name, version: '2.0.0', description: `${name} Plugin` }),
+  );
+  const tgz = join(root, `${name}.tar.gz`);
+  await execFileAsync('tar', ['-czf', tgz, '-C', src, '.']);
+  return tgz;
 }
 
 /** Write a plugin that contributes an LLM provider catalog (trust-gated). The
@@ -622,6 +647,54 @@ describe('plugin mutate → hot-reload end-to-end', () => {
       const list2Res = await app.request('/plugins', { headers: AUTH });
       const list2 = (await list2Res.json()) as { records: PluginStatusRecord[] };
       expect(list2.records.find((r) => r.name === 'disco')).toBeUndefined();
+    } finally {
+      await cleanup();
+    }
+  });
+
+  // P2 T6: install from a `.tar.gz` SOURCE through the route. The round-trip test
+  // above covers a local DIRECTORY source; this proves an ARCHIVE source flows
+  // through the same untrusted+scanned install path: 201, extracted into the
+  // managed dir on disk, and visible after the real reload (status loaded, code
+  // component in noop because it lands untrusted).
+  it('installs from a .tar.gz source through the route (201 + on-disk + reload-visible)', async () => {
+    const tgz = await writeTarballSourcePlugin(dataDir, 'boogie');
+
+    const { app, getWiringState, cleanup } = await boot(dataDir);
+    try {
+      const install = await app.request('/plugins/install', {
+        method: 'POST',
+        headers: JSON_HEADERS,
+        body: JSON.stringify({ source: tgz }),
+      });
+      expect(install.status).toBe(201);
+      const installed = (await install.json()) as {
+        name: string;
+        location: string;
+        source: string;
+      };
+      expect(installed.name).toBe('boogie');
+      expect(installed.location).toBe(join(dataDir, 'plugins', 'boogie'));
+      expect(installed.source).toBe(tgz);
+
+      // Extracted onto disk under the managed plugins dir, manifest included.
+      const installedDir = join(dataDir, 'plugins', 'boogie');
+      await expect(stat(join(installedDir, MANIFEST_DIR, MANIFEST_FILENAME))).resolves.toBeTruthy();
+
+      // Config persisted: enabled + installed + source from the archive path.
+      const onDisk = await new PluginConfigStore(dataDir).load();
+      expect(onDisk.boogie).toMatchObject({ enabled: true, installed: true, source: tgz });
+      expect(onDisk.boogie.trusted).toBeUndefined();
+
+      // Reload-visible: loaded, untrusted, code component withheld (noop).
+      const listRes = await app.request('/plugins', { headers: AUTH });
+      const list = (await listRes.json()) as { records: PluginStatusRecord[] };
+      const boogie = list.records.find((r) => r.name === 'boogie');
+      expect(boogie?.status).toBe('loaded');
+      expect(boogie?.trusted).toBe(false);
+      expect(boogie?.activated).toContain('skills');
+      expect(boogie?.noop).toContain('mcp');
+      expect(getWiringState().mcpConfigs).toHaveLength(0);
     } finally {
       await cleanup();
     }
