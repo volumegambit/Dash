@@ -12,11 +12,11 @@ class WsMessageSerializationTest {
 
     @Test fun encodesMessageWithTypeDiscriminator() {
         val msg: WsClientMessage = WsClientMessage.Message(
-            id = "1", agent = "ada", channelId = "c", conversationId = "conv", text = "hi",
+            id = "1", agentId = "ada", channelId = "c", conversationId = "conv", text = "hi",
         )
         val obj = json.encodeToJsonElement(WsClientMessage.serializer(), msg).jsonObject
         assertEquals("message", obj["type"]?.jsonPrimitive?.content)
-        assertEquals("ada", obj["agent"]?.jsonPrimitive?.content)
+        assertEquals("ada", obj["agentId"]?.jsonPrimitive?.content)
         assertEquals("conv", obj["conversationId"]?.jsonPrimitive?.content)
     }
 
@@ -26,14 +26,6 @@ class WsMessageSerializationTest {
         ).jsonObject
         assertEquals("cancel", obj["type"]?.jsonPrimitive?.content)
         assertEquals("9", obj["id"]?.jsonPrimitive?.content)
-    }
-
-    @Test fun encodesAnswerWithQuestionId() {
-        val obj = json.encodeToJsonElement(
-            WsClientMessage.serializer(), WsClientMessage.Answer("1", "q", "yes"),
-        ).jsonObject
-        assertEquals("answer", obj["type"]?.jsonPrimitive?.content)
-        assertEquals("q", obj["questionId"]?.jsonPrimitive?.content)
     }
 
     @Test fun decodesServerEventWithNestedAgentEvent() {

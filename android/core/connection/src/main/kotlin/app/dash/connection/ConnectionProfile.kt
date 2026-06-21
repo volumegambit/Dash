@@ -26,7 +26,7 @@ data class ConnectionProfile(
         get() {
             val scheme = if (secure) "wss" else "ws"
             val token = URLEncoder.encode(chatToken, "UTF-8")
-            return "$scheme://$host:$chatPort/ws?token=$token"
+            return "$scheme://$host:$chatPort/ws/chat?token=$token"
         }
 
     companion object {

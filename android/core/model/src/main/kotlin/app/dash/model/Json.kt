@@ -8,7 +8,9 @@ import kotlinx.serialization.json.Json
  *
  * Contract source of truth (TypeScript):
  *  - packages/agent/src/types.ts        (AgentEvent, content blocks)
- *  - packages/chat/src/types.ts         (WsClientMessage / WsServerMessage)
+ *  - apps/gateway/src/chat-ws.ts        (WsClientMessage / WsServerMessage — the
+ *                                        live `/ws/chat` route, not the unmounted
+ *                                        legacy packages/chat/src/chat-server.ts)
  *  - apps/gateway/src/agent-registry.ts (RegisteredAgent)
  *
  * Keep these DTOs in sync with those files. Unknown fields are ignored so the

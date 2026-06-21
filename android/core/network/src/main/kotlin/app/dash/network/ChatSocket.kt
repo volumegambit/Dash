@@ -7,8 +7,6 @@ import app.dash.model.WsServerMessage
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
-import kotlinx.coroutines.flow.emptyFlow
-import kotlinx.coroutines.launch
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
@@ -23,8 +21,8 @@ class GatewayStreamError(message: String) : RuntimeException(message)
 
 /**
  * Streams a single agent turn over the gateway chat WebSocket
- * (default port 9200, `/ws?token=<chatToken>`). Protocol:
- * packages/chat/src/chat-server.ts.
+ * (default port 9200, `/ws/chat?token=<chatToken>`). Protocol:
+ * apps/gateway/src/chat-ws.ts.
  */
 class ChatSocket(
     private val chatUrl: String,
@@ -36,15 +34,8 @@ class ChatSocket(
      * Opens the socket, sends [message], and emits each [AgentEvent] for it.
      * The flow completes on the `done` frame and fails on an `error` frame or a
      * 4001 close. Cancelling the collector tears the socket down.
-     *
-     * [outgoing] carries follow-up frames for the same turn — e.g. an
-     * `answer` to a `question` event, or a `cancel` — which are forwarded over
-     * the live socket as they are emitted.
      */
-    fun stream(
-        message: WsClientMessage.Message,
-        outgoing: Flow<WsClientMessage> = emptyFlow(),
-    ): Flow<AgentEvent> = callbackFlow {
+    fun stream(message: WsClientMessage.Message): Flow<AgentEvent> = callbackFlow {
         val request = Request.Builder().url(chatUrl).build()
         val socket = client.newWebSocket(
             request,
@@ -81,13 +72,7 @@ class ChatSocket(
                 }
             },
         )
-        val pump = launch {
-            outgoing.collect { socket.send(json.encodeToString(WsClientMessage.serializer(), it)) }
-        }
-        awaitClose {
-            pump.cancel()
-            socket.cancel()
-        }
+        awaitClose { socket.cancel() }
     }
 
     private companion object {

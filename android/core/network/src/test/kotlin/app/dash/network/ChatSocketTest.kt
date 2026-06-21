@@ -30,7 +30,7 @@ class ChatSocketTest {
     }
 
     private fun message(id: String = "1") = WsClientMessage.Message(
-        id = id, agent = "ada", channelId = "c", conversationId = "conv", text = "hi",
+        id = id, agentId = "ada", channelId = "c", conversationId = "conv", text = "hi",
     )
 
     private fun socket(): ChatSocket {

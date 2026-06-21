@@ -24,7 +24,6 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
@@ -99,9 +98,7 @@ fun ChatScreen(
                 items(state.messages.size) { index ->
                     when (val message = state.messages[index]) {
                         is ChatMessage.User -> UserBubble(message.text)
-                        is ChatMessage.Assistant -> AssistantBubble(message) { qid, answer ->
-                            viewModel.answer(qid, answer)
-                        }
+                        is ChatMessage.Assistant -> AssistantBubble(message)
                     }
                 }
             }
@@ -127,7 +124,7 @@ private fun UserBubble(text: String) {
 }
 
 @Composable
-private fun AssistantBubble(message: ChatMessage.Assistant, onAnswer: (String, String) -> Unit) {
+private fun AssistantBubble(message: ChatMessage.Assistant) {
     Column(Modifier.fillMaxWidth()) {
         if (message.thinking.isNotEmpty()) {
             ThinkingBlock(message.thinking)
@@ -140,16 +137,19 @@ private fun AssistantBubble(message: ChatMessage.Assistant, onAnswer: (String, S
         if (message.text.isNotEmpty()) {
             Text(message.text)
         }
+        // The agent asked a question. v1 renders it (and its options) as text;
+        // reply by typing — the live gateway has no in-band answer frame, it
+        // continues the conversation via the next message.
         message.question?.let { question ->
             Spacer(Modifier.height(8.dp))
             Text(question.question, style = MaterialTheme.typography.bodyMedium)
             question.options.forEach { option ->
-                OutlinedButton(
-                    onClick = { onAnswer(question.id, option) },
-                    modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
-                ) {
-                    Text(option)
-                }
+                Text(
+                    "• $option",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 2.dp),
+                )
             }
         }
     }

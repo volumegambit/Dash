@@ -34,7 +34,8 @@ seams), so they're unit-testable without Android.
 **Contract source of truth (TypeScript).** The `core/model` DTOs mirror these files;
 keep them in sync:
 - `packages/agent/src/types.ts` — `AgentEvent`, content blocks
-- `packages/chat/src/types.ts` — `WsClientMessage` / `WsServerMessage`
+- `apps/gateway/src/chat-ws.ts` — `WsClientMessage` / `WsServerMessage` (the live
+  `/ws/chat` route + `agentId`; **not** the unmounted legacy `packages/chat/src/chat-server.ts`)
 - `apps/gateway/src/agent-registry.ts` — `RegisteredAgent`
 
 Unknown `AgentEvent` variants decode to `AgentEvent.Unknown` rather than throwing, so a
