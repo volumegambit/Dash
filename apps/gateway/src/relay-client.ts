@@ -18,6 +18,12 @@ export interface RelayClientOptions {
   managementPort: number;
   channelPort: number;
   logger?: RelayClientLogger;
+  /** Reconnect backoff base in ms (doubles per attempt, capped). Default 1000. */
+  reconnectBaseMs?: number;
+  /** Reconnect backoff cap in ms. Default 30000. */
+  reconnectMaxMs?: number;
+  /** Heartbeat ping interval in ms; a missed pong forces a reconnect. Default 20000. */
+  heartbeatMs?: number;
 }
 
 export interface RelayClient {
@@ -47,17 +53,61 @@ interface LocalConn {
  * reconnect (R7) extend this file.
  */
 export function startRelayClient(opts: RelayClientOptions): RelayClient {
+  const reconnectBaseMs = opts.reconnectBaseMs ?? 1000;
+  const reconnectMaxMs = opts.reconnectMaxMs ?? 30000;
+  const heartbeatMs = opts.heartbeatMs ?? 20000;
+
   const streams = new Map<number, LocalConn>();
   let socket: WebSocket | null = null;
   let stopped = false;
+  let reconnectAttempt = 0;
+  let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+  let heartbeatTimer: ReturnType<typeof setInterval> | undefined;
 
-  const connect = (): void => {
+  const stopHeartbeat = (): void => {
+    if (heartbeatTimer) {
+      clearInterval(heartbeatTimer);
+      heartbeatTimer = undefined;
+    }
+  };
+
+  const startHeartbeat = (ws: WebSocket): void => {
+    let pongReceived = true;
+    ws.on('pong', () => {
+      pongReceived = true;
+    });
+    heartbeatTimer = setInterval(() => {
+      if (!pongReceived) {
+        ws.terminate(); // dead peer (no pong) → 'close' → reconnect
+        return;
+      }
+      pongReceived = false;
+      try {
+        ws.ping();
+      } catch {
+        // socket already closing
+      }
+    }, heartbeatMs);
+  };
+
+  const scheduleReconnect = (): void => {
+    if (stopped) return;
+    const delay = Math.min(reconnectMaxMs, reconnectBaseMs * 2 ** reconnectAttempt);
+    reconnectAttempt += 1;
+    reconnectTimer = setTimeout(connect, delay);
+  };
+
+  function connect(): void {
     if (stopped) return;
     const url = `${opts.relayUrl.replace(/\/+$/, '')}/gw/${encodeURIComponent(opts.gatewayId)}`;
     const ws = new WebSocket(url, { headers: { authorization: `Bearer ${opts.relayToken}` } });
     socket = ws;
 
-    ws.on('open', () => opts.logger?.info(`[relay] connected to ${opts.relayUrl}`));
+    ws.on('open', () => {
+      reconnectAttempt = 0;
+      opts.logger?.info(`[relay] connected to ${opts.relayUrl}`);
+      startHeartbeat(ws);
+    });
     ws.on('message', (raw: Buffer) => {
       let frame: Frame;
       try {
@@ -69,10 +119,11 @@ export function startRelayClient(opts: RelayClientOptions): RelayClient {
     });
     ws.on('error', (err) => opts.logger?.warn(`[relay] socket error: ${err.message}`));
     ws.on('close', () => {
-      // Reconnect logic lands in R7; for now the tunnel simply ends.
+      stopHeartbeat();
       resetStreams();
+      scheduleReconnect();
     });
-  };
+  }
 
   const handleFrame = (ws: WebSocket, frame: Frame): void => {
     if (frame.t === 'ping') {
@@ -218,6 +269,8 @@ export function startRelayClient(opts: RelayClientOptions): RelayClient {
   return {
     stop(): void {
       stopped = true;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      stopHeartbeat();
       resetStreams();
       socket?.close();
     },

@@ -404,4 +404,67 @@ describe('relay-client', () => {
     await waitFor(() => received.some((f) => f.t === 'end'), 4000);
     expect(bytes()).toBe(total); // every byte delivered, nothing dropped
   });
+
+  it('reconnects with backoff after the relay drops', async () => {
+    relay = new WebSocketServer({ port: 0, host: '127.0.0.1' });
+    await new Promise<void>((r) => relay?.on('listening', () => r()));
+    const relayPort = (relay.address() as AddressInfo).port;
+
+    let connectCount = 0;
+    const onConn = (): void => {
+      connectCount += 1;
+    };
+    relay.on('connection', onConn);
+
+    client = startRelayClient({
+      relayUrl: `ws://127.0.0.1:${relayPort}`,
+      relayToken: 'rt',
+      gatewayId: 'g1',
+      managementPort: 9999,
+      channelPort: 9998,
+      reconnectBaseMs: 20,
+      reconnectMaxMs: 100,
+      heartbeatMs: 10000,
+    });
+    await waitFor(() => connectCount >= 1);
+
+    // Drop the relay; the client should re-dial with backoff.
+    await new Promise<void>((r) => {
+      for (const c of relay?.clients ?? []) c.terminate();
+      relay?.close(() => r());
+    });
+
+    // Bring a fresh relay up on the SAME port; the client should reconnect.
+    relay = new WebSocketServer({ port: relayPort, host: '127.0.0.1' });
+    await new Promise<void>((r) => relay?.on('listening', () => r()));
+    relay.on('connection', onConn);
+
+    await waitFor(() => connectCount >= 2, 3000);
+    expect(connectCount).toBeGreaterThanOrEqual(2);
+  });
+
+  it('sends heartbeat pings to the relay', async () => {
+    relay = new WebSocketServer({ port: 0, host: '127.0.0.1' });
+    await new Promise<void>((r) => relay?.on('listening', () => r()));
+    const relayPort = (relay.address() as AddressInfo).port;
+
+    let pinged = false;
+    relay.on('connection', (ws) => {
+      ws.on('ping', () => {
+        pinged = true;
+      });
+    });
+
+    client = startRelayClient({
+      relayUrl: `ws://127.0.0.1:${relayPort}`,
+      relayToken: 'rt',
+      gatewayId: 'g1',
+      managementPort: 9999,
+      channelPort: 9998,
+      heartbeatMs: 30,
+    });
+
+    await waitFor(() => pinged, 2000);
+    expect(pinged).toBe(true);
+  });
 });
