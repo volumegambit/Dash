@@ -207,6 +207,7 @@ export const defaultHealthChecker: HealthChecker = async (port: number): Promise
 export interface GatewaySupervisorOptions {
   gatewayDataDir: string;
   gatewayRuntimeDir?: string; // --data-dir passed to the gateway process
+  logsDir?: string; // where to write gateway.log (defaults to <gatewayDataDir>/logs)
   projectRoot: string;
   makeGatewayClient?: (baseUrl: string, token: string) => GatewayManagementClient;
   managementPort?: number;
@@ -444,7 +445,7 @@ export class GatewaySupervisor {
       spawnArgs.push('--data-dir', opts.gatewayRuntimeDir);
     }
     // Write gateway logs to a file so they can be viewed from MC
-    const logsDir = join(opts.gatewayDataDir, 'logs');
+    const logsDir = opts.logsDir ?? join(opts.gatewayDataDir, 'logs');
     await mkdir(logsDir, { recursive: true });
     const logPath = join(logsDir, 'gateway.log');
     const logFd = openSync(logPath, 'a');

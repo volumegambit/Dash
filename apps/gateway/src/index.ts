@@ -1,5 +1,4 @@
 import type { Server } from 'node:http';
-import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { config } from 'dotenv';
@@ -15,6 +14,7 @@ import { createConsoleLogger } from '@dash/logging';
 import { mountProjectsWs } from '@dash/management';
 import { FileTokenStore, McpManager } from '@dash/mcp';
 import type { McpAgentContext } from '@dash/mcp';
+import { gatewayDir, migrateLegacyLayout, workspacesDir } from '@dash/paths';
 import { createProjectsTools, openProjectsDb } from '@dash/projects';
 import { serve } from '@hono/node-server';
 import { createNodeWebSocket } from '@hono/node-ws';
@@ -40,12 +40,22 @@ async function main() {
   const managementPort = flags.managementPort ?? 9300;
   const channelPort = flags.channelPort ?? 9200;
   const startedAt = new Date().toISOString();
-  const dataDir = flags.dataDir ?? '.';
 
   // One structured logger for the whole gateway process. Text format for
   // human-readable console output; callers can swap this for a dual-writer
   // (console + file) in production without touching downstream code.
   const logger = createConsoleLogger(flags.verbose ? 'debug' : 'info', 'text', 'gateway');
+
+  // Default to the shared ~/.dash/gateway location. When no explicit
+  // --data-dir is passed, first migrate any data left by older versions into
+  // the ~/.dash layout. Idempotent and skipped when DASH_HOME is customized.
+  if (!flags.dataDir) {
+    const migration = await migrateLegacyLayout();
+    for (const line of [...migration.moved, ...migration.notes]) {
+      logger.info(`[migrate] ${line}`);
+    }
+  }
+  const dataDir = flags.dataDir ?? gatewayDir();
 
   // Ensure data dir exists
   const { mkdir } = await import('node:fs/promises');
@@ -117,7 +127,7 @@ async function main() {
   const eventBus = new EventBus();
   const registryPath = resolve(dataDir, 'agents.json');
   // Agents without an explicit workspace get a per-agent directory under
-  // `~/dash-workspaces/<agentId>`. We live under the user's home rather
+  // `~/.dash/workspaces/<agentId>`. We live under the user's home rather
   // than the gateway dataDir so these directories are easy to discover
   // in Finder/Explorer — users can drop files into them, open them in
   // their editor, etc. The path is resolved at register() time
@@ -125,7 +135,7 @@ async function main() {
   // starts — see agent-chat-coordinator.ts. It's persisted to agents.json
   // so it survives restarts and is visible on the MC agent detail page.
   const registry = new AgentRegistry(registryPath, {
-    defaultWorkspace: (id) => resolve(homedir(), 'dash-workspaces', id),
+    defaultWorkspace: (id) => join(workspacesDir(), id),
   });
   await registry.load();
   if (registry.list().length > 0) {

@@ -10,7 +10,6 @@ import {
   GatewaySupervisor,
   SettingsStore,
   defaultProcessSpawner,
-  getPlatformDataDir,
 } from '@dash/mc';
 import type {
   CreateAgentRequest,
@@ -18,6 +17,7 @@ import type {
   GatewaySupervisorOptions,
   ProcessSpawner,
 } from '@dash/mc';
+import { desktopDir, gatewayDir, logsDir, migrateLegacyLayout } from '@dash/paths';
 import { app, dialog, ipcMain, shell } from 'electron';
 import type { BrowserWindow } from 'electron';
 import WebSocket from 'ws';
@@ -27,16 +27,15 @@ import { completeClaudeOAuth, prepareClaudeOAuth } from './claude-auth.js';
 import { startCodexOAuth } from './codex-auth.js';
 import { GatewayPoller } from './gateway-poller.js';
 
-const DATA_DIR = process.env.MC_DATA_DIR || getPlatformDataDir('dash');
+const DATA_DIR = process.env.MC_DATA_DIR || desktopDir();
 
-// Capture MC main process logs to a file
-const MC_LOG_PATH = join(DATA_DIR, 'logs', 'mc.log');
+// Capture MC main process logs to a file (shared ~/.dash/logs)
+const MC_LOG_PATH = join(logsDir(), 'mc.log');
 let mcLogStream: ReturnType<typeof createWriteStream> | undefined;
 
 function initMcLogging(): void {
   if (mcLogStream) return;
-  const logsDir = join(DATA_DIR, 'logs');
-  mkdirSync(logsDir, { recursive: true });
+  mkdirSync(logsDir(), { recursive: true });
   mcLogStream = createWriteStream(MC_LOG_PATH, { flags: 'a' });
   mcLogStream.write(`\n--- MC starting at ${new Date().toISOString()} ---\n`);
 
@@ -140,11 +139,22 @@ function getChatService(getWindow: () => BrowserWindow | undefined): ChatService
 export async function registerIpcHandlers(
   getWindow: () => BrowserWindow | undefined,
 ): Promise<void> {
+  // Migrate any data left by older versions into the ~/.dash layout before
+  // opening any store. Idempotent; skipped when running against a custom
+  // MC_DATA_DIR (tests/QA) or a custom DASH_HOME.
+  if (!process.env.MC_DATA_DIR && !process.env.DASH_HOME) {
+    const migration = await migrateLegacyLayout();
+    for (const line of [...migration.moved, ...migration.notes]) {
+      console.log(`[migrate] ${line}`);
+    }
+  }
+
   initMcLogging();
 
   const gwOptions: GatewaySupervisorOptions = {
     gatewayDataDir: DATA_DIR,
-    gatewayRuntimeDir: getPlatformDataDir('dash-gateway'),
+    gatewayRuntimeDir: gatewayDir(),
+    logsDir: logsDir(),
     projectRoot: resolveProjectRoot(),
   };
   const gw = getGatewaySupervisor(gwOptions);
@@ -1002,7 +1012,7 @@ export async function registerIpcHandlers(
   // Under the Hood — log reading (dev mode)
   // -----------------------------------------------------------------------
 
-  const GATEWAY_LOG_PATH = join(DATA_DIR, 'logs', 'gateway.log');
+  const GATEWAY_LOG_PATH = join(logsDir(), 'gateway.log');
 
   ipcMain.handle('logs:read', async (_e, source: 'mc' | 'gateway', tailLines = 500) => {
     const logPath = source === 'mc' ? MC_LOG_PATH : GATEWAY_LOG_PATH;
