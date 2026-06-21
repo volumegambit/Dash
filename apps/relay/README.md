@@ -7,10 +7,12 @@ exposing the gateway directly.
 It is a small, self-hostable Node service. You run **one** relay; every gateway you
 own dials into it and becomes reachable at its own subdomain.
 
-> **Note:** the relay is a self-hosted component today. The in-app "Pair over relay"
-> flow in Mission Control and the Android app is being finalized; until then you can
-> deploy and exercise the relay with the gateway flags and the admin API documented
-> below.
+> **Setup at a glance:** deploy a relay (below), then in Mission Control open
+> **Settings → Remote access (relay)** and enter your relay domain, relay token,
+> and admin secret. The gateway restarts and dials the relay, and **Pair Device**
+> then shows a relay QR the Android app scans to connect from anywhere. The
+> gateway flags and admin API below are the same mechanism, useful for scripting
+> or a headless gateway.
 
 ---
 
