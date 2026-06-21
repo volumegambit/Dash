@@ -132,6 +132,22 @@ function buildTar(entries: Record<string, string>): Buffer {
   return Buffer.concat([...blocks, Buffer.alloc(1024)]);
 }
 
+/** A symlink tar member (size 0; the escape target is the linkpath). */
+function tarSymlink(name: string, linkpath: string): Buffer {
+  const header = new Header({
+    path: name,
+    type: 'SymbolicLink',
+    linkpath,
+    size: 0,
+    mode: 0o777,
+    mtime: new Date(),
+  });
+  header.encode();
+  const headerBlock = header.block;
+  if (!headerBlock) throw new Error('failed to encode tar symlink header');
+  return headerBlock; // size 0 → no body, no padding
+}
+
 /** Gzip a buffer (so the result is a real `.tar.gz`). */
 async function gzip(buf: Buffer): Promise<Buffer> {
   const { gzipSync } = await import('node:zlib');
@@ -189,6 +205,31 @@ describe('installPluginToDir', () => {
       { code: 'corrupt_archive' },
     );
     expect(existsSync(abs)).toBe(false);
+  });
+
+  // Locks in the symlink defense (the post-write realpath-containment sweep): a
+  // two-entry attack — a symlink escaping the root, then a file written THROUGH
+  // it — must be rejected, and nothing may land at the escape target.
+  it('rejects a tarball with a symlink-through-escape (zip-slip → corrupt_archive)', async () => {
+    const sentinel = join(work, 'sentinel');
+    await mkdir(sentinel, { recursive: true });
+    const malicious = await gzip(
+      Buffer.concat([
+        tarEntry('my-plugin/.claude-plugin/plugin.json', JSON.stringify({ name: 'my-plugin' })),
+        tarSymlink('my-plugin/link', sentinel), // symlink escaping the extraction root
+        tarEntry('my-plugin/link/victim.txt', 'PWNED'), // write THROUGH the symlink
+        Buffer.alloc(1024),
+      ]),
+    );
+    const tgz = join(work, 'evil-symlink.tar.gz');
+    await writeFile(tgz, malicious);
+
+    await expect(installPluginToDir({ dataDir, source: tgz, scanner: safe })).rejects.toMatchObject(
+      { code: 'corrupt_archive' },
+    );
+    // The write-through must NOT have landed at the escape target.
+    expect(existsSync(join(sentinel, 'victim.txt'))).toBe(false);
+    expect(existsSync(join(dataDir, 'plugins', 'my-plugin'))).toBe(false);
   });
 
   it('installs a valid .tar.gz, using the manifest name, with files on disk', async () => {
