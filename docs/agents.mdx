@@ -18,24 +18,16 @@ When you send a message, the agent reads it, reasons about what to do, uses tool
 
 ## Agent configuration
 
-Each agent is defined in your config with a few key fields.
+You configure each agent in Mission Control's **Deploy** wizard (and edit it later from the agent's **Configuration** tab). Behind the scenes, an agent's saved configuration looks like this:
 
 ```json
 {
-  "agents": {
-    "assistant": {
-      "model": "anthropic/claude-sonnet-4-20250514",
-      "systemPrompt": "You are a helpful assistant that specializes in research.",
-      "tools": ["bash", "read", "write", "edit", "grep", "glob", "web_search"],
-      "maxTokens": 4096,
-      "workspace": "./data/assistant-workspace",
-      "fallbackModels": ["openai/gpt-4o", "google/gemini-2.0-flash"],
-      "skills": {
-        "paths": ["./skills"],
-        "urls": ["https://example.com/skills"]
-      }
-    }
-  }
+  "name": "assistant",
+  "model": "anthropic/claude-sonnet-4-20250514",
+  "systemPrompt": "You are a helpful assistant that specializes in research.",
+  "tools": ["bash", "read", "write", "edit", "grep", "find", "web_search"],
+  "maxTokens": 4096,
+  "fallbackModels": ["openai/gpt-4o", "google/gemini-2.0-flash"]
 }
 ```
 
@@ -45,9 +37,10 @@ Each agent is defined in your config with a few key fields.
 | `systemPrompt` | `string` | yes | Instructions that tell the agent who it is and how to behave |
 | `tools` | `string[]` | no | Which tools the agent can use. See [Tools](/tools) for the full list |
 | `maxTokens` | `number` | no | Maximum response length in tokens (default: `4096`) |
-| `workspace` | `string` | no | Directory where the agent operates, resolved relative to the project root |
+| `workspace` | `string` | no | Directory where the agent operates (default: `~/.dash/workspaces/<agent-id>`) |
 | `fallbackModels` | `string[]` | no | Backup models to try if the primary model fails |
-| `skills` | `object` | no | Local paths and/or remote URLs where the agent discovers skills |
+
+Mission Control saves your agents to `~/.dash/gateway/agents.json` and the gateway restores them on restart.
 
 ## Available models
 
@@ -90,12 +83,12 @@ Pick the tools your agent needs. Each tool gives a specific capability:
 | `write` | Create new files in the project |
 | `edit` | Make changes to existing files |
 | `ls` | See what files and folders exist |
-| `glob` | Find files by name or pattern |
+| `find` | Find files by name or pattern |
 | `grep` | Search for text inside files |
 | `web_search` | Search the internet for information |
 | `web_fetch` | Download content from web pages |
 | `mcp` | Connect to external services and tools |
-| `skill` | Use specialized skill workflows |
+| `create_skill`, `install_skill`, `remove_skill` | Let the agent manage its own skills |
 
 See [Tools](/tools) for detailed descriptions and sandboxing behavior.
 
@@ -114,13 +107,7 @@ The agent tries models in order: primary first, then each fallback. This keeps y
 
 ## Workspace
 
-Every agent gets its own workspace directory. This is where tool operations happen.
-
-```json
-{
-  "workspace": "./data/my-agent-workspace"
-}
-```
+Every agent gets its own workspace directory. This is where tool operations happen. By default it's `~/.dash/workspaces/<agent-id>` — you can open that folder in Finder or your editor to drop in files for the agent to work with, or set a custom path in the deploy wizard.
 
 The workspace directory is created automatically if it does not exist. Tools operate within this directory:
 
@@ -143,59 +130,43 @@ Agents are deployed as background processes. Each agent goes through these state
 | `stopped` | The agent has been stopped (manually or by the system) |
 | `error` | Something went wrong during startup or runtime |
 
-You can **start**, **stop**, **restart**, and **remove** agents at any time through Mission Control or the CLI.
-
-<Tabs>
-  <Tab title="Mission Control (desktop)">
-    Use the Agents page to see all your agents and their status. Click an agent to start, stop, or restart it.
-  </Tab>
-  <Tab title="CLI">
-    ```bash
-    mc status              # List all deployments and their states
-    mc status <id>         # Detailed status for one deployment
-    mc stop <id>           # Stop a running agent
-    mc remove <id>         # Remove an agent entirely
-    ```
-    See [CLI Reference](/cli-reference) for all commands.
-  </Tab>
-</Tabs>
+You can **start**, **stop**, **restart**, and **remove** agents at any time from Mission Control's **Agents** page — click an agent to manage it. For automation, the same operations are available on the [Management API](/api-reference#agents).
 
 ## Sessions
 
-Every conversation with an agent is saved as a session. Sessions are stored as JSONL files (one event per line) so they are easy to inspect and crash-safe.
+Every conversation with an agent is saved as a session. Sessions are stored as append-only JSONL files (one event per line) so they are easy to inspect and crash-safe.
 
 ```
-data/sessions/{channelId}/{conversationId}/session.jsonl
+~/.dash/gateway/sessions/{agent-name}/{conversationId}/
 ```
 
 When you send a new message, the agent loads the session history first. This means it remembers everything from the conversation — previous messages, tool results, and its own responses. Context carries across messages automatically.
 
 ## Multiple agents
 
-You can run as many agents as you need. Each one is independent — different model, different instructions, different tools.
+You can run as many agents as you need. Each one is independent — different model, different instructions, different tools. Deploy each from Mission Control; their configurations look like this:
 
 ```json
-{
-  "agents": {
-    "researcher": {
-      "model": "anthropic/claude-sonnet-4-20250514",
-      "systemPrompt": "You are a research assistant. Find information and summarize it clearly.",
-      "tools": ["web_search", "web_fetch", "read", "write"]
-    },
-    "coder": {
-      "model": "anthropic/claude-opus-4-20250514",
-      "systemPrompt": "You are a senior software engineer. Write clean, tested code.",
-      "tools": ["bash", "read", "write", "edit", "glob", "grep"],
-      "workspace": "./data/coder-workspace"
-    },
-    "ops": {
-      "model": "openai/gpt-4o",
-      "systemPrompt": "You manage infrastructure and deployments.",
-      "tools": ["bash", "read"],
-      "workspace": "./data/ops-workspace"
-    }
+[
+  {
+    "name": "researcher",
+    "model": "anthropic/claude-sonnet-4-20250514",
+    "systemPrompt": "You are a research assistant. Find information and summarize it clearly.",
+    "tools": ["web_search", "web_fetch", "read", "write"]
+  },
+  {
+    "name": "coder",
+    "model": "anthropic/claude-opus-4-20250514",
+    "systemPrompt": "You are a senior software engineer. Write clean, tested code.",
+    "tools": ["bash", "read", "write", "edit", "find", "grep"]
+  },
+  {
+    "name": "ops",
+    "model": "openai/gpt-4o",
+    "systemPrompt": "You manage infrastructure and deployments.",
+    "tools": ["bash", "read"]
   }
-}
+]
 ```
 
 Each agent gets its own workspace, session history, and set of tools. Route messages to the right agent through [Messaging Apps](/messaging-apps) or by name in the [Chat API](/chat-with-your-agent).
@@ -213,6 +184,6 @@ Each agent gets its own workspace, session history, and set of tools. Route mess
     Deploy and manage agents from the desktop app or CLI.
   </Card>
   <Card title="Configuration" icon="gear" href="/configuration">
-    Full config schema, environment variables, and CLI flags.
+    Agent settings, the data directory layout, and standalone gateway flags.
   </Card>
 </CardGroup>

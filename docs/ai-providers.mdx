@@ -25,7 +25,7 @@ OpenRouter models keep the upstream vendor in the name, so they carry a second p
 
 Each provider needs an API key. The recommended approach is through **Mission Control**, which stores keys in an AES-256-GCM encrypted credential store. Open the **AI Providers** page, select your provider, and paste your key.
 
-For standalone gateway usage, you can also set credentials via environment variables or a `--secrets` file (see [CLI flags](/configuration#cli-flags)).
+For standalone gateway usage (no Mission Control), set credentials via environment variables instead — for example in an `.env` file or your Docker environment.
 
 ### Environment variables
 
@@ -51,12 +51,6 @@ Sign up at [console.anthropic.com](https://console.anthropic.com) to get an API 
 ANTHROPIC_API_KEY=sk-ant-...
 ```
 
-or in `credentials.json`:
-
-```json
-{ "anthropic": { "apiKey": "sk-ant-..." } }
-```
-
 ## OpenAI
 
 Sign up at [platform.openai.com](https://platform.openai.com) to get an API key.
@@ -71,12 +65,6 @@ Sign up at [platform.openai.com](https://platform.openai.com) to get an API key.
 OPENAI_API_KEY=sk-...
 ```
 
-or in `credentials.json`:
-
-```json
-{ "openai": { "apiKey": "sk-..." } }
-```
-
 ## Google
 
 Sign up at [aistudio.google.com](https://aistudio.google.com) to get an API key.
@@ -89,12 +77,6 @@ Sign up at [aistudio.google.com](https://aistudio.google.com) to get an API key.
 
 ```env
 GOOGLE_API_KEY=AIza...
-```
-
-or in `credentials.json`:
-
-```json
-{ "google": { "apiKey": "AIza..." } }
 ```
 
 ## Moonshot (Kimi)
@@ -113,12 +95,6 @@ Sign up at [platform.moonshot.ai](https://platform.moonshot.ai) to get an API ke
 
 ```env
 MOONSHOT_API_KEY=sk-...
-```
-
-or in `credentials.json`:
-
-```json
-{ "moonshotai": { "apiKey": "sk-..." } }
 ```
 
 ## OpenRouter
@@ -141,36 +117,12 @@ or in `credentials.json`:
 OPENROUTER_API_KEY=sk-or-v1-...
 ```
 
-or in `credentials.json`:
-
-```json
-{ "openrouter": { "apiKey": "sk-or-v1-..." } }
-```
-
 ## Using a provider in an agent
 
-Set the `model` field in your agent config using the `provider/model` format:
+When you deploy or edit an agent in Mission Control, pick its model from the dropdown — it lists models for every provider you've connected, in `provider/model` format. Each agent can use a different provider, and the prefix tells Dash which API to call:
 
-```json
-{
-  "agents": {
-    "default": {
-      "model": "anthropic/claude-sonnet-4-20250514",
-      "systemPrompt": "You are a helpful assistant.",
-      "tools": ["bash", "read"]
-    },
-    "gpt-agent": {
-      "model": "openai/gpt-4o",
-      "systemPrompt": "You are a helpful assistant.",
-      "tools": ["bash", "read"]
-    },
-    "gemini-agent": {
-      "model": "google/gemini-2.0-flash",
-      "systemPrompt": "You are a helpful assistant.",
-      "tools": ["bash", "read"]
-    }
-  }
-}
-```
+- `anthropic/claude-sonnet-4-20250514`
+- `openai/gpt-4o`
+- `google/gemini-2.0-flash`
 
-The provider prefix tells Dash which API to call for each agent.
+You can also set a chain of [fallback models](/agents#fallback-models) from different providers so an agent keeps working if one provider has an outage.

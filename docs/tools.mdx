@@ -3,7 +3,7 @@ title: "Tools"
 description: "Built-in tools for file operations, shell commands, web access, skills, and integrations — with workspace sandboxing."
 ---
 
-Tools are what your agents can *do*. Each tool gives an agent a real-world capability — reading files, running commands, searching the web, and more. Tools are enabled per-agent via the `tools` array in your config.
+Tools are what your agents can *do*. Each tool gives an agent a real-world capability — reading files, running commands, searching the web, and more. You enable tools per agent when you deploy or edit it in Mission Control.
 
 ## File tools
 
@@ -47,12 +47,12 @@ Tools are what your agents can *do*. Each tool gives an agent a real-world capab
 
     Paths are resolved relative to the workspace when configured.
   </Tab>
-  <Tab title="glob">
+  <Tab title="find">
     Find files by name or pattern (e.g. `**/*.ts`).
 
     | Parameter | Type | Required | Description |
     |-----------|------|----------|-------------|
-    | `pattern` | `string` | yes | Glob pattern to match |
+    | `pattern` | `string` | yes | File name or glob pattern to match |
 
     Searches within the workspace when configured.
   </Tab>
@@ -111,16 +111,9 @@ Tools are what your agents can *do*. Each tool gives an agent a real-world capab
 
 ## Skills
 
+Loading a skill is automatic — whenever skills are available, the agent can pull a skill's full instructions on demand, so there's no tool to enable for that. The tools below are the ones you opt into to let an agent *manage* its own skills. See [Skills](/skills) for the full picture.
+
 <Tabs>
-  <Tab title="load_skill">
-    Load a reusable skill into the current conversation context.
-
-    | Parameter | Type | Required | Description |
-    |-----------|------|----------|-------------|
-    | `name` | `string` | yes | The skill name to load |
-
-    The agent uses this tool when it identifies that a task matches one of its available skills. Returns the full skill instructions so the agent can follow them.
-  </Tab>
   <Tab title="create_skill">
     Create a reusable skill that persists across conversations.
 
@@ -166,23 +159,16 @@ Tools are what your agents can *do*. Each tool gives an agent a real-world capab
 
     Not affected by workspace sandboxing.
   </Tab>
+  <Tab title="connector management">
+    Let an agent manage its own MCP connectors over chat: `mcp_add_server`, `mcp_list_servers`, and `mcp_remove_server` add, list, and remove external tool servers. Enable these only for agents you trust to wire up their own integrations.
+
+    Not affected by workspace sandboxing.
+  </Tab>
 </Tabs>
 
 ## Workspace sandboxing
 
-The `workspace` field in an agent's config sets a directory that tools operate within:
-
-```json
-{
-  "agents": {
-    "default": {
-      "workspace": "./data/workspace"
-    }
-  }
-}
-```
-
-The workspace path is resolved relative to the project root. The directory is created automatically if it doesn't exist.
+Each agent's **working directory** sets where its tools operate. It defaults to `~/.dash/workspaces/<agent-id>` and you can set a custom path when you deploy or edit the agent. The directory is created automatically if it doesn't exist.
 
 **How sandboxing works per tool:**
 
@@ -193,7 +179,7 @@ The workspace path is resolved relative to the project root. The directory is cr
 | `write` | Paths are resolved relative to the workspace. Path traversal outside the workspace is blocked. |
 | `edit` | Paths are resolved relative to the workspace. Path traversal outside the workspace is blocked. |
 | `ls` | Paths are resolved relative to the workspace. |
-| `glob` | Searches within the workspace directory. |
+| `find` | Searches within the workspace directory. |
 | `grep` | Searches within the workspace directory. |
 | `web_search` | Not affected — operates independently of the workspace. |
 | `web_fetch` | Not affected — operates independently of the workspace. |

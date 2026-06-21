@@ -60,7 +60,7 @@ Authenticate with a token in the query string. See [API Reference](/api-referenc
 
 The protocol uses a simple request-response pattern over WebSocket:
 
-1. **Send a message** — include the agent name, a conversation ID, and your text
+1. **Send a message** — include the agent ID, a channel ID, a conversation ID, and your text
 2. **Receive streaming events** — the server sends events as the agent works (`text_delta`, `tool_use_start`, `tool_result`, etc.)
 3. **Receive done** — a `done` message signals the response is complete
 
@@ -69,7 +69,7 @@ The protocol uses a simple request-response pattern over WebSocket:
 {
   "type": "message",
   "id": "req-1",
-  "agent": "default",
+  "agentId": "default",
   "channelId": "my-app",
   "conversationId": "conv-1",
   "text": "Summarize the latest logs"
@@ -96,7 +96,7 @@ Every conversation is persisted as a session. When you send a message to an agen
 
 Sessions are stored as append-only JSONL files. Each message, tool call, and response is recorded in order. This means your conversation history is durable and can be inspected if needed.
 
-Sessions are scoped by channel and conversation ID. A chat in Mission Control and a chat on Telegram are separate sessions, even if they're with the same agent.
+Sessions are scoped by agent and conversation ID. A chat in Mission Control and a chat on Telegram are separate sessions, even if they're with the same agent.
 
 ## Streaming
 

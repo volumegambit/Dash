@@ -29,7 +29,7 @@ graph TB
 Dash has two main components:
 
 - **Gateway** — Single long-running process that hosts all agents in memory, serves a WebSocket channel server at port 9200, exposes an HTTP management API at port 9300, and connects to external messaging platforms. Mission Control spawns it automatically on first launch and reuses it across MC restarts — the bearer token lives in the OS keychain, so a relaunched MC recognizes its own gateway without a fresh spawn.
-- **Mission Control** — Electron desktop app. Main process hosts the supervisor that manages the gateway lifecycle, renderer is a React + Vite UI talking to the main process over IPC. Also available as a CLI for terminal users and automation.
+- **Mission Control** — Electron desktop app. Main process hosts the supervisor that manages the gateway lifecycle, renderer is a React + Vite UI talking to the main process over IPC.
 
 ### Deployment options
 
@@ -37,7 +37,7 @@ Dash is flexible about where each piece runs.
 
 **Single machine** — run everything locally. Launch Mission Control, which spawns the gateway as a child process. Good for development and personal use.
 
-**Headless** — run the gateway standalone on a VPS or server: `npm run gateway -- --config <path>`. Use the CLI or point Mission Control at the management URL for remote management.
+**Headless** — run the gateway standalone on a VPS, server, or in Docker: `npm run gateway`. Manage it through its [Management API](/api-reference), or point Mission Control at the management URL for remote management.
 
 ## How your team is organized
 
@@ -52,13 +52,13 @@ Dash is flexible about where each piece runs.
     WebSocket server (port 9200) for real-time agent interaction. Clients connect, send messages, and receive a stream of events (text deltas, tool executions, final responses) as they happen. Supports multiple concurrent conversations on a single connection via message ID correlation.
   </Accordion>
   <Accordion title="Management API" icon="tower-control">
-    HTTP server (port 9300) for operational control. Provides health checks (`/health`), server info (`/info`), agent deployment, and graceful shutdown (`/lifecycle/shutdown`). Used by Mission Control to deploy and manage agents.
+    HTTP server (port 9300) for operational control. Provides health checks (`/health`) plus CRUD for agents, channels, credentials, and models. Used by Mission Control to deploy and manage agents. See the [Management API reference](/api-reference).
   </Accordion>
   <Accordion title="Gateway" icon="server">
-    The main entry point. A single process that hosts agents in memory, runs both the channel server and management API, and owns all messaging platform connections. Reads config, creates agents with their assigned models and tools, and routes messages from external platforms (Telegram, WhatsApp) to agents. When deployed via Mission Control, secrets from the encrypted store are injected via the management API. Supports `--config` and `--token` CLI flags for standalone use.
+    The main entry point. A single process that hosts agents in memory, runs both the channel server and management API, and owns all messaging platform connections. Creates agents with their assigned models and tools, and routes messages from external platforms (Telegram, WhatsApp) to agents. Agents, channels, and credentials are created at runtime through the management API rather than a config file. Supports CLI flags (`--token`, `--data-dir`, …) for standalone use — see [Configuration](/configuration#running-the-gateway-standalone).
   </Accordion>
   <Accordion title="Mission Control" icon="grid-2">
-    Desktop app (Electron) and CLI for managing the gateway and agents. Spawns the gateway on first launch, stores the management token in the OS keychain, and communicates with the gateway over HTTP (management) and WebSocket (chat). Includes a tabbed chat interface, agent deployment wizard, and connector management. Provider API keys are stored in an AES-256-GCM encrypted file (`credentials.enc`).
+    Desktop app (Electron) for managing the gateway and agents. Spawns the gateway on first launch, stores the management token in the OS keychain, and communicates with the gateway over HTTP (management) and WebSocket (chat). Includes a tabbed chat interface, agent deployment wizard, and connector management. Provider API keys are stored in an AES-256-GCM encrypted file (`credentials.enc`).
   </Accordion>
 </AccordionGroup>
 
@@ -68,7 +68,7 @@ The gateway runs two servers with independent authentication:
 
 | Server | Protocol | Default port | Auth | Purpose |
 |--------|----------|-------------|------|---------|
-| Management API | HTTP | 9300 | Bearer token | Health, info, deploy, shutdown |
+| Management API | HTTP | 9300 | Bearer token | Health, agents, channels, credentials, models |
 | Channel server | WebSocket | 9200 | Query param (`?token=`) | Real-time agent chat |
 
 Both servers bind to `127.0.0.1` by default. Each has its own token — a management token cannot be used on the channel port, and vice versa.
@@ -104,7 +104,7 @@ Here's what happens when you send a message to one of your agents.
 
 | Type | Fields | Description |
 |------|--------|-------------|
-| `message` | `id`, `agent`, `channelId`, `conversationId`, `text` | Send a chat message |
+| `message` | `id`, `agentId`, `channelId`, `conversationId`, `text` | Send a chat message |
 | `cancel` | `id` | Cancel an in-flight request |
 
 **Server → Client:**
@@ -119,10 +119,10 @@ The `id` field correlates requests with responses, allowing multiple concurrent 
 
 ## Session persistence
 
-Conversations are stored as append-only JSONL files (one JSON object per line):
+Conversations are stored as append-only JSONL files (one JSON object per line), under a directory keyed by agent and conversation:
 
 ```
-~/.dash/gateway/sessions/{channelId}/{conversationId}/session.jsonl
+~/.dash/gateway/sessions/{agent-name}/{conversationId}/
 ```
 
 Each line records a timestamped event — user messages, assistant responses, and tool results. When an agent loads a session, it replays these entries to reconstruct the conversation history. This format is simple, crash-safe (partial writes don't corrupt earlier entries), and easy to inspect.
