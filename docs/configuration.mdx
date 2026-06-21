@@ -1,220 +1,90 @@
 ---
 title: "Configuration"
-description: "Configure agents, sessions, and credentials through JSON config files, environment variables, and CLI flags."
+description: "How Dash agents, data, and credentials are configured — all through Mission Control, with a standalone gateway option."
 ---
 
-Dash is configured with a single JSON file. Define your agent team here — who they are, what models they use, what tools they have access to, and where they can operate.
+Dash is configured through **Mission Control**. There are no config files to hand-edit — you deploy agents, connect providers, and set up messaging apps from the desktop app, and Mission Control saves everything for you.
 
-1. **Built-in defaults** — sensible starting values
-2. **JSON config file** — `config/dash.json` or `dash.json` at the project root
-3. **Environment variables** — override specific values (via `.env` or shell)
+This page explains what you can configure, where Dash stores its data, and the few environment variables and CLI flags available when you run the gateway on its own.
 
-For deployed agents, the `--secrets` flag is the primary way to provide API keys and tokens (see [CLI flags](#cli-flags)). Environment variables can override specific settings.
+## Agent settings
 
-For Mission Control users, secrets are stored in an encrypted file — see [Secrets](/secrets) for a full explanation of how encryption, key caching, and secret delivery work.
+Each agent is configured in Mission Control's **Deploy** wizard (and editable later from the agent's **Configuration** tab). An agent has these settings:
 
-## Config file schema
+| Setting | Required | Description |
+|---------|----------|-------------|
+| Model | yes | The model the agent uses, in `provider/model` format (e.g. `anthropic/claude-sonnet-4-20250514`). The dropdown is populated live from the providers you've connected. See [AI Providers](/ai-providers). |
+| System prompt | yes | Instructions sent with every request that shape the agent's behavior. |
+| Tools | no | Which capabilities the agent can use. See [Tools](/tools) for the full list. |
+| Max tokens | no | Maximum response length in tokens (default: `4096`). |
+| Working directory | no | Where the agent's file and shell tools operate. Defaults to `~/.dash/workspaces/<agent-id>`. |
+| Fallback models | no | Backup models to try if the primary model is unavailable. See [Agents](/agents#fallback-models). |
+| Extended thinking | no | Let the model reason before responding. See [Extended thinking](/extended-thinking). |
+| Skills | no | Reusable instructions the agent can discover and load. See [Skills](/skills). |
 
-```json
-{
-  "agents": {
-    "<name>": {
-      "model": "anthropic/claude-sonnet-4-20250514",
-      "systemPrompt": "You are a helpful assistant.",
-      "tools": ["bash", "edit", "write", "read", "glob", "grep", "ls"],
-      "maxTokens": 4096,
-      "workspace": "./data/workspace",
-      "thinking": { "budgetTokens": 10000 }
-    }
-  },
-  "sessions": {
-    "dir": "./data/sessions"
-  },
-  "logging": {
-    "level": "info"
-  }
-}
-```
+Your agents are saved to `~/.dash/gateway/agents.json` and restored automatically when the gateway restarts.
 
-## Agents
+## Data directory
 
-Each entry in the `agents` array is one member of your team.
-
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `model` | `string` | yes | Model in `provider/model` format (e.g. `anthropic/claude-sonnet-4-20250514`) |
-| `systemPrompt` | `string` | yes | System prompt sent with every request |
-| `tools` | `string[]` | no | Tool names to enable. Available: `bash`, `read`, `write`, `edit`, `ls`, `glob`, `grep`, `web_search`, `web_fetch`, `mcp`, `load_skill`, `create_skill`. See [Tools](/tools) |
-| `maxTokens` | `number` | no | Maximum response tokens (default: `4096`) |
-| `workspace` | `string` | no | Working directory for tools, resolved relative to project root |
-| `thinking` | `object` | no | Enable extended thinking. See [extended thinking](/extended-thinking) |
-| `thinking.budgetTokens` | `number` | — | Token budget for thinking (must be >= 1024, must be < `maxTokens`) |
-
-### Example: multiple agents
-
-```json
-{
-  "agents": {
-    "default": {
-      "model": "anthropic/claude-sonnet-4-20250514",
-      "systemPrompt": "You are Dash, a helpful AI assistant.",
-      "tools": ["bash", "edit", "write", "read", "glob", "grep", "ls"],
-      "maxTokens": 4096,
-      "workspace": "./data/workspace"
-    },
-    "coder": {
-      "model": "anthropic/claude-sonnet-4-20250514",
-      "systemPrompt": "You are Dash Coder, a software engineering assistant.",
-      "tools": ["bash", "edit", "write", "read", "glob", "grep", "ls", "web_search"],
-      "maxTokens": 16000,
-      "thinking": { "budgetTokens": 10000 },
-      "workspace": "./data/coder-workspace"
-    }
-  }
-}
-```
-
-### Per-agent files (`agents/` directory)
-
-Instead of defining all agents in `dash.json`, you can create individual JSON files in an `agents/` directory. Each filename (minus `.json`) becomes the agent name.
+Everything Dash stores on disk lives under a single root — `~/.dash` by default — organized into clearly named subfolders:
 
 ```
-config/
-├── dash.json          # sessions, logging (no agents key needed)
-└── agents/
-    ├── default.json   # → agent named "default"
-    └── coder.json     # → agent named "coder"
+~/.dash/
+├── gateway/      # gateway data: credentials, agents, sessions, skills, databases
+├── desktop/      # Mission Control app data: settings, conversations
+├── logs/         # mc.log and gateway.log
+└── workspaces/   # one folder per agent (where its files live)
 ```
 
-Each agent file contains just the agent config:
+This is the same location whether you launch Dash through Mission Control or run the gateway on its own, so your agents, credentials, and conversations are always in one predictable place. You can open any of these folders in Finder or your editor.
 
-```json
-{
-  "model": "anthropic/claude-sonnet-4-20250514",
-  "systemPrompt": "You are Dash Coder.",
-  "tools": ["bash", "edit", "write", "read", "glob", "grep", "ls"],
-  "maxTokens": 16000
-}
-```
+To store everything somewhere else (for example, a separate disk or multiple profiles), set `DASH_HOME` to a directory of your choosing. Running the gateway with `--data-dir <path>` overrides just the gateway's own folder.
 
-When an `agents/` directory is present, it **replaces** the `agents` key in `dash.json` entirely. This makes agent definitions portable and easy to share without exposing secrets or session config.
-
-## Sessions
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `dir` | `string` | `./data/sessions` | Directory for session JSONL files |
-
-## Logging
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `level` | `string` | `info` | Log level (e.g. `debug`, `info`, `warn`, `error`) |
-
-## Defaults
-
-When no config file is found, Dash uses these defaults:
-
-```json
-{
-  "agents": {
-    "default": {
-      "model": "anthropic/claude-sonnet-4-5",
-      "systemPrompt": "You are Dash, a helpful AI assistant. You can use tools to help accomplish tasks.",
-      "tools": ["bash", "edit", "write", "read", "glob", "grep", "ls"]
-    }
-  },
-  "sessions": { "dir": "./data/sessions" },
-  "logging": { "level": "info" }
-}
-```
-
-## API keys and secrets
-
-API keys are provided through Mission Control's encrypted secret store or the `--secrets` flag when running the gateway standalone.
-
-For local development or standalone use, environment variables can still configure tokens and logging.
+<Note>
+  Upgrading from an older version? The first time Dash starts, it automatically moves your existing data into `~/.dash` — no action needed. See [Troubleshooting](/troubleshooting#my-data-moved-after-updating) if anything looks missing.
+</Note>
 
 ## Environment variables
 
+Dash needs no environment variables for normal Mission Control use. These are available for advanced and standalone scenarios:
+
 | Variable | Description |
 |----------|-------------|
-| `MANAGEMENT_API_TOKEN` | Enables the Management API when set |
-| `MANAGEMENT_API_PORT` | Management API port (default: `9300`) |
-| `CHAT_API_TOKEN` | Enables the Chat API when set |
-| `CHAT_API_PORT` | Chat API port (default: `9200`) |
-| `LOG_LEVEL` | Log level override |
+| `DASH_HOME` | Root directory for everything Dash stores on disk (default: `~/.dash`). |
+| `MC_DATA_DIR` | Override just the Mission Control app's data folder (used by tests and QA). |
+| `POOL_MAX_SIZE` | Maximum number of agent runtimes kept in memory by the gateway (default: `200`). |
+| `NODE_ENV` | Set to `production` to quiet the gateway's verbose request logging. |
+
+Provider API keys are **not** read from environment variables when you use Mission Control — they live in the encrypted credential store (see [Secrets](/secrets)). When running the gateway standalone, you can supply them as environment variables (e.g. `ANTHROPIC_API_KEY`); see [AI Providers](/ai-providers#configuring-credentials).
 
 <Note>
   For details on which models each provider supports and how routing works, see [AI Providers](/ai-providers).
 </Note>
 
-## CLI flags
+## Running the gateway standalone
 
-The gateway accepts `--config` and `--secrets` flags for standalone deployment scenarios.
-
-```bash
-npm run gateway -- --config /path/to/dash.json --secrets /path/to/secrets.json
-```
-
-### `--config <path>`
-
-Load configuration from an explicit path. This can be either:
-
-- **A file** — load that JSON file directly (same as before). If an `agents/` sibling directory exists, agent definitions are loaded from it.
-- **A directory** — load `dash.json` from the directory for non-agent settings, and load individual agent definitions from the `agents/` subdirectory.
-
-When `--config` is omitted, the gateway searches for `config/dash.json` or `dash.json` at the project root, and additionally checks `config/agents/` for per-agent files.
-
-### `--secrets <path>`
-
-Load secrets from a JSON file. The file is read once and then **deleted** immediately. This is designed for deployment systems that write a temporary secrets file for the gateway to consume.
-
-```json
-{
-  "anthropicApiKey": "sk-ant-...",
-  "managementToken": "mgmt-...",
-  "chatToken": "chat-..."
-}
-```
-
-When a secrets file is provided, its values are used for provider API keys and auth tokens.
-
-## Encrypted secrets
-
-Mission Control (desktop app and CLI) stores secrets in an AES-256-GCM encrypted file at `~/.mission-control/secrets.enc`. This replaces plaintext storage and protects API keys, tokens, and credentials at rest.
-
-### How it works
-
-1. On first use, you create an encryption password (minimum 8 characters)
-2. A 256-bit key is derived from your password using scrypt
-3. Secrets are encrypted and written to `secrets.enc` with 0600 file permissions
-4. The derived key is cached in your OS keychain (macOS Keychain or Linux `secret-tool`) so you don't need to re-enter your password on every command
-
-### CLI commands
+Mission Control spawns and manages the gateway for you. To run it on its own — for a headless server or Docker — start it directly:
 
 ```bash
-mc secrets list                  # List all secret key names
-mc secrets get <key>             # Show a masked secret value
-mc secrets get <key> --reveal    # Show the full value (for scripting)
-mc secrets set <key>             # Store a secret (prompts for value)
-mc secrets set <key> --value v   # Store a secret inline
-mc secrets delete <key>          # Remove a secret
-mc secrets change-password       # Re-encrypt with a new password
-mc unlock                        # Unlock the store (cache key in keychain)
-mc lock                          # Clear the cached key from the keychain
+npm run gateway
 ```
 
-### Migration from plaintext
+It uses `~/.dash/gateway` for its data and creates agents, channels, and credentials through its [Management API](/api-reference). The gateway accepts these flags:
 
-If you have an existing `~/.mission-control/secrets.json` from before encryption was added, it's migrated automatically. The first command that accesses secrets will prompt you to create a password, encrypt the existing data, and delete the plaintext file.
+| Flag | Description |
+|------|-------------|
+| `--management-port <port>` | Port for the Management API (default: `9300`). |
+| `--channel-port <port>` | Port for the WebSocket channel server (default: `9200`). |
+| `--token <token>` | Bearer token required on the Management API. |
+| `--chat-token <token>` | Token required on the channel server (`ws://…/ws/chat?token=…`). |
+| `--data-dir <path>` | Override the gateway's data directory (default: `~/.dash/gateway`). |
+| `--verbose` | Enable debug logging. |
 
-### Credential precedence
+There are no `--config` or `--secrets` flags, and the gateway does not read any JSON config file — agents, channels, and credentials are managed at runtime through the [Management API](/api-reference), which is exactly what Mission Control uses.
 
-When Mission Control manages agents, secrets are delivered to the gateway's encrypted credential store. For standalone gateway usage, credentials are resolved in this order:
+## Credentials
 
-1. `--secrets` file (highest priority)
-2. Environment variables (`.env` or shell)
+Provider API keys and messaging tokens are encrypted at rest. The gateway keeps them in `~/.dash/gateway/credentials.enc` (AES-256-GCM); gateway access tokens live in your OS keychain. See [Secrets](/secrets) for the full picture of how credentials are stored and delivered to agents.
 
 ## Plugins
 
@@ -304,9 +174,3 @@ When the gateway starts, it logs `[plugins] loaded 'my-skills' (skills)` and the
 <Note>
   Skills, commands, MCP servers, and `bin/` executables are active. Additional plugin components — hooks, subagents, providers — are coming in a future release.
 </Note>
-
-## Deep merge behavior
-
-<Warning>
-  JSON config is deep-merged with defaults. Objects are merged recursively, but arrays are **replaced**, not concatenated. Specifying `tools: ["bash"]` in your config replaces the default `["bash", "edit", "write", "read", "glob", "grep", "ls"]` entirely.
-</Warning>

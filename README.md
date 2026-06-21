@@ -46,7 +46,7 @@ When the wizard finishes you're in Mission Control proper.
 - **Reach it from Telegram or WhatsApp** — *Messaging Apps → Connect*. Paste a bot token (Telegram) or scan a QR code (WhatsApp) and your agent starts receiving messages from those platforms.
 - **Give it more tools** — *Connectors → Add Connector*. Install any Model Context Protocol (MCP) server (Linear, GitHub, a local filesystem, anything from the [MCP ecosystem](https://modelcontextprotocol.io)) and its tools become available to your agents.
 
-All configuration lives inside Mission Control. There are no config files to hand-edit for day-to-day use.
+All configuration lives inside Mission Control. There are no config files to hand-edit for day-to-day use. Everything Dash stores on disk lives under `~/.dash` (override with `DASH_HOME`) — `gateway/`, `desktop/`, `logs/`, and `workspaces/`.
 
 ## What You Get
 
@@ -88,7 +88,7 @@ npm run build          # Build all packages and apps (tsup)
 npm run mc:dev         # Mission Control (dev mode, hot-reload)
 npm run mc:build       # Mission Control (production build)
 npm run mc:package     # Mission Control (package for distribution)
-npm run gateway        # Gateway standalone (pass --config <path>)
+npm run gateway        # Gateway standalone (pass --data-dir <path>)
 npm test               # Full test suite (vitest)
 npm run lint           # Biome check
 npm run lint:fix       # Biome auto-fix

@@ -9,12 +9,9 @@ Something not working? Here are the most common issues and how to fix them.
 
 <AccordionGroup>
   <Accordion title="Missing API key">
-    **Error:**
-    ```
-    Missing ANTHROPIC_API_KEY. Set it in config/credentials.json or as an env var.
-    ```
+    **Symptom:** An agent fails its first message with an authentication error.
 
-    **Fix:** Set `ANTHROPIC_API_KEY` in your `.env` file or `config/credentials.json`. See [getting started](/getting-started#configuration).
+    **Fix:** Add the provider's API key on Mission Control's **AI Providers** page — it's saved to the encrypted credential store and picked up on the agent's next message. Running the gateway standalone? Set the provider's environment variable (e.g. `ANTHROPIC_API_KEY`) instead. See [AI Providers](/ai-providers#configuring-credentials).
   </Accordion>
 
   <Accordion title="Chat connection refused">
@@ -35,55 +32,23 @@ Something not working? Here are the most common issues and how to fix them.
     { "type": "error", "id": "...", "error": "Unknown agent: myagent" }
     ```
 
-    **Fix:** The `agent` field in your message references an agent name that doesn't exist in the config. Check `config/dash.json` and make sure the agent name matches a key in the `agents` object.
-  </Accordion>
-
-  <Accordion title="Config not found (standalone gateway)">
-    **Error:**
-    ```
-    config/dash.json not found
-    ```
-
-    **Fix:** The standalone gateway requires a config file. Pass it explicitly with `--config`:
-
-    ```bash
-    npm run gateway -- --config path/to/dash.json
-    ```
+    **Fix:** The message references an agent that doesn't exist. Open Mission Control's **Agents** page (or call `GET /agents` on the [Management API](/api-reference#agents)) and make sure the name matches a deployed agent.
   </Accordion>
 </AccordionGroup>
 
-## Secrets and encryption
+## Secrets and credentials
 
 <AccordionGroup>
-  <Accordion title="Secret store is locked">
-    **Error:**
-    ```
-    Secret store is locked
-    ```
+  <Accordion title="Provider key not taking effect">
+    After adding or changing a key on the **AI Providers** page, the agent still hits an auth error.
 
-    **Fix:** Run `mc unlock` to unlock the store, or any `mc secrets` command — you'll be prompted for your encryption password. If you've previously unlocked in this session and see this error, your keychain cache may have been cleared. Run `mc unlock` again.
+    **Fix:** The gateway reads credentials fresh on each message, so a new key takes effect on the agent's *next* message — send another one. If it still fails, confirm the key is valid with the provider and that you selected the right provider for the model the agent uses.
   </Accordion>
 
-  <Accordion title="Wrong password / unable to authenticate data">
-    **Error:**
-    ```
-    Unsupported state or unable to authenticate data
-    ```
+  <Accordion title="Credentials unreadable after copying ~/.dash elsewhere">
+    Provider keys live encrypted in `~/.dash/gateway/credentials.enc`, decrypted with the key in `~/.dash/gateway/secret.key`.
 
-    **Fix:** You entered the wrong encryption password. Try again with the correct password. If you've forgotten your password, the encrypted secrets cannot be recovered — delete `~/.mission-control/secrets.enc` and set up a new password. You'll need to re-enter all your secrets.
-  </Accordion>
-
-  <Accordion title="Password must be at least 8 characters">
-    **Error:**
-    ```
-    Password must be at least 8 characters.
-    ```
-
-    **Fix:** Choose a longer password. The minimum length is 8 characters.
-  </Accordion>
-
-  <Accordion title="Keychain not working / always prompting for password">
-    If you're prompted for your password on every command, the OS keychain may not be available. On macOS, make sure the `security` command is accessible. On Linux, make sure `secret-tool` (from `libsecret-tools`) is installed. On unsupported platforms, you'll be prompted each time — this is expected behavior.
+    **Fix:** If you copy `~/.dash` to another machine, copy **both** files together — `credentials.enc` can't be decrypted without its `secret.key`. If `secret.key` is lost, delete `credentials.enc` and re-enter your keys on the AI Providers page.
   </Accordion>
 </AccordionGroup>
 
@@ -123,7 +88,7 @@ Something not working? Here are the most common issues and how to fix them.
   <Accordion title="Corrupt JSONL">
     If a session file has invalid JSON on a line (e.g. from a crash during write), the session loader will throw a parse error. To recover:
 
-    1. Find the session file: `data/sessions/{channelId}/{conversationId}/session.jsonl`
+    1. Find the conversation's session directory: `~/.dash/gateway/sessions/{agent-name}/{conversationId}/` and open the `.jsonl` session file inside it
     2. Open it in a text editor
     3. Remove or fix the malformed line(s) — each line should be a valid JSON object
     4. Restart Dash
@@ -135,44 +100,52 @@ Something not working? Here are the most common issues and how to fix them.
     To reset a conversation, delete its session directory:
 
     ```bash
-    rm -rf data/sessions/{channelId}/{conversationId}
+    rm -rf ~/.dash/gateway/sessions/{agent-name}/{conversationId}
     ```
 
     To reset all sessions:
 
     ```bash
-    rm -rf data/sessions
+    rm -rf ~/.dash/gateway/sessions
     ```
+  </Accordion>
+
+  <Accordion title="My data moved after updating">
+    Dash now keeps everything under `~/.dash` (gateway data, desktop app data, logs, and agent workspaces). The first time a newer version starts, it automatically moves data from the old locations into `~/.dash` — your credentials, agents, and conversations come along.
+
+    If something looks missing, check the old locations:
+
+    - macOS: `~/Library/Application Support/dash` and `~/Library/Application Support/dash-gateway`
+    - Linux: `~/.local/share/dash` and `~/.local/share/dash-gateway`
+    - Agent workspaces: the old `~/dash-workspaces`
+
+    The migration only runs when `~/.dash` doesn't already have that data, and it never deletes the originals — so it's always safe to copy anything left behind by hand. To pin Dash to a specific location instead, set `DASH_HOME`.
   </Accordion>
 </AccordionGroup>
 
 ## Docker issues
 
 <AccordionGroup>
-  <Accordion title="Sessions lost on restart">
-    Make sure the volume mount is in place in `docker-compose.yml`:
+  <Accordion title="Data lost on restart">
+    Dash stores everything under `DASH_HOME` (set to `/data` in the container). Make sure that path is backed by a persistent volume in `docker-compose.yml`:
 
     ```yaml
+    environment:
+      - DASH_HOME=/data
     volumes:
-      - ./data/sessions:/app/data/sessions
+      - dash-data:/data
     ```
 
-    Without this mount, session data lives only inside the container and is lost when it's recreated.
-  </Accordion>
-
-  <Accordion title="Config changes not picked up">
-    Config is mounted read-only (`./config:/app/config:ro`). Changes to `config/dash.json` on the host are reflected immediately on next container restart. If you need to apply changes without rebuilding:
-
-    ```bash
-    docker compose restart
-    ```
+    Without this volume, credentials, agents, and sessions live only inside the container and are lost when it's recreated.
   </Accordion>
 </AccordionGroup>
 
 ## Debug logging
 
-Set `LOG_LEVEL=debug` in your `.env` file or environment for more verbose output:
+Mission Control and the gateway write logs to `~/.dash/logs/` (`mc.log` and `gateway.log`) — check there first when something goes wrong.
 
-```env
-LOG_LEVEL=debug
+For a standalone gateway, add the `--verbose` flag to get debug-level output:
+
+```bash
+npm run gateway -- --verbose
 ```

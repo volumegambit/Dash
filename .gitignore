@@ -17,14 +17,34 @@ routeTree.gen.ts
 .env
 .env.local
 .env.*.local
+# Secrets written to the repo root when running the app/gateway from here
+secret.key
+credentials.enc
 
 # Runtime data & user config
 data/
 config/
+# SQLite databases and session data written to the repo root at runtime
+*.db
+/sessions/
 # Runtime managed-skills storage at the repo root (not the packages/skills
 # source package, nor packages/agent/src/skills). Anchored so it only matches
 # a top-level ./skills/ directory.
 /skills/
+# Gateway/desktop runtime artifacts. These now live under ~/.dash, but guard
+# the repo root so a stray `npm run gateway -- --data-dir .` (or an old build)
+# can never get its credentials/sessions/databases committed. Anchored to the
+# repo root so source files with these names elsewhere are unaffected.
+/agent-stream-events.db
+/projects.db
+/credentials.enc
+/secret.key
+/sessions/
+/whatsapp-sessions/
+/mcp/
+/agents.json
+/channels.json
+/models.json
 
 # OS files
 .DS_Store
@@ -51,8 +71,9 @@ test-credentials.json
 # Gateway config (contains tokens)
 gateway.json
 
-# Claude Code
+# Claude Code (AGENTS.md mirrors CLAUDE.md — agent instructions, local only)
 CLAUDE.md
+AGENTS.md
 skills-lock.json
 
 # Project-local docs
@@ -70,11 +91,15 @@ docs/plans/
 # 2026-04-13.
 .claude/
 
+# Codex CLI personal config — local tooling, mirrors .claude/
+.codex/
+
 # Superpowers brainstorm session artifacts — local scratch only.
 .superpowers/brainstorm/
 
-# Generated design assets
+# Generated design assets (source of truth is designs/dash.pen)
 designs/images/
+designs/*.png
 
 # Website build artifacts
 apps/website/.next/

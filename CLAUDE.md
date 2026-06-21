@@ -146,6 +146,8 @@ UI designs live in `designs/dash.pen` (Pencil format). Use the Pencil MCP tools 
 
 Implementation plans and design docs live in `docs/plans/`. This directory is gitignored from the main repo. It has its own git repo pushed to a separate private repository: **https://github.com/volumegambit/dash-dev-plans**
 
+**Always write plans and design docs to `docs/plans/`, flat, never into a subdirectory or any other path.** Use the date-prefixed naming convention: `YYYY-MM-DD-<name>.md` for implementation plans and `YYYY-MM-DD-<name>-design.md` for design specs. This applies to plans produced by any workflow (including the `brainstorming`, `writing-plans`, and `executing-plans` superpowers skills) — do not create `docs/superpowers/`, `docs/specs/`, or similar; those leak design docs into the main public repo.
+
 After writing plan files, commit and push them there:
 
 ```bash

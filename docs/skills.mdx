@@ -5,7 +5,7 @@ description: "Reusable instructions that agents discover and load on demand."
 
 Skills are reusable instructions that persist across conversations. An agent can load a skill when it recognizes a matching task, giving it step-by-step guidance without you repeating yourself every time.
 
-Dash ships with a **bundled library** of ready-made skills (research, drafting, summarizing, code review, and more), and agents can **install more** from the public skill ecosystem — by chat or config. Users can also list and run skills directly from a chat channel with slash commands.
+Dash ships with a **bundled library** of ready-made skills (research, drafting, summarizing, code review, and more), and agents can **install more** from the public skill ecosystem — by chat or from Mission Control. Users can also list and run skills directly from a chat channel with slash commands.
 
 ## How skills work
 
@@ -86,42 +86,18 @@ Skills are discovered from three tiers, in precedence order — a per-agent skil
 Each agent has a managed skills directory outside its workspace:
 
 ```
-{data-dir}/skills/{agent-name}/
+~/.dash/gateway/skills/{agent-name}/
 ```
 
 This directory is created automatically. Skills here are managed through Mission Control or created by the agent itself (if allowed). The agent's file tools cannot reach this directory — it's outside the workspace sandbox.
 
 ### Additional paths
 
-You can add extra directories to scan via the `skills.paths` config:
-
-```json
-{
-  "agents": {
-    "default": {
-      "skills": {
-        "paths": ["~/my-skills", "./workspace/skills"]
-      }
-    }
-  }
-}
-```
-
-If a path is inside the agent's workspace, the agent's file tools can read and write to it. This is an opt-in choice for power users who want to manage skills alongside project files.
+From the agent's **Skills** tab in Mission Control, you can add extra directories to scan for skills. If a path is inside the agent's workspace, the agent's file tools can read and write to it. This is an opt-in choice for power users who want to manage skills alongside project files.
 
 ### Bundled library
 
-Dash ships a curated library of ready-made skills covering assistant, dev, creative, and communication tasks. These are available to every agent by default and are read-only — to stop using one, install a same-named skill to shadow it, or disable the whole library:
-
-```json
-{
-  "agents": {
-    "default": {
-      "skills": { "includeBundled": false }
-    }
-  }
-}
-```
+Dash ships a curated library of ready-made skills covering assistant, dev, creative, and communication tasks. These are available to every agent by default and are read-only. To stop using one, install a same-named skill to shadow it — or turn the whole bundled library off from the agent's **Skills** tab.
 
 ## Agent skill creation
 

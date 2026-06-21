@@ -55,29 +55,10 @@ More platforms are planned. The Gateway uses an adapter pattern, so adding a new
   </Step>
 </Steps>
 
-<Accordion title="Manual setup (without Mission Control)">
-  If you prefer to configure the Gateway directly, create a config directory with a `dash.json` and agent definitions:
+<Accordion title="Without Mission Control">
+  Channels aren't configured with a file — they're created at runtime through the gateway's [Management API](/api-reference#channels). Mission Control is just a friendly front-end for that API.
 
-  ```json
-  {
-    "channels": {
-      "my-telegram-bot": {
-        "adapter": "telegram",
-        "token": "your-telegram-bot-token",
-        "allowedUsers": ["@yourusername"],
-        "agent": "default"
-      }
-    }
-  }
-  ```
-
-  Then start the Gateway:
-
-  ```bash
-  npm run gateway -- --config path/to/config
-  ```
-
-  See [Architecture](/architecture) for the full gateway configuration reference.
+  To set one up against a standalone gateway, `POST /channels` with the adapter, token, routing rules, and access lists, then enable it. See the [Management API](/api-reference#channels) reference.
 </Accordion>
 
 ## Setting up WhatsApp
@@ -146,48 +127,25 @@ The Gateway is the process that hosts agents and handles all messaging platform 
 The Gateway hosts agents in-process and serves the channel server on port 9200. Mission Control's built-in chat connects to the same channel server over WebSocket.
 
 <AccordionGroup>
-  <Accordion title="Gateway configuration">
-    The Gateway reads a JSON config file that maps channels to agents:
-
-    ```json
-    {
-      "channels": {
-        "telegram-support": {
-          "adapter": "telegram",
-          "token": "bot-token-here",
-          "allowedUsers": ["@admin"],
-          "agent": "support-agent"
-        }
-      }
-    }
-    ```
-
-    Each channel specifies an adapter type and which agent to route to. The gateway hosts agents in-process, so no separate agent server URLs are needed.
+  <Accordion title="How channels are stored">
+    Each channel records its adapter type, bot token, routing rules, and access lists, and which agent to route to. The gateway persists channels to `~/.dash/gateway/channels.json` and connects each adapter on startup. Edits made through Mission Control (or `PUT /channels/:name`) take effect on the next message — no restart needed. Because the gateway hosts agents in-process, there are no separate agent server URLs to wire up.
   </Accordion>
   <Accordion title="Running the Gateway manually">
     ```bash
-    npm run gateway -- --config gateway.json
+    npm run gateway
     ```
 
-    The Gateway starts, connects to each configured platform, and begins routing messages. It runs until stopped.
-
-    For secure deployments, pass tokens via a temporary secrets file:
-
-    ```bash
-    npm run gateway -- --config gateway.json --secrets secrets.json
-    ```
-
-    The secrets file is read once and deleted immediately. See [Secrets](/secrets) for the secrets file format.
+    The gateway starts on its data directory (`~/.dash/gateway`), reconnects any saved channels, and begins routing. Create or edit channels through its [Management API](/api-reference#channels), and supply bot tokens the same way (`POST /credentials`). It runs until stopped. See [Configuration](/configuration#running-the-gateway-standalone) for the available flags.
   </Accordion>
   <Accordion title="Mission Control integration">
-    When you deploy agents through Mission Control, the Gateway is managed automatically. Mission Control:
+    When you manage messaging apps through Mission Control, the gateway is handled automatically. Mission Control:
 
-    1. Generates the Gateway config from your messaging app settings
-    2. Injects tokens from the encrypted secret store
-    3. Starts the Gateway process
-    4. Routes Mission Control's built-in chat through the Gateway
+    1. Saves your channel settings to the gateway via the Management API
+    2. Stores bot tokens in the encrypted credential store
+    3. Keeps the gateway process running
+    4. Routes Mission Control's built-in chat through the gateway
 
-    You do not need to create or edit `gateway.json` manually when using Mission Control.
+    There's nothing to configure by hand.
   </Accordion>
 </AccordionGroup>
 

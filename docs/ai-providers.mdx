@@ -1,9 +1,9 @@
 ---
 title: "AI Providers"
-description: "Connect to Anthropic, OpenAI, Google, Moonshot (Kimi), or any major LLM provider."
+description: "Connect to Anthropic, OpenAI, Google, Moonshot (Kimi), OpenRouter, or any major LLM provider."
 ---
 
-Each agent in your team can use a different AI provider and model. Mix and match Anthropic, OpenAI, Google, and Moonshot (Kimi) — or use the same provider for everyone.
+Each agent in your team can use a different AI provider and model. Mix and match Anthropic, OpenAI, Google, and Moonshot (Kimi) directly — or use OpenRouter to reach hundreds of models (DeepSeek, Llama, Qwen, Grok, GLM, and more) through a single key.
 
 ## Provider routing
 
@@ -15,14 +15,17 @@ Model names use a `provider/model` format. The prefix before the slash tells Das
 | `openai/` | OpenAI |
 | `google/` | Google |
 | `moonshotai/` | Moonshot (Kimi) |
+| `openrouter/` | OpenRouter |
 
 For example, `anthropic/claude-sonnet-4-20250514` routes to Anthropic and `openai/gpt-4o` routes to OpenAI.
+
+OpenRouter models keep the upstream vendor in the name, so they carry a second prefix: `openrouter/<vendor>/<model>`, e.g. `openrouter/deepseek/deepseek-r1` or `openrouter/anthropic/claude-opus-4.8`.
 
 ## Configuring credentials
 
 Each provider needs an API key. The recommended approach is through **Mission Control**, which stores keys in an AES-256-GCM encrypted credential store. Open the **AI Providers** page, select your provider, and paste your key.
 
-For standalone gateway usage, you can also set credentials via environment variables or a `--secrets` file (see [CLI flags](/configuration#cli-flags)).
+For standalone gateway usage (no Mission Control), set credentials via environment variables instead — for example in an `.env` file or your Docker environment.
 
 ### Environment variables
 
@@ -32,6 +35,7 @@ For standalone gateway usage, you can also set credentials via environment varia
 | `OPENAI_API_KEY` | OpenAI |
 | `GOOGLE_API_KEY` | Google |
 | `MOONSHOT_API_KEY` | Moonshot (Kimi) |
+| `OPENROUTER_API_KEY` | OpenRouter |
 
 ## Anthropic
 
@@ -45,12 +49,6 @@ Sign up at [console.anthropic.com](https://console.anthropic.com) to get an API 
 
 ```env
 ANTHROPIC_API_KEY=sk-ant-...
-```
-
-or in `credentials.json`:
-
-```json
-{ "anthropic": { "apiKey": "sk-ant-..." } }
 ```
 
 ## OpenAI
@@ -67,12 +65,6 @@ Sign up at [platform.openai.com](https://platform.openai.com) to get an API key.
 OPENAI_API_KEY=sk-...
 ```
 
-or in `credentials.json`:
-
-```json
-{ "openai": { "apiKey": "sk-..." } }
-```
-
 ## Google
 
 Sign up at [aistudio.google.com](https://aistudio.google.com) to get an API key.
@@ -85,12 +77,6 @@ Sign up at [aistudio.google.com](https://aistudio.google.com) to get an API key.
 
 ```env
 GOOGLE_API_KEY=AIza...
-```
-
-or in `credentials.json`:
-
-```json
-{ "google": { "apiKey": "AIza..." } }
 ```
 
 ## Moonshot (Kimi)
@@ -111,36 +97,32 @@ Sign up at [platform.moonshot.ai](https://platform.moonshot.ai) to get an API ke
 MOONSHOT_API_KEY=sk-...
 ```
 
-or in `credentials.json`:
+## OpenRouter
 
-```json
-{ "moonshotai": { "apiKey": "sk-..." } }
+[OpenRouter](https://openrouter.ai) is a single OpenAI-compatible gateway that fronts many upstream providers. With one OpenRouter key you can reach models Dash doesn't connect to directly — DeepSeek, Llama, Qwen, Grok, GLM, and more — and OpenRouter automatically fails over to a healthy upstream provider if one is down. Sign up at [openrouter.ai](https://openrouter.ai) and create a key on the [Keys page](https://openrouter.ai/settings/keys).
+
+**Example models:**
+- `openrouter/deepseek/deepseek-r1` — DeepSeek R1 reasoning
+- `openrouter/qwen/qwen3-max` — Qwen3 Max
+- `openrouter/x-ai/grok-4.3` — xAI Grok
+- `openrouter/anthropic/claude-opus-4.8` — Claude, billed through OpenRouter
+
+<Note>
+  OpenRouter model names carry the upstream vendor: `openrouter/<vendor>/<model>`. Your OpenRouter key starts with `sk-or-v1-` — a plain `sk-...` key is an OpenAI key and won't route here. Routing a model you also have natively (e.g. Claude) through OpenRouter bills per token from your OpenRouter credits rather than your direct provider subscription.
+</Note>
+
+**Configuration:**
+
+```env
+OPENROUTER_API_KEY=sk-or-v1-...
 ```
 
 ## Using a provider in an agent
 
-Set the `model` field in your agent config using the `provider/model` format:
+When you deploy or edit an agent in Mission Control, pick its model from the dropdown — it lists models for every provider you've connected, in `provider/model` format. Each agent can use a different provider, and the prefix tells Dash which API to call:
 
-```json
-{
-  "agents": {
-    "default": {
-      "model": "anthropic/claude-sonnet-4-20250514",
-      "systemPrompt": "You are a helpful assistant.",
-      "tools": ["bash", "read"]
-    },
-    "gpt-agent": {
-      "model": "openai/gpt-4o",
-      "systemPrompt": "You are a helpful assistant.",
-      "tools": ["bash", "read"]
-    },
-    "gemini-agent": {
-      "model": "google/gemini-2.0-flash",
-      "systemPrompt": "You are a helpful assistant.",
-      "tools": ["bash", "read"]
-    }
-  }
-}
-```
+- `anthropic/claude-sonnet-4-20250514`
+- `openai/gpt-4o`
+- `google/gemini-2.0-flash`
 
-The provider prefix tells Dash which API to call for each agent.
+You can also set a chain of [fallback models](/agents#fallback-models) from different providers so an agent keeps working if one provider has an outage.

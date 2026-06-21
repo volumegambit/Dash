@@ -1,11 +1,4 @@
-import { homedir } from 'node:os';
-import { join } from 'node:path';
-
-export function getPlatformDataDir(appName: string): string {
-  if (process.platform === 'darwin') {
-    return join(homedir(), 'Library', 'Application Support', appName);
-  }
-  const xdg = process.env.XDG_DATA_HOME;
-  const base = xdg || join(homedir(), '.local', 'share');
-  return join(base, appName);
-}
+// Re-exported from @dash/paths, which owns all on-disk path resolution. Kept
+// here so existing `@dash/mc` consumers (and its public index export) continue
+// to resolve `getPlatformDataDir` without a breaking import change.
+export { getPlatformDataDir } from '@dash/paths';

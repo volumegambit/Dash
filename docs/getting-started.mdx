@@ -63,7 +63,7 @@ The app opens automatically. On first launch, the setup wizard walks you through
     Choose Anthropic, OpenAI, or Google. You can add more providers later from the **AI Providers** tab.
   </Step>
   <Step title="Paste your API key">
-    Paste your API key. Mission Control sends it directly to the gateway's encrypted credential store (AES-256-GCM, key derived via OS keychain). The key is masked in the input field.
+    Paste your API key. Mission Control sends it directly to the gateway's encrypted credential store (AES-256-GCM, at `~/.dash/gateway/credentials.enc`). The key is masked in the input field.
   </Step>
 </Steps>
 
@@ -95,7 +95,7 @@ Now that your provider is connected, you can deploy an agent.
     Select which tools your agent can use. A good starter set is **bash**, **read**, and **write**. See [Tools](/tools) for the full list.
   </Step>
   <Step title="Deploy">
-    Click **Deploy**. The gateway creates the agent in-process with its own workspace at `~/dash-workspaces/<agent-id>/`.
+    Click **Deploy**. The gateway creates the agent in-process with its own workspace at `~/.dash/workspaces/<agent-id>/`.
   </Step>
 </Steps>
 
@@ -109,12 +109,11 @@ That is it — your first agent is deployed and ready to work.
 
 ## Other ways to run Dash
 
-Mission Control is the recommended approach, but Dash also supports other interfaces for specific use cases.
+Mission Control is the recommended approach, but you can also run the gateway on its own.
 
-- **Gateway standalone** — run the gateway headlessly for automation: `npm run gateway -- --config <path>`
-- **CLI** — manage deployments from the terminal: `npm run mc-cli -- <command>`
+- **Gateway standalone** — run the gateway headlessly (on a server or in Docker) and manage it through its Management API: `npm run gateway`
 
-See [Mission Control](/mission-control) and [CLI Reference](/cli-reference) for details.
+See [Configuration](/configuration#running-the-gateway-standalone) for the available flags and the [Management API](/api-reference) for managing agents programmatically.
 
 ## Next steps
 

@@ -9,7 +9,7 @@ Ready to put your first AI agent to work? This guide walks you through deploying
 
 Before you begin, make sure you have:
 
-- **Mission Control running** — either the desktop app (`npm run mc:dev`) or the CLI (`npm run mc-cli`). See [Getting Started](/getting-started) for setup instructions.
+- **Mission Control running** — the desktop app (`npm run mc:dev`). See [Getting Started](/getting-started) for setup instructions.
 - **At least one AI provider connected** — your agent needs an API key for the model it will use. If you haven't set one up yet, head to [AI Providers](/ai-providers) to configure one.
 
 ## Deploy step by step
@@ -44,8 +44,8 @@ Before you begin, make sure you have:
 
     Common starter sets:
     - **General assistant** — `bash`, `read`, `write`
-    - **Code-focused** — `bash`, `read`, `write`, `edit`, `glob`, `grep`
-    - **Read-only** — `read`, `glob`, `grep`
+    - **Code-focused** — `bash`, `read`, `write`, `edit`, `find`, `grep`
+    - **Read-only** — `read`, `find`, `grep`
   </Step>
 
   <Step title="Add fallback models (optional)">
@@ -53,7 +53,7 @@ Before you begin, make sure you have:
   </Step>
 
   <Step title="Deploy">
-    Click **Deploy**. If you left the workspace blank, Mission Control creates one for you under `~/dash-workspaces/<agent-id>/` — you can open this folder in Finder or your editor to drop files in for the agent to work on. The agent process starts and is added to the agents list, and you'll see a confirmation with the deployment details.
+    Click **Deploy**. If you left the workspace blank, Mission Control creates one for you under `~/.dash/workspaces/<agent-id>/` — you can open this folder in Finder or your editor to drop files in for the agent to work on. The agent process starts and is added to the agents list, and you'll see a confirmation with the deployment details.
   </Step>
 
   <Step title="Verify it's running">
