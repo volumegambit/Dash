@@ -149,7 +149,8 @@ async function main() {
   // derived skill name is `<plugin>:<name>` — an exact match for the slash form
   // (no LLM leniency). Agents run in the main session (the `tools` frontmatter is
   // advisory, not enforced); isolated subagent spawning is a future enhancement.
-  // `loadFlatSkills` dedups by name, so the combined list is safe.
+  // Name collisions resolve first-wins (commands precede agents; discovered
+  // skills win over both); a duplicate `<plugin>:<name>` is cosmetic, not fatal.
   const pluginCommandFiles = [...loadedPlugins.commandFiles, ...loadedPlugins.agentFiles].map(
     ({ pluginName, file }) => ({
       file,
