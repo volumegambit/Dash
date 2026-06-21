@@ -30,6 +30,8 @@ export type { LoadPluginsOptions } from './loader.js';
 export { translateMcpJson } from './mcp-translate.js';
 export { hookEnv, substituteVars } from './substitute.js';
 export { createHookEngine } from './hook-engine.js';
+export { PluginOpError, parsePluginSource } from './install.js';
+export type { ParsedPluginSource, PluginOpCode } from './install.js';
 export type {
   HookEngine,
   HookEngineOptions,

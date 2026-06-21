@@ -3,6 +3,7 @@ import { mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { PluginConfigStore, PluginEntryConfig } from '@dash/plugins';
+import { PluginOpError } from '@dash/plugins';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { AgentChatCoordinator } from './agent-chat-coordinator.js';
@@ -11,7 +12,7 @@ import type { ChannelRegistry } from './channel-registry.js';
 import type { GatewayCredentialStore } from './credential-store.js';
 import { EventBus, type GatewayEvent } from './event-bus.js';
 import type { DynamicGateway } from './gateway.js';
-import { createGatewayManagementApp } from './management-api.js';
+import { createGatewayManagementApp, mapPluginError } from './management-api.js';
 import type { ModelsStore } from './models-store.js';
 import type { PluginStatusRecord, PluginWiringState } from './plugins-wiring.js';
 
@@ -507,6 +508,53 @@ describe('plugin management routes', () => {
       expect(names).toEqual(['broke', 'disco']);
       const disco = body.plugins.find((p) => p.name === 'disco');
       expect(disco).toEqual({ name: 'disco', displayName: 'Disco', version: '1.2.3' });
+    });
+  });
+});
+
+describe('mapPluginError', () => {
+  it('maps not_found to 404', () => {
+    expect(mapPluginError(new PluginOpError('not_found', 'nope'))).toEqual({
+      status: 404,
+      body: { error: 'nope' },
+    });
+  });
+
+  it('maps duplicate to 409', () => {
+    expect(mapPluginError(new PluginOpError('duplicate', 'dupe'))).toEqual({
+      status: 409,
+      body: { error: 'dupe' },
+    });
+  });
+
+  it.each(['invalid_manifest', 'corrupt_archive', 'scan_failed', 'dangerous'] as const)(
+    'maps %s to 422',
+    (code) => {
+      expect(mapPluginError(new PluginOpError(code, 'bad'))).toEqual({
+        status: 422,
+        body: { error: 'bad' },
+      });
+    },
+  );
+
+  it('maps untrusted to 500 (no explicit mapping)', () => {
+    expect(mapPluginError(new PluginOpError('untrusted', 'meh'))).toEqual({
+      status: 500,
+      body: { error: 'meh' },
+    });
+  });
+
+  it('maps an error without a code to 500 but preserves the message', () => {
+    expect(mapPluginError(new Error('boom'))).toEqual({
+      status: 500,
+      body: { error: 'boom' },
+    });
+  });
+
+  it('maps a non-Error value to 500 with a generic message', () => {
+    expect(mapPluginError('not an error')).toEqual({
+      status: 500,
+      body: { error: 'Internal error' },
     });
   });
 });

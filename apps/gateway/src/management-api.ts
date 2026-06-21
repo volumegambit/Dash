@@ -132,6 +132,34 @@ async function parseJsonBody<T = Record<string, unknown>>(
   }
 }
 
+/**
+ * Map a plugin install/marketplace error to an HTTP status + body. Mirrors
+ * `mapSkillError`, keyed on the `code` carried by `PluginOpError`:
+ * - `not_found` → 404
+ * - `duplicate` → 409
+ * - `invalid_manifest` | `corrupt_archive` | `scan_failed` | `dangerous` → 422
+ * - anything else → 500
+ */
+export function mapPluginError(err: unknown): {
+  status: 404 | 409 | 422 | 500;
+  body: { error: string };
+} {
+  const code = err instanceof Error && 'code' in err ? (err as { code?: string }).code : undefined;
+  const message = err instanceof Error ? err.message : 'Internal error';
+  const status: 404 | 409 | 422 | 500 =
+    code === 'not_found'
+      ? 404
+      : code === 'duplicate'
+        ? 409
+        : code === 'invalid_manifest' ||
+            code === 'corrupt_archive' ||
+            code === 'scan_failed' ||
+            code === 'dangerous'
+          ? 422
+          : 500;
+  return { status, body: { error: message } };
+}
+
 export function createGatewayManagementApp(options: GatewayManagementOptions): Hono {
   const { gateway, agents, agentRegistry, channelRegistry, credentialStore, token, eventBus } =
     options;
