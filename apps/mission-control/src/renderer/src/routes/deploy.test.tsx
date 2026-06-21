@@ -122,6 +122,8 @@ describe('DeployWizard', () => {
       systemPrompt: '',
       tools: [],
       workspace: undefined,
+      // No plugins picker in the wizard (MVP) — new agents default to all plugins.
+      plugins: undefined,
     });
   });
 });

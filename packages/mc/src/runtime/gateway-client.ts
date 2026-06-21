@@ -10,6 +10,12 @@ export interface GatewayAgent {
     workspace?: string;
     maxTokens?: number;
     mcpServers?: string[];
+    /**
+     * Per-agent plugin selection (names). Visibility/routing only — trust is
+     * gateway-wide. `undefined` / omitted = all loaded plugins (backward-compat);
+     * a non-empty list scopes the agent to those plugins.
+     */
+    plugins?: string[];
   };
   status: 'registered' | 'active' | 'disabled';
   registeredAt: string;
@@ -50,6 +56,13 @@ export interface CreateAgentRequest {
   workspace?: string;
   maxTokens?: number;
   mcpServers?: string[];
+  /**
+   * Per-agent plugin selection (names). Visibility/routing only — trust is
+   * gateway-wide. `undefined` / omitted = all loaded plugins (backward-compat);
+   * a non-empty list scopes the agent to those plugins. Flows to POST /agents
+   * and PUT /agents/:id, where the gateway accepts the `plugins?` field.
+   */
+  plugins?: string[];
 }
 
 /**

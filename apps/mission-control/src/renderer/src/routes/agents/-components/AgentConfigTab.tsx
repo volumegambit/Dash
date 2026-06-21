@@ -1,3 +1,4 @@
+import type { PluginRecord } from '@dash/management';
 import type { GatewayAgent } from '@dash/mc';
 import { ChevronDown, ChevronUp, FolderOpen, RotateCcw, X } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
@@ -16,6 +17,7 @@ type ConfigPatch = {
   systemPrompt?: string;
   workspace?: string;
   mcpServers?: string[];
+  plugins?: string[];
 };
 
 interface AgentConfigTabProps {
@@ -39,7 +41,7 @@ export function AgentConfigTab({
 
   // Which card is open (null = all collapsed). Opening goes straight to edit mode.
   const [openCard, setOpenCard] = useState<
-    'workspace' | 'models' | 'prompt' | 'tools' | 'connectors' | null
+    'workspace' | 'models' | 'prompt' | 'tools' | 'connectors' | 'plugins' | null
   >(null);
 
   // Workspace editing state
@@ -63,6 +65,13 @@ export function AgentConfigTab({
   // Connectors state
   const [assignedConnectors, setAssignedConnectors] = useState<string[]>([]);
   const [poolConnectors, setPoolConnectors] = useState<McpConnectorInfo[]>([]);
+
+  // Plugins state. Per-agent plugin selection is visibility/routing only; trust
+  // is gateway-wide. Empty = all (undefined): an empty selection means the agent
+  // sees every loaded plugin, matching the gateway's `plugins: undefined`
+  // backward-compat behavior — NOT "no plugins".
+  const [assignedPlugins, setAssignedPlugins] = useState<string[]>([]);
+  const [poolPlugins, setPoolPlugins] = useState<PluginRecord[]>([]);
 
   // Sync connectors when agentConfig changes
   useEffect(() => {
@@ -100,6 +109,40 @@ export function AgentConfigTab({
     if (status === 'reconnecting') return 'connecting';
     return 'disconnected';
   }
+
+  // Sync plugins when agentConfig changes
+  useEffect(() => {
+    setAssignedPlugins(agentConfig?.plugins ?? []);
+    window.api.plugins
+      .list()
+      .then(setPoolPlugins)
+      .catch(() => {});
+  }, [agentConfig]);
+
+  const unassignedPlugins = poolPlugins.filter((p) => !assignedPlugins.includes(p.name));
+
+  const handleAssignPlugin = useCallback(
+    async (name: string) => {
+      // Empty = all (undefined): a non-empty selection scopes the agent to
+      // those plugins; clearing back to empty writes undefined (= all).
+      const next = [...assignedPlugins, name];
+      setAssignedPlugins(next);
+      await updateConfig(agentId, { plugins: next.length > 0 ? next : undefined });
+    },
+    [assignedPlugins, agentId, updateConfig],
+  );
+
+  const handleUnassignPlugin = useCallback(
+    async (name: string) => {
+      const next = assignedPlugins.filter((p) => p !== name);
+      setAssignedPlugins(next);
+      await updateConfig(agentId, { plugins: next.length > 0 ? next : undefined });
+    },
+    [assignedPlugins, agentId, updateConfig],
+  );
+
+  const pluginLabel = (name: string): string =>
+    poolPlugins.find((p) => p.name === name)?.displayName ?? name;
 
   // Sync chain model/fallbacks when agentConfig changes
   useEffect(() => {
@@ -550,6 +593,84 @@ export function AgentConfigTab({
                 No connectors available.{' '}
                 <a href="#/connectors" className="text-accent hover:underline">
                   Add connectors
+                </a>{' '}
+                first.
+              </p>
+            ) : null}
+          </div>
+        )}
+      </div>
+
+      {/* Plugins card. Per-agent plugin selection is visibility/routing only;
+          trust is gateway-wide. Empty = all (undefined). */}
+      <div className="rounded-lg border border-border bg-card-bg">
+        <button
+          type="button"
+          onClick={() => setOpenCard(openCard === 'plugins' ? null : 'plugins')}
+          className="flex w-full items-center justify-between p-4 text-left"
+        >
+          <div>
+            <h3 className="text-sm font-medium">Plugins</h3>
+            <p className="text-xs text-muted">
+              {assignedPlugins.length > 0
+                ? `${assignedPlugins.length} selected`
+                : 'All plugins (default)'}
+            </p>
+          </div>
+          {openCard === 'plugins' ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+        </button>
+
+        {openCard === 'plugins' && (
+          <div className="border-t border-border p-4">
+            {assignedPlugins.length > 0 ? (
+              <div className="mb-3 flex flex-wrap gap-2">
+                {assignedPlugins.map((name) => (
+                  <span
+                    key={name}
+                    className="flex items-center gap-1 rounded bg-bg-hover px-2 py-1 text-sm"
+                  >
+                    {pluginLabel(name)}
+                    <button
+                      type="button"
+                      aria-label={`Remove ${name}`}
+                      onClick={() => handleUnassignPlugin(name)}
+                      className="ml-1 text-fg-muted hover:text-red-500"
+                    >
+                      <X size={12} />
+                    </button>
+                  </span>
+                ))}
+              </div>
+            ) : (
+              <p className="mb-3 text-sm text-muted">
+                All plugins (default). This agent sees every loaded plugin. Select plugins below to
+                scope it to a subset.
+              </p>
+            )}
+
+            {unassignedPlugins.length > 0 ? (
+              <select
+                onChange={(e) => {
+                  handleAssignPlugin(e.target.value);
+                  e.target.value = '';
+                }}
+                defaultValue=""
+                className="rounded border border-border bg-bg-input px-3 py-1.5 text-sm"
+              >
+                <option value="" disabled>
+                  Add plugin...
+                </option>
+                {unassignedPlugins.map((p) => (
+                  <option key={p.name} value={p.name}>
+                    {p.displayName ?? p.name}
+                  </option>
+                ))}
+              </select>
+            ) : poolPlugins.length === 0 ? (
+              <p className="text-sm text-fg-muted">
+                No plugins installed.{' '}
+                <a href="#/plugins" className="text-accent hover:underline">
+                  Manage plugins
                 </a>{' '}
                 first.
               </p>

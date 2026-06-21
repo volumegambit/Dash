@@ -15,6 +15,7 @@ interface AgentConfig {
   systemPrompt: string;
   tools: string[];
   workspace: string; // '' means auto-generate
+  plugins?: string[]; // undefined / empty = all plugins (no picker in the wizard)
 }
 
 export function DeployWizard(): JSX.Element {
@@ -85,6 +86,8 @@ export function DeployWizard(): JSX.Element {
         systemPrompt: agent.systemPrompt,
         tools: agent.tools,
         workspace: agent.workspace || undefined,
+        // Plugins picker is post-creation (AgentConfigTab); new agents default to all plugins.
+        plugins: agent.plugins && agent.plugins.length > 0 ? agent.plugins : undefined,
       });
       navigate({ to: '/agents/$id', params: { id: created.id } });
     } catch (err: unknown) {
