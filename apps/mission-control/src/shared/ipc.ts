@@ -21,6 +21,11 @@ import type {
   ProjectsEvent,
 } from './projects-ipc.js';
 
+// Re-export shared gateway/management types so renderer stores and components
+// can import them from this single IPC facade module.
+export type { CreateAgentRequest, GatewayAgent, GatewayChannel } from '@dash/mc';
+export type { ChannelHealthEntry } from '@dash/management';
+
 // Top-level setup/onboarding status. Distinguishes a genuine first run
 // (`needs-setup`) from a configured user whose gateway cannot start
 // (`gateway-failed`) — the latter must NOT be shown the onboarding wizard.

@@ -461,7 +461,7 @@ function StatusBadge({ status }: { status: GatewayAgent['status'] }): JSX.Elemen
 
 export const Route = createFileRoute('/agents/$id')({
   component: AgentDetail,
-  validateSearch: (search: Record<string, unknown>) => ({
+  validateSearch: (search: Record<string, unknown>): { tab?: string } => ({
     tab: typeof search.tab === 'string' ? search.tab : undefined,
   }),
 });

@@ -1,7 +1,7 @@
 import type { GatewayAgent } from '@dash/mc';
 import { ChevronDown, ChevronUp, FolderOpen, RotateCcw, X } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
-import type { McpConnectorInfo } from '../../../../shared/ipc.js';
+import type { McpConnectorInfo } from '../../../../../shared/ipc.js';
 import { HealthDot } from '../../../components/HealthDot.js';
 import { ModelChainEditor } from '../../../components/ModelChainEditor.js';
 import { ALL_TOOL_IDS, TOOL_GROUPS } from '../../../components/deploy-options.js';

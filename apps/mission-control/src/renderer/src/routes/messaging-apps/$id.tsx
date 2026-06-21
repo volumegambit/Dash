@@ -84,6 +84,7 @@ function MessagingAppDetail(): JSX.Element {
   const knownAgentIds: Set<string> | null = agentsLoading ? null : new Set(agents.map((a) => a.id));
 
   async function addGlobalDeny() {
+    if (!channel) return;
     const val = globalDenyInput.trim();
     if (!val) return;
     await updateChannel(id, { globalDenyList: [...channel.globalDenyList, val] });
@@ -91,14 +92,17 @@ function MessagingAppDetail(): JSX.Element {
   }
 
   async function removeGlobalDeny(entry: string) {
+    if (!channel) return;
     await updateChannel(id, { globalDenyList: channel.globalDenyList.filter((e) => e !== entry) });
   }
 
   async function removeRule(index: number) {
+    if (!channel) return;
     await updateChannel(id, { routing: channel.routing.filter((_, i) => i !== index) });
   }
 
   async function moveRule(index: number, direction: 'up' | 'down') {
+    if (!channel) return;
     const newRouting = [...channel.routing];
     const swapIdx = direction === 'up' ? index - 1 : index + 1;
     if (swapIdx < 0 || swapIdx >= newRouting.length) return;
