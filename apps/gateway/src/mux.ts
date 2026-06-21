@@ -21,8 +21,10 @@ export type Frame =
     }
   // gateway → relay: response status + headers (HTTP), or 101 (WS upgrade ok)
   | { t: 'head'; streamId: number; status: number; headers: Record<string, string> }
-  // either direction: body bytes / WS frame payload (base64 in `chunk`)
-  | { t: 'data'; streamId: number; chunk: string }
+  // either direction: body bytes / WS frame payload (base64 in `chunk`). For WS
+  // frames, `binary` preserves the text/binary type — the gateway chat-ws only
+  // accepts text frames, so this must round-trip faithfully.
+  | { t: 'data'; streamId: number; chunk: string; binary?: boolean }
   // either direction: half-close (no more body / done)
   | { t: 'end'; streamId: number }
   // either direction: abort/teardown (carries a WS/HTTP close code when relevant)

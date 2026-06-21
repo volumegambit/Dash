@@ -132,4 +132,65 @@ describe('relay-server', () => {
     const { status } = await httpGet('/agents', { host: 'nope.relay.local' });
     expect(status).toBe(502);
   });
+
+  it('upgrades a phone WebSocket and bridges frames to the gateway', async () => {
+    const gw = await connectGateway('g1', 'good');
+    let openFrame: Extract<Frame, { t: 'open' }> | undefined;
+    gw.on('message', (raw: Buffer) => {
+      const f = decodeFrame(raw.toString());
+      if (f.t === 'open' && f.kind === 'ws') {
+        openFrame = f;
+        gw.send(encodeFrame({ t: 'head', streamId: f.streamId, status: 101, headers: {} }));
+      } else if (f.t === 'data') {
+        gw.send(
+          encodeFrame({
+            t: 'data',
+            streamId: f.streamId,
+            chunk: encodeChunk(Buffer.from('{"type":"event"}')),
+            binary: false,
+          }),
+        );
+      }
+    });
+    await waitFor(() => server.hasGateway('g1'));
+
+    const phone = new WebSocket(`ws://127.0.0.1:${port}/ws/chat?token=tok`, {
+      headers: { host: 'g1.relay.local' },
+    });
+    await new Promise<void>((resolve, reject) => {
+      phone.on('open', () => resolve());
+      phone.on('error', reject);
+    });
+    const events: string[] = [];
+    phone.on('message', (d: Buffer) => events.push(d.toString()));
+    phone.send('{"type":"message"}');
+
+    await waitFor(() => events.length >= 1);
+    expect(openFrame?.kind).toBe('ws');
+    expect(openFrame?.target).toBe('chat');
+    expect(openFrame?.path).toBe('/ws/chat?token=tok');
+    expect(events[0]).toBe('{"type":"event"}');
+    phone.close();
+  });
+
+  it('closes the phone WebSocket when the gateway sends a 4001 close', async () => {
+    const gw = await connectGateway('g1', 'good');
+    gw.on('message', (raw: Buffer) => {
+      const f = decodeFrame(raw.toString());
+      if (f.t === 'open' && f.kind === 'ws') {
+        gw.send(
+          encodeFrame({ t: 'close', streamId: f.streamId, code: 4001, reason: 'Unauthorized' }),
+        );
+      }
+    });
+    await waitFor(() => server.hasGateway('g1'));
+
+    const phone = new WebSocket(`ws://127.0.0.1:${port}/ws/chat?token=bad`, {
+      headers: { host: 'g1.relay.local' },
+    });
+    const code = await new Promise<number>((resolve) => {
+      phone.on('close', (c) => resolve(c));
+    });
+    expect(code).toBe(4001);
+  });
 });

@@ -14,6 +14,7 @@ describe('mux frame codec', () => {
     { t: 'open', streamId: 2, target: 'chat', kind: 'ws', path: '/ws/chat?token=x', headers: {} },
     { t: 'head', streamId: 1, status: 200, headers: { 'content-type': 'application/json' } },
     { t: 'data', streamId: 1, chunk: 'aGk=' },
+    { t: 'data', streamId: 3, chunk: 'AQID', binary: true },
     { t: 'end', streamId: 1 },
     { t: 'close', streamId: 1, code: 4001, reason: 'Unauthorized' },
     { t: 'credit', streamId: 1, bytes: 65536 },

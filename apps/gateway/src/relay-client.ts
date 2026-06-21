@@ -1,5 +1,5 @@
 import http from 'node:http';
-import { WebSocket } from 'ws';
+import { type RawData, WebSocket } from 'ws';
 import { type Frame, decodeChunk, decodeFrame, encodeChunk, encodeFrame } from './mux.js';
 
 export interface RelayClientLogger {
@@ -28,6 +28,7 @@ export interface RelayClient {
 interface LocalConn {
   kind: 'http' | 'ws';
   req?: http.ClientRequest;
+  ws?: WebSocket;
 }
 
 /**
@@ -78,15 +79,24 @@ export function startRelayClient(opts: RelayClientOptions): RelayClient {
       case 'open':
         openStream(ws, frame);
         break;
-      case 'data':
-        streams.get(frame.streamId)?.req?.write(decodeChunk(frame.chunk));
+      case 'data': {
+        const conn = streams.get(frame.streamId);
+        if (!conn) break;
+        if (conn.kind === 'ws') {
+          const bytes = decodeChunk(frame.chunk);
+          conn.ws?.send(frame.binary ? bytes : bytes.toString('utf8'));
+        } else {
+          conn.req?.write(decodeChunk(frame.chunk));
+        }
         break;
+      }
       case 'end':
         streams.get(frame.streamId)?.req?.end();
         break;
       case 'close': {
         const conn = streams.get(frame.streamId);
         conn?.req?.destroy();
+        conn?.ws?.close();
         streams.delete(frame.streamId);
         break;
       }
@@ -97,7 +107,10 @@ export function startRelayClient(opts: RelayClientOptions): RelayClient {
 
   const openStream = (ws: WebSocket, frame: Extract<Frame, { t: 'open' }>): void => {
     const port = frame.target === 'chat' ? opts.channelPort : opts.managementPort;
-    if (frame.kind !== 'http') return; // WS upgrades handled in R5
+    if (frame.kind === 'ws') {
+      openLoopbackWs(ws, frame, port);
+      return;
+    }
 
     const req = http.request(
       {
@@ -132,8 +145,48 @@ export function startRelayClient(opts: RelayClientOptions): RelayClient {
     streams.set(frame.streamId, { kind: 'http', req });
   };
 
+  /** Bridge a phone WebSocket onto a loopback ws client (/ws/chat, /projects/ws). */
+  const openLoopbackWs = (
+    relaySocket: WebSocket,
+    frame: Extract<Frame, { t: 'open' }>,
+    port: number,
+  ): void => {
+    // frame.path includes the `?token=` query the gateway's auth checks.
+    const local = new WebSocket(`ws://127.0.0.1:${port}${frame.path}`);
+    streams.set(frame.streamId, { kind: 'ws', ws: local });
+
+    local.on('open', () => {
+      relaySocket.send(
+        encodeFrame({ t: 'head', streamId: frame.streamId, status: 101, headers: {} }),
+      );
+    });
+    local.on('message', (data: RawData, isBinary: boolean) => {
+      relaySocket.send(
+        encodeFrame({
+          t: 'data',
+          streamId: frame.streamId,
+          chunk: encodeChunk(toBuffer(data)),
+          binary: isBinary,
+        }),
+      );
+    });
+    local.on('close', (code: number, reason: Buffer) => {
+      relaySocket.send(
+        encodeFrame({ t: 'close', streamId: frame.streamId, code, reason: reason.toString() }),
+      );
+      streams.delete(frame.streamId);
+    });
+    local.on('error', () => {
+      relaySocket.send(encodeFrame({ t: 'close', streamId: frame.streamId }));
+      streams.delete(frame.streamId);
+    });
+  };
+
   const resetStreams = (): void => {
-    for (const conn of streams.values()) conn.req?.destroy();
+    for (const conn of streams.values()) {
+      conn.req?.destroy();
+      conn.ws?.close();
+    }
     streams.clear();
   };
 
@@ -155,4 +208,11 @@ function flattenHeaders(headers: http.IncomingHttpHeaders): Record<string, strin
     out[k] = Array.isArray(v) ? v.join(', ') : String(v);
   }
   return out;
+}
+
+/** Normalize a ws message payload (Buffer | Buffer[] | ArrayBuffer) to a Buffer. */
+function toBuffer(data: RawData): Buffer {
+  if (Buffer.isBuffer(data)) return data;
+  if (Array.isArray(data)) return Buffer.concat(data);
+  return Buffer.from(data as ArrayBuffer);
 }

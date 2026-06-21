@@ -18,15 +18,25 @@ async function waitFor(pred: () => boolean, timeoutMs = 1500): Promise<void> {
   }
 }
 
-describe('relay-client (HTTP replay)', () => {
-  let loopback: http.Server;
-  let relay: WebSocketServer;
+describe('relay-client', () => {
+  let loopback: http.Server | undefined;
+  let relay: WebSocketServer | undefined;
+  let chat: WebSocketServer | undefined;
   let client: RelayClient | undefined;
 
   afterEach(async () => {
     client?.stop();
-    await new Promise<void>((r) => relay.close(() => r()));
-    await new Promise<void>((r) => loopback.close(() => r()));
+    client = undefined;
+    for (const wss of [relay, chat]) {
+      if (!wss) continue;
+      for (const c of wss.clients) c.terminate();
+      await new Promise<void>((r) => wss.close(() => r()));
+    }
+    relay = undefined;
+    chat = undefined;
+    const lb = loopback;
+    loopback = undefined;
+    if (lb) await new Promise<void>((r) => lb.close(() => r()));
   });
 
   it('replays an HTTP open to loopback and pipes the response back, forwarding auth', async () => {
@@ -202,5 +212,108 @@ describe('relay-client (HTTP replay)', () => {
     releaseB?.();
     await waitFor(() => dataText().includes('data: b\n\n'));
     expect(dataText()).toContain(': keepalive\n\n');
+  });
+
+  it('bridges a WebSocket turn, preserving text frames in both directions', async () => {
+    chat = new WebSocketServer({ port: 0, host: '127.0.0.1' });
+    await new Promise<void>((r) => chat?.on('listening', () => r()));
+    const chatPort = (chat.address() as AddressInfo).port;
+    const loopbackMsgs: string[] = [];
+    chat.on('connection', (lws, req) => {
+      expect(req.url).toBe('/ws/chat?token=tok');
+      lws.on('message', (data: Buffer) => {
+        loopbackMsgs.push(data.toString());
+        lws.send(JSON.stringify({ type: 'event', id: '1' }));
+      });
+    });
+
+    relay = new WebSocketServer({ port: 0, host: '127.0.0.1' });
+    await new Promise<void>((r) => relay.on('listening', () => r()));
+    const relayPort = (relay.address() as AddressInfo).port;
+    const received: Frame[] = [];
+    const gwSocket = new Promise<WebSocket>((resolve) => {
+      relay.on('connection', (ws) => {
+        ws.on('message', (raw: Buffer) => received.push(decodeFrame(raw.toString())));
+        resolve(ws);
+      });
+    });
+
+    client = startRelayClient({
+      relayUrl: `ws://127.0.0.1:${relayPort}`,
+      relayToken: 'rt',
+      gatewayId: 'g1',
+      managementPort: 9999,
+      channelPort: chatPort,
+    });
+
+    const ws = await gwSocket;
+    ws.send(
+      encodeFrame({
+        t: 'open',
+        streamId: 5,
+        target: 'chat',
+        kind: 'ws',
+        path: '/ws/chat?token=tok',
+        headers: {},
+      }),
+    );
+    await waitFor(() => received.some((f) => f.t === 'head' && f.status === 101));
+
+    ws.send(
+      encodeFrame({
+        t: 'data',
+        streamId: 5,
+        chunk: Buffer.from('{"type":"message"}').toString('base64'),
+        binary: false,
+      }),
+    );
+    await waitFor(() => loopbackMsgs.length >= 1);
+    expect(loopbackMsgs[0]).toBe('{"type":"message"}');
+
+    await waitFor(() => received.some((f) => f.t === 'data'));
+    const dataFrame = received.find((f) => f.t === 'data') as Extract<Frame, { t: 'data' }>;
+    expect(decodeChunk(dataFrame.chunk).toString()).toContain('"type":"event"');
+    expect(dataFrame.binary).toBe(false); // text frame preserved as text
+  });
+
+  it('propagates a loopback 4001 close as a close frame', async () => {
+    chat = new WebSocketServer({ port: 0, host: '127.0.0.1' });
+    await new Promise<void>((r) => chat?.on('listening', () => r()));
+    const chatPort = (chat.address() as AddressInfo).port;
+    chat.on('connection', (lws) => lws.close(4001, 'Unauthorized'));
+
+    relay = new WebSocketServer({ port: 0, host: '127.0.0.1' });
+    await new Promise<void>((r) => relay.on('listening', () => r()));
+    const relayPort = (relay.address() as AddressInfo).port;
+    const received: Frame[] = [];
+    const gwSocket = new Promise<WebSocket>((resolve) => {
+      relay.on('connection', (ws) => {
+        ws.on('message', (raw: Buffer) => received.push(decodeFrame(raw.toString())));
+        resolve(ws);
+      });
+    });
+
+    client = startRelayClient({
+      relayUrl: `ws://127.0.0.1:${relayPort}`,
+      relayToken: 'rt',
+      gatewayId: 'g1',
+      managementPort: 9999,
+      channelPort: chatPort,
+    });
+    const ws = await gwSocket;
+    ws.send(
+      encodeFrame({
+        t: 'open',
+        streamId: 6,
+        target: 'chat',
+        kind: 'ws',
+        path: '/ws/chat?token=bad',
+        headers: {},
+      }),
+    );
+    await waitFor(() => received.some((f) => f.t === 'close' && f.code === 4001));
+    expect(received.find((f) => f.t === 'close')?.code).toBe(4001);
+
+    await new Promise<void>((r) => chat.close(() => r()));
   });
 });

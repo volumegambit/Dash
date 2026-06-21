@@ -1,7 +1,15 @@
 import http from 'node:http';
-import { type WebSocket, WebSocketServer } from 'ws';
+import type { Duplex } from 'node:stream';
+import { type RawData, type WebSocket, WebSocketServer } from 'ws';
 import type { RelayDeps } from './auth.js';
-import { type Frame, decodeChunk, decodeFrame, encodeChunk, encodeFrame } from './mux.js';
+import {
+  type Frame,
+  type Target,
+  decodeChunk,
+  decodeFrame,
+  encodeChunk,
+  encodeFrame,
+} from './mux.js';
 
 export type { RelayDeps };
 
@@ -17,7 +25,7 @@ const RELAY_AUTH_CLOSE = 4401;
 /** A phone-originated stream's callbacks, driven by frames from the gateway. */
 interface PhoneStream {
   onHead(status: number, headers: Record<string, string>): void;
-  onData(chunk: Buffer): void;
+  onData(chunk: Buffer, binary: boolean): void;
   onEnd(): void;
   onClose(code?: number, reason?: string): void;
 }
@@ -47,8 +55,7 @@ export function createRelayServer(deps: RelayDeps): RelayServer {
     const path = (req.url ?? '/').split('?')[0];
     const gwMatch = path.match(/^\/gw\/([^/]+)$/);
     if (!gwMatch) {
-      // Phone-facing WebSocket (/ws/chat, /projects/ws) lands in R5.
-      socket.destroy();
+      handlePhoneWsUpgrade(gateways, wss, req, socket, head);
       return;
     }
     const gatewayId = decodeURIComponent(gwMatch[1]);
@@ -117,7 +124,7 @@ function routeFromGateway(conn: GatewayConn, frame: Frame): void {
       stream.onHead(frame.status, frame.headers);
       break;
     case 'data':
-      stream.onData(decodeChunk(frame.chunk));
+      stream.onData(decodeChunk(frame.chunk), frame.binary ?? false);
       break;
     case 'end':
       stream.onEnd();
@@ -203,6 +210,80 @@ function handlePhoneHttp(
     conn.socket.send(encodeFrame({ t: 'close', streamId }));
     conn.streams.delete(streamId);
   });
+}
+
+/** Bridge a phone WebSocket (/ws/chat → chat:9200, /projects/ws → mgmt:9300). */
+function handlePhoneWsUpgrade(
+  gateways: Map<string, GatewayConn>,
+  wss: WebSocketServer,
+  req: http.IncomingMessage,
+  socket: Duplex,
+  head: Buffer,
+): void {
+  const gatewayId = gatewayIdFromHost(req.headers.host);
+  const conn = gatewayId ? gateways.get(gatewayId) : undefined;
+  if (!conn) {
+    socket.destroy();
+    return;
+  }
+  const fullPath = req.url ?? '/';
+  const target: Target = fullPath.split('?')[0].startsWith('/ws/chat') ? 'chat' : 'mgmt';
+
+  wss.handleUpgrade(req, socket, head, (phoneWs) => {
+    const streamId = conn.nextStreamId++;
+    conn.streams.set(streamId, {
+      onHead() {
+        // 101 — the phone connection is already upgraded at the relay edge.
+      },
+      onData(chunk, binary) {
+        phoneWs.send(binary ? chunk : chunk.toString('utf8'));
+      },
+      onEnd() {
+        conn.streams.delete(streamId);
+        phoneWs.close();
+      },
+      onClose(code, reason) {
+        conn.streams.delete(streamId);
+        phoneWs.close(safeCloseCode(code), reason);
+      },
+    });
+
+    conn.socket.send(
+      encodeFrame({
+        t: 'open',
+        streamId,
+        target,
+        kind: 'ws',
+        path: fullPath,
+        headers: forwardableHeaders(req.headers),
+      }),
+    );
+
+    phoneWs.on('message', (data: RawData, isBinary: boolean) => {
+      conn.socket.send(
+        encodeFrame({ t: 'data', streamId, chunk: encodeChunk(toBuffer(data)), binary: isBinary }),
+      );
+    });
+    phoneWs.on('close', () => {
+      if (conn.streams.delete(streamId)) {
+        conn.socket.send(encodeFrame({ t: 'close', streamId }));
+      }
+    });
+  });
+}
+
+/** Forward normal + app-range (4001 etc.) close codes; coerce reserved/abnormal to 1000. */
+function safeCloseCode(code?: number): number {
+  if (code === 1000) return 1000;
+  if (code !== undefined && code >= 3000 && code <= 4999) return code;
+  return 1000;
+}
+
+/** Normalize a ws message payload (Buffer | Buffer[] | ArrayBuffer) to a Buffer. */
+function toBuffer(data: RawData): Buffer {
+  if (Buffer.isBuffer(data)) return data;
+  if (Array.isArray(data)) return Buffer.concat(data);
+  return Buffer.from(data as ArrayBuffer);
 }
 
 function bearer(authHeader: string | undefined): string | undefined {
