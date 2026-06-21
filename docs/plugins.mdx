@@ -80,6 +80,26 @@ Installing a plugin brings someone else's instructions — and potentially their
 Trusting a plugin lets its hooks, MCP servers, `bin/` executables, and provider catalogs run inside the gateway with its privileges. Review a plugin before you trust it — especially anything installed from a source you don't control.
 </Warning>
 
+## Provider credentials
+
+Some plugins ship **LLM provider catalogs** (`providers/*.json`) that add extra AI providers — your company's internal model gateway, a regional endpoint, or any OpenAI-compatible service. When you've **trusted** a plugin that ships one, its providers appear automatically on the [AI Providers](/ai-providers) screen in Mission Control, listed right alongside the built-in ones (Claude, OpenAI, Google, Kimi, OpenRouter).
+
+Adding a key works exactly like a built-in provider: open **AI Providers**, pick the plugin's provider, and paste your key. Each provider needs its own API key.
+
+**Multiple named keys.** A provider can hold more than one key — a `default` plus extras like `backup` — so you can keep an alternate credential ready. Keys are stored in the same encrypted credential store as your built-in providers, under slots named:
+
+```
+<provider-id>-api-key:<key-name>
+```
+
+For example, a provider with id `myprov` stores its primary key under `myprov-api-key:default` and a second under `myprov-api-key:backup`.
+
+<Note>
+A plugin's providers only show up if the plugin is **trusted**. An untrusted plugin's provider catalog is withheld — its providers won't appear on the AI Providers screen, and there's nowhere to add a key for them — until you trust the plugin (see [Security model](#security-model)). This is the same trust gate that holds back MCP servers, hooks, and `bin/` executables.
+</Note>
+
+A plugin can't shadow a built-in provider: if a plugin's provider id collides with one of the built-ins (`anthropic`, `openai`, `google`, `moonshotai`, `openrouter`), that provider is dropped and never offered, even from a trusted plugin.
+
 ## Marketplaces
 
 A **marketplace** is a published catalog of plugins you can browse and install by name. You point Dash at a marketplace source — a local path, a URL, or a git repo — and Dash reads its `marketplace.json` to list the plugins it offers.
