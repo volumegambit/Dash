@@ -216,6 +216,61 @@ When Mission Control manages agents, secrets are delivered to the gateway's encr
 1. `--secrets` file (highest priority)
 2. Environment variables (`.env` or shell)
 
+## Plugins
+
+Plugins let you drop extra skills into any Dash agent without touching the config file. The gateway discovers plugins from the `plugins/` directory inside your data directory.
+
+### Directory layout
+
+```
+<dataDir>/
+├── plugins/
+│   └── <plugin-name>/
+│       └── skills/
+│           └── <skill-name>/
+│               └── SKILL.md
+└── plugins/config.json
+```
+
+Each plugin follows the Claude Code layout: a `skills/` folder containing one subdirectory per skill, each with a `SKILL.md` file in standard frontmatter format (`name`, `description`, body).
+
+### Enabling a plugin
+
+Create or edit `<dataDir>/plugins/config.json`:
+
+```json
+{
+  "<plugin-name>": { "enabled": true }
+}
+```
+
+Plugins not listed in `config.json`, or listed with `"enabled": false`, are ignored.
+
+### Example
+
+```bash
+# Create the plugin directory and a skill
+mkdir -p /path/to/data/plugins/my-skills/skills/summarize
+
+cat > /path/to/data/plugins/my-skills/skills/summarize/SKILL.md <<'EOF'
+---
+name: summarize
+description: Summarize any text concisely
+---
+Summarize the provided text in three sentences or fewer.
+EOF
+
+# Enable the plugin
+echo '{ "my-skills": { "enabled": true } }' \
+  > /path/to/data/plugins/config.json
+```
+
+When the gateway starts, it logs `[plugins] loaded 'my-skills' (skills)` and the agent's `load_skill` tool can reference any skill from that plugin.
+
+<Note>
+  Only `skills/` is active in this release. Additional plugin components — MCP servers, custom commands, hooks — are coming in a future release.
+</Note>
+
 ## Deep merge behavior
 
 <Warning>
