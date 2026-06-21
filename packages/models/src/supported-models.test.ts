@@ -2,6 +2,7 @@ import {
   SUPPORTED_MODELS,
   findSupportedModel,
   globToRegex,
+  isModelExcluded,
   isModelSupported,
 } from './supported-models.js';
 
@@ -97,12 +98,43 @@ describe('isModelSupported', () => {
     expect(isModelSupported('openai', modelId)).toBe(expected);
   });
 
-  // Google — allowed
+  // Google — allowed (chat / tool-use / streaming text models). Several share a
+  // prefix with the excluded modalities below, so they guard the deny-list
+  // against over-matching real chat models.
   it.each([
     ['gemini-2.0-flash', true],
     ['gemini-2.5-pro', true],
     ['gemini-1.5-flash', true],
+    ['gemini-3-pro-preview', true],
+    ['gemini-3.1-pro-preview', true],
+    ['gemini-3.5-flash', true],
+    ['gemini-flash-latest', true],
+    ['gemini-pro-latest', true],
   ])('google/%s → %s', (modelId, expected) => {
+    expect(isModelSupported('google', modelId)).toBe(expected);
+  });
+
+  // Google — excluded non-chat modalities. Each matches a broad allow pattern
+  // (gemini-* / gemini-*-pro* / gemini-*-flash*) but is an image / TTS /
+  // embedding / robotics / computer-use endpoint, not a chat model. The
+  // EXCLUDED_MODELS deny-list wins over the allow match. Verified against a live
+  // generativelanguage.googleapis.com audit on 2026-06-21.
+  it.each([
+    ['gemini-embedding-001', false],
+    ['gemini-embedding-2', false],
+    ['gemini-embedding-2-preview', false],
+    ['gemini-2.5-flash-image', false], // Nano Banana (image gen)
+    ['gemini-3-pro-image', false],
+    ['gemini-3-pro-image-preview', false],
+    ['gemini-3.1-flash-image', false],
+    ['gemini-3.1-flash-image-preview', false],
+    ['gemini-2.5-flash-preview-tts', false],
+    ['gemini-2.5-pro-preview-tts', false],
+    ['gemini-3.1-flash-tts-preview', false],
+    ['gemini-robotics-er-1.5-preview', false],
+    ['gemini-robotics-er-1.6-preview', false],
+    ['gemini-2.5-computer-use-preview-10-2025', false],
+  ])('google/%s → %s (excluded modality)', (modelId, expected) => {
     expect(isModelSupported('google', modelId)).toBe(expected);
   });
 
@@ -156,6 +188,34 @@ describe('findSupportedModel', () => {
     const thinking = findSupportedModel('moonshotai', 'kimi-k2-thinking');
     const preview = findSupportedModel('moonshotai', 'kimi-k2-0905-preview');
     expect(thinking?.tier).toBeLessThan(preview?.tier);
+  });
+});
+
+describe('isModelExcluded', () => {
+  it('excludes Google non-chat modalities that match a broad allow pattern', () => {
+    expect(isModelExcluded('google', 'gemini-2.5-flash-image')).toBe(true);
+    expect(isModelExcluded('google', 'gemini-2.5-pro-preview-tts')).toBe(true);
+    expect(isModelExcluded('google', 'gemini-embedding-001')).toBe(true);
+    expect(isModelExcluded('google', 'gemini-robotics-er-1.6-preview')).toBe(true);
+    expect(isModelExcluded('google', 'gemini-2.5-computer-use-preview-10-2025')).toBe(true);
+  });
+
+  it('does not exclude Gemini chat models', () => {
+    expect(isModelExcluded('google', 'gemini-2.5-pro')).toBe(false);
+    expect(isModelExcluded('google', 'gemini-3.5-flash')).toBe(false);
+    expect(isModelExcluded('google', 'gemini-flash-latest')).toBe(false);
+  });
+
+  it('wins over allow-list matches — findSupportedModel returns null', () => {
+    // gemini-2.5-flash-image matches the gemini-*-flash* allow pattern, but the
+    // deny-list short-circuits it; the plain chat model still resolves.
+    expect(findSupportedModel('google', 'gemini-2.5-flash-image')).toBeNull();
+    expect(findSupportedModel('google', 'gemini-2.5-flash')).not.toBeNull();
+  });
+
+  it('only applies to providers with registered exclusions', () => {
+    expect(isModelExcluded('openai', 'gpt-5.4')).toBe(false);
+    expect(isModelExcluded('anthropic', 'claude-opus-4-8')).toBe(false);
   });
 });
 

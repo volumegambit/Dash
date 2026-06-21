@@ -5,11 +5,13 @@ export { PROVIDERS, Anthropic, OpenAI, Google } from './providers/index.js';
 export {
   MODELS_REVIEWED_AT,
   SUPPORTED_MODELS,
+  EXCLUDED_MODELS,
   findSupportedModel,
   isModelSupported,
+  isModelExcluded,
   globToRegex,
 } from './supported-models.js';
-export type { SupportedModelEntry } from './supported-models.js';
+export type { SupportedModelEntry, ExcludedModelEntry } from './supported-models.js';
 export { BOOTSTRAP_MODELS } from './bootstrap-models.js';
 export { applySupportedFilter } from './filter.js';
 export { discoverModels } from './discover.js';
