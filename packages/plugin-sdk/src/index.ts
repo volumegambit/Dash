@@ -41,5 +41,38 @@ export interface PluginManifest {
   commands?: string[];
 }
 
+/**
+ * Claude Code hook lifecycle events. A plugin's `hooks/hooks.json` maps a
+ * subset of these to shell commands the host runs. Unknown keys in a real
+ * file are tolerated by the parser (the engine simply never fires them).
+ */
+export type HookEvent =
+  | 'SessionStart'
+  | 'UserPromptSubmit'
+  | 'PreToolUse'
+  | 'PostToolUse'
+  | 'Stop'
+  | 'SubagentStart'
+  | 'SubagentStop';
+
+/** A single shell command a hook runs. `timeout` is in seconds (Claude Code semantics). */
+export interface HookCommand {
+  type: 'command';
+  command: string;
+  timeout?: number;
+}
+
+/**
+ * A group of commands for an event, optionally gated by a `matcher` (e.g. a
+ * tool name for PreToolUse/PostToolUse). Absent matcher → always applies.
+ */
+export interface HookMatcherGroup {
+  matcher?: string;
+  hooks: HookCommand[];
+}
+
+/** Parsed `hooks.json`: event → matcher groups. */
+export type HooksConfig = Partial<Record<HookEvent, HookMatcherGroup[]>>;
+
 /** Marker so the host can assert it links a compatible SDK build. */
 export const PLUGIN_TYPES_VERSION = 1 as const;

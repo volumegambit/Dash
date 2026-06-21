@@ -17,6 +17,7 @@ export {
   resolveSkillDirs,
   validateManifest,
 } from './manifest.js';
+export { HOOKS_FILE, readHooksJson, validateHooksJson } from './hooks-manifest.js';
 export { PluginConfigStore } from './config-store.js';
 export { loadPlugins } from './loader.js';
 export type { LoadPluginsOptions } from './loader.js';
