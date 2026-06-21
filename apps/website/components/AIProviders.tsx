@@ -1,6 +1,6 @@
 import { Badge } from '@/components/ui/badge';
 import { Card, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { Brain, Sparkles, Zap } from 'lucide-react';
+import { Brain, Network, Sparkles, Zap } from 'lucide-react';
 
 const PROVIDERS = [
   {
@@ -27,6 +27,14 @@ const PROVIDERS = [
       'GPT models — versatile language models with broad capabilities and a massive ecosystem of integrations.',
     recommended: false,
   },
+  {
+    gradient: 'linear-gradient(180deg, #0EA5E9, #2563EB)',
+    Icon: Network,
+    name: 'OpenRouter',
+    description:
+      'One key, hundreds of models — DeepSeek, Llama, Qwen, Grok, and more, with automatic failover across providers.',
+    recommended: false,
+  },
 ];
 
 export function AIProviders() {
@@ -41,8 +49,9 @@ export function AIProviders() {
           Your AI, your choice.
         </h2>
         <p className="text-[18px] text-text-secondary text-center max-w-[600px] leading-relaxed">
-          Bring your own API keys — use your existing Anthropic, OpenAI, or Google subscriptions
-          directly. No middleman, no markup on tokens. Your keys, your usage, your bill.
+          Bring your own API keys — connect Anthropic, OpenAI, or Google directly with no middleman
+          and no markup, or reach hundreds more models through a single OpenRouter key. Your keys,
+          your usage, your bill.
         </p>
       </div>
 
