@@ -217,10 +217,18 @@ export async function registerIpcHandlers(
   // once and never overwritten. Gateway-independent and keychain-free, so
   // it survives a gateway crash that deletes gateway-state.json — that is
   // what stops a configured user from being mistaken for a first run.
+  //
+  // Best-effort: a failure to persist the flag (e.g. read-only data dir,
+  // disk full) must never bubble up and downgrade an otherwise-healthy
+  // launch to `gateway-failed`. It will simply be retried on a later launch.
   const markSetupCompleted = async (): Promise<void> => {
-    const settings = await getSettingsStore().get();
-    if (!settings.setupCompletedAt) {
-      await getSettingsStore().set({ setupCompletedAt: new Date().toISOString() });
+    try {
+      const settings = await getSettingsStore().get();
+      if (!settings.setupCompletedAt) {
+        await getSettingsStore().set({ setupCompletedAt: new Date().toISOString() });
+      }
+    } catch (err) {
+      console.error('[mc] failed to persist setupCompletedAt:', err);
     }
   };
 
@@ -551,6 +559,10 @@ export async function registerIpcHandlers(
       await client.setCredential(`openai-api-key:${keyName}`, result.accessToken);
       await client.setCredential(`openai-codex-refresh:${keyName}`, result.refreshToken);
       await client.setCredential(`openai-codex-expires:${keyName}`, String(result.expiresAt));
+      // OAuth onboarding stores credentials directly (not via credentials:set),
+      // so mark setup complete here too — otherwise an OAuth-only user has no
+      // durable setupCompletedAt and can be mistaken for a first run.
+      await markSetupCompleted();
 
       return { success: true };
     } catch (err) {
@@ -601,6 +613,9 @@ export async function registerIpcHandlers(
         }
         const client = await getClient(gw);
         await client.setCredential(`anthropic-api-key:${keyName}`, apiKey);
+        // See codex:startOAuth — OAuth onboarding bypasses credentials:set, so
+        // record onboarding completion here too.
+        await markSetupCompleted();
 
         return { success: true };
       } catch (err) {
