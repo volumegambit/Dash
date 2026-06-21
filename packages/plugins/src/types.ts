@@ -1,4 +1,5 @@
 import type { McpServerConfig } from '@dash/mcp';
+import type { HooksConfig } from '@dash/plugin-sdk';
 
 export type PluginStatus = 'loaded' | 'disabled' | 'error';
 
@@ -46,6 +47,17 @@ export interface McpConfigEntry {
   config: McpServerConfig;
 }
 
+/**
+ * A plugin's parsed `hooks/hooks.json`, tagged with the plugin name and its
+ * root dir. `pluginRoot` is retained so the hook engine can later resolve
+ * `${CLAUDE_PLUGIN_ROOT}` in hook commands.
+ */
+export interface HookConfigEntry {
+  pluginName: string;
+  pluginRoot: string;
+  config: HooksConfig;
+}
+
 export interface LoadedPlugins {
   records: PluginRecord[];
   /** Flattened skill dirs across all loaded plugins (for config.skills.paths). */
@@ -60,4 +72,6 @@ export interface LoadedPlugins {
   binDirs: string[];
   /** Translated MCP servers from enabled+trusted plugins, tagged by plugin. */
   mcpConfigs: McpConfigEntry[];
+  /** Parsed hooks.json from enabled+trusted plugins, tagged by plugin + root. */
+  hookConfigs: HookConfigEntry[];
 }

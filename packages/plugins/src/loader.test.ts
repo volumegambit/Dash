@@ -14,6 +14,7 @@ async function writePlugin(
     command?: string;
     bin?: boolean;
     mcp?: Record<string, unknown>;
+    hooks?: Record<string, unknown> | string;
   } = {},
 ): Promise<string> {
   const dir = join(root, name);
@@ -43,6 +44,13 @@ async function writePlugin(
   }
   if (opts.mcp) {
     await writeFile(join(dir, '.mcp.json'), JSON.stringify(opts.mcp));
+  }
+  if (opts.hooks !== undefined) {
+    await mkdir(join(dir, 'hooks'), { recursive: true });
+    await writeFile(
+      join(dir, 'hooks', 'hooks.json'),
+      typeof opts.hooks === 'string' ? opts.hooks : JSON.stringify(opts.hooks),
+    );
   }
   return dir;
 }
@@ -257,5 +265,80 @@ describe('loadPlugins', () => {
     );
     expect(loaded.binDirs).toContain(join(goodDir, 'bin'));
     expect(loaded.mcpConfigs.some((c) => c.pluginName === 'good')).toBe(true);
+  });
+
+  it('collects hookConfigs for an enabled+trusted plugin with valid hooks.json', async () => {
+    const hooks = {
+      PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: 'echo' }] }],
+    };
+    const dir = await writePlugin(pluginsDir, 'hooky', { hooks });
+    const loaded = await loadPlugins({
+      pluginsDir,
+      entries: { hooky: { enabled: true, trusted: true } },
+    });
+    expect(loaded.hookConfigs).toEqual([{ pluginName: 'hooky', pluginRoot: dir, config: hooks }]);
+    expect(loaded.records[0].activated).toEqual(expect.arrayContaining(['hooks']));
+  });
+
+  it('withholds hooks from an enabled-but-untrusted plugin', async () => {
+    await writePlugin(pluginsDir, 'hooky', {
+      hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: 'echo' }] }] },
+    });
+    const loaded = await loadPlugins({ pluginsDir, entries: { hooky: { enabled: true } } });
+    expect(loaded.hookConfigs).toEqual([]);
+    expect(loaded.records[0].noop).toEqual(expect.arrayContaining(['hooks']));
+  });
+
+  it('treats an empty hooks.json on a trusted plugin as present-but-inactive (noop)', async () => {
+    await writePlugin(pluginsDir, 'hooky', { hooks: {} });
+    const loaded = await loadPlugins({
+      pluginsDir,
+      entries: { hooky: { enabled: true, trusted: true } },
+    });
+    expect(loaded.hookConfigs).toEqual([]);
+    expect(loaded.records[0].noop).toEqual(expect.arrayContaining(['hooks']));
+    expect(loaded.records[0].activated).not.toContain('hooks');
+  });
+
+  it('records a malformed hooks.json failure without aborting (status error, others load)', async () => {
+    await writePlugin(pluginsDir, 'bad', { hooks: '{ broken' });
+    await writePlugin(pluginsDir, 'good', { skill: 'g' });
+    const loaded = await loadPlugins({
+      pluginsDir,
+      entries: { bad: { enabled: true, trusted: true }, good: { enabled: true } },
+    });
+    const byName = Object.fromEntries(loaded.records.map((r) => [r.name, r]));
+    expect(byName.good.status).toBe('loaded');
+    expect(byName.bad.status).toBe('error');
+    expect(byName.bad.failure?.phase).toBe('route');
+    // Nothing from `bad` leaked into hookConfigs.
+    expect(loaded.hookConfigs.some((c) => c.pluginName === 'bad')).toBe(false);
+  });
+
+  it('does not leak a failing trusted plugin hookConfigs into the aggregates', async () => {
+    // Trusted plugin with valid skills/ but a malformed hooks.json. Its
+    // components (including any prior to hooks) must NOT survive — atomic.
+    const badDir = await writePlugin(pluginsDir, 'bad', {
+      skill: 'bskill',
+      hooks: '{ broken',
+    });
+    const goodDir = await writePlugin(pluginsDir, 'good', {
+      skill: 'gskill',
+      hooks: { PreToolUse: [{ hooks: [{ type: 'command', command: 'echo' }] }] },
+    });
+    const loaded = await loadPlugins({
+      pluginsDir,
+      entries: {
+        bad: { enabled: true, trusted: true },
+        good: { enabled: true, trusted: true },
+      },
+    });
+    const byName = Object.fromEntries(loaded.records.map((r) => [r.name, r]));
+    expect(byName.bad.status).toBe('error');
+    expect(byName.good.status).toBe('loaded');
+    expect(loaded.skillDirs).not.toContain(join(badDir, 'skills'));
+    expect(loaded.hookConfigs.some((c) => c.pluginName === 'bad')).toBe(false);
+    expect(loaded.skillDirs).toContain(join(goodDir, 'skills'));
+    expect(loaded.hookConfigs.some((c) => c.pluginName === 'good')).toBe(true);
   });
 });

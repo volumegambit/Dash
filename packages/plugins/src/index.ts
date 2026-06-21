@@ -1,4 +1,5 @@
 export type {
+  HookConfigEntry,
   LoadedPlugins,
   McpConfigEntry,
   PluginEntryConfig,

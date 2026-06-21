@@ -1,8 +1,15 @@
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join, resolve } from 'node:path';
+import { readHooksJson } from './hooks-manifest.js';
 import { readManifest, resolveBinDir, resolveCommandFiles, resolveSkillDirs } from './manifest.js';
 import { translateMcpJson } from './mcp-translate.js';
-import type { LoadedPlugins, McpConfigEntry, PluginEntryConfig, PluginRecord } from './types.js';
+import type {
+  HookConfigEntry,
+  LoadedPlugins,
+  McpConfigEntry,
+  PluginEntryConfig,
+  PluginRecord,
+} from './types.js';
 
 export interface LoadPluginsOptions {
   /** Directory holding installed plugins (one subdir per plugin), e.g. <dataDir>/plugins. */
@@ -54,6 +61,7 @@ export async function loadPlugins(opts: LoadPluginsOptions): Promise<LoadedPlugi
   const commandFiles: Array<{ pluginName: string; file: string }> = [];
   const binDirs: string[] = [];
   const mcpConfigs: McpConfigEntry[] = [];
+  const hookConfigs: HookConfigEntry[] = [];
 
   for (const [discoveredName, { dir, entry, fromPath }] of targets) {
     // `phase` tracks where in this plugin's load we are, so the catch can
@@ -89,6 +97,7 @@ export async function loadPlugins(opts: LoadPluginsOptions): Promise<LoadedPlugi
       const localCommandFiles: Array<{ pluginName: string; file: string }> = [];
       const localBinDirs: string[] = [];
       const localMcpConfigs: McpConfigEntry[] = [];
+      const localHookConfigs: HookConfigEntry[] = [];
 
       // Markdown components need no trust. Skills (default skills/ + manifest
       // entries) and commands (flat .md files) are discovered for any enabled
@@ -134,11 +143,32 @@ export async function loadPlugins(opts: LoadPluginsOptions): Promise<LoadedPlugi
         }
       }
 
+      // Hooks run shell (code execution) → trust-gated, same as bin/MCP.
+      const hooksPath = join(dir, 'hooks', 'hooks.json');
+      if (existsSync(hooksPath)) {
+        if (trusted) {
+          // readHooksJson parses + validates; a malformed file throws → caught
+          // below as a 'route' failure for THIS plugin only. Accumulating into
+          // locals means a throw discards every component above (atomic).
+          const config = await readHooksJson(dir);
+          if (Object.keys(config).length) {
+            localHookConfigs.push({ pluginName: manifest.name, pluginRoot: dir, config });
+            activated.push('hooks');
+          } else {
+            // File present but no events → present-but-inactive (matches .mcp.json).
+            noop.push('hooks');
+          }
+        } else {
+          noop.push('hooks');
+        }
+      }
+
       // Plugin fully succeeded — commit its components to the aggregates.
       skillDirs.push(...localSkillDirs);
       commandFiles.push(...localCommandFiles);
       binDirs.push(...localBinDirs);
       mcpConfigs.push(...localMcpConfigs);
+      hookConfigs.push(...localHookConfigs);
 
       records.push({
         name: manifest.name,
@@ -168,5 +198,5 @@ export async function loadPlugins(opts: LoadPluginsOptions): Promise<LoadedPlugi
     }
   }
 
-  return { records, skillDirs, commandFiles, binDirs, mcpConfigs };
+  return { records, skillDirs, commandFiles, binDirs, mcpConfigs, hookConfigs };
 }
