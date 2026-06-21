@@ -24,17 +24,104 @@ function parseValue(raw: string): string | string[] {
   return trimmed;
 }
 
+/** Raw frontmatter fields plus the body, without requiring a `name`. */
+export interface ParsedFrontmatterFields {
+  fields: Record<string, string | string[]>;
+  content: string;
+}
+
+/** Leading-whitespace count (spaces + tabs) of a line. */
+function indentOf(line: string): number {
+  const match = line.match(/^[ \t]*/);
+  return match ? match[0].length : 0;
+}
+
 /**
- * Parse YAML frontmatter from a skill file.
+ * Consume a YAML block scalar starting at `startIdx` (the first line AFTER the
+ * `key: |`/`key: >` indicator line). Returns the assembled string value and the
+ * index of the first line that is NOT part of the block.
+ *
+ * The block body is every following line that is blank OR indented more than the
+ * top-level key (indent 0). The block indent is taken from the first non-blank
+ * body line; the block ends at the first non-blank line indented less than that.
+ */
+function consumeBlockScalar(
+  lines: string[],
+  startIdx: number,
+  style: '|' | '>',
+  chomp: '' | '-' | '+',
+): { value: string; nextIdx: number } {
+  // Find the indent of the first non-blank body line.
+  let blockIndent = -1;
+  let j = startIdx;
+  for (; j < lines.length; j++) {
+    if (lines[j].trim() === '') continue;
+    if (indentOf(lines[j]) === 0) break; // back at top level — no body
+    blockIndent = indentOf(lines[j]);
+    break;
+  }
+
+  // No indented body at all: empty block.
+  if (blockIndent === -1) {
+    return { value: '', nextIdx: j };
+  }
+
+  const bodyLines: string[] = [];
+  let i = startIdx;
+  for (; i < lines.length; i++) {
+    const line = lines[i];
+    if (line.trim() === '') {
+      bodyLines.push('');
+      continue;
+    }
+    if (indentOf(line) < blockIndent) break; // dedent past block — block ends
+    bodyLines.push(line.slice(blockIndent));
+  }
+
+  // Drop trailing blank lines that belong to the gap before the next key.
+  while (bodyLines.length > 0 && bodyLines[bodyLines.length - 1] === '') {
+    bodyLines.pop();
+  }
+
+  let value: string;
+  if (style === '|') {
+    value = bodyLines.join('\n');
+  } else {
+    // Folded: join with spaces, but a blank line becomes a newline (paragraph
+    // break). Collapse runs and trim around the breaks.
+    const parts: string[] = [];
+    let current = '';
+    for (const bl of bodyLines) {
+      if (bl === '') {
+        parts.push(current.trim());
+        current = '';
+      } else {
+        current = current === '' ? bl : `${current} ${bl}`;
+      }
+    }
+    if (current !== '') parts.push(current.trim());
+    value = parts.filter((p) => p !== '').join('\n');
+  }
+
+  // Chomping: '+' (keep) would preserve trailing newlines, but we have already
+  // trimmed trailing blanks. 'clip' (default) and '-' (strip) both leave us
+  // with no trailing newline here, which is the safe default for our use.
+  void chomp;
+
+  return { value, nextIdx: i };
+}
+
+/**
+ * Parse YAML frontmatter fields from a skill/command file WITHOUT requiring a
+ * `name`. Returns the raw field map and the body, or null if the frontmatter
+ * delimiters are missing/unterminated.
  *
  * Supports:
  * - Key-value pairs: `key: value`
  * - Inline arrays: `key: [a, b, c]`
  * - Multi-line arrays: `key:\n  - item`
- *
- * Returns null if frontmatter is missing or name is empty.
  */
-export function parseFrontmatter(raw: string): ParsedSkill | null {
+export function parseFrontmatterFields(raw: string): ParsedFrontmatterFields | null {
   const normalized = raw.replace(/\r\n/g, '\n');
 
   // Must start with ---
@@ -52,7 +139,7 @@ export function parseFrontmatter(raw: string): ParsedSkill | null {
   const rest = afterOpen.slice(closeIdx + 4); // skip \n---
 
   // Parse YAML key-value pairs with multi-line array support
-  const fm: Record<string, string | string[]> = {};
+  const fields: Record<string, string | string[]> = {};
   const lines = yamlBlock.split('\n');
   let i = 0;
   while (i < lines.length) {
@@ -79,6 +166,19 @@ export function parseFrontmatter(raw: string): ParsedSkill | null {
     const key = line.slice(0, colonIdx).trim();
     const valueRaw = line.slice(colonIdx + 1).trim();
 
+    // Check for a YAML block scalar: `key: |` (literal) or `key: >` (folded),
+    // each optionally with a chomping indicator (`-`/`+`) and/or an explicit
+    // indent digit (e.g. `|2`). The block body follows on indented lines.
+    const blockMatch = valueRaw.match(/^([|>])([+-]?)\d*\s*$/);
+    if (blockMatch) {
+      const style = blockMatch[1] as '|' | '>';
+      const chomp = blockMatch[2] as '' | '-' | '+';
+      const { value, nextIdx } = consumeBlockScalar(lines, i + 1, style, chomp);
+      fields[key] = value;
+      i = nextIdx;
+      continue;
+    }
+
     // Check for multi-line array (value is empty, next lines are `- item`)
     if (valueRaw === '') {
       const items: string[] = [];
@@ -93,13 +193,33 @@ export function parseFrontmatter(raw: string): ParsedSkill | null {
           break;
         }
       }
-      fm[key] = items;
+      fields[key] = items;
       continue;
     }
 
-    fm[key] = parseValue(valueRaw);
+    fields[key] = parseValue(valueRaw);
     i++;
   }
+
+  return { fields, content: rest.trimStart().trimEnd() };
+}
+
+/**
+ * Parse YAML frontmatter from a skill file.
+ *
+ * Supports:
+ * - Key-value pairs: `key: value`
+ * - Inline arrays: `key: [a, b, c]`
+ * - Multi-line arrays: `key:\n  - item`
+ *
+ * Returns null if frontmatter is missing or name is empty.
+ */
+export function parseFrontmatter(raw: string): ParsedSkill | null {
+  const parsed = parseFrontmatterFields(raw);
+  if (!parsed) {
+    return null;
+  }
+  const fm = parsed.fields;
 
   // Validate required fields
   const name = typeof fm.name === 'string' ? fm.name : '';
@@ -133,9 +253,7 @@ export function parseFrontmatter(raw: string): ParsedSkill | null {
     frontmatter.dependencies = fm.dependencies;
   }
 
-  const content = rest.trimStart().trimEnd();
-
-  return { frontmatter, content };
+  return { frontmatter, content: parsed.content };
 }
 
 /**

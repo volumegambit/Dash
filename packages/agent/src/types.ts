@@ -115,6 +115,72 @@ export interface ExtraTool {
   ) => Promise<{ content: Array<{ type: 'text'; text: string }>; details: unknown }>;
 }
 
+/**
+ * Structurally-typed plugin hook runner injected into the backend at
+ * construction (the `createHookEngine` result from @dash/plugins). Duck-typed
+ * so @dash/agent has NO dependency on @dash/plugins — same pattern as
+ * `ExtraTool`. The field names mirror the engine's input/decision shapes
+ * exactly (toolName, toolInput, toolResponse, sessionId, cwd, source) so the
+ * concrete engine satisfies this interface without an adapter.
+ *
+ * Only the methods the backend actually calls are listed. `runUserPromptSubmit`
+ * is wired in the router, not here.
+ *
+ * Note: PreToolUse's `updatedInput` cannot be applied through pi's
+ * `beforeToolCall` (pi's `BeforeToolCallResult` only carries `block`/`reason`),
+ * so the backend uses PreToolUse for allow/deny only. The field is part of the
+ * interface for parity with the engine but is ignored by the backend.
+ */
+export interface HookRunner {
+  runPreToolUse(input: {
+    toolName: string;
+    toolInput: unknown;
+    sessionId?: string;
+    cwd?: string;
+  }): Promise<{ block: boolean; reason?: string; updatedInput?: unknown }>;
+  runPostToolUse(input: {
+    toolName: string;
+    toolInput: unknown;
+    toolResponse: string;
+    sessionId?: string;
+    cwd?: string;
+  }): Promise<{ block: boolean; reason?: string; additionalContext?: string }>;
+  runSessionStart(input: {
+    sessionId?: string;
+    cwd?: string;
+    source?: string;
+  }): Promise<{ additionalContext?: string }>;
+  runStop(input: {
+    sessionId?: string;
+    cwd?: string;
+    source?: string;
+  }): Promise<{ additionalContext?: string }>;
+  /** True when any hooks are registered — lets the backend skip wiring entirely. */
+  readonly hasHooks: boolean;
+}
+
+/**
+ * Structurally-typed catalog of plugin-contributed LLM models, injected into
+ * the backend at construction. Duck-typed so @dash/agent has NO dependency on
+ * @dash/plugins — the gateway builds the concrete catalog (Task 3) and the
+ * agent only calls `resolve`.
+ *
+ * `resolve` is consulted by `resolveModel` ONLY as a fallback: when the static
+ * pi-ai registry does not know a `provider/modelId`. It returns a pi-ai
+ * `Model<Api>`-shaped object (typed `unknown` here to keep this interface free
+ * of a pi-ai type leak; the backend casts the result) or `null` when the
+ * catalog doesn't recognize the model either.
+ */
+export interface PluginModelCatalog {
+  /**
+   * Returns the resolved pi-ai `Model<Api>`-shaped object, or `null` when the
+   * catalog doesn't recognize the model. (`unknown` already subsumes `null`, so
+   * the return type is plain `unknown`; the null = not-found contract lives in
+   * this comment and the interface doc above.)
+   */
+  resolve(provider: string, modelId: string): unknown;
+}
+
 export interface AgentBackend {
   readonly name: string;
   start(workspace: string): Promise<void>;

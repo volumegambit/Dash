@@ -250,4 +250,31 @@ describe('createModelsRoute', () => {
     const body = (await res.json()) as { errors: Record<string, string> };
     expect(body.errors.openai).toContain('401');
   });
+
+  it('GET /models merges configured pluginModels at render time (core wins, not persisted)', async () => {
+    const discover = vi.fn().mockResolvedValue({
+      models: [{ value: 'anthropic/claude-opus-4-5', label: 'X', provider: 'anthropic' }],
+      errors: {},
+      providersConfigured: 1,
+    });
+    const app = createModelsRoute({
+      store,
+      credentialStore: makeCredentialStore({ anthropic: 'sk-ant' }),
+      discover,
+      pluginModels: [
+        { value: 'myllm/m1', label: 'M One', provider: 'myllm' },
+        // A plugin must never shadow a core model id.
+        { value: 'anthropic/claude-opus-4-5', label: 'SHADOW', provider: 'anthropic' },
+      ],
+    });
+
+    const res = await app.request('/');
+    const body = (await res.json()) as { models: { value: string; label: string }[] };
+    const values = body.models.map((m) => m.value);
+    expect(values).toEqual(['anthropic/claude-opus-4-5', 'myllm/m1']);
+    // Core label kept (plugin did not shadow it).
+    expect(body.models[0].label).toBe('X');
+    // Render-time only: plugin models are NEVER written to the store.
+    expect((await store.load())?.models.map((m) => m.value)).toEqual(['anthropic/claude-opus-4-5']);
+  });
 });

@@ -10,6 +10,7 @@ import {
 import { Hono } from 'hono';
 import type { GatewayCredentialStore } from './credential-store.js';
 import type { ModelsStore } from './models-store.js';
+import { appendPluginModels } from './plugin-providers.js';
 
 /**
  * Response shape returned by `GET /models` and `POST /models/refresh`.
@@ -40,6 +41,13 @@ export interface ModelsRouteOptions {
    * a credential resolver bound to the encrypted credential store.
    */
   discover?: typeof discoverModels;
+  /**
+   * Plugin-contributed models, expanded from loaded provider catalogs.
+   * Merged into the response at render time only (core models win on a
+   * value clash). Never persisted to the store, so removing a plugin
+   * cleanly drops its models. Empty/undefined → no merge.
+   */
+  pluginModels?: FilteredModel[];
 }
 
 /**
@@ -59,7 +67,7 @@ export interface ModelsRouteOptions {
  * fetch instead of all racing to hit provider /v1/models endpoints.
  */
 export function createModelsRoute(options: ModelsRouteOptions): Hono {
-  const { store, credentialStore } = options;
+  const { store, credentialStore, pluginModels } = options;
   const discover = options.discover ?? discoverModels;
   const app = new Hono();
 
@@ -128,7 +136,9 @@ export function createModelsRoute(options: ModelsRouteOptions): Hono {
 
   app.get('/', async (c) => {
     if (c.req.query('debug') === 'true') {
-      const response = await getOrRefresh();
+      // Merge plugin models at the response boundary (render-time only, never
+      // persisted) so the debug view shows exactly what callers receive.
+      const response = appendPluginModels(await getOrRefresh(), pluginModels);
       const credentials = await credentialStore.readProviderApiKeys();
       const providersConfigured = Object.keys(credentials);
       const debug: ModelsDebugResponse = {
@@ -144,14 +154,14 @@ export function createModelsRoute(options: ModelsRouteOptions): Hono {
       };
       return c.json(debug);
     }
-    return c.json(await getOrRefresh());
+    return c.json(appendPluginModels(await getOrRefresh(), pluginModels));
   });
 
   app.post('/refresh', async (c) => {
     // Force-fresh: clear in-flight (so a stale refresh from before a
     // credential change doesn't get joined) and run a new discover.
     inFlight = null;
-    return c.json(await refreshNow());
+    return c.json(appendPluginModels(await refreshNow(), pluginModels));
   });
 
   return app;

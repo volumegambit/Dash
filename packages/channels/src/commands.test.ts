@@ -35,6 +35,30 @@ describe('parseSlashCommand', () => {
     });
   });
 
+  it('parses /skill:deploy as name "deploy" (not plugin "skill")', () => {
+    expect(parseSlashCommand('/skill:deploy now')).toEqual({
+      kind: 'skill',
+      name: 'deploy',
+      input: 'now',
+    });
+  });
+
+  it('parses Claude-style /<plugin>:<command> [input]', () => {
+    expect(parseSlashCommand('/myplugin:deploy staging')).toEqual({
+      kind: 'skill',
+      name: 'myplugin:deploy',
+      input: 'staging',
+    });
+  });
+
+  it('parses /<plugin>:<command> with no input', () => {
+    expect(parseSlashCommand('/myplugin:deploy')).toEqual({
+      kind: 'skill',
+      name: 'myplugin:deploy',
+      input: '',
+    });
+  });
+
   it('returns null for non-commands and unknown commands', () => {
     expect(parseSlashCommand('hello there')).toBeNull();
     expect(parseSlashCommand('/unknown thing')).toBeNull();

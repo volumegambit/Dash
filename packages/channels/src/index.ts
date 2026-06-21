@@ -5,8 +5,15 @@ export type {
   MessageHandler,
   ChannelHealth,
 } from './types.js';
-export type { RouterRoutingRule, RouterConfig, MessageLogEntry, MessageLogger } from './types.js';
-export { MessageRouter } from './router.js';
+export type {
+  RouterRoutingRule,
+  RouterConfig,
+  MessageLogEntry,
+  MessageLogger,
+  MessageHook,
+} from './types.js';
+export { parseSlashCommand, formatSkillList, skillPrompt, SLASH_HELP } from './commands.js';
+export type { SlashCommand } from './commands.js';
 export { MissionControlAdapter } from './adapters/mission-control.js';
 export { TelegramAdapter } from './adapters/telegram.js';
 export type { TelegramAllowedUsers } from './adapters/telegram.js';

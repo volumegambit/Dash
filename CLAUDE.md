@@ -60,6 +60,17 @@ npx vitest --watch                # Watch mode
 
 Tests use temp directories (`mkdtemp`) in beforeEach with cleanup in afterEach. No mocking of the Anthropic SDK — tests focus on session store, tool execution, and registry logic.
 
+### Plugin functional E2E smoke
+
+```bash
+npm run plugins:e2e                                   # auto-picks a model from ~/.dash/gateway/agents.json
+PLUGINS_E2E_MODEL=moonshotai/kimi-k2.7-code npm run plugins:e2e   # or pin a model
+```
+
+`scripts/plugins-e2e/run.mjs` boots a **real gateway** under an isolated temp `DASH_HOME`, installs a self-contained demo plugin (a `greet` skill, a `triage` command, a `demo-tool` bin executable, and a `.mcp.json` pointing at the bundled fixture MCP server `scripts/plugins-e2e/fixture-mcp-server.mjs`), registers an agent, then drives four prompts over the chat WebSocket and asserts each Claude-Code plugin component actually fires: **bin/** (agent runs `demo-tool` via bash → `demo-tool ran`), **.mcp.json** (agent calls `demo-fixture__echo`), **skills/** (`load_skill greet`), **commands/** (`load_skill demo:triage`, proving the `<plugin>:<command>` namespacing). It also exercises the **trust gate** (only `trusted: true` plugins get MCP + bin).
+
+Prereqs: **Node ≥ 22.12** (older Node breaks `pi-coding-agent`'s undici — use `nvm use 22.23`) and a **provider API key configured** in the gateway (`~/.dash/gateway`). It makes real (small, ~cents) LLM calls, so it is **not** part of `npm test`/`preflight`/CI. Run it after changes to the plugin loader (`packages/plugins`), the gateway plugin wiring (`apps/gateway/src/index.ts`), or `@dash/agent` skill injection. A `/test-plugins` slash command wraps it for convenience, but `.claude/` is gitignored (local-only) per repo policy, so the npm script is the canonical entry point.
+
 ### Mission Control Manual QA
 
 The exhaustive manual test plan lives at `apps/mission-control/TEST_PLAN.md`. It has 26 sections covering all MC features, business rules, and UI consistency. Each section is independently executable with preconditions and bootstrap steps.

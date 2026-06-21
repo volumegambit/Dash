@@ -17,6 +17,7 @@
   },
   "dependencies": {
     "@dash/agent": "*",
+    "@dash/plugins": "*",
     "@dash/channels": "*",
     "@dash/mcp": "*",
     "@dash/chat": "*",
@@ -24,7 +25,9 @@
     "@dash/management": "*",
     "@dash/models": "*",
     "@dash/paths": "*",
+    "@dash/plugin-sdk": "*",
     "@dash/projects": "*",
+    "@earendil-works/pi-ai": "^0.79.8",
     "@hono/node-server": "^1",
     "@hono/node-ws": "^1",
     "better-sqlite3": "^12.9.0",

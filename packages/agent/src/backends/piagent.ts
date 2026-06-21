@@ -26,8 +26,9 @@ import {
   createRemoveSkillTool,
   discoverSkills,
   heuristicScan,
+  loadFlatSkills,
 } from '../skills/index.js';
-import type { SkillSecurityScanner } from '../skills/index.js';
+import type { FlatSkillFile, SkillSecurityScanner } from '../skills/index.js';
 import type { SkillDiscoveryResult } from '../skills/types.js';
 import { BraveSearchProvider } from '../tools/search-providers/brave.js';
 import { createTodoWriteTool } from '../tools/todowrite.js';
@@ -39,6 +40,8 @@ import type {
   AgentState,
   DashAgentConfig,
   ExtraTool,
+  HookRunner,
+  PluginModelCatalog,
   RunOptions,
 } from '../types.js';
 import { DashResourceLoader } from './dash-resource-loader.js';
@@ -59,6 +62,177 @@ export type ProviderApiKeysSource =
   | (() => Promise<Record<string, string>>);
 
 /**
+ * Stringify a pi tool result for the PostToolUse `toolResponse` payload.
+ * Prefers the joined text content blocks (what the model actually sees); falls
+ * back to a JSON dump of the whole result.
+ */
+function stringifyToolResult(result: unknown): string {
+  if (
+    result &&
+    typeof result === 'object' &&
+    Array.isArray((result as { content?: unknown }).content)
+  ) {
+    const content = (result as { content: Array<{ type?: string; text?: string }> }).content;
+    const text = content
+      .filter((c) => c.type === 'text' && typeof c.text === 'string')
+      .map((c) => c.text as string)
+      .join('\n');
+    if (text) return text;
+  }
+  try {
+    return JSON.stringify(result ?? '');
+  } catch {
+    return String(result ?? '');
+  }
+}
+
+/**
+ * Compose plugin tool hooks onto a live pi `Agent`, preserving pi's own
+ * handlers. pi installs its OWN `beforeToolCall`/`afterToolCall` in the
+ * AgentSession ctor, so this MUST run AFTER `createAgentSession(...)` returns —
+ * it saves pi's prior handler, then sets a wrapper that awaits the prior one
+ * first and composes the plugin decision around it.
+ *
+ * Exported for unit testing with a fake agent + fake HookRunner.
+ *
+ * Composition rules:
+ * - beforeToolCall: await pi's prior handler; if it blocks, return its block
+ *   verbatim (pi wins, plugin pre-hook is skipped). Otherwise run the plugin
+ *   PreToolUse hook; if it blocks, return `{ block: true, reason }`. Else return
+ *   pi's prior result unchanged.
+ * - afterToolCall: await pi's prior handler (its override, if any, becomes the
+ *   working result). Run the plugin PostToolUse hook; if it blocks, set
+ *   `isError` and append the block reason to the content; if it returns
+ *   `additionalContext`, append it as a text block. Omitted fields keep pi's /
+ *   the executed result's values (pi's field-by-field merge semantics).
+ *
+ * Limitation: pi's `BeforeToolCallResult` only carries `block`/`reason` — there
+ * is NO supported way to feed modified args back into the tool call. So
+ * PreToolUse is allow/deny only here; the engine's `updatedInput` cannot be
+ * applied. It is NOT silently dropped: the wrapper logs a one-time warning so an
+ * operator who installs a Claude-Code arg-rewriting hook learns it has no effect
+ * (and should use `permissionDecision: "deny"` to block instead).
+ */
+export function composeToolHooks(
+  // biome-ignore lint/suspicious/noExplicitAny: pi Agent's hook fields are not exported as a usable type
+  agent: any,
+  hookRunner: HookRunner,
+  ctxInfo: { sessionId?: string | (() => string | undefined); cwd?: string; logger?: Logger },
+): void {
+  const { cwd, logger } = ctxInfo;
+  // Warn at most once per install when a hook returns un-appliable updatedInput.
+  let warnedUpdatedInput = false;
+  // sessionId may be a static value (tests) or a thunk read at fire-time, so
+  // the per-run conversation id is current when each hook fires.
+  const resolveSessionId = (): string | undefined =>
+    typeof ctxInfo.sessionId === 'function' ? ctxInfo.sessionId() : ctxInfo.sessionId;
+
+  // biome-ignore lint/suspicious/noExplicitAny: pi BeforeToolCall context/result types are not exported
+  const priorBefore: ((ctx: any, signal?: AbortSignal) => Promise<any>) | undefined =
+    agent.beforeToolCall;
+  // biome-ignore lint/suspicious/noExplicitAny: pi BeforeToolCall context/result types are not exported
+  agent.beforeToolCall = async (ctx: any, signal?: AbortSignal) => {
+    const piRes = await priorBefore?.(ctx, signal);
+    // pi's prior block wins — skip the plugin pre-hook entirely.
+    if (piRes?.block) return piRes;
+
+    // The HookRunner is duck-typed (the createHookEngine result from
+    // @dash/plugins). The engine never throws, but defend the composition
+    // anyway: a throwing runner must not break the tool call. Fail open —
+    // allow, returning pi's prior result.
+    let decision: Awaited<ReturnType<HookRunner['runPreToolUse']>>;
+    try {
+      // Tool name lives at ctx.toolCall.name (pi-ai ToolCall.name), NOT toolName.
+      decision = await hookRunner.runPreToolUse({
+        toolName: ctx?.toolCall?.name,
+        toolInput: ctx?.args,
+        sessionId: resolveSessionId(),
+        cwd,
+      });
+    } catch {
+      return piRes;
+    }
+    if (decision.block) {
+      return { block: true, reason: decision.reason };
+    }
+    // The engine may return `updatedInput` (a hook rewrote the tool args), but
+    // pi's BeforeToolCallResult is allow/deny only — there is no supported way
+    // to feed modified args back into the call. Warn ONCE rather than silently
+    // no-op, so an operator who installs an arg-rewriting hook learns it has no
+    // effect on this backend.
+    if (decision.updatedInput !== undefined && !warnedUpdatedInput) {
+      warnedUpdatedInput = true;
+      const message = `[PiAgent] a PreToolUse hook returned updatedInput for tool '${ctx?.toolCall?.name}', but this backend cannot apply modified tool arguments — the tool runs with the original input. Use permissionDecision: "deny" to block a call instead.`;
+      // Fall back to console.warn when no structured logger is injected (the
+      // gateway constructs the backend without one) so the warning is never
+      // silently swallowed.
+      if (logger) logger.warn(message);
+      else console.warn(message);
+    }
+    return piRes;
+  };
+
+  // biome-ignore lint/suspicious/noExplicitAny: pi AfterToolCall context/result types are not exported
+  const priorAfter: ((ctx: any, signal?: AbortSignal) => Promise<any>) | undefined =
+    agent.afterToolCall;
+  // biome-ignore lint/suspicious/noExplicitAny: pi AfterToolCall context/result types are not exported
+  agent.afterToolCall = async (ctx: any, signal?: AbortSignal) => {
+    const piRes = await priorAfter?.(ctx, signal);
+
+    // Defend the composition against a throwing (duck-typed) HookRunner: a
+    // throw here must not break the tool result. Fail open — return the
+    // prior/base result unchanged so the plugin simply contributes nothing.
+    let decision: Awaited<ReturnType<HookRunner['runPostToolUse']>>;
+    try {
+      decision = await hookRunner.runPostToolUse({
+        toolName: ctx?.toolCall?.name,
+        toolInput: ctx?.args,
+        // Prefer pi's prior after-handler override (truncation/redaction) over
+        // the raw executed result, mirroring the baseContent precedence below —
+        // so a PostToolUse hook observes the same output the model will see.
+        toolResponse: stringifyToolResult(piRes ?? ctx?.result),
+        sessionId: resolveSessionId(),
+        cwd,
+      });
+    } catch {
+      return piRes;
+    }
+
+    // Working content/isError: pi's override (if any) layered over the executed
+    // result. Clone the content array so we never mutate pi's internal state.
+    const baseContent: Array<{ type: string; text?: string }> = Array.isArray(piRes?.content)
+      ? piRes.content
+      : Array.isArray(ctx?.result?.content)
+        ? ctx.result.content
+        : [];
+    const content = [...baseContent];
+    // When there's no prior after-handler (piRes undefined), fall back to the
+    // executed result's error flag so a plugin contribution doesn't silently
+    // drop the tool's own isError.
+    let isError: boolean | undefined = piRes?.isError ?? ctx?.result?.isError;
+
+    if (decision.block) {
+      isError = true;
+      content.push({ type: 'text', text: decision.reason ?? 'Tool blocked by plugin hook' });
+    }
+    if (decision.additionalContext) {
+      content.push({ type: 'text', text: decision.additionalContext });
+    }
+
+    // Nothing for the plugin to contribute: return pi's prior result untouched.
+    if (!decision.block && !decision.additionalContext) {
+      return piRes;
+    }
+
+    return {
+      ...(piRes ?? {}),
+      content,
+      ...(isError !== undefined ? { isError } : {}),
+    };
+  };
+}
+
+/**
  * PiAgentBackend - AgentBackend implementation using the PiAgent SDK
  * (@earendil-works/pi-coding-agent).
  *
@@ -76,11 +250,22 @@ export class PiAgentBackend implements AgentBackend {
   private session: AgentSession | null = null;
   private auth: AuthStorage | null = null;
   private abortRequested = false;
+  /** Workspace cwd captured in start(); used as the hook cwd in run(). */
+  private workspace: string | null = null;
   private ownsMcpManager = false;
   private resourceLoader: DashResourceLoader | null = null;
 
   /** Tools injected by the host (e.g. projects_* from @dash/projects). */
   private extraTools: ExtraTool[] = [];
+
+  /**
+   * Flat single-file skill/command entries (Claude Code `commands/*.md`) injected
+   * by the host (e.g. the gateway plugin loader's `commandFiles`). Each entry
+   * carries an optional `namespace` so plugin commands register as the namespaced
+   * skill `<plugin>:<command>`. Loaded via `loadFlatSkills()` and merged into
+   * `listSkills()` after discovered skills.
+   */
+  private extraSkillFiles: FlatSkillFile[] = [];
 
   /**
    * Conversation id of the in-flight run, exposed to injected tools via
@@ -131,8 +316,24 @@ export class PiAgentBackend implements AgentBackend {
     private mcpConfigStore?: McpConfigStoreInterface,
     private mcpAgentContext?: McpAgentContext,
     extraTools: ExtraTool[] = [],
+    extraSkillFiles: FlatSkillFile[] = [],
+    /**
+     * Optional plugin hook runner (the `createHookEngine` result from
+     * @dash/plugins, duck-typed). When present and `hasHooks` is true, tool
+     * hooks are composed onto the pi agent and SessionStart/Stop fire around
+     * each run. Zero overhead when undefined.
+     */
+    private hookRunner?: HookRunner,
+    /**
+     * Optional catalog of plugin-contributed LLM models (built by the gateway,
+     * duck-typed via `PluginModelCatalog`). Consulted by `resolveModel` ONLY as
+     * a fallback when the static pi-ai registry doesn't know a provider/model.
+     * Zero behavior change when undefined.
+     */
+    private pluginModelCatalog?: PluginModelCatalog,
   ) {
     this.extraTools = extraTools;
+    this.extraSkillFiles = extraSkillFiles;
   }
 
   /** Current conversation/session id for the in-flight run, or null when idle. */
@@ -299,12 +500,16 @@ export class PiAgentBackend implements AgentBackend {
     const modelId = modelStr.slice(slash + 1);
     // biome-ignore lint/suspicious/noExplicitAny: getModel requires generic provider/modelId that are not statically known
     const model = getModel(provider as any, modelId as any);
-    if (!model) {
-      throw new Error(
-        `Unknown model "${modelStr}". Check that the provider and model ID are correct.`,
-      );
+    // Static pi-ai registry wins. Only when it doesn't know the model do we
+    // fall back to a plugin-contributed catalog (if one was injected).
+    if (model) return model;
+    if (this.pluginModelCatalog) {
+      const m = this.pluginModelCatalog.resolve(provider, modelId);
+      if (m) return m as Model<Api>;
     }
-    return model;
+    throw new Error(
+      `Unknown model "${modelStr}". Check that the provider and model ID are correct.`,
+    );
   }
 
   /**
@@ -501,6 +706,7 @@ export class PiAgentBackend implements AgentBackend {
    * Start the backend by creating a PiAgent session.
    */
   async start(workspace: string): Promise<void> {
+    this.workspace = workspace;
     // Resolve credentials from the source (snapshot or provider function).
     const keys = await this.resolveProviderKeys();
     this.logger?.info(`[PiAgent] Starting with credentials: ${PiAgentBackend.redactKeys(keys)}`);
@@ -581,6 +787,20 @@ export class PiAgentBackend implements AgentBackend {
 
     this.session = session;
 
+    // Compose plugin tool hooks onto pi's agent. MUST run AFTER
+    // createAgentSession(...) returns — pi installs its own beforeToolCall/
+    // afterToolCall in the session ctor, and composeToolHooks saves+wraps them.
+    // This covers built-in + custom + MCP tools. Zero overhead when there's no
+    // runner or no hooks registered. sessionId is read at fire-time (it's the
+    // per-run conversation id); cwd is the static workspace.
+    if (this.hookRunner?.hasHooks) {
+      composeToolHooks((session as unknown as { agent: unknown }).agent, this.hookRunner, {
+        sessionId: () => this.currentSessionId ?? undefined,
+        cwd: workspace,
+        logger: this.logger,
+      });
+    }
+
     // pi creates the built-in file tools (read/bash/edit/write/grep/find/ls)
     // scoped to `cwd`, but only read/bash/edit/write are active by default.
     // Activate exactly Dash's set — allowed built-ins plus all custom tools —
@@ -613,9 +833,60 @@ export class PiAgentBackend implements AgentBackend {
     this.lastCompactionReason = 'threshold';
     this.currentSessionId = state.conversationId;
 
+    const hookCwd = state.workspace ?? this.workspace ?? undefined;
+
     try {
+      // Fire the SessionStart lifecycle hook (plugins) before the model runs.
+      // Its additionalContext is appended to pi's system prompt via the resource
+      // loader; setActiveToolsByName() inside runModelChain forces a rebuild so
+      // the appended sections take effect on this run. No-op when no runner.
+      //
+      // Derive `source` from the session-persistence mode so a plugin's
+      // SessionStart matcher can target it: a persisted session (sessionDir set
+      // → SessionManager.continueRecent) reports 'resume'; a fresh in-memory
+      // session reports 'startup'. Note: this fires on every run() (every turn),
+      // not once per session, so the source reflects the backend's mode rather
+      // than a true first-vs-subsequent-turn distinction.
+      if (this.hookRunner?.hasHooks) {
+        const start = await this.hookRunner.runSessionStart({
+          sessionId: state.conversationId,
+          cwd: hookCwd,
+          source: this.sessionDir ? 'resume' : 'startup',
+        });
+        // Reset the append slot every run so a prior run's SessionStart context
+        // can't leak into a later run that returns none. setAppendSystemPrompt
+        // has no co-tenant — the memory preamble is folded into systemPrompt in
+        // DashAgent.chat() (a different slot), so a plain reset is safe.
+        if (this.resourceLoader) {
+          this.resourceLoader.setAppendSystemPrompt(
+            start.additionalContext ? [start.additionalContext] : [],
+          );
+        }
+      }
+
       yield* this.runModelChain(state, options);
     } finally {
+      // Fire the Stop lifecycle hook (plugins). Stop's additionalContext has
+      // nowhere to go after the run completes (the turn is over), so we log it
+      // and otherwise ignore it. No-op when no runner.
+      if (this.hookRunner?.hasHooks) {
+        try {
+          const stop = await this.hookRunner.runStop({
+            sessionId: state.conversationId,
+            cwd: hookCwd,
+          });
+          if (stop.additionalContext) {
+            this.logger?.info(
+              `[PiAgent] Stop hook additionalContext ignored (run already complete): ${stop.additionalContext.slice(0, 200)}`,
+            );
+          }
+        } catch (err) {
+          this.logger?.warn(
+            `[PiAgent] Stop hook failed: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+      }
+
       // Clear the in-flight session id so consumers calling getCurrentSessionId()
       // during async teardown after run() returns don't observe a stale id. Only
       // resets the field — does not affect the generator's return/throw semantics.
@@ -995,13 +1266,19 @@ export class PiAgentBackend implements AgentBackend {
   }
 
   /**
-   * Discover skills across all tiers (managed > configured paths > bundled).
+   * Discover skills across all tiers (managed > configured paths > bundled),
+   * then merge in any flat single-file skills/commands supplied via
+   * `extraSkillFiles`. Discovered skills win on a name collision — flat skills
+   * whose name already appears are skipped.
    */
   async listSkills(): Promise<SkillDiscoveryResult[]> {
-    return discoverSkills({
+    const discovered = await discoverSkills({
       managedSkillsDir: this.managedSkillsDir,
       paths: this.config.skills?.paths,
       includeBundled: this.config.skills?.includeBundled,
     });
+    const flat = await loadFlatSkills(this.extraSkillFiles);
+    const seen = new Set(discovered.map((s) => s.name));
+    return [...discovered, ...flat.filter((s) => !seen.has(s.name))];
   }
 }

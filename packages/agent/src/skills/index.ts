@@ -2,6 +2,8 @@ export type { SkillFrontmatter, SkillDiscoveryResult } from './types.js';
 export { parseFrontmatter, generateFrontmatter } from './frontmatter.js';
 export type { ParsedSkill } from './frontmatter.js';
 export { scanSkillsDirectory } from './scanner.js';
+export { loadFlatSkills } from './flat.js';
+export type { FlatSkillFile } from './flat.js';
 export { discoverSkills } from './discover.js';
 export type { DiscoverSkillsOptions } from './discover.js';
 export {

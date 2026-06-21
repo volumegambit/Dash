@@ -19,6 +19,10 @@ export function parseSlashCommand(text: string): SlashCommand | null {
   const m = trimmed.match(/^\/skill(?::|\s+)(\S+)\s*([\s\S]*)$/);
   if (m) return { kind: 'skill', name: m[1], input: m[2].trim() };
 
+  // Claude-style plugin command: /<plugin>:<command> [input]
+  const ns = trimmed.match(/^\/([a-z0-9][a-z0-9-]*):(\S+)\s*([\s\S]*)$/i);
+  if (ns) return { kind: 'skill', name: `${ns[1]}:${ns[2]}`, input: ns[3].trim() };
+
   return null;
 }
 
@@ -26,6 +30,7 @@ export const SLASH_HELP = [
   'Commands:',
   '/skills — list available skills',
   '/skill:<name> [input] — run a skill',
+  '/<plugin>:<command> [input] — run a plugin command',
   '/help — show this help',
 ].join('\n');
 

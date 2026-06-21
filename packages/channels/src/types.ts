@@ -62,3 +62,26 @@ export interface MessageLogEntry {
 }
 
 export type MessageLogger = (entry: MessageLogEntry) => void;
+
+/**
+ * Optional per-message hook fired after allow/deny filtering and the
+ * slash-command shim, but before the message is dispatched to the agent.
+ * The gateway sets this to the plugin hook engine's `runUserPromptSubmit`.
+ *
+ * Structural by design — `@dash/channels` has NO dependency on `@dash/plugins`;
+ * the field names mirror the engine's `PromptInput`/`PromptDecision` shapes so
+ * the host can adapt the engine to this signature with a thin closure.
+ *
+ * Contract (enforced by the router/gateway, not this type):
+ * - `block: true` → the message is NOT dispatched. If `reason` is present it is
+ *   sent back to the sender; otherwise the message is silently dropped.
+ * - `additionalContext` → prepended to the prompt text before dispatch.
+ * - The caller wraps invocation in try/catch and FAILS OPEN: if the hook
+ *   throws, the original message is dispatched unchanged.
+ */
+export type MessageHook = (input: {
+  prompt: string;
+  channel: string;
+  conversationId: string;
+  senderId: string;
+}) => Promise<{ block: boolean; reason?: string; additionalContext?: string }>;

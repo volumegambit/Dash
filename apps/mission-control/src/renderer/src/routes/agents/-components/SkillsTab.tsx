@@ -7,6 +7,7 @@ const SOURCE_LABEL: Record<SkillInfo['source'], string> = {
   managed: 'Managed',
   agent: 'Agent',
   remote: 'Remote',
+  plugin: 'Plugin',
 };
 
 const FIELD = 'w-full border border-border bg-sidebar-hover p-2 text-sm';
@@ -112,7 +113,7 @@ function SkillCard({
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(skill.content ?? '');
-  const editable = skill.editable && skill.source !== 'bundled';
+  const editable = skill.editable && skill.source !== 'bundled' && skill.source !== 'plugin';
 
   return (
     <div className="border border-border bg-card-bg p-4">

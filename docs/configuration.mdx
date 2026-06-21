@@ -85,3 +85,216 @@ There are no `--config` or `--secrets` flags, and the gateway does not read any 
 ## Credentials
 
 Provider API keys and messaging tokens are encrypted at rest. The gateway keeps them in `~/.dash/gateway/credentials.enc` (AES-256-GCM); gateway access tokens live in your OS keychain. See [Secrets](/secrets) for the full picture of how credentials are stored and delivered to agents.
+
+## Plugins
+
+Plugins let you drop extra skills into any Dash agent without touching the config file. The gateway discovers plugins from the `plugins/` directory inside your data directory.
+
+### Directory layout
+
+```
+<dataDir>/
+└── plugins/
+    ├── config.json
+    └── <plugin-name>/
+        ├── .claude-plugin/
+        │   └── plugin.json          (optional)
+        ├── skills/
+        │   └── <skill-name>/
+        │       └── SKILL.md
+        ├── commands/
+        │   └── <command-name>.md    (optional)
+        ├── agents/
+        │   └── <agent-name>.md      (optional)
+        ├── hooks/
+        │   └── hooks.json           (optional, trusted only)
+        ├── .mcp.json                (optional, trusted only)
+        ├── providers/
+        │   └── <provider>.json      (optional, trusted only)
+        └── bin/                     (optional, trusted only)
+            └── <executable>
+```
+
+Each plugin follows the Claude Code layout:
+
+- **`skills/`** — one subdirectory per skill, each with a `SKILL.md` file in standard frontmatter format (`name`, `description`, body).
+- **`commands/`** — flat `<name>.md` files. Each becomes a `/<plugin>:<command>` slash command (see below).
+- **`agents/`** — flat `<name>.md` files (Claude Code subagent format). Each becomes a loadable specialist (see below).
+- **`hooks/hooks.json`** — event hooks that run shell commands at key points in a run (see [Hooks](#hooks) below). Code execution, so it requires `trusted`.
+- **`.mcp.json`** — extra MCP servers to register with the gateway. Code execution, so it requires `trusted` (see below).
+- **`providers/`** — flat `<provider>.json` LLM provider catalogs that add selectable models. Credential-bearing, so they require `trusted` (see [LLM providers](#llm-providers) below).
+- **`bin/`** — executables prepended to the gateway's `PATH`. Code execution, so it requires `trusted`.
+
+The `.claude-plugin/plugin.json` manifest is optional; when present it can set `name`, `displayName`, `description`, and `version`. When absent, the plugin's directory name is used as its name.
+
+### Enabling a plugin
+
+Create or edit `<dataDir>/plugins/config.json`:
+
+```json
+{
+  "<plugin-name>": { "enabled": true }
+}
+```
+
+Plugins not listed in `config.json`, or listed with `"enabled": false`, are ignored.
+
+### Trusting a plugin
+
+`enabled` is enough for markdown components — `skills/` and `commands/`, which never run code. Components that **execute code or handle credentials** — `hooks/hooks.json`, `.mcp.json` servers, `bin/` executables, and `providers/` LLM catalogs — additionally require `"trusted": true`:
+
+```json
+{
+  "<plugin-name>": { "enabled": true, "trusted": true }
+}
+```
+
+An enabled-but-untrusted plugin still contributes its skills and commands, but its hooks, MCP servers, `bin/` directory, and provider catalogs are skipped. Only set `trusted` for plugins whose code you have reviewed and trust to run inside the gateway process.
+
+### Loading a plugin from a path
+
+A `config.json` entry can point at a plugin directory anywhere on disk with a `path` field, instead of requiring the plugin to live under `<dataDir>/plugins/`. This is handy for local development — you can keep a plugin in your own working tree and load it without copying it in:
+
+```json
+{
+  "my-dev-plugin": { "path": "/abs/or/relative/dir", "trusted": true }
+}
+```
+
+A `path` entry is **enabled automatically** — you do not need `"enabled": true`. It still requires `"trusted": true` to run code components (hooks, MCP servers, `bin/` executables, and provider catalogs); skills and commands load from `enabled` alone, just like any other plugin.
+
+### Commands
+
+Each `commands/<name>.md` file becomes a slash command named `/<plugin>:<name>`. For example, a plugin called `my-skills` with `commands/triage.md` exposes `/my-skills:triage`. The command body is the markdown content; optional frontmatter (`name`, `description`) overrides the command name and supplies a description. The slash name is `<plugin>:<frontmatter-name>` when `name:` frontmatter is present, otherwise `<plugin>:<filename-without-.md>`. Commands need only `enabled`.
+
+### Subagents (specialists)
+
+Each `agents/<name>.md` file (Claude Code subagent format — frontmatter `name`/`description` plus a markdown body) is exposed as a **loadable specialist**. For example, a plugin called `my-skills` with `agents/reviewer.md` is invocable as `/my-skills:reviewer` or via the agent's `load_skill` tool. As with commands, the loadable name is `<plugin>:<frontmatter-name>` when `name:` frontmatter is present, otherwise `<plugin>:<filename-without-.md>`. When loaded, the specialist contributes its instructions to the conversation on demand. Like commands, subagents are markdown — they need only `enabled` (not `trusted`).
+
+**Limitation:** subagents run in the **main session**, not as isolated child agents. The `tools` frontmatter field is therefore **advisory, not enforced** — a loaded specialist can use the agent's full tool set. True isolated subagent spawning (a separate context with a restricted tool subset) is a future enhancement.
+
+### MCP servers and executables
+
+A trusted plugin's `.mcp.json` is read at startup and its servers are registered with the gateway's MCP manager and persisted alongside your other MCP servers. Registration is fail-isolated: a server that fails to start is logged and skipped without affecting the rest of the gateway. A trusted plugin's `bin/` directory is prepended to the gateway's `PATH`, so its executables resolve ahead of system binaries.
+
+### Hooks
+
+A trusted plugin can register **hooks** — shell commands that run at key points in an agent run — via a `hooks/hooks.json` file in the [Claude Code hooks format](https://docs.claude.com/en/docs/claude-code/hooks). Hooks run shell commands, so they require `"trusted": true`; an untrusted plugin's hooks are skipped.
+
+Supported events:
+
+| Event | When it fires | What it can do |
+| --- | --- | --- |
+| `SessionStart` | Before the model runs, at the start of a run | Add context to the system prompt |
+| `UserPromptSubmit` | After an inbound channel message passes routing, before the agent runs | Block the message, or prepend context to the prompt |
+| `PreToolUse` | Before a tool executes (matched by tool name) | Allow or deny the tool call |
+| `PostToolUse` | After a tool executes (matched by tool name) | Block the result, or append context |
+| `Stop` | After the run completes | Cleanup (its output is logged, not injected) |
+
+Each event maps to an array of matcher groups; each group has an optional `matcher` (a tool name, a `|`-separated list, or a regex — omit or use `*` to match everything) and a `hooks` array of `{ "type": "command", "command": "...", "timeout": <seconds> }` entries.
+
+```json
+{
+  "PreToolUse": [
+    {
+      "matcher": "bash",
+      "hooks": [
+        { "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/scripts/guard.sh" }
+      ]
+    }
+  ],
+  "UserPromptSubmit": [
+    {
+      "hooks": [
+        { "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/scripts/inject-context.sh" }
+      ]
+    }
+  ]
+}
+```
+
+Hook commands receive the Claude Code event payload (`tool_name`, `tool_input`, `prompt`, `session_id`, `cwd`, …) as JSON on **stdin**, and communicate back through their exit code and stdout:
+
+- **Exit `0`** — allowed. To deny, add context, or replace tool input, print a JSON object with a `hookSpecificOutput` field (e.g. `{"hookSpecificOutput":{"permissionDecision":"deny","permissionDecisionReason":"..."}}` or `{"hookSpecificOutput":{"additionalContext":"..."}}`).
+- **Exit `2`** — blocking error. Standard error becomes the block reason.
+
+The string `${CLAUDE_PLUGIN_ROOT}` in a command is substituted with the plugin's absolute directory, so hooks can reference scripts bundled with the plugin. `${CLAUDE_PROJECT_DIR}` and `${CLAUDE_PLUGIN_DATA}` (a per-plugin scratch directory) are also available.
+
+**Fail-open by design.** A hook that errors, times out, exits non-zero (other than `2`), or prints malformed JSON is ignored — the run proceeds as if the hook had allowed it. Hooks never crash the gateway.
+
+**Where each event fires.** `SessionStart`, `PreToolUse`, `PostToolUse`, and `Stop` fire on **every** agent run, whether the run was reached through Mission Control chat or an inbound channel. `UserPromptSubmit` fires **only on the channel path** (Telegram, WhatsApp); it does not run for Mission Control chat messages.
+
+### LLM providers
+
+A trusted plugin can add a whole **LLM provider** — a base URL, a wire protocol, and a list of models — through one or more `providers/<provider>.json` catalog files. Once loaded, its models appear in Mission Control's model dropdown as `<id>/<model-id>` and any agent can be pointed at them, exactly like the built-in providers.
+
+<Warning>
+  A provider catalog requires `"trusted": true`. A provider sees **every prompt** you send to its models, **receives your API key**, and **chooses the network endpoint** requests go to. Only add provider plugins you trust with all three.
+</Warning>
+
+Each catalog file is a single JSON object:
+
+```json
+{
+  "id": "myllm",
+  "label": "My LLM",
+  "credentialPrefix": "myllm-api-key",
+  "baseUrl": "https://api.myllm.example/v1",
+  "api": "openai-completions",
+  "models": [
+    {
+      "id": "my-fast",
+      "name": "My Fast",
+      "contextWindow": 128000,
+      "maxTokens": 8192,
+      "reasoning": false,
+      "cost": { "input": 0.5, "output": 1.5, "cacheRead": 0, "cacheWrite": 0 }
+    }
+  ]
+}
+```
+
+| Field | Required | Description |
+| --- | --- | --- |
+| `id` | yes | Provider id and the `<id>/<model>` prefix. Also the credential lookup name. |
+| `label` | yes | Human-readable provider name. |
+| `baseUrl` | yes | API base URL the gateway calls. |
+| `api` | yes | Wire protocol: `openai-completions` or `anthropic-messages`. |
+| `credentialPrefix` | yes | Prefix the API key is stored under (e.g. `myllm-api-key`). |
+| `models[]` | yes | Statically-known models. Each needs `id`, `contextWindow`, `maxTokens`; `name`, `reasoning`, `cost`, `input`, `headers`, and `compat` are optional. |
+| `dynamicModels` | no | OpenRouter-style "accept any model id" — see below. |
+| `dynamicModelDefaults` | no | `{ "contextWindow", "maxTokens" }` applied to dynamically-accepted ids. |
+| `placeholderKey` | no | Stand-in key for keyless local servers — see below. |
+
+**Storing the API key.** Save it in the credential store under `<id>-api-key:<name>`, for example `myllm-api-key:default`. The simplest way is Mission Control's **AI Providers** screen, which writes that key for you; you can also set it directly with the gateway's credentials API. The first key stored for a provider id wins.
+
+**Accept-any-model providers.** Set `"dynamicModels": true` together with `"dynamicModelDefaults": { "contextWindow": ..., "maxTokens": ... }` to allow any model id the provider supports — useful for aggregators like OpenRouter where the catalog can't list everything. Listed `models` still appear in the dropdown; an unlisted id is accepted on demand and sized from the defaults. (Without `dynamicModelDefaults`, an unlisted id is rejected — the gateway can't size it.)
+
+**Keyless local servers.** For a local server that needs no real key (such as Ollama), set `"placeholderKey": "ollama"` (any non-empty string). The gateway uses it whenever no real key is stored, so the provider authenticates out of the box.
+
+If you already run an OpenAI- or Anthropic-compatible endpoint (OpenRouter, OpenClaw, a self-hosted gateway, …), porting it is just filling in this catalog — `baseUrl`, `api`, and the model list.
+
+### Example
+
+```bash
+# Create the plugin directory and a skill
+mkdir -p /path/to/data/plugins/my-skills/skills/summarize
+
+cat > /path/to/data/plugins/my-skills/skills/summarize/SKILL.md <<'EOF'
+---
+name: summarize
+description: Summarize any text concisely
+---
+Summarize the provided text in three sentences or fewer.
+EOF
+
+# Enable the plugin
+echo '{ "my-skills": { "enabled": true } }' \
+  > /path/to/data/plugins/config.json
+```
+
+When the gateway starts, it logs `[plugins] loaded 'my-skills' (skills)` and the agent's `load_skill` tool (see [Tools](/tools) — requires `load_skill` in the agent's tools list) can reference any skill from that plugin.
+
+<Note>
+  Skills, commands, subagents, hooks, MCP servers, `bin/` executables, and LLM providers are active. Subagents currently run in the main session (see the limitation above); isolated subagent spawning is coming in a future release.
+</Note>

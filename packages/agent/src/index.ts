@@ -4,6 +4,7 @@ export type {
   AgentEvent,
   ExtraTool,
   ImageBlock,
+  PluginModelCatalog,
   RunOptions,
   DashAgentConfig,
 } from './types.js';
@@ -22,11 +23,12 @@ export type {
   PoolEntry,
   PoolBackendFactory,
 } from './conversation-pool.js';
-export type { SkillDiscoveryResult, SkillFrontmatter } from './skills/index.js';
+export type { SkillDiscoveryResult, SkillFrontmatter, FlatSkillFile } from './skills/index.js';
 export {
   parseFrontmatter,
   generateFrontmatter,
   scanSkillsDirectory,
+  loadFlatSkills,
   discoverSkills,
   heuristicScan,
   createLlmScanner,
