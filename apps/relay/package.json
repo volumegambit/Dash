@@ -1,0 +1,33 @@
+{
+  "name": "@dash/relay",
+  "version": "0.2.0",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsup",
+    "dev": "node --import tsx src/main.ts",
+    "start": "node dist/main.js"
+  },
+  "dependencies": {
+    "@dash/logging": "*",
+    "ws": "^8"
+  },
+  "devDependencies": {
+    "@types/ws": "^8",
+    "tsx": "^4.19.0"
+  },
+  "tsup": {
+    "entry": ["src/index.ts", "src/main.ts"],
+    "format": ["esm"],
+    "dts": true,
+    "clean": true,
+    "sourcemap": true
+  }
+}

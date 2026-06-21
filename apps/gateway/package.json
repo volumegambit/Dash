@@ -35,6 +35,7 @@
     "hono": "^4"
   },
   "devDependencies": {
+    "@dash/relay": "*",
     "@types/better-sqlite3": "^7.6.13",
     "tsx": "^4.19.0"
   },
@@ -43,6 +44,9 @@
     "format": ["esm"],
     "dts": true,
     "clean": true,
-    "sourcemap": true
+    "sourcemap": true,
+    "banner": {
+      "js": "import { createRequire as _createRequire } from 'module'; const require = _createRequire(import.meta.url);"
+    }
   }
 }

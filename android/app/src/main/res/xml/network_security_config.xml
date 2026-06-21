@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  v1 connects to a Dash gateway over plain http/ws on the local network (the
+  gateway has no TLS yet). Cleartext is required for the LAN/adb-reverse path
+  documented in android/README.md. The future Dash relay adds https/wss, at
+  which point this allowance can be removed or scoped to private IP ranges.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>

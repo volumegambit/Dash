@@ -1,0 +1,42 @@
+name: Android CI
+
+# Separate from the Node CI workflow so it only runs when the Android app
+# changes (job-level path filters aren't native). The Android app is a hermetic
+# Gradle project — see android/README.md.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'android/**'
+      - '.github/workflows/android.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'android/**'
+      - '.github/workflows/android.yml'
+
+jobs:
+  android:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: android
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v6
+
+      # ubuntu-latest ships the Android SDK (ANDROID_HOME set, licenses
+      # accepted), so the JVM unit suite and debug APK build need no extra
+      # SDK setup. Instrumented (device) tests are not run here.
+      - name: Unit tests
+        run: ./gradlew test
+
+      - name: Assemble debug APK
+        run: ./gradlew assembleDebug

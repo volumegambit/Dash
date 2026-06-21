@@ -26,6 +26,15 @@ function createMockApi(): Record<keyof MissionControlAPI, ReturnType<typeof vi.f
     agentsDisable: vi.fn().mockResolvedValue(undefined),
     agentsEnable: vi.fn().mockResolvedValue(undefined),
 
+    // Pairing
+    pairingGetInfo: vi.fn().mockResolvedValue({
+      host: '127.0.0.1',
+      mgmtPort: 9300,
+      chatPort: 9200,
+      mgmtToken: 'test-mgmt',
+      chatToken: 'test-chat',
+    }),
+
     // Channels (gateway passthrough)
     channelsList: vi.fn().mockResolvedValue([]),
     channelsGet: vi.fn().mockResolvedValue(null),
@@ -87,6 +96,11 @@ function createMockApi(): Record<keyof MissionControlAPI, ReturnType<typeof vi.f
     // Settings
     settingsGet: vi.fn().mockResolvedValue({}),
     settingsSet: vi.fn().mockResolvedValue(undefined),
+
+    // Relay (remote access)
+    relayGetConfig: vi.fn().mockResolvedValue({ zone: null, configured: false }),
+    relaySetConfig: vi.fn().mockResolvedValue(undefined),
+    relayClearConfig: vi.fn().mockResolvedValue(undefined),
 
     // Logs
     logsRead: vi.fn().mockResolvedValue(''),

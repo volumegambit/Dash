@@ -16,6 +16,8 @@ export type {
   HealthChecker,
 } from './runtime/process.js';
 export { providerSecretKey, parseProviderSecretKey } from './runtime/provider-keys.js';
+export { createRelayAdminClient } from './runtime/relay-admin-client.js';
+export type { RelayAdminClient } from './runtime/relay-admin-client.js';
 export { ConversationStore } from './conversations.js';
 export type { McConversation, McMessage } from './conversations.js';
 export type { MessagingApp, RoutingRule, RoutingCondition } from './types.js';

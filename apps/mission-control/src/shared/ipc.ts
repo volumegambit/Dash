@@ -98,6 +98,45 @@ export interface McpStatusChange {
   status: 'connected' | 'disconnected' | 'reconnecting' | 'error' | 'needs_reauth';
 }
 
+/** LAN pairing: phone and gateway on the same network, direct connection. */
+export interface LanPairingInfo {
+  mode: 'lan';
+  host: string;
+  mgmtPort: number;
+  chatPort: number;
+  mgmtToken: string;
+  chatToken: string;
+}
+
+/** Relay pairing: phone reaches the gateway over the internet via the relay. */
+export interface RelayPairingInfo {
+  mode: 'relay';
+  /** `<gatewayId>.<zone>` — both HTTPS and WSS resolve here through the relay. */
+  host: string;
+  secure: true;
+  mgmtToken: string;
+  chatToken: string;
+  /** Per-device credential the phone presents to the relay (x-dash-relay-credential). */
+  relayCredential: string;
+}
+
+export type PairingInfo = LanPairingInfo | RelayPairingInfo;
+
+/** Current relay (remote access) configuration state, safe to show the renderer. */
+export interface RelayConfigStatus {
+  /** Relay domain, e.g. `relay.example.com`, or null when relay mode is off. */
+  zone: string | null;
+  /** True only when zone + relay token + admin secret are all present. */
+  configured: boolean;
+}
+
+/** User-supplied relay config (must match their self-hosted relay). */
+export interface RelayConfigInput {
+  zone: string;
+  relayToken: string;
+  adminSecret: string;
+}
+
 export interface MissionControlAPI {
   getVersion(): Promise<string>;
 
@@ -114,6 +153,9 @@ export interface MissionControlAPI {
   agentsRemove(id: string): Promise<void>;
   agentsDisable(id: string): Promise<void>;
   agentsEnable(id: string): Promise<void>;
+
+  // Pairing (Android app)
+  pairingGetInfo(): Promise<PairingInfo>;
 
   // Channels (gateway passthrough)
   channelsList(): Promise<GatewayChannel[]>;
@@ -187,6 +229,12 @@ export interface MissionControlAPI {
   // Settings
   settingsGet(): Promise<AppSettings>;
   settingsSet(patch: Partial<AppSettings>): Promise<void>;
+
+  // Relay (remote access) config. Secrets (token, admin secret) live in the OS
+  // keychain and are never read back to the renderer — only whether they're set.
+  relayGetConfig(): Promise<RelayConfigStatus>;
+  relaySetConfig(config: RelayConfigInput): Promise<void>;
+  relayClearConfig(): Promise<void>;
 
   // Models & Tools — gateway is the source of truth for the model list.
   // `modelsList` reads the gateway's persistent store (or its bootstrap

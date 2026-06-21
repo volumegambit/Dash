@@ -35,7 +35,7 @@ async function lsofPortOwner(port: number): Promise<number | undefined> {
   }
 }
 import { type KeychainStore, createDefaultKeychainStore } from '../security/keychain-store.js';
-import { generateToken } from '../security/keygen.js';
+import { generateGatewayId, generateToken } from '../security/keygen.js';
 import {
   type GatewayHealthResponse,
   GatewayHttpError,
@@ -212,6 +212,19 @@ export interface GatewaySupervisorOptions {
   makeGatewayClient?: (baseUrl: string, token: string) => GatewayManagementClient;
   managementPort?: number;
   channelPort?: number;
+  /**
+   * Explicit relay base URL (e.g. `ws://127.0.0.1:8788` for local dev). When
+   * set, the gateway is spawned in relay mode dialing this URL verbatim. Takes
+   * precedence over `relayZone`.
+   */
+  relayUrl?: string;
+  /**
+   * Relay domain for production (e.g. `relay.example.com`). When set (and no
+   * explicit `relayUrl`), the gateway dials `wss://<gatewayId>.<zone>` — its own
+   * wildcard subdomain — and is reachable to phones at the same host. The relay
+   * token comes from the keychain (user-configured to match the relay).
+   */
+  relayZone?: string;
 }
 
 export class GatewaySupervisor {
@@ -444,6 +457,33 @@ export class GatewaySupervisor {
     if (opts.gatewayRuntimeDir) {
       spawnArgs.push('--data-dir', opts.gatewayRuntimeDir);
     }
+    // Relay mode: dial OUT to the configured relay. Enabled by an explicit
+    // relayUrl (dev) or a relayZone (production → dial wss://<gatewayId>.<zone>).
+    // A stable gatewayId is generated + persisted so phones keep a fixed address;
+    // the relay token comes from the keychain (user-configured to match the
+    // relay, or generated for local dev). Only touched when relay mode is on.
+    if (opts.relayUrl || opts.relayZone) {
+      // Treat an empty stored token/id as absent: clearRelayConfig() persists ''
+      // rather than deleting, and `??` only substitutes null/undefined — so a
+      // bare `??` could spawn with `--relay-token ''` (an empty admission secret).
+      const storedRelayToken = await this.keychain.getRelayToken();
+      const relayToken =
+        storedRelayToken && storedRelayToken.length > 0 ? storedRelayToken : generateToken();
+      const storedGatewayId = await this.keychain.getGatewayId();
+      const gatewayId =
+        storedGatewayId && storedGatewayId.length > 0 ? storedGatewayId : generateGatewayId();
+      await this.keychain.setRelayToken(relayToken);
+      await this.keychain.setGatewayId(gatewayId);
+      const relayUrl = opts.relayUrl ?? `wss://${gatewayId}.${opts.relayZone}`;
+      spawnArgs.push(
+        '--relay-url',
+        relayUrl,
+        '--relay-token',
+        relayToken,
+        '--gateway-id',
+        gatewayId,
+      );
+    }
     // Write gateway logs to a file so they can be viewed from MC
     const logsDir = opts.logsDir ?? join(opts.gatewayDataDir, 'logs');
     await mkdir(logsDir, { recursive: true });
@@ -509,6 +549,20 @@ export class GatewaySupervisor {
    * management + chat tokens so that agents keep a stable identity.
    */
   async restart(): Promise<GatewayManagementClient> {
+    // Let any in-flight ensureRunning() settle before we kill + respawn.
+    // Otherwise restart() would (a) join a spawn started BEFORE a config change
+    // (e.g. relay:setConfig set gwOptions.relayZone) and miss the new options,
+    // silently not applying relay mode, or (b) kill a half-spawned gateway
+    // mid-flight (EADDRINUSE / drifted state.json). We discard the result and
+    // respawn fresh below; any ensureRunning started AFTER this point reads the
+    // already-updated options.
+    if (this.ensureRunningPromise) {
+      try {
+        await this.ensureRunningPromise;
+      } catch {
+        // about to kill + respawn regardless
+      }
+    }
     const store = new GatewayStateStore(this.options.gatewayDataDir);
     const state = await store.read();
     if (state) {
@@ -558,5 +612,47 @@ export class GatewaySupervisor {
    */
   async getGatewayToken(): Promise<string | null> {
     return this.keychain.getGatewayToken();
+  }
+
+  /**
+   * Read the stable relay gateway id from the keychain. The pairing flow uses it
+   * to build the relay host (`<gatewayId>.<zone>`) and to provision a per-device
+   * credential. Null before relay mode has ever been configured.
+   */
+  async getGatewayId(): Promise<string | null> {
+    return this.keychain.getGatewayId();
+  }
+
+  /**
+   * Read the relay admin master secret from the keychain. The pairing flow uses
+   * it to call the relay's /admin API. Null when relay mode is not set up.
+   */
+  async getRelayAdminSecret(): Promise<string | null> {
+    return this.keychain.getRelayAdminSecret();
+  }
+
+  /** Read the shared relay token (admission secret) from the keychain. */
+  async getRelayToken(): Promise<string | null> {
+    return this.keychain.getRelayToken();
+  }
+
+  /**
+   * Persist the user's relay credentials (the shared relay token + admin secret
+   * configured in MC to match their self-hosted relay). Relay mode takes effect
+   * on the next gateway (re)start.
+   */
+  async setRelayCredentials(relayToken: string, adminSecret: string): Promise<void> {
+    await this.keychain.setRelayToken(relayToken);
+    await this.keychain.setRelayAdminSecret(adminSecret);
+  }
+
+  /**
+   * Disable relay mode: forget the relay token + admin secret. The stable
+   * gatewayId is intentionally kept so re-enabling relay reuses the same address
+   * (and any still-valid pairings).
+   */
+  async clearRelayConfig(): Promise<void> {
+    await this.keychain.setRelayToken('');
+    await this.keychain.setRelayAdminSecret('');
   }
 }

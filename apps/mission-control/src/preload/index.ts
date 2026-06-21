@@ -19,6 +19,9 @@ const api: MissionControlAPI = {
   agentsDisable: (id) => ipcRenderer.invoke('agents:disable', id),
   agentsEnable: (id) => ipcRenderer.invoke('agents:enable', id),
 
+  // Pairing
+  pairingGetInfo: () => ipcRenderer.invoke('pairing:getInfo'),
+
   // Channels
   channelsList: () => ipcRenderer.invoke('channels:list'),
   channelsGet: (name) => ipcRenderer.invoke('channels:get', name),
@@ -95,6 +98,11 @@ const api: MissionControlAPI = {
   // Settings
   settingsGet: () => ipcRenderer.invoke('settings:get'),
   settingsSet: (patch) => ipcRenderer.invoke('settings:set', patch),
+
+  // Relay (remote access)
+  relayGetConfig: () => ipcRenderer.invoke('relay:getConfig'),
+  relaySetConfig: (config) => ipcRenderer.invoke('relay:setConfig', config),
+  relayClearConfig: () => ipcRenderer.invoke('relay:clearConfig'),
 
   // Models & Tools
   modelsList: () => ipcRenderer.invoke('models:list'),

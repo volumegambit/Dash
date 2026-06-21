@@ -43,6 +43,7 @@
     "ignore": [
       "**/dist/**",
       "**/out/**",
+      "**/build/**",
       "**/node_modules/**",
       "data/**",
       "**/*.gen.ts",

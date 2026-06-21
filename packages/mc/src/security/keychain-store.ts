@@ -25,6 +25,9 @@ import type { Entry as KeytarEntry } from '@napi-rs/keyring';
 const KEYCHAIN_SERVICE = 'dash-mission-control';
 const GATEWAY_TOKEN_ACCOUNT = 'gateway-management-token';
 const CHAT_TOKEN_ACCOUNT = 'gateway-chat-token';
+const RELAY_TOKEN_ACCOUNT = 'gateway-relay-token';
+const GATEWAY_ID_ACCOUNT = 'gateway-relay-id';
+const RELAY_ADMIN_SECRET_ACCOUNT = 'gateway-relay-admin-secret';
 
 export interface KeychainStore {
   getGatewayToken(): Promise<string | null>;
@@ -32,11 +35,28 @@ export interface KeychainStore {
   getChatToken(): Promise<string | null>;
   setChatToken(value: string): Promise<void>;
   /**
-   * Remove both gateway tokens from the OS credential store. Used by
-   * explicit teardown (e.g. "Reset Gateway" in MC settings). Never
-   * called during normal `ensureRunning()` flows — we prefer the
-   * existing tokens across spawns so a restarted gateway stays
-   * identity-compatible with prior state.
+   * Relay admission secret the gateway presents on dial-in, and the stable
+   * per-gateway id the relay routes by. Both persist here so a supervisor
+   * restart reuses the same identity — phones pair to `<gatewayId>`, so it must
+   * not change. Only populated once relay mode is configured.
+   */
+  getRelayToken(): Promise<string | null>;
+  setRelayToken(value: string): Promise<void>;
+  getGatewayId(): Promise<string | null>;
+  setGatewayId(value: string): Promise<void>;
+  /**
+   * Master secret for the relay's admin API. Mission Control presents it to
+   * provision/revoke per-device pairing credentials. User-configured to match
+   * the relay's RELAY_ADMIN_SECRET; a secret, so it lives here, not in settings.
+   */
+  getRelayAdminSecret(): Promise<string | null>;
+  setRelayAdminSecret(value: string): Promise<void>;
+  /**
+   * Remove all gateway secrets (management + chat tokens, relay token, gateway
+   * id, relay admin secret) from the OS credential store. Used by explicit
+   * teardown (e.g. "Reset Gateway" in MC settings). Never called during normal
+   * `ensureRunning()` flows — we prefer the existing identity across spawns so a
+   * restarted gateway stays compatible with prior state and paired phones.
    */
   clearAllGatewayTokens(): Promise<void>;
 }
@@ -82,8 +102,38 @@ class DefaultKeychainStore implements KeychainStore {
     (await this.entry(CHAT_TOKEN_ACCOUNT)).setPassword(value);
   }
 
+  async getRelayToken(): Promise<string | null> {
+    return (await this.entry(RELAY_TOKEN_ACCOUNT)).getPassword();
+  }
+
+  async setRelayToken(value: string): Promise<void> {
+    (await this.entry(RELAY_TOKEN_ACCOUNT)).setPassword(value);
+  }
+
+  async getGatewayId(): Promise<string | null> {
+    return (await this.entry(GATEWAY_ID_ACCOUNT)).getPassword();
+  }
+
+  async setGatewayId(value: string): Promise<void> {
+    (await this.entry(GATEWAY_ID_ACCOUNT)).setPassword(value);
+  }
+
+  async getRelayAdminSecret(): Promise<string | null> {
+    return (await this.entry(RELAY_ADMIN_SECRET_ACCOUNT)).getPassword();
+  }
+
+  async setRelayAdminSecret(value: string): Promise<void> {
+    (await this.entry(RELAY_ADMIN_SECRET_ACCOUNT)).setPassword(value);
+  }
+
   async clearAllGatewayTokens(): Promise<void> {
-    for (const account of [GATEWAY_TOKEN_ACCOUNT, CHAT_TOKEN_ACCOUNT]) {
+    for (const account of [
+      GATEWAY_TOKEN_ACCOUNT,
+      CHAT_TOKEN_ACCOUNT,
+      RELAY_TOKEN_ACCOUNT,
+      GATEWAY_ID_ACCOUNT,
+      RELAY_ADMIN_SECRET_ACCOUNT,
+    ]) {
       try {
         (await this.entry(account)).deletePassword();
       } catch {
@@ -127,8 +177,35 @@ export class InMemoryKeychainStore implements KeychainStore {
     this.store.set(CHAT_TOKEN_ACCOUNT, value);
   }
 
+  async getRelayToken(): Promise<string | null> {
+    return this.store.get(RELAY_TOKEN_ACCOUNT) ?? null;
+  }
+
+  async setRelayToken(value: string): Promise<void> {
+    this.store.set(RELAY_TOKEN_ACCOUNT, value);
+  }
+
+  async getGatewayId(): Promise<string | null> {
+    return this.store.get(GATEWAY_ID_ACCOUNT) ?? null;
+  }
+
+  async setGatewayId(value: string): Promise<void> {
+    this.store.set(GATEWAY_ID_ACCOUNT, value);
+  }
+
+  async getRelayAdminSecret(): Promise<string | null> {
+    return this.store.get(RELAY_ADMIN_SECRET_ACCOUNT) ?? null;
+  }
+
+  async setRelayAdminSecret(value: string): Promise<void> {
+    this.store.set(RELAY_ADMIN_SECRET_ACCOUNT, value);
+  }
+
   async clearAllGatewayTokens(): Promise<void> {
     this.store.delete(GATEWAY_TOKEN_ACCOUNT);
     this.store.delete(CHAT_TOKEN_ACCOUNT);
+    this.store.delete(RELAY_TOKEN_ACCOUNT);
+    this.store.delete(RELAY_ADMIN_SECRET_ACCOUNT);
+    this.store.delete(GATEWAY_ID_ACCOUNT);
   }
 }

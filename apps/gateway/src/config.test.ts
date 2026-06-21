@@ -28,6 +28,37 @@ describe('parseFlags', () => {
     expect(parseFlags(['--chat-token', 'chat-secret'])).toEqual({ chatToken: 'chat-secret' });
   });
 
+  it('parses --relay-url flag', () => {
+    expect(parseFlags(['--relay-url', 'wss://relay.example.com'])).toEqual({
+      relayUrl: 'wss://relay.example.com',
+    });
+  });
+
+  it('parses --relay-token flag', () => {
+    expect(parseFlags(['--relay-token', 'relay-secret'])).toEqual({ relayToken: 'relay-secret' });
+  });
+
+  it('parses --gateway-id flag', () => {
+    expect(parseFlags(['--gateway-id', 'gw-abc'])).toEqual({ gatewayId: 'gw-abc' });
+  });
+
+  it('parses relay flags together', () => {
+    expect(
+      parseFlags([
+        '--relay-url',
+        'wss://relay.example.com',
+        '--relay-token',
+        'rt',
+        '--gateway-id',
+        'gw-1',
+      ]),
+    ).toEqual({
+      relayUrl: 'wss://relay.example.com',
+      relayToken: 'rt',
+      gatewayId: 'gw-1',
+    });
+  });
+
   it('parses multiple flags', () => {
     expect(
       parseFlags(['--management-port', '9400', '--token', 'my-token', '--data-dir', '/tmp/data']),

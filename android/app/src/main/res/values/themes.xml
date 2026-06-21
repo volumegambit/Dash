@@ -1,0 +1,7 @@
+<resources>
+    <style name="Theme.Dash" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/dash_background</item>
+        <item name="android:statusBarColor">@color/dash_background</item>
+        <item name="android:navigationBarColor">@color/dash_background</item>
+    </style>
+</resources>

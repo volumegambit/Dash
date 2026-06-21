@@ -1,0 +1,29 @@
+[Unit]
+Description=Dash relay (reverse-tunnel rendezvous for phones and gateways)
+Documentation=https://github.com/volumegambit/dash
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Adjust WorkingDirectory + the node path to your install. The relay reads
+# RELAY_PORT and RELAY_TOKEN from the environment file; --host binds loopback
+# because Caddy terminates TLS in front of it.
+WorkingDirectory=/opt/dash
+ExecStart=/usr/bin/node /opt/dash/apps/relay/dist/main.js --host 127.0.0.1
+EnvironmentFile=/etc/dash-relay/relay.env
+Restart=on-failure
+RestartSec=2
+
+# Hardening — the relay needs no privileges, no home, and only its own tmp.
+DynamicUser=yes
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+RestrictAddressFamilies=AF_INET AF_INET6
+RestrictNamespaces=yes
+LockPersonality=yes
+
+[Install]
+WantedBy=multi-user.target

@@ -41,6 +41,7 @@ import {
   excludeCoreProviderCollisions,
   expandPluginModelsForRoute,
 } from './plugin-providers.js';
+import { type RelayClient, startRelayClient } from './relay-client.js';
 
 async function main() {
   const flags = parseFlags(process.argv.slice(2));
@@ -532,10 +533,35 @@ async function main() {
 
   console.log(`Gateway management API listening on port ${managementPort}`);
   console.log(`Gateway channel server listening on port ${channelPort}`);
+
+  // Relay mode: when --relay-url and --relay-token are both set, dial OUT to the
+  // relay and replay phone traffic against our own loopback servers. A phone can
+  // then reach this gateway from anywhere with no inbound ports opened. The two
+  // HTTP servers above are untouched — the relay-client is "just another
+  // localhost client" and all auth still happens at the gateway. See apps/relay.
+  let relayClient: RelayClient | undefined;
+  if (flags.relayUrl && flags.relayToken) {
+    const gatewayId = await resolveGatewayId(flags.gatewayId, dataDir);
+    relayClient = startRelayClient({
+      relayUrl: flags.relayUrl,
+      relayToken: flags.relayToken,
+      gatewayId,
+      managementPort,
+      channelPort,
+      logger: {
+        info: (m) => logger.info(m),
+        warn: (m) => logger.warn(m),
+        error: (m) => logger.error(m),
+      },
+    });
+    console.log(`[gateway] relay mode: dialing ${flags.relayUrl} as gateway "${gatewayId}"`);
+  }
+
   console.log('Server ready');
 
   const shutdown = async (signal: string) => {
     console.log(`\nReceived ${signal}, shutting down...`);
+    relayClient?.stop();
     await mcpManager.stop();
     await agents.stop();
     await gateway.stop();
@@ -552,6 +578,29 @@ async function main() {
 
   process.on('SIGINT', () => shutdown('SIGINT'));
   process.on('SIGTERM', () => shutdown('SIGTERM'));
+}
+
+/**
+ * Resolve a stable per-gateway id for relay routing. An explicit --gateway-id
+ * wins (the MC supervisor passes one cached in the keychain). Otherwise persist
+ * a generated id under the data dir so it survives restarts: the relay routes by
+ * `<gatewayId>` subdomain and the phone's pairing payload encodes it, so it must
+ * not change between launches.
+ */
+async function resolveGatewayId(explicit: string | undefined, dataDir: string): Promise<string> {
+  if (explicit) return explicit;
+  const { readFile, writeFile } = await import('node:fs/promises');
+  const idPath = resolve(dataDir, 'relay-gateway-id');
+  try {
+    const existing = (await readFile(idPath, 'utf8')).trim();
+    if (existing) return existing;
+  } catch {
+    // Not created yet — fall through and generate one.
+  }
+  const { randomUUID } = await import('node:crypto');
+  const id = randomUUID();
+  await writeFile(idPath, id, { mode: 0o600 });
+  return id;
 }
 
 main().catch((err) => {

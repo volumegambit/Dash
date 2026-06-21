@@ -3,6 +3,7 @@ import { RefreshCw } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
 import type { AppSettings } from '../../../shared/ipc.js';
 import { ModelChainEditor } from '../components/ModelChainEditor.js';
+import { RelaySettings } from '../components/RelaySettings.js';
 import { useAvailableModels } from '../hooks/useAvailableModels.js';
 import { useUIStore } from '../stores/ui.js';
 
@@ -111,6 +112,8 @@ function Settings(): JSX.Element {
             )}
           </div>
         </div>
+
+        <RelaySettings />
 
         <div className="mt-6 rounded-lg border border-border bg-card-bg p-4">
           <h2 className="mb-1 font-[family-name:var(--font-mono)] text-[11px] uppercase tracking-[2px] text-accent">
