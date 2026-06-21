@@ -82,6 +82,34 @@ Something not working? Here are the most common issues and how to fix them.
   </Accordion>
 </AccordionGroup>
 
+## Plugins
+
+<AccordionGroup>
+  <Accordion title="Plugin not loading">
+    A plugin you added doesn't show up and its skills/commands aren't available.
+
+    **Fix:** Plugins are scanned **once at startup**, so restart the gateway after any change. Then confirm: the plugin directory is under `~/.dash/gateway/plugins/`, the plugin is listed in `~/.dash/gateway/plugins/config.json` with `"enabled": true` (a `path` entry is enabled automatically), and `config.json` is valid JSON. Check `~/.dash/logs/gateway.log` for a `[plugins] loaded '<name>' (...)` line — a missing line or a parse error there points at the problem. See [Plugins](/plugins).
+  </Accordion>
+
+  <Accordion title="Hooks, MCP servers, bin/, or provider not active">
+    The plugin loads and its skills work, but its hooks, `.mcp.json` servers, `bin/` executables, or provider catalog do nothing.
+
+    **Fix:** This is intentional. Those components run code or handle credentials, so they require `"trusted": true` in addition to `"enabled": true`. Set `{ "<plugin>": { "enabled": true, "trusted": true } }` in `config.json` and restart. Only trust plugins whose code you've reviewed.
+  </Accordion>
+
+  <Accordion title="Slash command not found">
+    `/plugin:command` (or `/plugin:agent`) reports an unknown command.
+
+    **Fix:** The syntax is `/<plugin>:<name>` — the plugin's name (or directory name), a colon, then the command/agent name (its `name:` frontmatter if set, otherwise the filename without `.md`). Confirm the plugin is enabled and you've restarted the gateway since adding the file. Commands and subagents need only `enabled`, not `trusted`.
+  </Accordion>
+
+  <Accordion title="Provider models not in the dropdown">
+    A plugin provider is trusted but its models don't appear in Mission Control's model list.
+
+    **Fix:** Confirm the plugin is `"trusted": true` and the gateway was restarted. The catalog's `credentialPrefix` must equal `<id>-api-key` (e.g. id `myllm` → `myllm-api-key`), and the API key must be stored under `<id>-api-key:<name>` — the **AI Providers** screen writes this for you. Models then appear as `<id>/<model-id>`. Check `gateway.log` for a provider validation error.
+  </Accordion>
+</AccordionGroup>
+
 ## Session issues
 
 <AccordionGroup>

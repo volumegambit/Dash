@@ -38,7 +38,14 @@ Everything Dash stores on disk lives under a single root — `~/.dash` by defaul
 
 This is the same location whether you launch Dash through Mission Control or run the gateway on its own, so your agents, credentials, and conversations are always in one predictable place. You can open any of these folders in Finder or your editor.
 
-To store everything somewhere else (for example, a separate disk or multiple profiles), set `DASH_HOME` to a directory of your choosing. Running the gateway with `--data-dir <path>` overrides just the gateway's own folder.
+Two of these subfolders are **data directories** in their own right — each is the root a single component reads and writes:
+
+- The **gateway's** data directory is `~/.dash/gateway` (credentials, agents, sessions, skills, databases, and plugins).
+- **Mission Control's** data directory is `~/.dash/desktop` (app settings and conversations).
+
+Where this page writes `<dataDir>` as a placeholder — for example throughout [Plugins](#plugins) — it always means the **gateway's** data directory, `~/.dash/gateway`, since the gateway is the component that loads those files.
+
+To store everything somewhere else (for example, a separate disk or multiple profiles), set `DASH_HOME` to a directory of your choosing. Running the gateway with `--data-dir <path>` overrides just the gateway's own folder; `MC_DATA_DIR` overrides just Mission Control's.
 
 <Note>
   Upgrading from an older version? The first time Dash starts, it automatically moves your existing data into `~/.dash` — no action needed. See [Troubleshooting](/troubleshooting#my-data-moved-after-updating) if anything looks missing.
@@ -88,12 +95,16 @@ Provider API keys and messaging tokens are encrypted at rest. The gateway keeps 
 
 ## Plugins
 
-Plugins let you drop extra skills into any Dash agent without touching the config file. The gateway discovers plugins from the `plugins/` directory inside your data directory.
+Plugins let you drop extra skills into any Dash agent without touching the config file. The gateway discovers plugins from the `plugins/` directory inside the **gateway's data directory** — that is, `~/.dash/gateway/plugins/`. Throughout this section, `<dataDir>` is shorthand for that gateway data directory (`~/.dash/gateway`), not Mission Control's `~/.dash/desktop`.
+
+<Note>
+For a step-by-step guide to discovering, enabling, trusting, and using plugins, see [Plugins](/plugins). This section is the detailed reference: directory layout, the `config.json` schema, hook events, and the provider catalog schema.
+</Note>
 
 ### Directory layout
 
 ```
-<dataDir>/
+<dataDir>/                  # the gateway's data directory: ~/.dash/gateway
 └── plugins/
     ├── config.json
     └── <plugin-name>/

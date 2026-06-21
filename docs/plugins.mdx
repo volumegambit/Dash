@@ -1,0 +1,182 @@
+---
+title: "Plugins"
+description: "Extend any agent with extra skills, commands, subagents, hooks, MCP servers, and LLM providers — dropped in as a directory and toggled from one config file."
+---
+
+A plugin is a folder of capabilities you drop into the gateway to extend what your agents can do — without editing the main config or touching code. One plugin can bundle several things at once: ready-made skills, slash commands, loadable specialists, event hooks, extra MCP servers, and even whole LLM providers.
+
+Plugins use the **Claude Code plugin layout**, so a plugin written for Claude Code generally works in Dash unchanged.
+
+<Note>
+Plugins are managed today by editing a small `config.json` file and restarting the gateway. A point-and-click plugin screen and a plugin marketplace are planned but not yet available — everything on this page is the file-based workflow that ships now.
+</Note>
+
+## What a plugin can add
+
+| Component | Folder | Needs trust? | What it does |
+|-----------|--------|--------------|--------------|
+| **Skills** | `skills/<name>/SKILL.md` | No | Reusable instructions the agent loads on demand (see [Skills](/skills)). |
+| **Commands** | `commands/<name>.md` | No | A `/<plugin>:<command>` slash command. |
+| **Subagents** | `agents/<name>.md` | No | A loadable specialist, invocable as `/<plugin>:<agent>`. |
+| **Hooks** | `hooks/hooks.json` | **Yes** | Shell commands that run at key points in a run. |
+| **MCP servers** | `.mcp.json` | **Yes** | Extra MCP servers registered with the gateway. |
+| **Executables** | `bin/` | **Yes** | Binaries prepended to the gateway's `PATH`. |
+| **LLM providers** | `providers/<id>.json` | **Yes** | A base URL, wire protocol, and model list that adds selectable models. |
+
+The split matters: **skills, commands, and subagents are plain markdown** — they never run code, so enabling the plugin is enough. The other four **execute code or handle credentials**, so they stay dormant until you explicitly *trust* the plugin. See [Trusting a plugin](#trusting-a-plugin).
+
+## Where plugins live
+
+Plugins are discovered from the `plugins/` directory inside the gateway's data directory — `~/.dash/gateway/plugins/` by default (or `<DASH_HOME>/gateway/plugins/` if you set `DASH_HOME`).
+
+```
+~/.dash/gateway/plugins/
+├── config.json                     ← which plugins are on, and trusted
+└── my-plugin/
+    ├── .claude-plugin/
+    │   └── plugin.json             (optional manifest)
+    ├── skills/
+    │   └── summarize/
+    │       └── SKILL.md
+    ├── commands/
+    │   └── triage.md               (optional)
+    ├── agents/
+    │   └── reviewer.md             (optional)
+    ├── hooks/
+    │   └── hooks.json              (optional, trusted only)
+    ├── .mcp.json                   (optional, trusted only)
+    ├── providers/
+    │   └── myllm.json              (optional, trusted only)
+    └── bin/                        (optional, trusted only)
+        └── my-tool
+```
+
+The `.claude-plugin/plugin.json` manifest is optional. When present it can set `name`, `displayName`, `description`, and `version`; when absent, the plugin's directory name becomes its name.
+
+## Enabling a plugin
+
+List the plugin in `~/.dash/gateway/plugins/config.json`:
+
+```json
+{
+  "my-plugin": { "enabled": true }
+}
+```
+
+A plugin that isn't listed, or is listed with `"enabled": false`, is ignored. Enabling activates the **markdown** components — skills, commands, and subagents.
+
+<Warning>
+The gateway reads `config.json` and scans plugins **once at startup**. After editing the file — or adding, removing, or changing a plugin's files — **restart the gateway** for the change to take effect. There is no hot-reload yet.
+</Warning>
+
+## Trusting a plugin
+
+Components that run code or handle credentials — `hooks/`, `.mcp.json`, `bin/`, and `providers/` — additionally require `"trusted": true`:
+
+```json
+{
+  "my-plugin": { "enabled": true, "trusted": true }
+}
+```
+
+An enabled-but-untrusted plugin still contributes its skills and commands, but its hooks, MCP servers, `bin/` executables, and provider catalogs are **silently skipped**. Only trust plugins whose code you have reviewed — a trusted plugin runs inside the gateway process with its privileges.
+
+<Tip>
+Think of it as two gates. `enabled` = "show me this plugin's instructions." `trusted` = "and let its code run." Markdown clears the first gate; code and credentials need both.
+</Tip>
+
+### Loading a plugin from a path
+
+For local development you can point an entry at a plugin directory anywhere on disk with `path`, instead of copying it under `plugins/`:
+
+```json
+{
+  "my-dev-plugin": { "path": "/abs/or/relative/dir", "trusted": true }
+}
+```
+
+A `path` entry is **enabled automatically** — you don't need `"enabled": true`. It still needs `"trusted": true` to run code components, exactly like any other plugin.
+
+## Using each component
+
+### Skills
+
+Each `skills/<name>/SKILL.md` joins the agent's skill index — the compact list of available skills the agent sees in its system prompt. The agent loads a skill's full instructions on demand with its `load_skill` tool, so the agent must have `load_skill` in its tool list (it's available by default whenever skills are configured). See [Skills](/skills) for the format and how discovery works.
+
+### Commands
+
+Each `commands/<name>.md` becomes a slash command named `/<plugin>:<name>`. A plugin called `my-plugin` with `commands/triage.md` exposes `/my-plugin:triage`. The markdown body is the command; optional frontmatter (`name`, `description`) overrides the command name and supplies a description. Commands need only `enabled`.
+
+### Subagents (specialists)
+
+Each `agents/<name>.md` (Claude Code subagent format — `name`/`description` frontmatter plus a body) becomes a **loadable specialist**, invocable as `/<plugin>:<agent>` or via the agent's `load_skill` tool. When loaded, it contributes its instructions to the conversation on demand. Like commands, subagents are markdown and need only `enabled`.
+
+<Note>
+**Limitation:** subagents run in the **main session**, not as isolated child agents. The `tools` frontmatter field is therefore *advisory, not enforced* — a loaded specialist can use the agent's full tool set. True isolated subagent spawning is a future enhancement.
+</Note>
+
+### MCP servers and executables
+
+A trusted plugin's `.mcp.json` is read at startup and its servers are registered with the gateway's MCP manager. Registration is fail-isolated — a server that fails to start is logged and skipped without affecting the rest of the gateway. A trusted plugin's `bin/` directory is prepended to the gateway's `PATH`, so its executables resolve ahead of system binaries. Neither is invoked directly; they contribute tools and binaries that the agent and other components can use.
+
+### Hooks
+
+A trusted plugin can register **hooks** — shell commands that run at key points in a run — via `hooks/hooks.json` in the [Claude Code hooks format](https://docs.claude.com/en/docs/claude-code/hooks). Because hooks run shell commands, they require `"trusted": true`.
+
+| Event | When it fires |
+|-------|---------------|
+| `SessionStart` | At the start of a run, before the model runs |
+| `UserPromptSubmit` | After an inbound channel message passes routing, before the agent runs (**channel path only** — not Mission Control chat) |
+| `PreToolUse` | Before a tool executes (matched by tool name) |
+| `PostToolUse` | After a tool executes (matched by tool name) |
+| `Stop` | After the run completes |
+
+Hook commands receive the event payload as JSON on **stdin** and respond through their exit code and stdout. The strings `${CLAUDE_PLUGIN_ROOT}` (the plugin's directory), `${CLAUDE_PROJECT_DIR}`, and `${CLAUDE_PLUGIN_DATA}` (a per-plugin scratch directory) are substituted in commands so a hook can reference bundled scripts.
+
+Hooks are **fail-open**: one that errors, times out, exits non-zero (other than the blocking exit code `2`), or prints malformed JSON is ignored — the run proceeds as if it had allowed the action. Hooks never crash the gateway. For the full event semantics, payload fields, and matcher syntax, see the [configuration reference](/configuration#hooks).
+
+### LLM providers
+
+A trusted plugin can add a whole **LLM provider** — a base URL, a wire protocol (`openai-completions` or `anthropic-messages`), and a list of models — through one or more `providers/<id>.json` catalog files. Once loaded, its models appear in Mission Control's model dropdown as `<id>/<model-id>`, and any agent can be pointed at them just like the built-in providers.
+
+<Warning>
+A provider catalog requires `"trusted": true`. A provider sees **every prompt** you send to its models, **receives your API key**, and **chooses the network endpoint** requests go to. Only add provider plugins you trust with all three.
+</Warning>
+
+Store the API key under `<id>-api-key:<name>` (for example `myllm-api-key:default`). The easiest way is Mission Control's **AI Providers** screen, which writes that key for you — see [AI Providers](/ai-providers). For the full catalog schema (dynamic models, keyless local servers, cost fields), see the [configuration reference](/configuration#llm-providers).
+
+## A complete example
+
+Build a one-skill plugin, enable it, and restart:
+
+```bash
+# 1. Create the plugin directory and a skill
+mkdir -p ~/.dash/gateway/plugins/my-plugin/skills/summarize
+
+cat > ~/.dash/gateway/plugins/my-plugin/skills/summarize/SKILL.md <<'EOF'
+---
+name: summarize
+description: Summarize any text concisely
+---
+Summarize the provided text in three sentences or fewer.
+EOF
+
+# 2. Enable the plugin
+echo '{ "my-plugin": { "enabled": true } }' \
+  > ~/.dash/gateway/plugins/config.json
+
+# 3. Restart the gateway so it picks up the new plugin
+```
+
+On startup the gateway logs which components loaded:
+
+```
+[plugins] loaded 'my-plugin' (skills)
+```
+
+Now any agent with the `load_skill` tool (see [Tools](/tools)) can use the `summarize` skill. Add a `commands/`, `agents/`, `hooks/`, `.mcp.json`, or `providers/` folder to the same directory to layer on the other component types — flip the plugin to `"trusted": true` first for the code and provider components.
+
+## Reference and troubleshooting
+
+- [Configuration → Plugins](/configuration#plugins) — the authoritative reference: full directory layout, the `config.json` schema, hook event details, and the provider catalog schema.
+- [Troubleshooting → Plugins](/troubleshooting#plugins) — common issues: a plugin not loading, code components silently skipped, slash commands not found, provider models not appearing.

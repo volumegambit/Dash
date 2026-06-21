@@ -24,6 +24,7 @@
               "ai-providers",
               "skills",
               "tools",
+              "plugins",
               "secrets"
             ]
           },
