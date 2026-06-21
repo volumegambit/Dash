@@ -7,6 +7,7 @@ export type GatewayEvent =
   | { type: 'mcp:server-added'; server: string }
   | { type: 'mcp:server-removed'; server: string }
   | { type: 'plugin:config-changed'; plugin: string; fields: string[] }
+  | { type: 'plugin:installed'; plugin: string }
   | { type: 'plugin:removed'; plugin: string }
   | { type: 'plugin:reloaded' };
 

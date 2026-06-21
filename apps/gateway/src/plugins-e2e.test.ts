@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AgentBackend, AgentEvent, AgentState, RunOptions } from '@dash/agent';
@@ -130,6 +130,31 @@ async function writeMcpPlugin(pluginsDir: string, name: string): Promise<void> {
   );
 }
 
+/**
+ * Write a LOCAL plugin SOURCE tree (outside the data dir's plugins/) that the
+ * install route can install FROM. Distinct from `writeMcpPlugin`, which lays a
+ * plugin DOWN in the managed plugins dir. Includes an MCP server so the
+ * installed (untrusted) plugin's code component lands in `noop`.
+ */
+async function writeLocalSourcePlugin(root: string, name: string): Promise<string> {
+  const src = join(root, `src-${name}`);
+  await mkdir(join(src, MANIFEST_DIR), { recursive: true });
+  await writeFile(
+    join(src, MANIFEST_DIR, MANIFEST_FILENAME),
+    JSON.stringify({ name, version: '2.0.0', description: `${name} Plugin` }),
+  );
+  await mkdir(join(src, 'skills', 'greeter'), { recursive: true });
+  await writeFile(
+    join(src, 'skills', 'greeter', 'SKILL.md'),
+    '---\nname: greeter\ndescription: greets people\n---\nSay hi.',
+  );
+  await writeFile(
+    join(src, '.mcp.json'),
+    JSON.stringify({ mcpServers: { db: { command: 'node', args: ['server.js'] } } }),
+  );
+  return src;
+}
+
 /** Write a plugin that contributes an LLM provider catalog (trust-gated). The
  *  provider models feed GET /models (CF5a). */
 async function writeProviderPlugin(pluginsDir: string, name: string): Promise<void> {
@@ -245,6 +270,7 @@ async function boot(dataDir: string, opts: { mcp?: ReturnType<typeof recordingMc
     pluginConfigStore,
     reloadPlugins,
     pluginsDir,
+    dataDir,
   });
 
   return {
@@ -523,6 +549,79 @@ describe('plugin mutate → hot-reload end-to-end', () => {
       const greeter = afterSkills.find((s) => s.name === 'greeter');
       expect(greeter).toBeDefined();
       expect(greeter?.source).toBe('plugin');
+    } finally {
+      await cleanup();
+    }
+  });
+
+  // P2 T4: POST /plugins/install installs a LOCAL source into the managed dir,
+  // sets enabled+installed+source (trusted stays false), and reloads → GET
+  // /plugins lists it (status loaded; code component noop since untrusted).
+  // Then P1's DELETE removes the dir + entry and GET /plugins no longer lists it.
+  it('install → list (untrusted, noop) → DELETE round-trip through the real reload', async () => {
+    const src = await writeLocalSourcePlugin(dataDir, 'disco');
+
+    const { app, events, getWiringState, cleanup } = await boot(dataDir);
+    try {
+      // --- INSTALL ---
+      const install = await app.request('/plugins/install', {
+        method: 'POST',
+        headers: JSON_HEADERS,
+        body: JSON.stringify({ source: src }),
+      });
+      expect(install.status).toBe(201);
+      const installed = (await install.json()) as {
+        name: string;
+        location: string;
+        source: string;
+      };
+      expect(installed.name).toBe('disco');
+      expect(installed.location).toBe(join(dataDir, 'plugins', 'disco'));
+      expect(installed.source).toBe(src);
+
+      // The dir landed under the managed plugins dir.
+      const installedDir = join(dataDir, 'plugins', 'disco');
+      await expect(stat(installedDir)).resolves.toBeTruthy();
+
+      // Config persisted: enabled + installed + source; trusted unset.
+      const onDisk = await new PluginConfigStore(dataDir).load();
+      expect(onDisk.disco).toMatchObject({ enabled: true, installed: true, source: src });
+      expect(onDisk.disco.trusted).toBeUndefined();
+
+      // plugin:installed event emitted.
+      expect(events.find((e) => e.type === 'plugin:installed')).toMatchObject({ plugin: 'disco' });
+
+      // --- LIST: loaded, enabled, code component in noop (untrusted) ---
+      const listRes = await app.request('/plugins', { headers: AUTH });
+      const list = (await listRes.json()) as { records: PluginStatusRecord[] };
+      const disco = list.records.find((r) => r.name === 'disco');
+      expect(disco).toBeDefined();
+      expect(disco?.status).toBe('loaded');
+      expect(disco?.enabled).toBe(true);
+      expect(disco?.trusted).toBe(false);
+      expect(disco?.activated).toContain('skills');
+      expect(disco?.noop).toContain('mcp');
+      expect(disco?.installedPath).toBe(installedDir);
+
+      // Untrusted → MCP withheld from live wiring.
+      expect(getWiringState().mcpConfigs).toHaveLength(0);
+
+      // --- DELETE (P1's route) removes dir + entry ---
+      const del = await app.request('/plugins/disco', { method: 'DELETE', headers: AUTH });
+      expect(del.status).toBe(200);
+      const delBody = (await del.json()) as { ok: boolean; path?: string };
+      expect(delBody.ok).toBe(true);
+      expect(delBody.path).toBe(installedDir);
+      // Directory actually gone.
+      await expect(stat(installedDir)).rejects.toBeTruthy();
+      // Config entry gone.
+      const afterDel = await new PluginConfigStore(dataDir).load();
+      expect(afterDel.disco).toBeUndefined();
+
+      // GET /plugins no longer lists it.
+      const list2Res = await app.request('/plugins', { headers: AUTH });
+      const list2 = (await list2Res.json()) as { records: PluginStatusRecord[] };
+      expect(list2.records.find((r) => r.name === 'disco')).toBeUndefined();
     } finally {
       await cleanup();
     }

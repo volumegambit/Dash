@@ -6,7 +6,7 @@ import { TelegramAdapter, WhatsAppAdapter } from '@dash/channels';
 import { type StructuredLogger, createConsoleLogger } from '@dash/logging';
 import { mountProjectsRoutes } from '@dash/management';
 import type { PluginConfigStore } from '@dash/plugins';
-import { realpathContained } from '@dash/plugins';
+import { heuristicPluginScan, installPluginToDir, realpathContained } from '@dash/plugins';
 import type { ProjectsDb } from '@dash/projects';
 import { Hono } from 'hono';
 import type { Context } from 'hono';
@@ -78,6 +78,13 @@ export interface GatewayManagementOptions {
    * an installed plugin's dir and guard the `rm -rf` with a realpath check.
    */
   pluginsDir?: string;
+  /**
+   * Absolute host data directory. Used by POST /plugins/install as the install
+   * root — the plugin lands at `<dataDir>/plugins/<name>` (see
+   * `installPluginToDir`). The install route 500s ('plugins not configured')
+   * when this is absent.
+   */
+  dataDir?: string;
 }
 
 /**
@@ -859,6 +866,7 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
     const pluginConfigStore = options.pluginConfigStore;
     const reloadPlugins = options.reloadPlugins;
     const pluginsDir = options.pluginsDir;
+    const dataDir = options.dataDir;
     const notConfigured = (c: Context) => c.json({ error: 'plugins not configured' }, 500);
 
     // GET /plugins → all status records, sorted by name (incl. disabled/error).
@@ -868,6 +876,42 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
         a.name.localeCompare(b.name),
       );
       return c.json({ records });
+    });
+
+    // POST /plugins/install → fetch + scan + install a plugin from `source` into
+    // <dataDir>/plugins/<name>, persist its config (enabled+installed+source;
+    // trusted stays false), reload, and return the InstalledPlugin record (201).
+    // Errors map via mapPluginError (404 not_found, 409 duplicate, 422
+    // dangerous/invalid/corrupt/scan_failed, else 500).
+    app.post('/plugins/install', async (c) => {
+      if (!pluginConfigStore || !reloadPlugins || !dataDir) return notConfigured(c);
+      const parsed = await parseJsonBody<{ source: string; name?: string }>(c);
+      if (!parsed.ok) return parsed.response;
+      const { source, name } = parsed.body;
+      if (typeof source !== 'string' || source.trim() === '') {
+        return c.json({ error: 'source must be a non-empty string' }, 400);
+      }
+      try {
+        // Pure functions (no @dash/agent dep): heuristicPluginScan + the installer.
+        const installed = await installPluginToDir({
+          dataDir,
+          source,
+          name,
+          scanner: heuristicPluginScan,
+        });
+        // Persist the four config fields BEFORE reload so the rebuild sees them.
+        await pluginConfigStore.setEnabled(installed.name, true); // visible
+        await pluginConfigStore.setSource(installed.name, source); // provenance
+        await pluginConfigStore.setInstalled(installed.name, true); // gates P1 DELETE dir removal
+        // Do NOT set trusted — it stays false; code components remain noop until
+        // the user trusts the plugin via PUT /plugins/:name (P1).
+        await reloadPlugins();
+        eventBus?.emit({ type: 'plugin:installed', plugin: installed.name });
+        return c.json(installed, 201);
+      } catch (err) {
+        const m = mapPluginError(err);
+        return c.json(m.body, m.status);
+      }
     });
 
     // PUT /plugins/:name → patch enabled/trusted, then reload. 404 if unknown,

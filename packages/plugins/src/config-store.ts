@@ -72,6 +72,7 @@ export class PluginConfigStore {
             : undefined,
         path: typeof v.path === 'string' ? v.path : undefined,
         installed: v.installed === true ? true : undefined,
+        source: typeof v.source === 'string' ? v.source : undefined,
       };
     }
     return entries;
@@ -91,6 +92,34 @@ export class PluginConfigStore {
     return this.enqueue(async () => {
       const entries = await this.load();
       entries[name] = { ...(entries[name] ?? { enabled: false }), trusted };
+      await this.save(entries);
+    });
+  }
+
+  /**
+   * Record where a plugin was installed from (the original install `source`
+   * string). Set by the API install endpoint for reinstall/update; mirrors
+   * `setEnabled` (write-queue serialized, name guarded, load→mutate→save).
+   */
+  async setSource(name: string, source: string): Promise<void> {
+    if (DANGEROUS_KEYS.has(name)) return;
+    return this.enqueue(async () => {
+      const entries = await this.load();
+      entries[name] = { ...(entries[name] ?? { enabled: false }), source };
+      await this.save(entries);
+    });
+  }
+
+  /**
+   * Mark whether a plugin was installed by the management API into
+   * `<dataDir>/plugins/<name>`. Gates DELETE's directory removal. Mirrors
+   * `setEnabled` (write-queue serialized, name guarded, load→mutate→save).
+   */
+  async setInstalled(name: string, installed: boolean): Promise<void> {
+    if (DANGEROUS_KEYS.has(name)) return;
+    return this.enqueue(async () => {
+      const entries = await this.load();
+      entries[name] = { ...(entries[name] ?? { enabled: false }), installed };
       await this.save(entries);
     });
   }

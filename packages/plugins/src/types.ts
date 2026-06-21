@@ -31,6 +31,12 @@ export interface PluginEntryConfig {
    * on disk; only host-installed copies are removed.
    */
   installed?: boolean;
+  /**
+   * Where the plugin was installed from; set on API install, used for
+   * reinstall/update. The original `source` string passed to the install
+   * endpoint (a `git:`/`http(s):` URL or a local filesystem path).
+   */
+  source?: string;
 }
 
 export interface PluginRecord {

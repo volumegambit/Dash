@@ -544,6 +544,7 @@ async function main() {
     pluginConfigStore,
     reloadPlugins,
     pluginsDir,
+    dataDir,
     eventLogStore,
     token: flags.token,
     startedAt,

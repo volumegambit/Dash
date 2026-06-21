@@ -183,4 +183,59 @@ describe('PluginConfigStore', () => {
     const loaded = await store.load();
     expect(Object.keys(loaded)).not.toContain('__proto__');
   });
+
+  // --- setSource / setInstalled (P2 install provenance) ---
+
+  it('persists source and round-trips via a fresh store', async () => {
+    const store = new PluginConfigStore(dataDir);
+    await store.setSource('disco', 'git:owner/repo@main');
+    // A fresh store reads the same on-disk file.
+    const fresh = new PluginConfigStore(dataDir);
+    const loaded = await fresh.load();
+    expect(loaded.disco.source).toBe('git:owner/repo@main');
+  });
+
+  it('persists installed and round-trips via a fresh store', async () => {
+    const store = new PluginConfigStore(dataDir);
+    await store.setInstalled('disco', true);
+    const fresh = new PluginConfigStore(dataDir);
+    const loaded = await fresh.load();
+    expect(loaded.disco.installed).toBe(true);
+  });
+
+  it('setInstalled(false) clears the installed flag (becomes undefined on load)', async () => {
+    const store = new PluginConfigStore(dataDir);
+    await store.setInstalled('disco', true);
+    await store.setInstalled('disco', false);
+    const loaded = await store.load();
+    // load() only surfaces installed when strictly true.
+    expect(loaded.disco.installed).toBeUndefined();
+  });
+
+  it('preserves enabled/trusted when setting source and installed', async () => {
+    const store = new PluginConfigStore(dataDir);
+    await store.setEnabled('disco', true);
+    await store.setTrusted('disco', true);
+    await store.setSource('disco', '/abs/path');
+    await store.setInstalled('disco', true);
+    const loaded = await store.load();
+    expect(loaded.disco.enabled).toBe(true);
+    expect(loaded.disco.trusted).toBe(true);
+    expect(loaded.disco.source).toBe('/abs/path');
+    expect(loaded.disco.installed).toBe(true);
+  });
+
+  it('setSource and setInstalled ignore prototype-pollution keys', async () => {
+    const store = new PluginConfigStore(dataDir);
+    await store.setSource('__proto__', 'x');
+    await store.setInstalled('constructor', true);
+    await store.setInstalled('prototype', true);
+    expect(({} as Record<string, unknown>).source).toBeUndefined();
+    expect(({} as Record<string, unknown>).installed).toBeUndefined();
+    expect((Object.prototype as Record<string, unknown>).source).toBeUndefined();
+    const loaded = await store.load();
+    expect(Object.keys(loaded)).not.toContain('__proto__');
+    expect(Object.keys(loaded)).not.toContain('constructor');
+    expect(Object.keys(loaded)).not.toContain('prototype');
+  });
 });
