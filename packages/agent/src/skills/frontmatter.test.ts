@@ -171,6 +171,190 @@ Content.`;
   });
 });
 
+describe('parseFrontmatter — YAML block scalars', () => {
+  it('parses a literal block scalar (|) preserving newlines', () => {
+    const raw = `---
+name: code-simplifier
+description: |
+  Simplifies code while preserving behavior.
+  Use after a feature lands.
+---
+
+Body.`;
+
+    const result = parseFrontmatter(raw);
+    expect(result).not.toBeNull();
+    expect(result?.frontmatter.description).toBe(
+      'Simplifies code while preserving behavior.\nUse after a feature lands.',
+    );
+    expect(result?.content).toBe('Body.');
+  });
+
+  it('parses a folded block scalar (>) joining lines with spaces', () => {
+    const raw = `---
+name: folded-skill
+description: >
+  Simplifies code while preserving behavior.
+  Use after a feature lands.
+---
+
+Body.`;
+
+    const result = parseFrontmatter(raw);
+    expect(result).not.toBeNull();
+    expect(result?.frontmatter.description).toBe(
+      'Simplifies code while preserving behavior. Use after a feature lands.',
+    );
+    expect(result?.content).toBe('Body.');
+  });
+
+  it('folded block scalar (>) treats a blank line as a paragraph break', () => {
+    const raw = `---
+name: folded-para
+description: >
+  First paragraph line one.
+  Line two.
+
+  Second paragraph.
+---
+
+Body.`;
+
+    const result = parseFrontmatter(raw);
+    expect(result).not.toBeNull();
+    expect(result?.frontmatter.description).toBe(
+      'First paragraph line one. Line two.\nSecond paragraph.',
+    );
+  });
+
+  it('honours the strip chomping indicator (|-) by removing the trailing newline', () => {
+    const raw = `---
+name: strip-skill
+description: |-
+  Line one.
+  Line two.
+---
+
+Body.`;
+
+    const result = parseFrontmatter(raw);
+    expect(result).not.toBeNull();
+    expect(result?.frontmatter.description).toBe('Line one.\nLine two.');
+  });
+
+  it('tolerates a keep chomping indicator (|+) and an explicit indent digit', () => {
+    const raw = `---
+name: keep-skill
+description: |+2
+  Line one.
+  Line two.
+---
+
+Body.`;
+
+    const result = parseFrontmatter(raw);
+    expect(result).not.toBeNull();
+    expect(result?.frontmatter.description).toContain('Line one.\nLine two.');
+  });
+
+  it('parses a realistic multi-field skill with a block description plus name and model', () => {
+    const raw = `---
+name: code-simplifier
+description: |
+  Simplifies code while preserving behavior.
+  Use after a feature lands.
+model: opus
+---
+
+# Code Simplifier
+
+Run me after a feature lands.`;
+
+    const result = parseFrontmatter(raw);
+    expect(result).not.toBeNull();
+    expect(result?.frontmatter.name).toBe('code-simplifier');
+    expect(result?.frontmatter.description).toBe(
+      'Simplifies code while preserving behavior.\nUse after a feature lands.',
+    );
+    expect(result?.frontmatter.model).toBe('opus');
+    expect(result?.content).toBe('# Code Simplifier\n\nRun me after a feature lands.');
+  });
+
+  it('parses a field that follows a block scalar (block boundary detection)', () => {
+    const raw = `---
+description: |
+  Block line one.
+  Block line two.
+trigger: /go
+---
+
+Body.`;
+
+    const result = parseFrontmatter(raw);
+    // name is required by parseFrontmatter; add one via fields path below.
+    expect(result).toBeNull();
+  });
+
+  it('detects the block boundary so a following field still parses (with name)', () => {
+    const raw = `---
+name: boundary
+description: |
+  Block line one.
+  Block line two.
+trigger: /go
+model: opus
+---
+
+Body.`;
+
+    const result = parseFrontmatter(raw);
+    expect(result).not.toBeNull();
+    expect(result?.frontmatter.description).toBe('Block line one.\nBlock line two.');
+    expect(result?.frontmatter.trigger).toBe('/go');
+    expect(result?.frontmatter.model).toBe('opus');
+  });
+});
+
+describe('parseFrontmatter — regression for non-block-scalar values', () => {
+  it('still parses plain key: value', () => {
+    const raw = `---
+name: plain
+description: A plain description
+---
+
+Body.`;
+    const result = parseFrontmatter(raw);
+    expect(result?.frontmatter.name).toBe('plain');
+    expect(result?.frontmatter.description).toBe('A plain description');
+  });
+
+  it('still parses inline arrays', () => {
+    const raw = `---
+name: inline
+description: inline arrays
+tools: [Read, Grep]
+---
+
+Body.`;
+    const result = parseFrontmatter(raw);
+    expect(result?.frontmatter.tools).toEqual(['Read', 'Grep']);
+  });
+
+  it('still parses multi-line arrays', () => {
+    const raw = `---
+name: multiline
+description: multi-line arrays
+tools:
+  - Read
+  - Grep
+---
+
+Body.`;
+    const result = parseFrontmatter(raw);
+    expect(result?.frontmatter.tools).toEqual(['Read', 'Grep']);
+  });
+});
+
 describe('generateFrontmatter', () => {
   it('generates frontmatter with required fields only', () => {
     const result = generateFrontmatter(

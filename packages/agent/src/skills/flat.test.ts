@@ -38,6 +38,21 @@ describe('loadFlatSkills', () => {
     expect(skills[0].content).toBe('Do the release.');
   });
 
+  it('keeps a YAML block-scalar description (real Claude Code agent files)', async () => {
+    const f = join(dir, 'code-simplifier.md');
+    await writeFile(
+      f,
+      '---\nname: code-simplifier\ndescription: |\n  Simplifies code while preserving behavior.\n  Use after a feature lands.\nmodel: opus\n---\nDo the simplify.',
+    );
+    const skills = await loadFlatSkills([{ file: f }]);
+    expect(skills).toHaveLength(1);
+    expect(skills[0].name).toBe('code-simplifier');
+    expect(skills[0].description).toBe(
+      'Simplifies code while preserving behavior.\nUse after a feature lands.',
+    );
+    expect(skills[0].content).toBe('Do the simplify.');
+  });
+
   it('skips files that cannot be read without throwing', async () => {
     const skills = await loadFlatSkills([{ file: join(dir, 'missing.md') }]);
     expect(skills).toEqual([]);
