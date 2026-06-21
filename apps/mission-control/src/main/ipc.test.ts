@@ -6,7 +6,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // We need to import makePackagedSpawner — it doesn't exist yet, so this will fail
 // Import it from ipc.ts after you implement it
-import { makePackagedSpawner, shutdownGatewayOnQuit } from './ipc.js';
+import {
+  isSetupConfigured,
+  makePackagedSpawner,
+  resolveSetupStatus,
+  shutdownGatewayOnQuit,
+} from './ipc.js';
 
 describe('makePackagedSpawner', () => {
   it('replaces node with execPath and adds ELECTRON_RUN_AS_NODE=1 when packaged', () => {
@@ -142,5 +147,65 @@ describe('shutdownGatewayOnQuit', () => {
 
     // And the file is still there — this is the behavior we care about.
     expect(existsSync(stateFile)).toBe(true);
+  });
+});
+
+describe('isSetupConfigured', () => {
+  it('true when setupCompletedAt is present', () => {
+    expect(isSetupConfigured({ setupCompletedAt: '2026-06-21T00:00:00.000Z' }, false)).toBe(true);
+  });
+
+  it('true when legacy gateway-state.json exists', () => {
+    expect(isSetupConfigured({}, true)).toBe(true);
+  });
+
+  it('false when neither flag nor legacy file', () => {
+    expect(isSetupConfigured({}, false)).toBe(false);
+  });
+});
+
+describe('resolveSetupStatus', () => {
+  const healthyClient = { listCredentials: async () => ['anthropic-api-key:default'] };
+
+  it('returns needs-setup when not configured and does not touch the gateway', async () => {
+    const ensureHealthyClient = vi.fn();
+    const result = await resolveSetupStatus({
+      isConfigured: async () => false,
+      ensureHealthyClient,
+      markSetupCompleted: vi.fn(),
+    });
+    expect(result).toEqual({ state: 'needs-setup' });
+    expect(ensureHealthyClient).not.toHaveBeenCalled();
+  });
+
+  it('returns ready and marks complete when configured + healthy + has creds', async () => {
+    const markSetupCompleted = vi.fn().mockResolvedValue(undefined);
+    const result = await resolveSetupStatus({
+      isConfigured: async () => true,
+      ensureHealthyClient: async () => healthyClient,
+      markSetupCompleted,
+    });
+    expect(result).toEqual({ state: 'ready' });
+    expect(markSetupCompleted).toHaveBeenCalledOnce();
+  });
+
+  it('returns needs-setup when configured + healthy but no credentials', async () => {
+    const result = await resolveSetupStatus({
+      isConfigured: async () => true,
+      ensureHealthyClient: async () => ({ listCredentials: async () => [] }),
+      markSetupCompleted: vi.fn(),
+    });
+    expect(result).toEqual({ state: 'needs-setup' });
+  });
+
+  it('returns gateway-failed with the error message when the client throws', async () => {
+    const result = await resolveSetupStatus({
+      isConfigured: async () => true,
+      ensureHealthyClient: async () => {
+        throw new Error('Gateway failed to start within 10s');
+      },
+      markSetupCompleted: vi.fn(),
+    });
+    expect(result).toEqual({ state: 'gateway-failed', error: 'Gateway failed to start within 10s' });
   });
 });

@@ -21,6 +21,14 @@ import type {
   ProjectsEvent,
 } from './projects-ipc.js';
 
+// Top-level setup/onboarding status. Distinguishes a genuine first run
+// (`needs-setup`) from a configured user whose gateway cannot start
+// (`gateway-failed`) — the latter must NOT be shown the onboarding wizard.
+export type SetupStatus =
+  | { state: 'needs-setup' }
+  | { state: 'ready' }
+  | { state: 'gateway-failed'; error: string };
+
 // Serializable AgentEvent (error is string, not Error object, for IPC transport)
 export type McAgentEvent =
   | { type: 'text_delta'; text: string }

@@ -21,6 +21,7 @@ import type {
 import { app, dialog, ipcMain, shell } from 'electron';
 import type { BrowserWindow } from 'electron';
 import WebSocket from 'ws';
+import type { SetupStatus } from '../shared/ipc.js';
 import { ChatService } from './chat-service.js';
 import { completeClaudeOAuth, prepareClaudeOAuth } from './claude-auth.js';
 import { refreshCodexToken, startCodexOAuth } from './codex-auth.js';
@@ -1016,4 +1017,44 @@ export async function shutdownGatewayOnQuit(dataDir: string): Promise<void> {
     // Already dead — SIGTERM on a missing PID throws ESRCH; expected.
   }
   // Deliberately NOT clearing the state file here. See docstring above.
+}
+
+/**
+ * Whether this install has completed onboarding, independent of whether the
+ * gateway is currently running. The durable signal is the `setupCompletedAt`
+ * flag in MC settings; an existing `gateway-state.json` is accepted as a
+ * legacy fallback so healthy pre-flag installs are never re-onboarded.
+ */
+export function isSetupConfigured(
+  settings: { setupCompletedAt?: string },
+  legacyStateExists: boolean,
+): boolean {
+  return Boolean(settings.setupCompletedAt) || legacyStateExists;
+}
+
+export interface SetupStatusDeps {
+  isConfigured: () => Promise<boolean>;
+  ensureHealthyClient: () => Promise<{ listCredentials: () => Promise<string[]> }>;
+  markSetupCompleted: () => Promise<void>;
+}
+
+/**
+ * Decide which top-level screen MC should show. Pure + dependency-injected so
+ * every branch is unit-testable without Electron or a live gateway.
+ *
+ * The genuine-first-run path returns BEFORE `ensureHealthyClient` is called,
+ * preserving the invariant that a brand-new install never touches the gateway
+ * or OS keychain before the consent UI.
+ */
+export async function resolveSetupStatus(deps: SetupStatusDeps): Promise<SetupStatus> {
+  if (!(await deps.isConfigured())) return { state: 'needs-setup' };
+  try {
+    const client = await deps.ensureHealthyClient();
+    const creds = await client.listCredentials();
+    if (creds.length === 0) return { state: 'needs-setup' };
+    await deps.markSetupCompleted();
+    return { state: 'ready' };
+  } catch (err) {
+    return { state: 'gateway-failed', error: err instanceof Error ? err.message : String(err) };
+  }
 }
