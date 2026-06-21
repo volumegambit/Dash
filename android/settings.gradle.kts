@@ -25,6 +25,7 @@ rootProject.name = "dash-android"
 include(":core:model")
 include(":core:network")
 include(":core:connection")
+include(":core:designsystem")
 include(":feature:agents")
 include(":feature:chat")
 include(":feature:pairing")
