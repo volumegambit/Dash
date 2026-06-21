@@ -84,6 +84,9 @@ interface HookSpecificOutput {
   permissionDecisionReason?: string;
   updatedInput?: unknown;
   additionalContext?: string;
+  /** PostToolUse: `decision: "block"` + `reason` (nested under hookSpecificOutput). */
+  decision?: string;
+  reason?: string;
 }
 
 /** The normalized result of running ONE command hook. */
@@ -289,24 +292,41 @@ export function createHookEngine(
       return NEUTRAL;
     }
     if (typeof parsed !== 'object' || parsed === null) return NEUTRAL;
-    const hso = (parsed as { hookSpecificOutput?: unknown }).hookSpecificOutput;
-    if (typeof hso !== 'object' || hso === null) return NEUTRAL;
-    const o = hso as HookSpecificOutput;
-
+    const p = parsed as Record<string, unknown>;
     const outcome: HookOutcome = { blocked: false };
-    // 'ask' is intentionally treated as a conservative block: Dash has no
-    // interactive prompt surface to ask the user, so we deny rather than allow.
-    if (o.permissionDecision === 'deny' || o.permissionDecision === 'ask') {
+
+    // Top-level decision — used by UserPromptSubmit / Stop / PostToolUse:
+    // `{ "decision": "block", "reason": "..." }`, plus the universal
+    // `{ "continue": false, "stopReason": "..." }`.
+    if (p.decision === 'block' || p.continue === false) {
       outcome.blocked = true;
-      if (typeof o.permissionDecisionReason === 'string') {
-        outcome.reason = o.permissionDecisionReason;
+      if (typeof p.reason === 'string') outcome.reason = p.reason;
+      else if (typeof p.stopReason === 'string') outcome.reason = p.stopReason;
+    }
+
+    // Event-specific `hookSpecificOutput`: PreToolUse permissionDecision +
+    // updatedInput, PostToolUse decision, and additionalContext.
+    const hso = p.hookSpecificOutput;
+    if (typeof hso === 'object' && hso !== null) {
+      const o = hso as HookSpecificOutput;
+      // 'ask' is intentionally treated as a conservative block: Dash has no
+      // interactive prompt surface to ask the user, so we deny rather than allow.
+      if (o.permissionDecision === 'deny' || o.permissionDecision === 'ask') {
+        outcome.blocked = true;
+        if (typeof o.permissionDecisionReason === 'string') {
+          outcome.reason = o.permissionDecisionReason;
+        }
       }
-    }
-    if ('updatedInput' in o && o.updatedInput !== undefined) {
-      outcome.updatedInput = o.updatedInput;
-    }
-    if (typeof o.additionalContext === 'string') {
-      outcome.additionalContext = o.additionalContext;
+      if (o.decision === 'block') {
+        outcome.blocked = true;
+        if (typeof o.reason === 'string') outcome.reason = o.reason;
+      }
+      if ('updatedInput' in o && o.updatedInput !== undefined) {
+        outcome.updatedInput = o.updatedInput;
+      }
+      if (typeof o.additionalContext === 'string') {
+        outcome.additionalContext = o.additionalContext;
+      }
     }
     return outcome;
   }

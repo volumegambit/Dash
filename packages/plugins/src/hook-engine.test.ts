@@ -177,6 +177,15 @@ describe('runUserPromptSubmit', () => {
     expect(d.block).toBe(true);
     expect(d.reason).toMatch(/block2/);
   });
+
+  it('blocks on a top-level decision:block JSON output (not exit-2)', async () => {
+    const e = createHookEngine([
+      entry({ UserPromptSubmit: [{ hooks: [cmd('decision-block.js')] }] }),
+    ]);
+    const d = await e.runUserPromptSubmit({ prompt: 'hi' });
+    expect(d.block).toBe(true);
+    expect(d.reason).toBe('top-level block');
+  });
 });
 
 describe('runSessionStart', () => {
