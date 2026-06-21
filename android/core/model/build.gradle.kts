@@ -4,7 +4,9 @@ plugins {
 }
 
 dependencies {
-    implementation(libs.kotlinx.serialization.json)
+    // `api`: AgentEvent.ToolUseStart.input (JsonObject) and ToolResult.details
+    // (JsonElement) are part of the public surface, so consumers need this too.
+    api(libs.kotlinx.serialization.json)
     testImplementation(libs.junit)
 }
 
