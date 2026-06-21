@@ -136,6 +136,54 @@ describe('gateway plugin hook assembly (Task 7)', () => {
     expect(promptArg).toContain('hello');
   });
 
+  it('engine drives the channel messageHook: a blocking UserPromptSubmit stops dispatch and replies the reason', async () => {
+    // A hook that blocks via the top-level Claude Code decision envelope.
+    const engine = await buildEngine({
+      UserPromptSubmit: [
+        {
+          hooks: [
+            {
+              type: 'command',
+              command: 'printf \'{"decision":"block","reason":"DENIED-BY-HOOK"}\'',
+            },
+          ],
+        },
+      ],
+    });
+
+    const gw = createDynamicGateway({
+      messageHook: engine.hasHooks
+        ? (i) =>
+            engine.runUserPromptSubmit({
+              prompt: i.prompt,
+              sessionId: i.conversationId,
+              cwd: dataDir,
+            })
+        : undefined,
+    });
+    const agent = makeFakeAgent();
+    gw.registerAgent('agent1', agent);
+    const adapter = makeFakeAdapter('tg1');
+    await gw.registerChannel('tg1', adapter, {
+      globalDenyList: [],
+      routing: [{ condition: { type: 'default' }, agentId: 'agent1', allowList: [], denyList: [] }],
+    });
+
+    await adapter.trigger({
+      channelId: 'tg1',
+      conversationId: 'conv1',
+      senderId: 'user1',
+      senderName: 'User',
+      text: 'hello',
+      timestamp: new Date(),
+    });
+
+    // Blocked BEFORE the agent runs; the reason is sent back to the sender via
+    // the adapter using its native (unprefixed) conversation id.
+    expect(agent.chat).not.toHaveBeenCalled();
+    expect(adapter.send).toHaveBeenCalledWith('conv1', { text: 'DENIED-BY-HOOK' });
+  });
+
   it('engine satisfies the backend HookRunner shape (tool + lifecycle methods)', async () => {
     const engine = await buildEngine({
       PreToolUse: [

@@ -435,6 +435,12 @@ export function createHookEngine(
           hook_event_name: 'Stop',
         };
         const outcome = await runOne(entry, command, payload, cwd);
+        // NOTE: unlike the pre/prompt events, a Stop hook's block decision
+        // (exit 2 / {"decision":"block"}) is intentionally NOT honored. Stop
+        // fires from the backend's end-of-turn `finally`, by which point the
+        // turn's output has already been streamed to the client — there is
+        // nothing left to continue into, so blocking would be a no-op. Only
+        // additionalContext is collected.
         if (outcome.additionalContext) contexts.push(outcome.additionalContext);
       }
       return { additionalContext: joinContext(contexts) };

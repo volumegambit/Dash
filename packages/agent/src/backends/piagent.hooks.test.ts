@@ -94,6 +94,48 @@ describe('composeToolHooks', () => {
     expect(runPreToolUse).not.toHaveBeenCalled();
   });
 
+  it('warns once (and does not block or mutate args) when a pre-hook returns un-appliable updatedInput', async () => {
+    const warn = vi.fn();
+    const logger = { info: vi.fn(), warn, error: vi.fn() };
+    const prior = vi.fn().mockResolvedValue(undefined);
+    const agent = makeFakeAgent({ before: prior });
+    const runner = makeRunner({
+      runPreToolUse: vi
+        .fn()
+        .mockResolvedValue({ block: false, updatedInput: { cmd: 'echo REWRITTEN' } }),
+    });
+
+    composeToolHooks(agent, runner, { logger });
+
+    const ctx = beforeCtx('bash', { cmd: 'echo ORIGINAL' });
+    const res1 = await agent.beforeToolCall?.(ctx);
+    const res2 = await agent.beforeToolCall?.(beforeCtx('bash', { cmd: 'echo ORIGINAL2' }));
+
+    // updatedInput is NOT applied: no block, pi's prior result is returned, the
+    // tool args object is left untouched (the tool runs with the original input).
+    expect(res1).toBeUndefined();
+    expect(res2).toBeUndefined();
+    expect(ctx.args).toEqual({ cmd: 'echo ORIGINAL' });
+    // Warned exactly once across the two firings, naming the limitation.
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0][0]).toMatch(/updatedInput/);
+  });
+
+  it('does NOT warn when a pre-hook allows without updatedInput (the warn is gated on updatedInput)', async () => {
+    const warn = vi.fn();
+    const logger = { info: vi.fn(), warn, error: vi.fn() };
+    const prior = vi.fn().mockResolvedValue(undefined);
+    const agent = makeFakeAgent({ before: prior });
+    const runner = makeRunner({ runPreToolUse: vi.fn().mockResolvedValue({ block: false }) });
+
+    composeToolHooks(agent, runner, { logger });
+
+    const res = await agent.beforeToolCall?.(beforeCtx('bash', { cmd: 'echo OK' }));
+    expect(res).toBeUndefined();
+    // A plain allow (no updatedInput) must never trip the warning.
+    expect(warn).not.toHaveBeenCalled();
+  });
+
   it('appends post-hook additionalContext to the tool result content', async () => {
     const prior = vi.fn().mockResolvedValue(undefined);
     const agent = makeFakeAgent({ after: prior });

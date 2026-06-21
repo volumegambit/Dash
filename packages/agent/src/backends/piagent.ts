@@ -107,16 +107,21 @@ function stringifyToolResult(result: unknown): string {
  *   the executed result's values (pi's field-by-field merge semantics).
  *
  * Limitation: pi's `BeforeToolCallResult` only carries `block`/`reason` — there
- * is NO way to feed modified args back into the tool call. So PreToolUse is
- * allow/deny only here; the engine's `updatedInput` is intentionally ignored.
+ * is NO supported way to feed modified args back into the tool call. So
+ * PreToolUse is allow/deny only here; the engine's `updatedInput` cannot be
+ * applied. It is NOT silently dropped: the wrapper logs a one-time warning so an
+ * operator who installs a Claude-Code arg-rewriting hook learns it has no effect
+ * (and should use `permissionDecision: "deny"` to block instead).
  */
 export function composeToolHooks(
   // biome-ignore lint/suspicious/noExplicitAny: pi Agent's hook fields are not exported as a usable type
   agent: any,
   hookRunner: HookRunner,
-  ctxInfo: { sessionId?: string | (() => string | undefined); cwd?: string },
+  ctxInfo: { sessionId?: string | (() => string | undefined); cwd?: string; logger?: Logger },
 ): void {
-  const { cwd } = ctxInfo;
+  const { cwd, logger } = ctxInfo;
+  // Warn at most once per install when a hook returns un-appliable updatedInput.
+  let warnedUpdatedInput = false;
   // sessionId may be a static value (tests) or a thunk read at fire-time, so
   // the per-run conversation id is current when each hook fires.
   const resolveSessionId = (): string | undefined =>
@@ -149,6 +154,20 @@ export function composeToolHooks(
     }
     if (decision.block) {
       return { block: true, reason: decision.reason };
+    }
+    // The engine may return `updatedInput` (a hook rewrote the tool args), but
+    // pi's BeforeToolCallResult is allow/deny only — there is no supported way
+    // to feed modified args back into the call. Warn ONCE rather than silently
+    // no-op, so an operator who installs an arg-rewriting hook learns it has no
+    // effect on this backend.
+    if (decision.updatedInput !== undefined && !warnedUpdatedInput) {
+      warnedUpdatedInput = true;
+      const message = `[PiAgent] a PreToolUse hook returned updatedInput for tool '${ctx?.toolCall?.name}', but this backend cannot apply modified tool arguments — the tool runs with the original input. Use permissionDecision: "deny" to block a call instead.`;
+      // Fall back to console.warn when no structured logger is injected (the
+      // gateway constructs the backend without one) so the warning is never
+      // silently swallowed.
+      if (logger) logger.warn(message);
+      else console.warn(message);
     }
     return piRes;
   };
@@ -775,6 +794,7 @@ export class PiAgentBackend implements AgentBackend {
       composeToolHooks((session as unknown as { agent: unknown }).agent, this.hookRunner, {
         sessionId: () => this.currentSessionId ?? undefined,
         cwd: workspace,
+        logger: this.logger,
       });
     }
 
