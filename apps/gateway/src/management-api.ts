@@ -1,9 +1,13 @@
+import { rm } from 'node:fs/promises';
+import { join } from 'node:path';
 import type { AgentClient } from '@dash/agent';
 import type { ChannelAdapter } from '@dash/channels';
 import { TelegramAdapter, WhatsAppAdapter } from '@dash/channels';
 import { type StructuredLogger, createConsoleLogger } from '@dash/logging';
 import { mountProjectsRoutes } from '@dash/management';
 import type { FilteredModel } from '@dash/models';
+import type { PluginConfigStore } from '@dash/plugins';
+import { realpathContained } from '@dash/plugins';
 import type { ProjectsDb } from '@dash/projects';
 import { Hono } from 'hono';
 import type { Context } from 'hono';
@@ -19,6 +23,7 @@ import type { McpManagementDeps } from './mcp-management.js';
 import { mountMcpRoutes } from './mcp-management.js';
 import { createModelsRoute } from './models-route.js';
 import type { ModelsStore } from './models-store.js';
+import type { PluginWiringState } from './plugins-wiring.js';
 
 export interface GatewayManagementOptions {
   gateway: DynamicGateway;
@@ -59,6 +64,28 @@ export interface GatewayManagementOptions {
    * shared logger from the gateway entrypoint to unify log streams.
    */
   logger?: StructuredLogger;
+  // --- Plugin management (all optional; absent in tests that don't wire
+  // plugins → the plugin routes return 500 'plugins not configured'). ---
+  /**
+   * Live getter for the current plugin wiring. MUST be a getter (not a
+   * snapshot) so the routes observe the rebuilt state after a reload — the
+   * entrypoint reassigns its `wiringState` holder, and this closure reads it.
+   */
+  getPluginWiringState?: () => PluginWiringState;
+  /** Persistence for the per-plugin enable/trust/installed entries. */
+  pluginConfigStore?: PluginConfigStore;
+  /**
+   * Re-run plugin discovery + rebuild wiring + swap the live reference + evict
+   * warm backends. Owned by the entrypoint (it alone can reassign the wiring
+   * holder + re-register MCP servers); the routes call it after persisting a
+   * config change. Resolves to the rebuilt wiring; rejects on any reload error.
+   */
+  reloadPlugins?: () => Promise<PluginWiringState>;
+  /**
+   * Absolute plugins directory (`<dataDir>/plugins`). Used by DELETE to compute
+   * an installed plugin's dir and guard the `rm -rf` with a realpath check.
+   */
+  pluginsDir?: string;
 }
 
 /**
@@ -792,6 +819,139 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
   // --- MCP routes ---
   if (options.mcpDeps) {
     mountMcpRoutes(app, options.mcpDeps);
+  }
+
+  // --- Plugin management routes ---
+  //
+  // Mounted behind the bearer middleware. The plugin options are OPTIONAL so
+  // tests/embedders that don't wire plugins still construct the app; each
+  // handler returns 500 'plugins not configured' when they're absent. State is
+  // read LIVE via `getPluginWiringState()` so every read reflects the latest
+  // reload. Mutations persist to the config store BEFORE calling `reloadPlugins`
+  // (which re-reads the persisted entries), then return the now-fresh record.
+  {
+    const getWiring = options.getPluginWiringState;
+    const pluginConfigStore = options.pluginConfigStore;
+    const reloadPlugins = options.reloadPlugins;
+    const pluginsDir = options.pluginsDir;
+    const notConfigured = (c: Context) => c.json({ error: 'plugins not configured' }, 500);
+
+    // GET /plugins → all status records, sorted by name (incl. disabled/error).
+    app.get('/plugins', (c) => {
+      if (!getWiring) return notConfigured(c);
+      const records = Object.values(getWiring().pluginRecords).sort((a, b) =>
+        a.name.localeCompare(b.name),
+      );
+      return c.json({ records });
+    });
+
+    // PUT /plugins/:name → patch enabled/trusted, then reload. 404 if unknown,
+    // 400 on a bad body, 409 if the reload fails (config already persisted).
+    app.put('/plugins/:name', async (c) => {
+      if (!getWiring || !pluginConfigStore || !reloadPlugins) return notConfigured(c);
+      const name = c.req.param('name');
+      if (!getWiring().pluginRecords[name]) return c.json({ error: 'not found' }, 404);
+
+      const parsed = await parseJsonBody<{ enabled?: unknown; trusted?: unknown }>(c);
+      if (!parsed.ok) return parsed.response;
+      const { enabled, trusted } = parsed.body;
+      if (enabled !== undefined && typeof enabled !== 'boolean') {
+        return c.json({ error: 'enabled must be a boolean' }, 400);
+      }
+      if (trusted !== undefined && typeof trusted !== 'boolean') {
+        return c.json({ error: 'trusted must be a boolean' }, 400);
+      }
+
+      // Persist config BEFORE reload so the rebuild sees the new entries.
+      const fields: string[] = [];
+      if (enabled !== undefined) {
+        await pluginConfigStore.setEnabled(name, enabled);
+        fields.push('enabled');
+      }
+      if (trusted !== undefined) {
+        await pluginConfigStore.setTrusted(name, trusted);
+        fields.push('trusted');
+      }
+
+      try {
+        await reloadPlugins();
+      } catch (err) {
+        // The config write already happened; the live wiring is unchanged (the
+        // reload threw before swapping it). Surface this as a 409 so the caller
+        // knows persisted config and running wiring have diverged.
+        const message = err instanceof Error ? err.message : 'reload failed';
+        return c.json(
+          { error: message, plugin: name, note: 'config persisted; wiring unchanged' },
+          409,
+        );
+      }
+
+      eventBus?.emit({ type: 'plugin:config-changed', plugin: name, fields });
+      const updated = getWiring().pluginRecords[name];
+      return c.json(updated);
+    });
+
+    // DELETE /plugins/:name → drop from store; for an installed plugin with a
+    // resolvable dir under pluginsDir, also rm -rf it. Then reload.
+    app.delete('/plugins/:name', async (c) => {
+      if (!getWiring || !pluginConfigStore || !reloadPlugins) return notConfigured(c);
+      const name = c.req.param('name');
+      const entries = await pluginConfigStore.load();
+      const entry = entries[name];
+      if (!entry) return c.json({ error: 'not found' }, 404);
+
+      await pluginConfigStore.remove(name);
+
+      // Only delete the directory for host-installed plugins (the `installed`
+      // flag). A `path:` (linked dev) or manually-dropped plugin is left on
+      // disk. The realpath guard refuses any dir that escapes pluginsDir.
+      let deletedPath: string | undefined;
+      if (entry.installed && pluginsDir) {
+        const dirAbs = join(pluginsDir, name);
+        if (realpathContained(pluginsDir, dirAbs)) {
+          await rm(dirAbs, { recursive: true, force: true });
+          deletedPath = dirAbs;
+        } else {
+          logger.warn?.('refusing to delete plugin dir outside plugins root', {
+            plugin: name,
+            dir: dirAbs,
+            pluginsDir,
+          });
+        }
+      }
+
+      await reloadPlugins();
+      eventBus?.emit({ type: 'plugin:removed', plugin: name });
+      return c.json(deletedPath ? { ok: true, path: deletedPath } : { ok: true });
+    });
+
+    // POST /plugins/reload → re-run discovery with no config change.
+    app.post('/plugins/reload', async (c) => {
+      if (!reloadPlugins) return notConfigured(c);
+      try {
+        await reloadPlugins();
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'reload failed';
+        return c.json({ error: message }, 500);
+      }
+      eventBus?.emit({ type: 'plugin:reloaded' });
+      return c.json({ ok: true, reloadedAt: new Date().toISOString() });
+    });
+
+    // GET /runtime/plugins → lightweight shape for MC pickers + credential form.
+    app.get('/runtime/plugins', (c) => {
+      if (!getWiring) return notConfigured(c);
+      const ws = getWiring();
+      const providers = ws.pluginProviderConfigs.map((p) => ({
+        id: p.catalog.id,
+        label: p.catalog.label,
+        credentialPrefix: p.catalog.credentialPrefix,
+      }));
+      const plugins = Object.values(ws.pluginRecords)
+        .filter((r) => r.status !== 'disabled')
+        .map((r) => ({ name: r.name, displayName: r.displayName, version: r.version }));
+      return c.json({ providers, plugins });
+    });
   }
 
   // --- Projects routes (HTTP: /projects, /issues, /inbox) ---

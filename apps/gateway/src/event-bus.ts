@@ -5,7 +5,10 @@ export type GatewayEvent =
   | { type: 'channel:removed'; channel: string }
   | { type: 'channel:restarted'; channel: string; reason: string }
   | { type: 'mcp:server-added'; server: string }
-  | { type: 'mcp:server-removed'; server: string };
+  | { type: 'mcp:server-removed'; server: string }
+  | { type: 'plugin:config-changed'; plugin: string; fields: string[] }
+  | { type: 'plugin:removed'; plugin: string }
+  | { type: 'plugin:reloaded' };
 
 type Subscriber = (event: GatewayEvent) => void;
 
