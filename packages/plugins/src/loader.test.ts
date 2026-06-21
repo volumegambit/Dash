@@ -268,21 +268,25 @@ describe('loadPlugins', () => {
   });
 
   it('collects hookConfigs for an enabled+trusted plugin with valid hooks.json', async () => {
-    const hooks = {
+    const eventMap = {
       PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: 'echo' }] }],
     };
-    const dir = await writePlugin(pluginsDir, 'hooky', { hooks });
+    const dir = await writePlugin(pluginsDir, 'hooky', { hooks: { hooks: eventMap } });
     const loaded = await loadPlugins({
       pluginsDir,
       entries: { hooky: { enabled: true, trusted: true } },
     });
-    expect(loaded.hookConfigs).toEqual([{ pluginName: 'hooky', pluginRoot: dir, config: hooks }]);
+    expect(loaded.hookConfigs).toEqual([
+      { pluginName: 'hooky', pluginRoot: dir, config: eventMap },
+    ]);
     expect(loaded.records[0].activated).toEqual(expect.arrayContaining(['hooks']));
   });
 
   it('withholds hooks from an enabled-but-untrusted plugin', async () => {
     await writePlugin(pluginsDir, 'hooky', {
-      hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: 'echo' }] }] },
+      hooks: {
+        hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: 'echo' }] }] },
+      },
     });
     const loaded = await loadPlugins({ pluginsDir, entries: { hooky: { enabled: true } } });
     expect(loaded.hookConfigs).toEqual([]);
@@ -324,7 +328,7 @@ describe('loadPlugins', () => {
     });
     const goodDir = await writePlugin(pluginsDir, 'good', {
       skill: 'gskill',
-      hooks: { PreToolUse: [{ hooks: [{ type: 'command', command: 'echo' }] }] },
+      hooks: { hooks: { PreToolUse: [{ hooks: [{ type: 'command', command: 'echo' }] }] } },
     });
     const loaded = await loadPlugins({
       pluginsDir,

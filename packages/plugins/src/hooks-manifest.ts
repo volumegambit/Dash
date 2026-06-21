@@ -66,11 +66,20 @@ export function validateHooksJson(raw: unknown): HooksConfig {
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
     throw new Error('hooks.json must be a JSON object');
   }
+  // Claude Code wraps the event map under a top-level `hooks` key, e.g.
+  // `{ "hooks": { "PreToolUse": [...] }, "disableAllHooks"?, "description"? }`.
+  // Read that inner map; sibling keys (description, disableAllHooks, etc.) are
+  // ignored. A file with no `hooks` key is a valid empty config.
+  const hooks = (raw as Record<string, unknown>).hooks;
+  if (hooks === undefined) return {};
+  if (typeof hooks !== 'object' || hooks === null || Array.isArray(hooks)) {
+    throw new Error("hooks.json 'hooks' must be an object mapping events to groups");
+  }
   const out: Record<string, HookMatcherGroup[]> = Object.create(null);
-  for (const [event, value] of Object.entries(raw as Record<string, unknown>)) {
+  for (const [event, value] of Object.entries(hooks as Record<string, unknown>)) {
     if (event === '__proto__') continue;
     if (!Array.isArray(value)) {
-      throw new Error(`hooks.json '${event}' must be an array of groups`);
+      throw new Error(`hooks.json hooks.'${event}' must be an array of groups`);
     }
     out[event] = value.map((g, i) => normalizeGroup(g, `${event}[${i}]`));
   }
