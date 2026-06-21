@@ -7,6 +7,30 @@ A plugin is a self-contained bundle of agent capabilities. Where a [skill](/skil
 
 Dash plugins follow the **Claude Code plugin layout**, so a plugin published for Claude Code works in Dash unchanged.
 
+## Quick start
+
+Here's the whole journey, from an empty list to a working plugin — all from **Mission Control → Plugins** (under **CONFIGURE** in the sidebar):
+
+<Steps>
+<Step title="Install a plugin">
+In the **Install Plugin** form, paste a **source** — a git repo (`git:owner/repo`), a download URL, or a path to a folder on your machine (`/path/to/plugin`) — and click **Install**. Leave **Name** blank to take the name from the plugin's manifest (or the source). See [Installing a plugin](#installing-a-plugin) for all three source forms.
+</Step>
+<Step title="See it in the list">
+The plugin appears with a **status badge** — *Loaded*, *Disabled*, or *Error* — and a row of **contribution** tags showing what it adds (skills, commands, agents, mcp, hooks, providers, bin). It lands **enabled but untrusted**: its skills and commands work right away; its code components wait for you to trust it.
+</Step>
+<Step title="Enable / disable it">
+Use the **Enable** / **Disable** button to turn the plugin's markdown components (skills, commands, subagents) on or off. A freshly installed plugin is already enabled.
+</Step>
+<Step title="Trust it (only if it ships code)">
+If the plugin includes code or credential components — MCP servers, hooks, `bin/` executables, or LLM providers — click **Trust**, review the confirmation listing exactly what will run, and confirm. A markdown-only plugin needs no trust. See the [Security model](#security-model).
+</Step>
+<Step title="Use it">
+Skills become loadable by any agent; commands and subagents are available as `/<plugin>:<command>` slash commands; trusted MCP servers and hooks wire in automatically; trusted providers show up on the [AI Providers](/ai-providers) screen once you add a key. See [Invoking each component](#invoking-each-component).
+</Step>
+</Steps>
+
+The rest of this page is the reference behind each of those steps. Prefer files over clicks? You can also drop a plugin directory under `<dataDir>/plugins/` and edit `config.json` by hand — see [Configuration → Plugins](/configuration#plugins) and the [complete example](#a-complete-example-plugin) below.
+
 ## What's in a plugin
 
 A plugin is a directory with an optional `.claude-plugin/plugin.json` manifest plus any of these components:
@@ -31,7 +55,7 @@ Already comfortable with skills? A plugin is the next step up: instead of instal
 
 ## Installing a plugin
 
-You install a plugin **by name or source** by calling the management API's `POST /plugins/install` endpoint (a Mission Control screen for this is coming). The installer fetches the plugin, scans it, and drops it into your gateway's managed plugins directory at `<dataDir>/plugins/<name>` — no restart needed; the gateway hot-reloads.
+You install a plugin **by source** from the **Plugins** screen in Mission Control (under **CONFIGURE**) — fill in the **Install Plugin** form and click **Install** — or, if you're scripting, by calling the management API's `POST /plugins/install` endpoint directly. Either way the installer fetches the plugin, scans it, and drops it into your gateway's managed plugins directory at `<dataDir>/plugins/<name>` — no restart needed; the gateway hot-reloads.
 
 A plugin install takes a single `source` string in one of three forms:
 
@@ -63,6 +87,36 @@ git:acme/dash-plugins/research@9f2c1ab…       # a full commit SHA (recommended
 ```
 
 A **full commit SHA** is the safest choice — it pins to exact bytes that can't change underneath you. A branch like `@main` always installs the latest, which is convenient but means a later reinstall can bring in different code.
+
+## Managing plugins in Mission Control
+
+Mission Control's **Plugins** screen — under **CONFIGURE** in the sidebar — is where you install, inspect, enable, trust, and remove plugins without touching a config file. Changes take effect immediately; the gateway hot-reloads as you go.
+
+**Install Plugin form.** At the top of the screen, a **Source** field takes any install source (git, URL, or local path — see [Installing a plugin](#installing-a-plugin)) and an optional **Name** field overrides the install name (the manifest's `name` still wins when one is present). Click **Install** to fetch, scan, and load the plugin. If the scan flags the plugin as *suspicious* or *dangerous*, the screen shows the verdict so you can decide whether to keep it.
+
+**The plugin list.** Each installed plugin is a card showing its name, version, a **status badge**, and its contributions:
+
+| Status badge | Meaning |
+|--------------|---------|
+| **Loaded** | The plugin is enabled and loaded its components without error. |
+| **Disabled** | The plugin is installed but turned off — it contributes nothing. |
+| **Error** | The plugin failed to load; the card shows the failure message. |
+
+Below the badge, **contribution tags** show which component types the plugin ships. A tag is shown **activated** (green) when that component is actually running, or **noop** (greyed out, struck through) when it's present but not active yet — for example, a code component on an untrusted plugin, which stays inert until you trust it.
+
+**Per-plugin controls.** Each card has:
+
+- **Enable / Disable** — toggles the plugin's markdown components (skills, commands, subagents) on or off.
+- **Trust / Revoke Trust** — shown **only when the plugin is enabled**. *Trust* opens a confirmation (below); *Revoke Trust* immediately stops the plugin's code components from running.
+- **Remove** — deletes the plugin's directory from your machine, after a confirmation prompt.
+
+### The trust confirmation
+
+Clicking **Trust** opens a confirmation dialog before any code runs. It carries a high-contrast warning — **"This code will run on your machine."** — and lists the exact code component types that will activate once you trust the plugin: any of `bin`, `hooks`, `mcp`, and `providers` the plugin ships. Confirm with **Trust Plugin**, or cancel to leave the plugin untrusted.
+
+<Note>
+The **Trust Plugin** button is disabled until the plugin is **enabled** — you enable a plugin first, then trust it. Trust is a deliberate, separate action; nothing trusts a plugin on your behalf. See the [Security model](#security-model) for why.
+</Note>
 
 ## Security model
 
@@ -99,6 +153,64 @@ A plugin's providers only show up if the plugin is **trusted**. An untrusted plu
 </Note>
 
 A plugin can't shadow a built-in provider: if a plugin's provider id collides with one of the built-ins (`anthropic`, `openai`, `google`, `moonshotai`, `openrouter`), that provider is dropped and never offered, even from a trusted plugin.
+
+## Invoking each component
+
+Once a plugin is loaded (and trusted, where needed), its components show up in different places. Here's how each one is reached:
+
+| Component | How you use it | Needs trust? |
+|-----------|----------------|--------------|
+| **Skills** | Auto-discovered into the agent's skill index; the agent loads one on demand with its `load_skill` tool. | No |
+| **Commands** | A `/<plugin>:<command>` slash command. | No |
+| **Subagents** | A `/<plugin>:<agent>` slash command, or loaded by the agent via `load_skill`. | No |
+| **MCP servers** | Register automatically at startup; their tools become available to the agent — no explicit invocation. | Yes |
+| **Hooks** | Run transparently at events during a run (session start, before/after tools, and so on). | Yes |
+| **LLM providers** | Appear in the agent's model picker once trusted and a key is added. | Yes |
+| **Executables (`bin/`)** | Prepended to the gateway's `PATH`, so they resolve when a command, hook, or the agent's shell tools run them by name. | Yes |
+
+### Skills
+
+A plugin's `skills/<name>/SKILL.md` files join the agent's **skill index** — the compact list of available skills the agent sees in its system prompt. The agent loads a skill's full instructions on demand with its `load_skill` tool, so the agent needs `load_skill` in its tool list (it's there by default whenever skills are configured). See [Skills](/skills) for the format and how discovery works.
+
+### Commands and subagents
+
+A plugin's `commands/<name>.md` becomes a slash command **`/<plugin>:<command>`** — a plugin named `research` with `commands/triage.md` exposes `/research:triage`. A plugin's `agents/<name>.md` (Claude Code subagent format) becomes a loadable specialist invocable as **`/<plugin>:<agent>`**, or loaded by the agent through `load_skill`. Both are **markdown**, so they work on `enabled` alone — no trust needed. The plugin name namespaces them, so the slash form matches exactly with no ambiguity.
+
+<Note>
+**Subagents run in the main session**, not as isolated child agents. Their `tools` frontmatter is therefore advisory, not enforced — a loaded specialist can use the agent's full tool set. True isolated subagent spawning is a future enhancement.
+</Note>
+
+### MCP servers, hooks, and executables
+
+These are **trusted** code components, and none of them is invoked by a slash command — they wire in behind the scenes:
+
+- **MCP servers** (`.mcp.json`) register with the gateway at startup. Their tools become part of the agent's toolset; registration is fail-isolated, so a server that won't start is logged and skipped without taking down the gateway.
+- **Hooks** (`hooks/hooks.json`) run automatically at key points in a run — session start, before and after tools, and run completion. You don't call them; they fire on events. For the full event list and behavior see [Hooks in the configuration reference](/configuration#hooks).
+- **Executables** (`bin/`) are prepended to the gateway's `PATH`, so a plugin's tools resolve ahead of system binaries when a command, hook, or the agent's shell tools invoke them by name.
+
+### LLM providers
+
+A trusted plugin's `providers/*.json` catalogs add selectable models. Once the plugin is trusted **and** you've added a key (see [Provider credentials](#provider-credentials)), the provider's models appear in the agent's model picker as `<id>/<model-id>`, exactly like the built-in providers — point any agent at one the same way.
+
+## Choosing plugins per agent
+
+By default, **every agent sees every loaded plugin**. You can scope an individual agent to a subset from its configuration:
+
+<Steps>
+<Step title="Open the agent's config">
+In Mission Control, go to **Agents**, open the agent, and switch to its **Config** tab.
+</Step>
+<Step title="Open the Plugins card">
+Expand the **Plugins** card. When no plugins are selected it reads **"All plugins (default)"** — the agent sees every loaded plugin.
+</Step>
+<Step title="Select the plugins this agent should see">
+Use **Add plugin…** to pick from the **loaded** plugins. Each one you add appears as a chip; remove a chip with its **×**. As soon as you select at least one, the agent is scoped to exactly those plugins. Clear all the chips to return to the **all-plugins** default.
+</Step>
+</Steps>
+
+<Note>
+Per-agent selection controls **visibility only — it does not trust a plugin**. Trust is gateway-wide: selecting a plugin for an agent never makes its code run if the plugin isn't trusted, and a trusted plugin stays trusted regardless of which agents are scoped to it. Only **loaded** plugins are offered in the picker — a disabled or errored plugin contributes nothing to route.
+</Note>
 
 ## Marketplaces
 
@@ -150,6 +262,89 @@ Each plugin has an entry in `<dataDir>/plugins/config.json` describing its state
 | `installed` | `true` when the management API installed the plugin into `<dataDir>/plugins/<name>`. Determines whether uninstalling also deletes the directory. |
 
 For the full config-file format — directory layout, manual enabling, loading a plugin from an arbitrary `path`, and per-component details — see [Configuration → Plugins](/configuration#plugins).
+
+## A complete example plugin
+
+Here's a minimal but realistic plugin you can copy and install from a local folder. It bundles a skill, a slash command, and — optionally — an LLM provider and a hook.
+
+**Directory layout:**
+
+```
+my-plugin/
+├── .claude-plugin/
+│   └── plugin.json
+├── skills/
+│   └── summarize/
+│       └── SKILL.md
+├── commands/
+│   └── triage.md
+├── providers/                  (optional — needs trust)
+│   └── myprov.json
+└── hooks/                      (optional — needs trust)
+    └── hooks.json
+```
+
+**`.claude-plugin/plugin.json`** — the manifest. Only `name` is meaningful-required (and must be kebab-case); the rest is metadata.
+
+```json
+{
+  "name": "my-plugin",
+  "displayName": "My Plugin",
+  "description": "A summarize skill and a triage command",
+  "version": "1.0.0"
+}
+```
+
+**`skills/summarize/SKILL.md`** — a skill. Markdown, so it loads on `enabled` alone.
+
+```markdown
+---
+name: summarize
+description: Summarize any text concisely
+---
+Summarize the provided text in three sentences or fewer.
+```
+
+**`commands/triage.md`** — a slash command, reachable as `/my-plugin:triage`. Optional frontmatter (`name`, `description`) overrides the command name and supplies a description.
+
+```markdown
+---
+description: Triage an incoming support ticket
+---
+Read the ticket below and assign a priority (P1–P4) with a one-line reason.
+```
+
+**`providers/myprov.json`** *(optional — a code/credential component, so it only runs once the plugin is trusted)*. The `credentialPrefix` must equal `<id>-api-key`, and `models` must list at least one model.
+
+```json
+{
+  "id": "myprov",
+  "label": "My Provider",
+  "credentialPrefix": "myprov-api-key",
+  "baseUrl": "https://api.myprov.example/v1",
+  "api": "openai-completions",
+  "models": [
+    { "id": "my-fast", "name": "My Fast", "contextWindow": 128000, "maxTokens": 8192 }
+  ]
+}
+```
+
+**`hooks/hooks.json`** *(optional — also trust-gated)*. Claude Code hooks format; `${CLAUDE_PLUGIN_ROOT}` resolves to the plugin's own directory.
+
+```json
+{
+  "PreToolUse": [
+    {
+      "matcher": "bash",
+      "hooks": [
+        { "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/scripts/guard.sh" }
+      ]
+    }
+  ]
+}
+```
+
+**Install it.** From Mission Control's **Plugins** screen, put the folder's path in the **Source** field (for example `/Users/you/plugins/my-plugin`) and click **Install**. The plugin lands **enabled but untrusted** — the `summarize` skill and `/my-plugin:triage` command work right away. To turn on the provider and hook, click **Trust** and confirm. Then add a key for the provider on the [AI Providers](/ai-providers) screen, and its `myprov/my-fast` model becomes selectable for any agent.
 
 ## What the errors mean
 
