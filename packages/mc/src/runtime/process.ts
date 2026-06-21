@@ -35,7 +35,7 @@ async function lsofPortOwner(port: number): Promise<number | undefined> {
   }
 }
 import { type KeychainStore, createDefaultKeychainStore } from '../security/keychain-store.js';
-import { generateToken } from '../security/keygen.js';
+import { generateGatewayId, generateToken } from '../security/keygen.js';
 import {
   type GatewayHealthResponse,
   GatewayHttpError,
@@ -212,6 +212,13 @@ export interface GatewaySupervisorOptions {
   makeGatewayClient?: (baseUrl: string, token: string) => GatewayManagementClient;
   managementPort?: number;
   channelPort?: number;
+  /**
+   * Relay base URL (e.g. `wss://relay.example.com`). When set, the gateway is
+   * spawned in relay mode: it dials OUT to this URL and the supervisor passes
+   * the stable relay identity (token + gatewayId from the keychain) as flags.
+   * Absent → no relay flags, no identity generated.
+   */
+  relayUrl?: string;
 }
 
 export class GatewaySupervisor {
@@ -443,6 +450,24 @@ export class GatewaySupervisor {
     ];
     if (opts.gatewayRuntimeDir) {
       spawnArgs.push('--data-dir', opts.gatewayRuntimeDir);
+    }
+    // Relay mode: dial OUT to the configured relay. The identity (token +
+    // gatewayId) is generated once and persisted in the keychain so a restarted
+    // gateway keeps the same address — phones pair to `<gatewayId>`, so it must
+    // be stable. Only touched when relay mode is actually configured.
+    if (opts.relayUrl) {
+      const relayToken = (await this.keychain.getRelayToken()) ?? generateToken();
+      const gatewayId = (await this.keychain.getGatewayId()) ?? generateGatewayId();
+      await this.keychain.setRelayToken(relayToken);
+      await this.keychain.setGatewayId(gatewayId);
+      spawnArgs.push(
+        '--relay-url',
+        opts.relayUrl,
+        '--relay-token',
+        relayToken,
+        '--gateway-id',
+        gatewayId,
+      );
     }
     // Write gateway logs to a file so they can be viewed from MC
     const logsDir = opts.logsDir ?? join(opts.gatewayDataDir, 'logs');

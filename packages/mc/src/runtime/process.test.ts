@@ -205,6 +205,93 @@ describe('GatewaySupervisor.ensureRunning()', () => {
   });
 
   // ------------------------------------------------------------------
+  // Relay mode: --relay-url/--relay-token/--gateway-id spawn wiring
+  // ------------------------------------------------------------------
+
+  it('appends relay flags and persists a stable identity when relayUrl is set', async () => {
+    const spawner = createMockSpawner();
+    const probe = createMockProbe({ type: 'free' });
+    const keychain = new InMemoryKeychainStore();
+
+    const gp = new GatewaySupervisor(
+      makeOptions(tmpDir, {
+        makeGatewayClient: () => createMockGatewayClient(),
+        relayUrl: 'wss://relay.example.com',
+      }),
+      spawner,
+      undefined,
+      probe,
+      keychain,
+    );
+
+    await gp.ensureRunning();
+
+    const args = (spawner.spawn as unknown as { mock: { calls: unknown[][] } }).mock
+      .calls[0][1] as string[];
+    // The relay URL is forwarded verbatim; the token + id come from the keychain.
+    const relayToken = await keychain.getRelayToken();
+    const gatewayId = await keychain.getGatewayId();
+    expect(relayToken).toBeTruthy();
+    expect(gatewayId).toBeTruthy();
+    expect(args[args.indexOf('--relay-url') + 1]).toBe('wss://relay.example.com');
+    expect(args[args.indexOf('--relay-token') + 1]).toBe(relayToken);
+    expect(args[args.indexOf('--gateway-id') + 1]).toBe(gatewayId);
+    // gateway id must be a valid DNS subdomain label (the relay routes by it).
+    expect(gatewayId).toMatch(/^[a-z0-9-]{1,63}$/);
+  });
+
+  it('omits relay flags when relayUrl is not configured', async () => {
+    const spawner = createMockSpawner();
+    const probe = createMockProbe({ type: 'free' });
+    const keychain = new InMemoryKeychainStore();
+
+    const gp = new GatewaySupervisor(
+      makeOptions(tmpDir, { makeGatewayClient: () => createMockGatewayClient() }),
+      spawner,
+      undefined,
+      probe,
+      keychain,
+    );
+
+    await gp.ensureRunning();
+
+    const args = (spawner.spawn as unknown as { mock: { calls: unknown[][] } }).mock
+      .calls[0][1] as string[];
+    expect(args).not.toContain('--relay-url');
+    expect(args).not.toContain('--relay-token');
+    expect(args).not.toContain('--gateway-id');
+    // No relay configured → no relay identity generated.
+    expect(await keychain.getRelayToken()).toBeNull();
+    expect(await keychain.getGatewayId()).toBeNull();
+  });
+
+  it('reuses the stable relay identity across spawns', async () => {
+    const spawner = createMockSpawner();
+    const probe = createMockProbe({ type: 'free' });
+    const keychain = new InMemoryKeychainStore();
+    await keychain.setRelayToken('preexisting-relay-token');
+    await keychain.setGatewayId('gw-stable123');
+
+    const gp = new GatewaySupervisor(
+      makeOptions(tmpDir, {
+        makeGatewayClient: () => createMockGatewayClient(),
+        relayUrl: 'wss://relay.example.com',
+      }),
+      spawner,
+      undefined,
+      probe,
+      keychain,
+    );
+
+    await gp.ensureRunning();
+
+    const args = (spawner.spawn as unknown as { mock: { calls: unknown[][] } }).mock
+      .calls[0][1] as string[];
+    expect(args[args.indexOf('--relay-token') + 1]).toBe('preexisting-relay-token');
+    expect(args[args.indexOf('--gateway-id') + 1]).toBe('gw-stable123');
+  });
+
+  // ------------------------------------------------------------------
   // Reuse path: token works — don't spawn, don't kill
   // ------------------------------------------------------------------
 

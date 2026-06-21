@@ -44,12 +44,30 @@ describe('InMemoryKeychainStore', () => {
     expect(await store.getGatewayToken()).toBe('second');
   });
 
-  it('clearAllGatewayTokens removes both tokens', async () => {
+  it('returns null for unset relay token and gateway id', async () => {
+    expect(await store.getRelayToken()).toBeNull();
+    expect(await store.getGatewayId()).toBeNull();
+  });
+
+  it('round-trips relay token and gateway id independently', async () => {
+    await store.setRelayToken('relay-secret');
+    await store.setGatewayId('gw-abc123');
+    expect(await store.getRelayToken()).toBe('relay-secret');
+    expect(await store.getGatewayId()).toBe('gw-abc123');
+    // The relay identity must not collide with the management/chat tokens.
+    expect(await store.getGatewayToken()).toBeNull();
+  });
+
+  it('clearAllGatewayTokens removes every secret', async () => {
     await store.setGatewayToken('g');
     await store.setChatToken('c');
+    await store.setRelayToken('r');
+    await store.setGatewayId('gw-1');
     await store.clearAllGatewayTokens();
     expect(await store.getGatewayToken()).toBeNull();
     expect(await store.getChatToken()).toBeNull();
+    expect(await store.getRelayToken()).toBeNull();
+    expect(await store.getGatewayId()).toBeNull();
   });
 
   it('clearAllGatewayTokens is idempotent on empty store', async () => {
@@ -146,6 +164,17 @@ describe('DefaultKeychainStore', () => {
     expect(await store.getChatToken()).toBe('chat-99');
 
     expect(entryConstructorCalls).toContainEqual(['dash-mission-control', 'gateway-chat-token']);
+  });
+
+  it('reads/writes relay token + gateway id under their own accounts', async () => {
+    const store = createDefaultKeychainStore();
+    await store.setRelayToken('relay-7');
+    await store.setGatewayId('gw-7');
+    expect(await store.getRelayToken()).toBe('relay-7');
+    expect(await store.getGatewayId()).toBe('gw-7');
+
+    expect(entryConstructorCalls).toContainEqual(['dash-mission-control', 'gateway-relay-token']);
+    expect(entryConstructorCalls).toContainEqual(['dash-mission-control', 'gateway-relay-id']);
   });
 
   it('caches Entry instances per account so the native ctor runs once', async () => {
