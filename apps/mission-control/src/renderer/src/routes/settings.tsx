@@ -5,6 +5,7 @@ import type { AppSettings } from '../../../shared/ipc.js';
 import { ModelChainEditor } from '../components/ModelChainEditor.js';
 import { RelaySettings } from '../components/RelaySettings.js';
 import { useAvailableModels } from '../hooks/useAvailableModels.js';
+import { useUIStore } from '../stores/ui.js';
 
 function Settings(): JSX.Element {
   const [version, setVersion] = useState<string>('...');
@@ -17,6 +18,8 @@ function Settings(): JSX.Element {
     refreshing: modelsRefreshing,
     refresh: refreshModels,
   } = useAvailableModels();
+  const companionVisible = useUIStore((s) => s.companionVisible);
+  const setCompanionVisible = useUIStore((s) => s.setCompanionVisible);
 
   useEffect(() => {
     window.api.getVersion().then(setVersion);
@@ -111,6 +114,25 @@ function Settings(): JSX.Element {
         </div>
 
         <RelaySettings />
+
+        <div className="mt-6 rounded-lg border border-border bg-card-bg p-4">
+          <h2 className="mb-1 font-[family-name:var(--font-mono)] text-[11px] uppercase tracking-[2px] text-accent">
+            Companion
+          </h2>
+          <p className="mb-3 text-xs text-muted">
+            The tree companion shows which sessions are working, need you, or finished while you
+            were away.
+          </p>
+          <label className="flex cursor-pointer items-center gap-3">
+            <input
+              type="checkbox"
+              checked={companionVisible}
+              onChange={(e) => setCompanionVisible(e.target.checked)}
+              className="rounded border border-border"
+            />
+            <span className="text-xs font-medium text-foreground">Show the tree companion</span>
+          </label>
+        </div>
 
         <div className="mt-6 rounded-lg border border-border bg-card-bg p-4">
           <h2 className="font-[family-name:var(--font-mono)] text-[11px] uppercase tracking-[2px] text-accent">

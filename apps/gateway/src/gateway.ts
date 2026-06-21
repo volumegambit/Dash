@@ -1,7 +1,8 @@
 import { appendFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import type { AgentClient } from '@dash/agent';
-import type { ChannelAdapter, InboundMessage, MessageLogEntry } from '@dash/channels';
+import { SLASH_HELP, formatSkillList, parseSlashCommand } from '@dash/channels';
+import type { ChannelAdapter, InboundMessage, MessageHook, MessageLogEntry } from '@dash/channels';
 
 interface RoutingRule {
   globalDenyList: string[];
@@ -41,6 +42,15 @@ export type RoutingResolver = (channelName: string) => {
 export interface DynamicGatewayOptions {
   dataDir?: string;
   resolveRouting?: RoutingResolver;
+  /**
+   * Optional per-message hook fired after allow/deny filtering and before the
+   * message is dispatched to the agent — this is the channel-path home for the
+   * plugin engine's UserPromptSubmit. `block: true` drops the message (sending
+   * `reason` back if present); `additionalContext` is prepended to the prompt.
+   * Invocation is wrapped in try/catch and FAILS OPEN: a throw dispatches the
+   * message unchanged. Omit it (or leave it undefined) for zero overhead.
+   */
+  messageHook?: MessageHook;
 }
 
 export interface DynamicGateway {
@@ -77,6 +87,7 @@ export function createDynamicGateway(options?: DynamicGatewayOptions): DynamicGa
   const agents = new Map<string, AgentClient>();
   const channels = new Map<string, ChannelState>();
   const resolveRouting = options?.resolveRouting;
+  const messageHook = options?.messageHook;
 
   // Set up channel message logging
   let logDir: string | null = null;
@@ -188,12 +199,65 @@ export function createDynamicGateway(options?: DynamicGatewayOptions): DynamicGa
 
       logMessage({ ...baseLog, outcome: 'routed', agentName });
 
+      // Channel slash-commands, handled before the prompt hook / LLM.
+      //  - /skills, /help → answered deterministically via the adapter's native
+      //    conversation id (no hook, no model round-trip).
+      //  - /skill:<name> and /<plugin>:<command> → normalized to pi's canonical
+      //    `/skill:<name>` form so pi's native prompt expander runs the skill
+      //    deterministically. (pi only expands text starting with `/skill:`, so a
+      //    bare `/<plugin>:<command>` would otherwise reach the model as plain
+      //    text — see AgentSession._expandSkillCommand.)
+      const slash = parseSlashCommand(msg.text);
+      if (slash?.kind === 'help') {
+        await adapter.send(msg.conversationId, { text: SLASH_HELP });
+        return;
+      }
+      if (slash?.kind === 'skills') {
+        const skills = (await agent.listSkills?.()) ?? [];
+        await adapter.send(msg.conversationId, { text: formatSkillList(skills) });
+        return;
+      }
+
       const prefixedConvId = `${channelName}:${msg.conversationId}`;
+
+      // UserPromptSubmit hook (e.g. plugins). Fires after allow/deny, before
+      // the agent runs. FAIL-OPEN: any throw falls through to normal dispatch
+      // with the prompt unchanged. block:true drops the message (sending the
+      // reason back if present); additionalContext is prepended to the prompt.
+      let promptText =
+        slash?.kind === 'skill'
+          ? `/skill:${slash.name}${slash.input ? ` ${slash.input}` : ''}`
+          : msg.text;
+      if (messageHook) {
+        try {
+          const decision = await messageHook({
+            prompt: promptText,
+            channel: channelName,
+            conversationId: prefixedConvId,
+            senderId: msg.senderId,
+          });
+          if (decision.block) {
+            logMessage({ ...baseLog, outcome: 'blocked', agentName, blockReason: 'prompt_hook' });
+            if (decision.reason) {
+              await adapter.send(msg.conversationId, { text: decision.reason });
+            }
+            return;
+          }
+          if (decision.additionalContext) {
+            promptText = `${decision.additionalContext}\n\n${promptText}`;
+          }
+        } catch (err) {
+          console.warn(
+            `[gateway] messageHook error (failing open) channel=${channelName}:`,
+            err instanceof Error ? err.message : err,
+          );
+        }
+      }
 
       let fullResponse = '';
       let streamError: Error | null = null;
       try {
-        for await (const event of agent.chat(msg.channelId, prefixedConvId, msg.text)) {
+        for await (const event of agent.chat(msg.channelId, prefixedConvId, promptText)) {
           if (event.type === 'response') {
             fullResponse = event.content;
           } else if (event.type === 'error') {

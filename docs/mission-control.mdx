@@ -1,11 +1,11 @@
 ---
 title: "Mission Control"
-description: "Manage your AI agent team from a desktop app or the command line."
+description: "Manage your AI agent team from the Mission Control desktop app."
 ---
 
 Mission Control is your command center for Dash. Deploy new agents, monitor running ones, chat with them directly, and connect them to messaging platforms — all from one place.
 
-It comes in two forms: a **desktop app** for visual management and a **CLI** for terminal users and automation.
+It's a **desktop app** that spawns and supervises the gateway for you. For automation, the gateway also exposes a [Management API](/api-reference) you can drive directly.
 
 ## Desktop app
 
@@ -113,58 +113,24 @@ A step-by-step wizard to deploy a new agent. Walk through:
   </Step>
 </Steps>
 
-## CLI
-
-Prefer the terminal? The Mission Control CLI gives you the same capabilities from the command line. It is ideal for automation, scripting, and remote management.
-
-### Key commands
-
-```bash
-mc deploy <config-dir>     # Deploy a new agent from a config directory
-mc status                  # List all deployments
-mc status <id>             # Detailed status for one deployment
-mc stop <id>               # Stop a running deployment
-mc remove <id>             # Remove a deployment and clean up secrets
-mc logs <id>               # Stream logs from a running deployment
-mc health <id>             # Check agent server health
-mc info <id>               # Get agent configuration from a running server
-```
-
-### Secret management
-
-```bash
-mc secrets list            # List stored secret names
-mc secrets set <key>       # Store a secret (prompts for value)
-mc secrets get <key>       # Show a masked secret value
-mc secrets delete <key>    # Remove a secret
-mc unlock                  # Cache encryption key in OS keychain
-mc lock                    # Clear cached encryption key
-```
-
-See [CLI Reference](/cli-reference) for the full command reference with all flags and output examples.
-
 ## Running Mission Control
 
 <Tabs>
-  <Tab title="Desktop app (dev mode)">
+  <Tab title="Dev mode">
     ```bash
     npm run mc:dev
     ```
     Launches the Electron app in development mode with hot reload.
   </Tab>
-  <Tab title="Desktop app (production)">
+  <Tab title="Production">
     ```bash
     npm run mc:build
     ```
     Builds a production version of the desktop app.
   </Tab>
-  <Tab title="CLI">
-    ```bash
-    npm run mc-cli -- <command>
-    ```
-    Run any CLI command. The `--` separates npm flags from the command arguments.
-  </Tab>
 </Tabs>
+
+For automation or a headless server, run the gateway on its own and drive it through the [Management API](/api-reference) — see [Configuration](/configuration#running-the-gateway-standalone).
 
 ## How it connects
 
@@ -172,7 +138,7 @@ Mission Control communicates with the gateway through two channels:
 
 | Connection | Protocol | Default port | Purpose |
 |-----------|----------|-------------|---------|
-| Management API | HTTP | 9300 | Health checks, server info, deploy/start/stop/restart |
+| Management API | HTTP | 9300 | Health checks, deploy/start/stop/restart, credentials, models |
 | Channel server | WebSocket | 9200 | Chat messages to and from agents |
 
 The desktop app connects to these automatically. On first launch, MC spawns the gateway as a background process and stores the auth tokens in the OS keychain. Subsequent launches reconnect to the existing gateway without re-spawning.
@@ -187,8 +153,8 @@ The desktop app connects to these automatically. On first launch, MC spawns the 
   <Card title="Agents" icon="robot" href="/agents">
     Learn how agents are configured and how they work.
   </Card>
-  <Card title="CLI Reference" icon="terminal" href="/cli-reference">
-    Full command reference for the mc CLI.
+  <Card title="Management API" icon="terminal" href="/api-reference">
+    Drive the gateway programmatically — agents, channels, credentials.
   </Card>
   <Card title="Messaging Apps" icon="comments" href="/messaging-apps">
     Connect agents to Telegram, WhatsApp, and more.

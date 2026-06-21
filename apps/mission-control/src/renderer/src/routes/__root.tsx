@@ -1,6 +1,7 @@
 import { Outlet, createRootRoute } from '@tanstack/react-router';
 import { Loader } from 'lucide-react';
 import { useEffect, useState } from 'react';
+import { Companion } from '../companion/Companion.js';
 import { GatewayFailedScreen } from '../components/GatewayFailedScreen';
 import { SetupWizard } from '../components/SetupWizard';
 import { Sidebar } from '../components/Sidebar';
@@ -112,6 +113,7 @@ function RootLayout(): JSX.Element {
         <main className="min-w-0 flex flex-1 flex-col overflow-hidden">
           <Outlet />
         </main>
+        <Companion />
       </div>
     </div>
   );

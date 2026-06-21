@@ -33,8 +33,8 @@ export interface SkillInfo {
   trigger?: string;
   location: string; // file path or URL
   content?: string; // full SKILL.md text (included in list responses)
-  editable: boolean; // true for local file paths, false for URL/bundled
-  source: 'managed' | 'agent' | 'remote' | 'bundled';
+  editable: boolean; // true for local file paths, false for URL/bundled/plugin
+  source: 'managed' | 'agent' | 'remote' | 'bundled' | 'plugin';
 }
 
 export interface SkillContent extends SkillInfo {

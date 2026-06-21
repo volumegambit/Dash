@@ -38,7 +38,7 @@
           },
           {
             "group": "Reference",
-            "pages": ["configuration", "cli-reference", "api-reference", "architecture"]
+            "pages": ["configuration", "api-reference", "architecture"]
           },
           {
             "group": "Help",

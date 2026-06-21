@@ -1,5 +1,5 @@
 import type { Server } from 'node:http';
-import { dirname, join, resolve } from 'node:path';
+import { delimiter, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { config } from 'dotenv';
 
@@ -14,7 +14,9 @@ import { createConsoleLogger } from '@dash/logging';
 import { mountProjectsWs } from '@dash/management';
 import { FileTokenStore, McpManager } from '@dash/mcp';
 import type { McpAgentContext } from '@dash/mcp';
+import { PROVIDERS } from '@dash/models';
 import { gatewayDir, migrateLegacyLayout, workspacesDir } from '@dash/paths';
+import { PluginConfigStore, createHookEngine, loadPlugins } from '@dash/plugins';
 import { createProjectsTools, openProjectsDb } from '@dash/projects';
 import { serve } from '@hono/node-server';
 import { createNodeWebSocket } from '@hono/node-ws';
@@ -33,6 +35,12 @@ import { createGatewayManagementApp } from './management-api.js';
 import { McpConfigStore } from './mcp-store.js';
 import { ModelsStore } from './models-store.js';
 import { OAuthRefreshCoordinator } from './oauth-refresh.js';
+import { registerPluginMcpServers } from './plugin-mcp.js';
+import {
+  createPluginModelCatalog,
+  excludeCoreProviderCollisions,
+  expandPluginModelsForRoute,
+} from './plugin-providers.js';
 import { type RelayClient, startRelayClient } from './relay-client.js';
 
 async function main() {
@@ -115,6 +123,86 @@ async function main() {
     await mcpManager.start();
   }
 
+  // Plugin host — discover Claude Code plugins under <dataDir>/plugins and
+  // route their skills. Skills are markdown (no code execution), so they load
+  // for any `enabled` plugin; `trusted` gates code-execution components in
+  // later increments. The loader never throws — a bad plugin is recorded and
+  // skipped so the gateway always starts.
+  const pluginConfigStore = new PluginConfigStore(dataDir);
+  const pluginEntries = await pluginConfigStore.load();
+  const loadedPlugins = await loadPlugins({
+    pluginsDir: resolve(dataDir, 'plugins'),
+    entries: pluginEntries,
+    logger,
+  });
+  const pluginSkillDirs = loadedPlugins.skillDirs;
+
+  // Code-execution plugin components (trusted only — gated in the loader).
+  // MCP servers from trusted plugins are registered with the running manager
+  // IN MEMORY each boot (never persisted), fail-isolated so a bad server never
+  // aborts startup. Not persisting is what keeps a plugin MCP server's lifecycle
+  // tied to plugin trust: configs.json is reconnected and listed (above, and via
+  // GET /runtime/mcp/servers) before the trust gate runs, so a persisted plugin
+  // server would survive untrust/disable/remove + reboot.
+  await registerPluginMcpServers(mcpManager, loadedPlugins.mcpConfigs, logger);
+
+  // Trusted plugin bin/ dirs are prepended to PATH so plugin executables
+  // (and MCP/command processes spawned by the agent) resolve them first.
+  if (loadedPlugins.binDirs.length) {
+    process.env.PATH = [...loadedPlugins.binDirs, process.env.PATH ?? ''].join(delimiter);
+  }
+
+  // Plugin commands (commands/*.md) and agents (agents/*.md) are flat single-file
+  // skills routed into the agent as extra skill files. Commands surface as
+  // `/plugin:command` slash commands; agents are loadable specialists invocable as
+  // `/plugin:agent` or via the agent's `load_skill` — they contribute the
+  // specialist's instructions on demand. Both are namespaced by plugin so the
+  // derived skill name is `<plugin>:<name>` — an exact match for the slash form
+  // (no LLM leniency). Agents run in the main session (the `tools` frontmatter is
+  // advisory, not enforced); isolated subagent spawning is a future enhancement.
+  // Name collisions resolve first-wins (commands precede agents; discovered
+  // skills win over both); a duplicate `<plugin>:<name>` is cosmetic, not fatal.
+  const pluginCommandFiles = [...loadedPlugins.commandFiles, ...loadedPlugins.agentFiles].map(
+    ({ pluginName, file }) => ({
+      file,
+      namespace: pluginName,
+    }),
+  );
+
+  // Plugin hook engine — runs the Claude-Code-format hooks declared by trusted
+  // plugins (`hooks/hooks.json`). It's shared two ways:
+  //   1. as the backend's `hookRunner` (tool + SessionStart/Stop events fire on
+  //      every agent run, whether reached via MC chat or a channel), and
+  //   2. as the channel gateway's `messageHook` (UserPromptSubmit fires only on
+  //      the inbound-channel path — see the messageHook wiring below).
+  // `hasHooks` is false when no trusted plugin declares any hook, so both the
+  // backend and the gateway short-circuit to zero overhead.
+  const hookEngine = createHookEngine(loadedPlugins.hookConfigs, { logger, dataDir });
+
+  // Plugin LLM providers — trusted plugins' `providers/*.json` catalogs. The
+  // catalog resolves `<id>/<model>` to a pi-ai Model the backend's resolveModel
+  // fallback routes to (credential-bearing → trust-gated in the loader). Static
+  // for the gateway's lifetime, so build once and share across all agents and
+  // the models route. `pluginModels` is the dropdown-facing flattening of the
+  // statically-known models, merged into GET /models at render time.
+  //
+  // Defense-in-depth: a plugin id is only validated kebab-case, so a trusted
+  // plugin could declare a built-in provider id (e.g. `anthropic`) and shadow
+  // its namespace. Drop any such collision before the catalogs are consumed
+  // anywhere downstream, computed once and reused.
+  const { safe: pluginProviderConfigs, dropped: droppedProviderConfigs } =
+    excludeCoreProviderCollisions(
+      loadedPlugins.providerConfigs,
+      PROVIDERS.map((p) => p.id),
+    );
+  for (const { pluginName, catalog } of droppedProviderConfigs) {
+    logger.warn(
+      `plugin '${pluginName}' provider catalog id '${catalog.id}' collides with a built-in provider — ignored`,
+    );
+  }
+  const pluginModelCatalog = createPluginModelCatalog(pluginProviderConfigs);
+  const pluginModels = expandPluginModelsForRoute(pluginProviderConfigs);
+
   // Create gateway + agent service.
   //
   // `resolveRouting` is the live link to the persisted channel registry:
@@ -130,6 +218,20 @@ async function main() {
       if (!entry) return null;
       return { globalDenyList: entry.globalDenyList, routing: entry.routing };
     },
+    // UserPromptSubmit fires only on the inbound-channel path. Adapt the
+    // engine's runUserPromptSubmit({ prompt, sessionId, cwd }) to the channel
+    // MessageHook signature. sessionId is the prefixed conversation id; cwd
+    // falls back to the gateway dataDir (channel agents have per-agent
+    // workspaces resolved per run, not a single gateway-wide cwd). Only set
+    // when hooks exist so there's zero overhead otherwise.
+    messageHook: hookEngine.hasHooks
+      ? (i) =>
+          hookEngine.runUserPromptSubmit({
+            prompt: i.prompt,
+            sessionId: i.conversationId,
+            cwd: dataDir,
+          })
+      : undefined,
   });
   const eventBus = new EventBus();
   const registryPath = resolve(dataDir, 'agents.json');
@@ -152,6 +254,11 @@ async function main() {
     registry,
     poolMaxSize: Number(process.env.POOL_MAX_SIZE ?? '200'),
     managedSkillsDir: (config) => resolve(dataDir, 'skills', config.name),
+    // Same plugin inputs the backend factory injects (skill dirs merged into
+    // `skills.paths`, command/agent files as extra flat skills) so the HTTP
+    // skills route (GET /agents/:id/skills) lists what chat can actually load.
+    pluginSkillDirs,
+    pluginCommandFiles,
     createBackend: async (agentConfig, conversationId) => {
       const sessionDir = resolve(dataDir, 'sessions', agentConfig.name, conversationId);
       await mkdir(sessionDir, { recursive: true });
@@ -172,7 +279,18 @@ async function main() {
       // and trigger the UI's re-auth path.
       const credentialProvider = async (): Promise<Record<string, string>> => {
         await oauthRefreshCoordinator.refreshExpiring();
-        return credentialStore.readProviderApiKeys();
+        const keys = await credentialStore.readProviderApiKeys();
+        // Keyless local providers (e.g. Ollama) declare a `placeholderKey` so
+        // the backend's AuthStorage has an entry for their provider id even when
+        // no real credential is stored. A stored key always wins. Uses the
+        // collision-filtered list so a plugin can't inject a placeholder under a
+        // built-in provider id.
+        for (const { catalog } of pluginProviderConfigs) {
+          if (catalog.placeholderKey && !keys[catalog.id]) {
+            keys[catalog.id] = catalog.placeholderKey;
+          }
+        }
+        return keys;
       };
 
       // MCP agent context — allows agents to manage their own MCP server assignments
@@ -223,7 +341,10 @@ async function main() {
           systemPrompt: agentConfig.systemPrompt,
           fallbackModels: agentConfig.fallbackModels,
           tools: agentConfig.tools,
-          skills: agentConfig.skills,
+          skills: {
+            ...agentConfig.skills,
+            paths: [...(agentConfig.skills?.paths ?? []), ...pluginSkillDirs],
+          },
         },
         credentialProvider,
         undefined,
@@ -247,6 +368,15 @@ async function main() {
           // deep-link) must pass config.name.
           getAgentId: () => agentConfig.name,
         }),
+        pluginCommandFiles,
+        // Plugin hook engine — composes tool hooks onto pi's agent and fires
+        // SessionStart/Stop around each run. Shared across all agents; a no-op
+        // when no trusted plugin declares hooks (hookEngine.hasHooks === false).
+        hookEngine,
+        // Plugin LLM provider catalog — consulted by resolveModel ONLY as a
+        // fallback when pi's static registry doesn't know a `<provider>/<model>`.
+        // Shared across all agents (static for the gateway's lifetime).
+        pluginModelCatalog,
       );
       return backend;
     },
@@ -339,6 +469,7 @@ async function main() {
     channelRegistry,
     credentialStore,
     modelsStore,
+    pluginModels,
     eventLogStore,
     token: flags.token,
     startedAt,

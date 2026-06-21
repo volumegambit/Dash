@@ -1,4 +1,5 @@
 import { mkdir } from 'node:fs/promises';
+import { sep } from 'node:path';
 import {
   ConversationPool,
   DashAgent,
@@ -7,6 +8,7 @@ import {
   discoverSkills,
   heuristicScan,
   installSkillToDir,
+  loadFlatSkills,
   removeSkillFromDir,
   updateSkillBody,
 } from '@dash/agent';
@@ -14,6 +16,7 @@ import type {
   AgentBackend,
   AgentEvent,
   DashAgentConfig,
+  FlatSkillFile,
   ImageBlock,
   InstalledSkill,
   SkillDiscoveryResult,
@@ -32,6 +35,18 @@ export interface AgentChatCoordinatorOptions {
   createBackend: BackendFactory;
   /** Resolve an agent's managed skills directory (for `listSkills`). */
   managedSkillsDir?: (config: GatewayAgentConfig) => string | undefined;
+  /**
+   * Trusted-plugin skill directories (each a `skills/`-style root). Merged into
+   * skill discovery for `listSkills` so the HTTP skills API surfaces plugin
+   * skills — mirroring how the backend factory merges them into `skills.paths`.
+   */
+  pluginSkillDirs?: string[];
+  /**
+   * Trusted-plugin command/agent files (flat `.md`, namespaced `<plugin>:<name>`).
+   * Loaded via `loadFlatSkills` and merged into `listSkills` so the HTTP skills
+   * API matches what chat can load — mirroring `PiAgentBackend.listSkills`.
+   */
+  pluginCommandFiles?: FlatSkillFile[];
 }
 
 export interface ChatRequest {
@@ -170,14 +185,39 @@ export function createAgentChatCoordinator(
     },
   });
 
+  const pluginSkillDirs = options.pluginSkillDirs ?? [];
+  const pluginCommandFiles = options.pluginCommandFiles ?? [];
+  const pluginCommandFilePaths = new Set(pluginCommandFiles.map((f) => f.file));
+  // A discovered skill is plugin-contributed if its file lives under one of the
+  // plugin skill dirs. Prefix-match on a separator-terminated dir so e.g.
+  // `/p/skills` never matches `/p/skills-extra`.
+  const isUnderPluginDir = (location: string): boolean =>
+    pluginSkillDirs.some((dir) => location.startsWith(dir.endsWith(sep) ? dir : dir + sep));
+
   const listSkillsFor = async (agentId: string): Promise<SkillDiscoveryResult[]> => {
     const entry = registry.get(agentId);
     if (!entry) return [];
-    return discoverSkills({
+    // Mirror PiAgentBackend.listSkills so the HTTP skills API returns exactly
+    // what chat can load. Discovery precedence (first wins by name): managed >
+    // config paths > plugin skill dirs > bundled. Plugin command/agent files
+    // are appended flat and lose name collisions to discovered skills.
+    const discovered = await discoverSkills({
       managedSkillsDir: options.managedSkillsDir?.(entry.config),
-      paths: entry.config.skills?.paths,
+      paths: [...(entry.config.skills?.paths ?? []), ...pluginSkillDirs],
       includeBundled: entry.config.skills?.includeBundled,
     });
+    const flat = await loadFlatSkills(pluginCommandFiles);
+    const seen = new Set(discovered.map((s) => s.name));
+    const merged = [...discovered, ...flat.filter((s) => !seen.has(s.name))];
+    // Badge plugin-contributed skills (skill dirs + command/agent files) as
+    // 'plugin' and force read-only: a user can't edit/remove them via the
+    // managed dir, so MC must not render those affordances (scanned skill dirs
+    // default to editable: true, which would otherwise be misleading).
+    return merged.map((s) =>
+      pluginCommandFilePaths.has(s.location) || isUnderPluginDir(s.location)
+        ? { ...s, source: 'plugin' as const, editable: false }
+        : s,
+    );
   };
 
   const requireManagedDir = (agentId: string): string => {

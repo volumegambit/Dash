@@ -1,154 +1,28 @@
 ---
 title: "Configuration"
-description: "Configure agents, sessions, and credentials through JSON config files, environment variables, and CLI flags."
+description: "How Dash agents, data, and credentials are configured — all through Mission Control, with a standalone gateway option."
 ---
 
-Dash is configured with a single JSON file. Define your agent team here — who they are, what models they use, what tools they have access to, and where they can operate.
+Dash is configured through **Mission Control**. There are no config files to hand-edit — you deploy agents, connect providers, and set up messaging apps from the desktop app, and Mission Control saves everything for you.
 
-1. **Built-in defaults** — sensible starting values
-2. **JSON config file** — `config/dash.json` or `dash.json` at the project root
-3. **Environment variables** — override specific values (via `.env` or shell)
+This page explains what you can configure, where Dash stores its data, and the few environment variables and CLI flags available when you run the gateway on its own.
 
-For deployed agents, the `--secrets` flag is the primary way to provide API keys and tokens (see [CLI flags](#cli-flags)). Environment variables can override specific settings.
+## Agent settings
 
-For Mission Control users, secrets are stored in an encrypted file — see [Secrets](/secrets) for a full explanation of how encryption, key caching, and secret delivery work.
+Each agent is configured in Mission Control's **Deploy** wizard (and editable later from the agent's **Configuration** tab). An agent has these settings:
 
-## Config file schema
+| Setting | Required | Description |
+|---------|----------|-------------|
+| Model | yes | The model the agent uses, in `provider/model` format (e.g. `anthropic/claude-sonnet-4-20250514`). The dropdown is populated live from the providers you've connected. See [AI Providers](/ai-providers). |
+| System prompt | yes | Instructions sent with every request that shape the agent's behavior. |
+| Tools | no | Which capabilities the agent can use. See [Tools](/tools) for the full list. |
+| Max tokens | no | Maximum response length in tokens (default: `4096`). |
+| Working directory | no | Where the agent's file and shell tools operate. Defaults to `~/.dash/workspaces/<agent-id>`. |
+| Fallback models | no | Backup models to try if the primary model is unavailable. See [Agents](/agents#fallback-models). |
+| Extended thinking | no | Let the model reason before responding. See [Extended thinking](/extended-thinking). |
+| Skills | no | Reusable instructions the agent can discover and load. See [Skills](/skills). |
 
-```json
-{
-  "agents": {
-    "<name>": {
-      "model": "anthropic/claude-sonnet-4-20250514",
-      "systemPrompt": "You are a helpful assistant.",
-      "tools": ["bash", "edit", "write", "read", "glob", "grep", "ls"],
-      "maxTokens": 4096,
-      "workspace": "./data/workspace",
-      "thinking": { "budgetTokens": 10000 }
-    }
-  },
-  "sessions": {
-    "dir": "./data/sessions"
-  },
-  "logging": {
-    "level": "info"
-  }
-}
-```
-
-## Agents
-
-Each entry in the `agents` array is one member of your team.
-
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `model` | `string` | yes | Model in `provider/model` format (e.g. `anthropic/claude-sonnet-4-20250514`) |
-| `systemPrompt` | `string` | yes | System prompt sent with every request |
-| `tools` | `string[]` | no | Tool names to enable. Available: `bash`, `read`, `write`, `edit`, `ls`, `glob`, `grep`, `web_search`, `web_fetch`, `mcp`, `load_skill`, `create_skill`. See [Tools](/tools) |
-| `maxTokens` | `number` | no | Maximum response tokens (default: `4096`) |
-| `workspace` | `string` | no | Working directory for tools, resolved relative to project root |
-| `thinking` | `object` | no | Enable extended thinking. See [extended thinking](/extended-thinking) |
-| `thinking.budgetTokens` | `number` | — | Token budget for thinking (must be >= 1024, must be < `maxTokens`) |
-
-### Example: multiple agents
-
-```json
-{
-  "agents": {
-    "default": {
-      "model": "anthropic/claude-sonnet-4-20250514",
-      "systemPrompt": "You are Dash, a helpful AI assistant.",
-      "tools": ["bash", "edit", "write", "read", "glob", "grep", "ls"],
-      "maxTokens": 4096,
-      "workspace": "./data/workspace"
-    },
-    "coder": {
-      "model": "anthropic/claude-sonnet-4-20250514",
-      "systemPrompt": "You are Dash Coder, a software engineering assistant.",
-      "tools": ["bash", "edit", "write", "read", "glob", "grep", "ls", "web_search"],
-      "maxTokens": 16000,
-      "thinking": { "budgetTokens": 10000 },
-      "workspace": "./data/coder-workspace"
-    }
-  }
-}
-```
-
-### Per-agent files (`agents/` directory)
-
-Instead of defining all agents in `dash.json`, you can create individual JSON files in an `agents/` directory. Each filename (minus `.json`) becomes the agent name.
-
-```
-config/
-├── dash.json          # sessions, logging (no agents key needed)
-└── agents/
-    ├── default.json   # → agent named "default"
-    └── coder.json     # → agent named "coder"
-```
-
-Each agent file contains just the agent config:
-
-```json
-{
-  "model": "anthropic/claude-sonnet-4-20250514",
-  "systemPrompt": "You are Dash Coder.",
-  "tools": ["bash", "edit", "write", "read", "glob", "grep", "ls"],
-  "maxTokens": 16000
-}
-```
-
-When an `agents/` directory is present, it **replaces** the `agents` key in `dash.json` entirely. This makes agent definitions portable and easy to share without exposing secrets or session config.
-
-## Sessions
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `dir` | `string` | `./data/sessions` | Directory for session JSONL files |
-
-## Logging
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `level` | `string` | `info` | Log level (e.g. `debug`, `info`, `warn`, `error`) |
-
-## Defaults
-
-When no config file is found, Dash uses these defaults:
-
-```json
-{
-  "agents": {
-    "default": {
-      "model": "anthropic/claude-sonnet-4-5",
-      "systemPrompt": "You are Dash, a helpful AI assistant. You can use tools to help accomplish tasks.",
-      "tools": ["bash", "edit", "write", "read", "glob", "grep", "ls"]
-    }
-  },
-  "sessions": { "dir": "./data/sessions" },
-  "logging": { "level": "info" }
-}
-```
-
-## API keys and secrets
-
-API keys are provided through Mission Control's encrypted secret store or the `--secrets` flag when running the gateway standalone.
-
-For local development or standalone use, environment variables can still configure tokens and logging.
-
-## Environment variables
-
-| Variable | Description |
-|----------|-------------|
-| `MANAGEMENT_API_TOKEN` | Enables the Management API when set |
-| `MANAGEMENT_API_PORT` | Management API port (default: `9300`) |
-| `CHAT_API_TOKEN` | Enables the Chat API when set |
-| `CHAT_API_PORT` | Chat API port (default: `9200`) |
-| `LOG_LEVEL` | Log level override |
-| `DASH_HOME` | Root directory for everything Dash stores on disk (default: `~/.dash`) |
-
-<Note>
-  For details on which models each provider supports and how routing works, see [AI Providers](/ai-providers).
-</Note>
+Your agents are saved to `~/.dash/gateway/agents.json` and restored automatically when the gateway restarts.
 
 ## Data directory
 
@@ -170,75 +44,257 @@ To store everything somewhere else (for example, a separate disk or multiple pro
   Upgrading from an older version? The first time Dash starts, it automatically moves your existing data into `~/.dash` — no action needed. See [Troubleshooting](/troubleshooting#my-data-moved-after-updating) if anything looks missing.
 </Note>
 
-## CLI flags
+## Environment variables
 
-The gateway accepts `--config` and `--secrets` flags for standalone deployment scenarios.
+Dash needs no environment variables for normal Mission Control use. These are available for advanced and standalone scenarios:
+
+| Variable | Description |
+|----------|-------------|
+| `DASH_HOME` | Root directory for everything Dash stores on disk (default: `~/.dash`). |
+| `MC_DATA_DIR` | Override just the Mission Control app's data folder (used by tests and QA). |
+| `POOL_MAX_SIZE` | Maximum number of agent runtimes kept in memory by the gateway (default: `200`). |
+| `NODE_ENV` | Set to `production` to quiet the gateway's verbose request logging. |
+
+Provider API keys are **not** read from environment variables when you use Mission Control — they live in the encrypted credential store (see [Secrets](/secrets)). When running the gateway standalone, you can supply them as environment variables (e.g. `ANTHROPIC_API_KEY`); see [AI Providers](/ai-providers#configuring-credentials).
+
+<Note>
+  For details on which models each provider supports and how routing works, see [AI Providers](/ai-providers).
+</Note>
+
+## Running the gateway standalone
+
+Mission Control spawns and manages the gateway for you. To run it on its own — for a headless server or Docker — start it directly:
 
 ```bash
-npm run gateway -- --config /path/to/dash.json --secrets /path/to/secrets.json
+npm run gateway
 ```
 
-### `--config <path>`
+It uses `~/.dash/gateway` for its data and creates agents, channels, and credentials through its [Management API](/api-reference). The gateway accepts these flags:
 
-Load configuration from an explicit path. This can be either:
+| Flag | Description |
+|------|-------------|
+| `--management-port <port>` | Port for the Management API (default: `9300`). |
+| `--channel-port <port>` | Port for the WebSocket channel server (default: `9200`). |
+| `--token <token>` | Bearer token required on the Management API. |
+| `--chat-token <token>` | Token required on the channel server (`ws://…/ws/chat?token=…`). |
+| `--data-dir <path>` | Override the gateway's data directory (default: `~/.dash/gateway`). |
+| `--verbose` | Enable debug logging. |
 
-- **A file** — load that JSON file directly (same as before). If an `agents/` sibling directory exists, agent definitions are loaded from it.
-- **A directory** — load `dash.json` from the directory for non-agent settings, and load individual agent definitions from the `agents/` subdirectory.
+There are no `--config` or `--secrets` flags, and the gateway does not read any JSON config file — agents, channels, and credentials are managed at runtime through the [Management API](/api-reference), which is exactly what Mission Control uses.
 
-When `--config` is omitted, the gateway searches for `config/dash.json` or `dash.json` at the project root, and additionally checks `config/agents/` for per-agent files.
+## Credentials
 
-### `--secrets <path>`
+Provider API keys and messaging tokens are encrypted at rest. The gateway keeps them in `~/.dash/gateway/credentials.enc` (AES-256-GCM); gateway access tokens live in your OS keychain. See [Secrets](/secrets) for the full picture of how credentials are stored and delivered to agents.
 
-Load secrets from a JSON file. The file is read once and then **deleted** immediately. This is designed for deployment systems that write a temporary secrets file for the gateway to consume.
+## Plugins
+
+Plugins let you drop extra skills into any Dash agent without touching the config file. The gateway discovers plugins from the `plugins/` directory inside your data directory.
+
+### Directory layout
+
+```
+<dataDir>/
+└── plugins/
+    ├── config.json
+    └── <plugin-name>/
+        ├── .claude-plugin/
+        │   └── plugin.json          (optional)
+        ├── skills/
+        │   └── <skill-name>/
+        │       └── SKILL.md
+        ├── commands/
+        │   └── <command-name>.md    (optional)
+        ├── agents/
+        │   └── <agent-name>.md      (optional)
+        ├── hooks/
+        │   └── hooks.json           (optional, trusted only)
+        ├── .mcp.json                (optional, trusted only)
+        ├── providers/
+        │   └── <provider>.json      (optional, trusted only)
+        └── bin/                     (optional, trusted only)
+            └── <executable>
+```
+
+Each plugin follows the Claude Code layout:
+
+- **`skills/`** — one subdirectory per skill, each with a `SKILL.md` file in standard frontmatter format (`name`, `description`, body).
+- **`commands/`** — flat `<name>.md` files. Each becomes a `/<plugin>:<command>` slash command (see below).
+- **`agents/`** — flat `<name>.md` files (Claude Code subagent format). Each becomes a loadable specialist (see below).
+- **`hooks/hooks.json`** — event hooks that run shell commands at key points in a run (see [Hooks](#hooks) below). Code execution, so it requires `trusted`.
+- **`.mcp.json`** — extra MCP servers to register with the gateway. Code execution, so it requires `trusted` (see below).
+- **`providers/`** — flat `<provider>.json` LLM provider catalogs that add selectable models. Credential-bearing, so they require `trusted` (see [LLM providers](#llm-providers) below).
+- **`bin/`** — executables prepended to the gateway's `PATH`. Code execution, so it requires `trusted`.
+
+The `.claude-plugin/plugin.json` manifest is optional; when present it can set `name`, `displayName`, `description`, and `version`. When absent, the plugin's directory name is used as its name.
+
+### Enabling a plugin
+
+Create or edit `<dataDir>/plugins/config.json`:
 
 ```json
 {
-  "anthropicApiKey": "sk-ant-...",
-  "managementToken": "mgmt-...",
-  "chatToken": "chat-..."
+  "<plugin-name>": { "enabled": true }
 }
 ```
 
-When a secrets file is provided, its values are used for provider API keys and auth tokens.
+Plugins not listed in `config.json`, or listed with `"enabled": false`, are ignored.
 
-## Encrypted secrets
+### Trusting a plugin
 
-Mission Control (desktop app and CLI) stores secrets in an AES-256-GCM encrypted file at `~/.mission-control/secrets.enc`. This replaces plaintext storage and protects API keys, tokens, and credentials at rest.
+`enabled` is enough for markdown components — `skills/` and `commands/`, which never run code. Components that **execute code or handle credentials** — `hooks/hooks.json`, `.mcp.json` servers, `bin/` executables, and `providers/` LLM catalogs — additionally require `"trusted": true`:
 
-### How it works
-
-1. On first use, you create an encryption password (minimum 8 characters)
-2. A 256-bit key is derived from your password using scrypt
-3. Secrets are encrypted and written to `secrets.enc` with 0600 file permissions
-4. The derived key is cached in your OS keychain (macOS Keychain or Linux `secret-tool`) so you don't need to re-enter your password on every command
-
-### CLI commands
-
-```bash
-mc secrets list                  # List all secret key names
-mc secrets get <key>             # Show a masked secret value
-mc secrets get <key> --reveal    # Show the full value (for scripting)
-mc secrets set <key>             # Store a secret (prompts for value)
-mc secrets set <key> --value v   # Store a secret inline
-mc secrets delete <key>          # Remove a secret
-mc secrets change-password       # Re-encrypt with a new password
-mc unlock                        # Unlock the store (cache key in keychain)
-mc lock                          # Clear the cached key from the keychain
+```json
+{
+  "<plugin-name>": { "enabled": true, "trusted": true }
+}
 ```
 
-### Migration from plaintext
+An enabled-but-untrusted plugin still contributes its skills and commands, but its hooks, MCP servers, `bin/` directory, and provider catalogs are skipped. Only set `trusted` for plugins whose code you have reviewed and trust to run inside the gateway process.
 
-If you have an existing `~/.mission-control/secrets.json` from before encryption was added, it's migrated automatically. The first command that accesses secrets will prompt you to create a password, encrypt the existing data, and delete the plaintext file.
+### Loading a plugin from a path
 
-### Credential precedence
+A `config.json` entry can point at a plugin directory anywhere on disk with a `path` field, instead of requiring the plugin to live under `<dataDir>/plugins/`. This is handy for local development — you can keep a plugin in your own working tree and load it without copying it in:
 
-When Mission Control manages agents, secrets are delivered to the gateway's encrypted credential store. For standalone gateway usage, credentials are resolved in this order:
+```json
+{
+  "my-dev-plugin": { "path": "/abs/or/relative/dir", "trusted": true }
+}
+```
 
-1. `--secrets` file (highest priority)
-2. Environment variables (`.env` or shell)
+A `path` entry is **enabled automatically** — you do not need `"enabled": true`. It still requires `"trusted": true` to run code components (hooks, MCP servers, `bin/` executables, and provider catalogs); skills and commands load from `enabled` alone, just like any other plugin.
 
-## Deep merge behavior
+### Commands
+
+Each `commands/<name>.md` file becomes a slash command named `/<plugin>:<name>`. For example, a plugin called `my-skills` with `commands/triage.md` exposes `/my-skills:triage`. The command body is the markdown content; optional frontmatter (`name`, `description`) overrides the command name and supplies a description. The slash name is `<plugin>:<frontmatter-name>` when `name:` frontmatter is present, otherwise `<plugin>:<filename-without-.md>`. Commands need only `enabled`.
+
+### Subagents (specialists)
+
+Each `agents/<name>.md` file (Claude Code subagent format — frontmatter `name`/`description` plus a markdown body) is exposed as a **loadable specialist**. For example, a plugin called `my-skills` with `agents/reviewer.md` is invocable as `/my-skills:reviewer` or via the agent's `load_skill` tool. As with commands, the loadable name is `<plugin>:<frontmatter-name>` when `name:` frontmatter is present, otherwise `<plugin>:<filename-without-.md>`. When loaded, the specialist contributes its instructions to the conversation on demand. Like commands, subagents are markdown — they need only `enabled` (not `trusted`).
+
+**Limitation:** subagents run in the **main session**, not as isolated child agents. The `tools` frontmatter field is therefore **advisory, not enforced** — a loaded specialist can use the agent's full tool set. True isolated subagent spawning (a separate context with a restricted tool subset) is a future enhancement.
+
+### MCP servers and executables
+
+A trusted plugin's `.mcp.json` is read at startup and its servers are registered with the gateway's MCP manager and persisted alongside your other MCP servers. Registration is fail-isolated: a server that fails to start is logged and skipped without affecting the rest of the gateway. A trusted plugin's `bin/` directory is prepended to the gateway's `PATH`, so its executables resolve ahead of system binaries.
+
+### Hooks
+
+A trusted plugin can register **hooks** — shell commands that run at key points in an agent run — via a `hooks/hooks.json` file in the [Claude Code hooks format](https://docs.claude.com/en/docs/claude-code/hooks). Hooks run shell commands, so they require `"trusted": true`; an untrusted plugin's hooks are skipped.
+
+Supported events:
+
+| Event | When it fires | What it can do |
+| --- | --- | --- |
+| `SessionStart` | Before the model runs, at the start of a run | Add context to the system prompt |
+| `UserPromptSubmit` | After an inbound channel message passes routing, before the agent runs | Block the message, or prepend context to the prompt |
+| `PreToolUse` | Before a tool executes (matched by tool name) | Allow or deny the tool call |
+| `PostToolUse` | After a tool executes (matched by tool name) | Block the result, or append context |
+| `Stop` | After the run completes | Cleanup (its output is logged, not injected) |
+
+Each event maps to an array of matcher groups; each group has an optional `matcher` (a tool name, a `|`-separated list, or a regex — omit or use `*` to match everything) and a `hooks` array of `{ "type": "command", "command": "...", "timeout": <seconds> }` entries.
+
+```json
+{
+  "PreToolUse": [
+    {
+      "matcher": "bash",
+      "hooks": [
+        { "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/scripts/guard.sh" }
+      ]
+    }
+  ],
+  "UserPromptSubmit": [
+    {
+      "hooks": [
+        { "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/scripts/inject-context.sh" }
+      ]
+    }
+  ]
+}
+```
+
+Hook commands receive the Claude Code event payload (`tool_name`, `tool_input`, `prompt`, `session_id`, `cwd`, …) as JSON on **stdin**, and communicate back through their exit code and stdout:
+
+- **Exit `0`** — allowed. To deny, add context, or replace tool input, print a JSON object with a `hookSpecificOutput` field (e.g. `{"hookSpecificOutput":{"permissionDecision":"deny","permissionDecisionReason":"..."}}` or `{"hookSpecificOutput":{"additionalContext":"..."}}`).
+- **Exit `2`** — blocking error. Standard error becomes the block reason.
+
+The string `${CLAUDE_PLUGIN_ROOT}` in a command is substituted with the plugin's absolute directory, so hooks can reference scripts bundled with the plugin. `${CLAUDE_PROJECT_DIR}` and `${CLAUDE_PLUGIN_DATA}` (a per-plugin scratch directory) are also available.
+
+**Fail-open by design.** A hook that errors, times out, exits non-zero (other than `2`), or prints malformed JSON is ignored — the run proceeds as if the hook had allowed it. Hooks never crash the gateway.
+
+**Where each event fires.** `SessionStart`, `PreToolUse`, `PostToolUse`, and `Stop` fire on **every** agent run, whether the run was reached through Mission Control chat or an inbound channel. `UserPromptSubmit` fires **only on the channel path** (Telegram, WhatsApp); it does not run for Mission Control chat messages.
+
+### LLM providers
+
+A trusted plugin can add a whole **LLM provider** — a base URL, a wire protocol, and a list of models — through one or more `providers/<provider>.json` catalog files. Once loaded, its models appear in Mission Control's model dropdown as `<id>/<model-id>` and any agent can be pointed at them, exactly like the built-in providers.
 
 <Warning>
-  JSON config is deep-merged with defaults. Objects are merged recursively, but arrays are **replaced**, not concatenated. Specifying `tools: ["bash"]` in your config replaces the default `["bash", "edit", "write", "read", "glob", "grep", "ls"]` entirely.
+  A provider catalog requires `"trusted": true`. A provider sees **every prompt** you send to its models, **receives your API key**, and **chooses the network endpoint** requests go to. Only add provider plugins you trust with all three.
 </Warning>
+
+Each catalog file is a single JSON object:
+
+```json
+{
+  "id": "myllm",
+  "label": "My LLM",
+  "credentialPrefix": "myllm-api-key",
+  "baseUrl": "https://api.myllm.example/v1",
+  "api": "openai-completions",
+  "models": [
+    {
+      "id": "my-fast",
+      "name": "My Fast",
+      "contextWindow": 128000,
+      "maxTokens": 8192,
+      "reasoning": false,
+      "cost": { "input": 0.5, "output": 1.5, "cacheRead": 0, "cacheWrite": 0 }
+    }
+  ]
+}
+```
+
+| Field | Required | Description |
+| --- | --- | --- |
+| `id` | yes | Provider id and the `<id>/<model>` prefix. Also the credential lookup name. |
+| `label` | yes | Human-readable provider name. |
+| `baseUrl` | yes | API base URL the gateway calls. |
+| `api` | yes | Wire protocol: `openai-completions` or `anthropic-messages`. |
+| `credentialPrefix` | yes | Prefix the API key is stored under (e.g. `myllm-api-key`). |
+| `models[]` | yes | Statically-known models. Each needs `id`, `contextWindow`, `maxTokens`; `name`, `reasoning`, `cost`, `input`, `headers`, and `compat` are optional. |
+| `dynamicModels` | no | OpenRouter-style "accept any model id" — see below. |
+| `dynamicModelDefaults` | no | `{ "contextWindow", "maxTokens" }` applied to dynamically-accepted ids. |
+| `placeholderKey` | no | Stand-in key for keyless local servers — see below. |
+
+**Storing the API key.** Save it in the credential store under `<id>-api-key:<name>`, for example `myllm-api-key:default`. The simplest way is Mission Control's **AI Providers** screen, which writes that key for you; you can also set it directly with the gateway's credentials API. The first key stored for a provider id wins.
+
+**Accept-any-model providers.** Set `"dynamicModels": true` together with `"dynamicModelDefaults": { "contextWindow": ..., "maxTokens": ... }` to allow any model id the provider supports — useful for aggregators like OpenRouter where the catalog can't list everything. Listed `models` still appear in the dropdown; an unlisted id is accepted on demand and sized from the defaults. (Without `dynamicModelDefaults`, an unlisted id is rejected — the gateway can't size it.)
+
+**Keyless local servers.** For a local server that needs no real key (such as Ollama), set `"placeholderKey": "ollama"` (any non-empty string). The gateway uses it whenever no real key is stored, so the provider authenticates out of the box.
+
+If you already run an OpenAI- or Anthropic-compatible endpoint (OpenRouter, OpenClaw, a self-hosted gateway, …), porting it is just filling in this catalog — `baseUrl`, `api`, and the model list.
+
+### Example
+
+```bash
+# Create the plugin directory and a skill
+mkdir -p /path/to/data/plugins/my-skills/skills/summarize
+
+cat > /path/to/data/plugins/my-skills/skills/summarize/SKILL.md <<'EOF'
+---
+name: summarize
+description: Summarize any text concisely
+---
+Summarize the provided text in three sentences or fewer.
+EOF
+
+# Enable the plugin
+echo '{ "my-skills": { "enabled": true } }' \
+  > /path/to/data/plugins/config.json
+```
+
+When the gateway starts, it logs `[plugins] loaded 'my-skills' (skills)` and the agent's `load_skill` tool (see [Tools](/tools) — requires `load_skill` in the agent's tools list) can reference any skill from that plugin.
+
+<Note>
+  Skills, commands, subagents, hooks, MCP servers, `bin/` executables, and LLM providers are active. Subagents currently run in the main session (see the limitation above); isolated subagent spawning is coming in a future release.
+</Note>
