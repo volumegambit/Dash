@@ -535,6 +535,96 @@ describe('plugin mutate → hot-reload end-to-end', () => {
     }
   });
 
+  // P4: the MC credential form reads candidate provider ids from
+  // GET /runtime/plugins. management-api-plugins.test.ts asserts the route shape
+  // with an INJECTED provider config; this proves the providers array is gated by
+  // the SAME trust filter as /models — through the real loader + reload. An
+  // enabled-but-untrusted provider plugin contributes NO provider (trust-gated);
+  // trusting it via the route surfaces the provider with its credential prefix.
+  it('P4: GET /runtime/plugins exposes a plugin provider only AFTER a reload trusts it', async () => {
+    await writeProviderPlugin(join(dataDir, 'plugins'), 'llmpack');
+    const cfg = new PluginConfigStore(dataDir);
+    await cfg.setEnabled('llmpack', true); // enabled but NOT trusted
+
+    const { app, cleanup } = await boot(dataDir);
+    try {
+      // Untrusted: the plugin is listed (not disabled) but contributes NO
+      // provider — the credential form has nothing to offer for it yet.
+      const before = await app.request('/runtime/plugins', { headers: AUTH });
+      expect(before.status).toBe(200);
+      const beforeBody = (await before.json()) as {
+        providers: Array<{ id: string; credentialPrefix: string }>;
+        plugins: Array<{ name: string }>;
+      };
+      expect(beforeBody.plugins.map((p) => p.name)).toContain('llmpack');
+      expect(beforeBody.providers.map((p) => p.id)).not.toContain('myllm');
+
+      // Trust via the route → reload rebuilds pluginProviderConfigs.
+      const put = await app.request('/plugins/llmpack', {
+        method: 'PUT',
+        headers: JSON_HEADERS,
+        body: JSON.stringify({ trusted: true }),
+      });
+      expect(put.status).toBe(200);
+
+      // Now the provider is exposed with the prefix the credential form keys on.
+      const after = await app.request('/runtime/plugins', { headers: AUTH });
+      const afterBody = (await after.json()) as {
+        providers: Array<{ id: string; label: string; credentialPrefix: string }>;
+      };
+      expect(afterBody.providers).toContainEqual({
+        id: 'myllm',
+        label: 'My LLM',
+        credentialPrefix: 'myllm-api-key',
+      });
+    } finally {
+      await cleanup();
+    }
+  });
+
+  // P4: a DISABLED provider plugin must be absent from /runtime/plugins entirely
+  // — neither its record (status disabled) nor its provider may surface, even if
+  // it was trusted before being disabled. management-api-plugins.test.ts proves
+  // the record-level exclusion with a stub; this proves it through the real
+  // loader, where a disabled plugin contributes no providerConfigs at all.
+  it('P4: GET /runtime/plugins excludes a disabled (formerly trusted) provider plugin', async () => {
+    await writeProviderPlugin(join(dataDir, 'plugins'), 'llmpack');
+    const cfg = new PluginConfigStore(dataDir);
+    await cfg.setEnabled('llmpack', true);
+    await cfg.setTrusted('llmpack', true);
+
+    const { app, cleanup } = await boot(dataDir);
+    try {
+      // Sanity: trusted+enabled boot exposes the provider.
+      const on = await app.request('/runtime/plugins', { headers: AUTH });
+      const onBody = (await on.json()) as {
+        providers: Array<{ id: string }>;
+        plugins: Array<{ name: string }>;
+      };
+      expect(onBody.providers.map((p) => p.id)).toContain('myllm');
+      expect(onBody.plugins.map((p) => p.name)).toContain('llmpack');
+
+      // Disable via the route → reload drops the plugin's wiring entirely.
+      const put = await app.request('/plugins/llmpack', {
+        method: 'PUT',
+        headers: JSON_HEADERS,
+        body: JSON.stringify({ enabled: false }),
+      });
+      expect(put.status).toBe(200);
+
+      const off = await app.request('/runtime/plugins', { headers: AUTH });
+      const offBody = (await off.json()) as {
+        providers: Array<{ id: string }>;
+        plugins: Array<{ name: string }>;
+      };
+      // Record excluded (status disabled) AND provider gone.
+      expect(offBody.plugins.map((p) => p.name)).not.toContain('llmpack');
+      expect(offBody.providers.map((p) => p.id)).not.toContain('myllm');
+    } finally {
+      await cleanup();
+    }
+  });
+
   it('CF5b: GET /agents/:id/skills reflects plugin skills only AFTER a reload', async () => {
     await writeMcpPlugin(join(dataDir, 'plugins'), 'disco');
     // disco starts disabled — its skill must not appear yet.
