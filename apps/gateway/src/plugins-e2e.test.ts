@@ -1,0 +1,406 @@
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import type { AgentBackend, AgentEvent, AgentState, RunOptions } from '@dash/agent';
+import type { Logger } from '@dash/logging';
+import { MANIFEST_DIR, MANIFEST_FILENAME, PluginConfigStore, loadPlugins } from '@dash/plugins';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+import { createAgentChatCoordinator } from './agent-chat-coordinator.js';
+import { AgentRegistry } from './agent-registry.js';
+import { GatewayCredentialStore } from './credential-store.js';
+import { EventBus, type GatewayEvent } from './event-bus.js';
+import type { DynamicGateway } from './gateway.js';
+import { createGatewayManagementApp } from './management-api.js';
+import { ModelsStore } from './models-store.js';
+import {
+  type PluginStatusRecord,
+  type PluginWiringState,
+  rebuildWiringState,
+  reloadPluginsUnderMutex,
+} from './plugins-wiring.js';
+
+// ===========================================================================
+// Real end-to-end integration test for P1's headline feature: mutate a plugin
+// via the management API → hot-reload rebuilds live wiring → no restart.
+//
+// Unlike management-api-plugins.test.ts (which injects a FAKE reload closure to
+// unit-test the routes), this test wires up the REAL pieces index.ts wires:
+//   - a real plugin laid down on disk under <dataDir>/plugins/<name>/
+//   - a real PluginConfigStore
+//   - a real createAgentChatCoordinator (so evictAll runs for real)
+//   - a real `reloadPlugins` closure built on reloadPluginsUnderMutex whose
+//     onWiringRebuilt reassigns the `wiringState` holder (exactly like index.ts)
+//   - createGatewayManagementApp with `getPluginWiringState: () => wiringState`
+//
+// The plugin declares an MCP server (.mcp.json), a trust-gated code component:
+//   - enabled+untrusted → boot status has mcp in `noop`, mcpConfigs empty
+//   - trust=true via PUT  → reload moves mcp to `activated`, mcpConfigs non-empty
+// proving the route genuinely rebuilt LIVE wiring through the reload.
+// ===========================================================================
+
+const NOOP_LOGGER: Logger = {
+  debug: () => {},
+  info: () => {},
+  warn: () => {},
+  error: () => {},
+};
+
+const CORE_PROVIDER_IDS = ['anthropic', 'openai', 'google', 'moonshotai', 'openrouter'];
+
+const AUTH = { Authorization: 'Bearer test-token' };
+const JSON_HEADERS = { 'Content-Type': 'application/json', ...AUTH };
+
+/** Minimal gateway stub — plugin routes never touch it. */
+function stubGateway(): DynamicGateway {
+  return {
+    registerAgent: vi.fn(),
+    deregisterAgent: vi.fn().mockResolvedValue([]),
+    registerChannel: vi.fn().mockResolvedValue(undefined),
+    stopChannel: vi.fn().mockResolvedValue(true),
+    agentCount: vi.fn().mockReturnValue(0),
+    channelCount: vi.fn().mockReturnValue(0),
+    start: vi.fn().mockResolvedValue(undefined),
+    stop: vi.fn().mockResolvedValue(undefined),
+  } as unknown as DynamicGateway;
+}
+
+/** A do-nothing backend so the real coordinator can be constructed. */
+function stubBackend(): AgentBackend {
+  return {
+    name: 'test',
+    start: vi.fn().mockResolvedValue(undefined),
+    stop: vi.fn().mockResolvedValue(undefined),
+    async *run(_state: AgentState, _options: RunOptions): AsyncGenerator<AgentEvent> {
+      yield { type: 'response', content: 'ok', usage: { inputTokens: 1, outputTokens: 1 } };
+    },
+    abort: vi.fn(),
+  };
+}
+
+/** Write a plugin that contributes a skill (markdown, always active) + an MCP
+ *  server (trust-gated). The MCP component is the trust signal we assert on. */
+async function writeMcpPlugin(pluginsDir: string, name: string): Promise<void> {
+  const dir = join(pluginsDir, name);
+  await mkdir(join(dir, MANIFEST_DIR), { recursive: true });
+  await writeFile(
+    join(dir, MANIFEST_DIR, MANIFEST_FILENAME),
+    JSON.stringify({ name, version: '1.0.0', description: `${name} Plugin` }),
+  );
+  // Markdown skill — loads for any enabled plugin (no trust needed).
+  await mkdir(join(dir, 'skills', 'greeter'), { recursive: true });
+  await writeFile(
+    join(dir, 'skills', 'greeter', 'SKILL.md'),
+    '---\nname: greeter\ndescription: greets people\n---\nSay hi.',
+  );
+  // MCP server — code component, withheld until trusted.
+  await writeFile(
+    join(dir, '.mcp.json'),
+    JSON.stringify({ mcpServers: { db: { command: 'node', args: ['server.js'] } } }),
+  );
+}
+
+/** Write a plugin that contributes an LLM provider catalog (trust-gated). The
+ *  provider models feed GET /models (CF5a). */
+async function writeProviderPlugin(pluginsDir: string, name: string): Promise<void> {
+  const dir = join(pluginsDir, name);
+  await mkdir(join(dir, MANIFEST_DIR), { recursive: true });
+  await writeFile(
+    join(dir, MANIFEST_DIR, MANIFEST_FILENAME),
+    JSON.stringify({ name, version: '1.0.0', description: `${name} Plugin` }),
+  );
+  await mkdir(join(dir, 'providers'), { recursive: true });
+  await writeFile(
+    join(dir, 'providers', 'myllm.json'),
+    JSON.stringify({
+      id: 'myllm',
+      label: 'My LLM',
+      credentialPrefix: 'myllm-api-key',
+      baseUrl: 'https://example/v1',
+      api: 'openai-completions',
+      models: [{ id: 'm1', name: 'Model One', contextWindow: 128000, maxTokens: 8192 }],
+    }),
+  );
+}
+
+/**
+ * Boot a real management app with plugins wired exactly as index.ts does:
+ * a mutable `wiringState` holder, a reload closure that reassigns it via
+ * onWiringRebuilt, and a getter the routes read live.
+ */
+async function boot(dataDir: string) {
+  const pluginsDir = join(dataDir, 'plugins');
+  const pluginConfigStore = new PluginConfigStore(dataDir);
+  const modelsStore = new ModelsStore(dataDir);
+  const credentialStore = new GatewayCredentialStore(dataDir);
+  await credentialStore.init();
+  const registry = new AgentRegistry();
+  const entries = await pluginConfigStore.load();
+  const loaded = await loadPlugins({ pluginsDir, entries, logger: NOOP_LOGGER });
+  // Mutable holder — reassigned by onWiringRebuilt on every reload (like index.ts).
+  let wiringState = await rebuildWiringState(loaded, entries, CORE_PROVIDER_IDS, {
+    logger: NOOP_LOGGER,
+    dataDir,
+  });
+
+  const agents = createAgentChatCoordinator({
+    registry,
+    poolMaxSize: 10,
+    createBackend: async () => stubBackend(),
+    // Read plugin skill/command wiring LIVE so a reload is reflected by
+    // GET /agents/:id/skills — exactly as index.ts wires it (CF5b).
+    getPluginSkillDirs: () => wiringState.skillDirs,
+    getPluginCommandFiles: () => wiringState.commandFiles,
+  });
+
+  const onWiringRebuilt = async (newWiring: PluginWiringState): Promise<void> => {
+    // index.ts also re-registers MCP servers here; this test has no live
+    // McpManager, so swapping the holder is the relevant behavior to mirror.
+    wiringState = newWiring;
+  };
+
+  const reloadPlugins = (): Promise<PluginWiringState> =>
+    reloadPluginsUnderMutex(
+      pluginConfigStore,
+      pluginsDir,
+      dataDir,
+      NOOP_LOGGER,
+      modelsStore,
+      agents,
+      CORE_PROVIDER_IDS,
+      onWiringRebuilt,
+    );
+
+  const eventBus = new EventBus();
+  const events: GatewayEvent[] = [];
+  eventBus.subscribe((e) => events.push(e));
+
+  const app = createGatewayManagementApp({
+    gateway: stubGateway(),
+    agents,
+    agentRegistry: registry,
+    channelRegistry: {
+      get: vi.fn(() => undefined),
+      list: vi.fn(() => []),
+      save: vi.fn().mockResolvedValue(undefined),
+    } as never,
+    credentialStore,
+    modelsStore,
+    token: 'test-token',
+    eventBus,
+    getPluginWiringState: () => wiringState,
+    pluginConfigStore,
+    reloadPlugins,
+    pluginsDir,
+  });
+
+  return {
+    app,
+    events,
+    agents,
+    getWiringState: () => wiringState,
+    cleanup: () => agents.stop(),
+  };
+}
+
+describe('plugin mutate → hot-reload end-to-end', () => {
+  let dataDir: string;
+
+  beforeEach(async () => {
+    dataDir = await mkdtemp(join(tmpdir(), 'plugins-e2e-'));
+    await mkdir(join(dataDir, 'plugins'), { recursive: true });
+  });
+  afterEach(async () => {
+    await rm(dataDir, { recursive: true, force: true });
+  });
+
+  it('lists an enabled-untrusted plugin with its code component in noop', async () => {
+    await writeMcpPlugin(join(dataDir, 'plugins'), 'disco');
+    // Persist enabled (untrusted) BEFORE boot so the boot load reflects it.
+    const cfg = new PluginConfigStore(dataDir);
+    await cfg.setEnabled('disco', true);
+
+    const { app, cleanup } = await boot(dataDir);
+    try {
+      const res = await app.request('/plugins', { headers: AUTH });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { records: PluginStatusRecord[] };
+      const disco = body.records.find((r) => r.name === 'disco');
+      expect(disco).toBeDefined();
+      expect(disco?.status).toBe('loaded');
+      expect(disco?.enabled).toBe(true);
+      // Skill is active (markdown, no trust); MCP is withheld → noop.
+      expect(disco?.activated).toContain('skills');
+      expect(disco?.noop).toContain('mcp');
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it('PUT trusted:true reloads and populates live MCP wiring through the route', async () => {
+    await writeMcpPlugin(join(dataDir, 'plugins'), 'disco');
+    const cfg = new PluginConfigStore(dataDir);
+    await cfg.setEnabled('disco', true);
+
+    const { app, events, getWiringState, cleanup } = await boot(dataDir);
+    try {
+      // Precondition: untrusted boot → no MCP configs in live wiring.
+      expect(getWiringState().mcpConfigs).toHaveLength(0);
+
+      const res = await app.request('/plugins/disco', {
+        method: 'PUT',
+        headers: JSON_HEADERS,
+        body: JSON.stringify({ trusted: true }),
+      });
+      expect(res.status).toBe(200);
+      const record = (await res.json()) as PluginStatusRecord;
+      // The returned record (read from the freshly-rebuilt wiring) shows mcp active.
+      expect(record.trusted).toBe(true);
+      expect(record.activated).toContain('mcp');
+      expect(record.noop).not.toContain('mcp');
+
+      // The LIVE wiring the routes read was genuinely rebuilt: the MCP config
+      // is now present (proving the route ran the real reload loop, not a stub).
+      const ws = getWiringState();
+      expect(ws.mcpConfigs.length).toBeGreaterThan(0);
+      expect(ws.mcpConfigs[0].pluginName).toBe('disco');
+
+      // GET /plugins now reflects the trusted state too.
+      const after = await app.request('/plugins', { headers: AUTH });
+      const list = (await after.json()) as { records: PluginStatusRecord[] };
+      expect(list.records.find((r) => r.name === 'disco')?.activated).toContain('mcp');
+
+      // Event emitted with the patched field.
+      const evt = events.find((e) => e.type === 'plugin:config-changed');
+      expect(evt).toMatchObject({ type: 'plugin:config-changed', plugin: 'disco' });
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it('POST /plugins/reload returns ok + reloadedAt and emits plugin:reloaded', async () => {
+    await writeMcpPlugin(join(dataDir, 'plugins'), 'disco');
+    const cfg = new PluginConfigStore(dataDir);
+    await cfg.setEnabled('disco', true);
+
+    const { app, events, cleanup } = await boot(dataDir);
+    try {
+      const before = Date.now();
+      const res = await app.request('/plugins/reload', { method: 'POST', headers: AUTH });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { ok: boolean; reloadedAt: string };
+      expect(body.ok).toBe(true);
+      const parsed = Date.parse(body.reloadedAt);
+      expect(Number.isNaN(parsed)).toBe(false);
+      expect(parsed).toBeGreaterThanOrEqual(before - 1000);
+      expect(events.find((e) => e.type === 'plugin:reloaded')).toBeTruthy();
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it('PUT enabled:false reloads → GET /plugins shows status disabled', async () => {
+    await writeMcpPlugin(join(dataDir, 'plugins'), 'disco');
+    const cfg = new PluginConfigStore(dataDir);
+    await cfg.setEnabled('disco', true);
+    await cfg.setTrusted('disco', true);
+
+    const { app, cleanup } = await boot(dataDir);
+    try {
+      // Sanity: trusted+enabled boot has mcp active.
+      const boot0 = await app.request('/plugins', { headers: AUTH });
+      const list0 = (await boot0.json()) as { records: PluginStatusRecord[] };
+      expect(list0.records.find((r) => r.name === 'disco')?.activated).toContain('mcp');
+
+      const res = await app.request('/plugins/disco', {
+        method: 'PUT',
+        headers: JSON_HEADERS,
+        body: JSON.stringify({ enabled: false }),
+      });
+      expect(res.status).toBe(200);
+
+      const after = await app.request('/plugins', { headers: AUTH });
+      const list = (await after.json()) as { records: PluginStatusRecord[] };
+      const disco = list.records.find((r) => r.name === 'disco');
+      expect(disco?.status).toBe('disabled');
+      expect(disco?.enabled).toBe(false);
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it('CF5a: GET /models reflects a plugin provider only AFTER a reload trusts it', async () => {
+    await writeProviderPlugin(join(dataDir, 'plugins'), 'llmpack');
+    const cfg = new PluginConfigStore(dataDir);
+    await cfg.setEnabled('llmpack', true); // enabled but NOT trusted
+
+    const { app, cleanup } = await boot(dataDir);
+    try {
+      // Untrusted boot: the provider's models must NOT appear (trust-gated).
+      const before = await app.request('/models', { headers: AUTH });
+      expect(before.status).toBe(200);
+      const beforeBody = (await before.json()) as { models: { value: string }[] };
+      expect(beforeBody.models.map((m) => m.value)).not.toContain('myllm/m1');
+
+      // Trust the plugin via the route → reload rebuilds wiring (incl. pluginModels).
+      const put = await app.request('/plugins/llmpack', {
+        method: 'PUT',
+        headers: JSON_HEADERS,
+        body: JSON.stringify({ trusted: true }),
+      });
+      expect(put.status).toBe(200);
+
+      // GET /models now reflects the reloaded plugin provider — proving the
+      // route reads pluginModels through a LIVE getter, not a boot snapshot.
+      const after = await app.request('/models', { headers: AUTH });
+      const afterBody = (await after.json()) as { models: { value: string }[] };
+      expect(afterBody.models.map((m) => m.value)).toContain('myllm/m1');
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it('CF5b: GET /agents/:id/skills reflects plugin skills only AFTER a reload', async () => {
+    await writeMcpPlugin(join(dataDir, 'plugins'), 'disco');
+    // disco starts disabled — its skill must not appear yet.
+    const { app, cleanup } = await boot(dataDir);
+    try {
+      // Register an agent via the management API (the app owns its own registry).
+      const created = await app.request('/agents', {
+        method: 'POST',
+        headers: JSON_HEADERS,
+        body: JSON.stringify({
+          name: 'sk-agent',
+          model: 'anthropic/claude-sonnet-4-5',
+          systemPrompt: 'p',
+        }),
+      });
+      expect(created.status).toBe(201);
+      const { id } = (await created.json()) as { id: string };
+
+      // Before enabling the plugin: greeter skill is absent.
+      const before = await app.request(`/agents/${id}/skills`, { headers: AUTH });
+      expect(before.status).toBe(200);
+      const beforeSkills = (await before.json()) as Array<{ name: string }>;
+      expect(beforeSkills.map((s) => s.name)).not.toContain('greeter');
+
+      // Enable the plugin via the route → reload registers its skill dir.
+      const put = await app.request('/plugins/disco', {
+        method: 'PUT',
+        headers: JSON_HEADERS,
+        body: JSON.stringify({ enabled: true }),
+      });
+      expect(put.status).toBe(200);
+
+      // After reload: the plugin's greeter skill is now listed (proving the
+      // coordinator reads plugin skill dirs through a LIVE getter).
+      const after = await app.request(`/agents/${id}/skills`, { headers: AUTH });
+      const afterSkills = (await after.json()) as Array<{ name: string; source?: string }>;
+      const greeter = afterSkills.find((s) => s.name === 'greeter');
+      expect(greeter).toBeDefined();
+      expect(greeter?.source).toBe('plugin');
+    } finally {
+      await cleanup();
+    }
+  });
+});
