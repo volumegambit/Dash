@@ -35,7 +35,7 @@ import { createGatewayManagementApp } from './management-api.js';
 import { McpConfigStore } from './mcp-store.js';
 import { ModelsStore } from './models-store.js';
 import { OAuthRefreshCoordinator } from './oauth-refresh.js';
-import { registerPluginMcpServers } from './plugin-mcp.js';
+import { reconcilePluginMcpServers, registerPluginMcpServers } from './plugin-mcp.js';
 import {
   type PluginWiringState,
   rebuildWiringState,
@@ -406,18 +406,9 @@ async function main() {
     wiringState = newWiring;
 
     // MCP hot-reload: remove every previously-registered plugin server, then
-    // additively re-register the new set. Each remove is fail-isolated — a
-    // server already gone (or mid-teardown) must not abort the rest.
-    for (const name of oldServerNames) {
-      try {
-        await mcpManager.removeServer(name);
-      } catch (err) {
-        logger.warn(
-          `[plugins] reload: removing MCP server '${name}' failed: ${(err as Error).message}`,
-        );
-      }
-    }
-    await registerPluginMcpServers(mcpManager, newWiring.mcpConfigs, logger);
+    // additively re-register the new set (remove-first because `addServer`
+    // rejects duplicate names). Fail-isolated per server — see the helper.
+    await reconcilePluginMcpServers(mcpManager, oldServerNames, newWiring.mcpConfigs, logger);
 
     // Re-log any provider catalogs dropped for colliding with a built-in id —
     // the same boot-time helper, so the warning surfaces on every reload too.

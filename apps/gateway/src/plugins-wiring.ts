@@ -183,15 +183,31 @@ export async function rebuildWiringState(
 let inFlight: Promise<PluginWiringState> | null = null;
 
 /**
- * Reload loop: hold a mutex so concurrent reloads serialize (not race).
- * Re-run loadPlugins(), rebuild wiring, fire `onWiringRebuilt`, invalidate the
- * models store, and evict every loaded plugin's affected agents. The caller is
- * expected to have persisted its config changes (enable/trust) BEFORE calling;
- * we re-`load()` the persisted entries so the rebuild reflects them.
+ * Reload loop. The full flow on a successful reload is:
+ *   loadPlugins → rebuildWiringState → onWiringRebuilt → modelsStore.clear →
+ *   agents.evictAll
+ * i.e. re-run discovery, rebuild the derived wiring snapshot, let the caller swap
+ * the live wiring reference + re-register MCP servers, invalidate the models
+ * cache, then evict idle warm backends so they re-warm against the new wiring.
  *
- * Only one reload at a time: concurrent requests queue and share the in-flight
- * promise. Returns the rebuilt wiring state, or throws if any reload step fails
- * (the in-flight slot is always reset, so a later reload can recover).
+ * IN-FLIGHT MUTEX: a module-level `inFlight` promise serializes reloads so
+ * concurrent requests do not race. The FIRST caller runs the reload body; every
+ * caller that arrives while it is running shares that one in-flight promise (and
+ * thus the same resolved `PluginWiringState`). The slot is reset in `finally`
+ * (on success OR failure), so the next caller after settlement runs a fresh
+ * reload — a failed reload does not wedge the mutex.
+ *
+ * DOCUMENTED RISK — config is persisted BEFORE reload: the caller (the PUT/DELETE
+ * route) writes the enable/trust/remove change to the config store BEFORE invoking
+ * this, and we re-`load()` those persisted entries so the rebuild reflects them.
+ * If a reload step then throws, this function rejects WITHOUT having swapped the
+ * live wiring — so the on-disk config is already changed but the running wiring
+ * stays on the PREVIOUS (now-stale) snapshot. The config and the live wiring are
+ * out of sync until the next SUCCESSFUL reload (a retry, another mutation, or a
+ * restart) reconciles them. The route surfaces this as a 409 ('config persisted;
+ * wiring unchanged') rather than silently rolling back the config write.
+ *
+ * Returns the rebuilt wiring state, or throws if any reload step fails.
  *
  * - pluginConfigStore: to load() the persisted entries before reload
  * - pluginsDir: the plugins directory to scan

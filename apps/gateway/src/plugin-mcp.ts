@@ -38,3 +38,39 @@ export async function registerPluginMcpServers(
     }
   }
 }
+
+/**
+ * Hot-reload the live set of plugin MCP servers: remove the previously-registered
+ * set, then additively re-register the new set. Used by the gateway's
+ * `onWiringRebuilt` callback when a plugin reload changes which MCP servers are
+ * trusted/declared.
+ *
+ * Remove-FIRST is required, not cosmetic: `addServer` rejects duplicate names, so
+ * a server whose name survives across the reload (most of them) must be torn down
+ * before it can be re-added against the new wiring. `oldServerNames` is the set we
+ * registered last time — captured by the caller BEFORE it swaps its live wiring
+ * reference, so we remove exactly what we added (the new wiring may add, drop, or
+ * rename servers).
+ *
+ * Each removal is fail-isolated: a server already gone (or mid-teardown) is logged
+ * and skipped so it never aborts the remaining removals or the re-register pass.
+ * The additive re-register delegates to `registerPluginMcpServers`, which is itself
+ * fail-isolated per server.
+ */
+export async function reconcilePluginMcpServers(
+  mcpManager: Pick<McpManager, 'addServer' | 'removeServer'>,
+  oldServerNames: string[],
+  newConfigs: Array<{ pluginName: string; config: McpServerConfig }>,
+  logger: Logger,
+): Promise<void> {
+  for (const name of oldServerNames) {
+    try {
+      await mcpManager.removeServer(name);
+    } catch (err) {
+      logger.warn(
+        `[plugins] reload: removing MCP server '${name}' failed: ${(err as Error).message}`,
+      );
+    }
+  }
+  await registerPluginMcpServers(mcpManager, newConfigs, logger);
+}
