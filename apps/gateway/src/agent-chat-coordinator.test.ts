@@ -158,3 +158,66 @@ describe('AgentChatCoordinator.listSkills', () => {
     await agents.stop();
   });
 });
+
+describe('AgentChatCoordinator skill mutations', () => {
+  function makeCoordinator(managed: string) {
+    const registry = new AgentRegistry();
+    const { id } = registry.register({
+      name: 'skill-agent',
+      model: 'anthropic/claude-sonnet-4-20250514',
+      systemPrompt: 'x',
+    });
+    const agents = createAgentChatCoordinator({
+      registry,
+      poolMaxSize: 10,
+      createBackend: async () => makeMockBackend([]),
+      managedSkillsDir: (config) => (config.name === 'skill-agent' ? managed : undefined),
+    });
+    return { agents, id };
+  }
+
+  it('creates then gets a skill', async () => {
+    const managed = await mkdtemp(join(tmpdir(), 'dash-coord-skills-'));
+    try {
+      const { agents, id } = makeCoordinator(managed);
+      await agents.createSkill(id, { name: 'made', description: 'd', content: 'body' });
+      expect((await agents.getSkill(id, 'made'))?.name).toBe('made');
+      await agents.stop();
+    } finally {
+      await rm(managed, { recursive: true, force: true });
+    }
+  });
+
+  it('installs from a local source and removes it', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dash-coord-skills-'));
+    try {
+      const managed = join(root, 'managed');
+      await mkdir(managed, { recursive: true });
+      const src = join(root, 'fix', 'arxiv');
+      await mkdir(src, { recursive: true });
+      await writeFile(join(src, 'SKILL.md'), '---\nname: arxiv\ndescription: d\n---\n\nbody\n');
+
+      const { agents, id } = makeCoordinator(managed);
+      await agents.installSkill(id, src);
+      expect((await agents.listSkills(id)).map((s) => s.name)).toContain('arxiv');
+      await agents.removeSkill(id, 'arxiv');
+      expect((await agents.listSkills(id)).map((s) => s.name)).not.toContain('arxiv');
+      await agents.stop();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses to remove a bundled skill', async () => {
+    const managed = await mkdtemp(join(tmpdir(), 'dash-coord-skills-'));
+    try {
+      const { agents, id } = makeCoordinator(managed);
+      const bundled = (await agents.listSkills(id)).find((s) => s.source === 'bundled');
+      if (!bundled) throw new Error('expected a bundled skill');
+      await expect(agents.removeSkill(id, bundled.name)).rejects.toMatchObject({ code: 'bundled' });
+      await agents.stop();
+    } finally {
+      await rm(managed, { recursive: true, force: true });
+    }
+  });
+});

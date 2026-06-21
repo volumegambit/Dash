@@ -1,11 +1,23 @@
 import { mkdir } from 'node:fs/promises';
-import { ConversationPool, DashAgent, discoverSkills } from '@dash/agent';
+import {
+  ConversationPool,
+  DashAgent,
+  SkillOpError,
+  createSkillInDir,
+  discoverSkills,
+  heuristicScan,
+  installSkillToDir,
+  removeSkillFromDir,
+  updateSkillBody,
+} from '@dash/agent';
 import type {
   AgentBackend,
   AgentEvent,
   DashAgentConfig,
   ImageBlock,
+  InstalledSkill,
   SkillDiscoveryResult,
+  WrittenSkill,
 } from '@dash/agent';
 import type { AgentRegistry, GatewayAgentConfig } from './agent-registry.js';
 
@@ -74,6 +86,19 @@ export interface AgentChatCoordinator {
   evict(agentId: string): Promise<void>;
   /** List the skills available to an agent (bundled + per-agent). */
   listSkills(agentId: string): Promise<SkillDiscoveryResult[]>;
+  /** Get one skill (with content) by name, or null. */
+  getSkill(agentId: string, name: string): Promise<SkillDiscoveryResult | null>;
+  /** Create a new managed skill. Throws SkillOpError on failure. */
+  createSkill(
+    agentId: string,
+    input: { name: string; description: string; content: string },
+  ): Promise<WrittenSkill>;
+  /** Replace a managed skill's body, preserving frontmatter. */
+  updateSkillContent(agentId: string, name: string, body: string): Promise<WrittenSkill>;
+  /** Install a skill from a git/URL/local source (security-scanned, fail-closed). */
+  installSkill(agentId: string, source: string, name?: string): Promise<InstalledSkill>;
+  /** Remove a managed/agent/remote skill (bundled refused). */
+  removeSkill(agentId: string, name: string): Promise<{ name: string }>;
   stats(): AgentChatCoordinatorStats;
   stop(): Promise<void>;
 }
@@ -145,6 +170,26 @@ export function createAgentChatCoordinator(
     },
   });
 
+  const listSkillsFor = async (agentId: string): Promise<SkillDiscoveryResult[]> => {
+    const entry = registry.get(agentId);
+    if (!entry) return [];
+    return discoverSkills({
+      managedSkillsDir: options.managedSkillsDir?.(entry.config),
+      paths: entry.config.skills?.paths,
+      includeBundled: entry.config.skills?.includeBundled,
+    });
+  };
+
+  const requireManagedDir = (agentId: string): string => {
+    const entry = registry.get(agentId);
+    if (!entry) throw new SkillOpError('not_found', `Agent '${agentId}' not found`);
+    const dir = options.managedSkillsDir?.(entry.config);
+    if (!dir) {
+      throw new SkillOpError('not_found', `Agent '${agentId}' has no managed skills directory`);
+    }
+    return dir;
+  };
+
   return {
     async *chat(request: ChatRequest): AsyncGenerator<AgentEvent> {
       const entry = registry.get(request.agentId);
@@ -173,14 +218,42 @@ export function createAgentChatCoordinator(
     },
 
     async listSkills(agentId: string): Promise<SkillDiscoveryResult[]> {
-      const entry = registry.get(agentId);
-      if (!entry) return [];
       // Computed directly (no pool/backend spin-up): skill discovery is a pure
       // filesystem scan over the managed dir, configured paths, and bundle.
-      return discoverSkills({
-        managedSkillsDir: options.managedSkillsDir?.(entry.config),
-        paths: entry.config.skills?.paths,
-        includeBundled: entry.config.skills?.includeBundled,
+      return listSkillsFor(agentId);
+    },
+
+    async getSkill(agentId, name) {
+      return (await listSkillsFor(agentId)).find((s) => s.name === name) ?? null;
+    },
+
+    async createSkill(agentId, input) {
+      return createSkillInDir({
+        managedDir: requireManagedDir(agentId),
+        name: input.name,
+        description: input.description,
+        content: input.content,
+      });
+    },
+
+    async updateSkillContent(agentId, name, body) {
+      return updateSkillBody({ managedDir: requireManagedDir(agentId), name, body });
+    },
+
+    async installSkill(agentId, source, name) {
+      return installSkillToDir({
+        managedDir: requireManagedDir(agentId),
+        source,
+        name,
+        scanner: async (c) => heuristicScan(c),
+      });
+    },
+
+    async removeSkill(agentId, name) {
+      return removeSkillFromDir({
+        managedDir: requireManagedDir(agentId),
+        name,
+        listFn: () => listSkillsFor(agentId),
       });
     },
 

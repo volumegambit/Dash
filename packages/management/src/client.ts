@@ -149,14 +149,26 @@ export class ManagementClient {
     );
   }
 
-  async updateSkillsConfig(
-    agentName: string,
-    config: SkillsConfig,
-  ): Promise<{ requiresRestart: boolean }> {
-    return this.requestWithBody<{ requiresRestart: boolean }>(
+  async updateSkillsConfig(agentName: string, config: SkillsConfig): Promise<SkillsConfig> {
+    return this.requestWithBody<SkillsConfig>(
       'PATCH',
       `/agents/${encodeURIComponent(agentName)}/skills/config`,
       config,
+    );
+  }
+
+  async installSkill(agentId: string, source: string, name?: string): Promise<SkillInfo> {
+    return this.requestWithBody<SkillInfo>(
+      'POST',
+      `/agents/${encodeURIComponent(agentId)}/skills/install`,
+      { source, name },
+    );
+  }
+
+  async removeSkill(agentId: string, skillName: string): Promise<void> {
+    await this.request<{ name: string }>(
+      'DELETE',
+      `/agents/${encodeURIComponent(agentId)}/skills/${encodeURIComponent(skillName)}`,
     );
   }
 

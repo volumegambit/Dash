@@ -57,6 +57,23 @@ MC_DATA_DIR=/tmp/mc-test-$(date +%s) npm run mc:dev
 1. **Verify:** The dashboard loads after the wizard completes
 2. **Verify:** The sidebar is visible with navigation links
 
+### 1.5 Gateway Fails to Start (Configured User)
+
+**Precondition:** Setup previously completed — `settings.json` has `setupCompletedAt`, or a
+`gateway-state.json` exists in the MC data dir. Simulate a gateway that cannot start (e.g. launch MC
+under a Node version missing a required symbol, or otherwise force the gateway spawn to throw).
+
+1. Launch MC. **Verify:** The **"Gateway failed to start"** screen appears — NOT the onboarding
+   wizard / "Welcome to Dash" keychain-consent screen.
+2. Click **Retry** while the gateway still can't start. **Verify:** The screen stays and shows the
+   error text.
+3. Resolve the underlying cause, then click **Retry**. **Verify:** MC proceeds to the main app and
+   chat is live.
+4. Relaunch and click **Quit** on the failure screen. **Verify:** The app exits.
+5. **Regression:** A genuinely new install (no `setupCompletedAt`, no `gateway-state.json`) still
+   shows the keychain-consent wizard first and does not touch the keychain until the user clicks
+   Continue.
+
 ---
 
 ## Section 2: Sidebar & Navigation
@@ -1179,6 +1196,23 @@ Take screenshots of every page and evaluate against these criteria. This section
 2. **Verify:** The agent confirms removal and `/skills` no longer lists it.
 3. Ask the agent to remove a bundled skill (e.g. "remove summarize-thread").
 4. **Verify:** The agent refuses — bundled skills cannot be removed.
+
+### 28.7 Skills tab in Mission Control
+**Precondition:** App running, gateway healthy, at least one agent created.
+1. Open an agent's detail page and click the **Skills** tab.
+2. **Verify:** A list of skills shows, each with a source badge (Bundled / Managed / Agent / Remote). Bundled skills (e.g. `deep-research`) appear by default.
+3. Click a bundled skill.
+4. **Verify:** Its `SKILL.md` content expands, read-only (no Edit/Remove buttons on bundled skills).
+5. Click **+ Create**, fill in a name / description / content, submit.
+6. **Verify:** The new skill appears in the list with an **Agent** badge and **Edit** / **Remove** actions.
+7. Click **Edit** on that skill, change the body, Save.
+8. **Verify:** Reopening the skill shows the updated content.
+9. Click **+ Install**, enter a public source (e.g. `git:NousResearch/hermes-agent/skills/research/arxiv@main`), Install.
+10. **Verify:** The skill appears with a **Remote** badge. (Try a known-dangerous local skill and **verify** the install is refused with a scan message.)
+11. Click **Remove** on the installed or created skill.
+12. **Verify:** It disappears from the list.
+13. In the **Skills settings** strip, toggle **Include bundled skill library** off and Save.
+14. **Verify:** Bundled skills no longer appear in the list (re-enable to restore).
 
 ## Appendix: Test Run Log
 

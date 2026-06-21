@@ -135,6 +135,16 @@ function makeAgents(): AgentChatCoordinator {
     steer: vi.fn().mockResolvedValue(undefined),
     followUp: vi.fn().mockResolvedValue(undefined),
     evict: vi.fn().mockResolvedValue(undefined),
+    listSkills: vi.fn().mockResolvedValue([]),
+    getSkill: vi.fn().mockResolvedValue(null),
+    createSkill: vi.fn().mockResolvedValue({ name: 'x', location: '/x/SKILL.md' }),
+    updateSkillContent: vi.fn().mockResolvedValue({ name: 'x', location: '/x/SKILL.md' }),
+    installSkill: vi.fn().mockResolvedValue({
+      name: 'x',
+      location: '/x/SKILL.md',
+      verdict: { verdict: 'safe', reasons: [] },
+    }),
+    removeSkill: vi.fn().mockResolvedValue({ name: 'x' }),
     stats: vi.fn().mockReturnValue({ size: 0, maxSize: 0, pinned: 0, agents: {} }),
     stop: vi.fn().mockResolvedValue(undefined),
   };
@@ -946,5 +956,135 @@ describe('createGatewayManagementApp', () => {
         openai: 'sk-openai-1',
       });
     });
+  });
+});
+
+describe('skill routes', () => {
+  const JSON_AUTH = { ...AUTH, 'Content-Type': 'application/json' };
+  function registerAgent(agentRegistry: AgentRegistry): RegisteredAgent {
+    return (agentRegistry.register as ReturnType<typeof vi.fn>)({
+      name: 'x',
+      model: 'm',
+      systemPrompt: 'p',
+    });
+  }
+
+  it('GET /agents/:id/skills returns the list', async () => {
+    const { app, agentRegistry, agents } = createApp();
+    const { id } = registerAgent(agentRegistry);
+    (agents.listSkills as ReturnType<typeof vi.fn>).mockResolvedValue([
+      {
+        name: 's',
+        description: 'd',
+        location: '/s',
+        content: 'c',
+        editable: true,
+        source: 'managed',
+      },
+    ]);
+    const res = await app.request(`/agents/${id}/skills`, { headers: AUTH });
+    expect(res.status).toBe(200);
+    expect((await res.json())[0].name).toBe('s');
+  });
+
+  it('GET /agents/:id/skills → 404 for an unknown agent', async () => {
+    const { app } = createApp();
+    expect((await app.request('/agents/nope/skills', { headers: AUTH })).status).toBe(404);
+  });
+
+  it('GET /agents/:id/skills/:name → 200 then 404 when absent', async () => {
+    const { app, agentRegistry, agents } = createApp();
+    const { id } = registerAgent(agentRegistry);
+    (agents.getSkill as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      name: 's',
+      description: 'd',
+      location: '',
+      content: '',
+      editable: true,
+      source: 'managed',
+    });
+    expect((await app.request(`/agents/${id}/skills/s`, { headers: AUTH })).status).toBe(200);
+    (agents.getSkill as ReturnType<typeof vi.fn>).mockResolvedValueOnce(null);
+    expect((await app.request(`/agents/${id}/skills/none`, { headers: AUTH })).status).toBe(404);
+  });
+
+  it('POST /agents/:id/skills creates (201)', async () => {
+    const { app, agentRegistry, agents } = createApp();
+    const { id } = registerAgent(agentRegistry);
+    const res = await app.request(`/agents/${id}/skills`, {
+      method: 'POST',
+      headers: JSON_AUTH,
+      body: JSON.stringify({ name: 'new', description: 'd', content: 'c' }),
+    });
+    expect(res.status).toBe(201);
+    expect(agents.createSkill).toHaveBeenCalledWith(id, {
+      name: 'new',
+      description: 'd',
+      content: 'c',
+    });
+  });
+
+  it('PUT /agents/:id/skills/:name → 422 on a bundled refusal', async () => {
+    const { app, agentRegistry, agents } = createApp();
+    const { id } = registerAgent(agentRegistry);
+    (agents.updateSkillContent as ReturnType<typeof vi.fn>).mockRejectedValue(
+      Object.assign(new Error('bundled read-only'), { code: 'bundled' }),
+    );
+    const res = await app.request(`/agents/${id}/skills/foo`, {
+      method: 'PUT',
+      headers: JSON_AUTH,
+      body: JSON.stringify({ content: 'x' }),
+    });
+    expect(res.status).toBe(422);
+  });
+
+  it('DELETE /agents/:id/skills/:name → 200, and 422 when bundled', async () => {
+    const { app, agentRegistry, agents } = createApp();
+    const { id } = registerAgent(agentRegistry);
+    expect(
+      (await app.request(`/agents/${id}/skills/foo`, { method: 'DELETE', headers: AUTH })).status,
+    ).toBe(200);
+    (agents.removeSkill as ReturnType<typeof vi.fn>).mockRejectedValue(
+      Object.assign(new Error('bundled'), { code: 'bundled' }),
+    );
+    expect(
+      (await app.request(`/agents/${id}/skills/deep-research`, { method: 'DELETE', headers: AUTH }))
+        .status,
+    ).toBe(422);
+  });
+
+  it('POST /agents/:id/skills/install → 200, and 422 when dangerous', async () => {
+    const { app, agentRegistry, agents } = createApp();
+    const { id } = registerAgent(agentRegistry);
+    const ok = await app.request(`/agents/${id}/skills/install`, {
+      method: 'POST',
+      headers: JSON_AUTH,
+      body: JSON.stringify({ source: './x' }),
+    });
+    expect(ok.status).toBe(200);
+    (agents.installSkill as ReturnType<typeof vi.fn>).mockRejectedValue(
+      Object.assign(new Error('dangerous'), { code: 'dangerous' }),
+    );
+    const bad = await app.request(`/agents/${id}/skills/install`, {
+      method: 'POST',
+      headers: JSON_AUTH,
+      body: JSON.stringify({ source: './evil' }),
+    });
+    expect(bad.status).toBe(422);
+  });
+
+  it('GET/PATCH /agents/:id/skills/config reads and patches config', async () => {
+    const { app, agentRegistry } = createApp();
+    const { id } = registerAgent(agentRegistry);
+    expect(
+      await (await app.request(`/agents/${id}/skills/config`, { headers: AUTH })).json(),
+    ).toEqual({});
+    const patched = await app.request(`/agents/${id}/skills/config`, {
+      method: 'PATCH',
+      headers: JSON_AUTH,
+      body: JSON.stringify({ includeBundled: false }),
+    });
+    expect(patched.status).toBe(200);
+    expect(await patched.json()).toEqual({ includeBundled: false });
   });
 });
