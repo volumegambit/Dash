@@ -138,8 +138,12 @@ async function main() {
 
   // Code-execution plugin components (trusted only — gated in the loader).
   // MCP servers from trusted plugins are registered with the running manager
-  // and persisted, fail-isolated so a bad server never aborts startup.
-  await registerPluginMcpServers(mcpManager, mcpConfigStore, loadedPlugins.mcpConfigs, logger);
+  // IN MEMORY each boot (never persisted), fail-isolated so a bad server never
+  // aborts startup. Not persisting is what keeps a plugin MCP server's lifecycle
+  // tied to plugin trust: configs.json is reconnected and listed (above, and via
+  // GET /runtime/mcp/servers) before the trust gate runs, so a persisted plugin
+  // server would survive untrust/disable/remove + reboot.
+  await registerPluginMcpServers(mcpManager, loadedPlugins.mcpConfigs, logger);
 
   // Trusted plugin bin/ dirs are prepended to PATH so plugin executables
   // (and MCP/command processes spawned by the agent) resolve them first.
@@ -249,6 +253,11 @@ async function main() {
     registry,
     poolMaxSize: Number(process.env.POOL_MAX_SIZE ?? '200'),
     managedSkillsDir: (config) => resolve(dataDir, 'skills', config.name),
+    // Same plugin inputs the backend factory injects (skill dirs merged into
+    // `skills.paths`, command/agent files as extra flat skills) so the HTTP
+    // skills route (GET /agents/:id/skills) lists what chat can actually load.
+    pluginSkillDirs,
+    pluginCommandFiles,
     createBackend: async (agentConfig, conversationId) => {
       const sessionDir = resolve(dataDir, 'sessions', agentConfig.name, conversationId);
       await mkdir(sessionDir, { recursive: true });

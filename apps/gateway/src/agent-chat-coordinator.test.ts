@@ -159,6 +159,66 @@ describe('AgentChatCoordinator.listSkills', () => {
   });
 });
 
+describe('AgentChatCoordinator.listSkills with plugin contributions', () => {
+  it('surfaces plugin skill dirs and namespaced command/agent files, badged as plugin', async () => {
+    // The HTTP skills route must match what chat can actually load: plugin
+    // skill dirs (skills/) and plugin command/agent files (commands/, agents/,
+    // namespaced `<plugin>:<name>`). Mirrors PiAgentBackend.listSkills.
+    const root = await mkdtemp(join(tmpdir(), 'dash-coord-plugins-'));
+    try {
+      const pluginSkillsDir = join(root, 'plugin-skills');
+      const greetDir = join(pluginSkillsDir, 'greet');
+      await mkdir(greetDir, { recursive: true });
+      await writeFile(
+        join(greetDir, 'SKILL.md'),
+        '---\nname: greet\ndescription: say hi\n---\n\nbody\n',
+      );
+
+      const cmdFile = join(root, 'deploy.md');
+      await writeFile(cmdFile, '---\ndescription: deploy it\n---\n\nrun the deploy\n');
+      const agentFile = join(root, 'reviewer.md');
+      await writeFile(agentFile, '---\ndescription: reviews code\n---\n\nreview\n');
+
+      const registry = new AgentRegistry();
+      const { id } = registry.register({
+        name: 'plugin-agent',
+        model: 'anthropic/claude-sonnet-4-20250514',
+        systemPrompt: 'x',
+      });
+
+      const agents = createAgentChatCoordinator({
+        registry,
+        poolMaxSize: 10,
+        createBackend: async () => makeMockBackend([]),
+        pluginSkillDirs: [pluginSkillsDir],
+        pluginCommandFiles: [
+          { file: cmdFile, namespace: 'acme' },
+          { file: agentFile, namespace: 'acme' },
+        ],
+      });
+
+      const skills = await agents.listSkills(id);
+      const byName = new Map(skills.map((s) => [s.name, s]));
+
+      // Plugin skill dir, <plugin>:<command>, and <plugin>:<agent> all present.
+      expect(byName.has('greet')).toBe(true);
+      expect(byName.has('acme:deploy')).toBe(true);
+      expect(byName.has('acme:reviewer')).toBe(true);
+
+      // All badged 'plugin' and non-editable (read-only in MC — a user can't
+      // edit/remove a plugin-contributed skill via the managed dir).
+      for (const name of ['greet', 'acme:deploy', 'acme:reviewer']) {
+        expect(byName.get(name)?.source).toBe('plugin');
+        expect(byName.get(name)?.editable).toBe(false);
+      }
+
+      await agents.stop();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('AgentChatCoordinator skill mutations', () => {
   function makeCoordinator(managed: string) {
     const registry = new AgentRegistry();
