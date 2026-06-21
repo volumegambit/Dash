@@ -21,6 +21,7 @@
   "dependencies": {
     "@dash/agent": "*",
     "@dash/management": "*",
+    "@dash/paths": "*",
     "@napi-rs/keyring": "^1.2.0"
   }
 }

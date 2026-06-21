@@ -144,9 +144,30 @@ For local development or standalone use, environment variables can still configu
 | `CHAT_API_TOKEN` | Enables the Chat API when set |
 | `CHAT_API_PORT` | Chat API port (default: `9200`) |
 | `LOG_LEVEL` | Log level override |
+| `DASH_HOME` | Root directory for everything Dash stores on disk (default: `~/.dash`) |
 
 <Note>
   For details on which models each provider supports and how routing works, see [AI Providers](/ai-providers).
+</Note>
+
+## Data directory
+
+Everything Dash stores on disk lives under a single root — `~/.dash` by default — organized into clearly named subfolders:
+
+```
+~/.dash/
+├── gateway/      # gateway data: credentials, agents, sessions, skills, databases
+├── desktop/      # Mission Control app data: settings, conversations
+├── logs/         # mc.log and gateway.log
+└── workspaces/   # one folder per agent (where its files live)
+```
+
+This is the same location whether you launch Dash through Mission Control or run the gateway on its own, so your agents, credentials, and conversations are always in one predictable place. You can open any of these folders in Finder or your editor.
+
+To store everything somewhere else (for example, a separate disk or multiple profiles), set `DASH_HOME` to a directory of your choosing. Running the gateway with `--data-dir <path>` overrides just the gateway's own folder.
+
+<Note>
+  Upgrading from an older version? The first time Dash starts, it automatically moves your existing data into `~/.dash` — no action needed. See [Troubleshooting](/troubleshooting#my-data-moved-after-updating) if anything looks missing.
 </Note>
 
 ## CLI flags

@@ -31,6 +31,20 @@ config/
 # source package, nor packages/agent/src/skills). Anchored so it only matches
 # a top-level ./skills/ directory.
 /skills/
+# Gateway/desktop runtime artifacts. These now live under ~/.dash, but guard
+# the repo root so a stray `npm run gateway -- --data-dir .` (or an old build)
+# can never get its credentials/sessions/databases committed. Anchored to the
+# repo root so source files with these names elsewhere are unaffected.
+/agent-stream-events.db
+/projects.db
+/credentials.enc
+/secret.key
+/sessions/
+/whatsapp-sessions/
+/mcp/
+/agents.json
+/channels.json
+/models.json
 
 # OS files
 .DS_Store

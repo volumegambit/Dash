@@ -4,6 +4,13 @@ services:
     container_name: dash
     restart: unless-stopped
     env_file: .env
+    environment:
+      # Pin Dash's data root to a stable, mountable path inside the container.
+      - DASH_HOME=/data
     volumes:
-      - ./data/sessions:/app/data/sessions
-      - ./config:/app/config:ro
+      # Persist everything Dash stores (credentials, agents, sessions, …)
+      # across container recreation.
+      - dash-data:/data
+
+volumes:
+  dash-data:

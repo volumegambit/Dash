@@ -123,7 +123,7 @@ Something not working? Here are the most common issues and how to fix them.
   <Accordion title="Corrupt JSONL">
     If a session file has invalid JSON on a line (e.g. from a crash during write), the session loader will throw a parse error. To recover:
 
-    1. Find the session file: `data/sessions/{channelId}/{conversationId}/session.jsonl`
+    1. Find the session file: `~/.dash/gateway/sessions/{channelId}/{conversationId}/session.jsonl`
     2. Open it in a text editor
     3. Remove or fix the malformed line(s) — each line should be a valid JSON object
     4. Restart Dash
@@ -135,37 +135,43 @@ Something not working? Here are the most common issues and how to fix them.
     To reset a conversation, delete its session directory:
 
     ```bash
-    rm -rf data/sessions/{channelId}/{conversationId}
+    rm -rf ~/.dash/gateway/sessions/{channelId}/{conversationId}
     ```
 
     To reset all sessions:
 
     ```bash
-    rm -rf data/sessions
+    rm -rf ~/.dash/gateway/sessions
     ```
+  </Accordion>
+
+  <Accordion title="My data moved after updating">
+    Dash now keeps everything under `~/.dash` (gateway data, desktop app data, logs, and agent workspaces). The first time a newer version starts, it automatically moves data from the old locations into `~/.dash` — your credentials, agents, and conversations come along.
+
+    If something looks missing, check the old locations:
+
+    - macOS: `~/Library/Application Support/dash` and `~/Library/Application Support/dash-gateway`
+    - Linux: `~/.local/share/dash` and `~/.local/share/dash-gateway`
+    - Agent workspaces: the old `~/dash-workspaces`
+
+    The migration only runs when `~/.dash` doesn't already have that data, and it never deletes the originals — so it's always safe to copy anything left behind by hand. To pin Dash to a specific location instead, set `DASH_HOME`.
   </Accordion>
 </AccordionGroup>
 
 ## Docker issues
 
 <AccordionGroup>
-  <Accordion title="Sessions lost on restart">
-    Make sure the volume mount is in place in `docker-compose.yml`:
+  <Accordion title="Data lost on restart">
+    Dash stores everything under `DASH_HOME` (set to `/data` in the container). Make sure that path is backed by a persistent volume in `docker-compose.yml`:
 
     ```yaml
+    environment:
+      - DASH_HOME=/data
     volumes:
-      - ./data/sessions:/app/data/sessions
+      - dash-data:/data
     ```
 
-    Without this mount, session data lives only inside the container and is lost when it's recreated.
-  </Accordion>
-
-  <Accordion title="Config changes not picked up">
-    Config is mounted read-only (`./config:/app/config:ro`). Changes to `config/dash.json` on the host are reflected immediately on next container restart. If you need to apply changes without rebuilding:
-
-    ```bash
-    docker compose restart
-    ```
+    Without this volume, credentials, agents, and sessions live only inside the container and are lost when it's recreated.
   </Accordion>
 </AccordionGroup>
 

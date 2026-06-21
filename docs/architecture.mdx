@@ -122,7 +122,7 @@ The `id` field correlates requests with responses, allowing multiple concurrent 
 Conversations are stored as append-only JSONL files (one JSON object per line):
 
 ```
-data/sessions/{channelId}/{conversationId}/session.jsonl
+~/.dash/gateway/sessions/{channelId}/{conversationId}/session.jsonl
 ```
 
 Each line records a timestamped event — user messages, assistant responses, and tool results. When an agent loads a session, it replays these entries to reconstruct the conversation history. This format is simple, crash-safe (partial writes don't corrupt earlier entries), and easy to inspect.
