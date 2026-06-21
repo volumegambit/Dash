@@ -1,9 +1,22 @@
 export interface ModelOption {
   value: string; // e.g. 'anthropic/claude-sonnet-4-20250514'
   label: string; // e.g. 'Claude Sonnet 4'
-  provider: 'anthropic' | 'openai' | 'google' | 'moonshotai';
+  provider: 'anthropic' | 'openai' | 'google' | 'moonshotai' | 'openrouter';
   secretKey: string; // e.g. 'anthropic-api-key'
 }
+
+/**
+ * Short provider display labels for model-picker optgroups, keyed by provider
+ * id. Single source of truth shared by ModelChainEditor and the chat model
+ * picker so a new provider's label can't drift between the two selectors.
+ */
+export const PROVIDER_LABELS: Record<string, string> = {
+  anthropic: 'Anthropic',
+  openai: 'OpenAI',
+  google: 'Google',
+  moonshotai: 'Moonshot',
+  openrouter: 'OpenRouter',
+};
 
 export interface ToolOption {
   value: string;

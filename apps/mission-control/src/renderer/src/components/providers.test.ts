@@ -28,6 +28,15 @@ describe('PROVIDER_CONFIG', () => {
     expect(PROVIDER_CONFIG.anthropic.helpUrl).toMatch(/^https:\/\/docs\.anthropic\.com\//);
   });
 
+  it('openrouter config uses openrouter.ai and the sk-or-v1- key hint', () => {
+    expect(PROVIDER_CONFIG.openrouter.consoleUrl).toBe('https://openrouter.ai');
+    expect(PROVIDER_CONFIG.openrouter.apiKeysUrl).toBe('https://openrouter.ai/settings/keys');
+    expect(PROVIDER_CONFIG.openrouter.secretKey).toBe('openrouter-api-key:default');
+    // Steer users to an OpenRouter key (sk-or-v1-), not a plain OpenAI sk- key.
+    expect(PROVIDER_CONFIG.openrouter.placeholder).toContain('sk-or-v1-');
+    expect(PROVIDER_CONFIG.openrouter.steps.join(' ')).toContain('sk-or-v1-');
+  });
+
   it('every provider config has valid URLs', () => {
     for (const [id, config] of Object.entries(PROVIDER_CONFIG)) {
       expect(config.consoleUrl, `${id} consoleUrl`).toMatch(/^https:\/\//);

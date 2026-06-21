@@ -173,7 +173,65 @@ describe('createModelsRoute', () => {
     expect(body.bootstrap.length).toBeGreaterThan(0);
     expect(body.patterns.length).toBeGreaterThan(0);
     expect(body.providersConfigured).toEqual([]);
-    expect(body.providersAvailable).toEqual(['anthropic', 'openai', 'google', 'moonshotai']);
+    expect(body.providersAvailable).toEqual([
+      'anthropic',
+      'openai',
+      'google',
+      'moonshotai',
+      'openrouter',
+    ]);
+  });
+
+  it('surfaces curated OpenRouter models end-to-end via the real discover + filter', async () => {
+    // No `discover` override → exercises the real @dash/models orchestrator,
+    // OpenRouter.fetchModels, and the SUPPORTED_MODELS filter. Stub global
+    // fetch to serve a canned /api/v1/models payload.
+    const fetchSpy = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        data: [
+          {
+            id: 'deepseek/deepseek-r1',
+            name: 'DeepSeek: R1',
+            supported_parameters: ['tools'],
+            architecture: { output_modalities: ['text'] },
+          },
+          // Dropped by the capability filter (`:free` variant suffix)
+          {
+            id: 'deepseek/deepseek-r1:free',
+            name: 'free',
+            supported_parameters: ['tools'],
+            architecture: { output_modalities: ['text'] },
+          },
+          // Dropped by the allow-list (not a curated id)
+          {
+            id: 'qwen/qwen3-0.6b',
+            name: 'tiny',
+            supported_parameters: ['tools'],
+            architecture: { output_modalities: ['text'] },
+          },
+        ],
+      }),
+      text: async () => '',
+    });
+    vi.stubGlobal('fetch', fetchSpy);
+    try {
+      const app = createModelsRoute({
+        store,
+        credentialStore: makeCredentialStore({ openrouter: 'sk-or-v1-test' }),
+      });
+      const res = await app.request('/');
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { models: { value: string }[]; source: string };
+      expect(body.source).toBe('live');
+      const values = body.models.map((m) => m.value);
+      expect(values).toContain('openrouter/deepseek/deepseek-r1');
+      expect(values).not.toContain('openrouter/deepseek/deepseek-r1:free');
+      expect(values).not.toContain('openrouter/qwen/qwen3-0.6b');
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it('passes through per-provider errors from discover', async () => {

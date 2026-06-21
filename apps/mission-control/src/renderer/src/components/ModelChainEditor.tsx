@@ -1,12 +1,5 @@
 import { Loader, RefreshCw, X } from 'lucide-react';
-import type { ModelOption } from './deploy-options.js';
-
-const PROVIDER_LABELS: Record<string, string> = {
-  anthropic: 'Anthropic',
-  openai: 'OpenAI',
-  google: 'Google',
-  moonshotai: 'Moonshot',
-};
+import { type ModelOption, PROVIDER_LABELS } from './deploy-options.js';
 
 function GroupedModelSelect({
   id,

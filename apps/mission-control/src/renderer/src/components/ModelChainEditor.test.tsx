@@ -105,4 +105,34 @@ describe('ModelChainEditor', () => {
     );
     expect(screen.getByText(/add api keys in settings/i)).toBeInTheDocument();
   });
+
+  it('groups OpenRouter models under their own "OpenRouter" optgroup', async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    const withOpenRouter: ModelOption[] = [
+      ...models,
+      {
+        value: 'openrouter/deepseek/deepseek-r1',
+        label: 'DeepSeek: R1',
+        provider: 'openrouter',
+        secretKey: 'openrouter-api-key',
+      },
+    ];
+    render(
+      <ModelChainEditor
+        model="anthropic/claude-sonnet-4-20250514"
+        fallbackModels={[]}
+        availableModels={withOpenRouter}
+        onChange={onChange}
+      />,
+    );
+    // <optgroup label="OpenRouter"> exposes role "group" with that accessible name.
+    expect(screen.getByRole('group', { name: 'OpenRouter' })).toBeInTheDocument();
+    // The namespaced value flows straight through onChange when selected.
+    await user.selectOptions(
+      screen.getByRole('combobox', { name: /primary model/i }),
+      'openrouter/deepseek/deepseek-r1',
+    );
+    expect(onChange).toHaveBeenCalledWith('openrouter/deepseek/deepseek-r1', []);
+  });
 });
