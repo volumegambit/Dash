@@ -45,6 +45,12 @@ export interface PluginManifest {
    * Parsed in Plan 4.
    */
   agents?: string[];
+  /**
+   * Extra provider-catalog files (`*.json`). Relative, starting with './'.
+   * ADDS to the default `providers/` scan (never replaces it). Credential-bearing
+   * → only honored for trusted plugins. Parsed in Plan 5.
+   */
+  providers?: string[];
 }
 
 /**
@@ -79,6 +85,59 @@ export interface HookMatcherGroup {
 
 /** Parsed `hooks.json`: event → matcher groups. */
 export type HooksConfig = Partial<Record<HookEvent, HookMatcherGroup[]>>;
+
+/**
+ * One model in a plugin-contributed provider catalog. `id`, `contextWindow`,
+ * and `maxTokens` are required; everything else is optional metadata the host
+ * uses for capability gating and cost display.
+ */
+export interface CatalogModel {
+  /** Model id as sent to the provider API (the `<provider>/<model>` model segment). */
+  id: string;
+  /** Human-readable label; falls back to `id`. */
+  name?: string;
+  /** Max context window in tokens. */
+  contextWindow: number;
+  /** Max output tokens per response. */
+  maxTokens: number;
+  /** Whether the model supports extended reasoning / thinking. */
+  reasoning?: boolean;
+  /** Accepted input modalities. */
+  input?: ('text' | 'image')[];
+  /** Per-million-token cost breakdown. */
+  cost?: { input: number; output: number; cacheRead: number; cacheWrite: number };
+  /** Extra request headers required by this model. */
+  headers?: Record<string, string>;
+  /** Provider-specific compatibility flags passed through verbatim. */
+  compat?: Record<string, unknown>;
+}
+
+/**
+ * A plugin-contributed LLM provider catalog (one per `providers/*.json` file).
+ * Credential-bearing → only trusted plugins contribute these. Adds a provider
+ * the host can route to via `<id>/<model>` and look up credentials for under
+ * `credentialPrefix`.
+ */
+export interface ProviderCatalog {
+  /** kebab-case; the `<id>/<model>` provider segment + credential provider name. */
+  id: string;
+  /** Human-readable provider label. */
+  label: string;
+  /** Credential lookup prefix, e.g. `<id>-api-key`. */
+  credentialPrefix: string;
+  /** Provider API base URL. */
+  baseUrl: string;
+  /** Wire protocol the provider speaks. */
+  api: 'openai-completions' | 'anthropic-messages';
+  /** Non-empty list of statically-known models. */
+  models: CatalogModel[];
+  /** OpenRouter-style "accept any model id" — model list is advisory, not exhaustive. */
+  dynamicModels?: boolean;
+  /** Defaults applied to dynamically-accepted model ids (when `dynamicModels`). */
+  dynamicModelDefaults?: { contextWindow: number; maxTokens: number };
+  /** Keyless locals (e.g. Ollama) — placeholder key used when no credential is stored. */
+  placeholderKey?: string;
+}
 
 /** Marker so the host can assert it links a compatible SDK build. */
 export const PLUGIN_TYPES_VERSION = 1 as const;

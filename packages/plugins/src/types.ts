@@ -1,5 +1,5 @@
 import type { McpServerConfig } from '@dash/mcp';
-import type { HooksConfig } from '@dash/plugin-sdk';
+import type { HooksConfig, ProviderCatalog } from '@dash/plugin-sdk';
 
 export type PluginStatus = 'loaded' | 'disabled' | 'error';
 
@@ -58,6 +58,12 @@ export interface HookConfigEntry {
   config: HooksConfig;
 }
 
+/** A validated provider catalog, tagged with the plugin that contributed it. */
+export interface ProviderConfigEntry {
+  pluginName: string;
+  catalog: ProviderCatalog;
+}
+
 export interface LoadedPlugins {
   records: PluginRecord[];
   /** Flattened skill dirs across all loaded plugins (for config.skills.paths). */
@@ -80,4 +86,9 @@ export interface LoadedPlugins {
   mcpConfigs: McpConfigEntry[];
   /** Parsed hooks.json from enabled+trusted plugins, tagged by plugin + root. */
   hookConfigs: HookConfigEntry[];
+  /**
+   * Validated provider catalogs from enabled+trusted plugins (credential-bearing
+   * → requires trust), one entry per `providers/*.json` file, tagged by plugin.
+   */
+  providerConfigs: ProviderConfigEntry[];
 }

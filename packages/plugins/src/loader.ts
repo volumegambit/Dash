@@ -6,15 +6,18 @@ import {
   resolveAgentFiles,
   resolveBinDir,
   resolveCommandFiles,
+  resolveProviderFiles,
   resolveSkillDirs,
 } from './manifest.js';
 import { translateMcpJson } from './mcp-translate.js';
+import { validateProviderCatalog } from './provider-catalog.js';
 import type {
   HookConfigEntry,
   LoadedPlugins,
   McpConfigEntry,
   PluginEntryConfig,
   PluginRecord,
+  ProviderConfigEntry,
 } from './types.js';
 
 export interface LoadPluginsOptions {
@@ -69,6 +72,7 @@ export async function loadPlugins(opts: LoadPluginsOptions): Promise<LoadedPlugi
   const binDirs: string[] = [];
   const mcpConfigs: McpConfigEntry[] = [];
   const hookConfigs: HookConfigEntry[] = [];
+  const providerConfigs: ProviderConfigEntry[] = [];
 
   for (const [discoveredName, { dir, entry, fromPath }] of targets) {
     // `phase` tracks where in this plugin's load we are, so the catch can
@@ -106,6 +110,7 @@ export async function loadPlugins(opts: LoadPluginsOptions): Promise<LoadedPlugi
       const localBinDirs: string[] = [];
       const localMcpConfigs: McpConfigEntry[] = [];
       const localHookConfigs: HookConfigEntry[] = [];
+      const localProviderConfigs: ProviderConfigEntry[] = [];
 
       // Markdown components need no trust. Skills (default skills/ + manifest
       // entries), commands (flat .md files), and agents (loadable specialist
@@ -174,6 +179,27 @@ export async function loadPlugins(opts: LoadPluginsOptions): Promise<LoadedPlugi
         }
       }
 
+      // Provider catalogs are credential-bearing (they declare a provider the
+      // host stores API keys for) → trust-gated, same as bin/MCP/hooks. The
+      // file set is the default providers/ scan PLUS manifest `providers`
+      // entries (both honored only when trusted).
+      const providerFiles = resolveProviderFiles(dir, manifest);
+      if (providerFiles.length) {
+        if (trusted) {
+          // Parse + validate each catalog; a malformed file throws → caught
+          // below as a 'route' failure for THIS plugin only. Accumulating into
+          // locals means a throw discards every component above (atomic).
+          for (const file of providerFiles) {
+            const raw = JSON.parse(readFileSync(file, 'utf8'));
+            const catalog = validateProviderCatalog(raw);
+            localProviderConfigs.push({ pluginName: manifest.name, catalog });
+          }
+          activated.push('providers');
+        } else {
+          noop.push('providers');
+        }
+      }
+
       // Plugin fully succeeded — commit its components to the aggregates.
       skillDirs.push(...localSkillDirs);
       commandFiles.push(...localCommandFiles);
@@ -181,6 +207,7 @@ export async function loadPlugins(opts: LoadPluginsOptions): Promise<LoadedPlugi
       binDirs.push(...localBinDirs);
       mcpConfigs.push(...localMcpConfigs);
       hookConfigs.push(...localHookConfigs);
+      providerConfigs.push(...localProviderConfigs);
 
       records.push({
         name: manifest.name,
@@ -210,5 +237,14 @@ export async function loadPlugins(opts: LoadPluginsOptions): Promise<LoadedPlugi
     }
   }
 
-  return { records, skillDirs, commandFiles, agentFiles, binDirs, mcpConfigs, hookConfigs };
+  return {
+    records,
+    skillDirs,
+    commandFiles,
+    agentFiles,
+    binDirs,
+    mcpConfigs,
+    hookConfigs,
+    providerConfigs,
+  };
 }

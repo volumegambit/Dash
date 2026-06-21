@@ -7,6 +7,7 @@ export type {
   PluginFailurePhase,
   PluginRecord,
   PluginStatus,
+  ProviderConfigEntry,
 } from './types.js';
 export {
   containedPath,
@@ -16,9 +17,11 @@ export {
   resolveAgentFiles,
   resolveBinDir,
   resolveCommandFiles,
+  resolveProviderFiles,
   resolveSkillDirs,
   validateManifest,
 } from './manifest.js';
+export { validateProviderCatalog } from './provider-catalog.js';
 export { HOOKS_FILE, readHooksJson, validateHooksJson } from './hooks-manifest.js';
 export { PluginConfigStore } from './config-store.js';
 export { loadPlugins } from './loader.js';

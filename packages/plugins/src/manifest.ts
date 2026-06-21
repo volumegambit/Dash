@@ -68,6 +68,7 @@ export function validateManifest(raw: unknown, dir: string): PluginManifest {
     skills: normalizePaths(m.skills),
     commands: normalizePaths(m.commands),
     agents: normalizePaths(m.agents),
+    providers: normalizePaths(m.providers),
   };
 }
 
@@ -160,6 +161,56 @@ export function resolveAgentFiles(dir: string, manifest: PluginManifest): string
       }
     } else if (root.endsWith('.md')) {
       files.push(root);
+    }
+  }
+  return files;
+}
+
+/**
+ * Resolves the provider-catalog `*.json` files a plugin contributes: the
+ * default `providers/` dir (when present) PLUS any `providers` manifest entries
+ * (relative, './'-prefixed, contained). Claude/Dash semantics: `providers` ADDS
+ * to the default, never replaces it. A manifest entry may point at a directory
+ * (scanned for flat `*.json` files) or directly at a `.json` file. The returned
+ * list is deduped, preserving first-seen order. Provider catalogs are
+ * credential-bearing, so the loader only honors these for TRUSTED plugins.
+ *
+ * The directory scan is hardened (try/catch around `readdirSync`): a symlinked
+ * or unreadable provider dir must NOT crash the loader.
+ */
+export function resolveProviderFiles(dir: string, manifest: PluginManifest): string[] {
+  const roots: string[] = [];
+  const def = join(dir, 'providers');
+  if (existsSync(def)) roots.push(def);
+  for (const p of manifest.providers ?? []) {
+    const abs = containedPath(dir, p);
+    if (abs) roots.push(abs);
+  }
+  const files: string[] = [];
+  const seen = new Set<string>();
+  const add = (file: string) => {
+    if (!seen.has(file)) {
+      seen.add(file);
+      files.push(file);
+    }
+  };
+  for (const root of roots) {
+    let isDir = false;
+    try {
+      isDir = statSync(root).isDirectory();
+    } catch {
+      continue;
+    }
+    if (isDir) {
+      try {
+        for (const entry of readdirSync(root, { withFileTypes: true })) {
+          if (entry.isFile() && entry.name.endsWith('.json')) add(join(root, entry.name));
+        }
+      } catch {
+        // Unreadable/symlinked dir — skip without crashing the loader.
+      }
+    } else if (root.endsWith('.json')) {
+      add(root);
     }
   }
   return files;

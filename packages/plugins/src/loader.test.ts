@@ -16,6 +16,8 @@ async function writePlugin(
     bin?: boolean;
     mcp?: Record<string, unknown>;
     hooks?: Record<string, unknown> | string;
+    /** Map of `<name>` → catalog object (or raw string for malformed cases). */
+    providers?: Record<string, Record<string, unknown> | string>;
   } = {},
 ): Promise<string> {
   const dir = join(root, name);
@@ -57,7 +59,28 @@ async function writePlugin(
       typeof opts.hooks === 'string' ? opts.hooks : JSON.stringify(opts.hooks),
     );
   }
+  if (opts.providers) {
+    await mkdir(join(dir, 'providers'), { recursive: true });
+    for (const [name, body] of Object.entries(opts.providers)) {
+      await writeFile(
+        join(dir, 'providers', `${name}.json`),
+        typeof body === 'string' ? body : JSON.stringify(body),
+      );
+    }
+  }
   return dir;
+}
+
+/** A minimal valid provider catalog body keyed by id. */
+function catalog(id: string): Record<string, unknown> {
+  return {
+    id,
+    label: id,
+    credentialPrefix: `${id}-api-key`,
+    baseUrl: `https://api.${id}.test`,
+    api: 'openai-completions',
+    models: [{ id: `${id}-large`, contextWindow: 1000, maxTokens: 100 }],
+  };
 }
 
 describe('loadPlugins', () => {
@@ -358,5 +381,92 @@ describe('loadPlugins', () => {
     expect(loaded.hookConfigs.some((c) => c.pluginName === 'bad')).toBe(false);
     expect(loaded.skillDirs).toContain(join(goodDir, 'skills'));
     expect(loaded.hookConfigs.some((c) => c.pluginName === 'good')).toBe(true);
+  });
+
+  it('collects providerConfigs for an enabled+trusted plugin', async () => {
+    await writePlugin(pluginsDir, 'p', { providers: { acme: catalog('acme') } });
+    const loaded = await loadPlugins({
+      pluginsDir,
+      entries: { p: { enabled: true, trusted: true } },
+    });
+    expect(loaded.providerConfigs).toEqual([
+      {
+        pluginName: 'p',
+        catalog: {
+          id: 'acme',
+          label: 'acme',
+          credentialPrefix: 'acme-api-key',
+          baseUrl: 'https://api.acme.test',
+          api: 'openai-completions',
+          models: [{ id: 'acme-large', contextWindow: 1000, maxTokens: 100 }],
+        },
+      },
+    ]);
+    expect(loaded.records[0].activated).toEqual(expect.arrayContaining(['providers']));
+  });
+
+  it('pushes one providerConfig entry per catalog file', async () => {
+    await writePlugin(pluginsDir, 'p', {
+      providers: { acme: catalog('acme'), beta: catalog('beta') },
+    });
+    const loaded = await loadPlugins({
+      pluginsDir,
+      entries: { p: { enabled: true, trusted: true } },
+    });
+    expect(loaded.providerConfigs.map((c) => c.catalog.id).sort()).toEqual(['acme', 'beta']);
+  });
+
+  it('withholds providers from an enabled-but-untrusted plugin', async () => {
+    await writePlugin(pluginsDir, 'p', { providers: { acme: catalog('acme') } });
+    const loaded = await loadPlugins({ pluginsDir, entries: { p: { enabled: true } } });
+    expect(loaded.providerConfigs).toEqual([]);
+    expect(loaded.records[0].noop).toEqual(expect.arrayContaining(['providers']));
+  });
+
+  it('records a malformed catalog failure without aborting (status error, others load)', async () => {
+    await writePlugin(pluginsDir, 'bad', { providers: { broken: { id: 'broken' } } });
+    await writePlugin(pluginsDir, 'good', { skill: 'g' });
+    const loaded = await loadPlugins({
+      pluginsDir,
+      entries: { bad: { enabled: true, trusted: true }, good: { enabled: true } },
+    });
+    const byName = Object.fromEntries(loaded.records.map((r) => [r.name, r]));
+    expect(byName.good.status).toBe('loaded');
+    expect(byName.bad.status).toBe('error');
+    expect(byName.bad.failure?.phase).toBe('route');
+    expect(loaded.providerConfigs.some((c) => c.pluginName === 'bad')).toBe(false);
+  });
+
+  it('does not leak a failing trusted plugin providerConfigs into the aggregates', async () => {
+    // Trusted plugin with a valid skill but a malformed catalog. Its prior
+    // components must NOT survive — per-plugin activation is atomic.
+    const badDir = await writePlugin(pluginsDir, 'bad', {
+      skill: 'bskill',
+      providers: { acme: catalog('acme'), broken: '{ not json' },
+    });
+    const goodDir = await writePlugin(pluginsDir, 'good', {
+      skill: 'gskill',
+      providers: { acme: catalog('acme') },
+    });
+    const loaded = await loadPlugins({
+      pluginsDir,
+      entries: {
+        bad: { enabled: true, trusted: true },
+        good: { enabled: true, trusted: true },
+      },
+    });
+    const byName = Object.fromEntries(loaded.records.map((r) => [r.name, r]));
+    expect(byName.bad.status).toBe('error');
+    expect(byName.good.status).toBe('loaded');
+    expect(loaded.skillDirs).not.toContain(join(badDir, 'skills'));
+    expect(loaded.providerConfigs.some((c) => c.pluginName === 'bad')).toBe(false);
+    expect(loaded.skillDirs).toContain(join(goodDir, 'skills'));
+    expect(loaded.providerConfigs.some((c) => c.pluginName === 'good')).toBe(true);
+  });
+
+  it('returns providerConfigs as [] when no plugin contributes a catalog', async () => {
+    await writePlugin(pluginsDir, 'p', { skill: 'g' });
+    const loaded = await loadPlugins({ pluginsDir, entries: { p: { enabled: true } } });
+    expect(loaded.providerConfigs).toEqual([]);
   });
 });

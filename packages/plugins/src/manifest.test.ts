@@ -8,6 +8,7 @@ import {
   resolveAgentFiles,
   resolveBinDir,
   resolveCommandFiles,
+  resolveProviderFiles,
   resolveSkillDirs,
   validateManifest,
 } from './manifest.js';
@@ -40,6 +41,16 @@ describe('validateManifest', () => {
   it('normalizes string agents to an array', () => {
     const m = validateManifest({ name: 'p', agents: './a' }, '/x/p');
     expect(m.agents).toEqual(['./a']);
+  });
+
+  it('normalizes string providers to an array', () => {
+    const m = validateManifest({ name: 'p', providers: './extra-providers' }, '/x/p');
+    expect(m.providers).toEqual(['./extra-providers']);
+  });
+
+  it('drops providers when given a non-array, non-string value', () => {
+    expect(validateManifest({ name: 'p', providers: 1 }, '/x/p').providers).toBeUndefined();
+    expect(validateManifest({ name: 'p', providers: [1, 2] }, '/x/p').providers).toBeUndefined();
   });
 
   it('preserves all recognized optional fields', () => {
@@ -274,5 +285,85 @@ describe('resolveBinDir', () => {
     expect(resolveBinDir(dir)).toBeUndefined();
     await mkdir(join(dir, 'bin'), { recursive: true });
     expect(resolveBinDir(dir)).toBe(join(dir, 'bin'));
+  });
+});
+
+describe('resolveProviderFiles', () => {
+  let dir: string;
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'cc-prov-'));
+  });
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it('finds flat .json files under the default providers/ dir', async () => {
+    await mkdir(join(dir, 'providers'), { recursive: true });
+    await writeFile(join(dir, 'providers', 'acme.json'), '{}');
+    await writeFile(join(dir, 'providers', 'beta.json'), '{}');
+    await writeFile(join(dir, 'providers', 'notes.txt'), 'ignore me');
+    const files = resolveProviderFiles(dir, { name: 'p' }).sort();
+    expect(files).toEqual([
+      join(dir, 'providers', 'acme.json'),
+      join(dir, 'providers', 'beta.json'),
+    ]);
+  });
+
+  it('manifest providers ADDS to the default dir', async () => {
+    await mkdir(join(dir, 'providers'), { recursive: true });
+    await writeFile(join(dir, 'providers', 'default.json'), '{}');
+    await mkdir(join(dir, 'custom'), { recursive: true });
+    await writeFile(join(dir, 'custom', 'special.json'), '{}');
+    const files = resolveProviderFiles(dir, { name: 'p', providers: ['./custom'] }).sort();
+    expect(files).toEqual([
+      join(dir, 'custom', 'special.json'),
+      join(dir, 'providers', 'default.json'),
+    ]);
+  });
+
+  it('uses a manifest providers path that points directly at a .json file', async () => {
+    await writeFile(join(dir, 'lone.json'), '{}');
+    const files = resolveProviderFiles(dir, { name: 'p', providers: ['./lone.json'] });
+    expect(files).toEqual([join(dir, 'lone.json')]);
+  });
+
+  it('dedupes a file reachable via both the default dir and a manifest entry', async () => {
+    await mkdir(join(dir, 'providers'), { recursive: true });
+    await writeFile(join(dir, 'providers', 'acme.json'), '{}');
+    const files = resolveProviderFiles(dir, {
+      name: 'p',
+      providers: ['./providers', './providers/acme.json'],
+    });
+    expect(files).toEqual([join(dir, 'providers', 'acme.json')]);
+  });
+
+  it('returns [] when no providers dir exists', () => {
+    expect(resolveProviderFiles(dir, { name: 'p' })).toEqual([]);
+  });
+
+  it('ignores non-relative or missing manifest provider paths', async () => {
+    await mkdir(join(dir, 'providers'), { recursive: true });
+    await writeFile(join(dir, 'providers', 'a.json'), '{}');
+    const files = resolveProviderFiles(dir, {
+      name: 'p',
+      providers: ['/abs/path', './missing'],
+    });
+    expect(files).toEqual([join(dir, 'providers', 'a.json')]);
+  });
+
+  it('rejects a manifest provider path that escapes the plugin root via path traversal', async () => {
+    const tmpParent = await mkdtemp(join(tmpdir(), 'cc-prov-escape-'));
+    const plugDir = join(tmpParent, 'plug');
+    const escapeDir = join(tmpParent, 'escape');
+    await mkdir(join(plugDir, 'providers'), { recursive: true });
+    await writeFile(join(plugDir, 'providers', 'a.json'), '{}');
+    await mkdir(escapeDir, { recursive: true });
+    await writeFile(join(escapeDir, 'evil.json'), '{}');
+    try {
+      const files = resolveProviderFiles(plugDir, { name: 'p', providers: ['./../escape'] });
+      expect(files).toEqual([join(plugDir, 'providers', 'a.json')]);
+    } finally {
+      await rm(tmpParent, { recursive: true, force: true });
+    }
   });
 });
