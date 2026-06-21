@@ -12,3 +12,4 @@ export {
   type Store,
 } from './store.js';
 export { DialTokenSigner } from './dial-token-signer.js';
+export { RelayAdminClient } from './relay-admin-client.js';
