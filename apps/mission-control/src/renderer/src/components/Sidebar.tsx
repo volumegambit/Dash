@@ -6,11 +6,11 @@ import {
   Globe,
   LifeBuoy,
   MessageCircle,
-  MessageSquare,
   PanelLeftClose,
   PanelLeftOpen,
   Plug,
   Settings,
+  Smartphone,
   Terminal,
   Zap,
 } from 'lucide-react';
@@ -43,7 +43,7 @@ const sections: NavSection[] = [
     label: 'MANAGE',
     items: [
       { to: '/agents', label: 'Agents', icon: Bot },
-      { to: '/messaging-apps', label: 'Messaging Apps', icon: MessageSquare },
+      { to: '/messaging-apps', label: 'Messaging Apps', icon: Smartphone },
     ],
   },
   {
