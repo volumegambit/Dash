@@ -39,6 +39,8 @@ export type {
   PluginInstallOptions,
   PluginOpCode,
 } from './install.js';
+export { readMarketplace, resolveMarketplacePlugin } from './marketplace.js';
+export type { MarketplaceConfig, MarketplaceEntry } from './marketplace.js';
 export type {
   HookEngine,
   HookEngineOptions,

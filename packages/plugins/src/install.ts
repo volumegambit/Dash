@@ -1,4 +1,3 @@
-import { execFile } from 'node:child_process';
 import type { Dirent } from 'node:fs';
 import {
   cp,
@@ -13,12 +12,10 @@ import {
 } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { basename, isAbsolute, join, resolve } from 'node:path';
-import { promisify } from 'node:util';
 import { extract } from 'tar';
+import { gitCloneToTemp } from './git.js';
 import { readManifest, realpathContained } from './manifest.js';
 import type { PluginScanVerdict } from './scanner.js';
-
-const execFileAsync = promisify(execFile);
 
 export type { PluginScanVerdict } from './scanner.js';
 
@@ -147,7 +144,8 @@ export interface InstalledPlugin {
   source: string;
 }
 
-function defaultGitRemote(owner: string, repo: string): string {
+/** The default GitHub remote URL for a `git:owner/repo` source. */
+export function defaultGitRemote(owner: string, repo: string): string {
   return `https://github.com/${owner}/${repo}.git`;
 }
 
@@ -266,34 +264,22 @@ async function realpathOrSelf(p: string): Promise<string> {
  */
 async function fetchPlugin(source: ParsedPluginSource): Promise<FetchedPlugin> {
   if (source.kind === 'git') {
-    const tmp = await mkdtemp(join(tmpdir(), 'dash-plugin-git-'));
+    const repoUrl = defaultGitRemote(source.owner, source.repo);
+    let cloned: Awaited<ReturnType<typeof gitCloneToTemp>>;
     try {
-      const repoUrl = defaultGitRemote(source.owner, source.repo);
-      try {
-        const args = ['clone', '--depth', '1'];
-        if (source.ref) args.push('--branch', source.ref);
-        args.push(repoUrl, tmp);
-        await execFileAsync('git', args);
-      } catch {
-        // `--branch` rejects commit SHAs; fall back to a full clone + checkout.
-        await rm(tmp, { recursive: true, force: true });
-        await mkdir(tmp, { recursive: true });
-        await execFileAsync('git', ['clone', repoUrl, tmp]);
-        if (source.ref) await execFileAsync('git', ['-C', tmp, 'checkout', source.ref]);
-      }
-      const fallbackName = source.subpath ? basename(source.subpath) : source.repo;
-      return {
-        dir: source.subpath ? join(tmp, source.subpath) : tmp,
-        cleanupRoot: tmp,
-        fallbackName,
-      };
+      cloned = await gitCloneToTemp(repoUrl, source.ref, 'dash-plugin-git-');
     } catch (err) {
-      await rm(tmp, { recursive: true, force: true });
       throw new PluginOpError(
         'not_found',
         `git clone failed for ${source.owner}/${source.repo}: ${errMsg(err)}`,
       );
     }
+    const fallbackName = source.subpath ? basename(source.subpath) : source.repo;
+    return {
+      dir: source.subpath ? join(cloned.dir, source.subpath) : cloned.dir,
+      cleanupRoot: cloned.dir,
+      fallbackName,
+    };
   }
 
   if (source.kind === 'url') {
