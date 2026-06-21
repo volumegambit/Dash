@@ -1,3 +1,4 @@
+import { symlinkSync } from 'node:fs';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -95,5 +96,54 @@ describe('loadPlugins', () => {
     const loaded = await loadPlugins({ pluginsDir: join(dataDir, 'nope'), entries: {} });
     expect(loaded.records).toEqual([]);
     expect(loaded.skillDirs).toEqual([]);
+  });
+
+  it('does not throw when pluginsDir read fails and still loads path entries', async () => {
+    // pluginsDir is a symlink to a regular file: existsSync() is true, but
+    // readdirSync() throws ENOTDIR. This must not escape loadPlugins.
+    const file = join(dataDir, 'not-a-dir');
+    await writeFile(file, 'regular file');
+    const brokenPluginsDir = join(dataDir, 'plugins-link');
+    symlinkSync(file, brokenPluginsDir);
+    const root = await mkdtemp(join(tmpdir(), 'devplug-'));
+    const dir = await writePlugin(root, 'devkit', { skill: 'x' });
+    const warnings: string[] = [];
+    const loaded = await loadPlugins({
+      pluginsDir: brokenPluginsDir,
+      entries: { devkit: { enabled: false, path: dir } },
+      logger: { info() {}, warn: (m) => warnings.push(m) },
+    });
+    expect(loaded.records).toHaveLength(1);
+    expect(loaded.records[0]).toMatchObject({ name: 'devkit', status: 'loaded' });
+    expect(loaded.skillDirs).toEqual([join(dir, 'skills')]);
+    expect(warnings.some((w) => w.includes('plugins'))).toBe(true);
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it('dedupes a name present as both a path entry and a pluginsDir subdir (path wins)', async () => {
+    // Same plugin name under pluginsDir AND as an explicit path entry.
+    await writePlugin(pluginsDir, 'dup', { skill: 'fromdir' });
+    const root = await mkdtemp(join(tmpdir(), 'devplug-'));
+    const pathDir = await writePlugin(root, 'dup', { skill: 'frompath' });
+    const loaded = await loadPlugins({
+      pluginsDir,
+      entries: { dup: { enabled: true, path: pathDir } },
+    });
+    expect(loaded.records).toHaveLength(1);
+    expect(loaded.records[0]).toMatchObject({ name: 'dup', status: 'loaded', dir: pathDir });
+    expect(loaded.skillDirs).toEqual([join(pathDir, 'skills')]);
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it('flattens skillDirs in discovery order (path entry first, then pluginsDir)', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'devplug-'));
+    const pathDir = await writePlugin(root, 'viapath', { skill: 'p' });
+    const dirDir = await writePlugin(pluginsDir, 'viadir', { skill: 'd' });
+    const loaded = await loadPlugins({
+      pluginsDir,
+      entries: { viapath: { enabled: true, path: pathDir }, viadir: { enabled: true } },
+    });
+    expect(loaded.skillDirs).toEqual([join(pathDir, 'skills'), join(dirDir, 'skills')]);
+    await rm(root, { recursive: true, force: true });
   });
 });

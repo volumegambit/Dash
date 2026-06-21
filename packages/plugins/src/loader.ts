@@ -1,4 +1,4 @@
-import { existsSync, readdirSync } from 'node:fs';
+import { readdirSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { readManifest, resolveSkillDirs } from './manifest.js';
 import type { LoadedPlugins, PluginEntryConfig, PluginRecord } from './types.js';
@@ -28,8 +28,12 @@ export async function loadPlugins(opts: LoadPluginsOptions): Promise<LoadedPlugi
     }
   }
 
-  // 2. Installed plugins under pluginsDir.
-  if (existsSync(opts.pluginsDir)) {
+  // 2. Installed plugins under pluginsDir. The directory read is isolated in
+  // its own try/catch: a missing dir (ENOENT), a symlink-to-file (ENOTDIR), or
+  // an unreadable dir (EACCES) must not abort the loader — and therefore must
+  // not abort gateway boot. Rely on the single readdirSync syscall (no
+  // existsSync pre-check) to avoid a TOCTOU race.
+  try {
     for (const d of readdirSync(opts.pluginsDir, { withFileTypes: true })) {
       if (!d.isDirectory() || targets.has(d.name)) continue;
       targets.set(d.name, {
@@ -38,6 +42,10 @@ export async function loadPlugins(opts: LoadPluginsOptions): Promise<LoadedPlugi
         fromPath: false,
       });
     }
+  } catch (err) {
+    opts.logger?.warn(
+      `[plugins] could not scan pluginsDir '${opts.pluginsDir}': ${(err as Error).message}`,
+    );
   }
 
   const records: PluginRecord[] = [];
