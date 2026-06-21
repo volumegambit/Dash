@@ -36,7 +36,11 @@ import { McpConfigStore } from './mcp-store.js';
 import { ModelsStore } from './models-store.js';
 import { OAuthRefreshCoordinator } from './oauth-refresh.js';
 import { registerPluginMcpServers } from './plugin-mcp.js';
-import { rebuildWiringState } from './plugins-wiring.js';
+import {
+  type PluginWiringState,
+  rebuildWiringState,
+  reloadPluginsUnderMutex,
+} from './plugins-wiring.js';
 import { type RelayClient, startRelayClient } from './relay-client.js';
 
 async function main() {
@@ -125,9 +129,13 @@ async function main() {
   // later increments. The loader never throws — a bad plugin is recorded and
   // skipped so the gateway always starts.
   const pluginConfigStore = new PluginConfigStore(dataDir);
+  // Plugins live under <dataDir>/plugins (one subdir per installed plugin).
+  // Resolved ONCE here and reused by the boot load, every hot-reload, and the
+  // DELETE /plugins/:name realpath guard, so all three agree on the exact dir.
+  const pluginsDir = resolve(dataDir, 'plugins');
   const pluginEntries = await pluginConfigStore.load();
   const loadedPlugins = await loadPlugins({
-    pluginsDir: resolve(dataDir, 'plugins'),
+    pluginsDir,
     entries: pluginEntries,
     logger,
   });
@@ -142,8 +150,8 @@ async function main() {
   // into a boot-time const. The hook engine is built with the same
   // `{ logger, dataDir }` the gateway used previously, so behavior is identical.
   //
-  // MUST be `let` (not `const`): Task 3's reload callback reassigns this holder.
-  // biome-ignore lint/style/useConst: reassigned by the plugin hot-reload (Task 3)
+  // MUST be `let` (not `const`): the `onWiringRebuilt` callback below reassigns
+  // this holder on every plugin hot-reload.
   let wiringState = await rebuildWiringState(loadedPlugins, pluginEntries, coreProviderIds, {
     logger,
     dataDir,
@@ -376,6 +384,62 @@ async function main() {
     },
   });
 
+  // --- Plugin hot-reload trigger ---
+  //
+  // The management routes cannot reassign this entrypoint's `wiringState`
+  // closure variable, so the reassignment + MCP re-registration lives HERE and
+  // is handed to the routes as an opaque `reloadPlugins()` they can call. The
+  // routes mutate `pluginConfigStore` (enable/trust/remove) BEFORE invoking
+  // this; `reloadPluginsUnderMutex` re-reads the persisted entries so the
+  // rebuild reflects them.
+
+  // Fired by `reloadPluginsUnderMutex` after it has rebuilt the wiring (and
+  // BEFORE it evicts warm backends), so re-warmed backends observe both the new
+  // `wiringState` AND the re-registered MCP servers.
+  const onWiringRebuilt = async (newWiring: PluginWiringState): Promise<void> => {
+    // Capture the CURRENT plugin MCP server names BEFORE reassigning, so we
+    // remove exactly the set we previously registered (the new wiring may add,
+    // drop, or rename them). `addServer` REJECTS duplicate names, so old plugin
+    // servers must be torn down before the additive re-register below.
+    const oldServerNames = wiringState.mcpConfigs.map((m) => m.config.name);
+
+    wiringState = newWiring;
+
+    // MCP hot-reload: remove every previously-registered plugin server, then
+    // additively re-register the new set. Each remove is fail-isolated — a
+    // server already gone (or mid-teardown) must not abort the rest.
+    for (const name of oldServerNames) {
+      try {
+        await mcpManager.removeServer(name);
+      } catch (err) {
+        logger.warn(
+          `[plugins] reload: removing MCP server '${name}' failed: ${(err as Error).message}`,
+        );
+      }
+    }
+    await registerPluginMcpServers(mcpManager, newWiring.mcpConfigs, logger);
+
+    // Re-log any provider catalogs dropped for colliding with a built-in id —
+    // the same boot-time helper, so the warning surfaces on every reload too.
+    logDroppedCollisions(newWiring.droppedProviderCollisions);
+  };
+
+  // The closure handed to the management routes: re-run discovery, rebuild
+  // wiring (under the module mutex so concurrent reloads serialize), swap the
+  // live reference via `onWiringRebuilt`, invalidate the models cache, and evict
+  // warm backends so they re-warm against the new wiring.
+  const reloadPlugins = (): Promise<PluginWiringState> =>
+    reloadPluginsUnderMutex(
+      pluginConfigStore,
+      pluginsDir,
+      dataDir,
+      logger,
+      modelsStore,
+      agents,
+      coreProviderIds,
+      onWiringRebuilt,
+    );
+
   // Bridge all active agents into the gateway
   for (const entry of registry.list()) {
     if (entry.status !== 'disabled') {
@@ -468,6 +532,14 @@ async function main() {
     // GET /models reflects reloaded plugin providers. Until then a reload
     // refreshes warm backends but not this route's plugin-model merge.
     pluginModels: wiringState.pluginModels,
+    // Plugin management routes (GET/PUT/DELETE /plugins, POST /plugins/reload,
+    // GET /runtime/plugins). The wiring is read through a LIVE getter so the
+    // routes always see the current state after a reload; the store + reload
+    // closure + plugins dir let PUT/DELETE persist and re-derive wiring.
+    getPluginWiringState: () => wiringState,
+    pluginConfigStore,
+    reloadPlugins,
+    pluginsDir,
     eventLogStore,
     token: flags.token,
     startedAt,
