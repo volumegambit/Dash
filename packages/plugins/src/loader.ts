@@ -182,9 +182,17 @@ export async function loadPlugins(opts: LoadPluginsOptions): Promise<LoadedPlugi
       // Provider catalogs are credential-bearing (they declare a provider the
       // host stores API keys for) → trust-gated, same as bin/MCP/hooks. The
       // file set is the default providers/ scan PLUS manifest `providers`
-      // entries (both honored only when trusted).
+      // entries (both honored only when trusted). A plugin DECLARES intent to
+      // provide providers when its manifest lists `providers`, OR a providers/
+      // dir exists, OR resolution found catalog files — so the untrusted skip
+      // records a `noop: 'providers'` for any of these, not just non-empty
+      // resolution (mirrors the bin/MCP/hooks trust-gating idiom).
       const providerFiles = resolveProviderFiles(dir, manifest);
-      if (providerFiles.length) {
+      const declaresProviders =
+        (manifest.providers?.length ?? 0) > 0 ||
+        existsSync(join(dir, 'providers')) ||
+        providerFiles.length > 0;
+      if (declaresProviders) {
         if (trusted) {
           // Parse + validate each catalog; a malformed file throws → caught
           // below as a 'route' failure for THIS plugin only. Accumulating into
@@ -194,7 +202,8 @@ export async function loadPlugins(opts: LoadPluginsOptions): Promise<LoadedPlugi
             const catalog = validateProviderCatalog(raw);
             localProviderConfigs.push({ pluginName: manifest.name, catalog });
           }
-          activated.push('providers');
+          if (providerFiles.length) activated.push('providers');
+          else noop.push('providers');
         } else {
           noop.push('providers');
         }

@@ -423,6 +423,16 @@ describe('loadPlugins', () => {
     expect(loaded.records[0].noop).toEqual(expect.arrayContaining(['providers']));
   });
 
+  it('noops providers for an untrusted plugin that DECLARES providers but has no files on disk', async () => {
+    // Manifest intent without a providers/ dir or catalog files: declaring
+    // `providers` is enough to record the untrusted skip as `noop: 'providers'`.
+    await writePlugin(pluginsDir, 'p', { manifest: { name: 'p', providers: ['./providers'] } });
+    const loaded = await loadPlugins({ pluginsDir, entries: { p: { enabled: true } } });
+    expect(loaded.providerConfigs).toEqual([]);
+    expect(loaded.records[0].noop).toEqual(expect.arrayContaining(['providers']));
+    expect(loaded.records[0].activated).not.toContain('providers');
+  });
+
   it('records a malformed catalog failure without aborting (status error, others load)', async () => {
     await writePlugin(pluginsDir, 'bad', { providers: { broken: { id: 'broken' } } });
     await writePlugin(pluginsDir, 'good', { skill: 'g' });

@@ -9,11 +9,6 @@ function optString(v: unknown): string | undefined {
   return typeof v === 'string' ? v : undefined;
 }
 
-/** Keep a recognized number field, or `undefined`. */
-function optNumber(v: unknown): number | undefined {
-  return typeof v === 'number' ? v : undefined;
-}
-
 /** Keep a recognized boolean field, or `undefined`. */
 function optBool(v: unknown): boolean | undefined {
   return typeof v === 'boolean' ? v : undefined;
