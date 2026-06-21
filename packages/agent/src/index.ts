@@ -27,6 +27,7 @@ export {
   parseFrontmatter,
   generateFrontmatter,
   scanSkillsDirectory,
+  loadFlatSkills,
   discoverSkills,
   heuristicScan,
   createLlmScanner,

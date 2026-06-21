@@ -26,6 +26,7 @@ import {
   createRemoveSkillTool,
   discoverSkills,
   heuristicScan,
+  loadFlatSkills,
 } from '../skills/index.js';
 import type { SkillSecurityScanner } from '../skills/index.js';
 import type { SkillDiscoveryResult } from '../skills/types.js';
@@ -83,6 +84,13 @@ export class PiAgentBackend implements AgentBackend {
   private extraTools: ExtraTool[] = [];
 
   /**
+   * Flat single-file skill/command paths (Claude Code `commands/*.md`) injected
+   * by the host (e.g. the gateway plugin loader's `commandFiles`). Loaded via
+   * `loadFlatSkills()` and merged into `listSkills()` after discovered skills.
+   */
+  private extraSkillFiles: string[] = [];
+
+  /**
    * Conversation id of the in-flight run, exposed to injected tools via
    * getCurrentSessionId(). Set at the top of run(); null when idle. This is
    * the session_id used for session_issue_link upserts.
@@ -131,8 +139,10 @@ export class PiAgentBackend implements AgentBackend {
     private mcpConfigStore?: McpConfigStoreInterface,
     private mcpAgentContext?: McpAgentContext,
     extraTools: ExtraTool[] = [],
+    extraSkillFiles: string[] = [],
   ) {
     this.extraTools = extraTools;
+    this.extraSkillFiles = extraSkillFiles;
   }
 
   /** Current conversation/session id for the in-flight run, or null when idle. */
@@ -995,13 +1005,19 @@ export class PiAgentBackend implements AgentBackend {
   }
 
   /**
-   * Discover skills across all tiers (managed > configured paths > bundled).
+   * Discover skills across all tiers (managed > configured paths > bundled),
+   * then merge in any flat single-file skills/commands supplied via
+   * `extraSkillFiles`. Discovered skills win on a name collision — flat skills
+   * whose name already appears are skipped.
    */
   async listSkills(): Promise<SkillDiscoveryResult[]> {
-    return discoverSkills({
+    const discovered = await discoverSkills({
       managedSkillsDir: this.managedSkillsDir,
       paths: this.config.skills?.paths,
       includeBundled: this.config.skills?.includeBundled,
     });
+    const flat = await loadFlatSkills(this.extraSkillFiles);
+    const seen = new Set(discovered.map((s) => s.name));
+    return [...discovered, ...flat.filter((s) => !seen.has(s.name))];
   }
 }
