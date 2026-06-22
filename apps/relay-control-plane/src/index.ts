@@ -19,4 +19,9 @@ export {
   type ProvisioningDeps,
 } from './provisioning.js';
 export { StubAuthenticator, type Authenticator } from './auth.js';
+export {
+  WorkosAuthenticator,
+  createWorkosVerifier,
+  type AccessTokenVerifier,
+} from './auth-workos.js';
 export { createApi, type ApiDeps } from './api.js';
