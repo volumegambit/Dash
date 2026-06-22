@@ -54,12 +54,15 @@ describe('createControlPlaneSession', () => {
 
     const session = createControlPlaneSession({
       tokenStore: store,
-      buildAuthUrl: (redirectUri) => `https://auth.example/authorize?redirect_uri=${redirectUri}`,
-      // The browser stand-in: extract the loopback redirect_uri and GET it with a code.
+      buildAuthUrl: (redirectUri, state) =>
+        `https://auth.example/authorize?redirect_uri=${redirectUri}&state=${state}`,
+      // The browser stand-in: extract the loopback redirect_uri + state and GET it back.
       openBrowser: async (url) => {
         openedUrl = url;
-        const redirectUri = decodeURIComponent(new URL(url).searchParams.get('redirect_uri') ?? '');
-        await hitCallback(`${redirectUri}?code=auth-code-123`);
+        const u = new URL(url);
+        const redirectUri = decodeURIComponent(u.searchParams.get('redirect_uri') ?? '');
+        const state = u.searchParams.get('state') ?? '';
+        await hitCallback(`${redirectUri}?code=auth-code-123&state=${state}`);
       },
       exchangeCode: async (code) => {
         exchangedCode = code;
@@ -151,16 +154,54 @@ describe('createControlPlaneSession', () => {
     const store = memoryTokenStore();
     const session = createControlPlaneSession({
       tokenStore: store,
-      buildAuthUrl: (r) => `https://auth.example/authorize?redirect_uri=${r}`,
+      buildAuthUrl: (r, state) => `https://auth.example/authorize?redirect_uri=${r}&state=${state}`,
       openBrowser: async (url) => {
-        const redirectUri = decodeURIComponent(new URL(url).searchParams.get('redirect_uri') ?? '');
-        await hitCallback(redirectUri);
+        const u = new URL(url);
+        const redirectUri = decodeURIComponent(u.searchParams.get('redirect_uri') ?? '');
+        const state = u.searchParams.get('state') ?? '';
+        // Correct state but no code → passes the CSRF check, fails on the code.
+        await hitCallback(`${redirectUri}?state=${state}`);
       },
       exchangeCode: async () => ({ accessToken: 'x', expiresAt: now() + 1000 }),
       now,
     });
 
     await expect(session.signIn()).rejects.toThrow(/code/i);
+  });
+
+  it('signIn rejects when the callback state does not match (CSRF guard)', async () => {
+    const store = memoryTokenStore();
+    const session = createControlPlaneSession({
+      tokenStore: store,
+      buildAuthUrl: (r, state) => `https://auth.example/authorize?redirect_uri=${r}&state=${state}`,
+      openBrowser: async (url) => {
+        const redirectUri = decodeURIComponent(new URL(url).searchParams.get('redirect_uri') ?? '');
+        // A local attacker injects its own code with a forged state.
+        await hitCallback(`${redirectUri}?code=evil-code&state=wrong-state`);
+      },
+      exchangeCode: async () => {
+        throw new Error('exchangeCode must not run on a state mismatch');
+      },
+      now,
+    });
+
+    await expect(session.signIn()).rejects.toThrow(/state mismatch/i);
+    expect(await session.getToken()).toBeNull();
+  });
+
+  it('signIn rejects (and closes the loopback server) on timeout', async () => {
+    const store = memoryTokenStore();
+    const session = createControlPlaneSession({
+      tokenStore: store,
+      buildAuthUrl: (r, state) => `https://auth.example/authorize?redirect_uri=${r}&state=${state}`,
+      // Browser never returns to the callback → the timeout must fire.
+      openBrowser: async () => {},
+      exchangeCode: async () => ({ accessToken: 'x', expiresAt: now() + 1000 }),
+      now,
+      signInTimeoutMs: 30,
+    });
+
+    await expect(session.signIn()).rejects.toThrow(/timed out/i);
   });
 
   it('refreshes the token when the in-memory cache is near expiry', async () => {
@@ -170,10 +211,12 @@ describe('createControlPlaneSession', () => {
 
     const session = createControlPlaneSession({
       tokenStore: store,
-      buildAuthUrl: (r) => `https://auth.example/authorize?redirect_uri=${r}`,
+      buildAuthUrl: (r, state) => `https://auth.example/authorize?redirect_uri=${r}&state=${state}`,
       openBrowser: async (url) => {
-        const redirectUri = decodeURIComponent(new URL(url).searchParams.get('redirect_uri') ?? '');
-        await hitCallback(`${redirectUri}?code=code-${issued}`);
+        const u = new URL(url);
+        const redirectUri = decodeURIComponent(u.searchParams.get('redirect_uri') ?? '');
+        const state = u.searchParams.get('state') ?? '';
+        await hitCallback(`${redirectUri}?code=code-${issued}&state=${state}`);
       },
       exchangeCode: async () => {
         issued += 1;

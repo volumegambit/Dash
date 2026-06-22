@@ -187,13 +187,16 @@ function keychainTokenStore(keychain: InMemoryKeychainStore): ControlPlaneSessio
 function driveLoopbackSignIn(keychain: InMemoryKeychainStore, accountToken: string) {
   return createControlPlaneSession({
     tokenStore: keychainTokenStore(keychain),
-    // The auth URL embeds the loopback redirect_uri; we echo it straight back.
-    buildAuthUrl: (redirectUri) => `https://workos.example/authorize?redirect_uri=${redirectUri}`,
-    // "Open the browser": parse the redirect_uri out of the URL and GET the
-    // callback with a fake authorization code — the browser's job, no UI.
+    // The auth URL embeds the loopback redirect_uri + CSRF state; echo both back.
+    buildAuthUrl: (redirectUri, state) =>
+      `https://workos.example/authorize?redirect_uri=${redirectUri}&state=${state}`,
+    // "Open the browser": parse the redirect_uri + state out of the URL and GET
+    // the callback with a fake authorization code — the browser's job, no UI.
     openBrowser: async (url) => {
-      const redirectUri = decodeURIComponent(new URL(url).searchParams.get('redirect_uri') ?? '');
-      const res = await fetch(`${redirectUri}?code=fake-auth-code`);
+      const u = new URL(url);
+      const redirectUri = decodeURIComponent(u.searchParams.get('redirect_uri') ?? '');
+      const state = u.searchParams.get('state') ?? '';
+      const res = await fetch(`${redirectUri}?code=fake-auth-code&state=${state}`);
       // Drain so the loopback server's response completes.
       await res.text();
     },

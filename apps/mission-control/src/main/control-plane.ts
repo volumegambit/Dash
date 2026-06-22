@@ -70,11 +70,11 @@ export function makeWorkosSeams(
   loadWorkos: () => Promise<WorkosLike> = defaultLoadWorkos(config.workosApiKey),
   now: () => number = Date.now,
 ): {
-  buildAuthUrl: (redirectUri: string) => string;
+  buildAuthUrl: (redirectUri: string, state: string) => string;
   exchangeCode: (code: string) => Promise<TokenExchangeResult>;
 } {
   return {
-    buildAuthUrl(redirectUri: string): string {
+    buildAuthUrl(redirectUri: string, state: string): string {
       // `redirectUri` arrives already URL-encoded from the session's loopback
       // server; URLSearchParams re-encodes, so decode first to avoid
       // double-encoding. Built directly (no SDK) to keep this synchronous.
@@ -84,6 +84,8 @@ export function makeWorkosSeams(
         redirect_uri: decoded,
         response_type: 'code',
         provider: 'authkit',
+        // CSRF guard — echoed back on the callback and verified by the session.
+        state,
       });
       return `https://api.workos.com/user_management/authorize?${params.toString()}`;
     },

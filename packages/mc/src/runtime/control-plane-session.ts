@@ -26,6 +26,7 @@
  * by this unit test. CI only drives the injected seams.
  */
 
+import { randomBytes } from 'node:crypto';
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 
@@ -51,14 +52,23 @@ export interface ControlPlaneSessionTokenStore {
 export interface ControlPlaneSessionOptions {
   /** Persists the access token across MC restarts. */
   tokenStore: ControlPlaneSessionTokenStore;
-  /** Builds the AuthKit authorize URL for the given loopback `redirect_uri`. */
-  buildAuthUrl(redirectUri: string): string;
+  /**
+   * Builds the AuthKit authorize URL for the given loopback `redirect_uri`,
+   * embedding the CSRF `state` we generated. The callback is rejected unless it
+   * echoes this exact `state` back.
+   */
+  buildAuthUrl(redirectUri: string, state: string): string;
   /** Launches the system browser (concretely `shell.openExternal`). */
   openBrowser(url: string): Promise<void>;
   /** Swaps a returned authorization `code` for an access token. */
   exchangeCode(code: string): Promise<TokenExchangeResult>;
   /** Clock in epoch milliseconds (injectable for deterministic expiry tests). */
   now?: () => number;
+  /**
+   * Abort sign-in (closing the loopback server) if the browser redirect never
+   * arrives within this many ms. Defaults to {@link DEFAULT_SIGN_IN_TIMEOUT_MS}.
+   */
+  signInTimeoutMs?: number;
 }
 
 /** Mission Control's hosted-control-plane sign-in session. */
@@ -83,6 +93,9 @@ export interface ControlPlaneSession {
 /** Refresh this many ms before the recorded expiry to avoid edge races. */
 const EXPIRY_SKEW_MS = 30_000;
 
+/** Default: abort sign-in if the browser redirect doesn't arrive in 5 minutes. */
+const DEFAULT_SIGN_IN_TIMEOUT_MS = 5 * 60_000;
+
 /**
  * Build a {@link ControlPlaneSession}. All side effects (browser, WorkOS,
  * clock, persistence) are injected via {@link ControlPlaneSessionOptions}.
@@ -96,8 +109,24 @@ export function createControlPlaneSession(opts: ControlPlaneSessionOptions): Con
 
   /** Run the loopback server + browser handshake; return the exchanged token. */
   async function runLoopbackFlow(): Promise<TokenExchangeResult> {
+    // CSRF guard: a random value embedded in the authorize URL that the callback
+    // MUST echo back, so another local process can't inject its own code.
+    const state = randomBytes(16).toString('base64url');
+    const timeoutMs = opts.signInTimeoutMs ?? DEFAULT_SIGN_IN_TIMEOUT_MS;
+
     const { code, close } = await new Promise<{ code: string; close: () => void }>(
       (resolve, reject) => {
+        // Clear the abort timer on any settle so it can't fire afterwards.
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const ok = (v: { code: string; close: () => void }): void => {
+          clearTimeout(timer);
+          resolve(v);
+        };
+        const fail = (err: Error): void => {
+          clearTimeout(timer);
+          reject(err);
+        };
+
         const server = http.createServer((req, res) => {
           // Only the callback path participates; ignore favicon etc. with 404.
           const url = new URL(req.url ?? '/', 'http://127.0.0.1');
@@ -106,29 +135,42 @@ export function createControlPlaneSession(opts: ControlPlaneSessionOptions): Con
             return;
           }
           const error = url.searchParams.get('error');
-          const code = url.searchParams.get('code');
           if (error) {
             res.writeHead(400, { 'content-type': 'text/plain' }).end(`Sign-in failed: ${error}`);
-            reject(new Error(`control plane sign-in failed: ${error}`));
+            fail(new Error(`control plane sign-in failed: ${error}`));
             return;
           }
+          // Reject any callback that doesn't echo our exact state — a code from
+          // another local process (login CSRF / code injection) is dropped here.
+          if (url.searchParams.get('state') !== state) {
+            res.writeHead(400, { 'content-type': 'text/plain' }).end('Invalid state');
+            fail(new Error('control plane sign-in failed: state mismatch (possible CSRF)'));
+            return;
+          }
+          const code = url.searchParams.get('code');
           if (!code) {
             res.writeHead(400, { 'content-type': 'text/plain' }).end('Missing authorization code');
-            reject(new Error('control plane sign-in failed: no authorization code in callback'));
+            fail(new Error('control plane sign-in failed: no authorization code in callback'));
             return;
           }
           res
             .writeHead(200, { 'content-type': 'text/html' })
             .end('<html><body>Signed in. You can close this window.</body></html>');
-          resolve({ code, close: () => server.close() });
+          ok({ code, close: () => server.close() });
         });
-        server.on('error', reject);
+        server.on('error', fail);
+        // Never wait forever for a redirect that may never arrive: abort + close.
+        timer = setTimeout(() => {
+          server.close();
+          fail(new Error('control plane sign-in timed out waiting for the browser redirect'));
+        }, timeoutMs);
+        timer.unref();
         server.listen(0, '127.0.0.1', () => {
           const { port } = server.address() as AddressInfo;
           const redirectUri = `http://127.0.0.1:${port}/callback`;
-          const authUrl = opts.buildAuthUrl(encodeURIComponent(redirectUri));
+          const authUrl = opts.buildAuthUrl(encodeURIComponent(redirectUri), state);
           // Fire-and-await the browser; surface a launch failure as a rejection.
-          opts.openBrowser(authUrl).catch(reject);
+          opts.openBrowser(authUrl).catch(fail);
         });
       },
     );
