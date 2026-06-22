@@ -113,10 +113,15 @@ function createMockApi(): MockApi {
     settingsGet: vi.fn().mockResolvedValue({}),
     settingsSet: vi.fn().mockResolvedValue(undefined),
 
-    // Relay (remote access)
-    relayGetConfig: vi.fn().mockResolvedValue({ zone: null, configured: false }),
-    relaySetConfig: vi.fn().mockResolvedValue(undefined),
-    relayClearConfig: vi.fn().mockResolvedValue(undefined),
+    // Remote access (hosted control plane)
+    controlPlaneStatus: vi
+      .fn()
+      .mockResolvedValue({ signedIn: false, enrolled: false, subdomain: null }),
+    controlPlaneSignIn: vi.fn().mockResolvedValue(undefined),
+    controlPlaneSignOut: vi.fn().mockResolvedValue(undefined),
+    gatewayEnroll: vi.fn().mockResolvedValue(undefined),
+    devicesList: vi.fn().mockResolvedValue([]),
+    devicesRevoke: vi.fn().mockResolvedValue(undefined),
 
     // Logs
     logsRead: vi.fn().mockResolvedValue(''),

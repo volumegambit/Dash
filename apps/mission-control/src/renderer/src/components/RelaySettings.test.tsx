@@ -5,56 +5,66 @@ import { mockApi } from '../../../../vitest.setup.js';
 import { RelaySettings } from './RelaySettings.js';
 
 describe('RelaySettings', () => {
-  it('shows the not-configured state with an Enable button', async () => {
-    mockApi.relayGetConfig.mockResolvedValue({ zone: null, configured: false });
+  it('shows "Sign in to Dash" when signed out', async () => {
+    mockApi.controlPlaneStatus.mockResolvedValue({
+      signedIn: false,
+      enrolled: false,
+      subdomain: null,
+    });
     render(<RelaySettings />);
-    expect(await screen.findByRole('button', { name: /enable relay/i })).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: /sign in to dash/i })).toBeInTheDocument();
     expect(screen.queryByTestId('relay-status')).not.toBeInTheDocument();
-    // No Disable button until configured.
-    expect(screen.queryByRole('button', { name: /disable relay/i })).not.toBeInTheDocument();
   });
 
-  it('shows the configured zone and a Disable button when relay mode is on', async () => {
-    mockApi.relayGetConfig.mockResolvedValue({ zone: 'relay.example.com', configured: true });
+  it('offers "Create gateway" when signed in but not enrolled', async () => {
+    mockApi.controlPlaneStatus.mockResolvedValue({
+      signedIn: true,
+      enrolled: false,
+      subdomain: null,
+    });
     render(<RelaySettings />);
-    expect(await screen.findByTestId('relay-status')).toHaveTextContent('relay.example.com');
-    expect(screen.getByRole('button', { name: /disable relay/i })).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: /create gateway/i })).toBeInTheDocument();
+    expect(screen.getByTestId('relay-signedin')).toBeInTheDocument();
   });
 
-  it('saves the entered config via relaySetConfig and clears the secret inputs', async () => {
-    mockApi.relayGetConfig.mockResolvedValue({ zone: null, configured: false });
-    mockApi.relaySetConfig.mockResolvedValue(undefined);
+  it('shows the enrolled subdomain and paired devices when connected', async () => {
+    mockApi.controlPlaneStatus.mockResolvedValue({
+      signedIn: true,
+      enrolled: true,
+      subdomain: 'gw-1.relay.example.com',
+    });
+    mockApi.devicesList.mockResolvedValue([{ id: 'dev-1', label: 'Pixel 9' }]);
+    render(<RelaySettings />);
+    expect(await screen.findByTestId('relay-status')).toHaveTextContent('gw-1.relay.example.com');
+    expect(await screen.findByText('Pixel 9')).toBeInTheDocument();
+  });
+
+  it('revokes a device via devicesRevoke', async () => {
+    mockApi.controlPlaneStatus.mockResolvedValue({
+      signedIn: true,
+      enrolled: true,
+      subdomain: 'gw-1.relay.example.com',
+    });
+    mockApi.devicesList.mockResolvedValue([{ id: 'dev-1', label: 'Pixel 9' }]);
+    mockApi.devicesRevoke.mockResolvedValue(undefined);
     const user = userEvent.setup();
     render(<RelaySettings />);
 
-    await user.type(await screen.findByLabelText('Relay domain'), 'relay.example.com');
-    await user.type(screen.getByLabelText('Relay token'), 'shared-token');
-    await user.type(screen.getByLabelText('Admin secret'), 'admin-secret');
-    await user.click(screen.getByRole('button', { name: /enable relay/i }));
-
-    await waitFor(() =>
-      expect(mockApi.relaySetConfig).toHaveBeenCalledWith({
-        zone: 'relay.example.com',
-        relayToken: 'shared-token',
-        adminSecret: 'admin-secret',
-      }),
-    );
-    // Secrets must not linger in the inputs after saving.
-    expect(screen.getByLabelText('Relay token')).toHaveValue('');
-    expect(screen.getByLabelText('Admin secret')).toHaveValue('');
+    await user.click(await screen.findByRole('button', { name: /revoke pixel 9/i }));
+    await waitFor(() => expect(mockApi.devicesRevoke).toHaveBeenCalledWith('dev-1'));
   });
 
-  it('surfaces a save error from the main process', async () => {
-    mockApi.relayGetConfig.mockResolvedValue({ zone: null, configured: false });
-    mockApi.relaySetConfig.mockRejectedValue(new Error('relay unreachable'));
+  it('surfaces a sign-in error from the main process', async () => {
+    mockApi.controlPlaneStatus.mockResolvedValue({
+      signedIn: false,
+      enrolled: false,
+      subdomain: null,
+    });
+    mockApi.controlPlaneSignIn.mockRejectedValue(new Error('browser launch failed'));
     const user = userEvent.setup();
     render(<RelaySettings />);
 
-    await user.type(await screen.findByLabelText('Relay domain'), 'relay.example.com');
-    await user.type(screen.getByLabelText('Relay token'), 't');
-    await user.type(screen.getByLabelText('Admin secret'), 's');
-    await user.click(screen.getByRole('button', { name: /enable relay/i }));
-
-    expect(await screen.findByText(/relay unreachable/i)).toBeInTheDocument();
+    await user.click(await screen.findByRole('button', { name: /sign in to dash/i }));
+    expect(await screen.findByText(/browser launch failed/i)).toBeInTheDocument();
   });
 });

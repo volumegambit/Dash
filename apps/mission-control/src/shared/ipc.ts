@@ -136,19 +136,25 @@ export interface RelayPairingInfo {
 
 export type PairingInfo = LanPairingInfo | RelayPairingInfo;
 
-/** Current relay (remote access) configuration state, safe to show the renderer. */
-export interface RelayConfigStatus {
-  /** Relay domain, e.g. `relay.example.com`, or null when relay mode is off. */
-  zone: string | null;
-  /** True only when zone + relay token + admin secret are all present. */
-  configured: boolean;
+/**
+ * Hosted control-plane sign-in + enrollment status, safe to show the renderer.
+ * Replaces the self-hosted relay config (zone / relay token / admin secret):
+ * remote access now flows through the hosted control plane — the user signs in,
+ * MC enrolls a gateway, and the control plane brokers the relay server-side.
+ */
+export interface ControlPlaneStatus {
+  /** True once a control-plane session token is present (signed in). */
+  signedIn: boolean;
+  /** True once a gateway has been enrolled (issued-gateway record present). */
+  enrolled: boolean;
+  /** The enrolled gateway's relay subdomain `<gatewayId>.<host>`, when enrolled. */
+  subdomain: string | null;
 }
 
-/** User-supplied relay config (must match their self-hosted relay). */
-export interface RelayConfigInput {
-  zone: string;
-  relayToken: string;
-  adminSecret: string;
+/** A paired device as surfaced to the renderer (label may be absent). */
+export interface DeviceInfo {
+  id: string;
+  label: string | null;
 }
 
 export interface MissionControlAPI {
@@ -244,11 +250,21 @@ export interface MissionControlAPI {
   settingsGet(): Promise<AppSettings>;
   settingsSet(patch: Partial<AppSettings>): Promise<void>;
 
-  // Relay (remote access) config. Secrets (token, admin secret) live in the OS
-  // keychain and are never read back to the renderer — only whether they're set.
-  relayGetConfig(): Promise<RelayConfigStatus>;
-  relaySetConfig(config: RelayConfigInput): Promise<void>;
-  relayClearConfig(): Promise<void>;
+  // Remote access via the hosted control plane. Sign in (WorkOS, system
+  // browser), enroll a gateway, and manage paired devices. The control-plane
+  // session token + issued gateway record live in the OS keychain and are never
+  // read back to the renderer — only the derived status.
+  controlPlaneStatus(): Promise<ControlPlaneStatus>;
+  /** Run the loopback-OAuth sign-in flow (opens the system browser). */
+  controlPlaneSignIn(): Promise<void>;
+  /** Forget the control-plane session token. */
+  controlPlaneSignOut(): Promise<void>;
+  /** Enroll a gateway with the control plane and restart it in relay mode. */
+  gatewayEnroll(): Promise<void>;
+  /** List the paired devices for the enrolled gateway. */
+  devicesList(): Promise<DeviceInfo[]>;
+  /** Revoke a single paired device by id. */
+  devicesRevoke(deviceId: string): Promise<void>;
 
   // Models & Tools — gateway is the source of truth for the model list.
   // `modelsList` reads the gateway's persistent store (or its bootstrap

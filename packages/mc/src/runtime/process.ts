@@ -34,7 +34,11 @@ async function lsofPortOwner(port: number): Promise<number | undefined> {
     return undefined;
   }
 }
-import { type KeychainStore, createDefaultKeychainStore } from '../security/keychain-store.js';
+import {
+  type IssuedGateway,
+  type KeychainStore,
+  createDefaultKeychainStore,
+} from '../security/keychain-store.js';
 import { generateGatewayId, generateToken } from '../security/keygen.js';
 import type { ControlPlaneClient } from './control-plane-client.js';
 import {
@@ -682,6 +686,27 @@ export class GatewaySupervisor {
   /** Read the shared relay token (admission secret) from the keychain. */
   async getRelayToken(): Promise<string | null> {
     return this.keychain.getRelayToken();
+  }
+
+  /**
+   * Read the gateway identity the control plane issued at enrollment
+   * (`gatewayId` + signed dial token + relay `host`). Null until the gateway
+   * has been enrolled. The pairing flow uses `gatewayId`/`host` to build the
+   * relay address and to provision per-device credentials through the control
+   * plane.
+   */
+  async getIssuedGateway(): Promise<IssuedGateway | null> {
+    return this.keychain.getIssuedGateway();
+  }
+
+  /** Read the hosted control-plane session token from the keychain. */
+  async getControlPlaneToken(): Promise<string | null> {
+    return this.keychain.getControlPlaneToken();
+  }
+
+  /** Persist the hosted control-plane session token to the keychain. */
+  async setControlPlaneToken(value: string): Promise<void> {
+    await this.keychain.setControlPlaneToken(value);
   }
 
   /**

@@ -16,8 +16,22 @@ export type {
   HealthChecker,
 } from './runtime/process.js';
 export { providerSecretKey, parseProviderSecretKey } from './runtime/provider-keys.js';
-export { createRelayAdminClient } from './runtime/relay-admin-client.js';
-export type { RelayAdminClient } from './runtime/relay-admin-client.js';
+export { createControlPlaneClient } from './runtime/control-plane-client.js';
+export type {
+  ControlPlaneClient,
+  GatewayProvision,
+  GatewayDevice,
+  GatewaySummary,
+} from './runtime/control-plane-client.js';
+export { createControlPlaneSession } from './runtime/control-plane-session.js';
+export type {
+  ControlPlaneSession,
+  ControlPlaneSessionOptions,
+  ControlPlaneSessionTokenStore,
+  TokenExchangeResult,
+} from './runtime/control-plane-session.js';
+export { createDefaultKeychainStore, InMemoryKeychainStore } from './security/keychain-store.js';
+export type { KeychainStore, IssuedGateway } from './security/keychain-store.js';
 export { ConversationStore } from './conversations.js';
 export type { McConversation, McMessage } from './conversations.js';
 export type { MessagingApp, RoutingRule, RoutingCondition } from './types.js';
