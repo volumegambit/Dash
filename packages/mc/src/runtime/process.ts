@@ -36,6 +36,7 @@ async function lsofPortOwner(port: number): Promise<number | undefined> {
 }
 import { type KeychainStore, createDefaultKeychainStore } from '../security/keychain-store.js';
 import { generateGatewayId, generateToken } from '../security/keygen.js';
+import type { ControlPlaneClient } from './control-plane-client.js';
 import {
   type GatewayHealthResponse,
   GatewayHttpError,
@@ -250,6 +251,16 @@ export class GatewaySupervisor {
      * avoid touching the real keychain.
      */
     private keychain: KeychainStore = createDefaultKeychainStore(),
+    /**
+     * Hosted control-plane client. When provided, relay enrollment goes
+     * through the control plane: the supervisor reads the cached issued
+     * gateway record (gatewayId + signed dial token + host) or, if absent,
+     * calls `createGateway()` once and caches the result. The gateway then
+     * dials `wss://<gatewayId>.<host>` with the control-plane-issued dial
+     * token. When omitted, relay mode falls back to the deprecated
+     * self-hosted path (self-generated id + token), retired in a later task.
+     */
+    private controlPlaneClient?: ControlPlaneClient,
   ) {}
 
   /**
@@ -457,12 +468,49 @@ export class GatewaySupervisor {
     if (opts.gatewayRuntimeDir) {
       spawnArgs.push('--data-dir', opts.gatewayRuntimeDir);
     }
-    // Relay mode: dial OUT to the configured relay. Enabled by an explicit
-    // relayUrl (dev) or a relayZone (production → dial wss://<gatewayId>.<zone>).
-    // A stable gatewayId is generated + persisted so phones keep a fixed address;
-    // the relay token comes from the keychain (user-configured to match the
-    // relay, or generated for local dev). Only touched when relay mode is on.
-    if (opts.relayUrl || opts.relayZone) {
+    // Relay mode. Two paths:
+    //
+    // 1. Hosted control plane (preferred). When a ControlPlaneClient is
+    //    injected, the gateway identity is *issued* by the control plane,
+    //    not self-generated: read the cached issued record (gatewayId +
+    //    signed dial token + host) or, if absent, enroll once via
+    //    createGateway() and cache it. The gateway dials its own wildcard
+    //    subdomain `wss://<gatewayId>.<host>` presenting the signed dial
+    //    token. `--gateway-id` is ALWAYS pushed so the gateway's randomUUID
+    //    fallback never fires and phones keep a fixed address.
+    //
+    // 2. Self-hosted (deprecated). When no control-plane client is wired,
+    //    fall back to the prior self-generated id + token, gated on an
+    //    explicit relayUrl (dev) or relayZone (prod). Retired in a later task.
+    if (this.controlPlaneClient) {
+      // Reuse the cached record across restarts; only enroll when absent so
+      // we never double-createGateway (which would orphan the prior gateway).
+      let issued = await this.keychain.getIssuedGateway();
+      if (!issued) {
+        const provision = await this.controlPlaneClient.createGateway();
+        // The control plane returns the full subdomain `<gatewayId>.<zone>`;
+        // store the bare zone as `host` so the dial URL reconstructs to
+        // `wss://<gatewayId>.<host>` (and re-enrollment keeps the same shape).
+        const prefix = `${provision.gatewayId}.`;
+        const host = provision.subdomain.startsWith(prefix)
+          ? provision.subdomain.slice(prefix.length)
+          : provision.subdomain;
+        issued = {
+          gatewayId: provision.gatewayId,
+          dialToken: provision.dialToken,
+          host,
+        };
+        await this.keychain.setIssuedGateway(issued);
+      }
+      spawnArgs.push(
+        '--relay-url',
+        `wss://${issued.gatewayId}.${issued.host}`,
+        '--relay-token',
+        issued.dialToken,
+        '--gateway-id',
+        issued.gatewayId,
+      );
+    } else if (opts.relayUrl || opts.relayZone) {
       // Treat an empty stored token/id as absent: clearRelayConfig() persists ''
       // rather than deleting, and `??` only substitutes null/undefined — so a
       // bare `??` could spawn with `--relay-token ''` (an empty admission secret).

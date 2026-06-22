@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { InMemoryKeychainStore } from '../security/keychain-store.js';
+import type { ControlPlaneClient, GatewayProvision } from './control-plane-client.js';
 import { GatewayHttpError, type GatewayManagementClient } from './gateway-client.js';
 import { GatewayStateStore } from './gateway-state.js';
 import {
@@ -91,6 +92,37 @@ function createMockSpawner(pid = 12345): ProcessSpawner {
       unref: vi.fn(),
     }),
   };
+}
+
+/**
+ * Fake `ControlPlaneClient` that records calls. `createGateway` returns a
+ * fixed provision so tests can assert the derived relay URL + dial token, and
+ * the call count proves a cached issued-gateway record is reused (no second
+ * enrollment). Only the methods the supervisor uses are wired; the rest throw
+ * to surface accidental use.
+ */
+function createFakeControlPlaneClient(
+  provision: GatewayProvision = {
+    gatewayId: 'gw-issued-1',
+    dialToken: 'dial-tok-1',
+    subdomain: 'gw-issued-1.relay.dash.example',
+  },
+): ControlPlaneClient & { createGateway: ReturnType<typeof vi.fn> } {
+  return {
+    createGateway: vi.fn().mockResolvedValue(provision),
+    refreshDialToken: vi.fn(async () => {
+      throw new Error('not used');
+    }),
+    createPairing: vi.fn(async () => {
+      throw new Error('not used');
+    }),
+    listGateways: vi.fn(async () => {
+      throw new Error('not used');
+    }),
+    revokePairing: vi.fn(async () => {
+      throw new Error('not used');
+    }),
+  } as unknown as ControlPlaneClient & { createGateway: ReturnType<typeof vi.fn> };
 }
 
 function makeOptions(
@@ -338,6 +370,76 @@ describe('GatewaySupervisor.ensureRunning()', () => {
     const args = (spawner.spawn as unknown as { mock: { calls: unknown[][] } }).mock
       .calls[0][1] as string[];
     expect(args[args.indexOf('--relay-url') + 1]).toBe('ws://127.0.0.1:8788');
+  });
+
+  // ------------------------------------------------------------------
+  // Control-plane enrollment: enroll via ControlPlaneClient, cache the
+  // issued gateway record, always push --gateway-id.
+  // ------------------------------------------------------------------
+
+  it('enrolls via the control plane and spawns with the issued identity', async () => {
+    const spawner = createMockSpawner();
+    const probe = createMockProbe({ type: 'free' });
+    const keychain = new InMemoryKeychainStore();
+    const client = createFakeControlPlaneClient();
+
+    const gp = new GatewaySupervisor(
+      makeOptions(tmpDir, { makeGatewayClient: () => createMockGatewayClient() }),
+      spawner,
+      undefined,
+      probe,
+      keychain,
+      client,
+    );
+
+    await gp.ensureRunning();
+
+    expect(client.createGateway).toHaveBeenCalledOnce();
+    const args = (spawner.spawn as unknown as { mock: { calls: unknown[][] } }).mock
+      .calls[0][1] as string[];
+    // relayUrl is derived as wss://<gatewayId>.<host>, the dial token is the
+    // control-plane-issued one, and --gateway-id is always present so the
+    // gateway's randomUUID fallback never fires.
+    expect(args[args.indexOf('--relay-url') + 1]).toBe('wss://gw-issued-1.relay.dash.example');
+    expect(args[args.indexOf('--relay-token') + 1]).toBe('dial-tok-1');
+    expect(args[args.indexOf('--gateway-id') + 1]).toBe('gw-issued-1');
+    // The issued record is cached for reuse across restarts.
+    expect(await keychain.getIssuedGateway()).toEqual({
+      gatewayId: 'gw-issued-1',
+      dialToken: 'dial-tok-1',
+      host: 'relay.dash.example',
+    });
+  });
+
+  it('reuses the cached issued gateway record (no second createGateway)', async () => {
+    const spawner = createMockSpawner();
+    const probe = createMockProbe({ type: 'free' });
+    const keychain = new InMemoryKeychainStore();
+    await keychain.setIssuedGateway({
+      gatewayId: 'gw-cached',
+      dialToken: 'dial-cached',
+      host: 'relay.dash.example',
+    });
+    const client = createFakeControlPlaneClient();
+
+    const gp = new GatewaySupervisor(
+      makeOptions(tmpDir, { makeGatewayClient: () => createMockGatewayClient() }),
+      spawner,
+      undefined,
+      probe,
+      keychain,
+      client,
+    );
+
+    await gp.ensureRunning();
+
+    // Cached record present → never hit the control plane.
+    expect(client.createGateway).not.toHaveBeenCalled();
+    const args = (spawner.spawn as unknown as { mock: { calls: unknown[][] } }).mock
+      .calls[0][1] as string[];
+    expect(args[args.indexOf('--relay-url') + 1]).toBe('wss://gw-cached.relay.dash.example');
+    expect(args[args.indexOf('--relay-token') + 1]).toBe('dial-cached');
+    expect(args[args.indexOf('--gateway-id') + 1]).toBe('gw-cached');
   });
 
   it('exposes the gateway id and relay admin secret from the keychain', async () => {
