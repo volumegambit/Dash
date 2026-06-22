@@ -1,16 +1,17 @@
 ---
 title: "Remote Access"
-description: "Reach your agents from your phone over the internet with a self-hosted relay."
+description: "Reach your agents from your phone over the internet, from anywhere."
 ---
 
 By default the Dash phone app connects to your gateway over your local Wi-Fi. The
-**relay** lets you reach the same agents from anywhere — on cellular, at the
-office, travelling — without opening any ports on your home network.
+**hosted relay** lets you reach the same agents from anywhere — on cellular, at
+the office, travelling — without opening any ports on your home network.
 
 <Note>
-The relay is **self-hosted**: you run a small relay service on a server with a
-domain name, and every gateway you own connects out to it. Nothing about your
-conversations passes through Dash's servers.
+The hosted relay is run by Dash. You sign in to your Dash account, create a
+gateway, and pair your phone — there's no server to set up and no domain to buy.
+Your conversations and login tokens pass through the relay as sealed bytes; the
+relay forwards them but never reads them.
 </Note>
 
 ## When you need it
@@ -34,52 +35,56 @@ phone's requests back down that connection.
 
 ```mermaid
 graph LR
-    Phone["Phone<br/><small>anywhere</small>"] -->|HTTPS / WSS| Relay["Relay<br/><small>public, TLS</small>"]
+    Phone["Phone<br/><small>anywhere</small>"] -->|HTTPS / WSS| Relay["Hosted relay<br/><small>run by Dash</small>"]
     Relay -.->|gateway dials out| Gateway["Gateway<br/><small>behind your router</small>"]
     Gateway --- Agents["Your agents"]
 ```
 
 The relay just passes encrypted bytes along — it never reads your messages or your
-gateway's login tokens. Three independent secrets keep it locked down: the relay
-only admits *your* gateway, only admits *your* paired phones, and your gateway
-still checks its own tokens on every request.
+gateway's login tokens. Your Dash sign-in identifies you, each gateway gets its own
+address, and every phone you pair carries its own credential — so the relay only
+ever connects *your* phones to *your* gateway.
 
 ## Set it up
 
 <Steps>
-  <Step title="Run a relay">
-    Deploy the relay on a server with a wildcard domain (for example
-    `*.relay.example.com`) and TLS. The
-    [relay guide](https://github.com/volumegambit/Dash/blob/main/apps/relay/README.md)
-    has a copy-paste setup using Caddy and systemd. You'll choose two secrets: a
-    **relay token** and an **admin secret**.
+  <Step title="Sign in to Dash">
+    In Mission Control, open **Settings → Remote access** and click **Sign in to
+    Dash**. Your browser opens to the Dash sign-in page. Sign in, and the browser
+    hands you back to Mission Control automatically. You only do this once per
+    machine.
   </Step>
-  <Step title="Connect Mission Control to your relay">
-    In Mission Control, open **Settings → Remote access (relay)** and enter your
-    relay domain, relay token, and admin secret — the same values you configured
-    on the relay. Click **Enable relay**. The gateway restarts and connects to
-    your relay automatically.
+  <Step title="Create a gateway">
+    Once you're signed in, click **Create gateway**. Dash gives your gateway a
+    stable address on the relay and restarts it so it connects out. When it's
+    ready you'll see **Gateway ready at** followed by your gateway's address.
   </Step>
-  <Step title="Pair your phone over the relay">
-    Open **Pair Device**. With the relay enabled, the QR code now carries your
+  <Step title="Pair your phone by QR">
+    Open **Pair Device**. With a gateway created, the QR code now carries your
     relay address and a per-device credential. Scan it with the Dash Android app —
     your phone connects through the relay from then on, wherever you are.
   </Step>
 </Steps>
 
 <Tip>
-Every phone you pair gets its own credential. To revoke a single device later,
-disable then re-enable the relay, or un-pair it — the other devices keep working.
+Every phone you pair gets its own credential, so you can pair as many devices as
+you like and manage them one at a time.
 </Tip>
 
-## Turning it off
+## Manage your devices
 
-In **Settings → Remote access (relay)**, click **Disable relay**. The gateway
-goes back to local-network-only pairing. Your relay settings are forgotten, but
-your gateway keeps its stable address, so re-enabling later reuses it.
+Back on **Settings → Remote access**, the **Paired devices** list shows every
+phone connected to your gateway. To disconnect one — a phone you've lost, sold, or
+no longer use — click **Revoke** next to it. That device can no longer reach your
+agents through the relay; your other devices keep working untouched.
 
-<Warning>
-If Mission Control can't reach your relay when you enable it (wrong domain, relay
-not running, wrong admin secret), the Pair Device screen shows the error. Check
-that your relay is up and the domain, token, and admin secret match exactly.
-</Warning>
+<Tip>
+A revoked phone simply needs to be paired again to come back. Open **Pair Device**,
+scan a fresh QR code on that phone, and it gets a new credential.
+</Tip>
+
+## Signing out
+
+Signing out of Dash on this machine stops new gateways and pairings from being
+created here. Your gateway keeps its stable address, so signing back in later picks
+up right where you left off.
