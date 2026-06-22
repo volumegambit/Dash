@@ -123,17 +123,31 @@ export class ProvisioningService {
   }
 
   /**
-   * Revoke a pairing. Ownership is checked in the store first; only on a real
-   * revocation does the relay invalidate the credential. Returns false (and
-   * skips the relay) when the caller does not own the gateway or the pairing is
-   * unknown.
+   * Revoke a single pairing. Ownership is checked in the store first; only on a
+   * real revocation does the relay invalidate that one credential. Returns false
+   * (and skips the relay) when the caller does not own the gateway or the pairing
+   * is unknown.
+   *
+   * The relay is told exactly which device to drop via its hash — never every
+   * credential for the gateway. We hold only the hash (the raw secret was
+   * returned once at provisioning and never persisted), so we pass it to the
+   * relay's hash-keyed revoke path.
    */
   async deletePairing(accountId: string, gatewayId: string, pairingId: string): Promise<boolean> {
     const gateway = this.#store.getGateway(gatewayId);
     if (!gateway || gateway.accountId !== accountId) return false;
+    // Capture the credential hash before revoking so we can target this one
+    // device on the relay; a missing pairing means there is nothing to revoke.
+    const pairing = this.#store.listPairings(gatewayId).find((p) => p.id === pairingId);
+    if (!pairing) return false;
     const revoked = this.#store.revokePairing(gatewayId, pairingId);
     if (!revoked) return false;
-    await this.#relay.revokePairing(accountId, gatewayId);
+    await this.#relay.revokePairing(
+      accountId,
+      gatewayId,
+      undefined,
+      hexToRelayHash(pairing.credentialHash),
+    );
     return true;
   }
 }
@@ -151,4 +165,13 @@ function generatePairingId(): string {
 /** SHA-256 hex digest — the only form a credential is stored in at rest. */
 function sha256(value: string): string {
   return createHash('sha256').update(value).digest('hex');
+}
+
+/**
+ * Re-encode our hex SHA-256 digest as base64url — the form the relay keys
+ * pairings by (its {@link DurableCredentialStore} stores base64url). Same 32
+ * hash bytes, different text; the conversion is exact and lossless.
+ */
+function hexToRelayHash(hexDigest: string): string {
+  return Buffer.from(hexDigest, 'hex').toString('base64url');
 }

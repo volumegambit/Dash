@@ -1,4 +1,4 @@
-import { generateKeyPairSync } from 'node:crypto';
+import { createHash, generateKeyPairSync } from 'node:crypto';
 import type { AddressInfo } from 'node:net';
 import {
   DurableCredentialStore,
@@ -46,6 +46,18 @@ test('revokePairing invalidates a specific credential', async () => {
 
   await client.revokePairing('t1', 'gw-1', credential);
   expect(store.isValid('gw-1', credential)).toBe(false);
+});
+
+test('revokePairing by credentialHash invalidates only that credential', async () => {
+  const client = new RelayAdminClient(baseUrl, 'master');
+  const a = await client.provisionPairing('t1', 'gw-1');
+  const b = await client.provisionPairing('t1', 'gw-1');
+  const hashA = createHash('sha256').update(a).digest('base64url');
+
+  // The control plane holds only the hash, so it revokes by hash, not raw value.
+  await client.revokePairing('t1', 'gw-1', undefined, hashA);
+  expect(store.isValid('gw-1', a)).toBe(false);
+  expect(store.isValid('gw-1', b)).toBe(true);
 });
 
 test('revokePairing without a credential revokes all for the gateway', async () => {

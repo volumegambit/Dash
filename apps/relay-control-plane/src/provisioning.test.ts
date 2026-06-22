@@ -198,6 +198,26 @@ describe('ProvisioningService pairings', () => {
     expect(store.listPairings(gw.gatewayId)[0].status).toBe('revoked');
   });
 
+  it('deletePairing revokes only the targeted device, leaving the others paired', async () => {
+    const { store, service } = makeRealService();
+    const gw = service.createGateway('acct-1');
+    const { credential: credA } = await service.createPairing('acct-1', gw.gatewayId, 'iPhone');
+    const { credential: credB } = await service.createPairing('acct-1', gw.gatewayId, 'iPad');
+    const pairingA = store.listPairings(gw.gatewayId).find((p) => p.deviceLabel === 'iPhone');
+    if (!pairingA) throw new Error('expected an iPhone pairing');
+
+    const ok = await service.deletePairing('acct-1', gw.gatewayId, pairingA.id);
+
+    expect(ok).toBe(true);
+    // Only the iPhone is revoked on the relay; the iPad stays paired.
+    expect(relayStore.isValid(gw.gatewayId, credA)).toBe(false);
+    expect(relayStore.isValid(gw.gatewayId, credB)).toBe(true);
+    // The store mirrors it: iPhone revoked, iPad still active.
+    const after = store.listPairings(gw.gatewayId);
+    expect(after.find((p) => p.id === pairingA.id)?.status).toBe('revoked');
+    expect(after.find((p) => p.deviceLabel === 'iPad')?.status).toBe('active');
+  });
+
   it('refuses a cross-account deletePairing: returns false, store and relay untouched', async () => {
     const { store, service } = makeRealService();
     const gw = service.createGateway('acct-1');
