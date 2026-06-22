@@ -117,6 +117,7 @@ export function createControlPlaneSession(opts: ControlPlaneSessionOptions): Con
     const { code, close } = await new Promise<{ code: string; close: () => void }>(
       (resolve, reject) => {
         // Clear the abort timer on any settle so it can't fire afterwards.
+        // biome-ignore lint/style/useConst: assigned after the ok/fail closures that capture it
         let timer: ReturnType<typeof setTimeout> | undefined;
         const ok = (v: { code: string; close: () => void }): void => {
           clearTimeout(timer);
