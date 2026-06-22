@@ -86,27 +86,39 @@ Something not working? Here are the most common issues and how to fix them.
 
 <AccordionGroup>
   <Accordion title="Plugin not loading">
-    A plugin you added doesn't show up and its skills/commands aren't available.
+    A plugin you installed isn't showing its skills or commands.
 
-    **Fix:** Plugins are scanned **once at startup**, so restart the gateway after any change. Then confirm: the plugin directory is under `~/.dash/gateway/plugins/`, the plugin is listed in `~/.dash/gateway/plugins/config.json` with `"enabled": true` (a `path` entry is enabled automatically), and `config.json` is valid JSON. Check `~/.dash/logs/gateway.log` for a `[plugins] loaded '<name>' (...)` line — a missing line or a parse error there points at the problem. See [Plugins](/plugins).
+    **Fix:** Open Mission Control's **Plugins** screen and check the plugin's status badge. **Disabled** means it's turned off — click **Enable**. **Error** means it failed to load — the card shows the failure message (usually a bad manifest or a missing `SKILL.md`). If hand-editing, make sure the plugin has an entry in `~/.dash/gateway/plugins/config.json` with `"enabled": true`. See [Plugins](/plugins#managing-plugins-in-mission-control).
   </Accordion>
 
-  <Accordion title="Hooks, MCP servers, bin/, or provider not active">
-    The plugin loads and its skills work, but its hooks, `.mcp.json` servers, `bin/` executables, or provider catalog do nothing.
+  <Accordion title="Code components inert until trusted">
+    A plugin's MCP servers, hooks, `bin/` executables, or providers do nothing, even though the plugin is enabled.
 
-    **Fix:** This is intentional. Those components run code or handle credentials, so they require `"trusted": true` in addition to `"enabled": true`. Set `{ "<plugin>": { "enabled": true, "trusted": true } }` in `config.json` and restart. Only trust plugins whose code you've reviewed.
+    **This is intentional.** A freshly installed plugin is enabled but **not trusted** — its skills and commands work, but its code and credential components stay inert until you trust it. Click **Trust** on the plugin card, review the confirmation listing what will run, and confirm. See the [Security model](/plugins#security-model).
   </Accordion>
 
-  <Accordion title="Slash command not found">
-    `/plugin:command` (or `/plugin:agent`) reports an unknown command.
+  <Accordion title="Slash command /plugin:command not found">
+    Typing `/<plugin>:<command>` doesn't resolve.
 
-    **Fix:** The syntax is `/<plugin>:<name>` — the plugin's name (or directory name), a colon, then the command/agent name (its `name:` frontmatter if set, otherwise the filename without `.md`). Confirm the plugin is enabled and you've restarted the gateway since adding the file. Commands and subagents need only `enabled`, not `trusted`.
+    **Fix:** Commands are namespaced as `/<plugin>:<command>` — a plugin named `research` with `commands/triage.md` is `/research:triage`, not `/triage`. Confirm the plugin is **enabled** (commands need only `enabled`, not trust) and **Loaded** on the Plugins screen, and that the file lives in the plugin's `commands/` directory. See [Invoking each component](/plugins#invoking-each-component).
   </Accordion>
 
-  <Accordion title="Provider models not in the dropdown">
-    A plugin provider is trusted but its models don't appear in Mission Control's model list.
+  <Accordion title="Plugin provider model not in the dropdown">
+    A model from a plugin's LLM provider doesn't appear in the agent's model picker.
 
-    **Fix:** Confirm the plugin is `"trusted": true` and the gateway was restarted. The catalog's `credentialPrefix` must equal `<id>-api-key` (e.g. id `myllm` → `myllm-api-key`), and the API key must be stored under `<id>-api-key:<name>` — the **AI Providers** screen writes this for you. Models then appear as `<id>/<model-id>`. Check `gateway.log` for a provider validation error.
+    **Fix:** Plugin providers need **two** things: the plugin must be **trusted** (an untrusted plugin's provider catalog is withheld entirely), and you must add an **API key** for it on the **AI Providers** screen. Trust the plugin, add the key, then the provider's `<id>/<model-id>` models become selectable. See [Provider credentials](/plugins#provider-credentials).
+  </Accordion>
+
+  <Accordion title="Install failed">
+    `POST /plugins/install` (or the **Install** button) returned an error.
+
+    **Fix:** The response code tells you why. **404** — the source wasn't found (a missing repo, dead URL, or unknown name); check the source string. **409** — a plugin with that name is already installed; remove it first or install under a different `name`. **422** — the plugin is invalid, corrupt, or the security scan flagged it as **dangerous** and refused it; inspect the source before retrying. See [What the errors mean](/plugins#what-the-errors-mean).
+  </Accordion>
+
+  <Accordion title="Removed plugin still listed">
+    A plugin you removed still appears, or a hand-dropped plugin doesn't show up.
+
+    **Fix:** The gateway hot-reloads on changes made through Mission Control or the management API, but it doesn't watch the folder for files you add or delete by hand. After editing `~/.dash/gateway/plugins/` directly, trigger a rescan with **POST /plugins/reload** (or restart the gateway). Note that removing a plugin only deletes its directory when it was installed by the management API — a hand-dropped or `path`-linked plugin is left on disk by design.
   </Accordion>
 </AccordionGroup>
 

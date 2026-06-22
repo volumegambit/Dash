@@ -14,6 +14,7 @@ export {
   MANIFEST_DIR,
   MANIFEST_FILENAME,
   readManifest,
+  realpathContained,
   resolveAgentFiles,
   resolveBinDir,
   resolveCommandFiles,
@@ -24,11 +25,22 @@ export {
 export { validateProviderCatalog } from './provider-catalog.js';
 export { HOOKS_FILE, readHooksJson, validateHooksJson } from './hooks-manifest.js';
 export { PluginConfigStore } from './config-store.js';
+export { heuristicPluginScan, scanText } from './scanner.js';
+export type { PluginScanLevel, PluginScanVerdict } from './scanner.js';
 export { loadPlugins } from './loader.js';
 export type { LoadPluginsOptions } from './loader.js';
 export { translateMcpJson } from './mcp-translate.js';
 export { hookEnv, substituteVars } from './substitute.js';
 export { createHookEngine } from './hook-engine.js';
+export { installPluginToDir, PluginOpError, parsePluginSource } from './install.js';
+export type {
+  InstalledPlugin,
+  ParsedPluginSource,
+  PluginInstallOptions,
+  PluginOpCode,
+} from './install.js';
+export { readMarketplace, resolveMarketplacePlugin } from './marketplace.js';
+export type { MarketplaceConfig, MarketplaceEntry } from './marketplace.js';
 export type {
   HookEngine,
   HookEngineOptions,

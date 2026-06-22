@@ -220,6 +220,75 @@ describe('AgentRegistry (file-backed)', () => {
     expect(reg.list()).toEqual([]);
   });
 
+  describe('plugins field (P5 per-agent plugin selection)', () => {
+    it('a config without plugins loads as undefined (NOT [] / null)', async () => {
+      // Legacy agents persisted before P5 have no `plugins` key. They must
+      // load as `undefined` (= all loaded plugins) for backward compat, not
+      // as [] (= none) or null.
+      const reg = new AgentRegistry(filePath);
+      const entry = reg.register({ name: 'legacy', model: 'm', systemPrompt: 's' });
+      await reg.save();
+
+      const reg2 = new AgentRegistry(filePath);
+      await reg2.load();
+      const loaded = reg2.get(entry.id);
+      expect(loaded?.config.plugins).toBeUndefined();
+      // Defensive: the key must be genuinely absent, not present-and-null.
+      expect('plugins' in (loaded?.config ?? {})).toBe(false);
+    });
+
+    it('round-trips a plugins selection through save/load', async () => {
+      const reg = new AgentRegistry(filePath);
+      const entry = reg.register({
+        name: 'scoped',
+        model: 'm',
+        systemPrompt: 's',
+        plugins: ['alpha', 'beta'],
+      });
+      await reg.save();
+
+      const reg2 = new AgentRegistry(filePath);
+      await reg2.load();
+      expect(reg2.get(entry.id)?.config.plugins).toEqual(['alpha', 'beta']);
+    });
+
+    it('register preserves an explicit empty plugins array (literal "none")', () => {
+      // The pure registry stores [] verbatim; the MC layer is responsible for
+      // mapping empty -> undefined before it reaches here.
+      const reg = new AgentRegistry();
+      const entry = reg.register({ name: 'none', model: 'm', systemPrompt: 's', plugins: [] });
+      expect(reg.get(entry.id)?.config.plugins).toEqual([]);
+    });
+
+    it('update() carries a plugins patch through (mirrors mcpServers)', () => {
+      const reg = new AgentRegistry();
+      const entry = reg.register({ name: 'a', model: 'm', systemPrompt: 's' });
+      reg.update(entry.id, { plugins: ['alpha'] });
+      expect(reg.get(entry.id)?.config.plugins).toEqual(['alpha']);
+    });
+
+    it('update() clears plugins back to all via the null sentinel (key deleted)', () => {
+      // The MC clear path sends `plugins: null` (a value that survives
+      // JSON.stringify, unlike `undefined`). The registry treats null as
+      // "clear to default": it DELETES the key so the config reads back as
+      // genuinely undefined (= all loaded plugins). It must NOT persist null —
+      // filterPluginsByAgent only handles `string[] | undefined`, so a stored
+      // null would break routing.
+      const reg = new AgentRegistry();
+      const entry = reg.register({
+        name: 'a',
+        model: 'm',
+        systemPrompt: 's',
+        plugins: ['alpha'],
+      });
+      reg.update(entry.id, { plugins: null });
+      const config = reg.get(entry.id)?.config ?? {};
+      expect(config.plugins).toBeUndefined();
+      // The key must be genuinely absent, not present-and-null.
+      expect('plugins' in config).toBe(false);
+    });
+  });
+
   describe('patchMcpServers', () => {
     it('adds a new server, starting from no mcpServers', () => {
       const reg = new AgentRegistry();

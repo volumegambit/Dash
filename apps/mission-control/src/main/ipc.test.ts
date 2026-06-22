@@ -9,6 +9,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   isSetupConfigured,
   makePackagedSpawner,
+  pluginInstallHandler,
+  pluginReloadHandler,
+  pluginRemoveHandler,
+  pluginRuntimeHandler,
+  pluginSetStateHandler,
+  pluginsListHandler,
   resolveSetupStatus,
   shutdownGatewayOnQuit,
 } from './ipc.js';
@@ -210,5 +216,90 @@ describe('resolveSetupStatus', () => {
       state: 'gateway-failed',
       error: 'Gateway failed to start within 10s',
     });
+  });
+});
+
+describe('plugin IPC handlers', () => {
+  // These mirror the management-client passthrough handlers registered in
+  // registerIpcHandlers. They take an already-resolved ManagementClient so we
+  // can assert the real behavior (record unwrapping, argument forwarding)
+  // without booting Electron.
+  const sampleRecord = {
+    name: 'acme',
+    status: 'loaded' as const,
+    enabled: true,
+    trusted: false,
+    activated: ['skills'],
+    noop: [],
+  };
+
+  it('pluginsListHandler unwraps the { records } envelope', async () => {
+    const client = {
+      pluginsList: vi.fn().mockResolvedValue({ records: [sampleRecord] }),
+    };
+    const result = await pluginsListHandler(client);
+    expect(client.pluginsList).toHaveBeenCalledOnce();
+    expect(result).toEqual([sampleRecord]);
+  });
+
+  it('pluginSetStateHandler forwards (name, patch) and returns the record', async () => {
+    const updated = { ...sampleRecord, trusted: true };
+    const client = { pluginSetState: vi.fn().mockResolvedValue(updated) };
+    const patch = { trusted: true };
+    const result = await pluginSetStateHandler(client, 'acme', patch);
+    expect(client.pluginSetState).toHaveBeenCalledWith('acme', patch);
+    expect(result).toBe(updated);
+  });
+
+  it('pluginInstallHandler forwards req.source and req.name', async () => {
+    const installed = {
+      name: 'acme',
+      location: '/data/plugins/acme',
+      scanVerdict: 'safe' as const,
+      scanReasons: [],
+      source: 'git:acme/acme',
+    };
+    const client = { pluginInstall: vi.fn().mockResolvedValue(installed) };
+    const result = await pluginInstallHandler(client, {
+      source: 'git:acme/acme',
+      name: 'override',
+    });
+    expect(client.pluginInstall).toHaveBeenCalledWith('git:acme/acme', 'override');
+    expect(result).toBe(installed);
+  });
+
+  it('pluginInstallHandler passes undefined name when omitted', async () => {
+    const client = { pluginInstall: vi.fn().mockResolvedValue({}) };
+    await pluginInstallHandler(client, { source: 'git:acme/acme' });
+    expect(client.pluginInstall).toHaveBeenCalledWith('git:acme/acme', undefined);
+  });
+
+  it('pluginRemoveHandler calls pluginRemove(name)', async () => {
+    const client = {
+      pluginRemove: vi.fn().mockResolvedValue({ ok: true, path: '/data/plugins/acme' }),
+    };
+    const result = await pluginRemoveHandler(client, 'acme');
+    expect(client.pluginRemove).toHaveBeenCalledWith('acme');
+    expect(result).toEqual({ ok: true, path: '/data/plugins/acme' });
+  });
+
+  it('pluginReloadHandler calls pluginReload()', async () => {
+    const client = {
+      pluginReload: vi.fn().mockResolvedValue({ ok: true, reloadedAt: '2026-06-21T00:00:00Z' }),
+    };
+    const result = await pluginReloadHandler(client);
+    expect(client.pluginReload).toHaveBeenCalledOnce();
+    expect(result).toEqual({ ok: true, reloadedAt: '2026-06-21T00:00:00Z' });
+  });
+
+  it('pluginRuntimeHandler calls runtimePlugins() and returns its result', async () => {
+    const runtime = {
+      providers: [{ id: 'acme', label: 'Acme', credentialPrefix: 'ACME_' }],
+      plugins: [{ name: 'acme', displayName: 'Acme', version: '1.2.3' }],
+    };
+    const client = { runtimePlugins: vi.fn().mockResolvedValue(runtime) };
+    const result = await pluginRuntimeHandler(client);
+    expect(client.runtimePlugins).toHaveBeenCalledOnce();
+    expect(result).toBe(runtime);
   });
 });

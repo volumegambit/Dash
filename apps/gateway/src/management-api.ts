@@ -1,9 +1,12 @@
+import { rm } from 'node:fs/promises';
+import { join } from 'node:path';
 import type { AgentClient } from '@dash/agent';
 import type { ChannelAdapter } from '@dash/channels';
 import { TelegramAdapter, WhatsAppAdapter } from '@dash/channels';
 import { type StructuredLogger, createConsoleLogger } from '@dash/logging';
 import { mountProjectsRoutes } from '@dash/management';
-import type { FilteredModel } from '@dash/models';
+import type { PluginConfigStore } from '@dash/plugins';
+import { heuristicPluginScan, installPluginToDir, realpathContained } from '@dash/plugins';
 import type { ProjectsDb } from '@dash/projects';
 import { Hono } from 'hono';
 import type { Context } from 'hono';
@@ -19,6 +22,7 @@ import type { McpManagementDeps } from './mcp-management.js';
 import { mountMcpRoutes } from './mcp-management.js';
 import { createModelsRoute } from './models-route.js';
 import type { ModelsStore } from './models-store.js';
+import type { PluginWiringState } from './plugins-wiring.js';
 
 export interface GatewayManagementOptions {
   gateway: DynamicGateway;
@@ -33,13 +37,6 @@ export interface GatewayManagementOptions {
    * `GET /models` triggers a fresh fetch with the new credential set.
    */
   modelsStore: ModelsStore;
-  /**
-   * Plugin-contributed models, expanded from loaded provider catalogs in
-   * `apps/gateway/src/index.ts`. Merged into the `GET /models` response at
-   * render time (core models win on a value clash); never persisted to the
-   * store. Empty/undefined when no trusted plugin contributes providers.
-   */
-  pluginModels?: FilteredModel[];
   /**
    * Durable event log used by the chat-ws streaming path to record
    * every outbound event. The management API exposes a replay
@@ -59,6 +56,35 @@ export interface GatewayManagementOptions {
    * shared logger from the gateway entrypoint to unify log streams.
    */
   logger?: StructuredLogger;
+  // --- Plugin management (all optional; absent in tests that don't wire
+  // plugins → the plugin routes return 500 'plugins not configured'). ---
+  /**
+   * Live getter for the current plugin wiring. MUST be a getter (not a
+   * snapshot) so the routes observe the rebuilt state after a reload — the
+   * entrypoint reassigns its `wiringState` holder, and this closure reads it.
+   */
+  getPluginWiringState?: () => PluginWiringState;
+  /** Persistence for the per-plugin enable/trust/installed entries. */
+  pluginConfigStore?: PluginConfigStore;
+  /**
+   * Re-run plugin discovery + rebuild wiring + swap the live reference + evict
+   * warm backends. Owned by the entrypoint (it alone can reassign the wiring
+   * holder + re-register MCP servers); the routes call it after persisting a
+   * config change. Resolves to the rebuilt wiring; rejects on any reload error.
+   */
+  reloadPlugins?: () => Promise<PluginWiringState>;
+  /**
+   * Absolute plugins directory (`<dataDir>/plugins`). Used by DELETE to compute
+   * an installed plugin's dir and guard the `rm -rf` with a realpath check.
+   */
+  pluginsDir?: string;
+  /**
+   * Absolute host data directory. Used by POST /plugins/install as the install
+   * root — the plugin lands at `<dataDir>/plugins/<name>` (see
+   * `installPluginToDir`). The install route 500s ('plugins not configured')
+   * when this is absent.
+   */
+  dataDir?: string;
 }
 
 /**
@@ -111,6 +137,34 @@ async function parseJsonBody<T = Record<string, unknown>>(
   } catch {
     return { ok: false, response: c.json({ error: 'Invalid JSON' }, 400) };
   }
+}
+
+/**
+ * Map a plugin install/marketplace error to an HTTP status + body. Mirrors
+ * `mapSkillError`, keyed on the `code` carried by `PluginOpError`:
+ * - `not_found` → 404
+ * - `duplicate` → 409
+ * - `invalid_manifest` | `corrupt_archive` | `scan_failed` | `dangerous` → 422
+ * - anything else → 500
+ */
+export function mapPluginError(err: unknown): {
+  status: 404 | 409 | 422 | 500;
+  body: { error: string };
+} {
+  const code = err instanceof Error && 'code' in err ? (err as { code?: string }).code : undefined;
+  const message = err instanceof Error ? err.message : 'Internal error';
+  const status: 404 | 409 | 422 | 500 =
+    code === 'not_found'
+      ? 404
+      : code === 'duplicate'
+        ? 409
+        : code === 'invalid_manifest' ||
+            code === 'corrupt_archive' ||
+            code === 'scan_failed' ||
+            code === 'dangerous'
+          ? 422
+          : 500;
+  return { status, body: { error: message } };
 }
 
 export function createGatewayManagementApp(options: GatewayManagementOptions): Hono {
@@ -760,7 +814,12 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
     createModelsRoute({
       store: options.modelsStore,
       credentialStore,
-      pluginModels: options.pluginModels,
+      // Read plugin models LIVE through the wiring getter so a hot-reload that
+      // adds/removes a plugin provider is reflected on the next GET /models —
+      // not a boot snapshot. Undefined when plugins aren't wired (tests).
+      getPluginModels: options.getPluginWiringState
+        ? () => options.getPluginWiringState?.().pluginModels ?? []
+        : undefined,
     }),
   );
 
@@ -792,6 +851,235 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
   // --- MCP routes ---
   if (options.mcpDeps) {
     mountMcpRoutes(app, options.mcpDeps);
+  }
+
+  // --- Plugin management routes ---
+  //
+  // Mounted behind the bearer middleware. The plugin options are OPTIONAL so
+  // tests/embedders that don't wire plugins still construct the app; each
+  // handler returns 500 'plugins not configured' when they're absent. State is
+  // read LIVE via `getPluginWiringState()` so every read reflects the latest
+  // reload. Mutations persist to the config store BEFORE calling `reloadPlugins`
+  // (which re-reads the persisted entries), then return the now-fresh record.
+  {
+    const getWiring = options.getPluginWiringState;
+    const pluginConfigStore = options.pluginConfigStore;
+    const reloadPlugins = options.reloadPlugins;
+    const pluginsDir = options.pluginsDir;
+    const dataDir = options.dataDir;
+    const notConfigured = (c: Context) => c.json({ error: 'plugins not configured' }, 500);
+
+    // GET /plugins → all status records, sorted by name (incl. disabled/error).
+    app.get('/plugins', (c) => {
+      if (!getWiring) return notConfigured(c);
+      const records = Object.values(getWiring().pluginRecords).sort((a, b) =>
+        a.name.localeCompare(b.name),
+      );
+      return c.json({ records });
+    });
+
+    // POST /plugins/install → fetch + scan + install a plugin from `source` into
+    // <dataDir>/plugins/<name>, persist its config (enabled+installed+source;
+    // trusted stays false), reload, and return the InstalledPlugin record (201).
+    // Errors map via mapPluginError (404 not_found, 409 duplicate, 422
+    // dangerous/invalid/corrupt/scan_failed, else 500).
+    app.post('/plugins/install', async (c) => {
+      if (!pluginConfigStore || !reloadPlugins || !dataDir) return notConfigured(c);
+      const parsed = await parseJsonBody<{ source: string; name?: string }>(c);
+      if (!parsed.ok) return parsed.response;
+      const { source, name } = parsed.body;
+      if (typeof source !== 'string' || source.trim() === '') {
+        return c.json({ error: 'source must be a non-empty string' }, 400);
+      }
+      let installed: Awaited<ReturnType<typeof installPluginToDir>>;
+      try {
+        // Pure functions (no @dash/agent dep): heuristicPluginScan + the installer.
+        // M4: thread the gateway logger so unreadable/malformed payload notices
+        // surface in the gateway log.
+        installed = await installPluginToDir({
+          dataDir,
+          source,
+          name,
+          scanner: (dir) => heuristicPluginScan(dir, logger),
+        });
+        // Persist the four config fields BEFORE reload so the rebuild sees them.
+        await pluginConfigStore.setEnabled(installed.name, true); // visible
+        await pluginConfigStore.setSource(installed.name, source); // provenance
+        await pluginConfigStore.setInstalled(installed.name, true); // gates P1 DELETE dir removal
+        // Do NOT set trusted — it stays false; code components remain noop until
+        // the user trusts the plugin via PUT /plugins/:name (P1).
+      } catch (err) {
+        // Pre-persist failure (fetch/scan/move/config write): nothing committed
+        // beyond what the installer cleans up; map to the structured HTTP error.
+        const m = mapPluginError(err);
+        return c.json(m.body, m.status);
+      }
+
+      // I4: the dir is moved + config persisted. If the reload then fails, the
+      // install LANDED — mirror PUT/DELETE's structured contract so the client
+      // knows the plugin is installed and the wiring reconciles on next reload,
+      // instead of a bare 500 that implies the install failed.
+      try {
+        await reloadPlugins();
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'reload failed';
+        eventBus?.emit({ type: 'plugin:installed', plugin: installed.name });
+        return c.json(
+          {
+            ok: true,
+            installed,
+            note: 'installed and persisted; wiring reconciles on next reload',
+            error: message,
+          },
+          200,
+        );
+      }
+      eventBus?.emit({ type: 'plugin:installed', plugin: installed.name });
+      return c.json(installed, 201);
+    });
+
+    // PUT /plugins/:name → patch enabled/trusted, then reload. 404 if unknown,
+    // 400 on a bad body, 409 if the reload fails (config already persisted).
+    app.put('/plugins/:name', async (c) => {
+      if (!getWiring || !pluginConfigStore || !reloadPlugins) return notConfigured(c);
+      const name = c.req.param('name');
+      if (!getWiring().pluginRecords[name]) return c.json({ error: 'not found' }, 404);
+
+      const parsed = await parseJsonBody<{ enabled?: unknown; trusted?: unknown }>(c);
+      if (!parsed.ok) return parsed.response;
+      const { enabled, trusted } = parsed.body;
+      if (enabled !== undefined && typeof enabled !== 'boolean') {
+        return c.json({ error: 'enabled must be a boolean' }, 400);
+      }
+      if (trusted !== undefined && typeof trusted !== 'boolean') {
+        return c.json({ error: 'trusted must be a boolean' }, 400);
+      }
+
+      // Persist config BEFORE reload so the rebuild sees the new entries.
+      const fields: string[] = [];
+      if (enabled !== undefined) {
+        await pluginConfigStore.setEnabled(name, enabled);
+        fields.push('enabled');
+      }
+      if (trusted !== undefined) {
+        await pluginConfigStore.setTrusted(name, trusted);
+        fields.push('trusted');
+      }
+
+      try {
+        await reloadPlugins();
+      } catch (err) {
+        // The config write already happened; the live wiring is genuinely
+        // unchanged — a thrown reload rejects BEFORE swapping the live reference
+        // (loadPlugins/rebuild run before the swap; post-swap clear/evict
+        // failures are best-effort and do NOT reject). Surface this as a 409 so
+        // the caller knows persisted config and running wiring have diverged.
+        const message = err instanceof Error ? err.message : 'reload failed';
+        return c.json(
+          { error: message, plugin: name, note: 'config persisted; wiring unchanged' },
+          409,
+        );
+      }
+
+      eventBus?.emit({ type: 'plugin:config-changed', plugin: name, fields });
+      // After a successful reload the plugin should be in the rebuilt records.
+      // If it vanished (e.g. its dir disappeared between the write and the
+      // reload), return a structured 409 rather than a 200 with a null body.
+      const updated = getWiring().pluginRecords[name];
+      if (!updated) {
+        return c.json(
+          {
+            error: 'plugin not present after reload',
+            plugin: name,
+            note: 'config persisted; plugin no longer in wiring',
+          },
+          409,
+        );
+      }
+      return c.json(updated);
+    });
+
+    // DELETE /plugins/:name → drop from store; for an installed plugin with a
+    // resolvable dir under pluginsDir, also rm -rf it. Then reload.
+    app.delete('/plugins/:name', async (c) => {
+      if (!getWiring || !pluginConfigStore || !reloadPlugins) return notConfigured(c);
+      const name = c.req.param('name');
+      const entries = await pluginConfigStore.load();
+      const entry = entries[name];
+      if (!entry) return c.json({ error: 'not found' }, 404);
+
+      await pluginConfigStore.remove(name);
+
+      // Only delete the directory for host-installed plugins (the `installed`
+      // flag). A `path:` (linked dev) or manually-dropped plugin is left on
+      // disk. The realpath guard refuses any dir that escapes pluginsDir.
+      let deletedPath: string | undefined;
+      if (entry.installed && pluginsDir) {
+        const dirAbs = join(pluginsDir, name);
+        if (realpathContained(pluginsDir, dirAbs)) {
+          await rm(dirAbs, { recursive: true, force: true });
+          deletedPath = dirAbs;
+        } else {
+          logger.warn?.('refusing to delete plugin dir outside plugins root', {
+            plugin: name,
+            dir: dirAbs,
+            pluginsDir,
+          });
+        }
+      }
+
+      // Mirror PUT's failure contract: the entry (and, for an installed plugin,
+      // its dir) is already removed. If the reload then fails, surface a
+      // structured 409 — the removal stuck; the live wiring reconciles on the
+      // next successful reload — rather than a raw 500.
+      try {
+        await reloadPlugins();
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'reload failed';
+        eventBus?.emit({ type: 'plugin:removed', plugin: name });
+        return c.json(
+          {
+            ok: true,
+            removed: true,
+            ...(deletedPath ? { path: deletedPath } : {}),
+            error: message,
+            plugin: name,
+            note: 'entry/dir removed; wiring reconciles on next reload',
+          },
+          409,
+        );
+      }
+      eventBus?.emit({ type: 'plugin:removed', plugin: name });
+      return c.json(deletedPath ? { ok: true, path: deletedPath } : { ok: true });
+    });
+
+    // POST /plugins/reload → re-run discovery with no config change.
+    app.post('/plugins/reload', async (c) => {
+      if (!reloadPlugins) return notConfigured(c);
+      try {
+        await reloadPlugins();
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'reload failed';
+        return c.json({ error: message }, 500);
+      }
+      eventBus?.emit({ type: 'plugin:reloaded' });
+      return c.json({ ok: true, reloadedAt: new Date().toISOString() });
+    });
+
+    // GET /runtime/plugins → lightweight shape for MC pickers + credential form.
+    app.get('/runtime/plugins', (c) => {
+      if (!getWiring) return notConfigured(c);
+      const ws = getWiring();
+      const providers = ws.pluginProviderConfigs.map((p) => ({
+        id: p.catalog.id,
+        label: p.catalog.label,
+        credentialPrefix: p.catalog.credentialPrefix,
+      }));
+      const plugins = Object.values(ws.pluginRecords)
+        .filter((r) => r.status !== 'disabled')
+        .map((r) => ({ name: r.name, displayName: r.displayName, version: r.version }));
+      return c.json({ providers, plugins });
+    });
   }
 
   // --- Projects routes (HTTP: /projects, /issues, /inbox) ---

@@ -23,10 +23,26 @@ export interface PluginEntryConfig {
   trusted?: boolean;
   config?: Record<string, unknown>;
   path?: string;
+  /**
+   * `true` when the plugin was installed by the management API into
+   * `<dataDir>/plugins/<name>` (set by the P2 install endpoint). DELETE
+   * /plugins/:name honors this flag to decide whether to also delete the
+   * plugin directory — a manually-dropped or linked (`path`) plugin is left
+   * on disk; only host-installed copies are removed.
+   */
+  installed?: boolean;
+  /**
+   * Where the plugin was installed from; set on API install, used for
+   * reinstall/update. The original `source` string passed to the install
+   * endpoint (a `git:`/`http(s):` URL or a local filesystem path).
+   */
+  source?: string;
 }
 
 export interface PluginRecord {
   name: string;
+  /** Human-readable name from the manifest, for pickers/cards. Falls back to `name` at the UI layer. */
+  displayName?: string;
   version?: string;
   description?: string;
   status: PluginStatus;

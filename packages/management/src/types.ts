@@ -88,6 +88,109 @@ export interface McpAddServerResponse {
   authUrl?: string;
 }
 
+// --- Plugins ---
+//
+// Wire types for the gateway's plugin-management routes (GET /plugins, PUT/DELETE
+// /plugins/:name, POST /plugins/install, POST /plugins/reload, GET
+// /runtime/plugins). The canonical shapes live in @dash/plugins and
+// apps/gateway's plugins-wiring; these mirror the public HTTP contract so
+// @dash/management does not take a dependency on those packages. Keep in sync.
+
+/**
+ * A UI-facing plugin status record (mirrors the gateway's `PluginStatusRecord`
+ * from `apps/gateway/src/plugins-wiring.ts`). Returned in the GET /plugins list
+ * and as the body of a successful PUT /plugins/:name.
+ */
+export interface PluginRecord {
+  name: string;
+  /** 'loaded' | 'disabled' | 'error'. */
+  status: 'loaded' | 'disabled' | 'error';
+  enabled: boolean;
+  trusted: boolean;
+  /** Component kinds activated, e.g. ['skills']. */
+  activated: string[];
+  /** Component kinds present on disk but not activated (deferred / untrusted). */
+  noop: string[];
+  /** If status === 'error', the failure reason (message only). */
+  failure?: string;
+  /** Absolute path under the managed plugins dir for an API-installed plugin. */
+  installedPath?: string;
+  /** Version from manifest, if present. */
+  version?: string;
+  /** Display name from manifest; falls back to `name`. */
+  displayName?: string;
+  /** Description from manifest, if present. */
+  description?: string;
+  /** The install source recorded in the config entry, if any. */
+  source?: string;
+}
+
+export interface PluginListResponse {
+  records: PluginRecord[];
+}
+
+export interface PluginSetStateRequest {
+  enabled?: boolean;
+  trusted?: boolean;
+}
+
+export interface PluginInstallRequest {
+  /** A `git:owner/repo`, `https://...`, or local filesystem path. */
+  source: string;
+  /** Optional plugin-name override (the manifest's `name` still wins if present). */
+  name?: string;
+}
+
+/**
+ * The record returned by a successful install (mirrors @dash/plugins'
+ * `InstalledPlugin`). The flattened `scanVerdict`/`scanReasons` are what the
+ * install RESULT carries — the verdict is NOT persisted to the config entry.
+ */
+export interface InstalledPlugin {
+  name: string;
+  version?: string;
+  description?: string;
+  /** Absolute path to the installed plugin (`<dataDir>/plugins/<name>`). */
+  location: string;
+  scanVerdict: 'safe' | 'suspicious' | 'dangerous';
+  scanReasons: string[];
+  /** The original `source` string passed to the install endpoint. */
+  source: string;
+}
+
+/**
+ * POST /plugins/install returns the flat {@link InstalledPlugin} (201). When the
+ * install succeeded but the post-install reload failed, it instead returns a
+ * structured reload-pending body (200) discriminated by `ok`.
+ */
+export type PluginInstallResponse =
+  | InstalledPlugin
+  | { ok: true; installed: InstalledPlugin; note: string; error?: string };
+
+/**
+ * A custom-provider entry contributed by a loaded plugin, surfaced by the
+ * gateway's GET /runtime/plugins route. `credentialPrefix` is the env-var
+ * prefix MC uses to scope credentials for the provider.
+ */
+export interface RuntimePluginProvider {
+  id: string;
+  label: string;
+  credentialPrefix: string;
+}
+
+/** A loaded plugin's identity, as reported by GET /runtime/plugins. */
+export interface RuntimePlugin {
+  name: string;
+  displayName?: string;
+  version?: string;
+}
+
+/** Body of the gateway's GET /runtime/plugins route. */
+export interface RuntimePluginsResponse {
+  providers: RuntimePluginProvider[];
+  plugins: RuntimePlugin[];
+}
+
 // --- Projects ---
 //
 // Wire types for the gateway's /projects, /issues, and /inbox routes. The

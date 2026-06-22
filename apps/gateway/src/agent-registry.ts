@@ -13,6 +13,21 @@ export interface GatewayAgentConfig {
   workspace?: string;
   maxTokens?: number;
   mcpServers?: string[];
+  /**
+   * Per-agent plugin selection (Plan P5). `undefined` = ALL loaded plugins
+   * (backward compat — legacy agents persisted before P5 have no key and MUST
+   * load as `undefined`, never `[]`/`null`). An explicit `[]` means "none".
+   *
+   * VISIBILITY / ROUTING ONLY. This narrows which loaded plugins an agent sees
+   * (its skill dirs + namespaced commands); it does NOT grant or revoke trust.
+   * Trust (enabled/trusted, and thus whether code components — MCP/hooks/bin/
+   * providers — were activated vs left `noop`) is decided gateway-wide upstream.
+   * An untrusted plugin's code stays `noop` regardless of any agent selecting it.
+   *
+   * Flows through `update()` exactly like `mcpServers`: a partial-update patch
+   * replaces the list wholesale (set to `undefined` to restore "all").
+   */
+  plugins?: string[];
 }
 
 export type AgentStatus = 'registered' | 'active' | 'disabled';
@@ -93,20 +108,34 @@ export class AgentRegistry {
     await rename(tmpPath, this.filePath);
   }
 
-  register(config: GatewayAgentConfig): RegisteredAgent {
+  register(config: GatewayAgentConfig & { plugins?: string[] | null }): RegisteredAgent {
     const duplicate = [...this.agents.values()].find((a) => a.name === config.name);
     if (duplicate) {
       throw new Error(`Agent '${config.name}' is already registered`);
     }
     const id = randomUUID().slice(0, 8);
 
+    // Defensive null-normalization (mirrors update()): if POST /agents carries
+    // `plugins: null` (the MC clear sentinel), strip the key so the stored
+    // config never holds null — filterPluginsByAgent only handles
+    // `string[] | undefined`. Rebuilding via rest-destructuring (rather than
+    // `delete`) produces a genuinely absent key and stays lint-clean.
+    let normalized: GatewayAgentConfig;
+    if (config.plugins === null) {
+      const { plugins: _cleared, ...withoutPlugins } = config;
+      normalized = withoutPlugins;
+    } else {
+      normalized = config as GatewayAgentConfig;
+    }
+
     // If no workspace was supplied and a resolver is configured, assign one.
     // An empty string is treated the same as undefined — the MC deploy form
     // sends `'' || undefined` but other callers (curl, CLI) might send '' directly.
     const resolvedConfig: GatewayAgentConfig =
-      (config.workspace === undefined || config.workspace === '') && this.options.defaultWorkspace
-        ? { ...config, workspace: this.options.defaultWorkspace(id) }
-        : config;
+      (normalized.workspace === undefined || normalized.workspace === '') &&
+      this.options.defaultWorkspace
+        ? { ...normalized, workspace: this.options.defaultWorkspace(id) }
+        : normalized;
 
     const entry: RegisteredAgent = {
       id,
@@ -138,10 +167,29 @@ export class AgentRegistry {
    * instead — see its doc for the race-window caveat between runtime and
    * operator edits.
    */
-  update(id: string, patch: Partial<Omit<GatewayAgentConfig, 'name'>>): RegisteredAgent {
+  update(
+    id: string,
+    patch: Partial<Omit<GatewayAgentConfig, 'name' | 'plugins'>> & { plugins?: string[] | null },
+  ): RegisteredAgent {
     const entry = this.agents.get(id);
     if (!entry) throw new Error(`Agent '${id}' not found`);
-    entry.config = { ...entry.config, ...patch };
+    // `plugins: null` is the MC clear sentinel (survives JSON.stringify, unlike
+    // `undefined` which the wire would drop). It means "clear back to all loaded
+    // plugins". We STRIP the key rather than persist null — filterPluginsByAgent
+    // only handles `string[] | undefined`, so a stored null would break routing.
+    // A non-null array sets the selection; an absent key leaves it unchanged.
+    const { plugins, ...rest } = patch;
+    const merged = { ...entry.config, ...rest };
+    if (plugins === null) {
+      // Rebuild without the key (rest-destructuring, not `delete`) so it is
+      // genuinely absent (= all) and the code stays lint-clean.
+      const { plugins: _cleared, ...withoutPlugins } = merged;
+      entry.config = withoutPlugins;
+    } else if (plugins !== undefined) {
+      entry.config = { ...merged, plugins };
+    } else {
+      entry.config = merged;
+    }
     return entry;
   }
 

@@ -105,4 +105,32 @@ describe('GatewayCredentialStore', () => {
     const mode = info.mode & 0o777;
     expect(mode).toBe(0o600);
   });
+
+  // P4: a plugin-contributed provider stores credentials under its own
+  // arbitrary id prefix (`<id>-api-key:<name>`), not a built-in one. The same
+  // collapsing logic that serves core providers must round-trip a plugin id —
+  // existing readProviderApiKeys() coverage only exercises core ids
+  // (anthropic/openai), so this pins the plugin-prefix case.
+  describe('readProviderApiKeys (plugin provider prefix)', () => {
+    it('collapses a plugin <id>-api-key:<name> entry to { id: value }', async () => {
+      await store.set('myprov-api-key:default', 'sk-myprov-123');
+      const keys = await store.readProviderApiKeys();
+      expect(keys).toEqual({ myprov: 'sk-myprov-123' });
+    });
+
+    it('round-trips plugin and core provider keys side by side', async () => {
+      await store.set('anthropic-api-key:default', 'sk-ant');
+      await store.set('acme-llm-api-key:default', 'sk-acme'); // hyphenated plugin id
+      const keys = await store.readProviderApiKeys();
+      expect(keys).toEqual({ anthropic: 'sk-ant', 'acme-llm': 'sk-acme' });
+    });
+
+    it('first key per plugin provider wins; non-api-key entries are ignored', async () => {
+      await store.set('myprov-api-key:default', 'sk-first');
+      await store.set('myprov-api-key:work', 'sk-second'); // ignored: first wins
+      await store.set('myprov-oauth-refresh:default', 'refresh-tok'); // ignored: not -api-key
+      const keys = await store.readProviderApiKeys();
+      expect(keys).toEqual({ myprov: 'sk-first' });
+    });
+  });
 });

@@ -1,7 +1,21 @@
 import { beforeEach, vi } from 'vitest';
 import type { MissionControlAPI } from './src/shared/ipc.js';
 
-function createMockApi(): Record<keyof MissionControlAPI, ReturnType<typeof vi.fn>> {
+type MockFn = ReturnType<typeof vi.fn>;
+
+/**
+ * Mock shape for {@link MissionControlAPI}: every leaf method is a `vi.fn`, and
+ * nested namespaces (e.g. `plugins`) become objects of mocks. A flat
+ * `Record<keyof MissionControlAPI, MockFn>` can't represent the nested
+ * `plugins` block, so we map each property to a mock-or-nested-mocks type.
+ */
+type MockApi = {
+  [K in keyof MissionControlAPI]: MissionControlAPI[K] extends (...args: never[]) => unknown
+    ? MockFn
+    : { [N in keyof MissionControlAPI[K]]: MockFn };
+};
+
+function createMockApi(): MockApi {
   return {
     // Version
     getVersion: vi.fn().mockResolvedValue('0.0.0-test'),
@@ -150,6 +164,16 @@ function createMockApi(): Record<keyof MissionControlAPI, ReturnType<typeof vi.f
 
     // MCP status events
     onMcpStatusChanged: vi.fn().mockReturnValue(() => {}),
+
+    // Plugins (gateway passthrough, nested namespace)
+    plugins: {
+      list: vi.fn().mockResolvedValue([]),
+      setState: vi.fn(),
+      install: vi.fn(),
+      remove: vi.fn().mockResolvedValue({ ok: true }),
+      reload: vi.fn().mockResolvedValue({ ok: true }),
+      runtime: vi.fn().mockResolvedValue({ providers: [], plugins: [] }),
+    },
 
     // Gateway
     gatewayGetStatus: vi.fn().mockResolvedValue('healthy'),

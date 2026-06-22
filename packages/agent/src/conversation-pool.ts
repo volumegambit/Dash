@@ -137,6 +137,29 @@ export class ConversationPool {
     }
   }
 
+  /**
+   * Evict every IDLE (unpinned) backend, leaving pinned in-flight conversations
+   * alone to drain. Used by plugin hot-reload: plugin wiring is global to all
+   * agents, so on reload we reset every warm backend so it rebuilds with the new
+   * wiring on next use — but pinned conversations are mid-stream and must NOT be
+   * interrupted (they keep their old wiring until they finish, then unpin and
+   * fall out of the pool naturally).
+   *
+   * Distinct from `clear()` (stops ALL incl. pinned, no abort) and `evictAgent()`
+   * (aborts pinned) — neither fits the "reset idle, drain pinned" semantics.
+   */
+  async evictIdle(): Promise<void> {
+    const toEvict: string[] = [];
+    for (const [key, entry] of this.pool) {
+      if (entry.pinned) continue;
+      await entry.backend.stop();
+      toEvict.push(key);
+    }
+    for (const key of toEvict) {
+      this.pool.delete(key);
+    }
+  }
+
   async forAgent(agentName: string, fn: (entry: PoolEntry) => Promise<void>): Promise<void> {
     const prefix = `${agentName}/`;
     for (const [key, entry] of this.pool) {

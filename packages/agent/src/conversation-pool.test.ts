@@ -180,6 +180,54 @@ describe('ConversationPool', () => {
     expect(pool.size).toBe(0);
   });
 
+  it('evictIdle stops and removes unpinned entries but keeps pinned ones', async () => {
+    const stopped: string[] = [];
+    let callCount = 0;
+    const factory = vi.fn().mockImplementation(async () => {
+      const name = `b-${callCount++}`;
+      const backend = mockBackend(name);
+      backend.stop = vi.fn().mockImplementation(async () => {
+        stopped.push(name);
+      });
+      return { backend, agent: mockAgent() };
+    });
+
+    const pool = new ConversationPool({ maxSize: 10, backendFactory: factory });
+    await pool.getOrCreate('a', 'conv-1'); // b-0 — idle
+    await pool.getOrCreate('a', 'conv-2'); // b-1 — will be pinned
+    await pool.getOrCreate('b', 'conv-1'); // b-2 — idle
+    pool.pin('a', 'conv-2');
+
+    await pool.evictIdle();
+
+    // Idle entries are stopped + removed; the pinned one survives untouched.
+    expect(pool.has('a', 'conv-1')).toBe(false);
+    expect(pool.has('b', 'conv-1')).toBe(false);
+    expect(pool.has('a', 'conv-2')).toBe(true);
+    expect(pool.size).toBe(1);
+    expect(stopped).toContain('b-0');
+    expect(stopped).toContain('b-2');
+    expect(stopped).not.toContain('b-1');
+  });
+
+  it('evictIdle does not abort the pinned in-flight backend', async () => {
+    const backend = mockBackend();
+    const pool = new ConversationPool({
+      maxSize: 10,
+      backendFactory: vi.fn().mockResolvedValue({ backend, agent: mockAgent() }),
+    });
+
+    await pool.getOrCreate('a', 'conv-1');
+    pool.pin('a', 'conv-1');
+
+    await pool.evictIdle();
+
+    // Pinned in-flight conversations drain — never aborted, never stopped.
+    expect(backend.abort).not.toHaveBeenCalled();
+    expect(backend.stop).not.toHaveBeenCalled();
+    expect(pool.has('a', 'conv-1')).toBe(true);
+  });
+
   it('forAgent iterates entries for a given agent', async () => {
     const pool = makePool();
     await pool.getOrCreate('agent-a', 'conv-1');

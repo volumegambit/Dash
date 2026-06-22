@@ -126,6 +126,16 @@ const api: MissionControlAPI = {
     return () => ipcRenderer.removeListener('mcp:statusChanged', handler);
   },
 
+  // Plugins
+  plugins: {
+    list: () => ipcRenderer.invoke('plugins:list'),
+    setState: (name, patch) => ipcRenderer.invoke('plugins:setState', name, patch),
+    install: (req) => ipcRenderer.invoke('plugins:install', req),
+    remove: (name) => ipcRenderer.invoke('plugins:remove', name),
+    reload: () => ipcRenderer.invoke('plugins:reload'),
+    runtime: () => ipcRenderer.invoke('plugins:runtime'),
+  },
+
   // Gateway
   gatewayGetStatus: () => ipcRenderer.invoke('gateway:getStatus'),
   gatewayRestart: () => ipcRenderer.invoke('gateway:restart'),

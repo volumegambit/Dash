@@ -190,8 +190,8 @@ describe('AgentChatCoordinator.listSkills with plugin contributions', () => {
         registry,
         poolMaxSize: 10,
         createBackend: async () => makeMockBackend([]),
-        pluginSkillDirs: [pluginSkillsDir],
-        pluginCommandFiles: [
+        getPluginSkillDirs: () => [pluginSkillsDir],
+        getPluginCommandFiles: () => [
           { file: cmdFile, namespace: 'acme' },
           { file: agentFile, namespace: 'acme' },
         ],

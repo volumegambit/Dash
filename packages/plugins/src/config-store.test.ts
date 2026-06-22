@@ -115,4 +115,127 @@ describe('PluginConfigStore', () => {
     expect(loaded.disco.enabled).toBe(true);
     expect(loaded.disco.trusted).toBe(true);
   });
+
+  it('removes a named entry, leaving others intact', async () => {
+    const store = new PluginConfigStore(dataDir);
+    await store.setEnabled('disco', true);
+    await store.setEnabled('keep', true);
+    await store.remove('disco');
+    const loaded = await store.load();
+    expect(loaded.disco).toBeUndefined();
+    expect(loaded.keep.enabled).toBe(true);
+    // Persisted atomically — the on-disk file no longer contains the entry.
+    const onDisk = JSON.parse(await readFile(join(dataDir, 'plugins', 'config.json'), 'utf8'));
+    expect(onDisk.disco).toBeUndefined();
+    expect(onDisk.keep.enabled).toBe(true);
+  });
+
+  it('remove is a no-op for an absent entry', async () => {
+    const store = new PluginConfigStore(dataDir);
+    await store.setEnabled('keep', true);
+    await store.remove('nope');
+    const loaded = await store.load();
+    expect(loaded.keep.enabled).toBe(true);
+    expect(loaded.nope).toBeUndefined();
+  });
+
+  // T-b (F2): concurrent setEnabled('a') + setTrusted('b') both survive. Without
+  // a write queue, each setter does load→mutate→save against a stale snapshot, so
+  // the second save clobbers the first key (read-modify-write race; atomic rename
+  // prevents corruption, not lost updates).
+  it('serializes concurrent writes so neither update is lost', async () => {
+    const store = new PluginConfigStore(dataDir);
+    await Promise.all([store.setEnabled('a', true), store.setTrusted('b', true)]);
+    const loaded = await store.load();
+    expect(loaded.a?.enabled).toBe(true);
+    expect(loaded.b?.trusted).toBe(true);
+  });
+
+  it('serializes a burst of concurrent writes without dropping any entry', async () => {
+    const store = new PluginConfigStore(dataDir);
+    const names = Array.from({ length: 20 }, (_, i) => `p${i}`);
+    await Promise.all(names.map((n) => store.setEnabled(n, true)));
+    const loaded = await store.load();
+    for (const n of names) expect(loaded[n]?.enabled).toBe(true);
+  });
+
+  // F10: the setters/remove must reject the prototype-pollution keys the same way
+  // load() does, so a crafted name can never reparent the on-disk map or pollute
+  // globals (defense-in-depth — not currently route-reachable).
+  it('setEnabled ignores prototype-pollution keys', async () => {
+    const store = new PluginConfigStore(dataDir);
+    await store.setEnabled('__proto__', true);
+    await store.setEnabled('constructor', true);
+    await store.setEnabled('prototype', true);
+    expect(({} as Record<string, unknown>).enabled).toBeUndefined();
+    expect((Object.prototype as Record<string, unknown>).enabled).toBeUndefined();
+    const loaded = await store.load();
+    expect(Object.keys(loaded)).not.toContain('__proto__');
+    expect(Object.keys(loaded)).not.toContain('constructor');
+    expect(Object.keys(loaded)).not.toContain('prototype');
+  });
+
+  it('setTrusted and remove ignore prototype-pollution keys', async () => {
+    const store = new PluginConfigStore(dataDir);
+    await store.setTrusted('__proto__', true);
+    await store.remove('constructor');
+    expect((Object.prototype as Record<string, unknown>).trusted).toBeUndefined();
+    const loaded = await store.load();
+    expect(Object.keys(loaded)).not.toContain('__proto__');
+  });
+
+  // --- setSource / setInstalled (P2 install provenance) ---
+
+  it('persists source and round-trips via a fresh store', async () => {
+    const store = new PluginConfigStore(dataDir);
+    await store.setSource('disco', 'git:owner/repo@main');
+    // A fresh store reads the same on-disk file.
+    const fresh = new PluginConfigStore(dataDir);
+    const loaded = await fresh.load();
+    expect(loaded.disco.source).toBe('git:owner/repo@main');
+  });
+
+  it('persists installed and round-trips via a fresh store', async () => {
+    const store = new PluginConfigStore(dataDir);
+    await store.setInstalled('disco', true);
+    const fresh = new PluginConfigStore(dataDir);
+    const loaded = await fresh.load();
+    expect(loaded.disco.installed).toBe(true);
+  });
+
+  it('setInstalled(false) clears the installed flag (becomes undefined on load)', async () => {
+    const store = new PluginConfigStore(dataDir);
+    await store.setInstalled('disco', true);
+    await store.setInstalled('disco', false);
+    const loaded = await store.load();
+    // load() only surfaces installed when strictly true.
+    expect(loaded.disco.installed).toBeUndefined();
+  });
+
+  it('preserves enabled/trusted when setting source and installed', async () => {
+    const store = new PluginConfigStore(dataDir);
+    await store.setEnabled('disco', true);
+    await store.setTrusted('disco', true);
+    await store.setSource('disco', '/abs/path');
+    await store.setInstalled('disco', true);
+    const loaded = await store.load();
+    expect(loaded.disco.enabled).toBe(true);
+    expect(loaded.disco.trusted).toBe(true);
+    expect(loaded.disco.source).toBe('/abs/path');
+    expect(loaded.disco.installed).toBe(true);
+  });
+
+  it('setSource and setInstalled ignore prototype-pollution keys', async () => {
+    const store = new PluginConfigStore(dataDir);
+    await store.setSource('__proto__', 'x');
+    await store.setInstalled('constructor', true);
+    await store.setInstalled('prototype', true);
+    expect(({} as Record<string, unknown>).source).toBeUndefined();
+    expect(({} as Record<string, unknown>).installed).toBeUndefined();
+    expect((Object.prototype as Record<string, unknown>).source).toBeUndefined();
+    const loaded = await store.load();
+    expect(Object.keys(loaded)).not.toContain('__proto__');
+    expect(Object.keys(loaded)).not.toContain('constructor');
+    expect(Object.keys(loaded)).not.toContain('prototype');
+  });
 });

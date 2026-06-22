@@ -13,6 +13,7 @@ import { Route as WebSearchRouteImport } from './routes/web-search'
 import { Route as UnderTheHoodRouteImport } from './routes/under-the-hood'
 import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as ProjectsRouteImport } from './routes/projects'
+import { Route as PluginsRouteImport } from './routes/plugins'
 import { Route as PairDeviceRouteImport } from './routes/pair-device'
 import { Route as MessagingAppsRouteImport } from './routes/messaging-apps'
 import { Route as DeployRouteImport } from './routes/deploy'
@@ -54,6 +55,11 @@ const SettingsRoute = SettingsRouteImport.update({
 const ProjectsRoute = ProjectsRouteImport.update({
   id: '/projects',
   path: '/projects',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const PluginsRoute = PluginsRouteImport.update({
+  id: '/plugins',
+  path: '/plugins',
   getParentRoute: () => rootRouteImport,
 } as any)
 const PairDeviceRoute = PairDeviceRouteImport.update({
@@ -178,6 +184,7 @@ export interface FileRoutesByFullPath {
   '/deploy': typeof DeployRoute
   '/messaging-apps': typeof MessagingAppsRouteWithChildren
   '/pair-device': typeof PairDeviceRoute
+  '/plugins': typeof PluginsRoute
   '/projects': typeof ProjectsRouteWithChildren
   '/settings': typeof SettingsRoute
   '/under-the-hood': typeof UnderTheHoodRoute
@@ -204,6 +211,7 @@ export interface FileRoutesByTo {
   '/connectors': typeof ConnectorsRoute
   '/deploy': typeof DeployRoute
   '/pair-device': typeof PairDeviceRoute
+  '/plugins': typeof PluginsRoute
   '/settings': typeof SettingsRoute
   '/under-the-hood': typeof UnderTheHoodRoute
   '/web-search': typeof WebSearchRoute
@@ -232,6 +240,7 @@ export interface FileRoutesById {
   '/deploy': typeof DeployRoute
   '/messaging-apps': typeof MessagingAppsRouteWithChildren
   '/pair-device': typeof PairDeviceRoute
+  '/plugins': typeof PluginsRoute
   '/projects': typeof ProjectsRouteWithChildren
   '/settings': typeof SettingsRoute
   '/under-the-hood': typeof UnderTheHoodRoute
@@ -262,6 +271,7 @@ export interface FileRouteTypes {
     | '/deploy'
     | '/messaging-apps'
     | '/pair-device'
+    | '/plugins'
     | '/projects'
     | '/settings'
     | '/under-the-hood'
@@ -288,6 +298,7 @@ export interface FileRouteTypes {
     | '/connectors'
     | '/deploy'
     | '/pair-device'
+    | '/plugins'
     | '/settings'
     | '/under-the-hood'
     | '/web-search'
@@ -315,6 +326,7 @@ export interface FileRouteTypes {
     | '/deploy'
     | '/messaging-apps'
     | '/pair-device'
+    | '/plugins'
     | '/projects'
     | '/settings'
     | '/under-the-hood'
@@ -344,6 +356,7 @@ export interface RootRouteChildren {
   DeployRoute: typeof DeployRoute
   MessagingAppsRoute: typeof MessagingAppsRouteWithChildren
   PairDeviceRoute: typeof PairDeviceRoute
+  PluginsRoute: typeof PluginsRoute
   ProjectsRoute: typeof ProjectsRouteWithChildren
   SettingsRoute: typeof SettingsRoute
   UnderTheHoodRoute: typeof UnderTheHoodRoute
@@ -378,6 +391,13 @@ declare module '@tanstack/react-router' {
       path: '/projects'
       fullPath: '/projects'
       preLoaderRoute: typeof ProjectsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/plugins': {
+      id: '/plugins'
+      path: '/plugins'
+      fullPath: '/plugins'
+      preLoaderRoute: typeof PluginsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/pair-device': {
@@ -603,6 +623,7 @@ const rootRouteChildren: RootRouteChildren = {
   DeployRoute: DeployRoute,
   MessagingAppsRoute: MessagingAppsRouteWithChildren,
   PairDeviceRoute: PairDeviceRoute,
+  PluginsRoute: PluginsRoute,
   ProjectsRoute: ProjectsRouteWithChildren,
   SettingsRoute: SettingsRoute,
   UnderTheHoodRoute: UnderTheHoodRoute,

@@ -1,7 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { AgentChatCoordinator } from './agent-chat-coordinator.js';
-import type { AgentRegistry, RegisteredAgent } from './agent-registry.js';
+import { AgentRegistry } from './agent-registry.js';
+import type { RegisteredAgent } from './agent-registry.js';
 import type { ChannelRegistry, RegisteredChannel } from './channel-registry.js';
 import type { GatewayCredentialStore } from './credential-store.js';
 import { EventBus } from './event-bus.js';
@@ -345,6 +346,125 @@ describe('createGatewayManagementApp', () => {
         body: JSON.stringify({ model: 'gpt-4' }),
       });
       expect(res.status).toBe(404);
+    });
+  });
+
+  // Per-agent plugin selection (Plan P5). The registry round-trip is unit-
+  // covered in agent-registry.test.ts ("plugins field" describe); these tests
+  // assert the management-API ROUTES carry `plugins` through verbatim — no
+  // strip, no transform, no default-to-[] — POST/PUT in, GET out.
+  describe('agent plugins field (P5) round-trips through the routes', () => {
+    it('POST /agents with plugins persists and GET /agents/:id returns it', async () => {
+      const { app } = createApp();
+      const created = await app.request('/agents', {
+        method: 'POST',
+        headers: JSON_HEADERS,
+        body: JSON.stringify({
+          name: 'bot',
+          model: 'claude',
+          systemPrompt: 'hi',
+          plugins: ['alpha', 'beta'],
+        }),
+      });
+      expect(created.status).toBe(201);
+      const createdBody = await created.json();
+      expect(createdBody.config.plugins).toEqual(['alpha', 'beta']);
+
+      const fetched = await app.request(`/agents/${createdBody.id}`, { headers: AUTH });
+      expect(fetched.status).toBe(200);
+      const fetchedBody = await fetched.json();
+      expect(fetchedBody.config.plugins).toEqual(['alpha', 'beta']);
+    });
+
+    it('POST /agents WITHOUT plugins stores undefined (not [] / null)', async () => {
+      const { app } = createApp();
+      const created = await app.request('/agents', {
+        method: 'POST',
+        headers: JSON_HEADERS,
+        body: JSON.stringify({ name: 'legacy', model: 'claude', systemPrompt: 'hi' }),
+      });
+      expect(created.status).toBe(201);
+      const body = await created.json();
+      // No selection → backward compat: the agent sees ALL loaded plugins. The
+      // key must be absent (undefined), never coerced to an empty array.
+      expect(body.config.plugins).toBeUndefined();
+      expect('plugins' in body.config).toBe(false);
+    });
+
+    it('POST /agents with an explicit empty plugins array preserves [] (literal "none")', async () => {
+      const { app } = createApp();
+      const created = await app.request('/agents', {
+        method: 'POST',
+        headers: JSON_HEADERS,
+        body: JSON.stringify({ name: 'none', model: 'claude', systemPrompt: 'hi', plugins: [] }),
+      });
+      expect(created.status).toBe(201);
+      const body = await created.json();
+      expect(body.config.plugins).toEqual([]);
+    });
+
+    it('PUT /agents/:id patches plugins and GET reflects the new selection', async () => {
+      const { app, agentRegistry } = createApp();
+      const entry = (agentRegistry.register as ReturnType<typeof vi.fn>)({
+        name: 'x',
+        model: 'm',
+        systemPrompt: 'p',
+      });
+      const updated = await app.request(`/agents/${entry.id}`, {
+        method: 'PUT',
+        headers: JSON_HEADERS,
+        body: JSON.stringify({ plugins: ['alpha'] }),
+      });
+      expect(updated.status).toBe(200);
+      expect((await updated.json()).config.plugins).toEqual(['alpha']);
+
+      const fetched = await app.request(`/agents/${entry.id}`, { headers: AUTH });
+      expect((await fetched.json()).config.plugins).toEqual(['alpha']);
+    });
+
+    // Regression for the "clear scoped plugins back to all no-ops over HTTP"
+    // bug. This uses a REAL AgentRegistry (not the in-test mock) and goes
+    // through the JSON body path so it exercises the actual serialization +
+    // merge. The MC client clears a selection by sending `plugins: null` — a
+    // value that survives JSON.stringify, unlike `undefined` (which would drop
+    // the key and make the PUT a no-op). The gateway must treat null as
+    // "clear to default" and DELETE the key so it reads back as undefined.
+    it('PUT /agents/:id with plugins: null clears the selection back to all (real registry, JSON path)', async () => {
+      const realRegistry = new AgentRegistry();
+      const { app } = createApp({ agentRegistry: realRegistry });
+
+      // Scope the agent to ['alpha'] first (the narrow that the bug couldn't undo).
+      const created = await app.request('/agents', {
+        method: 'POST',
+        headers: JSON_HEADERS,
+        body: JSON.stringify({
+          name: 'scoped',
+          model: 'm',
+          systemPrompt: 'p',
+          plugins: ['alpha'],
+        }),
+      });
+      expect(created.status).toBe(201);
+      const createdBody = await created.json();
+      expect(createdBody.config.plugins).toEqual(['alpha']);
+
+      // Clear via the null sentinel — body literally carries `"plugins":null`.
+      const cleared = await app.request(`/agents/${createdBody.id}`, {
+        method: 'PUT',
+        headers: JSON_HEADERS,
+        body: JSON.stringify({ plugins: null }),
+      });
+      expect(cleared.status).toBe(200);
+      const clearedBody = await cleared.json();
+      // Read back: the key must be GONE (undefined = "all loaded plugins"),
+      // not null (which would break filterPluginsByAgent) and not ['alpha'].
+      expect(clearedBody.config.plugins).toBeUndefined();
+      expect('plugins' in clearedBody.config).toBe(false);
+
+      const fetched = await app.request(`/agents/${createdBody.id}`, { headers: AUTH });
+      const fetchedBody = await fetched.json();
+      expect(fetchedBody.config.plugins).toBeUndefined();
+      expect('plugins' in fetchedBody.config).toBe(false);
     });
   });
 

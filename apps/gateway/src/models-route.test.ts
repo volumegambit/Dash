@@ -261,7 +261,7 @@ describe('createModelsRoute', () => {
       store,
       credentialStore: makeCredentialStore({ anthropic: 'sk-ant' }),
       discover,
-      pluginModels: [
+      getPluginModels: () => [
         { value: 'myllm/m1', label: 'M One', provider: 'myllm' },
         // A plugin must never shadow a core model id.
         { value: 'anthropic/claude-opus-4-5', label: 'SHADOW', provider: 'anthropic' },
@@ -276,5 +276,36 @@ describe('createModelsRoute', () => {
     expect(body.models[0].label).toBe('X');
     // Render-time only: plugin models are NEVER written to the store.
     expect((await store.load())?.models.map((m) => m.value)).toEqual(['anthropic/claude-opus-4-5']);
+  });
+
+  it('reads getPluginModels LIVE per request (a reload-added provider appears without rebuild)', async () => {
+    // Simulate a hot-reload: the plugin-model source starts empty and a later
+    // reassignment (as the wiring holder would do) adds a provider's models.
+    // The route must observe the change because it reads the getter per request.
+    const discover = vi.fn().mockResolvedValue({
+      models: [{ value: 'anthropic/claude-opus-4-5', label: 'X', provider: 'anthropic' }],
+      errors: {},
+      providersConfigured: 1,
+    });
+    let live: { value: string; label: string; provider: string }[] = [];
+    const app = createModelsRoute({
+      store,
+      credentialStore: makeCredentialStore({ anthropic: 'sk-ant' }),
+      discover,
+      getPluginModels: () => live,
+    });
+
+    // Before reload: no plugin models.
+    const before = await app.request('/');
+    const beforeBody = (await before.json()) as { models: { value: string }[] };
+    expect(beforeBody.models.map((m) => m.value)).not.toContain('myllm/m1');
+
+    // Reload adds the provider's models to the live source.
+    live = [{ value: 'myllm/m1', label: 'M One', provider: 'myllm' }];
+
+    // After reload: the SAME route now reflects the new provider — no rebuild.
+    const after = await app.request('/');
+    const afterBody = (await after.json()) as { models: { value: string }[] };
+    expect(afterBody.models.map((m) => m.value)).toContain('myllm/m1');
   });
 });

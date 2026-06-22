@@ -20,6 +20,7 @@ describe('Sidebar', () => {
     expect(screen.queryByText('Secrets')).not.toBeInTheDocument();
     expect(screen.getByText('Settings')).toBeInTheDocument();
     expect(screen.getByText('Messaging Apps')).toBeInTheDocument();
+    expect(screen.getByText('Plugins')).toBeInTheDocument();
   });
 
   it('does not render a Dashboard nav item', () => {

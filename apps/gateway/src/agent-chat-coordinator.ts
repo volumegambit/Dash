@@ -36,17 +36,21 @@ export interface AgentChatCoordinatorOptions {
   /** Resolve an agent's managed skills directory (for `listSkills`). */
   managedSkillsDir?: (config: GatewayAgentConfig) => string | undefined;
   /**
-   * Trusted-plugin skill directories (each a `skills/`-style root). Merged into
-   * skill discovery for `listSkills` so the HTTP skills API surfaces plugin
-   * skills — mirroring how the backend factory merges them into `skills.paths`.
+   * Live getter for the trusted-plugin skill directories (each a `skills/`-style
+   * root). Merged into skill discovery for `listSkills` so the HTTP skills API
+   * surfaces plugin skills — mirroring how the backend factory merges them into
+   * `skills.paths`. Read PER CALL (not captured) so a plugin hot-reload is
+   * reflected by `GET /agents/:id/skills` without a restart. Undefined → none.
    */
-  pluginSkillDirs?: string[];
+  getPluginSkillDirs?: () => string[];
   /**
-   * Trusted-plugin command/agent files (flat `.md`, namespaced `<plugin>:<name>`).
-   * Loaded via `loadFlatSkills` and merged into `listSkills` so the HTTP skills
-   * API matches what chat can load — mirroring `PiAgentBackend.listSkills`.
+   * Live getter for the trusted-plugin command/agent files (flat `.md`,
+   * namespaced `<plugin>:<name>`). Loaded via `loadFlatSkills` and merged into
+   * `listSkills` so the HTTP skills API matches what chat can load — mirroring
+   * `PiAgentBackend.listSkills`. Read PER CALL (not captured) so a plugin
+   * hot-reload is reflected without a restart. Undefined → none.
    */
-  pluginCommandFiles?: FlatSkillFile[];
+  getPluginCommandFiles?: () => FlatSkillFile[];
 }
 
 export interface ChatRequest {
@@ -99,6 +103,14 @@ export interface AgentChatCoordinator {
    * by agent ID independently of the registry.
    */
   evict(agentId: string): Promise<void>;
+  /**
+   * Evict all idle warm backends so they rebuild with current wiring on next
+   * use; pinned in-flight conversations drain. Used by plugin hot-reload, where
+   * the rebuilt wiring is global to every agent — resetting idle backends makes
+   * the next chat re-warm against the new skill dirs / hooks / model catalog,
+   * while mid-stream conversations finish on their old wiring undisturbed.
+   */
+  evictAll(): Promise<void>;
   /** List the skills available to an agent (bundled + per-agent). */
   listSkills(agentId: string): Promise<SkillDiscoveryResult[]>;
   /** Get one skill (with content) by name, or null. */
@@ -185,18 +197,20 @@ export function createAgentChatCoordinator(
     },
   });
 
-  const pluginSkillDirs = options.pluginSkillDirs ?? [];
-  const pluginCommandFiles = options.pluginCommandFiles ?? [];
-  const pluginCommandFilePaths = new Set(pluginCommandFiles.map((f) => f.file));
-  // A discovered skill is plugin-contributed if its file lives under one of the
-  // plugin skill dirs. Prefix-match on a separator-terminated dir so e.g.
-  // `/p/skills` never matches `/p/skills-extra`.
-  const isUnderPluginDir = (location: string): boolean =>
-    pluginSkillDirs.some((dir) => location.startsWith(dir.endsWith(sep) ? dir : dir + sep));
-
   const listSkillsFor = async (agentId: string): Promise<SkillDiscoveryResult[]> => {
     const entry = registry.get(agentId);
     if (!entry) return [];
+    // Read plugin wiring LIVE on each call so a hot-reload (which reassigns the
+    // gateway's wiringState holder behind these getters) is reflected by
+    // GET /agents/:id/skills without a restart.
+    const pluginSkillDirs = options.getPluginSkillDirs?.() ?? [];
+    const pluginCommandFiles = options.getPluginCommandFiles?.() ?? [];
+    const pluginCommandFilePaths = new Set(pluginCommandFiles.map((f) => f.file));
+    // A discovered skill is plugin-contributed if its file lives under one of the
+    // plugin skill dirs. Prefix-match on a separator-terminated dir so e.g.
+    // `/p/skills` never matches `/p/skills-extra`.
+    const isUnderPluginDir = (location: string): boolean =>
+      pluginSkillDirs.some((dir) => location.startsWith(dir.endsWith(sep) ? dir : dir + sep));
     // Mirror PiAgentBackend.listSkills so the HTTP skills API returns exactly
     // what chat can load. Discovery precedence (first wins by name): managed >
     // config paths > plugin skill dirs > bundled. Plugin command/agent files
@@ -321,6 +335,10 @@ export function createAgentChatCoordinator(
 
     async evict(agentId) {
       await pool.evictAgent(agentId);
+    },
+
+    async evictAll() {
+      await pool.evictIdle();
     },
 
     stats() {

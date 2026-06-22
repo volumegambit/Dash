@@ -9,6 +9,7 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   Plug,
+  Puzzle,
   QrCode,
   Settings,
   Smartphone,
@@ -57,6 +58,7 @@ const sections: NavSection[] = [
     items: [
       { to: '/connections', label: 'AI Providers', icon: Plug },
       { to: '/connectors', label: 'Connectors (MCP)', icon: Cable },
+      { to: '/plugins', label: 'Plugins', icon: Puzzle },
       { to: '/web-search', label: 'Web Search', icon: Globe },
       { to: '/settings', label: 'Settings', icon: Settings },
     ],

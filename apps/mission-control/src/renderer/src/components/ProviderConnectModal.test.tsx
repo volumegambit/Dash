@@ -3,6 +3,7 @@ import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { mockApi } from '../../../../vitest.setup.js';
 import { ProviderConnectModal } from './ProviderConnectModal.js';
+import type { ProviderConfig } from './providers.js';
 
 describe('ProviderConnectModal', () => {
   const noop = () => {};
@@ -83,5 +84,53 @@ describe('ProviderConnectModal', () => {
       await screen.findByText('Key name must contain only letters, numbers, and hyphens.'),
     ).toBeInTheDocument();
     expect(mockApi.credentialsSet).not.toHaveBeenCalled();
+  });
+
+  // RP4-3: providerConfig is OPTIONAL. Core providers (no providerConfig) keep
+  // falling back to PROVIDER_CONFIG (covered above). A plugin provider passes a
+  // synthesized config and a free-form string id.
+  describe('with a synthesized plugin providerConfig', () => {
+    const pluginConfig: ProviderConfig = {
+      title: 'Connect to My Provider',
+      secretKey: 'myprov-api-key:default',
+      placeholder: 'API key',
+      consoleUrl: '',
+      apiKeysUrl: '',
+      helpUrl: '',
+      helpLabel: '',
+      explanation: 'Paste your My Provider API key to connect it.',
+      steps: ['Paste your API key below.'],
+    };
+
+    it('renders the title from the passed providerConfig, not PROVIDER_CONFIG', () => {
+      render(
+        <ProviderConnectModal
+          provider="myprov"
+          providerConfig={pluginConfig}
+          keyName="default"
+          onClose={noop}
+          onSaved={noop}
+        />,
+      );
+      expect(screen.getByText('Connect to My Provider')).toBeInTheDocument();
+    });
+
+    it('saves the credential under {pluginId}-api-key:{keyName}', async () => {
+      const user = userEvent.setup();
+      const onSaved = vi.fn();
+      render(
+        <ProviderConnectModal
+          provider="myprov"
+          providerConfig={pluginConfig}
+          keyName="default"
+          onClose={noop}
+          onSaved={onSaved}
+        />,
+      );
+      await user.type(screen.getByLabelText('API key'), 'secret-token');
+      await user.click(screen.getByText('Save API Key'));
+      expect(mockApi.credentialsSet).toHaveBeenCalledWith('myprov-api-key:default', 'secret-token');
+      expect(onSaved).toHaveBeenCalledOnce();
+    });
   });
 });
