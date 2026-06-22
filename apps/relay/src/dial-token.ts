@@ -9,10 +9,11 @@ export interface DialTokenClaims {
 }
 
 /**
- * Test/helper signer. The PRODUCTION signer is the control plane (Phase B);
- * the relay only ever verifies. Format: base64url(JSON claims).base64url(sig),
- * Ed25519 over the (utf-8) claims segment. No `alg` field — the algorithm is
- * fixed, which structurally avoids JWT algorithm-confusion attacks.
+ * The shared signer. The control plane signs dial tokens with its private key;
+ * the relay verifies — this is the shared signer. Format:
+ * base64url(JSON claims).base64url(sig), Ed25519 over the (utf-8) claims
+ * segment. No `alg` field — the algorithm is fixed, which structurally avoids
+ * JWT algorithm-confusion attacks.
  */
 export function signDialToken(claims: DialTokenClaims, privateKey: KeyObject): string {
   const payload = Buffer.from(JSON.stringify(claims), 'utf8').toString('base64url');
