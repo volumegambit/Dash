@@ -39,7 +39,7 @@ import {
   type KeychainStore,
   createDefaultKeychainStore,
 } from '../security/keychain-store.js';
-import { generateGatewayId, generateToken } from '../security/keygen.js';
+import { generateToken } from '../security/keygen.js';
 import type { ControlPlaneClient } from './control-plane-client.js';
 import {
   type GatewayHealthResponse,
@@ -217,19 +217,6 @@ export interface GatewaySupervisorOptions {
   makeGatewayClient?: (baseUrl: string, token: string) => GatewayManagementClient;
   managementPort?: number;
   channelPort?: number;
-  /**
-   * Explicit relay base URL (e.g. `ws://127.0.0.1:8788` for local dev). When
-   * set, the gateway is spawned in relay mode dialing this URL verbatim. Takes
-   * precedence over `relayZone`.
-   */
-  relayUrl?: string;
-  /**
-   * Relay domain for production (e.g. `relay.example.com`). When set (and no
-   * explicit `relayUrl`), the gateway dials `wss://<gatewayId>.<zone>` — its own
-   * wildcard subdomain — and is reachable to phones at the same host. The relay
-   * token comes from the keychain (user-configured to match the relay).
-   */
-  relayZone?: string;
 }
 
 export class GatewaySupervisor {
@@ -261,8 +248,8 @@ export class GatewaySupervisor {
      * gateway record (gatewayId + signed dial token + host) or, if absent,
      * calls `createGateway()` once and caches the result. The gateway then
      * dials `wss://<gatewayId>.<host>` with the control-plane-issued dial
-     * token. When omitted, relay mode falls back to the deprecated
-     * self-hosted path (self-generated id + token), retired in a later task.
+     * token. When omitted (e.g. unit tests that don't exercise relay mode),
+     * the gateway is spawned without relay flags.
      */
     private controlPlaneClient?: ControlPlaneClient,
   ) {}
@@ -472,20 +459,13 @@ export class GatewaySupervisor {
     if (opts.gatewayRuntimeDir) {
       spawnArgs.push('--data-dir', opts.gatewayRuntimeDir);
     }
-    // Relay mode. Two paths:
-    //
-    // 1. Hosted control plane (preferred). When a ControlPlaneClient is
-    //    injected, the gateway identity is *issued* by the control plane,
-    //    not self-generated: read the cached issued record (gatewayId +
-    //    signed dial token + host) or, if absent, enroll once via
-    //    createGateway() and cache it. The gateway dials its own wildcard
-    //    subdomain `wss://<gatewayId>.<host>` presenting the signed dial
-    //    token. `--gateway-id` is ALWAYS pushed so the gateway's randomUUID
-    //    fallback never fires and phones keep a fixed address.
-    //
-    // 2. Self-hosted (deprecated). When no control-plane client is wired,
-    //    fall back to the prior self-generated id + token, gated on an
-    //    explicit relayUrl (dev) or relayZone (prod). Retired in a later task.
+    // Relay mode via the hosted control plane. When a ControlPlaneClient is
+    // injected, the gateway identity is *issued* by the control plane, not
+    // self-generated: read the cached issued record (gatewayId + signed dial
+    // token + host) or, if absent, enroll once via createGateway() and cache
+    // it. The gateway dials its own wildcard subdomain `wss://<gatewayId>.<host>`
+    // presenting the signed dial token. `--gateway-id` is ALWAYS pushed so the
+    // gateway's randomUUID fallback never fires and phones keep a fixed address.
     if (this.controlPlaneClient) {
       // Reuse the cached record across restarts; only enroll when absent so
       // we never double-createGateway (which would orphan the prior gateway).
@@ -513,27 +493,6 @@ export class GatewaySupervisor {
         issued.dialToken,
         '--gateway-id',
         issued.gatewayId,
-      );
-    } else if (opts.relayUrl || opts.relayZone) {
-      // Treat an empty stored token/id as absent: clearRelayConfig() persists ''
-      // rather than deleting, and `??` only substitutes null/undefined — so a
-      // bare `??` could spawn with `--relay-token ''` (an empty admission secret).
-      const storedRelayToken = await this.keychain.getRelayToken();
-      const relayToken =
-        storedRelayToken && storedRelayToken.length > 0 ? storedRelayToken : generateToken();
-      const storedGatewayId = await this.keychain.getGatewayId();
-      const gatewayId =
-        storedGatewayId && storedGatewayId.length > 0 ? storedGatewayId : generateGatewayId();
-      await this.keychain.setRelayToken(relayToken);
-      await this.keychain.setGatewayId(gatewayId);
-      const relayUrl = opts.relayUrl ?? `wss://${gatewayId}.${opts.relayZone}`;
-      spawnArgs.push(
-        '--relay-url',
-        relayUrl,
-        '--relay-token',
-        relayToken,
-        '--gateway-id',
-        gatewayId,
       );
     }
     // Write gateway logs to a file so they can be viewed from MC
@@ -602,12 +561,12 @@ export class GatewaySupervisor {
    */
   async restart(): Promise<GatewayManagementClient> {
     // Let any in-flight ensureRunning() settle before we kill + respawn.
-    // Otherwise restart() would (a) join a spawn started BEFORE a config change
-    // (e.g. relay:setConfig set gwOptions.relayZone) and miss the new options,
+    // Otherwise restart() would (a) join a spawn started BEFORE enrollment
+    // (e.g. gateway:enroll triggers a restart) and miss the issued identity,
     // silently not applying relay mode, or (b) kill a half-spawned gateway
     // mid-flight (EADDRINUSE / drifted state.json). We discard the result and
     // respawn fresh below; any ensureRunning started AFTER this point reads the
-    // already-updated options.
+    // already-enrolled identity.
     if (this.ensureRunningPromise) {
       try {
         await this.ensureRunningPromise;
@@ -667,28 +626,6 @@ export class GatewaySupervisor {
   }
 
   /**
-   * Read the stable relay gateway id from the keychain. The pairing flow uses it
-   * to build the relay host (`<gatewayId>.<zone>`) and to provision a per-device
-   * credential. Null before relay mode has ever been configured.
-   */
-  async getGatewayId(): Promise<string | null> {
-    return this.keychain.getGatewayId();
-  }
-
-  /**
-   * Read the relay admin master secret from the keychain. The pairing flow uses
-   * it to call the relay's /admin API. Null when relay mode is not set up.
-   */
-  async getRelayAdminSecret(): Promise<string | null> {
-    return this.keychain.getRelayAdminSecret();
-  }
-
-  /** Read the shared relay token (admission secret) from the keychain. */
-  async getRelayToken(): Promise<string | null> {
-    return this.keychain.getRelayToken();
-  }
-
-  /**
    * Read the gateway identity the control plane issued at enrollment
    * (`gatewayId` + signed dial token + relay `host`). Null until the gateway
    * has been enrolled. The pairing flow uses `gatewayId`/`host` to build the
@@ -707,25 +644,5 @@ export class GatewaySupervisor {
   /** Persist the hosted control-plane session token to the keychain. */
   async setControlPlaneToken(value: string): Promise<void> {
     await this.keychain.setControlPlaneToken(value);
-  }
-
-  /**
-   * Persist the user's relay credentials (the shared relay token + admin secret
-   * configured in MC to match their self-hosted relay). Relay mode takes effect
-   * on the next gateway (re)start.
-   */
-  async setRelayCredentials(relayToken: string, adminSecret: string): Promise<void> {
-    await this.keychain.setRelayToken(relayToken);
-    await this.keychain.setRelayAdminSecret(adminSecret);
-  }
-
-  /**
-   * Disable relay mode: forget the relay token + admin secret. The stable
-   * gatewayId is intentionally kept so re-enabling relay reuses the same address
-   * (and any still-valid pairings).
-   */
-  async clearRelayConfig(): Promise<void> {
-    await this.keychain.setRelayToken('');
-    await this.keychain.setRelayAdminSecret('');
   }
 }
