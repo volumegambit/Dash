@@ -107,7 +107,7 @@ beforeEach(async () => {
 
   // --- Real relay ---
   relay = createRelayServer({
-    relayTokenValid: (t) => t === RELAY_TOKEN,
+    relayTokenValid: (_gatewayId, t) => t === RELAY_TOKEN,
     pairingCredentialValid: () => true,
   });
   relayPort = await listen(relay.httpServer);

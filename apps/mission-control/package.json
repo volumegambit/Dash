@@ -9,7 +9,9 @@
     "build": "electron-vite build",
     "preview": "electron-vite preview",
     "package": "electron-builder",
-    "typecheck": "tsc -p tsconfig.node.json --noEmit"
+    "typecheck": "npm run typecheck:node && npm run typecheck:web",
+    "typecheck:node": "tsc -p tsconfig.node.json --noEmit",
+    "typecheck:web": "tsc -p tsconfig.web.json --noEmit"
   },
   "dependencies": {
     "@dash/channels": "*",

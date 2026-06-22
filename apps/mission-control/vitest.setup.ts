@@ -103,6 +103,8 @@ function createMockApi(): MockApi {
     skillsList: vi.fn().mockResolvedValue([]),
     skillsGet: vi.fn().mockResolvedValue(null),
     skillsUpdateContent: vi.fn().mockResolvedValue(undefined),
+    skillsInstall: vi.fn().mockResolvedValue(null),
+    skillsRemove: vi.fn().mockResolvedValue(undefined),
     skillsCreate: vi.fn().mockResolvedValue(null),
     skillsGetConfig: vi.fn().mockResolvedValue({ paths: [], urls: [] }),
     skillsUpdateConfig: vi.fn().mockResolvedValue({ requiresRestart: false }),

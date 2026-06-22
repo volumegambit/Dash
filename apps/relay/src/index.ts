@@ -11,5 +11,16 @@ export {
   type RelayServerOptions,
   type RelayAdminConfig,
 } from './relay-server.js';
-export { staticRelayAuth, credentialStoreAuth, safeEqual, type RelayDeps } from './auth.js';
-export { PairingCredentialStore } from './credential-store.js';
+export {
+  staticRelayAuth,
+  credentialStoreAuth,
+  hostedRelayAuth,
+  safeEqual,
+  type RelayDeps,
+} from './auth.js';
+export {
+  PairingCredentialStore,
+  DurableCredentialStore,
+  type CredentialStore,
+} from './credential-store.js';
+export { signDialToken, verifyDialToken, type DialTokenClaims } from './dial-token.js';

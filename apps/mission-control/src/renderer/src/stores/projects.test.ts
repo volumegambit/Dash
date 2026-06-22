@@ -140,7 +140,12 @@ describe('useProjectsStore.applyEvent', () => {
 describe('useProjectsStore.subscribe', () => {
   it('subscribes once and forwards frames to applyEvent', () => {
     useProjectsStore.setState({ subscribed: false });
-    let captured: ((e: { topic: string; payload: Record<string, unknown> }) => void) | null = null;
+    // `captured` is assigned synchronously inside mockImplementation when
+    // subscribe() runs. The cast keeps its type as the full union so the
+    // optional calls below aren't narrowed to `null` (TS can't see the
+    // callback assignment, only the `null` initializer).
+    type CapturedFrame = (e: { topic: string; payload: Record<string, unknown> }) => void;
+    let captured: CapturedFrame | null = null as CapturedFrame | null;
     mockApi.onProjectsEvent.mockImplementation((cb: typeof captured) => {
       captured = cb;
       // The real preload removes the IPC listener on unsub; model that by

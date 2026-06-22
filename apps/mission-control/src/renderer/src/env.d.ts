@@ -1,4 +1,4 @@
-/// <reference types="electron-vite/client" />
+/// <reference types="vite/client" />
 
 import type { MissionControlAPI } from '../../shared/ipc';
 
