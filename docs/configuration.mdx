@@ -88,7 +88,9 @@ Provider API keys and messaging tokens are encrypted at rest. The gateway keeps 
 
 ## Plugins
 
-Plugins let you drop extra skills into any Dash agent without touching the config file. The gateway discovers plugins from the `plugins/` directory inside your data directory.
+For the step-by-step guide — installing, enabling, trusting, scoping per agent, and the security model — see [Plugins](/plugins). This section is the configuration reference: the on-disk layout and `config.json` schema.
+
+Plugins let you bundle skills, commands, subagents, and integrations and turn them on for any Dash agent. The gateway discovers plugins from the `plugins/` directory inside its data directory — by default `~/.dash/gateway/plugins/` (the examples below use `<dataDir>/plugins/` to stand for that path, since `--data-dir` can move it).
 
 ### Directory layout
 
@@ -162,6 +164,21 @@ A `config.json` entry can point at a plugin directory anywhere on disk with a `p
 ```
 
 A `path` entry is **enabled automatically** — you do not need `"enabled": true`. It still requires `"trusted": true` to run code components (hooks, MCP servers, `bin/` executables, and provider catalogs); skills and commands load from `enabled` alone, just like any other plugin.
+
+### `config.json` schema
+
+Each key in `config.json` is a plugin name; its value is an object with these fields:
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `enabled` | boolean | The plugin's markdown components (skills, commands, subagents) load. |
+| `trusted` | boolean | The plugin's code components (hooks, MCP servers, `bin/`, providers) are allowed to run. Defaults to off — set deliberately after review. |
+| `path` | string | Load the plugin from this directory instead of `<dataDir>/plugins/<name>`. A `path` entry is enabled automatically. |
+| `source` | string | Where the plugin was installed from (a `git:`/`http(s):` URL or a local path). Set by the management API on install; used for reinstall/update. |
+| `installed` | boolean | `true` when the management API installed the plugin into `<dataDir>/plugins/<name>`. Determines whether removing it also deletes the directory. |
+| `config` | object | Optional plugin-specific settings passed through to the plugin. |
+
+Hand-editing only needs `enabled` (and `trusted` for code components); `source`, `installed`, and `config` are managed for you when you install through Mission Control or the management API.
 
 ### Commands
 
