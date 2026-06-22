@@ -20,7 +20,7 @@
     "apps/*"
   ],
   "scripts": {
-    "build": "npm run build -w packages/paths -w packages/models -w packages/plugin-sdk -w packages/skills -w packages/projects -w packages/mcp -w packages/plugins -w packages/agent -w packages/channels -w packages/logging -w packages/management -w packages/chat -w packages/mc -w apps/relay -w apps/gateway",
+    "build": "npm run build -w packages/paths -w packages/models -w packages/plugin-sdk -w packages/skills -w packages/projects -w packages/mcp -w packages/plugins -w packages/agent -w packages/channels -w packages/logging -w packages/management -w packages/chat -w packages/mc -w apps/relay -w apps/relay-control-plane -w apps/gateway",
     "gateway": "node --import tsx apps/gateway/src/index.ts",
     "relay": "node --import tsx apps/relay/src/main.ts",
     "relay:e2e": "node scripts/relay-e2e.mjs",

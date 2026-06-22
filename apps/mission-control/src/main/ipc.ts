@@ -18,10 +18,11 @@ import {
   GatewayStateStore,
   GatewaySupervisor,
   SettingsStore,
-  createRelayAdminClient,
+  createDefaultKeychainStore,
   defaultProcessSpawner,
 } from '@dash/mc';
 import type {
+  ControlPlaneClient,
   CreateAgentRequest,
   GatewayChannel,
   GatewaySupervisorOptions,
@@ -31,15 +32,11 @@ import { desktopDir, gatewayDir, logsDir, migrateLegacyLayout } from '@dash/path
 import { app, dialog, ipcMain, shell } from 'electron';
 import type { BrowserWindow } from 'electron';
 import WebSocket from 'ws';
-import type {
-  PairingInfo,
-  RelayConfigInput,
-  RelayConfigStatus,
-  SetupStatus,
-} from '../shared/ipc.js';
+import type { ControlPlaneStatus, DeviceInfo, PairingInfo, SetupStatus } from '../shared/ipc.js';
 import { ChatService } from './chat-service.js';
 import { completeClaudeOAuth, prepareClaudeOAuth } from './claude-auth.js';
 import { startCodexOAuth } from './codex-auth.js';
+import { createControlPlaneRuntime, readControlPlaneConfig } from './control-plane.js';
 import { GatewayPoller } from './gateway-poller.js';
 import { buildPairingInfo } from './pairing.js';
 
@@ -98,9 +95,20 @@ let gatewaySupervisor: GatewaySupervisor | undefined;
 // when null; torn down on quit.
 let projectsWs: WebSocket | null = null;
 
-function getGatewaySupervisor(options: GatewaySupervisorOptions): GatewaySupervisor {
+function getGatewaySupervisor(
+  options: GatewaySupervisorOptions,
+  keychain: ReturnType<typeof createDefaultKeychainStore>,
+  controlPlaneClient?: ControlPlaneClient,
+): GatewaySupervisor {
   if (!gatewaySupervisor) {
-    gatewaySupervisor = new GatewaySupervisor(options);
+    gatewaySupervisor = new GatewaySupervisor(
+      options,
+      undefined,
+      undefined,
+      undefined,
+      keychain,
+      controlPlaneClient,
+    );
   }
   return gatewaySupervisor;
 }
@@ -190,12 +198,29 @@ export async function registerIpcHandlers(
     logsDir: logsDir(),
     projectRoot: resolveProjectRoot(),
   };
-  // Start the gateway in relay mode if the user has configured a relay domain.
-  // gwOptions is the live object the supervisor reads at each (re)spawn, so the
-  // relay:setConfig/clearConfig handlers mutate gwOptions.relayZone + restart.
-  const persistedSettings = await getSettingsStore().get();
-  if (persistedSettings.relayZone) gwOptions.relayZone = persistedSettings.relayZone;
-  const gw = getGatewaySupervisor(gwOptions);
+
+  // Hosted control plane wiring. A single shared keychain backs both the
+  // supervisor (gateway + issued-gateway secrets) and the control-plane session
+  // (the WorkOS access token), so all gateway/relay secrets live in one place.
+  // The session's token resolver feeds the client, so every control-plane API
+  // call carries the current token. When the control-plane client is provided,
+  // the supervisor enrolls via the control plane instead of self-generating a
+  // relay identity (see process.ts).
+  const keychain = createDefaultKeychainStore();
+  const { session: controlPlaneSession, client: controlPlaneClient } = createControlPlaneRuntime({
+    config: readControlPlaneConfig(),
+    tokenStore: {
+      // Treat an empty string (written by `clear`) as signed-out — the session
+      // only branches on `null`, and some keychain backends won't delete keys.
+      get: async () => {
+        const token = await keychain.getControlPlaneToken();
+        return token ? token : null;
+      },
+      set: (value) => keychain.setControlPlaneToken(value),
+      clear: () => keychain.setControlPlaneToken(''),
+    },
+  });
+  const gw = getGatewaySupervisor(gwOptions, keychain, controlPlaneClient);
 
   // First-run detection: if there's no gateway-state.json yet, we
   // have never successfully started the gateway on this machine and
@@ -492,13 +517,11 @@ export async function registerIpcHandlers(
     if (!managementToken || !chatToken) {
       throw new Error('Gateway not running — start it before pairing a device');
     }
-    // Relay mode requires all three: the zone (settings) plus the gateway id and
-    // admin secret (keychain). Any missing → LAN pairing.
-    const settings = await getSettingsStore().get();
-    const [gatewayId, adminSecret] = await Promise.all([
-      gw.getGatewayId(),
-      gw.getRelayAdminSecret(),
-    ]);
+    // Relay mode is available once the gateway is enrolled with the control
+    // plane (an issued-gateway record with a gatewayId + relay host). Absent →
+    // LAN pairing. The per-device credential is provisioned by the control
+    // plane server-side — MC never holds the relay master secret.
+    const issued = await gw.getIssuedGateway();
     return buildPairingInfo(
       {
         mgmtToken: managementToken,
@@ -508,45 +531,76 @@ export async function registerIpcHandlers(
           mgmtPort: gatewayState?.port ?? 9300,
           chatPort: gatewayState?.channelPort ?? 9200,
         },
-        relay:
-          settings.relayZone && gatewayId && adminSecret
-            ? { zone: settings.relayZone, gatewayId, adminSecret }
-            : undefined,
+        relay: issued ? { gatewayId: issued.gatewayId, host: issued.host } : undefined,
       },
-      (adminBaseUrl, secret, gid) =>
-        createRelayAdminClient(adminBaseUrl, secret).provisionCredential(gid),
+      async (gatewayId) => (await controlPlaneClient.createPairing(gatewayId)).credential,
     );
   });
 
   // -----------------------------------------------------------------------
-  // Relay (remote access) configuration
+  // Remote access — hosted control plane (sign in, enroll, manage devices)
+  //
+  // Replaces the self-hosted relay config (zone / relay token / admin secret).
+  // The user signs in with WorkOS (system browser, loopback redirect), MC
+  // enrolls a gateway with the control plane, and the control plane brokers the
+  // relay server-side — MC never holds the relay master secret.
   // -----------------------------------------------------------------------
 
-  ipcMain.handle('relay:getConfig', async (): Promise<RelayConfigStatus> => {
-    const settings = await getSettingsStore().get();
-    const zone = settings.relayZone ?? null;
-    const [token, adminSecret] = await Promise.all([gw.getRelayToken(), gw.getRelayAdminSecret()]);
-    return { zone, configured: Boolean(zone && token && adminSecret) };
+  ipcMain.handle('controlPlane:status', async (): Promise<ControlPlaneStatus> => {
+    const [token, issued] = await Promise.all([
+      controlPlaneSession.getToken(),
+      gw.getIssuedGateway(),
+    ]);
+    return {
+      signedIn: Boolean(token),
+      enrolled: Boolean(issued),
+      subdomain: issued ? `${issued.gatewayId}.${issued.host}` : null,
+    };
   });
 
-  ipcMain.handle('relay:setConfig', async (_e, config: RelayConfigInput) => {
-    const zone = config.zone.trim();
-    if (!zone || !config.relayToken || !config.adminSecret) {
-      throw new Error('Relay domain, relay token and admin secret are all required');
+  ipcMain.handle('controlPlane:signIn', async () => {
+    await controlPlaneSession.signIn();
+  });
+
+  ipcMain.handle('controlPlane:signOut', async () => {
+    await controlPlaneSession.signOut();
+  });
+
+  ipcMain.handle('gateway:enroll', async () => {
+    if (!(await controlPlaneSession.getToken())) {
+      throw new Error('Sign in to Dash before enrolling a gateway');
     }
-    // Secrets → keychain; non-secret zone → settings. Then flip the live options
-    // and restart so the gateway dials the relay.
-    await gw.setRelayCredentials(config.relayToken, config.adminSecret);
-    await getSettingsStore().set({ relayZone: zone });
-    gwOptions.relayZone = zone;
+    // Enrollment happens inside the supervisor's relay block: a restart with the
+    // control-plane client wired reads the cached issued-gateway record or calls
+    // createGateway() once, then dials the relay. Restart so it takes effect now.
     await gw.restart();
+    const state = await new GatewayStateStore(DATA_DIR).read();
+    const chatToken = await gw.getChatToken();
+    const managementToken = await gw.getGatewayToken();
+    if (state && chatService) {
+      chatService.setGatewayConnection({
+        channelPort: state.channelPort,
+        chatToken: chatToken ?? undefined,
+        managementBaseUrl: `http://127.0.0.1:${state.port}`,
+        managementToken: managementToken ?? undefined,
+      });
+    }
   });
 
-  ipcMain.handle('relay:clearConfig', async () => {
-    await gw.clearRelayConfig();
-    await getSettingsStore().set({ relayZone: undefined });
-    gwOptions.relayZone = undefined;
-    await gw.restart();
+  ipcMain.handle('devices:list', async (): Promise<DeviceInfo[]> => {
+    const issued = await gw.getIssuedGateway();
+    if (!issued) return [];
+    const gateways = await controlPlaneClient.listGateways();
+    const match = gateways.find((g) => g.gatewayId === issued.gatewayId);
+    return match ? match.devices : [];
+  });
+
+  ipcMain.handle('devices:revoke', async (_e, deviceId: string) => {
+    const issued = await gw.getIssuedGateway();
+    if (!issued) {
+      throw new Error('No gateway enrolled — nothing to revoke');
+    }
+    await controlPlaneClient.revokePairing(issued.gatewayId, deviceId);
   });
 
   ipcMain.handle('agents:disable', async (_e, id: string) => {

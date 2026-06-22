@@ -64,18 +64,56 @@ describe('InMemoryKeychainStore', () => {
     expect(await store.getRelayAdminSecret()).toBeNull();
   });
 
+  it('returns null for an unset control-plane token', async () => {
+    expect(await store.getControlPlaneToken()).toBeNull();
+  });
+
+  it('round-trips the control-plane token', async () => {
+    await store.setControlPlaneToken('cp-access-token');
+    expect(await store.getControlPlaneToken()).toBe('cp-access-token');
+    // Must not collide with the relay token or admin secret.
+    expect(await store.getRelayToken()).toBeNull();
+  });
+
+  it('returns null for an unset issued gateway record', async () => {
+    expect(await store.getIssuedGateway()).toBeNull();
+  });
+
+  it('round-trips the issued gateway record', async () => {
+    await store.setIssuedGateway({
+      gatewayId: 'gw-issued-1',
+      dialToken: 'dial-token-1',
+      host: 'relay.example.com',
+    });
+    expect(await store.getIssuedGateway()).toEqual({
+      gatewayId: 'gw-issued-1',
+      dialToken: 'dial-token-1',
+      host: 'relay.example.com',
+    });
+  });
+
+  it('returns null for the issued gateway record when only partially set', async () => {
+    // A record is only valid when all three fields are present.
+    await store.setControlPlaneToken('cp');
+    expect(await store.getIssuedGateway()).toBeNull();
+  });
+
   it('clearAllGatewayTokens removes every secret', async () => {
     await store.setGatewayToken('g');
     await store.setChatToken('c');
     await store.setRelayToken('r');
     await store.setGatewayId('gw-1');
     await store.setRelayAdminSecret('a');
+    await store.setControlPlaneToken('cp');
+    await store.setIssuedGateway({ gatewayId: 'gw-i', dialToken: 'd', host: 'h' });
     await store.clearAllGatewayTokens();
     expect(await store.getGatewayToken()).toBeNull();
     expect(await store.getChatToken()).toBeNull();
     expect(await store.getRelayToken()).toBeNull();
     expect(await store.getGatewayId()).toBeNull();
     expect(await store.getRelayAdminSecret()).toBeNull();
+    expect(await store.getControlPlaneToken()).toBeNull();
+    expect(await store.getIssuedGateway()).toBeNull();
   });
 
   it('clearAllGatewayTokens is idempotent on empty store', async () => {
@@ -193,6 +231,33 @@ describe('DefaultKeychainStore', () => {
       'dash-mission-control',
       'gateway-relay-admin-secret',
     ]);
+  });
+
+  it('reads/writes the control-plane token under its own account', async () => {
+    const store = createDefaultKeychainStore();
+    await store.setControlPlaneToken('cp-token');
+    expect(await store.getControlPlaneToken()).toBe('cp-token');
+    expect(entryConstructorCalls).toContainEqual(['dash-mission-control', 'control-plane-token']);
+  });
+
+  it('reads/writes the issued gateway record under its own accounts', async () => {
+    const store = createDefaultKeychainStore();
+    await store.setIssuedGateway({
+      gatewayId: 'gw-issued-9',
+      dialToken: 'dial-9',
+      host: 'relay.example.com',
+    });
+    expect(await store.getIssuedGateway()).toEqual({
+      gatewayId: 'gw-issued-9',
+      dialToken: 'dial-9',
+      host: 'relay.example.com',
+    });
+    expect(entryConstructorCalls).toContainEqual(['dash-mission-control', 'issued-gateway-id']);
+    expect(entryConstructorCalls).toContainEqual([
+      'dash-mission-control',
+      'issued-gateway-dial-token',
+    ]);
+    expect(entryConstructorCalls).toContainEqual(['dash-mission-control', 'issued-gateway-host']);
   });
 
   it('caches Entry instances per account so the native ctor runs once', async () => {

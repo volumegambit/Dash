@@ -99,10 +99,13 @@ const api: MissionControlAPI = {
   settingsGet: () => ipcRenderer.invoke('settings:get'),
   settingsSet: (patch) => ipcRenderer.invoke('settings:set', patch),
 
-  // Relay (remote access)
-  relayGetConfig: () => ipcRenderer.invoke('relay:getConfig'),
-  relaySetConfig: (config) => ipcRenderer.invoke('relay:setConfig', config),
-  relayClearConfig: () => ipcRenderer.invoke('relay:clearConfig'),
+  // Remote access (hosted control plane)
+  controlPlaneStatus: () => ipcRenderer.invoke('controlPlane:status'),
+  controlPlaneSignIn: () => ipcRenderer.invoke('controlPlane:signIn'),
+  controlPlaneSignOut: () => ipcRenderer.invoke('controlPlane:signOut'),
+  gatewayEnroll: () => ipcRenderer.invoke('gateway:enroll'),
+  devicesList: () => ipcRenderer.invoke('devices:list'),
+  devicesRevoke: (deviceId: string) => ipcRenderer.invoke('devices:revoke', deviceId),
 
   // Models & Tools
   modelsList: () => ipcRenderer.invoke('models:list'),

@@ -52,6 +52,34 @@ Something not working? Here are the most common issues and how to fix them.
   </Accordion>
 </AccordionGroup>
 
+## Remote access (relay)
+
+<AccordionGroup>
+  <Accordion title="Sign-in failed">
+    **Symptom:** Clicking **Sign in to Dash** on **Settings → Remote access** opens the browser but Mission Control shows **Sign-in failed**.
+
+    **Fix:** Finish signing in within the browser tab that opened — Mission Control is waiting for it to hand control back. If you closed the tab, dismissed it, or it timed out, click **Sign in to Dash** again to start over. Make sure the machine running Mission Control has internet access.
+  </Accordion>
+
+  <Accordion title="Create gateway is missing or fails">
+    **Symptom:** You don't see **Create gateway**, or clicking it shows **Could not enroll a gateway**.
+
+    **Fix:** **Create gateway** only appears once you're signed in — if you see **Sign in to Dash** instead, sign in first. If enrollment fails, it's usually a temporary network problem: wait a moment and click **Create gateway** again. The gateway needs to be running for it to connect out.
+  </Accordion>
+
+  <Accordion title="QR code still pairs over the local network">
+    **Symptom:** The **Pair Device** screen says it connects over your **local network** even though you want remote access.
+
+    **Fix:** The QR code only switches to remote access after you've created a gateway. Open **Settings → Remote access**, confirm you see **Gateway ready at** with an address, then return to **Pair Device** — the code now carries your relay address.
+  </Accordion>
+
+  <Accordion title="Phone can no longer connect after a revoke">
+    **Symptom:** A phone that used to work remotely now can't reach your agents.
+
+    **Fix:** If that device was removed under **Settings → Remote access → Paired devices** (by you or from another machine), its credential no longer works — this is expected. Pair it again: open **Pair Device**, scan a fresh QR code on the phone, and it gets a new credential.
+  </Accordion>
+</AccordionGroup>
+
 ## Tool errors
 
 <AccordionGroup>
