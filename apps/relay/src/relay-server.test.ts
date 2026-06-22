@@ -12,7 +12,7 @@ import {
 } from './relay-server.js';
 
 const deps = {
-  relayTokenValid: (t: string) => t === 'good',
+  relayTokenValid: (_gatewayId: string, t: string) => t === 'good',
   pairingCredentialValid: () => true,
 };
 
@@ -127,6 +127,31 @@ describe('relay-server', () => {
     });
     expect(code).toBe(4401);
     expect(server.hasGateway('g2')).toBe(false);
+  });
+
+  it('rejects a dial token bound to another gateway without disturbing the incumbent', async () => {
+    // token `good-1` only valid for gw-1, `good-2` only for gw-2.
+    await restartWith({
+      relayTokenValid: (gatewayId, token) => token === `good-${gatewayId.slice(-1)}`,
+      pairingCredentialValid: () => true,
+    });
+
+    const gw1 = await connectGateway('gw-1', 'good-1');
+    await waitFor(() => server.hasGateway('gw-1'));
+    expect(server.hasGateway('gw-1')).toBe(true);
+
+    // Attacker dials gw-1's slot with a token only valid for gw-2.
+    const code = await new Promise<number>((resolve) => {
+      const attacker = new WebSocket(`ws://127.0.0.1:${port}/gw/gw-1`, {
+        headers: { authorization: 'Bearer good-2' },
+      });
+      attacker.on('close', (c) => resolve(c));
+    });
+    expect(code).toBe(4401);
+    expect(server.hasGateway('gw-1')).toBe(true); // incumbent survived — no DoS kick
+    expect(gw1.readyState).toBe(WebSocket.OPEN);
+
+    gw1.close();
   });
 
   it('replaces an existing gateway connection with the same id', async () => {
@@ -323,7 +348,7 @@ describe('relay-server', () => {
   it('rejects phone HTTP with 401 when the pairing credential is invalid', async () => {
     let seen: { gatewayId: string; credential: string } | undefined;
     await restartWith({
-      relayTokenValid: (t) => t === 'good',
+      relayTokenValid: (_gatewayId, t) => t === 'good',
       pairingCredentialValid: (gatewayId, credential) => {
         seen = { gatewayId, credential };
         return false;
@@ -344,7 +369,7 @@ describe('relay-server', () => {
 
   it('rejects a phone WebSocket with 4401 when the pairing credential is invalid', async () => {
     await restartWith({
-      relayTokenValid: (t) => t === 'good',
+      relayTokenValid: (_gatewayId, t) => t === 'good',
       pairingCredentialValid: () => false,
     });
     const gw = await connectGateway('g1', 'good');
@@ -362,7 +387,7 @@ describe('relay-server', () => {
 
   it('proxies the request when the pairing credential is accepted', async () => {
     await restartWith({
-      relayTokenValid: (t) => t === 'good',
+      relayTokenValid: (_gatewayId, t) => t === 'good',
       pairingCredentialValid: (_gatewayId, credential) => credential === 'secret',
     });
     const gw = await connectGateway('g1', 'good');
@@ -396,7 +421,7 @@ describe('relay-server', () => {
     const prov = await httpPost(
       '/admin/pairings',
       { authorization: 'Bearer admin-secret' },
-      { gatewayId: 'g1' },
+      { tenantId: 't1', gatewayId: 'g1' },
     );
     expect(prov.status).toBe(200);
     const { credential } = JSON.parse(prov.body) as { credential: string };
@@ -436,7 +461,7 @@ describe('relay-server', () => {
     const prov = await httpPost(
       '/admin/pairings',
       { authorization: 'Bearer admin-secret' },
-      { gatewayId: 'g1' },
+      { tenantId: 't1', gatewayId: 'g1' },
     );
     const { credential } = JSON.parse(prov.body) as { credential: string };
 
@@ -450,7 +475,7 @@ describe('relay-server', () => {
     const rev = await httpPost(
       '/admin/pairings/revoke',
       { authorization: 'Bearer admin-secret' },
-      { gatewayId: 'g1', credential },
+      { tenantId: 't1', gatewayId: 'g1', credential },
     );
     expect(rev.status).toBe(200);
 
@@ -461,6 +486,37 @@ describe('relay-server', () => {
     });
     expect(after.status).toBe(401);
     gw.close();
+  });
+
+  it('admin /admin/gateways/revoke force-closes the live gateway socket', async () => {
+    await restartWithCredentialStore();
+    const gw = await connectGateway('gw-1', 'good');
+    await waitFor(() => server.hasGateway('gw-1'));
+    expect(server.hasGateway('gw-1')).toBe(true);
+
+    const res = await httpPost(
+      '/admin/gateways/revoke',
+      { authorization: 'Bearer admin-secret' },
+      { tenantId: 't1', gatewayId: 'gw-1' },
+    );
+    expect(res.status).toBe(200);
+
+    const code = await new Promise<number>((resolve) => {
+      gw.on('close', (c) => resolve(c));
+    });
+    expect(code).toBe(4401);
+    await waitFor(() => !server.hasGateway('gw-1'));
+    expect(server.hasGateway('gw-1')).toBe(false);
+  });
+
+  it('admin pairing routes require tenantId', async () => {
+    await restartWithCredentialStore();
+    const res = await httpPost(
+      '/admin/pairings',
+      { authorization: 'Bearer admin-secret' },
+      { gatewayId: 'gw-1' }, // no tenantId
+    );
+    expect(res.status).toBe(400);
   });
 
   it('survives a malformed gateway response (duplicate head) and keeps serving', async () => {
@@ -493,7 +549,7 @@ describe('relay-server', () => {
   it('does not spend the rate-limit budget on unauthenticated requests', async () => {
     await restartWith(
       {
-        relayTokenValid: (t) => t === 'good',
+        relayTokenValid: (_gatewayId, t) => t === 'good',
         pairingCredentialValid: (_gatewayId, cred) => cred === 'valid',
       },
       { rateBurst: 1, ratePerSec: 0 },

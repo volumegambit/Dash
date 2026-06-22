@@ -1,5 +1,6 @@
-import { timingSafeEqual } from 'node:crypto';
-import type { PairingCredentialStore } from './credential-store.js';
+import { type KeyObject, timingSafeEqual } from 'node:crypto';
+import type { CredentialStore, PairingCredentialStore } from './credential-store.js';
+import { verifyDialToken } from './dial-token.js';
 
 /**
  * Auth decisions the relay needs. The real per-gateway implementation lands in
@@ -7,8 +8,13 @@ import type { PairingCredentialStore } from './credential-store.js';
  * (relay-server) has no opinion on how credentials are stored.
  */
 export interface RelayDeps {
-  /** True if a gateway may register (the Bearer it presents on dial-in). */
-  relayTokenValid(token: string): boolean;
+  /**
+   * True if a gateway may register the given `gatewayId` with the Bearer it
+   * presents on dial-in. The `gatewayId` is bound into the decision so a token
+   * minted for one gateway cannot be replayed to dial in as another (hosted
+   * mode); the shared-token modes ignore it.
+   */
+  relayTokenValid(gatewayId: string, token: string): boolean;
   /** True if a phone may reach this gateway (its per-pairing credential). */
   pairingCredentialValid(gatewayId: string, credential: string): boolean;
 }
@@ -32,7 +38,7 @@ export function safeEqual(a: string, b: string): boolean {
  */
 export function staticRelayAuth(relayToken: string): RelayDeps {
   return {
-    relayTokenValid: (token) => safeEqual(token, relayToken),
+    relayTokenValid: (_gatewayId, token) => safeEqual(token, relayToken),
     pairingCredentialValid: () => true,
   };
 }
@@ -45,7 +51,27 @@ export function staticRelayAuth(relayToken: string): RelayDeps {
  */
 export function credentialStoreAuth(relayToken: string, store: PairingCredentialStore): RelayDeps {
   return {
-    relayTokenValid: (token) => safeEqual(token, relayToken),
+    relayTokenValid: (_gatewayId, token) => safeEqual(token, relayToken),
     pairingCredentialValid: (gatewayId, credential) => store.isValid(gatewayId, credential),
+  };
+}
+
+/**
+ * Hosted (multi-tenant SaaS) auth: dial-in is a control-plane-signed token whose
+ * claims bind it to ONE gatewayId; the pairing credential is validated against the
+ * (control-plane-pushed) store. No shared secret, no per-request network call.
+ */
+export function hostedRelayAuth(opts: {
+  publicKey: KeyObject;
+  store: CredentialStore;
+  now?: () => number;
+}): RelayDeps {
+  const now = opts.now ?? (() => Math.floor(Date.now() / 1000));
+  return {
+    relayTokenValid: (gatewayId, token) => {
+      const claims = verifyDialToken(token, opts.publicKey, now());
+      return claims !== null && claims.gatewayId === gatewayId;
+    },
+    pairingCredentialValid: (gatewayId, credential) => opts.store.isValid(gatewayId, credential),
   };
 }
