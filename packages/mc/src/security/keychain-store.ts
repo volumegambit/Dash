@@ -28,6 +28,23 @@ const CHAT_TOKEN_ACCOUNT = 'gateway-chat-token';
 const RELAY_TOKEN_ACCOUNT = 'gateway-relay-token';
 const GATEWAY_ID_ACCOUNT = 'gateway-relay-id';
 const RELAY_ADMIN_SECRET_ACCOUNT = 'gateway-relay-admin-secret';
+const CONTROL_PLANE_TOKEN_ACCOUNT = 'control-plane-token';
+const ISSUED_GATEWAY_ID_ACCOUNT = 'issued-gateway-id';
+const ISSUED_GATEWAY_DIAL_TOKEN_ACCOUNT = 'issued-gateway-dial-token';
+const ISSUED_GATEWAY_HOST_ACCOUNT = 'issued-gateway-host';
+
+/**
+ * The gateway identity the hosted control plane issues at enrollment.
+ * `gatewayId` is the routing key phones pair to (it becomes the relay
+ * subdomain), `dialToken` is the signed credential the gateway presents
+ * when it dials the relay, and `host` is the relay's base hostname. All
+ * three are required for a usable record — see {@link KeychainStore.getIssuedGateway}.
+ */
+export interface IssuedGateway {
+  gatewayId: string;
+  dialToken: string;
+  host: string;
+}
 
 export interface KeychainStore {
   getGatewayToken(): Promise<string | null>;
@@ -39,24 +56,50 @@ export interface KeychainStore {
    * per-gateway id the relay routes by. Both persist here so a supervisor
    * restart reuses the same identity — phones pair to `<gatewayId>`, so it must
    * not change. Only populated once relay mode is configured.
+   *
+   * @deprecated Self-hosted relay path. The hosted control plane now issues the
+   * gateway identity ({@link getIssuedGateway}); use that instead.
    */
   getRelayToken(): Promise<string | null>;
+  /** @deprecated Self-hosted relay path — see {@link getIssuedGateway}. */
   setRelayToken(value: string): Promise<void>;
+  /** @deprecated Self-hosted relay path — see {@link getIssuedGateway}. */
   getGatewayId(): Promise<string | null>;
+  /** @deprecated Self-hosted relay path — see {@link getIssuedGateway}. */
   setGatewayId(value: string): Promise<void>;
   /**
    * Master secret for the relay's admin API. Mission Control presents it to
    * provision/revoke per-device pairing credentials. User-configured to match
    * the relay's RELAY_ADMIN_SECRET; a secret, so it lives here, not in settings.
+   *
+   * @deprecated Self-hosted relay path. With the hosted control plane MC never
+   * holds the relay master secret — the control plane is the admin caller.
    */
   getRelayAdminSecret(): Promise<string | null>;
+  /** @deprecated Self-hosted relay path — see {@link getRelayAdminSecret}. */
   setRelayAdminSecret(value: string): Promise<void>;
   /**
+   * The hosted control plane's session access token (WorkOS-issued). MC sends
+   * it as `Authorization: Bearer <token>` on every control-plane API call. A
+   * secret, so it lives in the OS credential store, never in settings.json.
+   */
+  getControlPlaneToken(): Promise<string | null>;
+  setControlPlaneToken(value: string): Promise<void>;
+  /**
+   * The gateway identity issued by the control plane at enrollment. Persisted
+   * so a supervisor restart reuses the same `gatewayId` (phones pair to it).
+   * Returns `null` unless all three fields are present — a partially written
+   * record is treated as absent so `ensureRunning()` re-enrolls cleanly.
+   */
+  getIssuedGateway(): Promise<IssuedGateway | null>;
+  setIssuedGateway(value: IssuedGateway): Promise<void>;
+  /**
    * Remove all gateway secrets (management + chat tokens, relay token, gateway
-   * id, relay admin secret) from the OS credential store. Used by explicit
-   * teardown (e.g. "Reset Gateway" in MC settings). Never called during normal
-   * `ensureRunning()` flows — we prefer the existing identity across spawns so a
-   * restarted gateway stays compatible with prior state and paired phones.
+   * id, relay admin secret, control-plane token, issued gateway record) from
+   * the OS credential store. Used by explicit teardown (e.g. "Reset Gateway" in
+   * MC settings). Never called during normal `ensureRunning()` flows — we prefer
+   * the existing identity across spawns so a restarted gateway stays compatible
+   * with prior state and paired phones.
    */
   clearAllGatewayTokens(): Promise<void>;
 }
@@ -126,6 +169,28 @@ class DefaultKeychainStore implements KeychainStore {
     (await this.entry(RELAY_ADMIN_SECRET_ACCOUNT)).setPassword(value);
   }
 
+  async getControlPlaneToken(): Promise<string | null> {
+    return (await this.entry(CONTROL_PLANE_TOKEN_ACCOUNT)).getPassword();
+  }
+
+  async setControlPlaneToken(value: string): Promise<void> {
+    (await this.entry(CONTROL_PLANE_TOKEN_ACCOUNT)).setPassword(value);
+  }
+
+  async getIssuedGateway(): Promise<IssuedGateway | null> {
+    const gatewayId = await (await this.entry(ISSUED_GATEWAY_ID_ACCOUNT)).getPassword();
+    const dialToken = await (await this.entry(ISSUED_GATEWAY_DIAL_TOKEN_ACCOUNT)).getPassword();
+    const host = await (await this.entry(ISSUED_GATEWAY_HOST_ACCOUNT)).getPassword();
+    if (!gatewayId || !dialToken || !host) return null;
+    return { gatewayId, dialToken, host };
+  }
+
+  async setIssuedGateway(value: IssuedGateway): Promise<void> {
+    (await this.entry(ISSUED_GATEWAY_ID_ACCOUNT)).setPassword(value.gatewayId);
+    (await this.entry(ISSUED_GATEWAY_DIAL_TOKEN_ACCOUNT)).setPassword(value.dialToken);
+    (await this.entry(ISSUED_GATEWAY_HOST_ACCOUNT)).setPassword(value.host);
+  }
+
   async clearAllGatewayTokens(): Promise<void> {
     for (const account of [
       GATEWAY_TOKEN_ACCOUNT,
@@ -133,6 +198,10 @@ class DefaultKeychainStore implements KeychainStore {
       RELAY_TOKEN_ACCOUNT,
       GATEWAY_ID_ACCOUNT,
       RELAY_ADMIN_SECRET_ACCOUNT,
+      CONTROL_PLANE_TOKEN_ACCOUNT,
+      ISSUED_GATEWAY_ID_ACCOUNT,
+      ISSUED_GATEWAY_DIAL_TOKEN_ACCOUNT,
+      ISSUED_GATEWAY_HOST_ACCOUNT,
     ]) {
       try {
         (await this.entry(account)).deletePassword();
@@ -201,11 +270,37 @@ export class InMemoryKeychainStore implements KeychainStore {
     this.store.set(RELAY_ADMIN_SECRET_ACCOUNT, value);
   }
 
+  async getControlPlaneToken(): Promise<string | null> {
+    return this.store.get(CONTROL_PLANE_TOKEN_ACCOUNT) ?? null;
+  }
+
+  async setControlPlaneToken(value: string): Promise<void> {
+    this.store.set(CONTROL_PLANE_TOKEN_ACCOUNT, value);
+  }
+
+  async getIssuedGateway(): Promise<IssuedGateway | null> {
+    const gatewayId = this.store.get(ISSUED_GATEWAY_ID_ACCOUNT);
+    const dialToken = this.store.get(ISSUED_GATEWAY_DIAL_TOKEN_ACCOUNT);
+    const host = this.store.get(ISSUED_GATEWAY_HOST_ACCOUNT);
+    if (!gatewayId || !dialToken || !host) return null;
+    return { gatewayId, dialToken, host };
+  }
+
+  async setIssuedGateway(value: IssuedGateway): Promise<void> {
+    this.store.set(ISSUED_GATEWAY_ID_ACCOUNT, value.gatewayId);
+    this.store.set(ISSUED_GATEWAY_DIAL_TOKEN_ACCOUNT, value.dialToken);
+    this.store.set(ISSUED_GATEWAY_HOST_ACCOUNT, value.host);
+  }
+
   async clearAllGatewayTokens(): Promise<void> {
     this.store.delete(GATEWAY_TOKEN_ACCOUNT);
     this.store.delete(CHAT_TOKEN_ACCOUNT);
     this.store.delete(RELAY_TOKEN_ACCOUNT);
     this.store.delete(RELAY_ADMIN_SECRET_ACCOUNT);
     this.store.delete(GATEWAY_ID_ACCOUNT);
+    this.store.delete(CONTROL_PLANE_TOKEN_ACCOUNT);
+    this.store.delete(ISSUED_GATEWAY_ID_ACCOUNT);
+    this.store.delete(ISSUED_GATEWAY_DIAL_TOKEN_ACCOUNT);
+    this.store.delete(ISSUED_GATEWAY_HOST_ACCOUNT);
   }
 }
