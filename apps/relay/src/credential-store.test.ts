@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -5,6 +6,11 @@ import { DurableCredentialStore, PairingCredentialStore } from './credential-sto
 
 function tmpDb() {
   return join(mkdtempSync(join(tmpdir(), 'relay-store-')), 'creds.db');
+}
+
+/** The relay's canonical pairing-hash form (matches the store's internal `hashCred`). */
+function hashOf(credential: string): string {
+  return createHash('sha256').update(credential).digest('base64url');
 }
 
 describe('PairingCredentialStore', () => {
@@ -82,6 +88,20 @@ describe('PairingCredentialStore', () => {
     expect(store.isValid('gw-1', a)).toBe(false);
     expect(store.isValid('gw-1', b)).toBe(false);
   });
+
+  it('revokeByHash invalidates only the credential whose hash matches', () => {
+    const store = new PairingCredentialStore();
+    const a = store.provision('t1', 'gw-1');
+    const b = store.provision('t1', 'gw-1');
+    // The caller knows only the hash (the control plane never keeps the raw secret).
+    expect(store.revokeByHash('t1', 'gw-1', hashOf(a))).toBe(true);
+    expect(store.isValid('gw-1', a)).toBe(false);
+    expect(store.isValid('gw-1', b)).toBe(true); // the other device still works
+    // Revoking again is a no-op and reports false.
+    expect(store.revokeByHash('t1', 'gw-1', hashOf(a))).toBe(false);
+    // An unknown gateway is a no-op too.
+    expect(store.revokeByHash('t1', 'gw-unknown', hashOf(b))).toBe(false);
+  });
 });
 
 describe('DurableCredentialStore', () => {
@@ -124,5 +144,16 @@ describe('DurableCredentialStore', () => {
     s.provision('t1', 'gw-1');
     s.provision('t1', 'gw-1'); // evicts `a`
     expect(s.isValid('gw-1', a)).toBe(false);
+  });
+
+  test('revokeByHash deletes only the matching credential', () => {
+    const s = new DurableCredentialStore(tmpDb());
+    const a = s.provision('t1', 'gw-1');
+    const b = s.provision('t1', 'gw-1');
+    expect(s.revokeByHash('t1', 'gw-1', hashOf(a))).toBe(true);
+    expect(s.isValid('gw-1', a)).toBe(false);
+    expect(s.isValid('gw-1', b)).toBe(true);
+    // Idempotent: revoking an already-absent hash reports false.
+    expect(s.revokeByHash('t1', 'gw-1', hashOf(a))).toBe(false);
   });
 });

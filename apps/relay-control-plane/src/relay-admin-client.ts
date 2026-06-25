@@ -4,9 +4,9 @@
  * The control plane is the *sole* caller of this API: it provisions a pairing
  * credential, pushes it to the relay, and stores only the hash. The relay's
  * admin contract (see `@dash/relay`'s `createRelayServer`):
- *   POST /admin/pairings          { tenantId, gatewayId }              → { credential }
- *   POST /admin/pairings/revoke   { tenantId, gatewayId, credential? } → { ok: true }
- *   POST /admin/gateways/revoke   { tenantId, gatewayId }              → { ok: true }
+ *   POST /admin/pairings          { tenantId, gatewayId }                            → { credential }
+ *   POST /admin/pairings/revoke   { tenantId, gatewayId, credential?|credentialHash? } → { ok: true }
+ *   POST /admin/gateways/revoke   { tenantId, gatewayId }                            → { ok: true }
  *
  * Idempotency: provision is naturally additive; both revoke routes answer 200
  * even when the target is already absent, so retries are safe.
@@ -38,11 +38,19 @@ export class RelayAdminClient {
   }
 
   /**
-   * Revoke a pairing credential. With `credential` omitted, every credential
-   * for the gateway is revoked. Tolerates an already-absent credential.
+   * Revoke a pairing credential. Pass `credentialHash` (the relay's base64url
+   * SHA-256 digest) to drop exactly one device when only its hash is held — the
+   * control plane's path, since it never keeps the raw secret. Pass `credential`
+   * to revoke by raw value. With neither, every credential for the gateway is
+   * revoked. Tolerates an already-absent target (idempotent).
    */
-  async revokePairing(tenantId: string, gatewayId: string, credential?: string): Promise<void> {
-    await this.#post('/admin/pairings/revoke', { tenantId, gatewayId, credential });
+  async revokePairing(
+    tenantId: string,
+    gatewayId: string,
+    credential?: string,
+    credentialHash?: string,
+  ): Promise<void> {
+    await this.#post('/admin/pairings/revoke', { tenantId, gatewayId, credential, credentialHash });
   }
 
   /** Force-close the gateway's live tunnel (drops a revoked gateway at once). */

@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { WebSocket } from 'ws';
@@ -485,6 +486,51 @@ describe('relay-server', () => {
       'x-dash-relay-credential': credential,
     });
     expect(after.status).toBe(401);
+    gw.close();
+  });
+
+  it('revoke by credentialHash invalidates only the targeted device', async () => {
+    await restartWithCredentialStore();
+    const gw = await connectGateway('g1', 'good');
+    respondOk(gw);
+    await waitFor(() => server.hasGateway('g1'));
+
+    const provA = await httpPost(
+      '/admin/pairings',
+      { authorization: 'Bearer admin-secret' },
+      { tenantId: 't1', gatewayId: 'g1' },
+    );
+    const provB = await httpPost(
+      '/admin/pairings',
+      { authorization: 'Bearer admin-secret' },
+      { tenantId: 't1', gatewayId: 'g1' },
+    );
+    const { credential: a } = JSON.parse(provA.body) as { credential: string };
+    const { credential: b } = JSON.parse(provB.body) as { credential: string };
+
+    // The control plane only has the hash — revoke device A by its base64url digest.
+    const rev = await httpPost(
+      '/admin/pairings/revoke',
+      { authorization: 'Bearer admin-secret' },
+      {
+        tenantId: 't1',
+        gatewayId: 'g1',
+        credentialHash: createHash('sha256').update(a).digest('base64url'),
+      },
+    );
+    expect(rev.status).toBe(200);
+
+    // Device A is now rejected; device B is untouched.
+    const afterA = await httpGet('/agents', {
+      host: 'g1.relay.local',
+      'x-dash-relay-credential': a,
+    });
+    expect(afterA.status).toBe(401);
+    const afterB = await httpGet('/agents', {
+      host: 'g1.relay.local',
+      'x-dash-relay-credential': b,
+    });
+    expect(afterB.status).toBe(200);
     gw.close();
   });
 

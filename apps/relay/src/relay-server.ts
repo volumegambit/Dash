@@ -42,11 +42,12 @@ export interface RelayAdminConfig {
 export interface RelayServerOptions extends RelayLimits {
   /**
    * When set, the relay exposes a Bearer-gated admin API on the same listener:
-   *   POST /admin/pairings          { tenantId, gatewayId }            → { credential }
-   *   POST /admin/pairings/revoke   { tenantId, gatewayId, credential? } → { ok: true }
-   *   POST /admin/gateways/revoke   { tenantId, gatewayId }            → { ok: true }
-   * Mission Control calls these to provision/revoke per-device pairings and to
-   * force-close a revoked gateway's live tunnel.
+   *   POST /admin/pairings          { tenantId, gatewayId }                         → { credential }
+   *   POST /admin/pairings/revoke   { tenantId, gatewayId, credential?|credentialHash? } → { ok: true }
+   *   POST /admin/gateways/revoke   { tenantId, gatewayId }                         → { ok: true }
+   * Mission Control / the hosted control plane call these to provision and revoke
+   * per-device pairings (by raw credential or, when only the hash is held, by
+   * `credentialHash`) and to force-close a revoked gateway's live tunnel.
    */
   admin?: RelayAdminConfig;
 }
@@ -472,8 +473,12 @@ function handleAdmin(
         if (!tenantId || !gatewayId) {
           return respondJson(res, 400, { error: 'tenantId and gatewayId required' });
         }
+        // Precedence: a single device by hash (the hosted control plane's path —
+        // it keeps only the hash), else by raw credential, else un-pair all.
+        const credentialHash = stringField(body, 'credentialHash');
         const credential = stringField(body, 'credential');
-        if (credential) admin.store.revoke(tenantId, gatewayId, credential);
+        if (credentialHash) admin.store.revokeByHash(tenantId, gatewayId, credentialHash);
+        else if (credential) admin.store.revoke(tenantId, gatewayId, credential);
         else admin.store.revokeAll(tenantId, gatewayId);
         return respondJson(res, 200, { ok: true });
       }

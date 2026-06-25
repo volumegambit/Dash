@@ -24,6 +24,14 @@ const nodeRequire = createRequire(import.meta.url);
 export interface CredentialStore {
   provision(tenantId: string, gatewayId: string): string;
   revoke(tenantId: string, gatewayId: string, credential: string): boolean;
+  /**
+   * Revoke one credential by its hash rather than its raw value. The hash is the
+   * relay's canonical base64url SHA-256 digest (see {@link hashCred}). This is
+   * the path the hosted control plane uses: it stores only the hash at rest, so
+   * it can never present the raw credential {@link revoke} requires. Returns true
+   * if a credential was removed.
+   */
+  revokeByHash(tenantId: string, gatewayId: string, credentialHash: string): boolean;
   revokeAll(tenantId: string, gatewayId: string): void;
   isValid(gatewayId: string, credential: string): boolean;
 }
@@ -81,6 +89,24 @@ export class PairingCredentialStore implements CredentialStore {
     const removed = set.delete(credential);
     if (set.size === 0) this.byGateway.delete(gatewayId);
     return removed;
+  }
+
+  /**
+   * Remove one credential identified by its base64url SHA-256 hash. This store
+   * keeps raw credentials, so it re-hashes each one (via the same {@link hashCred}
+   * the durable store persists) to find the match. Returns true if one was removed.
+   */
+  revokeByHash(_tenantId: string, gatewayId: string, credentialHash: string): boolean {
+    const set = this.byGateway.get(gatewayId);
+    if (!set || credentialHash.length === 0) return false;
+    for (const known of set) {
+      if (hashCred(known) === credentialHash) {
+        set.delete(known);
+        if (set.size === 0) this.byGateway.delete(gatewayId);
+        return true;
+      }
+    }
+    return false;
   }
 
   /** Revoke every credential for a gateway (e.g. un-pair-all). */
@@ -156,6 +182,17 @@ export class DurableCredentialStore implements CredentialStore {
     const r = this.db
       .prepare('DELETE FROM pairings WHERE gateway_id = ? AND cred_hash = ?')
       .run(gatewayId, hashCred(credential));
+    return r.changes > 0;
+  }
+
+  /**
+   * Revoke by hash. The stored `cred_hash` is already the base64url digest, so
+   * the supplied hash matches it directly — no raw credential needed.
+   */
+  revokeByHash(_tenantId: string, gatewayId: string, credentialHash: string): boolean {
+    const r = this.db
+      .prepare('DELETE FROM pairings WHERE gateway_id = ? AND cred_hash = ?')
+      .run(gatewayId, credentialHash);
     return r.changes > 0;
   }
 
