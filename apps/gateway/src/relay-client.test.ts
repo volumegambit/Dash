@@ -548,4 +548,125 @@ describe('relay-client', () => {
     expect(received.some((f) => f.t === 'head')).toBe(true); // failed AFTER the head
     expect(received.some((f) => f.t === 'close')).toBe(true);
   });
+
+  it('reads the token via getRelayToken and sends a fresh proof header per dial', async () => {
+    relay = new WebSocketServer({ port: 0, host: '127.0.0.1' });
+    await new Promise<void>((r) => relay?.on('listening', () => r()));
+    const relayPort = (relay.address() as AddressInfo).port;
+
+    const seen: Array<{ auth?: string; proof?: string }> = [];
+    relay.on('connection', (ws, req) => {
+      seen.push({
+        auth: req.headers.authorization,
+        proof: req.headers['x-gateway-proof'] as string | undefined,
+      });
+      ws.close(4401, 'Unauthorized'); // force a re-dial so we see a second header set
+    });
+
+    let tokenN = 0;
+    let proofN = 0;
+    client = startRelayClient({
+      relayUrl: `ws://127.0.0.1:${relayPort}`,
+      relayToken: 'unused',
+      getRelayToken: () => `tok-${++tokenN}`,
+      signProof: () => `proof-${++proofN}`,
+      gatewayId: 'g1',
+      managementPort: 9999,
+      channelPort: 9998,
+      reconnectBaseMs: 20,
+      reconnectMaxMs: 100,
+      heartbeatMs: 100000,
+    });
+
+    await waitFor(() => seen.length >= 2, 3000);
+    // The getter token is used, not the static `relayToken`.
+    expect(seen[0].auth).toBe('Bearer tok-1');
+    expect(seen[0].proof).toBe('proof-1');
+    // A fresh proof (and token) is minted on the next dial.
+    expect(seen[1].auth).toBe('Bearer tok-2');
+    expect(seen[1].proof).toBe('proof-2');
+  });
+
+  it('calls onAuthFailure when the relay closes with 4401', async () => {
+    relay = new WebSocketServer({ port: 0, host: '127.0.0.1' });
+    await new Promise<void>((r) => relay?.on('listening', () => r()));
+    const relayPort = (relay.address() as AddressInfo).port;
+    relay.on('connection', (ws) => ws.close(4401, 'Unauthorized'));
+
+    let authFailures = 0;
+    client = startRelayClient({
+      relayUrl: `ws://127.0.0.1:${relayPort}`,
+      relayToken: 'rt',
+      gatewayId: 'g1',
+      managementPort: 9999,
+      channelPort: 9998,
+      reconnectBaseMs: 50,
+      reconnectMaxMs: 100,
+      heartbeatMs: 100000,
+      onAuthFailure: () => {
+        authFailures += 1;
+      },
+    });
+
+    await waitFor(() => authFailures >= 1, 2000);
+    expect(authFailures).toBeGreaterThanOrEqual(1);
+  });
+
+  it('does not call onAuthFailure on a normal (non-4401) close', async () => {
+    relay = new WebSocketServer({ port: 0, host: '127.0.0.1' });
+    await new Promise<void>((r) => relay?.on('listening', () => r()));
+    const relayPort = (relay.address() as AddressInfo).port;
+    relay.on('connection', (ws) => ws.close(1000, 'bye'));
+
+    let authFailures = 0;
+    client = startRelayClient({
+      relayUrl: `ws://127.0.0.1:${relayPort}`,
+      relayToken: 'rt',
+      gatewayId: 'g1',
+      managementPort: 9999,
+      channelPort: 9998,
+      reconnectBaseMs: 50,
+      reconnectMaxMs: 100,
+      heartbeatMs: 100000,
+      onAuthFailure: () => {
+        authFailures += 1;
+      },
+    });
+
+    await new Promise((r) => setTimeout(r, 300));
+    expect(authFailures).toBe(0);
+  });
+
+  it('redialNow re-dials immediately with the latest token', async () => {
+    relay = new WebSocketServer({ port: 0, host: '127.0.0.1' });
+    await new Promise<void>((r) => relay?.on('listening', () => r()));
+    const relayPort = (relay.address() as AddressInfo).port;
+
+    const auths: string[] = [];
+    relay.on('connection', (ws, req) => {
+      auths.push(req.headers.authorization ?? '');
+      void ws; // keep the connection open
+    });
+
+    let tok = 'old';
+    client = startRelayClient({
+      relayUrl: `ws://127.0.0.1:${relayPort}`,
+      relayToken: 'unused',
+      getRelayToken: () => tok,
+      gatewayId: 'g1',
+      managementPort: 9999,
+      channelPort: 9998,
+      reconnectBaseMs: 20,
+      reconnectMaxMs: 100,
+      heartbeatMs: 100000,
+    });
+
+    await waitFor(() => auths.length >= 1);
+    expect(auths[0]).toBe('Bearer old');
+
+    tok = 'new';
+    client.redialNow();
+    await waitFor(() => auths.length >= 2, 2000);
+    expect(auths[1]).toBe('Bearer new');
+  });
 });
