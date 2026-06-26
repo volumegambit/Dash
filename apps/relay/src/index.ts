@@ -23,4 +23,10 @@ export {
   DurableCredentialStore,
   type CredentialStore,
 } from './credential-store.js';
-export { signDialToken, verifyDialToken, type DialTokenClaims } from './dial-token.js';
+export {
+  signDialToken,
+  verifyDialToken,
+  decodeDialTokenClaims,
+  type DialTokenClaims,
+} from './dial-token.js';
+export { signAssertion, verifyAssertion, type AssertionClaims } from './assertion.js';
