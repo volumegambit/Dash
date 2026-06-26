@@ -1,11 +1,19 @@
 import { Hono } from 'hono';
 import type { Authenticator } from './auth.js';
-import type { ProvisioningService } from './provisioning.js';
+import type { GatewayAssertionAuthenticator } from './gateway-assertion-auth.js';
+import {
+  InvalidPublicKeyError,
+  InvalidSubdomainError,
+  type ProvisioningService,
+  SubdomainTakenError,
+} from './provisioning.js';
 
 /** Collaborators the HTTP API binds its routes to. */
 export interface ApiDeps {
   provisioning: ProvisioningService;
   authenticator: Authenticator;
+  /** Authenticates the gateway-driven `/gw/dial-token` refresh (non-WorkOS). */
+  gatewayAssertionAuth: GatewayAssertionAuthenticator;
 }
 
 /**
@@ -26,11 +34,21 @@ type ApiEnv = { Variables: { accountId: string } };
  * under another account.
  */
 export function createApi(deps: ApiDeps): Hono<ApiEnv> {
-  const { provisioning, authenticator } = deps;
+  const { provisioning, authenticator, gatewayAssertionAuth } = deps;
   const app = new Hono<ApiEnv>();
 
   // --- Health (open) ---
   app.get('/health', (c) => c.json({ status: 'healthy' }));
+
+  // --- Gateway-driven dial-token refresh (open path, gateway-assertion auth) ---
+  // Sibling to /health — NOT under the WorkOS-gated /v1/* middleware. The gateway
+  // proves possession of its private key with a signed assertion; the account is
+  // re-derived from the stored record, never the request. Every failure → 401.
+  app.post('/gw/dial-token', (c) => {
+    const dialToken = gatewayAssertionAuth.mintDialToken(c.req.header('authorization'));
+    if (!dialToken) return c.json({ error: 'unauthorized' }, 401);
+    return c.json({ dialToken });
+  });
 
   // --- Auth middleware: gates everything under /v1 ---
   app.use('/v1/*', async (c, next) => {
@@ -45,10 +63,26 @@ export function createApi(deps: ApiDeps): Hono<ApiEnv> {
 
   // --- Gateways ---
 
-  app.post('/v1/gateways', (c) => {
+  app.post('/v1/gateways', async (c) => {
     const accountId = c.get('accountId');
-    const { gatewayId, subdomain, dialToken } = provisioning.createGateway(accountId);
-    return c.json({ gatewayId, subdomain, dialToken });
+    const body = (await c.req.json().catch(() => ({}))) as {
+      subdomain?: unknown;
+      publicKey?: unknown;
+    };
+    const subdomain = typeof body.subdomain === 'string' ? body.subdomain : '';
+    const publicKey = typeof body.publicKey === 'string' ? body.publicKey : '';
+    try {
+      const created = provisioning.createGateway(accountId, { subdomain, publicKey });
+      return c.json(created);
+    } catch (err) {
+      if (err instanceof SubdomainTakenError) {
+        return c.json({ error: 'subdomain taken' }, 409);
+      }
+      if (err instanceof InvalidSubdomainError || err instanceof InvalidPublicKeyError) {
+        return c.json({ error: 'invalid request' }, 400);
+      }
+      throw err;
+    }
   });
 
   app.get('/v1/gateways', (c) => {
@@ -56,22 +90,16 @@ export function createApi(deps: ApiDeps): Hono<ApiEnv> {
     return c.json({ gateways: provisioning.listGateways(accountId) });
   });
 
+  app.get('/v1/subdomains/:label', (c) => {
+    const label = c.req.param('label');
+    return c.json({ available: provisioning.isSubdomainAvailable(label) });
+  });
+
   app.delete('/v1/gateways/:id', async (c) => {
     const accountId = c.get('accountId');
     const ok = await provisioning.deleteGateway(accountId, c.req.param('id'));
     if (!ok) return c.json({ error: 'gateway not found' }, 404);
     return c.json({ ok: true });
-  });
-
-  // Refresh: re-sign a dial token for a gateway the caller owns. Ownership is
-  // re-checked against the caller's own gateway list so a forged id for another
-  // account's gateway cannot mint a token.
-  app.post('/v1/gateways/:id/dial-token', (c) => {
-    const accountId = c.get('accountId');
-    const gatewayId = c.req.param('id');
-    const dialToken = provisioning.refreshDialToken(accountId, gatewayId);
-    if (!dialToken) return c.json({ error: 'gateway not found' }, 404);
-    return c.json({ dialToken });
   });
 
   // --- Pairings ---
