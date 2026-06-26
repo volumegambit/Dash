@@ -9,6 +9,7 @@ import {
   decodeFrame,
   encodeFrame,
   hostedRelayAuth,
+  signAssertion,
 } from '@dash/relay';
 import {
   type Authenticator,
@@ -33,6 +34,10 @@ import { createControlPlaneClient } from './control-plane-client.js';
 // The control plane signs dial tokens with this private key; the real relay
 // verifies them with the matching public key.
 const { publicKey, privateKey } = generateKeyPairSync('ed25519');
+// The gateway's own identity keypair; its raw pubkey is the cnf, and it signs
+// the holder-of-key proof the relay now requires on dial-in.
+const gwKeys = generateKeyPairSync('ed25519');
+const gwPubB64 = (gwKeys.publicKey.export({ format: 'jwk' }) as { x: string }).x;
 
 /** Trusts the bearer token verbatim as the accountId (the client sends one). */
 class BearerAccountAuthenticator implements Authenticator {
@@ -89,8 +94,13 @@ afterEach(async () => {
 /** Dial in a fake gateway presenting the CP-signed dial token at /gw/:gatewayId. */
 function connectGateway(gatewayId: string, token: string): Promise<WebSocket> {
   return new Promise((resolve, reject) => {
+    const nowSec = Math.floor(Date.now() / 1000);
+    const proof = signAssertion(
+      { gatewayId, aud: 'relay-dial', iat: nowSec, exp: nowSec + 60 },
+      gwKeys.privateKey,
+    );
     const ws = new WebSocket(`ws://127.0.0.1:${relayPort}/gw/${gatewayId}`, {
-      headers: { authorization: `Bearer ${token}` },
+      headers: { authorization: `Bearer ${token}`, 'x-gateway-proof': proof },
     });
     ws.on('open', () => resolve(ws));
     ws.on('error', reject);
@@ -156,7 +166,7 @@ describe('createControlPlaneClient against a real control plane + relay', () => 
   it('createGateway returns a dial token the relay verifies on dial-in', async () => {
     const client = createControlPlaneClient(cpBaseUrl, token);
 
-    const provision = await client.createGateway('cp-test-1', 'pk-cp-test');
+    const provision = await client.createGateway('cp-test-1', gwPubB64);
     expect(provision.gatewayId).toBe('cp-test-1');
     expect(provision.subdomain).toBe('cp-test-1.relay.example.com');
     expect(typeof provision.dialToken).toBe('string');
@@ -171,7 +181,7 @@ describe('createControlPlaneClient against a real control plane + relay', () => 
 
   it('createPairing returns a credential the relay validates at its edge', async () => {
     const client = createControlPlaneClient(cpBaseUrl, token);
-    const provision = await client.createGateway('cp-test-1', 'pk-cp-test');
+    const provision = await client.createGateway('cp-test-1', gwPubB64);
 
     const gw = await connectGateway(provision.gatewayId, provision.dialToken);
     respondOk(gw);
@@ -196,7 +206,7 @@ describe('createControlPlaneClient against a real control plane + relay', () => 
 
   it('listGateways returns owned gateways with their devices', async () => {
     const client = createControlPlaneClient(cpBaseUrl, token);
-    const provision = await client.createGateway('cp-test-1', 'pk-cp-test');
+    const provision = await client.createGateway('cp-test-1', gwPubB64);
     await client.createPairing(provision.gatewayId, 'iPhone');
 
     const gateways = await client.listGateways();
@@ -211,7 +221,7 @@ describe('createControlPlaneClient against a real control plane + relay', () => 
 
   it('revokePairing invalidates the credential at the relay edge', async () => {
     const client = createControlPlaneClient(cpBaseUrl, token);
-    const provision = await client.createGateway('cp-test-1', 'pk-cp-test');
+    const provision = await client.createGateway('cp-test-1', gwPubB64);
     const gw = await connectGateway(provision.gatewayId, provision.dialToken);
     respondOk(gw);
     await waitFor(() => relayServer.hasGateway(provision.gatewayId));

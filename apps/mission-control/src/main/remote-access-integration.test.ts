@@ -30,6 +30,7 @@ import {
   decodeFrame,
   encodeFrame,
   hostedRelayAuth,
+  signAssertion,
 } from '@dash/relay';
 import {
   type Authenticator,
@@ -53,6 +54,10 @@ import { buildPairingInfo } from './pairing.js';
 // The control plane signs dial tokens with this private key; the real relay
 // verifies them with the matching public key.
 const { publicKey, privateKey } = generateKeyPairSync('ed25519');
+// The gateway's own identity keypair; its raw pubkey is the cnf, and it signs
+// the holder-of-key proof the relay now requires on dial-in.
+const gwKeys = generateKeyPairSync('ed25519');
+const gwPubB64 = (gwKeys.publicKey.export({ format: 'jwk' }) as { x: string }).x;
 
 /** Trusts the bearer token verbatim as the accountId (the session sends one). */
 class BearerAccountAuthenticator implements Authenticator {
@@ -108,8 +113,13 @@ afterEach(async () => {
 /** Dial in a fake gateway presenting the CP-signed dial token at /gw/:gatewayId. */
 function connectGateway(gatewayId: string, token: string): Promise<WebSocket> {
   return new Promise((resolve, reject) => {
+    const nowSec = Math.floor(Date.now() / 1000);
+    const proof = signAssertion(
+      { gatewayId, aud: 'relay-dial', iat: nowSec, exp: nowSec + 60 },
+      gwKeys.privateKey,
+    );
     const ws = new WebSocket(`ws://127.0.0.1:${relayPort}/gw/${gatewayId}`, {
-      headers: { authorization: `Bearer ${token}` },
+      headers: { authorization: `Bearer ${token}`, 'x-gateway-proof': proof },
     });
     ws.on('open', () => resolve(ws));
     ws.on('error', reject);
@@ -231,7 +241,7 @@ describe('hosted remote-access slice (main-process integration)', () => {
     // issued record in the keychain. Then the gateway dials its own subdomain.
     let issued = await keychain.getIssuedGateway();
     expect(issued).toBeNull();
-    const provision = await client.createGateway('alice-int', 'pk-int');
+    const provision = await client.createGateway('alice-int', gwPubB64);
     const prefix = `${provision.gatewayId}.`;
     const host = provision.subdomain.startsWith(prefix)
       ? provision.subdomain.slice(prefix.length)

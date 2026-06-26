@@ -91,8 +91,13 @@ async function waitFor(pred: () => boolean, timeoutMs = 1000): Promise<void> {
 /** Dial in a fake gateway presenting the CP-signed dial token at /gw/:gatewayId. */
 function connectGateway(gatewayId: string, token: string): Promise<WebSocket> {
   return new Promise((resolve, reject) => {
+    const nowSec = Math.floor(Date.now() / 1000);
+    const proof = signAssertion(
+      { gatewayId, aud: 'relay-dial', iat: nowSec, exp: nowSec + 60 },
+      gwKeys.privateKey,
+    );
     const ws = new WebSocket(`ws://127.0.0.1:${relayPort}/gw/${gatewayId}`, {
-      headers: { authorization: `Bearer ${token}` },
+      headers: { authorization: `Bearer ${token}`, 'x-gateway-proof': proof },
     });
     ws.on('open', () => resolve(ws));
     ws.on('error', reject);
