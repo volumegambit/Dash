@@ -64,7 +64,21 @@ Something not working? Here are the most common issues and how to fix them.
   <Accordion title="Create gateway is missing or fails">
     **Symptom:** You don't see **Create gateway**, or clicking it shows **Could not enroll a gateway**.
 
-    **Fix:** **Create gateway** only appears once you're signed in — if you see **Sign in to Dash** instead, sign in first. If enrollment fails, it's usually a temporary network problem: wait a moment and click **Create gateway** again. The gateway needs to be running for it to connect out.
+    **Fix:** **Create gateway** only appears once you're signed in — if you see **Sign in to Dash** instead, sign in first. If it fails because the address you chose is taken, pick a different name (see "The address I want is already taken" below). Otherwise it's usually a temporary network problem: wait a moment and try again. The gateway needs to be running for it to connect out.
+  </Accordion>
+
+  <Accordion title="Remote access stopped working after a while">
+    **Symptom:** Your phone reached your agents through the relay for a while, then
+    couldn't connect anymore — typically after the machine was asleep or powered off
+    for an extended period.
+
+    **Fix:** Usually none needed — the gateway renews its own relay connection in the
+    background and reconnects on its own, even after being offline for weeks. Just give
+    it a moment after the machine wakes up. You do **not** need to re-create the gateway
+    or re-pair your phone. If it still hasn't recovered after a few minutes, confirm the
+    machine running Dash is online, then open **Settings → Remote access** and check that
+    you see **Gateway ready at** with your address. The gateway must be running for it to
+    reconnect.
   </Accordion>
 
   <Accordion title="QR code still pairs over the local network">
@@ -77,6 +91,17 @@ Something not working? Here are the most common issues and how to fix them.
     **Symptom:** A phone that used to work remotely now can't reach your agents.
 
     **Fix:** If that device was removed under **Settings → Remote access → Paired devices** (by you or from another machine), its credential no longer works — this is expected. Pair it again: open **Pair Device**, scan a fresh QR code on the phone, and it gets a new credential.
+  </Accordion>
+
+  <Accordion title="The address I want is already taken">
+    **Symptom:** When creating a gateway, the address (hostname) you typed is rejected
+    as unavailable.
+
+    **Fix:** Relay addresses are globally unique and permanent — once a name is claimed
+    it belongs to that gateway forever and is **never** released for reuse, even if the
+    original gateway was later removed. Pick a different, more specific name (for example
+    add your initials or your machine's name) and try again. The availability indicator
+    in the picker tells you live whether a name is free before you commit to it.
   </Accordion>
 </AccordionGroup>
 
