@@ -10,9 +10,9 @@ import {
 } from './index.js';
 
 const { publicKey, privateKey } = generateKeyPairSync('ed25519');
-const cnf = Buffer.from(
-  publicKey.export({ type: 'spki', format: 'der' }).subarray(-32),
-).toString('base64url');
+const cnf = Buffer.from(publicKey.export({ type: 'spki', format: 'der' }).subarray(-32)).toString(
+  'base64url',
+);
 
 test('re-exports the dial-token + cnf surface', () => {
   const claims: DialTokenClaims = { tenantId: 't1', gatewayId: 'gw-1', cnf, exp: 2_000_000_000 };

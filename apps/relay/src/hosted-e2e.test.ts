@@ -9,6 +9,9 @@ import { decodeFrame, encodeChunk, encodeFrame } from './mux.js';
 import { type RelayServer, createRelayServer } from './relay-server.js';
 
 const { publicKey, privateKey } = generateKeyPairSync('ed25519');
+const cnf = Buffer.from(publicKey.export({ type: 'spki', format: 'der' }).subarray(-32)).toString(
+  'base64url',
+);
 
 let server: RelayServer;
 let port: number;
@@ -114,7 +117,7 @@ describe('hosted relay e2e', () => {
   it('runs the full hosted lifecycle: signed dial-in → pair → proxy → revoke', async () => {
     // 1. A control-plane-signed dial token, bound to gw-1, lets the gateway register.
     const dialToken = signDialToken(
-      { tenantId: 't1', gatewayId: 'gw-1', exp: Math.floor(Date.now() / 1000) + 3600 },
+      { tenantId: 't1', gatewayId: 'gw-1', cnf, exp: Math.floor(Date.now() / 1000) + 3600 },
       privateKey,
     );
     const gw = await connectGateway('gw-1', dialToken);
