@@ -1,4 +1,4 @@
-import { createPrivateKey } from 'node:crypto';
+import { createPrivateKey, createPublicKey } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { createConsoleLogger } from '@dash/logging';
 import { serve } from '@hono/node-server';
@@ -8,6 +8,7 @@ import { WorkosAuthenticator, createWorkosVerifier } from './auth-workos.js';
 import { type Authenticator, StubAuthenticator } from './auth.js';
 import { loadConfig } from './config.js';
 import { DialTokenSigner } from './dial-token-signer.js';
+import { GatewayAssertionAuthenticator } from './gateway-assertion-auth.js';
 import { ProvisioningService } from './provisioning.js';
 import { RelayAdminClient } from './relay-admin-client.js';
 import { SqliteStore } from './store.js';
@@ -53,7 +54,14 @@ async function main(): Promise<void> {
     );
   }
 
-  const app = createApi({ provisioning, authenticator });
+  const gatewayAssertionAuth = new GatewayAssertionAuthenticator({
+    store,
+    signer,
+    verifyPublicKey: (b64) =>
+      createPublicKey({ key: { kty: 'OKP', crv: 'Ed25519', x: b64 }, format: 'jwk' }),
+  });
+
+  const app = createApi({ provisioning, authenticator, gatewayAssertionAuth });
 
   const server = serve({ fetch: app.fetch, port: config.port }, (info) => {
     logger.info(`control plane listening on :${info.port}`);

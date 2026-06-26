@@ -110,9 +110,6 @@ function createFakeControlPlaneClient(
 ): ControlPlaneClient & { createGateway: ReturnType<typeof vi.fn> } {
   return {
     createGateway: vi.fn().mockResolvedValue(provision),
-    refreshDialToken: vi.fn(async () => {
-      throw new Error('not used');
-    }),
     createPairing: vi.fn(async () => {
       throw new Error('not used');
     }),

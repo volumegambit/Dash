@@ -4,6 +4,8 @@ import { type KeyObject, sign, verify } from 'node:crypto';
 export interface DialTokenClaims {
   tenantId: string;
   gatewayId: string;
+  /** Holder-of-key: the gateway's raw Ed25519 public key (32 bytes, base64url). */
+  cnf: string;
   /** Expiry, unix seconds. */
   exp: number;
 }
@@ -41,8 +43,38 @@ export function verifyDialToken(
     if (
       typeof claims.tenantId !== 'string' ||
       typeof claims.gatewayId !== 'string' ||
+      typeof claims.cnf !== 'string' ||
       typeof claims.exp !== 'number' ||
       claims.exp <= nowSec
+    ) {
+      return null;
+    }
+    return claims;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * No-key decode of the claims segment: split on '.', base64url-decode segment 0,
+ * JSON.parse, validate shape (incl. `cnf`). Lets a gateway read its OWN token's
+ * `exp`/`cnf` to schedule refresh — it does NOT verify the signature, so never
+ * trust the result as authentication. Returns `null` on any malformation.
+ */
+export function decodeDialTokenClaims(token: string): DialTokenClaims | null {
+  const dot = token.indexOf('.');
+  if (dot <= 0 || dot !== token.lastIndexOf('.')) return null;
+  const payload = token.slice(0, dot);
+  if (!payload) return null;
+  try {
+    const claims = JSON.parse(
+      Buffer.from(payload, 'base64url').toString('utf8'),
+    ) as DialTokenClaims;
+    if (
+      typeof claims.tenantId !== 'string' ||
+      typeof claims.gatewayId !== 'string' ||
+      typeof claims.cnf !== 'string' ||
+      typeof claims.exp !== 'number'
     ) {
       return null;
     }

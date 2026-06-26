@@ -1,4 +1,5 @@
 import { execFile, spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { closeSync, openSync, writeSync } from 'node:fs';
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -471,7 +472,11 @@ export class GatewaySupervisor {
       // we never double-createGateway (which would orphan the prior gateway).
       let issued = await this.keychain.getIssuedGateway();
       if (!issued) {
-        const provision = await this.controlPlaneClient.createGateway();
+        // P5 replaces this with the subdomain picker + the gateway's loopback
+        // public key. Until then, derive a DNS-safe label from a fresh id and
+        // pass a placeholder key so enrollment compiles end to end.
+        const label = `gw-${randomUUID().slice(0, 12)}`;
+        const provision = await this.controlPlaneClient.createGateway(label, 'pending-pubkey');
         // The control plane returns the full subdomain `<gatewayId>.<zone>`;
         // store the bare zone as `host` so the dial URL reconstructs to
         // `wss://<gatewayId>.<host>` (and re-enrollment keeps the same shape).

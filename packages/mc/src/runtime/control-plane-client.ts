@@ -12,8 +12,7 @@
  * caller decides whether to prompt for sign-in.
  *
  * Contract (`apps/relay-control-plane/src/api.ts`):
- *   POST   /v1/gateways                       → { gatewayId, subdomain, dialToken }
- *   POST   /v1/gateways/:id/dial-token        → { dialToken }
+ *   POST   /v1/gateways {subdomain, publicKey} → { gatewayId, subdomain, dialToken }
  *   POST   /v1/gateways/:id/pairings          → { credential }
  *   GET    /v1/gateways                        → { gateways: GatewayRecord[] }
  *   GET    /v1/gateways/:id/pairings           → { pairings: PairingRecord[] }
@@ -42,10 +41,8 @@ export interface GatewaySummary {
 
 /** Mission Control's HTTP interface to the control plane (injectable for DI). */
 export interface ControlPlaneClient {
-  /** Enroll a new gateway for the signed-in account. */
-  createGateway(): Promise<GatewayProvision>;
-  /** Re-sign the dial token for an owned gateway. */
-  refreshDialToken(gatewayId: string): Promise<string>;
+  /** Enroll a new gateway for the signed-in account at a chosen subdomain. */
+  createGateway(subdomain: string, publicKey: string): Promise<GatewayProvision>;
   /** Provision a one-time pairing credential for an owned gateway. */
   createPairing(gatewayId: string, deviceLabel?: string): Promise<{ credential: string }>;
   /** List the gateways the signed-in account owns, each with its devices. */
@@ -89,8 +86,11 @@ export function createControlPlaneClient(
   }
 
   return {
-    async createGateway(): Promise<GatewayProvision> {
-      const body = await request<Partial<GatewayProvision>>('POST', '/v1/gateways');
+    async createGateway(subdomain: string, publicKey: string): Promise<GatewayProvision> {
+      const body = await request<Partial<GatewayProvision>>('POST', '/v1/gateways', {
+        subdomain,
+        publicKey,
+      });
       if (
         typeof body.gatewayId !== 'string' ||
         typeof body.dialToken !== 'string' ||
@@ -99,17 +99,6 @@ export function createControlPlaneClient(
         throw new Error('control plane: createGateway returned an incomplete response');
       }
       return { gatewayId: body.gatewayId, dialToken: body.dialToken, subdomain: body.subdomain };
-    },
-
-    async refreshDialToken(gatewayId: string): Promise<string> {
-      const body = await request<{ dialToken?: unknown }>(
-        'POST',
-        `/v1/gateways/${encodeURIComponent(gatewayId)}/dial-token`,
-      );
-      if (typeof body.dialToken !== 'string' || body.dialToken.length === 0) {
-        throw new Error('control plane: refreshDialToken returned no token');
-      }
-      return body.dialToken;
     },
 
     async createPairing(gatewayId: string, deviceLabel?: string): Promise<{ credential: string }> {

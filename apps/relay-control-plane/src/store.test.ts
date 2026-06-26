@@ -27,10 +27,12 @@ describe('SqliteStore', () => {
         gatewayId: 'gw-aaa',
         accountId: 'acct-1',
         subdomain: 'gw-aaa.relay.local',
+        publicKey: 'pk-aaa',
       });
       expect(created.gatewayId).toBe('gw-aaa');
       expect(created.accountId).toBe('acct-1');
       expect(created.subdomain).toBe('gw-aaa.relay.local');
+      expect(created.publicKey).toBe('pk-aaa');
       expect(created.status).toBe('active');
       expect(typeof created.createdAt).toBe('number');
 
@@ -45,9 +47,24 @@ describe('SqliteStore', () => {
     it('lists gateways scoped to an account', () => {
       store.createAccount('acct-1');
       store.createAccount('acct-2');
-      store.createGateway({ gatewayId: 'gw-1', accountId: 'acct-1', subdomain: 'gw-1.z' });
-      store.createGateway({ gatewayId: 'gw-2', accountId: 'acct-1', subdomain: 'gw-2.z' });
-      store.createGateway({ gatewayId: 'gw-3', accountId: 'acct-2', subdomain: 'gw-3.z' });
+      store.createGateway({
+        gatewayId: 'gw-1',
+        accountId: 'acct-1',
+        subdomain: 'gw-1.z',
+        publicKey: 'pk-1',
+      });
+      store.createGateway({
+        gatewayId: 'gw-2',
+        accountId: 'acct-1',
+        subdomain: 'gw-2.z',
+        publicKey: 'pk-2',
+      });
+      store.createGateway({
+        gatewayId: 'gw-3',
+        accountId: 'acct-2',
+        subdomain: 'gw-3.z',
+        publicKey: 'pk-3',
+      });
 
       const a1 = store.listGateways('acct-1');
       expect(a1.map((g) => g.gatewayId).sort()).toEqual(['gw-1', 'gw-2']);
@@ -60,7 +77,12 @@ describe('SqliteStore', () => {
     beforeEach(() => {
       store.createAccount('acct-A');
       store.createAccount('acct-B');
-      store.createGateway({ gatewayId: 'gw-A', accountId: 'acct-A', subdomain: 'gw-A.z' });
+      store.createGateway({
+        gatewayId: 'gw-A',
+        accountId: 'acct-A',
+        subdomain: 'gw-A.z',
+        publicKey: 'pk-A',
+      });
     });
 
     it('revokes a gateway owned by the account', () => {
@@ -81,7 +103,12 @@ describe('SqliteStore', () => {
   describe('pairings', () => {
     beforeEach(() => {
       store.createAccount('acct-1');
-      store.createGateway({ gatewayId: 'gw-1', accountId: 'acct-1', subdomain: 'gw-1.z' });
+      store.createGateway({
+        gatewayId: 'gw-1',
+        accountId: 'acct-1',
+        subdomain: 'gw-1.z',
+        publicKey: 'pk-1',
+      });
     });
 
     it('adds a pairing storing the hash and a device label', () => {
@@ -148,7 +175,12 @@ describe('SqliteStore', () => {
       try {
         const first = new SqliteStore(dbPath);
         first.createAccount('acct-1');
-        first.createGateway({ gatewayId: 'gw-1', accountId: 'acct-1', subdomain: 'gw-1.z' });
+        first.createGateway({
+          gatewayId: 'gw-1',
+          accountId: 'acct-1',
+          subdomain: 'gw-1.z',
+          publicKey: 'pk-1',
+        });
         first.addPairing({ id: 'p1', gatewayId: 'gw-1', credentialHash: 'h1', deviceLabel: 'X' });
         first.close();
 
@@ -159,6 +191,50 @@ describe('SqliteStore', () => {
       } finally {
         rmSync(dir, { recursive: true, force: true });
       }
+    });
+  });
+
+  describe('isSubdomainAvailable + getGatewayPublicKey (never recycled)', () => {
+    beforeEach(() => {
+      store.createAccount('acct-1');
+    });
+
+    it('reports an unused label available', () => {
+      expect(store.isSubdomainAvailable('alice-mbp')).toBe(true);
+    });
+
+    it('reports a claimed label unavailable while active', () => {
+      store.createGateway({
+        gatewayId: 'alice-mbp',
+        accountId: 'acct-1',
+        subdomain: 'alice-mbp.relay.local',
+        publicKey: 'pk-alice',
+      });
+      expect(store.isSubdomainAvailable('alice-mbp')).toBe(false);
+    });
+
+    it('keeps a revoked label unavailable — never recycled', () => {
+      store.createGateway({
+        gatewayId: 'alice-mbp',
+        accountId: 'acct-1',
+        subdomain: 'alice-mbp.relay.local',
+        publicKey: 'pk-alice',
+      });
+      expect(store.revokeGateway('acct-1', 'alice-mbp')).toBe(true);
+      expect(store.getGateway('alice-mbp')?.status).toBe('revoked');
+      // The row persists, so the label can never be re-claimed.
+      expect(store.isSubdomainAvailable('alice-mbp')).toBe(false);
+    });
+
+    it('returns the stored public key, or null for an unknown gateway', () => {
+      store.createGateway({
+        gatewayId: 'alice-mbp',
+        accountId: 'acct-1',
+        subdomain: 'alice-mbp.relay.local',
+        publicKey: 'pk-alice',
+      });
+      expect(store.getGatewayPublicKey('alice-mbp')).toBe('pk-alice');
+      expect(store.getGatewayPublicKey('gw-missing')).toBeNull();
     });
   });
 });
