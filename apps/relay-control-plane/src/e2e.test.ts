@@ -1,4 +1,4 @@
-import { generateKeyPairSync } from 'node:crypto';
+import { createPublicKey, generateKeyPairSync } from 'node:crypto';
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import {
@@ -9,11 +9,14 @@ import {
   decodeFrame,
   encodeFrame,
   hostedRelayAuth,
+  signAssertion,
+  verifyDialToken,
 } from '@dash/relay';
 import { WebSocket } from 'ws';
 import { createApi } from './api.js';
 import { StubAuthenticator } from './auth.js';
 import { DialTokenSigner } from './dial-token-signer.js';
+import { GatewayAssertionAuthenticator } from './gateway-assertion-auth.js';
 import { ProvisioningService } from './provisioning.js';
 import { RelayAdminClient } from './relay-admin-client.js';
 import { SqliteStore } from './store.js';
@@ -24,11 +27,17 @@ import { SqliteStore } from './store.js';
 // runs against the real relay, so this proves the cross-service contract end to
 // end with no mocks.
 const { publicKey, privateKey } = generateKeyPairSync('ed25519');
+// The gateway's own Ed25519 identity (holder-of-key). Its raw public key is
+// stored at enrollment and is the cnf the CP binds tokens to; its private key
+// signs the /gw/dial-token refresh assertion.
+const gwKeys = generateKeyPairSync('ed25519');
+const gwPubB64 = (gwKeys.publicKey.export({ format: 'jwk' }) as { x: string }).x;
 
 let relayServer: RelayServer;
 let relayStore: DurableCredentialStore;
 let relayPort: number;
 let app: ReturnType<typeof createApi>;
+let store: SqliteStore;
 
 beforeEach(async () => {
   relayStore = new DurableCredentialStore(':memory:');
@@ -38,7 +47,7 @@ beforeEach(async () => {
   await new Promise<void>((r) => relayServer.httpServer.listen(0, '127.0.0.1', () => r()));
   relayPort = (relayServer.httpServer.address() as AddressInfo).port;
 
-  const store = new SqliteStore(':memory:');
+  store = new SqliteStore(':memory:');
   const signer = new DialTokenSigner(privateKey, 3600, () => Math.floor(Date.now() / 1000));
   const relay = new RelayAdminClient(`http://127.0.0.1:${relayPort}`, 'master');
   const provisioning = new ProvisioningService({
@@ -47,7 +56,13 @@ beforeEach(async () => {
     relay,
     relayZone: 'relay.example.com',
   });
-  app = createApi({ provisioning, authenticator: new StubAuthenticator() });
+  const gatewayAssertionAuth = new GatewayAssertionAuthenticator({
+    store,
+    signer,
+    verifyPublicKey: (b64) =>
+      createPublicKey({ key: { kty: 'OKP', crv: 'Ed25519', x: b64 }, format: 'jwk' }),
+  });
+  app = createApi({ provisioning, authenticator: new StubAuthenticator(), gatewayAssertionAuth });
 });
 
 afterEach(async () => {
@@ -133,14 +148,13 @@ function phoneGet(
 
 describe('control-plane ↔ relay integration e2e', () => {
   it('provisions a gateway, dials in, proxies a phone, then force-closes on delete', async () => {
-    // 1. The control plane mints a gateway + a CP-signed dial token over its HTTP API.
-    const created = (await (await cp('POST', '/v1/gateways', 'acct-1')).json()) as {
-      gatewayId: string;
-      dialToken: string;
-      subdomain: string;
-    };
-    expect(created.gatewayId).toMatch(/^gw-[0-9a-f]+$/);
-    expect(created.subdomain).toBe(`${created.gatewayId}.relay.example.com`);
+    // 1. The control plane mints a gateway from a chosen subdomain + the gateway's
+    //    public key, returning a CP-signed dial token (cnf = that pubkey).
+    const created = (await (
+      await cp('POST', '/v1/gateways', 'acct-1', { subdomain: 'alice-mbp', publicKey: gwPubB64 })
+    ).json()) as { gatewayId: string; dialToken: string; subdomain: string };
+    expect(created.gatewayId).toBe('alice-mbp');
+    expect(created.subdomain).toBe('alice-mbp.relay.example.com');
 
     // 2. The fake gateway dials the real relay with that token and registers —
     //    proving the CP-signed token verifies against the relay's public key.
@@ -148,6 +162,25 @@ describe('control-plane ↔ relay integration e2e', () => {
     respondOk(gw);
     await waitFor(() => relayServer.hasGateway(created.gatewayId));
     expect(relayServer.hasGateway(created.gatewayId)).toBe(true);
+
+    // 2b. The gateway refreshes its own dial token via /gw/dial-token using a
+    //     self-signed assertion — no MC, no user session. The minted token's
+    //     tenantId is re-derived from the STORED account (immutable binding).
+    const nowSec = Math.floor(Date.now() / 1000);
+    const refreshAssertion = signAssertion(
+      { gatewayId: created.gatewayId, aud: 'cp-dial-token', iat: nowSec, exp: nowSec + 60 },
+      gwKeys.privateKey,
+    );
+    const refreshRes = await app.request('/gw/dial-token', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${refreshAssertion}` },
+    });
+    expect(refreshRes.status).toBe(200);
+    const { dialToken: refreshed } = (await refreshRes.json()) as { dialToken: string };
+    const refreshedClaims = verifyDialToken(refreshed, publicKey, nowSec);
+    expect(refreshedClaims?.tenantId).toBe('acct-1');
+    expect(refreshedClaims?.gatewayId).toBe(created.gatewayId);
+    expect(refreshedClaims?.cnf).toBe(gwPubB64);
 
     // 3. The control plane provisions a pairing (pushed to the relay admin API).
     const { credential } = (await (
@@ -181,13 +214,20 @@ describe('control-plane ↔ relay integration e2e', () => {
       'x-dash-relay-credential': credential,
     });
     expect(after.status).toBe(502);
+
+    // 6. The label is permanent: re-creating it after delete is rejected (409),
+    //    so a cached hostname can never be taken over by a new gateway.
+    const recreate = await cp('POST', '/v1/gateways', 'acct-1', {
+      subdomain: created.gatewayId,
+      publicKey: gwPubB64,
+    });
+    expect(recreate.status).toBe(409);
   });
 
   it('keeps tenants isolated: a foreign account cannot delete or pair another’s gateway', async () => {
-    const created = (await (await cp('POST', '/v1/gateways', 'acct-1')).json()) as {
-      gatewayId: string;
-      dialToken: string;
-    };
+    const created = (await (
+      await cp('POST', '/v1/gateways', 'acct-1', { subdomain: 'alice-mbp', publicKey: gwPubB64 })
+    ).json()) as { gatewayId: string; dialToken: string };
     const gw = await connectGateway(created.gatewayId, created.dialToken);
     respondOk(gw);
     await waitFor(() => relayServer.hasGateway(created.gatewayId));
