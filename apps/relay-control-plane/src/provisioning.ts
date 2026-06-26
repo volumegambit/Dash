@@ -2,6 +2,14 @@ import { createHash, randomBytes } from 'node:crypto';
 import type { DialTokenSigner } from './dial-token-signer.js';
 import type { RelayAdminClient } from './relay-admin-client.js';
 import type { GatewayRecord, PairingRecord, Store } from './store.js';
+import { validateSubdomainLabel } from './subdomain.js';
+
+/** Thrown when a requested subdomain label is not DNS-safe or is reserved. */
+export class InvalidSubdomainError extends Error {}
+/** Thrown when a label is already claimed (active or burned — never recycled). */
+export class SubdomainTakenError extends Error {}
+/** Thrown when the supplied gateway public key is empty/malformed. */
+export class InvalidPublicKeyError extends Error {}
 
 /** Result of provisioning a new gateway: its id, subdomain, and a dial token. */
 export interface CreatedGateway {
@@ -45,32 +53,41 @@ export class ProvisioningService {
   }
 
   /**
-   * Provision a new gateway for `accountId`: mint a DNS-safe id, persist it, and
-   * return a control-plane-signed dial token the relay will verify on dial-in.
+   * Provision a new gateway for `accountId` at the user-chosen `subdomain` label.
+   *
+   * The label IS the gatewayId (permanent, globally unique, never recycled): we
+   * validate it, assert it is available across ALL statuses, persist the gateway
+   * with its public key, and return a control-plane-signed dial token whose `cnf`
+   * binds the token to that key. Throws on an invalid/taken label or empty key —
+   * nothing is persisted on the failure paths.
    */
-  createGateway(accountId: string): CreatedGateway {
+  createGateway(accountId: string, opts: { subdomain: string; publicKey: string }): CreatedGateway {
+    const label = opts.subdomain;
+    if (!validateSubdomainLabel(label)) {
+      throw new InvalidSubdomainError(`invalid subdomain label: ${label}`);
+    }
+    if (!opts.publicKey) {
+      throw new InvalidPublicKeyError('gateway public key required');
+    }
+    if (!this.#store.isSubdomainAvailable(label)) {
+      throw new SubdomainTakenError(`subdomain taken: ${label}`);
+    }
     this.#store.createAccount(accountId);
-    const gatewayId = generateGatewayId();
-    const subdomain = `${gatewayId}.${this.#relayZone}`;
-    this.#store.createGateway({ gatewayId, accountId, subdomain });
-    const dialToken = this.#signer.signFor(accountId, gatewayId);
+    const gatewayId = label;
+    const subdomain = `${label}.${this.#relayZone}`;
+    this.#store.createGateway({ gatewayId, accountId, subdomain, publicKey: opts.publicKey });
+    const dialToken = this.#signer.signFor(accountId, gatewayId, opts.publicKey);
     return { gatewayId, subdomain, dialToken };
+  }
+
+  /** True iff `label` is valid AND unclaimed in any status (for the picker). */
+  isSubdomainAvailable(label: string): boolean {
+    return validateSubdomainLabel(label) && this.#store.isSubdomainAvailable(label);
   }
 
   /** List the gateways owned by `accountId`. */
   listGateways(accountId: string): GatewayRecord[] {
     return this.#store.listGateways(accountId);
-  }
-
-  /**
-   * Re-sign a dial token for one of `accountId`'s gateways (token refresh).
-   * Ownership is checked first: a gateway the caller does not own — or an
-   * unknown id — returns `null` and mints nothing.
-   */
-  refreshDialToken(accountId: string, gatewayId: string): string | null {
-    const gateway = this.#store.getGateway(gatewayId);
-    if (!gateway || gateway.accountId !== accountId) return null;
-    return this.#signer.signFor(accountId, gatewayId);
   }
 
   /**
@@ -150,11 +167,6 @@ export class ProvisioningService {
     );
     return true;
   }
-}
-
-/** A DNS-safe, lowercase `gw-<hex>` id well under the 63-char label limit. */
-function generateGatewayId(): string {
-  return `gw-${randomBytes(12).toString('hex')}`;
 }
 
 /** A unique pairing id. */

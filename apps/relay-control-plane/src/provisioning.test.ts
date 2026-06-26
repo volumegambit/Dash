@@ -34,36 +34,90 @@ function makeService(relay: RelayAdminClient, now: () => number = () => 1000) {
 }
 
 describe('ProvisioningService.createGateway', () => {
-  it('mints a DNS-safe gateway id, subdomain, and a relay-verifiable dial token', () => {
+  it('claims a label as the gatewayId, stores the pubkey, signs a cnf-bound token', () => {
     const { client } = spyRelayClient();
     const { store, service } = makeService(client);
 
-    const result = service.createGateway('acct-1');
+    const result = service.createGateway('acct-1', {
+      subdomain: 'alice-mbp',
+      publicKey: 'pk-alice',
+    });
 
-    expect(result.gatewayId).toMatch(/^gw-[0-9a-f]+$/);
-    expect(result.gatewayId.length).toBeLessThanOrEqual(63);
-    expect(result.subdomain).toBe(`${result.gatewayId}.relay.example.com`);
+    expect(result.gatewayId).toBe('alice-mbp');
+    expect(result.subdomain).toBe('alice-mbp.relay.example.com');
 
-    // The dial token the relay would verify, bound to this gateway.
+    // The dial token the relay would verify, bound to this gateway + pubkey.
     const claims = verifyDialToken(result.dialToken, publicKey, 1000);
-    expect(claims).toEqual({ tenantId: 'acct-1', gatewayId: result.gatewayId, exp: 4600 });
+    expect(claims).toEqual({
+      tenantId: 'acct-1',
+      gatewayId: 'alice-mbp',
+      exp: 4600,
+      cnf: 'pk-alice',
+    });
 
-    // The store persisted the gateway under the owning account.
-    const record = store.getGateway(result.gatewayId);
-    expect(record).not.toBeNull();
+    // The store persisted the gateway under the owning account, with the pubkey.
+    const record = store.getGateway('alice-mbp');
     expect(record?.accountId).toBe('acct-1');
-    expect(record?.subdomain).toBe(result.subdomain);
+    expect(record?.publicKey).toBe('pk-alice');
     expect(record?.status).toBe('active');
-    expect(store.listGateways('acct-1').map((g) => g.gatewayId)).toContain(result.gatewayId);
   });
 
-  it('generates a fresh gateway id per call', () => {
+  it('rejects an invalid label without touching the store', () => {
+    const { client } = spyRelayClient();
+    const { store, service } = makeService(client);
+
+    expect(() =>
+      service.createGateway('acct-1', { subdomain: 'Bad_Label', publicKey: 'pk' }),
+    ).toThrow(/invalid subdomain/i);
+    expect(store.getGateway('Bad_Label')).toBeNull();
+  });
+
+  it('rejects an empty public key', () => {
     const { client } = spyRelayClient();
     const { service } = makeService(client);
 
-    const a = service.createGateway('acct-1');
-    const b = service.createGateway('acct-1');
-    expect(a.gatewayId).not.toBe(b.gatewayId);
+    expect(() =>
+      service.createGateway('acct-1', { subdomain: 'alice-mbp', publicKey: '' }),
+    ).toThrow(/public key/i);
+  });
+
+  it('rejects a label already claimed (taken)', () => {
+    const { client } = spyRelayClient();
+    const { service } = makeService(client);
+
+    service.createGateway('acct-1', { subdomain: 'alice-mbp', publicKey: 'pk-1' });
+    expect(() =>
+      service.createGateway('acct-2', { subdomain: 'alice-mbp', publicKey: 'pk-2' }),
+    ).toThrow(/taken/i);
+  });
+
+  it('never recycles a burned label: revoke then re-create is rejected', () => {
+    const { client } = spyRelayClient();
+    const { store, service } = makeService(client);
+
+    const gw = service.createGateway('acct-1', { subdomain: 'alice-mbp', publicKey: 'pk-1' });
+    expect(store.revokeGateway('acct-1', gw.gatewayId)).toBe(true);
+
+    expect(() =>
+      service.createGateway('acct-1', { subdomain: 'alice-mbp', publicKey: 'pk-2' }),
+    ).toThrow(/taken/i);
+  });
+});
+
+describe('ProvisioningService.isSubdomainAvailable', () => {
+  it('is true for an unused label and false once claimed', () => {
+    const { client } = spyRelayClient();
+    const { service } = makeService(client);
+
+    expect(service.isSubdomainAvailable('alice-mbp')).toBe(true);
+    service.createGateway('acct-1', { subdomain: 'alice-mbp', publicKey: 'pk-1' });
+    expect(service.isSubdomainAvailable('alice-mbp')).toBe(false);
+  });
+
+  it('is false for an invalid label (cannot be claimed anyway)', () => {
+    const { client } = spyRelayClient();
+    const { service } = makeService(client);
+    expect(service.isSubdomainAvailable('Bad_Label')).toBe(false);
   });
 });
 
@@ -72,11 +126,11 @@ describe('ProvisioningService.listGateways', () => {
     const { client } = spyRelayClient();
     const { service } = makeService(client);
 
-    const a1 = service.createGateway('acct-1');
-    service.createGateway('acct-2');
+    service.createGateway('acct-1', { subdomain: 'alice', publicKey: 'pk-a' });
+    service.createGateway('acct-2', { subdomain: 'bob', publicKey: 'pk-b' });
 
     const list = service.listGateways('acct-1');
-    expect(list.map((g) => g.gatewayId)).toEqual([a1.gatewayId]);
+    expect(list.map((g) => g.gatewayId)).toEqual(['alice']);
   });
 });
 
@@ -85,7 +139,7 @@ describe('ProvisioningService.deleteGateway', () => {
     const { client, calls } = spyRelayClient();
     const { store, service } = makeService(client);
 
-    const gw = service.createGateway('acct-1');
+    const gw = service.createGateway('acct-1', { subdomain: 'alice', publicKey: 'pk-a' });
 
     const ok = await service.deleteGateway('acct-2', gw.gatewayId);
     expect(ok).toBe(false);
@@ -99,7 +153,7 @@ describe('ProvisioningService.deleteGateway', () => {
     const { client, calls } = spyRelayClient();
     const { store, service } = makeService(client);
 
-    const gw = service.createGateway('acct-1');
+    const gw = service.createGateway('acct-1', { subdomain: 'alice', publicKey: 'pk-a' });
 
     const ok = await service.deleteGateway('acct-1', gw.gatewayId);
     expect(ok).toBe(true);
@@ -145,7 +199,7 @@ describe('ProvisioningService pairings', () => {
 
   it('mints a credential the relay validates and stores only its hash', async () => {
     const { store, service } = makeRealService();
-    const gw = service.createGateway('acct-1');
+    const gw = service.createGateway('acct-1', { subdomain: 'alice', publicKey: 'pk-a' });
 
     const { credential } = await service.createPairing('acct-1', gw.gatewayId, 'iPhone');
 
@@ -163,7 +217,7 @@ describe('ProvisioningService pairings', () => {
 
   it('defaults the device label to null when omitted', async () => {
     const { store, service } = makeRealService();
-    const gw = service.createGateway('acct-1');
+    const gw = service.createGateway('acct-1', { subdomain: 'alice', publicKey: 'pk-a' });
 
     await service.createPairing('acct-1', gw.gatewayId);
 
@@ -172,7 +226,7 @@ describe('ProvisioningService pairings', () => {
 
   it('refuses a cross-account createPairing: throws, no relay credential minted', async () => {
     const { store, service } = makeRealService();
-    const gw = service.createGateway('acct-1');
+    const gw = service.createGateway('acct-1', { subdomain: 'alice', publicKey: 'pk-a' });
 
     await expect(service.createPairing('acct-2', gw.gatewayId, 'iPhone')).rejects.toThrow();
 
@@ -187,7 +241,7 @@ describe('ProvisioningService pairings', () => {
 
   it('deletePairing revokes on the relay and in the store', async () => {
     const { store, service } = makeRealService();
-    const gw = service.createGateway('acct-1');
+    const gw = service.createGateway('acct-1', { subdomain: 'alice', publicKey: 'pk-a' });
     const { credential } = await service.createPairing('acct-1', gw.gatewayId, 'iPhone');
     const pairingId = store.listPairings(gw.gatewayId)[0].id;
 
@@ -200,7 +254,7 @@ describe('ProvisioningService pairings', () => {
 
   it('deletePairing revokes only the targeted device, leaving the others paired', async () => {
     const { store, service } = makeRealService();
-    const gw = service.createGateway('acct-1');
+    const gw = service.createGateway('acct-1', { subdomain: 'alice', publicKey: 'pk-a' });
     const { credential: credA } = await service.createPairing('acct-1', gw.gatewayId, 'iPhone');
     const { credential: credB } = await service.createPairing('acct-1', gw.gatewayId, 'iPad');
     const pairingA = store.listPairings(gw.gatewayId).find((p) => p.deviceLabel === 'iPhone');
@@ -220,7 +274,7 @@ describe('ProvisioningService pairings', () => {
 
   it('refuses a cross-account deletePairing: returns false, store and relay untouched', async () => {
     const { store, service } = makeRealService();
-    const gw = service.createGateway('acct-1');
+    const gw = service.createGateway('acct-1', { subdomain: 'alice', publicKey: 'pk-a' });
     const { credential } = await service.createPairing('acct-1', gw.gatewayId, 'iPhone');
     const pairingId = store.listPairings(gw.gatewayId)[0].id;
 
