@@ -26,10 +26,13 @@ import { AgentRegistry } from './agent-registry.js';
 import { ChannelRegistry } from './channel-registry.js';
 import { mountChatWs } from './chat-ws.js';
 import { parseFlags } from './config.js';
+import { createControlPlaneClient } from './control-plane-client.js';
 import { GatewayCredentialStore } from './credential-store.js';
+import { createDialTokenManager } from './dial-token-manager.js';
 import { EventBus } from './event-bus.js';
 import { SqliteEventLogStore } from './event-log-store-sqlite.js';
 import type { EventLogStore } from './event-log-store.js';
+import { loadOrCreateGatewayIdentity } from './gateway-identity.js';
 import { createDynamicGateway } from './gateway.js';
 import { createGatewayManagementApp } from './management-api.js';
 import { McpConfigStore } from './mcp-store.js';
@@ -76,6 +79,12 @@ async function main() {
   // Ensure data dir exists
   const { mkdir } = await import('node:fs/promises');
   await mkdir(dataDir, { recursive: true });
+
+  // Gateway cryptographic identity (always on, transport-independent). Loads or
+  // generates an Ed25519 keypair (private key 0600 at <dataDir>/relay-gateway-key)
+  // and signs the short-lived holder-of-key assertions used by relay dial-in and
+  // control-plane token refresh.
+  const relayIdentity = await loadOrCreateGatewayIdentity(dataDir);
 
   // Initialize credential store
   const credentialStore = new GatewayCredentialStore(dataDir);
@@ -566,6 +575,7 @@ async function main() {
     reloadPlugins,
     pluginsDir,
     dataDir,
+    relayIdentity: { publicKeyB64: relayIdentity.publicKeyB64 },
     eventLogStore,
     token: flags.token,
     startedAt,
@@ -630,27 +640,72 @@ async function main() {
   console.log(`Gateway management API listening on port ${managementPort}`);
   console.log(`Gateway channel server listening on port ${channelPort}`);
 
-  // Relay mode: when --relay-url and --relay-token are both set, dial OUT to the
-  // relay and replay phone traffic against our own loopback servers. A phone can
-  // then reach this gateway from anywhere with no inbound ports opened. The two
-  // HTTP servers above are untouched — the relay-client is "just another
-  // localhost client" and all auth still happens at the gateway. See apps/relay.
+  // Relay mode: when --relay-url is set, dial OUT to the relay and replay phone
+  // traffic against our own loopback servers. With --control-plane-url present
+  // the gateway owns its dial-token lifecycle (autonomous mode); without it,
+  // the legacy static-token path is used so a mixed-version fleet degrades.
   let relayClient: RelayClient | undefined;
-  if (flags.relayUrl && flags.relayToken) {
+  let dialTokenManager: ReturnType<typeof createDialTokenManager> | undefined;
+  if (flags.relayUrl) {
     const gatewayId = await resolveGatewayId(flags.gatewayId, dataDir);
-    relayClient = startRelayClient({
-      relayUrl: flags.relayUrl,
-      relayToken: flags.relayToken,
-      gatewayId,
-      managementPort,
-      channelPort,
-      logger: {
-        info: (m) => logger.info(m),
-        warn: (m) => logger.warn(m),
-        error: (m) => logger.error(m),
-      },
-    });
-    console.log(`[gateway] relay mode: dialing ${flags.relayUrl} as gateway "${gatewayId}"`);
+
+    if (flags.controlPlaneUrl) {
+      // Autonomous mode: the manager refreshes via the control plane (holder-of-
+      // key assertion) on boot, proactively before expiry, and reactively on a
+      // relay 4401. The seed token (--relay-token) is the MC-provided dial token,
+      // used only until the manager refreshes from its own persisted state.
+      const cpClient = createControlPlaneClient({
+        controlPlaneUrl: flags.controlPlaneUrl,
+        gatewayId,
+        identity: relayIdentity,
+      });
+      dialTokenManager = createDialTokenManager({
+        cpClient,
+        dataDir,
+        seedToken: flags.relayToken,
+        // `redial` no-ops on the boot refresh (relayClient is still undefined);
+        // the first connect() below dials with the refreshed token. See the
+        // load-bearing ordering note above.
+        redial: () => relayClient?.redialNow(),
+        logger: { info: (m) => logger.info(m), warn: (m) => logger.warn(m) },
+      });
+      await dialTokenManager.start();
+
+      relayClient = startRelayClient({
+        relayUrl: flags.relayUrl,
+        relayToken: flags.relayToken ?? '',
+        getRelayToken: () => dialTokenManager?.getToken() ?? '',
+        signProof: () => relayIdentity.signProof(gatewayId),
+        onAuthFailure: () => dialTokenManager?.onAuthFailure(),
+        gatewayId,
+        managementPort,
+        channelPort,
+        logger: {
+          info: (m) => logger.info(m),
+          warn: (m) => logger.warn(m),
+          error: (m) => logger.error(m),
+        },
+      });
+      console.log(
+        `[gateway] relay mode (autonomous): dialing ${flags.relayUrl} as gateway "${gatewayId}"`,
+      );
+    } else if (flags.relayToken) {
+      // Legacy single-token mode (no control plane): dial with the static token,
+      // no self-refresh. Kept so a mixed-version fleet degrades cleanly.
+      relayClient = startRelayClient({
+        relayUrl: flags.relayUrl,
+        relayToken: flags.relayToken,
+        gatewayId,
+        managementPort,
+        channelPort,
+        logger: {
+          info: (m) => logger.info(m),
+          warn: (m) => logger.warn(m),
+          error: (m) => logger.error(m),
+        },
+      });
+      console.log(`[gateway] relay mode: dialing ${flags.relayUrl} as gateway "${gatewayId}"`);
+    }
   }
 
   console.log('Server ready');
@@ -658,6 +713,7 @@ async function main() {
   const shutdown = async (signal: string) => {
     console.log(`\nReceived ${signal}, shutting down...`);
     relayClient?.stop();
+    dialTokenManager?.stop();
     await mcpManager.stop();
     await agents.stop();
     await gateway.stop();
