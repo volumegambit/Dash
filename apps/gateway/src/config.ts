@@ -13,6 +13,9 @@ export interface LoadConfigOptions {
   /** Stable per-gateway id; the relay addresses streams to `/gw/<gatewayId>`.
    *  Defaults to a value derived at startup when relay mode is on but unset. */
   gatewayId?: string;
+  /** Control-plane base URL (e.g. `https://cp.example.com`). When set in relay
+   *  mode, the gateway refreshes its own dial token via POST /gw/dial-token. */
+  controlPlaneUrl?: string;
 }
 
 export function parseFlags(argv: string[]): LoadConfigOptions {
@@ -42,6 +45,9 @@ export function parseFlags(argv: string[]): LoadConfigOptions {
       i++;
     } else if (argv[i] === '--gateway-id' && argv[i + 1]) {
       options.gatewayId = argv[i + 1];
+      i++;
+    } else if (argv[i] === '--control-plane-url' && argv[i + 1]) {
+      options.controlPlaneUrl = argv[i + 1];
       i++;
     } else if (argv[i] === '--verbose') {
       options.verbose = true;
