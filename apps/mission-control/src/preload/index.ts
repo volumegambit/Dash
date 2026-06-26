@@ -103,7 +103,8 @@ const api: MissionControlAPI = {
   controlPlaneStatus: () => ipcRenderer.invoke('controlPlane:status'),
   controlPlaneSignIn: () => ipcRenderer.invoke('controlPlane:signIn'),
   controlPlaneSignOut: () => ipcRenderer.invoke('controlPlane:signOut'),
-  gatewayEnroll: () => ipcRenderer.invoke('gateway:enroll'),
+  subdomainCheck: (label: string) => ipcRenderer.invoke('controlPlane:subdomainCheck', label),
+  gatewayEnroll: (subdomain: string) => ipcRenderer.invoke('gateway:enroll', subdomain),
   devicesList: () => ipcRenderer.invoke('devices:list'),
   devicesRevoke: (deviceId: string) => ipcRenderer.invoke('devices:revoke', deviceId),
 

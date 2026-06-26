@@ -16,15 +16,51 @@ describe('RelaySettings', () => {
     expect(screen.queryByTestId('relay-status')).not.toBeInTheDocument();
   });
 
-  it('offers "Create gateway" when signed in but not enrolled', async () => {
+  it('shows the subdomain picker when signed in but not enrolled', async () => {
     mockApi.controlPlaneStatus.mockResolvedValue({
       signedIn: true,
       enrolled: false,
       subdomain: null,
     });
     render(<RelaySettings />);
-    expect(await screen.findByRole('button', { name: /create gateway/i })).toBeInTheDocument();
+    expect(await screen.findByTestId('subdomain-input')).toBeInTheDocument();
     expect(screen.getByTestId('relay-signedin')).toBeInTheDocument();
+  });
+
+  it('checks availability as the user types and enrolls with the chosen label', async () => {
+    mockApi.controlPlaneStatus.mockResolvedValue({
+      signedIn: true,
+      enrolled: false,
+      subdomain: null,
+    });
+    mockApi.subdomainCheck.mockResolvedValue(true);
+    mockApi.gatewayEnroll.mockResolvedValue(undefined);
+    const user = userEvent.setup();
+    render(<RelaySettings />);
+
+    const input = await screen.findByTestId('subdomain-input');
+    await user.type(input, 'alice-mbp');
+    await waitFor(() => expect(mockApi.subdomainCheck).toHaveBeenCalledWith('alice-mbp'));
+    expect(await screen.findByTestId('subdomain-hint')).toHaveTextContent(/available/i);
+
+    await user.click(screen.getByRole('button', { name: /claim & enable/i }));
+    await waitFor(() => expect(mockApi.gatewayEnroll).toHaveBeenCalledWith('alice-mbp'));
+  });
+
+  it('rejects a DNS-unsafe label client-side without calling the control plane', async () => {
+    mockApi.controlPlaneStatus.mockResolvedValue({
+      signedIn: true,
+      enrolled: false,
+      subdomain: null,
+    });
+    const user = userEvent.setup();
+    render(<RelaySettings />);
+
+    const input = await screen.findByTestId('subdomain-input');
+    await user.type(input, 'Bad_Label');
+    expect(await screen.findByTestId('subdomain-hint')).toHaveTextContent(/letters, numbers/i);
+    expect(mockApi.subdomainCheck).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: /claim & enable/i })).toBeDisabled();
   });
 
   it('shows the enrolled subdomain and paired devices when connected', async () => {

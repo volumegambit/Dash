@@ -110,6 +110,7 @@ function createFakeControlPlaneClient(
 ): ControlPlaneClient & { createGateway: ReturnType<typeof vi.fn> } {
   return {
     createGateway: vi.fn().mockResolvedValue(provision),
+    isSubdomainAvailable: vi.fn(async () => true),
     createPairing: vi.fn(async () => {
       throw new Error('not used');
     }),
@@ -265,53 +266,23 @@ describe('GatewaySupervisor.ensureRunning()', () => {
   // issued gateway record, always push --gateway-id.
   // ------------------------------------------------------------------
 
-  it('enrolls via the control plane and spawns with the issued identity', async () => {
-    const spawner = createMockSpawner();
-    const probe = createMockProbe({ type: 'free' });
-    const keychain = new InMemoryKeychainStore();
-    const client = createFakeControlPlaneClient();
-
-    const gp = new GatewaySupervisor(
-      makeOptions(tmpDir, { makeGatewayClient: () => createMockGatewayClient() }),
-      spawner,
-      undefined,
-      probe,
-      keychain,
-      client,
-    );
-
-    await gp.ensureRunning();
-
-    expect(client.createGateway).toHaveBeenCalledOnce();
-    const args = (spawner.spawn as unknown as { mock: { calls: unknown[][] } }).mock
-      .calls[0][1] as string[];
-    // relayUrl is derived as wss://<gatewayId>.<host>, the dial token is the
-    // control-plane-issued one, and --gateway-id is always present so the
-    // gateway's randomUUID fallback never fires.
-    expect(args[args.indexOf('--relay-url') + 1]).toBe('wss://gw-issued-1.relay.dash.example');
-    expect(args[args.indexOf('--relay-token') + 1]).toBe('dial-tok-1');
-    expect(args[args.indexOf('--gateway-id') + 1]).toBe('gw-issued-1');
-    // The issued record is cached for reuse across restarts.
-    expect(await keychain.getIssuedGateway()).toEqual({
-      gatewayId: 'gw-issued-1',
-      dialToken: 'dial-tok-1',
-      host: 'relay.dash.example',
-    });
-  });
-
-  it('reuses the cached issued gateway record (no second createGateway)', async () => {
+  it('spawns with relay flags + --control-plane-url from the cached issued record', async () => {
     const spawner = createMockSpawner();
     const probe = createMockProbe({ type: 'free' });
     const keychain = new InMemoryKeychainStore();
     await keychain.setIssuedGateway({
-      gatewayId: 'gw-cached',
-      dialToken: 'dial-cached',
+      gatewayId: 'alice-mbp',
+      subdomain: 'alice-mbp.relay.dash.example',
       host: 'relay.dash.example',
+      dialToken: 'seed-dial-1',
     });
     const client = createFakeControlPlaneClient();
 
     const gp = new GatewaySupervisor(
-      makeOptions(tmpDir, { makeGatewayClient: () => createMockGatewayClient() }),
+      makeOptions(tmpDir, {
+        makeGatewayClient: () => createMockGatewayClient(),
+        controlPlaneUrl: 'https://cp.dash.example',
+      }),
       spawner,
       undefined,
       probe,
@@ -321,13 +292,44 @@ describe('GatewaySupervisor.ensureRunning()', () => {
 
     await gp.ensureRunning();
 
-    // Cached record present → never hit the control plane.
+    // Enrollment is an explicit IPC step now — the supervisor never calls it.
     expect(client.createGateway).not.toHaveBeenCalled();
     const args = (spawner.spawn as unknown as { mock: { calls: unknown[][] } }).mock
       .calls[0][1] as string[];
-    expect(args[args.indexOf('--relay-url') + 1]).toBe('wss://gw-cached.relay.dash.example');
-    expect(args[args.indexOf('--relay-token') + 1]).toBe('dial-cached');
-    expect(args[args.indexOf('--gateway-id') + 1]).toBe('gw-cached');
+    expect(args[args.indexOf('--relay-url') + 1]).toBe('wss://alice-mbp.relay.dash.example');
+    expect(args[args.indexOf('--relay-token') + 1]).toBe('seed-dial-1');
+    expect(args[args.indexOf('--gateway-id') + 1]).toBe('alice-mbp');
+    expect(args[args.indexOf('--control-plane-url') + 1]).toBe('https://cp.dash.example');
+    // No gateway secret is ever passed at spawn.
+    expect(args).not.toContain('--relay-secret');
+  });
+
+  it('omits relay flags when no issued record is cached', async () => {
+    const spawner = createMockSpawner();
+    const probe = createMockProbe({ type: 'free' });
+    const keychain = new InMemoryKeychainStore();
+    const client = createFakeControlPlaneClient();
+
+    const gp = new GatewaySupervisor(
+      makeOptions(tmpDir, {
+        makeGatewayClient: () => createMockGatewayClient(),
+        controlPlaneUrl: 'https://cp.dash.example',
+      }),
+      spawner,
+      undefined,
+      probe,
+      keychain,
+      client,
+    );
+
+    await gp.ensureRunning();
+
+    expect(client.createGateway).not.toHaveBeenCalled();
+    const args = (spawner.spawn as unknown as { mock: { calls: unknown[][] } }).mock
+      .calls[0][1] as string[];
+    expect(args).not.toContain('--relay-url');
+    expect(args).not.toContain('--relay-token');
+    expect(args).not.toContain('--gateway-id');
   });
 
   // ------------------------------------------------------------------
@@ -768,8 +770,9 @@ describe('GatewaySupervisor.restart()', () => {
     await keychain.setChatToken('chat-tok');
     await keychain.setIssuedGateway({
       gatewayId: 'gw-stable',
-      dialToken: 'dial-stable',
+      subdomain: 'gw-stable.relay.dash.example',
       host: 'relay.dash.example',
+      dialToken: 'dial-stable',
     });
 
     const spawner = createMockSpawner(77777);
@@ -784,6 +787,7 @@ describe('GatewaySupervisor.restart()', () => {
     const gp = new GatewaySupervisor(
       makeOptions(tmpDir, {
         makeGatewayClient: () => createMockGatewayClient(),
+        controlPlaneUrl: 'https://cp.dash.example',
       }),
       spawner,
       killer,
@@ -801,6 +805,7 @@ describe('GatewaySupervisor.restart()', () => {
     expect(args[args.indexOf('--relay-url') + 1]).toBe('wss://gw-stable.relay.dash.example');
     expect(args[args.indexOf('--relay-token') + 1]).toBe('dial-stable');
     expect(args[args.indexOf('--gateway-id') + 1]).toBe('gw-stable');
+    expect(args[args.indexOf('--control-plane-url') + 1]).toBe('https://cp.dash.example');
   });
 
   it('escalates SIGTERM to SIGKILL when the gateway ignores SIGTERM', async () => {

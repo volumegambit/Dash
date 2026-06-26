@@ -79,16 +79,31 @@ describe('InMemoryKeychainStore', () => {
     expect(await store.getIssuedGateway()).toBeNull();
   });
 
-  it('round-trips the issued gateway record', async () => {
+  it('round-trips the issued gateway record without a secret', async () => {
     await store.setIssuedGateway({
-      gatewayId: 'gw-issued-1',
-      dialToken: 'dial-token-1',
+      gatewayId: 'alice-mbp',
+      subdomain: 'alice-mbp.relay.example.com',
       host: 'relay.example.com',
     });
     expect(await store.getIssuedGateway()).toEqual({
-      gatewayId: 'gw-issued-1',
-      dialToken: 'dial-token-1',
+      gatewayId: 'alice-mbp',
+      subdomain: 'alice-mbp.relay.example.com',
       host: 'relay.example.com',
+    });
+  });
+
+  it('round-trips an issued record that also carries a seed dial token', async () => {
+    await store.setIssuedGateway({
+      gatewayId: 'alice-mbp',
+      subdomain: 'alice-mbp.relay.example.com',
+      host: 'relay.example.com',
+      dialToken: 'seed-dial-1',
+    });
+    expect(await store.getIssuedGateway()).toEqual({
+      gatewayId: 'alice-mbp',
+      subdomain: 'alice-mbp.relay.example.com',
+      host: 'relay.example.com',
+      dialToken: 'seed-dial-1',
     });
   });
 
@@ -105,7 +120,11 @@ describe('InMemoryKeychainStore', () => {
     await store.setGatewayId('gw-1');
     await store.setRelayAdminSecret('a');
     await store.setControlPlaneToken('cp');
-    await store.setIssuedGateway({ gatewayId: 'gw-i', dialToken: 'd', host: 'h' });
+    await store.setIssuedGateway({
+      gatewayId: 'gw-i',
+      subdomain: 'gw-i.relay.example.com',
+      host: 'h',
+    });
     await store.clearAllGatewayTokens();
     expect(await store.getGatewayToken()).toBeNull();
     expect(await store.getChatToken()).toBeNull();
@@ -243,19 +262,19 @@ describe('DefaultKeychainStore', () => {
   it('reads/writes the issued gateway record under its own accounts', async () => {
     const store = createDefaultKeychainStore();
     await store.setIssuedGateway({
-      gatewayId: 'gw-issued-9',
-      dialToken: 'dial-9',
+      gatewayId: 'alice-mbp',
+      subdomain: 'alice-mbp.relay.example.com',
       host: 'relay.example.com',
     });
     expect(await store.getIssuedGateway()).toEqual({
-      gatewayId: 'gw-issued-9',
-      dialToken: 'dial-9',
+      gatewayId: 'alice-mbp',
+      subdomain: 'alice-mbp.relay.example.com',
       host: 'relay.example.com',
     });
     expect(entryConstructorCalls).toContainEqual(['dash-mission-control', 'issued-gateway-id']);
     expect(entryConstructorCalls).toContainEqual([
       'dash-mission-control',
-      'issued-gateway-dial-token',
+      'issued-gateway-subdomain',
     ]);
     expect(entryConstructorCalls).toContainEqual(['dash-mission-control', 'issued-gateway-host']);
   });

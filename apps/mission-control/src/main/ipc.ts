@@ -26,6 +26,7 @@ import type {
   CreateAgentRequest,
   GatewayChannel,
   GatewaySupervisorOptions,
+  IssuedGateway,
   ProcessSpawner,
 } from '@dash/mc';
 import { desktopDir, gatewayDir, logsDir, migrateLegacyLayout } from '@dash/paths';
@@ -113,6 +114,40 @@ function getGatewaySupervisor(
   return gatewaySupervisor;
 }
 
+/**
+ * Enroll the local gateway with the hosted control plane under a user-chosen,
+ * permanent subdomain. Pure of Electron/IPC so it is unit-testable:
+ *   1. read the gateway's own Ed25519 public key over loopback (the gateway
+ *      must be running for `/identity` to answer — `ensureRunning` guarantees
+ *      it and returns a non-null client),
+ *   2. claim the label and bind the pubkey; the CP returns the full subdomain
+ *      `<gatewayId>.<zone>`, so we derive the bare `host` zone for the dial URL,
+ *   3. cache the non-secret issued record (NO gateway secret/key),
+ *   4. restart so the supervisor's relay block picks up the cached record.
+ */
+export async function enrollGateway(deps: {
+  subdomain: string;
+  ensureRunning: () => Promise<GatewayManagementClient>;
+  restart: () => Promise<unknown>;
+  keychain: { setIssuedGateway: (value: IssuedGateway) => Promise<void> };
+  controlPlaneClient: Pick<ControlPlaneClient, 'createGateway'>;
+}): Promise<void> {
+  const client = await deps.ensureRunning();
+  const { publicKey } = await client.getRelayIdentity();
+  const provision = await deps.controlPlaneClient.createGateway(deps.subdomain, publicKey);
+  const prefix = `${provision.gatewayId}.`;
+  const host = provision.subdomain.startsWith(prefix)
+    ? provision.subdomain.slice(prefix.length)
+    : provision.subdomain;
+  await deps.keychain.setIssuedGateway({
+    gatewayId: provision.gatewayId,
+    subdomain: provision.subdomain,
+    host,
+    dialToken: provision.dialToken,
+  });
+  await deps.restart();
+}
+
 async function getClient(gw: GatewaySupervisor): Promise<GatewayManagementClient> {
   return gw.ensureRunning();
 }
@@ -192,11 +227,13 @@ export async function registerIpcHandlers(
 
   initMcLogging();
 
+  const controlPlaneConfig = readControlPlaneConfig();
   const gwOptions: GatewaySupervisorOptions = {
     gatewayDataDir: DATA_DIR,
     gatewayRuntimeDir: gatewayDir(),
     logsDir: logsDir(),
     projectRoot: resolveProjectRoot(),
+    controlPlaneUrl: controlPlaneConfig.baseUrl,
   };
 
   // Hosted control plane wiring. A single shared keychain backs both the
@@ -208,7 +245,7 @@ export async function registerIpcHandlers(
   // relay identity (see process.ts).
   const keychain = createDefaultKeychainStore();
   const { session: controlPlaneSession, client: controlPlaneClient } = createControlPlaneRuntime({
-    config: readControlPlaneConfig(),
+    config: controlPlaneConfig,
     tokenStore: {
       // Treat an empty string (written by `clear`) as signed-out — the session
       // only branches on `null`, and some keychain backends won't delete keys.
@@ -554,7 +591,7 @@ export async function registerIpcHandlers(
     return {
       signedIn: Boolean(token),
       enrolled: Boolean(issued),
-      subdomain: issued ? `${issued.gatewayId}.${issued.host}` : null,
+      subdomain: issued ? issued.subdomain : null,
     };
   });
 
@@ -566,14 +603,24 @@ export async function registerIpcHandlers(
     await controlPlaneSession.signOut();
   });
 
-  ipcMain.handle('gateway:enroll', async () => {
+  ipcMain.handle('controlPlane:subdomainCheck', async (_e, label: string): Promise<boolean> => {
+    if (!(await controlPlaneSession.getToken())) {
+      throw new Error('Sign in to Dash before checking a subdomain');
+    }
+    return controlPlaneClient.isSubdomainAvailable(label);
+  });
+
+  ipcMain.handle('gateway:enroll', async (_e, subdomain: string): Promise<void> => {
     if (!(await controlPlaneSession.getToken())) {
       throw new Error('Sign in to Dash before enrolling a gateway');
     }
-    // Enrollment happens inside the supervisor's relay block: a restart with the
-    // control-plane client wired reads the cached issued-gateway record or calls
-    // createGateway() once, then dials the relay. Restart so it takes effect now.
-    await gw.restart();
+    await enrollGateway({
+      subdomain,
+      ensureRunning: () => gw.ensureRunning(),
+      restart: () => gw.restart(),
+      keychain,
+      controlPlaneClient,
+    });
     const state = await new GatewayStateStore(DATA_DIR).read();
     const chatToken = await gw.getChatToken();
     const managementToken = await gw.getGatewayToken();

@@ -98,6 +98,29 @@ describe('GatewayManagementClient', () => {
     });
   });
 
+  describe('getRelayIdentity()', () => {
+    it('calls GET /identity with auth headers and returns { publicKey }', async () => {
+      mockOk({ publicKey: 'ed25519-pubkey-b64' });
+
+      const client = new GatewayManagementClient(BASE_URL, TOKEN);
+      const result = await client.getRelayIdentity();
+
+      expect(fetchSpy).toHaveBeenCalledWith(
+        `${BASE_URL}/identity`,
+        expect.objectContaining({ headers: expect.objectContaining(AUTH_HEADER) }),
+      );
+      expect(result.publicKey).toBe('ed25519-pubkey-b64');
+    });
+
+    it('throws GatewayHttpError on non-2xx', async () => {
+      const { GatewayHttpError } = await import('./gateway-client.js');
+      mockError(404, 'not found');
+
+      const client = new GatewayManagementClient(BASE_URL, TOKEN);
+      await expect(client.getRelayIdentity()).rejects.toBeInstanceOf(GatewayHttpError);
+    });
+  });
+
   // ---- Agents ----
 
   describe('createAgent()', () => {

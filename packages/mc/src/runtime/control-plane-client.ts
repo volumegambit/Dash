@@ -43,6 +43,8 @@ export interface GatewaySummary {
 export interface ControlPlaneClient {
   /** Enroll a new gateway for the signed-in account at a chosen subdomain. */
   createGateway(subdomain: string, publicKey: string): Promise<GatewayProvision>;
+  /** True iff a subdomain `label` is available to claim (backs the picker hint). */
+  isSubdomainAvailable(label: string): Promise<boolean>;
   /** Provision a one-time pairing credential for an owned gateway. */
   createPairing(gatewayId: string, deviceLabel?: string): Promise<{ credential: string }>;
   /** List the gateways the signed-in account owns, each with its devices. */
@@ -99,6 +101,14 @@ export function createControlPlaneClient(
         throw new Error('control plane: createGateway returned an incomplete response');
       }
       return { gatewayId: body.gatewayId, dialToken: body.dialToken, subdomain: body.subdomain };
+    },
+
+    async isSubdomainAvailable(label: string): Promise<boolean> {
+      const body = await request<{ available?: unknown }>(
+        'GET',
+        `/v1/subdomains/${encodeURIComponent(label)}`,
+      );
+      return body.available === true;
     },
 
     async createPairing(gatewayId: string, deviceLabel?: string): Promise<{ credential: string }> {

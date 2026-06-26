@@ -248,3 +248,58 @@ describe('createControlPlaneClient against a real control plane + relay', () => 
     await expect(client.createGateway('cp-test-1', 'pk-cp-test')).rejects.toThrow(/401/);
   });
 });
+
+describe('createControlPlaneClient request shapes (unit)', () => {
+  function clientWith(fetchImpl: typeof fetch) {
+    return createControlPlaneClient('https://cp.test', async () => 'tok', fetchImpl);
+  }
+
+  it('createGateway POSTs { subdomain, publicKey } to /v1/gateways', async () => {
+    let capturedUrl = '';
+    let capturedBody: unknown;
+    const fetchImpl = (async (url: string, init: RequestInit) => {
+      capturedUrl = url;
+      capturedBody = JSON.parse(init.body as string);
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          gatewayId: 'alice-mbp',
+          subdomain: 'alice-mbp.relay.example.com',
+          dialToken: 'dial-1',
+        }),
+        text: async () => '',
+      } as unknown as Response;
+    }) as unknown as typeof fetch;
+
+    const client = clientWith(fetchImpl);
+    const provision = await client.createGateway('alice-mbp', 'pubkey-b64');
+
+    expect(capturedUrl).toBe('https://cp.test/v1/gateways');
+    expect(capturedBody).toEqual({ subdomain: 'alice-mbp', publicKey: 'pubkey-b64' });
+    expect(provision).toEqual({
+      gatewayId: 'alice-mbp',
+      subdomain: 'alice-mbp.relay.example.com',
+      dialToken: 'dial-1',
+    });
+  });
+
+  it('isSubdomainAvailable GETs /v1/subdomains/:label and maps { available }', async () => {
+    let capturedUrl = '';
+    const fetchImpl = (async (url: string) => {
+      capturedUrl = url;
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ available: false }),
+        text: async () => '',
+      } as unknown as Response;
+    }) as unknown as typeof fetch;
+
+    const client = clientWith(fetchImpl);
+    const available = await client.isSubdomainAvailable('taken-label');
+
+    expect(capturedUrl).toBe('https://cp.test/v1/subdomains/taken-label');
+    expect(available).toBe(false);
+  });
+});

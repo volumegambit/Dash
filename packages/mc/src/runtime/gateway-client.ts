@@ -181,6 +181,19 @@ export class GatewayManagementClient {
     return res.json() as Promise<GatewayHealthResponse>;
   }
 
+  // Relay identity — the gateway's own Ed25519 public key, read over loopback
+  // at relay opt-in so MC can register it with the control plane. Authed
+  // (loopback-only, but the management API is bearer-gated). MC never sees the
+  // private key — it stays 0600 on the gateway disk.
+  async getRelayIdentity(): Promise<{ publicKey: string }> {
+    const res = await fetch(`${this.baseUrl}/identity`, {
+      headers: this.headers(),
+      signal: AbortSignal.timeout(HOT_PATH_TIMEOUT_MS),
+    });
+    await this.throwIfNotOk(res, 'getRelayIdentity');
+    return res.json() as Promise<{ publicKey: string }>;
+  }
+
   // Agents
   async createAgent(config: CreateAgentRequest): Promise<GatewayAgent> {
     const res = await fetch(`${this.baseUrl}/agents`, {
