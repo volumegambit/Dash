@@ -11,8 +11,28 @@ export interface RelayClientLogger {
 export interface RelayClientOptions {
   /** Relay base URL, e.g. `wss://relay.example.com` (no `/gw` path). */
   relayUrl: string;
-  /** Bearer presented on dial-in so the relay admits this gateway. */
+  /**
+   * Bearer presented on dial-in so the relay admits this gateway. Used only when
+   * `getRelayToken` is absent (the legacy single-token path). When both are set,
+   * `getRelayToken` wins — the token is read fresh at each dial.
+   */
   relayToken: string;
+  /**
+   * Live getter for the dial token, read at dial time so an autonomous refresh
+   * (DialTokenManager) is picked up on the next connect without restarting the
+   * client. Overrides `relayToken` when present.
+   */
+  getRelayToken?: () => string;
+  /**
+   * Mints a fresh `X-Gateway-Proof` holder-of-key assertion. Called on EVERY
+   * `connect()` so each dial carries a short-lived, non-replayable proof.
+   */
+  signProof?: () => string;
+  /**
+   * Invoked when the relay closes the dial socket with code `4401` (bad/expired
+   * token). The DialTokenManager uses this to trigger a cooldown-guarded refresh.
+   */
+  onAuthFailure?: () => void;
   /** Stable per-gateway id; the relay addresses streams to `/gw/<gatewayId>`. */
   gatewayId: string;
   managementPort: number;
@@ -30,6 +50,8 @@ export interface RelayClientOptions {
 
 export interface RelayClient {
   stop(): void;
+  /** Reset backoff, cancel any pending reconnect, and dial immediately. */
+  redialNow(): void;
 }
 
 /** Per-stream flow-control window (bytes); the loopback source pauses past it. */
@@ -114,7 +136,12 @@ export function startRelayClient(opts: RelayClientOptions): RelayClient {
   function connect(): void {
     if (stopped) return;
     const url = `${opts.relayUrl.replace(/\/+$/, '')}/gw/${encodeURIComponent(opts.gatewayId)}`;
-    const ws = new WebSocket(url, { headers: { authorization: `Bearer ${opts.relayToken}` } });
+    const token = opts.getRelayToken ? opts.getRelayToken() : opts.relayToken;
+    const headers: Record<string, string> = { authorization: `Bearer ${token}` };
+    // Holder-of-key proof: a fresh, short-lived assertion per dial. The relay
+    // verifies it against the token's `cnf` pubkey (P3) before registering.
+    if (opts.signProof) headers['x-gateway-proof'] = opts.signProof();
+    const ws = new WebSocket(url, { headers });
     socket = ws;
 
     ws.on('open', () => {
@@ -135,13 +162,16 @@ export function startRelayClient(opts: RelayClientOptions): RelayClient {
       handleFrame(ws, frame);
     });
     ws.on('error', (err) => opts.logger?.warn(`[relay] socket error: ${err.message}`));
-    ws.on('close', () => {
+    ws.on('close', (code: number) => {
       if (stableTimer) {
         clearTimeout(stableTimer);
         stableTimer = undefined;
       }
       stopHeartbeat();
       resetStreams();
+      // A `4401` is the relay rejecting the dial token — let the manager refresh
+      // it (reactive path) in addition to the normal backoff reconnect.
+      if (code === 4401) opts.onAuthFailure?.();
       scheduleReconnect();
     });
   }
@@ -317,6 +347,32 @@ export function startRelayClient(opts: RelayClientOptions): RelayClient {
   connect();
 
   return {
+    redialNow(): void {
+      if (stopped) return;
+      // Cancel a pending backoff reconnect and reset the counter so the new
+      // token is tried immediately rather than after the current delay.
+      if (reconnectTimer) {
+        clearTimeout(reconnectTimer);
+        reconnectTimer = undefined;
+      }
+      // Clear the stable-timer too (consistent with stop()); the previous
+      // connection's timer would otherwise survive the terminate+reconnect.
+      if (stableTimer) {
+        clearTimeout(stableTimer);
+        stableTimer = undefined;
+      }
+      reconnectAttempt = 0;
+      // Drop the live socket (if any) so its 'close' doesn't double-dial; the
+      // explicit connect below opens the fresh tunnel.
+      if (socket) {
+        socket.removeAllListeners('close');
+        socket.terminate();
+        socket = null;
+      }
+      stopHeartbeat();
+      resetStreams();
+      connect();
+    },
     stop(): void {
       stopped = true;
       if (reconnectTimer) clearTimeout(reconnectTimer);

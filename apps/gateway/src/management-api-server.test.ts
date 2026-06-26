@@ -215,6 +215,19 @@ describe('createGatewayManagementApp', () => {
     });
   });
 
+  describe('GET /identity', () => {
+    it('returns the relay public key and is bearer-gated', async () => {
+      const { app } = createApp({ relayIdentity: { publicKeyB64: 'PUBKEY_B64' } });
+
+      const unauth = await app.request('/identity');
+      expect(unauth.status).toBe(401);
+
+      const res = await app.request('/identity', { headers: AUTH });
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ publicKey: 'PUBKEY_B64' });
+    });
+  });
+
   // Auth
   describe('Auth middleware', () => {
     it('rejects unauthenticated requests', async () => {

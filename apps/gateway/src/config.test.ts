@@ -42,6 +42,12 @@ describe('parseFlags', () => {
     expect(parseFlags(['--gateway-id', 'gw-abc'])).toEqual({ gatewayId: 'gw-abc' });
   });
 
+  it('parses --control-plane-url', () => {
+    expect(parseFlags(['--control-plane-url', 'https://cp.example.com'])).toEqual({
+      controlPlaneUrl: 'https://cp.example.com',
+    });
+  });
+
   it('parses relay flags together', () => {
     expect(
       parseFlags([
