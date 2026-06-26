@@ -30,20 +30,25 @@ const GATEWAY_ID_ACCOUNT = 'gateway-relay-id';
 const RELAY_ADMIN_SECRET_ACCOUNT = 'gateway-relay-admin-secret';
 const CONTROL_PLANE_TOKEN_ACCOUNT = 'control-plane-token';
 const ISSUED_GATEWAY_ID_ACCOUNT = 'issued-gateway-id';
-const ISSUED_GATEWAY_DIAL_TOKEN_ACCOUNT = 'issued-gateway-dial-token';
+const ISSUED_GATEWAY_SUBDOMAIN_ACCOUNT = 'issued-gateway-subdomain';
 const ISSUED_GATEWAY_HOST_ACCOUNT = 'issued-gateway-host';
+const ISSUED_GATEWAY_DIAL_TOKEN_ACCOUNT = 'issued-gateway-dial-token';
 
 /**
- * The gateway identity the hosted control plane issues at enrollment.
- * `gatewayId` is the routing key phones pair to (it becomes the relay
- * subdomain), `dialToken` is the signed credential the gateway presents
- * when it dials the relay, and `host` is the relay's base hostname. All
- * three are required for a usable record — see {@link KeychainStore.getIssuedGateway}.
+ * The gateway identity the hosted control plane issues at enrollment. The
+ * gateway owns its own keypair (the private key never leaves the device), so MC
+ * custodies only non-secret routing data: `gatewayId` (the user-chosen permanent
+ * subdomain label, also the relay routing key), `subdomain` (the full
+ * `<label>.<zone>` hostname phones pair to), and `host` (the relay's base zone).
+ * `dialToken` is an optional spawn-time seed — the gateway refreshes its own
+ * token, so this is not load-bearing. `gatewayId`, `subdomain`, and `host` are
+ * all required for a usable record — see {@link KeychainStore.getIssuedGateway}.
  */
 export interface IssuedGateway {
   gatewayId: string;
-  dialToken: string;
+  subdomain: string;
   host: string;
+  dialToken?: string;
 }
 
 export interface KeychainStore {
@@ -179,16 +184,18 @@ class DefaultKeychainStore implements KeychainStore {
 
   async getIssuedGateway(): Promise<IssuedGateway | null> {
     const gatewayId = await (await this.entry(ISSUED_GATEWAY_ID_ACCOUNT)).getPassword();
-    const dialToken = await (await this.entry(ISSUED_GATEWAY_DIAL_TOKEN_ACCOUNT)).getPassword();
+    const subdomain = await (await this.entry(ISSUED_GATEWAY_SUBDOMAIN_ACCOUNT)).getPassword();
     const host = await (await this.entry(ISSUED_GATEWAY_HOST_ACCOUNT)).getPassword();
-    if (!gatewayId || !dialToken || !host) return null;
-    return { gatewayId, dialToken, host };
+    if (!gatewayId || !subdomain || !host) return null;
+    const dialToken = await (await this.entry(ISSUED_GATEWAY_DIAL_TOKEN_ACCOUNT)).getPassword();
+    return dialToken ? { gatewayId, subdomain, host, dialToken } : { gatewayId, subdomain, host };
   }
 
   async setIssuedGateway(value: IssuedGateway): Promise<void> {
     (await this.entry(ISSUED_GATEWAY_ID_ACCOUNT)).setPassword(value.gatewayId);
-    (await this.entry(ISSUED_GATEWAY_DIAL_TOKEN_ACCOUNT)).setPassword(value.dialToken);
+    (await this.entry(ISSUED_GATEWAY_SUBDOMAIN_ACCOUNT)).setPassword(value.subdomain);
     (await this.entry(ISSUED_GATEWAY_HOST_ACCOUNT)).setPassword(value.host);
+    (await this.entry(ISSUED_GATEWAY_DIAL_TOKEN_ACCOUNT)).setPassword(value.dialToken ?? '');
   }
 
   async clearAllGatewayTokens(): Promise<void> {
@@ -200,6 +207,7 @@ class DefaultKeychainStore implements KeychainStore {
       RELAY_ADMIN_SECRET_ACCOUNT,
       CONTROL_PLANE_TOKEN_ACCOUNT,
       ISSUED_GATEWAY_ID_ACCOUNT,
+      ISSUED_GATEWAY_SUBDOMAIN_ACCOUNT,
       ISSUED_GATEWAY_DIAL_TOKEN_ACCOUNT,
       ISSUED_GATEWAY_HOST_ACCOUNT,
     ]) {
@@ -280,16 +288,19 @@ export class InMemoryKeychainStore implements KeychainStore {
 
   async getIssuedGateway(): Promise<IssuedGateway | null> {
     const gatewayId = this.store.get(ISSUED_GATEWAY_ID_ACCOUNT);
-    const dialToken = this.store.get(ISSUED_GATEWAY_DIAL_TOKEN_ACCOUNT);
+    const subdomain = this.store.get(ISSUED_GATEWAY_SUBDOMAIN_ACCOUNT);
     const host = this.store.get(ISSUED_GATEWAY_HOST_ACCOUNT);
-    if (!gatewayId || !dialToken || !host) return null;
-    return { gatewayId, dialToken, host };
+    if (!gatewayId || !subdomain || !host) return null;
+    const dialToken = this.store.get(ISSUED_GATEWAY_DIAL_TOKEN_ACCOUNT);
+    return dialToken ? { gatewayId, subdomain, host, dialToken } : { gatewayId, subdomain, host };
   }
 
   async setIssuedGateway(value: IssuedGateway): Promise<void> {
     this.store.set(ISSUED_GATEWAY_ID_ACCOUNT, value.gatewayId);
-    this.store.set(ISSUED_GATEWAY_DIAL_TOKEN_ACCOUNT, value.dialToken);
+    this.store.set(ISSUED_GATEWAY_SUBDOMAIN_ACCOUNT, value.subdomain);
     this.store.set(ISSUED_GATEWAY_HOST_ACCOUNT, value.host);
+    if (value.dialToken) this.store.set(ISSUED_GATEWAY_DIAL_TOKEN_ACCOUNT, value.dialToken);
+    else this.store.delete(ISSUED_GATEWAY_DIAL_TOKEN_ACCOUNT);
   }
 
   async clearAllGatewayTokens(): Promise<void> {
@@ -300,6 +311,7 @@ export class InMemoryKeychainStore implements KeychainStore {
     this.store.delete(GATEWAY_ID_ACCOUNT);
     this.store.delete(CONTROL_PLANE_TOKEN_ACCOUNT);
     this.store.delete(ISSUED_GATEWAY_ID_ACCOUNT);
+    this.store.delete(ISSUED_GATEWAY_SUBDOMAIN_ACCOUNT);
     this.store.delete(ISSUED_GATEWAY_DIAL_TOKEN_ACCOUNT);
     this.store.delete(ISSUED_GATEWAY_HOST_ACCOUNT);
   }
