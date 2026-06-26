@@ -85,6 +85,12 @@ export interface GatewayManagementOptions {
    * when this is absent.
    */
   dataDir?: string;
+  /**
+   * The gateway's relay identity (public key only). When present, mounts
+   * `GET /identity` so MC can read the pubkey over loopback at relay opt-in.
+   * Absent in tests that don't exercise identity.
+   */
+  relayIdentity?: { publicKeyB64: string };
 }
 
 /**
@@ -330,6 +336,15 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
       channels: channelRegistry.list().length,
     });
   });
+
+  // --- Relay identity ---
+  // Authed (behind the bearer middleware registered above, app.use('*')). MC
+  // reads this over loopback at relay opt-in to register the gateway's public
+  // key with the control plane.
+  if (options.relayIdentity) {
+    const { publicKeyB64 } = options.relayIdentity;
+    app.get('/identity', (c) => c.json({ publicKey: publicKeyB64 }));
+  }
 
   // --- Agent routes ---
 
