@@ -248,6 +248,7 @@ describe('hosted remote-access slice (main-process integration)', () => {
       : provision.subdomain;
     await keychain.setIssuedGateway({
       gatewayId: provision.gatewayId,
+      subdomain: provision.subdomain,
       dialToken: provision.dialToken,
       host,
     });

@@ -6,7 +6,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // We need to import makePackagedSpawner — it doesn't exist yet, so this will fail
 // Import it from ipc.ts after you implement it
+import { InMemoryKeychainStore } from '@dash/mc';
 import {
+  enrollGateway,
   isSetupConfigured,
   makePackagedSpawner,
   pluginInstallHandler,
@@ -18,6 +20,41 @@ import {
   resolveSetupStatus,
   shutdownGatewayOnQuit,
 } from './ipc.js';
+
+describe('enrollGateway', () => {
+  it('reads the gateway pubkey, claims the subdomain, persists {id,subdomain,host}, restarts', async () => {
+    const keychain = new InMemoryKeychainStore();
+    const getRelayIdentity = vi.fn().mockResolvedValue({ publicKey: 'pubkey-b64' });
+    const ensureRunning = vi.fn().mockResolvedValue({ getRelayIdentity });
+    const restart = vi.fn().mockResolvedValue(undefined);
+    const createGateway = vi.fn().mockResolvedValue({
+      gatewayId: 'alice-mbp',
+      subdomain: 'alice-mbp.relay.dash.example',
+      dialToken: 'dial-1',
+    });
+
+    await enrollGateway({
+      subdomain: 'alice-mbp',
+      ensureRunning,
+      restart,
+      keychain,
+      controlPlaneClient: { createGateway } as never,
+    });
+
+    // Pubkey read over loopback, then label claimed with that pubkey.
+    expect(getRelayIdentity).toHaveBeenCalledOnce();
+    expect(createGateway).toHaveBeenCalledWith('alice-mbp', 'pubkey-b64');
+    // host is the bare zone (subdomain minus the `<gatewayId>.` prefix).
+    expect(await keychain.getIssuedGateway()).toEqual({
+      gatewayId: 'alice-mbp',
+      subdomain: 'alice-mbp.relay.dash.example',
+      host: 'relay.dash.example',
+      dialToken: 'dial-1',
+    });
+    // Relay mode is applied through a restart.
+    expect(restart).toHaveBeenCalledOnce();
+  });
+});
 
 describe('makePackagedSpawner', () => {
   it('replaces node with execPath and adds ELECTRON_RUN_AS_NODE=1 when packaged', () => {
