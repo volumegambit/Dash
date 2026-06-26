@@ -12,6 +12,8 @@ export interface GatewayRecord {
   gatewayId: string;
   accountId: string;
   subdomain: string;
+  /** The gateway's Ed25519 public key (raw, base64url) — its cryptographic identity. */
+  publicKey: string;
   status: 'active' | 'revoked';
   createdAt: number;
 }
@@ -39,7 +41,15 @@ export interface Store {
   createGateway(r: Omit<GatewayRecord, 'status' | 'createdAt'>): GatewayRecord;
   getGateway(gatewayId: string): GatewayRecord | null;
   listGateways(accountId: string): GatewayRecord[];
-  /** Ownership-checked: only the owning account may revoke. */
+  /**
+   * True only when NO row exists for `label` in ANY status. A claimed label is
+   * never recycled — `revokeGateway` keeps the row, so a burned label stays
+   * unavailable forever (prevents subdomain takeover of a cached hostname).
+   */
+  isSubdomainAvailable(label: string): boolean;
+  /** The stored public key for `gatewayId`, or null when unknown. */
+  getGatewayPublicKey(gatewayId: string): string | null;
+  /** Ownership-checked: only the owning account may revoke. Keeps the row. */
   revokeGateway(accountId: string, gatewayId: string): boolean;
   addPairing(r: Omit<PairingRecord, 'status' | 'createdAt'>): PairingRecord;
   listPairings(gatewayId: string): PairingRecord[];
@@ -50,6 +60,7 @@ interface GatewayRow {
   gateway_id: string;
   account_id: string;
   subdomain: string;
+  public_key: string;
   status: string;
   created_at: number;
 }
@@ -79,6 +90,7 @@ export class SqliteStore implements Store {
         gateway_id TEXT PRIMARY KEY,
         account_id TEXT NOT NULL REFERENCES accounts(account_id),
         subdomain  TEXT NOT NULL,
+        public_key TEXT NOT NULL DEFAULT '',
         status     TEXT NOT NULL,
         created_at INTEGER NOT NULL
       );
@@ -93,6 +105,13 @@ export class SqliteStore implements Store {
       CREATE INDEX IF NOT EXISTS idx_gateways_account ON gateways(account_id);
       CREATE INDEX IF NOT EXISTS idx_pairings_gateway ON pairings(gateway_id);
     `);
+    // Guarded migration: a dev DB created before the pubkey model lacks
+    // `public_key`. Add it if absent (CREATE TABLE IF NOT EXISTS won't alter an
+    // existing table). No production fleet exists, so a backfill is unnecessary.
+    const cols = this.db.prepare('PRAGMA table_info(gateways)').all() as Array<{ name: string }>;
+    if (!cols.some((c) => c.name === 'public_key')) {
+      this.db.exec("ALTER TABLE gateways ADD COLUMN public_key TEXT NOT NULL DEFAULT ''");
+    }
   }
 
   private readonly now: () => number;
@@ -109,9 +128,16 @@ export class SqliteStore implements Store {
     };
     this.db
       .prepare(
-        'INSERT INTO gateways (gateway_id, account_id, subdomain, status, created_at) VALUES (?, ?, ?, ?, ?)',
+        'INSERT INTO gateways (gateway_id, account_id, subdomain, public_key, status, created_at) VALUES (?, ?, ?, ?, ?, ?)',
       )
-      .run(record.gatewayId, record.accountId, record.subdomain, record.status, record.createdAt);
+      .run(
+        record.gatewayId,
+        record.accountId,
+        record.subdomain,
+        record.publicKey,
+        record.status,
+        record.createdAt,
+      );
     return record;
   }
 
@@ -127,6 +153,20 @@ export class SqliteStore implements Store {
       .prepare('SELECT * FROM gateways WHERE account_id = ?')
       .all(accountId) as unknown as GatewayRow[];
     return rows.map((row) => this.toGateway(row));
+  }
+
+  isSubdomainAvailable(label: string): boolean {
+    const row = this.db
+      .prepare('SELECT 1 FROM gateways WHERE gateway_id = ?')
+      .get(label) as unknown;
+    return row === undefined;
+  }
+
+  getGatewayPublicKey(gatewayId: string): string | null {
+    const row = this.db
+      .prepare('SELECT public_key FROM gateways WHERE gateway_id = ?')
+      .get(gatewayId) as { public_key: string } | undefined;
+    return row ? row.public_key : null;
   }
 
   revokeGateway(accountId: string, gatewayId: string): boolean {
@@ -181,6 +221,7 @@ export class SqliteStore implements Store {
       gatewayId: row.gateway_id,
       accountId: row.account_id,
       subdomain: row.subdomain,
+      publicKey: row.public_key,
       status: row.status as GatewayRecord['status'],
       createdAt: row.created_at,
     };
