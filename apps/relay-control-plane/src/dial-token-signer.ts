@@ -6,7 +6,8 @@ import { signDialToken } from '@dash/relay';
  *
  * The relay verifies these tokens with the matching public key via
  * `@dash/relay`'s `verifyDialToken` — this signer is the control-plane half of
- * that shared contract. `tenantId == accountId` for v1.
+ * that shared contract. `tenantId == accountId` for v1; `cnf` is the gateway's
+ * public key (holder-of-key binding).
  */
 export class DialTokenSigner {
   readonly #privateKey: KeyObject;
@@ -24,10 +25,10 @@ export class DialTokenSigner {
     this.#now = now;
   }
 
-  /** Mint a signed dial token for `gatewayId` under `tenantId`. */
-  signFor(tenantId: string, gatewayId: string): string {
+  /** Mint a signed dial token for `gatewayId` under `tenantId`, bound to `cnf`. */
+  signFor(tenantId: string, gatewayId: string, cnf: string): string {
     const exp = this.#now() + this.#ttlSec;
-    return signDialToken({ tenantId, gatewayId, exp }, this.#privateKey);
+    return signDialToken({ tenantId, gatewayId, exp, cnf }, this.#privateKey);
   }
 }
 
