@@ -15,9 +15,17 @@ export { DialTokenSigner } from './dial-token-signer.js';
 export { RelayAdminClient } from './relay-admin-client.js';
 export {
   ProvisioningService,
+  InvalidSubdomainError,
+  SubdomainTakenError,
+  InvalidPublicKeyError,
   type CreatedGateway,
   type ProvisioningDeps,
 } from './provisioning.js';
+export { validateSubdomainLabel } from './subdomain.js';
+export {
+  GatewayAssertionAuthenticator,
+  type GatewayAssertionAuthDeps,
+} from './gateway-assertion-auth.js';
 export { StubAuthenticator, type Authenticator } from './auth.js';
 export {
   WorkosAuthenticator,
