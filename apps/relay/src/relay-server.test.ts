@@ -13,7 +13,7 @@ import {
 } from './relay-server.js';
 
 const deps = {
-  relayTokenValid: (_gatewayId: string, t: string) => t === 'good',
+  verifyDialIn: (_gatewayId: string, t: string) => t === 'good',
   pairingCredentialValid: () => true,
 };
 
@@ -130,10 +130,67 @@ describe('relay-server', () => {
     expect(server.hasGateway('g2')).toBe(false);
   });
 
+  it('closes a gateway with 4401 when verifyDialIn fails (missing proof), before register', async () => {
+    // A deps that only admits when a non-empty proof header is present, mirroring
+    // hosted holder-of-key. The connect helper sends NO X-Gateway-Proof, so the
+    // dial is rejected before registerGateway runs.
+    await restartWith({
+      verifyDialIn: (_gatewayId, token, proof) => token === 'good' && Boolean(proof),
+      pairingCredentialValid: () => true,
+    });
+    const code = await new Promise<number>((resolve) => {
+      const ws = new WebSocket(`ws://127.0.0.1:${port}/gw/gw-1`, {
+        headers: { authorization: 'Bearer good' }, // no X-Gateway-Proof
+      });
+      ws.on('close', (c) => resolve(c));
+    });
+    expect(code).toBe(4401);
+    expect(server.hasGateway('gw-1')).toBe(false);
+  });
+
+  it('closes a gateway with 4401 when verifyDialIn rejects a present-but-invalid proof, before register', async () => {
+    // The token is fine but the proof is wrong — the upgrade path must still close
+    // 4401 before register (spec: invalid proof -> 4401 before register).
+    await restartWith({
+      verifyDialIn: (_gatewayId, token, proof) => token === 'good' && proof === 'ok',
+      pairingCredentialValid: () => true,
+    });
+    const code = await new Promise<number>((resolve) => {
+      const ws = new WebSocket(`ws://127.0.0.1:${port}/gw/gw-1`, {
+        headers: { authorization: 'Bearer good', 'x-gateway-proof': 'bad' },
+      });
+      ws.on('close', (c) => resolve(c));
+    });
+    expect(code).toBe(4401);
+    expect(server.hasGateway('gw-1')).toBe(false);
+  });
+
+  it('admits a gateway when verifyDialIn sees the X-Gateway-Proof header', async () => {
+    let seenProof: string | undefined;
+    await restartWith({
+      verifyDialIn: (_gatewayId, token, proof) => {
+        seenProof = proof;
+        return token === 'good' && proof === 'a-proof';
+      },
+      pairingCredentialValid: () => true,
+    });
+    const ws = await new Promise<WebSocket>((resolve, reject) => {
+      const s = new WebSocket(`ws://127.0.0.1:${port}/gw/gw-1`, {
+        headers: { authorization: 'Bearer good', 'x-gateway-proof': 'a-proof' },
+      });
+      s.on('open', () => resolve(s));
+      s.on('error', reject);
+    });
+    await waitFor(() => server.hasGateway('gw-1'));
+    expect(server.hasGateway('gw-1')).toBe(true);
+    expect(seenProof).toBe('a-proof');
+    ws.close();
+  });
+
   it('rejects a dial token bound to another gateway without disturbing the incumbent', async () => {
     // token `good-1` only valid for gw-1, `good-2` only for gw-2.
     await restartWith({
-      relayTokenValid: (gatewayId, token) => token === `good-${gatewayId.slice(-1)}`,
+      verifyDialIn: (gatewayId, token) => token === `good-${gatewayId.slice(-1)}`,
       pairingCredentialValid: () => true,
     });
 
@@ -349,7 +406,7 @@ describe('relay-server', () => {
   it('rejects phone HTTP with 401 when the pairing credential is invalid', async () => {
     let seen: { gatewayId: string; credential: string } | undefined;
     await restartWith({
-      relayTokenValid: (_gatewayId, t) => t === 'good',
+      verifyDialIn: (_gatewayId, t) => t === 'good',
       pairingCredentialValid: (gatewayId, credential) => {
         seen = { gatewayId, credential };
         return false;
@@ -370,7 +427,7 @@ describe('relay-server', () => {
 
   it('rejects a phone WebSocket with 4401 when the pairing credential is invalid', async () => {
     await restartWith({
-      relayTokenValid: (_gatewayId, t) => t === 'good',
+      verifyDialIn: (_gatewayId, t) => t === 'good',
       pairingCredentialValid: () => false,
     });
     const gw = await connectGateway('g1', 'good');
@@ -388,7 +445,7 @@ describe('relay-server', () => {
 
   it('proxies the request when the pairing credential is accepted', async () => {
     await restartWith({
-      relayTokenValid: (_gatewayId, t) => t === 'good',
+      verifyDialIn: (_gatewayId, t) => t === 'good',
       pairingCredentialValid: (_gatewayId, credential) => credential === 'secret',
     });
     const gw = await connectGateway('g1', 'good');
@@ -595,7 +652,7 @@ describe('relay-server', () => {
   it('does not spend the rate-limit budget on unauthenticated requests', async () => {
     await restartWith(
       {
-        relayTokenValid: (_gatewayId, t) => t === 'good',
+        verifyDialIn: (_gatewayId, t) => t === 'good',
         pairingCredentialValid: (_gatewayId, cred) => cred === 'valid',
       },
       { rateBurst: 1, ratePerSec: 0 },

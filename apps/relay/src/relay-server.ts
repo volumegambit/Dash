@@ -58,6 +58,8 @@ const RELAY_AUTH_CLOSE = 4401;
 const RELAY_RATE_LIMIT_CLOSE = 4429;
 /** Header carrying the phone's per-pairing relay credential (set by the app). */
 const PAIRING_CREDENTIAL_HEADER = 'x-dash-relay-credential';
+/** Header carrying the gateway's holder-of-key dial-in proof (hosted mode). */
+const GATEWAY_PROOF_HEADER = 'x-gateway-proof';
 
 /** A phone-originated stream's callbacks, driven by frames from the gateway. */
 interface PhoneStream {
@@ -107,8 +109,12 @@ export function createRelayServer(deps: RelayDeps, options: RelayServerOptions =
     }
     const gatewayId = decodeURIComponent(gwMatch[1]);
     const token = bearer(req.headers.authorization);
+    const proof = headerValue(req.headers[GATEWAY_PROOF_HEADER]) || undefined;
     wss.handleUpgrade(req, socket, head, (ws) => {
-      if (!token || !deps.relayTokenValid(gatewayId, token)) {
+      // Auth-before-register: a bad/absent token OR a missing/invalid holder-of-key
+      // proof is closed 4401 before the gateway is ever registered (so it can't
+      // displace an incumbent connection on the same id).
+      if (!token || !deps.verifyDialIn(gatewayId, token, proof)) {
         ws.close(RELAY_AUTH_CLOSE, 'Unauthorized');
         return;
       }
