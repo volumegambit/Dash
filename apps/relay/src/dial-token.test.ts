@@ -1,5 +1,10 @@
 import { generateKeyPairSync, sign } from 'node:crypto';
-import { type DialTokenClaims, signDialToken, verifyDialToken } from './dial-token.js';
+import {
+  type DialTokenClaims,
+  decodeDialTokenClaims,
+  signDialToken,
+  verifyDialToken,
+} from './dial-token.js';
 
 const { publicKey, privateKey } = generateKeyPairSync('ed25519');
 const cnf = Buffer.from(
@@ -49,4 +54,21 @@ test('rejects a token whose claims are missing cnf', () => {
   const payload = Buffer.from(JSON.stringify(noCnf), 'utf8').toString('base64url');
   const sig = sign(null, Buffer.from(payload), privateKey).toString('base64url');
   expect(verifyDialToken(`${payload}.${sig}`, publicKey, 1_000_000_000)).toBeNull();
+});
+
+test('decodeDialTokenClaims reads exp/cnf without a key', () => {
+  const tok = signDialToken(claims, privateKey);
+  expect(decodeDialTokenClaims(tok)).toEqual(claims);
+});
+
+test('decodeDialTokenClaims returns null on malformed input', () => {
+  for (const bad of ['', 'no-dot', 'a.b.c', '.', 'x.', 'not-base64url.sig']) {
+    expect(decodeDialTokenClaims(bad)).toBeNull();
+  }
+});
+
+test('decodeDialTokenClaims returns null when a required claim is absent', () => {
+  const noCnf = { tenantId: 't1', gatewayId: 'gw-abc', exp: 2_000_000_000 };
+  const payload = Buffer.from(JSON.stringify(noCnf), 'utf8').toString('base64url');
+  expect(decodeDialTokenClaims(`${payload}.anything`)).toBeNull();
 });

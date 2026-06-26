@@ -54,3 +54,32 @@ export function verifyDialToken(
     return null;
   }
 }
+
+/**
+ * No-key decode of the claims segment: split on '.', base64url-decode segment 0,
+ * JSON.parse, validate shape (incl. `cnf`). Lets a gateway read its OWN token's
+ * `exp`/`cnf` to schedule refresh — it does NOT verify the signature, so never
+ * trust the result as authentication. Returns `null` on any malformation.
+ */
+export function decodeDialTokenClaims(token: string): DialTokenClaims | null {
+  const dot = token.indexOf('.');
+  if (dot <= 0 || dot !== token.lastIndexOf('.')) return null;
+  const payload = token.slice(0, dot);
+  if (!payload) return null;
+  try {
+    const claims = JSON.parse(
+      Buffer.from(payload, 'base64url').toString('utf8'),
+    ) as DialTokenClaims;
+    if (
+      typeof claims.tenantId !== 'string' ||
+      typeof claims.gatewayId !== 'string' ||
+      typeof claims.cnf !== 'string' ||
+      typeof claims.exp !== 'number'
+    ) {
+      return null;
+    }
+    return claims;
+  } catch {
+    return null;
+  }
+}
