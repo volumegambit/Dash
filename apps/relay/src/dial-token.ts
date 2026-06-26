@@ -4,6 +4,8 @@ import { type KeyObject, sign, verify } from 'node:crypto';
 export interface DialTokenClaims {
   tenantId: string;
   gatewayId: string;
+  /** Holder-of-key: the gateway's raw Ed25519 public key (32 bytes, base64url). */
+  cnf: string;
   /** Expiry, unix seconds. */
   exp: number;
 }
@@ -41,6 +43,7 @@ export function verifyDialToken(
     if (
       typeof claims.tenantId !== 'string' ||
       typeof claims.gatewayId !== 'string' ||
+      typeof claims.cnf !== 'string' ||
       typeof claims.exp !== 'number' ||
       claims.exp <= nowSec
     ) {
