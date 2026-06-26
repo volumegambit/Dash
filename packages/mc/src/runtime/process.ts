@@ -1,5 +1,4 @@
 import { execFile, spawn } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
 import { closeSync, openSync, writeSync } from 'node:fs';
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -218,6 +217,9 @@ export interface GatewaySupervisorOptions {
   makeGatewayClient?: (baseUrl: string, token: string) => GatewayManagementClient;
   managementPort?: number;
   channelPort?: number;
+  /** Control-plane base URL, passed to the gateway so it refreshes its own dial
+   *  token. Present iff hosted relay mode is configured. */
+  controlPlaneUrl?: string;
 }
 
 export class GatewaySupervisor {
@@ -460,45 +462,30 @@ export class GatewaySupervisor {
     if (opts.gatewayRuntimeDir) {
       spawnArgs.push('--data-dir', opts.gatewayRuntimeDir);
     }
-    // Relay mode via the hosted control plane. When a ControlPlaneClient is
-    // injected, the gateway identity is *issued* by the control plane, not
-    // self-generated: read the cached issued record (gatewayId + signed dial
-    // token + host) or, if absent, enroll once via createGateway() and cache
-    // it. The gateway dials its own wildcard subdomain `wss://<gatewayId>.<host>`
-    // presenting the signed dial token. `--gateway-id` is ALWAYS pushed so the
-    // gateway's randomUUID fallback never fires and phones keep a fixed address.
-    if (this.controlPlaneClient) {
-      // Reuse the cached record across restarts; only enroll when absent so
-      // we never double-createGateway (which would orphan the prior gateway).
-      let issued = await this.keychain.getIssuedGateway();
-      if (!issued) {
-        // P5 replaces this with the subdomain picker + the gateway's loopback
-        // public key. Until then, derive a DNS-safe label from a fresh id and
-        // pass a placeholder key so enrollment compiles end to end.
-        const label = `gw-${randomUUID().slice(0, 12)}`;
-        const provision = await this.controlPlaneClient.createGateway(label, 'pending-pubkey');
-        // The control plane returns the full subdomain `<gatewayId>.<zone>`;
-        // store the bare zone as `host` so the dial URL reconstructs to
-        // `wss://<gatewayId>.<host>` (and re-enrollment keeps the same shape).
-        const prefix = `${provision.gatewayId}.`;
-        const host = provision.subdomain.startsWith(prefix)
-          ? provision.subdomain.slice(prefix.length)
-          : provision.subdomain;
-        issued = {
-          gatewayId: provision.gatewayId,
-          dialToken: provision.dialToken,
-          host,
-        };
-        await this.keychain.setIssuedGateway(issued);
+    // Relay mode via the hosted control plane. Enrollment is now an explicit IPC
+    // step (enrollGateway): the user picks a permanent subdomain, MC reads the
+    // gateway's OWN public key over loopback and registers it with the control
+    // plane. The supervisor never enrolls during spawn — it reads the cached
+    // issued record and, when present, spawns the gateway with its control-plane
+    // URL + relay flags. The gateway owns its dial-token lifecycle (refreshes via
+    // --control-plane-url); `--relay-token` carries only the optional boot seed.
+    // No record → spawn without relay flags (the gateway runs locally until the
+    // user opts into the relay).
+    if (this.controlPlaneClient && opts.controlPlaneUrl) {
+      const issued = await this.keychain.getIssuedGateway();
+      if (issued) {
+        spawnArgs.push(
+          '--relay-url',
+          `wss://${issued.gatewayId}.${issued.host}`,
+          '--gateway-id',
+          issued.gatewayId,
+          '--control-plane-url',
+          opts.controlPlaneUrl,
+        );
+        if (issued.dialToken) {
+          spawnArgs.push('--relay-token', issued.dialToken);
+        }
       }
-      spawnArgs.push(
-        '--relay-url',
-        `wss://${issued.gatewayId}.${issued.host}`,
-        '--relay-token',
-        issued.dialToken,
-        '--gateway-id',
-        issued.gatewayId,
-      );
     }
     // Write gateway logs to a file so they can be viewed from MC
     const logsDir = opts.logsDir ?? join(opts.gatewayDataDir, 'logs');
