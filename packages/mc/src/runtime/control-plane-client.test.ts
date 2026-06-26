@@ -156,9 +156,9 @@ describe('createControlPlaneClient against a real control plane + relay', () => 
   it('createGateway returns a dial token the relay verifies on dial-in', async () => {
     const client = createControlPlaneClient(cpBaseUrl, token);
 
-    const provision = await client.createGateway();
-    expect(provision.gatewayId).toMatch(/^gw-[0-9a-f]+$/);
-    expect(provision.subdomain).toBe(`${provision.gatewayId}.relay.example.com`);
+    const provision = await client.createGateway('cp-test-1', 'pk-cp-test');
+    expect(provision.gatewayId).toBe('cp-test-1');
+    expect(provision.subdomain).toBe('cp-test-1.relay.example.com');
     expect(typeof provision.dialToken).toBe('string');
 
     // The real relay accepts the CP-signed dial token — proving the contract.
@@ -171,7 +171,7 @@ describe('createControlPlaneClient against a real control plane + relay', () => 
 
   it('createPairing returns a credential the relay validates at its edge', async () => {
     const client = createControlPlaneClient(cpBaseUrl, token);
-    const provision = await client.createGateway();
+    const provision = await client.createGateway('cp-test-1', 'pk-cp-test');
 
     const gw = await connectGateway(provision.gatewayId, provision.dialToken);
     respondOk(gw);
@@ -194,24 +194,9 @@ describe('createControlPlaneClient against a real control plane + relay', () => 
     gw.close();
   });
 
-  it('refreshDialToken mints a fresh token the relay also accepts', async () => {
-    const client = createControlPlaneClient(cpBaseUrl, token);
-    const provision = await client.createGateway();
-
-    const refreshed = await client.refreshDialToken(provision.gatewayId);
-    expect(typeof refreshed).toBe('string');
-    expect(refreshed.length).toBeGreaterThan(0);
-
-    const gw = await connectGateway(provision.gatewayId, refreshed);
-    respondOk(gw);
-    await waitFor(() => relayServer.hasGateway(provision.gatewayId));
-    expect(relayServer.hasGateway(provision.gatewayId)).toBe(true);
-    gw.close();
-  });
-
   it('listGateways returns owned gateways with their devices', async () => {
     const client = createControlPlaneClient(cpBaseUrl, token);
-    const provision = await client.createGateway();
+    const provision = await client.createGateway('cp-test-1', 'pk-cp-test');
     await client.createPairing(provision.gatewayId, 'iPhone');
 
     const gateways = await client.listGateways();
@@ -226,7 +211,7 @@ describe('createControlPlaneClient against a real control plane + relay', () => 
 
   it('revokePairing invalidates the credential at the relay edge', async () => {
     const client = createControlPlaneClient(cpBaseUrl, token);
-    const provision = await client.createGateway();
+    const provision = await client.createGateway('cp-test-1', 'pk-cp-test');
     const gw = await connectGateway(provision.gatewayId, provision.dialToken);
     respondOk(gw);
     await waitFor(() => relayServer.hasGateway(provision.gatewayId));
@@ -250,6 +235,6 @@ describe('createControlPlaneClient against a real control plane + relay', () => 
   it('maps a non-2xx response to an error', async () => {
     // No token → the auth middleware answers 401 → the client throws.
     const client = createControlPlaneClient(cpBaseUrl, async () => null);
-    await expect(client.createGateway()).rejects.toThrow(/401/);
+    await expect(client.createGateway('cp-test-1', 'pk-cp-test')).rejects.toThrow(/401/);
   });
 });

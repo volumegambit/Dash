@@ -231,7 +231,7 @@ describe('hosted remote-access slice (main-process integration)', () => {
     // issued record in the keychain. Then the gateway dials its own subdomain.
     let issued = await keychain.getIssuedGateway();
     expect(issued).toBeNull();
-    const provision = await client.createGateway();
+    const provision = await client.createGateway('alice-int', 'pk-int');
     const prefix = `${provision.gatewayId}.`;
     const host = provision.subdomain.startsWith(prefix)
       ? provision.subdomain.slice(prefix.length)
