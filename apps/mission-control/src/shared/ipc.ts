@@ -259,8 +259,10 @@ export interface MissionControlAPI {
   controlPlaneSignIn(): Promise<void>;
   /** Forget the control-plane session token. */
   controlPlaneSignOut(): Promise<void>;
-  /** Enroll a gateway with the control plane and restart it in relay mode. */
-  gatewayEnroll(): Promise<void>;
+  /** True when `label` is an unclaimed, DNS-safe subdomain. Backs the picker. */
+  subdomainCheck(label: string): Promise<boolean>;
+  /** Claim `subdomain`, bind the gateway pubkey, and restart in relay mode. */
+  gatewayEnroll(subdomain: string): Promise<void>;
   /** List the paired devices for the enrolled gateway. */
   devicesList(): Promise<DeviceInfo[]>;
   /** Revoke a single paired device by id. */

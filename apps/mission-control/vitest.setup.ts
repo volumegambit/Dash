@@ -119,6 +119,7 @@ function createMockApi(): MockApi {
       .mockResolvedValue({ signedIn: false, enrolled: false, subdomain: null }),
     controlPlaneSignIn: vi.fn().mockResolvedValue(undefined),
     controlPlaneSignOut: vi.fn().mockResolvedValue(undefined),
+    subdomainCheck: vi.fn().mockResolvedValue(true),
     gatewayEnroll: vi.fn().mockResolvedValue(undefined),
     devicesList: vi.fn().mockResolvedValue([]),
     devicesRevoke: vi.fn().mockResolvedValue(undefined),
