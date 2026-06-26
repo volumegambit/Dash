@@ -73,6 +73,33 @@ The gateway runs two servers with independent authentication:
 
 Both servers bind to `127.0.0.1` by default. Each has its own token — a management token cannot be used on the channel port, and vice versa.
 
+## Remote access identity
+
+When you use the [hosted relay](/remote-access) to reach your agents from your phone,
+the gateway authenticates itself with its **own cryptographic identity** rather than a
+shared password. On first start, the gateway generates an Ed25519 key pair and stores
+the private half on its own disk (owner-readable only); the private key never leaves the
+machine. Only the matching **public** key is ever registered with Dash, so the hosted
+service holds nothing that could impersonate your gateway.
+
+Each gateway also has a **permanent address** on the relay — the hostname you chose when
+you set up remote access. That address is globally unique and is claimed for good: it's
+never reassigned and never recycled, even if you later remove the gateway, so a paired
+phone always resolves the same gateway and a name can't be taken over by someone else.
+
+Each time the gateway dials out to the relay, it presents its relay address token
+together with a short-lived proof signed by that private key. The relay checks, offline,
+that the token was issued by Dash for that exact address **and** that the dialer actually
+holds the matching private key (holder-of-key) before it admits the connection. A token
+copied from disk or seen on the wire is therefore inert on its own — without the private
+key it produces no valid proof.
+
+This also makes remote access self-healing. Relay address tokens are short-lived, and the
+gateway renews its own token in the background — on a timer before it expires, on the next
+dial after a rejected one, and on boot after being offline. So a gateway that's been
+powered off for days or weeks reconnects on its own, with no re-enrollment and without
+Mission Control needing to be open.
+
 ## Message flow
 
 Here's what happens when you send a message to one of your agents.
