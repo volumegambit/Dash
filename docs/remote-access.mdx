@@ -54,10 +54,14 @@ ever connects *your* phones to *your* gateway.
     hands you back to Mission Control automatically. You only do this once per
     machine.
   </Step>
-  <Step title="Create a gateway">
-    Once you're signed in, click **Create gateway**. Dash gives your gateway a
-    stable address on the relay and restarts it so it connects out. When it's
-    ready you'll see **Gateway ready at** followed by your gateway's address.
+  <Step title="Choose your gateway's address">
+    Click **Create gateway** and pick a name for your gateway's address — something
+    short and memorable that you'll recognise (for example, your initials or your
+    machine's name; any name shown here is just an example). As you type, Dash checks
+    whether the name is free. The name becomes your gateway's permanent address on the
+    relay (`<your-name>.<the relay domain>`). Confirm, and Dash claims the address and
+    restarts the gateway so it connects out. When it's ready you'll see **Gateway ready
+    at** followed by your address.
   </Step>
   <Step title="Pair your phone by QR">
     Open **Pair Device**. With a gateway created, the QR code now carries your
@@ -65,6 +69,13 @@ ever connects *your* phones to *your* gateway.
     your phone connects through the relay from then on, wherever you are.
   </Step>
 </Steps>
+
+<Note>
+Your gateway's address is **permanent**. Once you claim a name it belongs to this
+gateway for good — it's never reassigned to anyone else, and it isn't released even if
+you later remove the gateway. Choose a name you're happy to keep. This is what lets your
+paired phones keep finding your gateway over time.
+</Note>
 
 <Tip>
 Every phone you pair gets its own credential, so you can pair as many devices as
