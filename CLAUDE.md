@@ -71,6 +71,14 @@ PLUGINS_E2E_MODEL=moonshotai/kimi-k2.7-code npm run plugins:e2e   # or pin a mod
 
 Prereqs: **Node ≥ 22.12** (older Node breaks `pi-coding-agent`'s undici — use `nvm use 22.23`) and a **provider API key configured** in the gateway (`~/.dash/gateway`). It makes real (small, ~cents) LLM calls, so it is **not** part of `npm test`/`preflight`/CI. Run it after changes to the plugin loader (`packages/plugins`), the gateway plugin wiring (`apps/gateway/src/index.ts`), or `@dash/agent` skill injection. A `/test-plugins` slash command wraps it for convenience, but `.claude/` is gitignored (local-only) per repo policy, so the npm script is the canonical entry point.
 
+### Clerk auth E2E
+
+```bash
+npm run clerk:e2e    # full headless Clerk OAuth flow -> control-plane verifier
+```
+
+`scripts/clerk-auth-e2e.mjs` drives the **full Clerk OAuth (OIDC) flow headlessly** — no browser — against the live Clerk **dev** instance and asserts the control-plane verifier (`apps/relay-control-plane/src/auth-clerk.ts` `createClerkVerifier`) accepts the resulting `id_token` and maps it to `{ accountId: <org_id> }`. It creates a `+clerk_test` user + org (idempotently), signs in over the Frontend API (OTP `424242`), runs authorize → token → verify, and deletes the user/org afterwards so reruns are clean. It makes **real Clerk dev calls** (Backend API via the `clerk` CLI + tiny FAPI calls), so like `plugins:e2e` it is **not** part of `npm test`/`preflight`/CI. Run it after changes to `auth-clerk.ts` or the MC sign-in flow. Prereqs: **Node ≥ 22.12** and a Clerk-CLI session for the Backend API (`clerk config pull`). The OAuth app must allow the `user:org:read` scope (that's what attaches `org_id` to the token); the script temporarily disables the app's consent screen and restores it on exit.
+
 ### Mission Control Manual QA
 
 The exhaustive manual test plan lives at `apps/mission-control/TEST_PLAN.md`. It has 26 sections covering all MC features, business rules, and UI consistency. Each section is independently executable with preconditions and bootstrap steps.
