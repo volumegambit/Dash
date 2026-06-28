@@ -10,7 +10,16 @@ export default defineConfig({
     // _interopNamespaceDefault helper crashes on EventEmitter's inherited
     // prototype properties. Bundling ws resolves the namespace import at build
     // time and avoids the CJS interop entirely.
-    plugins: [externalizeDepsPlugin({ exclude: ['@dash/mc', '@dash/management', 'ws'] })],
+    //
+    // @dash/* workspace packages are ESM-only (their exports map has `import`
+    // but no `require` condition). The main process is bundled as CommonJS, so
+    // any @dash package left external becomes a runtime `require()` that throws
+    // ERR_PACKAGE_PATH_NOT_EXPORTED. Every @dash package the main process
+    // imports directly must be bundled (excluded here): @dash/mc, @dash/management,
+    // and @dash/paths (imported by src/main/ipc.ts).
+    plugins: [
+      externalizeDepsPlugin({ exclude: ['@dash/mc', '@dash/management', '@dash/paths', 'ws'] }),
+    ],
     build: {
       rollupOptions: {
         // @dash/channels is dynamically imported for WhatsApp pairing.
