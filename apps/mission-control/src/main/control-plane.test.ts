@@ -44,7 +44,7 @@ describe('makeClerkSeams', () => {
     expect(url.searchParams.get('client_id')).toBe('5KwDiIAztapVfeoE');
     expect(url.searchParams.get('redirect_uri')).toBe('http://127.0.0.1:53682/callback');
     expect(url.searchParams.get('response_type')).toBe('code');
-    expect(url.searchParams.get('scope')).toBe('openid profile email offline_access');
+    expect(url.searchParams.get('scope')).toBe('openid profile email offline_access user:org:read');
     expect(url.searchParams.get('state')).toBe('st-1');
     expect(url.searchParams.get('code_challenge')).toBe('chal-1');
     expect(url.searchParams.get('code_challenge_method')).toBe('S256');
