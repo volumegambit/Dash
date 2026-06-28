@@ -37,8 +37,15 @@ const DEFAULT_CONTROL_PLANE_URL = 'https://cp.dash.dev';
  */
 const REDIRECT_URI = 'http://127.0.0.1:53682/callback';
 
-/** The OIDC scopes MC requests; `offline_access` yields a refresh token. */
-const SCOPES = 'openid profile email offline_access';
+/**
+ * The OIDC scopes MC requests. `offline_access` yields a refresh token.
+ * `user:org:read` is REQUIRED: it is what makes Clerk attach the active
+ * organization to the issued tokens (`org_id`). The control plane is
+ * organizations-only and rejects any id_token without `org_id`, so without this
+ * scope sign-in would fail with 401. (The OAuth application must also allow
+ * `user:org:read`.)
+ */
+const SCOPES = 'openid profile email offline_access user:org:read';
 
 /** Shape of Clerk's `/oauth/token` response (subset MC needs). */
 interface ClerkTokenResponse {

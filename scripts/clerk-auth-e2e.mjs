@@ -67,11 +67,13 @@ const ISSUER = `https://${FAPI}`;
 const CLIENT_ID = '5KwDiIAztapVfeoE';
 const OAUTH_APP_ID = 'oa_3FlEQdAJyEXvNabwPo4JcBdwNZU';
 const REDIRECT_URI = 'http://127.0.0.1:53682/callback';
-// `user:org:read` is what makes Clerk attach the org to the OAuth tokens. With
-// the consent screen disabled, Clerk populates `org_id` from the user's
-// last-active organization (our session has exactly one, auto-selected), so the
-// id_token carries the org_id the control-plane verifier requires.
-const SCOPE = 'openid profile email user:org:read';
+// MUST mirror Mission Control's requested scopes (apps/mission-control/src/main/
+// control-plane.ts SCOPES) so this test faithfully exercises the real sign-in.
+// `user:org:read` is what makes Clerk attach the org to the OAuth tokens: with it,
+// Clerk populates `org_id` from the user's active organization (our session has
+// exactly one, auto-selected), so the id_token carries the org_id the
+// control-plane verifier requires. `offline_access` matches MC (refresh token).
+const SCOPE = 'openid profile email offline_access user:org:read';
 const TEST_EMAIL = 'dash-e2e+clerk_test@example.com';
 const ORG_NAME = 'Dash E2E Org';
 // A clerk-js version is required on FAPI calls; any recent major works.
