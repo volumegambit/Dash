@@ -5,7 +5,7 @@
 // collaborators MC composes at runtime — a real control plane (createApi +
 // ProvisioningService + SqliteStore + DialTokenSigner) whose admin target is a
 // real relay (createRelayServer), the real `ControlPlaneSession` loopback
-// sign-in (with WorkOS behind an injected `exchangeCode` seam, no browser), the
+// sign-in (with Clerk behind an injected `exchangeCode` seam, no browser), the
 // real `createControlPlaneClient`, the real keychain store, and the real
 // `buildPairingInfo` that `pairing:getInfo` calls — and proves the whole path:
 //
@@ -16,7 +16,7 @@
 //
 // The v2 QR wire shape is the fixed `{v:2,host,secure,mgmtToken,chatToken,
 // relayCredential}` the Android app depends on — asserted here so a drift fails
-// loudly. The live WorkOS browser round-trip + Electron shell.openExternal are
+// loudly. The live Clerk browser round-trip + Electron shell.openExternal are
 // manual MC QA, not CI; every other seam is real.
 
 import { generateKeyPairSync } from 'node:crypto';
@@ -197,9 +197,10 @@ function keychainTokenStore(keychain: InMemoryKeychainStore): ControlPlaneSessio
 function driveLoopbackSignIn(keychain: InMemoryKeychainStore, accountToken: string) {
   return createControlPlaneSession({
     tokenStore: keychainTokenStore(keychain),
-    // The auth URL embeds the loopback redirect_uri + CSRF state; echo both back.
-    buildAuthUrl: (redirectUri, state) =>
-      `https://workos.example/authorize?redirect_uri=${redirectUri}&state=${state}`,
+    // The auth URL embeds the loopback redirect_uri + CSRF state + PKCE
+    // challenge; echo state back on the callback.
+    buildAuthUrl: (redirectUri, state, codeChallenge) =>
+      `https://clerk.example/oauth/authorize?redirect_uri=${redirectUri}&state=${state}&code_challenge=${codeChallenge}&code_challenge_method=S256`,
     // "Open the browser": parse the redirect_uri + state out of the URL and GET
     // the callback with a fake authorization code — the browser's job, no UI.
     openBrowser: async (url) => {
@@ -210,10 +211,12 @@ function driveLoopbackSignIn(keychain: InMemoryKeychainStore, accountToken: stri
       // Drain so the loopback server's response completes.
       await res.text();
     },
-    // WorkOS exchange seam: a real account would come back here. We mint the
-    // bearer the StubAuthenticator-style CP trusts verbatim as the accountId.
-    exchangeCode: async (code) => {
+    // Clerk token-exchange seam: a real account would come back here. The session
+    // threads the PKCE code_verifier through; we mint the bearer the
+    // BearerAccountAuthenticator-style CP trusts verbatim as the accountId.
+    exchangeCode: async (code, codeVerifier) => {
       expect(code).toBe('fake-auth-code');
+      expect(codeVerifier).toMatch(/^[A-Za-z0-9_-]+$/);
       return { accessToken: accountToken, expiresAt: Date.now() + 3_600_000 };
     },
   });

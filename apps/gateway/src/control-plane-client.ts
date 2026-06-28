@@ -25,7 +25,7 @@ export interface ControlPlaneClient {
 /**
  * Gateway-local client for the control plane's `POST /gw/dial-token` refresh
  * endpoint. Unlike MC's control-plane client, this authenticates with a
- * holder-of-key assertion (no WorkOS session) — the gateway owns its own
+ * holder-of-key assertion (no Clerk session) — the gateway owns its own
  * refresh. The caller (`DialTokenManager`) handles retries/backoff; this stays
  * a thin request that either returns a token or throws.
  */

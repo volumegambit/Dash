@@ -10,95 +10,122 @@ import { shell } from 'electron';
 
 /**
  * Main-process wiring for the hosted control plane. This is the one place where
- * the concrete WorkOS SDK lives — `@dash/mc`'s `ControlPlaneSession` keeps
- * WorkOS, the browser, and the clock behind injected seams so its unit tests
- * need neither a live WorkOS account nor an Electron runtime. Here we fill those
- * seams with the real `@workos-inc/node` client, `shell.openExternal`, and the
- * keychain-backed token store.
+ * the concrete Clerk OAuth details live — `@dash/mc`'s `ControlPlaneSession`
+ * keeps Clerk, the browser, and the clock behind injected seams so its unit
+ * tests need neither a live Clerk account nor an Electron runtime. Here we fill
+ * those seams with the Clerk `/oauth/authorize` URL builder, a plain `fetch`
+ * POST to `/oauth/token` (public client + PKCE, no client secret, no SDK),
+ * `shell.openExternal`, and the keychain-backed token store.
  *
- * The live browser round-trip and the real WorkOS `authenticateWithCode` are
- * exercised by manual MC QA (`apps/mission-control/TEST_PLAN.md`), not by CI.
+ * The live browser round-trip and the real Clerk token exchange are exercised by
+ * manual MC QA (`apps/mission-control/TEST_PLAN.md`), not by CI.
  *
  * Configuration comes from the environment (deployment step, not code):
- *   - `DASH_CONTROL_PLANE_URL`  — control-plane API origin.
- *   - `DASH_WORKOS_CLIENT_ID`   — WorkOS AuthKit client id (public).
- *   - `DASH_WORKOS_API_KEY`     — WorkOS API key (used for the code exchange).
+ *   - `DASH_CONTROL_PLANE_URL`    — control-plane API origin.
+ *   - `DASH_CLERK_FRONTEND_API`   — Clerk Frontend API host (e.g. `foo.clerk.accounts.dev`).
+ *   - `DASH_CLERK_CLIENT_ID`      — Clerk OAuth application client id (public).
  */
 
 const DEFAULT_CONTROL_PLANE_URL = 'https://cp.dash.dev';
 
 /**
- * Minimal structural view of the WorkOS user-management surface MC uses. We
- * only need the code exchange — the AuthKit authorize URL is plain string
- * building, so `buildAuthUrl` constructs it directly (no SDK call, kept
- * synchronous for the session's loopback flow).
+ * The fixed loopback redirect URI. Must match the port the
+ * `ControlPlaneSession` listens on AND the URI registered with the Clerk OAuth
+ * app. OAuth requires the `redirect_uri` at the token exchange to be identical
+ * to the one used at authorize, so it is pinned here rather than threaded
+ * through `exchangeCode`.
  */
-interface WorkosUserManagement {
-  authenticateWithCode(opts: {
-    clientId: string;
-    code: string;
-  }): Promise<{ accessToken: string; expiresIn?: number }>;
-}
+const REDIRECT_URI = 'http://127.0.0.1:53682/callback';
 
-interface WorkosLike {
-  userManagement: WorkosUserManagement;
+/** The OIDC scopes MC requests; `offline_access` yields a refresh token. */
+const SCOPES = 'openid profile email offline_access';
+
+/** Shape of Clerk's `/oauth/token` response (subset MC needs). */
+interface ClerkTokenResponse {
+  id_token?: string;
+  access_token?: string;
+  refresh_token?: string;
+  expires_in?: number;
 }
 
 /** How MC reads its control-plane configuration (env by default; injectable). */
 export interface ControlPlaneConfig {
   baseUrl: string;
-  workosClientId: string;
-  workosApiKey: string;
+  clerkFrontendApi: string;
+  clerkClientId: string;
 }
 
 export function readControlPlaneConfig(env: NodeJS.ProcessEnv = process.env): ControlPlaneConfig {
   return {
     baseUrl: env.DASH_CONTROL_PLANE_URL ?? DEFAULT_CONTROL_PLANE_URL,
-    workosClientId: env.DASH_WORKOS_CLIENT_ID ?? '',
-    workosApiKey: env.DASH_WORKOS_API_KEY ?? '',
+    clerkFrontendApi: env.DASH_CLERK_FRONTEND_API ?? '',
+    clerkClientId: env.DASH_CLERK_CLIENT_ID ?? '',
   };
 }
 
 /**
- * Build the concrete `exchangeCode` + `buildAuthUrl` seams over a WorkOS client.
- * Lazily imports `@workos-inc/node` so the native-free unit tests and the
- * gateway CLI never pay for it. Exported (with an injectable WorkOS factory) so
- * the mapping logic is unit-testable without the real SDK.
+ * Build the concrete `exchangeCode` + `buildAuthUrl` seams over Clerk's OAuth
+ * endpoints. No SDK is needed: authorize is plain URL building and the token
+ * exchange is a single `fetch` POST (public client + PKCE). Exported (with an
+ * injectable `fetch`/clock) so the mapping logic is unit-testable.
  */
-export function makeWorkosSeams(
+export function makeClerkSeams(
   config: ControlPlaneConfig,
-  loadWorkos: () => Promise<WorkosLike> = defaultLoadWorkos(config.workosApiKey),
+  fetchImpl: typeof fetch = fetch,
   now: () => number = Date.now,
 ): {
-  buildAuthUrl: (redirectUri: string, state: string) => string;
-  exchangeCode: (code: string) => Promise<TokenExchangeResult>;
+  buildAuthUrl: (redirectUri: string, state: string, codeChallenge: string) => string;
+  exchangeCode: (code: string, codeVerifier: string) => Promise<TokenExchangeResult>;
 } {
+  const base = `https://${config.clerkFrontendApi}`;
   return {
-    buildAuthUrl(redirectUri: string, state: string): string {
+    buildAuthUrl(redirectUri: string, state: string, codeChallenge: string): string {
       // `redirectUri` arrives already URL-encoded from the session's loopback
       // server; URLSearchParams re-encodes, so decode first to avoid
-      // double-encoding. Built directly (no SDK) to keep this synchronous.
+      // double-encoding.
       const decoded = safeDecode(redirectUri);
       const params = new URLSearchParams({
-        client_id: config.workosClientId,
+        client_id: config.clerkClientId,
         redirect_uri: decoded,
         response_type: 'code',
-        provider: 'authkit',
+        scope: SCOPES,
         // CSRF guard — echoed back on the callback and verified by the session.
         state,
+        // PKCE — Clerk's public client requires it.
+        code_challenge: codeChallenge,
+        code_challenge_method: 'S256',
       });
-      return `https://api.workos.com/user_management/authorize?${params.toString()}`;
+      return `${base}/oauth/authorize?${params.toString()}`;
     },
-    async exchangeCode(code: string): Promise<TokenExchangeResult> {
-      const workos = await loadWorkos();
-      const result = await workos.userManagement.authenticateWithCode({
-        clientId: config.workosClientId,
+    async exchangeCode(code: string, codeVerifier: string): Promise<TokenExchangeResult> {
+      const body = new URLSearchParams({
+        grant_type: 'authorization_code',
+        client_id: config.clerkClientId,
         code,
+        redirect_uri: REDIRECT_URI,
+        code_verifier: codeVerifier,
       });
-      // WorkOS returns the lifetime in seconds; convert to an absolute epoch-ms
+      const res = await fetchImpl(`${base}/oauth/token`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/x-www-form-urlencoded' },
+        body: body.toString(),
+      });
+      if (!res.ok) {
+        const detail = await res.text().catch(() => '');
+        throw new Error(
+          `control plane token exchange failed: HTTP ${res.status}${detail ? ` ${detail}` : ''}`,
+        );
+      }
+      const json = (await res.json()) as ClerkTokenResponse;
+      // MC sends the OIDC id_token as the control-plane Bearer: it carries the
+      // org_id and aud=client_id the control plane's verifier requires.
+      if (typeof json.id_token !== 'string' || json.id_token.length === 0) {
+        throw new Error('control plane token exchange returned no id_token');
+      }
+      // Clerk returns the lifetime in seconds; convert to an absolute epoch-ms
       // expiry for the session's skew check. Default to 1h when absent.
-      const lifetimeSeconds = result.expiresIn ?? 3600;
-      return { accessToken: result.accessToken, expiresAt: now() + lifetimeSeconds * 1000 };
+      const lifetimeSeconds = json.expires_in ?? 3600;
+      return { accessToken: json.id_token, expiresAt: now() + lifetimeSeconds * 1000 };
     },
   };
 }
@@ -109,13 +136,6 @@ function safeDecode(value: string): string {
   } catch {
     return value;
   }
-}
-
-function defaultLoadWorkos(apiKey: string): () => Promise<WorkosLike> {
-  return async () => {
-    const { WorkOS } = await import('@workos-inc/node');
-    return new WorkOS(apiKey) as unknown as WorkosLike;
-  };
 }
 
 /**
@@ -129,7 +149,7 @@ export function createControlPlaneRuntime(opts: {
   tokenStore: ControlPlaneSessionTokenStore;
   openBrowser?: (url: string) => Promise<void>;
 }): { session: ControlPlaneSession; client: ControlPlaneClient } {
-  const seams = makeWorkosSeams(opts.config);
+  const seams = makeClerkSeams(opts.config);
   const session = createControlPlaneSession({
     tokenStore: opts.tokenStore,
     buildAuthUrl: seams.buildAuthUrl,

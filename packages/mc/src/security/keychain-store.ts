@@ -84,7 +84,7 @@ export interface KeychainStore {
   /** @deprecated Self-hosted relay path — see {@link getRelayAdminSecret}. */
   setRelayAdminSecret(value: string): Promise<void>;
   /**
-   * The hosted control plane's session access token (WorkOS-issued). MC sends
+   * The hosted control plane's session access token (Clerk OIDC id_token). MC sends
    * it as `Authorization: Bearer <token>` on every control-plane API call. A
    * secret, so it lives in the OS credential store, never in settings.json.
    */
