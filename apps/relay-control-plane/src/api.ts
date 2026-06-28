@@ -12,7 +12,7 @@ import {
 export interface ApiDeps {
   provisioning: ProvisioningService;
   authenticator: Authenticator;
-  /** Authenticates the gateway-driven `/gw/dial-token` refresh (non-WorkOS). */
+  /** Authenticates the gateway-driven `/gw/dial-token` refresh (non-Clerk). */
   gatewayAssertionAuth: GatewayAssertionAuthenticator;
 }
 
@@ -41,7 +41,7 @@ export function createApi(deps: ApiDeps): Hono<ApiEnv> {
   app.get('/health', (c) => c.json({ status: 'healthy' }));
 
   // --- Gateway-driven dial-token refresh (open path, gateway-assertion auth) ---
-  // Sibling to /health — NOT under the WorkOS-gated /v1/* middleware. The gateway
+  // Sibling to /health — NOT under the Clerk-gated /v1/* middleware. The gateway
   // proves possession of its private key with a signed assertion; the account is
   // re-derived from the stored record, never the request. Every failure → 401.
   app.post('/gw/dial-token', (c) => {

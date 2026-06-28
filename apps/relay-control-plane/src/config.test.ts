@@ -78,19 +78,32 @@ describe('loadConfig', () => {
     });
   });
 
-  it('reads the optional WorkOS keys from env when both present', () => {
+  it('reads the optional Clerk keys from env when both present', () => {
     const cfg = loadConfig({
       env: {
         ...requiredEnv,
-        RELAY_CP_WORKOS_API_KEY: 'sk_test',
-        RELAY_CP_WORKOS_CLIENT_ID: 'client_123',
+        RELAY_CP_CLERK_FRONTEND_API: 'foo.clerk.accounts.dev',
+        RELAY_CP_CLERK_CLIENT_ID: 'client_123',
       },
     });
-    expect(cfg.workos).toEqual({ apiKey: 'sk_test', clientId: 'client_123' });
+    expect(cfg.clerk).toEqual({
+      frontendApi: 'foo.clerk.accounts.dev',
+      clientId: 'client_123',
+    });
   });
 
-  it('omits workos when keys are absent', () => {
-    expect(loadConfig({ env: requiredEnv }).workos).toBeUndefined();
+  it('omits clerk when keys are absent', () => {
+    expect(loadConfig({ env: requiredEnv }).clerk).toBeUndefined();
+  });
+
+  it('omits clerk when only one key is present', () => {
+    expect(
+      loadConfig({ env: { ...requiredEnv, RELAY_CP_CLERK_FRONTEND_API: 'foo.clerk.accounts.dev' } })
+        .clerk,
+    ).toBeUndefined();
+    expect(
+      loadConfig({ env: { ...requiredEnv, RELAY_CP_CLERK_CLIENT_ID: 'client_123' } }).clerk,
+    ).toBeUndefined();
   });
 
   it('lets flags override env', () => {

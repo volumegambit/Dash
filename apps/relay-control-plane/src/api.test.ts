@@ -203,7 +203,7 @@ describe('GET /v1/subdomains/:label', () => {
   });
 });
 
-describe('POST /gw/dial-token (gateway-authed, non-WorkOS)', () => {
+describe('POST /gw/dial-token (gateway-authed, non-Clerk)', () => {
   async function enroll(): Promise<void> {
     await req('POST', '/v1/gateways', 'a1', { subdomain: 'alice-mbp', publicKey: gwPubB64 });
   }
@@ -261,7 +261,7 @@ describe('POST /gw/dial-token (gateway-authed, non-WorkOS)', () => {
     expect(res.status).toBe(401);
   });
 
-  it('401s with no Authorization header (no WorkOS middleware on this path)', async () => {
+  it('401s with no Authorization header (no Clerk middleware on this path)', async () => {
     const res = await app.request('/gw/dial-token', { method: 'POST' });
     expect(res.status).toBe(401);
   });

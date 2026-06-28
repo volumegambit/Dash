@@ -2,9 +2,8 @@ import { createPrivateKey, createPublicKey } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { createConsoleLogger } from '@dash/logging';
 import { serve } from '@hono/node-server';
-import { WorkOS } from '@workos-inc/node';
 import { createApi } from './api.js';
-import { WorkosAuthenticator, createWorkosVerifier } from './auth-workos.js';
+import { ClerkAuthenticator, createClerkVerifier } from './auth-clerk.js';
 import { type Authenticator, StubAuthenticator } from './auth.js';
 import { loadConfig } from './config.js';
 import { DialTokenSigner } from './dial-token-signer.js';
@@ -33,24 +32,25 @@ async function main(): Promise<void> {
     relayZone: config.relayZone,
   });
 
-  // Authenticator selection. WorkOS is the production identity provider: when its
+  // Authenticator selection. Clerk is the production identity provider: when its
   // credentials are configured, every request is authenticated by verifying a
-  // WorkOS access token against the JWKS. The dev StubAuthenticator (trusts an
-  // `x-test-account` header) is available only behind an explicit opt-in flag so
-  // it can never be enabled in production by accident.
+  // Clerk OIDC ID token against the Frontend API JWKS. The dev StubAuthenticator
+  // (trusts an `x-test-account` header) is available only behind an explicit
+  // opt-in flag so it can never be enabled in production by accident.
   let authenticator: Authenticator;
   const devAuth =
     process.env.RELAY_CP_DEV_STUB_AUTH === '1' || process.env.NODE_ENV === 'development';
-  if (config.workos) {
-    const workos = new WorkOS(config.workos.apiKey);
-    authenticator = new WorkosAuthenticator(createWorkosVerifier(workos, config.workos.clientId));
-    logger.info('using WorkosAuthenticator (WorkOS identity)');
+  if (config.clerk) {
+    authenticator = new ClerkAuthenticator(
+      createClerkVerifier(config.clerk.frontendApi, config.clerk.clientId),
+    );
+    logger.info('using ClerkAuthenticator (Clerk identity)');
   } else if (devAuth) {
     authenticator = new StubAuthenticator();
-    logger.info('using StubAuthenticator (dev) — set RELAY_CP_WORKOS_* for production auth');
+    logger.info('using StubAuthenticator (dev) — set RELAY_CP_CLERK_* for production auth');
   } else {
     throw new Error(
-      'No authenticator configured: set WorkOS credentials (RELAY_CP_WORKOS_API_KEY + RELAY_CP_WORKOS_CLIENT_ID) or RELAY_CP_DEV_STUB_AUTH=1 for the dev stub.',
+      'No authenticator configured: set Clerk credentials (RELAY_CP_CLERK_FRONTEND_API + RELAY_CP_CLERK_CLIENT_ID) or RELAY_CP_DEV_STUB_AUTH=1 for the dev stub.',
     );
   }
 

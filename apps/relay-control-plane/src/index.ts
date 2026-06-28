@@ -26,10 +26,6 @@ export {
   GatewayAssertionAuthenticator,
   type GatewayAssertionAuthDeps,
 } from './gateway-assertion-auth.js';
-export { StubAuthenticator, type Authenticator } from './auth.js';
-export {
-  WorkosAuthenticator,
-  createWorkosVerifier,
-  type AccessTokenVerifier,
-} from './auth-workos.js';
+export { StubAuthenticator, type Authenticator, type AccessTokenVerifier } from './auth.js';
+export { ClerkAuthenticator, createClerkVerifier } from './auth-clerk.js';
 export { createApi, type ApiDeps } from './api.js';
