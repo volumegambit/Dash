@@ -24,6 +24,7 @@
     "gateway": "node --import tsx apps/gateway/src/index.ts",
     "relay": "node --env-file-if-exists=.env --import tsx apps/relay/src/main.ts",
     "relay:e2e": "node scripts/relay-e2e.mjs",
+    "clerk:e2e": "node --import tsx scripts/clerk-auth-e2e.mjs",
     "mc:dev": "npm run dev --workspace=apps/mission-control",
     "mc:dev:debug": "npm run dev:debug --workspace=apps/mission-control",
     "mc:build": "npm run build --workspace=apps/mission-control",
