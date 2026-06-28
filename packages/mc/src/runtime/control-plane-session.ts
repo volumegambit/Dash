@@ -146,16 +146,13 @@ export function createControlPlaneSession(opts: ControlPlaneSessionOptions): Con
           clearTimeout(timer);
           resolve(v);
         };
-        // Release the fixed port immediately. `closeAllConnections()` drops any
-        // lingering keep-alive socket from the browser redirect so the next
-        // sign-in can re-bind 127.0.0.1:53682 without waiting on the OS. `close()`
+        // Stop accepting new connections and release the listening socket once
+        // the in-flight redirect response has drained — a graceful close so the
+        // browser/test client still receives its response (force-dropping the
+        // socket here would truncate it). The fixed port may not be free the very
+        // next instant, so the bind path below retries on EADDRINUSE. `close()`
         // on a server that never bound throws ERR_SERVER_NOT_RUNNING — ignore it.
         const shutdown = (): void => {
-          try {
-            server.closeAllConnections();
-          } catch {
-            // no connections / unsupported; nothing to drop
-          }
           try {
             server.close();
           } catch {
@@ -172,6 +169,11 @@ export function createControlPlaneSession(opts: ControlPlaneSessionOptions): Con
         };
 
         const server = http.createServer((req, res) => {
+          // Close the socket after each response (no keep-alive). This one-shot
+          // server is torn down right after, and a lingering keep-alive socket
+          // would hold the fixed port past `server.close()` and block the next
+          // sign-in from re-binding it.
+          res.setHeader('connection', 'close');
           // Only the callback path participates; ignore favicon etc. with 404.
           const url = new URL(req.url ?? '/', 'http://127.0.0.1');
           if (url.pathname !== '/callback') {

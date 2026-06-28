@@ -96,9 +96,7 @@ describe('makeClerkSeams', () => {
   });
 
   it('throws when the token endpoint returns a non-2xx response', async () => {
-    const fetchImpl = vi
-      .fn()
-      .mockResolvedValue(new Response('invalid_grant', { status: 400 }));
+    const fetchImpl = vi.fn().mockResolvedValue(new Response('invalid_grant', { status: 400 }));
     const seams = makeClerkSeams(config, fetchImpl);
 
     await expect(seams.exchangeCode('bad-code', 'v')).rejects.toThrow(/token exchange/i);

@@ -1,4 +1,4 @@
-import { SignJWT, type CryptoKey, type JWK, exportJWK, generateKeyPair } from 'jose';
+import { type CryptoKey, type JWK, SignJWT, exportJWK, generateKeyPair } from 'jose';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { ClerkAuthenticator, createClerkVerifier } from './auth-clerk.js';
 import type { AccessTokenVerifier } from './auth.js';
