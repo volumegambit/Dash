@@ -250,7 +250,7 @@ export interface MissionControlAPI {
   settingsGet(): Promise<AppSettings>;
   settingsSet(patch: Partial<AppSettings>): Promise<void>;
 
-  // Remote access via the hosted control plane. Sign in (WorkOS, system
+  // Remote access via the hosted control plane. Sign in (Clerk, system
   // browser), enroll a gateway, and manage paired devices. The control-plane
   // session token + issued gateway record live in the OS keychain and are never
   // read back to the renderer — only the derived status.

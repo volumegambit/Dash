@@ -82,6 +82,11 @@ the private half on its own disk (owner-readable only); the private key never le
 machine. Only the matching **public** key is ever registered with Dash, so the hosted
 service holds nothing that could impersonate your gateway.
 
+Gateways are owned by an **organization**, not by an individual login. When you set up
+remote access you sign in to Dash and act on behalf of an organization; the gateways and
+addresses you create belong to it, which is what lets you share access with teammates. The
+hosted service only ever sees the organization a request belongs to — never a password.
+
 Each gateway also has a **permanent address** on the relay — the hostname you chose when
 you set up remote access. That address is globally unique and is claimed for good: it's
 never reassigned and never recycled, even if you later remove the gateway, so a paired

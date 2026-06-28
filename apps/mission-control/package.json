@@ -18,7 +18,6 @@
     "@dash/management": "*",
     "@dash/mc": "*",
     "@dash/paths": "*",
-    "@workos-inc/node": "^10.4.0",
     "bufferutil": "^4.1.0",
     "electron-updater": "^6.8.3",
     "qrcode": "^1.5.4",

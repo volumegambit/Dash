@@ -1,6 +1,6 @@
 /**
  * HTTP client for the hosted control-plane API — Mission Control's *sole*
- * interface to the control plane. MC signs in (WorkOS, elsewhere), then uses
+ * interface to the control plane. MC signs in (Clerk, elsewhere), then uses
  * this client to enroll a gateway, refresh its dial token, and provision/revoke
  * device pairings. The control plane is the only party that talks to the relay
  * admin API server-side, so MC never holds the relay master secret.

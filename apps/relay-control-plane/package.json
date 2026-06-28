@@ -19,7 +19,6 @@
     "@dash/logging": "*",
     "@dash/relay": "*",
     "@hono/node-server": "^1",
-    "@workos-inc/node": "^10.4.0",
     "hono": "^4",
     "jose": "^6.2.3"
   },

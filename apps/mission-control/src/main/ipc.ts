@@ -238,7 +238,7 @@ export async function registerIpcHandlers(
 
   // Hosted control plane wiring. A single shared keychain backs both the
   // supervisor (gateway + issued-gateway secrets) and the control-plane session
-  // (the WorkOS access token), so all gateway/relay secrets live in one place.
+  // (the Clerk id_token), so all gateway/relay secrets live in one place.
   // The session's token resolver feeds the client, so every control-plane API
   // call carries the current token. When the control-plane client is provided,
   // the supervisor enrolls via the control plane instead of self-generating a
@@ -578,7 +578,7 @@ export async function registerIpcHandlers(
   // Remote access — hosted control plane (sign in, enroll, manage devices)
   //
   // Replaces the self-hosted relay config (zone / relay token / admin secret).
-  // The user signs in with WorkOS (system browser, loopback redirect), MC
+  // The user signs in with Clerk (system browser, loopback redirect), MC
   // enrolls a gateway with the control plane, and the control plane brokers the
   // relay server-side — MC never holds the relay master secret.
   // -----------------------------------------------------------------------

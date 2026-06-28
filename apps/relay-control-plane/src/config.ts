@@ -17,8 +17,11 @@ export interface ControlPlaneConfig {
    * relay verifies these with the matching public key. Required.
    */
   dialTokenPrivateKeyPath: string;
-  /** WorkOS credentials. Present only when both keys are supplied. */
-  workos?: { apiKey: string; clientId: string };
+  /**
+   * Clerk OIDC credentials. Present only when both keys are supplied. Verifying
+   * the ID token needs only the public Frontend API JWKS, so no secret key.
+   */
+  clerk?: { frontendApi: string; clientId: string };
 }
 
 /** A subset of {@link ControlPlaneConfig} parsed from CLI flags. */
@@ -108,9 +111,9 @@ export function loadConfig(sources: ControlPlaneConfigSources = {}): ControlPlan
     );
   }
 
-  const apiKey = env.RELAY_CP_WORKOS_API_KEY;
-  const clientId = env.RELAY_CP_WORKOS_CLIENT_ID;
-  const workos = apiKey && clientId ? { apiKey, clientId } : undefined;
+  const frontendApi = env.RELAY_CP_CLERK_FRONTEND_API;
+  const clientId = env.RELAY_CP_CLERK_CLIENT_ID;
+  const clerk = frontendApi && clientId ? { frontendApi, clientId } : undefined;
 
   return {
     port,
@@ -120,6 +123,6 @@ export function loadConfig(sources: ControlPlaneConfigSources = {}): ControlPlan
     relayZone,
     dialTokenTtlSec,
     dialTokenPrivateKeyPath,
-    workos,
+    clerk,
   };
 }

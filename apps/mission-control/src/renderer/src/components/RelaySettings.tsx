@@ -13,7 +13,7 @@ function isDnsSafeLabel(label: string): boolean {
 
 /**
  * Settings section for remote access via the hosted Dash relay. The user signs
- * in to Dash (WorkOS, system browser), enrolls a gateway, and manages the
+ * in to Dash (Clerk, system browser), enrolls a gateway, and manages the
  * devices paired to it. No secrets are entered here — the control-plane session
  * token and the gateway's issued identity live in the OS keychain and are never
  * read back to the renderer (we only learn the derived sign-in/enroll status).
