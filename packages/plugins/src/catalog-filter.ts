@@ -4,7 +4,7 @@ import type { ProviderCatalog, SupportedPattern } from '@dash/plugin-sdk';
  * Memoized compiled patterns. A catalog's pattern set is small and fixed, but a
  * live OpenRouter fetch runs each pattern against hundreds of model ids on every
  * discover — caching by pattern string collapses the repeated `new RegExp` work
- * to one compile per pattern. Mirrors `@dash/models`' cache.
+ * to one compile per pattern.
  */
 const globRegexCache = new Map<string, RegExp>();
 

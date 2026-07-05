@@ -13,7 +13,8 @@ import { appendPluginModels, expandPluginModelsForRoute } from './plugin-provide
 /**
  * Response shape returned by `GET /models` and `POST /models/refresh`.
  * The MC wire contract — field names and shapes are unchanged from the
- * previous `@dash/models`-backed route.
+ * previous curated-allow-list route (now backed by the bundled
+ * dash-core-providers catalogs via `@dash/plugins`).
  */
 export interface ModelsRouteResponse {
   models: FilteredModel[];

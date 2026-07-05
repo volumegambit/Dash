@@ -14,7 +14,7 @@ import type { FilteredModel } from '@dash/plugin-sdk';
  * audit bumps a `reviewedAt` (patterns changed), the persisted file no longer
  * matches the current fingerprint and `load()` treats it as missing, forcing a
  * clean refetch. The field name is kept for on-disk compatibility — an existing
- * `models.json` written under `@dash/models`' `MODELS_REVIEWED_AT` simply
+ * `models.json` written under the pre-catalog fingerprint format simply
  * mismatches the new catalog fingerprint and refetches once.
  */
 export interface ModelsStoreFile {
