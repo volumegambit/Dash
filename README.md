@@ -101,7 +101,7 @@ For the full development guide — coding conventions, testing strategy, git wor
 
 | Package | Purpose |
 |---------|---------|
-| `packages/models` | LLM provider definitions + curated allow-list (Anthropic, OpenAI, Google) |
+| `packages/plugins` | Plugin loader + provider-catalog engine (model discovery, filtering, freshness). Provider definitions and the curated allow-list ship as catalogs in the bundled `dash-core-providers` plugin |
 | `packages/agent` | Agent runtime — tool execution, sessions, conversation pool |
 | `packages/mcp` | Model Context Protocol client for external tool servers |
 | `packages/channels` | Channel adapters (Telegram, WhatsApp) + message router |

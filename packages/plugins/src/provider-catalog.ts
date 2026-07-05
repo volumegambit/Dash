@@ -278,19 +278,40 @@ function validateSupportedPatterns(v: unknown, where: string): SupportedPattern[
   });
 }
 
-function optUiHints(v: unknown): CatalogUiHints | undefined {
+/**
+ * Validates `ui` rendering hints. String fields are validated leniently
+ * (dropped when malformed); `sortOrder`, when present, must be a finite number
+ * and throws otherwise (per-field, with the field name in the message).
+ */
+function validateUiHints(v: unknown, where: string): CatalogUiHints | undefined {
   if (typeof v !== 'object' || v === null || Array.isArray(v)) return undefined;
   const u = v as Record<string, unknown>;
   const keyConsoleUrl = optString(u.keyConsoleUrl);
   const keyPlaceholder = optString(u.keyPlaceholder);
   const docsUrl = optString(u.docsUrl);
-  if (keyConsoleUrl === undefined && keyPlaceholder === undefined && docsUrl === undefined) {
+  const description = optString(u.description);
+  let sortOrder: number | undefined;
+  if (u.sortOrder !== undefined) {
+    if (typeof u.sortOrder !== 'number' || !Number.isFinite(u.sortOrder)) {
+      throw new Error(`${where}: ui 'sortOrder' must be a finite number`);
+    }
+    sortOrder = u.sortOrder;
+  }
+  if (
+    keyConsoleUrl === undefined &&
+    keyPlaceholder === undefined &&
+    docsUrl === undefined &&
+    description === undefined &&
+    sortOrder === undefined
+  ) {
     return undefined;
   }
   return {
     ...(keyConsoleUrl !== undefined ? { keyConsoleUrl } : {}),
     ...(keyPlaceholder !== undefined ? { keyPlaceholder } : {}),
     ...(docsUrl !== undefined ? { docsUrl } : {}),
+    ...(description !== undefined ? { description } : {}),
+    ...(sortOrder !== undefined ? { sortOrder } : {}),
   };
 }
 
@@ -300,8 +321,9 @@ function optUiHints(v: unknown): CatalogUiHints | undefined {
  * {`openai-completions`, `anthropic-messages`}, and a NON-EMPTY `models` array
  * whose entries each carry a string `id` + number `contextWindow`/`maxTokens`.
  * Optional fields (`dynamicModels`, `dynamicModelDefaults`, `placeholderKey`,
- * and per-model metadata) are validated when present and dropped when
- * malformed. Built field-by-field (never returns/spreads the parsed object →
+ * `excludedPatterns`, `ui.sortOrder`, `ui.description`, and per-model metadata)
+ * are validated when present and dropped when malformed. Built field-by-field
+ * (never returns/spreads the parsed object →
  * prototype-pollution-safe, consistent with `manifest.ts`). Throws a clear
  * error per bad field so the loader can isolate the offending plugin.
  */
@@ -358,6 +380,18 @@ export function validateProviderCatalog(raw: unknown): ProviderCatalog {
     c.supportedPatterns !== undefined
       ? validateSupportedPatterns(c.supportedPatterns, `catalog "${c.id}" supportedPatterns`)
       : undefined;
+  let excludedPatterns: string[] | undefined;
+  if (c.excludedPatterns !== undefined) {
+    if (!Array.isArray(c.excludedPatterns)) {
+      throw new Error(`catalog "${c.id}": excludedPatterns must be an array`);
+    }
+    excludedPatterns = c.excludedPatterns.map((p, i) => {
+      if (typeof p !== 'string' || p.length === 0) {
+        throw new Error(`catalog "${c.id}": excludedPatterns[${i}] must be a non-empty string`);
+      }
+      return p;
+    });
+  }
   let reviewedAt: string | undefined;
   if (c.reviewedAt !== undefined) {
     if (typeof c.reviewedAt !== 'string' || !ISO_DATE.test(c.reviewedAt)) {
@@ -365,7 +399,7 @@ export function validateProviderCatalog(raw: unknown): ProviderCatalog {
     }
     reviewedAt = c.reviewedAt;
   }
-  const ui = optUiHints(c.ui);
+  const ui = validateUiHints(c.ui, `catalog "${c.id}"`);
 
   return {
     id: c.id,
@@ -379,6 +413,7 @@ export function validateProviderCatalog(raw: unknown): ProviderCatalog {
     ...(placeholderKey !== undefined ? { placeholderKey } : {}),
     ...(modelsFetch !== undefined ? { modelsFetch } : {}),
     ...(supportedPatterns !== undefined ? { supportedPatterns } : {}),
+    ...(excludedPatterns !== undefined ? { excludedPatterns } : {}),
     ...(reviewedAt !== undefined ? { reviewedAt } : {}),
     ...(ui !== undefined ? { ui } : {}),
   };

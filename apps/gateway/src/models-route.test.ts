@@ -1,6 +1,8 @@
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import type { ProviderCatalog } from '@dash/plugin-sdk';
+import type { ProviderConfigEntry } from '@dash/plugins';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { GatewayCredentialStore } from './credential-store.js';
 import { createModelsRoute } from './models-route.js';
@@ -17,6 +19,44 @@ function makeCredentialStore(keys: Record<string, string> = {}): GatewayCredenti
   } as unknown as GatewayCredentialStore;
 }
 
+/**
+ * Minimal synthetic catalog. `sortOrder` drives dropdown order; `models` are the
+ * static (bootstrap) list; `supportedPatterns` feed the debug `patterns` block;
+ * `reviewedAt` feeds the store fingerprint.
+ */
+function makeCatalog(overrides: Partial<ProviderCatalog> & { id: string }): ProviderCatalog {
+  return {
+    id: overrides.id,
+    name: overrides.name ?? overrides.id,
+    api: 'openai-completions',
+    baseUrl: `https://${overrides.id}.example/v1`,
+    models: [],
+    ...overrides,
+  } as ProviderCatalog;
+}
+
+function makeConfigs(catalogs: ProviderCatalog[]): ProviderConfigEntry[] {
+  return catalogs.map((catalog) => ({ pluginName: 'dash-core-providers', catalog }));
+}
+
+// A catalog with static models + reviewedAt + a fetch spec so discover treats it
+// as configured, and a bare catalog with a couple of static models only.
+const anthropicCatalog = makeCatalog({
+  id: 'anthropic',
+  name: 'Anthropic',
+  reviewedAt: '2026-07-01',
+  ui: { sortOrder: 0 },
+  models: [{ id: 'claude-opus-4-5', name: 'Claude Opus 4.5' }],
+  supportedPatterns: [{ pattern: 'claude-opus', tier: 1 }],
+});
+
+const myllmCatalog = makeCatalog({
+  id: 'myllm',
+  name: 'My LLM',
+  ui: { sortOrder: 5 },
+  models: [{ id: 'm1', name: 'M One' }],
+});
+
 describe('createModelsRoute', () => {
   let dataDir: string;
   let store: ModelsStore;
@@ -30,27 +70,33 @@ describe('createModelsRoute', () => {
     await rm(dataDir, { recursive: true, force: true });
   });
 
-  it('GET /models returns BOOTSTRAP_MODELS with source=bootstrap when no credentials', async () => {
+  it('GET /models with no credentials serves source=bootstrap: the catalogs’ static models in sortOrder, not persisted', async () => {
     const discover = vi.fn().mockResolvedValue({ models: [], errors: {}, providersConfigured: 0 });
     const app = createModelsRoute({
       store,
       credentialStore: makeCredentialStore({}),
+      getProviderConfigs: () => makeConfigs([myllmCatalog, anthropicCatalog]),
       discover,
     });
 
     const res = await app.request('/');
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { models: unknown[]; source: string };
+    const body = (await res.json()) as { models: { value: string }[]; source: string };
     expect(body.source).toBe('bootstrap');
-    expect(body.models.length).toBeGreaterThan(0);
-    // Did not persist
-    expect(await store.load()).toBeNull();
+    // Static models in sortOrder order (anthropic sortOrder 0 before myllm 5).
+    expect(body.models.map((m) => m.value)).toEqual(['anthropic/claude-opus-4-5', 'myllm/m1']);
+    // Did not persist.
+    expect(await store.load('2026-07-01')).toBeNull();
   });
 
-  it('GET /models calls discover when store is empty and credentials exist', async () => {
+  it('GET /models live path persists and serves source=live with discover models FIRST, static appended deduped', async () => {
     const discover = vi.fn().mockResolvedValue({
       models: [
-        { value: 'anthropic/claude-opus-4-5', label: 'Claude Opus 4.5', provider: 'anthropic' },
+        {
+          value: 'anthropic/claude-opus-4-5',
+          label: 'Claude Opus 4.5 (live)',
+          provider: 'anthropic',
+        },
       ],
       errors: {},
       providersConfigured: 1,
@@ -58,45 +104,79 @@ describe('createModelsRoute', () => {
     const app = createModelsRoute({
       store,
       credentialStore: makeCredentialStore({ anthropic: 'sk-ant' }),
+      getProviderConfigs: () => makeConfigs([anthropicCatalog, myllmCatalog]),
       discover,
     });
 
     const res = await app.request('/');
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { models: unknown[]; source: string };
+    const body = (await res.json()) as {
+      models: { value: string; label: string }[];
+      source: string;
+    };
     expect(body.source).toBe('live');
-    expect(body.models).toHaveLength(1);
-    expect(discover).toHaveBeenCalledOnce();
-    // Persisted to store
-    expect((await store.load())?.models).toHaveLength(1);
+    // Discover model first (live label preserved — not shadowed by static dedupe),
+    // then the static myllm/m1 appended.
+    expect(body.models.map((m) => m.value)).toEqual(['anthropic/claude-opus-4-5', 'myllm/m1']);
+    expect(body.models[0].label).toBe('Claude Opus 4.5 (live)');
+    // Persisted (only live models, not the render-time static merge).
+    expect((await store.load('2026-07-01'))?.models.map((m) => m.value)).toEqual([
+      'anthropic/claude-opus-4-5',
+    ]);
   });
 
-  it('GET /models returns from store on hit (no discover call)', async () => {
-    await store.save([
-      { value: 'anthropic/claude-opus-4-5', label: 'Claude Opus 4.5', provider: 'anthropic' },
-    ]);
-    const discover = vi.fn();
+  it('second GET serves from the store without calling discover again', async () => {
+    const discover = vi.fn().mockResolvedValue({
+      models: [{ value: 'anthropic/claude-opus-4-5', label: 'X', provider: 'anthropic' }],
+      errors: {},
+      providersConfigured: 1,
+    });
     const app = createModelsRoute({
       store,
       credentialStore: makeCredentialStore({ anthropic: 'sk-ant' }),
+      getProviderConfigs: () => makeConfigs([anthropicCatalog, myllmCatalog]),
       discover,
     });
 
+    await app.request('/');
+    expect(discover).toHaveBeenCalledOnce();
     const res = await app.request('/');
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { models: unknown[]; source: string };
-    expect(body.source).toBe('live');
-    expect(body.models).toHaveLength(1);
-    expect(discover).not.toHaveBeenCalled();
+    // Still only one discover call — second GET served from the store.
+    expect(discover).toHaveBeenCalledOnce();
+  });
+
+  it('bumping a catalog reviewedAt in the getter invalidates the store on the next GET', async () => {
+    const discover = vi.fn().mockResolvedValue({
+      models: [{ value: 'anthropic/claude-opus-4-5', label: 'X', provider: 'anthropic' }],
+      errors: {},
+      providersConfigured: 1,
+    });
+    let anthropic = anthropicCatalog;
+    const app = createModelsRoute({
+      store,
+      credentialStore: makeCredentialStore({ anthropic: 'sk-ant' }),
+      getProviderConfigs: () => makeConfigs([anthropic, myllmCatalog]),
+      discover,
+    });
+
+    await app.request('/');
+    expect(discover).toHaveBeenCalledOnce();
+
+    // A catalog audit bumps reviewedAt → fingerprint moves → store invalidated.
+    anthropic = makeCatalog({ ...anthropicCatalog, reviewedAt: '2026-07-02' });
+    await app.request('/');
+    expect(discover).toHaveBeenCalledTimes(2);
   });
 
   it('POST /models/refresh always triggers discover', async () => {
-    await store.save([
-      { value: 'anthropic/claude-opus-4-5', label: 'Claude Opus 4.5', provider: 'anthropic' },
-    ]);
+    await store.save(
+      [{ value: 'anthropic/claude-opus-4-5', label: 'X', provider: 'anthropic' }],
+      '2026-07-01',
+    );
     const discover = vi.fn().mockResolvedValue({
       models: [
-        { value: 'anthropic/claude-opus-4-5', label: 'Claude Opus 4.5', provider: 'anthropic' },
+        { value: 'anthropic/claude-opus-4-5', label: 'X', provider: 'anthropic' },
         { value: 'anthropic/claude-sonnet-4-5', label: 'Claude Sonnet 4.5', provider: 'anthropic' },
       ],
       errors: {},
@@ -105,6 +185,7 @@ describe('createModelsRoute', () => {
     const app = createModelsRoute({
       store,
       credentialStore: makeCredentialStore({ anthropic: 'sk-ant' }),
+      getProviderConfigs: () => makeConfigs([anthropicCatalog]),
       discover,
     });
 
@@ -124,14 +205,13 @@ describe('createModelsRoute', () => {
     const app = createModelsRoute({
       store,
       credentialStore: makeCredentialStore({ anthropic: 'sk-ant' }),
+      getProviderConfigs: () => makeConfigs([anthropicCatalog]),
       discover,
     });
 
-    // Fire three parallel GETs before the discover resolves
     const [r1, r2, r3] = await Promise.all([
       (async () => {
         const promise = app.request('/');
-        // Yield to let request enter the mutex
         await new Promise((r) => setTimeout(r, 10));
         resolveDiscover({
           models: [{ value: 'anthropic/claude-opus-4-5', label: 'X', provider: 'anthropic' }],
@@ -150,7 +230,7 @@ describe('createModelsRoute', () => {
     expect(r3.status).toBe(200);
   });
 
-  it('GET /models?debug=true returns bootstrap, patterns, and providers', async () => {
+  it('GET /models?debug=true carries catalog-derived bootstrap, patterns, and providers', async () => {
     const discover = vi.fn().mockResolvedValue({
       models: [],
       errors: {},
@@ -159,79 +239,24 @@ describe('createModelsRoute', () => {
     const app = createModelsRoute({
       store,
       credentialStore: makeCredentialStore({}),
+      getProviderConfigs: () => makeConfigs([anthropicCatalog, myllmCatalog]),
       discover,
     });
 
     const res = await app.request('/?debug=true');
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
-      bootstrap: unknown[];
-      patterns: unknown[];
+      bootstrap: { value: string }[];
+      patterns: { provider: string; pattern: string; tier: number }[];
       providersConfigured: string[];
       providersAvailable: string[];
     };
-    expect(body.bootstrap.length).toBeGreaterThan(0);
-    expect(body.patterns.length).toBeGreaterThan(0);
+    // bootstrap = sorted static expansion.
+    expect(body.bootstrap.map((m) => m.value)).toEqual(['anthropic/claude-opus-4-5', 'myllm/m1']);
+    // patterns = flatMap of catalogs' supportedPatterns.
+    expect(body.patterns).toEqual([{ provider: 'anthropic', pattern: 'claude-opus', tier: 1 }]);
     expect(body.providersConfigured).toEqual([]);
-    expect(body.providersAvailable).toEqual([
-      'anthropic',
-      'openai',
-      'google',
-      'moonshotai',
-      'openrouter',
-    ]);
-  });
-
-  it('surfaces curated OpenRouter models end-to-end via the real discover + filter', async () => {
-    // No `discover` override → exercises the real @dash/models orchestrator,
-    // OpenRouter.fetchModels, and the SUPPORTED_MODELS filter. Stub global
-    // fetch to serve a canned /api/v1/models payload.
-    const fetchSpy = vi.fn().mockResolvedValue({
-      ok: true,
-      status: 200,
-      json: async () => ({
-        data: [
-          {
-            id: 'deepseek/deepseek-r1',
-            name: 'DeepSeek: R1',
-            supported_parameters: ['tools'],
-            architecture: { output_modalities: ['text'] },
-          },
-          // Dropped by the capability filter (`:free` variant suffix)
-          {
-            id: 'deepseek/deepseek-r1:free',
-            name: 'free',
-            supported_parameters: ['tools'],
-            architecture: { output_modalities: ['text'] },
-          },
-          // Dropped by the allow-list (not a curated id)
-          {
-            id: 'qwen/qwen3-0.6b',
-            name: 'tiny',
-            supported_parameters: ['tools'],
-            architecture: { output_modalities: ['text'] },
-          },
-        ],
-      }),
-      text: async () => '',
-    });
-    vi.stubGlobal('fetch', fetchSpy);
-    try {
-      const app = createModelsRoute({
-        store,
-        credentialStore: makeCredentialStore({ openrouter: 'sk-or-v1-test' }),
-      });
-      const res = await app.request('/');
-      expect(res.status).toBe(200);
-      const body = (await res.json()) as { models: { value: string }[]; source: string };
-      expect(body.source).toBe('live');
-      const values = body.models.map((m) => m.value);
-      expect(values).toContain('openrouter/deepseek/deepseek-r1');
-      expect(values).not.toContain('openrouter/deepseek/deepseek-r1:free');
-      expect(values).not.toContain('openrouter/qwen/qwen3-0.6b');
-    } finally {
-      vi.unstubAllGlobals();
-    }
+    expect(body.providersAvailable).toEqual(['anthropic', 'myllm']);
   });
 
   it('passes through per-provider errors from discover', async () => {
@@ -243,6 +268,7 @@ describe('createModelsRoute', () => {
     const app = createModelsRoute({
       store,
       credentialStore: makeCredentialStore({ anthropic: 'sk-ant', openai: 'sk-openai' }),
+      getProviderConfigs: () => makeConfigs([anthropicCatalog]),
       discover,
     });
 
@@ -251,59 +277,47 @@ describe('createModelsRoute', () => {
     expect(body.errors.openai).toContain('401');
   });
 
-  it('GET /models merges configured pluginModels at render time (core wins, not persisted)', async () => {
+  it('render-time static merge never shadows a live core model and is never persisted', async () => {
+    // A static catalog model whose value collides with a live discover model:
+    // the live entry (and its label) wins; the store holds only the live model.
     const discover = vi.fn().mockResolvedValue({
-      models: [{ value: 'anthropic/claude-opus-4-5', label: 'X', provider: 'anthropic' }],
+      models: [{ value: 'anthropic/claude-opus-4-5', label: 'LIVE', provider: 'anthropic' }],
       errors: {},
       providersConfigured: 1,
     });
     const app = createModelsRoute({
       store,
       credentialStore: makeCredentialStore({ anthropic: 'sk-ant' }),
+      getProviderConfigs: () => makeConfigs([anthropicCatalog, myllmCatalog]),
       discover,
-      getPluginModels: () => [
-        { value: 'myllm/m1', label: 'M One', provider: 'myllm' },
-        // A plugin must never shadow a core model id.
-        { value: 'anthropic/claude-opus-4-5', label: 'SHADOW', provider: 'anthropic' },
-      ],
     });
 
     const res = await app.request('/');
     const body = (await res.json()) as { models: { value: string; label: string }[] };
-    const values = body.models.map((m) => m.value);
-    expect(values).toEqual(['anthropic/claude-opus-4-5', 'myllm/m1']);
-    // Core label kept (plugin did not shadow it).
-    expect(body.models[0].label).toBe('X');
-    // Render-time only: plugin models are NEVER written to the store.
-    expect((await store.load())?.models.map((m) => m.value)).toEqual(['anthropic/claude-opus-4-5']);
+    expect(body.models.map((m) => m.value)).toEqual(['anthropic/claude-opus-4-5', 'myllm/m1']);
+    expect(body.models[0].label).toBe('LIVE');
+    expect((await store.load('2026-07-01'))?.models.map((m) => m.value)).toEqual([
+      'anthropic/claude-opus-4-5',
+    ]);
   });
 
-  it('reads getPluginModels LIVE per request (a reload-added provider appears without rebuild)', async () => {
-    // Simulate a hot-reload: the plugin-model source starts empty and a later
-    // reassignment (as the wiring holder would do) adds a provider's models.
-    // The route must observe the change because it reads the getter per request.
-    const discover = vi.fn().mockResolvedValue({
-      models: [{ value: 'anthropic/claude-opus-4-5', label: 'X', provider: 'anthropic' }],
-      errors: {},
-      providersConfigured: 1,
-    });
-    let live: { value: string; label: string; provider: string }[] = [];
+  it('reads getProviderConfigs LIVE per request (a reload-added provider appears without rebuild)', async () => {
+    const discover = vi.fn().mockResolvedValue({ models: [], errors: {}, providersConfigured: 0 });
+    let configs: ProviderConfigEntry[] = makeConfigs([anthropicCatalog]);
     const app = createModelsRoute({
       store,
-      credentialStore: makeCredentialStore({ anthropic: 'sk-ant' }),
+      credentialStore: makeCredentialStore({}),
+      getProviderConfigs: () => configs,
       discover,
-      getPluginModels: () => live,
     });
 
-    // Before reload: no plugin models.
     const before = await app.request('/');
     const beforeBody = (await before.json()) as { models: { value: string }[] };
     expect(beforeBody.models.map((m) => m.value)).not.toContain('myllm/m1');
 
-    // Reload adds the provider's models to the live source.
-    live = [{ value: 'myllm/m1', label: 'M One', provider: 'myllm' }];
+    // Reload adds a provider.
+    configs = makeConfigs([anthropicCatalog, myllmCatalog]);
 
-    // After reload: the SAME route now reflects the new provider — no rebuild.
     const after = await app.request('/');
     const afterBody = (await after.json()) as { models: { value: string }[] };
     expect(afterBody.models.map((m) => m.value)).toContain('myllm/m1');

@@ -15,7 +15,9 @@ interface UseRuntimeProvidersResult {
  *
  * Degrades gracefully: a gateway or plugin-loading failure must not break the
  * AI Providers page. On error, `error` is set and `providers`/`plugins` are
- * left as empty arrays so the page can still render the core providers.
+ * left as empty arrays. That empty-arrays-on-error contract drives the page's
+ * explicit error/empty states (the error card with Retry; the wizard error
+ * card) rather than falling back to any hardcoded provider list.
  */
 export function useRuntimeProviders(): UseRuntimeProvidersResult {
   const [providers, setProviders] = useState<RuntimePluginProvider[]>([]);
@@ -31,8 +33,9 @@ export function useRuntimeProviders(): UseRuntimeProvidersResult {
       setPlugins(res.plugins);
       setError(null);
     } catch (err) {
-      // Graceful degradation: keep the lists empty and surface the error so
-      // consumers can show a non-fatal notice without losing the page.
+      // Graceful degradation: keep the lists empty and surface the error so the
+      // page can drive its explicit error/empty states (error card with Retry;
+      // wizard error card) without losing the page.
       setProviders([]);
       setPlugins([]);
       setError(err instanceof Error ? err : new Error(String(err)));

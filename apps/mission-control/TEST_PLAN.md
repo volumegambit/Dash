@@ -16,11 +16,24 @@ Test plan for agent-driven QA. Each section is independently executable — it d
 MC_DATA_DIR=/tmp/mc-test-$(date +%s) npm run mc:dev
 ```
 
+**Port isolation (required for QA runs):** MC launches its gateway on fixed ports by default (9300 management / 9200 channel), so a QA instance collides with a personal MC already running on the machine ("Port 9300 is already in use by another gateway"). QA runs must override the ports and isolate the data tree:
+
+```bash
+DASH_HOME=/tmp/mc-qa-$(date +%s) \
+MC_GATEWAY_MANAGEMENT_PORT=9310 \
+MC_GATEWAY_CHANNEL_PORT=9210 \
+npm run mc:dev
+```
+
+- `MC_GATEWAY_MANAGEMENT_PORT` / `MC_GATEWAY_CHANNEL_PORT` (defaults 9300/9200) move the QA gateway off the personal MC's ports. All MC-internal URLs follow automatically — `gateway-state.json` is the source of truth for ports. Invalid values fail launch loudly rather than falling back.
+- `DASH_HOME` relocates the whole `~/.dash` tree. Without it a QA gateway shares `~/.dash/gateway` (agents.json, credentials, event-log DB) with the personal gateway, so QA's agent create/delete tests would mutate the user's real agents.
+- The OS keychain entry (service `dash-mission-control`) is machine-global. A second MC instance reuses the existing tokens rather than rotating them, so QA does not break a running personal MC's auth — but do **not** run "Reset Gateway" (which clears the shared keychain) while a personal MC is running.
+
 ---
 
 ## Section 1: Fresh App Launch & Setup Wizard
 
-**Precondition:** Clean data directory (no prior setup). Start MC with `MC_DATA_DIR=/tmp/mc-test-$(date +%s) npm run mc:dev`
+**Precondition:** Clean data directory (no prior setup). Start MC with `DASH_HOME=/tmp/mc-test-$(date +%s) MC_GATEWAY_MANAGEMENT_PORT=9310 MC_GATEWAY_CHANNEL_PORT=9210 npm run mc:dev` (see "Port isolation" in the preamble).
 
 ### 1.1 Gateway Initialization
 1. Launch the app
@@ -28,30 +41,35 @@ MC_DATA_DIR=/tmp/mc-test-$(date +%s) npm run mc:dev
 3. **Verify:** A loading spinner or "Setting up" message is shown while the gateway initializes
 4. Wait for initialization to complete (or fail)
 
-### 1.2 Provider Selection
-1. After gateway init, a provider selection screen should appear
-2. **Verify:** Four provider cards visible: Anthropic, OpenAI, Google, Kimi by Moonshot
-3. Click the Anthropic card
-4. **Verify:** The Anthropic card has a selected/highlighted visual state; the others do not
-5. Click the OpenAI card
-6. **Verify:** Only OpenAI is highlighted now (Anthropic is deselected)
-7. Click back to Anthropic, then click "Next"
+### 1.2 Provider Selection (gateway-driven)
 
-### 1.3 API Key Entry
-1. **Verify:** The screen shows Anthropic-specific title and explanation
-2. **Verify:** Numbered how-to steps are displayed (1, 2, 3...) with colored step circles
-3. **Verify:** There is a "Key name" input and an "API key" input
-4. **Verify:** The API key input is a password field (characters masked)
-5. **Verify:** The save/submit button is disabled (both fields empty)
-6. Type `my key!` in the key name field
-7. Type anything in the API key field
+> Note: The wizard provider picker is populated from the gateway's runtime plugins, exactly like the AI Providers page — labels and descriptions come from the provider catalogs, and cards are sorted by catalog `ui.sortOrder`. There is no hardcoded provider list in the wizard.
+
+1. After gateway init, a provider selection screen ("Choose Your AI Provider") should appear
+2. **Verify:** Provider cards are listed in catalog `ui.sortOrder`: **Anthropic, OpenAI, Google, Moonshot (Kimi), OpenRouter** (plus any third-party provider plugins after those). Each card shows the catalog **label** and, when present, the catalog `ui.description` as a subtitle
+3. **Verify:** The **first** sorted provider (Anthropic) is **pre-selected** on arrival — it shows the selected/highlighted state and a check icon, and the continue button reads "Continue with Anthropic"
+4. Click the OpenAI card
+5. **Verify:** Only OpenAI is highlighted now (Anthropic is deselected); the continue button reads "Continue with OpenAI"
+6. Click back to Anthropic, then click "Continue with Anthropic"
+
+#### 1.2a Wizard Picker Loading / Error / Retry
+1. Reach the provider step immediately after gateway init, before the runtime-plugins fetch resolves
+2. **Verify:** A loading spinner is shown while the provider list is being fetched (no cards, no continue button yet)
+3. Simulate the gateway being unreachable for the fetch
+4. **Verify:** An error card is shown with the fetch error message (or a "no provider catalogs — make sure dash-core-providers is enabled" message) and a **Retry** button; no provider cards or continue button are shown
+5. Restore the gateway and click **Retry**
+6. **Verify:** The provider cards render and the first sorted provider is pre-selected
+
+### 1.3 API Key Entry (instructions derive from catalog ui hints)
+1. **Verify:** The screen title and explanation are the selected provider's (e.g. "Connect to Anthropic"), derived from the catalog
+2. **Verify:** Numbered how-to steps are displayed (1, 2, 3...) with colored step circles, sourced from the catalog `ui` hints — a **"Navigate to API Keys"** step deep-links to `ui.keyConsoleUrl`, the key-input placeholder matches `ui.keyPlaceholder`, and a documentation link deep-links to `ui.docsUrl`. There is **no** hardcoded root-console step
+3. **Verify (OAuth only on anthropic/openai):** For Anthropic the screen also offers a "Sign in with Claude (Pro/Max)" button above the API-key form (OpenAI would offer "Sign in with ChatGPT (Codex)"); other providers show no OAuth option
+4. **Verify:** There is an "API key" input and it is a password field (characters masked)
+5. **Verify:** The save/submit button is disabled when the API-key field is empty
+6. Type `sk-ant-test-fake-key-12345` in the API key field
+7. **Verify:** The save button is now enabled
 8. Click save
-9. **Verify:** An error message appears about invalid key name characters (only alphanumeric and hyphens allowed)
-10. Clear the key name, type `default`
-11. Type `sk-ant-test-fake-key-12345` in the API key field
-12. **Verify:** The save button is now enabled
-13. Click save
-14. **Verify:** The wizard advances to a "Done" / welcome screen
+9. **Verify:** The wizard advances to a "Done" / welcome screen
 
 ### 1.4 Setup Complete
 1. **Verify:** The dashboard loads after the wizard completes
@@ -108,32 +126,38 @@ under a Node version missing a required symbol, or otherwise force the gateway s
 
 ## Section 3: AI Providers (Settings → AI Providers)
 
-**Precondition:** App running, at least one API key configured.
+**Precondition:** App running, gateway healthy, at least one API key configured.
 **Bootstrap:** If no key exists, go to AI Providers → click "Add Key" for Anthropic → enter key name `default` and a valid API key from `test-credentials.json` → Save.
+
+> Note: MC no longer hardcodes the provider list. Every provider card — bundled and plugin-contributed alike — is rendered from the gateway's `GET /runtime/plugins` response (fetched over the T1 IPC bridge). Card title = catalog label, subtitle = catalog `ui.description`, ordering = catalog `ui.sortOrder`, and the connect-modal instructions are derived from the catalog `ui` hints. There is no separate "plugin providers" screen; core and plugin providers share one unified list and one connect flow.
 
 ### 3.1 Page Layout
 1. Navigate to Settings → AI Providers
 2. Take a screenshot of the full page
-3. **Verify:** Provider sections visible (Anthropic, OpenAI, Google, Kimi by Moonshot)
-4. **Verify:** The key added during setup (`default`) appears under Anthropic
-5. **Verify:** An "Add Key" or "+" button is visible for each provider
-6. **Verify:** Buttons use bordered style (not plain text links)
-7. **Verify (Moonshot):** The Kimi by Moonshot section shows an `sk-...` placeholder and links to platform.moonshot.ai; adding a key under `moonshotai` makes Kimi K2 models (e.g. `moonshotai/kimi-k2-thinking`) selectable in the model dropdown
+3. **Verify:** A single unified list of provider cards is shown (no separate core vs. plugin sections). The cards appear in catalog `ui.sortOrder`: **Anthropic, OpenAI, Google, Moonshot (Kimi) (`moonshotai`), OpenRouter**, then any third-party plugin providers after those
+4. **Verify:** Each card's title is the catalog **label** and, when the catalog supplies one, a **subtitle** (catalog `ui.description`) appears under it
+5. **Verify:** The key added during setup (`default`) appears under Anthropic, and Anthropic shows a green **Active** badge; providers with no key show a red **Disabled** badge and "No key configured"
+6. **Verify:** An "Add Key" button is visible on every provider card, using bordered style (not a plain text link)
+7. **Verify:** Only **Anthropic** and **OpenAI** cards show an OAuth login button ("Add Claude Login Key" / "Add Codex Login Key"); other cards do not
+8. **Verify (source badge):** Providers from the bundled `dash-core-providers` plugin (Anthropic, OpenAI, Google, Moonshot, OpenRouter) show **no** source badge. A third-party provider contributed by another installed plugin shows a small accent **plugin-name badge** next to its title (the badge text is that plugin's name). If no third-party provider plugin is installed, skip this sub-check.
+9. **Verify (Moonshot):** The Moonshot (Kimi) card shows an `sk-...` placeholder (from the catalog `ui.keyPlaceholder`) in its connect modal and links to platform.moonshot.ai; adding a key under `moonshotai` makes Kimi K2 models (e.g. `moonshotai/kimi-k2-thinking`) selectable in the model dropdown
 
-### 3.2 Add a Second Key
+### 3.2 Add a Second Key (modal instructions derive from catalog ui hints)
 1. Click the "Add Key" button for Anthropic
-2. **Verify:** A modal opens with provider-specific instructions
-3. **Verify:** Modal has: key name input, API key input (password field), numbered how-to steps, external links, Cancel and Save buttons
-4. **Verify:** Save is disabled when fields are empty
-5. Type `secondary` in key name
-6. Type `sk-ant-test-secondary-key` in API key
-7. Click Save
-8. **Verify:** Modal closes; `secondary` key now appears in the Anthropic section
+2. **Verify:** A modal opens titled **"Connect to Anthropic"** with provider-specific instructions
+3. **Verify:** Modal has: an explanation line, a numbered "How to get your key" list, key name input, API key input (password field), Cancel and Save buttons
+4. **Verify (ui-hint-derived instructions):** The how-to steps come from the catalog `ui` hints, not a hardcoded root-console step. There is **no** "create a free account on the root console" step. Instead a **"Navigate to API Keys"** step deep-links to the catalog `ui.keyConsoleUrl`, the API-key input placeholder matches the catalog `ui.keyPlaceholder` (e.g. `sk-ant-...`), and a **documentation link** ("Anthropic documentation") deep-links to `ui.docsUrl`
+5. **Verify:** Save is disabled when either field is empty
+6. Type `secondary` in key name
+7. Type `sk-ant-test-secondary-key` in API key
+8. **Verify:** Save is now enabled
+9. Click Save
+10. **Verify:** Modal closes; `secondary` key now appears under the Anthropic card
 
 ### 3.3 Key Deletion (No Agents Affected)
 1. Click the remove/trash button next to the `secondary` key
-2. **Verify:** A confirmation dialog appears
-3. Click confirm/remove
+2. **Verify:** An inline "Remove key?" confirmation appears
+3. Click "Yes, remove"
 4. **Verify:** The `secondary` key disappears from the list
 
 ### 3.4 Escape Key Closes Modals
@@ -141,6 +165,21 @@ under a Node version missing a required symbol, or otherwise force the gateway s
 2. Press Escape
 3. **Verify:** The modal closes
 4. **Verify:** No key was added
+
+### 3.5 Loading & Error States (gateway-driven list)
+1. Open Settings → AI Providers immediately after a cold gateway start, before the runtime-plugins fetch resolves
+2. **Verify:** A centered loading spinner is shown while the provider list is being fetched (no cards yet)
+3. Simulate the gateway being unreachable when the fetch runs (e.g. stop the gateway, then reopen AI Providers)
+4. **Verify:** An error/empty card is shown titled **"No AI providers available"** with the fetch error message and a **Retry** button; clicking Retry re-fetches from the gateway
+5. Restore the gateway and click **Retry**
+6. **Verify:** The provider cards render
+
+### 3.6 Empty State via Disabling the Bundled Providers Plugin
+1. Go to **Settings → Plugins** and **disable** the built-in **`dash-core-providers`** plugin
+2. Return to **Settings → AI Providers** (reopen the page so it re-fetches)
+3. **Verify:** The **"No AI providers available"** empty-state card is shown. Its message names the **dash-core-providers** plugin and tells the user to re-enable it under Settings → Plugins (or install a provider plugin), and a **Retry** button is present
+4. Re-enable **`dash-core-providers`** under Settings → Plugins, return to AI Providers, and click **Retry**
+5. **Verify:** The full unified provider list returns (Anthropic, OpenAI, Google, Moonshot, OpenRouter)
 
 ---
 
@@ -565,14 +604,17 @@ under a Node version missing a required symbol, or otherwise force the gateway s
 
 **Bootstrap:** For 15.1: Create an agent (Section 4), then remove its API key from AI Providers. For 15.2-15.3: Create an agent that uses an MCP connector (assign via Agent Detail → Configuration → Connectors card).
 
-### 15.1 Missing Credential Banner
+> Note: Provider credentials for core and plugin providers now share one list and one connect flow on the AI Providers page (Section 3). Recovery — the "Update Key →" link the auth-error surfaces (see 15.1) and the "Add key" flow it leads to — behaves identically whether the agent's model belongs to a bundled `dash-core-providers` provider or a third-party plugin provider.
+
+### 15.1 Missing Credential Error
+There is no pre-send "missing credential" banner in chat; the input is not gated on credentials. Instead, sending a message with no key surfaces the provider's auth error inline in the message stream.
 1. Create an agent, then remove its API key
-2. Navigate to Chat, select a conversation for that agent
-3. **Verify:** Yellow banner above input: "This agent is missing an API key for [provider]"
-4. **Verify:** Chat input is disabled (cannot type or send)
-5. **Verify:** Send button is disabled (50% opacity)
-6. Add the key back
-7. **Verify:** Banner disappears, input re-enabled
+2. Navigate to Chat, select a conversation for that agent, and send a message
+3. **Verify:** The input is NOT blocked — the message sends and the agent's error surfaces inline as red error text in the conversation (e.g. a 401/authentication/"invalid key" message from the provider)
+4. **Verify:** For an auth-type error, an "Update Key →" link is shown beneath the error text that navigates to Settings → AI Providers
+5. Add the key back from Settings → AI Providers (same unified list/flow for core and plugin providers)
+6. **Verify:** Re-sending the message now succeeds (no auth error)
+7. **Verify (plugin provider parity, if a third-party provider plugin is installed):** Repeat 1–6 with an agent whose model belongs to a plugin-contributed provider. The inline auth error, the "Update Key →" link, and the add-key recovery behave identically
 
 ### 15.2 MCP Connector Offline Banner
 1. Create an agent that uses an MCP connector
@@ -925,11 +967,11 @@ The Settings page has its own left sub-nav with seven sections: **General** (Gat
 
 ### 22.5 Companion Toggle (General)
 1. **Verify:** "Companion" section with a "Show the companion" checkbox
-2. **Verify:** When the checkbox is on, a pet picker with thumbnails (cat, red panda) appears below it
+2. **Verify:** When the checkbox is on, a pet picker with a wrapping grid of animated thumbnails (22 pets) appears below it
 3. Toggle the checkbox off
 4. **Verify:** The floating companion widget disappears and the pet picker is hidden
 5. Toggle it back on
-6. **Verify:** The companion widget reappears (full widget behavior is covered in Section 29)
+6. **Verify:** The companion widget reappears (full widget behavior is covered in Section 30)
 
 ### 22.6 Pair Device (Devices)
 1. Navigate to Settings → Devices
@@ -1219,21 +1261,22 @@ Take screenshots of every page and evaluate against these criteria. This section
 2. **Verify:** The right pane shows an "Assign agent" picker above Linked Sessions; disabled agents are not listed.
 3. Select an agent and click "Assign".
 4. **Verify:** You STAY on the task page; the button shows "Assigning…" then resets.
-5. **Verify:** Status flips to in_progress with sub-status agent_working (shown as a pill in the right pane), and a new chip appears under Linked Sessions showing 🤖 the agent's name + the session id — without a manual refresh.
-6. **Verify:** An AGENT SESSION pane appears in the middle of the task page showing the kickoff message and the agent's streaming reply live; the left pane keeps DESCRIPTION (or an italic "No description") and TIMELINE with relative timestamps; no raw `comment_added` rows and no bare "Linked session <uuid>" rows (session links read "🤖 <agent> session linked").
-7. When the agent asks a question / goes waiting_on_human, type an answer in the pane's "Reply to the agent…" box and press Enter.
-8. **Verify:** Your reply and the agent's next streaming turn render in the pane without leaving the task page.
-8b. Post a comment via the "Add a comment…" composer while the agent is idle. **Verify:** The composer footer reads "Also sent to the agent session"; the comment lands in the timeline AND appears in the session pane as a user message prefixed "New comment on <KEY>:", and the agent responds. While the agent is streaming, the footer reads "Agent is mid-run — comment stays on the task" and the comment is NOT sent to the session. On a task with no linked session, no footer hint shows and nothing is sent.
-9. With two linked sessions on one task, click the older session's chip.
-10. **Verify:** The pane switches to that session's transcript (active chip gets an accent border); clicking the pane's external-link icon opens the SAME session in the full Chat view (title "KEY — task title", no duplicate conversation created).
+5. **Verify:** Status flips to in_progress with sub-status agent_working (shown as a pill in the right pane), and a tab bar appears at the top of the main column: a "Task" tab plus a "🤖 <agent name>" tab per MC session — without a manual refresh.
+6. **Verify:** The view auto-switches to the new session's tab, showing the kickoff message and the agent's streaming reply live at full column width. Clicking "Task" returns to DESCRIPTION (or an italic "No description") and TIMELINE with relative timestamps; no raw `comment_added` rows and no bare "Linked session <uuid>" rows (session links read "🤖 <agent> session linked"). While the agent streams, its tab shows a small accent dot (visible from the Task tab).
+7. When the agent asks a question / goes waiting_on_human, type an answer in the session tab's "Reply to the agent…" box and press Enter.
+8. **Verify:** Your reply and the agent's next streaming turn render in the tab without leaving the task page.
+8b. On the Task tab, post a comment via the "Add a comment…" composer while the agent is idle. **Verify:** The composer footer reads "Also sent to the agent session"; the comment lands in the timeline AND appears in the session tab as a user message prefixed "New comment on <KEY>:", and the agent responds. While the agent is streaming, the footer reads "Agent is mid-run — comment stays on the task" and the comment is NOT sent to the session. On a task with no linked session, no footer hint shows and nothing is sent.
+9. With two linked sessions on one task, verify the tabs are ordered newest-first (two sessions from the same agent are disambiguated with a short id suffix), then click the older session's tab.
+10. **Verify:** The main column switches to that session's transcript (active tab gets an accent underline); clicking the external-link icon at the top of the session content opens the SAME session in the full Chat view (title "KEY — task title", no duplicate conversation created).
 11. In Chat, ask the agent to add a comment to the task; return to the task detail.
 12. **Verify:** The comment appears in the timeline (agent-authored, non-highlighted).
 13. For a task with a linked session from a NON-MC channel (e.g. Telegram, seeded via that channel's agent), open its detail.
-14. **Verify:** That session's chip is muted and non-clickable with a "Session from another channel" tooltip; the session pane shows only MC sessions.
+14. **Verify:** That session gets NO tab; it appears under Linked Sessions in the right pane as a muted, non-clickable row with a "Session from another channel" tooltip, and the count reflects only such sessions. A task whose sessions are all MC sessions shows no Linked Sessions section; a task with no MC sessions shows no tab bar at all.
 15. Open Projects → Kanban. **Verify:** Each card shows a small assign icon (person-plus) in its top-right, next to the 🤖 badge when present.
 16. Click a card's assign icon. **Verify:** A dropdown lists non-disabled agents; the card does NOT open. Pick an agent.
 17. **Verify:** The menu closes; the card moves to In Progress under "Agent working" without a refresh; the task detail shows the new linked session.
 18. Open Projects → All tasks (also check My work and a project's task table). **Verify:** The Assignee cell of each row has the same assign icon; clicking it opens the menu without opening the row, and Escape or an outside click closes it.
+19. With a task's detail page open, link a session WITHOUT using this window's UI — e.g. ask an agent in Chat to pick up the task via its projects tool, or assign an agent from a second MC window. **Verify:** The new "🤖 <agent>" session tab appears in the open task page's tab bar live (driven by the session.linked broadcast), without navigating away and back.
 
 ---
 
@@ -1312,42 +1355,42 @@ Covers the Plugins screen (P3), plugin trust, per-agent plugin selection (P5), a
 7. Agent detail → Config tab: the plugins multiselect lists built-ins and installed plugins alike. Select only "Assistant" for an agent. **Verify:** in chat, that agent can `load_skill deep-research` but NOT `code-review`.
 8. Agent detail → Skills tab. **Verify:** there is NO "Include bundled skill library" checkbox; built-in skills appear in the list as read-only plugin skills.
 
-## Section 29: Companion widget (floating pet)
+## Section 30: Companion widget (floating pet)
 
-**Precondition:** App running, gateway healthy, at least one agent created, and the **Show the companion** toggle enabled (Settings → General → Companion). The companion is a separate always-on-top desktop window (not part of the main MC window); the in-app component is a headless publisher that streams session statuses and the selected pet to that window over IPC. The widget renders a **selectable pixel-art pet** — a **cat** or a **red panda** (default **red panda**). It shows one **aggregate mood** for all sessions via the pet's collar-tag color plus eye overlays. Mood priority (highest wins): **error** (red `#f87171`) > **needs** (amber `#f5c518`) > **working** (blue `#3da5d9`, pulsing) > **done** (green `#34c759`) > **idle** (gray `#9aa0a6`, asleep — no sessions).
+**Precondition:** App running, gateway healthy, at least one agent created, and the **Show the companion** toggle enabled (Settings → General → Companion). The companion is a separate always-on-top desktop window (not part of the main MC window); the in-app component is a headless publisher that streams session statuses and the selected pet to that window over IPC. The widget renders a **selectable, frame-animated pixel-art pet** (PixelLab-generated) — one of **22 pets** — animals (cat, dog with green head-ribbon, pig, rabbit, red panda, bear, lion, quokka, unicorn), characters (wizard, ninja, chef, pirate, knight, robot, astronaut, Bigfoot, Bollywood star, royal guard), and cultural icons (Fortune God/Cai Shen, Merlion, maneki-neko) — default **red panda**. It shows one **aggregate mood** for all sessions: each mood plays a distinct, pet-appropriate animation — working is especially characterful (dog runs, rabbit digs, pig roots, wizard casts fireballs, chef chops, Fortune God counts gold coins, Merlion spouts water, royal guard marches in place) and shows the mood hue as a small **collar badge dot**. Mood priority (highest wins): **error** (red `#f87171`) > **needs** (amber `#f5c518`) > **working** (blue `#3da5d9`) > **done** (green `#34c759`) > **idle** (gray `#9aa0a6` — no sessions).
 
-### 29.1 Widget appears and floats
+### 30.1 Widget appears and floats
 1. Launch MC with the companion enabled.
-2. **Verify:** A small pixel-art pet widget appears at the **bottom-right** of the screen (frameless, transparent background, not shown in the taskbar/dock switcher). With no sessions running, the pet is **idle/asleep** (gray collar).
+2. **Verify:** A small pixel-art pet widget appears at the **bottom-right** of the screen (frameless, transparent background, not shown in the taskbar/dock switcher). With no sessions running, the pet is **idle** (gray collar dot, slow idle animation).
 3. **Verify:** The pet is the one selected in Settings (default **red panda** on a fresh install) — it does **not** start blank (the selection is replayed to the widget when it opens).
 4. Bring another application fully in front of MC.
 5. **Verify:** The widget still floats **on top of** that other app.
 
-### 29.2 Pet picker swaps the pet live
-1. In Settings → General → Companion, confirm the two-thumbnail **PetPicker** is shown below the **Show the companion** checkbox (labels **Cat** and **Red panda**), with the current pet highlighted.
+### 30.2 Pet picker swaps the pet live
+1. In Settings → General → Companion, confirm the **PetPicker** grid of 22 labeled thumbnails wraps neatly below the **Show the companion** checkbox, with the current pet highlighted.
 2. Click the **Cat** thumbnail.
 3. **Verify:** The floating widget swaps to the **cat** sprite **live** (no restart needed).
 4. Click the **Red panda** thumbnail.
 5. **Verify:** The floating widget swaps back to the **red panda** sprite live.
 
-### 29.3 Pet selection persists across restart
+### 30.3 Pet selection persists across restart
 1. Select a pet (e.g. **Cat**) in Settings → General → Companion.
 2. Fully quit and relaunch MC.
 3. **Verify:** The widget reappears rendering the **same pet** you selected (selection persisted; the picker shows it highlighted).
 
-### 29.4 Survives main-window minimize
+### 30.4 Survives main-window minimize
 1. Minimize the main MC window.
 2. **Verify:** The widget stays visible and on top (it is independent of the main window's minimized state).
 3. Restore the main window.
 4. **Verify:** The widget is unchanged.
 
-### 29.5 Drag and persist position
+### 30.5 Drag and persist position
 1. Drag the widget to a different location on screen.
 2. **Verify:** It moves and stays where dropped.
 3. Fully quit and relaunch MC.
 4. **Verify:** The widget reappears **at the position you left it** (position persisted across restarts).
 
-### 29.6 Settings toggle hides/shows it
+### 30.6 Settings toggle hides/shows it
 1. In Settings → General → Companion, uncheck **Show the companion**.
 2. **Verify:** The widget disappears immediately, and the PetPicker is hidden (only shown when the companion is visible).
 3. Re-check the toggle.
@@ -1355,27 +1398,37 @@ Covers the Plugins screen (P3), plugin trust, per-agent plugin selection (P5), a
 5. Toggle it **off**, then fully quit and relaunch MC.
 6. **Verify:** The widget stays hidden after restart (the visibility preference is persisted).
 
-### 29.7 Closing the main window removes the widget
+### 30.7 Closing the main window removes the widget
 1. With the widget visible, close the main MC window (quit the app).
 2. **Verify:** The widget is removed as well — no orphaned always-on-top window is left behind.
 
-### 29.8 Multi-display unplug (position recenters)
+### 30.8 Multi-display unplug (position recenters)
 1. Move the widget onto a secondary display.
 2. Disconnect / unplug that secondary display (or disable it in the OS display settings).
 3. **Verify:** The widget is **clamped back onto a visible display** (it does not vanish off-screen).
 
-### 29.9 Aggregate mood reflects session state
-The widget shows a **single aggregate mood** across all sessions, not one indicator per session. Drive sessions into each state and observe the pet's collar color and expression. Test the priority ordering too.
+### 30.9 Aggregate mood reflects session state
+The widget shows a **single aggregate mood** across all sessions, not one indicator per session. Drive sessions into each state and observe the pet: each mood plays a distinct animation, and the collar badge dot shows the mood hue. Test the priority ordering too.
 1. With **no sessions** running.
-2. **Verify:** The pet is **idle** — **asleep**, gray collar.
+2. **Verify:** The pet is **idle** — gray collar dot, slow idle animation.
 3. Start a long-running task so a session is **working**.
-4. **Verify:** The pet shows the **working** mood — **blue collar, pulsing**.
+4. **Verify:** The pet shows the **working** mood — **blue collar dot**, the pet's working animation (e.g. running, digging, rooting, spell-casting, chopping, coin-counting).
 5. Ask a question the agent surfaces so a session **needs you** (unanswered).
-6. **Verify:** The pet shows the **needs** mood — **amber collar**. (Needs outranks working: with both a working and a needs session, the pet is amber.)
+6. **Verify:** The pet shows the **needs** mood — **amber collar dot**, the pet's needs-you animation (e.g. barking, roaring, bell-ringing, spyglass-scanning, red-envelope offering). (Needs outranks working: with both a working and a needs session, the pet is amber.)
 7. Let a session **finish** while you are away (unread done), with nothing working or needing attention.
-8. **Verify:** The pet shows the **done** mood — **green collar**.
+8. **Verify:** The pet shows the **done** mood — **green collar dot**, celebratory jumping.
 9. Force a session to **error**.
-10. **Verify:** The pet shows the **error** mood — **red collar**. (Error is highest priority: with an errored session present, the pet is red regardless of any working/needs/done sessions.)
+10. **Verify:** The pet shows the **error** mood — **red collar dot**, the pet's error animation (e.g. growling, foot-thumping, short-circuiting, spell backfiring, hat slipping over the eyes). (Error is highest priority: with an errored session present, the pet is red regardless of any working/needs/done sessions.)
+
+### 30.10 Animation quality and reduced motion
+Spot-check at least five pets including one humanoid (e.g. wizard) and one v3-custom-heavy pet (e.g. royal guard).
+1. With any mood active, watch the widget for ~10 seconds.
+2. **Verify:** The animation loops smoothly (no stutter, no flashing, no visible frame seams) and the pixels stay crisp (no blur from scaling).
+3. **Verify:** Playback speed feels right for the mood: idle is calm/slow, working is brisk, done is a lively jump loop.
+4. Switch moods (e.g. start then stop a task) and **verify:** the animation restarts cleanly from the new mood's first frame — no flash of the previous mood's frame.
+5. Enable the OS reduced-motion setting (macOS: System Settings → Accessibility → Display → Reduce motion), then reopen the widget.
+6. **Verify:** The pet holds a **static frame** (first frame of the mood) instead of animating; the collar badge dot still shows the mood color.
+7. In Settings → General → Companion, **verify:** all PetPicker thumbnails play their idle animations (static under reduced motion).
 11. Clear all sessions (none active or needing attention).
 12. **Verify:** The pet returns to **idle/asleep** (gray).
 

@@ -111,7 +111,29 @@ export type GatewayStatus = 'starting' | 'healthy' | 'unhealthy';
 // truth: the renderer's companion/types.ts re-exports this.
 export type CompanionStatus = 'working' | 'needs' | 'done' | 'error';
 
-export type PetKind = 'cat' | 'red-panda';
+export type PetKind =
+  | 'astronaut'
+  | 'bear'
+  | 'bigfoot'
+  | 'bollywood-star'
+  | 'cat'
+  | 'chef'
+  | 'dog'
+  | 'fortune-god'
+  | 'knight'
+  | 'lion'
+  | 'maneki-neko'
+  | 'merlion'
+  | 'ninja'
+  | 'pig'
+  | 'pirate'
+  | 'quokka'
+  | 'rabbit'
+  | 'red-panda'
+  | 'robot'
+  | 'royal-guard'
+  | 'unicorn'
+  | 'wizard';
 
 // --- MCP Connectors ---
 

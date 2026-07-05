@@ -3,7 +3,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { discoverSkills, loadFlatSkills } from '@dash/agent';
 import type { Logger } from '@dash/logging';
-import { MANIFEST_DIR, MANIFEST_FILENAME, PluginConfigStore, loadPlugins } from '@dash/plugins';
+import {
+  MANIFEST_DIR,
+  MANIFEST_FILENAME,
+  PluginConfigStore,
+  RESERVED_PROVIDER_IDS,
+  loadPlugins,
+} from '@dash/plugins';
 import type { PluginRecord as LoaderPluginRecord, PluginEntryConfig } from '@dash/plugins';
 import { vi } from 'vitest';
 import type { AgentChatCoordinator } from './agent-chat-coordinator.js';
@@ -110,7 +116,7 @@ const NOOP_LOGGER: Logger = {
   error: () => {},
 };
 
-const CORE_PROVIDER_IDS = ['anthropic', 'openai', 'google'];
+const CORE_PROVIDER_IDS = [...RESERVED_PROVIDER_IDS];
 
 const WIRING_OPTIONS = {
   logger: NOOP_LOGGER,
@@ -223,9 +229,8 @@ describe('rebuildWiringState', () => {
     expect(state.hookEngine).toBeDefined();
     expect(state.hookEngine.hasHooks).toBe(false);
 
-    // Catalog + flattened models + mcp configs + provider configs are present.
+    // Catalog + mcp configs + provider configs are present.
     expect(state.pluginModelCatalog).toBeDefined();
-    expect(Array.isArray(state.pluginModels)).toBe(true);
     expect(Array.isArray(state.mcpConfigs)).toBe(true);
     expect(Array.isArray(state.pluginProviderConfigs)).toBe(true);
 
@@ -268,7 +273,7 @@ describe('rebuildWiringState', () => {
     expect(state.skillDirsByPlugin.cmdonly).toEqual([]);
   });
 
-  it('flattens trusted plugin provider models into pluginModels and the catalog', async () => {
+  it('surfaces a trusted plugin provider in the configs and resolving catalog', async () => {
     await writePlugin(pluginsDir, 'beta', {
       manifest: { name: 'beta', version: '2.0.0', description: 'Beta Plugin' },
       providers: { myllm: providerCatalog('myllm') },
@@ -279,9 +284,7 @@ describe('rebuildWiringState', () => {
     const state = await rebuildWiringState(loaded, entries, CORE_PROVIDER_IDS, WIRING_OPTIONS);
 
     expect(state.pluginProviderConfigs).toHaveLength(1);
-    expect(state.pluginModels).toEqual([
-      { value: 'myllm/m1', label: 'Model One', provider: 'myllm' },
-    ]);
+    expect(state.pluginProviderConfigs[0]?.catalog.id).toBe('myllm');
     // Catalog resolves the declared model.
     expect(state.pluginModelCatalog.resolve('myllm', 'm1')).not.toBeNull();
   });
@@ -296,7 +299,6 @@ describe('rebuildWiringState', () => {
     const state = await rebuildWiringState(loaded, entries, CORE_PROVIDER_IDS, WIRING_OPTIONS);
 
     expect(state.pluginProviderConfigs).toHaveLength(0);
-    expect(state.pluginModels).toHaveLength(0);
     // CF3: dropped collisions are surfaced so the caller can log them at
     // boot AND reload (rebuild stays side-effect-free).
     expect(state.droppedProviderCollisions).toHaveLength(1);

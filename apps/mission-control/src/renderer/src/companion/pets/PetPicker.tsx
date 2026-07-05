@@ -3,7 +3,30 @@ import type { PetKind } from '../../../../shared/ipc.js';
 import { PetThumbnail } from './index.js';
 import { PET_KINDS } from './kinds.js';
 
-const LABEL: Record<PetKind, string> = { cat: 'Cat', 'red-panda': 'Red panda' };
+const LABEL: Record<PetKind, string> = {
+  astronaut: 'Astronaut',
+  bear: 'Bear',
+  bigfoot: 'Bigfoot',
+  'bollywood-star': 'Bollywood Star',
+  cat: 'Cat',
+  chef: 'Chef',
+  dog: 'Dog',
+  'fortune-god': 'Fortune God',
+  knight: 'Knight',
+  lion: 'Lion',
+  'maneki-neko': 'Maneki-neko',
+  merlion: 'Merlion',
+  ninja: 'Ninja',
+  pig: 'Pig',
+  pirate: 'Pirate',
+  quokka: 'Quokka',
+  rabbit: 'Rabbit',
+  'red-panda': 'Red panda',
+  robot: 'Robot',
+  'royal-guard': 'Royal Guard',
+  unicorn: 'Unicorn',
+  wizard: 'Wizard',
+};
 
 export function PetPicker({
   value,
@@ -13,7 +36,7 @@ export function PetPicker({
   onChange: (kind: PetKind) => void;
 }): JSX.Element {
   return (
-    <div className="mt-3 flex gap-3">
+    <div className="mt-3 flex flex-wrap gap-3">
       {PET_KINDS.map((kind) => (
         <button
           key={kind}

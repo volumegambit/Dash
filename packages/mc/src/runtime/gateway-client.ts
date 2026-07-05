@@ -99,8 +99,8 @@ export interface CreateAgentRequest {
 
 /**
  * Curated model returned by the gateway's `GET /models` endpoint. Same
- * shape as `@dash/models` `FilteredModel`. Re-declared locally to keep
- * the MC client zero-dependency on `@dash/models` — MC just consumes
+ * shape as `@dash/plugin-sdk` `FilteredModel`. Re-declared locally to keep
+ * the MC client zero-dependency on `@dash/plugin-sdk` — MC just consumes
  * the gateway's REST contract.
  */
 export interface GatewayModel {

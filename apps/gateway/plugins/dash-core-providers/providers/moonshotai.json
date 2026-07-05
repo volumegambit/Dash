@@ -96,6 +96,10 @@
   ],
   "reviewedAt": "2026-06-21",
   "ui": {
-    "keyConsoleUrl": "https://platform.moonshot.ai/console/api-keys"
+    "keyConsoleUrl": "https://platform.moonshot.ai/console/api-keys",
+    "keyPlaceholder": "sk-...",
+    "docsUrl": "https://platform.moonshot.ai/docs/api/overview",
+    "description": "Kimi K2 — strong agentic and coding models from Moonshot AI.",
+    "sortOrder": 3
   }
 }

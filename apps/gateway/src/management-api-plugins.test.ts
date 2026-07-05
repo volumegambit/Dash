@@ -96,7 +96,6 @@ function wiring(over: Partial<PluginWiringState> = {}): PluginWiringState {
     commandFiles: [],
     hookEngine: { hasHooks: false } as unknown as PluginWiringState['hookEngine'],
     pluginModelCatalog: {} as unknown as PluginWiringState['pluginModelCatalog'],
-    pluginModels: [],
     mcpConfigs: [],
     pluginProviderConfigs: [],
     droppedProviderCollisions: [],
@@ -821,17 +820,71 @@ describe('plugin management routes', () => {
       const res = await app.request('/runtime/plugins', { headers: AUTH });
       expect(res.status).toBe(200);
       const body = (await res.json()) as {
-        providers: Array<{ id: string; label: string; credentialPrefix: string }>;
+        providers: Array<{
+          id: string;
+          label: string;
+          credentialPrefix: string;
+          pluginName: string;
+        }>;
         plugins: Array<{ name: string; displayName?: string; version?: string }>;
       };
       expect(body.providers).toEqual([
-        { id: 'discoai', label: 'Disco AI', credentialPrefix: 'disco' },
+        { id: 'discoai', label: 'Disco AI', credentialPrefix: 'disco', pluginName: 'disco' },
       ]);
       // 'off' (disabled) is excluded; 'broke' (error, not disabled) is included.
       const names = body.plugins.map((p) => p.name).sort();
       expect(names).toEqual(['broke', 'disco']);
       const disco = body.plugins.find((p) => p.name === 'disco');
       expect(disco).toEqual({ name: 'disco', displayName: 'Disco', version: '1.2.3' });
+    });
+
+    it('surfaces catalog ui hints when present and omits the field otherwise', async () => {
+      const ws = wiring({
+        pluginProviderConfigs: [
+          {
+            pluginName: 'disco',
+            catalog: {
+              id: 'discoai',
+              label: 'Disco AI',
+              credentialPrefix: 'disco',
+              models: [],
+              ui: { keyConsoleUrl: 'https://x', sortOrder: 1, description: 'Disco tunes.' },
+            },
+          } as unknown as PluginWiringState['pluginProviderConfigs'][number],
+          {
+            pluginName: 'plain',
+            catalog: {
+              id: 'plainai',
+              label: 'Plain AI',
+              credentialPrefix: 'plain',
+              models: [],
+            },
+          } as unknown as PluginWiringState['pluginProviderConfigs'][number],
+        ],
+        pluginRecords: {},
+      });
+      const { app } = createApp({ wiringState: ws });
+      const res = await app.request('/runtime/plugins', { headers: AUTH });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as {
+        providers: Array<{
+          id: string;
+          label: string;
+          credentialPrefix: string;
+          pluginName: string;
+          ui?: { keyConsoleUrl?: string; sortOrder?: number; description?: string };
+        }>;
+      };
+      expect(body.providers).toEqual([
+        {
+          id: 'discoai',
+          label: 'Disco AI',
+          credentialPrefix: 'disco',
+          pluginName: 'disco',
+          ui: { keyConsoleUrl: 'https://x', sortOrder: 1, description: 'Disco tunes.' },
+        },
+        { id: 'plainai', label: 'Plain AI', credentialPrefix: 'plain', pluginName: 'plain' },
+      ]);
     });
   });
 });

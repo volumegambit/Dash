@@ -91,7 +91,8 @@ The exhaustive manual test plan lives at `apps/mission-control/TEST_PLAN.md`. It
 - Clean environment: dispatch `mission-control-qa-from-clean` agent
 
 **When to run QA:** After changes to MC features, run the relevant TEST_PLAN sections. Use the section-to-feature mapping:
-- AI Providers / credentials changes → Sections 3, 15, 24
+- Setup wizard / provider picker changes → Section 1
+- AI Providers / credentials changes → Sections 1, 3, 15
 - Chat UI changes → Sections 6-17
 - Agent list/detail changes → Sections 4, 5, 18
 - Connectors (MCP) changes → Sections 19, 15
@@ -107,26 +108,24 @@ GitHub Actions runs on every push to `main` and on PRs. The workflow (`.github/w
 
 ## Model list maintenance
 
-The agent model dropdown is populated by querying provider `/v1/models` endpoints (Anthropic, OpenAI, Google), then filtering through a curated allow-list at `packages/models/src/supported-models.ts`. The gateway owns all model logic at runtime; MC just renders what the gateway returns.
+The agent model dropdown is populated by querying provider `/v1/models` endpoints, then filtering through the curated provider catalogs bundled with the `dash-core-providers` plugin at `apps/gateway/plugins/dash-core-providers/providers/*.json`. Each catalog carries a `supportedPatterns` allow-list, a static `models[]` (the bootstrap/offline list), and a per-catalog `reviewedAt` date. The gateway loads these catalogs via `@dash/plugins` and owns all model logic at runtime; MC just renders what the gateway returns.
 
-That allow-list has a `MODELS_REVIEWED_AT` constant. `npm run models:check` warns when it's more than 30 days old and CI hard-fails the build at 60 days. The check imports the constant from `@dash/models`.
+`npm run models:check` gates on the **oldest** `reviewedAt` across all catalogs: it warns when that is more than 30 days old and CI hard-fails the build at 60 days.
 
-**Before any of the following actions, check `MODELS_REVIEWED_AT` (or run `npm run models:check`):**
+**Before any of the following actions, check the catalogs' `reviewedAt` (or run `npm run models:check`):**
 
 - Cutting a release / version bump
 - Working on model-selection or deploy-wizard UI
 - Bumping provider SDKs (`@anthropic-ai/sdk`, `openai`, `@google/genai`)
-- Adding a new provider to `packages/models/src/providers/`
+- Adding a new provider catalog to a plugin
 
-If `MODELS_REVIEWED_AT` is more than 30 days old, run `/update-models` (or `npm run models:audit:apply`) before proceeding. The audit script calls each provider's `/v1/models` endpoint, diffs against the curated list, proposes pattern + bootstrap updates, applies them on user confirmation, runs tests, and shows the diff for review. It does not auto-commit.
+If the oldest `reviewedAt` is more than 30 days old, run `/update-models` (or `npm run models:audit:apply`) before proceeding. The audit script calls each provider's `/v1/models` endpoint, diffs against the catalogs, proposes pattern + model updates, applies them on user confirmation (rewriting the catalog JSONs and bumping their `reviewedAt`), runs tests, and shows the diff for review. It does not auto-commit.
 
 Adding a new provider:
-1. Create `packages/models/src/providers/<id>.ts` with a `ProviderDefinition` matching the existing files
-2. Append it to the `PROVIDERS` array in `packages/models/src/providers/index.ts`
-3. Add patterns to `SUPPORTED_MODELS` in `supported-models.ts`
-4. Run `npm run models:audit:apply` to populate `BOOTSTRAP_MODELS` and bump `MODELS_REVIEWED_AT`
+1. Add a `providers/<id>.json` catalog to the bundled `dash-core-providers` plugin (`apps/gateway/plugins/dash-core-providers/providers/`) — or ship it in any plugin. Match the shape of the existing catalogs (`id`, `label`, `credentialPrefix`, `baseUrl`, `api`, `models`, `modelsFetch`, `supportedPatterns`, `reviewedAt`, `ui`).
+2. Run `npm run models:audit:apply` to populate the static `models[]` and set `reviewedAt`.
 
-The provider registry is consumed by the gateway (`GET /models`), the audit script, and the CI freshness check — adding a provider requires no further wiring.
+No core wiring is required — catalogs are discovered from installed plugins by the gateway (`GET /models`), the audit script, and the CI freshness check. Reserved core provider ids live in `RESERVED_PROVIDER_IDS` (`packages/plugins/src/loader.ts`).
 
 ## Git Workflow
 

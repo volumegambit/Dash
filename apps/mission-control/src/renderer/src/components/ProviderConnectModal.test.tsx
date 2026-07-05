@@ -1,33 +1,100 @@
 import '@testing-library/jest-dom/vitest';
+import type { RuntimePluginProvider } from '@dash/management';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { mockApi } from '../../../../vitest.setup.js';
 import { ProviderConnectModal } from './ProviderConnectModal.js';
-import type { ProviderConfig } from './providers.js';
+import { providerConnectConfig } from './providers.js';
+
+// A representative bundled provider carrying full ui hints — the modal is now
+// always driven by a derived config, so tests build one from a runtime provider.
+const anthropicProvider: RuntimePluginProvider = {
+  id: 'anthropic',
+  label: 'Anthropic',
+  credentialPrefix: 'anthropic-api-key',
+  pluginName: 'dash-core-providers',
+  ui: {
+    keyConsoleUrl: 'https://console.anthropic.com/settings/keys',
+    keyPlaceholder: 'sk-ant-...',
+    docsUrl: 'https://docs.anthropic.com/en/docs/initial-setup',
+    description: 'Claude models',
+    sortOrder: 0,
+  },
+};
+
+const googleProvider: RuntimePluginProvider = {
+  id: 'google',
+  label: 'Google Gemini',
+  credentialPrefix: 'google-api-key',
+  pluginName: 'dash-core-providers',
+  ui: {
+    keyConsoleUrl: 'https://aistudio.google.com/app/apikey',
+    keyPlaceholder: 'AIza...',
+    sortOrder: 2,
+  },
+};
+
+const openaiProvider: RuntimePluginProvider = {
+  id: 'openai',
+  label: 'OpenAI',
+  credentialPrefix: 'openai-api-key',
+  pluginName: 'dash-core-providers',
+  ui: { keyConsoleUrl: 'https://platform.openai.com/api-keys', keyPlaceholder: 'sk-...' },
+};
 
 describe('ProviderConnectModal', () => {
   const noop = () => {};
 
-  it('renders the provider title from PROVIDER_CONFIG', () => {
-    render(<ProviderConnectModal provider="anthropic" onClose={noop} onSaved={noop} />);
-    expect(screen.getByText('Connect to Claude')).toBeInTheDocument();
+  it('renders the provider title from the derived providerConfig', () => {
+    render(
+      <ProviderConnectModal
+        provider="anthropic"
+        providerConfig={providerConnectConfig(anthropicProvider)}
+        onClose={noop}
+        onSaved={noop}
+      />,
+    );
+    expect(screen.getByText('Connect to Anthropic')).toBeInTheDocument();
   });
 
-  it('renders the console URL as a clickable button', () => {
-    render(<ProviderConnectModal provider="anthropic" onClose={noop} onSaved={noop} />);
-    expect(screen.getByText('console.anthropic.com')).toBeInTheDocument();
+  it('renders the API keys URL as a clickable button', () => {
+    render(
+      <ProviderConnectModal
+        provider="anthropic"
+        providerConfig={providerConnectConfig(anthropicProvider)}
+        onClose={noop}
+        onSaved={noop}
+      />,
+    );
+    // apiKeysUrl hint present -> the "API Keys" step link renders.
+    expect(screen.getByText('API Keys')).toBeInTheDocument();
   });
 
-  it('calls openExternal with consoleUrl when console link clicked', async () => {
+  it('calls openExternal with apiKeysUrl when the API Keys link clicked', async () => {
     const user = userEvent.setup();
-    render(<ProviderConnectModal provider="anthropic" onClose={noop} onSaved={noop} />);
-    await user.click(screen.getByText('console.anthropic.com'));
-    expect(mockApi.openExternal).toHaveBeenCalledWith('https://console.anthropic.com');
+    render(
+      <ProviderConnectModal
+        provider="anthropic"
+        providerConfig={providerConnectConfig(anthropicProvider)}
+        onClose={noop}
+        onSaved={noop}
+      />,
+    );
+    await user.click(screen.getByText('API Keys'));
+    expect(mockApi.openExternal).toHaveBeenCalledWith(
+      'https://console.anthropic.com/settings/keys',
+    );
   });
 
   it('pre-fills key name when keyName prop is provided', () => {
     render(
-      <ProviderConnectModal provider="anthropic" keyName="default" onClose={noop} onSaved={noop} />,
+      <ProviderConnectModal
+        provider="anthropic"
+        providerConfig={providerConnectConfig(anthropicProvider)}
+        keyName="default"
+        onClose={noop}
+        onSaved={noop}
+      />,
     );
     const keyNameInput = screen.getByLabelText('Key name');
     expect(keyNameInput).toHaveValue('default');
@@ -39,6 +106,7 @@ describe('ProviderConnectModal', () => {
     render(
       <ProviderConnectModal
         provider="anthropic"
+        providerConfig={providerConnectConfig(anthropicProvider)}
         keyName="default"
         onClose={noop}
         onSaved={onSaved}
@@ -57,7 +125,14 @@ describe('ProviderConnectModal', () => {
   it('calls onClose when Cancel is clicked', async () => {
     const user = userEvent.setup();
     const onClose = vi.fn();
-    render(<ProviderConnectModal provider="openai" onClose={onClose} onSaved={noop} />);
+    render(
+      <ProviderConnectModal
+        provider="openai"
+        providerConfig={providerConnectConfig(openaiProvider)}
+        onClose={onClose}
+        onSaved={noop}
+      />,
+    );
     await user.click(screen.getByText('Cancel'));
     expect(onClose).toHaveBeenCalledOnce();
   });
@@ -66,7 +141,13 @@ describe('ProviderConnectModal', () => {
     const user = userEvent.setup();
     mockApi.credentialsSet.mockRejectedValueOnce(new Error('Network error'));
     render(
-      <ProviderConnectModal provider="google" keyName="default" onClose={noop} onSaved={noop} />,
+      <ProviderConnectModal
+        provider="google"
+        providerConfig={providerConnectConfig(googleProvider)}
+        keyName="default"
+        onClose={noop}
+        onSaved={noop}
+      />,
     );
     await user.type(screen.getByPlaceholderText('AIza...'), 'AIzatest');
     await user.click(screen.getByText('Save API Key'));
@@ -75,7 +156,14 @@ describe('ProviderConnectModal', () => {
 
   it('shows error when key name contains invalid characters', async () => {
     const user = userEvent.setup();
-    render(<ProviderConnectModal provider="anthropic" onClose={noop} onSaved={noop} />);
+    render(
+      <ProviderConnectModal
+        provider="anthropic"
+        providerConfig={providerConnectConfig(anthropicProvider)}
+        onClose={noop}
+        onSaved={noop}
+      />,
+    );
     const keyNameInput = screen.getByLabelText('Key name');
     await user.type(keyNameInput, 'bad name!');
     await user.type(screen.getByPlaceholderText('sk-ant-...'), 'sk-ant-testkey');
@@ -86,33 +174,28 @@ describe('ProviderConnectModal', () => {
     expect(mockApi.credentialsSet).not.toHaveBeenCalled();
   });
 
-  // RP4-3: providerConfig is OPTIONAL. Core providers (no providerConfig) keep
-  // falling back to PROVIDER_CONFIG (covered above). A plugin provider passes a
-  // synthesized config and a free-form string id.
-  describe('with a synthesized plugin providerConfig', () => {
-    const pluginConfig: ProviderConfig = {
-      title: 'Connect to My Provider',
-      secretKey: 'myprov-api-key:default',
-      placeholder: 'API key',
-      consoleUrl: '',
-      apiKeysUrl: '',
-      helpUrl: '',
-      helpLabel: '',
-      explanation: 'Paste your My Provider API key to connect it.',
-      steps: ['Paste your API key below.'],
+  // A provider without ui hints yields empty URL fields: the URL instruction
+  // steps are omitted and the provider-specific steps renumber from 1.
+  describe('with a hint-less provider config', () => {
+    const plainProvider: RuntimePluginProvider = {
+      id: 'myprov',
+      label: 'My Provider',
+      credentialPrefix: 'myprov-api-key',
+      pluginName: 'llmpack',
     };
 
-    it('renders the title from the passed providerConfig, not PROVIDER_CONFIG', () => {
+    it('renders the derived title and omits the API Keys URL step', () => {
       render(
         <ProviderConnectModal
           provider="myprov"
-          providerConfig={pluginConfig}
+          providerConfig={providerConnectConfig(plainProvider)}
           keyName="default"
           onClose={noop}
           onSaved={noop}
         />,
       );
       expect(screen.getByText('Connect to My Provider')).toBeInTheDocument();
+      expect(screen.queryByText('API Keys')).not.toBeInTheDocument();
     });
 
     it('saves the credential under {pluginId}-api-key:{keyName}', async () => {
@@ -121,7 +204,7 @@ describe('ProviderConnectModal', () => {
       render(
         <ProviderConnectModal
           provider="myprov"
-          providerConfig={pluginConfig}
+          providerConfig={providerConnectConfig(plainProvider)}
           keyName="default"
           onClose={noop}
           onSaved={onSaved}

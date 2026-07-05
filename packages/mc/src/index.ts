@@ -51,3 +51,9 @@ export type {
 } from './runtime/gateway-client.js';
 export { GatewayStateStore } from './runtime/gateway-state.js';
 export type { GatewayState } from './runtime/gateway-state.js';
+export {
+  DEFAULT_CHANNEL_PORT,
+  DEFAULT_MANAGEMENT_PORT,
+  resolveGatewayPorts,
+} from './runtime/ports.js';
+export type { GatewayPorts } from './runtime/ports.js';

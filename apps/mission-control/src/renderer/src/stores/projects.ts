@@ -11,6 +11,7 @@ import type {
   ProjectWithCounts,
   ProjectsEvent,
 } from '../../../shared/projects-ipc.js';
+import { useChatStore } from './chat.js';
 
 const VIEW_MODE_KEY = 'dash.projects.kanbanViewMode';
 
@@ -267,6 +268,14 @@ export const useProjectsStore = create<ProjectsState>((set, get) => ({
         const issueId = (payload as { issue_id?: string }).issue_id;
         if (issueId && get().detailById[issueId]) {
           void get().loadIssueDetail(issueId);
+        }
+        // A linked session usually means a NEW chat conversation (agent
+        // dispatch — possibly from another window or an agent's projects
+        // tool). The task page's session tabs only show links present in the
+        // chat store's conversation list, so refresh it here: broadcast-only
+        // link paths have no component calling loadConversations.
+        if (topic === 'session.linked') {
+          void useChatStore.getState().loadConversations();
         }
         return;
       }
