@@ -1,0 +1,149 @@
+---
+title: "Projects"
+description: "A shared task board for you and your agents, built into Mission Control."
+---
+
+Projects is Mission Control's built-in task tracker. It's shared between you and your agents: you create and organize work, and agents can create tasks, log progress as they go, and flag when they need your input.
+
+Open it from the sidebar — click **Projects**. The page header reads **Manage Work**.
+
+<Note>
+  Every agent can use Projects out of the box. There's nothing to enable — the project tools are available to all agents automatically.
+</Note>
+
+## The five views
+
+Tabs across the top of the Projects page switch between five views:
+
+<Tabs>
+  <Tab title="Inbox">
+    Everything that needs your attention, in two groups:
+
+    - **Waiting on you** — an agent needs your input on a task before it can continue
+    - **New activity** — a task assigned to you changed since you last looked at it
+
+    A badge on the Inbox tab shows how many items are waiting. Click an item to open the task — that also marks it as seen. When there's nothing left, you'll see "Inbox zero. Nothing needs you right now."
+  </Tab>
+  <Tab title="My work">
+    All tasks assigned to you, newest activity first. A quick answer to "what's on my plate?"
+  </Tab>
+  <Tab title="All tasks">
+    Every task, in a table. Filter by status (Backlog, Todo, In Progress, Review, Done) or search by title, key, or description. The **New task** button lives here too.
+  </Tab>
+  <Tab title="Kanban">
+    A drag-and-drop board. Move a card between columns to change its status — when you drop a card on **In Progress**, you'll be asked to pick a sub-status. Three layouts are available: **Status + sub-status**, **Flat**, and **By project**.
+  </Tab>
+  <Tab title="Projects">
+    A card for each project, showing its key, status, and how many tasks are open versus done. Click a card to see the project's description and its tasks. The **New project** button lives here.
+  </Tab>
+</Tabs>
+
+## Tasks
+
+A task is a single piece of work. It has a title, an optional description (markdown works), a status, and an assignee. Tasks can live inside a project or stand alone.
+
+Every task gets a short key like `GATEWAY-42` — the project's key plus a number. Standalone tasks are numbered `TASK-1`, `TASK-2`, and so on.
+
+### Creating a task
+
+<Steps>
+  <Step title="Click New task">
+    You'll find the button in the **All tasks** view, or inside any project.
+  </Step>
+  <Step title="Give it a title">
+    Add a description if you like — markdown is supported.
+  </Step>
+  <Step title="Pick a project">
+    Choose a project from the dropdown, or leave it as **No project / standalone**. If you started from inside a project, this step is already done.
+  </Step>
+  <Step title="Click Create">
+    The task appears immediately, with status **Todo**.
+  </Step>
+</Steps>
+
+### Statuses
+
+Tasks move through six statuses:
+
+| Status | Meaning |
+|--------|---------|
+| **Backlog** | Captured, but not planned yet |
+| **Todo** | Ready to be picked up |
+| **In Progress** | Being worked on right now |
+| **Review** | Done, pending a check |
+| **Done** | Finished |
+| **Cancelled** | Won't be done |
+
+While a task is **In Progress**, it also carries a sub-status that tells you who the ball is with:
+
+| Sub-status | Meaning |
+|------------|---------|
+| **Agent working** | An agent is actively on it |
+| **Waiting on human** | The agent needs something from you — this puts the task in your Inbox |
+| **Blocked** | Stuck on something else |
+
+To change a task's status, open the task and use the dropdown in the top-right corner. Changes save instantly. On the Kanban board, just drag the card.
+
+### Inside a task
+
+Click any task to open its detail page. You'll see:
+
+- **Description** — the task's write-up, rendered as markdown
+- **Timeline** — a running history of everything that happened: status changes, comments, subtasks created, and agent activity. Agent-run entries can be expanded to see exactly what the agent did
+- **Comments** — add a comment at the bottom of the timeline. Agents can comment too; their comments are marked with 🤖. You can delete your own comments — a deleted comment shows as "deleted" in the timeline rather than vanishing, so the history stays complete
+- **Details panel** (right side) — assignee, sub-status, project, who created the task, linked chat sessions, and subtasks
+
+### Subtasks
+
+Break a task into smaller steps with subtasks. In the details panel, type into the **+ Subtask** field and press Enter. Each subtask is a full task of its own, with its own key, status, and timeline.
+
+Subtasks go one level deep: a task can have subtasks, but a subtask can't have subtasks of its own.
+
+## Your Inbox
+
+The Inbox is how Projects gets your attention. A task shows up there for one of two reasons:
+
+- **Waiting on you** — an agent set the task to **Waiting on human**. It's asking for a decision, an answer, or a review before it can continue. The item stays in your Inbox until the task moves on — usually because you reply and the agent picks it back up.
+- **New activity** — a task assigned to you was updated since you last opened it. Clicking the item clears it.
+
+## Organizing with projects
+
+Projects group related tasks — one per initiative, area, or goal.
+
+To create one, go to the **Projects** view and click **New project**. Give it a name and a short uppercase key (like `GATEWAY`). The key becomes the prefix for every task number in that project.
+
+Each project page shows a description you can edit (click **Edit**, write markdown, save), the project's task list, and a **New task** button that creates tasks directly in that project. Projects have a status of their own — active, paused, completed, or cancelled.
+
+## How agents use Projects
+
+Agents don't just appear in the timeline — they're full participants. In any chat, you can ask an agent to plan work, and it can:
+
+- **Create projects and tasks** — ask "break this feature down into tasks and track them" and the agent will set up the board for you. Tasks created by an agent are marked with 🤖
+- **Update tasks as it works** — an agent picking up a task sets it to **In Progress** with sub-status **Agent working**, and moves it along as it makes progress
+- **Comment on progress** — agents post markdown comments to the timeline, so the task page tells the whole story
+- **Ask for your input** — when an agent hits a question only you can answer, it sets the task to **Waiting on human**. The task lands in your Inbox
+
+Every conversation that touches a task is recorded on the task as a **linked session**, so you can always trace which chats a piece of work came from.
+
+The full set of project tools available to agents is listed in the [Tools reference](/tools#projects).
+
+## Where your data lives
+
+Tasks and projects are stored locally on your machine, in a database under the gateway's data directory (`data/projects.db`). Nothing syncs to the cloud. Mission Control picks up changes live — when an agent updates a task, you see it immediately.
+
+## What's next
+
+<CardGroup cols={2}>
+  <Card title="Mission Control" icon="gauge" href="/mission-control">
+    The desktop app where Projects lives.
+  </Card>
+  <Card title="Chat with your agent" icon="comments" href="/chat-with-your-agent">
+    Start a conversation and put your agents to work.
+  </Card>
+  <Card title="Tools" icon="wrench" href="/tools">
+    Everything agents can do, including the project tools.
+  </Card>
+  <Card title="Agents" icon="robot" href="/agents">
+    How agents are configured and how they work.
+  </Card>
+</CardGroup>
