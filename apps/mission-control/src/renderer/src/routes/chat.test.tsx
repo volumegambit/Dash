@@ -1,7 +1,7 @@
 import '@testing-library/jest-dom/vitest';
 import { render, screen } from '@testing-library/react';
 import { mockApi } from '../../../../vitest.setup.js';
-import type { McAgentEvent } from '../../shared/ipc.js';
+import type { McAgentEvent } from '../../../shared/ipc.js';
 import { useAgentsStore } from '../stores/agents.js';
 import { useChatStore } from '../stores/chat.js';
 
