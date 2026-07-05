@@ -301,9 +301,6 @@ function ApiKeyStep({
   // Object.hasOwn (not a bare index) so a provider id like 'constructor' can't
   // walk the prototype chain and pull a truthy value off Object.prototype,
   // which would spuriously render the OAuth CTA on a non-OAuth provider.
-  // Object.hasOwn (not a bare index) so a provider id like 'constructor' can't
-  // walk the prototype chain and pull a truthy value off Object.prototype,
-  // which would spuriously render the OAuth CTA on a non-OAuth provider.
   const oauthLabel = Object.hasOwn(OAUTH_LABEL, provider.id) ? OAUTH_LABEL[provider.id] : undefined;
   const [oauthLoading, setOauthLoading] = useState(false);
   const [oauthError, setOauthError] = useState<string | null>(null);
