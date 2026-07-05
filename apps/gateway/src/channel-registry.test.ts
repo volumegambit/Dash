@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -244,5 +244,28 @@ describe('ChannelRegistry', () => {
     const channel = registry.get('legacy');
     expect(channel).toBeDefined();
     expect(channel?.allowedUsers).toEqual([]);
+  });
+
+  it('concurrent saves all resolve and leave a valid, consistent file', async () => {
+    // Same fixed-`.tmp` race as AgentRegistry: overlapping save()s used to
+    // ENOENT on the loser's rename. Fire many concurrent update→save pairs;
+    // none must reject and the final file must parse to the live Map snapshot.
+    const registry = new ChannelRegistry(filePath);
+    registry.register(makeConfig({ name: 'chan' }));
+
+    const N = 20;
+    const saves: Promise<void>[] = [];
+    for (let i = 0; i < N; i++) {
+      registry.update('chan', { globalDenyList: [`deny-${i}`] });
+      saves.push(registry.save());
+    }
+    await expect(Promise.all(saves)).resolves.toBeDefined();
+
+    const registry2 = new ChannelRegistry(filePath);
+    await registry2.load();
+    expect(registry2.get('chan')?.globalDenyList).toEqual([`deny-${N - 1}`]);
+
+    const leftovers = (await readdir(tmpDir)).filter((f) => f.includes('.tmp'));
+    expect(leftovers).toEqual([]);
   });
 });

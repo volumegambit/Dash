@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { vi } from 'vitest';
@@ -560,6 +560,49 @@ describe('AgentRegistry (file-backed)', () => {
       const paths = [a.config.workspace, b.config.workspace, c.config.workspace];
       expect(new Set(paths).size).toBe(3); // all distinct
       expect(paths.every((p) => p?.startsWith('/w/'))).toBe(true);
+    });
+  });
+
+  describe('concurrent saves (atomic-write race)', () => {
+    it('many overlapping update+save calls all resolve and leave a valid, consistent file', async () => {
+      // Regression for the fixed-`.tmp`-name race: the Config tab's
+      // Providers/Plugins cards auto-persist on every chip change, so two
+      // overlapping save()s used to write the same `agents.json.tmp`; the
+      // first rename consumed it and the loser's rename threw
+      // `ENOENT: rename agents.json.tmp -> agents.json`, surfacing as a 500 and
+      // a silently lost update. Fire many concurrent update→save pairs against
+      // one instance; none must reject, and the final file must parse to a
+      // consistent snapshot of the in-memory Map.
+      const reg = new AgentRegistry(filePath);
+      const entry = reg.register({ name: 'a', model: 'm0', systemPrompt: 's' });
+
+      const N = 20;
+      const saves: Promise<void>[] = [];
+      for (let i = 0; i < N; i++) {
+        reg.update(entry.id, { model: `m${i}` });
+        saves.push(reg.save());
+      }
+      // With the fixed `.tmp` name this reliably rejects with ENOENT.
+      await expect(Promise.all(saves)).resolves.toBeDefined();
+
+      // The persisted file must be valid JSON reflecting the live Map — its
+      // model is whatever the in-memory entry now holds (last update wins),
+      // and no field/entry is dropped.
+      const raw = await readFile(filePath, 'utf-8');
+      const parsed = JSON.parse(raw) as Array<{ id: string; config: { model: string } }>;
+      expect(parsed).toHaveLength(1);
+      expect(parsed[0].id).toBe(entry.id);
+      expect(parsed[0].config.model).toBe(reg.get(entry.id)?.config.model);
+      expect(parsed[0].config.model).toBe(`m${N - 1}`);
+    });
+
+    it('leaves no leftover .tmp files after concurrent saves', async () => {
+      const reg = new AgentRegistry(filePath);
+      reg.register({ name: 'a', model: 'm', systemPrompt: 's' });
+      await Promise.all(Array.from({ length: 10 }, () => reg.save()));
+
+      const leftovers = (await readdir(dir)).filter((f) => f.includes('.tmp'));
+      expect(leftovers).toEqual([]);
     });
   });
 });

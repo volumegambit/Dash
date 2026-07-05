@@ -1,4 +1,5 @@
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 
 export interface ChannelRoutingRule {
@@ -41,6 +42,16 @@ export interface RegisteredChannel {
 
 export class ChannelRegistry {
   private channels = new Map<string, RegisteredChannel>();
+  /**
+   * Single in-process write queue. Every `save()` chains onto this promise so
+   * two overlapping saves cannot race on the temp file. Serializing them (plus
+   * the unique temp name in `save()`) means neither a shared-`.tmp` rename
+   * ENOENT nor a corrupt/interleaved file can occur. The queue never rejects —
+   * a failed save propagates to its awaiting caller while the chain stays
+   * resolved so it does not wedge later saves. Mirrors `AgentRegistry` /
+   * `PluginConfigStore`.
+   */
+  private writeQueue: Promise<void> = Promise.resolve();
 
   constructor(private filePath?: string) {}
 
@@ -85,14 +96,43 @@ export class ChannelRegistry {
     }
   }
 
-  /** Persist current state to disk. No-op if no file path. */
-  async save(): Promise<void> {
+  /**
+   * Persist current state to disk. No-op if no file path. Serialized behind the
+   * write queue so overlapping saves cannot race on the temp file; each write
+   * snapshots the live Map at run time (the Map, not the file, is the source of
+   * truth).
+   */
+  save(): Promise<void> {
+    if (!this.filePath) return Promise.resolve();
+    const run = this.writeQueue.then(
+      () => this.writeSnapshot(),
+      () => this.writeSnapshot(),
+    );
+    // Keep the chain alive (and non-rejecting) regardless of this write's
+    // outcome, while still surfacing the rejection to the awaiting caller.
+    this.writeQueue = run.then(
+      () => {},
+      () => {},
+    );
+    return run;
+  }
+
+  private async writeSnapshot(): Promise<void> {
     if (!this.filePath) return;
     await mkdir(dirname(this.filePath), { recursive: true });
     const entries = [...this.channels.values()];
-    const tmpPath = `${this.filePath}.tmp`;
+    // Randomize the temp path so concurrent saves don't write the same file and
+    // corrupt/interleave each other's contents (or ENOENT on the loser's
+    // rename after the winner already consumed a shared `.tmp`).
+    const tmpPath = `${this.filePath}.${randomUUID()}.tmp`;
     await writeFile(tmpPath, JSON.stringify(entries, null, 2));
-    await rename(tmpPath, this.filePath);
+    try {
+      await rename(tmpPath, this.filePath);
+    } catch (err) {
+      // Don't leave the temp file behind if the rename fails.
+      await unlink(tmpPath).catch(() => {});
+      throw err;
+    }
   }
 
   register(config: ChannelConfig): RegisteredChannel {
