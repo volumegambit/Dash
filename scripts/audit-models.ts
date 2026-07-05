@@ -44,7 +44,12 @@ import { fileURLToPath } from 'node:url';
 import type { ProviderCatalog } from '@dash/plugin-sdk';
 // Use fetchCatalogModels directly (NOT discoverCatalogModels — the audit needs
 // per-catalog raw ids to report unmatched models, which discover filters out).
-import { fetchCatalogModels, findCatalogPattern, validateProviderCatalog } from '@dash/plugins';
+import {
+  fetchCatalogModels,
+  findCatalogPattern,
+  globToRegex,
+  validateProviderCatalog,
+} from '@dash/plugins';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, '..');
@@ -134,6 +139,18 @@ interface DriftEntry {
   live: string;
 }
 
+/**
+ * True when a live model id matches any of the catalog's `excludedPatterns`
+ * globs — mirrors the deny-wins short-circuit in `findCatalogPattern`. Absent
+ * pattern list is treated as empty.
+ */
+function isCatalogExcluded(catalog: ProviderCatalog, modelId: string): boolean {
+  for (const pattern of catalog.excludedPatterns ?? []) {
+    if (globToRegex(pattern).test(modelId)) return true;
+  }
+  return false;
+}
+
 interface ProviderReport {
   provider: string;
   configured: boolean;
@@ -141,6 +158,12 @@ interface ProviderReport {
   liveCount: number;
   /** Live ids matching no supportedPattern (candidate additions — human-curated). */
   unmatched: LiveModel[];
+  /**
+   * Live ids matched by an `excludedPatterns` glob — intentional deny-list
+   * exclusions (non-chat modalities), NOT candidate additions. Bucketed
+   * separately so they don't pollute the unmatched list.
+   */
+  excluded: LiveModel[];
   /** Static catalog models no longer present in the live list (dropped on --apply). */
   staleStatics: string[];
   /** Still-live static models whose name differs from the live label (refreshed on --apply). */
@@ -159,6 +182,7 @@ async function gatherReport(catalogs: LoadedCatalog[]): Promise<ProviderReport[]
         configured: false,
         liveCount: 0,
         unmatched: [],
+        excluded: [],
         staleStatics: [],
         nameDrift: [],
       });
@@ -180,6 +204,7 @@ async function gatherReport(catalogs: LoadedCatalog[]): Promise<ProviderReport[]
         fetchError,
         liveCount: 0,
         unmatched: [],
+        excluded: [],
         staleStatics: [],
         nameDrift: [],
       });
@@ -187,7 +212,14 @@ async function gatherReport(catalogs: LoadedCatalog[]): Promise<ProviderReport[]
     }
 
     const liveById = new Map(live.map((m) => [m.id, m]));
-    const unmatched = live.filter((m) => findCatalogPattern(catalog, m.id) === null);
+    // Deny-listed ids match no allow pattern after exclusion, so bucket them
+    // separately rather than surfacing them as "potential additions" — they are
+    // intentionally filtered out (non-chat modalities). `unmatched` is then only
+    // the genuinely-new ids a human might want to allow-list.
+    const excluded = live.filter((m) => isCatalogExcluded(catalog, m.id));
+    const unmatched = live.filter(
+      (m) => !isCatalogExcluded(catalog, m.id) && findCatalogPattern(catalog, m.id) === null,
+    );
     const staleStatics = catalog.models.filter((m) => !liveById.has(m.id)).map((m) => m.id);
     const nameDrift: DriftEntry[] = [];
     for (const model of catalog.models) {
@@ -204,6 +236,7 @@ async function gatherReport(catalogs: LoadedCatalog[]): Promise<ProviderReport[]
       configured: true,
       liveCount: live.length,
       unmatched,
+      excluded,
       staleStatics,
       nameDrift,
     });
@@ -254,6 +287,16 @@ function printReport(catalogs: LoadedCatalog[], reports: ProviderReport[]): void
     }
     if (report.unmatched.length > shown.length) {
       console.log(`    ... and ${report.unmatched.length - shown.length} more`);
+    }
+    if (report.excluded.length > 0) {
+      console.log(`  Excluded by deny-list (intentional): ${report.excluded.length}`);
+      const shownExcluded = report.excluded.slice(0, 20);
+      for (const m of shownExcluded) {
+        console.log(`    – ${m.id.padEnd(40)} ${m.label}`);
+      }
+      if (report.excluded.length > shownExcluded.length) {
+        console.log(`    ... and ${report.excluded.length - shownExcluded.length} more`);
+      }
     }
     if (report.staleStatics.length > 0) {
       console.log(
