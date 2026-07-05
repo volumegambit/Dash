@@ -146,6 +146,31 @@ describe('TaskDetail delete', () => {
     expect(mockNavigate).not.toHaveBeenCalled();
   });
 
+  it('shows the session pane right after assign without a remount', async () => {
+    // Repro for QA 27.16 §6: assign creates a NEW conversation, so the chat
+    // store's mount-time conversations snapshot excludes it and the pane never
+    // rendered until the task was re-opened.
+    const before = detail();
+    const after = detail({ linked_sessions: [sessionLink()] });
+    useProjectsStore.setState({ detailById: { issue_1: before } });
+    mockApi.projectsGetIssue
+      .mockResolvedValueOnce(before) // mount load
+      .mockResolvedValue(after); // refetch after assign
+    mockApi.agentsList.mockResolvedValue([devAgent]);
+    mockApi.chatListConversations
+      .mockResolvedValueOnce([]) // mount load — conversation doesn't exist yet
+      .mockResolvedValue([mcConversation]);
+    mockApi.chatGetMessages.mockResolvedValue([]);
+    render(<TaskDetail />);
+
+    await userEvent.selectOptions(await screen.findByTestId('task-assign-agent'), 'agent-reg');
+    await userEvent.click(screen.getByTestId('task-assign-start'));
+
+    // The pane (with its composer) must appear in place, no navigation/remount.
+    expect(await screen.findByPlaceholderText('Reply to the agent…')).toBeInTheDocument();
+    expect(mockNavigate).not.toHaveBeenCalled();
+  });
+
   it('hides disabled agents from the assign picker', async () => {
     const d = detail();
     useProjectsStore.setState({ detailById: { issue_1: d } });

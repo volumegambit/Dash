@@ -453,15 +453,30 @@ export async function registerIpcHandlers(
   // gateway to the shape the renderer's reducer expects (bare Issue/Project for
   // entity topics, `{ issue_id }` for detail-mutating topics). We forward
   // `payload` UNCHANGED — do NOT re-wrap it. Mirrors the chat-service WS pattern
-  // (`addEventListener`); reconnect is driven by the poller's `healthy` branch.
+  // (`addEventListener`). Reconnect cannot rely on the poller alone: it only
+  // fires on health TRANSITIONS, so a socket that drops (or a connect attempt
+  // that fails) while the gateway stays healthy would never be retried —
+  // scheduleProjectsWsReconnect() self-heals those cases.
+  let projectsWsRetry: NodeJS.Timeout | null = null;
+  function scheduleProjectsWsReconnect(): void {
+    if (projectsWsRetry) return;
+    projectsWsRetry = setTimeout(() => {
+      projectsWsRetry = null;
+      if (!projectsWs) connectToProjectsWs();
+    }, 5_000);
+    projectsWsRetry.unref();
+  }
   function connectToProjectsWs(): void {
     projectsWs?.close();
     projectsWs = null;
     void (async () => {
       const gatewayState = await new GatewayStateStore(DATA_DIR).read();
-      if (!gatewayState) return;
-      const token = await gw.getGatewayToken();
-      if (!token) return;
+      const token = gatewayState ? await gw.getGatewayToken() : null;
+      if (!gatewayState || !token) {
+        // State/token not readable yet (e.g. first boot race) — retry.
+        scheduleProjectsWsReconnect();
+        return;
+      }
       const url = `ws://127.0.0.1:${gatewayState.port}/projects/ws?token=${encodeURIComponent(token)}`;
       const ws = new WebSocket(url);
       projectsWs = ws;
@@ -482,11 +497,13 @@ export async function registerIpcHandlers(
         }
       });
       ws.addEventListener('close', () => {
-        if (projectsWs === ws) projectsWs = null;
+        if (projectsWs === ws) {
+          projectsWs = null;
+          scheduleProjectsWsReconnect();
+        }
       });
       ws.addEventListener('error', () => {
-        // The close handler clears the ref; reconnect happens on the next
-        // 'healthy' poll tick.
+        // 'close' always follows 'error'; that handler schedules the retry.
       });
     })();
   }
@@ -1324,7 +1341,11 @@ export async function registerIpcHandlers(
   // -----------------------------------------------------------------------
 
   app.on('before-quit', async () => {
-    projectsWs?.close();
+    if (projectsWsRetry) clearTimeout(projectsWsRetry);
+    // Detach before close so the close handler doesn't schedule a reconnect.
+    const ws = projectsWs;
+    projectsWs = null;
+    ws?.close();
     gatewayPoller?.stop();
     await shutdownGatewayOnQuit(DATA_DIR);
   });
