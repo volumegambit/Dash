@@ -1314,11 +1314,11 @@ Covers the Plugins screen (P3), plugin trust, per-agent plugin selection (P5), a
 
 ## Section 30: Companion widget (floating pet)
 
-**Precondition:** App running, gateway healthy, at least one agent created, and the **Show the companion** toggle enabled (Settings → General → Companion). The companion is a separate always-on-top desktop window (not part of the main MC window); the in-app component is a headless publisher that streams session statuses and the selected pet to that window over IPC. The widget renders a **selectable pixel-art pet** — a **cat** (static grid sprite) or a **red panda** (default; **frame-animated**, PixelLab-generated). It shows one **aggregate mood** for all sessions. The cat shows mood via its collar-tag color plus eye overlays; the red panda plays a **per-mood animation** (idle sway / running / sitting / jumping / bristling) and shows the same mood hue as a small **collar badge dot**. Mood priority (highest wins): **error** (red `#f87171`) > **needs** (amber `#f5c518`) > **working** (blue `#3da5d9`) > **done** (green `#34c759`) > **idle** (gray `#9aa0a6` — no sessions).
+**Precondition:** App running, gateway healthy, at least one agent created, and the **Show the companion** toggle enabled (Settings → General → Companion). The companion is a separate always-on-top desktop window (not part of the main MC window); the in-app component is a headless publisher that streams session statuses and the selected pet to that window over IPC. The widget renders a **selectable, frame-animated pixel-art pet** (PixelLab-generated) — a **cat** or a **red panda** (default **red panda**). It shows one **aggregate mood** for all sessions: each mood plays a distinct animation (idle sway / running / sitting / jumping / bristling) and shows the mood hue as a small **collar badge dot**. Mood priority (highest wins): **error** (red `#f87171`) > **needs** (amber `#f5c518`) > **working** (blue `#3da5d9`) > **done** (green `#34c759`) > **idle** (gray `#9aa0a6` — no sessions).
 
 ### 30.1 Widget appears and floats
 1. Launch MC with the companion enabled.
-2. **Verify:** A small pixel-art pet widget appears at the **bottom-right** of the screen (frameless, transparent background, not shown in the taskbar/dock switcher). With no sessions running, the pet is **idle** (gray collar dot; the red panda plays its slow idle animation).
+2. **Verify:** A small pixel-art pet widget appears at the **bottom-right** of the screen (frameless, transparent background, not shown in the taskbar/dock switcher). With no sessions running, the pet is **idle** (gray collar dot, slow idle animation).
 3. **Verify:** The pet is the one selected in Settings (default **red panda** on a fresh install) — it does **not** start blank (the selection is replayed to the widget when it opens).
 4. Bring another application fully in front of MC.
 5. **Verify:** The widget still floats **on top of** that other app.
@@ -1365,26 +1365,27 @@ Covers the Plugins screen (P3), plugin trust, per-agent plugin selection (P5), a
 3. **Verify:** The widget is **clamped back onto a visible display** (it does not vanish off-screen).
 
 ### 30.9 Aggregate mood reflects session state
-The widget shows a **single aggregate mood** across all sessions, not one indicator per session. Drive sessions into each state and observe the pet. For the **cat**, mood shows as collar color + expression; for the **red panda**, mood shows as a distinct animation + collar badge dot color. Test the priority ordering too.
+The widget shows a **single aggregate mood** across all sessions, not one indicator per session. Drive sessions into each state and observe the pet: each mood plays a distinct animation, and the collar badge dot shows the mood hue. Test the priority ordering too.
 1. With **no sessions** running.
-2. **Verify:** The pet is **idle** — gray collar (cat: asleep; red panda: slow idle animation).
+2. **Verify:** The pet is **idle** — gray collar dot, slow idle animation.
 3. Start a long-running task so a session is **working**.
-4. **Verify:** The pet shows the **working** mood — **blue collar** (cat: pulsing; red panda: running animation).
+4. **Verify:** The pet shows the **working** mood — **blue collar dot**, running animation.
 5. Ask a question the agent surfaces so a session **needs you** (unanswered).
-6. **Verify:** The pet shows the **needs** mood — **amber collar** (red panda: sitting, waiting on you). (Needs outranks working: with both a working and a needs session, the pet is amber.)
+6. **Verify:** The pet shows the **needs** mood — **amber collar dot**, sitting (waiting on you). (Needs outranks working: with both a working and a needs session, the pet is amber.)
 7. Let a session **finish** while you are away (unread done), with nothing working or needing attention.
-8. **Verify:** The pet shows the **done** mood — **green collar** (red panda: celebratory jumping).
+8. **Verify:** The pet shows the **done** mood — **green collar dot**, celebratory jumping.
 9. Force a session to **error**.
-10. **Verify:** The pet shows the **error** mood — **red collar** (red panda: bristling/angry animation). (Error is highest priority: with an errored session present, the pet is red regardless of any working/needs/done sessions.)
+10. **Verify:** The pet shows the **error** mood — **red collar dot**, bristling/angry animation. (Error is highest priority: with an errored session present, the pet is red regardless of any working/needs/done sessions.)
 
 ### 30.10 Animation quality and reduced motion
-1. With the **red panda** selected and any mood active, watch the widget for ~10 seconds.
+Run once per pet (cat and red panda).
+1. With any mood active, watch the widget for ~10 seconds.
 2. **Verify:** The animation loops smoothly (no stutter, no flashing, no visible frame seams) and the pixels stay crisp (no blur from scaling).
 3. **Verify:** Playback speed feels right for the mood: idle is calm/slow, working is brisk, done is a lively jump loop.
 4. Switch moods (e.g. start then stop a task) and **verify:** the animation restarts cleanly from the new mood's first frame — no flash of the previous mood's frame.
 5. Enable the OS reduced-motion setting (macOS: System Settings → Accessibility → Display → Reduce motion), then reopen the widget.
-6. **Verify:** The red panda holds a **static frame** (first frame of the mood) instead of animating; the collar badge dot still shows the mood color.
-7. In Settings → General → Companion, **verify:** the red panda thumbnail in the PetPicker plays its idle animation (static under reduced motion).
+6. **Verify:** The pet holds a **static frame** (first frame of the mood) instead of animating; the collar badge dot still shows the mood color.
+7. In Settings → General → Companion, **verify:** both PetPicker thumbnails play their idle animations (static under reduced motion).
 11. Clear all sessions (none active or needing attention).
 12. **Verify:** The pet returns to **idle/asleep** (gray).
 
