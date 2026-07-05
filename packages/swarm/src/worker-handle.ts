@@ -170,17 +170,28 @@ export class WorkerHandle {
     return new Promise<string>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.clearQuestion();
+        // The question timed out but the worker is NOT terminal — restore
+        // 'running' so its segment can finalize with an intact report rather
+        // than being stranded in 'waiting_input'.
+        this.restoreRunningAfterQuestion();
         reject(new Error(`ask_orchestrator timeout after ${timeoutMs}ms`));
       }, timeoutMs);
       if (typeof timer === 'object' && 'unref' in timer) timer.unref();
 
       const onAbort = () => {
         this.clearQuestion();
+        // Abort of the ask (not a cancel of the worker) — restore 'running' so
+        // the worker is not stranded in 'waiting_input'.
+        this.restoreRunningAfterQuestion();
         reject(new Error('ask_orchestrator aborted'));
       };
       if (signal) {
         if (signal.aborted) {
           clearTimeout(timer);
+          // Pre-aborted: no questionWaiter is stored yet, so clear the pending
+          // question ourselves and restore 'running' before rejecting.
+          this.clearQuestion();
+          this.restoreRunningAfterQuestion();
           reject(new Error('ask_orchestrator aborted'));
           return;
         }
@@ -375,6 +386,21 @@ export class WorkerHandle {
     this.questionWaiter?.cleanup();
     this.questionWaiter = undefined;
     this.pendingQuestion = undefined;
+  }
+
+  /**
+   * Restore 'running' after a question rejection (timeout / signal-abort) so the
+   * segment's terminal transition does NOT take the keep-waiting branch forever
+   * and strand the worker in 'waiting_input'. Mirrors answerQuestion's restore.
+   * Guarded on `!finalized`: cancel()/finalizeFailed have already moved status to
+   * a terminal value and must win, so this never resurrects a terminalizing worker.
+   */
+  private restoreRunningAfterQuestion(): void {
+    if (this.finalized) return;
+    if (this.status === 'waiting_input') {
+      this.status = 'running';
+      this.emitStatus('running');
+    }
   }
 
   private startHeartbeat(): void {

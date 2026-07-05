@@ -309,6 +309,100 @@ describe('WorkerHandle', () => {
     await assertion;
   });
 
+  // Final-review fix (a): a timed-out ask must NOT strand the worker in
+  // 'waiting_input'. Status returns to 'running' (with a worker_status{running}
+  // emitted); when the segment then completes the worker finalizes 'done' with
+  // its REAL report — not a cancel/timeout reason.
+  it('restores running on ask timeout, then finalizes done with the report intact', async () => {
+    vi.useFakeTimers();
+    try {
+      const { handle, backend, events } = makeHandle();
+      handle.start();
+      const seg = await backend.onNextSegment();
+      // The worker produced its report before asking.
+      await seg.emit(response('the real report', 2, 3));
+
+      const qp = handle.waitForQuestion('proceed?', undefined, 5_000);
+      expect(handle.status).toBe('waiting_input');
+      const assertion = expect(qp).rejects.toThrow(/timeout/i);
+      await vi.advanceTimersByTimeAsync(5_000);
+      await assertion;
+
+      // Restored to running, and a worker_status{running} was emitted AFTER the
+      // waiting_input one.
+      expect(handle.status).toBe('running');
+      const statuses = events
+        .filter((e) => e.type === 'worker_status')
+        .map((e) => (e as { status: string }).status);
+      expect(statuses).toContain('waiting_input');
+      expect(statuses.lastIndexOf('running')).toBeGreaterThan(statuses.indexOf('waiting_input'));
+      expect(handle.pendingQuestion).toBeUndefined();
+
+      // Segment completes now → terminal transition must go to 'done' with the
+      // real report, NOT stay stuck in waiting_input and NOT report a cancel reason.
+      seg.complete();
+      await handle.terminalPromise;
+      expect(handle.status).toBe('done');
+      expect(handle.report).toBe('the real report');
+      const done = events.find((e) => e.type === 'worker_done');
+      expect(done).toMatchObject({
+        type: 'worker_done',
+        status: 'done',
+        report: 'the real report',
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // Final-review fix (b): a PRE-ABORTED signal clears the pending question and
+  // restores 'running' — no waiting_input stranding, and the segment can finalize.
+  it('clears the question and restores running when the signal is already aborted', async () => {
+    const { handle, backend, events } = makeHandle();
+    handle.start();
+    const seg = await backend.onNextSegment();
+    await seg.emit(response('report after preabort', 1, 1));
+
+    const ac = new AbortController();
+    ac.abort(); // already aborted before the ask
+    const qp = handle.waitForQuestion('proceed?', ac.signal, 10_000);
+    await expect(qp).rejects.toThrow(/aborted/i);
+
+    // No stranding: pending question cleared, status back to running.
+    expect(handle.pendingQuestion).toBeUndefined();
+    expect(handle.status).toBe('running');
+
+    // Segment completes → done, not stuck in waiting_input.
+    seg.complete();
+    await handle.terminalPromise;
+    expect(handle.status).toBe('done');
+    expect(handle.report).toBe('report after preabort');
+    const done = events.find((e) => e.type === 'worker_done');
+    expect(done).toMatchObject({ type: 'worker_done', status: 'done' });
+  });
+
+  // Final-review fix (c): cancel() during waiting_input still wins — the worker
+  // terminalizes as 'cancelled' and is NOT resurrected to 'running'.
+  it('cancel() during waiting_input wins over the restore (stays cancelled)', async () => {
+    const { handle, backend, events } = makeHandle();
+    handle.start();
+    await backend.onNextSegment();
+    const qp = handle.waitForQuestion('proceed?', undefined, 10_000);
+    const assertion = expect(qp).rejects.toBeDefined();
+
+    handle.cancel('user cancelled');
+    await assertion;
+
+    expect(handle.status).toBe('cancelled');
+    // No worker_status{running} was emitted by the cancel path.
+    const done = events.find((e) => e.type === 'worker_done');
+    expect(done).toMatchObject({
+      type: 'worker_done',
+      status: 'cancelled',
+      report: 'user cancelled',
+    });
+  });
+
   // Requirement 5 + 7: cancel() during waiting_input rejects the waiter immediately
   // WITHOUT awaiting the backend (stop hangs forever).
   it('cancel() during waiting_input rejects the waiter without awaiting the backend', async () => {
