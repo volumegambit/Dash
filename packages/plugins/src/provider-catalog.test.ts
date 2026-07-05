@@ -291,6 +291,13 @@ describe('validateProviderCatalog — phase-1 fields', () => {
     expect(validateProviderCatalog({ ...base, ui: { sortOrder: 2 } }).ui).toEqual({ sortOrder: 2 });
   });
 
+  it('round-trips ui.description and drops a non-string one', () => {
+    expect(
+      validateProviderCatalog({ ...base, ui: { description: 'Claude — powerful assistant.' } }).ui,
+    ).toEqual({ description: 'Claude — powerful assistant.' });
+    expect(validateProviderCatalog({ ...base, ui: { description: 42 } }).ui).toBeUndefined();
+  });
+
   it('throws when ui.sortOrder is not a finite number', () => {
     expect(() => validateProviderCatalog({ ...base, ui: { sortOrder: 'first' } })).toThrow(
       /sortOrder/,

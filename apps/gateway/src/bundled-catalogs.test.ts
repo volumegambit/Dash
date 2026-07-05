@@ -21,6 +21,7 @@ describe('bundled dash-core-providers catalogs (checked-in JSON invariants)', ()
       expect(catalog.supportedPatterns?.length).toBeGreaterThan(0);
       expect(catalog.models.length).toBeGreaterThan(0);
       expect(typeof catalog.ui?.sortOrder).toBe('number');
+      expect(catalog.ui?.description?.length).toBeGreaterThan(0);
     }
   });
 

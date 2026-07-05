@@ -1099,6 +1099,7 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
         id: p.catalog.id,
         label: p.catalog.label,
         credentialPrefix: p.catalog.credentialPrefix,
+        pluginName: p.pluginName,
         ui: p.catalog.ui,
       }));
       const plugins = Object.values(ws.pluginRecords)

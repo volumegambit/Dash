@@ -288,6 +288,7 @@
     "keyConsoleUrl": "https://openrouter.ai/settings/keys",
     "keyPlaceholder": "sk-or-v1-...",
     "docsUrl": "https://openrouter.ai/docs/quickstart",
+    "description": "One key for many models — DeepSeek, Llama, Qwen, Grok, GLM, and more, with automatic upstream failover.",
     "sortOrder": 4
   }
 }

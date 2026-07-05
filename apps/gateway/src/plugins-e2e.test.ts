@@ -575,12 +575,18 @@ describe('plugin mutate → hot-reload end-to-end', () => {
       // Now the provider is exposed with the prefix the credential form keys on.
       const after = await app.request('/runtime/plugins', { headers: AUTH });
       const afterBody = (await after.json()) as {
-        providers: Array<{ id: string; label: string; credentialPrefix: string }>;
+        providers: Array<{
+          id: string;
+          label: string;
+          credentialPrefix: string;
+          pluginName: string;
+        }>;
       };
       expect(afterBody.providers).toContainEqual({
         id: 'myllm',
         label: 'My LLM',
         credentialPrefix: 'myllm-api-key',
+        pluginName: 'llmpack',
       });
     } finally {
       await cleanup();

@@ -214,6 +214,8 @@ export interface CatalogUiHints {
   keyConsoleUrl?: string;
   keyPlaceholder?: string;
   docsUrl?: string;
+  /** One-sentence marketing description shown on provider picker cards. */
+  description?: string;
   /** Dropdown ordering hint; lower sorts first. */
   sortOrder?: number;
 }

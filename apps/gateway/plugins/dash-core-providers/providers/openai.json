@@ -194,6 +194,7 @@
     "keyConsoleUrl": "https://platform.openai.com/api-keys",
     "keyPlaceholder": "sk-...",
     "docsUrl": "https://platform.openai.com/docs/quickstart",
+    "description": "GPT and o-series reasoning models from OpenAI.",
     "sortOrder": 1
   }
 }
