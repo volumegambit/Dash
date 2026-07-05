@@ -383,6 +383,18 @@ export class ManagementClient {
     return this.request<IssueEvent[]>('GET', `/issues/${encodeURIComponent(id)}/events`);
   }
 
+  async linkSession(
+    issueId: string,
+    sessionId: string,
+    agentId?: string,
+  ): Promise<SessionIssueLink> {
+    return this.requestWithBody<SessionIssueLink>(
+      'POST',
+      `/issues/${encodeURIComponent(issueId)}/sessions`,
+      { session_id: sessionId, agent_id: agentId ?? null },
+    );
+  }
+
   async getIssueSessions(id: string): Promise<SessionIssueLink[]> {
     return this.request<SessionIssueLink[]>('GET', `/issues/${encodeURIComponent(id)}/sessions`);
   }

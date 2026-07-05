@@ -443,6 +443,14 @@ describe('ManagementClient', () => {
       expect(recording[0].url).toBe('/issues/i1');
     });
 
+    it('linkSession() POSTs /issues/:id/sessions with session and agent ids', async () => {
+      nextResponse = { session_id: 'c1', issue_id: 'i1', agent_id: 'Developer' };
+      await projClient.linkSession('i1', 'c1', 'Developer');
+      expect(recording[0].method).toBe('POST');
+      expect(recording[0].url).toBe('/issues/i1/sessions');
+      expect(recording[0].body).toEqual({ session_id: 'c1', agent_id: 'Developer' });
+    });
+
     it('listInbox() GETs /inbox', async () => {
       nextResponse = [];
       await projClient.listInbox();
