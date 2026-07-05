@@ -54,7 +54,21 @@ describe('bundled dash-core-providers catalogs (checked-in JSON invariants)', ()
       'gemini-*-tts*',
       'gemini-robotics-*',
       'gemini-*-computer-use*',
+      'imagen-*',
+      'veo-*',
+      'lyria-*',
+      'nano-banana-*',
     ]);
+  });
+
+  it('anthropic auth rules all send the required anthropic-version header', async () => {
+    // Anthropic's /v1/models rejects requests without anthropic-version (400),
+    // which silently breaks live model discovery for the whole provider.
+    const cat = validateProviderCatalog(await readCatalog('anthropic'));
+    const spec = cat.modelsFetch as ModelsFetchSpec;
+    for (const rule of spec.auth) {
+      expect(rule.extraHeaders?.['anthropic-version']).toBe('2023-06-01');
+    }
   });
 
   it('openrouter is dynamic with tools + no-colon entry filters', async () => {

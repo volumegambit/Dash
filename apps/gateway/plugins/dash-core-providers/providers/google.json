@@ -7,9 +7,9 @@
   "models": [
     {
       "id": "gemini-2.5-pro",
-      "name": "Gemini 2.5 Pro",
       "contextWindow": 1048576,
       "maxTokens": 65536,
+      "name": "Gemini 2.5 Pro",
       "reasoning": true,
       "input": [
         "text",
@@ -24,9 +24,9 @@
     },
     {
       "id": "gemini-2.5-flash",
-      "name": "Gemini 2.5 Flash",
       "contextWindow": 1048576,
       "maxTokens": 65536,
+      "name": "Gemini 2.5 Flash",
       "reasoning": true,
       "input": [
         "text",
@@ -79,9 +79,13 @@
     "gemini-*-image*",
     "gemini-*-tts*",
     "gemini-robotics-*",
-    "gemini-*-computer-use*"
+    "gemini-*-computer-use*",
+    "imagen-*",
+    "veo-*",
+    "lyria-*",
+    "nano-banana-*"
   ],
-  "reviewedAt": "2026-06-21",
+  "reviewedAt": "2026-07-05",
   "ui": {
     "keyConsoleUrl": "https://aistudio.google.com/app/apikey",
     "keyPlaceholder": "AIza...",
