@@ -268,6 +268,7 @@ under a Node version missing a required symbol, or otherwise force the gateway s
 12. **Verify:** The card returns to **"All providers (default)"** and the summary no longer shows a count
 13. Re-open the **Models** card. **Verify:** The model dropdown again lists **all** providers' optgroups (OpenAI restored), and any previously " (not allowed)"-marked model no longer carries the suffix
 14. **Verify (existing-agent default):** For an agent that has never had providers scoped, the Providers card shows "All providers (default)" and its model dropdown is unfiltered — confirming the allow-list is opt-in and does not change behavior for existing agents
+15. **Verify (failed save rolls back — Connectors, Plugins, AND Providers cards):** Make the gateway unreachable while MC stays open (e.g. `kill -9` the gateway process), then add or remove a chip in each of the three assignment cards. **Verify:** an inline red error banner with the failure message appears at the top of the expanded card, the chip and the collapsed summary (count / "All … (default)") revert to the last saved state — no phantom selection sticks — and for Providers the Models-card dropdown filter reverts too. Bring the gateway back and retry: the error clears and the change now sticks. All three cards must behave identically
 
 ---
 
