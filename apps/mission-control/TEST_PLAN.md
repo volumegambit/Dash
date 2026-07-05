@@ -33,7 +33,7 @@ MC_DATA_DIR=/tmp/mc-test-$(date +%s) npm run mc:dev
 > Note: The wizard provider picker is populated from the gateway's runtime plugins, exactly like the AI Providers page — labels and descriptions come from the provider catalogs, and cards are sorted by catalog `ui.sortOrder`. There is no hardcoded provider list in the wizard.
 
 1. After gateway init, a provider selection screen ("Choose Your AI Provider") should appear
-2. **Verify:** Provider cards are listed in catalog `ui.sortOrder`: **Anthropic, OpenAI, Google, Kimi by Moonshot, OpenRouter** (plus any third-party provider plugins after those). Each card shows the catalog **label** and, when present, the catalog `ui.description` as a subtitle
+2. **Verify:** Provider cards are listed in catalog `ui.sortOrder`: **Anthropic, OpenAI, Google, Moonshot (Kimi), OpenRouter** (plus any third-party provider plugins after those). Each card shows the catalog **label** and, when present, the catalog `ui.description` as a subtitle
 3. **Verify:** The **first** sorted provider (Anthropic) is **pre-selected** on arrival — it shows the selected/highlighted state and a check icon, and the continue button reads "Continue with Anthropic"
 4. Click the OpenAI card
 5. **Verify:** Only OpenAI is highlighted now (Anthropic is deselected); the continue button reads "Continue with OpenAI"
@@ -121,13 +121,13 @@ under a Node version missing a required symbol, or otherwise force the gateway s
 ### 3.1 Page Layout
 1. Navigate to Settings → AI Providers
 2. Take a screenshot of the full page
-3. **Verify:** A single unified list of provider cards is shown (no separate core vs. plugin sections). The cards appear in catalog `ui.sortOrder`: **Anthropic, OpenAI, Google, Kimi by Moonshot (`moonshotai`), OpenRouter**, then any third-party plugin providers after those
+3. **Verify:** A single unified list of provider cards is shown (no separate core vs. plugin sections). The cards appear in catalog `ui.sortOrder`: **Anthropic, OpenAI, Google, Moonshot (Kimi) (`moonshotai`), OpenRouter**, then any third-party plugin providers after those
 4. **Verify:** Each card's title is the catalog **label** and, when the catalog supplies one, a **subtitle** (catalog `ui.description`) appears under it
 5. **Verify:** The key added during setup (`default`) appears under Anthropic, and Anthropic shows a green **Active** badge; providers with no key show a red **Disabled** badge and "No key configured"
 6. **Verify:** An "Add Key" button is visible on every provider card, using bordered style (not a plain text link)
 7. **Verify:** Only **Anthropic** and **OpenAI** cards show an OAuth login button ("Add Claude Login Key" / "Add Codex Login Key"); other cards do not
 8. **Verify (source badge):** Providers from the bundled `dash-core-providers` plugin (Anthropic, OpenAI, Google, Moonshot, OpenRouter) show **no** source badge. A third-party provider contributed by another installed plugin shows a small accent **plugin-name badge** next to its title (the badge text is that plugin's name). If no third-party provider plugin is installed, skip this sub-check.
-9. **Verify (Moonshot):** The Kimi by Moonshot card shows an `sk-...` placeholder (from the catalog `ui.keyPlaceholder`) in its connect modal and links to platform.moonshot.ai; adding a key under `moonshotai` makes Kimi K2 models (e.g. `moonshotai/kimi-k2-thinking`) selectable in the model dropdown
+9. **Verify (Moonshot):** The Moonshot (Kimi) card shows an `sk-...` placeholder (from the catalog `ui.keyPlaceholder`) in its connect modal and links to platform.moonshot.ai; adding a key under `moonshotai` makes Kimi K2 models (e.g. `moonshotai/kimi-k2-thinking`) selectable in the model dropdown
 
 ### 3.2 Add a Second Key (modal instructions derive from catalog ui hints)
 1. Click the "Add Key" button for Anthropic
