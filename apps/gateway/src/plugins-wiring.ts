@@ -2,7 +2,7 @@ import { join } from 'node:path';
 import type { PluginModelCatalog } from '@dash/agent';
 import type { Logger } from '@dash/logging';
 import type { McpServerConfig } from '@dash/mcp';
-import type { FilteredModel } from '@dash/models';
+import type { FilteredModel } from '@dash/plugin-sdk';
 import { RESERVED_FIRST_PLUGIN, createHookEngine, loadPlugins } from '@dash/plugins';
 import type {
   HookEngine,

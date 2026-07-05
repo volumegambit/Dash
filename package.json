@@ -11,7 +11,6 @@
     "packages/management",
     "packages/mc",
     "packages/mcp",
-    "packages/models",
     "packages/paths",
     "packages/plugin-sdk",
     "packages/plugins",
@@ -20,7 +19,7 @@
     "apps/*"
   ],
   "scripts": {
-    "build": "npm run build -w packages/paths -w packages/models -w packages/plugin-sdk -w packages/skills -w packages/projects -w packages/mcp -w packages/plugins -w packages/agent -w packages/channels -w packages/logging -w packages/management -w packages/chat -w packages/mc -w apps/relay -w apps/relay-control-plane -w apps/gateway",
+    "build": "npm run build -w packages/paths -w packages/plugin-sdk -w packages/skills -w packages/projects -w packages/mcp -w packages/plugins -w packages/agent -w packages/channels -w packages/logging -w packages/management -w packages/chat -w packages/mc -w apps/relay -w apps/relay-control-plane -w apps/gateway",
     "gateway": "node --import tsx apps/gateway/src/index.ts",
     "relay": "node --env-file-if-exists=.env --import tsx apps/relay/src/main.ts",
     "relay:e2e": "node scripts/relay-e2e.mjs",
@@ -37,7 +36,6 @@
     "models:audit": "tsx scripts/audit-models.ts",
     "models:audit:apply": "tsx scripts/audit-models.ts --apply",
     "models:check": "tsx scripts/check-models-freshness.ts",
-    "providers:generate": "node --import tsx scripts/generate-core-providers-plugin.ts",
     "preflight": "npm run lint && npm run build && npm test && npm run models:check",
     "test": "vitest run",
     "plugins:e2e": "node scripts/plugins-e2e/run.mjs",

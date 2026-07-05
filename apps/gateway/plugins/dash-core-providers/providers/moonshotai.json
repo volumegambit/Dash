@@ -96,6 +96,9 @@
   ],
   "reviewedAt": "2026-06-21",
   "ui": {
-    "keyConsoleUrl": "https://platform.moonshot.ai/console/api-keys"
+    "keyConsoleUrl": "https://platform.moonshot.ai/console/api-keys",
+    "keyPlaceholder": "sk-...",
+    "docsUrl": "https://platform.moonshot.ai/docs/api/overview",
+    "sortOrder": 3
   }
 }

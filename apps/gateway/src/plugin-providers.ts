@@ -1,7 +1,6 @@
 import type { PluginModelCatalog } from '@dash/agent';
-import type { FilteredModel } from '@dash/models';
-import type { CatalogModel, ProviderCatalog } from '@dash/plugin-sdk';
-import type { ProviderConfigEntry } from '@dash/plugins';
+import type { CatalogModel, FilteredModel, ProviderCatalog } from '@dash/plugin-sdk';
+import { type ProviderConfigEntry, catalogSortKey } from '@dash/plugins';
 import type { Api, Model } from '@earendil-works/pi-ai';
 import type { ModelsRouteResponse } from './models-route.js';
 
@@ -107,12 +106,20 @@ export function createPluginModelCatalog(
  * for the model dropdown. Dynamic-only model ids aren't enumerable, so only the
  * declared `models` appear — that's correct: the dropdown lists concrete
  * choices, while dynamic ids stay resolvable on demand via the catalog.
+ *
+ * Input is sorted by `catalogSortKey` first ([ui.sortOrder ?? MAX, id]) so the
+ * dropdown order is stable and matches the live-discovery ordering.
  */
 export function expandPluginModelsForRoute(
   providerConfigs: ProviderConfigEntry[],
 ): FilteredModel[] {
+  const sorted = [...providerConfigs].sort((a, b) => {
+    const [ao, aid] = catalogSortKey(a.catalog);
+    const [bo, bid] = catalogSortKey(b.catalog);
+    return ao !== bo ? ao - bo : aid.localeCompare(bid);
+  });
   const out: FilteredModel[] = [];
-  for (const { catalog } of providerConfigs) {
+  for (const { catalog } of sorted) {
     for (const model of catalog.models) {
       out.push({
         value: `${catalog.id}/${model.id}`,

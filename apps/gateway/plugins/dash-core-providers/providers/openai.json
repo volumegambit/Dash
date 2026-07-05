@@ -191,6 +191,9 @@
   ],
   "reviewedAt": "2026-06-21",
   "ui": {
-    "keyConsoleUrl": "https://platform.openai.com/api-keys"
+    "keyConsoleUrl": "https://platform.openai.com/api-keys",
+    "keyPlaceholder": "sk-...",
+    "docsUrl": "https://platform.openai.com/docs/quickstart",
+    "sortOrder": 1
   }
 }

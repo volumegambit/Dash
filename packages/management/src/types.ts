@@ -177,6 +177,8 @@ export interface RuntimePluginProvider {
   id: string;
   label: string;
   credentialPrefix: string;
+  /** Optional catalog UI hints (console URL, key placeholder, docs, sort order). */
+  ui?: { keyConsoleUrl?: string; keyPlaceholder?: string; docsUrl?: string; sortOrder?: number };
 }
 
 /** A loaded plugin's identity, as reported by GET /runtime/plugins. */

@@ -1,18 +1,21 @@
 import { existsSync } from 'node:fs';
 import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
-import { type FilteredModel, MODELS_REVIEWED_AT } from '@dash/models';
+import type { FilteredModel } from '@dash/plugin-sdk';
 
 /**
  * Persistent on-disk shape of the gateway's model store. Lives next to
  * `channels.json`, `agents.json`, and `gateway-state.json` in the gateway
  * data directory.
  *
- * `supportedModelsReviewedAt` is a stale-detection key: if the gateway is
- * upgraded with a new `MODELS_REVIEWED_AT` (e.g. the audit script bumped
- * patterns), the old store is automatically treated as missing on the
- * next read. This forces a fresh fetch whenever curation changes, so the
- * store never goes out of sync with the allow-list.
+ * `supportedModelsReviewedAt` is a stale-detection key. The fingerprint is now
+ * supplied by the caller from LIVE catalog data (the newest `reviewedAt` across
+ * the loaded provider catalogs) rather than a source constant: when a catalog
+ * audit bumps a `reviewedAt` (patterns changed), the persisted file no longer
+ * matches the current fingerprint and `load()` treats it as missing, forcing a
+ * clean refetch. The field name is kept for on-disk compatibility — an existing
+ * `models.json` written under the pre-catalog fingerprint format simply
+ * mismatches the new catalog fingerprint and refetches once.
  */
 export interface ModelsStoreFile {
   fetchedAt: string;
@@ -21,8 +24,10 @@ export interface ModelsStoreFile {
 }
 
 /**
- * Persistent gateway model store. Atomic writes via tmp+rename. Auto
- * stale-invalidation against the in-source `MODELS_REVIEWED_AT`.
+ * Persistent gateway model store. Atomic writes via tmp+rename. Stale
+ * invalidation against a caller-supplied fingerprint (the newest catalog
+ * `reviewedAt`), so the store never serves data curated under a different
+ * catalog revision.
  */
 export class ModelsStore {
   private filePath: string;
@@ -35,14 +40,14 @@ export class ModelsStore {
    * Load the store from disk. Returns null when:
    *   - the file doesn't exist
    *   - the file is corrupt JSON
-   *   - the persisted `supportedModelsReviewedAt` doesn't match the
-   *     current source `MODELS_REVIEWED_AT` (allow-list has changed
-   *     since this file was written)
+   *   - the persisted `supportedModelsReviewedAt` doesn't match
+   *     `currentReviewedAt` (the catalogs have been re-reviewed since this
+   *     file was written)
    *
-   * Callers treat null as "no usable data, refetch live or return
-   * BOOTSTRAP_MODELS depending on credential state".
+   * Callers treat null as "no usable data, refetch live or return the
+   * catalogs' static models depending on credential state".
    */
-  async load(): Promise<ModelsStoreFile | null> {
+  async load(currentReviewedAt: string): Promise<ModelsStoreFile | null> {
     if (!existsSync(this.filePath)) return null;
     let raw: string;
     try {
@@ -58,8 +63,8 @@ export class ModelsStore {
       // overwrites it cleanly.
       return null;
     }
-    if (parsed.supportedModelsReviewedAt !== MODELS_REVIEWED_AT) {
-      // Allow-list has changed since this file was written. Force a
+    if (parsed.supportedModelsReviewedAt !== currentReviewedAt) {
+      // Catalogs have been re-reviewed since this file was written. Force a
       // refresh so curation stays in sync.
       return null;
     }
@@ -67,15 +72,15 @@ export class ModelsStore {
   }
 
   /**
-   * Persist a fresh model list to disk. Atomic write via tmp+rename
-   * (matches the pattern used by AgentRegistry, ChannelRegistry,
-   * GatewayStateStore).
+   * Persist a fresh model list to disk with the fingerprint it was curated
+   * under. Atomic write via tmp+rename (matches the pattern used by
+   * AgentRegistry, ChannelRegistry, GatewayStateStore).
    */
-  async save(models: FilteredModel[]): Promise<void> {
+  async save(models: FilteredModel[], reviewedAt: string): Promise<void> {
     await mkdir(dirname(this.filePath), { recursive: true });
     const payload: ModelsStoreFile = {
       fetchedAt: new Date().toISOString(),
-      supportedModelsReviewedAt: MODELS_REVIEWED_AT,
+      supportedModelsReviewedAt: reviewedAt,
       models,
     };
     const tmpPath = `${this.filePath}.tmp`;

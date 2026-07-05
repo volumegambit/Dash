@@ -1,21 +1,20 @@
+import type { FilteredModel } from '@dash/plugin-sdk';
 import {
-  BOOTSTRAP_MODELS,
-  type CredentialResolver,
-  type FilteredModel,
-  MODELS_REVIEWED_AT,
-  PROVIDERS,
-  SUPPORTED_MODELS,
-  discoverModels,
-} from '@dash/models';
+  type CatalogCredentialResolver,
+  type ProviderConfigEntry,
+  discoverCatalogModels,
+  newestCatalogReviewedAt,
+} from '@dash/plugins';
 import { Hono } from 'hono';
 import type { GatewayCredentialStore } from './credential-store.js';
 import type { ModelsStore } from './models-store.js';
-import { appendPluginModels } from './plugin-providers.js';
+import { appendPluginModels, expandPluginModelsForRoute } from './plugin-providers.js';
 
 /**
  * Response shape returned by `GET /models` and `POST /models/refresh`.
- * Mirrors the `ModelsResponse` interface in @dash/models but defined here
- * to avoid a circular import on the lighter-weight type the route serves.
+ * The MC wire contract — field names and shapes are unchanged from the
+ * previous curated-allow-list route (now backed by the bundled
+ * dash-core-providers catalogs via `@dash/plugins`).
  */
 export interface ModelsRouteResponse {
   models: FilteredModel[];
@@ -36,87 +35,83 @@ export interface ModelsRouteOptions {
   store: ModelsStore;
   credentialStore: GatewayCredentialStore;
   /**
-   * Override `discoverModels` for tests. Production callers leave this
-   * unset and the route uses the real `@dash/models` orchestrator with
-   * a credential resolver bound to the encrypted credential store.
+   * Live wiring getter — read PER-REQUEST so plugin hot-reload is reflected on
+   * the next `GET /models` without a restart. Provides the loaded provider
+   * catalogs the route discovers against and whose static models it merges at
+   * render time.
    */
-  discover?: typeof discoverModels;
-  /**
-   * Live getter for plugin-contributed models, expanded from the currently
-   * loaded provider catalogs. Read PER-REQUEST (not captured) so a plugin
-   * hot-reload that adds/removes a provider is reflected on the next
-   * `GET /models` without a restart. Merged into the response at render time
-   * only (core models win on a value clash); never persisted to the store, so
-   * removing a plugin cleanly drops its models. Undefined → no merge.
-   */
-  getPluginModels?: () => FilteredModel[];
+  getProviderConfigs: () => ProviderConfigEntry[];
+  /** Test override for `discoverCatalogModels`. */
+  discover?: typeof discoverCatalogModels;
 }
 
 /**
  * Build a Hono sub-app exposing `GET /models` and `POST /models/refresh`.
  *
- * `GET /models` reads the persisted store and returns immediately on a
- * hit. On a miss (no file, stale supportedModelsReviewedAt, or after an
- * explicit invalidation), it triggers a live fetch via `discoverModels`,
- * persists the result, and returns. When no provider credentials are
- * configured at all, returns BOOTSTRAP_MODELS without writing the store.
+ * `GET /models` reads the persisted store and returns immediately on a hit. On
+ * a miss (no file, the catalog fingerprint moved, or after an explicit
+ * invalidation), it triggers a live fetch via `discoverCatalogModels` against
+ * the loaded provider catalogs, persists the result, and returns. When no
+ * provider credentials are configured at all, returns `source: 'bootstrap'`
+ * with an empty `models` — the render-time merge below fills in every catalog's
+ * static models, which IS the bootstrap list now (there is no separate
+ * BOOTSTRAP_MODELS constant).
  *
- * `POST /models/refresh` always triggers a fresh discover. Used by MC's
- * refresh button and by callers that want to force-refetch after they
- * know credentials have changed.
+ * `POST /models/refresh` always triggers a fresh discover. Used by MC's refresh
+ * button and by callers that want to force-refetch after credentials change.
  *
- * The cold-fetch path is mutex-guarded so concurrent callers share one
- * fetch instead of all racing to hit provider /v1/models endpoints.
+ * The cold-fetch path is mutex-guarded so concurrent callers share one fetch
+ * instead of all racing to hit provider /v1/models endpoints.
  */
 export function createModelsRoute(options: ModelsRouteOptions): Hono {
   const { store, credentialStore } = options;
-  const discover = options.discover ?? discoverModels;
+  const discover = options.discover ?? discoverCatalogModels;
   const app = new Hono();
 
-  // Read the plugin models LIVE on each request so a hot-reload is reflected.
-  // Undefined getter → no plugin models (e.g. tests/embedders without plugins).
-  const pluginModels = (): FilteredModel[] | undefined => options.getPluginModels?.();
+  // Read the loaded catalogs LIVE on each request so a plugin hot-reload that
+  // adds/removes a provider is reflected without a restart.
+  const catalogs = () => options.getProviderConfigs().map((p) => p.catalog);
 
   // Promise mutex — when a refresh is in flight, all callers share it.
   let inFlight: Promise<ModelsRouteResponse> | null = null;
 
   /**
-   * Bind a credential resolver to the encrypted store. The resolver
-   * reads provider credentials lazily so the store isn't decrypted
-   * until discoverModels actually wants to call a provider.
+   * Resolve a catalog credential from the encrypted store. Reads lazily so
+   * the store isn't decrypted until discover actually wants a provider.
    */
-  const credentialResolver: CredentialResolver = async (provider) => {
+  const credentialResolver: CatalogCredentialResolver = async (catalogId) => {
     const keys = await credentialStore.readProviderApiKeys();
-    return keys[provider.id] ?? null;
+    return keys[catalogId] ?? null;
   };
 
   async function refreshNow(): Promise<ModelsRouteResponse> {
     if (inFlight) return inFlight;
     inFlight = (async () => {
-      const result = await discover(credentialResolver);
+      const fingerprint = newestCatalogReviewedAt(catalogs());
+      const result = await discover(catalogs(), credentialResolver);
       const fetchedAt = new Date().toISOString();
       if (result.providersConfigured === 0) {
-        // No credentials configured at all → return the curated bootstrap
-        // list. Do NOT persist it: the store represents *live* data, and
-        // the moment a credential is added the next refresh should
-        // overwrite cleanly without inheriting bootstrap as a baseline.
+        // No credentials configured at all → serve an empty live list tagged
+        // `bootstrap`. Do NOT persist it: the render-time merge below fills in
+        // every catalog's static models (the bootstrap list), and the moment a
+        // credential is added the next refresh overwrites cleanly.
         return {
-          models: BOOTSTRAP_MODELS,
+          models: [],
           source: 'bootstrap' as const,
           errors: {},
           fetchedAt,
-          supportedModelsReviewedAt: MODELS_REVIEWED_AT,
+          supportedModelsReviewedAt: fingerprint,
         };
       }
-      // At least one provider had a credential — persist whatever we
-      // got back (could include errors for some providers).
-      await store.save(result.models);
+      // At least one provider had a credential — persist whatever we got back
+      // (could include errors for some providers).
+      await store.save(result.models, fingerprint);
       return {
         models: result.models,
         source: 'live' as const,
         errors: result.errors,
         fetchedAt,
-        supportedModelsReviewedAt: MODELS_REVIEWED_AT,
+        supportedModelsReviewedAt: fingerprint,
       };
     })();
     try {
@@ -127,7 +122,7 @@ export function createModelsRoute(options: ModelsRouteOptions): Hono {
   }
 
   async function getOrRefresh(): Promise<ModelsRouteResponse> {
-    const stored = await store.load();
+    const stored = await store.load(newestCatalogReviewedAt(catalogs()));
     if (stored && stored.models.length > 0) {
       return {
         models: stored.models,
@@ -140,34 +135,42 @@ export function createModelsRoute(options: ModelsRouteOptions): Hono {
     return refreshNow();
   }
 
+  // Merge every catalog's static models into a response at render time (never
+  // persisted): live core models win on a value clash, plugin/static models are
+  // appended in dropdown order. This IS the bootstrap list on the zero-credential
+  // path, and the deduped append of static ids on the live path.
+  const withStaticModels = (resp: ModelsRouteResponse): ModelsRouteResponse =>
+    appendPluginModels(resp, expandPluginModelsForRoute(options.getProviderConfigs()));
+
   app.get('/', async (c) => {
     if (c.req.query('debug') === 'true') {
-      // Merge plugin models at the response boundary (render-time only, never
-      // persisted) so the debug view shows exactly what callers receive.
-      const response = appendPluginModels(await getOrRefresh(), pluginModels());
+      const response = withStaticModels(await getOrRefresh());
       const credentials = await credentialStore.readProviderApiKeys();
       const providersConfigured = Object.keys(credentials);
+      const cats = catalogs();
       const debug: ModelsDebugResponse = {
         ...response,
-        bootstrap: BOOTSTRAP_MODELS,
-        patterns: SUPPORTED_MODELS.map((p) => ({
-          provider: p.provider,
-          pattern: p.pattern,
-          tier: p.tier,
-        })),
+        bootstrap: expandPluginModelsForRoute(options.getProviderConfigs()),
+        patterns: cats.flatMap((cat) =>
+          (cat.supportedPatterns ?? []).map((p) => ({
+            provider: cat.id,
+            pattern: p.pattern,
+            tier: p.tier,
+          })),
+        ),
         providersConfigured,
-        providersAvailable: PROVIDERS.map((p) => p.id),
+        providersAvailable: cats.map((cat) => cat.id),
       };
       return c.json(debug);
     }
-    return c.json(appendPluginModels(await getOrRefresh(), pluginModels()));
+    return c.json(withStaticModels(await getOrRefresh()));
   });
 
   app.post('/refresh', async (c) => {
-    // Force-fresh: clear in-flight (so a stale refresh from before a
-    // credential change doesn't get joined) and run a new discover.
+    // Force-fresh: clear in-flight (so a stale refresh from before a credential
+    // change doesn't get joined) and run a new discover.
     inFlight = null;
-    return c.json(appendPluginModels(await refreshNow(), pluginModels()));
+    return c.json(withStaticModels(await refreshNow()));
   });
 
   return app;

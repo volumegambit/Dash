@@ -4,8 +4,8 @@ import { AVAILABLE_TOOLS, TOOL_DESCRIPTIONS, TOOL_GROUPS } from './deploy-option
 
 // Note: AVAILABLE_MODELS was removed in the dynamic-model-discovery
 // rewrite. The model list is now served by the gateway's GET /models
-// endpoint with the curated allow-list in @dash/models. See
-// packages/models/src/supported-models.ts and bootstrap-models.ts.
+// endpoint, backed by the bundled dash-core-providers catalogs. See
+// apps/gateway/plugins/dash-core-providers/providers/*.json.
 
 describe('AVAILABLE_TOOLS', () => {
   it('has at least one tool', () => {

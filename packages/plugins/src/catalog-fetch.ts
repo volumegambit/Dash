@@ -1,6 +1,6 @@
 import type { CatalogAuthRule, CatalogEntryFilters, ModelsFetchSpec } from '@dash/plugin-sdk';
 
-/** Bounded like @dash/models' fetchers: a slow provider must not wedge callers. */
+/** Bounded fetch: a slow provider must not wedge callers. */
 const DEFAULT_TIMEOUT_MS = 10_000;
 
 /** One live-discovered model, pre-filtering. */
@@ -9,7 +9,7 @@ export interface FetchedCatalogModel {
   label: string;
 }
 
-/** Mirrors @dash/models `FetcherError` semantics (provider + HTTP status). */
+/** Carries provider + HTTP status for a failed catalog fetch. */
 export class CatalogFetchError extends Error {
   override readonly name = 'CatalogFetchError';
   constructor(

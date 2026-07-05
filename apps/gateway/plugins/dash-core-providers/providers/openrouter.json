@@ -285,6 +285,9 @@
   ],
   "reviewedAt": "2026-06-21",
   "ui": {
-    "keyConsoleUrl": "https://openrouter.ai/keys"
+    "keyConsoleUrl": "https://openrouter.ai/settings/keys",
+    "keyPlaceholder": "sk-or-v1-...",
+    "docsUrl": "https://openrouter.ai/docs/quickstart",
+    "sortOrder": 4
   }
 }

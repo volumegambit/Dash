@@ -268,6 +268,34 @@ describe('validateProviderCatalog — phase-1 fields', () => {
     ).toEqual({ keyConsoleUrl: 'https://acme.dev/keys' });
     expect(validateProviderCatalog({ ...base, ui: 'nope' }).ui).toBeUndefined();
   });
+
+  it('round-trips excludedPatterns', () => {
+    expect(
+      validateProviderCatalog({ ...base, excludedPatterns: ['gemini-*-tts*'] }).excludedPatterns,
+    ).toEqual(['gemini-*-tts*']);
+  });
+
+  it('throws when excludedPatterns has an empty-string entry', () => {
+    expect(() => validateProviderCatalog({ ...base, excludedPatterns: [''] })).toThrow(
+      /excludedPatterns/,
+    );
+  });
+
+  it('throws when excludedPatterns is not an array', () => {
+    expect(() => validateProviderCatalog({ ...base, excludedPatterns: 'x' })).toThrow(
+      /excludedPatterns/,
+    );
+  });
+
+  it('round-trips ui.sortOrder', () => {
+    expect(validateProviderCatalog({ ...base, ui: { sortOrder: 2 } }).ui).toEqual({ sortOrder: 2 });
+  });
+
+  it('throws when ui.sortOrder is not a finite number', () => {
+    expect(() => validateProviderCatalog({ ...base, ui: { sortOrder: 'first' } })).toThrow(
+      /sortOrder/,
+    );
+  });
 });
 
 describe('validateProviderCatalog — phase-2 modelsFetch variants + entryFilters', () => {

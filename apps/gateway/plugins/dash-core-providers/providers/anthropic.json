@@ -96,6 +96,9 @@
   ],
   "reviewedAt": "2026-06-21",
   "ui": {
-    "keyConsoleUrl": "https://console.anthropic.com/settings/keys"
+    "keyConsoleUrl": "https://console.anthropic.com/settings/keys",
+    "keyPlaceholder": "sk-ant-...",
+    "docsUrl": "https://docs.anthropic.com/en/docs/initial-setup#prerequisites",
+    "sortOrder": 0
   }
 }

@@ -2,7 +2,7 @@ import { symlinkSync } from 'node:fs';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { RESERVED_FIRST_PLUGIN, loadPlugins } from './loader.js';
+import { RESERVED_FIRST_PLUGIN, RESERVED_PROVIDER_IDS, loadPlugins } from './loader.js';
 import { MANIFEST_DIR, MANIFEST_FILENAME } from './manifest.js';
 
 async function writePlugin(
@@ -82,6 +82,18 @@ function catalog(id: string): Record<string, unknown> {
     models: [{ id: `${id}-large`, contextWindow: 1000, maxTokens: 100 }],
   };
 }
+
+describe('RESERVED_PROVIDER_IDS', () => {
+  it('is the five core provider ids in order', () => {
+    expect(RESERVED_PROVIDER_IDS).toEqual([
+      'anthropic',
+      'openai',
+      'google',
+      'moonshotai',
+      'openrouter',
+    ]);
+  });
+});
 
 describe('loadPlugins', () => {
   let dataDir: string;

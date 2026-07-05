@@ -24,7 +24,6 @@
     "@dash/chat": "*",
     "@dash/logging": "*",
     "@dash/management": "*",
-    "@dash/models": "*",
     "@dash/paths": "*",
     "@dash/plugin-sdk": "*",
     "@dash/projects": "*",

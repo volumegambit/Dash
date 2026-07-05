@@ -14,9 +14,8 @@ import { createConsoleLogger } from '@dash/logging';
 import { mountProjectsWs } from '@dash/management';
 import { FileTokenStore, McpManager } from '@dash/mcp';
 import type { McpAgentContext } from '@dash/mcp';
-import { PROVIDERS } from '@dash/models';
 import { gatewayDir, migrateLegacyLayout, workspacesDir } from '@dash/paths';
-import { PluginConfigStore, loadPlugins } from '@dash/plugins';
+import { PluginConfigStore, RESERVED_PROVIDER_IDS, loadPlugins } from '@dash/plugins';
 import { createProjectsTools, openProjectsDb } from '@dash/projects';
 import { getBuiltinPluginsDir } from '@dash/skills';
 import { serve } from '@hono/node-server';
@@ -166,7 +165,7 @@ async function main() {
     entries: pluginEntries,
     logger,
   });
-  const coreProviderIds = PROVIDERS.map((p) => p.id);
+  const coreProviderIds = [...RESERVED_PROVIDER_IDS];
 
   // Derive ALL plugin wiring (skill dirs, namespaced command/agent files, hook
   // engine, model catalog + dropdown models, MCP configs, provider configs with
