@@ -112,5 +112,23 @@ android/**/build/
 android/local.properties
 android/.kotlin/
 android/captures/
+# Native (NDK/CMake) build dirs
+android/.cxx/
+android/**/.externalNativeBuild/
+# IntelliJ/Android Studio module files (project config is Gradle-driven)
+android/**/*.iml
+# APK/AAB build outputs installed or exported outside build/
+android/app/debug/
 *.apk
 *.aab
+*.ap_
+# Signing — never commit keystores or signing config with credentials
+*.jks
+*.keystore
+android/keystore.properties
+android/signing.properties
+# Profiler captures & heap dumps
+*.hprof
+# Kotlin/Java crash logs
+hs_err_pid*
+replay_pid*
