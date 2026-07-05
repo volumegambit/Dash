@@ -1228,6 +1228,10 @@ Take screenshots of every page and evaluate against these criteria. This section
 12. **Verify:** The comment appears in the timeline (agent-authored, non-highlighted).
 13. For a task with a linked session from a NON-MC channel (e.g. Telegram, seeded via that channel's agent), open its detail.
 14. **Verify:** That session's chip is muted and non-clickable with a "Session from another channel" tooltip.
+15. Open Projects → Kanban. **Verify:** Each card shows a small assign icon (person-plus) in its top-right, next to the 🤖 badge when present.
+16. Click a card's assign icon. **Verify:** A dropdown lists non-disabled agents; the card does NOT open. Pick an agent.
+17. **Verify:** The menu closes; the card moves to In Progress under "Agent working" without a refresh; the task detail shows the new linked session.
+18. Open Projects → All tasks (also check My work and a project's task table). **Verify:** The Assignee cell of each row has the same assign icon; clicking it opens the menu without opening the row, and Escape or an outside click closes it.
 
 ---
 
