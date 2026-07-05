@@ -13,6 +13,15 @@ const MARGIN = 24;
 let companionWindow: BrowserWindow | undefined;
 
 /**
+ * Tracks the latest requested visibility. Because `createCompanionWindow` reads
+ * settings asynchronously before the window exists, a `setVisible(false)` that
+ * arrives mid-create would otherwise be silently dropped (no window to destroy)
+ * and the create would then show a window the user just hid. Callers set this
+ * before create/destroy; the async create honors it when it resolves.
+ */
+let desiredVisible = false;
+
+/**
  * Default resting spot: bottom-right of the primary display's work area, inset
  * by the window size and a small margin.
  */
@@ -35,9 +44,11 @@ export function createCompanionWindow(opts: {
   settings: SettingsStore;
   getMainWindow: () => BrowserWindow | undefined;
 }): void {
+  desiredVisible = true;
   if (companionWindow) return; // idempotent
   void opts.settings.get().then((s) => {
     if (companionWindow) return; // a concurrent create won the race
+    if (!desiredVisible) return; // hidden again while we were reading settings
     const pos = clampToVisible(
       s.companionWindowPos ?? defaultCorner(),
       screen.getAllDisplays(),
@@ -76,13 +87,17 @@ export function createCompanionWindow(opts: {
     // Never start blank: once the widget is ready, ask the main window to
     // republish the current per-session statuses.
     companionWindow.webContents.on('did-finish-load', () => {
-      opts.getMainWindow()?.webContents.send('companion:replay');
+      const main = opts.getMainWindow();
+      if (main && !main.webContents.isDestroyed()) {
+        main.webContents.send('companion:replay');
+      }
     });
   });
 }
 
 /** Close and clear the companion widget window if it exists. */
 export function destroyCompanionWindow(): void {
+  desiredVisible = false;
   if (companionWindow && !companionWindow.isDestroyed()) {
     companionWindow.close();
   }
