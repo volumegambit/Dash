@@ -90,6 +90,18 @@ under a Node version missing a required symbol, or otherwise force the gateway s
 5. Click "Agents" in sidebar
 6. **Verify:** "Agents" is highlighted (bold, left accent border); other links are not
 
+### 2.2 Collapse & Expand
+1. **Verify:** On a fresh app launch the sidebar is expanded (labels and section headers visible)
+2. **Verify:** A collapse toggle (panel icon) appears in the sidebar header (top) and another in the footer (bottom)
+3. Click the top toggle
+4. **Verify:** Sidebar collapses to an icon-only rail; nav labels and section headers are hidden; both toggles now show the expand icon
+5. Click any nav icon (e.g. Chat) while collapsed
+6. **Verify:** The app navigates to that page AND the sidebar expands
+7. Collapse again, then click the bottom toggle
+8. **Verify:** Sidebar expands
+9. Press ⌘B
+10. **Verify:** Sidebar toggles collapsed/expanded
+
 ---
 
 ## Section 3: AI Providers (Connections)
