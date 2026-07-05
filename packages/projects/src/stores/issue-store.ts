@@ -68,4 +68,9 @@ export interface IssueStore {
   getDetail(idOrKey: string): IssueDetail | null;
   list(filter?: ListIssuesFilter): Issue[];
   update(id: string, patch: UpdateIssueInput, actor?: IssueActor): Issue;
+  /** Hard-delete an issue. FK cascades remove its comments, events, session
+   *  links, and subtasks; inbox_read rows are cleaned alongside. Emits
+   *  issue.deleted for the issue and each cascaded subtask. Throws when the
+   *  issue is missing. Returns the deleted issue's final snapshot. */
+  delete(id: string): Issue;
 }

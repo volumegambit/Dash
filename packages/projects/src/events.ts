@@ -12,6 +12,9 @@ export interface ProjectsEventMap {
   'project.updated': { project: Project };
   'issue.created': { issue: Issue };
   'issue.updated': { issue: Issue };
+  /** Emitted once for the deleted issue and once per subtask the SQL
+   *  cascade removed with it — consumers never re-derive the cascade. */
+  'issue.deleted': { issue: Issue };
   'issue.event.appended': { event: IssueEvent };
   'comment.added': { comment: IssueComment };
   'comment.edited': { comment: IssueComment };
