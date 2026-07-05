@@ -1218,16 +1218,16 @@ Take screenshots of every page and evaluate against these criteria. This section
 2. **Verify:** The right pane shows an "Assign agent" picker above Linked Sessions; disabled agents are not listed.
 3. Select an agent and click "Assign".
 4. **Verify:** You STAY on the task page; the button shows "Assigning…" then resets.
-5. **Verify:** Status flips to in_progress with sub-status agent_working, and a new chip appears under Linked Sessions showing 🤖 the agent's name + the session id — without a manual refresh.
-6. **Verify:** The timeline soon shows agent activity (agent run rows / comments) as the agent works the kickoff instructions.
-7. Click the new session chip.
-8. **Verify:** The Chat view opens with that conversation selected; its title is "KEY — task title"; the kickoff message and the agent's streaming reply are visible.
-9. Navigate back to the task.
-10. **Verify:** The chip is still there and re-opens the same conversation (no duplicate conversation is created).
+5. **Verify:** Status flips to in_progress with sub-status agent_working (shown as a pill in the right pane), and a new chip appears under Linked Sessions showing 🤖 the agent's name + the session id — without a manual refresh.
+6. **Verify:** An AGENT SESSION pane appears in the middle of the task page showing the kickoff message and the agent's streaming reply live; the left pane keeps DESCRIPTION (or an italic "No description") and TIMELINE with relative timestamps; no raw `comment_added` rows and no bare "Linked session <uuid>" rows (session links read "🤖 <agent> session linked").
+7. When the agent asks a question / goes waiting_on_human, type an answer in the pane's "Reply to the agent…" box and press Enter.
+8. **Verify:** Your reply and the agent's next streaming turn render in the pane without leaving the task page.
+9. With two linked sessions on one task, click the older session's chip.
+10. **Verify:** The pane switches to that session's transcript (active chip gets an accent border); clicking the pane's external-link icon opens the SAME session in the full Chat view (title "KEY — task title", no duplicate conversation created).
 11. In Chat, ask the agent to add a comment to the task; return to the task detail.
 12. **Verify:** The comment appears in the timeline (agent-authored, non-highlighted).
 13. For a task with a linked session from a NON-MC channel (e.g. Telegram, seeded via that channel's agent), open its detail.
-14. **Verify:** That session's chip is muted and non-clickable with a "Session from another channel" tooltip.
+14. **Verify:** That session's chip is muted and non-clickable with a "Session from another channel" tooltip; the session pane shows only MC sessions.
 15. Open Projects → Kanban. **Verify:** Each card shows a small assign icon (person-plus) in its top-right, next to the 🤖 badge when present.
 16. Click a card's assign icon. **Verify:** A dropdown lists non-disabled agents; the card does NOT open. Pick an agent.
 17. **Verify:** The menu closes; the card moves to In Progress under "Agent working" without a refresh; the task detail shows the new linked session.
