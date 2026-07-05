@@ -11,6 +11,7 @@ export type {
 export { DashAgent } from './agent.js';
 export type { DashAgentConfigResolver } from './agent.js';
 export { PiAgentBackend } from './backends/piagent.js';
+export { resolveModelString } from './backends/resolve-model.js';
 export type { ProviderApiKeysSource } from './backends/piagent.js';
 export { createOAuthRefreshers } from './oauth-refreshers.js';
 export type { OAuthTokenRefresher, RefreshedOAuthTokens } from './oauth-refreshers.js';

@@ -98,6 +98,7 @@ function createMockApi(): MockApi {
     onAgentEvent: vi.fn().mockReturnValue(() => {}),
     onChatDone: vi.fn().mockReturnValue(() => {}),
     onChatError: vi.fn().mockReturnValue(() => {}),
+    onChatConversationRenamed: vi.fn().mockReturnValue(() => {}),
 
     // Skills (gateway passthrough)
     skillsList: vi.fn().mockResolvedValue([]),

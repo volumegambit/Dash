@@ -85,6 +85,27 @@ export class ConversationStore {
     return this.indexLock;
   }
 
+  /**
+   * Run a whole read-modify-write cycle on the index under the lock.
+   * Serializing only the write (saveIndex) is not enough: two concurrent
+   * cycles would both read the same stale copy and the second write would
+   * silently drop the first one's change (e.g. a background auto-title
+   * rename racing the assistant-message updatedAt bump).
+   */
+  private updateIndex<T>(mutate: (conversations: McConversation[]) => Promise<T> | T): Promise<T> {
+    const run = this.indexLock.then(
+      async () => mutate(await this.loadIndex()),
+      async () => mutate(await this.loadIndex()),
+    );
+    // Chain the lock on completion (not the value) so a mutator error
+    // doesn't wedge every later index operation.
+    this.indexLock = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
+  }
+
   private async writeIndex(conversations: McConversation[]): Promise<void> {
     await mkdir(this.dir, { recursive: true });
     const tmpPath = `${this.indexPath}.${randomUUID()}.tmp`;
@@ -136,18 +157,19 @@ export class ConversationStore {
   }
 
   async create(agentId: string): Promise<McConversation> {
-    const conversations = await this.loadIndex();
-    const now = new Date().toISOString();
-    const conversation: McConversation = {
-      id: randomUUID(),
-      agentId,
-      title: 'New Conversation',
-      createdAt: now,
-      updatedAt: now,
-    };
-    conversations.push(conversation);
-    await this.saveIndex(conversations);
-    return conversation;
+    return this.updateIndex(async (conversations) => {
+      const now = new Date().toISOString();
+      const conversation: McConversation = {
+        id: randomUUID(),
+        agentId,
+        title: 'New Conversation',
+        createdAt: now,
+        updatedAt: now,
+      };
+      conversations.push(conversation);
+      await this.writeIndex(conversations);
+      return conversation;
+    });
   }
 
   async listByAgent(agentId: string): Promise<McConversation[]> {
@@ -165,18 +187,20 @@ export class ConversationStore {
   }
 
   async rename(id: string, title: string): Promise<void> {
-    const conversations = await this.loadIndex();
-    const idx = conversations.findIndex((c) => c.id === id);
-    if (idx !== -1) {
-      conversations[idx].title = title;
-      conversations[idx].updatedAt = new Date().toISOString();
-      await this.saveIndex(conversations);
-    }
+    await this.updateIndex(async (conversations) => {
+      const idx = conversations.findIndex((c) => c.id === id);
+      if (idx !== -1) {
+        conversations[idx].title = title;
+        conversations[idx].updatedAt = new Date().toISOString();
+        await this.writeIndex(conversations);
+      }
+    });
   }
 
   async delete(id: string): Promise<void> {
-    const conversations = await this.loadIndex();
-    await this.saveIndex(conversations.filter((c) => c.id !== id));
+    await this.updateIndex((conversations) =>
+      this.writeIndex(conversations.filter((c) => c.id !== id)),
+    );
     const messagesPath = join(this.dir, `${id}.jsonl`);
     await unlink(messagesPath).catch((e: NodeJS.ErrnoException) => {
       if (e.code !== 'ENOENT') throw e;
@@ -189,9 +213,9 @@ export class ConversationStore {
     await writeFile(messagesPath, `${JSON.stringify(message)}\n`, { flag: 'a' });
 
     // Update index: updatedAt and title from first user message
-    const conversations = await this.loadIndex();
-    const idx = conversations.findIndex((c) => c.id === conversationId);
-    if (idx !== -1) {
+    await this.updateIndex(async (conversations) => {
+      const idx = conversations.findIndex((c) => c.id === conversationId);
+      if (idx === -1) return;
       conversations[idx].updatedAt = new Date().toISOString();
       if (
         conversations[idx].title === 'New Conversation' &&
@@ -200,8 +224,8 @@ export class ConversationStore {
       ) {
         conversations[idx].title = message.content.text.slice(0, 60);
       }
-      await this.saveIndex(conversations);
-    }
+      await this.writeIndex(conversations);
+    });
   }
 
   async getMessages(conversationId: string): Promise<McMessage[]> {

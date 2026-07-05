@@ -216,6 +216,12 @@ function getChatService(getWindow: () => BrowserWindow | undefined): ChatService
         const win = getWindow();
         if (win && !win.isDestroyed()) win.webContents.send('chat:error', conversationId, error);
       },
+      undefined,
+      (conversationId, title) => {
+        const win = getWindow();
+        if (win && !win.isDestroyed())
+          win.webContents.send('chat:conversationRenamed', conversationId, title);
+      },
     );
   }
   return chatService;

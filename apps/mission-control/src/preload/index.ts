@@ -86,6 +86,12 @@ const api: MissionControlAPI = {
     ipcRenderer.on('chat:error', listener);
     return () => ipcRenderer.removeListener('chat:error', listener);
   },
+  onChatConversationRenamed: (callback) => {
+    const listener = (_event: Electron.IpcRendererEvent, conversationId: string, title: string) =>
+      callback(conversationId, title);
+    ipcRenderer.on('chat:conversationRenamed', listener);
+    return () => ipcRenderer.removeListener('chat:conversationRenamed', listener);
+  },
 
   // Skills
   skillsList: (agentId) => ipcRenderer.invoke('skills:list', agentId),

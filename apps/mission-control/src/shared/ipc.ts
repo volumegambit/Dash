@@ -296,6 +296,7 @@ export interface MissionControlAPI {
   onAgentEvent(callback: (conversationId: string, event: McAgentEvent) => void): () => void;
   onChatDone(callback: (conversationId: string) => void): () => void;
   onChatError(callback: (conversationId: string, error: string) => void): () => void;
+  onChatConversationRenamed(callback: (conversationId: string, title: string) => void): () => void;
 
   // Skills (gateway passthrough)
   skillsList(agentId: string): Promise<SkillInfo[]>;
