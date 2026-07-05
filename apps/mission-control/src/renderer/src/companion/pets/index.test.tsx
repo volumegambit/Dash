@@ -1,4 +1,4 @@
-import { render } from '@testing-library/react';
+import { render, screen } from '@testing-library/react';
 import { expect, test } from 'vitest';
 import { CompanionPet, PET_REGISTRY, PetThumbnail } from './index.js';
 
@@ -13,13 +13,21 @@ test('CompanionPet renders the selected pet and reflects mood via the working pu
   expect(container.querySelectorAll('.companion-pulse').length).toBe(1);
 });
 
+test('the red panda renders as a frame-based animated pet', () => {
+  const { container } = render(<CompanionPet kind="red-panda" statuses={['working']} />);
+  expect(container.querySelector('svg')).toBeNull();
+  const img = screen.getByRole('img', { name: 'Red panda' }).querySelector('img');
+  expect(img?.src.startsWith('data:image/png;base64,')).toBe(true);
+});
+
 test('unknown kind falls back to the default pet', () => {
   // @ts-expect-error deliberately invalid kind
-  const { container } = render(<CompanionPet kind="dinosaur" statuses={[]} />);
-  expect(container.querySelector('title')?.textContent).toBe('Red panda');
+  render(<CompanionPet kind="dinosaur" statuses={[]} />);
+  expect(screen.getByRole('img', { name: 'Red panda' })).toBeTruthy();
 });
 
 test('PetThumbnail renders the idle pet (never pulses)', () => {
   const { container } = render(<PetThumbnail kind="red-panda" />);
   expect(container.querySelectorAll('.companion-pulse').length).toBe(0);
+  expect(screen.getByRole('img', { name: 'Red panda' })).toBeTruthy();
 });
