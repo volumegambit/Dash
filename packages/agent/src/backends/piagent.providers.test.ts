@@ -4,8 +4,9 @@ import type { PluginModelCatalog } from '../types.js';
 import { PiAgentBackend } from './piagent.js';
 
 /**
- * Focused unit tests for the private `resolveModel` method's fallback to a
- * plugin-contributed model catalog. resolveModel is private, so we exercise it
+ * Focused unit tests for the private `resolveModel` method's interaction with a
+ * plugin-contributed model catalog. Catalogs are consulted FIRST; pi-ai's
+ * static registry is the fallback. resolveModel is private, so we exercise it
  * directly via a cast — this avoids needing a live pi session.
  */
 
@@ -47,7 +48,7 @@ function makeBackend(catalog?: PluginModelCatalog): PiAgentBackend {
   );
 }
 
-describe('PiAgentBackend.resolveModel — plugin model catalog fallback', () => {
+describe('PiAgentBackend.resolveModel — plugin model catalog precedence', () => {
   it('returns the catalog model when the static registry does not know it', () => {
     const fake = makeFakeModel('myllm', 'm1');
     const catalog: PluginModelCatalog = {
@@ -57,12 +58,19 @@ describe('PiAgentBackend.resolveModel — plugin model catalog fallback', () => 
     expect(resolve(backend, 'myllm/m1')).toBe(fake);
   });
 
-  it('prefers the static registry and does NOT consult the catalog for a known model', () => {
+  it('prefers the catalog over the static registry for a registry-known id', () => {
+    // The catalog claims claude-sonnet-4-5 (a registry-known id) — catalog wins.
+    const fake = makeFakeModel('anthropic', 'claude-sonnet-4-5');
     const catalog: PluginModelCatalog = {
-      resolve: () => {
-        throw new Error('catalog.resolve must not be called when the registry has the model');
-      },
+      resolve: (provider, modelId) =>
+        provider === 'anthropic' && modelId === 'claude-sonnet-4-5' ? fake : null,
     };
+    const backend = makeBackend(catalog);
+    expect(resolve(backend, 'anthropic/claude-sonnet-4-5')).toBe(fake);
+  });
+
+  it('falls back to the static registry when the catalog declines a known model', () => {
+    const catalog: PluginModelCatalog = { resolve: () => null };
     const backend = makeBackend(catalog);
     // claude-sonnet-4-5 is a known-good registry model (see piagent.contract.test.ts).
     const model = resolve(backend, 'anthropic/claude-sonnet-4-5');

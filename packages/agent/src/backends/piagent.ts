@@ -1,7 +1,6 @@
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import type { AgentEvent as PiAgentEvent } from '@earendil-works/pi-agent-core';
-import { getModel } from '@earendil-works/pi-ai';
 import type { Api, AssistantMessage, ImageContent, Model, Usage } from '@earendil-works/pi-ai';
 import {
   AuthStorage,
@@ -45,6 +44,7 @@ import type {
   RunOptions,
 } from '../types.js';
 import { DashResourceLoader } from './dash-resource-loader.js';
+import { resolveModelString } from './resolve-model.js';
 
 /** All built-in tool names supported by PiAgent */
 const DEFAULT_TOOL_NAMES = ['read', 'bash', 'edit', 'write', 'grep', 'find', 'ls'] as const;
@@ -326,9 +326,9 @@ export class PiAgentBackend implements AgentBackend {
     private hookRunner?: HookRunner,
     /**
      * Optional catalog of plugin-contributed LLM models (built by the gateway,
-     * duck-typed via `PluginModelCatalog`). Consulted by `resolveModel` ONLY as
-     * a fallback when the static pi-ai registry doesn't know a provider/model.
-     * Zero behavior change when undefined.
+     * duck-typed via `PluginModelCatalog`). Consulted by `resolveModel` FIRST —
+     * catalogs own their ids and can carry fresher metadata than pi-ai's baked
+     * registry, which is the fallback. Zero behavior change when undefined.
      */
     private pluginModelCatalog?: PluginModelCatalog,
   ) {
@@ -487,29 +487,11 @@ export class PiAgentBackend implements AgentBackend {
   }
 
   /**
-   * Resolve the model from "provider/model-id" format.
+   * Resolve the model from "provider/model-id" format. Plugin catalogs win
+   * over pi-ai's static registry (see resolve-model.ts for the rationale).
    */
   private resolveModel(modelStr: string): Model<Api> {
-    const slash = modelStr.indexOf('/');
-    if (slash === -1) {
-      throw new Error(
-        `Model must be in "provider/model" format, got "${modelStr}". Example: "anthropic/claude-sonnet-4-20250514"`,
-      );
-    }
-    const provider = modelStr.slice(0, slash);
-    const modelId = modelStr.slice(slash + 1);
-    // biome-ignore lint/suspicious/noExplicitAny: getModel requires generic provider/modelId that are not statically known
-    const model = getModel(provider as any, modelId as any);
-    // Static pi-ai registry wins. Only when it doesn't know the model do we
-    // fall back to a plugin-contributed catalog (if one was injected).
-    if (model) return model;
-    if (this.pluginModelCatalog) {
-      const m = this.pluginModelCatalog.resolve(provider, modelId);
-      if (m) return m as Model<Api>;
-    }
-    throw new Error(
-      `Unknown model "${modelStr}". Check that the provider and model ID are correct.`,
-    );
+    return resolveModelString(modelStr, this.pluginModelCatalog);
   }
 
   /**
