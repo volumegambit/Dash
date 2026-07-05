@@ -1164,6 +1164,21 @@ Take screenshots of every page and evaluate against these criteria. This section
 3. Click it.
 4. **Verify:** All tasks opens with a "Filtered to tasks involving agent …" banner and only that agent's tasks listed.
 
+### 27.15 Task detail — delete
+1. Create a task with one subtask and one comment (via UI or an agent).
+2. Open the task's detail page.
+3. **Verify:** A trash icon appears in the header, right of the status dropdown.
+4. Click the trash icon.
+5. **Verify:** It is replaced by an inline "Delete?" with Yes / No (no modal).
+6. Click "No".
+7. **Verify:** The confirm collapses back to the trash icon; nothing is deleted.
+8. Click the trash icon, then "Yes".
+9. **Verify:** The view navigates back to All tasks; the task AND its subtask are gone from All tasks, Kanban, and Inbox.
+10. Open a second MC window on Kanban before deleting another task.
+11. **Verify:** The card disappears from the second window without a refresh (issue.deleted broadcast).
+12. Delete a SUBTASK from its own detail page.
+13. **Verify:** The view navigates to the parent task's detail, and the subtask no longer appears in the parent's Subtasks list.
+
 ---
 
 ## Section 28: Skills over chat
