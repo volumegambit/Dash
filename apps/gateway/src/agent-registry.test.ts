@@ -289,6 +289,92 @@ describe('AgentRegistry (file-backed)', () => {
     });
   });
 
+  describe('providers field (P4 per-agent provider allow-list)', () => {
+    it('a config without providers loads as undefined (NOT [] / null)', async () => {
+      // Legacy agents persisted before P4 have no `providers` key. They must
+      // load as `undefined` (= ALL available providers) for backward compat,
+      // not as [] (= none) or null.
+      const reg = new AgentRegistry(filePath);
+      const entry = reg.register({ name: 'legacy', model: 'm', systemPrompt: 's' });
+      await reg.save();
+
+      const reg2 = new AgentRegistry(filePath);
+      await reg2.load();
+      const loaded = reg2.get(entry.id);
+      expect(loaded?.config.providers).toBeUndefined();
+      // Defensive: the key must be genuinely absent, not present-and-null.
+      expect('providers' in (loaded?.config ?? {})).toBe(false);
+    });
+
+    it('round-trips a providers selection through save/load', async () => {
+      const reg = new AgentRegistry(filePath);
+      const entry = reg.register({
+        name: 'scoped',
+        model: 'm',
+        systemPrompt: 's',
+        providers: ['anthropic'],
+      });
+      await reg.save();
+
+      const reg2 = new AgentRegistry(filePath);
+      await reg2.load();
+      expect(reg2.get(entry.id)?.config.providers).toEqual(['anthropic']);
+    });
+
+    it('register preserves an explicit empty providers array (literal "none")', () => {
+      // The pure registry stores [] verbatim; the MC layer is responsible for
+      // mapping empty -> undefined before it reaches here.
+      const reg = new AgentRegistry();
+      const entry = reg.register({ name: 'none', model: 'm', systemPrompt: 's', providers: [] });
+      expect(reg.get(entry.id)?.config.providers).toEqual([]);
+    });
+
+    it('update() carries a providers patch through (mirrors mcpServers)', () => {
+      const reg = new AgentRegistry();
+      const entry = reg.register({ name: 'a', model: 'm', systemPrompt: 's' });
+      reg.update(entry.id, { providers: ['anthropic'] });
+      expect(reg.get(entry.id)?.config.providers).toEqual(['anthropic']);
+    });
+
+    it('update() clears providers back to all via the null sentinel (key deleted)', () => {
+      // The MC clear path sends `providers: null` (a value that survives
+      // JSON.stringify, unlike `undefined`). The registry treats null as
+      // "clear to default": it DELETES the key so the config reads back as
+      // genuinely undefined (= ALL available providers). It must NOT persist
+      // null — model resolution only handles `string[] | undefined`, so a
+      // stored null would break resolution.
+      const reg = new AgentRegistry();
+      const entry = reg.register({
+        name: 'a',
+        model: 'm',
+        systemPrompt: 's',
+        providers: ['anthropic'],
+      });
+      reg.update(entry.id, { providers: null });
+      const config = reg.get(entry.id)?.config ?? {};
+      expect(config.providers).toBeUndefined();
+      // The key must be genuinely absent, not present-and-null.
+      expect('providers' in config).toBe(false);
+    });
+
+    it('clears providers and plugins independently via the null sentinel', () => {
+      // Both fields normalize null -> absent, but independently: clearing one
+      // must not disturb the other's persisted selection.
+      const reg = new AgentRegistry();
+      const entry = reg.register({
+        name: 'a',
+        model: 'm',
+        systemPrompt: 's',
+        plugins: ['alpha'],
+        providers: ['anthropic'],
+      });
+      reg.update(entry.id, { providers: null });
+      const config = reg.get(entry.id)?.config ?? {};
+      expect('providers' in config).toBe(false);
+      expect(config.plugins).toEqual(['alpha']);
+    });
+  });
+
   describe('patchMcpServers', () => {
     it('adds a new server, starting from no mcpServers', () => {
       const reg = new AgentRegistry();
