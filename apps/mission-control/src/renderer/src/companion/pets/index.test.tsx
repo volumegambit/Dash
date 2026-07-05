@@ -2,8 +2,9 @@ import { render, screen } from '@testing-library/react';
 import { expect, test } from 'vitest';
 import { CompanionPet, PET_REGISTRY, PetThumbnail } from './index.js';
 
-test('registry has both pets keyed by kind', () => {
+test('registry has every pet keyed by kind', () => {
   expect(PET_REGISTRY.cat.kind).toBe('cat');
+  expect(PET_REGISTRY.dog.kind).toBe('dog');
   expect(PET_REGISTRY['red-panda'].kind).toBe('red-panda');
 });
 
