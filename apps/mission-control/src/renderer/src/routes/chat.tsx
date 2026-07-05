@@ -3,6 +3,7 @@ import { createFileRoute, useNavigate } from '@tanstack/react-router';
 import hljs from 'highlight.js/lib/core';
 import bash from 'highlight.js/lib/languages/bash';
 import {
+  Ban,
   Check,
   ChevronDown,
   ChevronUp,
@@ -18,6 +19,7 @@ import {
   Send,
   Square,
   Trash2,
+  Users,
   X,
   XCircle,
 } from 'lucide-react';
@@ -52,6 +54,14 @@ import {
   truncate,
 } from './chat.helpers.js';
 import { ChatModelPicker } from './chat.model-picker.js';
+import {
+  type WorkerCardStatus,
+  type WorkerGroup,
+  deriveWorkerStatus,
+  groupWorkerEvents,
+  latestWorkerDetail,
+  summarizeSwarmStrip,
+} from './chat.swarm.js';
 
 /** Event types that produce visible rendered output in renderEvents / MessageBubble */
 const VISIBLE_EVENT_TYPES = new Set([
@@ -61,6 +71,10 @@ const VISIBLE_EVENT_TYPES = new Set([
   'error',
   'question',
   'context_compacted',
+  // Swarm worker events render a WorkerCard, so a turn of only worker events
+  // must NOT fall through to the bare thinking indicator.
+  'worker_spawned',
+  'worker_done',
 ]);
 
 // --- Event rendering helpers ---
@@ -71,6 +85,7 @@ function renderEvents(
   onAnswerQuestion?: (questionId: string, answer: string) => void,
   answeredQuestions?: Record<string, string>,
   onNavigateToConnections?: () => void,
+  isStreaming = false,
 ): JSX.Element[] {
   const elements: JSX.Element[] = [];
   let blockCount = 0;
@@ -80,8 +95,55 @@ function renderEvents(
   let toolInput: Record<string, unknown> | undefined;
   let toolOutputBuffer = '';
 
+  // Pre-scan: group all worker_* events by workerId so we can render one card
+  // per worker at its spawn position and let the status/done events fall
+  // through without touching the text/thinking/tool fold buffers.
+  const workerGroups = groupWorkerEvents(events);
+
+  // Flush any pending text/thinking so a worker card lands in reading order.
+  const flushProse = (): void => {
+    if (thinkingBuffer) {
+      elements.push(<ThinkingBlock key={`think-${blockCount++}`} text={thinkingBuffer} />);
+      thinkingBuffer = '';
+    }
+    if (textBuffer) {
+      elements.push(
+        <div key={`text-${blockCount++}`} className="mb-3">
+          <Markdown>{textBuffer}</Markdown>
+        </div>,
+      );
+      textBuffer = '';
+    }
+  };
+
   for (let i = 0; i < events.length; i++) {
     const event = events[i] as McAgentEvent;
+
+    if (
+      event.type === 'worker_spawned' ||
+      event.type === 'worker_status' ||
+      event.type === 'worker_done'
+    ) {
+      const group = workerGroups.get(event.workerId);
+      // Render a card only at the group's anchor position (spawn, or the
+      // orphan terminal's own position); every other worker event is folded
+      // into that single card and renders nothing standalone.
+      if (group && group.anchorIndex === i) {
+        flushProse();
+        if (group.orphan) {
+          elements.push(<OrphanWorkerCard key={`worker-${blockCount++}`} group={group} />);
+        } else {
+          elements.push(
+            <WorkerCard
+              key={`worker-${blockCount++}`}
+              group={group}
+              status={deriveWorkerStatus(group, isStreaming)}
+            />,
+          );
+        }
+      }
+      continue;
+    }
 
     if (event.type === 'thinking_delta') {
       thinkingBuffer += event.text;
@@ -565,6 +627,149 @@ function formatTokens(n: number): string {
   return String(n);
 }
 
+/** Status icon for a swarm worker card header, mirroring ToolBlock's inline icon. */
+function WorkerStatusIcon({ status }: { status: WorkerCardStatus }): JSX.Element {
+  switch (status) {
+    case 'running':
+    case 'waiting':
+      return <Loader size={10} className="inline animate-spin text-accent mr-1.5" />;
+    case 'done':
+      return <Check size={10} className="inline text-green mr-1.5" />;
+    case 'failed':
+      return <XCircle size={10} className="inline text-red mr-1.5" />;
+    default:
+      return <Ban size={10} className="inline text-muted mr-1.5" />;
+  }
+}
+
+const WORKER_STATUS_LABEL: Record<WorkerCardStatus, string> = {
+  running: 'Running',
+  waiting: 'Waiting for input',
+  done: 'Done',
+  failed: 'Failed',
+  cancelled: 'Cancelled',
+};
+
+/**
+ * A swarm worker card — cloned from ToolBlock's open-state/header pattern.
+ * Collapsed shows the status icon + role + one-line latest detail; expanded
+ * shows the brief, the status trail, the report as Markdown, and model +
+ * token count from the terminal event's usage.
+ */
+function WorkerCard({
+  group,
+  status,
+}: {
+  group: WorkerGroup;
+  status: WorkerCardStatus;
+}): JSX.Element {
+  const [open, setOpen] = useState(false);
+  const detail = latestWorkerDetail(group);
+  const report = group.done?.report;
+  const usage = group.done?.usage;
+  const isError = status === 'failed';
+
+  return (
+    <div
+      className={`mb-3 border text-xs ${isError ? 'border-red-900/50 bg-red-900/10' : 'border-border bg-sidebar-hover'}`}
+    >
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className="flex w-full items-center px-3 py-1.5 text-left hover:text-foreground"
+      >
+        <WorkerStatusIcon status={status} />
+        <Users size={10} className="mr-1.5 inline shrink-0 text-muted" />
+        <span className="font-mono shrink-0">{group.role}</span>
+        {detail && <span className="ml-2 truncate text-muted">{detail}</span>}
+      </button>
+      {open && (
+        <div className="space-y-2 border-t border-border px-3 pb-2 pt-1.5">
+          <p className="text-muted">
+            <span className="capitalize">Status:</span> {WORKER_STATUS_LABEL[status]}
+          </p>
+          {group.brief && (
+            <p className="text-muted">
+              <span className="capitalize">Brief:</span> {group.brief}
+            </p>
+          )}
+          {group.statuses.length > 0 && (
+            <div className="space-y-0.5">
+              {group.statuses.map((s, idx) => {
+                const line = s.status === 'waiting_input' ? (s.question ?? s.detail) : s.detail;
+                if (!line) return null;
+                return (
+                  <p
+                    key={`${s.workerId}-trail-${idx}`}
+                    className="flex items-start gap-1.5 text-muted"
+                  >
+                    <span className="text-muted/60">·</span>
+                    <span>{line}</span>
+                  </p>
+                );
+              })}
+            </div>
+          )}
+          {report && (
+            <div className="max-h-64 overflow-auto prose-sm">
+              <Markdown>{report}</Markdown>
+            </div>
+          )}
+          {(group.model || usage) && (
+            <div className="flex items-center gap-2 pt-0.5 font-[family-name:var(--font-mono)] text-[10px] text-muted opacity-60">
+              {group.model && <span>{formatModelName(group.model)}</span>}
+              {group.model && usage && <span>·</span>}
+              {usage && (
+                <span>
+                  {formatTokens(usage.inputTokens)} in · {formatTokens(usage.outputTokens)} out
+                </span>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Compact standalone "worker finished" card for an orphan terminal event — a
+ * worker_done/worker_status whose spawn landed in a previous message (crash
+ * reconcile split the run). Sources everything from the self-describing event.
+ */
+function OrphanWorkerCard({ group }: { group: WorkerGroup }): JSX.Element {
+  const status: WorkerCardStatus = group.done ? group.done.status : 'cancelled';
+  const isError = status === 'failed';
+  const [open, setOpen] = useState(false);
+  const report = group.done?.report;
+
+  return (
+    <div
+      className={`mb-3 border text-xs ${isError ? 'border-red-900/50 bg-red-900/10' : 'border-border bg-sidebar-hover'}`}
+    >
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className="flex w-full items-center px-3 py-1.5 text-left hover:text-foreground"
+      >
+        <WorkerStatusIcon status={status} />
+        <Users size={10} className="mr-1.5 inline shrink-0 text-muted" />
+        <span className="font-mono shrink-0">{group.role}</span>
+        <span className="ml-2 truncate text-muted">
+          worker {WORKER_STATUS_LABEL[status].toLowerCase()}
+        </span>
+      </button>
+      {open && report && (
+        <div className="border-t border-border px-3 pb-2 pt-1.5">
+          <div className="max-h-64 overflow-auto prose-sm">
+            <Markdown>{report}</Markdown>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function extractUsage(events: Record<string, unknown>[]): Record<string, number> | null {
   for (let i = events.length - 1; i >= 0; i--) {
     const e = events[i] as McAgentEvent;
@@ -653,17 +858,20 @@ export const MessageBubble = memo(function MessageBubble({
 
   const events: Record<string, unknown>[] =
     streamingEvents ?? (message?.content.type === 'assistant' ? message.content.events : []);
+  // A persisted message renders with isStreaming=false so any worker group
+  // that never reached a terminal event terminalizes to `cancelled`; a live
+  // stream (streamingEvents present) renders with isStreaming=true.
+  const isLive = streamingEvents != null;
   const rendered = renderEvents(
     events,
     navigateToLogs,
     onAnswerQuestion,
     answeredQuestions,
     onNavigateToConnections,
+    isLive,
   );
   const usage = extractUsage(events);
   const assistantText = extractTextFromEvents(events);
-
-  const isLive = streamingEvents != null;
 
   // Don't render an empty bubble — show nothing (the streaming ThinkingIndicator handles the waiting state)
   if (rendered.length === 0) return <></>;
@@ -832,6 +1040,48 @@ function PinnedTodoPanel({ todos }: { todos: TodoItem[] }): JSX.Element {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+/** Dot color for a worker's status in the pinned strip. */
+const WORKER_DOT_COLOR: Record<WorkerCardStatus, string> = {
+  running: 'bg-accent',
+  waiting: 'bg-yellow-400',
+  done: 'bg-green',
+  failed: 'bg-red',
+  cancelled: 'bg-muted',
+};
+
+/**
+ * Pinned strip shown while the live stream contains any non-terminal worker
+ * group — mirrors PinnedTodoPanel's placement/styling. Derived from the same
+ * groupWorkerEvents fold via summarizeSwarmStrip; the parent only renders this
+ * when the summary is non-null, so `events` here always has live work.
+ */
+function PinnedSwarmStrip({ events }: { events: McAgentEvent[] }): JSX.Element {
+  const summary = summarizeSwarmStrip(events, true);
+  if (!summary) return <></>;
+
+  const parts = [`${summary.total} ${summary.total === 1 ? 'worker' : 'workers'}`];
+  if (summary.running > 0) parts.push(`${summary.running} running`);
+  if (summary.waiting > 0) parts.push(`${summary.waiting} waiting`);
+
+  return (
+    <div className="border-t border-border bg-card-bg">
+      <div className="flex w-full items-center gap-3 px-6 py-2 text-xs text-muted">
+        <Users size={12} className="shrink-0" />
+        <span className="font-medium">{parts.join(' · ')}</span>
+        <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+          {summary.workers.map((w) => (
+            <span
+              key={w.workerId}
+              className={`inline-block h-1.5 w-1.5 shrink-0 rounded-full ${WORKER_DOT_COLOR[w.status]}`}
+              title={`${w.role}: ${w.status}`}
+            />
+          ))}
+        </div>
+      </div>
     </div>
   );
 }
@@ -1877,6 +2127,8 @@ export function Chat(): JSX.Element {
           )}
           <div ref={messagesEndRef} />
         </div>
+
+        {isStreaming && liveEvents.length > 0 && <PinnedSwarmStrip events={liveEvents} />}
 
         {latestTodos && latestTodos.length > 0 && <PinnedTodoPanel todos={latestTodos} />}
 
