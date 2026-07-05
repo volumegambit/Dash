@@ -282,6 +282,70 @@ describe('TaskDetail delete', () => {
     expect(screen.getByText('No description')).toBeInTheDocument();
   });
 
+  it('feeds a posted comment into the active session as a chat message', async () => {
+    const d = detail({ linked_sessions: [sessionLink()] });
+    useProjectsStore.setState({ detailById: { issue_1: d } });
+    mockApi.projectsGetIssue.mockResolvedValue(d);
+    mockApi.chatListConversations.mockResolvedValue([mcConversation]);
+    mockApi.chatGetMessages.mockResolvedValue([]);
+    render(<TaskDetail />);
+
+    // The composer shows where the comment will go.
+    expect(await screen.findByText(/Also sent to the agent session/)).toBeInTheDocument();
+
+    await userEvent.type(screen.getByPlaceholderText('Add a comment…'), 'ship it');
+    await userEvent.click(screen.getByText('Comment'));
+
+    await waitFor(() =>
+      expect(mockApi.projectsAddComment).toHaveBeenCalledWith('issue_1', 'ship it'),
+    );
+    await waitFor(() =>
+      expect(mockApi.chatSend).toHaveBeenCalledWith(
+        'conv-42',
+        expect.stringContaining('ship it'),
+        undefined,
+      ),
+    );
+    // The feed message carries the task key for agent context.
+    expect(mockApi.chatSend.mock.calls[0][1]).toContain('TASK-1');
+  });
+
+  it('does not feed the session when none is linked', async () => {
+    const d = detail();
+    useProjectsStore.setState({ detailById: { issue_1: d } });
+    mockApi.projectsGetIssue.mockResolvedValue(d);
+    render(<TaskDetail />);
+
+    await userEvent.type(await screen.findByPlaceholderText('Add a comment…'), 'just a note');
+    await userEvent.click(screen.getByText('Comment'));
+
+    await waitFor(() =>
+      expect(mockApi.projectsAddComment).toHaveBeenCalledWith('issue_1', 'just a note'),
+    );
+    expect(mockApi.chatSend).not.toHaveBeenCalled();
+    expect(screen.queryByText(/Also sent to the agent session/)).not.toBeInTheDocument();
+  });
+
+  it('skips the session feed while the agent is mid-run and says so', async () => {
+    const d = detail({ linked_sessions: [sessionLink()] });
+    useProjectsStore.setState({ detailById: { issue_1: d } });
+    useChatStore.setState({ sending: { 'conv-42': true } });
+    mockApi.projectsGetIssue.mockResolvedValue(d);
+    mockApi.chatListConversations.mockResolvedValue([mcConversation]);
+    mockApi.chatGetMessages.mockResolvedValue([]);
+    render(<TaskDetail />);
+
+    expect(await screen.findByText(/Agent is mid-run/)).toBeInTheDocument();
+
+    await userEvent.type(screen.getByPlaceholderText('Add a comment…'), 'while busy');
+    await userEvent.click(screen.getByText('Comment'));
+
+    await waitFor(() =>
+      expect(mockApi.projectsAddComment).toHaveBeenCalledWith('issue_1', 'while busy'),
+    );
+    expect(mockApi.chatSend).not.toHaveBeenCalled();
+  });
+
   it('keeps sessions from other channels as non-clickable chips', async () => {
     const d = detail({ linked_sessions: [sessionLink({ session_id: 'tg-session' })] });
     useProjectsStore.setState({ detailById: { issue_1: d } });

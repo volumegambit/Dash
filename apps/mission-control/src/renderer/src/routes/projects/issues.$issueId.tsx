@@ -145,6 +145,8 @@ export function TaskDetail(): JSX.Element {
   const loadAgents = useAgentsStore((s) => s.loadAgents);
   const conversations = useChatStore((s) => s.conversations);
   const loadConversations = useChatStore((s) => s.loadConversations);
+  const chatSending = useChatStore((s) => s.sending);
+  const sendChatMessage = useChatStore((s) => s.sendMessage);
 
   const [draft, setDraft] = useState('');
   const [subtaskTitle, setSubtaskTitle] = useState('');
@@ -203,11 +205,24 @@ export function TaskDetail(): JSX.Element {
     return `🤖 ${agent ?? 'Agent'} session linked`;
   };
 
+  const activeSessionBusy = activeSessionId ? (chatSending[activeSessionId] ?? false) : false;
+
   const submitComment = async () => {
     const body = draft.trim();
     if (!body) return;
     setDraft('');
     await addComment(issueId, body);
+    // Feed the comment into the session shown in the pane so the agent reacts
+    // without a manual nudge. Skipped while the agent is mid-run — the chat
+    // service rejects concurrent streams, and the kickoff instructions already
+    // tell agents to re-read task comments.
+    if (activeSessionId && !activeSessionBusy) {
+      try {
+        await sendChatMessage(activeSessionId, `New comment on ${detail.key}:\n\n${body}`);
+      } catch {
+        // Best-effort: the comment is already on the task record.
+      }
+    }
   };
 
   const startAssign = async () => {
@@ -380,7 +395,14 @@ export function TaskDetail(): JSX.Element {
               rows={3}
               className="w-full border border-border bg-background p-2 text-sm text-foreground placeholder:text-muted focus:border-accent focus:outline-none"
             />
-            <div className="mt-1 flex justify-end">
+            <div className="mt-1 flex items-center justify-between">
+              <span className="text-[10px] text-muted">
+                {activeSessionId
+                  ? activeSessionBusy
+                    ? 'Agent is mid-run — comment stays on the task'
+                    : 'Also sent to the agent session'
+                  : ''}
+              </span>
               <button
                 type="button"
                 onClick={submitComment}
