@@ -75,6 +75,12 @@ export interface AppSettings {
 
 export type GatewayStatus = 'starting' | 'healthy' | 'unhealthy';
 
+// Coarse per-session status the companion pet renders. Single source of
+// truth: the renderer's companion/types.ts re-exports this.
+export type CompanionStatus = 'working' | 'needs' | 'done' | 'error';
+
+export type PetKind = 'cat' | 'red-panda';
+
 // --- MCP Connectors ---
 
 export interface McpConnectorInfo {
@@ -330,6 +336,16 @@ export interface MissionControlAPI {
 
   // Updates
   onUpdateAvailable(callback: (info: { version: string }) => void): () => void;
+
+  // Companion widget. The main window publishes coarse per-session statuses and
+  // the selected pet; main forwards both into the widget window and can ask the
+  // main window to re-publish (replay) when the widget (re)opens.
+  companionPublishStatuses(statuses: CompanionStatus[]): void;
+  companionPublishPet(pet: PetKind): void;
+  companionSetVisible(visible: boolean): Promise<void>;
+  onCompanionStatuses(callback: (statuses: CompanionStatus[]) => void): () => void;
+  onCompanionPet(callback: (pet: PetKind) => void): () => void;
+  onCompanionReplayRequest(callback: () => void): () => void;
 
   // Projects (gateway passthrough)
   projectsListProjects(status?: Project['status']): Promise<Project[]>;

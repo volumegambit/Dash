@@ -33,10 +33,23 @@ import { desktopDir, gatewayDir, logsDir, migrateLegacyLayout } from '@dash/path
 import { app, dialog, ipcMain, shell } from 'electron';
 import type { BrowserWindow } from 'electron';
 import WebSocket from 'ws';
-import type { ControlPlaneStatus, DeviceInfo, PairingInfo, SetupStatus } from '../shared/ipc.js';
+import type {
+  CompanionStatus,
+  ControlPlaneStatus,
+  DeviceInfo,
+  PairingInfo,
+  PetKind,
+  SetupStatus,
+} from '../shared/ipc.js';
 import { ChatService } from './chat-service.js';
 import { completeClaudeOAuth, prepareClaudeOAuth } from './claude-auth.js';
 import { startCodexOAuth } from './codex-auth.js';
+import {
+  createCompanionWindow,
+  destroyCompanionWindow,
+  forwardPet,
+  forwardStatuses,
+} from './companion-window.js';
 import { createControlPlaneRuntime, readControlPlaneConfig } from './control-plane.js';
 import { GatewayPoller } from './gateway-poller.js';
 import { buildPairingInfo } from './pairing.js';
@@ -957,6 +970,31 @@ export async function registerIpcHandlers(
       await getSettingsStore().set(patch);
     },
   );
+
+  // -----------------------------------------------------------------------
+  // Companion widget (always-on-top pet window)
+  // -----------------------------------------------------------------------
+
+  // Main window publishes coarse per-session statuses; forward them into the
+  // widget window (a no-op when the widget is closed).
+  ipcMain.on('companion:statuses', (_event, statuses: CompanionStatus[]) => {
+    forwardStatuses(statuses);
+  });
+
+  // Renderer publishes the selected pet; forward it into the widget window
+  // (a no-op when the widget is closed).
+  ipcMain.on('companion:pet', (_event, pet: PetKind) => {
+    forwardPet(pet);
+  });
+
+  // Renderer toggles widget visibility (drives creation/teardown).
+  ipcMain.handle('companion:setVisible', (_event, visible: boolean) => {
+    if (visible) {
+      createCompanionWindow({ settings: getSettingsStore(), getMainWindow: getWindow });
+    } else {
+      destroyCompanionWindow();
+    }
+  });
 
   // -----------------------------------------------------------------------
   // Gateway status

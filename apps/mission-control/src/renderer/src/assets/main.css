@@ -53,16 +53,6 @@ body {
   font-family: var(--font-display);
 }
 
-@keyframes companion-pulse {
-  0%,
-  100% {
-    opacity: 1;
-  }
-  50% {
-    opacity: 0.5;
-  }
-}
-
 @keyframes companion-slide-in {
   0% {
     transform: translateY(8px);
@@ -72,10 +62,6 @@ body {
     transform: translateY(0);
     opacity: 1;
   }
-}
-
-.companion-pulse {
-  animation: companion-pulse 1.5s ease-in-out infinite;
 }
 
 .companion-slide-in {

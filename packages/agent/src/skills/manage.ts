@@ -10,7 +10,7 @@ import { isValidSkillName } from './validate.js';
 
 export type SkillOpCode =
   | 'not_found'
-  | 'bundled'
+  | 'plugin'
   | 'dangerous'
   | 'duplicate'
   | 'invalid'
@@ -163,8 +163,8 @@ export async function installSkillToDir(o: {
 }
 
 /**
- * Remove a managed/agent/remote skill. Bundled skills are read-only. Throws
- * SkillOpError(`not_found` | `bundled`).
+ * Remove a managed/agent/remote skill. Plugin-provided skills are read-only.
+ * Throws SkillOpError(`not_found` | `plugin`).
  */
 export async function removeSkillFromDir(o: {
   managedDir: string;
@@ -175,10 +175,10 @@ export async function removeSkillFromDir(o: {
   if (!match) {
     throw new SkillOpError('not_found', `Skill "${o.name}" not found.`);
   }
-  if (match.source === 'bundled') {
+  if (match.source === 'plugin') {
     throw new SkillOpError(
-      'bundled',
-      `Skill "${o.name}" is a bundled skill and cannot be removed. You can shadow it by installing a skill with the same name.`,
+      'plugin',
+      `Skill "${o.name}" is provided by a plugin and cannot be removed here. Manage it from Settings → Plugins, or shadow it by installing a skill with the same name.`,
     );
   }
   const skillDir = join(o.managedDir, o.name);

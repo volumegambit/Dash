@@ -3,7 +3,6 @@ import { useEffect, useMemo, useState } from 'react';
 import { useAgentSkillsStore } from '../../../stores/agent-skills.js';
 
 const SOURCE_LABEL: Record<SkillInfo['source'], string> = {
-  bundled: 'Bundled',
   managed: 'Managed',
   agent: 'Agent',
   remote: 'Remote',
@@ -113,7 +112,7 @@ function SkillCard({
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(skill.content ?? '');
-  const editable = skill.editable && skill.source !== 'bundled' && skill.source !== 'plugin';
+  const editable = skill.editable && skill.source !== 'plugin';
 
   return (
     <div className="border border-border bg-card-bg p-4">
@@ -273,7 +272,7 @@ function InstallForm({
   );
 }
 
-function SkillsConfigStrip({
+export function SkillsConfigStrip({
   config,
   onSave,
 }: {
@@ -284,18 +283,9 @@ function SkillsConfigStrip({
   useEffect(() => {
     setPaths((config.paths ?? []).join('\n'));
   }, [config.paths]);
-  const includeBundled = config.includeBundled !== false;
 
   return (
     <div className="space-y-2 border border-border bg-card-bg p-4">
-      <label className="flex items-center gap-2 text-sm">
-        <input
-          type="checkbox"
-          checked={includeBundled}
-          onChange={(e) => onSave({ ...config, includeBundled: e.target.checked })}
-        />
-        Include bundled skill library
-      </label>
       <span className="block text-xs text-muted">Extra skill directories (one per line)</span>
       <textarea
         className="h-16 w-full border border-border bg-sidebar-hover p-2 font-mono text-xs"

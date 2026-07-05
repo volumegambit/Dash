@@ -32,6 +32,14 @@ export interface LoadPluginsOptions {
   pluginsDir: string;
   /** Enable/trust + path entries from PluginConfigStore. */
   entries: Record<string, PluginEntryConfig>;
+  /**
+   * Optional directory of built-in plugins shipped with the host (one subdir
+   * per plugin). Scanned LAST so a user plugin (path entry or pluginsDir
+   * subdir) of the same name wins; the shadowed builtin surfaces as an error
+   * record. Builtins are enabled by default — config entries store overrides
+   * only — and follow the same trust gate as any other plugin.
+   */
+  builtinRoot?: string;
   logger?: { info(msg: string): void; warn(msg: string): void };
 }
 
@@ -43,7 +51,10 @@ export interface LoadPluginsOptions {
  * aborts the others, so the host always starts.
  */
 export async function loadPlugins(opts: LoadPluginsOptions): Promise<LoadedPlugins> {
-  const targets = new Map<string, { dir: string; entry: PluginEntryConfig; fromPath: boolean }>();
+  const targets = new Map<
+    string,
+    { dir: string; entry: PluginEntryConfig; fromPath: boolean; builtin?: boolean }
+  >();
 
   // 1. Explicit path entries (highest precedence, auto-enabled).
   for (const [name, entry] of Object.entries(opts.entries)) {
@@ -80,6 +91,33 @@ export async function loadPlugins(opts: LoadPluginsOptions): Promise<LoadedPlugi
     );
   }
 
+  // 3. Built-in plugins (shipped with the host). Scanned LAST: a user plugin
+  // of the same name wins; the shadowed builtin is surfaced as an error
+  // record (never silently dropped). Same fail-isolated readdir as step 2.
+  const shadowedBuiltins: Array<{ name: string; dir: string }> = [];
+  if (opts.builtinRoot) {
+    try {
+      for (const d of readdirSync(opts.builtinRoot, { withFileTypes: true })) {
+        if (!d.isDirectory()) continue;
+        const dir = join(opts.builtinRoot, d.name);
+        if (targets.has(d.name)) {
+          shadowedBuiltins.push({ name: d.name, dir });
+          continue;
+        }
+        targets.set(d.name, {
+          dir,
+          entry: opts.entries[d.name] ?? { enabled: true },
+          fromPath: false,
+          builtin: true,
+        });
+      }
+    } catch (err) {
+      opts.logger?.warn(
+        `[plugins] could not scan builtinRoot '${opts.builtinRoot}': ${(err as Error).message}`,
+      );
+    }
+  }
+
   const records: PluginRecord[] = [];
   const skillDirs: string[] = [];
   const commandFiles: Array<{ pluginName: string; file: string }> = [];
@@ -89,14 +127,36 @@ export async function loadPlugins(opts: LoadPluginsOptions): Promise<LoadedPlugi
   const hookConfigs: HookConfigEntry[] = [];
   const providerConfigs: ProviderConfigEntry[] = [];
 
-  for (const [discoveredName, { dir, entry, fromPath }] of targets) {
+  for (const { name, dir } of shadowedBuiltins) {
+    opts.logger?.warn(
+      `[plugins] built-in plugin '${name}' is shadowed by a user plugin of the same name`,
+    );
+    records.push({
+      name,
+      status: 'error',
+      dir,
+      skillDirs: [],
+      activated: [],
+      noop: [],
+      builtin: true,
+      failure: {
+        phase: 'discovery',
+        error: 'shadowed by a user plugin of the same name',
+        failedAt: new Date().toISOString(),
+      },
+    });
+  }
+
+  for (const [discoveredName, { dir, entry, fromPath, builtin }] of targets) {
     // `phase` tracks where in this plugin's load we are, so the catch can
     // attribute a throw correctly: 'manifest' until the manifest is read,
     // then 'route' while resolving/translating components (e.g. .mcp.json).
     let phase: 'manifest' | 'route' = 'manifest';
     try {
       const manifest = await readManifest(dir);
-      const enabled = fromPath || entry.enabled;
+      // Builtins are enabled unless explicitly disabled (overrides-only
+      // config); installed plugins require an explicit enabled:true.
+      const enabled = fromPath || (builtin ? entry.enabled !== false : entry.enabled);
       if (!enabled) {
         records.push({
           name: manifest.name,
@@ -108,6 +168,7 @@ export async function loadPlugins(opts: LoadPluginsOptions): Promise<LoadedPlugi
           skillDirs: [],
           activated: [],
           noop: ['skills'],
+          builtin: builtin || undefined,
         });
         continue;
       }
@@ -244,6 +305,7 @@ export async function loadPlugins(opts: LoadPluginsOptions): Promise<LoadedPlugi
         skillDirs: sDirs,
         activated,
         noop,
+        builtin: builtin || undefined,
       });
       opts.logger?.info(
         `[plugins] loaded '${manifest.name}' (${activated.join(', ') || 'no components'})`,
@@ -258,6 +320,7 @@ export async function loadPlugins(opts: LoadPluginsOptions): Promise<LoadedPlugi
         skillDirs: [],
         activated: [],
         noop: [],
+        builtin: builtin || undefined,
         failure: { phase, error: message, failedAt: new Date().toISOString() },
       });
     }

@@ -76,6 +76,11 @@ export interface PluginStatusRecord {
    * trust toggle.
    */
   trusted: boolean;
+  /**
+   * `true` for a plugin shipped with Dash (discovered from the builtin root).
+   * Builtins are enabled by default, not removable, and never auto-trusted.
+   */
+  builtin: boolean;
   /** Component kinds activated, e.g. ['skills']. */
   activated: string[];
   /** Component kinds present on disk but not activated (deferred / untrusted). */
@@ -120,9 +125,13 @@ function toStatusRecord(
   return {
     name: loaded.name,
     status: loaded.status,
-    // A `path:` entry is auto-enabled (explicit dev intent); otherwise honor the
-    // persisted `enabled` flag. A `disabled` record always means enabled=false.
-    enabled: loaded.status !== 'disabled' && (entry?.enabled === true || entry?.path !== undefined),
+    builtin: loaded.builtin === true,
+    // Builtins are enabled by default (their `disabled` status already
+    // reflects an explicit enabled:false override); installed plugins need
+    // an explicit enabled:true; a `path:` entry is auto-enabled.
+    enabled:
+      loaded.status !== 'disabled' &&
+      (loaded.builtin === true || entry?.enabled === true || entry?.path !== undefined),
     // Normalize to a concrete boolean so the key is always present.
     trusted: entry?.trusted === true,
     activated: loaded.activated,
@@ -288,6 +297,9 @@ let pending: {
  *
  * - pluginConfigStore: to load() the persisted entries before reload
  * - pluginsDir: the plugins directory to scan
+ * - builtinRoot: the built-in plugins root (from @dash/skills), scanned
+ *   alongside `pluginsDir` so Dash's shipped plugins reload too. Resolved at
+ *   runtime — never persisted — so the path can't rot across updates.
  * - dataDir: host data dir, threaded into the rebuilt hook engine (for the
  *   ${CLAUDE_PLUGIN_DATA} substitution — matches boot-time fidelity)
  * - logger: for logging the reload flow + threaded into the rebuilt hook engine
@@ -301,6 +313,7 @@ let pending: {
 export async function reloadPluginsUnderMutex(
   pluginConfigStore: PluginConfigStore,
   pluginsDir: string,
+  builtinRoot: string | undefined,
   dataDir: string,
   logger: Logger,
   modelsStore: ModelsStore,
@@ -316,7 +329,7 @@ export async function reloadPluginsUnderMutex(
     // Re-read the persisted enable/trust entries (the caller persisted any
     // changes before invoking) and re-run discovery.
     const entries = await pluginConfigStore.load();
-    const loaded = await loadPlugins({ pluginsDir, entries, logger });
+    const loaded = await loadPlugins({ pluginsDir, builtinRoot, entries, logger });
 
     // Rebuild the derived wiring snapshot (pure construction, no I/O). Thread
     // logger + dataDir + pluginsDir so the rebuilt records/hook engine match boot.
@@ -396,6 +409,7 @@ export async function reloadPluginsUnderMutex(
           const state = await reloadPluginsUnderMutex(
             pluginConfigStore,
             pluginsDir,
+            builtinRoot,
             dataDir,
             logger,
             modelsStore,

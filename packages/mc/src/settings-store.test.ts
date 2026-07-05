@@ -50,4 +50,25 @@ describe('SettingsStore', () => {
     expect(settings.setupCompletedAt).toBe('2026-06-21T12:00:00.000Z');
     expect(settings.defaultModel).toBe('claude-opus-4-8');
   });
+
+  it('round-trips companionWindowPos without clobbering other fields', async () => {
+    await store.set({ defaultModel: 'claude-opus-4-8' });
+    await store.set({ companionWindowPos: { x: 1720, y: 850 } });
+    const settings = await store.get();
+    expect(settings.companionWindowPos).toEqual({ x: 1720, y: 850 });
+    expect(settings.defaultModel).toBe('claude-opus-4-8');
+  });
+
+  it('does not drop keys when two set calls overlap', async () => {
+    // Fire both without awaiting between them: without write serialization the
+    // second read-modify-write reads the same empty snapshot as the first and
+    // clobbers its key. Both keys must survive.
+    await Promise.all([
+      store.set({ companionWindowPos: { x: 1, y: 2 } }),
+      store.set({ defaultModel: 'm' }),
+    ]);
+    const settings = await store.get();
+    expect(settings.companionWindowPos).toEqual({ x: 1, y: 2 });
+    expect(settings.defaultModel).toBe('m');
+  });
 });

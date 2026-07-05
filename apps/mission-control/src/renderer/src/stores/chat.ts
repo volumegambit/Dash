@@ -14,6 +14,10 @@ interface ChatState {
   loadConversations(): Promise<void>;
   loadAllConversations(): Promise<void>;
   selectConversation(id: string): Promise<void>;
+  /** Load a conversation's messages if not already cached — unlike
+   *  selectConversation this does NOT change the global selection or tabs,
+   *  so embedded views (e.g. the task page's session panel) can use it. */
+  ensureMessages(id: string): Promise<void>;
   openTab(id: string): void;
   closeTab(id: string): void;
   createConversation(agentId: string): Promise<McConversation>;
@@ -92,6 +96,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const messages = await window.api.chatGetMessages(id);
       set((s) => ({ messages: { ...s.messages, [id]: messages } }));
     }
+  },
+
+  async ensureMessages(id: string) {
+    if (get().messages[id]) return;
+    const messages = await window.api.chatGetMessages(id);
+    set((s) => ({ messages: { ...s.messages, [id]: messages } }));
   },
 
   openTab(id: string) {

@@ -54,6 +54,8 @@ export interface PluginRecord {
   activated: string[];
   /** Component kinds present on disk but not activated yet (deferred plans). */
   noop: string[];
+  /** `true` for a plugin discovered from the host's built-in root (shipped with Dash). */
+  builtin?: boolean;
   failure?: PluginFailure;
 }
 
