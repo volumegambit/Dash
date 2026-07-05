@@ -335,6 +335,50 @@ describe('swarm management routes', () => {
   });
 
   // --- Behavior 3: cancel worker ---
+  describe('POST /agents/:id/conversations/:conversationId/swarm/cancel', () => {
+    it('terminalizes the live turn → {cancelled:true}, then idempotently false', async () => {
+      const { app, agentRegistry } = createApp({ swarmCoordinator: coordinator });
+      const id = registerAgent(agentRegistry);
+      spawnRun(coordinator, id, 'conv-cancel');
+
+      const res = await app.request(`/agents/${id}/conversations/conv-cancel/swarm/cancel`, {
+        method: 'POST',
+        headers: AUTH,
+      });
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ cancelled: true });
+      // The turn is finalized: spawning again for the same conversation throws.
+      expect(() => coordinator.spawnWorker(id, 'conv-cancel', { role: 'r', brief: 'b' })).toThrow();
+
+      const again = await app.request(`/agents/${id}/conversations/conv-cancel/swarm/cancel`, {
+        method: 'POST',
+        headers: AUTH,
+      });
+      expect(res.status).toBe(200);
+      expect(await again.json()).toEqual({ cancelled: false });
+    });
+
+    it('returns {cancelled:false} when the conversation has no live turn', async () => {
+      const { app, agentRegistry } = createApp({ swarmCoordinator: coordinator });
+      const id = registerAgent(agentRegistry);
+      const res = await app.request(`/agents/${id}/conversations/never-ran/swarm/cancel`, {
+        method: 'POST',
+        headers: AUTH,
+      });
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ cancelled: false });
+    });
+
+    it('404s for an unknown agent', async () => {
+      const { app } = createApp({ swarmCoordinator: coordinator });
+      const res = await app.request('/agents/ghost/conversations/c1/swarm/cancel', {
+        method: 'POST',
+        headers: AUTH,
+      });
+      expect(res.status).toBe(404);
+    });
+  });
+
   describe('POST /agents/:id/swarm/runs/:runId/workers/:workerId/cancel', () => {
     it('cancels a live worker → {ok:true}', async () => {
       const { app, agentRegistry } = createApp({ swarmCoordinator: coordinator });

@@ -933,14 +933,21 @@ export async function registerIpcHandlers(
     ) => getChatService(getWindow).sendMessage(conversationId, text, images),
   );
 
-  ipcMain.handle('chat:cancel', (_event, conversationId: string) => {
+  // NOTE: these two are fired from the preload with `ipcRenderer.send`
+  // (fire-and-forget, void-typed in MissionControlAPI), so they MUST be
+  // registered with `ipcMain.on` — an `ipcMain.handle` registration only
+  // answers `invoke` and silently drops `send` messages. That mismatch made
+  // the chat stop button a renderer-side no-op (swarm workers kept running
+  // after "stop"; see TEST_PLAN 31.9).
+  ipcMain.on('chat:cancel', (_event, conversationId: string) => {
     getChatService(getWindow).cancel(conversationId);
   });
 
-  ipcMain.handle(
+  ipcMain.on(
     'chat:answer-question',
-    (_event, conversationId: string, questionId: string, answer: string) =>
-      getChatService(getWindow).answerQuestion(conversationId, questionId, answer),
+    (_event, conversationId: string, questionId: string, answer: string) => {
+      getChatService(getWindow).answerQuestion(conversationId, questionId, answer);
+    },
   );
 
   // -----------------------------------------------------------------------

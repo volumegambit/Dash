@@ -714,6 +714,28 @@ describe('SwarmCoordinator', () => {
       expect(() => coord.spawnWorker(AGENT_ID, 'c1', { role: 'r', brief: 'b' })).toThrow();
     });
 
+    it('cancelTurn finalizes only the keyed conversation and reports whether one existed', async () => {
+      const { factory, backends } = makeFactory();
+      const coord = new SwarmCoordinator({ workerFactory: factory });
+      coord.attach(baseAttach({ conversationId: 'c1' }));
+      coord.attach(baseAttach({ conversationId: 'c2' }));
+      coord.spawnWorker(AGENT_ID, 'c1', { role: 'r', brief: 'b' });
+      coord.spawnWorker(AGENT_ID, 'c2', { role: 'r', brief: 'b' });
+      await waitForBackends(backends, 2);
+      await backends[0].onNextSegment();
+      await backends[1].onNextSegment();
+
+      expect(coord.cancelTurn(AGENT_ID, 'c1')).toBe(true);
+      // c1's worker aborted; c2 untouched and still spawnable.
+      expect(backends[0].abortCalls).toBe(1);
+      expect(backends[1].abortCalls).toBe(0);
+      expect(() => coord.spawnWorker(AGENT_ID, 'c1', { role: 'r', brief: 'b' })).toThrow();
+      expect(() => coord.spawnWorker(AGENT_ID, 'c2', { role: 'r', brief: 'b' })).not.toThrow();
+      // Idempotent + accurate return for unknown/finalized turns.
+      expect(coord.cancelTurn(AGENT_ID, 'c1')).toBe(false);
+      expect(coord.cancelTurn(AGENT_ID, 'nope')).toBe(false);
+    });
+
     it('stop finalizes runs across all agents', async () => {
       const { factory, backends } = makeFactory();
       const coord = new SwarmCoordinator({ workerFactory: factory });

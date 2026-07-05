@@ -483,6 +483,20 @@ export class SwarmCoordinator {
     return { ok: true };
   }
 
+  /**
+   * Finalize the live swarm turn of ONE conversation — the user cancelled
+   * the chat turn. Cancels every non-terminal worker and appends their
+   * terminal events to the event log (consumer-gone path) so history
+   * replays the cards as Cancelled. Returns whether a live turn existed.
+   */
+  cancelTurn(agentId: string, conversationId: string): boolean {
+    const k = key(agentId, conversationId);
+    const turn = this.live.get(k);
+    if (!turn || turn.finalized) return false;
+    this.finalizeTurn(k, turn, { consumerAlive: false });
+    return true;
+  }
+
   cancelRunsFor(agentId: string): void {
     for (const [k, turn] of this.live) {
       if (turn.opts.agentId === agentId) {

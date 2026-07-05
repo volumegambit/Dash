@@ -50,6 +50,22 @@ export function mountSwarmRoutes(app: Hono, deps: SwarmManagementDeps): void {
     return c.json({ ok: true });
   });
 
+  // POST /agents/:id/conversations/:conversationId/swarm/cancel
+  //   → { cancelled: boolean }
+  //
+  // Terminalizes the conversation's live swarm turn (all non-terminal
+  // workers → Cancelled, terminal events appended to the event log). MC's
+  // chat stop button calls this over HTTP because the swarm's lifetime is
+  // NOT tied to the orchestrator's WS stream — workers keep running (by
+  // design) after the stream ends, so a stream-scoped cancel can't reach
+  // them. Idempotent: `cancelled:false` when there is no live turn.
+  app.post('/agents/:id/conversations/:conversationId/swarm/cancel', (c) => {
+    const id = c.req.param('id');
+    if (!agentRegistry.get(id)) return c.json({ error: 'not found' }, 404);
+    const cancelled = swarmCoordinator.cancelTurn(id, c.req.param('conversationId'));
+    return c.json({ cancelled });
+  });
+
   // POST /agents/:id/swarm/runs/:runId/workers/:workerId/send  body {message}
   //   → {ok:true} | 409 {ok:false, reason} | 400 on missing/empty message
   app.post('/agents/:id/swarm/runs/:runId/workers/:workerId/send', async (c) => {

@@ -392,7 +392,36 @@ export class ChatService {
     const entry = this.activeStreams.get(conversationId);
     if (entry) {
       this.activeStreams.delete(conversationId);
+      // Tell the gateway this is an explicit user cancel BEFORE closing (a
+      // bare close reads as a network drop).
+      try {
+        if (entry.ws.readyState === WebSocket.OPEN) {
+          entry.ws.send(JSON.stringify({ type: 'cancel', id: entry.msgId }));
+        }
+      } catch {
+        // Closing anyway.
+      }
       entry.ws.close();
+    }
+    // ALWAYS also cancel the conversation's live swarm turn over HTTP —
+    // swarm workers outlive the orchestrator's WS stream by design (the
+    // stream may have timed out or finished while workers still run), so
+    // the frame above cannot be the only cancel vehicle. Idempotent
+    // server-side; fire-and-forget here.
+    void this.cancelSwarmTurn(conversationId);
+  }
+
+  /** Best-effort HTTP cancel of the conversation's live swarm turn. */
+  private async cancelSwarmTurn(conversationId: string): Promise<void> {
+    try {
+      const conversation = await this.store.get(conversationId);
+      if (!conversation) return;
+      await this.managementFetch(
+        `/agents/${encodeURIComponent(conversation.agentId)}/conversations/${encodeURIComponent(conversationId)}/swarm/cancel`,
+        {},
+      );
+    } catch {
+      // No management connection or transient failure — nothing to clean up.
     }
   }
 

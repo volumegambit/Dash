@@ -156,6 +156,64 @@ describe('ChatService', () => {
     void serverWs; // suppress unused variable warning
   });
 
+  it('cancel POSTs the swarm-turn cancel even with no active stream', async () => {
+    // Regression: swarm workers outlive the orchestrator stream, so the
+    // stop path must not depend on an activeStreams entry existing.
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(new Response(JSON.stringify({ cancelled: true }), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    const svc = new ChatService(store, onEvent, onDone, onError, {
+      channelPort: BASE_PORT,
+      managementBaseUrl: 'http://mgmt.test',
+      managementToken: 'tok',
+    });
+
+    const conv = await svc.createConversation('agent-9');
+    svc.cancel(conv.id); // no sendMessage — no active stream entry
+    await vi.waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        `http://mgmt.test/agents/agent-9/conversations/${conv.id}/swarm/cancel`,
+        expect.objectContaining({ method: 'POST' }),
+      );
+    });
+    vi.unstubAllGlobals();
+  });
+
+  it('cancel sends a cancel frame before closing (swarm terminalization)', async () => {
+    const port = BASE_PORT + 450;
+    service = makeService(port);
+
+    const received: Record<string, unknown>[] = [];
+    let closed = false;
+    wss = new WebSocketServer({ port });
+    wss.on('connection', (ws) => {
+      ws.on('message', (raw) => {
+        received.push(JSON.parse(String(raw)));
+        // Never respond — keep the stream active so cancel() has work to do.
+      });
+      ws.on('close', () => {
+        closed = true;
+      });
+    });
+    await new Promise<void>((r) => wss?.on('listening', r));
+
+    const conv = await service.createConversation('agent-1');
+    service.sendMessage(conv.id, 'hello').catch(() => {});
+    await vi.waitFor(() => {
+      expect(received.length).toBeGreaterThan(0);
+    });
+    const msgId = received[0].id;
+
+    service.cancel(conv.id);
+    await vi.waitFor(() => {
+      expect(closed).toBe(true);
+    });
+
+    const cancelFrame = received.find((m) => m.type === 'cancel');
+    expect(cancelFrame).toEqual({ type: 'cancel', id: msgId });
+  });
+
   it('answerQuestion sends answer over active WebSocket', async () => {
     const port = BASE_PORT + 500;
     service = makeService(port);

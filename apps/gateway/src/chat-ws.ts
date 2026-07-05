@@ -18,6 +18,14 @@ export interface ChatWsOptions {
   eventLogStore?: EventLogStore;
   /** When true, log every inbound and outbound WebSocket message. */
   verbose?: boolean;
+  /**
+   * Swarm coordinator hook: an explicit user cancel of a chat turn must
+   * also terminalize that conversation's live swarm workers (a bare
+   * socket close intentionally does NOT — it is indistinguishable from a
+   * network drop, and dropped consumers reconcile via the event log while
+   * workers finish). Structural type so tests can pass a stub.
+   */
+  swarmCoordinator?: { cancelTurn(agentId: string, conversationId: string): boolean };
 }
 
 /** Truncate long fields (like base64 images) so logs stay readable. */
@@ -172,7 +180,10 @@ export function mountChatWs(app: Hono, options: ChatWsOptions): void {
       }
 
       // Track active streams by message ID
-      const activeStreams = new Map<string, { controller: AbortController }>();
+      const activeStreams = new Map<
+        string,
+        { controller: AbortController; agentId: string; conversationId: string }
+      >();
       // Track active streams by conversation key for steer/followUp detection
       const conversationStreams = new Map<string, string>(); // convKey → messageId
 
@@ -210,6 +221,10 @@ export function mountChatWs(app: Hono, options: ChatWsOptions): void {
             if (entry) {
               entry.controller.abort();
               activeStreams.delete(msg.id);
+              // A user cancel terminalizes the conversation's live swarm
+              // workers too — aborting the orchestrator alone would leave
+              // them running (and billing) headless.
+              options.swarmCoordinator?.cancelTurn(entry.agentId, entry.conversationId);
             }
             sendServerMessage(ws, { type: 'done', id: msg.id });
             return;
@@ -256,7 +271,7 @@ export function mountChatWs(app: Hono, options: ChatWsOptions): void {
 
             // Start a new stream
             const controller = new AbortController();
-            activeStreams.set(msg.id, { controller });
+            activeStreams.set(msg.id, { controller, agentId, conversationId: convId });
             conversationStreams.set(convKey, msg.id);
 
             (async () => {
