@@ -231,6 +231,10 @@ export function TaskDetail(): JSX.Element {
     setAssigning(true);
     try {
       await assignAgent(issueId, { id: agent.id, name: agent.name });
+      // Assign just created a NEW chat conversation; without a reload the
+      // mount-time conversations snapshot excludes it, the mcSessions filter
+      // drops the link, and the session pane stays hidden until a remount.
+      await loadConversations();
       setAssignAgentId('');
     } catch {
       // Error surfaced via the store; keep the picker state for retry.
