@@ -1,0 +1,6 @@
+{
+  "name": "dash-meta",
+  "displayName": "Skill Management",
+  "version": "0.2.0",
+  "description": "Skill management: list, install, and remove agent skills"
+}

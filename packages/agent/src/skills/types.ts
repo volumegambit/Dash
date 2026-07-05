@@ -17,5 +17,5 @@ export interface SkillDiscoveryResult {
   location: string;
   content: string;
   editable: boolean;
-  source: 'managed' | 'agent' | 'remote' | 'bundled' | 'plugin';
+  source: 'managed' | 'agent' | 'remote' | 'plugin';
 }

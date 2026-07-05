@@ -21,7 +21,7 @@ export interface AgentClient {
   ): AsyncGenerator<AgentEvent>;
   answerQuestion?(id: string, answers: string[][]): Promise<void>;
   /**
-   * List the skills available to this agent (bundled + per-agent). Optional:
+   * List the skills available to this agent (plugin + per-agent). Optional:
    * implementations that can't introspect skills omit it, and the router then
    * skips deterministic `/skills` listing.
    */

@@ -33,8 +33,8 @@ export interface SkillInfo {
   trigger?: string;
   location: string; // file path or URL
   content?: string; // full SKILL.md text (included in list responses)
-  editable: boolean; // true for local file paths, false for URL/bundled/plugin
-  source: 'managed' | 'agent' | 'remote' | 'bundled' | 'plugin';
+  editable: boolean; // true for local file paths, false for URL/plugin
+  source: 'managed' | 'agent' | 'remote' | 'plugin';
 }
 
 export interface SkillContent extends SkillInfo {
@@ -44,7 +44,6 @@ export interface SkillContent extends SkillInfo {
 export interface SkillsConfig {
   paths?: string[];
   urls?: string[];
-  includeBundled?: boolean;
 }
 
 export interface ChannelHealthEntry {
@@ -107,6 +106,8 @@ export interface PluginRecord {
   status: 'loaded' | 'disabled' | 'error';
   enabled: boolean;
   trusted: boolean;
+  /** `true` for a plugin shipped with Dash: enabled by default, not removable. */
+  builtin: boolean;
   /** Component kinds activated, e.g. ['skills']. */
   activated: string[];
   /** Component kinds present on disk but not activated (deferred / untrusted). */

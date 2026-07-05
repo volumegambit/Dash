@@ -111,19 +111,19 @@ describe('install_skill / remove_skill tools', () => {
     expect(onChange).toHaveBeenCalledOnce();
   });
 
-  it('refuses to remove a bundled skill', async () => {
+  it('refuses to remove a plugin-provided skill', async () => {
     const list = async (): Promise<SkillDiscoveryResult[]> => [
       {
-        name: 'deep-research',
+        name: 'code-review',
         description: 'd',
-        location: '/bundled/deep-research/SKILL.md',
+        location: '/plugins/dash-dev/skills/code-review/SKILL.md',
         content: '',
         editable: false,
-        source: 'bundled',
+        source: 'plugin',
       },
     ];
-    const r = await createRemoveSkillTool(managed, list).execute('id', { name: 'deep-research' });
-    expect(resultText(r)).toMatch(/bundled skill and cannot be removed/);
+    const r = await createRemoveSkillTool(managed, list).execute('id', { name: 'code-review' });
+    expect(resultText(r)).toMatch(/provided by a plugin and cannot be removed/);
   });
 
   it('reports when a skill to remove is not found', async () => {

@@ -10,7 +10,7 @@ import type { SkillDiscoveryResult } from './types.js';
  */
 export async function scanSkillsDirectory(
   dirPath: string,
-  defaultSource: 'managed' | 'agent' | 'remote' | 'bundled',
+  defaultSource: 'managed' | 'agent' | 'remote',
 ): Promise<SkillDiscoveryResult[]> {
   if (!existsSync(dirPath)) return [];
 

@@ -924,11 +924,12 @@ The Settings page has its own left sub-nav with seven sections: **General** (Gat
 1. **Verify:** App version number is displayed (e.g., "DashSquad v0.x.x")
 
 ### 22.5 Companion Toggle (General)
-1. **Verify:** "Companion" section with a "Show the tree companion" checkbox
-2. Toggle the checkbox off
-3. **Verify:** The tree companion disappears from the app
-4. Toggle it back on
-5. **Verify:** The tree companion reappears
+1. **Verify:** "Companion" section with a "Show the companion" checkbox
+2. **Verify:** When the checkbox is on, a pet picker with thumbnails (cat, red panda) appears below it
+3. Toggle the checkbox off
+4. **Verify:** The floating companion widget disappears and the pet picker is hidden
+5. Toggle it back on
+6. **Verify:** The companion widget reappears (full widget behavior is covered in Section 29)
 
 ### 22.6 Pair Device (Devices)
 1. Navigate to Settings → Devices
@@ -1218,16 +1219,17 @@ Take screenshots of every page and evaluate against these criteria. This section
 2. **Verify:** The right pane shows an "Assign agent" picker above Linked Sessions; disabled agents are not listed.
 3. Select an agent and click "Assign".
 4. **Verify:** You STAY on the task page; the button shows "Assigning…" then resets.
-5. **Verify:** Status flips to in_progress with sub-status agent_working, and a new chip appears under Linked Sessions showing 🤖 the agent's name + the session id — without a manual refresh.
-6. **Verify:** The timeline soon shows agent activity (agent run rows / comments) as the agent works the kickoff instructions.
-7. Click the new session chip.
-8. **Verify:** The Chat view opens with that conversation selected; its title is "KEY — task title"; the kickoff message and the agent's streaming reply are visible.
-9. Navigate back to the task.
-10. **Verify:** The chip is still there and re-opens the same conversation (no duplicate conversation is created).
+5. **Verify:** Status flips to in_progress with sub-status agent_working (shown as a pill in the right pane), and a new chip appears under Linked Sessions showing 🤖 the agent's name + the session id — without a manual refresh.
+6. **Verify:** An AGENT SESSION pane appears in the middle of the task page showing the kickoff message and the agent's streaming reply live; the left pane keeps DESCRIPTION (or an italic "No description") and TIMELINE with relative timestamps; no raw `comment_added` rows and no bare "Linked session <uuid>" rows (session links read "🤖 <agent> session linked").
+7. When the agent asks a question / goes waiting_on_human, type an answer in the pane's "Reply to the agent…" box and press Enter.
+8. **Verify:** Your reply and the agent's next streaming turn render in the pane without leaving the task page.
+8b. Post a comment via the "Add a comment…" composer while the agent is idle. **Verify:** The composer footer reads "Also sent to the agent session"; the comment lands in the timeline AND appears in the session pane as a user message prefixed "New comment on <KEY>:", and the agent responds. While the agent is streaming, the footer reads "Agent is mid-run — comment stays on the task" and the comment is NOT sent to the session. On a task with no linked session, no footer hint shows and nothing is sent.
+9. With two linked sessions on one task, click the older session's chip.
+10. **Verify:** The pane switches to that session's transcript (active chip gets an accent border); clicking the pane's external-link icon opens the SAME session in the full Chat view (title "KEY — task title", no duplicate conversation created).
 11. In Chat, ask the agent to add a comment to the task; return to the task detail.
 12. **Verify:** The comment appears in the timeline (agent-authored, non-highlighted).
 13. For a task with a linked session from a NON-MC channel (e.g. Telegram, seeded via that channel's agent), open its detail.
-14. **Verify:** That session's chip is muted and non-clickable with a "Session from another channel" tooltip.
+14. **Verify:** That session's chip is muted and non-clickable with a "Session from another channel" tooltip; the session pane shows only MC sessions.
 15. Open Projects → Kanban. **Verify:** Each card shows a small assign icon (person-plus) in its top-right, next to the 🤖 badge when present.
 16. Click a card's assign icon. **Verify:** A dropdown lists non-disabled agents; the card does NOT open. Pick an agent.
 17. **Verify:** The menu closes; the card moves to In Progress under "Agent working" without a refresh; the task detail shows the new linked session.
@@ -1292,8 +1294,90 @@ Take screenshots of every page and evaluate against these criteria. This section
 10. **Verify:** The skill appears with a **Remote** badge. (Try a known-dangerous local skill and **verify** the install is refused with a scan message.)
 11. Click **Remove** on the installed or created skill.
 12. **Verify:** It disappears from the list.
-13. In the **Skills settings** strip, toggle **Include bundled skill library** off and Save.
-14. **Verify:** Bundled skills no longer appear in the list (re-enable to restore).
+13. In **Settings → Plugins**, disable the built-in plugin that contributes this agent's bundled skills (e.g. disable **Skill Management** for `manage-skills`, or **Developer** for `code-review`).
+14. **Verify:** In chat over this agent, `load_skill <name>` for that plugin's skill no longer finds it (and the skill drops from the agent's Skills tab list); re-enable the plugin and **verify** the skill loads again.
+
+## Section 29: Plugins (Settings → Plugins)
+
+Covers the Plugins screen (P3), plugin trust, per-agent plugin selection (P5), and built-in plugins.
+
+**Preconditions:** Gateway running and MC connected (Sections 1–2). No test plugins installed yet.
+
+1. Navigate to Settings → Plugins. **Verify:** the five built-in plugins (Assistant, Communication, Creative, Developer, Skill Management) are listed, each with a "Built-in" badge, status "Loaded", a skills contribution tag, an Enable/Disable control, and NO Remove button.
+2. Disable "Developer". **Verify:** status flips to Disabled; in a chat with any agent, `load_skill code-review` no longer finds the skill. Re-enable and verify it returns.
+3. Install a plugin from a local path source (any valid plugin dir; the E2E demo plugin layout works). **Verify:** it appears with Enable/Disable, Trust, and Remove controls and NO Built-in badge.
+4. Install form: submit a source that resolves to the name `dash-dev`. **Verify:** the install is rejected with a built-in name error; the built-in row is unaffected.
+5. Trust flow on the installed plugin: click Trust. **Verify:** the confirmation modal lists exactly the code components (bin/hooks/MCP/providers) and a "runs code on your machine" warning; confirm, then Revoke Trust.
+6. Remove the installed plugin. **Verify:** confirm dialog states the directory will be deleted; after removal the row disappears; built-in rows remain.
+7. Agent detail → Config tab: the plugins multiselect lists built-ins and installed plugins alike. Select only "Assistant" for an agent. **Verify:** in chat, that agent can `load_skill deep-research` but NOT `code-review`.
+8. Agent detail → Skills tab. **Verify:** there is NO "Include bundled skill library" checkbox; built-in skills appear in the list as read-only plugin skills.
+
+## Section 29: Companion widget (floating pet)
+
+**Precondition:** App running, gateway healthy, at least one agent created, and the **Show the companion** toggle enabled (Settings → General → Companion). The companion is a separate always-on-top desktop window (not part of the main MC window); the in-app component is a headless publisher that streams session statuses and the selected pet to that window over IPC. The widget renders a **selectable pixel-art pet** — a **cat** or a **red panda** (default **red panda**). It shows one **aggregate mood** for all sessions via the pet's collar-tag color plus eye overlays. Mood priority (highest wins): **error** (red `#f87171`) > **needs** (amber `#f5c518`) > **working** (blue `#3da5d9`, pulsing) > **done** (green `#34c759`) > **idle** (gray `#9aa0a6`, asleep — no sessions).
+
+### 29.1 Widget appears and floats
+1. Launch MC with the companion enabled.
+2. **Verify:** A small pixel-art pet widget appears at the **bottom-right** of the screen (frameless, transparent background, not shown in the taskbar/dock switcher). With no sessions running, the pet is **idle/asleep** (gray collar).
+3. **Verify:** The pet is the one selected in Settings (default **red panda** on a fresh install) — it does **not** start blank (the selection is replayed to the widget when it opens).
+4. Bring another application fully in front of MC.
+5. **Verify:** The widget still floats **on top of** that other app.
+
+### 29.2 Pet picker swaps the pet live
+1. In Settings → General → Companion, confirm the two-thumbnail **PetPicker** is shown below the **Show the companion** checkbox (labels **Cat** and **Red panda**), with the current pet highlighted.
+2. Click the **Cat** thumbnail.
+3. **Verify:** The floating widget swaps to the **cat** sprite **live** (no restart needed).
+4. Click the **Red panda** thumbnail.
+5. **Verify:** The floating widget swaps back to the **red panda** sprite live.
+
+### 29.3 Pet selection persists across restart
+1. Select a pet (e.g. **Cat**) in Settings → General → Companion.
+2. Fully quit and relaunch MC.
+3. **Verify:** The widget reappears rendering the **same pet** you selected (selection persisted; the picker shows it highlighted).
+
+### 29.4 Survives main-window minimize
+1. Minimize the main MC window.
+2. **Verify:** The widget stays visible and on top (it is independent of the main window's minimized state).
+3. Restore the main window.
+4. **Verify:** The widget is unchanged.
+
+### 29.5 Drag and persist position
+1. Drag the widget to a different location on screen.
+2. **Verify:** It moves and stays where dropped.
+3. Fully quit and relaunch MC.
+4. **Verify:** The widget reappears **at the position you left it** (position persisted across restarts).
+
+### 29.6 Settings toggle hides/shows it
+1. In Settings → General → Companion, uncheck **Show the companion**.
+2. **Verify:** The widget disappears immediately, and the PetPicker is hidden (only shown when the companion is visible).
+3. Re-check the toggle.
+4. **Verify:** The widget reappears (bottom-right, or its last persisted position) with the previously selected pet, and the PetPicker reappears.
+5. Toggle it **off**, then fully quit and relaunch MC.
+6. **Verify:** The widget stays hidden after restart (the visibility preference is persisted).
+
+### 29.7 Closing the main window removes the widget
+1. With the widget visible, close the main MC window (quit the app).
+2. **Verify:** The widget is removed as well — no orphaned always-on-top window is left behind.
+
+### 29.8 Multi-display unplug (position recenters)
+1. Move the widget onto a secondary display.
+2. Disconnect / unplug that secondary display (or disable it in the OS display settings).
+3. **Verify:** The widget is **clamped back onto a visible display** (it does not vanish off-screen).
+
+### 29.9 Aggregate mood reflects session state
+The widget shows a **single aggregate mood** across all sessions, not one indicator per session. Drive sessions into each state and observe the pet's collar color and expression. Test the priority ordering too.
+1. With **no sessions** running.
+2. **Verify:** The pet is **idle** — **asleep**, gray collar.
+3. Start a long-running task so a session is **working**.
+4. **Verify:** The pet shows the **working** mood — **blue collar, pulsing**.
+5. Ask a question the agent surfaces so a session **needs you** (unanswered).
+6. **Verify:** The pet shows the **needs** mood — **amber collar**. (Needs outranks working: with both a working and a needs session, the pet is amber.)
+7. Let a session **finish** while you are away (unread done), with nothing working or needing attention.
+8. **Verify:** The pet shows the **done** mood — **green collar**.
+9. Force a session to **error**.
+10. **Verify:** The pet shows the **error** mood — **red collar**. (Error is highest priority: with an errored session present, the pet is red regardless of any working/needs/done sessions.)
+11. Clear all sessions (none active or needing attention).
+12. **Verify:** The pet returns to **idle/asleep** (gray).
 
 ## Appendix: Test Run Log
 

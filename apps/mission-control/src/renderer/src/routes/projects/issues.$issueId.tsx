@@ -1,11 +1,14 @@
 import { createFileRoute, useNavigate } from '@tanstack/react-router';
-import { ArrowLeft, ChevronDown, ChevronRight, Trash2 } from 'lucide-react';
+import { ArrowLeft, ChevronDown, ChevronRight, ExternalLink, Trash2 } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import type { IssueComment, IssueEvent, IssueStatus } from '../../../../shared/projects-ipc.js';
 import { Markdown } from '../../components/Markdown.js';
 import { useAgentsStore } from '../../stores/agents.js';
 import { useChatStore } from '../../stores/chat.js';
 import { useProjectsStore } from '../../stores/projects.js';
+import { SessionPanel } from './-components/SessionPanel.js';
+import { SubStatusPill } from './-components/StatusPill.js';
+import { relativeTime } from './-lib/format.js';
 import { isAgentRunEvent, mergeTimeline } from './-lib/timeline.js';
 
 const STATUS_OPTIONS: IssueStatus[] = [
@@ -68,15 +71,20 @@ function CommentRow({
           {isHuman ? '' : '🤖 '}
           {comment.author_id}
         </span>
-        {isHuman && (
-          <button
-            type="button"
-            onClick={() => onDelete(comment.id)}
-            className="text-[10px] text-muted hover:text-red"
-          >
-            Delete
-          </button>
-        )}
+        <span className="flex items-center gap-2">
+          <span className="text-[10px] text-muted opacity-60">
+            {relativeTime(comment.created_at)}
+          </span>
+          {isHuman && (
+            <button
+              type="button"
+              onClick={() => onDelete(comment.id)}
+              className="text-[10px] text-muted hover:text-red"
+            >
+              Delete
+            </button>
+          )}
+        </span>
       </div>
       <div className="text-sm text-foreground">
         <Markdown>{comment.body}</Markdown>
@@ -137,6 +145,8 @@ export function TaskDetail(): JSX.Element {
   const loadAgents = useAgentsStore((s) => s.loadAgents);
   const conversations = useChatStore((s) => s.conversations);
   const loadConversations = useChatStore((s) => s.loadConversations);
+  const chatSending = useChatStore((s) => s.sending);
+  const sendChatMessage = useChatStore((s) => s.sendMessage);
 
   const [draft, setDraft] = useState('');
   const [subtaskTitle, setSubtaskTitle] = useState('');
@@ -145,14 +155,17 @@ export function TaskDetail(): JSX.Element {
   const [deleting, setDeleting] = useState(false);
   const [assignAgentId, setAssignAgentId] = useState('');
   const [assigning, setAssigning] = useState(false);
+  const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
 
   useEffect(() => {
     loadProjects();
     loadIssueDetail(issueId);
     // Agents feed the assign picker; conversations decide which linked-session
-    // chips can open in Chat.
+    // chips can show in the embedded session panel.
     loadAgents();
     loadConversations();
+    // A session picked on one task must not leak onto the next.
+    setSelectedSessionId(null);
   }, [loadIssueDetail, loadProjects, loadAgents, loadConversations, issueId]);
 
   if (!detail) {
@@ -160,13 +173,56 @@ export function TaskDetail(): JSX.Element {
   }
 
   const project = detail.project_id ? projectsById[detail.project_id] : null;
-  const timeline = mergeTimeline(detail.events, detail.comments);
+  // Hide comment_* bookkeeping events — the comments themselves are already
+  // interleaved in the timeline (deleted ones as placeholders).
+  const timeline = mergeTimeline(detail.events, detail.comments).filter(
+    (item) => item.kind !== 'event' || !item.event.type.startsWith('comment_'),
+  );
+
+  // Sessions that exist as MC chat conversations can render in the embedded
+  // panel; the most recently referenced one is shown until a chip is picked.
+  const mcSessions = detail.linked_sessions.filter((l) =>
+    conversations.some((c) => c.id === l.session_id),
+  );
+  const latestMcSession = mcSessions.reduce<(typeof mcSessions)[number] | null>(
+    (best, l) => (!best || l.last_referenced_at > best.last_referenced_at ? l : best),
+    null,
+  );
+  const activeSessionId =
+    selectedSessionId && mcSessions.some((l) => l.session_id === selectedSessionId)
+      ? selectedSessionId
+      : (latestMcSession?.session_id ?? null);
+
+  // session_linked events carry a raw session id; show the agent behind it.
+  const sessionLinkedLabel = (event: IssueEvent): string => {
+    let sessionId = '';
+    try {
+      sessionId = String((JSON.parse(event.data) as { session_id?: string }).session_id ?? '');
+    } catch {
+      // ignore
+    }
+    const agent = detail.linked_sessions.find((l) => l.session_id === sessionId)?.agent_id;
+    return `🤖 ${agent ?? 'Agent'} session linked`;
+  };
+
+  const activeSessionBusy = activeSessionId ? (chatSending[activeSessionId] ?? false) : false;
 
   const submitComment = async () => {
     const body = draft.trim();
     if (!body) return;
     setDraft('');
     await addComment(issueId, body);
+    // Feed the comment into the session shown in the pane so the agent reacts
+    // without a manual nudge. Skipped while the agent is mid-run — the chat
+    // service rejects concurrent streams, and the kickoff instructions already
+    // tell agents to re-read task comments.
+    if (activeSessionId && !activeSessionBusy) {
+      try {
+        await sendChatMessage(activeSessionId, `New comment on ${detail.key}:\n\n${body}`);
+      } catch {
+        // Best-effort: the comment is already on the task record.
+      }
+    }
   };
 
   const startAssign = async () => {
@@ -286,12 +342,17 @@ export function TaskDetail(): JSX.Element {
       </div>
 
       <div className="flex min-h-0 flex-1">
-        {/* Left pane */}
+        {/* Left pane — task content */}
         <div className="flex min-w-0 flex-1 flex-col overflow-auto border-r border-border px-8 py-4">
-          {detail.description && (
+          <p className="mb-2 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[2px] text-accent">
+            Description
+          </p>
+          {detail.description ? (
             <div className="mb-4 text-sm text-foreground">
               <Markdown>{detail.description}</Markdown>
             </div>
+          ) : (
+            <p className="mb-4 text-sm italic text-muted">No description</p>
           )}
 
           <p className="mb-2 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[2px] text-accent">
@@ -308,8 +369,18 @@ export function TaskDetail(): JSX.Element {
               ) : isAgentRunEvent(item.event) ? (
                 <AgentRunRow key={item.event.id} event={item.event} />
               ) : (
-                <div key={item.event.id} className="py-1 text-xs text-muted">
-                  {eventSummary(item.event)}
+                <div
+                  key={item.event.id}
+                  className="flex items-center justify-between py-1 text-xs text-muted"
+                >
+                  <span>
+                    {item.event.type === 'session_linked'
+                      ? sessionLinkedLabel(item.event)
+                      : eventSummary(item.event)}
+                  </span>
+                  <span className="shrink-0 pl-2 text-[10px] opacity-60">
+                    {relativeTime(item.event.created_at)}
+                  </span>
                 </div>
               ),
             )}
@@ -324,7 +395,14 @@ export function TaskDetail(): JSX.Element {
               rows={3}
               className="w-full border border-border bg-background p-2 text-sm text-foreground placeholder:text-muted focus:border-accent focus:outline-none"
             />
-            <div className="mt-1 flex justify-end">
+            <div className="mt-1 flex items-center justify-between">
+              <span className="text-[10px] text-muted">
+                {activeSessionId
+                  ? activeSessionBusy
+                    ? 'Agent is mid-run — comment stays on the task'
+                    : 'Also sent to the agent session'
+                  : ''}
+              </span>
               <button
                 type="button"
                 onClick={submitComment}
@@ -337,10 +415,45 @@ export function TaskDetail(): JSX.Element {
           </div>
         </div>
 
+        {/* Middle pane — embedded agent session (latest or chip-selected) */}
+        {activeSessionId && (
+          <div className="flex min-w-0 flex-1 flex-col border-r border-border">
+            <div className="flex shrink-0 items-center justify-between px-5 pt-4">
+              <p className="font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[2px] text-accent">
+                Agent session
+              </p>
+              <button
+                type="button"
+                onClick={() =>
+                  navigate({
+                    to: '/chat',
+                    search: { agentId: '', conversationId: activeSessionId },
+                  })
+                }
+                title="Open in Chat"
+                aria-label="Open in Chat"
+                data-testid="session-open-chat"
+                className="p-1 text-muted transition-colors hover:text-accent"
+              >
+                <ExternalLink size={12} />
+              </button>
+            </div>
+            {/* Keyed so draft/answered state resets when switching sessions. */}
+            <SessionPanel key={activeSessionId} conversationId={activeSessionId} />
+          </div>
+        )}
+
         {/* Right pane */}
         <div className="w-72 shrink-0 overflow-auto px-5 py-4">
           <Field label="Assignee" value={detail.assignee_user_id} />
-          <Field label="Sub-status" value={detail.sub_status ?? '—'} />
+          <div className="mb-2 flex items-center justify-between text-xs">
+            <span className="text-muted">Sub-status</span>
+            {detail.sub_status ? (
+              <SubStatusPill subStatus={detail.sub_status} />
+            ) : (
+              <span className="text-foreground">—</span>
+            )}
+          </div>
           <Field label="Project" value={project?.key ?? '—'} />
           <Field label="Parent" value={detail.parent_issue_id ?? '—'} />
           <Field
@@ -386,23 +499,21 @@ export function TaskDetail(): JSX.Element {
           <p className="mb-1 mt-4 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[2px] text-accent">
             Linked sessions ({detail.linked_sessions.length})
           </p>
-          {/* Chips for sessions that exist as MC chat conversations open in
-              Chat; sessions from other channels (Telegram, …) stay inert. */}
+          {/* MC-session chips select the embedded panel (open-in-Chat lives in
+              the panel header); sessions from other channels stay inert. */}
           {detail.linked_sessions.map((link) => {
             const label = `${link.agent_id ? `🤖 ${link.agent_id} · ` : ''}${link.session_id}`;
+            const isActive = link.session_id === activeSessionId;
             return conversations.some((c) => c.id === link.session_id) ? (
               <button
                 key={link.session_id}
                 type="button"
-                onClick={() =>
-                  navigate({
-                    to: '/chat',
-                    search: { agentId: '', conversationId: link.session_id },
-                  })
-                }
+                onClick={() => setSelectedSessionId(link.session_id)}
                 data-testid={`session-chip-${link.session_id}`}
-                title="Open in Chat"
-                className="mb-1 block w-full truncate bg-sidebar-hover px-2 py-1 text-left text-xs text-foreground hover:text-accent"
+                title="Show session"
+                className={`mb-1 block w-full truncate bg-sidebar-hover px-2 py-1 text-left text-xs hover:text-accent ${
+                  isActive ? 'border-l-2 border-accent text-accent' : 'text-foreground'
+                }`}
               >
                 {label}
               </button>

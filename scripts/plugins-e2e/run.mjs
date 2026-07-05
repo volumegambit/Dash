@@ -2,11 +2,13 @@
 //
 // Boots a REAL gateway with a self-contained demo plugin (skills/, commands/,
 // bin/, .mcp.json → a bundled fixture MCP server, hooks/ → a PreToolUse block,
-// agents/ → a loadable specialist), registers an agent, drives six prompts over
-// the chat WebSocket, and asserts that each plugin component actually triggers
-// the right tool / skill / hook — covering plugin Plans 1-4. Fully isolated
-// under a temp DASH_HOME; real provider credentials are copied in and deleted
-// on teardown.
+// agents/ → a loadable specialist), registers an agent, drives seven prompts
+// over the chat WebSocket, and asserts that each plugin component actually
+// triggers the right tool / skill / hook — covering plugin Plans 1-4. It also
+// asserts the five dash-* built-in plugins load with zero installs (boot-level
+// GET /plugins check + a manage-skills load_skill prompt). Fully isolated under
+// a temp DASH_HOME; real provider credentials are copied in and deleted on
+// teardown.
 //
 // Run: npm run plugins:e2e   (Node >= 22.12 required — the gateway needs it)
 // Model: $PLUGINS_E2E_MODEL, else the first model from ~/.dash/gateway/agents.json.
@@ -184,6 +186,26 @@ try {
       .join('\n'),
   );
 
+  // --- 3b. Built-in plugins load with zero installs ------------------------
+  // The temp DASH_HOME has ONLY the demo plugin installed, yet the five
+  // dash-* built-ins ship in @dash/skills and must load on any boot. Assert
+  // GET /plugins lists them all with builtin:true. (Management auth is off in
+  // this harness — no MANAGEMENT_API_TOKEN — so a plain fetch works, same as
+  // the /agents call below.)
+  const BUILTINS = ['dash-assistant', 'dash-comms', 'dash-creative', 'dash-dev', 'dash-meta'];
+  const plr = await fetch(`http://localhost:${MPORT}/plugins`);
+  if (!plr.ok) throw new Error(`GET /plugins failed: ${plr.status} ${await plr.text()}`);
+  const records = (await plr.json()).records || [];
+  const byName = new Map(records.map((r) => [r.name, r]));
+  const missing = BUILTINS.filter((n) => byName.get(n)?.builtin !== true);
+  console.log(`\n--- built-in plugins (GET /plugins: ${records.length} records) ---`);
+  for (const n of BUILTINS)
+    console.log(
+      `  ${byName.get(n)?.builtin === true ? '✅' : '❌'} ${n}  builtin=${byName.get(n)?.builtin}`,
+    );
+  if (missing.length)
+    throw new Error(`built-in plugins missing or not flagged builtin:true — ${missing.join(', ')}`);
+
   // --- 4. Register the test agent ------------------------------------------
   const reg = await fetch(`http://localhost:${MPORT}/agents`, {
     method: 'POST',
@@ -304,6 +326,14 @@ try {
         ev.some((e) => e.type === 'tool_use_start' && e.name === 'bash') &&
         !!tres(ev, /DEMO-BLOCK/),
       (ev) => tres(ev, /DEMO-BLOCK/),
+    ],
+    [
+      'builtin   built-in plugin skill reaches a fresh gateway (dash-meta manage-skills)',
+      'Use load_skill to load the "manage-skills" skill, then reply DONE.',
+      (ev) =>
+        ev.some((e) => e.type === 'tool_use_start' && e.name === 'load_skill') &&
+        !!tres(ev, /# Manage Skills/),
+      (ev) => tres(ev, /# Manage Skills/),
     ],
   ];
 

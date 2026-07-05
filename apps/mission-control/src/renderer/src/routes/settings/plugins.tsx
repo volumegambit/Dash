@@ -228,6 +228,11 @@ export function PluginsScreen(): JSX.Element {
                         {plugin.version && (
                           <span className="text-xs text-muted">v{plugin.version}</span>
                         )}
+                        {plugin.builtin && (
+                          <span className="inline-flex items-center gap-1 text-xs px-2 py-1 bg-blue-500/20 text-blue-400 rounded">
+                            Built-in
+                          </span>
+                        )}
                         {/* Status badge */}
                         {plugin.status === 'loaded' && (
                           <span className="inline-flex items-center gap-1 text-xs px-2 py-1 bg-green-500/20 text-green-400 rounded">
@@ -301,15 +306,17 @@ export function PluginsScreen(): JSX.Element {
                         </button>
                       )}
 
-                      {/* Remove button */}
-                      <button
-                        type="button"
-                        onClick={() => setRemoveConfirm(plugin.name)}
-                        className="px-3 py-1 text-xs text-red-400 border border-red-700/50 rounded hover:bg-red-950/20 transition-colors"
-                      >
-                        <Trash2 size={14} className="inline mr-1" />
-                        Remove
-                      </button>
+                      {/* Remove button — hidden for built-in plugins */}
+                      {!plugin.builtin && (
+                        <button
+                          type="button"
+                          onClick={() => setRemoveConfirm(plugin.name)}
+                          className="px-3 py-1 text-xs text-red-400 border border-red-700/50 rounded hover:bg-red-950/20 transition-colors"
+                        >
+                          <Trash2 size={14} className="inline mr-1" />
+                          Remove
+                        </button>
+                      )}
                     </div>
                   </div>
                 </div>

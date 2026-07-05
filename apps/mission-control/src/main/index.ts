@@ -1,6 +1,7 @@
 import { join } from 'node:path';
 import { BrowserWindow, app } from 'electron';
 import { autoUpdater } from 'electron-updater';
+import { destroyCompanionWindow } from './companion-window.js';
 import { registerIpcHandlers } from './ipc';
 import { setupAutoUpdater } from './updater.js';
 
@@ -36,6 +37,9 @@ function createWindow(): void {
   });
 
   mainWindow.on('closed', () => {
+    // The companion widget hides when the main window closes; this also
+    // preserves `window-all-closed` semantics (no orphan always-on-top window).
+    destroyCompanionWindow();
     mainWindow = undefined;
   });
 

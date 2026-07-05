@@ -1,8 +1,17 @@
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
-import { join } from 'node:path';
-import { getBundledSkillsDir } from '@dash/skills';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it, vi } from 'vitest';
 import { createLlmScanner, heuristicScan } from './security.js';
+
+/**
+ * Absolute path to the built-in plugins directory in the sibling `@dash/skills`
+ * package. Resolved relative to this test module so it works without a package
+ * dependency (agent no longer depends on `@dash/skills`).
+ */
+function builtinPluginsDir(): string {
+  return join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'skills', 'plugins');
+}
 
 describe('heuristicScan', () => {
   it('passes a benign skill', () => {
@@ -53,18 +62,20 @@ describe('createLlmScanner', () => {
   });
 });
 
-describe('heuristicScan on bundled skills', () => {
-  it('does not flag any shipped bundled skill as dangerous', () => {
-    const root = getBundledSkillsDir();
+describe('heuristicScan on built-in plugin skills', () => {
+  it('does not flag any shipped built-in skill as dangerous', () => {
+    const root = builtinPluginsDir();
     const offenders: string[] = [];
-    for (const suite of readdirSync(root, { withFileTypes: true })) {
-      if (!suite.isDirectory()) continue;
-      for (const skill of readdirSync(join(root, suite.name), { withFileTypes: true })) {
+    for (const plugin of readdirSync(root, { withFileTypes: true })) {
+      if (!plugin.isDirectory()) continue;
+      const skillsDir = join(root, plugin.name, 'skills');
+      if (!existsSync(skillsDir)) continue;
+      for (const skill of readdirSync(skillsDir, { withFileTypes: true })) {
         if (!skill.isDirectory()) continue;
-        const file = join(root, suite.name, skill.name, 'SKILL.md');
+        const file = join(skillsDir, skill.name, 'SKILL.md');
         if (!existsSync(file)) continue;
         if (heuristicScan(readFileSync(file, 'utf-8')).verdict === 'dangerous') {
-          offenders.push(`${suite.name}/${skill.name}`);
+          offenders.push(`${plugin.name}/${skill.name}`);
         }
       }
     }
