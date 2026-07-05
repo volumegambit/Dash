@@ -1226,6 +1226,58 @@ Take screenshots of every page and evaluate against these criteria. This section
 13. In the **Skills settings** strip, toggle **Include bundled skill library** off and Save.
 14. **Verify:** Bundled skills no longer appear in the list (re-enable to restore).
 
+## Section 29: Companion widget (floating tree)
+
+**Precondition:** App running, gateway healthy, at least one agent created, and the **Show the tree companion** toggle enabled (Settings → Companion). The companion is a separate always-on-top desktop window (not part of the main MC window); the in-app component is now a headless publisher that streams session statuses to that window over IPC.
+
+### 29.1 Widget appears and floats
+1. Launch MC with the companion enabled.
+2. **Verify:** A small pixel-tree widget appears at the **bottom-right** of the screen (frameless, transparent background, not shown in the taskbar/dock switcher).
+3. Bring another application fully in front of MC.
+4. **Verify:** The widget still floats **on top of** that other app.
+
+### 29.2 Survives main-window minimize
+1. Minimize the main MC window.
+2. **Verify:** The widget stays visible and on top (it is independent of the main window's minimized state).
+3. Restore the main window.
+4. **Verify:** The widget is unchanged.
+
+### 29.3 Drag and persist position
+1. Drag the widget to a different location on screen.
+2. **Verify:** It moves and stays where dropped.
+3. Fully quit and relaunch MC.
+4. **Verify:** The widget reappears **at the position you left it** (position persisted across restarts).
+
+### 29.4 Settings toggle hides/shows it
+1. In Settings → Companion, uncheck **Show the tree companion**.
+2. **Verify:** The widget disappears immediately.
+3. Re-check the toggle.
+4. **Verify:** The widget reappears (bottom-right, or its last persisted position).
+5. Toggle it **off**, then fully quit and relaunch MC.
+6. **Verify:** The widget stays hidden after restart (the visibility preference is persisted).
+
+### 29.5 Closing the main window removes the widget
+1. With the widget visible, close the main MC window (quit the app).
+2. **Verify:** The widget is removed as well — no orphaned always-on-top window is left behind.
+
+### 29.6 Multi-display unplug (position recenters)
+1. Move the widget onto a secondary display.
+2. Disconnect / unplug that secondary display (or disable it in the OS display settings).
+3. **Verify:** The widget is **clamped back onto a visible display** (it does not vanish off-screen).
+
+### 29.7 Status colors reflect session state
+Drive sessions into each state (start a long-running task, ask a question the agent surfaces, let one finish while you are away, force an error) and observe the tree.
+1. A session that is **working**.
+2. **Verify:** The tree shows the **working** state — **blue, pulsing**.
+3. A session that **needs you** (unanswered question).
+4. **Verify:** The tree shows the **needs** state — **yellow**.
+5. A session that **finished** while you were away (unread done).
+6. **Verify:** The tree shows the **done** state — **green**.
+7. A session that **errored**.
+8. **Verify:** The tree shows the **error** state — **red**.
+9. With no active/attention sessions.
+10. **Verify:** The tree returns to its idle/resting appearance.
+
 ## Appendix: Test Run Log
 
 | Run # | Date | Sections Tested | Pass | Fail | Bugs Filed | Notes |
