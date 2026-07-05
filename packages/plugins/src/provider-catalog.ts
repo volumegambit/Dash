@@ -1,5 +1,6 @@
 import type {
   CatalogAuthRule,
+  CatalogEntryFilters,
   CatalogModel,
   CatalogUiHints,
   ModelsFetchSpec,
@@ -171,11 +172,66 @@ function validateAuthRule(v: unknown, where: string): CatalogAuthRule {
   };
 }
 
+/**
+ * Validates a `CatalogEntryFilters` block (declarative post-fetch filtering).
+ * `arrayIncludes` entries need non-empty string `path` + `value`;
+ * `excludeIdSubstrings` entries must be non-empty strings. Built field-by-field
+ * (proto-safe), throwing per bad field.
+ */
+function validateEntryFilters(v: unknown, where: string): CatalogEntryFilters {
+  if (typeof v !== 'object' || v === null || Array.isArray(v)) {
+    throw new Error(`${where}: entryFilters must be an object`);
+  }
+  const e = v as Record<string, unknown>;
+  let arrayIncludes: { path: string; value: string }[] | undefined;
+  if (e.arrayIncludes !== undefined) {
+    if (!Array.isArray(e.arrayIncludes)) {
+      throw new Error(`${where}: entryFilters 'arrayIncludes' must be an array`);
+    }
+    arrayIncludes = e.arrayIncludes.map((r, i) => {
+      if (typeof r !== 'object' || r === null || Array.isArray(r)) {
+        throw new Error(`${where}: entryFilters arrayIncludes[${i}] must be an object`);
+      }
+      const rule = r as Record<string, unknown>;
+      if (typeof rule.path !== 'string' || rule.path.length === 0) {
+        throw new Error(
+          `${where}: entryFilters arrayIncludes[${i}] 'path' must be a non-empty string`,
+        );
+      }
+      if (typeof rule.value !== 'string' || rule.value.length === 0) {
+        throw new Error(
+          `${where}: entryFilters arrayIncludes[${i}] 'value' must be a non-empty string`,
+        );
+      }
+      return { path: rule.path, value: rule.value };
+    });
+  }
+  let excludeIdSubstrings: string[] | undefined;
+  if (e.excludeIdSubstrings !== undefined) {
+    if (!Array.isArray(e.excludeIdSubstrings)) {
+      throw new Error(`${where}: entryFilters 'excludeIdSubstrings' must be an array`);
+    }
+    excludeIdSubstrings = e.excludeIdSubstrings.map((s, i) => {
+      if (typeof s !== 'string' || s.length === 0) {
+        throw new Error(
+          `${where}: entryFilters excludeIdSubstrings[${i}] must be a non-empty string`,
+        );
+      }
+      return s;
+    });
+  }
+  return {
+    ...(arrayIncludes !== undefined ? { arrayIncludes } : {}),
+    ...(excludeIdSubstrings !== undefined ? { excludeIdSubstrings } : {}),
+  };
+}
+
 function validateModelsFetch(v: unknown, where: string): ModelsFetchSpec {
   if (typeof v !== 'object' || v === null || Array.isArray(v)) {
     throw new Error(`${where}: modelsFetch must be an object`);
   }
   const f = v as Record<string, unknown>;
+  const whenKeyPrefix = optString(f.whenKeyPrefix);
   if (typeof f.url !== 'string' || f.url.length === 0) {
     throw new Error(`${where}: modelsFetch 'url' must be a non-empty string`);
   }
@@ -191,13 +247,17 @@ function validateModelsFetch(v: unknown, where: string): ModelsFetchSpec {
   }
   const namePath = optString(f.namePath);
   const stripIdPrefix = optString(f.stripIdPrefix);
+  const entryFilters =
+    f.entryFilters !== undefined ? validateEntryFilters(f.entryFilters, `${where}`) : undefined;
   return {
+    ...(whenKeyPrefix !== undefined ? { whenKeyPrefix } : {}),
     url: f.url,
     auth,
     listPath: f.listPath,
     idPath: f.idPath,
     ...(namePath !== undefined ? { namePath } : {}),
     ...(stripIdPrefix !== undefined ? { stripIdPrefix } : {}),
+    ...(entryFilters !== undefined ? { entryFilters } : {}),
   };
 }
 
@@ -290,7 +350,9 @@ export function validateProviderCatalog(raw: unknown): ProviderCatalog {
 
   const modelsFetch =
     c.modelsFetch !== undefined
-      ? validateModelsFetch(c.modelsFetch, `catalog "${c.id}"`)
+      ? Array.isArray(c.modelsFetch)
+        ? c.modelsFetch.map((v, i) => validateModelsFetch(v, `catalog "${c.id}" modelsFetch[${i}]`))
+        : validateModelsFetch(c.modelsFetch, `catalog "${c.id}"`)
       : undefined;
   const supportedPatterns =
     c.supportedPatterns !== undefined
