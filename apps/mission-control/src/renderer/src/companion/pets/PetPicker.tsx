@@ -42,7 +42,7 @@ export function PetPicker({
   onChange: (kind: PetKind) => void;
 }): JSX.Element {
   return (
-    <div className="mt-3 flex flex-wrap gap-3">
+    <div className="mt-3 flex max-h-72 flex-wrap gap-3 overflow-y-auto pr-2">
       {PET_KINDS.map((kind) => (
         <button
           key={kind}
