@@ -59,7 +59,7 @@ content or your gateway tokens.
 
 | Layer | Secret | Checked by | On failure |
 |-------|--------|-----------|------------|
-| Gateway admission | relay token (Bearer on dial-in) | relay | WS close `4401` |
+| Gateway admission | relay token (Bearer on dial-in) — or, in [hosted mode](#hosted-multi-tenant-mode), a signed dial token + holder-of-key proof | relay | WS close `4401` |
 | Per-pairing credential | `x-dash-relay-credential` header | relay (against its store) | `401` / WS `4401` |
 | App ↔ gateway | management Bearer / chat `?token=` | **the gateway** (forwarded verbatim) | gateway's own `401`/`4001` |
 
@@ -171,8 +171,27 @@ The gateway then registers and is reachable at `https://<gatewayId>.relay.exampl
 |------|-----|---------|---------|
 | `--port` | `RELAY_PORT` | `8443` | Port to listen on (Caddy proxies to it). |
 | `--host` | `RELAY_HOST` | `127.0.0.1` | Bind address. Loopback by default (Caddy fronts it); use `0.0.0.0` to expose directly. |
-| `--relay-token` | `RELAY_TOKEN` | — *(required)* | Shared secret a gateway must present to register. |
+| `--relay-token` | `RELAY_TOKEN` | — *(required in self-hosted mode)* | Shared secret a gateway must present to register. Not used in hosted mode. |
 | `--admin-secret` | `RELAY_ADMIN_SECRET` | — *(optional)* | Enables the admin API and real pairing-credential enforcement. |
+| `--dial-token-public-key` | `RELAY_DIAL_TOKEN_PUBLIC_KEY` | — *(optional)* | Path to a PEM-encoded Ed25519 public key. Setting it switches the relay into hosted (multi-tenant) mode — see below. |
+| `--store-path` | `RELAY_STORE_PATH` | `relay-creds.db` | Hosted mode only: path to the durable SQLite pairing-credential store. |
+
+### Hosted (multi-tenant) mode
+
+The last two flags are how the **Dash-run hosted relay** is deployed; a self-hosted
+relay normally leaves them unset. When `--dial-token-public-key` is set:
+
+- **Gateway admission changes.** Instead of the shared relay token, each gateway dials
+  in with a control-plane-signed **dial token** bound to its `gatewayId`, plus a fresh
+  **proof** signed with the gateway's own private key (holder-of-key — a token stolen
+  at rest or in flight is useless without the key). Both are verified offline against
+  the supplied public key, so `--relay-token` is ignored and no longer required.
+- **Pairings become durable.** Per-pairing credentials live in a SQLite store
+  (`--store-path`) that survives restarts and holds only SHA-256 hashes, never raw
+  credentials. `--admin-secret` still gates the admin API, which the control plane
+  drives to provision and revoke pairings.
+
+Everything else — subdomain routing, forwarded gateway auth, rate limits — is identical.
 
 ### Gateway relay mode
 
@@ -221,7 +240,9 @@ curl -X POST -H "Authorization: Bearer $RELAY_ADMIN_SECRET" \
   secret get `401`.
 - The self-hosted credential store is **in-memory** — a relay restart drops all pairings,
   and each device needs a freshly provisioned credential to reconnect. This keeps a relay
-  that's only a pass-through from holding standing access on disk.
+  that's only a pass-through from holding standing access on disk. (Hosted mode is the
+  exception: with no re-provisioning channel after a restart, it keeps a durable SQLite
+  store of credential *hashes* — see the configuration reference.)
 
 ---
 
