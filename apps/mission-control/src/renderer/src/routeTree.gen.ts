@@ -9,7 +9,6 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from './routes/__root'
-import { Route as WebSearchRouteImport } from './routes/web-search'
 import { Route as UnderTheHoodRouteImport } from './routes/under-the-hood'
 import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as ProjectsRouteImport } from './routes/projects'
@@ -37,11 +36,6 @@ import { Route as MessagingAppsIdRouteImport } from './routes/messaging-apps/$id
 import { Route as AgentsIdRouteImport } from './routes/agents/$id'
 import { Route as ProjectsIssuesIssueIdRouteImport } from './routes/projects/issues.$issueId'
 
-const WebSearchRoute = WebSearchRouteImport.update({
-  id: '/web-search',
-  path: '/web-search',
-  getParentRoute: () => rootRouteImport,
-} as any)
 const UnderTheHoodRoute = UnderTheHoodRouteImport.update({
   id: '/under-the-hood',
   path: '/under-the-hood',
@@ -188,7 +182,6 @@ export interface FileRoutesByFullPath {
   '/projects': typeof ProjectsRouteWithChildren
   '/settings': typeof SettingsRoute
   '/under-the-hood': typeof UnderTheHoodRoute
-  '/web-search': typeof WebSearchRoute
   '/agents/$id': typeof AgentsIdRoute
   '/messaging-apps/$id': typeof MessagingAppsIdRoute
   '/messaging-apps/new-telegram': typeof MessagingAppsNewTelegramRoute
@@ -214,7 +207,6 @@ export interface FileRoutesByTo {
   '/plugins': typeof PluginsRoute
   '/settings': typeof SettingsRoute
   '/under-the-hood': typeof UnderTheHoodRoute
-  '/web-search': typeof WebSearchRoute
   '/agents/$id': typeof AgentsIdRoute
   '/messaging-apps/$id': typeof MessagingAppsIdRoute
   '/messaging-apps/new-telegram': typeof MessagingAppsNewTelegramRoute
@@ -244,7 +236,6 @@ export interface FileRoutesById {
   '/projects': typeof ProjectsRouteWithChildren
   '/settings': typeof SettingsRoute
   '/under-the-hood': typeof UnderTheHoodRoute
-  '/web-search': typeof WebSearchRoute
   '/agents/$id': typeof AgentsIdRoute
   '/messaging-apps/$id': typeof MessagingAppsIdRoute
   '/messaging-apps/new-telegram': typeof MessagingAppsNewTelegramRoute
@@ -275,7 +266,6 @@ export interface FileRouteTypes {
     | '/projects'
     | '/settings'
     | '/under-the-hood'
-    | '/web-search'
     | '/agents/$id'
     | '/messaging-apps/$id'
     | '/messaging-apps/new-telegram'
@@ -301,7 +291,6 @@ export interface FileRouteTypes {
     | '/plugins'
     | '/settings'
     | '/under-the-hood'
-    | '/web-search'
     | '/agents/$id'
     | '/messaging-apps/$id'
     | '/messaging-apps/new-telegram'
@@ -330,7 +319,6 @@ export interface FileRouteTypes {
     | '/projects'
     | '/settings'
     | '/under-the-hood'
-    | '/web-search'
     | '/agents/$id'
     | '/messaging-apps/$id'
     | '/messaging-apps/new-telegram'
@@ -360,18 +348,10 @@ export interface RootRouteChildren {
   ProjectsRoute: typeof ProjectsRouteWithChildren
   SettingsRoute: typeof SettingsRoute
   UnderTheHoodRoute: typeof UnderTheHoodRoute
-  WebSearchRoute: typeof WebSearchRoute
 }
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
-    '/web-search': {
-      id: '/web-search'
-      path: '/web-search'
-      fullPath: '/web-search'
-      preLoaderRoute: typeof WebSearchRouteImport
-      parentRoute: typeof rootRouteImport
-    }
     '/under-the-hood': {
       id: '/under-the-hood'
       path: '/under-the-hood'
@@ -627,7 +607,6 @@ const rootRouteChildren: RootRouteChildren = {
   ProjectsRoute: ProjectsRouteWithChildren,
   SettingsRoute: SettingsRoute,
   UnderTheHoodRoute: UnderTheHoodRoute,
-  WebSearchRoute: WebSearchRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

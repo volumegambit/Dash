@@ -85,7 +85,7 @@ under a Node version missing a required symbol, or otherwise force the gateway s
 ### 2.1 Sidebar Layout & Health
 1. Take a screenshot of the full sidebar
 2. **Verify:** Logo at top with a small green health dot (gateway healthy)
-3. **Verify:** Three nav sections: CORE (Dashboard, Chat), MANAGE (Agents, Messaging Apps), CONFIGURE (AI Providers, Connectors, Web Search, Settings)
+3. **Verify:** Three nav sections: CORE (Dashboard, Chat), MANAGE (Agents, Messaging Apps), CONFIGURE (AI Providers, Connectors, Settings)
 4. **Verify:** Feedback link at bottom
 5. Click "Agents" in sidebar
 6. **Verify:** "Agents" is highlighted (bold, left accent border); other links are not
@@ -853,10 +853,10 @@ under a Node version missing a required symbol, or otherwise force the gateway s
 
 ---
 
-## Section 21: Web Search
+## Section 21: Web Search (in Settings)
 
 ### 21.1 No Key Set
-1. Navigate to Web Search
+1. Navigate to Settings and locate the "Web Search" section
 2. **Verify:** Password input field and "Save" button visible
 3. **Verify:** Link to Brave Search API signup is present
 
@@ -926,7 +926,7 @@ Take screenshots of every page and evaluate against these criteria. This section
 7. **Verify:** Icon-only buttons (trash, refresh, pencil) use consistent padding
 
 ### 23.2 Form Inputs
-1. Check text inputs across: Setup Wizard, Create Agent Wizard, Add Key modal, Add Connector modal, Web Search
+1. Check text inputs across: Setup Wizard, Create Agent Wizard, Add Key modal, Add Connector modal, Settings (Web Search section)
 2. **Verify:** All text inputs have consistent border color, background, and focus style (border-accent on focus)
 3. **Verify:** All password inputs use monospace font
 4. **Verify:** All dropdowns match text input styling
@@ -943,7 +943,7 @@ Take screenshots of every page and evaluate against these criteria. This section
 6. **Verify:** Dots are consistently sized within each context
 
 ### 23.4 Page Headers
-1. Visit every main page (Dashboard, Chat, Agents, Create Agent, AI Providers, Connectors, Messaging Apps, Web Search, Settings)
+1. Visit every main page (Dashboard, Chat, Agents, Create Agent, AI Providers, Connectors, Messaging Apps, Settings)
 2. **Verify:** Each page has a header with: small uppercase accent label (e.g., "MANAGE AGENTS") and a larger title
 3. **Verify:** Action buttons (Create Agent, Add Connector) are right-aligned in headers
 4. **Verify:** Header heights are consistent across pages

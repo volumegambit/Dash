@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from 'react';
 import type { AppSettings } from '../../../shared/ipc.js';
 import { ModelChainEditor } from '../components/ModelChainEditor.js';
 import { RelaySettings } from '../components/RelaySettings.js';
+import { WebSearchSettings } from '../components/WebSearchSettings.js';
 import { useAvailableModels } from '../hooks/useAvailableModels.js';
 import { useUIStore } from '../stores/ui.js';
 
@@ -112,6 +113,8 @@ function Settings(): JSX.Element {
             )}
           </div>
         </div>
+
+        <WebSearchSettings />
 
         <RelaySettings />
 
