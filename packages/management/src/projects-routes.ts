@@ -92,7 +92,11 @@ export function mountProjectsRoutes(app: Hono, deps: ProjectsRoutesDeps): void {
     }
   });
 
-  app.get('/projects/:id', (c) => {
+  app.get('/projects/:id', (c, next) => {
+    // `ws` is reserved for the /projects/ws WebSocket upgrade (projects-ws.ts),
+    // registered on the same app AFTER these routes — defer or this param
+    // route shadows the upgrade and every client gets a 404.
+    if (c.req.param('id') === 'ws') return next();
     const project = db.projects.getWithCounts(c.req.param('id'));
     if (!project) return c.json({ error: 'Project not found' }, 404);
     return c.json(project);
