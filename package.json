@@ -37,6 +37,7 @@
     "models:audit": "tsx scripts/audit-models.ts",
     "models:audit:apply": "tsx scripts/audit-models.ts --apply",
     "models:check": "tsx scripts/check-models-freshness.ts",
+    "providers:generate": "node --import tsx scripts/generate-core-providers-plugin.ts",
     "preflight": "npm run lint && npm run build && npm test && npm run models:check",
     "test": "vitest run",
     "plugins:e2e": "node scripts/plugins-e2e/run.mjs",

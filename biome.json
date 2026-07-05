@@ -47,6 +47,7 @@
       "**/node_modules/**",
       "data/**",
       "**/*.gen.ts",
+      "apps/gateway/plugins/dash-core-providers/**",
       ".claude/worktrees/**",
       ".worktrees/**",
       "apps/website/.next/**"
