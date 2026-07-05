@@ -87,8 +87,12 @@ export function createModelsRoute(options: ModelsRouteOptions): Hono {
   async function refreshNow(): Promise<ModelsRouteResponse> {
     if (inFlight) return inFlight;
     inFlight = (async () => {
-      const fingerprint = newestCatalogReviewedAt(catalogs());
-      const result = await discover(catalogs(), credentialResolver);
+      // Snapshot the live catalogs ONCE so the fingerprint and the discover run
+      // against an identical set — a plugin hot-reload between the two calls
+      // can't leave the persisted fingerprint out of step with the fetched models.
+      const cats = catalogs();
+      const fingerprint = newestCatalogReviewedAt(cats);
+      const result = await discover(cats, credentialResolver);
       const fetchedAt = new Date().toISOString();
       if (result.providersConfigured === 0) {
         // No credentials configured at all → serve an empty live list tagged

@@ -177,8 +177,16 @@ export interface RuntimePluginProvider {
   id: string;
   label: string;
   credentialPrefix: string;
-  /** Optional catalog UI hints (console URL, key placeholder, docs, sort order). */
-  ui?: { keyConsoleUrl?: string; keyPlaceholder?: string; docsUrl?: string; sortOrder?: number };
+  /** Name of the plugin that contributed this catalog (e.g. 'dash-core-providers'). */
+  pluginName: string;
+  /** Optional catalog UI hints (console URL, key placeholder, docs, description, sort order). */
+  ui?: {
+    keyConsoleUrl?: string;
+    keyPlaceholder?: string;
+    docsUrl?: string;
+    description?: string;
+    sortOrder?: number;
+  };
 }
 
 /** A loaded plugin's identity, as reported by GET /runtime/plugins. */

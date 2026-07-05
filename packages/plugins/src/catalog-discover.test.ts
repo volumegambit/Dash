@@ -195,6 +195,43 @@ describe('discoverCatalogModels', () => {
     expect(result.providersConfigured).toBe(2);
   });
 
+  it('orders two same-tier models within a catalog by id.localeCompare', async () => {
+    // A single pattern (tier 0) matches both ids; the fetch returns them in
+    // reverse-alphabetical order, so a stable output proves the id.localeCompare
+    // tie-break (not fetch order) drives within-catalog ordering at equal tier.
+    const SAME_TIER: ProviderCatalog = {
+      id: 'anthropic',
+      label: 'Anthropic',
+      credentialPrefix: 'anthropic-api-key',
+      baseUrl: 'https://api.anthropic.com',
+      api: 'anthropic-messages',
+      models: [],
+      modelsFetch: {
+        url: 'https://api.anthropic.com/v1/models',
+        auth: [{ header: 'x-api-key' }],
+        listPath: 'data',
+        idPath: 'id',
+        namePath: 'display_name',
+      },
+      supportedPatterns: [{ pattern: 'claude-opus-*', tier: 0 }],
+      ui: { sortOrder: 0 },
+    };
+    const impl = routedFetch({
+      'api.anthropic.com': {
+        data: [
+          { id: 'claude-opus-4-9', display_name: 'Claude Opus 4.9' },
+          { id: 'claude-opus-4-8', display_name: 'Claude Opus 4.8' },
+        ],
+      },
+    });
+    const result = await discoverCatalogModels([SAME_TIER], async () => 'key', impl);
+    // Equal tier ⇒ id.localeCompare: 4-8 sorts before 4-9 despite fetch order.
+    expect(result.models).toEqual([
+      { value: 'anthropic/claude-opus-4-8', label: 'Claude Opus 4.8', provider: 'anthropic' },
+      { value: 'anthropic/claude-opus-4-9', label: 'Claude Opus 4.9', provider: 'anthropic' },
+    ]);
+  });
+
   it('drops a fetched id matching an excluded pattern', async () => {
     const impl = routedFetch({
       'generativelanguage.googleapis.com': {

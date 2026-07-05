@@ -107,10 +107,11 @@ describe('@dash/plugin-sdk surface', () => {
       models: [{ id: 'gemini-3-pro', contextWindow: 2_000_000, maxTokens: 65_536 }],
       supportedPatterns: [{ pattern: 'gemini-*-pro*', tier: 0 }],
       excludedPatterns: ['gemini-*-tts*'],
-      ui: { keyConsoleUrl: 'https://x', sortOrder: 2 },
+      ui: { keyConsoleUrl: 'https://x', sortOrder: 2, description: 'Fast Gemini models.' },
     };
     expect(cat.excludedPatterns).toEqual(['gemini-*-tts*']);
     expect(cat.ui?.sortOrder).toBe(2);
+    expect(cat.ui?.description).toBe('Fast Gemini models.');
 
     const m: FilteredModel = { value: 'a/b', label: 'B', provider: 'a' };
     expect(m.value).toBe('a/b');

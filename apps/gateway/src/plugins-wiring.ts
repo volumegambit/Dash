@@ -2,7 +2,6 @@ import { join } from 'node:path';
 import type { PluginModelCatalog } from '@dash/agent';
 import type { Logger } from '@dash/logging';
 import type { McpServerConfig } from '@dash/mcp';
-import type { FilteredModel } from '@dash/plugin-sdk';
 import { RESERVED_FIRST_PLUGIN, createHookEngine, loadPlugins } from '@dash/plugins';
 import type {
   HookEngine,
@@ -13,11 +12,7 @@ import type {
 } from '@dash/plugins';
 import type { AgentChatCoordinator } from './agent-chat-coordinator.js';
 import type { ModelsStore } from './models-store.js';
-import {
-  createPluginModelCatalog,
-  excludeCoreProviderCollisions,
-  expandPluginModelsForRoute,
-} from './plugin-providers.js';
+import { createPluginModelCatalog, excludeCoreProviderCollisions } from './plugin-providers.js';
 
 /**
  * Immutable snapshot of the derived plugin wiring at a point in time.
@@ -30,7 +25,6 @@ export interface PluginWiringState {
   commandFiles: Array<{ file: string; namespace: string }>;
   hookEngine: HookEngine;
   pluginModelCatalog: PluginModelCatalog;
-  pluginModels: FilteredModel[];
   mcpConfigs: Array<{ pluginName: string; config: McpServerConfig }>;
   pluginProviderConfigs: ProviderConfigEntry[];
   /**
@@ -152,9 +146,10 @@ function toStatusRecord(
 /**
  * Rebuild the entire PluginWiringState from a `loadPlugins()` result: derive
  * skill dirs, namespaced command/agent files, the hook engine, the plugin model
- * catalog + flattened dropdown models, MCP configs, provider configs (with
- * core-collision exclusion), and the per-plugin status record map. Called on
- * boot and on every reload.
+ * catalog, MCP configs, provider configs (with core-collision exclusion), and
+ * the per-plugin status record map. Called on boot and on every reload. The
+ * models route derives its dropdown list itself from `pluginProviderConfigs`
+ * (via a live getter), so no flattened model list is cached in this snapshot.
  *
  * Side-effect-free state CONSTRUCTION only: it builds and returns the wiring
  * (including `mcpConfigs` in the state) but performs NO I/O. In particular it
@@ -214,7 +209,6 @@ export async function rebuildWiringState(
       RESERVED_FIRST_PLUGIN,
     );
   const pluginModelCatalog = createPluginModelCatalog(pluginProviderConfigs);
-  const pluginModels = expandPluginModelsForRoute(pluginProviderConfigs);
 
   // Per-plugin status records, keyed by plugin name, for API responses.
   // Also build per-plugin skill-dir attribution (plugin name → its own skill
@@ -237,7 +231,6 @@ export async function rebuildWiringState(
     commandFiles,
     hookEngine,
     pluginModelCatalog,
-    pluginModels,
     mcpConfigs: loadedPlugins.mcpConfigs,
     pluginProviderConfigs,
     droppedProviderCollisions,

@@ -91,7 +91,8 @@ The exhaustive manual test plan lives at `apps/mission-control/TEST_PLAN.md`. It
 - Clean environment: dispatch `mission-control-qa-from-clean` agent
 
 **When to run QA:** After changes to MC features, run the relevant TEST_PLAN sections. Use the section-to-feature mapping:
-- AI Providers / credentials changes → Sections 3, 15, 24
+- Setup wizard / provider picker changes → Section 1
+- AI Providers / credentials changes → Sections 1, 3, 15
 - Chat UI changes → Sections 6-17
 - Agent list/detail changes → Sections 4, 5, 18
 - Connectors (MCP) changes → Sections 19, 15

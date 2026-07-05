@@ -289,6 +289,7 @@ function validateUiHints(v: unknown, where: string): CatalogUiHints | undefined 
   const keyConsoleUrl = optString(u.keyConsoleUrl);
   const keyPlaceholder = optString(u.keyPlaceholder);
   const docsUrl = optString(u.docsUrl);
+  const description = optString(u.description);
   let sortOrder: number | undefined;
   if (u.sortOrder !== undefined) {
     if (typeof u.sortOrder !== 'number' || !Number.isFinite(u.sortOrder)) {
@@ -300,6 +301,7 @@ function validateUiHints(v: unknown, where: string): CatalogUiHints | undefined 
     keyConsoleUrl === undefined &&
     keyPlaceholder === undefined &&
     docsUrl === undefined &&
+    description === undefined &&
     sortOrder === undefined
   ) {
     return undefined;
@@ -308,6 +310,7 @@ function validateUiHints(v: unknown, where: string): CatalogUiHints | undefined 
     ...(keyConsoleUrl !== undefined ? { keyConsoleUrl } : {}),
     ...(keyPlaceholder !== undefined ? { keyPlaceholder } : {}),
     ...(docsUrl !== undefined ? { docsUrl } : {}),
+    ...(description !== undefined ? { description } : {}),
     ...(sortOrder !== undefined ? { sortOrder } : {}),
   };
 }
@@ -318,8 +321,9 @@ function validateUiHints(v: unknown, where: string): CatalogUiHints | undefined 
  * {`openai-completions`, `anthropic-messages`}, and a NON-EMPTY `models` array
  * whose entries each carry a string `id` + number `contextWindow`/`maxTokens`.
  * Optional fields (`dynamicModels`, `dynamicModelDefaults`, `placeholderKey`,
- * and per-model metadata) are validated when present and dropped when
- * malformed. Built field-by-field (never returns/spreads the parsed object →
+ * `excludedPatterns`, `ui.sortOrder`, `ui.description`, and per-model metadata)
+ * are validated when present and dropped when malformed. Built field-by-field
+ * (never returns/spreads the parsed object →
  * prototype-pollution-safe, consistent with `manifest.ts`). Throws a clear
  * error per bad field so the loader can isolate the offending plugin.
  */

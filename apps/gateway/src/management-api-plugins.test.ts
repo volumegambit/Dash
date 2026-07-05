@@ -96,7 +96,6 @@ function wiring(over: Partial<PluginWiringState> = {}): PluginWiringState {
     commandFiles: [],
     hookEngine: { hasHooks: false } as unknown as PluginWiringState['hookEngine'],
     pluginModelCatalog: {} as unknown as PluginWiringState['pluginModelCatalog'],
-    pluginModels: [],
     mcpConfigs: [],
     pluginProviderConfigs: [],
     droppedProviderCollisions: [],
@@ -821,11 +820,16 @@ describe('plugin management routes', () => {
       const res = await app.request('/runtime/plugins', { headers: AUTH });
       expect(res.status).toBe(200);
       const body = (await res.json()) as {
-        providers: Array<{ id: string; label: string; credentialPrefix: string }>;
+        providers: Array<{
+          id: string;
+          label: string;
+          credentialPrefix: string;
+          pluginName: string;
+        }>;
         plugins: Array<{ name: string; displayName?: string; version?: string }>;
       };
       expect(body.providers).toEqual([
-        { id: 'discoai', label: 'Disco AI', credentialPrefix: 'disco' },
+        { id: 'discoai', label: 'Disco AI', credentialPrefix: 'disco', pluginName: 'disco' },
       ]);
       // 'off' (disabled) is excluded; 'broke' (error, not disabled) is included.
       const names = body.plugins.map((p) => p.name).sort();
@@ -844,7 +848,7 @@ describe('plugin management routes', () => {
               label: 'Disco AI',
               credentialPrefix: 'disco',
               models: [],
-              ui: { keyConsoleUrl: 'https://x', sortOrder: 1 },
+              ui: { keyConsoleUrl: 'https://x', sortOrder: 1, description: 'Disco tunes.' },
             },
           } as unknown as PluginWiringState['pluginProviderConfigs'][number],
           {
@@ -867,7 +871,8 @@ describe('plugin management routes', () => {
           id: string;
           label: string;
           credentialPrefix: string;
-          ui?: { keyConsoleUrl?: string; sortOrder?: number };
+          pluginName: string;
+          ui?: { keyConsoleUrl?: string; sortOrder?: number; description?: string };
         }>;
       };
       expect(body.providers).toEqual([
@@ -875,9 +880,10 @@ describe('plugin management routes', () => {
           id: 'discoai',
           label: 'Disco AI',
           credentialPrefix: 'disco',
-          ui: { keyConsoleUrl: 'https://x', sortOrder: 1 },
+          pluginName: 'disco',
+          ui: { keyConsoleUrl: 'https://x', sortOrder: 1, description: 'Disco tunes.' },
         },
-        { id: 'plainai', label: 'Plain AI', credentialPrefix: 'plain' },
+        { id: 'plainai', label: 'Plain AI', credentialPrefix: 'plain', pluginName: 'plain' },
       ]);
     });
   });

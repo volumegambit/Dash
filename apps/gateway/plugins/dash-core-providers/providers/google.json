@@ -86,6 +86,7 @@
     "keyConsoleUrl": "https://aistudio.google.com/app/apikey",
     "keyPlaceholder": "AIza...",
     "docsUrl": "https://ai.google.dev/gemini-api/docs/quickstart",
+    "description": "Fast and capable Gemini models from Google DeepMind.",
     "sortOrder": 2
   }
 }

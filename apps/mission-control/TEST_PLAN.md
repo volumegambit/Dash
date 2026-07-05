@@ -41,30 +41,35 @@ npm run mc:dev
 3. **Verify:** A loading spinner or "Setting up" message is shown while the gateway initializes
 4. Wait for initialization to complete (or fail)
 
-### 1.2 Provider Selection
-1. After gateway init, a provider selection screen should appear
-2. **Verify:** Four provider cards visible: Anthropic, OpenAI, Google, Kimi by Moonshot
-3. Click the Anthropic card
-4. **Verify:** The Anthropic card has a selected/highlighted visual state; the others do not
-5. Click the OpenAI card
-6. **Verify:** Only OpenAI is highlighted now (Anthropic is deselected)
-7. Click back to Anthropic, then click "Next"
+### 1.2 Provider Selection (gateway-driven)
 
-### 1.3 API Key Entry
-1. **Verify:** The screen shows Anthropic-specific title and explanation
-2. **Verify:** Numbered how-to steps are displayed (1, 2, 3...) with colored step circles
-3. **Verify:** There is a "Key name" input and an "API key" input
-4. **Verify:** The API key input is a password field (characters masked)
-5. **Verify:** The save/submit button is disabled (both fields empty)
-6. Type `my key!` in the key name field
-7. Type anything in the API key field
+> Note: The wizard provider picker is populated from the gateway's runtime plugins, exactly like the AI Providers page — labels and descriptions come from the provider catalogs, and cards are sorted by catalog `ui.sortOrder`. There is no hardcoded provider list in the wizard.
+
+1. After gateway init, a provider selection screen ("Choose Your AI Provider") should appear
+2. **Verify:** Provider cards are listed in catalog `ui.sortOrder`: **Anthropic, OpenAI, Google, Moonshot (Kimi), OpenRouter** (plus any third-party provider plugins after those). Each card shows the catalog **label** and, when present, the catalog `ui.description` as a subtitle
+3. **Verify:** The **first** sorted provider (Anthropic) is **pre-selected** on arrival — it shows the selected/highlighted state and a check icon, and the continue button reads "Continue with Anthropic"
+4. Click the OpenAI card
+5. **Verify:** Only OpenAI is highlighted now (Anthropic is deselected); the continue button reads "Continue with OpenAI"
+6. Click back to Anthropic, then click "Continue with Anthropic"
+
+#### 1.2a Wizard Picker Loading / Error / Retry
+1. Reach the provider step immediately after gateway init, before the runtime-plugins fetch resolves
+2. **Verify:** A loading spinner is shown while the provider list is being fetched (no cards, no continue button yet)
+3. Simulate the gateway being unreachable for the fetch
+4. **Verify:** An error card is shown with the fetch error message (or a "no provider catalogs — make sure dash-core-providers is enabled" message) and a **Retry** button; no provider cards or continue button are shown
+5. Restore the gateway and click **Retry**
+6. **Verify:** The provider cards render and the first sorted provider is pre-selected
+
+### 1.3 API Key Entry (instructions derive from catalog ui hints)
+1. **Verify:** The screen title and explanation are the selected provider's (e.g. "Connect to Anthropic"), derived from the catalog
+2. **Verify:** Numbered how-to steps are displayed (1, 2, 3...) with colored step circles, sourced from the catalog `ui` hints — a **"Navigate to API Keys"** step deep-links to `ui.keyConsoleUrl`, the key-input placeholder matches `ui.keyPlaceholder`, and a documentation link deep-links to `ui.docsUrl`. There is **no** hardcoded root-console step
+3. **Verify (OAuth only on anthropic/openai):** For Anthropic the screen also offers a "Sign in with Claude (Pro/Max)" button above the API-key form (OpenAI would offer "Sign in with ChatGPT (Codex)"); other providers show no OAuth option
+4. **Verify:** There is an "API key" input and it is a password field (characters masked)
+5. **Verify:** The save/submit button is disabled when the API-key field is empty
+6. Type `sk-ant-test-fake-key-12345` in the API key field
+7. **Verify:** The save button is now enabled
 8. Click save
-9. **Verify:** An error message appears about invalid key name characters (only alphanumeric and hyphens allowed)
-10. Clear the key name, type `default`
-11. Type `sk-ant-test-fake-key-12345` in the API key field
-12. **Verify:** The save button is now enabled
-13. Click save
-14. **Verify:** The wizard advances to a "Done" / welcome screen
+9. **Verify:** The wizard advances to a "Done" / welcome screen
 
 ### 1.4 Setup Complete
 1. **Verify:** The dashboard loads after the wizard completes
@@ -121,32 +126,38 @@ under a Node version missing a required symbol, or otherwise force the gateway s
 
 ## Section 3: AI Providers (Settings → AI Providers)
 
-**Precondition:** App running, at least one API key configured.
+**Precondition:** App running, gateway healthy, at least one API key configured.
 **Bootstrap:** If no key exists, go to AI Providers → click "Add Key" for Anthropic → enter key name `default` and a valid API key from `test-credentials.json` → Save.
+
+> Note: MC no longer hardcodes the provider list. Every provider card — bundled and plugin-contributed alike — is rendered from the gateway's `GET /runtime/plugins` response (fetched over the T1 IPC bridge). Card title = catalog label, subtitle = catalog `ui.description`, ordering = catalog `ui.sortOrder`, and the connect-modal instructions are derived from the catalog `ui` hints. There is no separate "plugin providers" screen; core and plugin providers share one unified list and one connect flow.
 
 ### 3.1 Page Layout
 1. Navigate to Settings → AI Providers
 2. Take a screenshot of the full page
-3. **Verify:** Provider sections visible (Anthropic, OpenAI, Google, Kimi by Moonshot)
-4. **Verify:** The key added during setup (`default`) appears under Anthropic
-5. **Verify:** An "Add Key" or "+" button is visible for each provider
-6. **Verify:** Buttons use bordered style (not plain text links)
-7. **Verify (Moonshot):** The Kimi by Moonshot section shows an `sk-...` placeholder and links to platform.moonshot.ai; adding a key under `moonshotai` makes Kimi K2 models (e.g. `moonshotai/kimi-k2-thinking`) selectable in the model dropdown
+3. **Verify:** A single unified list of provider cards is shown (no separate core vs. plugin sections). The cards appear in catalog `ui.sortOrder`: **Anthropic, OpenAI, Google, Moonshot (Kimi) (`moonshotai`), OpenRouter**, then any third-party plugin providers after those
+4. **Verify:** Each card's title is the catalog **label** and, when the catalog supplies one, a **subtitle** (catalog `ui.description`) appears under it
+5. **Verify:** The key added during setup (`default`) appears under Anthropic, and Anthropic shows a green **Active** badge; providers with no key show a red **Disabled** badge and "No key configured"
+6. **Verify:** An "Add Key" button is visible on every provider card, using bordered style (not a plain text link)
+7. **Verify:** Only **Anthropic** and **OpenAI** cards show an OAuth login button ("Add Claude Login Key" / "Add Codex Login Key"); other cards do not
+8. **Verify (source badge):** Providers from the bundled `dash-core-providers` plugin (Anthropic, OpenAI, Google, Moonshot, OpenRouter) show **no** source badge. A third-party provider contributed by another installed plugin shows a small accent **plugin-name badge** next to its title (the badge text is that plugin's name). If no third-party provider plugin is installed, skip this sub-check.
+9. **Verify (Moonshot):** The Moonshot (Kimi) card shows an `sk-...` placeholder (from the catalog `ui.keyPlaceholder`) in its connect modal and links to platform.moonshot.ai; adding a key under `moonshotai` makes Kimi K2 models (e.g. `moonshotai/kimi-k2-thinking`) selectable in the model dropdown
 
-### 3.2 Add a Second Key
+### 3.2 Add a Second Key (modal instructions derive from catalog ui hints)
 1. Click the "Add Key" button for Anthropic
-2. **Verify:** A modal opens with provider-specific instructions
-3. **Verify:** Modal has: key name input, API key input (password field), numbered how-to steps, external links, Cancel and Save buttons
-4. **Verify:** Save is disabled when fields are empty
-5. Type `secondary` in key name
-6. Type `sk-ant-test-secondary-key` in API key
-7. Click Save
-8. **Verify:** Modal closes; `secondary` key now appears in the Anthropic section
+2. **Verify:** A modal opens titled **"Connect to Anthropic"** with provider-specific instructions
+3. **Verify:** Modal has: an explanation line, a numbered "How to get your key" list, key name input, API key input (password field), Cancel and Save buttons
+4. **Verify (ui-hint-derived instructions):** The how-to steps come from the catalog `ui` hints, not a hardcoded root-console step. There is **no** "create a free account on the root console" step. Instead a **"Navigate to API Keys"** step deep-links to the catalog `ui.keyConsoleUrl`, the API-key input placeholder matches the catalog `ui.keyPlaceholder` (e.g. `sk-ant-...`), and a **documentation link** ("Anthropic documentation") deep-links to `ui.docsUrl`
+5. **Verify:** Save is disabled when either field is empty
+6. Type `secondary` in key name
+7. Type `sk-ant-test-secondary-key` in API key
+8. **Verify:** Save is now enabled
+9. Click Save
+10. **Verify:** Modal closes; `secondary` key now appears under the Anthropic card
 
 ### 3.3 Key Deletion (No Agents Affected)
 1. Click the remove/trash button next to the `secondary` key
-2. **Verify:** A confirmation dialog appears
-3. Click confirm/remove
+2. **Verify:** An inline "Remove key?" confirmation appears
+3. Click "Yes, remove"
 4. **Verify:** The `secondary` key disappears from the list
 
 ### 3.4 Escape Key Closes Modals
@@ -154,6 +165,21 @@ under a Node version missing a required symbol, or otherwise force the gateway s
 2. Press Escape
 3. **Verify:** The modal closes
 4. **Verify:** No key was added
+
+### 3.5 Loading & Error States (gateway-driven list)
+1. Open Settings → AI Providers immediately after a cold gateway start, before the runtime-plugins fetch resolves
+2. **Verify:** A centered loading spinner is shown while the provider list is being fetched (no cards yet)
+3. Simulate the gateway being unreachable when the fetch runs (e.g. stop the gateway, then reopen AI Providers)
+4. **Verify:** An error/empty card is shown titled **"No AI providers available"** with the fetch error message and a **Retry** button; clicking Retry re-fetches from the gateway
+5. Restore the gateway and click **Retry**
+6. **Verify:** The provider cards render
+
+### 3.6 Empty State via Disabling the Bundled Providers Plugin
+1. Go to **Settings → Plugins** and **disable** the built-in **`dash-core-providers`** plugin
+2. Return to **Settings → AI Providers** (reopen the page so it re-fetches)
+3. **Verify:** The **"No AI providers available"** empty-state card is shown. Its message names the **dash-core-providers** plugin and tells the user to re-enable it under Settings → Plugins (or install a provider plugin), and a **Retry** button is present
+4. Re-enable **`dash-core-providers`** under Settings → Plugins, return to AI Providers, and click **Retry**
+5. **Verify:** The full unified provider list returns (Anthropic, OpenAI, Google, Moonshot, OpenRouter)
 
 ---
 
@@ -578,14 +604,17 @@ under a Node version missing a required symbol, or otherwise force the gateway s
 
 **Bootstrap:** For 15.1: Create an agent (Section 4), then remove its API key from AI Providers. For 15.2-15.3: Create an agent that uses an MCP connector (assign via Agent Detail → Configuration → Connectors card).
 
-### 15.1 Missing Credential Banner
+> Note: Provider credentials for core and plugin providers now share one list and one connect flow on the AI Providers page (Section 3). Recovery — the "Update Key →" link the auth-error surfaces (see 15.1) and the "Add key" flow it leads to — behaves identically whether the agent's model belongs to a bundled `dash-core-providers` provider or a third-party plugin provider.
+
+### 15.1 Missing Credential Error
+There is no pre-send "missing credential" banner in chat; the input is not gated on credentials. Instead, sending a message with no key surfaces the provider's auth error inline in the message stream.
 1. Create an agent, then remove its API key
-2. Navigate to Chat, select a conversation for that agent
-3. **Verify:** Yellow banner above input: "This agent is missing an API key for [provider]"
-4. **Verify:** Chat input is disabled (cannot type or send)
-5. **Verify:** Send button is disabled (50% opacity)
-6. Add the key back
-7. **Verify:** Banner disappears, input re-enabled
+2. Navigate to Chat, select a conversation for that agent, and send a message
+3. **Verify:** The input is NOT blocked — the message sends and the agent's error surfaces inline as red error text in the conversation (e.g. a 401/authentication/"invalid key" message from the provider)
+4. **Verify:** For an auth-type error, an "Update Key →" link is shown beneath the error text that navigates to Settings → AI Providers
+5. Add the key back from Settings → AI Providers (same unified list/flow for core and plugin providers)
+6. **Verify:** Re-sending the message now succeeds (no auth error)
+7. **Verify (plugin provider parity, if a third-party provider plugin is installed):** Repeat 1–6 with an agent whose model belongs to a plugin-contributed provider. The inline auth error, the "Update Key →" link, and the add-key recovery behave identically
 
 ### 15.2 MCP Connector Offline Banner
 1. Create an agent that uses an MCP connector
