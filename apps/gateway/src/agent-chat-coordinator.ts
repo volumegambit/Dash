@@ -160,6 +160,13 @@ export function createAgentChatCoordinator(
       model: entry.config.model,
       systemPrompt,
       fallbackModels: entry.config.fallbackModels,
+      // Per-agent provider allow-list, resolved LIVE on every message just like
+      // `model`/`fallbackModels`. This is what makes the gate propagate to a
+      // warm backend without a pool eviction: `PUT /agents/:id` mutates the
+      // registry, the next `chat()` re-reads it here, and `resolveModel` gates
+      // on this value. `undefined` = no gating; `[]` = block-all. See
+      // agent-chat-coordinator.test.ts (live provider propagation).
+      allowedProviders: entry.config.providers,
       tools: entry.config.tools,
       skills: entry.config.skills,
     };

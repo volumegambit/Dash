@@ -17,9 +17,19 @@ import type { GatewayAgentConfig } from './agent-registry.js';
  * model" / a real model instead of the policy error and this test fails.
  */
 
-/** Cast helper to call the private resolveModel directly (no live pi session). */
+/**
+ * Cast helper to call the private resolveModel directly (no live pi session).
+ * Passes the backend's frozen `config.allowedProviders` as the gate — mirroring
+ * the `start()` path, which is what this wiring test asserts (that
+ * `agentConfig.providers` reaches the frozen `DashAgentConfig.allowedProviders`).
+ */
 function resolve(backend: PiAgentBackend, modelStr: string): Model<Api> {
-  return (backend as unknown as { resolveModel(s: string): Model<Api> }).resolveModel(modelStr);
+  const cfg = (backend as unknown as { config: { allowedProviders?: string[] } }).config;
+  return (
+    backend as unknown as {
+      resolveModel(s: string, a: string[] | undefined): Model<Api>;
+    }
+  ).resolveModel(modelStr, cfg.allowedProviders);
 }
 
 /**

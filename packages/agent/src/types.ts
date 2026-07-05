@@ -91,6 +91,16 @@ export interface AgentState {
   systemPrompt: string;
   model: string;
   fallbackModels?: string[];
+  /**
+   * Provider allow-list gating model resolution for THIS message. Carried on
+   * `AgentState` — rebuilt from the live config on every `chat()` — so the gate
+   * rides the exact same per-message mechanism as `model`/`fallbackModels`: a
+   * warm backend picks up allow-list changes on the next turn without a pool
+   * eviction, and the gate can never come from a different config generation
+   * than the model string it guards. `undefined` = no gating; `[]` = no provider
+   * allowed. See `DashAgentConfig.allowedProviders`.
+   */
+  allowedProviders?: string[];
   tools?: string[];
   workspace?: string;
   images?: ImageBlock[];

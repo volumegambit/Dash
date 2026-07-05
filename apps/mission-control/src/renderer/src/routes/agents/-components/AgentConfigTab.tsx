@@ -182,6 +182,18 @@ export function AgentConfigTab({
   // runtime) so a user can always see and remove a scoped selection.
   const unassignedProviders = poolProviders.filter((p) => !assignedProviders.includes(p.id));
 
+  // Distinguish "no restriction" (providers absent → all providers, the
+  // default) from an explicit `providers: []` (every provider BLOCKED). The UI
+  // itself can never produce `[]` — clearing the last chip writes `null` (= all,
+  // see handleUnassignProvider). So a persisted empty array can only arrive via
+  // the management API, and rendering it as "All providers (default)" would be a
+  // lie: such an agent can use NO provider and cannot resolve any model. We read
+  // the persisted config directly (not the transient `assignedProviders`) so a
+  // normal in-UI clear — which momentarily empties `assignedProviders` while it
+  // persists `null` — never flashes the blocked label.
+  const blockedByEmptyAllowList =
+    Array.isArray(agentConfig?.providers) && agentConfig.providers.length === 0;
+
   const handleAssignProvider = useCallback(
     async (id: string) => {
       // Empty = all: a non-empty selection scopes the agent to those providers;
@@ -417,10 +429,20 @@ export function AgentConfigTab({
               }}
               onRefresh={refreshModels}
               refreshing={modelsRefreshing}
-              // Live providers-card selection: an empty allow-list means "all",
-              // so pass undefined to disable filtering; a non-empty selection
-              // filters the dropdown and re-filters immediately as the card edits.
-              allowedProviders={assignedProviders.length > 0 ? assignedProviders : undefined}
+              // Live providers-card selection. Three cases:
+              //  - non-empty selection → filter the dropdown to those providers
+              //    (re-filters immediately as the card edits);
+              //  - API-set `providers: []` (blockedByEmptyAllowList) → pass `[]`
+              //    so EVERY model is correctly marked disallowed, matching the
+              //    gateway's block-all gate (undefined here would wrongly un-filter);
+              //  - absent (no restriction) → undefined disables filtering (all).
+              allowedProviders={
+                assignedProviders.length > 0
+                  ? assignedProviders
+                  : blockedByEmptyAllowList
+                    ? []
+                    : undefined
+              }
             />
             <div className="mt-3 flex justify-end gap-2">
               <button
@@ -757,7 +779,9 @@ export function AgentConfigTab({
             <p className="text-xs text-muted">
               {assignedProviders.length > 0
                 ? `${assignedProviders.length} selected`
-                : 'All providers (default)'}
+                : blockedByEmptyAllowList
+                  ? 'No providers (agent blocked)'
+                  : 'All providers (default)'}
             </p>
           </div>
           {openCard === 'providers' ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
@@ -784,6 +808,12 @@ export function AgentConfigTab({
                   </span>
                 ))}
               </div>
+            ) : blockedByEmptyAllowList ? (
+              <p className="mb-3 text-sm text-red-500">
+                No providers (agent blocked). This agent's allow-list is empty (set via the API), so
+                it cannot use any provider and no model will resolve. Select a provider below to
+                unblock it.
+              </p>
             ) : (
               <p className="mb-3 text-sm text-muted">
                 All providers (default). This agent can use every provider. Select providers below

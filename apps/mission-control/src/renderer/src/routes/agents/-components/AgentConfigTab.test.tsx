@@ -346,4 +346,43 @@ describe('AgentConfigTab providers card', () => {
     expect(screen.queryByRole('option', { name: /Anthropic/i })).not.toBeInTheDocument();
     expect(screen.getByRole('option', { name: /OpenAI/i })).toBeInTheDocument();
   });
+
+  it('renders an API-set `providers: []` as "No providers (agent blocked)", not "All providers"', async () => {
+    // The UI itself can never produce `providers: []` (clearing the last chip
+    // writes `null`). An empty array can only arrive via the management API and
+    // means the agent is BLOCKED from every provider — the collapsed summary and
+    // expanded copy must say so honestly, never "All providers (default)" (which
+    // would imply the opposite: unrestricted access).
+    const user = userEvent.setup();
+    mockApi.plugins.runtime.mockResolvedValue({
+      providers: [
+        runtimeProvider('anthropic', { label: 'Anthropic', ui: { sortOrder: 0 } }),
+        runtimeProvider('openai', { label: 'OpenAI', ui: { sortOrder: 1 } }),
+      ],
+      plugins: [],
+    });
+    const updateConfig = vi.fn().mockResolvedValue(undefined);
+
+    render(
+      <AgentConfigTab
+        agentId="agent-1"
+        agentConfig={{ ...baseConfig, providers: [] }}
+        updateConfig={updateConfig}
+      />,
+    );
+
+    // Collapsed summary must NOT read "All providers"; it reads the blocked copy.
+    expect(screen.getByText(/no providers \(agent blocked\)/i)).toBeInTheDocument();
+    expect(screen.queryByText(/all providers \(default\)/i)).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: /providers/i }));
+
+    // Expanded copy explains the block and how to recover; no "all providers" lie.
+    expect(
+      await screen.findByText(/no providers \(agent blocked\)\. this agent's allow-list is empty/i),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText(/all providers \(default\)\. this agent can use every provider/i),
+    ).not.toBeInTheDocument();
+  });
 });

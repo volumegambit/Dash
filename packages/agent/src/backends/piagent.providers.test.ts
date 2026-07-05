@@ -26,9 +26,42 @@ function makeFakeModel(provider: string, id: string): Model<Api> {
   };
 }
 
-/** Cast helper to call the private resolveModel directly. */
+/**
+ * Cast helper to call the private resolveModel with the backend's frozen
+ * `config.allowedProviders` — the `start()`-time gate. The catalog-precedence
+ * backends below set no allow-list, so this passes `undefined` (no gating).
+ */
 function resolve(backend: PiAgentBackend, modelStr: string): Model<Api> {
-  return (backend as unknown as { resolveModel(s: string): Model<Api> }).resolveModel(modelStr);
+  const cfg = (backend as unknown as { config: { allowedProviders?: string[] } }).config;
+  return (
+    backend as unknown as {
+      resolveModel(s: string, a: string[] | undefined): Model<Api>;
+    }
+  ).resolveModel(modelStr, cfg.allowedProviders);
+}
+
+/**
+ * Cast helper to call the private resolveModel WITH the live allow-list
+ * override — this is the argument `runModelChain` passes as `state.allowedProviders`.
+ */
+function resolveLive(
+  backend: PiAgentBackend,
+  modelStr: string,
+  allowed: string[] | undefined,
+): Model<Api> {
+  return (
+    backend as unknown as {
+      resolveModel(s: string, a: string[] | undefined): Model<Api>;
+    }
+  ).resolveModel(modelStr, allowed);
+}
+
+/** Backend with a constructor-frozen allow-list, for live-override tests. */
+function makeBackendWithFrozenAllowList(allowedProviders: string[] | undefined): PiAgentBackend {
+  return new PiAgentBackend(
+    { model: 'anthropic/claude-sonnet-4-5', systemPrompt: 'x', allowedProviders },
+    {},
+  );
 }
 
 function makeBackend(catalog?: PluginModelCatalog): PiAgentBackend {
@@ -97,5 +130,50 @@ describe('PiAgentBackend.resolveModel — plugin model catalog precedence', () =
     };
     const backend = makeBackend(catalog);
     expect(() => resolve(backend, 'noslash')).toThrow(/must be in "provider\/model" format/);
+  });
+});
+
+/**
+ * Live per-message allow-list propagation. `runModelChain` passes the LIVE
+ * `state.allowedProviders` (rebuilt from the registry every message) into
+ * `resolveModel`, so the gate must honor that argument over the
+ * constructor-frozen `this.config.allowedProviders`. These tests exercise the
+ * two-arg form directly — the connective tissue that lets a WARM backend
+ * enforce the current policy without a pool eviction (the whole point of this
+ * fix wave). Frozen-config wiring stays covered by backend-providers-wiring.test.ts.
+ */
+describe('PiAgentBackend.resolveModel — live per-message allow-list override', () => {
+  it('REFUSES a now-disallowed provider when the live list restricts, even though the backend was frozen unrestricted', () => {
+    // Backend warmed while the agent had NO restriction (undefined).
+    const backend = makeBackendWithFrozenAllowList(undefined);
+    // A later message carries the live list ['anthropic'] — google must be refused
+    // on THIS turn, without rebuilding the backend.
+    expect(() => resolveLive(backend, 'google/gemini-x', ['anthropic'])).toThrow(
+      'Provider "google" is not allowed for this agent (allowed: anthropic)',
+    );
+  });
+
+  it('ALLOWS a provider when the live list clears a restriction the backend was frozen with', () => {
+    // Backend warmed while the agent was restricted to ['anthropic'].
+    const backend = makeBackendWithFrozenAllowList(['anthropic']);
+    // The restriction was cleared (undefined = no gating) — google now resolves
+    // past the gate (fails later as Unknown model, NOT the policy error).
+    expect(() => resolveLive(backend, 'google/gemini-x', undefined)).toThrow(/Unknown model/);
+  });
+
+  it('honors a live [] (block-all) over a permissive frozen list — [] must not fall through', () => {
+    // Frozen list allowed anthropic; the live state is [] (block everything).
+    const backend = makeBackendWithFrozenAllowList(['anthropic']);
+    expect(() => resolveLive(backend, 'anthropic/claude-sonnet-4-5', [])).toThrow(
+      'Provider "anthropic" is not allowed for this agent (allowed: none)',
+    );
+  });
+
+  it('falls back to the frozen config when no live override is supplied (start()-time path)', () => {
+    // start() calls resolveModel(model) with one arg → frozen this.config gate.
+    const backend = makeBackendWithFrozenAllowList(['anthropic']);
+    expect(() => resolve(backend, 'google/gemini-x')).toThrow(
+      'Provider "google" is not allowed for this agent (allowed: anthropic)',
+    );
   });
 });

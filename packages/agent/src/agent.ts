@@ -59,6 +59,12 @@ export class DashAgent {
       message: userMessage,
       model: config.model,
       fallbackModels: config.fallbackModels,
+      // Carry the allow-list on the per-message state alongside the model it
+      // gates. Because `config` is a fresh resolver read on every chat(), an
+      // agent scoped to specific providers AFTER a conversation warmed up takes
+      // effect on the next message — the gate and the model string always come
+      // from the same config generation. See AgentState.allowedProviders.
+      allowedProviders: config.allowedProviders,
       systemPrompt,
       tools: config.tools,
       workspace: config.workspace,
