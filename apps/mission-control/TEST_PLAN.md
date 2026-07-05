@@ -1276,6 +1276,7 @@ Take screenshots of every page and evaluate against these criteria. This section
 16. Click a card's assign icon. **Verify:** A dropdown lists non-disabled agents; the card does NOT open. Pick an agent.
 17. **Verify:** The menu closes; the card moves to In Progress under "Agent working" without a refresh; the task detail shows the new linked session.
 18. Open Projects → All tasks (also check My work and a project's task table). **Verify:** The Assignee cell of each row has the same assign icon; clicking it opens the menu without opening the row, and Escape or an outside click closes it.
+19. With a task's detail page open, link a session WITHOUT using this window's UI — e.g. ask an agent in Chat to pick up the task via its projects tool, or assign an agent from a second MC window. **Verify:** The new "🤖 <agent>" session tab appears in the open task page's tab bar live (driven by the session.linked broadcast), without navigating away and back.
 
 ---
 

@@ -1,6 +1,8 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import type { McConversation } from '@dash/mc';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { mockApi } from '../../../../vitest.setup.js';
 import type { Issue, IssueDetail, Project } from '../../../shared/projects-ipc.js';
+import { useChatStore } from './chat.js';
 import { useProjectsStore } from './projects.js';
 
 function issue(id: string, patch: Partial<Issue> = {}): Issue {
@@ -37,8 +39,19 @@ function project(id: string, patch: Partial<Project> = {}): Project {
   };
 }
 
+function conversation(id: string): McConversation {
+  return {
+    id,
+    agentId: 'Developer',
+    title: id,
+    createdAt: '2026-07-05T00:00:00Z',
+    updatedAt: '2026-07-05T00:00:00Z',
+  };
+}
+
 beforeEach(() => {
   useProjectsStore.setState({ issuesById: {}, projectsById: {}, inbox: [], detailById: {} });
+  useChatStore.setState({ conversations: [] });
 });
 
 describe('useProjectsStore.applyEvent', () => {
@@ -135,6 +148,43 @@ describe('useProjectsStore.applyEvent', () => {
     ).not.toThrow();
     expect(mockApi.projectsGetIssue).not.toHaveBeenCalled();
   });
+
+  it('refreshes the chat conversation list on session.linked even when the detail is not cached', async () => {
+    // Broadcast-only link paths (agent projects tool, second MC window) create
+    // a conversation this window has never loaded; the task page's session
+    // tabs filter linked_sessions by the chat store's list, so the store must
+    // refresh it — no component ever calls loadConversations for these.
+    mockApi.chatListConversations.mockResolvedValue([conversation('sess-1')]);
+
+    useProjectsStore.getState().applyEvent({
+      topic: 'session.linked',
+      payload: { issue_id: 'not-cached' },
+    });
+
+    expect(mockApi.chatListConversations).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => {
+      expect(useChatStore.getState().conversations.map((c) => c.id)).toEqual(['sess-1']);
+    });
+  });
+
+  it('refreshes both the cached detail and the conversation list on session.linked', async () => {
+    const detail = { ...issue('1'), comments: [], events: [], linked_sessions: [], subtasks: [] };
+    useProjectsStore.setState({ detailById: { '1': detail as IssueDetail } });
+    mockApi.chatListConversations.mockResolvedValue([conversation('sess-1')]);
+
+    useProjectsStore.getState().applyEvent({ topic: 'session.linked', payload: { issue_id: '1' } });
+
+    expect(mockApi.projectsGetIssue).toHaveBeenCalledWith('1');
+    expect(mockApi.chatListConversations).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['issue.event.appended', 'comment.added', 'comment.edited', 'comment.deleted'] as const)(
+    'does NOT refresh the conversation list on %s',
+    (topic) => {
+      useProjectsStore.getState().applyEvent({ topic, payload: { issue_id: '1' } });
+      expect(mockApi.chatListConversations).not.toHaveBeenCalled();
+    },
+  );
 
   it('removes the issue, its cached children, its detail, and its inbox row on issue.deleted', () => {
     const parent = issue('1');
