@@ -183,39 +183,55 @@ describe('appendPluginModels', () => {
 });
 
 describe('excludeCoreProviderCollisions', () => {
-  function cat(id: string): ProviderConfigEntry {
-    return entry({
-      id,
-      label: id,
-      credentialPrefix: `${id}-api-key`,
-      baseUrl: 'https://x/v1',
-      api: 'openai-completions',
-      models: [],
-    });
+  function cat(id: string, pluginName = 'demo'): ProviderConfigEntry {
+    return {
+      pluginName,
+      catalog: {
+        id,
+        label: id,
+        credentialPrefix: `${id}-api-key`,
+        baseUrl: 'https://x/v1',
+        api: 'openai-completions',
+        models: [],
+      },
+    };
   }
 
-  it('drops catalogs whose id collides with a core provider id and keeps the rest', () => {
+  it('keeps a reserved id when it comes from the owner plugin', () => {
     const { safe, dropped } = excludeCoreProviderCollisions(
-      [cat('anthropic'), cat('myllm')],
+      [cat('anthropic', 'dash-core-providers'), cat('myllm')],
       ['anthropic', 'openai', 'google'],
+      'dash-core-providers',
+    );
+    expect(safe.map((e) => e.catalog.id)).toEqual(['anthropic', 'myllm']);
+    expect(dropped).toEqual([]);
+  });
+
+  it('drops a reserved id claimed by any other plugin and keeps the rest', () => {
+    const { safe, dropped } = excludeCoreProviderCollisions(
+      [cat('anthropic', 'impostor'), cat('myllm')],
+      ['anthropic', 'openai', 'google'],
+      'dash-core-providers',
     );
     expect(safe.map((e) => e.catalog.id)).toEqual(['myllm']);
     expect(dropped.map((e) => e.catalog.id)).toEqual(['anthropic']);
   });
 
-  it('compares ids case-insensitively', () => {
+  it('compares reserved ids case-insensitively', () => {
     const { safe, dropped } = excludeCoreProviderCollisions(
-      [cat('Anthropic'), cat('myllm')],
+      [cat('Anthropic', 'impostor'), cat('myllm')],
       ['anthropic', 'openai', 'google'],
+      'dash-core-providers',
     );
     expect(safe.map((e) => e.catalog.id)).toEqual(['myllm']);
     expect(dropped.map((e) => e.catalog.id)).toEqual(['Anthropic']);
   });
 
-  it('returns all entries as safe when none collide', () => {
+  it('passes non-reserved ids regardless of which plugin declares them', () => {
     const { safe, dropped } = excludeCoreProviderCollisions(
-      [cat('myllm'), cat('acme')],
+      [cat('myllm', 'impostor'), cat('acme', 'dash-core-providers')],
       ['anthropic', 'openai', 'google'],
+      'dash-core-providers',
     );
     expect(safe.map((e) => e.catalog.id)).toEqual(['myllm', 'acme']);
     expect(dropped).toEqual([]);

@@ -3,7 +3,7 @@ import type { PluginModelCatalog } from '@dash/agent';
 import type { Logger } from '@dash/logging';
 import type { McpServerConfig } from '@dash/mcp';
 import type { FilteredModel } from '@dash/models';
-import { createHookEngine, loadPlugins } from '@dash/plugins';
+import { RESERVED_FIRST_PLUGIN, createHookEngine, loadPlugins } from '@dash/plugins';
 import type {
   HookEngine,
   PluginRecord as LoaderPluginRecord,
@@ -192,13 +192,18 @@ export async function rebuildWiringState(
     dataDir: options.dataDir,
   });
 
-  // Provider catalogs — drop any that collide with a built-in provider id
-  // (defense-in-depth: a trusted plugin could declare a core provider id and
-  // shadow its namespace). The dropped set is returned (not logged here) so the
+  // Provider catalogs — reserved (core) provider ids belong to the bundled
+  // dash-core-providers plugin; drop them from any other plugin
+  // (defense-in-depth: a trusted plugin could declare a reserved id and shadow
+  // its namespace). The dropped set is returned (not logged here) so the
   // caller surfaces collisions at boot AND on reload while this builder stays
   // side-effect-free.
   const { safe: pluginProviderConfigs, dropped: droppedProviderCollisions } =
-    excludeCoreProviderCollisions(loadedPlugins.providerConfigs, coreProviderIds);
+    excludeCoreProviderCollisions(
+      loadedPlugins.providerConfigs,
+      coreProviderIds,
+      RESERVED_FIRST_PLUGIN,
+    );
   const pluginModelCatalog = createPluginModelCatalog(pluginProviderConfigs);
   const pluginModels = expandPluginModelsForRoute(pluginProviderConfigs);
 

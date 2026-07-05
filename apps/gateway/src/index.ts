@@ -168,14 +168,15 @@ async function main() {
     pluginsDir,
   });
 
-  // Surface provider catalogs dropped for colliding with a built-in provider id
+  // Surface provider catalogs dropped for claiming a reserved provider id
   // (defense-in-depth — a trusted plugin could declare e.g. `anthropic` and
-  // shadow its namespace). rebuildWiringState returns the dropped set so this is
-  // logged at boot AND on every reload (the builder itself stays side-effect-free).
+  // shadow the namespace owned by the bundled dash-core-providers plugin).
+  // rebuildWiringState returns the dropped set so this is logged at boot AND
+  // on every reload (the builder itself stays side-effect-free).
   const logDroppedCollisions = (dropped: typeof wiringState.droppedProviderCollisions): void => {
     for (const { pluginName, catalog } of dropped) {
       logger.warn(
-        `plugin '${pluginName}' provider catalog id '${catalog.id}' collides with a built-in provider — ignored`,
+        `plugin '${pluginName}' provider catalog id '${catalog.id}' is a reserved provider id owned by dash-core-providers — ignored`,
       );
     }
   };
