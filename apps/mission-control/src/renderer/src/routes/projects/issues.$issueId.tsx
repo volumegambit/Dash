@@ -156,16 +156,19 @@ export function TaskDetail(): JSX.Element {
   const [assignAgentId, setAssignAgentId] = useState('');
   const [assigning, setAssigning] = useState(false);
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
+  // 'task' or an MC session id — which tab fills the main column.
+  const [activeTab, setActiveTab] = useState<'task' | string>('task');
 
   useEffect(() => {
     loadProjects();
     loadIssueDetail(issueId);
     // Agents feed the assign picker; conversations decide which linked-session
-    // chips can show in the embedded session panel.
+    // tabs can show in the main column.
     loadAgents();
     loadConversations();
     // A session picked on one task must not leak onto the next.
     setSelectedSessionId(null);
+    setActiveTab('task');
   }, [loadIssueDetail, loadProjects, loadAgents, loadConversations, issueId]);
 
   if (!detail) {
@@ -192,6 +195,25 @@ export function TaskDetail(): JSX.Element {
     selectedSessionId && mcSessions.some((l) => l.session_id === selectedSessionId)
       ? selectedSessionId
       : (latestMcSession?.session_id ?? null);
+
+  // Tabs are newest-first; duplicate agent labels get a short id suffix.
+  const orderedMcSessions = [...mcSessions].sort((a, b) =>
+    b.last_referenced_at.localeCompare(a.last_referenced_at),
+  );
+  const agentLabelCounts = new Map<string, number>();
+  for (const l of orderedMcSessions) {
+    const key = l.agent_id ?? 'Agent';
+    agentLabelCounts.set(key, (agentLabelCounts.get(key) ?? 0) + 1);
+  }
+  const sessionTabLabel = (l: (typeof orderedMcSessions)[number]): string => {
+    const name = l.agent_id ?? 'Agent';
+    return (agentLabelCounts.get(name) ?? 0) > 1
+      ? `🤖 ${name} · ${l.session_id.slice(0, 4)}`
+      : `🤖 ${name}`;
+  };
+  // A selected session tab whose conversation vanished falls back to Task.
+  const activeSessionTab =
+    activeTab !== 'task' && mcSessions.some((l) => l.session_id === activeTab) ? activeTab : null;
 
   // session_linked events carry a raw session id; show the agent behind it.
   const sessionLinkedLabel = (event: IssueEvent): string => {
@@ -229,13 +251,21 @@ export function TaskDetail(): JSX.Element {
     const agent = agents.find((a) => a.id === assignAgentId);
     if (!agent || assigning) return;
     setAssigning(true);
+    const before = new Set(detail.linked_sessions.map((l) => l.session_id));
     try {
       await assignAgent(issueId, { id: agent.id, name: agent.name });
       // Assign just created a NEW chat conversation; without a reload the
       // mount-time conversations snapshot excludes it, the mcSessions filter
-      // drops the link, and the session pane stays hidden until a remount.
+      // drops the link, and the session tab never shows until a remount.
       await loadConversations();
       setAssignAgentId('');
+      // Jump to the freshly created session's tab — that's where the kickoff streams.
+      const after = useProjectsStore.getState().detailById[issueId]?.linked_sessions ?? [];
+      const fresh = after.find((l) => !before.has(l.session_id)) ?? after[0];
+      if (fresh) {
+        setActiveTab(fresh.session_id);
+        setSelectedSessionId(fresh.session_id);
+      }
     } catch {
       // Error surfaced via the store; keep the picker state for retry.
     } finally {
@@ -346,106 +376,149 @@ export function TaskDetail(): JSX.Element {
       </div>
 
       <div className="flex min-h-0 flex-1">
-        {/* Left pane — task content */}
+        {/* Main column — Task tab (description/timeline/composer) or a session tab */}
         <div className="flex min-w-0 flex-1 flex-col overflow-auto border-r border-border px-8 py-4">
-          <p className="mb-2 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[2px] text-accent">
-            Description
-          </p>
-          {detail.description ? (
-            <div className="mb-4 text-sm text-foreground">
-              <Markdown>{detail.description}</Markdown>
+          {orderedMcSessions.length > 0 && (
+            <div role="tablist" className="mb-4 flex shrink-0 gap-1 border-b border-border">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={!activeSessionTab}
+                data-testid="tab-task"
+                onClick={() => setActiveTab('task')}
+                className={`px-3 py-1.5 text-xs ${
+                  !activeSessionTab
+                    ? 'border-b-2 border-accent text-accent'
+                    : 'text-muted hover:text-foreground'
+                }`}
+              >
+                Task
+              </button>
+              {orderedMcSessions.map((link) => (
+                <button
+                  key={link.session_id}
+                  type="button"
+                  role="tab"
+                  aria-selected={activeSessionTab === link.session_id}
+                  data-testid={`tab-session-${link.session_id}`}
+                  onClick={() => {
+                    setActiveTab(link.session_id);
+                    setSelectedSessionId(link.session_id);
+                  }}
+                  className={`flex items-center gap-1.5 truncate px-3 py-1.5 text-xs ${
+                    activeSessionTab === link.session_id
+                      ? 'border-b-2 border-accent text-accent'
+                      : 'text-muted hover:text-foreground'
+                  }`}
+                >
+                  {sessionTabLabel(link)}
+                  {chatSending[link.session_id] && (
+                    <span
+                      data-testid={`tab-dot-${link.session_id}`}
+                      className="h-1.5 w-1.5 shrink-0 rounded-full bg-accent"
+                    />
+                  )}
+                </button>
+              ))}
             </div>
-          ) : (
-            <p className="mb-4 text-sm italic text-muted">No description</p>
           )}
 
-          <p className="mb-2 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[2px] text-accent">
-            Timeline
-          </p>
-          <div className="flex-1">
-            {timeline.map((item) =>
-              item.kind === 'comment' ? (
-                <CommentRow
-                  key={item.comment.id}
-                  comment={item.comment}
-                  onDelete={(id) => deleteComment(issueId, id)}
-                />
-              ) : isAgentRunEvent(item.event) ? (
-                <AgentRunRow key={item.event.id} event={item.event} />
-              ) : (
-                <div
-                  key={item.event.id}
-                  className="flex items-center justify-between py-1 text-xs text-muted"
+          {activeSessionTab ? (
+            <div className="flex min-h-0 flex-1 flex-col">
+              <div className="flex shrink-0 items-center justify-end">
+                <button
+                  type="button"
+                  onClick={() =>
+                    navigate({
+                      to: '/chat',
+                      search: { agentId: '', conversationId: activeSessionTab },
+                    })
+                  }
+                  title="Open in Chat"
+                  aria-label="Open in Chat"
+                  data-testid="session-open-chat"
+                  className="p-1 text-muted transition-colors hover:text-accent"
                 >
-                  <span>
-                    {item.event.type === 'session_linked'
-                      ? sessionLinkedLabel(item.event)
-                      : eventSummary(item.event)}
-                  </span>
-                  <span className="shrink-0 pl-2 text-[10px] opacity-60">
-                    {relativeTime(item.event.created_at)}
-                  </span>
-                </div>
-              ),
-            )}
-          </div>
-
-          {/* Composer */}
-          <div className="mt-4">
-            <textarea
-              value={draft}
-              onChange={(e) => setDraft(e.target.value)}
-              placeholder="Add a comment…"
-              rows={3}
-              className="w-full border border-border bg-background p-2 text-sm text-foreground placeholder:text-muted focus:border-accent focus:outline-none"
-            />
-            <div className="mt-1 flex items-center justify-between">
-              <span className="text-[10px] text-muted">
-                {activeSessionId
-                  ? activeSessionBusy
-                    ? 'Agent is mid-run — comment stays on the task'
-                    : 'Also sent to the agent session'
-                  : ''}
-              </span>
-              <button
-                type="button"
-                onClick={submitComment}
-                disabled={!draft.trim()}
-                className="bg-accent px-3 py-1 text-sm text-white hover:opacity-90 disabled:opacity-50"
-              >
-                Comment
-              </button>
+                  <ExternalLink size={12} />
+                </button>
+              </div>
+              {/* Keyed so draft/answered state resets when switching sessions. */}
+              <SessionPanel key={activeSessionTab} conversationId={activeSessionTab} />
             </div>
-          </div>
-        </div>
-
-        {/* Middle pane — embedded agent session (latest or chip-selected) */}
-        {activeSessionId && (
-          <div className="flex min-w-0 flex-1 flex-col border-r border-border">
-            <div className="flex shrink-0 items-center justify-between px-5 pt-4">
-              <p className="font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[2px] text-accent">
-                Agent session
+          ) : (
+            <>
+              <p className="mb-2 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[2px] text-accent">
+                Description
               </p>
-              <button
-                type="button"
-                onClick={() =>
-                  navigate({
-                    to: '/chat',
-                    search: { agentId: '', conversationId: activeSessionId },
-                  })
-                }
-                title="Open in Chat"
-                aria-label="Open in Chat"
-                data-testid="session-open-chat"
-                className="p-1 text-muted transition-colors hover:text-accent"
-              >
-                <ExternalLink size={12} />
-              </button>
-            </div>
-            {/* Keyed so draft/answered state resets when switching sessions. */}
-            <SessionPanel key={activeSessionId} conversationId={activeSessionId} />
-          </div>
-        )}
+              {detail.description ? (
+                <div className="mb-4 text-sm text-foreground">
+                  <Markdown>{detail.description}</Markdown>
+                </div>
+              ) : (
+                <p className="mb-4 text-sm italic text-muted">No description</p>
+              )}
+
+              <p className="mb-2 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[2px] text-accent">
+                Timeline
+              </p>
+              <div className="flex-1">
+                {timeline.map((item) =>
+                  item.kind === 'comment' ? (
+                    <CommentRow
+                      key={item.comment.id}
+                      comment={item.comment}
+                      onDelete={(id) => deleteComment(issueId, id)}
+                    />
+                  ) : isAgentRunEvent(item.event) ? (
+                    <AgentRunRow key={item.event.id} event={item.event} />
+                  ) : (
+                    <div
+                      key={item.event.id}
+                      className="flex items-center justify-between py-1 text-xs text-muted"
+                    >
+                      <span>
+                        {item.event.type === 'session_linked'
+                          ? sessionLinkedLabel(item.event)
+                          : eventSummary(item.event)}
+                      </span>
+                      <span className="shrink-0 pl-2 text-[10px] opacity-60">
+                        {relativeTime(item.event.created_at)}
+                      </span>
+                    </div>
+                  ),
+                )}
+              </div>
+
+              {/* Composer */}
+              <div className="mt-4">
+                <textarea
+                  value={draft}
+                  onChange={(e) => setDraft(e.target.value)}
+                  placeholder="Add a comment…"
+                  rows={3}
+                  className="w-full border border-border bg-background p-2 text-sm text-foreground placeholder:text-muted focus:border-accent focus:outline-none"
+                />
+                <div className="mt-1 flex items-center justify-between">
+                  <span className="text-[10px] text-muted">
+                    {activeSessionId
+                      ? activeSessionBusy
+                        ? 'Agent is mid-run — comment stays on the task'
+                        : 'Also sent to the agent session'
+                      : ''}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={submitComment}
+                    disabled={!draft.trim()}
+                    className="bg-accent px-3 py-1 text-sm text-white hover:opacity-90 disabled:opacity-50"
+                  >
+                    Comment
+                  </button>
+                </div>
+              </div>
+            </>
+          )}
+        </div>
 
         {/* Right pane */}
         <div className="w-72 shrink-0 overflow-auto px-5 py-4">
