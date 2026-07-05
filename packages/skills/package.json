@@ -4,7 +4,7 @@
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
-  "files": ["dist", "skills"],
+  "files": ["dist", "plugins"],
   "exports": {
     ".": {
       "import": "./dist/index.js",

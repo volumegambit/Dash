@@ -12,6 +12,7 @@ function makeRecord(overrides: Partial<PluginRecord> = {}): PluginRecord {
     status: 'loaded',
     enabled: true,
     trusted: false,
+    builtin: false,
     activated: ['skills'],
     noop: ['mcp'],
     version: '1.2.3',
@@ -219,5 +220,25 @@ describe('PluginsScreen', () => {
     render(<PluginsScreen />);
 
     expect(await screen.findByText(/gateway unreachable/)).toBeInTheDocument();
+  });
+
+  it('shows a Built-in badge and hides Remove for builtin plugins', async () => {
+    mockApi.plugins.list.mockResolvedValue([
+      makeRecord({ name: 'dash-dev', displayName: 'Dash Dev', builtin: true }),
+    ]);
+    render(<PluginsScreen />);
+
+    expect(await screen.findByText('Built-in')).toBeInTheDocument();
+    expect(screen.queryByText('Remove')).not.toBeInTheDocument();
+  });
+
+  it('still shows Remove for non-builtin plugins', async () => {
+    mockApi.plugins.list.mockResolvedValue([
+      makeRecord({ name: 'user-plugin', displayName: 'User Plugin', builtin: false }),
+    ]);
+    render(<PluginsScreen />);
+
+    expect(await screen.findByText('Remove')).toBeInTheDocument();
+    expect(screen.queryByText('Built-in')).not.toBeInTheDocument();
   });
 });

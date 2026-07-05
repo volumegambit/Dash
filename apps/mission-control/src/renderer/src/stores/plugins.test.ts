@@ -9,6 +9,7 @@ function record(name: string, patch: Partial<PluginRecord> = {}): PluginRecord {
     status: 'loaded',
     enabled: true,
     trusted: true,
+    builtin: false,
     activated: ['skills'],
     noop: [],
     ...patch,

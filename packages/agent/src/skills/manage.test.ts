@@ -153,20 +153,20 @@ describe('removeSkillFromDir', () => {
     expect(existsSync(join(managed, 'foo'))).toBe(false);
   });
 
-  it('refuses to remove a bundled skill', async () => {
+  it('refuses to remove a plugin-provided skill with code "plugin"', async () => {
     const list = async (): Promise<SkillDiscoveryResult[]> => [
       {
-        name: 'deep-research',
-        description: 'd',
-        location: '',
+        name: 'code-review',
+        description: 'x',
+        location: '/plugins/dash-dev/skills/code-review/SKILL.md',
         content: '',
+        source: 'plugin',
         editable: false,
-        source: 'bundled',
       },
     ];
     await expect(
-      removeSkillFromDir({ managedDir: managed, name: 'deep-research', listFn: list }),
-    ).rejects.toMatchObject({ code: 'bundled' });
+      removeSkillFromDir({ managedDir: managed, name: 'code-review', listFn: list }),
+    ).rejects.toMatchObject({ code: 'plugin' });
   });
 
   it('rejects a missing skill', async () => {

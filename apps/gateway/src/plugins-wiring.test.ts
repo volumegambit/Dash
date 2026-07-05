@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { discoverSkills, loadFlatSkills } from '@dash/agent';
 import type { Logger } from '@dash/logging';
 import { MANIFEST_DIR, MANIFEST_FILENAME, PluginConfigStore, loadPlugins } from '@dash/plugins';
-import type { PluginEntryConfig } from '@dash/plugins';
+import type { PluginRecord as LoaderPluginRecord, PluginEntryConfig } from '@dash/plugins';
 import { vi } from 'vitest';
 import type { AgentChatCoordinator } from './agent-chat-coordinator.js';
 import { ModelsStore } from './models-store.js';
@@ -33,7 +33,7 @@ describe('gateway plugin → skill wiring', () => {
     const loaded = await loadPlugins({ pluginsDir, entries: { disco: { enabled: true } } });
 
     // Mirror the gateway merge: plugin skill dirs appended to agent skills.paths.
-    const skills = await discoverSkills({ paths: loaded.skillDirs, includeBundled: false });
+    const skills = await discoverSkills({ paths: loaded.skillDirs });
     expect(skills.map((s) => s.name)).toContain('greeter');
   });
 
@@ -526,6 +526,7 @@ describe('reloadPluginsUnderMutex', () => {
     const state = await reloadPluginsUnderMutex(
       store,
       pluginsDir,
+      undefined,
       tmp,
       NOOP_LOGGER,
       modelsStore,
@@ -572,6 +573,7 @@ describe('reloadPluginsUnderMutex', () => {
       reloadPluginsUnderMutex(
         store,
         pluginsDir,
+        undefined,
         tmp,
         NOOP_LOGGER,
         modelsStore,
@@ -622,6 +624,7 @@ describe('reloadPluginsUnderMutex', () => {
       reloadPluginsUnderMutex(
         store,
         pluginsDir,
+        undefined,
         tmp,
         NOOP_LOGGER,
         modelsStore,
@@ -651,6 +654,7 @@ describe('reloadPluginsUnderMutex', () => {
     await reloadPluginsUnderMutex(
       store,
       pluginsDir,
+      undefined,
       tmp,
       NOOP_LOGGER,
       modelsStore,
@@ -660,6 +664,7 @@ describe('reloadPluginsUnderMutex', () => {
     await reloadPluginsUnderMutex(
       store,
       pluginsDir,
+      undefined,
       tmp,
       NOOP_LOGGER,
       modelsStore,
@@ -687,6 +692,7 @@ describe('reloadPluginsUnderMutex', () => {
       reloadPluginsUnderMutex(
         store,
         pluginsDir,
+        undefined,
         tmp,
         NOOP_LOGGER,
         modelsStore,
@@ -711,6 +717,7 @@ describe('reloadPluginsUnderMutex', () => {
     const ok = await reloadPluginsUnderMutex(
       store,
       pluginsDir,
+      undefined,
       tmp,
       NOOP_LOGGER,
       okStore,
@@ -737,6 +744,7 @@ describe('reloadPluginsUnderMutex', () => {
     const state = await reloadPluginsUnderMutex(
       store,
       pluginsDir,
+      undefined,
       tmp,
       NOOP_LOGGER,
       modelsStore,
@@ -773,6 +781,7 @@ describe('reloadPluginsUnderMutex', () => {
     const state = await reloadPluginsUnderMutex(
       store,
       pluginsDir,
+      undefined,
       tmp,
       NOOP_LOGGER,
       modelsStore,
@@ -787,5 +796,74 @@ describe('reloadPluginsUnderMutex', () => {
     expect(swapped).toBe(true);
     expect(Object.keys(state.pluginRecords)).toEqual(['alpha']);
     expect(agents.evictAll).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ===========================================================================
+// builtin status records (Task 3) — the `builtin` flag + enabled rule.
+// These construct loader records directly (no on-disk fixtures) so a builtin
+// record can be injected without a config entry, exercising the enabled rule
+// for builtins.
+// ===========================================================================
+
+const testOptions = WIRING_OPTIONS;
+
+/** Build a minimal loader `PluginRecord` for a status-record test. */
+function makeRecord(
+  overrides: Partial<LoaderPluginRecord> & Pick<LoaderPluginRecord, 'name' | 'status'>,
+): LoaderPluginRecord {
+  return {
+    dir: join('/tmp/wiring-test-data/plugins', overrides.name),
+    skillDirs: [],
+    activated: [],
+    noop: [],
+    ...overrides,
+  };
+}
+
+/** Wrap loader records in an otherwise-empty `LoadedPlugins` result. */
+function makeLoadedPlugins(records: LoaderPluginRecord[]): Awaited<ReturnType<typeof loadPlugins>> {
+  return {
+    records,
+    skillDirs: [],
+    commandFiles: [],
+    agentFiles: [],
+    binDirs: [],
+    mcpConfigs: [],
+    hookConfigs: [],
+    providerConfigs: [],
+  };
+}
+
+describe('builtin status records', () => {
+  it('marks builtin records and computes enabled without a config entry', async () => {
+    const loaded = makeLoadedPlugins([
+      makeRecord({ name: 'dash-dev', status: 'loaded', builtin: true }),
+    ]);
+    const wiring = await rebuildWiringState(loaded, {}, [], testOptions);
+    expect(wiring.pluginRecords['dash-dev']).toMatchObject({
+      builtin: true,
+      enabled: true,
+      trusted: false,
+    });
+  });
+
+  it('a disabled builtin reports enabled:false, builtin:true', async () => {
+    const loaded = makeLoadedPlugins([
+      makeRecord({ name: 'dash-dev', status: 'disabled', builtin: true }),
+    ]);
+    const wiring = await rebuildWiringState(
+      loaded,
+      { 'dash-dev': { enabled: false } },
+      [],
+      testOptions,
+    );
+    expect(wiring.pluginRecords['dash-dev']).toMatchObject({ builtin: true, enabled: false });
+  });
+
+  it('non-builtin records report builtin:false', async () => {
+    const loaded = makeLoadedPlugins([makeRecord({ name: 'other', status: 'loaded' })]);
+    const wiring = await rebuildWiringState(loaded, { other: { enabled: true } }, [], testOptions);
+    expect(wiring.pluginRecords.other.builtin).toBe(false);
   });
 });

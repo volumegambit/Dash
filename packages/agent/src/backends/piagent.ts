@@ -1266,16 +1266,15 @@ export class PiAgentBackend implements AgentBackend {
   }
 
   /**
-   * Discover skills across all tiers (managed > configured paths > bundled),
-   * then merge in any flat single-file skills/commands supplied via
-   * `extraSkillFiles`. Discovered skills win on a name collision — flat skills
-   * whose name already appears are skipped.
+   * Discover skills across all tiers (managed > configured paths), then merge
+   * in any flat single-file skills/commands supplied via `extraSkillFiles`.
+   * Discovered skills win on a name collision — flat skills whose name already
+   * appears are skipped.
    */
   async listSkills(): Promise<SkillDiscoveryResult[]> {
     const discovered = await discoverSkills({
       managedSkillsDir: this.managedSkillsDir,
       paths: this.config.skills?.paths,
-      includeBundled: this.config.skills?.includeBundled,
     });
     const flat = await loadFlatSkills(this.extraSkillFiles);
     const seen = new Set(discovered.map((s) => s.name));

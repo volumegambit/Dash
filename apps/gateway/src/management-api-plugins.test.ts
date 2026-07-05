@@ -676,6 +676,95 @@ describe('plugin management routes', () => {
     });
   });
 
+  describe('builtin plugin guards', () => {
+    // Lay down a minimal LOCAL plugin source dir whose manifest name collides
+    // with a builtin (`dash-dev`), reusing the install-test fixture pattern.
+    async function writeCollidingPlugin(root: string): Promise<string> {
+      const src = join(root, 'src-dash-dev');
+      await mkdir(join(src, '.claude-plugin'), { recursive: true });
+      await writeFile(
+        join(src, '.claude-plugin', 'plugin.json'),
+        JSON.stringify({ name: 'dash-dev', version: '1.0.0', description: 'dash-dev plugin' }),
+      );
+      await mkdir(join(src, 'skills', 'greeter'), { recursive: true });
+      await writeFile(
+        join(src, 'skills', 'greeter', 'SKILL.md'),
+        '---\nname: greeter\ndescription: greets\n---\nhi',
+      );
+      return src;
+    }
+
+    it('DELETE /plugins/:name returns 400 for a builtin', async () => {
+      // A builtin has no config entry — the guard must fire off the wiring
+      // record BEFORE the store lookup (otherwise this would 404).
+      const { store } = stubConfigStore({});
+      const { app } = createApp({
+        wiringState: wiring({
+          pluginRecords: { 'dash-dev': record({ name: 'dash-dev', builtin: true }) },
+        }),
+        configStore: store,
+        reloadPlugins: vi.fn(),
+        pluginsDir: '/tmp/plugins',
+      });
+      const res = await app.request('/plugins/dash-dev', { method: 'DELETE', headers: AUTH });
+      expect(res.status).toBe(400);
+      expect((await res.json()).error).toMatch(/built-in plugins cannot be removed/);
+      expect(store.remove).not.toHaveBeenCalled();
+    });
+
+    it('PUT /plugins/:name still disables a builtin', async () => {
+      const { store } = stubConfigStore({ 'dash-dev': { enabled: true } });
+      const reloadPlugins = vi.fn().mockResolvedValue(undefined);
+      const { app } = createApp({
+        wiringState: wiring({
+          pluginRecords: { 'dash-dev': record({ name: 'dash-dev', builtin: true }) },
+        }),
+        configStore: store,
+        reloadPlugins,
+      });
+      const res = await app.request('/plugins/dash-dev', {
+        method: 'PUT',
+        headers: JSON_HEADERS,
+        body: JSON.stringify({ enabled: false }),
+      });
+      expect(res.status).toBe(200);
+      expect(store.setEnabled).toHaveBeenCalledWith('dash-dev', false);
+    });
+
+    it('POST /plugins/install rejects a builtin name collision with 409', async () => {
+      const dataDir = await mkdtemp(join(tmpdir(), 'plugins-install-collide-'));
+      const pluginsDir = join(dataDir, 'plugins');
+      try {
+        // Fixture source resolves to a plugin whose manifest name is 'dash-dev'.
+        const collidingSourceDir = await writeCollidingPlugin(dataDir);
+        const { store } = stubConfigStore({});
+        const reloadPlugins = vi.fn().mockResolvedValue(wiring());
+        const { app } = createApp({
+          wiringState: wiring({
+            pluginRecords: { 'dash-dev': record({ name: 'dash-dev', builtin: true }) },
+          }),
+          configStore: store,
+          reloadPlugins,
+          pluginsDir,
+          dataDir,
+        });
+
+        const res = await app.request('/plugins/install', {
+          method: 'POST',
+          headers: JSON_HEADERS,
+          body: JSON.stringify({ source: collidingSourceDir }),
+        });
+        expect(res.status).toBe(409);
+        expect((await res.json()).error).toMatch(/built-in plugin name/);
+        // Rolled back: neither persisted nor left on disk under pluginsDir.
+        expect(store.setEnabled).not.toHaveBeenCalled();
+        await expect(stat(join(pluginsDir, 'dash-dev'))).rejects.toBeTruthy();
+      } finally {
+        await rm(dataDir, { recursive: true, force: true });
+      }
+    });
+  });
+
   describe('POST /plugins/reload', () => {
     it('reloads, emits plugin:reloaded, returns an ISO timestamp', async () => {
       const reloadPlugins = vi.fn().mockResolvedValue(wiring());

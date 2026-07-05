@@ -1294,8 +1294,23 @@ Take screenshots of every page and evaluate against these criteria. This section
 10. **Verify:** The skill appears with a **Remote** badge. (Try a known-dangerous local skill and **verify** the install is refused with a scan message.)
 11. Click **Remove** on the installed or created skill.
 12. **Verify:** It disappears from the list.
-13. In the **Skills settings** strip, toggle **Include bundled skill library** off and Save.
-14. **Verify:** Bundled skills no longer appear in the list (re-enable to restore).
+13. In **Settings → Plugins**, disable the built-in plugin that contributes this agent's bundled skills (e.g. disable **Skill Management** for `manage-skills`, or **Developer** for `code-review`).
+14. **Verify:** In chat over this agent, `load_skill <name>` for that plugin's skill no longer finds it (and the skill drops from the agent's Skills tab list); re-enable the plugin and **verify** the skill loads again.
+
+## Section 29: Plugins (Settings → Plugins)
+
+Covers the Plugins screen (P3), plugin trust, per-agent plugin selection (P5), and built-in plugins.
+
+**Preconditions:** Gateway running and MC connected (Sections 1–2). No test plugins installed yet.
+
+1. Navigate to Settings → Plugins. **Verify:** the five built-in plugins (Assistant, Communication, Creative, Developer, Skill Management) are listed, each with a "Built-in" badge, status "Loaded", a skills contribution tag, an Enable/Disable control, and NO Remove button.
+2. Disable "Developer". **Verify:** status flips to Disabled; in a chat with any agent, `load_skill code-review` no longer finds the skill. Re-enable and verify it returns.
+3. Install a plugin from a local path source (any valid plugin dir; the E2E demo plugin layout works). **Verify:** it appears with Enable/Disable, Trust, and Remove controls and NO Built-in badge.
+4. Install form: submit a source that resolves to the name `dash-dev`. **Verify:** the install is rejected with a built-in name error; the built-in row is unaffected.
+5. Trust flow on the installed plugin: click Trust. **Verify:** the confirmation modal lists exactly the code components (bin/hooks/MCP/providers) and a "runs code on your machine" warning; confirm, then Revoke Trust.
+6. Remove the installed plugin. **Verify:** confirm dialog states the directory will be deleted; after removal the row disappears; built-in rows remain.
+7. Agent detail → Config tab: the plugins multiselect lists built-ins and installed plugins alike. Select only "Assistant" for an agent. **Verify:** in chat, that agent can `load_skill deep-research` but NOT `code-review`.
+8. Agent detail → Skills tab. **Verify:** there is NO "Include bundled skill library" checkbox; built-in skills appear in the list as read-only plugin skills.
 
 ## Section 29: Companion widget (floating pet)
 

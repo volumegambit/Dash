@@ -11,6 +11,7 @@ function plugin(patch: Partial<PluginRecord> = {}): PluginRecord {
     status: 'loaded',
     enabled: true,
     trusted: false,
+    builtin: false,
     activated: ['skills'],
     noop: ['mcp', 'hooks'],
     version: '1.2.3',

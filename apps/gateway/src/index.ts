@@ -18,6 +18,7 @@ import { PROVIDERS } from '@dash/models';
 import { gatewayDir, migrateLegacyLayout, workspacesDir } from '@dash/paths';
 import { PluginConfigStore, loadPlugins } from '@dash/plugins';
 import { createProjectsTools, openProjectsDb } from '@dash/projects';
+import { getBuiltinPluginsDir } from '@dash/skills';
 import { serve } from '@hono/node-server';
 import { createNodeWebSocket } from '@hono/node-ws';
 import { Hono } from 'hono';
@@ -36,6 +37,7 @@ import { loadOrCreateGatewayIdentity } from './gateway-identity.js';
 import { createDynamicGateway } from './gateway.js';
 import { createGatewayManagementApp } from './management-api.js';
 import { McpConfigStore } from './mcp-store.js';
+import { migrateIncludeBundled } from './migrate-include-bundled.js';
 import { ModelsStore } from './models-store.js';
 import { OAuthRefreshCoordinator } from './oauth-refresh.js';
 import { filterPluginsByAgent } from './plugin-filtering.js';
@@ -143,9 +145,13 @@ async function main() {
   // Resolved ONCE here and reused by the boot load, every hot-reload, and the
   // DELETE /plugins/:name realpath guard, so all three agree on the exact dir.
   const pluginsDir = resolve(dataDir, 'plugins');
+  // Built-in plugins ship inside @dash/skills and are resolved at runtime —
+  // never persisted to config.json — so the path can't rot across updates.
+  const builtinRoot = getBuiltinPluginsDir();
   const pluginEntries = await pluginConfigStore.load();
   const loadedPlugins = await loadPlugins({
     pluginsDir,
+    builtinRoot,
     entries: pluginEntries,
     logger,
   });
@@ -257,6 +263,12 @@ async function main() {
   await registry.load();
   if (registry.list().length > 0) {
     console.log(`[agents] Restored ${registry.list().length} agent(s) from disk`);
+  }
+  // One-time migration: the removed skills.includeBundled flag becomes
+  // per-agent plugin selection (see migrate-include-bundled.ts).
+  const migratedAgents = await migrateIncludeBundled(registry, wiringState.pluginRecords, logger);
+  if (migratedAgents > 0) {
+    logger.info(`[migrate] rewrote ${migratedAgents} agent(s) off skills.includeBundled`);
   }
   const agents = createAgentChatCoordinator({
     registry,
@@ -471,6 +483,7 @@ async function main() {
     reloadPluginsUnderMutex(
       pluginConfigStore,
       pluginsDir,
+      builtinRoot,
       dataDir,
       logger,
       modelsStore,
