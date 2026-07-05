@@ -1,4 +1,5 @@
 import type {
+  CatalogAuthRule,
   CatalogModel,
   HookCommand,
   HookEvent,
@@ -64,6 +65,43 @@ describe('@dash/plugin-sdk surface', () => {
     };
     expect(cat.api).toBe('openai-completions');
     expect(cat.models[0].id).toBe('acme-large');
+  });
+
+  it('ProviderCatalog accepts the widened api union and the new optional blocks', () => {
+    const cat: ProviderCatalog = {
+      id: 'google',
+      label: 'Google',
+      credentialPrefix: 'google-api-key',
+      baseUrl: 'https://generativelanguage.googleapis.com',
+      api: 'google-generative-ai',
+      models: [{ id: 'gemini-3-pro', contextWindow: 2_000_000, maxTokens: 65_536 }],
+      modelsFetch: {
+        url: 'https://generativelanguage.googleapis.com/v1beta/models',
+        auth: [{ queryParam: 'key' }],
+        listPath: 'models',
+        idPath: 'name',
+        namePath: 'displayName',
+        stripIdPrefix: 'models/',
+      },
+      supportedPatterns: [{ pattern: 'gemini-*-pro*', tier: 0 }],
+      reviewedAt: '2026-07-05',
+      ui: { keyConsoleUrl: 'https://aistudio.google.com/apikey', keyPlaceholder: 'AIza…' },
+    };
+    expect(cat.api).toBe('google-generative-ai');
+    expect(cat.modelsFetch?.auth[0]?.queryParam).toBe('key');
+  });
+
+  it('CatalogAuthRule expresses the Anthropic OAuth header swap declaratively', () => {
+    const rules: CatalogAuthRule[] = [
+      {
+        whenKeyPrefix: 'sk-ant-oat',
+        header: 'authorization',
+        valuePrefix: 'Bearer ',
+        extraHeaders: { 'anthropic-beta': 'oauth-2025-04-20' },
+      },
+      { header: 'x-api-key' },
+    ];
+    expect(rules[0]?.whenKeyPrefix).toBe('sk-ant-oat');
   });
 
   it('HooksConfig maps hook events to matcher groups', () => {

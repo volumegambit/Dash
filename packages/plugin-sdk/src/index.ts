@@ -113,6 +113,72 @@ export interface CatalogModel {
 }
 
 /**
+ * Wire protocols the host runtime (pi-ai) can dispatch. Mirror of pi-ai's
+ * `KnownApi` — keep in sync when bumping @earendil-works/pi-ai.
+ */
+export type CatalogApi =
+  | 'openai-completions'
+  | 'openai-responses'
+  | 'azure-openai-responses'
+  | 'openai-codex-responses'
+  | 'anthropic-messages'
+  | 'mistral-conversations'
+  | 'bedrock-converse-stream'
+  | 'google-generative-ai'
+  | 'google-vertex';
+
+/**
+ * One declarative way to attach the API key to a models-list request. Rules
+ * are evaluated in order; the first whose `whenKeyPrefix` matches (or that has
+ * no `whenKeyPrefix`) applies. Lets a catalog express e.g. Anthropic's OAuth
+ * header swap without code.
+ */
+export interface CatalogAuthRule {
+  /** Apply this rule only when the stored key starts with this prefix. */
+  whenKeyPrefix?: string;
+  /** Header to carry the key (e.g. `x-api-key`, `authorization`). */
+  header?: string;
+  /** Prepended to the key in the header value (e.g. `Bearer `). */
+  valuePrefix?: string;
+  /** Carry the key as a query parameter instead of a header (e.g. Google `key`). */
+  queryParam?: string;
+  /** Extra literal headers sent alongside (e.g. `anthropic-beta`). */
+  extraHeaders?: Record<string, string>;
+}
+
+/**
+ * Declarative live model discovery: GET `url`, authenticate via the first
+ * matching `auth` rule, read the array at dot-path `listPath`, and map each
+ * entry's `idPath`/`namePath`. No code execution — a catalog stays pure JSON.
+ */
+export interface ModelsFetchSpec {
+  url: string;
+  /** Ordered auth rules; first match wins (see {@link CatalogAuthRule}). */
+  auth: CatalogAuthRule[];
+  /** Dot-path to the model array in the response (e.g. `data`, `models`). */
+  listPath: string;
+  /** Dot-path to the model id within a list entry (e.g. `id`, `name`). */
+  idPath: string;
+  /** Dot-path to a display name within a list entry. */
+  namePath?: string;
+  /** Strip this prefix from extracted ids (e.g. Google's `models/`). */
+  stripIdPrefix?: string;
+}
+
+/** One allow-list entry: glob-style `*` wildcards, lower tier = better. */
+export interface SupportedPattern {
+  pattern: string;
+  tier: number;
+}
+
+/** Optional rendering hints for host UIs (Mission Control). */
+export interface CatalogUiHints {
+  keyConsoleUrl?: string;
+  keyPlaceholder?: string;
+  docsUrl?: string;
+}
+
+/**
  * A plugin-contributed LLM provider catalog (one per `providers/*.json` file).
  * Credential-bearing → only trusted plugins contribute these. Adds a provider
  * the host can route to via `<id>/<model>` and look up credentials for under
@@ -128,7 +194,7 @@ export interface ProviderCatalog {
   /** Provider API base URL. */
   baseUrl: string;
   /** Wire protocol the provider speaks. */
-  api: 'openai-completions' | 'anthropic-messages';
+  api: CatalogApi;
   /** Non-empty list of statically-known models. */
   models: CatalogModel[];
   /** OpenRouter-style "accept any model id" — model list is advisory, not exhaustive. */
@@ -137,6 +203,14 @@ export interface ProviderCatalog {
   dynamicModelDefaults?: { contextWindow: number; maxTokens: number };
   /** Keyless locals (e.g. Ollama) — placeholder key used when no credential is stored. */
   placeholderKey?: string;
+  /** Declarative live model discovery; absent → static `models` only. */
+  modelsFetch?: ModelsFetchSpec;
+  /** Allow-list patterns filtering live-fetched models; absent → no live filter. */
+  supportedPatterns?: SupportedPattern[];
+  /** ISO date the model list was last human-reviewed. */
+  reviewedAt?: string;
+  /** Host-UI rendering hints. */
+  ui?: CatalogUiHints;
 }
 
 /** Marker so the host can assert it links a compatible SDK build. */
