@@ -64,6 +64,27 @@ describe('Companion (headless publisher)', () => {
     expect(mockApi.companionPublishStatuses).toHaveBeenCalledWith(['working']);
   });
 
+  it('publishes the selected pet when visible and on replay', () => {
+    seedOneWorkingSession();
+    useUIStore.setState({ companionVisible: true, companionPet: 'cat' });
+
+    let replay: (() => void) | undefined;
+    mockApi.onCompanionReplayRequest.mockImplementation((cb: () => void) => {
+      replay = cb;
+      return () => {};
+    });
+
+    render(<Companion />);
+
+    expect(mockApi.companionPublishPet).toHaveBeenCalledWith('cat');
+    mockApi.companionPublishPet.mockClear();
+
+    expect(replay).toBeTypeOf('function');
+    replay?.();
+
+    expect(mockApi.companionPublishPet).toHaveBeenCalledWith('cat');
+  });
+
   it('keeps the widget window in sync with the visibility preference', () => {
     seedOneWorkingSession();
     useUIStore.setState({ companionVisible: true });
