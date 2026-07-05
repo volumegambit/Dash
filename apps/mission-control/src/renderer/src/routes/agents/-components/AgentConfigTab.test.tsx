@@ -4,6 +4,7 @@ import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { mockApi } from '../../../../../../vitest.setup.js';
+import type { McpConnectorInfo } from '../../../../../shared/ipc.js';
 import { AgentConfigTab } from './AgentConfigTab.js';
 
 function pluginRecord(name: string, patch: Partial<PluginRecord> = {}): PluginRecord {
@@ -160,6 +161,59 @@ describe('AgentConfigTab plugins card', () => {
     expect(screen.queryByRole('option', { name: /Alpha Plugin/i })).not.toBeInTheDocument();
     // The loaded, unassigned 'beta' is still assignable.
     expect(screen.getByRole('option', { name: /Beta Plugin/i })).toBeInTheDocument();
+  });
+
+  it('rolls back an assigned plugin and shows an error when the save fails', async () => {
+    const user = userEvent.setup();
+    mockApi.plugins.list.mockResolvedValue([
+      pluginRecord('alpha', { displayName: 'Alpha Plugin' }),
+    ]);
+    const updateConfig = vi.fn().mockRejectedValue(new Error('gateway unreachable'));
+
+    render(
+      <AgentConfigTab agentId="agent-1" agentConfig={baseConfig} updateConfig={updateConfig} />,
+    );
+
+    await user.click(screen.getByRole('button', { name: /plugins/i }));
+    await screen.findByRole('option', { name: /Alpha Plugin/i });
+
+    await user.selectOptions(screen.getByRole('combobox'), 'alpha');
+
+    // The failed PUT must surface inline and roll the optimistic chip back:
+    // the store only refreshes agentConfig on success, so without an explicit
+    // rollback the phantom selection would stick forever.
+    expect(await screen.findByText(/gateway unreachable/i)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /remove alpha/i })).not.toBeInTheDocument();
+    // The plugin is offered again and the default-all copy returns.
+    expect(screen.getByRole('option', { name: /Alpha Plugin/i })).toBeInTheDocument();
+    expect(
+      screen.getByText(/all plugins \(default\)\. this agent sees every loaded plugin/i),
+    ).toBeInTheDocument();
+  });
+
+  it('restores an unassigned plugin chip and shows an error when the save fails', async () => {
+    const user = userEvent.setup();
+    mockApi.plugins.list.mockResolvedValue([
+      pluginRecord('alpha', { displayName: 'Alpha Plugin' }),
+    ]);
+    const updateConfig = vi.fn().mockRejectedValue(new Error('gateway unreachable'));
+
+    render(
+      <AgentConfigTab
+        agentId="agent-1"
+        agentConfig={{ ...baseConfig, plugins: ['alpha'] }}
+        updateConfig={updateConfig}
+      />,
+    );
+
+    await user.click(screen.getByRole('button', { name: /plugins/i }));
+    const remove = await screen.findByRole('button', { name: /remove alpha/i });
+    await user.click(remove);
+
+    // The chip must come back and the summary must still count it.
+    expect(await screen.findByText(/gateway unreachable/i)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /remove alpha/i })).toBeInTheDocument();
+    expect(screen.getByText(/1 selected/i)).toBeInTheDocument();
   });
 
   it('shows the "All plugins" indicator for a legacy agent (plugins undefined)', async () => {
@@ -347,6 +401,59 @@ describe('AgentConfigTab providers card', () => {
     expect(screen.getByRole('option', { name: /OpenAI/i })).toBeInTheDocument();
   });
 
+  it('rolls back an assigned provider and shows an error when the save fails', async () => {
+    const user = userEvent.setup();
+    mockApi.plugins.runtime.mockResolvedValue({
+      providers: [runtimeProvider('anthropic', { label: 'Anthropic', ui: { sortOrder: 0 } })],
+      plugins: [],
+    });
+    const updateConfig = vi.fn().mockRejectedValue(new Error('gateway unreachable'));
+
+    render(
+      <AgentConfigTab agentId="agent-1" agentConfig={baseConfig} updateConfig={updateConfig} />,
+    );
+
+    await user.click(screen.getByRole('button', { name: /providers/i }));
+    await screen.findByRole('option', { name: /Anthropic/i });
+
+    await user.selectOptions(screen.getByRole('combobox'), 'anthropic');
+
+    // Rollback matters doubly here: assignedProviders also live-filters the
+    // model dropdown (allowedProviders), so a phantom selection would silently
+    // disable models the agent can actually use.
+    expect(await screen.findByText(/gateway unreachable/i)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /remove anthropic/i })).not.toBeInTheDocument();
+    expect(screen.getByRole('option', { name: /Anthropic/i })).toBeInTheDocument();
+    expect(
+      screen.getByText(/all providers \(default\)\. this agent can use every provider/i),
+    ).toBeInTheDocument();
+  });
+
+  it('restores an unassigned provider chip and shows an error when the save fails', async () => {
+    const user = userEvent.setup();
+    mockApi.plugins.runtime.mockResolvedValue({
+      providers: [runtimeProvider('anthropic', { label: 'Anthropic', ui: { sortOrder: 0 } })],
+      plugins: [],
+    });
+    const updateConfig = vi.fn().mockRejectedValue(new Error('gateway unreachable'));
+
+    render(
+      <AgentConfigTab
+        agentId="agent-1"
+        agentConfig={{ ...baseConfig, providers: ['anthropic'] }}
+        updateConfig={updateConfig}
+      />,
+    );
+
+    await user.click(screen.getByRole('button', { name: /providers/i }));
+    const remove = await screen.findByRole('button', { name: /remove anthropic/i });
+    await user.click(remove);
+
+    expect(await screen.findByText(/gateway unreachable/i)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /remove anthropic/i })).toBeInTheDocument();
+    expect(screen.getByText(/1 selected/i)).toBeInTheDocument();
+  });
+
   it('renders an API-set `providers: []` as "No providers (agent blocked)", not "All providers"', async () => {
     // The UI itself can never produce `providers: []` (clearing the last chip
     // writes `null`). An empty array can only arrive via the management API and
@@ -384,5 +491,91 @@ describe('AgentConfigTab providers card', () => {
     expect(
       screen.queryByText(/all providers \(default\)\. this agent can use every provider/i),
     ).not.toBeInTheDocument();
+  });
+});
+
+function connectorInfo(name: string): McpConnectorInfo {
+  return {
+    name,
+    transport: { type: 'stdio', command: 'noop' },
+    status: 'connected',
+    tools: [],
+  };
+}
+
+describe('AgentConfigTab connectors card', () => {
+  beforeEach(() => {
+    mockApi.mcpListConnectors.mockReset();
+    mockApi.plugins.list.mockResolvedValue([]);
+    mockApi.plugins.runtime.mockResolvedValue({ providers: [], plugins: [] });
+  });
+
+  it('rolls back an assigned connector and shows an error when the save fails', async () => {
+    const user = userEvent.setup();
+    mockApi.mcpListConnectors.mockResolvedValue([connectorInfo('github')]);
+    const updateConfig = vi.fn().mockRejectedValue(new Error('gateway unreachable'));
+
+    render(
+      <AgentConfigTab agentId="agent-1" agentConfig={baseConfig} updateConfig={updateConfig} />,
+    );
+
+    await user.click(screen.getByRole('button', { name: /connectors/i }));
+    await screen.findByRole('option', { name: /github/i });
+
+    await user.selectOptions(screen.getByRole('combobox'), 'github');
+
+    // Same rollback contract as the plugins/providers cards: surface the
+    // failure inline, drop the phantom chip, and re-offer the connector.
+    expect(await screen.findByText(/gateway unreachable/i)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /remove github/i })).not.toBeInTheDocument();
+    expect(screen.getByRole('option', { name: /github/i })).toBeInTheDocument();
+    expect(screen.getByText(/no connectors assigned/i)).toBeInTheDocument();
+  });
+
+  it('restores an unassigned connector chip and shows an error when the save fails', async () => {
+    const user = userEvent.setup();
+    mockApi.mcpListConnectors.mockResolvedValue([connectorInfo('github')]);
+    const updateConfig = vi.fn().mockRejectedValue(new Error('gateway unreachable'));
+
+    render(
+      <AgentConfigTab
+        agentId="agent-1"
+        agentConfig={{ ...baseConfig, mcpServers: ['github'] }}
+        updateConfig={updateConfig}
+      />,
+    );
+
+    await user.click(screen.getByRole('button', { name: /connectors/i }));
+    const remove = await screen.findByRole('button', { name: /remove github/i });
+    await user.click(remove);
+
+    expect(await screen.findByText(/gateway unreachable/i)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /remove github/i })).toBeInTheDocument();
+    expect(screen.getByText(/1 connected/i)).toBeInTheDocument();
+  });
+
+  it('clears the error and keeps the selection when a retry succeeds', async () => {
+    const user = userEvent.setup();
+    mockApi.mcpListConnectors.mockResolvedValue([connectorInfo('github')]);
+    const updateConfig = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('gateway unreachable'))
+      .mockResolvedValue(undefined);
+
+    render(
+      <AgentConfigTab agentId="agent-1" agentConfig={baseConfig} updateConfig={updateConfig} />,
+    );
+
+    await user.click(screen.getByRole('button', { name: /connectors/i }));
+    await screen.findByRole('option', { name: /github/i });
+
+    // First attempt fails and rolls back...
+    await user.selectOptions(screen.getByRole('combobox'), 'github');
+    expect(await screen.findByText(/gateway unreachable/i)).toBeInTheDocument();
+
+    // ...retrying succeeds: the stale error clears and the chip sticks.
+    await user.selectOptions(screen.getByRole('combobox'), 'github');
+    expect(await screen.findByRole('button', { name: /remove github/i })).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByText(/gateway unreachable/i)).not.toBeInTheDocument());
   });
 });

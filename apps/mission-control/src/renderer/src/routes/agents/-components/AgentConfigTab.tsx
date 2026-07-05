@@ -84,6 +84,7 @@ export function AgentConfigTab({
   // Connectors state
   const [assignedConnectors, setAssignedConnectors] = useState<string[]>([]);
   const [poolConnectors, setPoolConnectors] = useState<McpConnectorInfo[]>([]);
+  const [connectorsError, setConnectorsError] = useState<string | null>(null);
 
   // Plugins state. Per-agent plugin selection is visibility/routing only; trust
   // is gateway-wide. Empty = all (undefined): an empty selection means the agent
@@ -91,6 +92,7 @@ export function AgentConfigTab({
   // backward-compat behavior — NOT "no plugins".
   const [assignedPlugins, setAssignedPlugins] = useState<string[]>([]);
   const [poolPlugins, setPoolPlugins] = useState<PluginRecord[]>([]);
+  const [pluginsError, setPluginsError] = useState<string | null>(null);
 
   // Providers state. Per-agent provider selection is an allow-list over the
   // runtime providers surfaced by the gateway. Empty = all: an empty selection
@@ -98,6 +100,7 @@ export function AgentConfigTab({
   // `providers: undefined` backward-compat behavior) — NOT "no providers".
   const [assignedProviders, setAssignedProviders] = useState<string[]>([]);
   const [poolProviders, setPoolProviders] = useState<RuntimePluginProvider[]>([]);
+  const [providersError, setProvidersError] = useState<string | null>(null);
 
   // Swarm editing state. Caps are kept as raw text so a blank field means
   // "use the gateway default" (undefined) rather than zero. `allowedModels` is
@@ -121,22 +124,59 @@ export function AgentConfigTab({
 
   const unassignedConnectors = poolConnectors.filter((c) => !assignedConnectors.includes(c.name));
 
+  // Shared save path for the three assignment cards (connectors / plugins /
+  // providers). The cards update local state optimistically before the PUT;
+  // the agents store only refreshes agentConfig on success, so a failed PUT
+  // would otherwise leave the phantom selection on screen forever — roll back
+  // to `prev` and surface the failure inline instead. Catching here also means
+  // the fire-and-forget call sites (chip onClick / select onChange) never see
+  // a rejected promise.
+  const persistAssignment = useCallback(
+    async (
+      patch: ConfigPatch,
+      prev: string[],
+      rollback: (value: string[]) => void,
+      setError: (message: string | null) => void,
+    ): Promise<void> => {
+      setError(null);
+      try {
+        await updateConfig(agentId, patch);
+      } catch (err) {
+        rollback(prev);
+        setError(err instanceof Error ? err.message : String(err));
+      }
+    },
+    [agentId, updateConfig],
+  );
+
   const handleAssignConnector = useCallback(
     async (name: string) => {
-      const next = [...assignedConnectors, name];
+      const prev = assignedConnectors;
+      const next = [...prev, name];
       setAssignedConnectors(next);
-      await updateConfig(agentId, { mcpServers: next });
+      await persistAssignment(
+        { mcpServers: next },
+        prev,
+        setAssignedConnectors,
+        setConnectorsError,
+      );
     },
-    [assignedConnectors, agentId, updateConfig],
+    [assignedConnectors, persistAssignment],
   );
 
   const handleUnassignConnector = useCallback(
     async (name: string) => {
-      const next = assignedConnectors.filter((s) => s !== name);
+      const prev = assignedConnectors;
+      const next = prev.filter((s) => s !== name);
       setAssignedConnectors(next);
-      await updateConfig(agentId, { mcpServers: next });
+      await persistAssignment(
+        { mcpServers: next },
+        prev,
+        setAssignedConnectors,
+        setConnectorsError,
+      );
     },
-    [assignedConnectors, agentId, updateConfig],
+    [assignedConnectors, persistAssignment],
   );
 
   function connectorHealthStatus(
@@ -170,20 +210,32 @@ export function AgentConfigTab({
       // Empty = all: a non-empty selection scopes the agent to those plugins;
       // clearing back to empty writes `null` (= all). `null` survives the wire;
       // `undefined` would be dropped by JSON.stringify, making the clear a no-op.
-      const next = [...assignedPlugins, name];
+      const prev = assignedPlugins;
+      const next = [...prev, name];
       setAssignedPlugins(next);
-      await updateConfig(agentId, { plugins: next.length > 0 ? next : null });
+      await persistAssignment(
+        { plugins: next.length > 0 ? next : null },
+        prev,
+        setAssignedPlugins,
+        setPluginsError,
+      );
     },
-    [assignedPlugins, agentId, updateConfig],
+    [assignedPlugins, persistAssignment],
   );
 
   const handleUnassignPlugin = useCallback(
     async (name: string) => {
-      const next = assignedPlugins.filter((p) => p !== name);
+      const prev = assignedPlugins;
+      const next = prev.filter((p) => p !== name);
       setAssignedPlugins(next);
-      await updateConfig(agentId, { plugins: next.length > 0 ? next : null });
+      await persistAssignment(
+        { plugins: next.length > 0 ? next : null },
+        prev,
+        setAssignedPlugins,
+        setPluginsError,
+      );
     },
-    [assignedPlugins, agentId, updateConfig],
+    [assignedPlugins, persistAssignment],
   );
 
   const pluginLabel = (name: string): string =>
@@ -222,20 +274,32 @@ export function AgentConfigTab({
       // Empty = all: a non-empty selection scopes the agent to those providers;
       // clearing back to empty writes `null` (= all). `null` survives the wire;
       // `undefined` would be dropped by JSON.stringify, making the clear a no-op.
-      const next = [...assignedProviders, id];
+      const prev = assignedProviders;
+      const next = [...prev, id];
       setAssignedProviders(next);
-      await updateConfig(agentId, { providers: next.length > 0 ? next : null });
+      await persistAssignment(
+        { providers: next.length > 0 ? next : null },
+        prev,
+        setAssignedProviders,
+        setProvidersError,
+      );
     },
-    [assignedProviders, agentId, updateConfig],
+    [assignedProviders, persistAssignment],
   );
 
   const handleUnassignProvider = useCallback(
     async (id: string) => {
-      const next = assignedProviders.filter((p) => p !== id);
+      const prev = assignedProviders;
+      const next = prev.filter((p) => p !== id);
       setAssignedProviders(next);
-      await updateConfig(agentId, { providers: next.length > 0 ? next : null });
+      await persistAssignment(
+        { providers: next.length > 0 ? next : null },
+        prev,
+        setAssignedProviders,
+        setProvidersError,
+      );
     },
-    [assignedProviders, agentId, updateConfig],
+    [assignedProviders, persistAssignment],
   );
 
   const providerLabel = (id: string): string => poolProviders.find((p) => p.id === id)?.label ?? id;
@@ -691,6 +755,11 @@ export function AgentConfigTab({
 
         {openCard === 'connectors' && (
           <div className="border-t border-border p-4">
+            {connectorsError && (
+              <div className="mb-3 border border-red/30 bg-red-tint p-3 text-sm text-red">
+                {connectorsError}
+              </div>
+            )}
             {assignedConnectors.length > 0 && (
               <div className="mb-3 flex flex-wrap gap-2">
                 {assignedConnectors.map((name) => {
@@ -704,6 +773,7 @@ export function AgentConfigTab({
                       {name}
                       <button
                         type="button"
+                        aria-label={`Remove ${name}`}
                         onClick={() => handleUnassignConnector(name)}
                         className="ml-1 text-fg-muted hover:text-red-500"
                       >
@@ -767,6 +837,11 @@ export function AgentConfigTab({
 
         {openCard === 'plugins' && (
           <div className="border-t border-border p-4">
+            {pluginsError && (
+              <div className="mb-3 border border-red/30 bg-red-tint p-3 text-sm text-red">
+                {pluginsError}
+              </div>
+            )}
             {assignedPlugins.length > 0 ? (
               <div className="mb-3 flex flex-wrap gap-2">
                 {assignedPlugins.map((name) => (
@@ -847,6 +922,11 @@ export function AgentConfigTab({
 
         {openCard === 'providers' && (
           <div className="border-t border-border p-4">
+            {providersError && (
+              <div className="mb-3 border border-red/30 bg-red-tint p-3 text-sm text-red">
+                {providersError}
+              </div>
+            )}
             {assignedProviders.length > 0 ? (
               <div className="mb-3 flex flex-wrap gap-2">
                 {assignedProviders.map((id) => (
