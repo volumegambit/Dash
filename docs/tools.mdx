@@ -166,6 +166,27 @@ Loading a skill is automatic — whenever skills are available, the agent can pu
   </Tab>
 </Tabs>
 
+## Projects
+
+Task-tracking tools for the [Projects](/projects) board in Mission Control. Every agent has these automatically — they are not part of the per-agent tool selection.
+
+| Tool | What it does |
+|------|--------------|
+| `projects_list` | List projects, optionally filtered by status |
+| `projects_read` | Read one project by id or key, with task counts per status |
+| `projects_create` | Create a project (name, uppercase key, optional description) |
+| `issues_list` | List tasks with filters: project, status, sub-status, assignee, creator, parent task, agents involved |
+| `issues_read` | Read one task in full — description, comments, timeline, subtasks, linked sessions |
+| `issues_create` | Create a task; can place it in a project or under a parent task (one level) |
+| `issues_update` | Update a task's title, description, status, sub-status, assignee, or project |
+| `issues_comment` | Post a markdown comment on a task |
+| `issues_comment_edit` | Edit a comment the agent posted earlier |
+| `issues_comment_delete` | Soft-delete a comment (shown as "deleted" in the timeline) |
+
+Every read, create, update, or comment automatically links the agent's current chat session to the task, so the task page shows which conversations touched it. When an agent sets a task's sub-status to `waiting_on_human`, the task appears in your Inbox under **Waiting on you**.
+
+Not affected by workspace sandboxing — task data lives in the gateway's local database.
+
 ## Workspace sandboxing
 
 Each agent's **working directory** sets where its tools operate. It defaults to `~/.dash/workspaces/<agent-id>` and you can set a custom path when you deploy or edit the agent. The directory is created automatically if it doesn't exist.
