@@ -605,7 +605,8 @@ function CopyButton({ text }: { text: string }): JSX.Element {
   );
 }
 
-const MessageBubble = memo(function MessageBubble({
+// Exported for reuse by the task page's embedded session panel.
+export const MessageBubble = memo(function MessageBubble({
   message,
   streamingEvents,
   navigateToLogs,
