@@ -29,6 +29,7 @@ hljs.registerLanguage('bash', bash);
 import type { McAgentEvent } from '../../../shared/ipc.js';
 import { detectLanguage } from '../components/DiffView.js';
 import { Markdown } from '../components/Markdown.js';
+import { SwarmPanel } from '../components/SwarmPanel.js';
 import { HighlightedCode, ToolResult } from '../components/ToolResult.js';
 import { useAvailableModels } from '../hooks/useAvailableModels.js';
 import { useAgentsStore } from '../stores/agents.js';
@@ -1478,6 +1479,14 @@ export function Chat(): JSX.Element {
   const [imageError, setImageError] = useState<string | null>(null);
   const [showAgentModal, setShowAgentModal] = useState(false);
   const [showBrowser, setShowBrowser] = useState(false);
+  // Swarm supervision panel (right drawer). `swarmPanelOpen` toggles it;
+  // `swarmRefreshToken` is bumped to force the panel to refetch — on a
+  // `swarm:run-changed` poke for the open agent and on gateway SSE (re)connect.
+  const [swarmPanelOpen, setSwarmPanelOpen] = useState(false);
+  const [swarmRefreshToken, setSwarmRefreshToken] = useState(0);
+  // True once we've observed at least one run for the selected agent, so the
+  // affordance shows even when swarm.enabled is off but historical runs exist.
+  const [swarmHasRuns, setSwarmHasRuns] = useState(false);
   const [renamingTitle, setRenamingTitle] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [inlineRenameTabId, setInlineRenameTabId] = useState<string | null>(null);
@@ -1748,6 +1757,62 @@ export function Chat(): JSX.Element {
   const activeModel = selectedAgent?.config.model;
   const activeWorkspace = selectedAgent?.config.workspace;
 
+  // Swarm affordance: visible when the agent has swarm enabled OR has runs.
+  const swarmEnabled = selectedAgent?.config.swarm?.enabled === true;
+  const showSwarmAffordance = Boolean(selectedAgentId) && (swarmEnabled || swarmHasRuns);
+
+  // Probe whether the selected agent has any swarm runs (so the affordance can
+  // show even when swarm.enabled is off but historical runs exist). Re-probes
+  // when the agent changes; cheap listing call, guarded against races.
+  useEffect(() => {
+    let cancelled = false;
+    setSwarmHasRuns(false);
+    if (!selectedAgentId) return;
+    window.api
+      .swarmListRuns(selectedAgentId)
+      .then((list) => {
+        if (!cancelled) setSwarmHasRuns(list.length > 0);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedAgentId]);
+
+  // Close the panel when switching to an agent that has no swarm affordance.
+  useEffect(() => {
+    if (swarmPanelOpen && !showSwarmAffordance) setSwarmPanelOpen(false);
+  }, [swarmPanelOpen, showSwarmAffordance]);
+
+  // Refresh (a): a `swarm:run-changed` poke for the OPEN agent bumps the token.
+  useEffect(() => {
+    if (!selectedAgentId) return;
+    const unsub = window.api.onGatewayEvent((eventType, data) => {
+      if (eventType !== 'swarm:run-changed') return;
+      let agentIdInEvent: string | undefined;
+      try {
+        agentIdInEvent = (JSON.parse(data) as { agentId?: string }).agentId;
+      } catch {
+        return;
+      }
+      if (agentIdInEvent === selectedAgentId) {
+        // The affordance may need to appear on the first-ever run.
+        setSwarmHasRuns(true);
+        setSwarmRefreshToken((t) => t + 1);
+      }
+    });
+    return unsub;
+  }, [selectedAgentId]);
+
+  // Refresh (b): gateway SSE (re)connect. The main process re-opens the event
+  // stream on every 'healthy' poll tick, so a 'healthy' status is our
+  // reconnect signal — bump the token to resync after any dropped stream.
+  useEffect(() => {
+    return window.api.gatewayOnStatus((status) => {
+      if (status === 'healthy') setSwarmRefreshToken((t) => t + 1);
+    });
+  }, []);
+
   const latestTodos = useMemo(
     () => extractLatestTodos(selectedMessages, liveEvents),
     [selectedMessages, liveEvents],
@@ -1942,325 +2007,352 @@ export function Chat(): JSX.Element {
         </div>
       </div>
 
-      {/* Chat Panel */}
-      <div
-        className="relative flex flex-1 flex-col min-h-0 min-w-0"
-        onDrop={(e) => {
-          e.preventDefault();
-          if (e.dataTransfer.files.length > 0) addImageFiles(e.dataTransfer.files);
-        }}
-        onDragOver={(e) => e.preventDefault()}
-      >
-        {compactionToast && (
-          <CompactionToast key={compactionToast.key} overflow={compactionToast.overflow} />
-        )}
-        {modelChangeToast && (
-          <ModelChangeToast key={modelChangeToast.key} modelName={modelChangeToast.modelName} />
-        )}
-        {(activeModel || selectedConversation) && (
-          <div className="flex items-center gap-3 border-b border-border px-6 py-1.5 shrink-0">
-            {selectedAgent && (
-              <span className="text-xs font-medium text-accent">{selectedAgent.name}</span>
-            )}
-            {activeModel && selectedAgent && (
-              <ChatModelPicker
-                value={activeModel}
-                models={availableModels}
-                onChange={async (model) => {
-                  try {
-                    await updateAgent(selectedAgent.id, { model });
-                    const modelOption = availableModels.find((m) => m.value === model);
-                    const modelName = modelOption?.label ?? model;
-                    setModelChangeToast({ modelName, key: Date.now() });
-                  } catch (err) {
-                    console.error('[Chat] Failed to update agent model:', err);
-                  }
-                }}
-              />
-            )}
-            {latestUsage && (
-              <ContextChip
-                tokensUsed={contextStatus.tokensUsed}
-                threshold={contextStatus.threshold}
-                pct={contextStatus.pct}
-              />
-            )}
-            {activeWorkspace && (
-              <button
-                type="button"
-                onClick={() => window.api.openPath(activeWorkspace)}
-                className="flex min-w-0 items-center gap-1.5 text-xs text-muted transition-colors hover:text-foreground"
-                title={`Working Directory: ${activeWorkspace}`}
-                aria-label="Open working directory"
-              >
-                <FolderOpen size={12} className="shrink-0" />
-                <span className="max-w-[260px] truncate">{activeWorkspace}</span>
-              </button>
-            )}
-            <div className="ml-auto flex items-center gap-2">
-              {selectedConversationId &&
-                (renamingTitle !== null ? (
-                  <input
-                    ref={renameRef}
-                    value={renamingTitle}
-                    onChange={(e) => setRenamingTitle(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter') {
+      {/* Chat + optional swarm panel (horizontal split) */}
+      <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden">
+        {/* Chat Panel */}
+        <div
+          className="relative flex flex-1 flex-col min-h-0 min-w-0"
+          onDrop={(e) => {
+            e.preventDefault();
+            if (e.dataTransfer.files.length > 0) addImageFiles(e.dataTransfer.files);
+          }}
+          onDragOver={(e) => e.preventDefault()}
+        >
+          {compactionToast && (
+            <CompactionToast key={compactionToast.key} overflow={compactionToast.overflow} />
+          )}
+          {modelChangeToast && (
+            <ModelChangeToast key={modelChangeToast.key} modelName={modelChangeToast.modelName} />
+          )}
+          {(activeModel || selectedConversation) && (
+            <div className="flex items-center gap-3 border-b border-border px-6 py-1.5 shrink-0">
+              {selectedAgent && (
+                <span className="text-xs font-medium text-accent">{selectedAgent.name}</span>
+              )}
+              {activeModel && selectedAgent && (
+                <ChatModelPicker
+                  value={activeModel}
+                  models={availableModels}
+                  onChange={async (model) => {
+                    try {
+                      await updateAgent(selectedAgent.id, { model });
+                      const modelOption = availableModels.find((m) => m.value === model);
+                      const modelName = modelOption?.label ?? model;
+                      setModelChangeToast({ modelName, key: Date.now() });
+                    } catch (err) {
+                      console.error('[Chat] Failed to update agent model:', err);
+                    }
+                  }}
+                />
+              )}
+              {latestUsage && (
+                <ContextChip
+                  tokensUsed={contextStatus.tokensUsed}
+                  threshold={contextStatus.threshold}
+                  pct={contextStatus.pct}
+                />
+              )}
+              {activeWorkspace && (
+                <button
+                  type="button"
+                  onClick={() => window.api.openPath(activeWorkspace)}
+                  className="flex min-w-0 items-center gap-1.5 text-xs text-muted transition-colors hover:text-foreground"
+                  title={`Working Directory: ${activeWorkspace}`}
+                  aria-label="Open working directory"
+                >
+                  <FolderOpen size={12} className="shrink-0" />
+                  <span className="max-w-[260px] truncate">{activeWorkspace}</span>
+                </button>
+              )}
+              <div className="ml-auto flex items-center gap-2">
+                {showSwarmAffordance && (
+                  <button
+                    type="button"
+                    onClick={() => setSwarmPanelOpen((v) => !v)}
+                    className={`flex items-center gap-1 rounded p-1 transition-colors ${
+                      swarmPanelOpen ? 'text-accent' : 'text-muted hover:text-foreground'
+                    }`}
+                    title="Swarm supervision"
+                    aria-label="Toggle swarm supervision panel"
+                    aria-pressed={swarmPanelOpen}
+                    data-testid="swarm-panel-toggle"
+                  >
+                    <Users size={14} />
+                  </button>
+                )}
+                {selectedConversationId &&
+                  (renamingTitle !== null ? (
+                    <input
+                      ref={renameRef}
+                      value={renamingTitle}
+                      onChange={(e) => setRenamingTitle(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          const trimmed = renamingTitle.trim();
+                          if (trimmed && trimmed !== selectedConversation?.title) {
+                            renameConversation(selectedConversationId, trimmed);
+                          }
+                          setRenamingTitle(null);
+                        }
+                        if (e.key === 'Escape') setRenamingTitle(null);
+                      }}
+                      onBlur={() => {
                         const trimmed = renamingTitle.trim();
                         if (trimmed && trimmed !== selectedConversation?.title) {
                           renameConversation(selectedConversationId, trimmed);
                         }
                         setRenamingTitle(null);
-                      }
-                      if (e.key === 'Escape') setRenamingTitle(null);
-                    }}
-                    onBlur={() => {
-                      const trimmed = renamingTitle.trim();
-                      if (trimmed && trimmed !== selectedConversation?.title) {
-                        renameConversation(selectedConversationId, trimmed);
-                      }
-                      setRenamingTitle(null);
-                    }}
-                    className="w-40 border border-accent bg-[#141414] px-2 py-0.5 text-xs text-foreground focus:outline-none"
-                    data-testid="status-bar-rename-input"
-                  />
-                ) : confirmDelete ? (
-                  <div className="flex items-center gap-1 text-xs">
-                    <span className="text-red">Delete?</span>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        deleteConversation(selectedConversationId);
-                        setConfirmDelete(false);
                       }}
-                      className="px-1.5 py-0.5 text-red hover:bg-red-900/30"
-                      data-testid="status-bar-confirm-delete"
-                    >
-                      Yes
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setConfirmDelete(false)}
-                      className="px-1.5 py-0.5 text-muted hover:text-foreground"
-                    >
-                      No
-                    </button>
-                  </div>
-                ) : (
-                  <>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setRenamingTitle(selectedConversation?.title ?? '');
-                        requestAnimationFrame(() => renameRef.current?.focus());
-                      }}
-                      className="p-1 text-muted transition-colors hover:text-foreground"
-                      title="Rename conversation"
-                      aria-label="Rename conversation"
-                      data-testid="status-bar-rename"
-                    >
-                      <Pencil size={12} />
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setConfirmDelete(true)}
-                      className="p-1 text-muted transition-colors hover:text-red"
-                      title="Delete conversation"
-                      aria-label="Delete conversation"
-                      data-testid="status-bar-delete"
-                    >
-                      <Trash2 size={12} />
-                    </button>
-                  </>
-                ))}
-            </div>
-          </div>
-        )}
-
-        <div
-          ref={scrollContainerRef}
-          onScroll={handleScroll}
-          className="flex-1 overflow-y-auto overflow-x-hidden px-6 py-4"
-        >
-          {!selectedConversationId ? (
-            <EmptyChatState
-              recentConversations={enrichedConversations.slice(0, 3).map((c) => ({
-                id: c.id,
-                title: c.title,
-                agentName: c.agentName,
-                updatedAt: c.updatedAt,
-              }))}
-              agents={activeAgents.map((a) => ({
-                id: a.id,
-                name: a.name,
-                model: a.config.model,
-              }))}
-              onSelectConversation={selectConversation}
-              onStartWithAgent={handleAgentSelected}
-              onNavigateToAgents={() => navigate({ to: '/agents' })}
-            />
-          ) : (
-            <>
-              {selectedMessages.map((msg, i) => (
-                <MessageBubble
-                  key={`${msg.role}-${i}`}
-                  message={msg}
-                  navigateToLogs={navigateToLogs}
-                  onAnswerQuestion={handleAnswerQuestion}
-                  answeredQuestions={answeredQuestions}
-                  onNavigateToConnections={() => navigate({ to: '/settings/ai-providers' })}
-                />
-              ))}
-              {isStreaming && !liveEvents.some((e) => VISIBLE_EVENT_TYPES.has(e.type)) && (
-                <ThinkingIndicator />
-              )}
-              {isStreaming && liveEvents.some((e) => VISIBLE_EVENT_TYPES.has(e.type)) && (
-                <MessageBubble
-                  streamingEvents={liveEvents}
-                  navigateToLogs={navigateToLogs}
-                  onAnswerQuestion={handleAnswerQuestion}
-                  answeredQuestions={answeredQuestions}
-                  onNavigateToConnections={() => navigate({ to: '/settings/ai-providers' })}
-                />
-              )}
-            </>
-          )}
-          <div ref={messagesEndRef} />
-        </div>
-
-        {isStreaming && liveEvents.length > 0 && <PinnedSwarmStrip events={liveEvents} />}
-
-        {latestTodos && latestTodos.length > 0 && <PinnedTodoPanel todos={latestTodos} />}
-
-        {/* MCP connector warning banner */}
-        {mcpIssue && (
-          <div className="bg-yellow-900/30 border-t border-yellow-700/50 px-6 py-3 flex items-center justify-between shrink-0">
-            <span className="text-sm text-yellow-200">
-              {mcpIssue.status === 'needs_reauth'
-                ? `${mcpIssue.serverName} connector needs re-authorization`
-                : `${mcpIssue.serverName} connector is offline`}
-            </span>
-            <button
-              type="button"
-              onClick={async () => {
-                if (mcpIssue.status === 'needs_reauth') {
-                  await window.api.mcpReauthorize(mcpIssue.serverName);
-                } else {
-                  await window.api.mcpReconnectConnector(mcpIssue.serverName);
-                }
-              }}
-              className="border border-yellow-700/50 bg-yellow-900/40 px-3 py-1 text-xs text-yellow-200 hover:bg-yellow-900/60"
-            >
-              {mcpIssue.status === 'needs_reauth' ? 'Re-authorize' : 'Reconnect'}
-            </button>
-          </div>
-        )}
-
-        {/* Input bar */}
-        <div className="bg-surface border-t border-border px-6 py-4 flex items-center gap-3 shrink-0">
-          <div className="flex-1 flex flex-col gap-2">
-            {attachedImages.length > 0 && (
-              <div className="flex gap-2">
-                {attachedImages.map((img) => (
-                  <div key={img.id} className="relative">
-                    <img
-                      src={img.preview}
-                      alt="Attached"
-                      className="h-16 w-16 border border-border object-cover"
+                      className="w-40 border border-accent bg-[#141414] px-2 py-0.5 text-xs text-foreground focus:outline-none"
+                      data-testid="status-bar-rename-input"
                     />
-                    <button
-                      type="button"
-                      onClick={() => removeImage(img.id)}
-                      className="absolute -right-1.5 -top-1.5 flex h-4 w-4 items-center justify-center rounded-full bg-red-900 text-[10px] text-white hover:bg-red-700"
-                    >
-                      ×
-                    </button>
-                  </div>
-                ))}
+                  ) : confirmDelete ? (
+                    <div className="flex items-center gap-1 text-xs">
+                      <span className="text-red">Delete?</span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          deleteConversation(selectedConversationId);
+                          setConfirmDelete(false);
+                        }}
+                        className="px-1.5 py-0.5 text-red hover:bg-red-900/30"
+                        data-testid="status-bar-confirm-delete"
+                      >
+                        Yes
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setConfirmDelete(false)}
+                        className="px-1.5 py-0.5 text-muted hover:text-foreground"
+                      >
+                        No
+                      </button>
+                    </div>
+                  ) : (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setRenamingTitle(selectedConversation?.title ?? '');
+                          requestAnimationFrame(() => renameRef.current?.focus());
+                        }}
+                        className="p-1 text-muted transition-colors hover:text-foreground"
+                        title="Rename conversation"
+                        aria-label="Rename conversation"
+                        data-testid="status-bar-rename"
+                      >
+                        <Pencil size={12} />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setConfirmDelete(true)}
+                        className="p-1 text-muted transition-colors hover:text-red"
+                        title="Delete conversation"
+                        aria-label="Delete conversation"
+                        data-testid="status-bar-delete"
+                      >
+                        <Trash2 size={12} />
+                      </button>
+                    </>
+                  ))}
               </div>
+            </div>
+          )}
+
+          <div
+            ref={scrollContainerRef}
+            onScroll={handleScroll}
+            className="flex-1 overflow-y-auto overflow-x-hidden px-6 py-4"
+          >
+            {!selectedConversationId ? (
+              <EmptyChatState
+                recentConversations={enrichedConversations.slice(0, 3).map((c) => ({
+                  id: c.id,
+                  title: c.title,
+                  agentName: c.agentName,
+                  updatedAt: c.updatedAt,
+                }))}
+                agents={activeAgents.map((a) => ({
+                  id: a.id,
+                  name: a.name,
+                  model: a.config.model,
+                }))}
+                onSelectConversation={selectConversation}
+                onStartWithAgent={handleAgentSelected}
+                onNavigateToAgents={() => navigate({ to: '/agents' })}
+              />
+            ) : (
+              <>
+                {selectedMessages.map((msg, i) => (
+                  <MessageBubble
+                    key={`${msg.role}-${i}`}
+                    message={msg}
+                    navigateToLogs={navigateToLogs}
+                    onAnswerQuestion={handleAnswerQuestion}
+                    answeredQuestions={answeredQuestions}
+                    onNavigateToConnections={() => navigate({ to: '/settings/ai-providers' })}
+                  />
+                ))}
+                {isStreaming && !liveEvents.some((e) => VISIBLE_EVENT_TYPES.has(e.type)) && (
+                  <ThinkingIndicator />
+                )}
+                {isStreaming && liveEvents.some((e) => VISIBLE_EVENT_TYPES.has(e.type)) && (
+                  <MessageBubble
+                    streamingEvents={liveEvents}
+                    navigateToLogs={navigateToLogs}
+                    onAnswerQuestion={handleAnswerQuestion}
+                    answeredQuestions={answeredQuestions}
+                    onNavigateToConnections={() => navigate({ to: '/settings/ai-providers' })}
+                  />
+                )}
+              </>
             )}
-            {imageError && <p className="text-xs text-red">{imageError}</p>}
-            <form
-              className="flex items-center gap-3"
-              onSubmit={(e) => {
-                e.preventDefault();
-                handleSend();
-              }}
-              onDrop={(e) => {
-                e.preventDefault();
-                if (e.dataTransfer.files.length > 0) addImageFiles(e.dataTransfer.files);
-              }}
-              onDragOver={(e) => e.preventDefault()}
-            >
-              <textarea
-                ref={textareaRef}
-                rows={1}
-                value={input}
-                onChange={(e) => {
-                  setInput(e.target.value);
-                  resizeTextarea();
-                }}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' && !e.shiftKey) {
-                    e.preventDefault();
-                    handleSend();
-                  }
-                }}
-                onPaste={(e) => {
-                  const files = Array.from(e.clipboardData.items)
-                    .filter((item) => item.kind === 'file')
-                    .map((item) => item.getAsFile())
-                    .filter((f): f is File => f !== null);
-                  if (files.length > 0) addImageFiles(files);
-                }}
-                placeholder={
-                  selectedConversationId ? 'Type a message…' : 'Select a conversation first'
-                }
-                disabled={!selectedConversationId || isStreaming}
-                className="flex-1 bg-[#141414] border border-border px-4 py-3 text-sm text-foreground placeholder:text-muted focus:border-accent focus:outline-none disabled:opacity-50 resize-none"
-              />
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept="image/png,image/jpeg,image/gif,image/webp"
-                multiple
-                className="hidden"
-                onChange={(e) => {
-                  if (e.target.files) addImageFiles(e.target.files);
-                  e.target.value = '';
-                }}
-              />
+            <div ref={messagesEndRef} />
+          </div>
+
+          {isStreaming && liveEvents.length > 0 && <PinnedSwarmStrip events={liveEvents} />}
+
+          {latestTodos && latestTodos.length > 0 && <PinnedTodoPanel todos={latestTodos} />}
+
+          {/* MCP connector warning banner */}
+          {mcpIssue && (
+            <div className="bg-yellow-900/30 border-t border-yellow-700/50 px-6 py-3 flex items-center justify-between shrink-0">
+              <span className="text-sm text-yellow-200">
+                {mcpIssue.status === 'needs_reauth'
+                  ? `${mcpIssue.serverName} connector needs re-authorization`
+                  : `${mcpIssue.serverName} connector is offline`}
+              </span>
               <button
                 type="button"
-                onClick={() => fileInputRef.current?.click()}
-                disabled={!selectedConversationId || isStreaming}
-                className="border border-border p-2.5 text-muted transition-colors hover:bg-sidebar-hover hover:text-foreground disabled:opacity-50 shrink-0"
-                title="Attach image"
+                onClick={async () => {
+                  if (mcpIssue.status === 'needs_reauth') {
+                    await window.api.mcpReauthorize(mcpIssue.serverName);
+                  } else {
+                    await window.api.mcpReconnectConnector(mcpIssue.serverName);
+                  }
+                }}
+                className="border border-yellow-700/50 bg-yellow-900/40 px-3 py-1 text-xs text-yellow-200 hover:bg-yellow-900/60"
               >
-                <Paperclip size={16} />
+                {mcpIssue.status === 'needs_reauth' ? 'Re-authorize' : 'Reconnect'}
               </button>
-              {isStreaming ? (
+            </div>
+          )}
+
+          {/* Input bar */}
+          <div className="bg-surface border-t border-border px-6 py-4 flex items-center gap-3 shrink-0">
+            <div className="flex-1 flex flex-col gap-2">
+              {attachedImages.length > 0 && (
+                <div className="flex gap-2">
+                  {attachedImages.map((img) => (
+                    <div key={img.id} className="relative">
+                      <img
+                        src={img.preview}
+                        alt="Attached"
+                        className="h-16 w-16 border border-border object-cover"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => removeImage(img.id)}
+                        className="absolute -right-1.5 -top-1.5 flex h-4 w-4 items-center justify-center rounded-full bg-red-900 text-[10px] text-white hover:bg-red-700"
+                      >
+                        ×
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {imageError && <p className="text-xs text-red">{imageError}</p>}
+              <form
+                className="flex items-center gap-3"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  handleSend();
+                }}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  if (e.dataTransfer.files.length > 0) addImageFiles(e.dataTransfer.files);
+                }}
+                onDragOver={(e) => e.preventDefault()}
+              >
+                <textarea
+                  ref={textareaRef}
+                  rows={1}
+                  value={input}
+                  onChange={(e) => {
+                    setInput(e.target.value);
+                    resizeTextarea();
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && !e.shiftKey) {
+                      e.preventDefault();
+                      handleSend();
+                    }
+                  }}
+                  onPaste={(e) => {
+                    const files = Array.from(e.clipboardData.items)
+                      .filter((item) => item.kind === 'file')
+                      .map((item) => item.getAsFile())
+                      .filter((f): f is File => f !== null);
+                    if (files.length > 0) addImageFiles(files);
+                  }}
+                  placeholder={
+                    selectedConversationId ? 'Type a message…' : 'Select a conversation first'
+                  }
+                  disabled={!selectedConversationId || isStreaming}
+                  className="flex-1 bg-[#141414] border border-border px-4 py-3 text-sm text-foreground placeholder:text-muted focus:border-accent focus:outline-none disabled:opacity-50 resize-none"
+                />
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="image/png,image/jpeg,image/gif,image/webp"
+                  multiple
+                  className="hidden"
+                  onChange={(e) => {
+                    if (e.target.files) addImageFiles(e.target.files);
+                    e.target.value = '';
+                  }}
+                />
                 <button
                   type="button"
-                  onClick={() => selectedConversationId && cancelMessage(selectedConversationId)}
-                  className="bg-red-900/50 p-2.5 text-red transition-colors hover:bg-red-900/70 shrink-0"
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={!selectedConversationId || isStreaming}
+                  className="border border-border p-2.5 text-muted transition-colors hover:bg-sidebar-hover hover:text-foreground disabled:opacity-50 shrink-0"
+                  title="Attach image"
                 >
-                  <Square size={16} />
+                  <Paperclip size={16} />
                 </button>
-              ) : (
-                <button
-                  type="submit"
-                  disabled={
-                    (!input.trim() && attachedImages.length === 0) || !selectedConversationId
-                  }
-                  className="bg-accent text-white p-2.5 hover:bg-primary-hover disabled:opacity-50 transition-colors shrink-0"
-                >
-                  <Send size={16} />
-                </button>
-              )}
-            </form>
+                {isStreaming ? (
+                  <button
+                    type="button"
+                    onClick={() => selectedConversationId && cancelMessage(selectedConversationId)}
+                    className="bg-red-900/50 p-2.5 text-red transition-colors hover:bg-red-900/70 shrink-0"
+                  >
+                    <Square size={16} />
+                  </button>
+                ) : (
+                  <button
+                    type="submit"
+                    disabled={
+                      (!input.trim() && attachedImages.length === 0) || !selectedConversationId
+                    }
+                    className="bg-accent text-white p-2.5 hover:bg-primary-hover disabled:opacity-50 transition-colors shrink-0"
+                  >
+                    <Send size={16} />
+                  </button>
+                )}
+              </form>
+            </div>
           </div>
         </div>
+        {/* Swarm supervision panel (right drawer) */}
+        {swarmPanelOpen && selectedAgentId && showSwarmAffordance && (
+          <SwarmPanel
+            key={selectedAgentId}
+            agentId={selectedAgentId}
+            refreshToken={swarmRefreshToken}
+            onClose={() => setSwarmPanelOpen(false)}
+          />
+        )}
       </div>
     </div>
   );
