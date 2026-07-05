@@ -1,4 +1,4 @@
-import type { CatalogAuthRule, ModelsFetchSpec } from '@dash/plugin-sdk';
+import type { CatalogAuthRule, CatalogEntryFilters, ModelsFetchSpec } from '@dash/plugin-sdk';
 
 /** Bounded like @dash/models' fetchers: a slow provider must not wedge callers. */
 const DEFAULT_TIMEOUT_MS = 10_000;
@@ -37,6 +37,34 @@ function pickAuthRule(rules: CatalogAuthRule[], apiKey: string): CatalogAuthRule
 }
 
 /**
+ * First variant whose `whenKeyPrefix` matches the stored key's shape (a spec
+ * without `whenKeyPrefix` always matches, so it belongs last as the default).
+ * Expresses OpenAI's JWT→Codex endpoint swap. Accepted simplification: OpenAI's
+ * 403-retry from the Codex endpoint back to the public one is NOT reproduced —
+ * variant selection is by key shape only.
+ */
+function pickVariant(specs: ModelsFetchSpec[], apiKey: string): ModelsFetchSpec | undefined {
+  return specs.find((s) => !s.whenKeyPrefix || apiKey.startsWith(s.whenKeyPrefix));
+}
+
+/**
+ * Applies a spec's declarative `entryFilters` to raw list entries BEFORE id
+ * mapping/prefix-stripping (so `arrayIncludes` paths and `excludeIdSubstrings`
+ * address the provider's own response shape). Every `arrayIncludes` rule must
+ * pass (AND); a non-array at a rule's path fails the rule (entry dropped).
+ */
+function passesEntryFilters(entry: unknown, filters: CatalogEntryFilters, rawId: string): boolean {
+  for (const rule of filters.arrayIncludes ?? []) {
+    const arr = dotGet(entry, rule.path);
+    if (!Array.isArray(arr) || !arr.includes(rule.value)) return false;
+  }
+  for (const sub of filters.excludeIdSubstrings ?? []) {
+    if (rawId.includes(sub)) return false;
+  }
+  return true;
+}
+
+/**
  * Execute a catalog's declarative `modelsFetch` spec: authenticate per the
  * first matching auth rule, GET the endpoint, and map the response list into
  * `{id, label}` entries. Entries without a string id are skipped (a provider
@@ -44,17 +72,27 @@ function pickAuthRule(rules: CatalogAuthRule[], apiKey: string): CatalogAuthRule
  * {@link CatalogFetchError} on HTTP failure or a missing/invalid list.
  */
 export async function fetchCatalogModels(
-  catalog: { id: string; modelsFetch?: ModelsFetchSpec },
+  catalog: { id: string; modelsFetch?: ModelsFetchSpec | ModelsFetchSpec[] },
   apiKey: string,
   fetchImpl: typeof fetch = fetch,
   signal?: AbortSignal,
 ): Promise<FetchedCatalogModel[]> {
-  const spec = catalog.modelsFetch;
-  if (!spec) {
+  if (!catalog.modelsFetch) {
     throw new CatalogFetchError(
       catalog.id,
       undefined,
       `provider "${catalog.id}" declares no modelsFetch spec`,
+    );
+  }
+  // Normalize to an ordered variant list, then pick the first variant whose
+  // `whenKeyPrefix` matches the stored key shape (unconditional = always).
+  const variants = Array.isArray(catalog.modelsFetch) ? catalog.modelsFetch : [catalog.modelsFetch];
+  const spec = pickVariant(variants, apiKey);
+  if (!spec) {
+    throw new CatalogFetchError(
+      catalog.id,
+      undefined,
+      'no modelsFetch variant matches the stored key shape',
     );
   }
   const url = new URL(spec.url);
@@ -90,6 +128,9 @@ export async function fetchCatalogModels(
   for (const entry of list) {
     const rawId = dotGet(entry, spec.idPath);
     if (typeof rawId !== 'string' || rawId.length === 0) continue;
+    // Declarative post-fetch filtering runs on the raw entry + raw id, before
+    // any prefix strip, so filter paths address the provider's response shape.
+    if (spec.entryFilters && !passesEntryFilters(entry, spec.entryFilters, rawId)) continue;
     const id =
       spec.stripIdPrefix && rawId.startsWith(spec.stripIdPrefix)
         ? rawId.slice(spec.stripIdPrefix.length)
