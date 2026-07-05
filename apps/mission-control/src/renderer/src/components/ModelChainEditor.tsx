@@ -51,6 +51,13 @@ interface ModelChainEditorProps {
   onChange: (model: string, fallbackModels: string[]) => void;
   onRefresh?: () => void;
   refreshing?: boolean;
+  /**
+   * When set, only models whose `provider` is in this list are offered. A
+   * currently-selected model (primary or a fallback) from a now-disallowed
+   * provider is kept visible — labeled " (not allowed)" — so the conflict is
+   * obvious rather than the value silently vanishing. When unset, no filtering.
+   */
+  allowedProviders?: string[];
 }
 
 export function ModelChainEditor({
@@ -60,6 +67,7 @@ export function ModelChainEditor({
   onChange,
   onRefresh,
   refreshing,
+  allowedProviders,
 }: ModelChainEditorProps): JSX.Element {
   if (availableModels.length === 0) {
     return (
@@ -70,6 +78,16 @@ export function ModelChainEditor({
   }
 
   const usedModels = new Set([model, ...fallbackModels]);
+
+  // Build the option list the dropdowns render from. Without `allowedProviders`
+  // it's the raw list. With it, disallowed providers are dropped — EXCEPT any
+  // currently-selected value, which is kept and marked " (not allowed)" so the
+  // user sees the conflict instead of the value silently disappearing.
+  const isAllowed = (m: ModelOption): boolean =>
+    !allowedProviders || allowedProviders.includes(m.provider);
+  const visibleModels: ModelOption[] = availableModels
+    .filter((m) => isAllowed(m) || usedModels.has(m.value))
+    .map((m) => (isAllowed(m) ? m : { ...m, label: `${m.label} (not allowed)` }));
 
   const handlePrimaryChange = (value: string): void => {
     onChange(value, fallbackModels);
@@ -89,11 +107,13 @@ export function ModelChainEditor({
   };
 
   const handleAddFallback = (): void => {
-    const next = availableModels.find((m) => !usedModels.has(m.value));
+    // Only offer to add an allowed, unused model — never auto-insert a
+    // disallowed provider's model.
+    const next = availableModels.find((m) => isAllowed(m) && !usedModels.has(m.value));
     if (next) onChange(model, [...fallbackModels, next.value]);
   };
 
-  const canAddFallback = availableModels.some((m) => !usedModels.has(m.value));
+  const canAddFallback = availableModels.some((m) => isAllowed(m) && !usedModels.has(m.value));
 
   return (
     <div className="space-y-3">
@@ -109,7 +129,7 @@ export function ModelChainEditor({
             id="primary-model"
             ariaLabel="Primary model"
             value={model}
-            models={availableModels}
+            models={visibleModels}
             onChange={handlePrimaryChange}
             className="flex-1 border border-border bg-card-bg px-3 py-2 text-sm text-foreground focus:border-accent focus:outline-none"
           />
@@ -134,7 +154,7 @@ export function ModelChainEditor({
             Fallback models (in order)
           </p>
           {fallbackModels.map((fb, i) => {
-            const optionsForRow = availableModels.filter(
+            const optionsForRow = visibleModels.filter(
               (m) =>
                 m.value === fb || !usedModels.has(m.value) || fallbackModels.indexOf(m.value) === i,
             );
