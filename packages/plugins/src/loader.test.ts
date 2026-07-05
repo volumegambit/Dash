@@ -502,3 +502,78 @@ describe('loadPlugins', () => {
     expect(loaded.providerConfigs).toEqual([]);
   });
 });
+
+describe('builtinRoot', () => {
+  let tmp: string;
+  let pluginsDir: string;
+  let builtinRoot: string;
+  beforeEach(async () => {
+    tmp = await mkdtemp(join(tmpdir(), 'builtin-'));
+    pluginsDir = join(tmp, 'plugins');
+    builtinRoot = join(tmp, 'builtins');
+    await mkdir(pluginsDir, { recursive: true });
+    await mkdir(builtinRoot, { recursive: true });
+  });
+  afterEach(async () => {
+    await rm(tmp, { recursive: true, force: true });
+  });
+
+  it('loads builtin plugins enabled by default with builtin flag', async () => {
+    // fixture: builtinRoot/dash-test with one skill, no config entries
+    await writePlugin(builtinRoot, 'dash-test', { skill: 'greet' });
+    const result = await loadPlugins({ pluginsDir, entries: {}, builtinRoot });
+    const rec = result.records.find((r) => r.name === 'dash-test');
+    expect(rec?.status).toBe('loaded');
+    expect(rec?.builtin).toBe(true);
+    expect(result.skillDirs.length).toBeGreaterThan(0);
+  });
+
+  it('honors an enabled:false override for a builtin', async () => {
+    await writePlugin(builtinRoot, 'dash-test', { skill: 'greet' });
+    const result = await loadPlugins({
+      pluginsDir,
+      entries: { 'dash-test': { enabled: false } },
+      builtinRoot,
+    });
+    const rec = result.records.find((r) => r.name === 'dash-test');
+    expect(rec?.status).toBe('disabled');
+    expect(rec?.builtin).toBe(true);
+    expect(result.skillDirs).toEqual([]);
+  });
+
+  it('a user plugin of the same name wins; builtin becomes an error record', async () => {
+    // fixture: pluginsDir/dash-test (enabled) AND builtinRoot/dash-test
+    await writePlugin(pluginsDir, 'dash-test', { skill: 'user' });
+    await writePlugin(builtinRoot, 'dash-test', { skill: 'builtin' });
+    const result = await loadPlugins({
+      pluginsDir,
+      entries: { 'dash-test': { enabled: true } },
+      builtinRoot,
+    });
+    const recs = result.records.filter((r) => r.name === 'dash-test');
+    expect(recs).toHaveLength(2);
+    const user = recs.find((r) => !r.builtin);
+    const shadowed = recs.find((r) => r.builtin);
+    expect(user?.status).toBe('loaded');
+    expect(shadowed?.status).toBe('error');
+    expect(shadowed?.failure?.error).toContain('shadowed');
+  });
+
+  it('does not auto-trust builtins: code components stay noop', async () => {
+    // fixture: builtinRoot/dash-code with bin/tool.sh
+    await writePlugin(builtinRoot, 'dash-code', { bin: true });
+    const result = await loadPlugins({ pluginsDir, entries: {}, builtinRoot });
+    const rec = result.records.find((r) => r.name === 'dash-code');
+    expect(rec?.noop).toContain('bin');
+    expect(result.binDirs).toEqual([]);
+  });
+
+  it('tolerates a missing builtinRoot', async () => {
+    const result = await loadPlugins({
+      pluginsDir,
+      entries: {},
+      builtinRoot: join(tmp, 'nope'),
+    });
+    expect(result.records.filter((r) => r.builtin)).toEqual([]);
+  });
+});
