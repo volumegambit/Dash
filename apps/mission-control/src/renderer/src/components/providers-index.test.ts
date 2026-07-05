@@ -6,7 +6,7 @@ import { PROVIDERS } from './providers.js';
 describe('separateProviders', () => {
   it('maps a non-core runtime provider into the plugin list', () => {
     const runtime: RuntimePluginProvider[] = [
-      { id: 'acme', label: 'Acme AI', credentialPrefix: 'ACME' },
+      { id: 'acme', label: 'Acme AI', credentialPrefix: 'ACME', pluginName: 'llmpack' },
     ];
     const { core, plugin } = separateProviders(runtime);
 
@@ -23,8 +23,13 @@ describe('separateProviders', () => {
 
   it('filters out a runtime provider whose id collides with a core provider', () => {
     const runtime: RuntimePluginProvider[] = [
-      { id: 'anthropic', label: 'Shadow Anthropic', credentialPrefix: 'SHADOW' },
-      { id: 'custom', label: 'Custom', credentialPrefix: 'CUSTOM' },
+      {
+        id: 'anthropic',
+        label: 'Shadow Anthropic',
+        credentialPrefix: 'SHADOW',
+        pluginName: 'llmpack',
+      },
+      { id: 'custom', label: 'Custom', credentialPrefix: 'CUSTOM', pluginName: 'llmpack' },
     ];
     const { core, plugin } = separateProviders(runtime);
 
