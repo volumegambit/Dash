@@ -762,4 +762,101 @@ describe('SwarmCoordinator', () => {
       expect(res.ok).toBe(true);
     });
   });
+
+  // Behavior 13: ask_orchestrator threading (the worker-side tool is delivered
+  // to the factory in the WorkerSpec, wired to the real handle + run.closed).
+  describe('ask_orchestrator threading', () => {
+    it('the spec handed to the factory carries exactly one extraTool named ask_orchestrator', () => {
+      const { factory, specs } = makeFactory();
+      const coord = new SwarmCoordinator({ workerFactory: factory });
+      coord.attach(baseAttach());
+      coord.spawnWorker(AGENT_ID, CONVO_ID, { role: 'r', brief: 'b' });
+      expect(specs).toHaveLength(1);
+      expect(specs[0].extraTools).toHaveLength(1);
+      expect(specs[0].extraTools[0].name).toBe('ask_orchestrator');
+    });
+
+    it('end-to-end: worker invokes ask_orchestrator → waiting_input → sendToWorker answer resolves the tool', async () => {
+      // A factory whose backend invokes its spec's ask_orchestrator on the first
+      // segment and reports the answer it receives back to the test.
+      let workerIdSeen = '';
+      const askResult = deferred<string>();
+      const factory: WorkerFactory = (spec) => {
+        const ask = spec.extraTools.find((t) => t.name === 'ask_orchestrator');
+        if (!ask) throw new Error('expected an ask_orchestrator tool in the spec');
+        workerIdSeen = spec.workerId;
+        const backend: WorkerBackend = {
+          async *chat(): AsyncGenerator<AgentEvent> {
+            const res = await ask.execute('call-1', { question: 'which db?' }, undefined);
+            askResult.resolve(res.content[0].text);
+            // Block forever after asking; the run finalize will settle teardown.
+            await new Promise<void>(() => {});
+          },
+          abort() {},
+          async stop() {},
+        };
+        return Promise.resolve(backend);
+      };
+
+      const coord = new SwarmCoordinator({ workerFactory: factory });
+      coord.attach(baseAttach());
+      const { workerId } = coord.spawnWorker(AGENT_ID, CONVO_ID, { role: 'r', brief: 'b' });
+
+      // Wait until the worker asks and lands in waiting_input.
+      const deadline = Date.now() + 1000;
+      while (Date.now() < deadline) {
+        const run = coord.getLiveRun(AGENT_ID, CONVO_ID);
+        const status = run?.getHandle(workerId)?.status;
+        if (status === 'waiting_input') break;
+        await new Promise((r) => setTimeout(r, 1));
+      }
+      const run = coord.getLiveRun(AGENT_ID, CONVO_ID);
+      expect(run?.getHandle(workerId)?.status).toBe('waiting_input');
+      expect(workerIdSeen).toBe(workerId);
+
+      // The orchestrator answers via send_to_worker; the tool resolves with it.
+      const sent = coord.sendToWorker(AGENT_ID, CONVO_ID, { workerId, message: 'use postgres' });
+      expect(sent.ok).toBe(true);
+      expect(await askResult.promise).toBe('use postgres');
+    });
+
+    it('run-closed (finalize) aborts a pending ask: the worker is cancelled and the tool rejects', async () => {
+      const askError = deferred<unknown>();
+      const factory: WorkerFactory = (spec) => {
+        const ask = spec.extraTools.find((t) => t.name === 'ask_orchestrator');
+        if (!ask) throw new Error('expected an ask_orchestrator tool in the spec');
+        const backend: WorkerBackend = {
+          async *chat(): AsyncGenerator<AgentEvent> {
+            try {
+              await ask.execute('call-1', { question: 'blocked?' }, undefined);
+              askError.resolve(undefined); // resolved without throwing = failure
+            } catch (err) {
+              askError.resolve(err);
+            }
+            // Block after settling; teardown is driven by the run finalize.
+            await new Promise<void>(() => {});
+          },
+          abort() {},
+          async stop() {},
+        };
+        return Promise.resolve(backend);
+      };
+
+      const coord = new SwarmCoordinator({ workerFactory: factory });
+      const a = coord.attach(baseAttach());
+      const { workerId } = coord.spawnWorker(AGENT_ID, CONVO_ID, { role: 'r', brief: 'b' });
+
+      // Wait for the worker to reach waiting_input, then finalize the run.
+      const deadline = Date.now() + 1000;
+      while (Date.now() < deadline) {
+        const run = coord.getLiveRun(AGENT_ID, CONVO_ID);
+        if (run?.getHandle(workerId)?.status === 'waiting_input') break;
+        await new Promise((r) => setTimeout(r, 1));
+      }
+      a.finalize({ consumerAlive: true }); // fires run.closed → cancels the worker
+
+      const err = await askError.promise;
+      expect(err).toBeInstanceOf(Error);
+    });
+  });
 });

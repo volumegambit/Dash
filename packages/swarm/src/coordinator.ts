@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { AgentEvent } from '@dash/agent';
 import { AsyncChannel } from './channel.js';
 import { type RunSnapshot, type RunSummary, SwarmRun } from './run.js';
+import { createAskOrchestratorTool } from './tools.js';
 import type { SwarmCaps, SwarmEventLogSink, WorkerFactory, WorkerStatus } from './types.js';
 import type { WorkerHandleOptions } from './worker-handle.js';
 
@@ -280,11 +281,18 @@ export class SwarmCoordinator {
       tools,
     };
 
-    // Create (but do NOT await) the backend promise; hand it to the handle.
-    const backendPromise = this.workerFactory({ ...spec, extraTools: [] });
-
     // Synchronous registration + sync emits before any await returns to caller.
-    run.register({ spec, backendPromise, hooks: this.hooks });
+    // register() builds the handle first and hands it to this callback so the
+    // per-worker ask_orchestrator tool (which needs the handle) can be built and
+    // threaded into the WorkerSpec before the factory is invoked. The factory
+    // promise is chained into a deferred backend promise inside register — it is
+    // NOT awaited here, preserving synchronous registration.
+    run.register({ spec, hooks: this.hooks }, (handle) =>
+      this.workerFactory({
+        ...spec,
+        extraTools: [createAskOrchestratorTool(handle, run.closed)],
+      }),
+    );
     // worker_spawned + agent_spawned emitted synchronously into the channel.
     run.channel.push({
       type: 'worker_spawned',

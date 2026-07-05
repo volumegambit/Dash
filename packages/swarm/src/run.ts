@@ -1,6 +1,6 @@
 import type { AgentEvent } from '@dash/agent';
 import { AsyncChannel } from './channel.js';
-import type { SwarmCaps, WorkerStatus } from './types.js';
+import type { SwarmCaps, WorkerBackend, WorkerStatus } from './types.js';
 import { WorkerHandle, type WorkerHandleOptions } from './worker-handle.js';
 
 /** A worker as seen by the panel/management API. */
@@ -122,24 +122,46 @@ export class SwarmRun {
   }
 
   /**
-   * Synchronously registers and starts a worker. The provided
-   * `backendPromise` MUST NOT be awaited by the caller before this returns —
-   * the WorkerHandle drives it internally. worker_spawned + agent_spawned are
-   * emitted by the coordinator around this call (or here) synchronously.
+   * Synchronously registers and starts a worker. The worker's `backendPromise`
+   * is produced by `makeBackend`, which receives the freshly-built (not yet
+   * started) `WorkerHandle` so the caller can construct handle-dependent extra
+   * tools (e.g. ask_orchestrator) and hand them to the worker factory. The
+   * factory promise MUST NOT be awaited by the caller before this returns — it
+   * is chained into a deferred backend promise the WorkerHandle drives
+   * internally. If `makeBackend` throws synchronously the failure is folded into
+   * the backend promise (a rejection), never an unhandled throw, so the handle
+   * fails cleanly instead of the spawn escaping. worker_spawned + agent_spawned
+   * are emitted by the coordinator around this call synchronously.
    */
   register(
-    handleOpts: Omit<WorkerHandleOptions, 'emit' | 'onTerminal' | 'maxSteers'> & {
+    handleOpts: Omit<
+      WorkerHandleOptions,
+      'emit' | 'onTerminal' | 'maxSteers' | 'backendPromise'
+    > & {
       maxSteers?: number;
     },
+    makeBackend: (handle: WorkerHandle) => Promise<WorkerBackend>,
   ): WorkerHandle {
+    const { promise: backendPromise, resolve: resolveBackend } =
+      Promise.withResolvers<WorkerBackend>();
     const handle = new WorkerHandle({
       ...handleOpts,
+      backendPromise,
       maxSteers: handleOpts.maxSteers ?? this.caps.maxSteersPerWorker,
       emit: (event) => this.channel.push(event),
       onTerminal: () => this.onWorkerTerminal?.(this),
     });
     this.handles.set(handle.workerId, handle);
     this.order.push(handle.workerId);
+    // Chain the factory promise into the deferred. A synchronous throw from
+    // makeBackend (or a rejected promise) becomes a rejected backendPromise,
+    // which WorkerHandle.runSegment catches → finalizeFailed. Never an unhandled
+    // rejection and never a throw out of register().
+    try {
+      resolveBackend(makeBackend(handle));
+    } catch (err) {
+      resolveBackend(Promise.reject(err instanceof Error ? err : new Error(String(err))));
+    }
     handle.start();
     return handle;
   }
