@@ -32,7 +32,13 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { BOOTSTRAP_MODELS, MODELS_REVIEWED_AT, PROVIDERS, SUPPORTED_MODELS } from '@dash/models';
+import {
+  BOOTSTRAP_MODELS,
+  EXCLUDED_MODELS,
+  MODELS_REVIEWED_AT,
+  PROVIDERS,
+  SUPPORTED_MODELS,
+} from '@dash/models';
 import type {
   CatalogModel,
   ModelsFetchSpec,
@@ -56,7 +62,16 @@ interface StaticSpec {
   modelsFetch: ModelsFetchSpec | ModelsFetchSpec[];
   dynamicModels?: boolean;
   dynamicModelDefaults?: { contextWindow: number; maxTokens: number };
+  excludedPatterns?: string[];
   ui?: ProviderCatalog['ui'];
+}
+
+/**
+ * Deny-list globs for a provider, derived from `@dash/models`' `EXCLUDED_MODELS`
+ * (single source of truth — not hand-transcribed). Applied to live-fetched ids.
+ */
+function excludedPatternsFor(providerId: string): string[] {
+  return EXCLUDED_MODELS.filter((e) => e.provider === providerId).map((e) => e.pattern);
 }
 
 const STATIC_SPECS: Record<string, StaticSpec> = {
@@ -80,7 +95,12 @@ const STATIC_SPECS: Record<string, StaticSpec> = {
       idPath: 'id',
       namePath: 'display_name',
     },
-    ui: { keyConsoleUrl: 'https://console.anthropic.com/settings/keys' },
+    ui: {
+      keyConsoleUrl: 'https://console.anthropic.com/settings/keys',
+      keyPlaceholder: 'sk-ant-...',
+      docsUrl: 'https://docs.anthropic.com/en/docs/initial-setup#prerequisites',
+      sortOrder: 0,
+    },
   },
   openai: {
     baseUrl: 'https://api.openai.com/v1',
@@ -104,7 +124,12 @@ const STATIC_SPECS: Record<string, StaticSpec> = {
         idPath: 'id',
       },
     ],
-    ui: { keyConsoleUrl: 'https://platform.openai.com/api-keys' },
+    ui: {
+      keyConsoleUrl: 'https://platform.openai.com/api-keys',
+      keyPlaceholder: 'sk-...',
+      docsUrl: 'https://platform.openai.com/docs/quickstart',
+      sortOrder: 1,
+    },
   },
   google: {
     baseUrl: 'https://generativelanguage.googleapis.com/v1beta',
@@ -117,7 +142,13 @@ const STATIC_SPECS: Record<string, StaticSpec> = {
       namePath: 'displayName',
       stripIdPrefix: 'models/',
     },
-    ui: { keyConsoleUrl: 'https://aistudio.google.com/apikey' },
+    excludedPatterns: excludedPatternsFor('google'),
+    ui: {
+      keyConsoleUrl: 'https://aistudio.google.com/app/apikey',
+      keyPlaceholder: 'AIza...',
+      docsUrl: 'https://ai.google.dev/gemini-api/docs/quickstart',
+      sortOrder: 2,
+    },
   },
   moonshotai: {
     baseUrl: 'https://api.moonshot.ai/v1',
@@ -128,7 +159,12 @@ const STATIC_SPECS: Record<string, StaticSpec> = {
       listPath: 'data',
       idPath: 'id',
     },
-    ui: { keyConsoleUrl: 'https://platform.moonshot.ai/console/api-keys' },
+    ui: {
+      keyConsoleUrl: 'https://platform.moonshot.ai/console/api-keys',
+      keyPlaceholder: 'sk-...',
+      docsUrl: 'https://platform.moonshot.ai/docs/api/overview',
+      sortOrder: 3,
+    },
   },
   openrouter: {
     baseUrl: 'https://openrouter.ai/api/v1',
@@ -149,7 +185,12 @@ const STATIC_SPECS: Record<string, StaticSpec> = {
         excludeIdSubstrings: [':'],
       },
     },
-    ui: { keyConsoleUrl: 'https://openrouter.ai/keys' },
+    ui: {
+      keyConsoleUrl: 'https://openrouter.ai/settings/keys',
+      keyPlaceholder: 'sk-or-v1-...',
+      docsUrl: 'https://openrouter.ai/docs/quickstart',
+      sortOrder: 4,
+    },
   },
 };
 
@@ -210,6 +251,7 @@ function buildCatalog(providerId: string): ProviderCatalog {
       : {}),
     modelsFetch: spec.modelsFetch,
     supportedPatterns,
+    ...(spec.excludedPatterns !== undefined ? { excludedPatterns: spec.excludedPatterns } : {}),
     reviewedAt: MODELS_REVIEWED_AT,
     ...(spec.ui !== undefined ? { ui: spec.ui } : {}),
   };

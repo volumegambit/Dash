@@ -73,6 +73,59 @@ describe('generated dash-core-providers catalogs', () => {
     expect(spec.auth[1]?.header).toBe('x-api-key');
   });
 
+  it('google carries the EXCLUDED_MODELS globs as excludedPatterns', async () => {
+    const cat = validateProviderCatalog(await readCatalog('google'));
+    expect(cat.excludedPatterns).toEqual([
+      'gemini-embedding-*',
+      'gemini-*-image*',
+      'gemini-*-tts*',
+      'gemini-robotics-*',
+      'gemini-*-computer-use*',
+    ]);
+  });
+
+  it('every catalog carries ui key/docs hints and the dropdown sortOrder', async () => {
+    const expected: Record<
+      (typeof PROVIDER_IDS)[number],
+      { keyConsoleUrl: string; keyPlaceholder: string; docsUrl: string; sortOrder: number }
+    > = {
+      anthropic: {
+        keyConsoleUrl: 'https://console.anthropic.com/settings/keys',
+        keyPlaceholder: 'sk-ant-...',
+        docsUrl: 'https://docs.anthropic.com/en/docs/initial-setup#prerequisites',
+        sortOrder: 0,
+      },
+      openai: {
+        keyConsoleUrl: 'https://platform.openai.com/api-keys',
+        keyPlaceholder: 'sk-...',
+        docsUrl: 'https://platform.openai.com/docs/quickstart',
+        sortOrder: 1,
+      },
+      google: {
+        keyConsoleUrl: 'https://aistudio.google.com/app/apikey',
+        keyPlaceholder: 'AIza...',
+        docsUrl: 'https://ai.google.dev/gemini-api/docs/quickstart',
+        sortOrder: 2,
+      },
+      moonshotai: {
+        keyConsoleUrl: 'https://platform.moonshot.ai/console/api-keys',
+        keyPlaceholder: 'sk-...',
+        docsUrl: 'https://platform.moonshot.ai/docs/api/overview',
+        sortOrder: 3,
+      },
+      openrouter: {
+        keyConsoleUrl: 'https://openrouter.ai/settings/keys',
+        keyPlaceholder: 'sk-or-v1-...',
+        docsUrl: 'https://openrouter.ai/docs/quickstart',
+        sortOrder: 4,
+      },
+    };
+    for (const id of PROVIDER_IDS) {
+      const cat = validateProviderCatalog(await readCatalog(id));
+      expect(cat.ui).toEqual(expected[id]);
+    }
+  });
+
   it('the manifest names the plugin dash-core-providers', async () => {
     const raw = await readFile(resolve(PLUGIN_DIR, '.claude-plugin', 'plugin.json'), 'utf8');
     const manifest = JSON.parse(raw) as { name: string; version: string; description: string };

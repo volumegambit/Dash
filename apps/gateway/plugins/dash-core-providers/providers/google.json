@@ -74,8 +74,18 @@
       "tier": 4
     }
   ],
+  "excludedPatterns": [
+    "gemini-embedding-*",
+    "gemini-*-image*",
+    "gemini-*-tts*",
+    "gemini-robotics-*",
+    "gemini-*-computer-use*"
+  ],
   "reviewedAt": "2026-06-21",
   "ui": {
-    "keyConsoleUrl": "https://aistudio.google.com/apikey"
+    "keyConsoleUrl": "https://aistudio.google.com/app/apikey",
+    "keyPlaceholder": "AIza...",
+    "docsUrl": "https://ai.google.dev/gemini-api/docs/quickstart",
+    "sortOrder": 2
   }
 }
