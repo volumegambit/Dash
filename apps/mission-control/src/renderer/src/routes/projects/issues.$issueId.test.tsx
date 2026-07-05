@@ -1,5 +1,5 @@
 import '@testing-library/jest-dom/vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { mockApi } from '../../../../../vitest.setup.js';
 import type { IssueDetail, SessionIssueLink } from '../../../../shared/projects-ipc.js';
@@ -316,6 +316,35 @@ describe('TaskDetail delete', () => {
     expect(await screen.findByText('No description')).toBeInTheDocument();
     expect(screen.queryByTestId('tab-task')).not.toBeInTheDocument();
     expect(screen.queryByTestId('tab-session-telegram-1')).not.toBeInTheDocument();
+  });
+
+  it('shows the session tab when the link arrives via broadcast only (no local assign)', async () => {
+    // An agent's projects tool or a second MC window links a session: this
+    // window only sees the gateway's session.linked broadcast. The tab must
+    // appear live — before the fix the conversation list was never reloaded,
+    // so the mcSessions filter dropped the link until a re-navigation.
+    const before = detail();
+    useProjectsStore.setState({ detailById: { issue_1: before } });
+    mockApi.projectsGetIssue.mockResolvedValue(before);
+    mockApi.chatListConversations.mockResolvedValue([]);
+    mockApi.chatGetMessages.mockResolvedValue([]);
+    render(<TaskDetail />);
+
+    expect(await screen.findByText('No description')).toBeInTheDocument();
+    expect(screen.queryByTestId('tab-session-conv-42')).not.toBeInTheDocument();
+
+    // The out-of-band link happened: the refetched detail and conversation
+    // list now include it, and the broadcast is the only signal we get.
+    const after = detail({ linked_sessions: [sessionLink()] });
+    mockApi.projectsGetIssue.mockResolvedValue(after);
+    mockApi.chatListConversations.mockResolvedValue([mcConversation]);
+    act(() => {
+      useProjectsStore
+        .getState()
+        .applyEvent({ topic: 'session.linked', payload: { issue_id: 'issue_1' } });
+    });
+
+    expect(await screen.findByTestId('tab-session-conv-42')).toBeInTheDocument();
   });
 
   it('hides comment_* noise rows from the timeline and stamps rows with relative time', async () => {
