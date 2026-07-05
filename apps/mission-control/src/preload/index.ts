@@ -203,7 +203,7 @@ const api: MissionControlAPI = {
     return () => ipcRenderer.removeListener('update:available', handler);
   },
 
-  // Companion (pixel-tree widget)
+  // Companion (pet widget)
   companionPublishStatuses: (statuses: CompanionStatus[]) =>
     ipcRenderer.send('companion:statuses', statuses),
   companionSetVisible: (visible: boolean) => ipcRenderer.invoke('companion:setVisible', visible),

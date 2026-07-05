@@ -75,7 +75,7 @@ export interface AppSettings {
 
 export type GatewayStatus = 'starting' | 'healthy' | 'unhealthy';
 
-// Coarse per-session status the pixel-tree companion renders. Single source of
+// Coarse per-session status the companion pet renders. Single source of
 // truth: the renderer's companion/types.ts re-exports this.
 export type CompanionStatus = 'working' | 'needs' | 'done' | 'error';
 

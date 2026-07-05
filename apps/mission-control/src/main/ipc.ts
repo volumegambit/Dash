@@ -971,7 +971,7 @@ export async function registerIpcHandlers(
   );
 
   // -----------------------------------------------------------------------
-  // Companion widget (always-on-top pixel-tree window)
+  // Companion widget (always-on-top pet window)
   // -----------------------------------------------------------------------
 
   // Main window publishes coarse per-session statuses; forward them into the

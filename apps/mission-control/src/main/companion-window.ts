@@ -4,7 +4,7 @@ import { BrowserWindow, app, screen } from 'electron';
 import type { CompanionStatus, PetKind } from '../shared/ipc.js';
 import { clampToVisible } from './companion-window-clamp.js';
 
-/** Widget window size: the tree sprite at 128px plus a little padding. */
+/** Widget window size: the pet sprite at 128px plus a little padding. */
 const WIN = { width: 140, height: 190 };
 
 /** Margin from the screen edge when placing the widget in its default corner. */
