@@ -61,13 +61,17 @@ function mockRuntime(providers: RuntimePluginProvider[]): void {
 describe('AiProviders page', () => {
   beforeEach(() => {
     mockApi.credentialsList.mockResolvedValue(['anthropic-api-key:default']);
-    mockRuntime([...BUNDLED, PLUGIN_PROVIDER]);
+    // Deliberately shuffle (reverse) the gateway order so the test proves the
+    // page SORTS rather than passing through arrival order. If sortProviders
+    // is removed, the rendered order would match this reversed input and the
+    // DOM-order assertion below fails.
+    mockRuntime([...BUNDLED, PLUGIN_PROVIDER].reverse());
   });
 
   it('renders one card per gateway provider in sortOrder order', async () => {
     render(<AiProviders />);
     await screen.findByText('Anthropic');
-    const labels = [
+    const expected = [
       'Anthropic',
       'OpenAI',
       'Google Gemini',
@@ -75,13 +79,17 @@ describe('AiProviders page', () => {
       'OpenRouter',
       'My LLM',
     ];
-    for (const label of labels) {
-      expect(screen.getByText(label)).toBeInTheDocument();
-    }
-    // Add Key: one per provider = 6.
+    // Assert the ACTUAL rendered order, not mere presence — this is what guards
+    // sortProviders. Each provider label is rendered as the card's
+    // `font-semibold` <p>; reading them in document order gives the display
+    // sequence, which must be sorted regardless of the reversed gateway input.
     await waitFor(() => {
       expect(screen.getAllByText('Add Key')).toHaveLength(6);
     });
+    const rendered = Array.from(document.querySelectorAll('p.font-semibold.text-foreground')).map(
+      (el) => el.textContent,
+    );
+    expect(rendered).toEqual(expected);
   });
 
   it('badges only the non-bundled provider with its plugin name', async () => {
@@ -192,6 +200,65 @@ describe('AiProviders page', () => {
     await user.click(screen.getAllByText('Add Key')[0]);
     const keyNameInput = screen.getByLabelText('Key name');
     expect(keyNameInput).toHaveValue('default');
+  });
+
+  it('keeps the latest keys when an earlier credentialsList response resolves last', async () => {
+    // Single-provider fixture so the status ("Active"/"Disabled") is
+    // unambiguous — the invariant is purely "anthropic's key survives".
+    mockRuntime([BUNDLED[0]]);
+    // loadKeys fires twice on mount (providers empty → providers arrive). The
+    // FIRST call sees no providers so it would group {} ; the SECOND call sees
+    // providers and finds the key. If the first response resolves LAST it must
+    // NOT clobber the second. Force that ordering with two deferred promises.
+    let resolveFirst: (v: string[]) => void = () => {};
+    let resolveSecond: (v: string[]) => void = () => {};
+    const first = new Promise<string[]>((r) => {
+      resolveFirst = r;
+    });
+    const second = new Promise<string[]>((r) => {
+      resolveSecond = r;
+    });
+    mockApi.credentialsList.mockReturnValueOnce(first).mockReturnValueOnce(second);
+
+    render(<AiProviders />);
+    // Resolve the SECOND call first: it carries the real key.
+    resolveSecond(['anthropic-api-key:default']);
+    await screen.findByText('Active');
+    // Now resolve the earlier (stale) call with an empty list. The guard must
+    // drop it so the displayed key survives.
+    resolveFirst([]);
+    await waitFor(() => {
+      expect(screen.getByText('Active')).toBeInTheDocument();
+    });
+    // Without the stale-response guard, the late {} would flip anthropic to
+    // "Disabled" — assert it did NOT.
+    expect(screen.queryByText('Disabled')).not.toBeInTheDocument();
+  });
+
+  it('renders no OAuth UI for a provider whose id is a prototype-chain key', async () => {
+    // A gateway provider id like 'constructor' is kebab-valid but also a key on
+    // Object.prototype. A bare `id in OAUTH_CONFIG` / `OAUTH_LABEL[id]` lookup
+    // would treat it as OAuth-capable and render a login button. Object.hasOwn
+    // must prevent that.
+    mockApi.credentialsList.mockResolvedValue([]);
+    mockRuntime([
+      {
+        id: 'constructor',
+        label: 'Proto Provider',
+        credentialPrefix: 'constructor-api-key',
+        pluginName: 'llmpack',
+        ui: { description: 'proto', sortOrder: 0 },
+      },
+    ]);
+    render(<AiProviders />);
+    await screen.findByText('Proto Provider');
+    // The OAuth button is uniquely styled with `border-green-700`. Asserting on
+    // that class (not the label) catches the bug even though the leaked
+    // prototype value is a function whose `.label` is undefined — so the button
+    // would render with EMPTY text yet still exist in the DOM.
+    expect(document.querySelector('button.border-green-700')).toBeNull();
+    // The normal Add Key affordance is still present.
+    expect(screen.getByText('Add Key')).toBeInTheDocument();
   });
 });
 

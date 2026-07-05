@@ -79,7 +79,13 @@ describe('SetupWizard', () => {
   const noop = () => {};
 
   beforeEach(() => {
-    mockApi.plugins.runtime.mockResolvedValue({ providers: BUNDLED, plugins: [] });
+    // Deliberately reverse the gateway order so the default-selection test
+    // genuinely proves the wizard SORTS: anthropic (sortOrder 0) must still be
+    // selected by default even though it arrives LAST from the gateway.
+    mockApi.plugins.runtime.mockResolvedValue({
+      providers: [...BUNDLED].reverse(),
+      plugins: [],
+    });
   });
 
   describe('keychain-consent step (initial)', () => {
@@ -177,8 +183,10 @@ describe('SetupWizard', () => {
       expect(screen.getByText('Google Gemini')).toBeInTheDocument();
       expect(screen.getByText('Kimi (Moonshot)')).toBeInTheDocument();
       expect(screen.getByText('OpenRouter')).toBeInTheDocument();
-      // Anthropic (sortOrder 0) is selected by default.
-      expect(screen.getByText(/Continue with Anthropic/)).toBeInTheDocument();
+      // Anthropic (sortOrder 0) is selected by default — even though the gateway
+      // returned it LAST (fixture reversed), proving the wizard sorts. Default
+      // selection lands via an effect, so await it.
+      expect(await screen.findByText(/Continue with Anthropic/)).toBeInTheDocument();
     });
 
     it('shows an error with Retry when runtime() rejects, and Retry proceeds', async () => {
@@ -194,6 +202,94 @@ describe('SetupWizard', () => {
       mockApi.plugins.runtime.mockResolvedValue({ providers: BUNDLED, plugins: [] });
       await user.click(retry);
       expect(await screen.findByText(/Continue with Anthropic/)).toBeInTheDocument();
+    });
+
+    it('falls back to the first provider when the selected one vanishes on refetch', async () => {
+      const user = userEvent.setup();
+      const anthropicOnly = BUNDLED.filter((p) => p.id === 'anthropic');
+      const anthropicPlusOpenai = BUNDLED.filter((p) => p.id === 'anthropic' || p.id === 'openai');
+      // Initial provider-step fetch lists anthropic + openai.
+      mockApi.plugins.runtime.mockResolvedValueOnce({
+        providers: anthropicPlusOpenai,
+        plugins: [],
+      });
+      render(<SetupWizard needsSetup={true} onComplete={noop} />);
+      await clickThroughConsent(user);
+      await screen.findByText('Choose Your AI Provider');
+      await screen.findByText('OpenAI');
+
+      // Select openai explicitly.
+      await user.click(screen.getByText('OpenAI'));
+      expect(await screen.findByText(/Continue with OpenAI/)).toBeInTheDocument();
+
+      // Arrange the NEXT provider-step fetch to drop openai, then re-mount the
+      // step by navigating to api-key and Back (that refetches on mount).
+      mockApi.plugins.runtime.mockResolvedValue({ providers: anthropicOnly, plugins: [] });
+      await user.click(screen.getByText(/Continue with OpenAI/));
+      await screen.findByText('Connect to OpenAI');
+      await user.click(screen.getByText('Back'));
+
+      // openai is gone; selection falls back to the first sorted provider.
+      expect(await screen.findByText(/Continue with Anthropic/)).toBeInTheDocument();
+      expect(screen.queryByText(/Continue with OpenAI/)).not.toBeInTheDocument();
+    });
+
+    it('preserves the selection when the refetch still lists it', async () => {
+      const user = userEvent.setup();
+      const anthropicPlusOpenai = BUNDLED.filter((p) => p.id === 'anthropic' || p.id === 'openai');
+      // Both fetches list anthropic + openai.
+      mockApi.plugins.runtime.mockResolvedValue({
+        providers: anthropicPlusOpenai,
+        plugins: [],
+      });
+      render(<SetupWizard needsSetup={true} onComplete={noop} />);
+      await clickThroughConsent(user);
+      await screen.findByText('Choose Your AI Provider');
+      await screen.findByText('OpenAI');
+
+      await user.click(screen.getByText('OpenAI'));
+      await screen.findByText(/Continue with OpenAI/);
+
+      // Re-mount the step (refetch) — openai is still present, so it stays.
+      await user.click(screen.getByText(/Continue with OpenAI/));
+      await screen.findByText('Connect to OpenAI');
+      await user.click(screen.getByText('Back'));
+
+      expect(await screen.findByText(/Continue with OpenAI/)).toBeInTheDocument();
+    });
+
+    it('renders no OAuth CTA on the api-key step for a prototype-chain provider id', async () => {
+      const user = userEvent.setup();
+      // A provider whose id is a key on Object.prototype ('constructor'). A bare
+      // OAUTH_LABEL[id] lookup would pull a truthy value and render the OAuth
+      // button; Object.hasOwn must prevent that.
+      mockApi.plugins.runtime.mockResolvedValue({
+        providers: [
+          {
+            id: 'constructor',
+            label: 'Proto Provider',
+            credentialPrefix: 'constructor-api-key',
+            pluginName: 'llmpack',
+            ui: { description: 'proto', keyPlaceholder: 'key...', sortOrder: 0 },
+          },
+        ],
+        plugins: [],
+      });
+      render(<SetupWizard needsSetup={true} onComplete={noop} />);
+      await clickThroughConsent(user);
+      await screen.findByText('Choose Your AI Provider');
+      await screen.findByText(/Continue with Proto Provider/);
+      await user.click(screen.getByText(/Continue with Proto Provider/));
+      expect(await screen.findByText('Connect to Proto Provider')).toBeInTheDocument();
+
+      // The OAuth block must not render at all. Its "or use an API key" divider
+      // is a stable marker — asserting on the button label alone would miss the
+      // bug, since the leaked prototype value is a function (renders as empty
+      // text) yet still gates the whole OAuth section into existence.
+      expect(screen.queryByText('or use an API key')).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /Sign in with/ })).not.toBeInTheDocument();
+      // The API-key input is still present.
+      expect(screen.getByPlaceholderText('key...')).toBeInTheDocument();
     });
   });
 

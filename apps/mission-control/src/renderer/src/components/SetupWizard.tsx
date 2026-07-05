@@ -188,10 +188,20 @@ function ProviderStep({
   const { providers: runtimeProviders, loading, error, refetch } = useRuntimeProviders();
   const providers = useMemo(() => sortProviders(runtimeProviders), [runtimeProviders]);
 
-  // Default-select the first sorted provider once the list loads (sortOrder 0
-  // keeps anthropic first). Only sets when nothing is selected yet.
+  // Keep the selection valid against the current list:
+  // - default-select the first sorted provider when nothing is selected yet
+  //   (sortOrder 0 keeps anthropic first);
+  // - if a selection exists but its id is no longer in the list (e.g. a refetch
+  //   after Back-navigation dropped it), fall back to the first provider so the
+  //   wizard never offers a vanished provider. A still-present selection is
+  //   preserved untouched.
   useEffect(() => {
-    if (!selected && providers.length > 0) {
+    if (providers.length === 0) return;
+    if (!selected) {
+      onSelect(providers[0]);
+      return;
+    }
+    if (!providers.some((p) => p.id === selected.id)) {
       onSelect(providers[0]);
     }
   }, [selected, providers, onSelect]);
@@ -288,7 +298,13 @@ function ApiKeyStep({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const oauthLabel = OAUTH_LABEL[provider.id];
+  // Object.hasOwn (not a bare index) so a provider id like 'constructor' can't
+  // walk the prototype chain and pull a truthy value off Object.prototype,
+  // which would spuriously render the OAuth CTA on a non-OAuth provider.
+  // Object.hasOwn (not a bare index) so a provider id like 'constructor' can't
+  // walk the prototype chain and pull a truthy value off Object.prototype,
+  // which would spuriously render the OAuth CTA on a non-OAuth provider.
+  const oauthLabel = Object.hasOwn(OAUTH_LABEL, provider.id) ? OAUTH_LABEL[provider.id] : undefined;
   const [oauthLoading, setOauthLoading] = useState(false);
   const [oauthError, setOauthError] = useState<string | null>(null);
   const [claudeFlow, setClaudeFlow] = useState<{ state: string; verifier: string } | null>(null);

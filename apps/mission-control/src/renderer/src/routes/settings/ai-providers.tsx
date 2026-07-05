@@ -1,7 +1,7 @@
 import { providerSecretKey } from '@dash/mc/provider-keys';
 import { createFileRoute } from '@tanstack/react-router';
 import { KeyRound, Loader, LogIn, Plus, RefreshCw, Trash2, X } from 'lucide-react';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ProviderConnectModal } from '../../components/ProviderConnectModal.js';
 import {
   BUNDLED_PROVIDERS_PLUGIN,
@@ -20,7 +20,10 @@ const OAUTH_CONFIG: Record<OAuthProvider, { label: string; badgeLabel: string }>
 };
 
 function hasOAuthSupport(providerId: string): providerId is OAuthProvider {
-  return providerId in OAUTH_CONFIG;
+  // Object.hasOwn (not `in`) so a gateway provider id like 'constructor' can't
+  // walk the prototype chain and spuriously match — that would render OAuth UI
+  // on a non-OAuth provider.
+  return Object.hasOwn(OAUTH_CONFIG, providerId);
 }
 
 interface ProviderKeyEntry {
@@ -35,6 +38,11 @@ export function AiProviders(): JSX.Element {
   const providers = useMemo(() => sortProviders(runtimeProviders), [runtimeProviders]);
 
   const [providerKeys, setProviderKeys] = useState<Record<string, ProviderKeyEntry[]>>({});
+  // loadKeys runs on mount (providers empty) and again when providers arrive.
+  // credentialsList responses can resolve out of order, so an early call could
+  // overwrite a later one with a stale (emptier) grouping. Guard with a
+  // monotonic sequence: only the latest invocation may commit its result.
+  const loadKeysSeq = useRef(0);
   const [modal, setModal] = useState<{
     provider: string;
     keyName?: string;
@@ -60,6 +68,7 @@ export function AiProviders(): JSX.Element {
   const [claudeOAuthError, setClaudeOAuthError] = useState<string | null>(null);
 
   const loadKeys = useCallback(async (): Promise<void> => {
+    const seq = ++loadKeysSeq.current;
     const allKeys = await window.api.credentialsList();
     // OAuth keys (any provider) have a matching `{provider}-oauth-refresh:{name}`
     // slot. This is the standardized convention the gateway refreshes against.
@@ -79,6 +88,9 @@ export function AiProviders(): JSX.Element {
       });
       grouped[id] = entries;
     }
+    // Stale-response guard: a call whose response resolves after a newer call
+    // must not clobber the newer result.
+    if (seq !== loadKeysSeq.current) return;
     setProviderKeys(grouped);
   }, [providers]);
 
@@ -257,7 +269,10 @@ export function AiProviders(): JSX.Element {
         {providers.length > 0 && (
           <div className="flex flex-col gap-3 mt-4">
             {providers.map((p) => {
-              const keys = providerKeys[p.id] ?? [];
+              // Object.hasOwn, not a bare index: a provider id like 'constructor'
+              // would otherwise resolve to Object.prototype.constructor (a
+              // function) instead of falling through to the empty default.
+              const keys = Object.hasOwn(providerKeys, p.id) ? providerKeys[p.id] : [];
               const hasKeys = keys.length > 0;
               const oauthProviderId = hasOAuthSupport(p.id) ? p.id : null;
               const oauthSupported = oauthProviderId !== null;
