@@ -288,4 +288,13 @@ export function initChatListeners(): void {
   window.api.onChatError((conversationId, error) => {
     useChatStore.getState().setMessageError(conversationId, error);
   });
+  // Background auto-title: the main process replaces a new conversation's
+  // placeholder title once the gateway generates one from the first message.
+  window.api.onChatConversationRenamed((conversationId, title) => {
+    useChatStore.setState((state) => ({
+      conversations: state.conversations.map((c) =>
+        c.id === conversationId ? { ...c, title } : c,
+      ),
+    }));
+  });
 }

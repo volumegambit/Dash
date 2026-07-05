@@ -224,8 +224,14 @@ describe('ChatService', () => {
     let replayCalls = 0;
     let replaySinceSeqSeen: number | undefined;
     const managementServer: Server = createServer((req, res) => {
-      replayCalls++;
       const url = new URL(req.url ?? '/', `http://${req.headers.host}`);
+      // The background auto-title POST also lands here; it isn't what this
+      // test measures, so 404 it and count only replay requests.
+      if (!url.pathname.endsWith('/events')) {
+        res.writeHead(404).end();
+        return;
+      }
+      replayCalls++;
       replaySinceSeqSeen = Number(url.searchParams.get('sinceSeq') ?? 'NaN');
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(
@@ -613,5 +619,129 @@ describe('ChatService', () => {
     await new Promise((r) => setTimeout(r, 100));
 
     expect(onDone).toHaveBeenCalledWith(conv.id);
+  });
+});
+
+describe('ChatService auto-title', () => {
+  let dataDir: string;
+  let store: ConversationStore;
+  let wss: WebSocketServer | undefined;
+  let onRenamed: ReturnType<typeof vi.fn>;
+  let service: ChatService;
+  const port = BASE_PORT + 150;
+
+  function makeTitledService(gc?: Partial<GatewayConnection>): ChatService {
+    return new ChatService(
+      store,
+      vi.fn(),
+      vi.fn(),
+      vi.fn(),
+      { channelPort: port, managementBaseUrl: 'http://mgmt.test', managementToken: 'tok', ...gc },
+      onRenamed,
+    );
+  }
+
+  /** Echo WS server so sendMessage's stream terminates cleanly. */
+  async function startWs(): Promise<void> {
+    wss = new WebSocketServer({ port });
+    wss.on('connection', (ws) => {
+      ws.on('message', (raw) => {
+        const msg = JSON.parse(String(raw));
+        ws.send(JSON.stringify({ type: 'done', id: msg.id }));
+      });
+    });
+    await new Promise<void>((r) => wss?.on('listening', r));
+  }
+
+  async function flushTitle(): Promise<void> {
+    // generateTitle is fire-and-forget and its store write queues behind
+    // real fs I/O; a timed settle (not event-loop turns) covers it.
+    await new Promise((r) => setTimeout(r, 150));
+  }
+
+  beforeEach(async () => {
+    dataDir = join(tmpdir(), `chat-title-test-${Date.now()}-${Math.random()}`);
+    await mkdir(dataDir, { recursive: true });
+    store = new ConversationStore(dataDir);
+    onRenamed = vi.fn();
+    service = makeTitledService();
+    await startWs();
+  });
+
+  afterEach(async () => {
+    vi.unstubAllGlobals();
+    if (wss) {
+      await new Promise<void>((r) => wss?.close(() => r()));
+      wss = undefined;
+    }
+    // Straggler index writes can race the removal; retry.
+    await rm(dataDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+  });
+
+  it('asks the gateway for a title on the first message and renames', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(
+        new Response(JSON.stringify({ title: 'Login bug triage' }), { status: 200 }),
+      );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const conv = await service.createConversation('agent-1');
+    await service.sendMessage(conv.id, 'my login form crashes on submit');
+    // The rename is fire-and-forget and lands behind the assistant-append
+    // fs writes; poll until it does.
+    await vi.waitFor(async () => {
+      expect((await store.get(conv.id))?.title).toBe('Login bug triage');
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://mgmt.test/agents/agent-1/conversation-title',
+      expect.objectContaining({
+        method: 'POST',
+        headers: expect.objectContaining({ authorization: 'Bearer tok' }),
+      }),
+    );
+    const updated = await store.get(conv.id);
+    expect(updated?.title).toBe('Login bug triage');
+    expect(onRenamed).toHaveBeenCalledWith(conv.id, 'Login bug triage');
+  });
+
+  it('does not request a title for later messages', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(new Response(JSON.stringify({ title: 'T' }), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const conv = await service.createConversation('agent-1');
+    await service.sendMessage(conv.id, 'first message');
+    await flushTitle();
+    await service.sendMessage(conv.id, 'second message');
+    await flushTitle();
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the truncated fallback title when the gateway call fails', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('boom')));
+
+    const conv = await service.createConversation('agent-1');
+    await service.sendMessage(conv.id, 'hello there companion');
+    await flushTitle();
+
+    const updated = await store.get(conv.id);
+    expect(updated?.title).toBe('hello there companion');
+    expect(onRenamed).not.toHaveBeenCalled();
+  });
+
+  it('skips titling without a management connection', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    service = makeTitledService({ managementBaseUrl: undefined, managementToken: undefined });
+
+    const conv = await service.createConversation('agent-1');
+    await service.sendMessage(conv.id, 'hello');
+    await flushTitle();
+
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });
