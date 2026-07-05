@@ -66,6 +66,14 @@ export interface DashAgentConfig {
   fallbackModels?: string[];
   systemPrompt: string;
   tools?: string[];
+  /**
+   * Provider allow-list gating model resolution. `undefined` = no gating (any
+   * provider); `[]` = no provider allowed; otherwise the `provider/` segment of
+   * every resolved model (primary AND fallback) must be a member. Enforced in
+   * `resolveModelString` before catalog/pi-ai lookup, so a disallowed provider
+   * fails with a distinct policy error rather than "Unknown model".
+   */
+  allowedProviders?: string[];
   workspace?: string;
   skills?: {
     paths?: string[];

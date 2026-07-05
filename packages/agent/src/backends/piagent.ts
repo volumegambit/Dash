@@ -489,9 +489,13 @@ export class PiAgentBackend implements AgentBackend {
   /**
    * Resolve the model from "provider/model-id" format. Plugin catalogs win
    * over pi-ai's static registry (see resolve-model.ts for the rationale).
+   *
+   * `config.allowedProviders` (if set) gates the provider segment BEFORE any
+   * lookup — threaded here so every resolution path (primary in start() and the
+   * fallback chain in runModelChain()) is gated identically.
    */
   private resolveModel(modelStr: string): Model<Api> {
-    return resolveModelString(modelStr, this.pluginModelCatalog);
+    return resolveModelString(modelStr, this.pluginModelCatalog, this.config.allowedProviders);
   }
 
   /**

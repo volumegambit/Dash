@@ -7,10 +7,17 @@ import type { PluginModelCatalog } from '../types.js';
  * metadata than pi-ai's baked registry — cost, context window, headers);
  * pi-ai's static registry is the fallback for anything catalogs don't
  * declare. Pure: all inputs explicit, no backend state.
+ *
+ * `allowedProviders` gates which provider segments this agent may use. It is
+ * checked FIRST — before any catalog/pi-ai lookup — so a disallowed provider
+ * reports a policy error even when the model genuinely exists. `undefined`
+ * means no gating (the historical behavior); `[]` disallows every provider;
+ * otherwise the provider segment must be a member.
  */
 export function resolveModelString(
   modelStr: string,
   pluginModelCatalog: PluginModelCatalog | undefined,
+  allowedProviders?: string[],
 ): Model<Api> {
   const slash = modelStr.indexOf('/');
   if (slash === -1) {
@@ -20,6 +27,14 @@ export function resolveModelString(
   }
   const provider = modelStr.slice(0, slash);
   const modelId = modelStr.slice(slash + 1);
+  // Policy gate: enforced BEFORE catalog/pi-ai lookup so a disallowed provider
+  // yields a distinct policy error (not "Unknown model"), even for a model that
+  // exists. `undefined` = no gating; `[]` = nothing allowed.
+  if (allowedProviders !== undefined && !allowedProviders.includes(provider)) {
+    throw new Error(
+      `Provider "${provider}" is not allowed for this agent (allowed: ${allowedProviders.join(', ') || 'none'})`,
+    );
+  }
   if (pluginModelCatalog) {
     const m = pluginModelCatalog.resolve(provider, modelId);
     if (m) return m as Model<Api>;
