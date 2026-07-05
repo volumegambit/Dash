@@ -18,6 +18,60 @@ export interface LoadConfigOptions {
   controlPlaneUrl?: string;
 }
 
+/**
+ * Gateway-wide swarm defaults. `maxConcurrentWorkersGlobal` is the hard ceiling
+ * across ALL agents' runs on this gateway; `defaults` are the per-agent caps
+ * used when an agent's own `swarm` block leaves a field unset.
+ */
+export interface GatewaySwarmDefaults {
+  maxConcurrentWorkers: number;
+  maxWorkersPerRun: number;
+  maxSteersPerWorker: number;
+  maxRunSeconds: number;
+}
+
+export interface GatewaySwarmConfig {
+  maxConcurrentWorkersGlobal: number;
+  defaults: GatewaySwarmDefaults;
+}
+
+/**
+ * Built-in gateway swarm defaults. Overridden by user/env config via
+ * {@link resolveSwarmConfig} (deep-merge: nested `defaults` fields fill
+ * individually, everything else replaces).
+ */
+export const DEFAULT_SWARM_CONFIG: GatewaySwarmConfig = {
+  maxConcurrentWorkersGlobal: 16,
+  defaults: {
+    maxConcurrentWorkers: 8,
+    maxWorkersPerRun: 24,
+    maxSteersPerWorker: 10,
+    maxRunSeconds: 1800,
+  },
+};
+
+/**
+ * Deep-merge a partial swarm config over {@link DEFAULT_SWARM_CONFIG}: a
+ * top-level `maxConcurrentWorkersGlobal` override wins, and each `defaults`
+ * field is filled individually so a caller can override just one cap without
+ * clobbering the rest. Returns a fresh object; never mutates the defaults.
+ */
+export function resolveSwarmConfig(
+  overrides?: Partial<{
+    maxConcurrentWorkersGlobal: number;
+    defaults: Partial<GatewaySwarmDefaults>;
+  }>,
+): GatewaySwarmConfig {
+  return {
+    maxConcurrentWorkersGlobal:
+      overrides?.maxConcurrentWorkersGlobal ?? DEFAULT_SWARM_CONFIG.maxConcurrentWorkersGlobal,
+    defaults: {
+      ...DEFAULT_SWARM_CONFIG.defaults,
+      ...overrides?.defaults,
+    },
+  };
+}
+
 export function parseFlags(argv: string[]): LoadConfigOptions {
   const options: LoadConfigOptions = {};
 

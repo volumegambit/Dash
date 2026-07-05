@@ -191,7 +191,7 @@ A plugin's `skills/<name>/SKILL.md` files join the agent's **skill index** — t
 A plugin's `commands/<name>.md` becomes a slash command **`/<plugin>:<command>`** — a plugin named `research` with `commands/triage.md` exposes `/research:triage`. A plugin's `agents/<name>.md` (Claude Code subagent format) becomes a loadable specialist invocable as **`/<plugin>:<agent>`**, or loaded by the agent through `load_skill`. Both are **markdown**, so they work on `enabled` alone — no trust needed. The plugin name namespaces them, so the slash form matches exactly with no ambiguity.
 
 <Note>
-**Subagents run in the main session**, not as isolated child agents. Their `tools` frontmatter is therefore advisory, not enforced — a loaded specialist can use the agent's full tool set. True isolated subagent spawning is a future enhancement.
+**Plugin subagents run in the main session**, not as isolated child agents. Their `tools` frontmatter is therefore advisory, not enforced — a loaded specialist can use the agent's full tool set. For **isolated** parallel workers — each with its own context and a restricted tool subset — enable the agent's [Swarm](/configuration#swarm) feature instead.
 </Note>
 
 ### MCP servers, hooks, and executables

@@ -1,10 +1,11 @@
 import type { PluginRecord, RuntimePluginProvider } from '@dash/management';
-import type { GatewayAgent } from '@dash/mc';
+import type { AgentSwarmConfig, GatewayAgent } from '@dash/mc';
 import { ChevronDown, ChevronUp, FolderOpen, RotateCcw, X } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
 import type { McpConnectorInfo } from '../../../../../shared/ipc.js';
 import { HealthDot } from '../../../components/HealthDot.js';
 import { ModelChainEditor } from '../../../components/ModelChainEditor.js';
+import { parseAllowedModels, parsePositiveInt } from '../../../components/SwarmPanel.helpers.js';
 import { ALL_TOOL_IDS, TOOL_GROUPS } from '../../../components/deploy-options.js';
 import { sortProviders } from '../../../components/providers.js';
 import { useAvailableModels } from '../../../hooks/useAvailableModels.js';
@@ -25,6 +26,9 @@ type ConfigPatch = {
   // Same null-clear sentinel semantics as `plugins`: `null` clears the scope
   // back to "all available providers"; a non-empty array scopes the agent.
   providers?: string[] | null;
+  // The gateway's `update()` replaces the whole `swarm` block wholesale
+  // (shallow merge), so we always send the complete block.
+  swarm?: AgentSwarmConfig;
 };
 
 interface AgentConfigTabProps {
@@ -48,7 +52,15 @@ export function AgentConfigTab({
 
   // Which card is open (null = all collapsed). Opening goes straight to edit mode.
   const [openCard, setOpenCard] = useState<
-    'workspace' | 'models' | 'prompt' | 'tools' | 'connectors' | 'plugins' | 'providers' | null
+    | 'workspace'
+    | 'models'
+    | 'prompt'
+    | 'tools'
+    | 'connectors'
+    | 'plugins'
+    | 'providers'
+    | 'swarm'
+    | null
   >(null);
 
   // Workspace editing state
@@ -86,6 +98,17 @@ export function AgentConfigTab({
   // `providers: undefined` backward-compat behavior) — NOT "no providers".
   const [assignedProviders, setAssignedProviders] = useState<string[]>([]);
   const [poolProviders, setPoolProviders] = useState<RuntimePluginProvider[]>([]);
+
+  // Swarm editing state. Caps are kept as raw text so a blank field means
+  // "use the gateway default" (undefined) rather than zero. `allowedModels` is
+  // a comma-separated text input.
+  const [swarmEnabled, setSwarmEnabled] = useState(false);
+  const [swarmMaxConcurrent, setSwarmMaxConcurrent] = useState('');
+  const [swarmMaxPerRun, setSwarmMaxPerRun] = useState('');
+  const [swarmMaxSteers, setSwarmMaxSteers] = useState('');
+  const [swarmMaxRunSeconds, setSwarmMaxRunSeconds] = useState('');
+  const [swarmAllowedModels, setSwarmAllowedModels] = useState('');
+  const [swarmSaving, setSwarmSaving] = useState(false);
 
   // Sync connectors when agentConfig changes
   useEffect(() => {
@@ -224,6 +247,41 @@ export function AgentConfigTab({
       setChainFallbacks(agentConfig.fallbackModels ?? []);
     }
   }, [agentConfig?.model, agentConfig?.fallbackModels]);
+
+  // Sync swarm draft when agentConfig changes. Numeric caps render as text (a
+  // blank field = "use the gateway default").
+  const swarmCfg = agentConfig?.swarm;
+  useEffect(() => {
+    setSwarmEnabled(swarmCfg?.enabled === true);
+    setSwarmMaxConcurrent(swarmCfg?.maxConcurrentWorkers?.toString() ?? '');
+    setSwarmMaxPerRun(swarmCfg?.maxWorkersPerRun?.toString() ?? '');
+    setSwarmMaxSteers(swarmCfg?.maxSteersPerWorker?.toString() ?? '');
+    setSwarmMaxRunSeconds(swarmCfg?.maxRunSeconds?.toString() ?? '');
+    setSwarmAllowedModels((swarmCfg?.allowedModels ?? []).join(', '));
+  }, [swarmCfg]);
+
+  const handleSaveSwarm = async (): Promise<void> => {
+    setSwarmSaving(true);
+    try {
+      // Build the complete block: the gateway replaces `swarm` wholesale.
+      // Blank/invalid caps become undefined (= gateway default); an empty
+      // allowedModels list is omitted, which leaves workers restricted to the
+      // orchestrator's model + fallbackModels (the most restrictive default).
+      const allowed = parseAllowedModels(swarmAllowedModels);
+      const swarm: AgentSwarmConfig = {
+        enabled: swarmEnabled,
+        maxConcurrentWorkers: parsePositiveInt(swarmMaxConcurrent),
+        maxWorkersPerRun: parsePositiveInt(swarmMaxPerRun),
+        maxSteersPerWorker: parsePositiveInt(swarmMaxSteers),
+        maxRunSeconds: parsePositiveInt(swarmMaxRunSeconds),
+        ...(allowed.length > 0 ? { allowedModels: allowed } : {}),
+      };
+      await updateConfig(agentId, { swarm });
+      setOpenCard(null);
+    } finally {
+      setSwarmSaving(false);
+    }
+  };
 
   const handleSaveChain = async (): Promise<void> => {
     setChainSaving(true);
@@ -848,6 +906,137 @@ export function AgentConfigTab({
                 first.
               </p>
             ) : null}
+          </div>
+        )}
+      </div>
+
+      {/* Swarm card. Per-agent worker spawning + caps. Enabled gates whether the
+          agent may spawn workers at all; blank caps fall back to the gateway
+          defaults. The gateway replaces the whole `swarm` block on save. */}
+      <div className="rounded-lg border border-border bg-card-bg">
+        <button
+          type="button"
+          onClick={() => setOpenCard(openCard === 'swarm' ? null : 'swarm')}
+          className="flex w-full items-center justify-between p-4 text-left"
+        >
+          <div>
+            <h3 className="text-sm font-medium">Swarm</h3>
+            <p className="text-xs text-muted mt-0.5">
+              {swarmEnabled ? 'Enabled — agent can spawn workers' : 'Disabled'}
+            </p>
+          </div>
+          {openCard === 'swarm' ? (
+            <ChevronUp size={16} className="text-muted" />
+          ) : (
+            <ChevronDown size={16} className="text-muted" />
+          )}
+        </button>
+        {openCard === 'swarm' && (
+          <div className="border-t border-border p-4">
+            <label className="flex cursor-pointer items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={swarmEnabled}
+                onChange={(e) => setSwarmEnabled(e.target.checked)}
+                className="accent-accent"
+                data-testid="swarm-enabled-toggle"
+              />
+              Enable swarm — let this agent spawn parallel workers
+            </label>
+            <p className="mt-1.5 text-[11px] text-muted">
+              Leave a cap blank to use the gateway default. Changes take effect on new
+              conversations.
+            </p>
+
+            <div className="mt-4 grid grid-cols-2 gap-3">
+              <label className="flex flex-col gap-1 text-xs text-muted">
+                Max concurrent workers
+                <input
+                  type="number"
+                  min={1}
+                  value={swarmMaxConcurrent}
+                  onChange={(e) => setSwarmMaxConcurrent(e.target.value)}
+                  placeholder="default"
+                  disabled={!swarmEnabled}
+                  className="rounded border border-border bg-card-bg px-2 py-1.5 text-sm text-foreground placeholder:text-muted focus:border-accent focus:outline-none disabled:opacity-50"
+                  data-testid="swarm-max-concurrent"
+                />
+              </label>
+              <label className="flex flex-col gap-1 text-xs text-muted">
+                Max workers per run
+                <input
+                  type="number"
+                  min={1}
+                  value={swarmMaxPerRun}
+                  onChange={(e) => setSwarmMaxPerRun(e.target.value)}
+                  placeholder="default"
+                  disabled={!swarmEnabled}
+                  className="rounded border border-border bg-card-bg px-2 py-1.5 text-sm text-foreground placeholder:text-muted focus:border-accent focus:outline-none disabled:opacity-50"
+                  data-testid="swarm-max-per-run"
+                />
+              </label>
+              <label className="flex flex-col gap-1 text-xs text-muted">
+                Max steers per worker
+                <input
+                  type="number"
+                  min={1}
+                  value={swarmMaxSteers}
+                  onChange={(e) => setSwarmMaxSteers(e.target.value)}
+                  placeholder="default"
+                  disabled={!swarmEnabled}
+                  className="rounded border border-border bg-card-bg px-2 py-1.5 text-sm text-foreground placeholder:text-muted focus:border-accent focus:outline-none disabled:opacity-50"
+                  data-testid="swarm-max-steers"
+                />
+              </label>
+              <label className="flex flex-col gap-1 text-xs text-muted">
+                Max run seconds
+                <input
+                  type="number"
+                  min={1}
+                  value={swarmMaxRunSeconds}
+                  onChange={(e) => setSwarmMaxRunSeconds(e.target.value)}
+                  placeholder="default"
+                  disabled={!swarmEnabled}
+                  className="rounded border border-border bg-card-bg px-2 py-1.5 text-sm text-foreground placeholder:text-muted focus:border-accent focus:outline-none disabled:opacity-50"
+                  data-testid="swarm-max-run-seconds"
+                />
+              </label>
+            </div>
+
+            <label className="mt-3 flex flex-col gap-1 text-xs text-muted">
+              Allowed models (comma-separated, optional)
+              <input
+                type="text"
+                value={swarmAllowedModels}
+                onChange={(e) => setSwarmAllowedModels(e.target.value)}
+                placeholder="e.g. anthropic/claude-haiku-4.5, openai/gpt-5-mini"
+                disabled={!swarmEnabled}
+                className="rounded border border-border bg-card-bg px-2 py-1.5 text-sm text-foreground placeholder:text-muted focus:border-accent focus:outline-none disabled:opacity-50"
+                data-testid="swarm-allowed-models"
+              />
+              <span className="text-[11px] text-muted">
+                Extra models workers may use, comma-separated. Blank = orchestrator's model and
+                fallbacks only.
+              </span>
+            </label>
+
+            <div className="mt-4 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={handleSaveSwarm}
+                disabled={swarmSaving}
+                className="rounded-lg bg-accent px-3 py-1.5 text-xs text-white hover:bg-primary-hover disabled:opacity-50"
+              >
+                {swarmSaving ? 'Saving...' : 'Save'}
+              </button>
+              <button
+                type="button"
+                onClick={() => setOpenCard(null)}
+                className="rounded-lg border border-border px-3 py-1.5 text-xs text-muted hover:text-foreground"
+              >
+                Cancel
+              </button>
+            </div>
           </div>
         )}
       </div>

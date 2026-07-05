@@ -24,6 +24,37 @@ Each agent is configured in Mission Control's **Deploy** wizard (and editable la
 
 Your agents are saved to `~/.dash/gateway/agents.json` and restored automatically when the gateway restarts.
 
+## Swarm
+
+An agent can be given a **swarm** so it can spawn short-lived **worker** subagents that run in parallel, each with its own isolated context, and then synthesize their reports into one answer. Swarm is **off by default** and is enabled per agent from Mission Control's **Configuration** tab → **Swarm** card ("Enable swarm — let this agent spawn parallel workers"). When it's on, the agent gains the `spawn_worker`, `wait_workers`, `send_to_worker`, and `check_workers` tools — see [Tools → Swarm orchestration](/tools#swarm-orchestration).
+
+Every agent carries its own optional swarm block on its config (saved verbatim to `agents.json`):
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `enabled` | `false` | Whether this agent may spawn workers at all. When off, the swarm tools are not given to the agent. |
+| `maxConcurrentWorkers` | `8` | Most workers this agent may run **at once** in a single turn. |
+| `maxWorkersPerRun` | `24` | Most workers this agent may spawn **in total** across one turn. |
+| `maxSteersPerWorker` | `10` | Most follow-up messages (steers/answers) the orchestrator may send to any one worker. |
+| `maxRunSeconds` | `1800` | Wall-clock limit for a single swarm turn (30 minutes). When it's hit, the turn closes and in-flight workers are settled. |
+| `allowedModels` | *(unset)* | Optional list of models a worker may use. When unset, workers use the orchestrator's own model (and its fallbacks). |
+
+Leave any cap **blank** to inherit the gateway default (below). A cap change **takes effect on the agent's next message** — the gateway rebuilds the agent so the new limits and the enabled/disabled state apply to the next turn.
+
+### Gateway swarm defaults
+
+The gateway also enforces a **global** ceiling across every agent's runs and supplies the per-agent defaults above. These are built-in and rarely need changing:
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `maxConcurrentWorkersGlobal` | `16` | Hard ceiling on workers running **at once across all agents** on this gateway. A spawn that would exceed it fails until other workers finish. |
+| `defaults.maxConcurrentWorkers` | `8` | Per-agent default used when an agent's own `maxConcurrentWorkers` is blank. |
+| `defaults.maxWorkersPerRun` | `24` | Per-agent default for `maxWorkersPerRun`. |
+| `defaults.maxSteersPerWorker` | `10` | Per-agent default for `maxSteersPerWorker`. |
+| `defaults.maxRunSeconds` | `1800` | Per-agent default for `maxRunSeconds`. |
+
+Worker transcripts are written under `~/.dash/gateway/sessions/<agent-name>/.swarm/` and are never auto-deleted — see [Troubleshooting](/troubleshooting#swarm) if you need to find or clean them up.
+
 ## Data directory
 
 Everything Dash stores on disk lives under a single root — `~/.dash` by default — organized into clearly named subfolders:
@@ -182,7 +213,7 @@ Each `commands/<name>.md` file becomes a slash command named `/<plugin>:<name>`.
 
 Each `agents/<name>.md` file (Claude Code subagent format — frontmatter `name`/`description` plus a markdown body) is exposed as a **loadable specialist**. For example, a plugin called `my-skills` with `agents/reviewer.md` is invocable as `/my-skills:reviewer` or via the agent's `load_skill` tool. As with commands, the loadable name is `<plugin>:<frontmatter-name>` when `name:` frontmatter is present, otherwise `<plugin>:<filename-without-.md>`. When loaded, the specialist contributes its instructions to the conversation on demand. Like commands, subagents are markdown — they need only `enabled` (not `trusted`).
 
-**Limitation:** subagents run in the **main session**, not as isolated child agents. The `tools` frontmatter field is therefore **advisory, not enforced** — a loaded specialist can use the agent's full tool set. True isolated subagent spawning (a separate context with a restricted tool subset) is a future enhancement.
+**Loadable specialists run in the main session.** A loaded specialist contributes its instructions to the *current* conversation, so its `tools` frontmatter field is **advisory, not enforced** — the specialist uses the agent's own tool set. This is different from **isolated** subagents: for true parallel workers that each run in a **separate context** with a restricted tool subset, enable the agent's [**Swarm**](#swarm) feature and let it use the `spawn_worker` tool. See [Tools](/tools#swarm-orchestration).
 
 ### MCP servers and executables
 
@@ -307,5 +338,5 @@ echo '{ "my-skills": { "enabled": true } }' \
 When the gateway starts, it logs `[plugins] loaded 'my-skills' (skills)` and the agent's `load_skill` tool (see [Tools](/tools) — requires `load_skill` in the agent's tools list) can reference any skill from that plugin.
 
 <Note>
-  Skills, commands, subagents, hooks, MCP servers, `bin/` executables, and LLM providers are active. Subagents currently run in the main session (see the limitation above); isolated subagent spawning is coming in a future release.
+  Skills, commands, subagents, hooks, MCP servers, `bin/` executables, and LLM providers are active. Plugin subagents load into the main session (see above). For **isolated** parallel workers — each with its own context and tool subset — enable the agent's [Swarm](#swarm) feature.
 </Note>

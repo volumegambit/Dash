@@ -8,6 +8,7 @@ import { mountProjectsRoutes } from '@dash/management';
 import type { PluginConfigStore } from '@dash/plugins';
 import { heuristicPluginScan, installPluginToDir, realpathContained } from '@dash/plugins';
 import type { ProjectsDb } from '@dash/projects';
+import type { SwarmCoordinator } from '@dash/swarm';
 import { Hono } from 'hono';
 import type { Context } from 'hono';
 
@@ -23,6 +24,7 @@ import { mountMcpRoutes } from './mcp-management.js';
 import { createModelsRoute } from './models-route.js';
 import type { ModelsStore } from './models-store.js';
 import type { PluginWiringState } from './plugins-wiring.js';
+import { mountSwarmRoutes } from './swarm-management.js';
 
 export interface GatewayManagementOptions {
   gateway: DynamicGateway;
@@ -46,6 +48,13 @@ export interface GatewayManagementOptions {
   eventLogStore?: EventLogStore;
   /** Shared projects DB. When present, mounts /projects + /issues + /inbox. */
   projectsDb?: ProjectsDb;
+  /**
+   * The swarm coordinator. When present, mounts the swarm panel routes
+   * (`GET/POST /agents/:id/swarm/...`) and threads the cancel cascade into the
+   * disable/delete agent handlers. Optional so tests/embedders that don't run
+   * swarms still construct the app; the swarm routes simply aren't mounted.
+   */
+  swarmCoordinator?: SwarmCoordinator;
   token?: string;
   startedAt?: string;
   eventBus?: EventBus;
@@ -389,6 +398,11 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
     if (!entry) return c.json({ error: 'not found' }, 404);
     const parsed = await parseJsonBody<Partial<Omit<GatewayAgentConfig, 'name'>>>(c);
     if (!parsed.ok) return parsed.response;
+    // Snapshot the pre-update swarm block so we can detect a swarm-config change
+    // after the update and evict warm backends (a running orchestrator caches
+    // its swarm gate/caps; eviction forces the next chat to rebuild with the new
+    // config). Deep-compared via JSON.stringify — the block is plain data.
+    const oldSwarm = JSON.stringify(entry.config.swarm);
     try {
       const updated = agentRegistry.update(id, parsed.body);
       await agentRegistry.save();
@@ -397,6 +411,9 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
         agent: entry.name,
         fields: Object.keys(parsed.body),
       });
+      if (JSON.stringify(updated.config.swarm) !== oldSwarm) {
+        await agents.evict(id);
+      }
       return c.json(stripSecrets(updated));
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Internal error';
@@ -414,6 +431,10 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
         channelRegistry.remove(name);
       }
       channelRegistry.removeRoutesForAgent(id);
+      // Finalize any live swarm runs for this agent before eviction. cancelRunsFor
+      // cancels non-terminal workers + aborts the orchestrator synchronously, so
+      // the subsequent evict() tears down an already-quiesced backend.
+      options.swarmCoordinator?.cancelRunsFor(id);
       // Evict warm backends before removing the registry entry so any
       // in-flight streams are aborted and backend.stop() is called. The
       // pool is keyed independently of the registry, so order doesn't
@@ -450,6 +471,12 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
     try {
       agentRegistry.disable(id);
       await agentRegistry.save();
+      // Disable must actually stop a running orchestrator: cancel its live swarm
+      // runs, then evict the warm backend (which aborts the pinned in-flight
+      // turn — intentional per the design, disable is a hard stop). Ordered so
+      // the swarm runs quiesce before the backend teardown.
+      options.swarmCoordinator?.cancelRunsFor(id);
+      await agents.evict(id);
       return c.json({ ok: true });
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Internal error';
@@ -860,6 +887,17 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
       }
       const entries = eventLogStore.readSince(agentId, conversationId, sinceSeq);
       return c.json({ entries });
+    });
+  }
+
+  // --- Swarm panel routes ---
+  // Mounted behind the bearer middleware (registered above via app.use('*')).
+  // Conditional on the coordinator dep so tests/embedders that don't run swarms
+  // still construct the app — the swarm routes simply return 404 (unmatched).
+  if (options.swarmCoordinator) {
+    mountSwarmRoutes(app, {
+      swarmCoordinator: options.swarmCoordinator,
+      agentRegistry,
     });
   }
 

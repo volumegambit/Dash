@@ -1,3 +1,19 @@
+/**
+ * Per-agent swarm caps + gating. Mirror of the gateway's `AgentSwarmConfig`
+ * (`apps/gateway/src/agent-registry.ts`). `enabled` gates whether the agent may
+ * spawn workers at all; the numeric caps and `allowedModels` (when set) override
+ * the gateway defaults. All fields optional — an omitted field falls back to the
+ * gateway `swarm.defaults`.
+ */
+export interface AgentSwarmConfig {
+  enabled?: boolean;
+  maxConcurrentWorkers?: number;
+  maxWorkersPerRun?: number;
+  maxSteersPerWorker?: number;
+  maxRunSeconds?: number;
+  allowedModels?: string[];
+}
+
 export interface GatewayAgent {
   id: string;
   name: string;
@@ -23,6 +39,8 @@ export interface GatewayAgent {
      * does NOT touch gateway-wide provider trust/credentials.
      */
     providers?: string[];
+    /** Per-agent swarm caps + gating. See {@link AgentSwarmConfig}. */
+    swarm?: AgentSwarmConfig;
   };
   status: 'registered' | 'active' | 'disabled';
   registeredAt: string;
@@ -93,6 +111,13 @@ export interface CreateAgentRequest {
    * — the gateway never persists or returns null.
    */
   providers?: string[] | null;
+  /**
+   * Per-agent swarm caps + gating. See {@link AgentSwarmConfig}. Flows to
+   * PUT /agents/:id where the gateway's `update()` replaces the whole `swarm`
+   * block wholesale (shallow merge), so a partial-update caller must send the
+   * complete block. Omitting the key leaves the stored block unchanged.
+   */
+  swarm?: AgentSwarmConfig;
 }
 
 /**

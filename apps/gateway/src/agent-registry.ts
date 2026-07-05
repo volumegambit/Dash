@@ -2,6 +2,22 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 
+/**
+ * Per-agent swarm configuration. All fields optional — the gateway's
+ * `swarm.defaults` fill any gap and `enabled` gates whether the agent may
+ * spawn workers at all. `allowedModels`, when set, restricts the models an
+ * orchestrator may hand to its workers. Persisted verbatim on the agent config
+ * (the registry round-trips the whole config object as JSON).
+ */
+export interface AgentSwarmConfig {
+  enabled?: boolean;
+  maxConcurrentWorkers?: number;
+  maxWorkersPerRun?: number;
+  maxSteersPerWorker?: number;
+  maxRunSeconds?: number;
+  allowedModels?: string[];
+}
+
 export interface GatewayAgentConfig {
   name: string;
   model: string;
@@ -13,6 +29,8 @@ export interface GatewayAgentConfig {
   workspace?: string;
   maxTokens?: number;
   mcpServers?: string[];
+  /** Per-agent swarm caps + gating. See {@link AgentSwarmConfig}. */
+  swarm?: AgentSwarmConfig;
   /**
    * Per-agent plugin selection (Plan P5). `undefined` = ALL loaded plugins
    * (backward compat — legacy agents persisted before P5 have no key and MUST

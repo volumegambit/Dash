@@ -983,6 +983,35 @@ export async function registerIpcHandlers(
   );
 
   // -----------------------------------------------------------------------
+  // Swarm panel (gateway passthrough)
+  // -----------------------------------------------------------------------
+
+  const getSwarmClient = (): Promise<ManagementClient> => getDirectManagementClient('Swarm API');
+
+  ipcMain.handle('swarm:listRuns', async (_e, agentId: string) =>
+    (await getSwarmClient()).listSwarmRuns(agentId),
+  );
+
+  ipcMain.handle('swarm:getRun', async (_e, agentId: string, runId: string) =>
+    (await getSwarmClient()).getSwarmRun(agentId, runId),
+  );
+
+  // cancel/send return {ok, reason?}: a 409 (run finalized / worker terminal) is
+  // surfaced by the client as {ok:false, reason} rather than thrown, so the
+  // renderer can show the reason. Other errors propagate as usual.
+  ipcMain.handle(
+    'swarm:cancelWorker',
+    async (_e, agentId: string, runId: string, workerId: string) =>
+      (await getSwarmClient()).cancelSwarmWorker(agentId, runId, workerId),
+  );
+
+  ipcMain.handle(
+    'swarm:send',
+    async (_e, agentId: string, runId: string, workerId: string, message: string) =>
+      (await getSwarmClient()).sendSwarmWorker(agentId, runId, workerId, message),
+  );
+
+  // -----------------------------------------------------------------------
   // Settings
   // -----------------------------------------------------------------------
 

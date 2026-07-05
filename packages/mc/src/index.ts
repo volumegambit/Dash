@@ -41,6 +41,7 @@ export { getPlatformDataDir } from './platform-paths.js';
 export { GatewayManagementClient, GatewayHttpError } from './runtime/gateway-client.js';
 export type {
   GatewayAgent,
+  AgentSwarmConfig,
   GatewayChannel,
   GatewayHealthResponse,
   CreateAgentRequest,

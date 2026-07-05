@@ -181,6 +181,48 @@ Something not working? Here are the most common issues and how to fix them.
   </Accordion>
 </AccordionGroup>
 
+## Swarm
+
+<AccordionGroup>
+  <Accordion title="A worker didn't spawn (cap reached)">
+    An agent with [Swarm](/configuration#swarm) enabled tried to spawn a worker and got an error instead. In chat this appears as a **red error tool block** on the `spawn_worker` call.
+
+    **This is a cap doing its job.** The message tells you which one:
+
+    - `too many workers running at once (max N) — wait for workers to finish` — the agent's **concurrent** limit. It should `wait_workers` before spawning more.
+    - `swarm run reached its worker limit (N workers per run)` — the **total-per-turn** limit.
+    - `the gateway is at its global worker limit (N) — wait for workers to finish` — the gateway-wide ceiling across **all** agents.
+
+    Raise the relevant cap on the agent's **Swarm** card if the work genuinely needs more workers — see [Configuration → Swarm](/configuration#swarm). The change takes effect on the agent's next message. (The gateway-wide ceiling across all agents is fixed in this build and is not user-configurable.)
+  </Accordion>
+
+  <Accordion title="The swarm stopped partway (wall-clock limit)">
+    Workers were cut off and the agent finalized the turn earlier than expected.
+
+    **Fix:** A swarm turn has a wall-clock cap (`maxRunSeconds`, default **1800** = 30 minutes). When it's hit, the run closes, any in-flight workers are settled, and their cards terminalize. New spawns into a closed turn fail with `swarm turn is closed — cannot spawn`. If your workloads legitimately run longer, raise `maxRunSeconds` on the agent's **Swarm** card.
+  </Accordion>
+
+  <Accordion title="Where are the worker transcripts?">
+    Each worker runs its own session, stored **separately** from the agent's normal conversations so it doesn't clutter the conversation list:
+
+    ```
+    ~/.dash/gateway/sessions/<agent-name>/.swarm/<runId>/<workerId>/
+    ```
+
+    These transcripts are kept for inspection and are **never auto-deleted** — Dash does not garbage-collect them. If you want to reclaim space, remove old `.swarm/` run directories by hand:
+
+    ```bash
+    rm -rf ~/.dash/gateway/sessions/<agent-name>/.swarm
+    ```
+  </Accordion>
+
+  <Accordion title="No swarm progress on Telegram / WhatsApp">
+    You chat with a swarm-enabled agent over a messaging app and see only the final answer — no per-worker updates.
+
+    **This is by design.** Live worker cards, the pinned strip, and the supervision panel are **Mission Control** features. Messaging channels deliver only the agent's **final response** (the answer it synthesizes from its workers), not the intermediate swarm events. To watch and steer a run in real time, chat with the agent in Mission Control.
+  </Accordion>
+</AccordionGroup>
+
 ## Session issues
 
 <AccordionGroup>

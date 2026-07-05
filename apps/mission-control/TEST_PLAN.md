@@ -988,7 +988,7 @@ The Settings page has its own left sub-nav with seven sections: **General** (Gat
 
 ### 22.5 Companion Toggle (General)
 1. **Verify:** "Companion" section with a "Show the companion" checkbox
-2. **Verify:** When the checkbox is on, a pet picker with a wrapping grid of animated thumbnails (22 pets) appears below it
+2. **Verify:** When the checkbox is on, a pet picker with a wrapping grid of animated thumbnails (28 pets) appears below it
 3. Toggle the checkbox off
 4. **Verify:** The floating companion widget disappears and the pet picker is hidden
 5. Toggle it back on
@@ -1378,7 +1378,7 @@ Covers the Plugins screen (P3), plugin trust, per-agent plugin selection (P5), a
 
 ## Section 30: Companion widget (floating pet)
 
-**Precondition:** App running, gateway healthy, at least one agent created, and the **Show the companion** toggle enabled (Settings → General → Companion). The companion is a separate always-on-top desktop window (not part of the main MC window); the in-app component is a headless publisher that streams session statuses and the selected pet to that window over IPC. The widget renders a **selectable, frame-animated pixel-art pet** (PixelLab-generated) — one of **22 pets** — animals (cat, dog with green head-ribbon, pig, rabbit, red panda, bear, lion, quokka, unicorn), characters (wizard, ninja, chef, pirate, knight, robot, astronaut, Bigfoot, Bollywood star, royal guard), and cultural icons (Fortune God/Cai Shen, Merlion, maneki-neko) — default **red panda**. It shows one **aggregate mood** for all sessions: each mood plays a distinct, pet-appropriate animation — working is especially characterful (dog runs, rabbit digs, pig roots, wizard casts fireballs, chef chops, Fortune God counts gold coins, Merlion spouts water, royal guard marches in place) and shows the mood hue as a small **collar badge dot**. Mood priority (highest wins): **error** (red `#f87171`) > **needs** (amber `#f5c518`) > **working** (blue `#3da5d9`) > **done** (green `#34c759`) > **idle** (gray `#9aa0a6` — no sessions).
+**Precondition:** App running, gateway healthy, at least one agent created, and the **Show the companion** toggle enabled (Settings → General → Companion). The companion is a separate always-on-top desktop window (not part of the main MC window); the in-app component is a headless publisher that streams session statuses and the selected pet to that window over IPC. The widget renders a **selectable, frame-animated pixel-art pet** (PixelLab-generated) — one of **28 pets** — animals (cat, dog with green head-ribbon, pig, rabbit, red panda, bear, lion, quokka, unicorn), characters (wizard, ninja, chef, pirate, knight, robot, astronaut, Bigfoot, Bollywood star, royal guard), cultural icons (Fortune God/Cai Shen, Merlion, maneki-neko), and influencer archetypes (wok uncle, fitness influencer, streamer, beauty guru, tech reviewer, travel vlogger) — default **red panda**. It shows one **aggregate mood** for all sessions: each mood plays a distinct, pet-appropriate animation — working is especially characterful (dog runs, rabbit digs, pig roots, wizard casts fireballs, chef chops, Fortune God counts gold coins, Merlion spouts water, royal guard marches in place) and shows the mood hue as a small **collar badge dot**. Mood priority (highest wins): **error** (red `#f87171`) > **needs** (amber `#f5c518`) > **working** (blue `#3da5d9`) > **done** (green `#34c759`) > **idle** (gray `#9aa0a6` — no sessions).
 
 ### 30.1 Widget appears and floats
 1. Launch MC with the companion enabled.
@@ -1388,7 +1388,7 @@ Covers the Plugins screen (P3), plugin trust, per-agent plugin selection (P5), a
 5. **Verify:** The widget still floats **on top of** that other app.
 
 ### 30.2 Pet picker swaps the pet live
-1. In Settings → General → Companion, confirm the **PetPicker** grid of 22 labeled thumbnails wraps neatly below the **Show the companion** checkbox, with the current pet highlighted.
+1. In Settings → General → Companion, confirm the **PetPicker** grid of 28 labeled thumbnails wraps neatly below the **Show the companion** checkbox, with the current pet highlighted.
 2. Click the **Cat** thumbnail.
 3. **Verify:** The floating widget swaps to the **cat** sprite **live** (no restart needed).
 4. Click the **Red panda** thumbnail.
@@ -1452,6 +1452,75 @@ Spot-check at least five pets including one humanoid (e.g. wizard) and one v3-cu
 7. In Settings → General → Companion, **verify:** all PetPicker thumbnails play their idle animations (static under reduced motion).
 11. Clear all sessions (none active or needing attention).
 12. **Verify:** The pet returns to **idle/asleep** (gray).
+
+## Section 30: Agent Swarm
+
+Covers the per-agent **Swarm** feature: the enable toggle in agent settings, the per-worker **cards** that render in a chat turn (live and from history), **orphan** cards after a crash-reconcile, the **pinned swarm strip**, the **swarm supervision panel** (run list, worker detail, cancel, send-to-worker), 409 handling, caps errors in chat, and cancel-mid-swarm terminalization.
+
+**Preconditions:** Gateway running and MC connected (Sections 1–2), at least one AI provider connected with a **cheap** model available (Section 3), and an agent whose tools include `read`, `bash`, `grep`, `ls`. A cheap model keeps these tests to ~cents — the swarm makes real, small LLM calls.
+
+**Bootstrap (fastest path):**
+1. Create or open an agent (Section 4) on a cheap model. Give it a workspace with at least one subdirectory containing a few files (so workers have something to list).
+2. Agent detail → **Configuration** tab → **Swarm** card → expand it → check **Enable swarm — let this agent spawn parallel workers** → **Save**.
+3. Open a chat with that agent (Section 6). The **prompt used throughout this section** is: `spawn two workers, have each list files in a subdirectory, then summarize`. This reliably drives spawn → wait → synthesize.
+
+### 30.1 Swarm toggle round-trip (persistence + eviction)
+1. Agent detail → **Configuration** → **Swarm** card. **Verify:** collapsed, it summarizes **"Disabled"** for a fresh agent, or **"Enabled — agent can spawn workers"** once on.
+2. Expand the card. **Verify:** a checkbox labeled **"Enable swarm — let this agent spawn parallel workers"**, optional cap fields (max concurrent workers, max workers per run, max steers per worker, max run seconds), an allowed-models field, and the note **"Leave a cap blank to use the gateway default. Changes take effect on new conversations."**
+3. Enable swarm, leave the caps blank, and **Save**. **Verify:** the card summary flips to **"Enabled — agent can spawn workers"**.
+4. Reload the agent detail page (or re-open the app). **Verify:** the toggle is still enabled — the setting persisted (`~/.dash/gateway/agents.json` carries a `swarm.enabled: true` block).
+5. **Eviction / next-message semantics:** in an existing chat conversation with this agent, send the swarm prompt. **Verify:** the agent actually spawns workers (worker cards appear — see 30.2). Because a swarm-config change **evicts the agent's warm backend**, the swarm tools are rebuilt into the agent on its next message; you do **not** need to restart the gateway or create a new conversation.
+6. Turn swarm **off** and **Save**, then send the prompt again in the same conversation. **Verify:** the agent no longer spawns workers (it has no `spawn_worker` tool) — again the change takes effect on the next message via eviction.
+
+### 30.2 Worker cards render live during a swarm turn
+1. With swarm enabled, send the swarm prompt.
+2. **Verify:** as the run proceeds, one **worker card** appears per spawned worker, anchored at its spawn point in the assistant message. Each card header shows the worker's **role** (monospace), a status icon, and a one-line latest detail.
+3. **Verify:** while running, a card shows **Running** with a spinning loader; a worker that pauses to ask shows **Waiting for input** with a spinner.
+4. **Verify:** when a worker finishes, its card shows **Done** (green check). Expand it. **Verify:** the expanded card shows the brief, the status trail, and the worker's **Report** rendered as Markdown, plus its model and token usage.
+5. **Verify:** the orchestrator's final synthesized answer appears after the worker cards (one answer built from the workers' reports).
+
+### 30.3 Cards render identically from history after app restart
+1. After a completed swarm turn (30.2), fully quit and relaunch MC, then re-open the same conversation.
+2. **Verify:** the same worker cards render from persisted history — same roles, same terminal statuses (**Done**/**Failed**), same reports on expand. History replay must match the live render, not collapse the cards into plain text.
+3. **Verify:** any worker that reached **Done** live still shows **Done** from history (it is not re-derived as cancelled).
+
+### 30.4 Orphan card after a forced crash-reconcile
+An **orphan** card is a worker whose terminal event landed in a *different* persisted message than its spawn (e.g. the gateway restarted mid-run, so the spawn is in message A and the `worker_done` reconciled into message B).
+1. Start a swarm turn, then force a crash-reconcile: kill/restart the gateway (or MC's gateway child) while workers are still running, then let MC reconnect and reconcile.
+2. Re-open the conversation. **Verify:** the split worker renders as a **compact standalone card** whose collapsed summary reads **"worker done"** / **"worker failed"** / **"worker cancelled"** (lowercase status), sourced from the terminal event's self-describing role — it is not dropped and does not error the message render.
+3. **Verify:** an orphan card is **not** counted in the pinned strip (it represents a finished worker from a prior message, not live work).
+
+### 30.5 Pinned strip counts
+1. During a live swarm turn with multiple workers, **Verify:** a **pinned swarm strip** appears (a people/`Users` icon plus a summary line) reading e.g. **"3 workers · 2 running · 1 waiting"** — singular **"1 worker"** when only one, and the "running"/"waiting" parts only appear when non-zero.
+2. **Verify:** a row of small status dots follows, one per non-orphan worker, colored by state (running=accent, waiting=yellow, done=green, failed=red, cancelled=muted). Hovering a dot shows **"{role}: {status}"**.
+3. **Verify:** once **every** worker reaches a terminal state, the pinned strip disappears (it only renders while there is non-terminal live work).
+
+### 30.6 Swarm panel — run list, worker detail, cancel, send
+The panel is the right-side **swarm supervision** drawer. Its affordance is a **people icon** in the chat header (`title="Swarm supervision"`), shown when the agent has swarm enabled **or** has historical runs.
+1. Click the swarm-supervision icon. **Verify:** a right drawer opens headed **"Swarm runs"**. With no runs yet it reads **"No swarm runs yet. When this agent spawns workers, runs appear here."**
+2. Run a swarm turn (30.2), then open/refresh the panel. **Verify:** the run list shows the run — a live run has a green pulsing dot; a finalized run shows **" · finished"** and a muted dot. Active runs sort above finalized ones, newest first.
+3. Click a run. **Verify:** the header becomes **"Workers"** and a worker table lists each worker with columns Role, Status (colored dot + label: Spawning / Running / Waiting for input / Done / Failed / Cancelled), Tokens, and Elapsed.
+4. Click a worker. **Verify:** the header becomes the worker's role and the detail view shows a status/model/tokens/elapsed meta row, the **Brief**, and (once present) the **Report** as Markdown.
+5. **Cancel a running worker:** while a worker is still running, click **Cancel worker** (button briefly reads **Cancelling…**). **Verify:** the worker transitions to **Cancelled** in the table and its chat card also reaches a **Cancelled** terminal state.
+6. **Send to a waiting worker:** drive a worker into **Waiting for input** (a worker that calls `ask_orchestrator`; steer the prompt to make one ask a question if needed). In its detail view, type into the **"Send a message to steer this worker…"** box and click **Send** (button reads **Sending…**). **Verify:** the message is delivered (200), the box clears, and the worker resumes — no error notice appears.
+7. **Verify:** for a worker that has already finished, the detail view shows **"This worker has finished — no further actions available."** with no Send/Cancel controls.
+
+### 30.7 409 handling (cancel an already-finished worker → visible notice, no crash)
+1. Open the panel on a run whose workers have finished, or cancel a worker and then immediately try to act on it again.
+2. Attempt to **Cancel** (or **Send** to) a worker that is already terminal, or a worker in a run that has been finalized.
+3. **Verify:** the gateway returns **409** and the panel shows a dismissable red **action notice** (`data-testid="swarm-action-notice"`) with the coordinator's reason — **"worker terminal"** (already-finished worker) or **"run finalized"** (dead run) — falling back to **"Could not cancel this worker."** / **"Could not send to this worker."** The app does **not** crash or throw; the notice can be dismissed with its X.
+
+### 30.8 Caps error rendering in chat (spawn beyond cap → isError tool result)
+1. Set a tight cap to force the error quickly: on the agent's **Swarm** card, set **max workers per run** to **1** (or **max concurrent workers** to **1**) and **Save**.
+2. Send a prompt that asks the agent to spawn **more** workers than the cap allows, e.g. `spawn three workers, each listing a different subdirectory`.
+3. **Verify:** the over-cap `spawn_worker` call renders as a **red-bordered / red-background tool block with an X (error) icon** and the tool name `spawn_worker`. Expanding it shows the coordinator's message — **"swarm run reached its worker limit (1 workers per run)"** or **"too many workers running at once (max 1) — wait for workers to finish"**. The turn does not break — the agent continues (typically waiting on the workers it did spawn and then synthesizing).
+4. (Optional) Restore the caps to blank afterward.
+
+### 30.9 Cancel-mid-swarm → end-of-stream terminalization of cards
+1. Send the swarm prompt and, while workers are still **Running**/**Waiting**, click the chat **stop/cancel** control to cancel the in-flight turn.
+2. **Verify:** as the stream ends, every worker card that had not already reached a terminal event is terminalized to **Cancelled** (ban icon, muted) — no card is left stuck spinning on **Running**/**Waiting**.
+3. **Verify:** the pinned strip disappears once all cards are terminal.
+4. Re-open the conversation from history. **Verify:** those cards still read **Cancelled** (the end-of-stream terminalization is stable across replay).
 
 ## Appendix: Test Run Log
 
