@@ -925,7 +925,7 @@ The Settings page has its own left sub-nav with seven sections: **General** (Gat
 
 ### 22.5 Companion Toggle (General)
 1. **Verify:** "Companion" section with a "Show the companion" checkbox
-2. **Verify:** When the checkbox is on, a pet picker with thumbnails (cat, dog, red panda) appears below it
+2. **Verify:** When the checkbox is on, a pet picker with thumbnails (cat, dog, pig, rabbit, red panda) appears below it
 3. Toggle the checkbox off
 4. **Verify:** The floating companion widget disappears and the pet picker is hidden
 5. Toggle it back on
@@ -1314,7 +1314,7 @@ Covers the Plugins screen (P3), plugin trust, per-agent plugin selection (P5), a
 
 ## Section 30: Companion widget (floating pet)
 
-**Precondition:** App running, gateway healthy, at least one agent created, and the **Show the companion** toggle enabled (Settings → General → Companion). The companion is a separate always-on-top desktop window (not part of the main MC window); the in-app component is a headless publisher that streams session statuses and the selected pet to that window over IPC. The widget renders a **selectable, frame-animated pixel-art pet** (PixelLab-generated) — a **cat**, a **dog**, or a **red panda** (default **red panda**). It shows one **aggregate mood** for all sessions: each mood plays a distinct animation (e.g. idle sway / running / sitting or barking / jumping / bristling or growling) and shows the mood hue as a small **collar badge dot**. Mood priority (highest wins): **error** (red `#f87171`) > **needs** (amber `#f5c518`) > **working** (blue `#3da5d9`) > **done** (green `#34c759`) > **idle** (gray `#9aa0a6` — no sessions).
+**Precondition:** App running, gateway healthy, at least one agent created, and the **Show the companion** toggle enabled (Settings → General → Companion). The companion is a separate always-on-top desktop window (not part of the main MC window); the in-app component is a headless publisher that streams session statuses and the selected pet to that window over IPC. The widget renders a **selectable, frame-animated pixel-art pet** (PixelLab-generated) — a **cat**, a **dog** (green ribbon on the right of its head), a **pig**, a **rabbit**, or a **red panda** (default **red panda**). It shows one **aggregate mood** for all sessions: each mood plays a distinct, pet-appropriate animation — working is especially characterful (dog runs, rabbit digs with dirt flying, pig roots in the dirt with its snout) and shows the mood hue as a small **collar badge dot**. Mood priority (highest wins): **error** (red `#f87171`) > **needs** (amber `#f5c518`) > **working** (blue `#3da5d9`) > **done** (green `#34c759`) > **idle** (gray `#9aa0a6` — no sessions).
 
 ### 30.1 Widget appears and floats
 1. Launch MC with the companion enabled.
@@ -1324,7 +1324,7 @@ Covers the Plugins screen (P3), plugin trust, per-agent plugin selection (P5), a
 5. **Verify:** The widget still floats **on top of** that other app.
 
 ### 30.2 Pet picker swaps the pet live
-1. In Settings → General → Companion, confirm the three-thumbnail **PetPicker** is shown below the **Show the companion** checkbox (labels **Cat**, **Dog**, and **Red panda**), with the current pet highlighted.
+1. In Settings → General → Companion, confirm the five-thumbnail **PetPicker** is shown below the **Show the companion** checkbox (labels **Cat**, **Dog**, **Pig**, **Rabbit**, and **Red panda**), with the current pet highlighted.
 2. Click the **Cat** thumbnail.
 3. **Verify:** The floating widget swaps to the **cat** sprite **live** (no restart needed).
 4. Click the **Red panda** thumbnail.
@@ -1369,16 +1369,16 @@ The widget shows a **single aggregate mood** across all sessions, not one indica
 1. With **no sessions** running.
 2. **Verify:** The pet is **idle** — gray collar dot, slow idle animation.
 3. Start a long-running task so a session is **working**.
-4. **Verify:** The pet shows the **working** mood — **blue collar dot**, running animation.
+4. **Verify:** The pet shows the **working** mood — **blue collar dot**, working animation (dog/cat/red panda: running; rabbit: digging; pig: rooting).
 5. Ask a question the agent surfaces so a session **needs you** (unanswered).
-6. **Verify:** The pet shows the **needs** mood — **amber collar dot**, sitting (dog: barking for you). (Needs outranks working: with both a working and a needs session, the pet is amber.)
+6. **Verify:** The pet shows the **needs** mood — **amber collar dot**, needs-you animation (dog: barking; rabbit: standing alert; pig/cat/red panda: sitting). (Needs outranks working: with both a working and a needs session, the pet is amber.)
 7. Let a session **finish** while you are away (unread done), with nothing working or needing attention.
 8. **Verify:** The pet shows the **done** mood — **green collar dot**, celebratory jumping.
 9. Force a session to **error**.
-10. **Verify:** The pet shows the **error** mood — **red collar dot**, bristling/angry animation. (Error is highest priority: with an errored session present, the pet is red regardless of any working/needs/done sessions.)
+10. **Verify:** The pet shows the **error** mood — **red collar dot**, error animation (dog: growling; rabbit: foot-thumping; others: bristling/angry). (Error is highest priority: with an errored session present, the pet is red regardless of any working/needs/done sessions.)
 
 ### 30.10 Animation quality and reduced motion
-Run once per pet (cat, dog, and red panda).
+Run once per pet (cat, dog, pig, rabbit, and red panda).
 1. With any mood active, watch the widget for ~10 seconds.
 2. **Verify:** The animation loops smoothly (no stutter, no flashing, no visible frame seams) and the pixels stay crisp (no blur from scaling).
 3. **Verify:** Playback speed feels right for the mood: idle is calm/slow, working is brisk, done is a lively jump loop.
