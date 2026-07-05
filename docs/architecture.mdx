@@ -162,3 +162,28 @@ Each line records a timestamped event — user messages, assistant responses, an
 ## Event log and chat replay
 
 The gateway maintains a durable event log for each conversation. When a client reconnects (e.g. after Mission Control restarts), it can replay missed events from the log without re-sending the message to the LLM. This ensures chat continuity across reconnections.
+
+## Agent Swarm
+
+When an agent has [swarm](/configuration#swarm) enabled, a single chat turn can fan out into an **orchestrator** plus several short-lived **worker** subagents that run in parallel. The orchestrator is the agent you're chatting with; a worker is a stripped-down agent — no MCP, no skills, no plugin tools — that shares the orchestrator's workspace but runs in its own isolated context from a self-contained brief.
+
+**Turn-scoped.** A swarm run lives **within one chat turn**. The gateway's swarm coordinator keys each run by `agentId/conversationId`: only the live turn can spawn or finalize it, and when the turn ends the run is finalized, any still-running workers are settled, and its worker pool is torn down. Workers do not outlive the message that spawned them.
+
+**Data flow.**
+
+<Steps>
+  <Step title="Orchestrator spawns workers">
+    Using `spawn_worker`, the orchestrator hands each worker a role, a brief, a model, and a tool subset. The coordinator enforces per-agent and global caps before creating the worker.
+  </Step>
+  <Step title="Workers run in parallel">
+    Each worker is its own agent backend running on the shared workspace. It works from its brief and can call `ask_orchestrator` to pause and ask a blocking question.
+  </Step>
+  <Step title="Worker events ride the chat stream">
+    The coordinator's per-run event channel is **merged into the orchestrator's own `AgentEvent` stream**, so `worker_spawned`, `worker_status`, and `worker_done` events interleave with the orchestrator's text and tool events over the same WebSocket. These events are **self-describing** (they carry the worker's role, model, and report), which is what lets Mission Control draw one card per worker — live, and identically when replayed from history.
+  </Step>
+  <Step title="Orchestrator collects and synthesizes">
+    The orchestrator uses `wait_workers` to collect reports (and `send_to_worker` to answer or steer), then writes one final answer built from the workers' reports. That final response is what channels like Telegram receive — intermediate worker events are for Mission Control only.
+  </Step>
+</Steps>
+
+**Supervision via the management API.** Mission Control's **swarm panel** reads live and recent runs over the [Management API](/api-reference) (`GET /agents/:id/swarm/runs` and `/runs/:runId`) and can cancel a worker or send it a message (`POST …/workers/:workerId/cancel` and `…/send`). A cancel or send against a worker that has already finished — or a run that has been finalized — returns **409**, which the panel surfaces as a dismissable notice rather than an error. Worker transcripts are persisted under `sessions/<agent-name>/.swarm/<runId>/<workerId>/` and kept for inspection.
