@@ -232,6 +232,30 @@ describe('useProjectsStore.deleteIssue', () => {
   });
 });
 
+describe('useProjectsStore.assignAgent', () => {
+  it('dispatches via the API and refetches the issue detail', async () => {
+    const d = { ...issue('1'), comments: [], events: [], linked_sessions: [], subtasks: [] };
+    useProjectsStore.setState({ detailById: { '1': d as IssueDetail } });
+    mockApi.projectsGetIssue.mockResolvedValue(d);
+
+    await useProjectsStore.getState().assignAgent('1', { id: 'agent-reg', name: 'Developer' });
+
+    expect(mockApi.projectsAssignAgent).toHaveBeenCalledWith('1', 'agent-reg', 'Developer');
+    // Immediate refetch so sub-status/linked-session feedback doesn't wait on WS.
+    expect(mockApi.projectsGetIssue).toHaveBeenCalledWith('1');
+  });
+
+  it('surfaces the error when the dispatch fails', async () => {
+    mockApi.projectsAssignAgent.mockRejectedValue(new Error('no gateway'));
+
+    await expect(
+      useProjectsStore.getState().assignAgent('1', { id: 'a', name: 'A' }),
+    ).rejects.toThrow('no gateway');
+
+    expect(useProjectsStore.getState().error).toBe('no gateway');
+  });
+});
+
 describe('useProjectsStore.subscribe', () => {
   it('subscribes once and forwards frames to applyEvent', () => {
     useProjectsStore.setState({ subscribed: false });

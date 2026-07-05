@@ -46,6 +46,10 @@ interface ProjectsState {
   createIssue(input: CreateIssueInput): Promise<Issue>;
   patchIssue(id: string, patch: Partial<Issue>): Promise<void>;
   deleteIssue(id: string): Promise<void>;
+  /** Dispatch an agent onto a task (creates + links a chat session, sets
+   *  in_progress/agent_working, sends the kickoff). `id` is the registry id,
+   *  `name` the agent's config.name (the session-link key). */
+  assignAgent(issueId: string, agent: { id: string; name: string }): Promise<void>;
   patchProject(id: string, patch: Partial<Project>): Promise<void>;
   addComment(issueId: string, body: string): Promise<void>;
   editComment(issueId: string, commentId: string, body: string): Promise<void>;
@@ -176,6 +180,18 @@ export const useProjectsStore = create<ProjectsState>((set, get) => ({
     // Remove immediately so the UI doesn't wait on the WS round-trip; the
     // issue.deleted broadcasts keep other windows in sync.
     set((s) => withoutIssue(s, id));
+  },
+
+  async assignAgent(issueId, agent) {
+    try {
+      await window.api.projectsAssignAgent(issueId, agent.id, agent.name);
+    } catch (err) {
+      set({ error: (err as Error).message });
+      throw err;
+    }
+    // The session.linked / issue.updated broadcasts also refresh this, but an
+    // awaited refetch shows the new chip and sub-status immediately.
+    await get().loadIssueDetail(issueId);
   },
 
   async patchProject(id, patch) {
