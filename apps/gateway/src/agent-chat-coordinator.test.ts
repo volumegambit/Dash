@@ -118,9 +118,12 @@ function makeScriptedBackend(): { backend: AgentBackend; controller: Orchestrato
 function makeWorkerFactory(): {
   factory: WorkerFactory;
   release(index: number): void;
+  specs: Array<{ role: string; workspace: string }>;
 } {
   const gates: Array<ReturnType<typeof deferred<void>>> = [];
+  const specs: Array<{ role: string; workspace: string }> = [];
   const factory: WorkerFactory = async (spec) => {
+    specs.push({ role: spec.role, workspace: spec.workspace });
     const gate = deferred<void>();
     gates.push(gate);
     const backend: WorkerBackend = {
@@ -141,6 +144,7 @@ function makeWorkerFactory(): {
   return {
     factory,
     release: (index) => gates[index]?.resolve(),
+    specs,
   };
 }
 
@@ -524,15 +528,20 @@ describe('AgentChatCoordinator skill mutations', () => {
 describe('AgentChatCoordinator swarm merge wrapper', () => {
   const MODEL = 'anthropic/claude-sonnet-4-20250514';
 
-  function setup(opts: { swarmEnabled: boolean; eventLog?: SwarmEventLogSink }) {
+  function setup(opts: {
+    swarmEnabled: boolean;
+    eventLog?: SwarmEventLogSink;
+    workspace?: string;
+  }) {
     const registry = new AgentRegistry();
     const { id } = registry.register({
       name: 'orch-agent',
       model: MODEL,
       systemPrompt: 'x',
       swarm: { enabled: opts.swarmEnabled },
+      ...(opts.workspace !== undefined ? { workspace: opts.workspace } : {}),
     });
-    const { factory, release } = makeWorkerFactory();
+    const { factory, release, specs } = makeWorkerFactory();
     const coordinator = new SwarmCoordinator({ workerFactory: factory, eventLog: opts.eventLog });
     const { backend, controller } = makeScriptedBackend();
     const swarm: AgentChatCoordinatorSwarm = {
@@ -545,7 +554,7 @@ describe('AgentChatCoordinator swarm merge wrapper', () => {
       createBackend: async () => backend,
       swarm,
     });
-    return { registry, id, coordinator, controller, agents, swarm, release };
+    return { registry, id, coordinator, controller, agents, swarm, release, specs };
   }
 
   // (a) Fast path: swarm disabled → byte-identical to the plain path.
@@ -780,6 +789,43 @@ describe('AgentChatCoordinator swarm merge wrapper', () => {
 
     const done = collected.find((e) => e.type === 'worker_done');
     expect(done).toMatchObject({ type: 'worker_done', workerId, status: 'done' });
+    await agents.stop();
+  });
+
+  // (f) Workspace threading: an agent config with a workspace set → the merge
+  // wrapper's attach() carries it, and spawned workers sandbox to THAT workspace
+  // (not the gateway's process cwd).
+  it('(f) threads the orchestrator workspace into the worker spec', async () => {
+    const AGENT_WORKSPACE = '/tmp/agent-swarm-fixture-workspace';
+    const { id, coordinator, controller, agents, release, specs } = setup({
+      swarmEnabled: true,
+      workspace: AGENT_WORKSPACE,
+    });
+
+    const gen = agents.chat({ agentId: id, conversationId: 'c1', text: 'hi' });
+    const pull = async () => {
+      const r = await gen.next();
+      return r;
+    };
+
+    await controller.emit({ type: 'text_delta', text: 'start' });
+    await pull();
+    coordinator.spawnWorker(id, 'c1', { role: 'w', brief: 'b' });
+    await pull(); // worker_spawned
+    await pull(); // agent_spawned
+
+    // The fake factory recorded the spec it was handed — the workspace must be
+    // the orchestrator's, NOT process.cwd().
+    expect(specs).toHaveLength(1);
+    expect(specs[0].workspace).toBe(AGENT_WORKSPACE);
+    expect(specs[0].workspace).not.toBe(process.cwd());
+
+    release(0);
+    await pull(); // worker_done{done}
+    controller.end();
+    while (!(await pull()).done) {
+      /* drain */
+    }
     await agents.stop();
   });
 });

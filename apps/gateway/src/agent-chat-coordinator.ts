@@ -368,6 +368,9 @@ export function createAgentChatCoordinator(
         orchestratorModel: entry.config.model,
         orchestratorFallbackModels: entry.config.fallbackModels,
         orchestratorTools: entry.config.tools,
+        // Workers sandbox to the orchestrator's workspace (not the gateway's
+        // process cwd). Absent → spawnWorker falls back to process.cwd().
+        workspace: entry.config.workspace,
       });
 
       const gen = poolEntry.agent.chat(
