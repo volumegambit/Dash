@@ -967,7 +967,7 @@ The Settings page has its own left sub-nav with seven sections: **General** (Gat
 
 ### 22.5 Companion Toggle (General)
 1. **Verify:** "Companion" section with a "Show the companion" checkbox
-2. **Verify:** When the checkbox is on, a pet picker with a wrapping grid of animated thumbnails (22 pets) appears below it
+2. **Verify:** When the checkbox is on, a pet picker with a wrapping grid of animated thumbnails (28 pets) appears below it
 3. Toggle the checkbox off
 4. **Verify:** The floating companion widget disappears and the pet picker is hidden
 5. Toggle it back on
@@ -1357,7 +1357,7 @@ Covers the Plugins screen (P3), plugin trust, per-agent plugin selection (P5), a
 
 ## Section 30: Companion widget (floating pet)
 
-**Precondition:** App running, gateway healthy, at least one agent created, and the **Show the companion** toggle enabled (Settings → General → Companion). The companion is a separate always-on-top desktop window (not part of the main MC window); the in-app component is a headless publisher that streams session statuses and the selected pet to that window over IPC. The widget renders a **selectable, frame-animated pixel-art pet** (PixelLab-generated) — one of **22 pets** — animals (cat, dog with green head-ribbon, pig, rabbit, red panda, bear, lion, quokka, unicorn), characters (wizard, ninja, chef, pirate, knight, robot, astronaut, Bigfoot, Bollywood star, royal guard), and cultural icons (Fortune God/Cai Shen, Merlion, maneki-neko) — default **red panda**. It shows one **aggregate mood** for all sessions: each mood plays a distinct, pet-appropriate animation — working is especially characterful (dog runs, rabbit digs, pig roots, wizard casts fireballs, chef chops, Fortune God counts gold coins, Merlion spouts water, royal guard marches in place) and shows the mood hue as a small **collar badge dot**. Mood priority (highest wins): **error** (red `#f87171`) > **needs** (amber `#f5c518`) > **working** (blue `#3da5d9`) > **done** (green `#34c759`) > **idle** (gray `#9aa0a6` — no sessions).
+**Precondition:** App running, gateway healthy, at least one agent created, and the **Show the companion** toggle enabled (Settings → General → Companion). The companion is a separate always-on-top desktop window (not part of the main MC window); the in-app component is a headless publisher that streams session statuses and the selected pet to that window over IPC. The widget renders a **selectable, frame-animated pixel-art pet** (PixelLab-generated) — one of **28 pets** — animals (cat, dog with green head-ribbon, pig, rabbit, red panda, bear, lion, quokka, unicorn), characters (wizard, ninja, chef, pirate, knight, robot, astronaut, Bigfoot, Bollywood star, royal guard), cultural icons (Fortune God/Cai Shen, Merlion, maneki-neko), and influencer archetypes (wok uncle, fitness influencer, streamer, beauty guru, tech reviewer, travel vlogger) — default **red panda**. It shows one **aggregate mood** for all sessions: each mood plays a distinct, pet-appropriate animation — working is especially characterful (dog runs, rabbit digs, pig roots, wizard casts fireballs, chef chops, Fortune God counts gold coins, Merlion spouts water, royal guard marches in place) and shows the mood hue as a small **collar badge dot**. Mood priority (highest wins): **error** (red `#f87171`) > **needs** (amber `#f5c518`) > **working** (blue `#3da5d9`) > **done** (green `#34c759`) > **idle** (gray `#9aa0a6` — no sessions).
 
 ### 30.1 Widget appears and floats
 1. Launch MC with the companion enabled.
@@ -1367,7 +1367,7 @@ Covers the Plugins screen (P3), plugin trust, per-agent plugin selection (P5), a
 5. **Verify:** The widget still floats **on top of** that other app.
 
 ### 30.2 Pet picker swaps the pet live
-1. In Settings → General → Companion, confirm the **PetPicker** grid of 22 labeled thumbnails wraps neatly below the **Show the companion** checkbox, with the current pet highlighted.
+1. In Settings → General → Companion, confirm the **PetPicker** grid of 28 labeled thumbnails wraps neatly below the **Show the companion** checkbox, with the current pet highlighted.
 2. Click the **Cat** thumbnail.
 3. **Verify:** The floating widget swaps to the **cat** sprite **live** (no restart needed).
 4. Click the **Red panda** thumbnail.
