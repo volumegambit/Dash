@@ -7,6 +7,9 @@ import type {
   SkillContent,
   SkillInfo,
   SkillsConfig,
+  SwarmRunSnapshot,
+  SwarmRunSummary,
+  SwarmWorkerActionResult,
 } from '@dash/management';
 import type {
   CreateAgentRequest,
@@ -43,7 +46,10 @@ export type SetupStatus =
   | { state: 'ready' }
   | { state: 'gateway-failed'; error: string };
 
-// Serializable AgentEvent (error is string, not Error object, for IPC transport)
+// Serializable AgentEvent (error is string, not Error object, for IPC transport).
+// The worker_* variants mirror @dash/agent's AgentEvent exactly — they carry no
+// Error objects, so their fields are copied as-is (the error-as-string
+// convention only applies to the `error` variant above).
 export type McAgentEvent =
   | { type: 'text_delta'; text: string }
   | { type: 'thinking_delta'; text: string }
@@ -61,6 +67,32 @@ export type McAgentEvent =
   | { type: 'question'; id: string; question: string; options: string[] }
   | { type: 'skill_created'; name: string; description: string }
   | { type: 'context_compacted'; overflow: boolean }
+  | {
+      type: 'worker_spawned';
+      workerId: string;
+      runId: string;
+      role: string;
+      brief: string;
+      model: string;
+    }
+  | {
+      type: 'worker_status';
+      workerId: string;
+      runId: string;
+      role: string;
+      status: 'running' | 'waiting_input';
+      detail?: string;
+      question?: string;
+    }
+  | {
+      type: 'worker_done';
+      workerId: string;
+      runId: string;
+      role: string;
+      status: 'done' | 'failed' | 'cancelled';
+      report: string;
+      usage?: { inputTokens: number; outputTokens: number };
+    }
   | { type: 'error'; error: string; timestamp: string };
 
 export interface TelegramBotInfo {
@@ -251,6 +283,24 @@ export interface MissionControlAPI {
   skillsUpdateConfig(agentId: string, config: SkillsConfig): Promise<SkillsConfig>;
   skillsInstall(agentId: string, source: string, name?: string): Promise<SkillInfo>;
   skillsRemove(agentId: string, skillName: string): Promise<void>;
+
+  // Swarm panel (gateway passthrough). `cancelWorker`/`swarmSend` resolve to
+  // `{ok, reason?}`: the underlying client surfaces the gateway's 409
+  // (run finalized / worker terminal) as `{ok:false, reason}` rather than a
+  // rejection, so the panel can render the reason.
+  swarmListRuns(agentId: string): Promise<SwarmRunSummary[]>;
+  swarmGetRun(agentId: string, runId: string): Promise<SwarmRunSnapshot>;
+  swarmCancelWorker(
+    agentId: string,
+    runId: string,
+    workerId: string,
+  ): Promise<SwarmWorkerActionResult>;
+  swarmSend(
+    agentId: string,
+    runId: string,
+    workerId: string,
+    message: string,
+  ): Promise<SwarmWorkerActionResult>;
 
   // Settings
   settingsGet(): Promise<AppSettings>;

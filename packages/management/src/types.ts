@@ -318,3 +318,67 @@ export interface IssueFilters {
   parent_issue_id?: string;
   agents_involved?: string;
 }
+
+// --- Swarm panel management ------------------------------------------------
+//
+// Wire mirror of the gateway's swarm snapshot shapes. Kept as a local copy so
+// `@dash/management` does not take a dependency on `@dash/swarm` (the dependency
+// only runs one way: the gateway wires the coordinator into the management app).
+// These MUST stay in sync with `packages/swarm/src/run.ts` (RunSummary,
+// RunSnapshot, RunWorkerSnapshot) and the WorkerStatus union in
+// `packages/swarm/src/types.ts`.
+
+/** Terminal + non-terminal worker lifecycle states. */
+export type SwarmWorkerStatus =
+  | 'spawning'
+  | 'running'
+  | 'waiting_input'
+  | 'done'
+  | 'failed'
+  | 'cancelled';
+
+/** A worker as surfaced to the swarm panel. Mirror of `RunWorkerSnapshot`. */
+export interface SwarmRunWorkerSnapshot {
+  workerId: string;
+  role: string;
+  status: SwarmWorkerStatus;
+  brief: string;
+  model: string;
+  report?: string;
+  usage: { inputTokens: number; outputTokens: number };
+  startedAt?: number;
+  endedAt?: number;
+}
+
+/** Lightweight run listing (panel). Mirror of `RunSummary`. */
+export interface SwarmRunSummary {
+  runId: string;
+  agentId: string;
+  conversationId: string;
+  startedAt: number;
+  endedAt?: number;
+  finalized: boolean;
+  workerCount: number;
+  activeCount: number;
+}
+
+/** Full run detail (panel), including per-worker snapshots. Mirror of `RunSnapshot`. */
+export interface SwarmRunSnapshot extends SwarmRunSummary {
+  workers: SwarmRunWorkerSnapshot[];
+}
+
+/** Response of `GET /agents/:id/swarm/runs`. */
+export interface SwarmRunsResponse {
+  runs: SwarmRunSummary[];
+}
+
+/**
+ * Result of the cancel/send panel actions. `ok:true` on success; `ok:false`
+ * with a `reason` when the worker/run is terminal or finalized (HTTP 409). The
+ * client surfaces the 409 as this shape rather than throwing, so the panel can
+ * show the reason.
+ */
+export interface SwarmWorkerActionResult {
+  ok: boolean;
+  reason?: string;
+}

@@ -36,6 +36,12 @@ export type {
   CreateProjectInput,
   CreateIssueInput,
   IssueFilters,
+  SwarmWorkerStatus,
+  SwarmRunWorkerSnapshot,
+  SwarmRunSummary,
+  SwarmRunSnapshot,
+  SwarmRunsResponse,
+  SwarmWorkerActionResult,
 } from './types.js';
 export { createManagementApp, startManagementServer } from './server.js';
 export type { ManagementServerOptions, SkillsHandlers } from './server.js';

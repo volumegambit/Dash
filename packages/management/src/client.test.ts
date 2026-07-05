@@ -687,4 +687,170 @@ describe('ManagementClient', () => {
       await expect(bad.pluginsList()).rejects.toThrow('Management API error 401');
     });
   });
+
+  describe('Swarm methods', () => {
+    interface RecordedRequest {
+      method: string;
+      url: string;
+      body: unknown;
+    }
+
+    let recording: RecordedRequest[];
+    let nextResponse: unknown;
+    let nextStatus: number;
+    let rawServer: Server;
+    let swarmClose: () => Promise<void>;
+    let swarmClient: ManagementClient;
+    let swarmBaseUrl: string;
+
+    beforeEach(async () => {
+      recording = [];
+      nextResponse = {};
+      nextStatus = 200;
+
+      rawServer = createServer((req: IncomingMessage, res: ServerResponse) => {
+        const chunks: Buffer[] = [];
+        req.on('data', (c) => chunks.push(c as Buffer));
+        req.on('end', () => {
+          const raw = Buffer.concat(chunks).toString('utf-8');
+          let body: unknown;
+          try {
+            body = raw ? JSON.parse(raw) : undefined;
+          } catch {
+            body = raw;
+          }
+          recording.push({ method: req.method ?? '', url: req.url ?? '', body });
+          if (req.headers.authorization !== `Bearer ${TEST_TOKEN}`) {
+            res.statusCode = 401;
+            res.end('unauthorized');
+            return;
+          }
+          res.statusCode = nextStatus;
+          res.setHeader('content-type', 'application/json');
+          res.end(JSON.stringify(nextResponse));
+        });
+      });
+
+      await new Promise<void>((resolve) => rawServer.listen(0, resolve));
+      const addr = rawServer.address();
+      const swarmPort = typeof addr === 'object' && addr ? addr.port : 0;
+      swarmClose = () =>
+        new Promise<void>((resolve, reject) =>
+          rawServer.close((err) => (err ? reject(err) : resolve())),
+        );
+      swarmBaseUrl = `http://localhost:${swarmPort}`;
+      swarmClient = new ManagementClient(swarmBaseUrl, TEST_TOKEN);
+    });
+
+    afterEach(async () => {
+      await swarmClose();
+    });
+
+    it('listSwarmRuns() GETs /agents/:id/swarm/runs and unwraps { runs }', async () => {
+      const summary = {
+        runId: 'r1',
+        agentId: 'a1',
+        conversationId: 'c1',
+        startedAt: 123,
+        finalized: false,
+        workerCount: 2,
+        activeCount: 1,
+      };
+      nextResponse = { runs: [summary] };
+      const res = await swarmClient.listSwarmRuns('a1');
+      expect(recording[0].method).toBe('GET');
+      expect(recording[0].url).toBe('/agents/a1/swarm/runs');
+      expect(res).toEqual([summary]);
+    });
+
+    it('getSwarmRun() GETs /agents/:id/swarm/runs/:runId and returns the snapshot', async () => {
+      const snapshot = {
+        runId: 'r1',
+        agentId: 'a1',
+        conversationId: 'c1',
+        startedAt: 123,
+        endedAt: 456,
+        finalized: true,
+        workerCount: 1,
+        activeCount: 0,
+        workers: [
+          {
+            workerId: 'w1',
+            role: 'researcher',
+            status: 'done',
+            brief: 'do the thing',
+            model: 'claude-sonnet',
+            report: 'done it',
+            usage: { inputTokens: 10, outputTokens: 20 },
+            startedAt: 100,
+            endedAt: 200,
+          },
+        ],
+      };
+      nextResponse = snapshot;
+      const res = await swarmClient.getSwarmRun('a1', 'r1');
+      expect(recording[0].method).toBe('GET');
+      expect(recording[0].url).toBe('/agents/a1/swarm/runs/r1');
+      expect(res).toEqual(snapshot);
+    });
+
+    it('cancelSwarmWorker() POSTs the cancel path with an empty body and returns {ok:true}', async () => {
+      nextResponse = { ok: true };
+      const res = await swarmClient.cancelSwarmWorker('a1', 'r1', 'w1');
+      expect(recording[0].method).toBe('POST');
+      expect(recording[0].url).toBe('/agents/a1/swarm/runs/r1/workers/w1/cancel');
+      expect(recording[0].body).toEqual({});
+      expect(res).toEqual({ ok: true });
+    });
+
+    it('sendSwarmWorker() POSTs the send path with { message } and returns {ok:true}', async () => {
+      nextResponse = { ok: true };
+      const res = await swarmClient.sendSwarmWorker('a1', 'r1', 'w1', 'steer this way');
+      expect(recording[0].method).toBe('POST');
+      expect(recording[0].url).toBe('/agents/a1/swarm/runs/r1/workers/w1/send');
+      expect(recording[0].body).toEqual({ message: 'steer this way' });
+      expect(res).toEqual({ ok: true });
+    });
+
+    it('cancelSwarmWorker() surfaces a 409 as {ok:false, reason} instead of throwing', async () => {
+      nextResponse = { ok: false, reason: 'worker terminal' };
+      nextStatus = 409;
+      const res = await swarmClient.cancelSwarmWorker('a1', 'r1', 'w1');
+      expect(res).toEqual({ ok: false, reason: 'worker terminal' });
+    });
+
+    it('sendSwarmWorker() surfaces a 409 as {ok:false, reason} instead of throwing', async () => {
+      nextResponse = { ok: false, reason: 'run finalized' };
+      nextStatus = 409;
+      const res = await swarmClient.sendSwarmWorker('a1', 'r1', 'w1', 'hello');
+      expect(res).toEqual({ ok: false, reason: 'run finalized' });
+    });
+
+    it('sendSwarmWorker() still throws on a non-409 error (e.g. 400 empty message)', async () => {
+      nextResponse = { error: 'message must be a non-empty string' };
+      nextStatus = 400;
+      await expect(swarmClient.sendSwarmWorker('a1', 'r1', 'w1', '')).rejects.toThrow(
+        'Management API error 400',
+      );
+    });
+
+    it('cancelSwarmWorker() still throws on a non-409 error (e.g. 404 unknown run)', async () => {
+      nextResponse = { error: 'not found' };
+      nextStatus = 404;
+      await expect(swarmClient.cancelSwarmWorker('a1', 'missing', 'w1')).rejects.toThrow(
+        'Management API error 404',
+      );
+    });
+
+    it('listSwarmRuns() throws on a non-ok response (auth failure)', async () => {
+      const bad = new ManagementClient(swarmBaseUrl, 'wrong-token');
+      await expect(bad.listSwarmRuns('a1')).rejects.toThrow('Management API error 401');
+    });
+
+    it('URL-encodes agent, run and worker ids', async () => {
+      nextResponse = { ok: true };
+      await swarmClient.cancelSwarmWorker('a 1', 'r/1', 'w#1');
+      expect(recording[0].url).toBe('/agents/a%201/swarm/runs/r%2F1/workers/w%231/cancel');
+    });
+  });
 });

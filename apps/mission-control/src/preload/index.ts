@@ -101,6 +101,14 @@ const api: MissionControlAPI = {
     ipcRenderer.invoke('skills:install', agentId, source, name),
   skillsRemove: (agentId, skillName) => ipcRenderer.invoke('skills:remove', agentId, skillName),
 
+  // Swarm panel
+  swarmListRuns: (agentId) => ipcRenderer.invoke('swarm:listRuns', agentId),
+  swarmGetRun: (agentId, runId) => ipcRenderer.invoke('swarm:getRun', agentId, runId),
+  swarmCancelWorker: (agentId, runId, workerId) =>
+    ipcRenderer.invoke('swarm:cancelWorker', agentId, runId, workerId),
+  swarmSend: (agentId, runId, workerId, message) =>
+    ipcRenderer.invoke('swarm:send', agentId, runId, workerId, message),
+
   // Settings
   settingsGet: () => ipcRenderer.invoke('settings:get'),
   settingsSet: (patch) => ipcRenderer.invoke('settings:set', patch),

@@ -25,6 +25,10 @@ import type {
   SkillContent,
   SkillInfo,
   SkillsConfig,
+  SwarmRunSnapshot,
+  SwarmRunSummary,
+  SwarmRunsResponse,
+  SwarmWorkerActionResult,
 } from './types.js';
 
 export class ManagementClient {
@@ -411,5 +415,96 @@ export class ManagementClient {
       `/inbox/${encodeURIComponent(issueId)}/mark-read`,
       {},
     );
+  }
+
+  // --- Swarm panel management ---
+
+  /** List swarm runs (live + finalized history) for an agent. */
+  async listSwarmRuns(agentId: string): Promise<SwarmRunSummary[]> {
+    const result = await this.request<SwarmRunsResponse>(
+      'GET',
+      `/agents/${encodeURIComponent(agentId)}/swarm/runs`,
+    );
+    return result.runs;
+  }
+
+  /** Fetch the full snapshot (workers included) for one swarm run. */
+  async getSwarmRun(agentId: string, runId: string): Promise<SwarmRunSnapshot> {
+    return this.request<SwarmRunSnapshot>(
+      'GET',
+      `/agents/${encodeURIComponent(agentId)}/swarm/runs/${encodeURIComponent(runId)}`,
+    );
+  }
+
+  /**
+   * Cancel a swarm worker from the panel. The gateway returns 200 `{ok:true}`
+   * on success and 409 `{ok:false, reason}` when the run is finalized or the
+   * worker is already terminal. Because the panel needs the `reason` (not an
+   * exception), this method catches the 409 specially and returns the parsed
+   * `{ok:false, reason}` body. All other non-2xx responses propagate as the
+   * usual `Management API error` throw.
+   */
+  async cancelSwarmWorker(
+    agentId: string,
+    runId: string,
+    workerId: string,
+  ): Promise<SwarmWorkerActionResult> {
+    return this.requestWorkerAction(
+      `/agents/${encodeURIComponent(agentId)}/swarm/runs/${encodeURIComponent(
+        runId,
+      )}/workers/${encodeURIComponent(workerId)}/cancel`,
+      {},
+    );
+  }
+
+  /**
+   * Steer a swarm worker from the panel by sending it a message. Same
+   * 409-handling contract as {@link cancelSwarmWorker}: 200 `{ok:true}` on
+   * success; 409 `{ok:false, reason}` (run finalized / worker terminal) is
+   * returned as the parsed body rather than thrown; other non-2xx responses
+   * (e.g. 400 empty message, 404 unknown agent/run) propagate as the usual
+   * `Management API error` throw.
+   */
+  async sendSwarmWorker(
+    agentId: string,
+    runId: string,
+    workerId: string,
+    message: string,
+  ): Promise<SwarmWorkerActionResult> {
+    return this.requestWorkerAction(
+      `/agents/${encodeURIComponent(agentId)}/swarm/runs/${encodeURIComponent(
+        runId,
+      )}/workers/${encodeURIComponent(workerId)}/send`,
+      { message },
+    );
+  }
+
+  /**
+   * POST a swarm worker action (cancel/send). Mirrors `requestWithBody` but
+   * treats HTTP 409 as a valid `{ok:false, reason}` result rather than an
+   * error, so the panel can surface the coordinator's reason string. Every
+   * other non-2xx status throws the same `Management API error` as the shared
+   * helpers.
+   */
+  private async requestWorkerAction(path: string, body: unknown): Promise<SwarmWorkerActionResult> {
+    const response = await fetch(`${this.baseUrl}${path}`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${this.token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(body),
+    });
+
+    if (response.status === 409) {
+      return response.json() as Promise<SwarmWorkerActionResult>;
+    }
+
+    if (!response.ok) {
+      const text = await response.text();
+      throw new Error(`Management API error ${response.status}: ${text}`);
+    }
+
+    return response.json() as Promise<SwarmWorkerActionResult>;
   }
 }
