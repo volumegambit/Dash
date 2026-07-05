@@ -8,9 +8,9 @@ It is a small, self-hostable Node service. You run **one** relay; every gateway 
 own dials into it and becomes reachable at its own subdomain.
 
 > **Using Mission Control?** You likely don't need this README. Mission Control's
-> **Settings → Remote access** uses the **hosted Dash relay**: sign in to Dash, claim
-> a permanent subdomain, and the gateway enrolls and reconnects on its own — there is
-> no form for entering relay credentials. That flow is documented in
+> **Settings → Devices → Remote access** uses the **hosted Dash relay**: sign in to
+> Dash, claim a permanent subdomain, and the gateway enrolls and reconnects on its
+> own — there is no form for entering relay credentials. That flow is documented in
 > [docs/remote-access.mdx](../../docs/remote-access.mdx).
 >
 > **Setup at a glance (self-hosted):** deploy a relay (below), start your gateway
@@ -26,7 +26,7 @@ own dials into it and becomes reachable at its own subdomain.
 - **You need it** to reach your agents from your phone when you're away from home — the
   gateway sits behind NAT/a firewall with no public address.
 - **You don't need it** when your phone and gateway are on the same Wi-Fi/LAN. Pair
-  directly over the local network instead (Mission Control → Pair Device).
+  directly over the local network instead (Mission Control → Settings → Devices).
 
 ---
 

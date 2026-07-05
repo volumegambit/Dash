@@ -49,7 +49,7 @@ fun PairingScreen(
     ) {
         Text("Connect to Dash", style = MaterialTheme.typography.headlineSmall)
         Text(
-            "Open Mission Control → Pair device and scan the QR code, or enter the connection details manually.",
+            "Open Mission Control → Settings → Devices and scan the QR code, or enter the connection details manually.",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )

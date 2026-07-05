@@ -2,10 +2,10 @@ import { providerSecretKey } from '@dash/mc/provider-keys';
 import { createFileRoute } from '@tanstack/react-router';
 import { KeyRound, Loader, LogIn, Plus, Trash2, X } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { ProviderConnectModal } from '../components/ProviderConnectModal.js';
-import { type PluginProviderOption, separateProviders } from '../components/providers-index.js';
-import { PROVIDERS, type Provider, type ProviderConfig } from '../components/providers.js';
-import { useRuntimeProviders } from '../hooks/useRuntimeProviders.js';
+import { ProviderConnectModal } from '../../components/ProviderConnectModal.js';
+import { type PluginProviderOption, separateProviders } from '../../components/providers-index.js';
+import { PROVIDERS, type Provider, type ProviderConfig } from '../../components/providers.js';
+import { useRuntimeProviders } from '../../hooks/useRuntimeProviders.js';
 
 const KEY_NAME_PATTERN = /^[a-zA-Z0-9-]+$/;
 
@@ -806,6 +806,6 @@ export function AiProviders(): JSX.Element {
   );
 }
 
-export const Route = createFileRoute('/connections')({
+export const Route = createFileRoute('/settings/ai-providers')({
   component: AiProviders,
 });

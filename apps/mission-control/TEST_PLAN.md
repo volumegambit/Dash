@@ -85,10 +85,12 @@ under a Node version missing a required symbol, or otherwise force the gateway s
 ### 2.1 Sidebar Layout & Health
 1. Take a screenshot of the full sidebar
 2. **Verify:** Logo at top with a small green health dot (gateway healthy)
-3. **Verify:** Three nav sections: CORE (Dashboard, Chat), MANAGE (Agents, Messaging Apps), CONFIGURE (AI Providers, Connectors, Settings)
-4. **Verify:** Feedback link at bottom
-5. Click "Agents" in sidebar
-6. **Verify:** "Agents" is highlighted (bold, left accent border); other links are not
+3. **Verify:** Primary nav items with no section header: Chat, Agents, Projects. A DEVELOPER section (Under the Hood) appears in dev builds only
+4. **Verify:** A Settings entry is pinned in the sidebar footer (above Feedback), with active highlight when on any Settings page
+5. **Verify:** There are NO top-level items for AI Providers, Connectors (MCP), Plugins, Messaging Apps, Pair Device, or Web Search — all live under Settings
+6. **Verify:** Feedback link at bottom
+7. Click "Agents" in sidebar
+8. **Verify:** "Agents" is highlighted (bold, left accent border); other links are not
 
 ### 2.2 Collapse & Expand
 1. **Verify:** On a fresh app launch the sidebar is expanded (labels and section headers visible)
@@ -104,13 +106,13 @@ under a Node version missing a required symbol, or otherwise force the gateway s
 
 ---
 
-## Section 3: AI Providers (Connections)
+## Section 3: AI Providers (Settings → AI Providers)
 
 **Precondition:** App running, at least one API key configured.
 **Bootstrap:** If no key exists, go to AI Providers → click "Add Key" for Anthropic → enter key name `default` and a valid API key from `test-credentials.json` → Save.
 
 ### 3.1 Page Layout
-1. Navigate to AI Providers
+1. Navigate to Settings → AI Providers
 2. Take a screenshot of the full page
 3. **Verify:** Provider sections visible (Anthropic, OpenAI, Google, Kimi by Moonshot)
 4. **Verify:** The key added during setup (`default`) appears under Anthropic
@@ -550,7 +552,7 @@ under a Node version missing a required symbol, or otherwise force the gateway s
 3. **Verify:** An error appears containing auth-related text (401, 403, "unauthorized", "authentication", or "invalid key")
 4. **Verify:** An "Update Key →" button/link appears in the error
 5. Click "Update Key →"
-6. **Verify:** Navigates to the AI Providers (Connections) page
+6. **Verify:** Navigates to the Settings → AI Providers page
 
 ### 14.3 MCP Tool Error
 1. If agent uses an MCP tool and the connector is down:
@@ -695,7 +697,7 @@ under a Node version missing a required symbol, or otherwise force the gateway s
 **Precondition:** App running
 
 ### 19.1 Empty State
-1. Navigate to Connectors page
+1. Navigate to Settings → Connectors (MCP)
 2. **Verify:** Empty state message with connector icon
 3. **Verify:** "Add Connector" button is visible in the header
 
@@ -740,7 +742,7 @@ under a Node version missing a required symbol, or otherwise force the gateway s
 **Bootstrap:** If no agent, follow Section 4. Load bot token, username, and test user ID from `test-credentials.json`.
 
 ### 20.1 Empty State
-1. Navigate to Messaging Apps
+1. Navigate to Settings → Messaging Apps
 2. **Verify:** Empty state with "Add Telegram" and "Connect WhatsApp" options
 
 ### 20.2 Telegram Wizard — Invalid Token
@@ -786,7 +788,7 @@ under a Node version missing a required symbol, or otherwise force the gateway s
 
 ### 20.7 Telegram — Verify Message Received in MC
 1. Switch back to Mission Control
-2. Navigate to Messaging Apps → click the Telegram channel
+2. Navigate to Settings → Messaging Apps → click the Telegram channel
 3. Check the message log (if available) for the received message
 4. **Verify:** The message "Hello from test" appears in the log with the sender ID
 5. **Verify:** The log shows which agent handled the message
@@ -844,7 +846,7 @@ under a Node version missing a required symbol, or otherwise force the gateway s
 ## Section 20B: Messaging Apps — WhatsApp
 
 ### 20B.1 WhatsApp Wizard — QR Display
-1. Navigate to Messaging Apps, click "Connect WhatsApp"
+1. Navigate to Settings → Messaging Apps, click "Connect WhatsApp"
 2. **Verify:** Intro screen explains Linked Devices feature
 3. Click Next/Continue
 4. **Verify:** QR code area is shown (may show loading then actual QR)
@@ -856,7 +858,7 @@ under a Node version missing a required symbol, or otherwise force the gateway s
 ## Section 21: Web Search (in Settings)
 
 ### 21.1 No Key Set
-1. Navigate to Settings and locate the "Web Search" section
+1. Navigate to Settings → Agent Defaults and locate the "Web Search" section
 2. **Verify:** Password input field and "Save" button visible
 3. **Verify:** Link to Brave Search API signup is present
 
@@ -874,15 +876,26 @@ under a Node version missing a required symbol, or otherwise force the gateway s
 
 ## Section 22: Settings
 
-### 22.1 Default Model Chain
-1. Navigate to Settings
+The Settings page has its own left sub-nav with seven sections: **General** (Gateway, Companion, About) and **Agent Defaults** (Default Model Chain, Web Search) at the top, then **PROVIDERS & TOOLS** (AI Providers, Connectors (MCP), Plugins) and **ACCESS** (Messaging Apps, Devices). AI Providers, Connectors, Plugins, and Messaging Apps keep their existing behavior (Sections 3, 19, 20) — only their location changed.
+
+### 22.0 Settings Sub-nav
+1. Navigate to Settings (sidebar footer entry)
+2. **Verify:** A left sub-nav titled "Settings" lists: General, Agent Defaults, AI Providers, Connectors (MCP), Plugins, Messaging Apps, Devices
+3. **Verify:** Group headers "PROVIDERS & TOOLS" and "ACCESS" separate the sections
+4. **Verify:** General is active by default (accent left border, bold)
+5. Click each section in turn
+6. **Verify:** The clicked section becomes active and the content pane shows that section (each with its own title bar)
+7. **Verify:** While on any Settings section, the sidebar's Settings entry stays highlighted
+
+### 22.1 Default Model Chain (Agent Defaults)
+1. Navigate to Settings → Agent Defaults
 2. **Verify:** "Default Model Chain" section with model selector
 3. **Verify:** "Refresh Models" button is present
 4. Select a model
 5. **Verify:** Selection is saved
 
-### 22.2 Gateway Restart
-1. On the Settings page, locate the "Gateway" section
+### 22.2 Gateway Restart (General)
+1. On Settings → General, locate the "Gateway" section
 2. **Verify:** "Restart Gateway" button is visible with a refresh icon
 3. Note the current sidebar health dot color (should be green)
 4. Click "Restart Gateway"
@@ -901,14 +914,34 @@ under a Node version missing a required symbol, or otherwise force the gateway s
 
 ### 22.3 Gateway Restart — Connector Recovery
 1. If MCP connectors are configured:
-2. Navigate to Connectors page, note connector statuses (should be green)
-3. Go to Settings, click "Restart Gateway"
+2. Navigate to Settings → Connectors (MCP), note connector statuses (should be green)
+3. Go to Settings → General, click "Restart Gateway"
 4. Wait for restart to complete
-5. Navigate to Connectors page
+5. Navigate to Settings → Connectors (MCP)
 6. **Verify:** Connectors reconnect automatically (may briefly show reconnecting, then connected)
 
-### 22.4 About Section
+### 22.4 About Section (General)
 1. **Verify:** App version number is displayed (e.g., "DashSquad v0.x.x")
+
+### 22.5 Companion Toggle (General)
+1. **Verify:** "Companion" section with a "Show the tree companion" checkbox
+2. Toggle the checkbox off
+3. **Verify:** The tree companion disappears from the app
+4. Toggle it back on
+5. **Verify:** The tree companion reappears
+
+### 22.6 Pair Device (Devices)
+1. Navigate to Settings → Devices
+2. **Verify:** "Pair Device" card renders a QR code on a white tile
+3. **Verify:** The gateway host is shown below the QR with a mode badge reading "local network" or "relay"
+4. **Verify:** No tokens or credentials appear as plain text anywhere on the card
+5. If a relay gateway is enrolled (see 22.7): **Verify:** the badge reads "relay" and the host is the relay address
+6. Claim a gateway in Remote access (22.7) without leaving the page: **Verify:** the QR re-renders in relay mode (no stale "local network" badge)
+
+### 22.7 Remote Access (Devices)
+1. On Settings → Devices, locate the "Remote access" section below Pair Device
+2. **Verify:** When signed out, a "Sign in to Dash" button is shown
+3. If signed in and enrolled: **Verify:** "Gateway ready at" shows the claimed subdomain and a "Paired devices" list (with Revoke buttons) is present
 
 ---
 
@@ -926,7 +959,7 @@ Take screenshots of every page and evaluate against these criteria. This section
 7. **Verify:** Icon-only buttons (trash, refresh, pencil) use consistent padding
 
 ### 23.2 Form Inputs
-1. Check text inputs across: Setup Wizard, Create Agent Wizard, Add Key modal, Add Connector modal, Settings (Web Search section)
+1. Check text inputs across: Setup Wizard, Create Agent Wizard, Add Key modal, Add Connector modal, Settings → Agent Defaults (Web Search section)
 2. **Verify:** All text inputs have consistent border color, background, and focus style (border-accent on focus)
 3. **Verify:** All password inputs use monospace font
 4. **Verify:** All dropdowns match text input styling
@@ -943,7 +976,7 @@ Take screenshots of every page and evaluate against these criteria. This section
 6. **Verify:** Dots are consistently sized within each context
 
 ### 23.4 Page Headers
-1. Visit every main page (Dashboard, Chat, Agents, Create Agent, AI Providers, Connectors, Messaging Apps, Settings)
+1. Visit every main page (Chat, Agents, Create Agent, Projects, and every Settings section: General, Agent Defaults, AI Providers, Connectors (MCP), Plugins, Messaging Apps, Devices)
 2. **Verify:** Each page has a header with: small uppercase accent label (e.g., "MANAGE AGENTS") and a larger title
 3. **Verify:** Action buttons (Create Agent, Add Connector) are right-aligned in headers
 4. **Verify:** Header heights are consistent across pages
@@ -998,7 +1031,7 @@ Take screenshots of every page and evaluate against these criteria. This section
 
 ### 24.1 Credential Impact on Agents
 1. Create an agent using the `default` Anthropic key
-2. Navigate to AI Providers
+2. Navigate to Settings → AI Providers
 3. Remove the `default` key (if it's the only key, the agent should show a warning)
 4. Navigate to Agents list
 5. **Verify:** The agent shows a yellow status dot
@@ -1010,7 +1043,7 @@ Take screenshots of every page and evaluate against these criteria. This section
 11. **Verify:** Agent status returns to green, banner disappears, input re-enabled
 
 ### 24.2 Settings → Create Agent Defaults
-1. Navigate to Settings
+1. Navigate to Settings → Agent Defaults
 2. Set a default model
 3. Navigate to Create Agent wizard
 4. **Verify:** The default model is pre-selected in the model dropdown
@@ -1018,7 +1051,7 @@ Take screenshots of every page and evaluate against these criteria. This section
 ### 24.3 Key Deletion with Agent Reassignment
 1. Ensure two keys exist for the same provider (e.g., `default` and `backup`)
 2. Create an agent using `default`
-3. Go to AI Providers, remove `default`
+3. Go to Settings → AI Providers, remove `default`
 4. **Verify:** KeyDeleteModal appears showing the affected agent
 5. **Verify:** Dropdown allows reassigning to `backup`
 6. Select `backup`, confirm
@@ -1067,7 +1100,7 @@ Take screenshots of every page and evaluate against these criteria. This section
 **Precondition:** App running, gateway healthy, at least one agent created. For seeded data, ask an agent in Chat to "create a project called Gateway with key GATEWAY, then create three tasks in it" (the agent uses the `projects_*` tools), or create tasks via the UI as the steps below allow.
 
 ### 27.1 Sidebar entry & subnav
-1. **Verify:** The sidebar has a "PLAN" group with a "Projects" entry (folder-kanban icon).
+1. **Verify:** The sidebar has a "Projects" entry (folder-kanban icon) among the primary items.
 2. Click "Projects".
 3. **Verify:** Header reads "Projects" with a "Manage Work" eyebrow.
 4. **Verify:** A subnav shows: Inbox, My work, All tasks, Kanban, Projects.

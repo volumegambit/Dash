@@ -602,7 +602,7 @@ export function AgentConfigTab({
             ) : assignedConnectors.length === 0 ? (
               <p className="text-sm text-fg-muted">
                 No connectors available.{' '}
-                <a href="#/connectors" className="text-accent hover:underline">
+                <a href="#/settings/connectors" className="text-accent hover:underline">
                   Add connectors
                 </a>{' '}
                 first.
@@ -680,7 +680,7 @@ export function AgentConfigTab({
             ) : poolPlugins.length === 0 ? (
               <p className="text-sm text-fg-muted">
                 No plugins installed.{' '}
-                <a href="#/plugins" className="text-accent hover:underline">
+                <a href="#/settings/plugins" className="text-accent hover:underline">
                   Manage plugins
                 </a>{' '}
                 first.

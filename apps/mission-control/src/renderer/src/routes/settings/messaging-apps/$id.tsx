@@ -2,8 +2,8 @@ import type { GatewayChannel } from '@dash/mc';
 import { Link, createFileRoute, useNavigate } from '@tanstack/react-router';
 import { AlertTriangle, ArrowLeft, Plus, Trash2 } from 'lucide-react';
 import { useEffect, useState } from 'react';
-import { useAgentsStore } from '../../stores/agents.js';
-import { useChannelsStore } from '../../stores/messaging-apps.js';
+import { useAgentsStore } from '../../../stores/agents.js';
+import { useChannelsStore } from '../../../stores/messaging-apps.js';
 
 function PlatformIcon({ type }: { type: string }): JSX.Element {
   if (type === 'whatsapp') {
@@ -67,7 +67,7 @@ function MessagingAppDetail(): JSX.Element {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-4">
         <p className="text-muted">Messaging app not found.</p>
-        <Link to="/messaging-apps" className="text-sm text-accent hover:underline">
+        <Link to="/settings/messaging-apps" className="text-sm text-accent hover:underline">
           ← Back to Messaging Apps
         </Link>
       </div>
@@ -115,7 +115,7 @@ function MessagingAppDetail(): JSX.Element {
       {/* Header */}
       <div className="bg-surface px-8 py-4 border-b border-border flex items-center gap-4 shrink-0">
         <Link
-          to="/messaging-apps"
+          to="/settings/messaging-apps"
           className="rounded p-1.5 text-muted transition-colors hover:bg-card-hover hover:text-foreground"
         >
           <ArrowLeft size={16} />
@@ -277,7 +277,7 @@ function MessagingAppDetail(): JSX.Element {
           onConfirm={async () => {
             setShowDeleteConfirm(false);
             await removeChannel(id);
-            navigate({ to: '/messaging-apps' });
+            navigate({ to: '/settings/messaging-apps' });
           }}
         />
       )}
@@ -636,6 +636,6 @@ function AddRulePanel({
   );
 }
 
-export const Route = createFileRoute('/messaging-apps/$id')({
+export const Route = createFileRoute('/settings/messaging-apps/$id')({
   component: MessagingAppDetail,
 });

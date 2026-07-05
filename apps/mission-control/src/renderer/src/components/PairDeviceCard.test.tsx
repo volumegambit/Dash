@@ -1,9 +1,9 @@
 import '@testing-library/jest-dom/vitest';
 import { render, screen } from '@testing-library/react';
 import { mockApi } from '../../../../vitest.setup.js';
-import { PairDevice } from './pair-device.js';
+import { PairDeviceCard } from './PairDeviceCard.js';
 
-describe('PairDevice', () => {
+describe('PairDeviceCard', () => {
   describe('LAN pairing', () => {
     beforeEach(() => {
       mockApi.pairingGetInfo.mockResolvedValue({
@@ -17,13 +17,13 @@ describe('PairDevice', () => {
     });
 
     it('renders a QR code from the pairing info', async () => {
-      render(<PairDevice />);
+      render(<PairDeviceCard />);
       const qr = await screen.findByTestId('pairing-qr');
       expect(qr).toHaveAttribute('src', expect.stringContaining('data:image/svg+xml'));
     });
 
     it('shows the gateway host + a local-network label but never the raw tokens', async () => {
-      render(<PairDevice />);
+      render(<PairDeviceCard />);
       expect(await screen.findByText(/192\.168\.1\.50/)).toBeInTheDocument();
       expect(screen.getByTestId('pairing-mode')).toHaveTextContent('local network');
       expect(screen.queryByText(/m-tok-secret/)).not.toBeInTheDocument();
@@ -44,7 +44,7 @@ describe('PairDevice', () => {
     });
 
     it('renders a QR code and a relay label', async () => {
-      render(<PairDevice />);
+      render(<PairDeviceCard />);
       const qr = await screen.findByTestId('pairing-qr');
       expect(qr).toHaveAttribute('src', expect.stringContaining('data:image/svg+xml'));
       expect(await screen.findByText('gw-1.relay.example.com')).toBeInTheDocument();
@@ -52,7 +52,7 @@ describe('PairDevice', () => {
     });
 
     it('never shows the tokens or the relay credential as text', async () => {
-      render(<PairDevice />);
+      render(<PairDeviceCard />);
       await screen.findByTestId('pairing-qr');
       expect(screen.queryByText(/m-tok-secret/)).not.toBeInTheDocument();
       expect(screen.queryByText(/c-tok-secret/)).not.toBeInTheDocument();

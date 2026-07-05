@@ -1,149 +1,89 @@
-import { createFileRoute } from '@tanstack/react-router';
-import { RefreshCw } from 'lucide-react';
-import { useCallback, useEffect, useState } from 'react';
-import type { AppSettings } from '../../../shared/ipc.js';
-import { ModelChainEditor } from '../components/ModelChainEditor.js';
-import { RelaySettings } from '../components/RelaySettings.js';
-import { WebSearchSettings } from '../components/WebSearchSettings.js';
-import { useAvailableModels } from '../hooks/useAvailableModels.js';
-import { useUIStore } from '../stores/ui.js';
+import { Link, Outlet, createFileRoute } from '@tanstack/react-router';
+import {
+  Cable,
+  Plug,
+  Puzzle,
+  SlidersHorizontal,
+  Smartphone,
+  TabletSmartphone,
+  Wrench,
+} from 'lucide-react';
+import type { LucideIcon } from 'lucide-react';
 
-function Settings(): JSX.Element {
-  const [version, setVersion] = useState<string>('...');
-  const [settings, setSettings] = useState<AppSettings>({});
-  const [saving, setSaving] = useState(false);
-  const [restarting, setRestarting] = useState(false);
-  const [restartStatus, setRestartStatus] = useState<'idle' | 'success' | 'error'>('idle');
-  const {
-    models: availableModels,
-    refreshing: modelsRefreshing,
-    refresh: refreshModels,
-  } = useAvailableModels();
-  const companionVisible = useUIStore((s) => s.companionVisible);
-  const setCompanionVisible = useUIStore((s) => s.setCompanionVisible);
+interface SettingsNavItem {
+  to: string;
+  label: string;
+  icon: LucideIcon;
+  exact?: boolean;
+}
 
-  useEffect(() => {
-    window.api.getVersion().then(setVersion);
-    window.api
-      .settingsGet()
-      .then(setSettings)
-      .catch(() => {});
-  }, []);
+interface SettingsNavGroup {
+  label?: string;
+  items: SettingsNavItem[];
+}
 
-  const handleRestartGateway = useCallback(async () => {
-    setRestarting(true);
-    setRestartStatus('idle');
-    try {
-      await window.api.gatewayRestart();
-      setRestartStatus('success');
-      setTimeout(() => setRestartStatus('idle'), 3000);
-    } catch {
-      setRestartStatus('error');
-      setTimeout(() => setRestartStatus('idle'), 5000);
-    } finally {
-      setRestarting(false);
-    }
-  }, []);
+const groups: SettingsNavGroup[] = [
+  {
+    items: [
+      { to: '/settings', label: 'General', icon: Wrench, exact: true },
+      { to: '/settings/agent-defaults', label: 'Agent Defaults', icon: SlidersHorizontal },
+    ],
+  },
+  {
+    label: 'PROVIDERS & TOOLS',
+    items: [
+      { to: '/settings/ai-providers', label: 'AI Providers', icon: Plug },
+      { to: '/settings/connectors', label: 'Connectors (MCP)', icon: Cable },
+      { to: '/settings/plugins', label: 'Plugins', icon: Puzzle },
+    ],
+  },
+  {
+    label: 'ACCESS',
+    items: [
+      { to: '/settings/messaging-apps', label: 'Messaging Apps', icon: Smartphone },
+      { to: '/settings/devices', label: 'Devices', icon: TabletSmartphone },
+    ],
+  },
+];
 
-  const handleChainChange = async (model: string, fallbackModels: string[]): Promise<void> => {
-    const patch: AppSettings = { defaultModel: model, defaultFallbackModels: fallbackModels };
-    setSettings((prev) => ({ ...prev, ...patch }));
-    setSaving(true);
-    try {
-      await window.api.settingsSet(patch);
-    } finally {
-      setSaving(false);
-    }
-  };
-
+export function SettingsLayout(): JSX.Element {
   return (
-    <div className="h-full flex flex-col overflow-hidden">
-      {/* Page header */}
-      <div className="bg-surface px-8 py-4 border-b border-border flex items-center justify-between shrink-0">
-        <div>
-          <h1 className="font-[family-name:var(--font-display)] text-[22px] font-semibold text-foreground">
-            Settings
-          </h1>
-          <p className="mt-1 text-sm text-muted">Application settings and configuration.</p>
-        </div>
-      </div>
+    <div className="flex h-full overflow-hidden">
+      {/* Settings sub-nav */}
+      <aside className="w-52 shrink-0 overflow-y-auto border-r border-border bg-surface px-3 py-5">
+        <h1 className="px-3 pb-3 font-[family-name:var(--font-display)] text-[17px] font-semibold text-foreground">
+          Settings
+        </h1>
+        <nav aria-label="Settings sections" className="flex flex-col gap-0.5">
+          {groups.map((group, groupIndex) => (
+            <div key={group.label ?? groupIndex}>
+              {group.label && (
+                <span className="block px-3 pb-1.5 pt-4 font-[family-name:var(--font-mono)] text-[9px] font-semibold uppercase tracking-[3px] text-accent">
+                  {group.label}
+                </span>
+              )}
+              {group.items.map((item) => (
+                <Link
+                  key={item.to}
+                  to={item.to}
+                  activeOptions={{ exact: item.exact ?? false }}
+                  className="flex h-9 items-center gap-2.5 px-3 text-sm text-muted transition-colors hover:bg-sidebar-hover hover:text-foreground [&.active]:border-l-[3px] [&.active]:border-accent [&.active]:bg-sidebar-active [&.active]:font-semibold [&.active]:text-foreground"
+                >
+                  <item.icon size={16} />
+                  {item.label}
+                </Link>
+              ))}
+            </div>
+          ))}
+        </nav>
+      </aside>
 
-      {/* Body */}
-      <div className="flex-1 overflow-y-auto p-8">
-        <div className="rounded-lg border border-border bg-card-bg p-4">
-          <h2 className="mb-1 font-[family-name:var(--font-mono)] text-[11px] uppercase tracking-[2px] text-accent">
-            Default Model Chain
-          </h2>
-          <p className="mb-4 text-xs text-muted">
-            Pre-populates the model selection when creating a new agent.
-            {saving && <span className="ml-2 text-accent">Saving...</span>}
-          </p>
-          <ModelChainEditor
-            model={settings.defaultModel ?? availableModels[0]?.value ?? ''}
-            fallbackModels={settings.defaultFallbackModels ?? []}
-            availableModels={availableModels}
-            onChange={handleChainChange}
-            onRefresh={refreshModels}
-            refreshing={modelsRefreshing}
-          />
-        </div>
-
-        <div className="mt-6 rounded-lg border border-border bg-card-bg p-4">
-          <h2 className="mb-1 font-[family-name:var(--font-mono)] text-[11px] uppercase tracking-[2px] text-accent">
-            Gateway
-          </h2>
-          <p className="mb-3 text-xs text-muted">
-            The gateway process manages agents, channels, and credentials.
-          </p>
-          <div className="flex items-center gap-3">
-            <button
-              type="button"
-              onClick={handleRestartGateway}
-              disabled={restarting}
-              className="inline-flex items-center gap-2 rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-muted hover:text-foreground hover:bg-card-hover transition-colors disabled:opacity-50"
-            >
-              <RefreshCw size={14} className={restarting ? 'animate-spin' : ''} />
-              {restarting ? 'Restarting...' : 'Restart Gateway'}
-            </button>
-            {restartStatus === 'success' && (
-              <span className="text-xs text-green">Gateway restarted successfully</span>
-            )}
-            {restartStatus === 'error' && (
-              <span className="text-xs text-red">Failed to restart gateway</span>
-            )}
-          </div>
-        </div>
-
-        <WebSearchSettings />
-
-        <RelaySettings />
-
-        <div className="mt-6 rounded-lg border border-border bg-card-bg p-4">
-          <h2 className="mb-1 font-[family-name:var(--font-mono)] text-[11px] uppercase tracking-[2px] text-accent">
-            Companion
-          </h2>
-          <p className="mb-3 text-xs text-muted">
-            The tree companion shows which sessions are working, need you, or finished while you
-            were away.
-          </p>
-          <label className="flex cursor-pointer items-center gap-3">
-            <input
-              type="checkbox"
-              checked={companionVisible}
-              onChange={(e) => setCompanionVisible(e.target.checked)}
-              className="rounded border border-border"
-            />
-            <span className="text-xs font-medium text-foreground">Show the tree companion</span>
-          </label>
-        </div>
-
-        <div className="mt-6 rounded-lg border border-border bg-card-bg p-4">
-          <h2 className="font-[family-name:var(--font-mono)] text-[11px] uppercase tracking-[2px] text-accent">
-            About
-          </h2>
-          <p className="mt-2 text-sm text-muted">
-            DashSquad v<span className="text-foreground">{version}</span>
-          </p>
+      {/* Active section — each child owns its header and scrolling. The pane
+          scrolls horizontally below the content floor instead of clipping
+          header CTAs at the 800px minimum window width. */}
+      <div className="min-w-0 flex-1 overflow-x-auto">
+        <div className="h-full min-w-[480px]">
+          <Outlet />
         </div>
       </div>
     </div>
@@ -151,5 +91,5 @@ function Settings(): JSX.Element {
 }
 
 export const Route = createFileRoute('/settings')({
-  component: Settings,
+  component: SettingsLayout,
 });

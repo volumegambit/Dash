@@ -9,8 +9,8 @@ import {
   Loader,
 } from 'lucide-react';
 import { useEffect, useState } from 'react';
-import { useAgentsStore } from '../../stores/agents.js';
-import { useChannelsStore } from '../../stores/messaging-apps.js';
+import { useAgentsStore } from '../../../stores/agents.js';
+import { useChannelsStore } from '../../../stores/messaging-apps.js';
 
 type PathId = 'new' | 'know' | 'token';
 
@@ -222,7 +222,7 @@ function NewTelegramWizard(): JSX.Element {
                 <div className="mt-8">
                   <button
                     type="button"
-                    onClick={() => navigate({ to: '/messaging-apps' })}
+                    onClick={() => navigate({ to: '/settings/messaging-apps' })}
                     className="inline-flex items-center gap-2 border border-border px-4 py-2 text-sm text-muted transition-colors hover:bg-card-hover hover:text-foreground"
                   >
                     <ArrowLeft size={14} />
@@ -578,7 +578,7 @@ function NewTelegramWizard(): JSX.Element {
                 </button>
                 <button
                   type="button"
-                  onClick={() => navigate({ to: '/messaging-apps' })}
+                  onClick={() => navigate({ to: '/settings/messaging-apps' })}
                   className="mt-6 bg-accent px-6 py-2 text-sm text-white hover:opacity-90"
                 >
                   Done
@@ -650,6 +650,6 @@ function Step({ number, text }: { number: number; text: string }): JSX.Element {
   );
 }
 
-export const Route = createFileRoute('/messaging-apps/new-telegram')({
+export const Route = createFileRoute('/settings/messaging-apps/new-telegram')({
   component: NewTelegramWizard,
 });
