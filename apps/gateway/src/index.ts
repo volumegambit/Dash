@@ -752,6 +752,7 @@ async function main() {
     upgradeWebSocket,
     eventLogStore,
     verbose: verboseWs,
+    swarmCoordinator,
   });
   if (verboseWs) {
     console.log('[gateway] chat-ws verbose logging enabled');
