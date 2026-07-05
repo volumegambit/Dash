@@ -27,6 +27,19 @@ import type {
  */
 export const RESERVED_FIRST_PLUGIN = 'dash-core-providers';
 
+/**
+ * The provider ids owned by the bundled dash-core-providers plugin — see
+ * excludeCoreProviderCollisions. Moved here from @dash/models when that package
+ * dissolved (Phase 3).
+ */
+export const RESERVED_PROVIDER_IDS = [
+  'anthropic',
+  'openai',
+  'google',
+  'moonshotai',
+  'openrouter',
+] as const;
+
 export interface LoadPluginsOptions {
   /** Directory holding installed plugins (one subdir per plugin), e.g. <dataDir>/plugins. */
   pluginsDir: string;

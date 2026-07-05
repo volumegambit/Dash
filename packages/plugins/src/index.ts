@@ -35,7 +35,7 @@ export { HOOKS_FILE, readHooksJson, validateHooksJson } from './hooks-manifest.j
 export { PluginConfigStore } from './config-store.js';
 export { heuristicPluginScan, scanText } from './scanner.js';
 export type { PluginScanLevel, PluginScanVerdict } from './scanner.js';
-export { loadPlugins, RESERVED_FIRST_PLUGIN } from './loader.js';
+export { loadPlugins, RESERVED_FIRST_PLUGIN, RESERVED_PROVIDER_IDS } from './loader.js';
 export type { LoadPluginsOptions } from './loader.js';
 export { translateMcpJson } from './mcp-translate.js';
 export { hookEnv, substituteVars } from './substitute.js';

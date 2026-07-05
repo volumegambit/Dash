@@ -833,6 +833,53 @@ describe('plugin management routes', () => {
       const disco = body.plugins.find((p) => p.name === 'disco');
       expect(disco).toEqual({ name: 'disco', displayName: 'Disco', version: '1.2.3' });
     });
+
+    it('surfaces catalog ui hints when present and omits the field otherwise', async () => {
+      const ws = wiring({
+        pluginProviderConfigs: [
+          {
+            pluginName: 'disco',
+            catalog: {
+              id: 'discoai',
+              label: 'Disco AI',
+              credentialPrefix: 'disco',
+              models: [],
+              ui: { keyConsoleUrl: 'https://x', sortOrder: 1 },
+            },
+          } as unknown as PluginWiringState['pluginProviderConfigs'][number],
+          {
+            pluginName: 'plain',
+            catalog: {
+              id: 'plainai',
+              label: 'Plain AI',
+              credentialPrefix: 'plain',
+              models: [],
+            },
+          } as unknown as PluginWiringState['pluginProviderConfigs'][number],
+        ],
+        pluginRecords: {},
+      });
+      const { app } = createApp({ wiringState: ws });
+      const res = await app.request('/runtime/plugins', { headers: AUTH });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as {
+        providers: Array<{
+          id: string;
+          label: string;
+          credentialPrefix: string;
+          ui?: { keyConsoleUrl?: string; sortOrder?: number };
+        }>;
+      };
+      expect(body.providers).toEqual([
+        {
+          id: 'discoai',
+          label: 'Disco AI',
+          credentialPrefix: 'disco',
+          ui: { keyConsoleUrl: 'https://x', sortOrder: 1 },
+        },
+        { id: 'plainai', label: 'Plain AI', credentialPrefix: 'plain' },
+      ]);
+    });
   });
 });
 
