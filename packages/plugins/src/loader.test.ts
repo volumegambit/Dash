@@ -2,7 +2,7 @@ import { symlinkSync } from 'node:fs';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { loadPlugins } from './loader.js';
+import { RESERVED_FIRST_PLUGIN, loadPlugins } from './loader.js';
 import { MANIFEST_DIR, MANIFEST_FILENAME } from './manifest.js';
 
 async function writePlugin(
@@ -93,6 +93,25 @@ describe('loadPlugins', () => {
   });
   afterEach(async () => {
     await rm(dataDir, { recursive: true, force: true });
+  });
+
+  it('loads dash-core-providers first, then the rest alphabetically (deterministic order)', async () => {
+    // Insertion order into the loader's targets map decides record order and
+    // therefore which plugin claims a contested namespace first. The bundled
+    // core-providers plugin must win deterministically, and the rest must not
+    // depend on filesystem readdir order.
+    await writePlugin(pluginsDir, 'zzz', { skill: 's1' });
+    await writePlugin(pluginsDir, RESERVED_FIRST_PLUGIN, { skill: 's2' });
+    await writePlugin(pluginsDir, 'aaa', { skill: 's3' });
+    const loaded = await loadPlugins({
+      pluginsDir,
+      entries: {
+        zzz: { enabled: true },
+        [RESERVED_FIRST_PLUGIN]: { enabled: true },
+        aaa: { enabled: true },
+      },
+    });
+    expect(loaded.records.map((r) => r.name)).toEqual([RESERVED_FIRST_PLUGIN, 'aaa', 'zzz']);
   });
 
   it('loads an enabled plugin and collects its skill dir', async () => {

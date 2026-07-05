@@ -1,0 +1,196 @@
+{
+  "id": "openai",
+  "label": "OpenAI",
+  "credentialPrefix": "openai-api-key",
+  "baseUrl": "https://api.openai.com/v1",
+  "api": "openai-completions",
+  "models": [
+    {
+      "id": "gpt-5.5",
+      "name": "GPT-5.5",
+      "contextWindow": 272000,
+      "maxTokens": 128000,
+      "reasoning": true,
+      "input": [
+        "text",
+        "image"
+      ],
+      "cost": {
+        "input": 5,
+        "output": 30,
+        "cacheRead": 0.5,
+        "cacheWrite": 0
+      }
+    },
+    {
+      "id": "gpt-5.4",
+      "name": "GPT-5.4",
+      "contextWindow": 272000,
+      "maxTokens": 128000,
+      "reasoning": true,
+      "input": [
+        "text",
+        "image"
+      ],
+      "cost": {
+        "input": 2.5,
+        "output": 15,
+        "cacheRead": 0.25,
+        "cacheWrite": 0
+      }
+    },
+    {
+      "id": "gpt-5.4-mini",
+      "name": "GPT-5.4-Mini",
+      "contextWindow": 400000,
+      "maxTokens": 128000,
+      "reasoning": true,
+      "input": [
+        "text",
+        "image"
+      ],
+      "cost": {
+        "input": 0.75,
+        "output": 4.5,
+        "cacheRead": 0.075,
+        "cacheWrite": 0
+      }
+    }
+  ],
+  "modelsFetch": [
+    {
+      "whenKeyPrefix": "eyJ",
+      "url": "https://chatgpt.com/backend-api/codex/models?client_version=2.0.0",
+      "auth": [
+        {
+          "header": "authorization",
+          "valuePrefix": "Bearer "
+        }
+      ],
+      "listPath": "models",
+      "idPath": "slug",
+      "namePath": "display_name"
+    },
+    {
+      "url": "https://api.openai.com/v1/models",
+      "auth": [
+        {
+          "header": "authorization",
+          "valuePrefix": "Bearer "
+        }
+      ],
+      "listPath": "data",
+      "idPath": "id"
+    }
+  ],
+  "supportedPatterns": [
+    {
+      "pattern": "o3-pro",
+      "tier": 0
+    },
+    {
+      "pattern": "o3",
+      "tier": 1
+    },
+    {
+      "pattern": "o3-mini",
+      "tier": 2
+    },
+    {
+      "pattern": "o1-pro",
+      "tier": 3
+    },
+    {
+      "pattern": "o1",
+      "tier": 4
+    },
+    {
+      "pattern": "o1-mini",
+      "tier": 5
+    },
+    {
+      "pattern": "gpt-*-codex*",
+      "tier": 9
+    },
+    {
+      "pattern": "gpt-5.5",
+      "tier": 10
+    },
+    {
+      "pattern": "gpt-5.4-pro",
+      "tier": 11
+    },
+    {
+      "pattern": "gpt-5.4",
+      "tier": 12
+    },
+    {
+      "pattern": "gpt-5.4-mini",
+      "tier": 13
+    },
+    {
+      "pattern": "gpt-5.3",
+      "tier": 14
+    },
+    {
+      "pattern": "gpt-5.3-mini",
+      "tier": 15
+    },
+    {
+      "pattern": "gpt-5.2",
+      "tier": 16
+    },
+    {
+      "pattern": "gpt-5.1",
+      "tier": 17
+    },
+    {
+      "pattern": "gpt-5.1-mini",
+      "tier": 18
+    },
+    {
+      "pattern": "gpt-5",
+      "tier": 19
+    },
+    {
+      "pattern": "gpt-5-pro",
+      "tier": 19
+    },
+    {
+      "pattern": "gpt-5-mini",
+      "tier": 20
+    },
+    {
+      "pattern": "gpt-4.1",
+      "tier": 21
+    },
+    {
+      "pattern": "gpt-4.1-mini",
+      "tier": 22
+    },
+    {
+      "pattern": "gpt-4o",
+      "tier": 23
+    },
+    {
+      "pattern": "gpt-4o-mini",
+      "tier": 24
+    },
+    {
+      "pattern": "gpt-4-turbo",
+      "tier": 25
+    },
+    {
+      "pattern": "gpt-4",
+      "tier": 26
+    },
+    {
+      "pattern": "gpt-3.5-turbo",
+      "tier": 30
+    }
+  ],
+  "reviewedAt": "2026-06-21",
+  "ui": {
+    "keyConsoleUrl": "https://platform.openai.com/api-keys"
+  }
+}

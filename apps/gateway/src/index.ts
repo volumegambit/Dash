@@ -24,6 +24,7 @@ import { createNodeWebSocket } from '@hono/node-ws';
 import { Hono } from 'hono';
 import { createAgentChatCoordinator } from './agent-chat-coordinator.js';
 import { AgentRegistry } from './agent-registry.js';
+import { ensureCoreProvidersPlugin } from './bundled-plugin.js';
 import { ChannelRegistry } from './channel-registry.js';
 import { mountChatWs } from './chat-ws.js';
 import { parseFlags } from './config.js';
@@ -148,6 +149,16 @@ async function main() {
   // Built-in plugins ship inside @dash/skills and are resolved at runtime —
   // never persisted to config.json — so the path can't rot across updates.
   const builtinRoot = getBuiltinPluginsDir();
+  // Boot-install the bundled core-providers plugin BEFORE loading entries so
+  // this boot (not the next) serves its catalogs. Fatal on failure: a gateway
+  // with zero providers is broken, and the bundle ships inside the package so
+  // there is no legitimate missing-file case.
+  await ensureCoreProvidersPlugin({
+    dataDir,
+    bundledDir: resolve(__dirname, '../plugins/dash-core-providers'),
+    configStore: pluginConfigStore,
+    logger,
+  });
   const pluginEntries = await pluginConfigStore.load();
   const loadedPlugins = await loadPlugins({
     pluginsDir,
@@ -174,14 +185,15 @@ async function main() {
     pluginsDir,
   });
 
-  // Surface provider catalogs dropped for colliding with a built-in provider id
+  // Surface provider catalogs dropped for claiming a reserved provider id
   // (defense-in-depth — a trusted plugin could declare e.g. `anthropic` and
-  // shadow its namespace). rebuildWiringState returns the dropped set so this is
-  // logged at boot AND on every reload (the builder itself stays side-effect-free).
+  // shadow the namespace owned by the bundled dash-core-providers plugin).
+  // rebuildWiringState returns the dropped set so this is logged at boot AND
+  // on every reload (the builder itself stays side-effect-free).
   const logDroppedCollisions = (dropped: typeof wiringState.droppedProviderCollisions): void => {
     for (const { pluginName, catalog } of dropped) {
       logger.warn(
-        `plugin '${pluginName}' provider catalog id '${catalog.id}' collides with a built-in provider — ignored`,
+        `plugin '${pluginName}' provider catalog id '${catalog.id}' is a reserved provider id owned by dash-core-providers — ignored`,
       );
     }
   };

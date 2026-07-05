@@ -147,11 +147,47 @@ export interface CatalogAuthRule {
 }
 
 /**
+ * Declarative post-fetch filtering of a live model list. Applied to raw list
+ * entries BEFORE id mapping/prefix-stripping, so paths address the provider's
+ * own response shape. Lets OpenRouter-style catalogs express a capability
+ * filter without code.
+ *
+ * Accepted simplification: OpenRouter's runtime output-modality check is NOT
+ * reproduced here. `arrayIncludes` (tools support) + `excludeIdSubstrings` (drop
+ * the `:free`/`:nitro` variant suffixes) plus the catalog's `supportedPatterns`
+ * allow-list give equivalent curation.
+ */
+export interface CatalogEntryFilters {
+  /**
+   * Keep an entry only if the array at dot-path `path` includes `value`. Every
+   * rule must pass (AND). A non-array at `path` fails the rule (entry dropped).
+   */
+  arrayIncludes?: { path: string; value: string }[];
+  /** Drop an entry whose raw id (pre-`stripIdPrefix`) contains any of these substrings. */
+  excludeIdSubstrings?: string[];
+}
+
+/**
  * Declarative live model discovery: GET `url`, authenticate via the first
  * matching `auth` rule, read the array at dot-path `listPath`, and map each
  * entry's `idPath`/`namePath`. No code execution — a catalog stays pure JSON.
+ *
+ * A {@link ProviderCatalog.modelsFetch} may carry an ARRAY of these specs as
+ * ordered variants: the host picks the first spec whose `whenKeyPrefix` matches
+ * the stored key's shape (a spec without `whenKeyPrefix` always matches, so it
+ * belongs last as the default). This expresses OpenAI's JWT→Codex endpoint
+ * swap without code.
+ *
+ * Accepted simplification: OpenAI's 403-retry from the Codex endpoint back to
+ * the public endpoint is NOT reproduced — variant selection is by key shape
+ * (`whenKeyPrefix`) only.
  */
 export interface ModelsFetchSpec {
+  /**
+   * Select this variant only when the stored key starts with this prefix (e.g.
+   * `eyJ` for a JWT). Omit on the default/fallback variant.
+   */
+  whenKeyPrefix?: string;
   url: string;
   /** Ordered auth rules; first match wins (see {@link CatalogAuthRule}). */
   auth: CatalogAuthRule[];
@@ -163,6 +199,8 @@ export interface ModelsFetchSpec {
   namePath?: string;
   /** Strip this prefix from extracted ids (e.g. Google's `models/`). */
   stripIdPrefix?: string;
+  /** Declarative post-fetch entry filters (e.g. OpenRouter capability filter). */
+  entryFilters?: CatalogEntryFilters;
 }
 
 /** One allow-list entry: glob-style `*` wildcards, lower tier = better. */
@@ -203,8 +241,12 @@ export interface ProviderCatalog {
   dynamicModelDefaults?: { contextWindow: number; maxTokens: number };
   /** Keyless locals (e.g. Ollama) — placeholder key used when no credential is stored. */
   placeholderKey?: string;
-  /** Declarative live model discovery; absent → static `models` only. */
-  modelsFetch?: ModelsFetchSpec;
+  /**
+   * Declarative live model discovery; absent → static `models` only. A single
+   * spec, or an ORDERED array of variants (first matching `whenKeyPrefix` wins;
+   * a spec without `whenKeyPrefix` always matches — see {@link ModelsFetchSpec}).
+   */
+  modelsFetch?: ModelsFetchSpec | ModelsFetchSpec[];
   /** Allow-list patterns filtering live-fetched models; absent → no live filter. */
   supportedPatterns?: SupportedPattern[];
   /** ISO date the model list was last human-reviewed. */

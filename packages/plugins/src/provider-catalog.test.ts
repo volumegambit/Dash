@@ -1,3 +1,4 @@
+import type { ModelsFetchSpec } from '@dash/plugin-sdk';
 import { validateProviderCatalog } from './provider-catalog.js';
 
 function minimalRaw(): Record<string, unknown> {
@@ -212,8 +213,9 @@ describe('validateProviderCatalog — phase-1 fields', () => {
         idPath: 'id',
       },
     });
-    expect(cat.modelsFetch?.url).toBe('https://api.acme.dev/v1/models');
-    expect(cat.modelsFetch?.auth).toEqual([{ header: 'x-api-key' }]);
+    const spec = cat.modelsFetch as ModelsFetchSpec;
+    expect(spec.url).toBe('https://api.acme.dev/v1/models');
+    expect(spec.auth).toEqual([{ header: 'x-api-key' }]);
   });
 
   it('throws on a modelsFetch spec missing listPath', () => {
@@ -265,5 +267,137 @@ describe('validateProviderCatalog — phase-1 fields', () => {
       validateProviderCatalog({ ...base, ui: { keyConsoleUrl: 'https://acme.dev/keys' } }).ui,
     ).toEqual({ keyConsoleUrl: 'https://acme.dev/keys' });
     expect(validateProviderCatalog({ ...base, ui: 'nope' }).ui).toBeUndefined();
+  });
+});
+
+describe('validateProviderCatalog — phase-2 modelsFetch variants + entryFilters', () => {
+  const base = {
+    id: 'acme',
+    label: 'Acme',
+    credentialPrefix: 'acme-api-key',
+    baseUrl: 'https://api.acme.dev',
+    api: 'openai-completions',
+    models: [{ id: 'acme-1', contextWindow: 128000, maxTokens: 8192 }],
+  };
+
+  it('accepts an array modelsFetch and returns the variants in order, keeping whenKeyPrefix', () => {
+    const cat = validateProviderCatalog({
+      ...base,
+      modelsFetch: [
+        {
+          whenKeyPrefix: 'eyJ',
+          url: 'https://chatgpt.com/backend-api/codex/models?client_version=2.0.0',
+          auth: [{ header: 'authorization', valuePrefix: 'Bearer ' }],
+          listPath: 'models',
+          idPath: 'slug',
+          namePath: 'display_name',
+        },
+        {
+          url: 'https://api.acme.dev/v1/models',
+          auth: [{ header: 'authorization', valuePrefix: 'Bearer ' }],
+          listPath: 'data',
+          idPath: 'id',
+        },
+      ],
+    });
+    const variants = cat.modelsFetch as ModelsFetchSpec[];
+    expect(Array.isArray(variants)).toBe(true);
+    expect(variants[0]?.whenKeyPrefix).toBe('eyJ');
+    expect(variants[0]?.idPath).toBe('slug');
+    expect(variants[1]?.whenKeyPrefix).toBeUndefined();
+    expect(variants[1]?.listPath).toBe('data');
+  });
+
+  it('still accepts a single-object modelsFetch (back-compat)', () => {
+    const cat = validateProviderCatalog({
+      ...base,
+      modelsFetch: {
+        url: 'https://api.acme.dev/v1/models',
+        auth: [{ header: 'x-api-key' }],
+        listPath: 'data',
+        idPath: 'id',
+      },
+    });
+    expect(Array.isArray(cat.modelsFetch)).toBe(false);
+    expect((cat.modelsFetch as ModelsFetchSpec).url).toBe('https://api.acme.dev/v1/models');
+  });
+
+  it('accepts and returns well-formed entryFilters', () => {
+    const cat = validateProviderCatalog({
+      ...base,
+      modelsFetch: {
+        url: 'https://openrouter.ai/api/v1/models',
+        auth: [{ header: 'authorization', valuePrefix: 'Bearer ' }],
+        listPath: 'data',
+        idPath: 'id',
+        namePath: 'name',
+        entryFilters: {
+          arrayIncludes: [{ path: 'supported_parameters', value: 'tools' }],
+          excludeIdSubstrings: [':'],
+        },
+      },
+    });
+    const spec = cat.modelsFetch as ModelsFetchSpec;
+    expect(spec.entryFilters?.arrayIncludes).toEqual([
+      { path: 'supported_parameters', value: 'tools' },
+    ]);
+    expect(spec.entryFilters?.excludeIdSubstrings).toEqual([':']);
+  });
+
+  it('throws on an entryFilters.arrayIncludes entry missing path', () => {
+    expect(() =>
+      validateProviderCatalog({
+        ...base,
+        modelsFetch: {
+          url: 'https://openrouter.ai/api/v1/models',
+          auth: [{ header: 'authorization' }],
+          listPath: 'data',
+          idPath: 'id',
+          entryFilters: { arrayIncludes: [{ value: 'tools' }] },
+        },
+      }),
+    ).toThrow(/arrayIncludes/);
+  });
+
+  it('throws on an entryFilters.arrayIncludes entry missing value', () => {
+    expect(() =>
+      validateProviderCatalog({
+        ...base,
+        modelsFetch: {
+          url: 'https://openrouter.ai/api/v1/models',
+          auth: [{ header: 'authorization' }],
+          listPath: 'data',
+          idPath: 'id',
+          entryFilters: { arrayIncludes: [{ path: 'supported_parameters' }] },
+        },
+      }),
+    ).toThrow(/arrayIncludes/);
+  });
+
+  it('throws when excludeIdSubstrings has a non-string or empty entry', () => {
+    expect(() =>
+      validateProviderCatalog({
+        ...base,
+        modelsFetch: {
+          url: 'https://openrouter.ai/api/v1/models',
+          auth: [{ header: 'authorization' }],
+          listPath: 'data',
+          idPath: 'id',
+          entryFilters: { excludeIdSubstrings: [42] },
+        },
+      }),
+    ).toThrow(/excludeIdSubstrings/);
+    expect(() =>
+      validateProviderCatalog({
+        ...base,
+        modelsFetch: {
+          url: 'https://openrouter.ai/api/v1/models',
+          auth: [{ header: 'authorization' }],
+          listPath: 'data',
+          idPath: 'id',
+          entryFilters: { excludeIdSubstrings: [''] },
+        },
+      }),
+    ).toThrow(/excludeIdSubstrings/);
   });
 });

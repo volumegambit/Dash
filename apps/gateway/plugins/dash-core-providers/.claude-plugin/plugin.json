@@ -1,0 +1,5 @@
+{
+  "name": "dash-core-providers",
+  "version": "0.2.0",
+  "description": "Dash's built-in LLM provider catalogs (Anthropic, OpenAI, Google, Moonshot, OpenRouter)"
+}

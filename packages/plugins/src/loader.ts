@@ -20,6 +20,13 @@ import type {
   ProviderConfigEntry,
 } from './types.js';
 
+/**
+ * The bundled core-providers plugin. Loaded FIRST (before all other plugins,
+ * which load alphabetically) so it deterministically claims its reserved
+ * provider ids regardless of filesystem readdir order.
+ */
+export const RESERVED_FIRST_PLUGIN = 'dash-core-providers';
+
 export interface LoadPluginsOptions {
   /** Directory holding installed plugins (one subdir per plugin), e.g. <dataDir>/plugins. */
   pluginsDir: string;
@@ -62,7 +69,15 @@ export async function loadPlugins(opts: LoadPluginsOptions): Promise<LoadedPlugi
   // not abort gateway boot. Rely on the single readdirSync syscall (no
   // existsSync pre-check) to avoid a TOCTOU race.
   try {
-    for (const d of readdirSync(opts.pluginsDir, { withFileTypes: true })) {
+    // Deterministic load order: the bundled core-providers plugin first (it
+    // owns reserved provider ids — see the gateway's reserved-id rule), then
+    // alphabetical. readdir order is filesystem-dependent; never rely on it.
+    const dirents = readdirSync(opts.pluginsDir, { withFileTypes: true }).sort((a, b) => {
+      if (a.name === RESERVED_FIRST_PLUGIN) return -1;
+      if (b.name === RESERVED_FIRST_PLUGIN) return 1;
+      return a.name.localeCompare(b.name);
+    });
+    for (const d of dirents) {
       if (!d.isDirectory() || targets.has(d.name)) continue;
       targets.set(d.name, {
         dir: join(opts.pluginsDir, d.name),

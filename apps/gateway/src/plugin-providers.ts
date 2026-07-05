@@ -30,27 +30,30 @@ export function buildModel(catalog: ProviderCatalog, model: CatalogModel): Model
 }
 
 /**
- * Defense-in-depth: drop plugin provider catalogs whose `catalog.id` collides
- * with a built-in (core) provider id. A plugin id is only validated kebab-case,
- * so nothing stops a trusted plugin declaring `id: 'anthropic'` — which would
- * let it shadow the core provider's namespace (injecting a `placeholderKey`
- * under the core id, or intercepting unknown `anthropic/<model>` ids via the
- * plugin catalog's `baseUrl`). A plugin must never occupy a built-in provider's
- * namespace, even when trusted. Returns the non-colliding catalogs as `safe`
- * and the colliding ones as `dropped`. Comparison is case-insensitive. Pure.
+ * Defense-in-depth: the reserved (core) provider ids belong exclusively to the
+ * bundled owner plugin (`dash-core-providers`). A plugin id is only validated
+ * kebab-case, so nothing stops a trusted third-party plugin declaring
+ * `id: 'anthropic'` — which would let it shadow the reserved namespace
+ * (injecting a `placeholderKey` under the core id, or intercepting unknown
+ * `anthropic/<model>` ids via the plugin catalog's `baseUrl`). A reserved id
+ * is kept only when `entry.pluginName === ownerPluginName`; from any other
+ * plugin it is dropped, even when trusted. Non-reserved ids always pass.
+ * Returns non-colliding catalogs as `safe` and colliding ones as `dropped`.
+ * Comparison is case-insensitive. Pure.
  */
 export function excludeCoreProviderCollisions(
   providerConfigs: ProviderConfigEntry[],
-  coreProviderIds: Iterable<string>,
+  reservedIds: Iterable<string>,
+  ownerPluginName: string,
 ): { safe: ProviderConfigEntry[]; dropped: ProviderConfigEntry[] } {
-  const core = new Set<string>();
-  for (const id of coreProviderIds) {
-    core.add(id.toLowerCase());
+  const reserved = new Set<string>();
+  for (const id of reservedIds) {
+    reserved.add(id.toLowerCase());
   }
   const safe: ProviderConfigEntry[] = [];
   const dropped: ProviderConfigEntry[] = [];
   for (const entry of providerConfigs) {
-    if (core.has(entry.catalog.id.toLowerCase())) {
+    if (reserved.has(entry.catalog.id.toLowerCase()) && entry.pluginName !== ownerPluginName) {
       dropped.push(entry);
     } else {
       safe.push(entry);

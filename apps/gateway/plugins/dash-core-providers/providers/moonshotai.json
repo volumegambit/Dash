@@ -1,0 +1,101 @@
+{
+  "id": "moonshotai",
+  "label": "Moonshot (Kimi)",
+  "credentialPrefix": "moonshotai-api-key",
+  "baseUrl": "https://api.moonshot.ai/v1",
+  "api": "openai-completions",
+  "models": [
+    {
+      "id": "kimi-k2.6",
+      "name": "Kimi K2.6",
+      "contextWindow": 262144,
+      "maxTokens": 262144,
+      "reasoning": true,
+      "input": [
+        "text",
+        "image"
+      ],
+      "cost": {
+        "input": 0.95,
+        "output": 4,
+        "cacheRead": 0.16,
+        "cacheWrite": 0
+      }
+    },
+    {
+      "id": "kimi-k2.7-code",
+      "name": "Kimi K2.7 Code",
+      "contextWindow": 262144,
+      "maxTokens": 262144,
+      "reasoning": true,
+      "input": [
+        "text",
+        "image"
+      ],
+      "cost": {
+        "input": 0.95,
+        "output": 4,
+        "cacheRead": 0.19,
+        "cacheWrite": 0
+      }
+    },
+    {
+      "id": "kimi-k2.5",
+      "name": "Kimi K2.5",
+      "contextWindow": 262144,
+      "maxTokens": 262144,
+      "reasoning": true,
+      "input": [
+        "text",
+        "image"
+      ],
+      "cost": {
+        "input": 0.6,
+        "output": 3,
+        "cacheRead": 0.1,
+        "cacheWrite": 0
+      }
+    }
+  ],
+  "modelsFetch": {
+    "url": "https://api.moonshot.ai/v1/models",
+    "auth": [
+      {
+        "header": "authorization",
+        "valuePrefix": "Bearer "
+      }
+    ],
+    "listPath": "data",
+    "idPath": "id"
+  },
+  "supportedPatterns": [
+    {
+      "pattern": "kimi-k2-thinking*",
+      "tier": 0
+    },
+    {
+      "pattern": "kimi-k2.7*",
+      "tier": 1
+    },
+    {
+      "pattern": "kimi-k2.6",
+      "tier": 2
+    },
+    {
+      "pattern": "kimi-k2.5",
+      "tier": 3
+    },
+    {
+      "pattern": "kimi-k2.*",
+      "tier": 3
+    },
+    {
+      "pattern": "kimi-k2*",
+      "tier": 4
+    }
+  ],
+  "reviewedAt": "2026-06-21",
+  "ui": {
+    "keyConsoleUrl": "https://platform.moonshot.ai/console/api-keys"
+  }
+}

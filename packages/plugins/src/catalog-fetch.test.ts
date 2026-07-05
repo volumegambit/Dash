@@ -163,3 +163,144 @@ describe('fetchCatalogModels', () => {
     expect(models).toEqual([{ id: 'good', label: 'good' }]);
   });
 });
+
+const OPENAI_VARIANTS = [
+  {
+    whenKeyPrefix: 'eyJ',
+    url: 'https://chatgpt.com/backend-api/codex/models?client_version=2.0.0',
+    auth: [{ header: 'authorization', valuePrefix: 'Bearer ' }],
+    listPath: 'models',
+    idPath: 'slug',
+    namePath: 'display_name',
+  },
+  {
+    url: 'https://api.openai.com/v1/models',
+    auth: [{ header: 'authorization', valuePrefix: 'Bearer ' }],
+    listPath: 'data',
+    idPath: 'id',
+  },
+];
+
+describe('fetchCatalogModels — modelsFetch variants (whenKeyPrefix)', () => {
+  it('picks the JWT (Codex) variant for an eyJ-prefixed key', async () => {
+    const { impl, calls } = stubFetch({
+      models: [{ slug: 'gpt-5-codex', display_name: 'GPT-5 Codex' }],
+    });
+    const models = await fetchCatalogModels(
+      { id: 'openai', modelsFetch: OPENAI_VARIANTS },
+      'eyJhbGc.payload.sig',
+      impl,
+    );
+    expect(models).toEqual([{ id: 'gpt-5-codex', label: 'GPT-5 Codex' }]);
+    expect(calls[0]?.url).toContain('chatgpt.com/backend-api/codex/models');
+    expect(calls[0]?.url).toContain('client_version=2.0.0');
+    expect(calls[0]?.headers.authorization).toBe('Bearer eyJhbGc.payload.sig');
+  });
+
+  it('picks the default variant for a non-JWT (sk-) key', async () => {
+    const { impl, calls } = stubFetch({ data: [{ id: 'o3-pro' }] });
+    const models = await fetchCatalogModels(
+      { id: 'openai', modelsFetch: OPENAI_VARIANTS },
+      'sk-abc',
+      impl,
+    );
+    expect(models).toEqual([{ id: 'o3-pro', label: 'o3-pro' }]);
+    expect(calls[0]?.url).toContain('api.openai.com/v1/models');
+    expect(calls[0]?.headers.authorization).toBe('Bearer sk-abc');
+  });
+
+  it('keeps a variant URL query param and adds the auth query param', async () => {
+    const { impl, calls } = stubFetch({ models: [{ name: 'models/gemini-3', displayName: 'G3' }] });
+    const models = await fetchCatalogModels(
+      {
+        id: 'google',
+        modelsFetch: [
+          {
+            url: 'https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000',
+            auth: [{ queryParam: 'key' }],
+            listPath: 'models',
+            idPath: 'name',
+            namePath: 'displayName',
+            stripIdPrefix: 'models/',
+          },
+        ],
+      },
+      'AIza-key',
+      impl,
+    );
+    expect(models).toEqual([{ id: 'gemini-3', label: 'G3' }]);
+    expect(calls[0]?.url).toContain('pageSize=1000');
+    expect(calls[0]?.url).toContain('key=AIza-key');
+  });
+
+  it('throws when no variant matches the stored key shape', async () => {
+    const { impl } = stubFetch({ data: [] });
+    await expect(
+      fetchCatalogModels(
+        {
+          id: 'openai',
+          modelsFetch: [
+            {
+              whenKeyPrefix: 'eyJ',
+              url: 'https://chatgpt.com/backend-api/codex/models',
+              auth: [{ header: 'authorization', valuePrefix: 'Bearer ' }],
+              listPath: 'models',
+              idPath: 'slug',
+            },
+          ],
+        },
+        'sk-not-a-jwt',
+        impl,
+      ),
+    ).rejects.toMatchObject({
+      name: 'CatalogFetchError',
+      provider: 'openai',
+      status: undefined,
+    });
+  });
+});
+
+const OPENROUTER_SPEC = {
+  url: 'https://openrouter.ai/api/v1/models',
+  auth: [{ header: 'authorization', valuePrefix: 'Bearer ' }],
+  listPath: 'data',
+  idPath: 'id',
+  namePath: 'name',
+  entryFilters: {
+    arrayIncludes: [{ path: 'supported_parameters', value: 'tools' }],
+    excludeIdSubstrings: [':'],
+  },
+};
+
+describe('fetchCatalogModels — entryFilters', () => {
+  it('keeps only entries passing arrayIncludes and not matching excludeIdSubstrings', async () => {
+    const { impl } = stubFetch({
+      data: [
+        { id: 'qualifies/model', name: 'Good', supported_parameters: ['tools', 'temperature'] },
+        { id: 'no-tools/model', name: 'NoTools', supported_parameters: ['temperature'] },
+        { id: 'variant/model:free', name: 'Free', supported_parameters: ['tools'] },
+      ],
+    });
+    const models = await fetchCatalogModels(
+      { id: 'openrouter', modelsFetch: OPENROUTER_SPEC },
+      'sk-or-key',
+      impl,
+    );
+    expect(models).toEqual([{ id: 'qualifies/model', label: 'Good' }]);
+  });
+
+  it('drops an entry whose arrayIncludes path is not an array', async () => {
+    const { impl } = stubFetch({
+      data: [
+        { id: 'a/b', name: 'A', supported_parameters: 'tools' },
+        { id: 'c/d', name: 'C', supported_parameters: ['tools'] },
+      ],
+    });
+    const models = await fetchCatalogModels(
+      { id: 'openrouter', modelsFetch: OPENROUTER_SPEC },
+      'sk-or-key',
+      impl,
+    );
+    expect(models).toEqual([{ id: 'c/d', label: 'C' }]);
+  });
+});
