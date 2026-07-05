@@ -38,6 +38,7 @@ import type {
   ControlPlaneStatus,
   DeviceInfo,
   PairingInfo,
+  PetKind,
   SetupStatus,
 } from '../shared/ipc.js';
 import { ChatService } from './chat-service.js';
@@ -46,6 +47,7 @@ import { startCodexOAuth } from './codex-auth.js';
 import {
   createCompanionWindow,
   destroyCompanionWindow,
+  forwardPet,
   forwardStatuses,
 } from './companion-window.js';
 import { createControlPlaneRuntime, readControlPlaneConfig } from './control-plane.js';
@@ -976,6 +978,12 @@ export async function registerIpcHandlers(
   // widget window (a no-op when the widget is closed).
   ipcMain.on('companion:statuses', (_event, statuses: CompanionStatus[]) => {
     forwardStatuses(statuses);
+  });
+
+  // Renderer publishes the selected pet; forward it into the widget window
+  // (a no-op when the widget is closed).
+  ipcMain.on('companion:pet', (_event, pet: PetKind) => {
+    forwardPet(pet);
   });
 
   // Renderer toggles widget visibility (drives creation/teardown).

@@ -1,7 +1,7 @@
 import { join } from 'node:path';
 import type { SettingsStore } from '@dash/mc';
 import { BrowserWindow, app, screen } from 'electron';
-import type { CompanionStatus } from '../shared/ipc.js';
+import type { CompanionStatus, PetKind } from '../shared/ipc.js';
 import { clampToVisible } from './companion-window-clamp.js';
 
 /** Widget window size: the tree sprite at 128px plus a little padding. */
@@ -113,5 +113,12 @@ export function getCompanionWindow(): BrowserWindow | undefined {
 export function forwardStatuses(statuses: CompanionStatus[]): void {
   if (companionWindow && !companionWindow.isDestroyed()) {
     companionWindow.webContents.send('companion:statuses', statuses);
+  }
+}
+
+/** Push the selected pet into the widget window, if open. */
+export function forwardPet(pet: PetKind): void {
+  if (companionWindow && !companionWindow.isDestroyed()) {
+    companionWindow.webContents.send('companion:pet', pet);
   }
 }

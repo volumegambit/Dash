@@ -4,6 +4,7 @@ import type {
   McAgentEvent,
   McpStatusChange,
   MissionControlAPI,
+  PetKind,
 } from '../shared/ipc.js';
 import type { ProjectsEvent } from '../shared/projects-ipc.js';
 
@@ -216,6 +217,12 @@ const api: MissionControlAPI = {
     const handler = () => callback();
     ipcRenderer.on('companion:replay', handler);
     return () => ipcRenderer.removeListener('companion:replay', handler);
+  },
+  companionPublishPet: (pet: PetKind) => ipcRenderer.send('companion:pet', pet),
+  onCompanionPet: (callback: (pet: PetKind) => void): (() => void) => {
+    const handler = (_: Electron.IpcRendererEvent, pet: PetKind) => callback(pet);
+    ipcRenderer.on('companion:pet', handler);
+    return () => ipcRenderer.removeListener('companion:pet', handler);
   },
 
   // Projects
