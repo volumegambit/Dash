@@ -1,8 +1,8 @@
 import '@testing-library/jest-dom/vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { mockApi } from '../../../../vitest.setup.js';
-import { AiProviders } from './connections.js';
+import { mockApi } from '../../../../../vitest.setup.js';
+import { AiProviders } from './ai-providers.js';
 
 describe('AiProviders page', () => {
   beforeEach(() => {

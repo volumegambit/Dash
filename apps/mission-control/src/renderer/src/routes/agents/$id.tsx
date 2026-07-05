@@ -395,7 +395,10 @@ function ChannelsTab({ connectedChannels }: { connectedChannels: GatewayChannel[
         <p className="text-sm text-muted">No channels connected.</p>
         <p className="text-xs text-muted">
           Connect messaging apps from the{' '}
-          <Link to="/messaging-apps" className="text-accent hover:text-primary-hover underline">
+          <Link
+            to="/settings/messaging-apps"
+            className="text-accent hover:text-primary-hover underline"
+          >
             Messaging Apps
           </Link>{' '}
           page.
@@ -419,7 +422,7 @@ function ChannelsTab({ connectedChannels }: { connectedChannels: GatewayChannel[
           </div>
           <div className="flex items-center gap-3">
             <Link
-              to="/messaging-apps"
+              to="/settings/messaging-apps"
               className="text-xs border border-border text-muted hover:text-foreground px-3 py-1.5 rounded transition-colors"
             >
               Edit

@@ -1,9 +1,9 @@
 import { createFileRoute } from '@tanstack/react-router';
 import { Cable, ChevronDown, ChevronUp, Loader, Plus, RefreshCw, Trash2, X } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
-import type { McpAddConnectorConfig, McpConnectorInfo } from '../../../shared/ipc.js';
-import { HealthDot } from '../components/HealthDot.js';
-import { useConnectorsStore } from '../stores/connectors.js';
+import type { McpAddConnectorConfig, McpConnectorInfo } from '../../../../shared/ipc.js';
+import { HealthDot } from '../../components/HealthDot.js';
+import { useConnectorsStore } from '../../stores/connectors.js';
 
 // --- Helpers ---
 
@@ -573,12 +573,12 @@ function ConnectorsPage(): JSX.Element {
       {/* Page header */}
       <div className="bg-surface px-8 py-4 border-b border-border flex justify-between items-center shrink-0">
         <div>
-          <span className="font-[family-name:var(--font-mono)] text-[11px] font-semibold uppercase tracking-[3px] text-accent">
-            Manage Connectors
-          </span>
           <h1 className="font-[family-name:var(--font-display)] text-[22px] font-semibold text-foreground">
-            Connectors
+            Connectors (MCP)
           </h1>
+          <p className="mt-1 text-sm text-muted">
+            Connect MCP servers to give your agents extra tools.
+          </p>
         </div>
         <button
           type="button"
@@ -642,6 +642,6 @@ function ConnectorsPage(): JSX.Element {
   );
 }
 
-export const Route = createFileRoute('/connectors')({
+export const Route = createFileRoute('/settings/connectors')({
   component: ConnectorsPage,
 });

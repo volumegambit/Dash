@@ -1852,7 +1852,7 @@ export function Chat(): JSX.Element {
                   navigateToLogs={navigateToLogs}
                   onAnswerQuestion={handleAnswerQuestion}
                   answeredQuestions={answeredQuestions}
-                  onNavigateToConnections={() => navigate({ to: '/connections' })}
+                  onNavigateToConnections={() => navigate({ to: '/settings/ai-providers' })}
                 />
               ))}
               {isStreaming && !liveEvents.some((e) => VISIBLE_EVENT_TYPES.has(e.type)) && (
@@ -1864,7 +1864,7 @@ export function Chat(): JSX.Element {
                   navigateToLogs={navigateToLogs}
                   onAnswerQuestion={handleAnswerQuestion}
                   answeredQuestions={answeredQuestions}
-                  onNavigateToConnections={() => navigate({ to: '/connections' })}
+                  onNavigateToConnections={() => navigate({ to: '/settings/ai-providers' })}
                 />
               )}
             </>

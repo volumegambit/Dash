@@ -2,8 +2,8 @@ import '@testing-library/jest-dom/vitest';
 import type { InstalledPlugin, PluginRecord } from '@dash/management';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { mockApi } from '../../../../vitest.setup.js';
-import { usePluginsStore } from '../stores/plugins.js';
+import { mockApi } from '../../../../../vitest.setup.js';
+import { usePluginsStore } from '../../stores/plugins.js';
 import { PluginsScreen } from './plugins.js';
 
 function makeRecord(overrides: Partial<PluginRecord> = {}): PluginRecord {

@@ -10,20 +10,29 @@ vi.mock('@tanstack/react-router', () => ({
 }));
 
 describe('Settings layout', () => {
-  it('renders the General, Agent Defaults, and Devices tabs', () => {
+  it('renders every settings section in the sub-nav with its route', () => {
     render(<SettingsLayout />);
-    expect(screen.getByRole('link', { name: 'General' })).toHaveAttribute('href', '/settings');
-    expect(screen.getByRole('link', { name: 'Agent Defaults' })).toHaveAttribute(
-      'href',
-      '/settings/agent-defaults',
-    );
-    expect(screen.getByRole('link', { name: 'Devices' })).toHaveAttribute(
-      'href',
-      '/settings/devices',
-    );
+    const expected: Array<[string, string]> = [
+      ['General', '/settings'],
+      ['Agent Defaults', '/settings/agent-defaults'],
+      ['AI Providers', '/settings/ai-providers'],
+      ['Connectors (MCP)', '/settings/connectors'],
+      ['Plugins', '/settings/plugins'],
+      ['Messaging Apps', '/settings/messaging-apps'],
+      ['Devices', '/settings/devices'],
+    ];
+    for (const [label, href] of expected) {
+      expect(screen.getByRole('link', { name: label })).toHaveAttribute('href', href);
+    }
   });
 
-  it('renders the active tab content in an outlet under the page header', () => {
+  it('groups provider/tool and access sections under labeled headers', () => {
+    render(<SettingsLayout />);
+    expect(screen.getByText('PROVIDERS & TOOLS')).toBeInTheDocument();
+    expect(screen.getByText('ACCESS')).toBeInTheDocument();
+  });
+
+  it('renders the active section in an outlet next to the sub-nav', () => {
     render(<SettingsLayout />);
     expect(screen.getByText('Settings')).toBeInTheDocument();
     expect(screen.getByTestId('outlet')).toBeInTheDocument();

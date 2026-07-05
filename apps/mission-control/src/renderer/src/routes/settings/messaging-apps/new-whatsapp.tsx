@@ -1,7 +1,7 @@
 import { createFileRoute, useNavigate } from '@tanstack/react-router';
 import { ArrowLeft, ArrowRight, Check, CheckCircle, Loader } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
-import { useAgentsStore } from '../../stores/agents.js';
+import { useAgentsStore } from '../../../stores/agents.js';
 
 type StepId = 'intro' | 'scan-qr' | 'name-connection' | 'choose-assistant' | 'done';
 
@@ -112,7 +112,7 @@ function NewWhatsAppWizard(): JSX.Element {
               <WizardStep
                 title="Connect WhatsApp"
                 onNext={goNext}
-                onBack={() => navigate({ to: '/messaging-apps' })}
+                onBack={() => navigate({ to: '/settings/messaging-apps' })}
                 backLabel="Cancel"
               >
                 <p className="text-base leading-relaxed">
@@ -268,7 +268,7 @@ function NewWhatsAppWizard(): JSX.Element {
                 </p>
                 <button
                   type="button"
-                  onClick={() => navigate({ to: '/messaging-apps' })}
+                  onClick={() => navigate({ to: '/settings/messaging-apps' })}
                   className="mt-6 rounded-lg bg-accent px-6 py-2 text-sm text-white hover:opacity-90"
                 >
                   Done
@@ -325,6 +325,6 @@ function WizardStep({
   );
 }
 
-export const Route = createFileRoute('/messaging-apps/new-whatsapp')({
+export const Route = createFileRoute('/settings/messaging-apps/new-whatsapp')({
   component: NewWhatsAppWizard,
 });
