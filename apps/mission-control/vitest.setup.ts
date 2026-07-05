@@ -215,6 +215,7 @@ function createMockApi(): MockApi {
     projectsCreateIssue: vi.fn().mockResolvedValue(null),
     projectsGetIssue: vi.fn().mockResolvedValue(null),
     projectsPatchIssue: vi.fn().mockResolvedValue(null),
+    projectsDeleteIssue: vi.fn().mockResolvedValue(undefined),
     projectsAddComment: vi.fn().mockResolvedValue(null),
     projectsEditComment: vi.fn().mockResolvedValue(null),
     projectsDeleteComment: vi.fn().mockResolvedValue(undefined),

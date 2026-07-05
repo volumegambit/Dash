@@ -341,6 +341,7 @@ export interface MissionControlAPI {
   projectsCreateIssue(input: CreateIssueInput): Promise<Issue>;
   projectsGetIssue(id: string): Promise<IssueDetail>;
   projectsPatchIssue(id: string, patch: Partial<Issue>): Promise<Issue>;
+  projectsDeleteIssue(id: string): Promise<void>;
   projectsAddComment(issueId: string, body: string): Promise<IssueComment>;
   projectsEditComment(issueId: string, commentId: string, body: string): Promise<IssueComment>;
   projectsDeleteComment(issueId: string, commentId: string): Promise<void>;

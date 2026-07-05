@@ -135,6 +135,101 @@ describe('useProjectsStore.applyEvent', () => {
     ).not.toThrow();
     expect(mockApi.projectsGetIssue).not.toHaveBeenCalled();
   });
+
+  it('removes the issue, its cached children, its detail, and its inbox row on issue.deleted', () => {
+    const parent = issue('1');
+    const child = issue('2', { parent_issue_id: '1' });
+    const other = issue('3');
+    useProjectsStore.setState({
+      issuesById: { '1': parent, '2': child, '3': other },
+      detailById: {
+        '1': { ...parent, comments: [], events: [], linked_sessions: [], subtasks: [child] },
+      },
+      inbox: [
+        { issue: parent, project: null, reason: 'new_activity', trigger_at: 'now' },
+        { issue: other, project: null, reason: 'new_activity', trigger_at: 'now' },
+      ],
+    });
+
+    useProjectsStore.getState().applyEvent({
+      topic: 'issue.deleted',
+      payload: parent as unknown as Record<string, unknown>,
+    });
+
+    const s = useProjectsStore.getState();
+    expect(s.issuesById['1']).toBeUndefined();
+    expect(s.issuesById['2']).toBeUndefined();
+    expect(s.issuesById['3']).toBeDefined();
+    expect(s.detailById['1']).toBeUndefined();
+    expect(s.inbox.map((it) => it.issue.id)).toEqual(['3']);
+  });
+
+  it('refetches the parent detail when a deleted subtask has a cached parent', () => {
+    const parent = issue('1');
+    const child = issue('2', { parent_issue_id: '1' });
+    const parentDetail = {
+      ...parent,
+      comments: [],
+      events: [],
+      linked_sessions: [],
+      subtasks: [child],
+    };
+    useProjectsStore.setState({
+      issuesById: { '1': parent, '2': child },
+      detailById: { '1': parentDetail as IssueDetail },
+    });
+    mockApi.projectsGetIssue.mockResolvedValue({ ...parentDetail, subtasks: [] });
+
+    useProjectsStore.getState().applyEvent({
+      topic: 'issue.deleted',
+      payload: child as unknown as Record<string, unknown>,
+    });
+
+    expect(useProjectsStore.getState().issuesById['2']).toBeUndefined();
+    expect(mockApi.projectsGetIssue).toHaveBeenCalledWith('1');
+  });
+
+  it('ignores an issue.deleted frame without an id', () => {
+    expect(() =>
+      useProjectsStore.getState().applyEvent({ topic: 'issue.deleted', payload: {} }),
+    ).not.toThrow();
+  });
+});
+
+describe('useProjectsStore.deleteIssue', () => {
+  it('calls the API and removes the issue and its children from the store', async () => {
+    const parent = issue('1');
+    const child = issue('2', { parent_issue_id: '1' });
+    const other = issue('3');
+    useProjectsStore.setState({
+      issuesById: { '1': parent, '2': child, '3': other },
+      detailById: {
+        '1': { ...parent, comments: [], events: [], linked_sessions: [], subtasks: [child] },
+      },
+      inbox: [{ issue: child, project: null, reason: 'new_activity', trigger_at: 'now' }],
+    });
+
+    await useProjectsStore.getState().deleteIssue('1');
+
+    expect(mockApi.projectsDeleteIssue).toHaveBeenCalledWith('1');
+    const s = useProjectsStore.getState();
+    expect(s.issuesById['1']).toBeUndefined();
+    expect(s.issuesById['2']).toBeUndefined();
+    expect(s.issuesById['3']).toBeDefined();
+    expect(s.detailById['1']).toBeUndefined();
+    expect(s.inbox).toEqual([]);
+  });
+
+  it('keeps the issue and surfaces the error when the API rejects', async () => {
+    const doomed = issue('1');
+    useProjectsStore.setState({ issuesById: { '1': doomed } });
+    mockApi.projectsDeleteIssue.mockRejectedValue(new Error('gateway down'));
+
+    await expect(useProjectsStore.getState().deleteIssue('1')).rejects.toThrow('gateway down');
+
+    expect(useProjectsStore.getState().issuesById['1']).toBeDefined();
+    expect(useProjectsStore.getState().error).toBe('gateway down');
+  });
 });
 
 describe('useProjectsStore.subscribe', () => {

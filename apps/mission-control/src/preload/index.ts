@@ -207,6 +207,7 @@ const api: MissionControlAPI = {
   projectsCreateIssue: (input) => ipcRenderer.invoke('projects:createIssue', input),
   projectsGetIssue: (id) => ipcRenderer.invoke('projects:getIssue', id),
   projectsPatchIssue: (id, patch) => ipcRenderer.invoke('projects:patchIssue', id, patch),
+  projectsDeleteIssue: (id) => ipcRenderer.invoke('projects:deleteIssue', id),
   projectsAddComment: (issueId, body) => ipcRenderer.invoke('projects:addComment', issueId, body),
   projectsEditComment: (issueId, commentId, body) =>
     ipcRenderer.invoke('projects:editComment', issueId, commentId, body),

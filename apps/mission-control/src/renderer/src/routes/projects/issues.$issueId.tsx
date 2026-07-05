@@ -1,5 +1,5 @@
 import { createFileRoute, useNavigate } from '@tanstack/react-router';
-import { ArrowLeft, ChevronDown, ChevronRight } from 'lucide-react';
+import { ArrowLeft, ChevronDown, ChevronRight, Trash2 } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import type { IssueComment, IssueEvent, IssueStatus } from '../../../../shared/projects-ipc.js';
 import { Markdown } from '../../components/Markdown.js';
@@ -118,7 +118,7 @@ function Field({ label, value }: { label: string; value: string }): JSX.Element 
   );
 }
 
-function TaskDetail(): JSX.Element {
+export function TaskDetail(): JSX.Element {
   const { issueId } = Route.useParams();
   const navigate = useNavigate();
   const detail = useProjectsStore((s) => s.detailById[issueId]);
@@ -129,10 +129,13 @@ function TaskDetail(): JSX.Element {
   const addComment = useProjectsStore((s) => s.addComment);
   const deleteComment = useProjectsStore((s) => s.deleteComment);
   const createIssue = useProjectsStore((s) => s.createIssue);
+  const deleteIssue = useProjectsStore((s) => s.deleteIssue);
 
   const [draft, setDraft] = useState('');
   const [subtaskTitle, setSubtaskTitle] = useState('');
   const [savingSubtask, setSavingSubtask] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   useEffect(() => {
     loadProjects();
@@ -151,6 +154,26 @@ function TaskDetail(): JSX.Element {
     if (!body) return;
     setDraft('');
     await addComment(issueId, body);
+  };
+
+  const confirmDeleteTask = async () => {
+    if (deleting) return;
+    setDeleting(true);
+    // Capture before the delete drops `detail` from the store.
+    const parentId = detail.parent_issue_id;
+    try {
+      await deleteIssue(issueId);
+    } catch {
+      // Store keeps the error; leave the page in place.
+      setDeleting(false);
+      setConfirmDelete(false);
+      return;
+    }
+    if (parentId) {
+      navigate({ to: '/projects/issues/$issueId', params: { issueId: parentId } });
+    } else {
+      navigate({ to: '/projects/all' });
+    }
   };
 
   const submitSubtask = async () => {
@@ -201,6 +224,38 @@ function TaskDetail(): JSX.Element {
             </option>
           ))}
         </select>
+        {confirmDelete ? (
+          <div className="flex items-center gap-1 text-xs">
+            <span className="text-red">Delete?</span>
+            <button
+              type="button"
+              onClick={confirmDeleteTask}
+              disabled={deleting}
+              className="px-1.5 py-0.5 text-red hover:bg-red-900/30 disabled:opacity-50"
+              data-testid="task-confirm-delete"
+            >
+              Yes
+            </button>
+            <button
+              type="button"
+              onClick={() => setConfirmDelete(false)}
+              className="px-1.5 py-0.5 text-muted hover:text-foreground"
+            >
+              No
+            </button>
+          </div>
+        ) : (
+          <button
+            type="button"
+            onClick={() => setConfirmDelete(true)}
+            className="p-1 text-muted transition-colors hover:text-red"
+            title="Delete task"
+            aria-label="Delete task"
+            data-testid="task-delete"
+          >
+            <Trash2 size={14} />
+          </button>
+        )}
       </div>
 
       <div className="flex min-h-0 flex-1">

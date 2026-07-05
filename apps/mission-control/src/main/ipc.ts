@@ -1165,6 +1165,9 @@ export async function registerIpcHandlers(
   ipcMain.handle('projects:patchIssue', async (_e, id: string, patch) =>
     (await getProjectsClient()).patchIssue(id, patch),
   );
+  ipcMain.handle('projects:deleteIssue', async (_e, id: string) =>
+    (await getProjectsClient()).deleteIssue(id),
+  );
   ipcMain.handle('projects:addComment', async (_e, issueId: string, body: string) =>
     (await getProjectsClient()).addComment(issueId, body),
   );

@@ -136,6 +136,7 @@ export interface ProjectsEvent {
   topic:
     | 'issue.created'
     | 'issue.updated'
+    | 'issue.deleted'
     | 'issue.event.appended'
     | 'comment.added'
     | 'comment.edited'

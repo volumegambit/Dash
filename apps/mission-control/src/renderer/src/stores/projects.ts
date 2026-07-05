@@ -45,6 +45,7 @@ interface ProjectsState {
   createProject(input: CreateProjectInput): Promise<Project>;
   createIssue(input: CreateIssueInput): Promise<Issue>;
   patchIssue(id: string, patch: Partial<Issue>): Promise<void>;
+  deleteIssue(id: string): Promise<void>;
   patchProject(id: string, patch: Partial<Project>): Promise<void>;
   addComment(issueId: string, body: string): Promise<void>;
   editComment(issueId: string, commentId: string, body: string): Promise<void>;
@@ -53,6 +54,24 @@ interface ProjectsState {
 
   applyEvent(event: ProjectsEvent): void;
   subscribe(): () => void;
+}
+
+/** State minus a deleted issue. Also drops its known children — the gateway
+ *  broadcasts one issue.deleted per cascaded subtask, but doing it here keeps
+ *  a single frame (or the local delete action) self-sufficient. */
+function withoutIssue(
+  s: Pick<ProjectsState, 'issuesById' | 'detailById' | 'inbox'>,
+  id: string,
+): Pick<ProjectsState, 'issuesById' | 'detailById' | 'inbox'> {
+  const gone = new Set([id]);
+  for (const i of Object.values(s.issuesById)) {
+    if (i.parent_issue_id === id) gone.add(i.id);
+  }
+  return {
+    issuesById: Object.fromEntries(Object.entries(s.issuesById).filter(([k]) => !gone.has(k))),
+    detailById: Object.fromEntries(Object.entries(s.detailById).filter(([k]) => !gone.has(k))),
+    inbox: s.inbox.filter((it) => !gone.has(it.issue.id)),
+  };
 }
 
 export const useProjectsStore = create<ProjectsState>((set, get) => ({
@@ -147,6 +166,18 @@ export const useProjectsStore = create<ProjectsState>((set, get) => ({
     // Detail (if cached) is refreshed by the WS event.appended broadcast.
   },
 
+  async deleteIssue(id) {
+    try {
+      await window.api.projectsDeleteIssue(id);
+    } catch (err) {
+      set({ error: (err as Error).message });
+      throw err;
+    }
+    // Remove immediately so the UI doesn't wait on the WS round-trip; the
+    // issue.deleted broadcasts keep other windows in sync.
+    set((s) => withoutIssue(s, id));
+  },
+
   async patchProject(id, patch) {
     const updated = await window.api.projectsPatchProject(id, patch);
     set((s) => ({ projectsById: { ...s.projectsById, [id]: updated } }));
@@ -190,6 +221,17 @@ export const useProjectsStore = create<ProjectsState>((set, get) => ({
         const issue = payload as unknown as Issue;
         if (!issue?.id) return;
         set((s) => ({ issuesById: { ...s.issuesById, [issue.id]: issue } }));
+        return;
+      }
+      case 'issue.deleted': {
+        const issue = payload as unknown as Issue;
+        if (!issue?.id) return;
+        set((s) => withoutIssue(s, issue.id));
+        // A deleted subtask leaves its parent's cached detail (subtask list)
+        // stale — refetch it, mirroring the comment.* invalidation below.
+        if (issue.parent_issue_id && get().detailById[issue.parent_issue_id]) {
+          void get().loadIssueDetail(issue.parent_issue_id);
+        }
         return;
       }
       case 'project.created':
