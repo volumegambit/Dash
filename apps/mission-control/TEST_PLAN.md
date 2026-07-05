@@ -1219,17 +1219,17 @@ Take screenshots of every page and evaluate against these criteria. This section
 2. **Verify:** The right pane shows an "Assign agent" picker above Linked Sessions; disabled agents are not listed.
 3. Select an agent and click "Assign".
 4. **Verify:** You STAY on the task page; the button shows "Assigning…" then resets.
-5. **Verify:** Status flips to in_progress with sub-status agent_working (shown as a pill in the right pane), and a new chip appears under Linked Sessions showing 🤖 the agent's name + the session id — without a manual refresh.
-6. **Verify:** An AGENT SESSION pane appears in the middle of the task page showing the kickoff message and the agent's streaming reply live; the left pane keeps DESCRIPTION (or an italic "No description") and TIMELINE with relative timestamps; no raw `comment_added` rows and no bare "Linked session <uuid>" rows (session links read "🤖 <agent> session linked").
-7. When the agent asks a question / goes waiting_on_human, type an answer in the pane's "Reply to the agent…" box and press Enter.
-8. **Verify:** Your reply and the agent's next streaming turn render in the pane without leaving the task page.
-8b. Post a comment via the "Add a comment…" composer while the agent is idle. **Verify:** The composer footer reads "Also sent to the agent session"; the comment lands in the timeline AND appears in the session pane as a user message prefixed "New comment on <KEY>:", and the agent responds. While the agent is streaming, the footer reads "Agent is mid-run — comment stays on the task" and the comment is NOT sent to the session. On a task with no linked session, no footer hint shows and nothing is sent.
-9. With two linked sessions on one task, click the older session's chip.
-10. **Verify:** The pane switches to that session's transcript (active chip gets an accent border); clicking the pane's external-link icon opens the SAME session in the full Chat view (title "KEY — task title", no duplicate conversation created).
+5. **Verify:** Status flips to in_progress with sub-status agent_working (shown as a pill in the right pane), and a tab bar appears at the top of the main column: a "Task" tab plus a "🤖 <agent name>" tab per MC session — without a manual refresh.
+6. **Verify:** The view auto-switches to the new session's tab, showing the kickoff message and the agent's streaming reply live at full column width. Clicking "Task" returns to DESCRIPTION (or an italic "No description") and TIMELINE with relative timestamps; no raw `comment_added` rows and no bare "Linked session <uuid>" rows (session links read "🤖 <agent> session linked"). While the agent streams, its tab shows a small accent dot (visible from the Task tab).
+7. When the agent asks a question / goes waiting_on_human, type an answer in the session tab's "Reply to the agent…" box and press Enter.
+8. **Verify:** Your reply and the agent's next streaming turn render in the tab without leaving the task page.
+8b. On the Task tab, post a comment via the "Add a comment…" composer while the agent is idle. **Verify:** The composer footer reads "Also sent to the agent session"; the comment lands in the timeline AND appears in the session tab as a user message prefixed "New comment on <KEY>:", and the agent responds. While the agent is streaming, the footer reads "Agent is mid-run — comment stays on the task" and the comment is NOT sent to the session. On a task with no linked session, no footer hint shows and nothing is sent.
+9. With two linked sessions on one task, verify the tabs are ordered newest-first (two sessions from the same agent are disambiguated with a short id suffix), then click the older session's tab.
+10. **Verify:** The main column switches to that session's transcript (active tab gets an accent underline); clicking the external-link icon at the top of the session content opens the SAME session in the full Chat view (title "KEY — task title", no duplicate conversation created).
 11. In Chat, ask the agent to add a comment to the task; return to the task detail.
 12. **Verify:** The comment appears in the timeline (agent-authored, non-highlighted).
 13. For a task with a linked session from a NON-MC channel (e.g. Telegram, seeded via that channel's agent), open its detail.
-14. **Verify:** That session's chip is muted and non-clickable with a "Session from another channel" tooltip; the session pane shows only MC sessions.
+14. **Verify:** That session gets NO tab; it appears under Linked Sessions in the right pane as a muted, non-clickable row with a "Session from another channel" tooltip, and the count reflects only such sessions. A task whose sessions are all MC sessions shows no Linked Sessions section; a task with no MC sessions shows no tab bar at all.
 15. Open Projects → Kanban. **Verify:** Each card shows a small assign icon (person-plus) in its top-right, next to the 🤖 badge when present.
 16. Click a card's assign icon. **Verify:** A dropdown lists non-disabled agents; the card does NOT open. Pick an agent.
 17. **Verify:** The menu closes; the card moves to In Progress under "Agent working" without a refresh; the task detail shows the new linked session.
