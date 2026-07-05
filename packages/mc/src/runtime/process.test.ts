@@ -209,6 +209,41 @@ describe('GatewaySupervisor.ensureRunning()', () => {
     expect(await keychain.getChatToken()).toBeTruthy();
   });
 
+  it('threads managementPort/channelPort options into probe, spawn args, client URL, and state.json', async () => {
+    const spawner = createMockSpawner();
+    const probe = createMockProbe({ type: 'free' });
+    const keychain = new InMemoryKeychainStore();
+    let capturedUrl = '';
+
+    const gp = new GatewaySupervisor(
+      makeOptions(tmpDir, {
+        makeGatewayClient: (url) => {
+          capturedUrl = url;
+          return createMockGatewayClient();
+        },
+        managementPort: 9310,
+        channelPort: 9210,
+      }),
+      spawner,
+      undefined,
+      probe,
+      keychain,
+    );
+
+    await gp.ensureRunning();
+
+    expect(probe).toHaveBeenCalledWith(9310);
+    expect(capturedUrl).toBe('http://localhost:9310');
+
+    const spawnArgs = (spawner.spawn as ReturnType<typeof vi.fn>).mock.calls[0][1] as string[];
+    expect(spawnArgs[spawnArgs.indexOf('--management-port') + 1]).toBe('9310');
+    expect(spawnArgs[spawnArgs.indexOf('--channel-port') + 1]).toBe('9210');
+
+    const state = await new GatewayStateStore(tmpDir).read();
+    expect(state?.port).toBe(9310);
+    expect(state?.channelPort).toBe(9210);
+  });
+
   it('passes --data-dir when gatewayRuntimeDir is set', async () => {
     const spawner = createMockSpawner();
     const probe = createMockProbe({ type: 'free' });
