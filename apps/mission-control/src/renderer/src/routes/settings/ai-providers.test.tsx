@@ -101,6 +101,19 @@ describe('AiProviders page', () => {
     expect(screen.queryByText('dash-core-providers')).not.toBeInTheDocument();
   });
 
+  it('renders no source badge for a provider sent without a pluginName', async () => {
+    // An older still-running gateway can send a provider over the wire with no
+    // pluginName at all (wire shape, not the compile-time type). The card must
+    // NOT render an empty tinted pill. Omit pluginName via spread + cast.
+    const { pluginName: _omit, ...noPlugin } = PLUGIN_PROVIDER;
+    mockRuntime([noPlugin as unknown as RuntimePluginProvider]);
+    render(<AiProviders />);
+    await screen.findByText('My LLM');
+    // The source badge is the only element styled with `bg-accent/20`; asserting
+    // on that class (not the text) catches an empty pill that has no text node.
+    expect(document.querySelector('span.bg-accent\\/20')).toBeNull();
+  });
+
   it('renders the provider ui.description as a subtitle', async () => {
     render(<AiProviders />);
     await screen.findByText('A plugin-contributed provider');

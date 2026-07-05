@@ -279,7 +279,11 @@ export function AiProviders(): JSX.Element {
               const oauthConfig = oauthProviderId ? OAUTH_CONFIG[oauthProviderId] : null;
               const isThisOAuthLoading = oauthLoading === p.id;
               const isAnyOAuthLoading = oauthLoading !== null;
-              const showSourceBadge = p.pluginName !== BUNDLED_PROVIDERS_PLUGIN;
+              // Require a non-empty pluginName: an older still-running gateway
+              // can send providers over the wire without one, which would
+              // otherwise render an empty tinted pill on every card.
+              const showSourceBadge =
+                Boolean(p.pluginName) && p.pluginName !== BUNDLED_PROVIDERS_PLUGIN;
 
               return (
                 <div key={p.id} className="bg-card-bg border border-border">

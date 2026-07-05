@@ -591,17 +591,17 @@ under a Node version missing a required symbol, or otherwise force the gateway s
 
 **Bootstrap:** For 15.1: Create an agent (Section 4), then remove its API key from AI Providers. For 15.2-15.3: Create an agent that uses an MCP connector (assign via Agent Detail → Configuration → Connectors card).
 
-> Note: Provider credentials for core and plugin providers now share one list and one connect flow on the AI Providers page (Section 3). The missing-credential banner and the "Add key" flow it links to behave identically whether the agent's model belongs to a bundled `dash-core-providers` provider or a third-party plugin provider — the `[provider]` named in the banner is the same catalog label shown on the unified AI Providers list.
+> Note: Provider credentials for core and plugin providers now share one list and one connect flow on the AI Providers page (Section 3). Recovery — the "Update Key →" link the auth-error surfaces (see 15.1) and the "Add key" flow it leads to — behaves identically whether the agent's model belongs to a bundled `dash-core-providers` provider or a third-party plugin provider.
 
-### 15.1 Missing Credential Banner
+### 15.1 Missing Credential Error
+There is no pre-send "missing credential" banner in chat; the input is not gated on credentials. Instead, sending a message with no key surfaces the provider's auth error inline in the message stream.
 1. Create an agent, then remove its API key
-2. Navigate to Chat, select a conversation for that agent
-3. **Verify:** Yellow banner above input: "This agent is missing an API key for [provider]" (where `[provider]` is the catalog label from the unified AI Providers list)
-4. **Verify:** Chat input is disabled (cannot type or send)
-5. **Verify:** Send button is disabled (50% opacity)
-6. Add the key back from Settings → AI Providers (same unified list/flow for core and plugin providers)
-7. **Verify:** Banner disappears, input re-enabled
-8. **Verify (plugin provider parity, if a third-party provider plugin is installed):** Repeat 1–7 with an agent whose model belongs to a plugin-contributed provider. The banner, the disabled input, and the add-key recovery behave identically
+2. Navigate to Chat, select a conversation for that agent, and send a message
+3. **Verify:** The input is NOT blocked — the message sends and the agent's error surfaces inline as red error text in the conversation (e.g. a 401/authentication/"invalid key" message from the provider)
+4. **Verify:** For an auth-type error, an "Update Key →" link is shown beneath the error text that navigates to Settings → AI Providers
+5. Add the key back from Settings → AI Providers (same unified list/flow for core and plugin providers)
+6. **Verify:** Re-sending the message now succeeds (no auth error)
+7. **Verify (plugin provider parity, if a third-party provider plugin is installed):** Repeat 1–6 with an agent whose model belongs to a plugin-contributed provider. The inline auth error, the "Update Key →" link, and the add-key recovery behave identically
 
 ### 15.2 MCP Connector Offline Banner
 1. Create an agent that uses an MCP connector
