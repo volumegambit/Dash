@@ -124,8 +124,8 @@ For the full development guide — coding conventions, testing strategy, git wor
 
 `android/` is a native Kotlin/Jetpack Compose app — a thin remote client to a running
 gateway for chatting with and monitoring your agents from a phone. It's a separate Gradle
-project (not part of the npm workspace). Pair it from Mission Control's **Pair Device**
-screen. See [`android/README.md`](android/README.md) for build/test/pairing instructions.
+project (not part of the npm workspace). Pair it from Mission Control's **Settings →
+Devices** tab. See [`android/README.md`](android/README.md) for build/test/pairing instructions.
 
 ### Relay (remote access)
 

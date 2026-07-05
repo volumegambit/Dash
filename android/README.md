@@ -76,14 +76,14 @@ only on `android/**` changes (separate from the Node CI so each toolchain stays 
 
 The app needs a gateway **host + management token + chat token**. Two ways to get them:
 
-1. **Pair via QR (recommended).** In Mission Control, open **Pair Device** and scan the QR
-   with the app. The QR encodes the desktop's LAN IP + both tokens.
+1. **Pair via QR (recommended).** In Mission Control, open **Settings → Devices** and scan
+   the QR in the **Pair Device** card with the app. The QR encodes the desktop's LAN IP + both tokens.
 2. **Manual entry.** Type the host/IP and paste both tokens on the app's connect screen.
 
 For a device/emulator that should reach a gateway on *this* machine:
 
 ```bash
-# Same Wi-Fi: use the Mac's LAN IP (shown on the Pair Device screen), or
+# Same Wi-Fi: use the Mac's LAN IP (shown on the Pair Device card in Settings → Devices), or
 # tunnel localhost over USB/emulator with adb reverse:
 adb reverse tcp:9300 tcp:9300   # management API
 adb reverse tcp:9200 tcp:9200   # chat WebSocket

@@ -56,7 +56,7 @@ Something not working? Here are the most common issues and how to fix them.
 
 <AccordionGroup>
   <Accordion title="Sign-in failed">
-    **Symptom:** Clicking **Sign in to Dash** on **Settings → Remote access** opens the browser but Mission Control shows **Sign-in failed**.
+    **Symptom:** Clicking **Sign in to Dash** on **Settings → Devices → Remote access** opens the browser but Mission Control shows **Sign-in failed**.
 
     **Fix:** Finish signing in within the browser tab that opened — Mission Control is waiting for it to hand control back. If you closed the tab, dismissed it, or it timed out, click **Sign in to Dash** again to start over. Make sure the machine running Mission Control has internet access.
   </Accordion>
@@ -64,7 +64,7 @@ Something not working? Here are the most common issues and how to fix them.
   <Accordion title="Select an organization">
     **Symptom:** You're signed in, but Mission Control asks you to **select an organization** before you can create a gateway.
 
-    **Fix:** Gateways are owned by an organization, not by you personally. On the Dash sign-in page, create or choose an organization, then return to **Settings → Remote access** and try again. If you belong to more than one organization, make sure you're signed in to the one that should own this gateway.
+    **Fix:** Gateways are owned by an organization, not by you personally. On the Dash sign-in page, create or choose an organization, then return to **Settings → Devices → Remote access** and try again. If you belong to more than one organization, make sure you're signed in to the one that should own this gateway.
   </Accordion>
 
   <Accordion title="Create gateway is missing or fails">
@@ -82,21 +82,21 @@ Something not working? Here are the most common issues and how to fix them.
     background and reconnects on its own, even after being offline for weeks. Just give
     it a moment after the machine wakes up. You do **not** need to re-create the gateway
     or re-pair your phone. If it still hasn't recovered after a few minutes, confirm the
-    machine running Dash is online, then open **Settings → Remote access** and check that
+    machine running Dash is online, then open **Settings → Devices → Remote access** and check that
     you see **Gateway ready at** with your address. The gateway must be running for it to
     reconnect.
   </Accordion>
 
   <Accordion title="QR code still pairs over the local network">
-    **Symptom:** The **Pair Device** screen says it connects over your **local network** even though you want remote access.
+    **Symptom:** The **Pair Device** section on **Settings → Devices** says it connects over your **local network** even though you want remote access.
 
-    **Fix:** The QR code only switches to remote access after you've created a gateway. Open **Settings → Remote access**, confirm you see **Gateway ready at** with an address, then return to **Pair Device** — the code now carries your relay address.
+    **Fix:** The QR code only switches to remote access after you've created a gateway. On **Settings → Devices**, confirm the **Remote access** section shows **Gateway ready at** with an address, then check the **Pair Device** section above it — the code now carries your relay address.
   </Accordion>
 
   <Accordion title="Phone can no longer connect after a revoke">
     **Symptom:** A phone that used to work remotely now can't reach your agents.
 
-    **Fix:** If that device was removed under **Settings → Remote access → Paired devices** (by you or from another machine), its credential no longer works — this is expected. Pair it again: open **Pair Device**, scan a fresh QR code on the phone, and it gets a new credential.
+    **Fix:** If that device was removed under **Settings → Devices → Paired devices** (by you or from another machine), its credential no longer works — this is expected. Pair it again: open **Settings → Devices**, scan a fresh QR code on the phone, and it gets a new credential.
   </Accordion>
 
   <Accordion title="The address I want is already taken">

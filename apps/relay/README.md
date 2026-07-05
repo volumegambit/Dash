@@ -8,11 +8,11 @@ It is a small, self-hostable Node service. You run **one** relay; every gateway 
 own dials into it and becomes reachable at its own subdomain.
 
 > **Setup at a glance:** deploy a relay (below), then in Mission Control open
-> **Settings → Remote access (relay)** and enter your relay domain, relay token,
-> and admin secret. The gateway restarts and dials the relay, and **Pair Device**
-> then shows a relay QR the Android app scans to connect from anywhere. The
-> gateway flags and admin API below are the same mechanism, useful for scripting
-> or a headless gateway.
+> **Settings → Devices → Remote access** and enter your relay domain, relay token,
+> and admin secret. The gateway restarts and dials the relay, and the **Pair
+> Device** card on the same tab then shows a relay QR the Android app scans to
+> connect from anywhere. The gateway flags and admin API below are the same
+> mechanism, useful for scripting or a headless gateway.
 
 ---
 
@@ -21,7 +21,7 @@ own dials into it and becomes reachable at its own subdomain.
 - **You need it** to reach your agents from your phone when you're away from home — the
   gateway sits behind NAT/a firewall with no public address.
 - **You don't need it** when your phone and gateway are on the same Wi-Fi/LAN. Pair
-  directly over the local network instead (Mission Control → Pair Device).
+  directly over the local network instead (Mission Control → Settings → Devices).
 
 ---
 
