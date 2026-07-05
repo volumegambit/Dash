@@ -9,7 +9,6 @@ import {
   PanelLeftOpen,
   Plug,
   Puzzle,
-  QrCode,
   Settings,
   Smartphone,
   Terminal,
@@ -45,7 +44,6 @@ const sections: NavSection[] = [
     items: [
       { to: '/agents', label: 'Agents', icon: Bot },
       { to: '/messaging-apps', label: 'Messaging Apps', icon: Smartphone },
-      { to: '/pair-device', label: 'Pair Device', icon: QrCode },
     ],
   },
   {

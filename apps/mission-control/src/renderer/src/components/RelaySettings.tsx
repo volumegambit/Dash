@@ -21,7 +21,7 @@ function isDnsSafeLabel(label: string): boolean {
  * This is the structural wiring; visual polish and the live browser flow are
  * exercised by manual MC QA.
  */
-export function RelaySettings(): JSX.Element {
+export function RelaySettings({ onEnrolled }: { onEnrolled?: () => void }): JSX.Element {
   const [status, setStatus] = useState<ControlPlaneStatus | null>(null);
   const [devices, setDevices] = useState<DeviceInfo[]>([]);
   const [busy, setBusy] = useState(false);
@@ -71,23 +71,29 @@ export function RelaySettings(): JSX.Element {
     load();
   }, [load]);
 
-  const run = async (fn: () => Promise<void>, fallbackMsg: string): Promise<void> => {
+  const run = async (fn: () => Promise<void>, fallbackMsg: string): Promise<boolean> => {
     setBusy(true);
     setError(null);
     try {
       await fn();
       load();
+      return true;
     } catch (e) {
       setError(e instanceof Error ? e.message : fallbackMsg);
+      return false;
     } finally {
       setBusy(false);
     }
   };
 
-  const signIn = (): Promise<void> => run(() => window.api.controlPlaneSignIn(), 'Sign-in failed');
-  const enroll = (): Promise<void> =>
-    run(() => window.api.gatewayEnroll(label), 'Could not claim that subdomain');
-  const revoke = (id: string): Promise<void> =>
+  const signIn = (): Promise<boolean> =>
+    run(() => window.api.controlPlaneSignIn(), 'Sign-in failed');
+  const enroll = async (): Promise<void> => {
+    if (await run(() => window.api.gatewayEnroll(label), 'Could not claim that subdomain')) {
+      onEnrolled?.();
+    }
+  };
+  const revoke = (id: string): Promise<boolean> =>
     run(() => window.api.devicesRevoke(id), 'Could not revoke device');
 
   const btnPrimary =

@@ -13,7 +13,6 @@ import { Route as UnderTheHoodRouteImport } from './routes/under-the-hood'
 import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as ProjectsRouteImport } from './routes/projects'
 import { Route as PluginsRouteImport } from './routes/plugins'
-import { Route as PairDeviceRouteImport } from './routes/pair-device'
 import { Route as MessagingAppsRouteImport } from './routes/messaging-apps'
 import { Route as DeployRouteImport } from './routes/deploy'
 import { Route as ConnectorsRouteImport } from './routes/connectors'
@@ -21,9 +20,12 @@ import { Route as ConnectionsRouteImport } from './routes/connections'
 import { Route as ChatRouteImport } from './routes/chat'
 import { Route as AgentsRouteImport } from './routes/agents'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as SettingsIndexRouteImport } from './routes/settings/index'
 import { Route as ProjectsIndexRouteImport } from './routes/projects/index'
 import { Route as MessagingAppsIndexRouteImport } from './routes/messaging-apps/index'
 import { Route as AgentsIndexRouteImport } from './routes/agents/index'
+import { Route as SettingsDevicesRouteImport } from './routes/settings/devices'
+import { Route as SettingsAgentDefaultsRouteImport } from './routes/settings/agent-defaults'
 import { Route as ProjectsMyWorkRouteImport } from './routes/projects/my-work'
 import { Route as ProjectsListRouteImport } from './routes/projects/list'
 import { Route as ProjectsKanbanRouteImport } from './routes/projects/kanban'
@@ -54,11 +56,6 @@ const ProjectsRoute = ProjectsRouteImport.update({
 const PluginsRoute = PluginsRouteImport.update({
   id: '/plugins',
   path: '/plugins',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const PairDeviceRoute = PairDeviceRouteImport.update({
-  id: '/pair-device',
-  path: '/pair-device',
   getParentRoute: () => rootRouteImport,
 } as any)
 const MessagingAppsRoute = MessagingAppsRouteImport.update({
@@ -96,6 +93,11 @@ const IndexRoute = IndexRouteImport.update({
   path: '/',
   getParentRoute: () => rootRouteImport,
 } as any)
+const SettingsIndexRoute = SettingsIndexRouteImport.update({
+  id: '/',
+  path: '/',
+  getParentRoute: () => SettingsRoute,
+} as any)
 const ProjectsIndexRoute = ProjectsIndexRouteImport.update({
   id: '/',
   path: '/',
@@ -110,6 +112,16 @@ const AgentsIndexRoute = AgentsIndexRouteImport.update({
   id: '/',
   path: '/',
   getParentRoute: () => AgentsRoute,
+} as any)
+const SettingsDevicesRoute = SettingsDevicesRouteImport.update({
+  id: '/devices',
+  path: '/devices',
+  getParentRoute: () => SettingsRoute,
+} as any)
+const SettingsAgentDefaultsRoute = SettingsAgentDefaultsRouteImport.update({
+  id: '/agent-defaults',
+  path: '/agent-defaults',
+  getParentRoute: () => SettingsRoute,
 } as any)
 const ProjectsMyWorkRoute = ProjectsMyWorkRouteImport.update({
   id: '/my-work',
@@ -177,10 +189,9 @@ export interface FileRoutesByFullPath {
   '/connectors': typeof ConnectorsRoute
   '/deploy': typeof DeployRoute
   '/messaging-apps': typeof MessagingAppsRouteWithChildren
-  '/pair-device': typeof PairDeviceRoute
   '/plugins': typeof PluginsRoute
   '/projects': typeof ProjectsRouteWithChildren
-  '/settings': typeof SettingsRoute
+  '/settings': typeof SettingsRouteWithChildren
   '/under-the-hood': typeof UnderTheHoodRoute
   '/agents/$id': typeof AgentsIdRoute
   '/messaging-apps/$id': typeof MessagingAppsIdRoute
@@ -192,9 +203,12 @@ export interface FileRoutesByFullPath {
   '/projects/kanban': typeof ProjectsKanbanRoute
   '/projects/list': typeof ProjectsListRoute
   '/projects/my-work': typeof ProjectsMyWorkRoute
+  '/settings/agent-defaults': typeof SettingsAgentDefaultsRoute
+  '/settings/devices': typeof SettingsDevicesRoute
   '/agents/': typeof AgentsIndexRoute
   '/messaging-apps/': typeof MessagingAppsIndexRoute
   '/projects/': typeof ProjectsIndexRoute
+  '/settings/': typeof SettingsIndexRoute
   '/projects/issues/$issueId': typeof ProjectsIssuesIssueIdRoute
 }
 export interface FileRoutesByTo {
@@ -203,9 +217,7 @@ export interface FileRoutesByTo {
   '/connections': typeof ConnectionsRoute
   '/connectors': typeof ConnectorsRoute
   '/deploy': typeof DeployRoute
-  '/pair-device': typeof PairDeviceRoute
   '/plugins': typeof PluginsRoute
-  '/settings': typeof SettingsRoute
   '/under-the-hood': typeof UnderTheHoodRoute
   '/agents/$id': typeof AgentsIdRoute
   '/messaging-apps/$id': typeof MessagingAppsIdRoute
@@ -217,9 +229,12 @@ export interface FileRoutesByTo {
   '/projects/kanban': typeof ProjectsKanbanRoute
   '/projects/list': typeof ProjectsListRoute
   '/projects/my-work': typeof ProjectsMyWorkRoute
+  '/settings/agent-defaults': typeof SettingsAgentDefaultsRoute
+  '/settings/devices': typeof SettingsDevicesRoute
   '/agents': typeof AgentsIndexRoute
   '/messaging-apps': typeof MessagingAppsIndexRoute
   '/projects': typeof ProjectsIndexRoute
+  '/settings': typeof SettingsIndexRoute
   '/projects/issues/$issueId': typeof ProjectsIssuesIssueIdRoute
 }
 export interface FileRoutesById {
@@ -231,10 +246,9 @@ export interface FileRoutesById {
   '/connectors': typeof ConnectorsRoute
   '/deploy': typeof DeployRoute
   '/messaging-apps': typeof MessagingAppsRouteWithChildren
-  '/pair-device': typeof PairDeviceRoute
   '/plugins': typeof PluginsRoute
   '/projects': typeof ProjectsRouteWithChildren
-  '/settings': typeof SettingsRoute
+  '/settings': typeof SettingsRouteWithChildren
   '/under-the-hood': typeof UnderTheHoodRoute
   '/agents/$id': typeof AgentsIdRoute
   '/messaging-apps/$id': typeof MessagingAppsIdRoute
@@ -246,9 +260,12 @@ export interface FileRoutesById {
   '/projects/kanban': typeof ProjectsKanbanRoute
   '/projects/list': typeof ProjectsListRoute
   '/projects/my-work': typeof ProjectsMyWorkRoute
+  '/settings/agent-defaults': typeof SettingsAgentDefaultsRoute
+  '/settings/devices': typeof SettingsDevicesRoute
   '/agents/': typeof AgentsIndexRoute
   '/messaging-apps/': typeof MessagingAppsIndexRoute
   '/projects/': typeof ProjectsIndexRoute
+  '/settings/': typeof SettingsIndexRoute
   '/projects/issues/$issueId': typeof ProjectsIssuesIssueIdRoute
 }
 export interface FileRouteTypes {
@@ -261,7 +278,6 @@ export interface FileRouteTypes {
     | '/connectors'
     | '/deploy'
     | '/messaging-apps'
-    | '/pair-device'
     | '/plugins'
     | '/projects'
     | '/settings'
@@ -276,9 +292,12 @@ export interface FileRouteTypes {
     | '/projects/kanban'
     | '/projects/list'
     | '/projects/my-work'
+    | '/settings/agent-defaults'
+    | '/settings/devices'
     | '/agents/'
     | '/messaging-apps/'
     | '/projects/'
+    | '/settings/'
     | '/projects/issues/$issueId'
   fileRoutesByTo: FileRoutesByTo
   to:
@@ -287,9 +306,7 @@ export interface FileRouteTypes {
     | '/connections'
     | '/connectors'
     | '/deploy'
-    | '/pair-device'
     | '/plugins'
-    | '/settings'
     | '/under-the-hood'
     | '/agents/$id'
     | '/messaging-apps/$id'
@@ -301,9 +318,12 @@ export interface FileRouteTypes {
     | '/projects/kanban'
     | '/projects/list'
     | '/projects/my-work'
+    | '/settings/agent-defaults'
+    | '/settings/devices'
     | '/agents'
     | '/messaging-apps'
     | '/projects'
+    | '/settings'
     | '/projects/issues/$issueId'
   id:
     | '__root__'
@@ -314,7 +334,6 @@ export interface FileRouteTypes {
     | '/connectors'
     | '/deploy'
     | '/messaging-apps'
-    | '/pair-device'
     | '/plugins'
     | '/projects'
     | '/settings'
@@ -329,9 +348,12 @@ export interface FileRouteTypes {
     | '/projects/kanban'
     | '/projects/list'
     | '/projects/my-work'
+    | '/settings/agent-defaults'
+    | '/settings/devices'
     | '/agents/'
     | '/messaging-apps/'
     | '/projects/'
+    | '/settings/'
     | '/projects/issues/$issueId'
   fileRoutesById: FileRoutesById
 }
@@ -343,10 +365,9 @@ export interface RootRouteChildren {
   ConnectorsRoute: typeof ConnectorsRoute
   DeployRoute: typeof DeployRoute
   MessagingAppsRoute: typeof MessagingAppsRouteWithChildren
-  PairDeviceRoute: typeof PairDeviceRoute
   PluginsRoute: typeof PluginsRoute
   ProjectsRoute: typeof ProjectsRouteWithChildren
-  SettingsRoute: typeof SettingsRoute
+  SettingsRoute: typeof SettingsRouteWithChildren
   UnderTheHoodRoute: typeof UnderTheHoodRoute
 }
 
@@ -378,13 +399,6 @@ declare module '@tanstack/react-router' {
       path: '/plugins'
       fullPath: '/plugins'
       preLoaderRoute: typeof PluginsRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/pair-device': {
-      id: '/pair-device'
-      path: '/pair-device'
-      fullPath: '/pair-device'
-      preLoaderRoute: typeof PairDeviceRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/messaging-apps': {
@@ -436,6 +450,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/settings/': {
+      id: '/settings/'
+      path: '/'
+      fullPath: '/settings/'
+      preLoaderRoute: typeof SettingsIndexRouteImport
+      parentRoute: typeof SettingsRoute
+    }
     '/projects/': {
       id: '/projects/'
       path: '/'
@@ -456,6 +477,20 @@ declare module '@tanstack/react-router' {
       fullPath: '/agents/'
       preLoaderRoute: typeof AgentsIndexRouteImport
       parentRoute: typeof AgentsRoute
+    }
+    '/settings/devices': {
+      id: '/settings/devices'
+      path: '/devices'
+      fullPath: '/settings/devices'
+      preLoaderRoute: typeof SettingsDevicesRouteImport
+      parentRoute: typeof SettingsRoute
+    }
+    '/settings/agent-defaults': {
+      id: '/settings/agent-defaults'
+      path: '/agent-defaults'
+      fullPath: '/settings/agent-defaults'
+      preLoaderRoute: typeof SettingsAgentDefaultsRouteImport
+      parentRoute: typeof SettingsRoute
     }
     '/projects/my-work': {
       id: '/projects/my-work'
@@ -594,6 +629,22 @@ const ProjectsRouteWithChildren = ProjectsRoute._addFileChildren(
   ProjectsRouteChildren,
 )
 
+interface SettingsRouteChildren {
+  SettingsAgentDefaultsRoute: typeof SettingsAgentDefaultsRoute
+  SettingsDevicesRoute: typeof SettingsDevicesRoute
+  SettingsIndexRoute: typeof SettingsIndexRoute
+}
+
+const SettingsRouteChildren: SettingsRouteChildren = {
+  SettingsAgentDefaultsRoute: SettingsAgentDefaultsRoute,
+  SettingsDevicesRoute: SettingsDevicesRoute,
+  SettingsIndexRoute: SettingsIndexRoute,
+}
+
+const SettingsRouteWithChildren = SettingsRoute._addFileChildren(
+  SettingsRouteChildren,
+)
+
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   AgentsRoute: AgentsRouteWithChildren,
@@ -602,10 +653,9 @@ const rootRouteChildren: RootRouteChildren = {
   ConnectorsRoute: ConnectorsRoute,
   DeployRoute: DeployRoute,
   MessagingAppsRoute: MessagingAppsRouteWithChildren,
-  PairDeviceRoute: PairDeviceRoute,
   PluginsRoute: PluginsRoute,
   ProjectsRoute: ProjectsRouteWithChildren,
-  SettingsRoute: SettingsRoute,
+  SettingsRoute: SettingsRouteWithChildren,
   UnderTheHoodRoute: UnderTheHoodRoute,
 }
 export const routeTree = rootRouteImport

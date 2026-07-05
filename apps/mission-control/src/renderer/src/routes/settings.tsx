@@ -1,155 +1,48 @@
-import { createFileRoute } from '@tanstack/react-router';
-import { RefreshCw } from 'lucide-react';
-import { useCallback, useEffect, useState } from 'react';
-import type { AppSettings } from '../../../shared/ipc.js';
-import { ModelChainEditor } from '../components/ModelChainEditor.js';
-import { RelaySettings } from '../components/RelaySettings.js';
-import { WebSearchSettings } from '../components/WebSearchSettings.js';
-import { useAvailableModels } from '../hooks/useAvailableModels.js';
-import { useUIStore } from '../stores/ui.js';
+import { Link, Outlet, createFileRoute } from '@tanstack/react-router';
 
-function Settings(): JSX.Element {
-  const [version, setVersion] = useState<string>('...');
-  const [settings, setSettings] = useState<AppSettings>({});
-  const [saving, setSaving] = useState(false);
-  const [restarting, setRestarting] = useState(false);
-  const [restartStatus, setRestartStatus] = useState<'idle' | 'success' | 'error'>('idle');
-  const {
-    models: availableModels,
-    refreshing: modelsRefreshing,
-    refresh: refreshModels,
-  } = useAvailableModels();
-  const companionVisible = useUIStore((s) => s.companionVisible);
-  const setCompanionVisible = useUIStore((s) => s.setCompanionVisible);
+interface SettingsTab {
+  to: string;
+  label: string;
+  exact?: boolean;
+}
 
-  useEffect(() => {
-    window.api.getVersion().then(setVersion);
-    window.api
-      .settingsGet()
-      .then(setSettings)
-      .catch(() => {});
-  }, []);
+const tabs: SettingsTab[] = [
+  { to: '/settings', label: 'General', exact: true },
+  { to: '/settings/agent-defaults', label: 'Agent Defaults' },
+  { to: '/settings/devices', label: 'Devices' },
+];
 
-  const handleRestartGateway = useCallback(async () => {
-    setRestarting(true);
-    setRestartStatus('idle');
-    try {
-      await window.api.gatewayRestart();
-      setRestartStatus('success');
-      setTimeout(() => setRestartStatus('idle'), 3000);
-    } catch {
-      setRestartStatus('error');
-      setTimeout(() => setRestartStatus('idle'), 5000);
-    } finally {
-      setRestarting(false);
-    }
-  }, []);
-
-  const handleChainChange = async (model: string, fallbackModels: string[]): Promise<void> => {
-    const patch: AppSettings = { defaultModel: model, defaultFallbackModels: fallbackModels };
-    setSettings((prev) => ({ ...prev, ...patch }));
-    setSaving(true);
-    try {
-      await window.api.settingsSet(patch);
-    } finally {
-      setSaving(false);
-    }
-  };
-
+export function SettingsLayout(): JSX.Element {
   return (
     <div className="h-full flex flex-col overflow-hidden">
       {/* Page header */}
-      <div className="bg-surface px-8 py-4 border-b border-border flex items-center justify-between shrink-0">
-        <div>
-          <h1 className="font-[family-name:var(--font-display)] text-[22px] font-semibold text-foreground">
-            Settings
-          </h1>
-          <p className="mt-1 text-sm text-muted">Application settings and configuration.</p>
-        </div>
+      <div className="bg-surface px-8 pt-4 border-b border-border shrink-0">
+        <h1 className="font-[family-name:var(--font-display)] text-[22px] font-semibold text-foreground">
+          Settings
+        </h1>
+        <p className="mt-1 text-sm text-muted">Application settings and configuration.</p>
+        <nav aria-label="Settings sections" className="mt-2 flex">
+          {tabs.map((tab) => (
+            <Link
+              key={tab.to}
+              to={tab.to}
+              activeOptions={{ exact: tab.exact ?? false }}
+              className="px-5 py-3.5 text-[13px] font-medium text-muted transition-colors hover:text-foreground [&.active]:border-b-2 [&.active]:border-accent [&.active]:font-semibold [&.active]:text-foreground"
+            >
+              {tab.label}
+            </Link>
+          ))}
+        </nav>
       </div>
 
-      {/* Body */}
+      {/* Active tab body */}
       <div className="flex-1 overflow-y-auto p-8">
-        <div className="rounded-lg border border-border bg-card-bg p-4">
-          <h2 className="mb-1 font-[family-name:var(--font-mono)] text-[11px] uppercase tracking-[2px] text-accent">
-            Default Model Chain
-          </h2>
-          <p className="mb-4 text-xs text-muted">
-            Pre-populates the model selection when creating a new agent.
-            {saving && <span className="ml-2 text-accent">Saving...</span>}
-          </p>
-          <ModelChainEditor
-            model={settings.defaultModel ?? availableModels[0]?.value ?? ''}
-            fallbackModels={settings.defaultFallbackModels ?? []}
-            availableModels={availableModels}
-            onChange={handleChainChange}
-            onRefresh={refreshModels}
-            refreshing={modelsRefreshing}
-          />
-        </div>
-
-        <div className="mt-6 rounded-lg border border-border bg-card-bg p-4">
-          <h2 className="mb-1 font-[family-name:var(--font-mono)] text-[11px] uppercase tracking-[2px] text-accent">
-            Gateway
-          </h2>
-          <p className="mb-3 text-xs text-muted">
-            The gateway process manages agents, channels, and credentials.
-          </p>
-          <div className="flex items-center gap-3">
-            <button
-              type="button"
-              onClick={handleRestartGateway}
-              disabled={restarting}
-              className="inline-flex items-center gap-2 rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-muted hover:text-foreground hover:bg-card-hover transition-colors disabled:opacity-50"
-            >
-              <RefreshCw size={14} className={restarting ? 'animate-spin' : ''} />
-              {restarting ? 'Restarting...' : 'Restart Gateway'}
-            </button>
-            {restartStatus === 'success' && (
-              <span className="text-xs text-green">Gateway restarted successfully</span>
-            )}
-            {restartStatus === 'error' && (
-              <span className="text-xs text-red">Failed to restart gateway</span>
-            )}
-          </div>
-        </div>
-
-        <WebSearchSettings />
-
-        <RelaySettings />
-
-        <div className="mt-6 rounded-lg border border-border bg-card-bg p-4">
-          <h2 className="mb-1 font-[family-name:var(--font-mono)] text-[11px] uppercase tracking-[2px] text-accent">
-            Companion
-          </h2>
-          <p className="mb-3 text-xs text-muted">
-            The tree companion shows which sessions are working, need you, or finished while you
-            were away.
-          </p>
-          <label className="flex cursor-pointer items-center gap-3">
-            <input
-              type="checkbox"
-              checked={companionVisible}
-              onChange={(e) => setCompanionVisible(e.target.checked)}
-              className="rounded border border-border"
-            />
-            <span className="text-xs font-medium text-foreground">Show the tree companion</span>
-          </label>
-        </div>
-
-        <div className="mt-6 rounded-lg border border-border bg-card-bg p-4">
-          <h2 className="font-[family-name:var(--font-mono)] text-[11px] uppercase tracking-[2px] text-accent">
-            About
-          </h2>
-          <p className="mt-2 text-sm text-muted">
-            DashSquad v<span className="text-foreground">{version}</span>
-          </p>
-        </div>
+        <Outlet />
       </div>
     </div>
   );
 }
 
 export const Route = createFileRoute('/settings')({
-  component: Settings,
+  component: SettingsLayout,
 });

@@ -39,7 +39,7 @@ export async function buildPairingInfo(
       relayCredential = await provision(relay.gatewayId);
     } catch (err) {
       // Surface a clear, actionable reason rather than an opaque fetch error —
-      // the Pair Device screen renders this message.
+      // the Pair Device card (Settings → Devices) renders this message.
       const reason = err instanceof Error ? err.message : String(err);
       throw new Error(`Could not reach the relay to provision a pairing credential: ${reason}`);
     }

@@ -47,6 +47,11 @@ describe('Sidebar', () => {
     expect(screen.queryByText('Deploy')).not.toBeInTheDocument();
   });
 
+  it('does not render a Pair Device nav item (it lives under Settings → Devices)', () => {
+    render(<Sidebar />);
+    expect(screen.queryByText('Pair Device')).not.toBeInTheDocument();
+  });
+
   it('renders a Feedback button', () => {
     render(<Sidebar />);
     expect(screen.getByText('Feedback')).toBeInTheDocument();

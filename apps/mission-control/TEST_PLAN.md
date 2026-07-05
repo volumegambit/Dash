@@ -85,7 +85,7 @@ under a Node version missing a required symbol, or otherwise force the gateway s
 ### 2.1 Sidebar Layout & Health
 1. Take a screenshot of the full sidebar
 2. **Verify:** Logo at top with a small green health dot (gateway healthy)
-3. **Verify:** Three nav sections: CORE (Dashboard, Chat), MANAGE (Agents, Messaging Apps), CONFIGURE (AI Providers, Connectors, Settings)
+3. **Verify:** Four nav sections: CORE (Chat), MANAGE (Agents, Messaging Apps), PLAN (Projects), CONFIGURE (AI Providers, Connectors (MCP), Plugins, Settings). A DEVELOPER section appears in dev builds only. There is no Pair Device or Web Search item (both live in Settings)
 4. **Verify:** Feedback link at bottom
 5. Click "Agents" in sidebar
 6. **Verify:** "Agents" is highlighted (bold, left accent border); other links are not
@@ -856,7 +856,7 @@ under a Node version missing a required symbol, or otherwise force the gateway s
 ## Section 21: Web Search (in Settings)
 
 ### 21.1 No Key Set
-1. Navigate to Settings and locate the "Web Search" section
+1. Navigate to Settings → Agent Defaults and locate the "Web Search" section
 2. **Verify:** Password input field and "Save" button visible
 3. **Verify:** Link to Brave Search API signup is present
 
@@ -874,15 +874,25 @@ under a Node version missing a required symbol, or otherwise force the gateway s
 
 ## Section 22: Settings
 
-### 22.1 Default Model Chain
+The Settings page is organized into three tabs: **General** (Gateway, Companion, About), **Agent Defaults** (Default Model Chain, Web Search), and **Devices** (Pair Device, Remote access).
+
+### 22.0 Tabs
 1. Navigate to Settings
+2. **Verify:** Three tabs under the page title: General, Agent Defaults, Devices
+3. **Verify:** General is the active tab by default (accent underline, bold)
+4. Click each tab in turn
+5. **Verify:** The clicked tab becomes active and the content below changes accordingly
+6. **Verify:** The sidebar has no "Pair Device" or "Web Search" items (both live in Settings now)
+
+### 22.1 Default Model Chain (Agent Defaults tab)
+1. Navigate to Settings → Agent Defaults
 2. **Verify:** "Default Model Chain" section with model selector
 3. **Verify:** "Refresh Models" button is present
 4. Select a model
 5. **Verify:** Selection is saved
 
-### 22.2 Gateway Restart
-1. On the Settings page, locate the "Gateway" section
+### 22.2 Gateway Restart (General tab)
+1. On the Settings → General tab, locate the "Gateway" section
 2. **Verify:** "Restart Gateway" button is visible with a refresh icon
 3. Note the current sidebar health dot color (should be green)
 4. Click "Restart Gateway"
@@ -902,13 +912,32 @@ under a Node version missing a required symbol, or otherwise force the gateway s
 ### 22.3 Gateway Restart — Connector Recovery
 1. If MCP connectors are configured:
 2. Navigate to Connectors page, note connector statuses (should be green)
-3. Go to Settings, click "Restart Gateway"
+3. Go to Settings → General, click "Restart Gateway"
 4. Wait for restart to complete
 5. Navigate to Connectors page
 6. **Verify:** Connectors reconnect automatically (may briefly show reconnecting, then connected)
 
-### 22.4 About Section
+### 22.4 About Section (General tab)
 1. **Verify:** App version number is displayed (e.g., "DashSquad v0.x.x")
+
+### 22.5 Companion Toggle (General tab)
+1. **Verify:** "Companion" section with a "Show the tree companion" checkbox
+2. Toggle the checkbox off
+3. **Verify:** The tree companion disappears from the app
+4. Toggle it back on
+5. **Verify:** The tree companion reappears
+
+### 22.6 Pair Device (Devices tab)
+1. Navigate to Settings → Devices
+2. **Verify:** "Pair Device" card renders a QR code on a white tile
+3. **Verify:** The gateway host is shown below the QR with a mode badge reading "local network" or "relay"
+4. **Verify:** No tokens or credentials appear as plain text anywhere on the card
+5. If a relay gateway is enrolled (see 22.7): **Verify:** the badge reads "relay" and the host is the relay address
+
+### 22.7 Remote Access (Devices tab)
+1. On the Settings → Devices tab, locate the "Remote access" section below Pair Device
+2. **Verify:** When signed out, a "Sign in to Dash" button is shown
+3. If signed in and enrolled: **Verify:** "Gateway ready at" shows the claimed subdomain and a "Paired devices" list (with Revoke buttons) is present
 
 ---
 
@@ -926,7 +955,7 @@ Take screenshots of every page and evaluate against these criteria. This section
 7. **Verify:** Icon-only buttons (trash, refresh, pencil) use consistent padding
 
 ### 23.2 Form Inputs
-1. Check text inputs across: Setup Wizard, Create Agent Wizard, Add Key modal, Add Connector modal, Settings (Web Search section)
+1. Check text inputs across: Setup Wizard, Create Agent Wizard, Add Key modal, Add Connector modal, Settings → Agent Defaults (Web Search section)
 2. **Verify:** All text inputs have consistent border color, background, and focus style (border-accent on focus)
 3. **Verify:** All password inputs use monospace font
 4. **Verify:** All dropdowns match text input styling
