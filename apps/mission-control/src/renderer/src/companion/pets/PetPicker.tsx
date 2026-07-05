@@ -6,11 +6,13 @@ import { PET_KINDS } from './kinds.js';
 const LABEL: Record<PetKind, string> = {
   astronaut: 'Astronaut',
   bear: 'Bear',
+  'beauty-guru': 'Beauty Guru',
   bigfoot: 'Bigfoot',
   'bollywood-star': 'Bollywood Star',
   cat: 'Cat',
   chef: 'Chef',
   dog: 'Dog',
+  'fitness-influencer': 'Fitness Influencer',
   'fortune-god': 'Fortune God',
   knight: 'Knight',
   lion: 'Lion',
@@ -24,8 +26,12 @@ const LABEL: Record<PetKind, string> = {
   'red-panda': 'Red panda',
   robot: 'Robot',
   'royal-guard': 'Royal Guard',
+  streamer: 'Streamer',
+  'tech-reviewer': 'Tech Reviewer',
+  'travel-vlogger': 'Travel Vlogger',
   unicorn: 'Unicorn',
   wizard: 'Wizard',
+  'wok-uncle': 'Wok Uncle',
 };
 
 export function PetPicker({
