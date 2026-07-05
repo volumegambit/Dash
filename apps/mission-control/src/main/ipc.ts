@@ -40,6 +40,7 @@ import { startCodexOAuth } from './codex-auth.js';
 import { createControlPlaneRuntime, readControlPlaneConfig } from './control-plane.js';
 import { GatewayPoller } from './gateway-poller.js';
 import { buildPairingInfo } from './pairing.js';
+import { assignAgentToTask } from './task-dispatch.js';
 
 const DATA_DIR = process.env.MC_DATA_DIR || desktopDir();
 
@@ -1167,6 +1168,26 @@ export async function registerIpcHandlers(
   );
   ipcMain.handle('projects:deleteIssue', async (_e, id: string) =>
     (await getProjectsClient()).deleteIssue(id),
+  );
+  ipcMain.handle(
+    'projects:assignAgent',
+    async (_e, issueId: string, agentId: string, agentName: string) => {
+      const client = await getProjectsClient();
+      const chat = getChatService(getWindow);
+      return assignAgentToTask(
+        {
+          getIssue: (idOrKey) => client.getIssue(idOrKey),
+          createConversation: (id) => chat.createConversation(id),
+          linkSession: (iid, sid, name) => client.linkSession(iid, sid, name),
+          patchIssue: (iid, patch) => client.patchIssue(iid, patch),
+          renameConversation: (cid, title) => chat.renameConversation(cid, title),
+          sendMessage: (cid, text) => chat.sendMessage(cid, text),
+        },
+        issueId,
+        agentId,
+        agentName,
+      );
+    },
   );
   ipcMain.handle('projects:addComment', async (_e, issueId: string, body: string) =>
     (await getProjectsClient()).addComment(issueId, body),
