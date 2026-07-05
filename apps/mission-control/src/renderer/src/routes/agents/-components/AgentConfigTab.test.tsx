@@ -12,6 +12,7 @@ function pluginRecord(name: string, patch: Partial<PluginRecord> = {}): PluginRe
     status: 'loaded',
     enabled: true,
     trusted: true,
+    builtin: false,
     activated: [],
     noop: [],
     ...patch,
