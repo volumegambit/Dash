@@ -76,13 +76,13 @@ const grid: readonly string[] = [
   '....eReeeeelllllllllllllllllleeeeeeeRe........ere.........',
   '....eeeeeeeellllllllllllllllleeeeeeee.........ele.........',
   '...eeeeeeeeeellllllllllllllleeeeeeeeee.........ere........',
-  '...eeeeeeeeeeeeelllllllllllleeeeeeeeeee.........e.........',
-  '...eeeeeeeeeeeeeeeelllllllleeeeeeeeeeeee..................',
-  '...eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee..................',
-  '...eeeeee..eeeeeeeeeeeeeeeeeeeee..eeeeee..................',
-  '...eeeee....eeeeeee....eeeeeee....eeeee...................',
-  '....eee......eeee......eeeee......eee.....................',
-  '.............eee.......eeee...............................',
+  '....eeeeeeeeellllllllllllllleeeeeeeee...........e.........',
+  '....eeeeeeeeeellllllllllllleeeeeeeeee.....................',
+  '....eeeeeeeee.eeeeee.eeeeee.eeeeeeeee.....................',
+  '....eeeeeeeee.eeeeee.eeeeee.eeeeeeeee.....................',
+  '.....eeeeeee...eeee...eeee...eeeeeee......................',
+  '..........................................................',
+  '..........................................................',
   '..........................................................',
   '..........................................................',
 ];
@@ -93,7 +93,21 @@ export const redPanda: PetSprite = {
   palette,
   grid,
   moods: {
-    idle: { collar: '#9aa0a6', cells: {} },
+    idle: {
+      collar: '#9aa0a6',
+      cells: {
+        // left eye (closed sleepy lid line across the patch)
+        '13,17': 'k',
+        '14,17': 'k',
+        '15,17': 'k',
+        '16,17': 'k',
+        // right eye (closed sleepy lid line across the patch)
+        '23,17': 'k',
+        '24,17': 'k',
+        '25,17': 'k',
+        '26,17': 'k',
+      },
+    },
     working: {
       collar: '#3da5d9',
       cells: {
