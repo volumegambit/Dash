@@ -302,9 +302,12 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
     }
   }
 
-  // Auth middleware — /health is exempt
+  // Auth middleware — /health is exempt. /projects/ws is exempt too:
+  // WebSocket clients cannot send an Authorization header, and the route
+  // (mounted on this app by the gateway via mountProjectsWs) enforces the
+  // same token itself through its ?token= query param.
   app.use('*', async (c, next) => {
-    if (c.req.path === '/health') {
+    if (c.req.path === '/health' || c.req.path === '/projects/ws') {
       await next();
       return;
     }

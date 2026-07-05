@@ -146,6 +146,44 @@ describe('TaskDetail delete', () => {
     expect(mockNavigate).not.toHaveBeenCalled();
   });
 
+  it('shows the session pane right after assign without a remount', async () => {
+    // Repro for QA 27.16 §6: assign creates a NEW conversation, so the chat
+    // store's mount-time conversations snapshot excludes it and the pane never
+    // rendered until the task was re-opened.
+    const before = detail();
+    const after = detail({ linked_sessions: [sessionLink()] });
+    useProjectsStore.setState({ detailById: { issue_1: before } });
+    mockApi.projectsGetIssue
+      .mockResolvedValueOnce(before) // mount load
+      .mockResolvedValue(after); // refetch after assign
+    mockApi.agentsList.mockResolvedValue([devAgent]);
+    mockApi.chatListConversations
+      .mockResolvedValueOnce([]) // mount load — conversation doesn't exist yet
+      .mockResolvedValue([mcConversation]);
+    mockApi.chatGetMessages.mockResolvedValue([]);
+    render(<TaskDetail />);
+
+    await userEvent.selectOptions(await screen.findByTestId('task-assign-agent'), 'agent-reg');
+    await userEvent.click(screen.getByTestId('task-assign-start'));
+
+    // Auto-switches to the new session's tab in place, no navigation/remount.
+    expect(await screen.findByPlaceholderText('Reply to the agent…')).toBeInTheDocument();
+    expect(screen.getByTestId('tab-session-conv-42')).toHaveAttribute('aria-selected', 'true');
+    expect(mockNavigate).not.toHaveBeenCalled();
+  });
+
+  it('marks a streaming session tab with an activity dot', async () => {
+    const d = detail({ linked_sessions: [sessionLink()] });
+    useProjectsStore.setState({ detailById: { issue_1: d } });
+    useChatStore.setState({ sending: { 'conv-42': true } });
+    mockApi.projectsGetIssue.mockResolvedValue(d);
+    mockApi.chatListConversations.mockResolvedValue([mcConversation]);
+    mockApi.chatGetMessages.mockResolvedValue([]);
+    render(<TaskDetail />);
+
+    expect(await screen.findByTestId('tab-dot-conv-42')).toBeInTheDocument();
+  });
+
   it('hides disabled agents from the assign picker', async () => {
     const d = detail();
     useProjectsStore.setState({ detailById: { issue_1: d } });
@@ -162,7 +200,22 @@ describe('TaskDetail delete', () => {
     expect(options).not.toContain('Retired');
   });
 
-  it('shows the latest MC-linked session in the panel automatically', async () => {
+  it('lists session tabs but defaults to the Task tab', async () => {
+    const d = detail({ linked_sessions: [sessionLink()] });
+    useProjectsStore.setState({ detailById: { issue_1: d } });
+    mockApi.projectsGetIssue.mockResolvedValue(d);
+    mockApi.chatListConversations.mockResolvedValue([mcConversation]);
+    mockApi.chatGetMessages.mockResolvedValue([]);
+    render(<TaskDetail />);
+
+    // Task tab active by default: description/timeline visible, no transcript.
+    expect(await screen.findByTestId('tab-session-conv-42')).toBeInTheDocument();
+    expect(screen.getByTestId('tab-task')).toBeInTheDocument();
+    expect(screen.getByText('No description')).toBeInTheDocument();
+    expect(screen.queryByPlaceholderText('Reply to the agent…')).not.toBeInTheDocument();
+  });
+
+  it('switching to a session tab shows the transcript; Task tab returns', async () => {
     const d = detail({ linked_sessions: [sessionLink()] });
     useProjectsStore.setState({ detailById: { issue_1: d } });
     mockApi.projectsGetIssue.mockResolvedValue(d);
@@ -177,13 +230,16 @@ describe('TaskDetail delete', () => {
     ]);
     render(<TaskDetail />);
 
-    // Transcript renders in-window without any chip interaction.
+    await userEvent.click(await screen.findByTestId('tab-session-conv-42'));
     expect(await screen.findByText(/I loaded TASK-1/)).toBeInTheDocument();
-    expect(screen.getByPlaceholderText('Reply to the agent…')).toBeInTheDocument();
+    expect(screen.queryByText('No description')).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByTestId('tab-task'));
+    expect(screen.getByText('No description')).toBeInTheDocument();
     expect(mockNavigate).not.toHaveBeenCalled();
   });
 
-  it('chip selects the session in the panel; the external-link icon opens Chat', async () => {
+  it('orders session tabs newest-first; external-link opens the active session in Chat', async () => {
     const older = sessionLink({
       session_id: 'conv-41',
       last_referenced_at: '2026-05-01T00:00:00Z',
@@ -205,17 +261,61 @@ describe('TaskDetail delete', () => {
     ]);
     render(<TaskDetail />);
 
-    // Latest session (conv-42) shows by default; picking the older chip swaps the panel.
-    expect(await screen.findByText(/transcript conv-42/)).toBeInTheDocument();
-    await userEvent.click(screen.getByTestId('session-chip-conv-41'));
-    expect(await screen.findByText(/transcript conv-41/)).toBeInTheDocument();
-    expect(mockNavigate).not.toHaveBeenCalled();
+    const tabs = await screen.findAllByTestId(/^tab-session-/);
+    expect(tabs.map((t) => t.getAttribute('data-testid'))).toEqual([
+      'tab-session-conv-42',
+      'tab-session-conv-41',
+    ]);
 
+    await userEvent.click(screen.getByTestId('tab-session-conv-41'));
+    expect(await screen.findByText(/transcript conv-41/)).toBeInTheDocument();
     await userEvent.click(screen.getByTestId('session-open-chat'));
     expect(mockNavigate).toHaveBeenCalledWith({
       to: '/chat',
       search: { agentId: '', conversationId: 'conv-41' },
     });
+  });
+
+  it('metadata lists only non-MC sessions, muted; MC sessions have no chips', async () => {
+    const d = detail({
+      linked_sessions: [sessionLink(), sessionLink({ session_id: 'telegram-1' })],
+    });
+    useProjectsStore.setState({ detailById: { issue_1: d } });
+    mockApi.projectsGetIssue.mockResolvedValue(d);
+    mockApi.chatListConversations.mockResolvedValue([mcConversation]);
+    mockApi.chatGetMessages.mockResolvedValue([]);
+    render(<TaskDetail />);
+
+    // Non-MC row is a muted, inert span with the other-channel tooltip.
+    const row = await screen.findByTitle('Session from another channel');
+    expect(row.textContent).toContain('telegram-1');
+    // The MC session has a tab, not a chip; the count reflects non-MC only.
+    expect(screen.queryByTestId('session-chip-conv-42')).not.toBeInTheDocument();
+    expect(screen.getByText('Linked sessions (1)')).toBeInTheDocument();
+  });
+
+  it('hides the linked-sessions section when every session is an MC tab', async () => {
+    const d = detail({ linked_sessions: [sessionLink()] });
+    useProjectsStore.setState({ detailById: { issue_1: d } });
+    mockApi.projectsGetIssue.mockResolvedValue(d);
+    mockApi.chatListConversations.mockResolvedValue([mcConversation]);
+    mockApi.chatGetMessages.mockResolvedValue([]);
+    render(<TaskDetail />);
+
+    await screen.findByTestId('tab-session-conv-42');
+    expect(screen.queryByText(/^Linked sessions/)).not.toBeInTheDocument();
+  });
+
+  it('renders no tab bar when the task has no MC sessions', async () => {
+    const d = detail({ linked_sessions: [sessionLink({ session_id: 'telegram-1' })] });
+    useProjectsStore.setState({ detailById: { issue_1: d } });
+    mockApi.projectsGetIssue.mockResolvedValue(d);
+    mockApi.chatListConversations.mockResolvedValue([]);
+    render(<TaskDetail />);
+
+    expect(await screen.findByText('No description')).toBeInTheDocument();
+    expect(screen.queryByTestId('tab-task')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('tab-session-telegram-1')).not.toBeInTheDocument();
   });
 
   it('hides comment_* noise rows from the timeline and stamps rows with relative time', async () => {
