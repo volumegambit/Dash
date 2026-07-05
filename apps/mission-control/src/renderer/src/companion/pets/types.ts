@@ -31,3 +31,32 @@ export interface PetSprite {
   /** Exactly the five moods. */
   moods: Record<Mood, PetMoodLayer>;
 }
+
+/** Per-mood animation for a frame-based pet: data-URI frames played on a loop. */
+export interface PetMoodAnimation {
+  /** PNG data URIs, in playback order. Always at least one frame. */
+  frames: readonly string[];
+  /** Playback speed in frames per second (default 8). */
+  fps?: number;
+  /**
+   * Mood accent color, shown as a badge dot beside the pet — the frame-based
+   * counterpart of {@link PetMoodLayer.collar}, using the same per-mood hues.
+   */
+  collar: string;
+}
+
+/** A pet rendered from pre-generated bitmap frames (e.g. PixelLab) instead of a grid. */
+export interface AnimatedPetSprite {
+  kind: PetKind;
+  /** Human label for the picker (e.g. "Red panda"). */
+  name: string;
+  /** Exactly the five moods. */
+  moods: Record<Mood, PetMoodAnimation>;
+}
+
+export type AnyPetSprite = PetSprite | AnimatedPetSprite;
+
+/** Grid pets have a `grid`; frame-based pets don't. */
+export function isAnimatedPetSprite(sprite: AnyPetSprite): sprite is AnimatedPetSprite {
+  return !('grid' in sprite);
+}
