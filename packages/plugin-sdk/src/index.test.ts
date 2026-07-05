@@ -1,10 +1,12 @@
 import type {
   CatalogAuthRule,
+  CatalogEntryFilters,
   CatalogModel,
   HookCommand,
   HookEvent,
   HookMatcherGroup,
   HooksConfig,
+  ModelsFetchSpec,
   PluginAuthor,
   PluginManifest,
   ProviderCatalog,
@@ -24,6 +26,8 @@ export type TypeSurfaceBaseline = [
   HooksConfig,
   CatalogModel,
   ProviderCatalog,
+  ModelsFetchSpec,
+  CatalogEntryFilters,
 ];
 
 describe('@dash/plugin-sdk surface', () => {
@@ -88,7 +92,54 @@ describe('@dash/plugin-sdk surface', () => {
       ui: { keyConsoleUrl: 'https://aistudio.google.com/apikey', keyPlaceholder: 'AIza…' },
     };
     expect(cat.api).toBe('google-generative-ai');
-    expect(cat.modelsFetch?.auth[0]?.queryParam).toBe('key');
+    expect((cat.modelsFetch as ModelsFetchSpec).auth[0]?.queryParam).toBe('key');
+  });
+
+  it('ProviderCatalog.modelsFetch accepts an ordered array of variants (whenKeyPrefix)', () => {
+    const cat: ProviderCatalog = {
+      id: 'openai',
+      label: 'OpenAI',
+      credentialPrefix: 'openai-api-key',
+      baseUrl: 'https://api.openai.com/v1',
+      api: 'openai-completions',
+      models: [{ id: 'o3-pro', contextWindow: 200000, maxTokens: 8192 }],
+      modelsFetch: [
+        {
+          whenKeyPrefix: 'eyJ',
+          url: 'https://chatgpt.com/backend-api/codex/models?client_version=2.0.0',
+          auth: [{ header: 'authorization', valuePrefix: 'Bearer ' }],
+          listPath: 'models',
+          idPath: 'slug',
+          namePath: 'display_name',
+        },
+        {
+          url: 'https://api.openai.com/v1/models',
+          auth: [{ header: 'authorization', valuePrefix: 'Bearer ' }],
+          listPath: 'data',
+          idPath: 'id',
+        },
+      ],
+    };
+    const variants = cat.modelsFetch as ModelsFetchSpec[];
+    expect(variants[0]?.whenKeyPrefix).toBe('eyJ');
+    expect(variants[1]?.whenKeyPrefix).toBeUndefined();
+  });
+
+  it('ModelsFetchSpec carries declarative entryFilters (OpenRouter capability filter)', () => {
+    const spec: ModelsFetchSpec = {
+      url: 'https://openrouter.ai/api/v1/models',
+      auth: [{ header: 'authorization', valuePrefix: 'Bearer ' }],
+      listPath: 'data',
+      idPath: 'id',
+      namePath: 'name',
+      entryFilters: {
+        arrayIncludes: [{ path: 'supported_parameters', value: 'tools' }],
+        excludeIdSubstrings: [':'],
+      },
+    };
+    const filters: CatalogEntryFilters | undefined = spec.entryFilters;
+    expect(filters?.arrayIncludes?.[0]?.path).toBe('supported_parameters');
+    expect(filters?.excludeIdSubstrings).toEqual([':']);
   });
 
   it('CatalogAuthRule expresses the Anthropic OAuth header swap declaratively', () => {
