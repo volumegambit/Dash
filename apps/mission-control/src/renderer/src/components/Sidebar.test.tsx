@@ -27,24 +27,41 @@ describe('Sidebar', () => {
     useUIStore.setState({ sidebarCollapsed: false });
   });
 
-  it('renders all expected nav items', () => {
+  it('renders the primary nav items and a Settings entry', () => {
     render(<Sidebar />);
     expect(screen.getByText('Chat')).toBeInTheDocument();
     expect(screen.getByText('Agents')).toBeInTheDocument();
-    expect(screen.queryByText('Secrets')).not.toBeInTheDocument();
+    expect(screen.getByText('Projects')).toBeInTheDocument();
     expect(screen.getByText('Settings')).toBeInTheDocument();
-    expect(screen.getByText('Messaging Apps')).toBeInTheDocument();
-    expect(screen.getByText('Plugins')).toBeInTheDocument();
   });
 
-  it('does not render a Dashboard nav item', () => {
+  it('does not render config destinations at top level (they live under Settings)', () => {
+    render(<Sidebar />);
+    for (const label of [
+      'AI Providers',
+      'Connectors (MCP)',
+      'Plugins',
+      'Messaging Apps',
+      'Pair Device',
+      'Web Search',
+    ]) {
+      expect(screen.queryByText(label)).not.toBeInTheDocument();
+    }
+  });
+
+  it('does not render retired nav items', () => {
     render(<Sidebar />);
     expect(screen.queryByText('Dashboard')).not.toBeInTheDocument();
+    expect(screen.queryByText('Deploy')).not.toBeInTheDocument();
+    expect(screen.queryByText('Secrets')).not.toBeInTheDocument();
   });
 
-  it('does not render a Deploy nav item', () => {
+  it('renders no section header over the primary items', () => {
     render(<Sidebar />);
-    expect(screen.queryByText('Deploy')).not.toBeInTheDocument();
+    expect(screen.queryByText('CORE')).not.toBeInTheDocument();
+    expect(screen.queryByText('MANAGE')).not.toBeInTheDocument();
+    expect(screen.queryByText('PLAN')).not.toBeInTheDocument();
+    expect(screen.queryByText('CONFIGURE')).not.toBeInTheDocument();
   });
 
   it('renders a Feedback button', () => {
@@ -75,12 +92,16 @@ describe('Sidebar', () => {
     expect(screen.queryByText('Mission Control')).not.toBeInTheDocument();
   });
 
-  it('hides section headers when collapsed', () => {
-    useUIStore.setState({ sidebarCollapsed: true });
+  it('hides the DEVELOPER section header when collapsed', () => {
+    // import.meta.env.DEV is true under vitest, so the DEVELOPER section renders
+    expect(screen.queryByText('DEVELOPER')).not.toBeInTheDocument();
+    useUIStore.setState({ sidebarCollapsed: false });
     render(<Sidebar />);
-    expect(screen.queryByText('CORE')).not.toBeInTheDocument();
-    expect(screen.queryByText('MANAGE')).not.toBeInTheDocument();
-    expect(screen.queryByText('CONFIGURE')).not.toBeInTheDocument();
+    expect(screen.getByText('DEVELOPER')).toBeInTheDocument();
+    act(() => {
+      useUIStore.setState({ sidebarCollapsed: true });
+    });
+    expect(screen.queryByText('DEVELOPER')).not.toBeInTheDocument();
   });
 
   it('shows expand buttons when collapsed', () => {

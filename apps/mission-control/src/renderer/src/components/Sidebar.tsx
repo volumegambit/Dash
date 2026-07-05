@@ -1,17 +1,12 @@
 import { Link } from '@tanstack/react-router';
 import {
   Bot,
-  Cable,
   FolderKanban,
   LifeBuoy,
   MessageCircle,
   PanelLeftClose,
   PanelLeftOpen,
-  Plug,
-  Puzzle,
-  QrCode,
   Settings,
-  Smartphone,
   Terminal,
   Zap,
 } from 'lucide-react';
@@ -31,34 +26,18 @@ interface NavItemDef {
 }
 
 interface NavSection {
-  label: string;
+  label?: string;
   items: NavItemDef[];
 }
 
+// Daily work at the top, unlabeled — three items need no taxonomy. All
+// configuration lives behind the single Settings entry in the footer.
 const sections: NavSection[] = [
   {
-    label: 'CORE',
-    items: [{ to: '/chat', label: 'Chat', icon: MessageCircle }],
-  },
-  {
-    label: 'MANAGE',
     items: [
+      { to: '/chat', label: 'Chat', icon: MessageCircle },
       { to: '/agents', label: 'Agents', icon: Bot },
-      { to: '/messaging-apps', label: 'Messaging Apps', icon: Smartphone },
-      { to: '/pair-device', label: 'Pair Device', icon: QrCode },
-    ],
-  },
-  {
-    label: 'PLAN',
-    items: [{ to: '/projects', label: 'Projects', icon: FolderKanban }],
-  },
-  {
-    label: 'CONFIGURE',
-    items: [
-      { to: '/connections', label: 'AI Providers', icon: Plug },
-      { to: '/connectors', label: 'Connectors (MCP)', icon: Cable },
-      { to: '/plugins', label: 'Plugins', icon: Puzzle },
-      { to: '/settings', label: 'Settings', icon: Settings },
+      { to: '/projects', label: 'Projects', icon: FolderKanban },
     ],
   },
   ...(import.meta.env.DEV
@@ -101,6 +80,12 @@ export function Sidebar(): JSX.Element {
     </button>
   );
 
+  const navItemClass = `flex items-center transition-colors [&.active]:bg-sidebar-active [&.active]:text-foreground [&.active]:font-semibold [&.active]:border-l-[3px] [&.active]:border-accent ${
+    collapsed
+      ? 'justify-center h-9 px-0 text-muted hover:bg-sidebar-hover hover:text-foreground'
+      : 'gap-2.5 h-9 px-3 text-sm text-muted hover:bg-sidebar-hover hover:text-foreground'
+  }`;
+
   return (
     <aside
       className={`flex h-full shrink-0 flex-col border-r border-border bg-sidebar-bg transition-[width] duration-200 ${
@@ -132,8 +117,8 @@ export function Sidebar(): JSX.Element {
       {/* Nav */}
       <nav className="flex flex-1 flex-col gap-0.5 overflow-y-auto py-2">
         {sections.map((section, sectionIndex) => (
-          <div key={section.label}>
-            {!collapsed && (
+          <div key={section.label ?? sectionIndex}>
+            {!collapsed && section.label && (
               <span
                 className={`block font-[family-name:var(--font-mono)] text-[9px] font-semibold uppercase tracking-[3px] text-accent px-3 py-1.5${sectionIndex > 0 ? ' pt-4' : ''}`}
               >
@@ -147,11 +132,7 @@ export function Sidebar(): JSX.Element {
                 to={item.to}
                 onClick={collapsed ? expandSidebar : undefined}
                 title={collapsed ? item.label : undefined}
-                className={`flex items-center transition-colors [&.active]:bg-sidebar-active [&.active]:text-foreground [&.active]:font-semibold [&.active]:border-l-[3px] [&.active]:border-accent ${
-                  collapsed
-                    ? 'justify-center h-9 px-0 text-muted hover:bg-sidebar-hover hover:text-foreground'
-                    : 'gap-2.5 h-9 px-3 text-sm text-muted hover:bg-sidebar-hover hover:text-foreground'
-                }`}
+                className={navItemClass}
               >
                 <item.icon size={16} />
                 {!collapsed && item.label}
@@ -161,21 +142,34 @@ export function Sidebar(): JSX.Element {
         ))}
       </nav>
 
-      {/* Footer */}
-      <div className={`flex items-center gap-2 py-3 ${collapsed ? 'flex-col px-0' : 'px-3'}`}>
-        {!collapsed && (
-          <>
-            <LifeBuoy size={14} className="text-muted" />
-            <button
-              type="button"
-              onClick={() => window.api.openExternal('https://discord.gg/REPLACE_WITH_REAL_INVITE')}
-              className="font-[family-name:var(--font-mono)] text-[11px] text-muted tracking-wide hover:text-foreground transition-colors"
-            >
-              Feedback
-            </button>
-          </>
-        )}
-        <div className={collapsed ? '' : 'ml-auto'}>{toggleButton}</div>
+      {/* Footer: Settings entry, then feedback + collapse */}
+      <div className="border-t border-border pt-2">
+        <Link
+          to="/settings"
+          onClick={collapsed ? expandSidebar : undefined}
+          title={collapsed ? 'Settings' : undefined}
+          className={navItemClass}
+        >
+          <Settings size={16} />
+          {!collapsed && 'Settings'}
+        </Link>
+        <div className={`flex items-center gap-2 py-3 ${collapsed ? 'flex-col px-0' : 'px-3'}`}>
+          {!collapsed && (
+            <>
+              <LifeBuoy size={14} className="text-muted" />
+              <button
+                type="button"
+                onClick={() =>
+                  window.api.openExternal('https://discord.gg/REPLACE_WITH_REAL_INVITE')
+                }
+                className="font-[family-name:var(--font-mono)] text-[11px] text-muted tracking-wide hover:text-foreground transition-colors"
+              >
+                Feedback
+              </button>
+            </>
+          )}
+          <div className={collapsed ? '' : 'ml-auto'}>{toggleButton}</div>
+        </div>
       </div>
     </aside>
   );

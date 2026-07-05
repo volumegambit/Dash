@@ -357,6 +357,12 @@ export interface MissionControlAPI {
   projectsCreateIssue(input: CreateIssueInput): Promise<Issue>;
   projectsGetIssue(id: string): Promise<IssueDetail>;
   projectsPatchIssue(id: string, patch: Partial<Issue>): Promise<Issue>;
+  projectsDeleteIssue(id: string): Promise<void>;
+  /** Dispatch an agent onto a task: creates a chat conversation, links it to
+   *  the issue, sets in_progress/agent_working, and sends the kickoff
+   *  message. `agentName` is config.name (the session-link key), `agentId`
+   *  the registry id. Resolves to the new conversation id. */
+  projectsAssignAgent(issueId: string, agentId: string, agentName: string): Promise<string>;
   projectsAddComment(issueId: string, body: string): Promise<IssueComment>;
   projectsEditComment(issueId: string, commentId: string, body: string): Promise<IssueComment>;
   projectsDeleteComment(issueId: string, commentId: string): Promise<void>;

@@ -106,6 +106,25 @@ describe('projects WebSocket', () => {
     ws.close();
   });
 
+  it('broadcasts issue.deleted with a BARE Issue payload', async () => {
+    const issue = db.issues.create({
+      title: 'Doomed task',
+      project_id: null,
+      parent_issue_id: null,
+      created_by: 'human',
+      created_by_agent_id: null,
+    });
+    const ws = await connect(TOKEN);
+    const frame = nextFrame(ws, 'issue.deleted');
+
+    db.issues.delete(issue.id);
+
+    const msg = await frame;
+    expect(msg.payload.id).toBe(issue.id);
+    expect(msg.payload.title).toBe('Doomed task');
+    ws.close();
+  });
+
   it('broadcasts comment.added normalized to { issue_id }', async () => {
     const issue = db.issues.create({
       title: 'Discuss',

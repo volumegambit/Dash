@@ -2,7 +2,7 @@ import type { GatewayChannel } from '@dash/mc';
 import { Link, createFileRoute } from '@tanstack/react-router';
 import { MessageSquare, Plus } from 'lucide-react';
 import { useEffect } from 'react';
-import { useChannelsStore } from '../../stores/messaging-apps.js';
+import { useChannelsStore } from '../../../stores/messaging-apps.js';
 
 function PlatformIcon({ type }: { type: string }): JSX.Element {
   if (type === 'whatsapp') {
@@ -61,14 +61,14 @@ function MessagingApps(): JSX.Element {
         </h1>
         <div className="flex items-center gap-2">
           <Link
-            to="/messaging-apps/new-telegram"
+            to="/settings/messaging-apps/new-telegram"
             className="inline-flex items-center gap-2 rounded-lg border border-border px-4 py-2 text-sm text-muted transition-colors hover:bg-card-hover hover:text-foreground"
           >
             <Plus size={16} />
             Add Telegram
           </Link>
           <Link
-            to="/messaging-apps/new-whatsapp"
+            to="/settings/messaging-apps/new-whatsapp"
             className="inline-flex items-center gap-2 rounded-lg bg-accent px-4 py-2 text-sm text-white transition-colors hover:opacity-90"
           >
             <Plus size={16} />
@@ -93,7 +93,7 @@ function MessagingApps(): JSX.Element {
             </p>
             <div className="mt-3 flex items-center justify-center gap-3">
               <Link
-                to="/messaging-apps/new-telegram"
+                to="/settings/messaging-apps/new-telegram"
                 className="inline-flex items-center gap-1 text-sm text-accent hover:underline"
               >
                 <Plus size={14} />
@@ -101,7 +101,7 @@ function MessagingApps(): JSX.Element {
               </Link>
               <span className="text-muted">·</span>
               <Link
-                to="/messaging-apps/new-whatsapp"
+                to="/settings/messaging-apps/new-whatsapp"
                 className="inline-flex items-center gap-1 text-sm text-accent hover:underline"
               >
                 <Plus size={14} />
@@ -130,7 +130,7 @@ function ChannelCard({
 }): JSX.Element {
   return (
     <Link
-      to="/messaging-apps/$id"
+      to="/settings/messaging-apps/$id"
       params={{ id: channel.name }}
       className="bg-card-bg border border-border p-5 flex flex-col gap-3 hover:bg-card-hover transition-colors cursor-pointer"
     >
@@ -153,6 +153,6 @@ function ChannelCard({
   );
 }
 
-export const Route = createFileRoute('/messaging-apps/')({
+export const Route = createFileRoute('/settings/messaging-apps/')({
   component: MessagingApps,
 });

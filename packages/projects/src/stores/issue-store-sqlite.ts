@@ -140,6 +140,8 @@ export class IssueStoreSqlite implements IssueStore {
   private readonly detailEventsStmt: Statement;
   private readonly detailSessionsStmt: Statement;
   private readonly detailSubtasksStmt: Statement;
+  private readonly deleteStmt: Statement;
+  private readonly deleteInboxReadStmt: Statement;
 
   constructor(
     private readonly db: DatabaseType,
@@ -177,6 +179,8 @@ export class IssueStoreSqlite implements IssueStore {
     this.detailSubtasksStmt = db.prepare(
       'SELECT * FROM issue WHERE parent_issue_id = ? ORDER BY created_at ASC, rowid ASC',
     );
+    this.deleteStmt = db.prepare('DELETE FROM issue WHERE id = ?');
+    this.deleteInboxReadStmt = db.prepare('DELETE FROM inbox_read WHERE issue_id = ?');
   }
 
   /**
@@ -410,5 +414,28 @@ export class IssueStoreSqlite implements IssueStore {
 
     this.emitter.emit('issue.updated', { issue: next });
     return next;
+  }
+
+  delete(id: string): Issue {
+    const current = this.get(id);
+    if (!current) throw new Error(`issue not found: ${id}`);
+
+    // Snapshot subtasks before the row goes away — the FK cascade removes
+    // them silently, and consumers get one issue.deleted per vanished issue.
+    const subtasks = (this.detailSubtasksStmt.all(id) as IssueRow[]).map(toIssue);
+
+    const txn = this.db.transaction(() => {
+      // inbox_read has no FK on issue — clean it up by hand.
+      this.deleteInboxReadStmt.run(id);
+      for (const st of subtasks) this.deleteInboxReadStmt.run(st.id);
+      // Cascades take issue_comment, issue_event, session_issue_link, and
+      // child issues (schema: ON DELETE CASCADE; foreign_keys=ON at open).
+      this.deleteStmt.run(id);
+    });
+    txn.immediate();
+
+    this.emitter.emit('issue.deleted', { issue: current });
+    for (const st of subtasks) this.emitter.emit('issue.deleted', { issue: st });
+    return current;
   }
 }

@@ -12,28 +12,29 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as UnderTheHoodRouteImport } from './routes/under-the-hood'
 import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as ProjectsRouteImport } from './routes/projects'
-import { Route as PluginsRouteImport } from './routes/plugins'
-import { Route as PairDeviceRouteImport } from './routes/pair-device'
-import { Route as MessagingAppsRouteImport } from './routes/messaging-apps'
 import { Route as DeployRouteImport } from './routes/deploy'
-import { Route as ConnectorsRouteImport } from './routes/connectors'
-import { Route as ConnectionsRouteImport } from './routes/connections'
 import { Route as ChatRouteImport } from './routes/chat'
 import { Route as AgentsRouteImport } from './routes/agents'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as SettingsIndexRouteImport } from './routes/settings/index'
 import { Route as ProjectsIndexRouteImport } from './routes/projects/index'
-import { Route as MessagingAppsIndexRouteImport } from './routes/messaging-apps/index'
 import { Route as AgentsIndexRouteImport } from './routes/agents/index'
+import { Route as SettingsPluginsRouteImport } from './routes/settings/plugins'
+import { Route as SettingsDevicesRouteImport } from './routes/settings/devices'
+import { Route as SettingsConnectorsRouteImport } from './routes/settings/connectors'
+import { Route as SettingsAiProvidersRouteImport } from './routes/settings/ai-providers'
+import { Route as SettingsAgentDefaultsRouteImport } from './routes/settings/agent-defaults'
 import { Route as ProjectsMyWorkRouteImport } from './routes/projects/my-work'
 import { Route as ProjectsListRouteImport } from './routes/projects/list'
 import { Route as ProjectsKanbanRouteImport } from './routes/projects/kanban'
 import { Route as ProjectsInboxRouteImport } from './routes/projects/inbox'
 import { Route as ProjectsAllRouteImport } from './routes/projects/all'
 import { Route as ProjectsProjectIdRouteImport } from './routes/projects/$projectId'
-import { Route as MessagingAppsNewWhatsappRouteImport } from './routes/messaging-apps/new-whatsapp'
-import { Route as MessagingAppsNewTelegramRouteImport } from './routes/messaging-apps/new-telegram'
-import { Route as MessagingAppsIdRouteImport } from './routes/messaging-apps/$id'
 import { Route as AgentsIdRouteImport } from './routes/agents/$id'
+import { Route as SettingsMessagingAppsIndexRouteImport } from './routes/settings/messaging-apps/index'
+import { Route as SettingsMessagingAppsNewWhatsappRouteImport } from './routes/settings/messaging-apps/new-whatsapp'
+import { Route as SettingsMessagingAppsNewTelegramRouteImport } from './routes/settings/messaging-apps/new-telegram'
+import { Route as SettingsMessagingAppsIdRouteImport } from './routes/settings/messaging-apps/$id'
 import { Route as ProjectsIssuesIssueIdRouteImport } from './routes/projects/issues.$issueId'
 
 const UnderTheHoodRoute = UnderTheHoodRouteImport.update({
@@ -51,34 +52,9 @@ const ProjectsRoute = ProjectsRouteImport.update({
   path: '/projects',
   getParentRoute: () => rootRouteImport,
 } as any)
-const PluginsRoute = PluginsRouteImport.update({
-  id: '/plugins',
-  path: '/plugins',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const PairDeviceRoute = PairDeviceRouteImport.update({
-  id: '/pair-device',
-  path: '/pair-device',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const MessagingAppsRoute = MessagingAppsRouteImport.update({
-  id: '/messaging-apps',
-  path: '/messaging-apps',
-  getParentRoute: () => rootRouteImport,
-} as any)
 const DeployRoute = DeployRouteImport.update({
   id: '/deploy',
   path: '/deploy',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const ConnectorsRoute = ConnectorsRouteImport.update({
-  id: '/connectors',
-  path: '/connectors',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const ConnectionsRoute = ConnectionsRouteImport.update({
-  id: '/connections',
-  path: '/connections',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ChatRoute = ChatRouteImport.update({
@@ -96,20 +72,45 @@ const IndexRoute = IndexRouteImport.update({
   path: '/',
   getParentRoute: () => rootRouteImport,
 } as any)
+const SettingsIndexRoute = SettingsIndexRouteImport.update({
+  id: '/',
+  path: '/',
+  getParentRoute: () => SettingsRoute,
+} as any)
 const ProjectsIndexRoute = ProjectsIndexRouteImport.update({
   id: '/',
   path: '/',
   getParentRoute: () => ProjectsRoute,
 } as any)
-const MessagingAppsIndexRoute = MessagingAppsIndexRouteImport.update({
-  id: '/',
-  path: '/',
-  getParentRoute: () => MessagingAppsRoute,
-} as any)
 const AgentsIndexRoute = AgentsIndexRouteImport.update({
   id: '/',
   path: '/',
   getParentRoute: () => AgentsRoute,
+} as any)
+const SettingsPluginsRoute = SettingsPluginsRouteImport.update({
+  id: '/plugins',
+  path: '/plugins',
+  getParentRoute: () => SettingsRoute,
+} as any)
+const SettingsDevicesRoute = SettingsDevicesRouteImport.update({
+  id: '/devices',
+  path: '/devices',
+  getParentRoute: () => SettingsRoute,
+} as any)
+const SettingsConnectorsRoute = SettingsConnectorsRouteImport.update({
+  id: '/connectors',
+  path: '/connectors',
+  getParentRoute: () => SettingsRoute,
+} as any)
+const SettingsAiProvidersRoute = SettingsAiProvidersRouteImport.update({
+  id: '/ai-providers',
+  path: '/ai-providers',
+  getParentRoute: () => SettingsRoute,
+} as any)
+const SettingsAgentDefaultsRoute = SettingsAgentDefaultsRouteImport.update({
+  id: '/agent-defaults',
+  path: '/agent-defaults',
+  getParentRoute: () => SettingsRoute,
 } as any)
 const ProjectsMyWorkRoute = ProjectsMyWorkRouteImport.update({
   id: '/my-work',
@@ -141,27 +142,33 @@ const ProjectsProjectIdRoute = ProjectsProjectIdRouteImport.update({
   path: '/$projectId',
   getParentRoute: () => ProjectsRoute,
 } as any)
-const MessagingAppsNewWhatsappRoute =
-  MessagingAppsNewWhatsappRouteImport.update({
-    id: '/new-whatsapp',
-    path: '/new-whatsapp',
-    getParentRoute: () => MessagingAppsRoute,
-  } as any)
-const MessagingAppsNewTelegramRoute =
-  MessagingAppsNewTelegramRouteImport.update({
-    id: '/new-telegram',
-    path: '/new-telegram',
-    getParentRoute: () => MessagingAppsRoute,
-  } as any)
-const MessagingAppsIdRoute = MessagingAppsIdRouteImport.update({
-  id: '/$id',
-  path: '/$id',
-  getParentRoute: () => MessagingAppsRoute,
-} as any)
 const AgentsIdRoute = AgentsIdRouteImport.update({
   id: '/$id',
   path: '/$id',
   getParentRoute: () => AgentsRoute,
+} as any)
+const SettingsMessagingAppsIndexRoute =
+  SettingsMessagingAppsIndexRouteImport.update({
+    id: '/messaging-apps/',
+    path: '/messaging-apps/',
+    getParentRoute: () => SettingsRoute,
+  } as any)
+const SettingsMessagingAppsNewWhatsappRoute =
+  SettingsMessagingAppsNewWhatsappRouteImport.update({
+    id: '/messaging-apps/new-whatsapp',
+    path: '/messaging-apps/new-whatsapp',
+    getParentRoute: () => SettingsRoute,
+  } as any)
+const SettingsMessagingAppsNewTelegramRoute =
+  SettingsMessagingAppsNewTelegramRouteImport.update({
+    id: '/messaging-apps/new-telegram',
+    path: '/messaging-apps/new-telegram',
+    getParentRoute: () => SettingsRoute,
+  } as any)
+const SettingsMessagingAppsIdRoute = SettingsMessagingAppsIdRouteImport.update({
+  id: '/messaging-apps/$id',
+  path: '/messaging-apps/$id',
+  getParentRoute: () => SettingsRoute,
 } as any)
 const ProjectsIssuesIssueIdRoute = ProjectsIssuesIssueIdRouteImport.update({
   id: '/issues/$issueId',
@@ -173,83 +180,86 @@ export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/agents': typeof AgentsRouteWithChildren
   '/chat': typeof ChatRoute
-  '/connections': typeof ConnectionsRoute
-  '/connectors': typeof ConnectorsRoute
   '/deploy': typeof DeployRoute
-  '/messaging-apps': typeof MessagingAppsRouteWithChildren
-  '/pair-device': typeof PairDeviceRoute
-  '/plugins': typeof PluginsRoute
   '/projects': typeof ProjectsRouteWithChildren
-  '/settings': typeof SettingsRoute
+  '/settings': typeof SettingsRouteWithChildren
   '/under-the-hood': typeof UnderTheHoodRoute
   '/agents/$id': typeof AgentsIdRoute
-  '/messaging-apps/$id': typeof MessagingAppsIdRoute
-  '/messaging-apps/new-telegram': typeof MessagingAppsNewTelegramRoute
-  '/messaging-apps/new-whatsapp': typeof MessagingAppsNewWhatsappRoute
   '/projects/$projectId': typeof ProjectsProjectIdRoute
   '/projects/all': typeof ProjectsAllRoute
   '/projects/inbox': typeof ProjectsInboxRoute
   '/projects/kanban': typeof ProjectsKanbanRoute
   '/projects/list': typeof ProjectsListRoute
   '/projects/my-work': typeof ProjectsMyWorkRoute
+  '/settings/agent-defaults': typeof SettingsAgentDefaultsRoute
+  '/settings/ai-providers': typeof SettingsAiProvidersRoute
+  '/settings/connectors': typeof SettingsConnectorsRoute
+  '/settings/devices': typeof SettingsDevicesRoute
+  '/settings/plugins': typeof SettingsPluginsRoute
   '/agents/': typeof AgentsIndexRoute
-  '/messaging-apps/': typeof MessagingAppsIndexRoute
   '/projects/': typeof ProjectsIndexRoute
+  '/settings/': typeof SettingsIndexRoute
   '/projects/issues/$issueId': typeof ProjectsIssuesIssueIdRoute
+  '/settings/messaging-apps/$id': typeof SettingsMessagingAppsIdRoute
+  '/settings/messaging-apps/new-telegram': typeof SettingsMessagingAppsNewTelegramRoute
+  '/settings/messaging-apps/new-whatsapp': typeof SettingsMessagingAppsNewWhatsappRoute
+  '/settings/messaging-apps/': typeof SettingsMessagingAppsIndexRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/chat': typeof ChatRoute
-  '/connections': typeof ConnectionsRoute
-  '/connectors': typeof ConnectorsRoute
   '/deploy': typeof DeployRoute
-  '/pair-device': typeof PairDeviceRoute
-  '/plugins': typeof PluginsRoute
-  '/settings': typeof SettingsRoute
   '/under-the-hood': typeof UnderTheHoodRoute
   '/agents/$id': typeof AgentsIdRoute
-  '/messaging-apps/$id': typeof MessagingAppsIdRoute
-  '/messaging-apps/new-telegram': typeof MessagingAppsNewTelegramRoute
-  '/messaging-apps/new-whatsapp': typeof MessagingAppsNewWhatsappRoute
   '/projects/$projectId': typeof ProjectsProjectIdRoute
   '/projects/all': typeof ProjectsAllRoute
   '/projects/inbox': typeof ProjectsInboxRoute
   '/projects/kanban': typeof ProjectsKanbanRoute
   '/projects/list': typeof ProjectsListRoute
   '/projects/my-work': typeof ProjectsMyWorkRoute
+  '/settings/agent-defaults': typeof SettingsAgentDefaultsRoute
+  '/settings/ai-providers': typeof SettingsAiProvidersRoute
+  '/settings/connectors': typeof SettingsConnectorsRoute
+  '/settings/devices': typeof SettingsDevicesRoute
+  '/settings/plugins': typeof SettingsPluginsRoute
   '/agents': typeof AgentsIndexRoute
-  '/messaging-apps': typeof MessagingAppsIndexRoute
   '/projects': typeof ProjectsIndexRoute
+  '/settings': typeof SettingsIndexRoute
   '/projects/issues/$issueId': typeof ProjectsIssuesIssueIdRoute
+  '/settings/messaging-apps/$id': typeof SettingsMessagingAppsIdRoute
+  '/settings/messaging-apps/new-telegram': typeof SettingsMessagingAppsNewTelegramRoute
+  '/settings/messaging-apps/new-whatsapp': typeof SettingsMessagingAppsNewWhatsappRoute
+  '/settings/messaging-apps': typeof SettingsMessagingAppsIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/agents': typeof AgentsRouteWithChildren
   '/chat': typeof ChatRoute
-  '/connections': typeof ConnectionsRoute
-  '/connectors': typeof ConnectorsRoute
   '/deploy': typeof DeployRoute
-  '/messaging-apps': typeof MessagingAppsRouteWithChildren
-  '/pair-device': typeof PairDeviceRoute
-  '/plugins': typeof PluginsRoute
   '/projects': typeof ProjectsRouteWithChildren
-  '/settings': typeof SettingsRoute
+  '/settings': typeof SettingsRouteWithChildren
   '/under-the-hood': typeof UnderTheHoodRoute
   '/agents/$id': typeof AgentsIdRoute
-  '/messaging-apps/$id': typeof MessagingAppsIdRoute
-  '/messaging-apps/new-telegram': typeof MessagingAppsNewTelegramRoute
-  '/messaging-apps/new-whatsapp': typeof MessagingAppsNewWhatsappRoute
   '/projects/$projectId': typeof ProjectsProjectIdRoute
   '/projects/all': typeof ProjectsAllRoute
   '/projects/inbox': typeof ProjectsInboxRoute
   '/projects/kanban': typeof ProjectsKanbanRoute
   '/projects/list': typeof ProjectsListRoute
   '/projects/my-work': typeof ProjectsMyWorkRoute
+  '/settings/agent-defaults': typeof SettingsAgentDefaultsRoute
+  '/settings/ai-providers': typeof SettingsAiProvidersRoute
+  '/settings/connectors': typeof SettingsConnectorsRoute
+  '/settings/devices': typeof SettingsDevicesRoute
+  '/settings/plugins': typeof SettingsPluginsRoute
   '/agents/': typeof AgentsIndexRoute
-  '/messaging-apps/': typeof MessagingAppsIndexRoute
   '/projects/': typeof ProjectsIndexRoute
+  '/settings/': typeof SettingsIndexRoute
   '/projects/issues/$issueId': typeof ProjectsIssuesIssueIdRoute
+  '/settings/messaging-apps/$id': typeof SettingsMessagingAppsIdRoute
+  '/settings/messaging-apps/new-telegram': typeof SettingsMessagingAppsNewTelegramRoute
+  '/settings/messaging-apps/new-whatsapp': typeof SettingsMessagingAppsNewWhatsappRoute
+  '/settings/messaging-apps/': typeof SettingsMessagingAppsIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -257,96 +267,94 @@ export interface FileRouteTypes {
     | '/'
     | '/agents'
     | '/chat'
-    | '/connections'
-    | '/connectors'
     | '/deploy'
-    | '/messaging-apps'
-    | '/pair-device'
-    | '/plugins'
     | '/projects'
     | '/settings'
     | '/under-the-hood'
     | '/agents/$id'
-    | '/messaging-apps/$id'
-    | '/messaging-apps/new-telegram'
-    | '/messaging-apps/new-whatsapp'
     | '/projects/$projectId'
     | '/projects/all'
     | '/projects/inbox'
     | '/projects/kanban'
     | '/projects/list'
     | '/projects/my-work'
+    | '/settings/agent-defaults'
+    | '/settings/ai-providers'
+    | '/settings/connectors'
+    | '/settings/devices'
+    | '/settings/plugins'
     | '/agents/'
-    | '/messaging-apps/'
     | '/projects/'
+    | '/settings/'
     | '/projects/issues/$issueId'
+    | '/settings/messaging-apps/$id'
+    | '/settings/messaging-apps/new-telegram'
+    | '/settings/messaging-apps/new-whatsapp'
+    | '/settings/messaging-apps/'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
     | '/chat'
-    | '/connections'
-    | '/connectors'
     | '/deploy'
-    | '/pair-device'
-    | '/plugins'
-    | '/settings'
     | '/under-the-hood'
     | '/agents/$id'
-    | '/messaging-apps/$id'
-    | '/messaging-apps/new-telegram'
-    | '/messaging-apps/new-whatsapp'
     | '/projects/$projectId'
     | '/projects/all'
     | '/projects/inbox'
     | '/projects/kanban'
     | '/projects/list'
     | '/projects/my-work'
+    | '/settings/agent-defaults'
+    | '/settings/ai-providers'
+    | '/settings/connectors'
+    | '/settings/devices'
+    | '/settings/plugins'
     | '/agents'
-    | '/messaging-apps'
     | '/projects'
+    | '/settings'
     | '/projects/issues/$issueId'
+    | '/settings/messaging-apps/$id'
+    | '/settings/messaging-apps/new-telegram'
+    | '/settings/messaging-apps/new-whatsapp'
+    | '/settings/messaging-apps'
   id:
     | '__root__'
     | '/'
     | '/agents'
     | '/chat'
-    | '/connections'
-    | '/connectors'
     | '/deploy'
-    | '/messaging-apps'
-    | '/pair-device'
-    | '/plugins'
     | '/projects'
     | '/settings'
     | '/under-the-hood'
     | '/agents/$id'
-    | '/messaging-apps/$id'
-    | '/messaging-apps/new-telegram'
-    | '/messaging-apps/new-whatsapp'
     | '/projects/$projectId'
     | '/projects/all'
     | '/projects/inbox'
     | '/projects/kanban'
     | '/projects/list'
     | '/projects/my-work'
+    | '/settings/agent-defaults'
+    | '/settings/ai-providers'
+    | '/settings/connectors'
+    | '/settings/devices'
+    | '/settings/plugins'
     | '/agents/'
-    | '/messaging-apps/'
     | '/projects/'
+    | '/settings/'
     | '/projects/issues/$issueId'
+    | '/settings/messaging-apps/$id'
+    | '/settings/messaging-apps/new-telegram'
+    | '/settings/messaging-apps/new-whatsapp'
+    | '/settings/messaging-apps/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   AgentsRoute: typeof AgentsRouteWithChildren
   ChatRoute: typeof ChatRoute
-  ConnectionsRoute: typeof ConnectionsRoute
-  ConnectorsRoute: typeof ConnectorsRoute
   DeployRoute: typeof DeployRoute
-  MessagingAppsRoute: typeof MessagingAppsRouteWithChildren
-  PairDeviceRoute: typeof PairDeviceRoute
-  PluginsRoute: typeof PluginsRoute
   ProjectsRoute: typeof ProjectsRouteWithChildren
-  SettingsRoute: typeof SettingsRoute
+  SettingsRoute: typeof SettingsRouteWithChildren
   UnderTheHoodRoute: typeof UnderTheHoodRoute
 }
 
@@ -373,46 +381,11 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ProjectsRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/plugins': {
-      id: '/plugins'
-      path: '/plugins'
-      fullPath: '/plugins'
-      preLoaderRoute: typeof PluginsRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/pair-device': {
-      id: '/pair-device'
-      path: '/pair-device'
-      fullPath: '/pair-device'
-      preLoaderRoute: typeof PairDeviceRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/messaging-apps': {
-      id: '/messaging-apps'
-      path: '/messaging-apps'
-      fullPath: '/messaging-apps'
-      preLoaderRoute: typeof MessagingAppsRouteImport
-      parentRoute: typeof rootRouteImport
-    }
     '/deploy': {
       id: '/deploy'
       path: '/deploy'
       fullPath: '/deploy'
       preLoaderRoute: typeof DeployRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/connectors': {
-      id: '/connectors'
-      path: '/connectors'
-      fullPath: '/connectors'
-      preLoaderRoute: typeof ConnectorsRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/connections': {
-      id: '/connections'
-      path: '/connections'
-      fullPath: '/connections'
-      preLoaderRoute: typeof ConnectionsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/chat': {
@@ -436,6 +409,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/settings/': {
+      id: '/settings/'
+      path: '/'
+      fullPath: '/settings/'
+      preLoaderRoute: typeof SettingsIndexRouteImport
+      parentRoute: typeof SettingsRoute
+    }
     '/projects/': {
       id: '/projects/'
       path: '/'
@@ -443,19 +423,47 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ProjectsIndexRouteImport
       parentRoute: typeof ProjectsRoute
     }
-    '/messaging-apps/': {
-      id: '/messaging-apps/'
-      path: '/'
-      fullPath: '/messaging-apps/'
-      preLoaderRoute: typeof MessagingAppsIndexRouteImport
-      parentRoute: typeof MessagingAppsRoute
-    }
     '/agents/': {
       id: '/agents/'
       path: '/'
       fullPath: '/agents/'
       preLoaderRoute: typeof AgentsIndexRouteImport
       parentRoute: typeof AgentsRoute
+    }
+    '/settings/plugins': {
+      id: '/settings/plugins'
+      path: '/plugins'
+      fullPath: '/settings/plugins'
+      preLoaderRoute: typeof SettingsPluginsRouteImport
+      parentRoute: typeof SettingsRoute
+    }
+    '/settings/devices': {
+      id: '/settings/devices'
+      path: '/devices'
+      fullPath: '/settings/devices'
+      preLoaderRoute: typeof SettingsDevicesRouteImport
+      parentRoute: typeof SettingsRoute
+    }
+    '/settings/connectors': {
+      id: '/settings/connectors'
+      path: '/connectors'
+      fullPath: '/settings/connectors'
+      preLoaderRoute: typeof SettingsConnectorsRouteImport
+      parentRoute: typeof SettingsRoute
+    }
+    '/settings/ai-providers': {
+      id: '/settings/ai-providers'
+      path: '/ai-providers'
+      fullPath: '/settings/ai-providers'
+      preLoaderRoute: typeof SettingsAiProvidersRouteImport
+      parentRoute: typeof SettingsRoute
+    }
+    '/settings/agent-defaults': {
+      id: '/settings/agent-defaults'
+      path: '/agent-defaults'
+      fullPath: '/settings/agent-defaults'
+      preLoaderRoute: typeof SettingsAgentDefaultsRouteImport
+      parentRoute: typeof SettingsRoute
     }
     '/projects/my-work': {
       id: '/projects/my-work'
@@ -499,33 +507,40 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ProjectsProjectIdRouteImport
       parentRoute: typeof ProjectsRoute
     }
-    '/messaging-apps/new-whatsapp': {
-      id: '/messaging-apps/new-whatsapp'
-      path: '/new-whatsapp'
-      fullPath: '/messaging-apps/new-whatsapp'
-      preLoaderRoute: typeof MessagingAppsNewWhatsappRouteImport
-      parentRoute: typeof MessagingAppsRoute
-    }
-    '/messaging-apps/new-telegram': {
-      id: '/messaging-apps/new-telegram'
-      path: '/new-telegram'
-      fullPath: '/messaging-apps/new-telegram'
-      preLoaderRoute: typeof MessagingAppsNewTelegramRouteImport
-      parentRoute: typeof MessagingAppsRoute
-    }
-    '/messaging-apps/$id': {
-      id: '/messaging-apps/$id'
-      path: '/$id'
-      fullPath: '/messaging-apps/$id'
-      preLoaderRoute: typeof MessagingAppsIdRouteImport
-      parentRoute: typeof MessagingAppsRoute
-    }
     '/agents/$id': {
       id: '/agents/$id'
       path: '/$id'
       fullPath: '/agents/$id'
       preLoaderRoute: typeof AgentsIdRouteImport
       parentRoute: typeof AgentsRoute
+    }
+    '/settings/messaging-apps/': {
+      id: '/settings/messaging-apps/'
+      path: '/messaging-apps'
+      fullPath: '/settings/messaging-apps/'
+      preLoaderRoute: typeof SettingsMessagingAppsIndexRouteImport
+      parentRoute: typeof SettingsRoute
+    }
+    '/settings/messaging-apps/new-whatsapp': {
+      id: '/settings/messaging-apps/new-whatsapp'
+      path: '/messaging-apps/new-whatsapp'
+      fullPath: '/settings/messaging-apps/new-whatsapp'
+      preLoaderRoute: typeof SettingsMessagingAppsNewWhatsappRouteImport
+      parentRoute: typeof SettingsRoute
+    }
+    '/settings/messaging-apps/new-telegram': {
+      id: '/settings/messaging-apps/new-telegram'
+      path: '/messaging-apps/new-telegram'
+      fullPath: '/settings/messaging-apps/new-telegram'
+      preLoaderRoute: typeof SettingsMessagingAppsNewTelegramRouteImport
+      parentRoute: typeof SettingsRoute
+    }
+    '/settings/messaging-apps/$id': {
+      id: '/settings/messaging-apps/$id'
+      path: '/messaging-apps/$id'
+      fullPath: '/settings/messaging-apps/$id'
+      preLoaderRoute: typeof SettingsMessagingAppsIdRouteImport
+      parentRoute: typeof SettingsRoute
     }
     '/projects/issues/$issueId': {
       id: '/projects/issues/$issueId'
@@ -549,24 +564,6 @@ const AgentsRouteChildren: AgentsRouteChildren = {
 
 const AgentsRouteWithChildren =
   AgentsRoute._addFileChildren(AgentsRouteChildren)
-
-interface MessagingAppsRouteChildren {
-  MessagingAppsIdRoute: typeof MessagingAppsIdRoute
-  MessagingAppsNewTelegramRoute: typeof MessagingAppsNewTelegramRoute
-  MessagingAppsNewWhatsappRoute: typeof MessagingAppsNewWhatsappRoute
-  MessagingAppsIndexRoute: typeof MessagingAppsIndexRoute
-}
-
-const MessagingAppsRouteChildren: MessagingAppsRouteChildren = {
-  MessagingAppsIdRoute: MessagingAppsIdRoute,
-  MessagingAppsNewTelegramRoute: MessagingAppsNewTelegramRoute,
-  MessagingAppsNewWhatsappRoute: MessagingAppsNewWhatsappRoute,
-  MessagingAppsIndexRoute: MessagingAppsIndexRoute,
-}
-
-const MessagingAppsRouteWithChildren = MessagingAppsRoute._addFileChildren(
-  MessagingAppsRouteChildren,
-)
 
 interface ProjectsRouteChildren {
   ProjectsProjectIdRoute: typeof ProjectsProjectIdRoute
@@ -594,18 +591,43 @@ const ProjectsRouteWithChildren = ProjectsRoute._addFileChildren(
   ProjectsRouteChildren,
 )
 
+interface SettingsRouteChildren {
+  SettingsAgentDefaultsRoute: typeof SettingsAgentDefaultsRoute
+  SettingsAiProvidersRoute: typeof SettingsAiProvidersRoute
+  SettingsConnectorsRoute: typeof SettingsConnectorsRoute
+  SettingsDevicesRoute: typeof SettingsDevicesRoute
+  SettingsPluginsRoute: typeof SettingsPluginsRoute
+  SettingsIndexRoute: typeof SettingsIndexRoute
+  SettingsMessagingAppsIdRoute: typeof SettingsMessagingAppsIdRoute
+  SettingsMessagingAppsNewTelegramRoute: typeof SettingsMessagingAppsNewTelegramRoute
+  SettingsMessagingAppsNewWhatsappRoute: typeof SettingsMessagingAppsNewWhatsappRoute
+  SettingsMessagingAppsIndexRoute: typeof SettingsMessagingAppsIndexRoute
+}
+
+const SettingsRouteChildren: SettingsRouteChildren = {
+  SettingsAgentDefaultsRoute: SettingsAgentDefaultsRoute,
+  SettingsAiProvidersRoute: SettingsAiProvidersRoute,
+  SettingsConnectorsRoute: SettingsConnectorsRoute,
+  SettingsDevicesRoute: SettingsDevicesRoute,
+  SettingsPluginsRoute: SettingsPluginsRoute,
+  SettingsIndexRoute: SettingsIndexRoute,
+  SettingsMessagingAppsIdRoute: SettingsMessagingAppsIdRoute,
+  SettingsMessagingAppsNewTelegramRoute: SettingsMessagingAppsNewTelegramRoute,
+  SettingsMessagingAppsNewWhatsappRoute: SettingsMessagingAppsNewWhatsappRoute,
+  SettingsMessagingAppsIndexRoute: SettingsMessagingAppsIndexRoute,
+}
+
+const SettingsRouteWithChildren = SettingsRoute._addFileChildren(
+  SettingsRouteChildren,
+)
+
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   AgentsRoute: AgentsRouteWithChildren,
   ChatRoute: ChatRoute,
-  ConnectionsRoute: ConnectionsRoute,
-  ConnectorsRoute: ConnectorsRoute,
   DeployRoute: DeployRoute,
-  MessagingAppsRoute: MessagingAppsRouteWithChildren,
-  PairDeviceRoute: PairDeviceRoute,
-  PluginsRoute: PluginsRoute,
   ProjectsRoute: ProjectsRouteWithChildren,
-  SettingsRoute: SettingsRoute,
+  SettingsRoute: SettingsRouteWithChildren,
   UnderTheHoodRoute: UnderTheHoodRoute,
 }
 export const routeTree = rootRouteImport

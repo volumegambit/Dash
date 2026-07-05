@@ -2,10 +2,10 @@ import type { PluginRecord } from '@dash/management';
 import { createFileRoute } from '@tanstack/react-router';
 import { Download, Loader, Trash2 } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
-import { PluginTrustModal } from '../components/PluginTrustModal.js';
-import { usePluginsStore } from '../stores/plugins.js';
+import { PluginTrustModal } from '../../components/PluginTrustModal.js';
+import { usePluginsStore } from '../../stores/plugins.js';
 
-export const Route = createFileRoute('/plugins')({
+export const Route = createFileRoute('/settings/plugins')({
   component: PluginsScreen,
 });
 

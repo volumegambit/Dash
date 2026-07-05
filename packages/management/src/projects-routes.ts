@@ -234,6 +234,17 @@ function mountIssueRoutes(
     }
   });
 
+  app.delete('/issues/:id', (c) => {
+    const existing = db.issues.getByIdOrKey(c.req.param('id'));
+    if (!existing) return c.json({ error: 'Issue not found' }, 404);
+    try {
+      db.issues.delete(existing.id);
+      return c.json({ ok: true });
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
+    }
+  });
+
   app.post('/issues/:id/comments', async (c) => {
     let body: { body?: string };
     try {
@@ -306,6 +317,29 @@ function mountIssueRoutes(
     const issue = db.issues.getByIdOrKey(c.req.param('id'));
     if (!issue) return c.json({ error: 'Issue not found' }, 404);
     return c.json(db.sessionLinks.listByIssue(issue.id));
+  });
+
+  // Explicit session↔issue link, used by MC's "assign agent" dispatch so the
+  // link exists the moment an agent is put on a task (agent tool calls only
+  // link lazily, on the agent's first projects/issues tool use).
+  app.post('/issues/:id/sessions', async (c) => {
+    let body: { session_id?: string; agent_id?: string | null };
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: 'Invalid JSON' }, 400);
+    }
+    if (!body.session_id || typeof body.session_id !== 'string') {
+      return c.json({ error: 'session_id is required' }, 400);
+    }
+    const issue = db.issues.getByIdOrKey(c.req.param('id'));
+    if (!issue) return c.json({ error: 'Issue not found' }, 404);
+    try {
+      const link = db.sessionLinks.link(body.session_id, issue.id, body.agent_id ?? undefined);
+      return c.json(link, 201);
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
+    }
   });
 }
 

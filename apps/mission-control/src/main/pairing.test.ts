@@ -5,7 +5,7 @@ const lan = { host: '192.168.1.50', mgmtPort: 9300, chatPort: 9200 };
 const base = { mgmtToken: 'm-tok', chatToken: 'c-tok', lan };
 
 /**
- * Mirror of the renderer's `qrPayload` for relay mode (pair-device.tsx). Kept
+ * Mirror of the renderer's `qrPayload` for relay mode (PairDeviceCard.tsx). Kept
  * here so the test asserts the exact v2 wire shape the Android app depends on —
  * if the relay payload drifts, this fails loudly. Do NOT change this shape.
  */

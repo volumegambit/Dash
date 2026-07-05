@@ -7,12 +7,17 @@ exposing the gateway directly.
 It is a small, self-hostable Node service. You run **one** relay; every gateway you
 own dials into it and becomes reachable at its own subdomain.
 
-> **Setup at a glance:** deploy a relay (below), then in Mission Control open
-> **Settings → Remote access (relay)** and enter your relay domain, relay token,
-> and admin secret. The gateway restarts and dials the relay, and **Pair Device**
-> then shows a relay QR the Android app scans to connect from anywhere. The
-> gateway flags and admin API below are the same mechanism, useful for scripting
-> or a headless gateway.
+> **Using Mission Control?** You likely don't need this README. Mission Control's
+> **Settings → Devices → Remote access** uses the **hosted Dash relay**: sign in to
+> Dash, claim a permanent subdomain, and the gateway enrolls and reconnects on its
+> own — there is no form for entering relay credentials. That flow is documented in
+> [docs/remote-access.mdx](../../docs/remote-access.mdx).
+>
+> **Setup at a glance (self-hosted):** deploy a relay (below), start your gateway
+> with `--relay-url` / `--relay-token` / `--gateway-id`, and provision a per-device
+> pairing credential through the admin API. This runs the same tunnel the hosted
+> relay uses, in a form you operate and script yourself — e.g. for a headless
+> gateway.
 
 ---
 
@@ -21,7 +26,7 @@ own dials into it and becomes reachable at its own subdomain.
 - **You need it** to reach your agents from your phone when you're away from home — the
   gateway sits behind NAT/a firewall with no public address.
 - **You don't need it** when your phone and gateway are on the same Wi-Fi/LAN. Pair
-  directly over the local network instead (Mission Control → Pair Device).
+  directly over the local network instead (Mission Control → Settings → Devices).
 
 ---
 
@@ -54,7 +59,7 @@ content or your gateway tokens.
 
 | Layer | Secret | Checked by | On failure |
 |-------|--------|-----------|------------|
-| Gateway admission | relay token (Bearer on dial-in) | relay | WS close `4401` |
+| Gateway admission | relay token (Bearer on dial-in) — or, in [hosted mode](#hosted-multi-tenant-mode), a signed dial token + holder-of-key proof | relay | WS close `4401` |
 | Per-pairing credential | `x-dash-relay-credential` header | relay (against its store) | `401` / WS `4401` |
 | App ↔ gateway | management Bearer / chat `?token=` | **the gateway** (forwarded verbatim) | gateway's own `401`/`4001` |
 
@@ -79,9 +84,11 @@ node apps/gateway/dist/index.js \
   --data-dir /tmp/dash-relay-demo \
   --relay-url ws://127.0.0.1:8788 --relay-token devrelay --gateway-id demo &
 
-# 3. Provision a per-device pairing credential (admin secret required)
+# 3. Provision a per-device pairing credential (admin secret required).
+#    tenantId is required by the API; the self-hosted store doesn't segregate
+#    by it, so any fixed value works.
 CRED=$(curl -s -X POST -H "Authorization: Bearer devadmin" \
-  -H "content-type: application/json" -d '{"gatewayId":"demo"}' \
+  -H "content-type: application/json" -d '{"tenantId":"self-hosted","gatewayId":"demo"}' \
   http://127.0.0.1:8788/admin/pairings | python3 -c 'import sys,json;print(json.load(sys.stdin)["credential"])')
 
 # 4. Make a phone-style request through the relay.
@@ -146,7 +153,7 @@ The unit is hardened (`DynamicUser`, `ProtectSystem=strict`, loopback bind behin
 
 ### 4. Point your gateway at it
 
-Start (or have Mission Control start) the gateway with:
+Start the gateway with:
 
 ```bash
 --relay-url wss://relay.example.com --relay-token <same as RELAY_TOKEN> --gateway-id <stable id>
@@ -164,8 +171,27 @@ The gateway then registers and is reachable at `https://<gatewayId>.relay.exampl
 |------|-----|---------|---------|
 | `--port` | `RELAY_PORT` | `8443` | Port to listen on (Caddy proxies to it). |
 | `--host` | `RELAY_HOST` | `127.0.0.1` | Bind address. Loopback by default (Caddy fronts it); use `0.0.0.0` to expose directly. |
-| `--relay-token` | `RELAY_TOKEN` | — *(required)* | Shared secret a gateway must present to register. |
+| `--relay-token` | `RELAY_TOKEN` | — *(required in self-hosted mode)* | Shared secret a gateway must present to register. Not used in hosted mode. |
 | `--admin-secret` | `RELAY_ADMIN_SECRET` | — *(optional)* | Enables the admin API and real pairing-credential enforcement. |
+| `--dial-token-public-key` | `RELAY_DIAL_TOKEN_PUBLIC_KEY` | — *(optional)* | Path to a PEM-encoded Ed25519 public key. Setting it switches the relay into hosted (multi-tenant) mode — see below. |
+| `--store-path` | `RELAY_STORE_PATH` | `relay-creds.db` | Hosted mode only: path to the durable SQLite pairing-credential store. |
+
+### Hosted (multi-tenant) mode
+
+The last two flags are how the **Dash-run hosted relay** is deployed; a self-hosted
+relay normally leaves them unset. When `--dial-token-public-key` is set:
+
+- **Gateway admission changes.** Instead of the shared relay token, each gateway dials
+  in with a control-plane-signed **dial token** bound to its `gatewayId`, plus a fresh
+  **proof** signed with the gateway's own private key (holder-of-key — a token stolen
+  at rest or in flight is useless without the key). Both are verified offline against
+  the supplied public key, so `--relay-token` is ignored and no longer required.
+- **Pairings become durable.** Per-pairing credentials live in a SQLite store
+  (`--store-path`) that survives restarts and holds only SHA-256 hashes, never raw
+  credentials. `--admin-secret` still gates the admin API, which the control plane
+  drives to provision and revoke pairings.
+
+Everything else — subdomain routing, forwarded gateway auth, rate limits — is identical.
 
 ### Gateway relay mode
 
@@ -180,20 +206,30 @@ The gateway then registers and is reachable at `https://<gatewayId>.relay.exampl
 ## Pairing & the admin (control) API
 
 When `--admin-secret` is set, the relay validates a real, revocable per-pairing
-credential and exposes a Bearer-gated admin API. Mission Control calls these to
-provision a credential at pair time and revoke it on un-pair.
+credential and exposes a Bearer-gated admin API. (In the hosted Dash service, the
+control plane drives this same API server-side.) On a self-hosted relay you call it
+yourself: provision a credential when pairing a device, revoke it when un-pairing.
 
 ```bash
-# Provision a credential for a gateway (one per paired device)
+# Provision a credential for a gateway (one per paired device).
+# tenantId is required by the API; the self-hosted store doesn't segregate by it,
+# so any fixed value works.
 curl -X POST -H "Authorization: Bearer $RELAY_ADMIN_SECRET" \
-  -H "content-type: application/json" -d '{"gatewayId":"<id>"}' \
+  -H "content-type: application/json" -d '{"tenantId":"self-hosted","gatewayId":"<id>"}' \
   https://admin.relay.example.com/admin/pairings
 # → { "gatewayId": "<id>", "credential": "<256-bit credential>" }
 
 # Revoke one credential (omit "credential" to revoke every device for the gateway)
 curl -X POST -H "Authorization: Bearer $RELAY_ADMIN_SECRET" \
-  -H "content-type: application/json" -d '{"gatewayId":"<id>","credential":"<cred>"}' \
+  -H "content-type: application/json" \
+  -d '{"tenantId":"self-hosted","gatewayId":"<id>","credential":"<cred>"}' \
   https://admin.relay.example.com/admin/pairings/revoke
+# → { "ok": true }
+
+# Force-close a gateway's live tunnel (it drops immediately; it can re-dial)
+curl -X POST -H "Authorization: Bearer $RELAY_ADMIN_SECRET" \
+  -H "content-type: application/json" -d '{"tenantId":"self-hosted","gatewayId":"<id>"}' \
+  https://admin.relay.example.com/admin/gateways/revoke
 # → { "ok": true }
 ```
 
@@ -202,9 +238,11 @@ curl -X POST -H "Authorization: Bearer $RELAY_ADMIN_SECRET" \
 - `/admin/*` is matched by path ahead of subdomain routing and is reachable at any
   subdomain that resolves to the relay (the admin secret is the gate). Calls without the
   secret get `401`.
-- The credential store is **in-memory** — a relay restart drops all pairings and Mission
-  Control re-provisions on reconnect. This keeps a relay that's only a pass-through from
-  holding standing access on disk.
+- The self-hosted credential store is **in-memory** — a relay restart drops all pairings,
+  and each device needs a freshly provisioned credential to reconnect. This keeps a relay
+  that's only a pass-through from holding standing access on disk. (Hosted mode is the
+  exception: with no re-provisioning channel after a restart, it keeps a durable SQLite
+  store of credential *hashes* — see the configuration reference.)
 
 ---
 
