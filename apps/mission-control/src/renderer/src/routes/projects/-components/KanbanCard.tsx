@@ -1,5 +1,6 @@
 import { Bot } from 'lucide-react';
 import type { Issue, Project } from '../../../../../shared/projects-ipc.js';
+import { AssignAgentMenu } from './AssignAgentMenu.js';
 import { SubStatusPill } from './StatusPill.js';
 
 export function KanbanCard({
@@ -31,9 +32,12 @@ export function KanbanCard({
         <span className="font-[family-name:var(--font-mono)] text-[10px] text-muted">
           {issue.key}
         </span>
-        {issue.created_by === 'agent' && (
-          <Bot size={12} className="text-muted" aria-label="Created by agent" />
-        )}
+        <div className="flex items-center gap-1">
+          {issue.created_by === 'agent' && (
+            <Bot size={12} className="text-muted" aria-label="Created by agent" />
+          )}
+          <AssignAgentMenu issueId={issue.id} />
+        </div>
       </div>
       <p className="mb-2 text-sm text-foreground">{issue.title}</p>
       <div className="flex flex-wrap items-center gap-1">

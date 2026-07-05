@@ -1,6 +1,7 @@
 import { Bot } from 'lucide-react';
 import { relativeTime } from '../-lib/format.js';
 import type { Issue, Project } from '../../../../../shared/projects-ipc.js';
+import { AssignAgentMenu } from './AssignAgentMenu.js';
 import { StatusPill, SubStatusPill } from './StatusPill.js';
 
 export function IssueRow({
@@ -37,7 +38,12 @@ export function IssueRow({
       <td className="px-3 py-2">
         <SubStatusPill subStatus={issue.sub_status} />
       </td>
-      <td className="px-3 py-2 text-sm text-muted">{issue.assignee_user_id}</td>
+      <td className="px-3 py-2 text-sm text-muted">
+        <span className="flex items-center gap-1">
+          {issue.assignee_user_id}
+          <AssignAgentMenu issueId={issue.id} />
+        </span>
+      </td>
       <td className="px-3 py-2 text-xs text-muted">{relativeTime(issue.updated_at)}</td>
     </tr>
   );
