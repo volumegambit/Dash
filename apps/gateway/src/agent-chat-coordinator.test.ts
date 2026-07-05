@@ -114,14 +114,26 @@ describe('AgentChatCoordinator', () => {
 });
 
 describe('AgentChatCoordinator.listSkills', () => {
-  it('returns an agent managed skill alongside the bundled tier', async () => {
-    const managed = await mkdtemp(join(tmpdir(), 'dash-coord-skills-'));
+  it('returns an agent managed skill alongside a plugin skill dir', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dash-coord-skills-'));
     try {
+      const managed = join(root, 'managed');
       const skillDir = join(managed, 'my-skill');
       await mkdir(skillDir, { recursive: true });
       await writeFile(
         join(skillDir, 'SKILL.md'),
         '---\nname: my-skill\ndescription: d\n---\n\nbody\n',
+      );
+
+      // A built-in-plugin-style skill dir (skills/<skill>/SKILL.md), the tier
+      // that replaced the removed bundled library. Threaded via the same
+      // getPluginSkillDirs getter the gateway uses at boot.
+      const pluginSkillsDir = join(root, 'plugin-skills');
+      const bundledDir = join(pluginSkillsDir, 'from-plugin');
+      await mkdir(bundledDir, { recursive: true });
+      await writeFile(
+        join(bundledDir, 'SKILL.md'),
+        '---\nname: from-plugin\ndescription: d\n---\n\nbody\n',
       );
 
       const registry = new AgentRegistry();
@@ -136,14 +148,23 @@ describe('AgentChatCoordinator.listSkills', () => {
         poolMaxSize: 10,
         createBackend: async () => makeMockBackend([]),
         managedSkillsDir: (config) => (config.name === 'skill-agent' ? managed : undefined),
+        getPluginSkillDirs: () => [pluginSkillsDir],
       });
 
       const skills = await agents.listSkills(id);
-      expect(skills.map((s) => s.name)).toContain('my-skill');
-      expect(skills.some((s) => s.source === 'bundled')).toBe(true);
+      const byName = new Map(skills.map((s) => [s.name, s]));
+
+      // The agent's own managed skill is present and editable.
+      expect(byName.has('my-skill')).toBe(true);
+      expect(byName.get('my-skill')?.source).toBe('managed');
+
+      // The plugin-dir skill is present, badged as a plugin and read-only —
+      // the equivalent of the old bundled tier under the plugin pipeline.
+      expect(byName.get('from-plugin')?.source).toBe('plugin');
+      expect(byName.get('from-plugin')?.editable).toBe(false);
       await agents.stop();
     } finally {
-      await rm(managed, { recursive: true, force: true });
+      await rm(root, { recursive: true, force: true });
     }
   });
 
@@ -268,16 +289,47 @@ describe('AgentChatCoordinator skill mutations', () => {
     }
   });
 
-  it('refuses to remove a bundled skill', async () => {
-    const managed = await mkdtemp(join(tmpdir(), 'dash-coord-skills-'));
+  it('refuses to remove a read-only plugin skill (not in the managed dir)', async () => {
+    // The old bundled tier is gone; the read-only tier a user must not be able
+    // to delete is now plugin-contributed skills (source: 'plugin'). They live
+    // under the plugin skill dir, never the agent's managed dir, so a remove
+    // request cannot delete them — it rejects with 'not_found'.
+    const root = await mkdtemp(join(tmpdir(), 'dash-coord-skills-'));
     try {
-      const { agents, id } = makeCoordinator(managed);
-      const bundled = (await agents.listSkills(id)).find((s) => s.source === 'bundled');
-      if (!bundled) throw new Error('expected a bundled skill');
-      await expect(agents.removeSkill(id, bundled.name)).rejects.toMatchObject({ code: 'bundled' });
+      const managed = join(root, 'managed');
+      await mkdir(managed, { recursive: true });
+
+      const pluginSkillsDir = join(root, 'plugin-skills');
+      const skillDir = join(pluginSkillsDir, 'ranger');
+      await mkdir(skillDir, { recursive: true });
+      await writeFile(
+        join(skillDir, 'SKILL.md'),
+        '---\nname: ranger\ndescription: d\n---\n\nbody\n',
+      );
+
+      const registry = new AgentRegistry();
+      const { id } = registry.register({
+        name: 'skill-agent',
+        model: 'anthropic/claude-sonnet-4-20250514',
+        systemPrompt: 'x',
+      });
+      const agents = createAgentChatCoordinator({
+        registry,
+        poolMaxSize: 10,
+        createBackend: async () => makeMockBackend([]),
+        managedSkillsDir: (config) => (config.name === 'skill-agent' ? managed : undefined),
+        getPluginSkillDirs: () => [pluginSkillsDir],
+      });
+
+      const plugin = (await agents.listSkills(id)).find((s) => s.source === 'plugin');
+      if (!plugin) throw new Error('expected a plugin skill');
+      expect(plugin.editable).toBe(false);
+      await expect(agents.removeSkill(id, plugin.name)).rejects.toMatchObject({
+        code: 'not_found',
+      });
       await agents.stop();
     } finally {
-      await rm(managed, { recursive: true, force: true });
+      await rm(root, { recursive: true, force: true });
     }
   });
 });
