@@ -16,11 +16,24 @@ Test plan for agent-driven QA. Each section is independently executable — it d
 MC_DATA_DIR=/tmp/mc-test-$(date +%s) npm run mc:dev
 ```
 
+**Port isolation (required for QA runs):** MC launches its gateway on fixed ports by default (9300 management / 9200 channel), so a QA instance collides with a personal MC already running on the machine ("Port 9300 is already in use by another gateway"). QA runs must override the ports and isolate the data tree:
+
+```bash
+DASH_HOME=/tmp/mc-qa-$(date +%s) \
+MC_GATEWAY_MANAGEMENT_PORT=9310 \
+MC_GATEWAY_CHANNEL_PORT=9210 \
+npm run mc:dev
+```
+
+- `MC_GATEWAY_MANAGEMENT_PORT` / `MC_GATEWAY_CHANNEL_PORT` (defaults 9300/9200) move the QA gateway off the personal MC's ports. All MC-internal URLs follow automatically — `gateway-state.json` is the source of truth for ports. Invalid values fail launch loudly rather than falling back.
+- `DASH_HOME` relocates the whole `~/.dash` tree. Without it a QA gateway shares `~/.dash/gateway` (agents.json, credentials, event-log DB) with the personal gateway, so QA's agent create/delete tests would mutate the user's real agents.
+- The OS keychain entry (service `dash-mission-control`) is machine-global. A second MC instance reuses the existing tokens rather than rotating them, so QA does not break a running personal MC's auth — but do **not** run "Reset Gateway" (which clears the shared keychain) while a personal MC is running.
+
 ---
 
 ## Section 1: Fresh App Launch & Setup Wizard
 
-**Precondition:** Clean data directory (no prior setup). Start MC with `MC_DATA_DIR=/tmp/mc-test-$(date +%s) npm run mc:dev`
+**Precondition:** Clean data directory (no prior setup). Start MC with `DASH_HOME=/tmp/mc-test-$(date +%s) MC_GATEWAY_MANAGEMENT_PORT=9310 MC_GATEWAY_CHANNEL_PORT=9210 npm run mc:dev` (see "Port isolation" in the preamble).
 
 ### 1.1 Gateway Initialization
 1. Launch the app
