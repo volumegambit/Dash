@@ -484,7 +484,9 @@ export class ManagementClient {
    * treats HTTP 409 as a valid `{ok:false, reason}` result rather than an
    * error, so the panel can surface the coordinator's reason string. Every
    * other non-2xx status throws the same `Management API error` as the shared
-   * helpers.
+   * helpers. The 409 body is parsed defensively: a non-JSON body (e.g. a
+   * reverse proxy or truncated response) falls back to `{ok:false, reason}`
+   * carrying the raw text rather than throwing a `SyntaxError`.
    */
   private async requestWorkerAction(path: string, body: unknown): Promise<SwarmWorkerActionResult> {
     const response = await fetch(`${this.baseUrl}${path}`, {
@@ -497,7 +499,12 @@ export class ManagementClient {
     });
 
     if (response.status === 409) {
-      return response.json() as Promise<SwarmWorkerActionResult>;
+      const text = await response.text();
+      try {
+        return JSON.parse(text) as SwarmWorkerActionResult;
+      } catch {
+        return { ok: false, reason: text.trim() || 'worker action failed (409)' };
+      }
     }
 
     if (!response.ok) {

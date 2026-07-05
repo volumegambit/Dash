@@ -698,6 +698,7 @@ describe('ManagementClient', () => {
     let recording: RecordedRequest[];
     let nextResponse: unknown;
     let nextStatus: number;
+    let nextRawBody: string | undefined;
     let rawServer: Server;
     let swarmClose: () => Promise<void>;
     let swarmClient: ManagementClient;
@@ -707,6 +708,7 @@ describe('ManagementClient', () => {
       recording = [];
       nextResponse = {};
       nextStatus = 200;
+      nextRawBody = undefined;
 
       rawServer = createServer((req: IncomingMessage, res: ServerResponse) => {
         const chunks: Buffer[] = [];
@@ -726,6 +728,11 @@ describe('ManagementClient', () => {
             return;
           }
           res.statusCode = nextStatus;
+          if (nextRawBody !== undefined) {
+            res.setHeader('content-type', 'text/plain');
+            res.end(nextRawBody);
+            return;
+          }
           res.setHeader('content-type', 'application/json');
           res.end(JSON.stringify(nextResponse));
         });
@@ -824,6 +831,20 @@ describe('ManagementClient', () => {
       nextStatus = 409;
       const res = await swarmClient.sendSwarmWorker('a1', 'r1', 'w1', 'hello');
       expect(res).toEqual({ ok: false, reason: 'run finalized' });
+    });
+
+    it('cancelSwarmWorker() surfaces a non-JSON 409 body as {ok:false, reason} without throwing', async () => {
+      nextStatus = 409;
+      nextRawBody = 'Gateway Timeout';
+      const res = await swarmClient.cancelSwarmWorker('a1', 'r1', 'w1');
+      expect(res).toEqual({ ok: false, reason: 'Gateway Timeout' });
+    });
+
+    it('sendSwarmWorker() surfaces a non-JSON 409 body as {ok:false, reason} without throwing', async () => {
+      nextStatus = 409;
+      nextRawBody = 'Gateway Timeout';
+      const res = await swarmClient.sendSwarmWorker('a1', 'r1', 'w1', 'hello');
+      expect(res).toEqual({ ok: false, reason: 'Gateway Timeout' });
     });
 
     it('sendSwarmWorker() still throws on a non-409 error (e.g. 400 empty message)', async () => {
