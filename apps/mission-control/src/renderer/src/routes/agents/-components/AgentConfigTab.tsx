@@ -195,7 +195,8 @@ export function AgentConfigTab({
     try {
       // Build the complete block: the gateway replaces `swarm` wholesale.
       // Blank/invalid caps become undefined (= gateway default); an empty
-      // allowedModels list is omitted (= "all models allowed").
+      // allowedModels list is omitted, which leaves workers restricted to the
+      // orchestrator's model + fallbackModels (the most restrictive default).
       const allowed = parseAllowedModels(swarmAllowedModels);
       const swarm: AgentSwarmConfig = {
         enabled: swarmEnabled,
@@ -844,7 +845,8 @@ export function AgentConfigTab({
                 data-testid="swarm-allowed-models"
               />
               <span className="text-[11px] text-muted">
-                Restricts which models workers may use. Leave blank to allow any model.
+                Extra models workers may use, comma-separated. Blank = orchestrator's model and
+                fallbacks only.
               </span>
             </label>
 

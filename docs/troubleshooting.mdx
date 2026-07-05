@@ -193,7 +193,7 @@ Something not working? Here are the most common issues and how to fix them.
     - `swarm run reached its worker limit (N workers per run)` — the **total-per-turn** limit.
     - `the gateway is at its global worker limit (N) — wait for workers to finish` — the gateway-wide ceiling across **all** agents.
 
-    Raise the relevant cap on the agent's **Swarm** card (or the gateway defaults) if the work genuinely needs more workers — see [Configuration → Swarm](/configuration#swarm). The change takes effect on the agent's next message.
+    Raise the relevant cap on the agent's **Swarm** card if the work genuinely needs more workers — see [Configuration → Swarm](/configuration#swarm). The change takes effect on the agent's next message. (The gateway-wide ceiling across all agents is fixed in this build and is not user-configurable.)
   </Accordion>
 
   <Accordion title="The swarm stopped partway (wall-clock limit)">
