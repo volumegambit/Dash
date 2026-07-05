@@ -30,6 +30,7 @@
     "@dash/projects": "*",
     "@dash/relay": "*",
     "@dash/skills": "*",
+    "@dash/swarm": "*",
     "@earendil-works/pi-ai": "^0.79.8",
     "@hono/node-server": "^1",
     "@hono/node-ws": "^1",
