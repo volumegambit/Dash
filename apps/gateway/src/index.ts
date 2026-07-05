@@ -311,6 +311,23 @@ async function main() {
   // resolved from defaults today (no env/flag override wired yet) — the shape is
   // ready for one via resolveSwarmConfig.
   const swarmConfig = resolveSwarmConfig();
+  // Throttle the coordinator's run-changed pokes to at most one EventBus emit per
+  // run per second. The coordinator fires onRunChanged on every state transition
+  // (spawn, worker terminal, finalize) — a busy run would otherwise flood the SSE
+  // stream. MC treats the event as a hint to refetch the run snapshot, so a
+  // leading-edge emit is sufficient. We deliberately do NOT schedule a trailing
+  // emit: the run's terminal `finalized:true` snapshot is reachable via an
+  // explicit refetch, and the finalize transition itself is >1s after the last
+  // spawn in any realistic run, so it lands as its own leading-edge emit.
+  const SWARM_POKE_THROTTLE_MS = 1000;
+  const swarmPokeLastEmit = new Map<string, number>();
+  const emitSwarmRunChanged = (agentId: string, runId: string): void => {
+    const now = Date.now();
+    const prev = swarmPokeLastEmit.get(runId);
+    if (prev !== undefined && now - prev < SWARM_POKE_THROTTLE_MS) return;
+    swarmPokeLastEmit.set(runId, now);
+    eventBus.emit({ type: 'swarm:run-changed', agentId, runId });
+  };
   const swarmCoordinator = new SwarmCoordinator({
     workerFactory: createGatewayWorkerFactory({
       credentialProvider: swarmCredentialProvider,
@@ -329,6 +346,7 @@ async function main() {
     },
     globalMaxConcurrentWorkers: swarmConfig.maxConcurrentWorkersGlobal,
     defaultCaps: swarmConfig.defaults,
+    onRunChanged: emitSwarmRunChanged,
   });
 
   const agents = createAgentChatCoordinator({
@@ -677,6 +695,10 @@ async function main() {
     dataDir,
     relayIdentity: { publicKeyB64: relayIdentity.publicKeyB64 },
     eventLogStore,
+    // Mounts the swarm panel routes + threads the cancel cascade into the
+    // disable/delete agent handlers. Same instance the chat coordinator attaches
+    // turns to, so the panel reads live runs.
+    swarmCoordinator,
     token: flags.token,
     startedAt,
     eventBus,
