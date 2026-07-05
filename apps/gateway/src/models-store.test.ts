@@ -68,4 +68,18 @@ describe('ModelsStore', () => {
   it('clear is a no-op when the file does not exist', async () => {
     await expect(store.clear()).resolves.toBeUndefined();
   });
+
+  it('overlapping save() calls all resolve and leave valid JSON (atomic-write race regression)', async () => {
+    // Regression: save() wrote a FIXED temp filename (models.json.tmp) with no
+    // serialization — same race as AgentRegistry.save(): two concurrent
+    // GET /models refreshes shared the temp file and the loser's rename()
+    // threw ENOENT.
+    const models = [
+      { value: 'anthropic/claude-opus-4-5', label: 'Claude Opus 4.5', provider: 'anthropic' },
+    ];
+    await Promise.all(Array.from({ length: 8 }, () => store.save(models, '2026-07-01')));
+
+    const loaded = await store.load('2026-07-01');
+    expect(loaded?.models).toEqual(models);
+  });
 });

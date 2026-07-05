@@ -105,4 +105,33 @@ describe('McpConfigStore', () => {
       expect(await store.isAllowed('https://evil.com')).toBe(false);
     });
   });
+
+  describe('concurrent writes (atomic-write race regression)', () => {
+    it('concurrent addConfig() calls all resolve and no config is lost', async () => {
+      // Regression: addConfig() is a load→mutate→save cycle and atomicWrite()
+      // used a FIXED temp filename (configs.json.tmp). Overlapping adds raced
+      // the rename (loser threw ENOENT) AND read the same stale snapshot, so
+      // one config silently vanished. The whole cycle must be serialized.
+      await Promise.all(
+        Array.from({ length: 6 }, (_, i) =>
+          store.addConfig({
+            name: `server-${i}`,
+            transport: { type: 'stdio', command: 'echo', args: [`${i}`] },
+          }),
+        ),
+      );
+
+      const configs = await store.loadConfigs();
+      expect(configs.map((c) => c.name).sort()).toEqual(
+        [0, 1, 2, 3, 4, 5].map((i) => `server-${i}`),
+      );
+    });
+
+    it('overlapping saveAllowlist() calls all resolve', async () => {
+      await Promise.all(
+        Array.from({ length: 8 }, () => store.saveAllowlist(['https://example.com/*'])),
+      );
+      expect(await store.loadAllowlist()).toEqual(['https://example.com/*']);
+    });
+  });
 });
