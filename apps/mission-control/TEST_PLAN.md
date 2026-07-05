@@ -912,6 +912,113 @@ under a Node version missing a required symbol, or otherwise force the gateway s
 
 ---
 
+## Section 22B: Remote Access — Hosted Dash Relay (in Settings)
+
+Covers the "Remote access" panel on the Settings page (`RelaySettings.tsx`) and its main-process
+wiring (`src/main/control-plane.ts`). Sign-in is Clerk OAuth (PKCE, public client) in the **system
+browser**, finishing on a loopback redirect to `http://127.0.0.1:53682/callback`. Configuration is
+env-only: `DASH_CLERK_FRONTEND_API` (Clerk Frontend API host), `DASH_CLERK_CLIENT_ID` (OAuth app
+client id), `DASH_CONTROL_PLANE_URL` (control-plane origin, defaults to `https://cp.dash.dev`).
+
+**Precondition:** App running past setup. 22B.1 and 22B.2 need **no relay infrastructure**.
+22B.3–22B.5 need a reachable control plane plus a Clerk OAuth app: either the live Clerk **dev**
+instance, or the full local loop (control plane + relay) from the `relay-e2e` skill. The signing-in
+account must belong to a Clerk **organization** — the control plane is organizations-only and
+rejects tokens without `org_id`.
+
+### 22B.1 Signed-Out State
+1. Navigate to Settings and scroll to the "Remote access" section
+2. **Verify:** Uppercase accent header "REMOTE ACCESS" with an explanatory paragraph mentioning
+   reaching agents from your phone through the hosted Dash relay, and that leaving it off keeps
+   pairing local-network-only
+3. **Verify:** A primary (accent background) "Sign in to Dash" button is visible
+4. **Verify:** No subdomain input, no "Paired devices" list, no error text — only the sign-in button
+
+### 22B.2 Unconfigured Sign-In Fails Fast (regression: bogus `https:///oauth/authorize` URL)
+
+**Precondition:** MC launched **without** the Clerk env vars.
+**Bootstrap:** Relaunch with them explicitly unset:
+```bash
+env -u DASH_CLERK_FRONTEND_API -u DASH_CLERK_CLIENT_ID npm run mc:dev
+```
+
+1. On Settings → Remote access, click "Sign in to Dash"
+2. **Verify:** A red error appears under the panel with the exact message: "Remote access sign-in
+   is not configured: set DASH_CLERK_FRONTEND_API and DASH_CLERK_CLIENT_ID, then restart Mission
+   Control."
+3. **Verify:** NO browser window or tab opens. (Regression guard: with the env unset, the
+   authorize URL used to be built from an empty host as `https:///oauth/authorize?...`, which
+   browsers normalize to the bogus hostname `oauth` — a dead page opened while MC silently waited
+   out the redirect timeout.)
+4. **Verify:** The error appears immediately (fail-fast) — the button does not sit in "Opening
+   browser…" for minutes waiting on a timeout
+5. **Verify:** The panel remains in the signed-out state with the button re-enabled; clicking again
+   shows the same error (no crash, no partial state)
+6. Repeat with only ONE of the two vars set — **Verify:** same error (both are required)
+
+### 22B.3 Configured Sign-In via System Browser
+
+**Precondition:** Both Clerk env vars set, `DASH_CONTROL_PLANE_URL` pointing at a reachable
+control plane, signed out.
+
+1. Click "Sign in to Dash"
+2. **Verify:** The button shows "Opening browser…" and the **system default browser** opens (not
+   an in-app Electron window)
+3. **Verify:** The browser URL is `https://<DASH_CLERK_FRONTEND_API>/oauth/authorize?...` — the
+   host is the configured Clerk Frontend API host — with `redirect_uri=http://127.0.0.1:53682/callback`,
+   `response_type=code`, a `code_challenge` (PKCE), and a scope including `user:org:read`
+4. Complete the Clerk sign-in in the browser
+5. **Verify:** The browser lands on `127.0.0.1:53682/callback` and shows "Signed in. You can close
+   this window."
+6. **Verify:** Back in MC — without restarting — the panel now shows green "Signed in to Dash" and
+   the subdomain claim UI (input + "Claim & enable")
+7. Quit and relaunch MC. **Verify:** Still signed in (the session token lives in the OS keychain;
+   no re-prompt)
+
+### 22B.4 Subdomain Claim — Validation & Availability
+
+**Precondition:** Signed in, gateway not yet enrolled (22B.3 just completed).
+
+1. **Verify:** Label "Choose a permanent address for this gateway", a monospace input with
+   placeholder `alice-mbp`, and a disabled "Claim & enable" button
+2. **Verify:** With the input empty, the hint reads "Lowercase letters, numbers and hyphens.
+   Permanent once claimed."
+3. Type `Alice-MBP` — **Verify:** hint becomes "Use only lowercase letters, numbers and hyphens
+   (no leading/trailing hyphen)." and the button stays disabled (uppercase rejected client-side;
+   no availability request is sent)
+4. Try `-alice` and `alice-` — **Verify:** same invalid hint, button disabled
+5. Type a valid unlikely-taken label (e.g. `qa-<random digits>`) — **Verify:** hint briefly shows
+   "Checking availability…" (the check is debounced ~300 ms), then "`<label>` is available", and
+   the button enables
+6. Type a label known to be claimed — **Verify:** hint shows "`<label>` is already taken" and the
+   button is disabled
+7. With an available label, click "Claim & enable" — **Verify:** button shows "Claiming…", then
+   the panel switches to green "Gateway ready at `<label>`" with the subdomain in monospace
+8. Quit and relaunch MC. **Verify:** Panel still shows "Gateway ready at `<label>`" (enrollment
+   persisted)
+9. **Verify (server authority):** the client check is a fast-fail mirror only — a label the client
+   accepts but the control plane rejects (e.g. a reserved name, if configured) surfaces as a red
+   error under the panel after clicking "Claim & enable"
+
+### 22B.5 Paired Devices & Revoke
+
+**Precondition:** Signed in and enrolled (22B.4 complete).
+**Bootstrap for device rows:** Pair a device against this gateway — the Android app QR flow from
+the `relay-e2e` local loop, or a real phone scanning the pairing QR.
+
+1. With no devices paired — **Verify:** a "PAIRED DEVICES" heading with the empty state "No
+   devices paired yet."
+2. Pair a device (see bootstrap)
+3. **Verify:** A device row appears showing the device's label (or id when unlabeled) with a
+   bordered secondary "Revoke" button
+4. Pair a second device — **Verify:** both rows are listed
+5. Click "Revoke" on the first device — **Verify:** only that row disappears; the other device
+   remains listed
+6. **Verify:** The revoked device can no longer reach the gateway through the relay (its next
+   connection is rejected), while the remaining device still works
+
+---
+
 ## Section 23: UI Consistency Audit
 
 Take screenshots of every page and evaluate against these criteria. This section tests visual polish, not functionality.

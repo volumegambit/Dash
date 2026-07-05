@@ -97,6 +97,7 @@ The exhaustive manual test plan lives at `apps/mission-control/TEST_PLAN.md`. It
 - Connectors (MCP) changes → Sections 19, 15
 - Messaging Apps changes → Sections 20, 20B
 - Settings / gateway changes → Section 22
+- Remote Access / hosted relay changes (RelaySettings, control-plane sign-in, device pairing) → Section 22B
 - Cross-cutting UI changes → Section 23 (UI consistency audit)
 
 **Maintaining the test plan:** When implementing new MC features or changing existing ones, update `apps/mission-control/TEST_PLAN.md` to cover the new/changed behavior. Add new sections or extend existing ones as needed.
