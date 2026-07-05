@@ -47,6 +47,7 @@ import {
   GatewayManagementClient,
 } from './gateway-client.js';
 import { GatewayStateStore } from './gateway-state.js';
+import { DEFAULT_CHANNEL_PORT, DEFAULT_MANAGEMENT_PORT } from './ports.js';
 
 /**
  * Classify an error thrown by the reuse-check (health + startedAt + listAgents)
@@ -355,8 +356,8 @@ export class GatewaySupervisor {
 
   private async ensureRunningInner(): Promise<GatewayManagementClient> {
     const opts = this.options;
-    const managementPort = opts.managementPort ?? 9300;
-    const channelPort = opts.channelPort ?? 9200;
+    const managementPort = opts.managementPort ?? DEFAULT_MANAGEMENT_PORT;
+    const channelPort = opts.channelPort ?? DEFAULT_CHANNEL_PORT;
     const store = new GatewayStateStore(opts.gatewayDataDir);
     const makeClient =
       opts.makeGatewayClient ?? ((url, token) => new GatewayManagementClient(url, token));

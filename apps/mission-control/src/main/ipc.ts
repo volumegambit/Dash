@@ -20,6 +20,7 @@ import {
   SettingsStore,
   createDefaultKeychainStore,
   defaultProcessSpawner,
+  resolveGatewayPorts,
 } from '@dash/mc';
 import type {
   ControlPlaneClient,
@@ -242,12 +243,20 @@ export async function registerIpcHandlers(
   initMcLogging();
 
   const controlPlaneConfig = readControlPlaneConfig();
+  // Gateway ports are fixed (9300/9200) unless overridden via
+  // MC_GATEWAY_MANAGEMENT_PORT / MC_GATEWAY_CHANNEL_PORT — set by QA runs
+  // and secondary profiles so they don't collide with a personal MC's
+  // gateway. Resolved once here; every downstream URL follows via
+  // gateway-state.json, which the supervisor writes with the real ports.
+  const gatewayPorts = resolveGatewayPorts(process.env);
   const gwOptions: GatewaySupervisorOptions = {
     gatewayDataDir: DATA_DIR,
     gatewayRuntimeDir: gatewayDir(),
     logsDir: logsDir(),
     projectRoot: resolveProjectRoot(),
     controlPlaneUrl: controlPlaneConfig.baseUrl,
+    managementPort: gatewayPorts.managementPort,
+    channelPort: gatewayPorts.channelPort,
   };
 
   // Hosted control plane wiring. A single shared keychain backs both the
@@ -596,8 +605,8 @@ export async function registerIpcHandlers(
         chatToken,
         lan: {
           host: getLanIp(),
-          mgmtPort: gatewayState?.port ?? 9300,
-          chatPort: gatewayState?.channelPort ?? 9200,
+          mgmtPort: gatewayState?.port ?? gatewayPorts.managementPort,
+          chatPort: gatewayState?.channelPort ?? gatewayPorts.channelPort,
         },
         relay: issued ? { gatewayId: issued.gatewayId, host: issued.host } : undefined,
       },
