@@ -58,6 +58,22 @@ type WsServerMessage =
   | { type: 'done'; id: string; seq?: number }
   | { type: 'error'; id: string; seq?: number; error: string };
 
+/**
+ * A conversationId must be a plain identifier, never a filesystem path. It is
+ * used to key durable session/event-log directories, so any path hazard is a
+ * traversal risk. This is deliberately permissive: MC UUIDs, `e2e-123`,
+ * `chan:42`, and channel ids with spaces/apostrophes like `Bob's Bot:42` all
+ * pass. It rejects ONLY the four path hazards — a `/` or `\` separator, a `..`
+ * parent-dir hop, a leading `.` (dotfile), or an unreasonable length (>128).
+ */
+export function isValidConversationId(id: string): boolean {
+  if (id.length === 0 || id.length > 128) return false;
+  if (id.includes('/') || id.includes('\\')) return false;
+  if (id.includes('..')) return false;
+  if (id.startsWith('.')) return false;
+  return true;
+}
+
 function validateMessage(msg: unknown): msg is WsClientMessage {
   if (typeof msg !== 'object' || msg === null) return false;
   const m = msg as Record<string, unknown>;
@@ -72,6 +88,7 @@ function validateMessage(msg: unknown): msg is WsClientMessage {
       typeof m.conversationId === 'string' &&
       typeof m.text === 'string';
     if (!valid) return false;
+    if (!isValidConversationId(m.conversationId as string)) return false;
     if (m.images !== undefined) {
       if (!Array.isArray(m.images)) return false;
       for (const img of m.images) {
@@ -249,6 +266,8 @@ export function mountChatWs(app: Hono, options: ChatWsOptions): void {
                 channelId,
                 text,
                 images: images?.length ? images : undefined,
+                messageId: msg.id,
+                signal: controller.signal,
               });
               try {
                 for await (const agentEvent of stream) {

@@ -57,6 +57,47 @@ describe('AgentChatCoordinator', () => {
     await agents.stop();
   });
 
+  it('accepts signal + messageId on the request and streams unchanged', async () => {
+    const registry = new AgentRegistry();
+    const { id } = registry.register({
+      name: 'test-agent',
+      model: 'anthropic/claude-sonnet-4-20250514',
+      systemPrompt: 'You are helpful.',
+    });
+
+    const expectedEvents: AgentEvent[] = [
+      { type: 'text_delta', text: 'Hello' },
+      {
+        type: 'response',
+        content: 'Hello',
+        usage: { inputTokens: 10, outputTokens: 5 },
+      },
+    ];
+
+    const agents = createAgentChatCoordinator({
+      registry,
+      poolMaxSize: 10,
+      createBackend: async () => makeMockBackend(expectedEvents),
+    });
+
+    const controller = new AbortController();
+    const collected: AgentEvent[] = [];
+    // signal + messageId are accepted on the request (Task 8 consumes them);
+    // for now chat() must stream identically to a request without them.
+    for await (const event of agents.chat({
+      agentId: id,
+      conversationId: 'conv-signal-1',
+      text: 'Hi there',
+      signal: controller.signal,
+      messageId: 'ws-msg-1',
+    })) {
+      collected.push(event);
+    }
+
+    expect(collected).toEqual(expectedEvents);
+    await agents.stop();
+  });
+
   it('rejects messages to unknown agents (yields error event)', async () => {
     const registry = new AgentRegistry();
     const agents = createAgentChatCoordinator({

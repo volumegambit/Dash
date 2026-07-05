@@ -59,6 +59,18 @@ export interface ChatRequest {
   channelId?: string;
   text: string;
   images?: ImageBlock[];
+  /**
+   * Abort signal for the in-flight chat. Accepted here and carried on the
+   * request so the caller (chat-ws) can wire the per-message AbortController.
+   * Task 8's merge wrapper consumes it; until then `chat()` does not change
+   * behavior based on it.
+   */
+  signal?: AbortSignal;
+  /**
+   * The originating WS message id. Accepted and carried for Task 8's merge
+   * wrapper (event correlation); `chat()` does not use it yet.
+   */
+  messageId?: string;
 }
 
 export interface AgentChatCoordinatorStats {
