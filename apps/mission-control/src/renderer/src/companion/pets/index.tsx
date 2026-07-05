@@ -1,20 +1,20 @@
 import type { JSX } from 'react';
 import type { CompanionStatus, PetKind } from '../../../../shared/ipc.js';
 import { aggregateMood } from '../aggregateMood.js';
-import { PixelPet } from './PixelPet.js';
-import { cat } from './cat.js';
+import { AnimatedPixelPet } from './AnimatedPixelPet.js';
+import { catAnimated } from './catAnimated.js';
 import { DEFAULT_PET, PET_KINDS } from './kinds.js';
-import { redPanda } from './redPanda.js';
-import type { PetSprite } from './types.js';
+import { redPandaAnimated } from './redPandaAnimated.js';
+import type { AnimatedPetSprite } from './types.js';
 
 export { DEFAULT_PET, PET_KINDS };
 
-export const PET_REGISTRY: Record<PetKind, PetSprite> = {
-  cat,
-  'red-panda': redPanda,
+export const PET_REGISTRY: Record<PetKind, AnimatedPetSprite> = {
+  cat: catAnimated,
+  'red-panda': redPandaAnimated,
 };
 
-function spriteFor(kind: PetKind): PetSprite {
+function spriteFor(kind: PetKind): AnimatedPetSprite {
   return PET_REGISTRY[kind] ?? PET_REGISTRY[DEFAULT_PET];
 }
 
@@ -28,10 +28,10 @@ export function CompanionPet({
   statuses: CompanionStatus[];
   size?: number;
 }): JSX.Element {
-  return <PixelPet sprite={spriteFor(kind)} mood={aggregateMood(statuses)} size={size} />;
+  return <AnimatedPixelPet sprite={spriteFor(kind)} mood={aggregateMood(statuses)} size={size} />;
 }
 
 /** Small idle-mood preview for the settings picker. */
 export function PetThumbnail({ kind, size = 48 }: { kind: PetKind; size?: number }): JSX.Element {
-  return <PixelPet sprite={spriteFor(kind)} mood="idle" size={size} />;
+  return <AnimatedPixelPet sprite={spriteFor(kind)} mood="idle" size={size} />;
 }
