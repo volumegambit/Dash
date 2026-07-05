@@ -6,6 +6,8 @@ export interface AppSettings {
   defaultModel?: string;
   defaultFallbackModels?: string[];
   setupCompletedAt?: string;
+  /** Persisted top-left position of the always-on-top companion widget window. */
+  companionWindowPos?: { x: number; y: number };
 }
 
 export class SettingsStore {

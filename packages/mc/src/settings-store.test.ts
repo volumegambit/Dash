@@ -50,4 +50,12 @@ describe('SettingsStore', () => {
     expect(settings.setupCompletedAt).toBe('2026-06-21T12:00:00.000Z');
     expect(settings.defaultModel).toBe('claude-opus-4-8');
   });
+
+  it('round-trips companionWindowPos without clobbering other fields', async () => {
+    await store.set({ defaultModel: 'claude-opus-4-8' });
+    await store.set({ companionWindowPos: { x: 1720, y: 850 } });
+    const settings = await store.get();
+    expect(settings.companionWindowPos).toEqual({ x: 1720, y: 850 });
+    expect(settings.defaultModel).toBe('claude-opus-4-8');
+  });
 });
