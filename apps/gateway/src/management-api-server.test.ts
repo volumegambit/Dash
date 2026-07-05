@@ -1221,3 +1221,76 @@ describe('skill routes', () => {
     expect(await patched.json()).toEqual({ paths: ['/extra/skills'] });
   });
 });
+
+describe('POST /agents/:agentId/conversation-title', () => {
+  function registerAgent(agentRegistry: ReturnType<typeof makeAgentRegistry>) {
+    return (agentRegistry.register as ReturnType<typeof vi.fn>)({
+      name: 'titler',
+      model: 'anthropic/claude-3-5-haiku-20241022',
+      systemPrompt: 'x',
+    });
+  }
+
+  it('returns a generated title using the injected completion', async () => {
+    const titleCompleteFn = vi.fn().mockResolvedValue({
+      role: 'assistant',
+      content: [{ type: 'text', text: '"Login bug triage."' }],
+      stopReason: 'stop',
+    });
+    const { app, agentRegistry, credentialStore } = createApp({ titleCompleteFn });
+    await credentialStore.set('anthropic-api-key:default', 'sk-test');
+    const entry = registerAgent(agentRegistry);
+    const res = await app.request(`/agents/${entry.id}/conversation-title`, {
+      method: 'POST',
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ text: 'my login form crashes on submit' }),
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ title: 'Login bug triage' });
+  });
+
+  it('404s for an unknown agent', async () => {
+    const { app } = createApp();
+    const res = await app.request('/agents/nope/conversation-title', {
+      method: 'POST',
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ text: 'hello' }),
+    });
+    expect(res.status).toBe(404);
+  });
+
+  it('400s on a missing text field', async () => {
+    const { app, agentRegistry } = createApp();
+    const entry = registerAgent(agentRegistry);
+    const res = await app.request(`/agents/${entry.id}/conversation-title`, {
+      method: 'POST',
+      headers: JSON_HEADERS,
+      body: JSON.stringify({}),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it('502s when generation fails (no provider key stored)', async () => {
+    const { app, agentRegistry } = createApp({
+      titleCompleteFn: vi.fn().mockResolvedValue({ content: [] }),
+    });
+    const entry = registerAgent(agentRegistry);
+    const res = await app.request(`/agents/${entry.id}/conversation-title`, {
+      method: 'POST',
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ text: 'hello' }),
+    });
+    expect(res.status).toBe(502);
+  });
+
+  it('requires auth', async () => {
+    const { app, agentRegistry } = createApp();
+    const entry = registerAgent(agentRegistry);
+    const res = await app.request(`/agents/${entry.id}/conversation-title`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: 'hello' }),
+    });
+    expect(res.status).toBe(401);
+  });
+});

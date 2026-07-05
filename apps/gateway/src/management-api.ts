@@ -15,6 +15,7 @@ import type { Context } from 'hono';
 import type { AgentChatCoordinator } from './agent-chat-coordinator.js';
 import type { AgentRegistry, GatewayAgentConfig, RegisteredAgent } from './agent-registry.js';
 import type { ChannelRegistry, ChannelRoutingRule } from './channel-registry.js';
+import { type CompleteFn, generateConversationTitle } from './conversation-title.js';
 import type { GatewayCredentialStore } from './credential-store.js';
 import type { EventBus, GatewayEvent } from './event-bus.js';
 import type { EventLogStore } from './event-log-store.js';
@@ -73,6 +74,12 @@ export interface GatewayManagementOptions {
    * entrypoint reassigns its `wiringState` holder, and this closure reads it.
    */
   getPluginWiringState?: () => PluginWiringState;
+  /**
+   * Injectable LLM completion for the conversation-title route. Tests stub
+   * this to avoid network access; production leaves it unset (pi-ai's
+   * `complete`).
+   */
+  titleCompleteFn?: CompleteFn;
   /** Persistence for the per-plugin enable/trust/installed entries. */
   pluginConfigStore?: PluginConfigStore;
   /**
@@ -889,6 +896,39 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
       return c.json({ entries });
     });
   }
+
+  // --- Conversation title generation ---
+  //
+  // MC calls this after the first user message of a conversation to
+  // replace its truncated-first-message placeholder with a short
+  // LLM-generated title. One cheap completion on the agent's own model
+  // (its provider credentials are guaranteed — the agent couldn't chat
+  // otherwise). Failures return 502 and MC keeps the placeholder.
+  app.post('/agents/:agentId/conversation-title', async (c) => {
+    const agentId = c.req.param('agentId');
+    const entry = agentRegistry.get(agentId);
+    if (!entry) return c.json({ error: 'agent not found' }, 404);
+    const parsed = await parseJsonBody<{ text?: unknown }>(c);
+    if (!parsed.ok) return parsed.response;
+    const text = typeof parsed.body.text === 'string' ? parsed.body.text.trim() : '';
+    if (!text) return c.json({ error: 'text is required' }, 400);
+    try {
+      const storeKeys = await credentialStore.readProviderApiKeys();
+      const title = await generateConversationTitle({
+        modelStr: entry.config.model,
+        allowedProviders: entry.config.providers,
+        pluginModelCatalog: options.getPluginWiringState?.().pluginModelCatalog,
+        providerApiKeys: { ...storeKeys, ...(entry.config.providerApiKeys ?? {}) },
+        text,
+        completeFn: options.titleCompleteFn,
+      });
+      return c.json({ title });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      logger.warn(`conversation title generation failed for agent "${agentId}": ${message}`);
+      return c.json({ error: message }, 502);
+    }
+  });
 
   // --- Swarm panel routes ---
   // Mounted behind the bearer middleware (registered above via app.use('*')).
