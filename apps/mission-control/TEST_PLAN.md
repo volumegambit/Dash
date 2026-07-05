@@ -1293,8 +1293,8 @@ Take screenshots of every page and evaluate against these criteria. This section
 10. **Verify:** The skill appears with a **Remote** badge. (Try a known-dangerous local skill and **verify** the install is refused with a scan message.)
 11. Click **Remove** on the installed or created skill.
 12. **Verify:** It disappears from the list.
-13. In the **Skills settings** strip, toggle **Include bundled skill library** off and Save.
-14. **Verify:** Bundled skills no longer appear in the list (re-enable to restore).
+13. In **Settings → Plugins**, disable the built-in plugin that contributes this agent's bundled skills (e.g. disable **Skill Management** for `manage-skills`, or **Developer** for `code-review`).
+14. **Verify:** In chat over this agent, `load_skill <name>` for that plugin's skill no longer finds it (and the skill drops from the agent's Skills tab list); re-enable the plugin and **verify** the skill loads again.
 
 ## Section 29: Plugins (Settings → Plugins)
 
