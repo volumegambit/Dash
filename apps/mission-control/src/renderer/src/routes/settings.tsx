@@ -2,6 +2,7 @@ import { createFileRoute } from '@tanstack/react-router';
 import { RefreshCw } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
 import type { AppSettings } from '../../../shared/ipc.js';
+import { PetPicker } from '../companion/pets/PetPicker.js';
 import { ModelChainEditor } from '../components/ModelChainEditor.js';
 import { RelaySettings } from '../components/RelaySettings.js';
 import { WebSearchSettings } from '../components/WebSearchSettings.js';
@@ -21,6 +22,8 @@ function Settings(): JSX.Element {
   } = useAvailableModels();
   const companionVisible = useUIStore((s) => s.companionVisible);
   const setCompanionVisible = useUIStore((s) => s.setCompanionVisible);
+  const companionPet = useUIStore((s) => s.companionPet);
+  const setCompanionPet = useUIStore((s) => s.setCompanionPet);
 
   useEffect(() => {
     window.api.getVersion().then(setVersion);
@@ -123,8 +126,8 @@ function Settings(): JSX.Element {
             Companion
           </h2>
           <p className="mb-3 text-xs text-muted">
-            The tree companion shows which sessions are working, need you, or finished while you
-            were away.
+            Your companion floats on your desktop and shows which sessions are working, need you, or
+            finished while you were away.
           </p>
           <label className="flex cursor-pointer items-center gap-3">
             <input
@@ -133,8 +136,9 @@ function Settings(): JSX.Element {
               onChange={(e) => setCompanionVisible(e.target.checked)}
               className="rounded border border-border"
             />
-            <span className="text-xs font-medium text-foreground">Show the tree companion</span>
+            <span className="text-xs font-medium text-foreground">Show the companion</span>
           </label>
+          {companionVisible && <PetPicker value={companionPet} onChange={setCompanionPet} />}
         </div>
 
         <div className="mt-6 rounded-lg border border-border bg-card-bg p-4">
