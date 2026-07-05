@@ -294,14 +294,23 @@ function renderEvents(
     } else if (inProgressSummary) {
       inProgressNode = <span className="ml-1 text-muted">{inProgressSummary}</span>;
     }
+    // A spinner is only honest while the stream is live. From history (or
+    // after a cancel/crash), a tool_use with no tool_result means the turn
+    // ended before the tool reported back — render it interrupted, not
+    // forever-spinning (e.g. wait_workers after a swarm cancel).
     elements.push(
       <div
         key="tool-progress"
         className="mb-2 flex items-center gap-2 border border-border bg-sidebar-hover px-3 py-1.5 text-xs text-muted"
       >
-        <Loader size={12} className="animate-spin shrink-0" />
+        {isStreaming ? (
+          <Loader size={12} className="animate-spin shrink-0" />
+        ) : (
+          <Ban size={12} className="shrink-0" />
+        )}
         <span className="font-mono">{toolLabel(toolName)}</span>
         {inProgressNode}
+        {!isStreaming && <span className="ml-1 italic">interrupted</span>}
       </div>,
     );
   }
