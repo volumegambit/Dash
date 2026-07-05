@@ -184,7 +184,10 @@ describe('TaskDetail delete', () => {
   });
 
   it('chip selects the session in the panel; the external-link icon opens Chat', async () => {
-    const older = sessionLink({ session_id: 'conv-41', last_referenced_at: '2026-05-01T00:00:00Z' });
+    const older = sessionLink({
+      session_id: 'conv-41',
+      last_referenced_at: '2026-05-01T00:00:00Z',
+    });
     const d = detail({ linked_sessions: [older, sessionLink()] });
     useProjectsStore.setState({ detailById: { issue_1: d } });
     mockApi.projectsGetIssue.mockResolvedValue(d);
