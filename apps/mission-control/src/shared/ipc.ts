@@ -337,12 +337,14 @@ export interface MissionControlAPI {
   // Updates
   onUpdateAvailable(callback: (info: { version: string }) => void): () => void;
 
-  // Companion (pixel-tree widget). The main window publishes coarse per-session
-  // statuses; main forwards them into the widget window and can ask the main
-  // window to re-publish (replay) when the widget (re)opens.
+  // Companion widget. The main window publishes coarse per-session statuses and
+  // the selected pet; main forwards both into the widget window and can ask the
+  // main window to re-publish (replay) when the widget (re)opens.
   companionPublishStatuses(statuses: CompanionStatus[]): void;
+  companionPublishPet(pet: PetKind): void;
   companionSetVisible(visible: boolean): Promise<void>;
   onCompanionStatuses(callback: (statuses: CompanionStatus[]) => void): () => void;
+  onCompanionPet(callback: (pet: PetKind) => void): () => void;
   onCompanionReplayRequest(callback: () => void): () => void;
 
   // Projects (gateway passthrough)
