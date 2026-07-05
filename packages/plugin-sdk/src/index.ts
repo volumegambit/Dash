@@ -216,7 +216,10 @@ export interface CatalogUiHints {
   docsUrl?: string;
   /** One-sentence marketing description shown on provider picker cards. */
   description?: string;
-  /** Dropdown ordering hint; lower sorts first. */
+  /**
+   * Dropdown ordering hint; lower sorts first. Providers missing sortOrder sort
+   * after all numbered ones, then alphabetically by id.
+   */
   sortOrder?: number;
 }
 

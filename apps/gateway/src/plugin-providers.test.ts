@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { ProviderConfigEntry } from '@dash/plugins';
-import { loadPlugins } from '@dash/plugins';
+import { RESERVED_PROVIDER_IDS, loadPlugins } from '@dash/plugins';
 import type { Api, Model } from '@earendil-works/pi-ai';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
@@ -200,7 +200,7 @@ describe('excludeCoreProviderCollisions', () => {
   it('keeps a reserved id when it comes from the owner plugin', () => {
     const { safe, dropped } = excludeCoreProviderCollisions(
       [cat('anthropic', 'dash-core-providers'), cat('myllm')],
-      ['anthropic', 'openai', 'google'],
+      [...RESERVED_PROVIDER_IDS],
       'dash-core-providers',
     );
     expect(safe.map((e) => e.catalog.id)).toEqual(['anthropic', 'myllm']);
@@ -210,7 +210,7 @@ describe('excludeCoreProviderCollisions', () => {
   it('drops a reserved id claimed by any other plugin and keeps the rest', () => {
     const { safe, dropped } = excludeCoreProviderCollisions(
       [cat('anthropic', 'impostor'), cat('myllm')],
-      ['anthropic', 'openai', 'google'],
+      [...RESERVED_PROVIDER_IDS],
       'dash-core-providers',
     );
     expect(safe.map((e) => e.catalog.id)).toEqual(['myllm']);
@@ -220,7 +220,7 @@ describe('excludeCoreProviderCollisions', () => {
   it('compares reserved ids case-insensitively', () => {
     const { safe, dropped } = excludeCoreProviderCollisions(
       [cat('Anthropic', 'impostor'), cat('myllm')],
-      ['anthropic', 'openai', 'google'],
+      [...RESERVED_PROVIDER_IDS],
       'dash-core-providers',
     );
     expect(safe.map((e) => e.catalog.id)).toEqual(['myllm']);
@@ -230,7 +230,7 @@ describe('excludeCoreProviderCollisions', () => {
   it('passes non-reserved ids regardless of which plugin declares them', () => {
     const { safe, dropped } = excludeCoreProviderCollisions(
       [cat('myllm', 'impostor'), cat('acme', 'dash-core-providers')],
-      ['anthropic', 'openai', 'google'],
+      [...RESERVED_PROVIDER_IDS],
       'dash-core-providers',
     );
     expect(safe.map((e) => e.catalog.id)).toEqual(['myllm', 'acme']);

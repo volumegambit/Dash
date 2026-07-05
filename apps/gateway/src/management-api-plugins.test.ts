@@ -96,7 +96,6 @@ function wiring(over: Partial<PluginWiringState> = {}): PluginWiringState {
     commandFiles: [],
     hookEngine: { hasHooks: false } as unknown as PluginWiringState['hookEngine'],
     pluginModelCatalog: {} as unknown as PluginWiringState['pluginModelCatalog'],
-    pluginModels: [],
     mcpConfigs: [],
     pluginProviderConfigs: [],
     droppedProviderCollisions: [],

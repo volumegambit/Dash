@@ -1,5 +1,5 @@
 import type { FilteredModel, ProviderCatalog, SupportedPattern } from '@dash/plugin-sdk';
-import { CatalogFetchError, fetchCatalogModels } from './catalog-fetch.js';
+import { fetchCatalogModels } from './catalog-fetch.js';
 import { findCatalogPattern } from './catalog-filter.js';
 
 /**
@@ -97,13 +97,7 @@ export async function discoverCatalogModels(
         }
         return { catalog, matched };
       } catch (err) {
-        const message =
-          err instanceof CatalogFetchError
-            ? err.message
-            : err instanceof Error
-              ? err.message
-              : String(err);
-        errors[catalog.id] = message;
+        errors[catalog.id] = err instanceof Error ? err.message : String(err);
         return { catalog, matched: [] };
       }
     }),

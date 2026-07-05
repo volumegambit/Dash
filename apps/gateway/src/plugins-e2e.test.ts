@@ -6,7 +6,13 @@ import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import type { AgentBackend, AgentEvent, AgentState, RunOptions } from '@dash/agent';
 import type { Logger } from '@dash/logging';
-import { MANIFEST_DIR, MANIFEST_FILENAME, PluginConfigStore, loadPlugins } from '@dash/plugins';
+import {
+  MANIFEST_DIR,
+  MANIFEST_FILENAME,
+  PluginConfigStore,
+  RESERVED_PROVIDER_IDS,
+  loadPlugins,
+} from '@dash/plugins';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { McpServerConfig } from '@dash/mcp';
@@ -19,6 +25,7 @@ import type { DynamicGateway } from './gateway.js';
 import { createGatewayManagementApp } from './management-api.js';
 import { ModelsStore } from './models-store.js';
 import { reconcilePluginMcpServers, registerPluginMcpServers } from './plugin-mcp.js';
+import { expandPluginModelsForRoute } from './plugin-providers.js';
 import {
   type PluginStatusRecord,
   type PluginWiringState,
@@ -80,7 +87,7 @@ const NOOP_LOGGER: Logger = {
   error: () => {},
 };
 
-const CORE_PROVIDER_IDS = ['anthropic', 'openai', 'google', 'moonshotai', 'openrouter'];
+const CORE_PROVIDER_IDS = [...RESERVED_PROVIDER_IDS];
 
 const AUTH = { Authorization: 'Bearer test-token' };
 const JSON_HEADERS = { 'Content-Type': 'application/json', ...AUTH };
@@ -522,7 +529,7 @@ describe('plugin mutate → hot-reload end-to-end', () => {
       const beforeBody = (await before.json()) as { models: { value: string }[] };
       expect(beforeBody.models.map((m) => m.value)).not.toContain('myllm/m1');
 
-      // Trust the plugin via the route → reload rebuilds wiring (incl. pluginModels).
+      // Trust the plugin via the route → reload rebuilds wiring (incl. provider configs).
       const put = await app.request('/plugins/llmpack', {
         method: 'PUT',
         headers: JSON_HEADERS,
@@ -531,7 +538,7 @@ describe('plugin mutate → hot-reload end-to-end', () => {
       expect(put.status).toBe(200);
 
       // GET /models now reflects the reloaded plugin provider — proving the
-      // route reads pluginModels through a LIVE getter, not a boot snapshot.
+      // route derives models from the LIVE provider-configs getter, not a snapshot.
       const after = await app.request('/models', { headers: AUTH });
       const afterBody = (await after.json()) as { models: { value: string }[] };
       expect(afterBody.models.map((m) => m.value)).toContain('myllm/m1');
@@ -814,7 +821,7 @@ describe('bundled dash-core-providers boot install (end-to-end)', () => {
   // The checked-in bundle shipped inside the gateway package — the same dir
   // index.ts resolves relative to its own location at boot.
   const bundledDir = fileURLToPath(new URL('../plugins/dash-core-providers', import.meta.url));
-  const RESERVED_IDS = ['anthropic', 'google', 'moonshotai', 'openai', 'openrouter'];
+  const RESERVED_IDS = [...RESERVED_PROVIDER_IDS].sort();
 
   let dataDir: string;
   beforeEach(async () => {
@@ -852,8 +859,13 @@ describe('bundled dash-core-providers boot install (end-to-end)', () => {
       expect(resolved?.provider).toBe('anthropic');
       expect(resolved?.baseUrl).toBe('https://api.anthropic.com/v1');
 
-      // The bundle's models feed the dropdown expansion...
-      expect(ws.pluginModels.some((m) => m.value.startsWith('anthropic/'))).toBe(true);
+      // The bundle's models feed the dropdown expansion (derived at render time
+      // from the live provider configs — the route no longer caches a model list)...
+      expect(
+        expandPluginModelsForRoute(ws.pluginProviderConfigs).some((m) =>
+          m.value.startsWith('anthropic/'),
+        ),
+      ).toBe(true);
 
       // ...and GET /models (route level) serves anthropic/ models. (Values that
       // duplicate core bootstrap models are deduped core-first, so presence —

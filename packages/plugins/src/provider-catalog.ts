@@ -321,8 +321,9 @@ function validateUiHints(v: unknown, where: string): CatalogUiHints | undefined 
  * {`openai-completions`, `anthropic-messages`}, and a NON-EMPTY `models` array
  * whose entries each carry a string `id` + number `contextWindow`/`maxTokens`.
  * Optional fields (`dynamicModels`, `dynamicModelDefaults`, `placeholderKey`,
- * and per-model metadata) are validated when present and dropped when
- * malformed. Built field-by-field (never returns/spreads the parsed object →
+ * `excludedPatterns`, `ui.sortOrder`, `ui.description`, and per-model metadata)
+ * are validated when present and dropped when malformed. Built field-by-field
+ * (never returns/spreads the parsed object →
  * prototype-pollution-safe, consistent with `manifest.ts`). Throws a clear
  * error per bad field so the loader can isolate the offending plugin.
  */
