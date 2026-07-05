@@ -5,7 +5,21 @@ import { useUIStore } from '../stores/ui.js';
 import { Sidebar } from './Sidebar.js';
 
 vi.mock('@tanstack/react-router', () => ({
-  Link: ({ to, children }: { to: string; children: ReactNode }) => <a href={to}>{children}</a>,
+  Link: ({
+    to,
+    children,
+    onClick,
+    title,
+  }: {
+    to: string;
+    children: ReactNode;
+    onClick?: () => void;
+    title?: string;
+  }) => (
+    <a href={to} onClick={onClick} title={title}>
+      {children}
+    </a>
+  ),
 }));
 
 describe('Sidebar', () => {
@@ -38,9 +52,14 @@ describe('Sidebar', () => {
     expect(screen.getByText('Feedback')).toBeInTheDocument();
   });
 
-  it('renders a collapse toggle button', () => {
+  it('is expanded by default', () => {
+    useUIStore.setState(useUIStore.getInitialState());
+    expect(useUIStore.getState().sidebarCollapsed).toBe(false);
+  });
+
+  it('renders collapse toggle buttons at top and bottom', () => {
     render(<Sidebar />);
-    expect(screen.getByRole('button', { name: /collapse sidebar/i })).toBeInTheDocument();
+    expect(screen.getAllByRole('button', { name: /collapse sidebar/i })).toHaveLength(2);
   });
 
   it('hides nav labels when collapsed', () => {
@@ -64,25 +83,42 @@ describe('Sidebar', () => {
     expect(screen.queryByText('CONFIGURE')).not.toBeInTheDocument();
   });
 
-  it('shows expand button when collapsed', () => {
+  it('shows expand buttons when collapsed', () => {
     useUIStore.setState({ sidebarCollapsed: true });
     render(<Sidebar />);
-    expect(screen.getByRole('button', { name: /expand sidebar/i })).toBeInTheDocument();
+    expect(screen.getAllByRole('button', { name: /expand sidebar/i })).toHaveLength(2);
   });
 
-  it('clicking collapse toggle collapses the sidebar', () => {
+  it('clicking the top collapse toggle collapses the sidebar', () => {
     render(<Sidebar />);
     act(() => {
-      fireEvent.click(screen.getByRole('button', { name: /collapse sidebar/i }));
+      fireEvent.click(screen.getAllByRole('button', { name: /collapse sidebar/i })[0]);
     });
     expect(useUIStore.getState().sidebarCollapsed).toBe(true);
   });
 
-  it('clicking expand toggle expands the sidebar', () => {
+  it('clicking the bottom expand toggle expands the sidebar', () => {
     useUIStore.setState({ sidebarCollapsed: true });
     render(<Sidebar />);
     act(() => {
-      fireEvent.click(screen.getByRole('button', { name: /expand sidebar/i }));
+      fireEvent.click(screen.getAllByRole('button', { name: /expand sidebar/i })[1]);
+    });
+    expect(useUIStore.getState().sidebarCollapsed).toBe(false);
+  });
+
+  it('clicking a nav icon while collapsed expands the sidebar', () => {
+    useUIStore.setState({ sidebarCollapsed: true });
+    render(<Sidebar />);
+    act(() => {
+      fireEvent.click(screen.getByTitle('Chat'));
+    });
+    expect(useUIStore.getState().sidebarCollapsed).toBe(false);
+  });
+
+  it('clicking a nav item while expanded keeps the sidebar expanded', () => {
+    render(<Sidebar />);
+    act(() => {
+      fireEvent.click(screen.getByText('Chat'));
     });
     expect(useUIStore.getState().sidebarCollapsed).toBe(false);
   });

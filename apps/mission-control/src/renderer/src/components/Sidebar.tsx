@@ -76,6 +76,7 @@ const sections: NavSection[] = [
 export function Sidebar(): JSX.Element {
   const collapsed = useUIStore((s) => s.sidebarCollapsed);
   const toggleSidebar = useUIStore((s) => s.toggleSidebar);
+  const expandSidebar = useUIStore((s) => s.expandSidebar);
   const [gatewayStatus, setGatewayStatus] = useState<GatewayStatus>('starting');
 
   useEffect(() => {
@@ -90,6 +91,18 @@ export function Sidebar(): JSX.Element {
         ? 'disconnected'
         : 'connecting';
 
+  const toggleButton = (
+    <button
+      type="button"
+      onClick={toggleSidebar}
+      className="text-muted hover:text-foreground transition-colors"
+      aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+      title={collapsed ? 'Expand sidebar (⌘B)' : 'Collapse sidebar (⌘B)'}
+    >
+      {collapsed ? <PanelLeftOpen size={16} /> : <PanelLeftClose size={16} />}
+    </button>
+  );
+
   return (
     <aside
       className={`flex h-full shrink-0 flex-col border-r border-border bg-sidebar-bg transition-[width] duration-200 ${
@@ -99,15 +112,21 @@ export function Sidebar(): JSX.Element {
       {/* Header */}
       <div
         className={`flex items-center border-b border-border pb-4 pt-3 ${
-          collapsed ? 'justify-center px-0' : 'justify-between px-1'
+          collapsed ? 'flex-col justify-center gap-3 px-0' : 'justify-between px-1'
         }`}
       >
         {collapsed ? (
-          <Zap size={18} className="text-accent" />
+          <>
+            <Zap size={18} className="text-accent" />
+            {toggleButton}
+          </>
         ) : (
           <>
             <DashSquadLogo />
-            <HealthDot health={gatewayHealth} />
+            <div className="flex items-center gap-2">
+              <HealthDot health={gatewayHealth} />
+              {toggleButton}
+            </div>
           </>
         )}
       </div>
@@ -128,6 +147,7 @@ export function Sidebar(): JSX.Element {
               <Link
                 key={item.to}
                 to={item.to}
+                onClick={collapsed ? expandSidebar : undefined}
                 title={collapsed ? item.label : undefined}
                 className={`flex items-center transition-colors [&.active]:bg-sidebar-active [&.active]:text-foreground [&.active]:font-semibold [&.active]:border-l-[3px] [&.active]:border-accent ${
                   collapsed
@@ -157,17 +177,7 @@ export function Sidebar(): JSX.Element {
             </button>
           </>
         )}
-        <button
-          type="button"
-          onClick={toggleSidebar}
-          className={`text-muted hover:text-foreground transition-colors ${
-            collapsed ? '' : 'ml-auto'
-          }`}
-          aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-          title={collapsed ? 'Expand sidebar (⌘B)' : 'Collapse sidebar (⌘B)'}
-        >
-          {collapsed ? <PanelLeftOpen size={16} /> : <PanelLeftClose size={16} />}
-        </button>
+        <div className={collapsed ? '' : 'ml-auto'}>{toggleButton}</div>
       </div>
     </aside>
   );

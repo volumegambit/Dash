@@ -3,6 +3,7 @@ import { create } from 'zustand';
 interface UIState {
   sidebarCollapsed: boolean;
   toggleSidebar: () => void;
+  expandSidebar: () => void;
   companionVisible: boolean;
   companionCollapsed: boolean;
   setCompanionVisible: (visible: boolean) => void;
@@ -10,8 +11,9 @@ interface UIState {
 }
 
 export const useUIStore = create<UIState>((set) => ({
-  sidebarCollapsed: true,
+  sidebarCollapsed: false,
   toggleSidebar: () => set((state) => ({ sidebarCollapsed: !state.sidebarCollapsed })),
+  expandSidebar: () => set({ sidebarCollapsed: false }),
   companionVisible: true,
   companionCollapsed: true,
   setCompanionVisible: (companionVisible) => set({ companionVisible }),
