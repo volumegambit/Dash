@@ -2,6 +2,7 @@ import type {
   CatalogAuthRule,
   CatalogEntryFilters,
   CatalogModel,
+  FilteredModel,
   HookCommand,
   HookEvent,
   HookMatcherGroup,
@@ -28,6 +29,7 @@ export type TypeSurfaceBaseline = [
   ProviderCatalog,
   ModelsFetchSpec,
   CatalogEntryFilters,
+  FilteredModel,
 ];
 
 describe('@dash/plugin-sdk surface', () => {
@@ -93,6 +95,25 @@ describe('@dash/plugin-sdk surface', () => {
     };
     expect(cat.api).toBe('google-generative-ai');
     expect((cat.modelsFetch as ModelsFetchSpec).auth[0]?.queryParam).toBe('key');
+  });
+
+  it('ProviderCatalog carries excludedPatterns and ui.sortOrder; FilteredModel is exported', () => {
+    const cat: ProviderCatalog = {
+      id: 'google',
+      label: 'Google',
+      credentialPrefix: 'google-api-key',
+      baseUrl: 'https://generativelanguage.googleapis.com',
+      api: 'google-generative-ai',
+      models: [{ id: 'gemini-3-pro', contextWindow: 2_000_000, maxTokens: 65_536 }],
+      supportedPatterns: [{ pattern: 'gemini-*-pro*', tier: 0 }],
+      excludedPatterns: ['gemini-*-tts*'],
+      ui: { keyConsoleUrl: 'https://x', sortOrder: 2 },
+    };
+    expect(cat.excludedPatterns).toEqual(['gemini-*-tts*']);
+    expect(cat.ui?.sortOrder).toBe(2);
+
+    const m: FilteredModel = { value: 'a/b', label: 'B', provider: 'a' };
+    expect(m.value).toBe('a/b');
   });
 
   it('ProviderCatalog.modelsFetch accepts an ordered array of variants (whenKeyPrefix)', () => {

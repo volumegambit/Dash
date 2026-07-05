@@ -214,6 +214,8 @@ export interface CatalogUiHints {
   keyConsoleUrl?: string;
   keyPlaceholder?: string;
   docsUrl?: string;
+  /** Dropdown ordering hint; lower sorts first. */
+  sortOrder?: number;
 }
 
 /**
@@ -249,10 +251,29 @@ export interface ProviderCatalog {
   modelsFetch?: ModelsFetchSpec | ModelsFetchSpec[];
   /** Allow-list patterns filtering live-fetched models; absent → no live filter. */
   supportedPatterns?: SupportedPattern[];
+  /**
+   * Deny-list globs applied to live-fetched model ids; a match here removes the
+   * model even when a supportedPattern matches. Serves modality filtering (e.g.
+   * Gemini TTS/image ids share chat prefixes).
+   */
+  excludedPatterns?: string[];
   /** ISO date the model list was last human-reviewed. */
   reviewedAt?: string;
   /** Host-UI rendering hints. */
   ui?: CatalogUiHints;
+}
+
+/**
+ * One entry in the gateway's GET /models response. Lives in the SDK so gateway
+ * and tooling share the wire shape without a models package.
+ */
+export interface FilteredModel {
+  /** Fully-qualified `<provider>/<modelId>` value. */
+  value: string;
+  /** Display name. */
+  label: string;
+  /** Provider id. */
+  provider: string;
 }
 
 /** Marker so the host can assert it links a compatible SDK build. */
