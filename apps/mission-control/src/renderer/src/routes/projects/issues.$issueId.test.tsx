@@ -20,6 +20,9 @@ vi.mock('@tanstack/react-router', () => ({
 
 const { TaskDetail } = await import('./issues.$issueId.js');
 
+// jsdom does not implement scrollIntoView (SessionPanel auto-follows).
+Element.prototype.scrollIntoView = vi.fn();
+
 function detail(patch: Partial<IssueDetail> = {}): IssueDetail {
   return {
     id: 'issue_1',
@@ -64,10 +67,18 @@ function sessionLink(patch: Partial<SessionIssueLink> = {}): SessionIssueLink {
   };
 }
 
+const mcConversation = {
+  id: 'conv-42',
+  agentId: 'agent-reg',
+  title: 'TASK-1 — Doomed task',
+  createdAt: '2026-06-01T00:00:00Z',
+  updatedAt: '2026-06-01T00:00:00Z',
+};
+
 beforeEach(() => {
   useProjectsStore.setState({ issuesById: {}, projectsById: {}, inbox: [], detailById: {} });
   useAgentsStore.setState({ agents: [], loading: false, error: null });
-  useChatStore.setState({ conversations: [] });
+  useChatStore.setState({ conversations: [], messages: {}, sending: {}, streamingEvents: {} });
   mockNavigate.mockClear();
 });
 
@@ -151,27 +162,121 @@ describe('TaskDetail delete', () => {
     expect(options).not.toContain('Retired');
   });
 
-  it('linked-session chip opens the chat conversation when it exists in MC', async () => {
+  it('shows the latest MC-linked session in the panel automatically', async () => {
     const d = detail({ linked_sessions: [sessionLink()] });
     useProjectsStore.setState({ detailById: { issue_1: d } });
     mockApi.projectsGetIssue.mockResolvedValue(d);
-    mockApi.chatListConversations.mockResolvedValue([
+    mockApi.chatListConversations.mockResolvedValue([mcConversation]);
+    mockApi.chatGetMessages.mockResolvedValue([
       {
-        id: 'conv-42',
-        agentId: 'agent-reg',
-        title: 'TASK-1 — Doomed task',
-        createdAt: '2026-06-01T00:00:00Z',
-        updatedAt: '2026-06-01T00:00:00Z',
+        id: 'm1',
+        role: 'assistant',
+        content: { type: 'assistant', events: [{ type: 'text_delta', text: 'I loaded TASK-1' }] },
+        timestamp: '2026-06-01T00:00:01Z',
       },
     ]);
     render(<TaskDetail />);
 
-    await userEvent.click(await screen.findByTestId('session-chip-conv-42'));
+    // Transcript renders in-window without any chip interaction.
+    expect(await screen.findByText(/I loaded TASK-1/)).toBeInTheDocument();
+    expect(screen.getByPlaceholderText('Reply to the agent…')).toBeInTheDocument();
+    expect(mockNavigate).not.toHaveBeenCalled();
+  });
 
+  it('chip selects the session in the panel; the external-link icon opens Chat', async () => {
+    const older = sessionLink({ session_id: 'conv-41', last_referenced_at: '2026-05-01T00:00:00Z' });
+    const d = detail({ linked_sessions: [older, sessionLink()] });
+    useProjectsStore.setState({ detailById: { issue_1: d } });
+    mockApi.projectsGetIssue.mockResolvedValue(d);
+    mockApi.chatListConversations.mockResolvedValue([
+      mcConversation,
+      { ...mcConversation, id: 'conv-41' },
+    ]);
+    mockApi.chatGetMessages.mockImplementation(async (id: string) => [
+      {
+        id: `m-${id}`,
+        role: 'assistant',
+        content: { type: 'assistant', events: [{ type: 'text_delta', text: `transcript ${id}` }] },
+        timestamp: '2026-06-01T00:00:01Z',
+      },
+    ]);
+    render(<TaskDetail />);
+
+    // Latest session (conv-42) shows by default; picking the older chip swaps the panel.
+    expect(await screen.findByText(/transcript conv-42/)).toBeInTheDocument();
+    await userEvent.click(screen.getByTestId('session-chip-conv-41'));
+    expect(await screen.findByText(/transcript conv-41/)).toBeInTheDocument();
+    expect(mockNavigate).not.toHaveBeenCalled();
+
+    await userEvent.click(screen.getByTestId('session-open-chat'));
     expect(mockNavigate).toHaveBeenCalledWith({
       to: '/chat',
-      search: { agentId: '', conversationId: 'conv-42' },
+      search: { agentId: '', conversationId: 'conv-41' },
     });
+  });
+
+  it('hides comment_* noise rows from the timeline and stamps rows with relative time', async () => {
+    const d = detail({
+      events: [
+        {
+          id: 'e1',
+          issue_id: 'issue_1',
+          type: 'comment_added',
+          actor_type: 'agent',
+          actor_id: 'Developer',
+          data: '{}',
+          created_at: '2026-06-01T00:00:02Z',
+        },
+        {
+          id: 'e2',
+          issue_id: 'issue_1',
+          type: 'status_change',
+          actor_type: 'human',
+          actor_id: 'local',
+          data: '{"from":"todo","to":"in_progress"}',
+          created_at: '2026-06-01T00:00:03Z',
+        },
+      ],
+    });
+    useProjectsStore.setState({ detailById: { issue_1: d } });
+    mockApi.projectsGetIssue.mockResolvedValue(d);
+    render(<TaskDetail />);
+
+    expect(await screen.findByText(/Status: todo → in_progress/)).toBeInTheDocument();
+    expect(screen.queryByText('comment_added')).not.toBeInTheDocument();
+  });
+
+  it('labels a session_linked event with the agent name from the link', async () => {
+    const d = detail({
+      linked_sessions: [sessionLink()],
+      events: [
+        {
+          id: 'e1',
+          issue_id: 'issue_1',
+          type: 'session_linked',
+          actor_type: 'agent',
+          actor_id: 'Developer',
+          data: '{"session_id":"conv-42"}',
+          created_at: '2026-06-01T00:00:02Z',
+        },
+      ],
+    });
+    useProjectsStore.setState({ detailById: { issue_1: d } });
+    mockApi.projectsGetIssue.mockResolvedValue(d);
+    render(<TaskDetail />);
+
+    expect(await screen.findByText(/🤖 Developer session linked/)).toBeInTheDocument();
+    expect(screen.queryByText(/Linked session conv-42/)).not.toBeInTheDocument();
+  });
+
+  it('shows a DESCRIPTION section with a placeholder when empty', async () => {
+    const d = detail();
+    useProjectsStore.setState({ detailById: { issue_1: d } });
+    mockApi.projectsGetIssue.mockResolvedValue(d);
+    render(<TaskDetail />);
+
+    expect(await screen.findByText('Description')).toBeInTheDocument();
+    expect(screen.getByText('No description')).toBeInTheDocument();
   });
 
   it('keeps sessions from other channels as non-clickable chips', async () => {
