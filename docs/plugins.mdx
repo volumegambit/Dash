@@ -9,7 +9,7 @@ Dash plugins follow the **Claude Code plugin layout**, so a plugin published for
 
 ## Quick start
 
-Here's the whole journey, from an empty list to a working plugin — all from **Mission Control → Plugins** (under **CONFIGURE** in the sidebar):
+Here's the whole journey, from an empty list to a working plugin — all from **Mission Control → Settings → Plugins**:
 
 <Steps>
 <Step title="Install a plugin">
@@ -69,7 +69,7 @@ Already comfortable with skills? A plugin is the next step up: instead of instal
 
 ## Installing a plugin
 
-You install a plugin **by source** from the **Plugins** screen in Mission Control (under **CONFIGURE**) — fill in the **Install Plugin** form and click **Install** — or, if you're scripting, by calling the management API's `POST /plugins/install` endpoint directly. Either way the installer fetches the plugin, scans it, and drops it into your gateway's managed plugins directory at `~/.dash/gateway/plugins/<name>` — no restart needed; the gateway hot-reloads.
+You install a plugin **by source** from **Settings → Plugins** in Mission Control — fill in the **Install Plugin** form and click **Install** — or, if you're scripting, by calling the management API's `POST /plugins/install` endpoint directly. Either way the installer fetches the plugin, scans it, and drops it into your gateway's managed plugins directory at `~/.dash/gateway/plugins/<name>` — no restart needed; the gateway hot-reloads.
 
 A plugin install takes a single `source` string in one of three forms:
 
@@ -104,7 +104,7 @@ A **full commit SHA** is the safest choice — it pins to exact bytes that can't
 
 ## Managing plugins in Mission Control
 
-Mission Control's **Plugins** screen — under **CONFIGURE** in the sidebar — is where you install, inspect, enable, trust, and remove plugins without touching a config file. Changes take effect immediately; the gateway hot-reloads as you go.
+Mission Control's **Settings → Plugins** screen is where you install, inspect, enable, trust, and remove plugins without touching a config file. Changes take effect immediately; the gateway hot-reloads as you go.
 
 **Install Plugin form.** At the top of the screen, a **Source** field takes any install source (git, URL, or local path — see [Installing a plugin](#installing-a-plugin)) and an optional **Name** field overrides the install name (the manifest's `name` still wins when one is present). Click **Install** to fetch, scan, and load the plugin. If the scan flags the plugin as *suspicious* or *dangerous*, the screen shows the verdict so you can decide whether to keep it.
 
@@ -150,7 +150,7 @@ Trusting a plugin lets its hooks, MCP servers, `bin/` executables, and provider 
 
 ## Provider credentials
 
-Some plugins ship **LLM provider catalogs** (`providers/*.json`) that add extra AI providers — your company's internal model gateway, a regional endpoint, or any OpenAI-compatible service. When you've **trusted** a plugin that ships one, its providers appear automatically on the [AI Providers](/ai-providers) screen in Mission Control, listed right alongside the built-in ones (Claude, OpenAI, Google, Kimi, OpenRouter).
+Some plugins ship **LLM provider catalogs** (`providers/*.json`) that add extra AI providers — your company's internal model gateway, a regional endpoint, or any OpenAI-compatible service. When you've **trusted** a plugin that ships one, its providers appear automatically on the **Settings → AI Providers** screen in Mission Control ([AI Providers](/ai-providers)), listed right alongside the built-in ones (Claude, OpenAI, Google, Kimi, OpenRouter).
 
 Adding a key works exactly like a built-in provider: open **AI Providers**, pick the plugin's provider, and paste your key. Each provider needs its own API key.
 
@@ -358,7 +358,7 @@ Read the ticket below and assign a priority (P1–P4) with a one-line reason.
 }
 ```
 
-**Install it.** From Mission Control's **Plugins** screen, put the folder's path in the **Source** field (for example `/Users/you/plugins/my-plugin`) and click **Install**. The plugin lands **enabled but untrusted** — the `summarize` skill and `/my-plugin:triage` command work right away. To turn on the provider and hook, click **Trust** and confirm. Then add a key for the provider on the [AI Providers](/ai-providers) screen, and its `myprov/my-fast` model becomes selectable for any agent.
+**Install it.** From Mission Control's **Settings → Plugins** screen, put the folder's path in the **Source** field (for example `/Users/you/plugins/my-plugin`) and click **Install**. The plugin lands **enabled but untrusted** — the `summarize` skill and `/my-plugin:triage` command work right away. To turn on the provider and hook, click **Trust** and confirm. Then add a key for the provider on the **Settings → AI Providers** screen, and its `myprov/my-fast` model becomes selectable for any agent.
 
 ## What the errors mean
 

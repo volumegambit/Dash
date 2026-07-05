@@ -277,7 +277,7 @@ Each catalog file is a single JSON object:
 | `dynamicModelDefaults` | no | `{ "contextWindow", "maxTokens" }` applied to dynamically-accepted ids. |
 | `placeholderKey` | no | Stand-in key for keyless local servers — see below. |
 
-**Storing the API key.** Save it in the credential store under `<id>-api-key:<name>`, for example `myllm-api-key:default`. The simplest way is Mission Control's **AI Providers** screen, which writes that key for you; you can also set it directly with the gateway's credentials API. The first key stored for a provider id wins.
+**Storing the API key.** Save it in the credential store under `<id>-api-key:<name>`, for example `myllm-api-key:default`. The simplest way is Mission Control's **Settings → AI Providers** screen, which writes that key for you; you can also set it directly with the gateway's credentials API. The first key stored for a provider id wins.
 
 **Accept-any-model providers.** Set `"dynamicModels": true` together with `"dynamicModelDefaults": { "contextWindow": ..., "maxTokens": ... }` to allow any model id the provider supports — useful for aggregators like OpenRouter where the catalog can't list everything. Listed `models` still appear in the dropdown; an unlisted id is accepted on demand and sized from the defaults. (Without `dynamicModelDefaults`, an unlisted id is rejected — the gateway can't size it.)
 

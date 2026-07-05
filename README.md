@@ -34,7 +34,7 @@ npm run mc:dev
 On first launch, Mission Control walks you through three steps. The whole thing takes under a minute.
 
 1. **Gateway start.** MC spawns the background gateway process (`apps/gateway`) as a detached child. You'll see a brief spinner while it comes up on port 9300 (management) and 9200 (channels). No prompts — the gateway is MC's child and is supervised automatically across restarts. Its management + chat tokens live in the OS keychain (macOS Keychain / Windows Credential Manager / libsecret on Linux), never in a plaintext file on disk.
-2. **Pick a provider.** Choose Anthropic, OpenAI, or Google. You can add more providers later from the *AI Providers* tab.
+2. **Pick a provider.** Choose Anthropic, OpenAI, or Google. You can add more providers later from *Settings → AI Providers*.
 3. **Paste your API key.** MC sends the key directly to the gateway's encrypted credential store (AES-256-GCM, key derived via OS keychain). MC itself never stores it. The key is masked in the input field to block shoulder-surfing.
 
 When the wizard finishes you're in Mission Control proper.
@@ -43,8 +43,8 @@ When the wizard finishes you're in Mission Control proper.
 
 - **Deploy your first agent** — *Agents → Deploy*. Pick a model from the dropdown (populated live from the provider's `/v1/models` endpoint, filtered through a curated allow-list), give it a name + system prompt, and choose which tools it can use.
 - **Chat with it** — *Chat → New Conversation*. Messages stream over a WebSocket directly to the gateway, no round-trip through a cloud service.
-- **Reach it from Telegram or WhatsApp** — *Messaging Apps → Connect*. Paste a bot token (Telegram) or scan a QR code (WhatsApp) and your agent starts receiving messages from those platforms.
-- **Give it more tools** — *Connectors → Add Connector*. Install any Model Context Protocol (MCP) server (Linear, GitHub, a local filesystem, anything from the [MCP ecosystem](https://modelcontextprotocol.io)) and its tools become available to your agents.
+- **Reach it from Telegram or WhatsApp** — *Settings → Messaging Apps → Connect*. Paste a bot token (Telegram) or scan a QR code (WhatsApp) and your agent starts receiving messages from those platforms.
+- **Give it more tools** — *Settings → Connectors (MCP) → Add Connector*. Install any Model Context Protocol (MCP) server (Linear, GitHub, a local filesystem, anything from the [MCP ecosystem](https://modelcontextprotocol.io)) and its tools become available to your agents.
 
 All configuration lives inside Mission Control. There are no config files to hand-edit for day-to-day use. Everything Dash stores on disk lives under `~/.dash` (override with `DASH_HOME`) — `gateway/`, `desktop/`, `logs/`, and `workspaces/`.
 
