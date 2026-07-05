@@ -917,6 +917,13 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
           name,
           scanner: (dir) => heuristicPluginScan(dir, logger),
         });
+        // A builtin name is reserved: the dir just landed under pluginsDir,
+        // so roll it back and reject. (installPluginToDir can't catch this —
+        // builtins have no dir there to collide with.)
+        if (getWiring?.().pluginRecords[installed.name]?.builtin) {
+          await rm(join(dataDir, 'plugins', installed.name), { recursive: true, force: true });
+          return c.json({ error: `'${installed.name}' is a built-in plugin name` }, 409);
+        }
         // Persist the four config fields BEFORE reload so the rebuild sees them.
         await pluginConfigStore.setEnabled(installed.name, true); // visible
         await pluginConfigStore.setSource(installed.name, source); // provenance
@@ -1019,6 +1026,12 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
     app.delete('/plugins/:name', async (c) => {
       if (!getWiring || !pluginConfigStore || !reloadPlugins) return notConfigured(c);
       const name = c.req.param('name');
+      // Builtins ship with Dash and have no removable installation — refuse
+      // with a pointer to disable, before the store lookup (a builtin usually
+      // has no config entry and would otherwise 404 misleadingly).
+      if (getWiring().pluginRecords[name]?.builtin) {
+        return c.json({ error: 'built-in plugins cannot be removed — disable instead' }, 400);
+      }
       const entries = await pluginConfigStore.load();
       const entry = entries[name];
       if (!entry) return c.json({ error: 'not found' }, 404);

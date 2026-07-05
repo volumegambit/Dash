@@ -107,6 +107,8 @@ export interface PluginRecord {
   status: 'loaded' | 'disabled' | 'error';
   enabled: boolean;
   trusted: boolean;
+  /** `true` for a plugin shipped with Dash: enabled by default, not removable. */
+  builtin: boolean;
   /** Component kinds activated, e.g. ['skills']. */
   activated: string[];
   /** Component kinds present on disk but not activated (deferred / untrusted). */
