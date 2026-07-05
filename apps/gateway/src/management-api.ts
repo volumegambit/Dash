@@ -828,12 +828,10 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
     createModelsRoute({
       store: options.modelsStore,
       credentialStore,
-      // Read plugin models LIVE through the wiring getter so a hot-reload that
-      // adds/removes a plugin provider is reflected on the next GET /models —
-      // not a boot snapshot. Undefined when plugins aren't wired (tests).
-      getPluginModels: options.getPluginWiringState
-        ? () => options.getPluginWiringState?.().pluginModels ?? []
-        : undefined,
+      // Read provider catalogs LIVE through the wiring getter so a hot-reload
+      // that adds/removes a plugin provider is reflected on the next GET
+      // /models — not a boot snapshot. Empty when plugins aren't wired (tests).
+      getProviderConfigs: () => options.getPluginWiringState?.().pluginProviderConfigs ?? [],
     }),
   );
 
