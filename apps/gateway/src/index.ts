@@ -37,6 +37,7 @@ import { loadOrCreateGatewayIdentity } from './gateway-identity.js';
 import { createDynamicGateway } from './gateway.js';
 import { createGatewayManagementApp } from './management-api.js';
 import { McpConfigStore } from './mcp-store.js';
+import { migrateIncludeBundled } from './migrate-include-bundled.js';
 import { ModelsStore } from './models-store.js';
 import { OAuthRefreshCoordinator } from './oauth-refresh.js';
 import { filterPluginsByAgent } from './plugin-filtering.js';
@@ -262,6 +263,12 @@ async function main() {
   await registry.load();
   if (registry.list().length > 0) {
     console.log(`[agents] Restored ${registry.list().length} agent(s) from disk`);
+  }
+  // One-time migration: the removed skills.includeBundled flag becomes
+  // per-agent plugin selection (see migrate-include-bundled.ts).
+  const migratedAgents = await migrateIncludeBundled(registry, wiringState.pluginRecords, logger);
+  if (migratedAgents > 0) {
+    logger.info(`[migrate] rewrote ${migratedAgents} agent(s) off skills.includeBundled`);
   }
   const agents = createAgentChatCoordinator({
     registry,
