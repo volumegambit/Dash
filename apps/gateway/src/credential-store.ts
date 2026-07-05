@@ -1,6 +1,6 @@
-import { randomBytes } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { chmod, mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import type { EncryptedPayload } from './crypto.js';
 import { decrypt, deriveKey, encrypt, generateSalt } from './crypto.js';
@@ -16,10 +16,36 @@ export class GatewayCredentialStore {
   private encPath: string;
   private key: Buffer | null = null;
   private salt: Buffer | null = null;
+  /**
+   * Single in-process write queue. `set()` / `delete()` are read-modify-writes
+   * (load → mutate → save), so they must serialize the WHOLE critical section,
+   * not just the file write — two overlapping mutations that each `load()` the
+   * same on-disk map and then save would otherwise lose one another's update
+   * (last-writer-wins clobbers the earlier key change). Chaining them behind
+   * this queue makes each run against the freshest on-disk state. The queue
+   * never rejects (a failed write propagates to the awaiting caller while the
+   * chain stays resolved) so one failure does not wedge later writes. Mirrors
+   * `PluginConfigStore`.
+   */
+  private writeQueue: Promise<void> = Promise.resolve();
 
   constructor(private dataDir: string) {
     this.keyPath = join(dataDir, 'secret.key');
     this.encPath = join(dataDir, 'credentials.enc');
+  }
+
+  /**
+   * Serialize a read-modify-write against the on-disk credentials behind the
+   * write queue. Returns a promise that settles with `fn`'s outcome; the chain
+   * absorbs the rejection so a failed write never blocks subsequent ones.
+   */
+  private enqueue<T>(fn: () => Promise<T>): Promise<T> {
+    const run = this.writeQueue.then(fn, fn);
+    this.writeQueue = run.then(
+      () => {},
+      () => {},
+    );
+    return run;
   }
 
   async init(): Promise<void> {
@@ -37,10 +63,16 @@ export class GatewayCredentialStore {
         key: this.key.toString('base64'),
         salt: this.salt.toString('base64'),
       });
-      const tmpPath = `${this.keyPath}.tmp`;
+      // Unique temp name so a concurrent init/write can't share this `.tmp`.
+      const tmpPath = `${this.keyPath}.${randomUUID()}.tmp`;
       await writeFile(tmpPath, payload, { mode: 0o600 });
       await chmod(tmpPath, 0o600);
-      await rename(tmpPath, this.keyPath);
+      try {
+        await rename(tmpPath, this.keyPath);
+      } catch (err) {
+        await unlink(tmpPath).catch(() => {});
+        throw err;
+      }
     }
   }
 
@@ -50,15 +82,21 @@ export class GatewayCredentialStore {
   }
 
   async set(key: string, value: string): Promise<void> {
-    const secrets = await this.load();
-    secrets[key] = value;
-    await this.save(secrets);
+    // Serialize the whole load→mutate→save so a concurrent set/delete can't
+    // read a stale map and clobber this key (see writeQueue).
+    return this.enqueue(async () => {
+      const secrets = await this.load();
+      secrets[key] = value;
+      await this.save(secrets);
+    });
   }
 
   async delete(key: string): Promise<void> {
-    const secrets = await this.load();
-    delete secrets[key];
-    await this.save(secrets);
+    return this.enqueue(async () => {
+      const secrets = await this.load();
+      delete secrets[key];
+      await this.save(secrets);
+    });
   }
 
   async list(): Promise<string[]> {
@@ -97,9 +135,18 @@ export class GatewayCredentialStore {
   private async save(secrets: Record<string, string>): Promise<void> {
     await mkdir(dirname(this.encPath), { recursive: true });
     const payload = encrypt(JSON.stringify(secrets), this.key as Buffer, this.salt as Buffer);
-    const tmpPath = `${this.encPath}.tmp`;
+    // Randomize the temp path so concurrent saves don't write the same file and
+    // corrupt/interleave each other's contents (or ENOENT on the loser's
+    // rename after the winner already consumed a shared `.tmp`).
+    const tmpPath = `${this.encPath}.${randomUUID()}.tmp`;
     await writeFile(tmpPath, JSON.stringify(payload, null, 2), { mode: 0o600 });
     await chmod(tmpPath, 0o600);
-    await rename(tmpPath, this.encPath);
+    try {
+      await rename(tmpPath, this.encPath);
+    } catch (err) {
+      // Don't leave the temp file behind if the rename fails.
+      await unlink(tmpPath).catch(() => {});
+      throw err;
+    }
   }
 }

@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -51,6 +51,28 @@ describe('GatewayCredentialStore', () => {
     await store.set('telegram-token', 'bot123456:ABC-DEF');
     const value = await store.get('telegram-token');
     expect(value).toBe('bot123456:ABC-DEF');
+  });
+
+  it('concurrent set() of distinct keys all survive (no lost updates, no tmp race)', async () => {
+    // This store is a genuine read-modify-write: set() does load→mutate→save.
+    // Without serialization, N concurrent sets each load the same on-disk map
+    // and last-writer-wins clobbers all but one key; with a shared `.tmp` name
+    // the losers' renames also ENOENT. Serializing the whole critical section
+    // behind the write queue (plus unique temp names) fixes both.
+    const N = 20;
+    await Promise.all(Array.from({ length: N }, (_, i) => store.set(`key-${i}`, `value-${i}`)));
+
+    const keys = await store.list();
+    expect(keys).toHaveLength(N);
+    // Read back through a fresh instance to prove the file is consistent.
+    const store2 = new GatewayCredentialStore(dataDir);
+    await store2.init();
+    for (let i = 0; i < N; i++) {
+      expect(await store2.get(`key-${i}`)).toBe(`value-${i}`);
+    }
+
+    const leftovers = (await readdir(dataDir)).filter((f) => f.includes('.tmp'));
+    expect(leftovers).toEqual([]);
   });
 
   it('list returns keys without values', async () => {
