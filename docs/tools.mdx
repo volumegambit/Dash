@@ -187,6 +187,72 @@ Every read, create, update, or comment automatically links the agent's current c
 
 Not affected by workspace sandboxing — task data lives in the gateway's local database.
 
+## Swarm orchestration
+
+When an agent has **[Swarm](/configuration#swarm)** enabled, it becomes an **orchestrator**: it can spawn short-lived **worker** subagents that run in parallel, steer them, collect their reports, and synthesize one answer. Enable swarm on the agent's **Configuration** tab in Mission Control; these tools then appear automatically — they are not part of the per-agent tool selection.
+
+Workers are ephemeral and live **within a single chat turn**. Each worker runs in its **own isolated context** (it never sees the orchestrator's conversation — only the brief it's given) but **shares the orchestrator's workspace**, so the orchestrator should tell each worker exactly which files or subdirectories to touch. A worker is granted a **subset** of the orchestrator's own tools — by default read-only ones (`read`, `grep`, `find`, `ls`); it can be given more (up to what the orchestrator itself has) via the `tools` argument. Workers never get MCP, skills, or the orchestrator's other tools.
+
+**Caps.** Spawning is bounded by the agent's swarm caps (concurrent workers, total workers per run, steers per worker, and a wall-clock limit) plus a gateway-wide global ceiling — see [Configuration → Swarm](/configuration#swarm). A tool call that would exceed a cap **fails with an error result** (rendered as an error tool block in chat) rather than silently doing nothing, so the orchestrator can adapt.
+
+The orchestrator has four tools:
+
+<Tabs>
+  <Tab title="spawn_worker">
+    Spawn a parallel worker with a role and a self-contained brief.
+
+    | Parameter | Type | Required | Description |
+    |-----------|------|----------|-------------|
+    | `role` | `string` | yes | Short role/name for the worker (e.g. `researcher`) — shown in the panel and status events |
+    | `brief` | `string` | yes | A self-contained brief: the goal, relevant files/paths, and exactly what to report back (the worker never sees the conversation) |
+    | `tools` | `string[]` | no | Subset of the orchestrator's tools to grant the worker. Defaults to read-only tools |
+    | `model` | `string` | no | Model id for the worker. Must be an allowed model; defaults to the orchestrator's model |
+
+    Fails with an error result when a cap is reached (too many workers at once, too many per run, or the global ceiling), when the model isn't allowed, or when a requested tool isn't one the orchestrator has.
+  </Tab>
+  <Tab title="wait_workers">
+    Block until the referenced workers finish or need input, then return each one's status and report.
+
+    | Parameter | Type | Required | Description |
+    |-----------|------|----------|-------------|
+    | `workerIds` | `string[]` | no | Which workers to wait on. Omit to wait on all workers in the run |
+    | `timeoutSeconds` | `number` | no | Max seconds to block before returning the current status (default: `300`) |
+
+    Respects the run's wall-clock cap and returns early when a worker is waiting on the orchestrator's input. This is the collection step of the loop.
+  </Tab>
+  <Tab title="send_to_worker">
+    Answer a worker that's waiting on the orchestrator, or steer a running worker with an extra instruction.
+
+    | Parameter | Type | Required | Description |
+    |-----------|------|----------|-------------|
+    | `workerId` | `string` | yes | The worker to steer or answer |
+    | `message` | `string` | yes | The answer or additional instruction to deliver |
+
+    Steers are capped per worker; a worker that has already finished cannot be steered.
+  </Tab>
+  <Tab title="check_workers">
+    Return a non-blocking snapshot of every worker in the run — id, role, status, and latest report or question. Use it to poll progress without blocking (unlike `wait_workers`).
+
+    Takes no parameters. Returns an empty roster before anything has been spawned.
+  </Tab>
+</Tabs>
+
+Each **worker** gets one tool of its own:
+
+<Tabs>
+  <Tab title="ask_orchestrator">
+    Ask the orchestrator a question and **pause** until it answers.
+
+    | Parameter | Type | Required | Description |
+    |-----------|------|----------|-------------|
+    | `question` | `string` | yes | The blocker or decision to send up to the orchestrator |
+
+    The worker stays paused (shown as **waiting for input**) until the orchestrator replies via `send_to_worker`, the run ends, or the request times out. Use it for decisions only the orchestrator can make.
+  </Tab>
+</Tabs>
+
+You can watch and steer a live swarm from Mission Control's **swarm supervision panel** (the people icon in the chat header) — see [Architecture → Agent Swarm](/architecture#agent-swarm).
+
 ## Workspace sandboxing
 
 Each agent's **working directory** sets where its tools operate. It defaults to `~/.dash/workspaces/<agent-id>` and you can set a custom path when you deploy or edit the agent. The directory is created automatically if it doesn't exist.

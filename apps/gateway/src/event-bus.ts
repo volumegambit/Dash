@@ -9,7 +9,8 @@ export type GatewayEvent =
   | { type: 'plugin:config-changed'; plugin: string; fields: string[] }
   | { type: 'plugin:installed'; plugin: string }
   | { type: 'plugin:removed'; plugin: string }
-  | { type: 'plugin:reloaded' };
+  | { type: 'plugin:reloaded' }
+  | { type: 'swarm:run-changed'; agentId: string; runId: string };
 
 type Subscriber = (event: GatewayEvent) => void;
 

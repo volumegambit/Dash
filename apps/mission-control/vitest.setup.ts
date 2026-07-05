@@ -109,6 +109,12 @@ function createMockApi(): MockApi {
     skillsGetConfig: vi.fn().mockResolvedValue({ paths: [], urls: [] }),
     skillsUpdateConfig: vi.fn().mockResolvedValue({ requiresRestart: false }),
 
+    // Swarm panel (gateway passthrough)
+    swarmListRuns: vi.fn().mockResolvedValue([]),
+    swarmGetRun: vi.fn().mockResolvedValue(null),
+    swarmCancelWorker: vi.fn().mockResolvedValue({ ok: true }),
+    swarmSend: vi.fn().mockResolvedValue({ ok: true }),
+
     // Settings
     settingsGet: vi.fn().mockResolvedValue({}),
     settingsSet: vi.fn().mockResolvedValue(undefined),

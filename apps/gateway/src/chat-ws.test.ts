@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import type { AgentChatCoordinator } from './agent-chat-coordinator.js';
 import { createAgentChatCoordinator } from './agent-chat-coordinator.js';
 import { AgentRegistry } from './agent-registry.js';
+import { isValidConversationId } from './chat-ws.js';
 
 /**
  * These tests verify that the AgentChatCoordinator — the core dependency
@@ -155,5 +156,44 @@ describe('chat-ws agent service integration', () => {
 
     expect(collected).toEqual(expectedEvents);
     await agents.stop();
+  });
+});
+
+describe('isValidConversationId (chat-ws conversationId hardening)', () => {
+  // A rejected conversationId gets the SAME error-frame path chat-ws already
+  // uses for any invalid message: validateMessage returns false, the server
+  // replies `{ type: 'error' }`, and NO stream starts / NO event-log append
+  // happens. Here we test the pure predicate that gates it.
+  it('rejects path hazards (no stream should ever start for these)', () => {
+    const rejected = [
+      '.swarm/r/w', // contains '/'
+      '../x', // contains '..' (and '/')
+      'a/b', // contains '/'
+      '.hidden', // starts with '.'
+      'x'.repeat(201), // exceeds the 128-char cap
+    ];
+    for (const id of rejected) {
+      expect(isValidConversationId(id)).toBe(false);
+    }
+  });
+
+  it('rejects backslash separators, parent hops, and empty ids', () => {
+    expect(isValidConversationId('a\\b')).toBe(false);
+    expect(isValidConversationId('foo..bar')).toBe(false);
+    expect(isValidConversationId('')).toBe(false);
+    expect(isValidConversationId('x'.repeat(129))).toBe(false);
+  });
+
+  it('accepts MC UUIDs, e2e ids, channel ids, and ids with spaces/apostrophes', () => {
+    const accepted = [
+      'e2e-123',
+      '550e8400-e29b-41d4-a716-446655440000', // a UUID
+      'chan:42',
+      "Bob's Bot:42", // channel-style id with a space and an apostrophe
+      'x'.repeat(128), // exactly at the cap
+    ];
+    for (const id of accepted) {
+      expect(isValidConversationId(id)).toBe(true);
+    }
   });
 });

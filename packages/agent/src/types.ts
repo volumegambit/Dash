@@ -54,6 +54,32 @@ export type AgentEvent =
   | { type: 'error'; error: Error; timestamp?: string }
   | { type: 'file_changed'; files: string[] }
   | { type: 'agent_spawned'; name: string }
+  | {
+      type: 'worker_spawned';
+      workerId: string;
+      runId: string;
+      role: string;
+      brief: string;
+      model: string;
+    }
+  | {
+      type: 'worker_status';
+      workerId: string;
+      runId: string;
+      role: string;
+      status: 'running' | 'waiting_input';
+      detail?: string;
+      question?: string;
+    }
+  | {
+      type: 'worker_done';
+      workerId: string;
+      runId: string;
+      role: string;
+      status: 'done' | 'failed' | 'cancelled';
+      report: string;
+      usage?: { inputTokens: number; outputTokens: number };
+    }
   | { type: 'agent_retry'; attempt: number; reason: string }
   | { type: 'context_compacted'; overflow: boolean }
   | { type: 'question'; id: string; question: string; options: string[] }
