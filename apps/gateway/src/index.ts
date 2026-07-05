@@ -18,6 +18,7 @@ import { PROVIDERS } from '@dash/models';
 import { gatewayDir, migrateLegacyLayout, workspacesDir } from '@dash/paths';
 import { PluginConfigStore, loadPlugins } from '@dash/plugins';
 import { createProjectsTools, openProjectsDb } from '@dash/projects';
+import { getBuiltinPluginsDir } from '@dash/skills';
 import { serve } from '@hono/node-server';
 import { createNodeWebSocket } from '@hono/node-ws';
 import { Hono } from 'hono';
@@ -143,9 +144,13 @@ async function main() {
   // Resolved ONCE here and reused by the boot load, every hot-reload, and the
   // DELETE /plugins/:name realpath guard, so all three agree on the exact dir.
   const pluginsDir = resolve(dataDir, 'plugins');
+  // Built-in plugins ship inside @dash/skills and are resolved at runtime —
+  // never persisted to config.json — so the path can't rot across updates.
+  const builtinRoot = getBuiltinPluginsDir();
   const pluginEntries = await pluginConfigStore.load();
   const loadedPlugins = await loadPlugins({
     pluginsDir,
+    builtinRoot,
     entries: pluginEntries,
     logger,
   });
@@ -471,6 +476,7 @@ async function main() {
     reloadPluginsUnderMutex(
       pluginConfigStore,
       pluginsDir,
+      builtinRoot,
       dataDir,
       logger,
       modelsStore,

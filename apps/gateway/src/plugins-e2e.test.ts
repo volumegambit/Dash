@@ -266,6 +266,9 @@ async function boot(dataDir: string, opts: { mcp?: ReturnType<typeof recordingMc
     reloadPluginsUnderMutex(
       pluginConfigStore,
       pluginsDir,
+      // No builtin root in this e2e boot — the fixtures live under pluginsDir,
+      // so reload scans the same single root the boot load did.
+      undefined,
       dataDir,
       NOOP_LOGGER,
       modelsStore,
