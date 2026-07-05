@@ -175,3 +175,95 @@ describe('validateProviderCatalog', () => {
     expect(cat.models).not.toBe(raw.models);
   });
 });
+
+describe('validateProviderCatalog — phase-1 fields', () => {
+  const base = {
+    id: 'acme',
+    label: 'Acme',
+    credentialPrefix: 'acme-api-key',
+    baseUrl: 'https://api.acme.dev',
+    api: 'openai-completions',
+    models: [{ id: 'acme-1', contextWindow: 128000, maxTokens: 8192 }],
+  };
+
+  it('accepts all nine pi-ai api shapes', () => {
+    for (const api of [
+      'openai-completions',
+      'openai-responses',
+      'azure-openai-responses',
+      'openai-codex-responses',
+      'anthropic-messages',
+      'mistral-conversations',
+      'bedrock-converse-stream',
+      'google-generative-ai',
+      'google-vertex',
+    ]) {
+      expect(validateProviderCatalog({ ...base, api }).api).toBe(api);
+    }
+  });
+
+  it('accepts and returns a well-formed modelsFetch spec', () => {
+    const cat = validateProviderCatalog({
+      ...base,
+      modelsFetch: {
+        url: 'https://api.acme.dev/v1/models',
+        auth: [{ header: 'x-api-key' }],
+        listPath: 'data',
+        idPath: 'id',
+      },
+    });
+    expect(cat.modelsFetch?.url).toBe('https://api.acme.dev/v1/models');
+    expect(cat.modelsFetch?.auth).toEqual([{ header: 'x-api-key' }]);
+  });
+
+  it('throws on a modelsFetch spec missing listPath', () => {
+    expect(() =>
+      validateProviderCatalog({
+        ...base,
+        modelsFetch: { url: 'https://api.acme.dev/v1/models', auth: [], idPath: 'id' },
+      }),
+    ).toThrow(/listPath/);
+  });
+
+  it('throws on an auth rule carrying both header and queryParam', () => {
+    expect(() =>
+      validateProviderCatalog({
+        ...base,
+        modelsFetch: {
+          url: 'https://api.acme.dev/v1/models',
+          auth: [{ header: 'x-api-key', queryParam: 'key' }],
+          listPath: 'data',
+          idPath: 'id',
+        },
+      }),
+    ).toThrow(/header or queryParam/);
+  });
+
+  it('accepts supportedPatterns and throws on a non-numeric tier', () => {
+    expect(
+      validateProviderCatalog({
+        ...base,
+        supportedPatterns: [{ pattern: 'acme-*', tier: 0 }],
+      }).supportedPatterns,
+    ).toEqual([{ pattern: 'acme-*', tier: 0 }]);
+    expect(() =>
+      validateProviderCatalog({ ...base, supportedPatterns: [{ pattern: 'acme-*', tier: 'a' }] }),
+    ).toThrow(/tier/);
+  });
+
+  it('accepts reviewedAt as YYYY-MM-DD and throws otherwise', () => {
+    expect(validateProviderCatalog({ ...base, reviewedAt: '2026-07-05' }).reviewedAt).toBe(
+      '2026-07-05',
+    );
+    expect(() => validateProviderCatalog({ ...base, reviewedAt: 'yesterday' })).toThrow(
+      /reviewedAt/,
+    );
+  });
+
+  it('keeps well-formed ui hints and drops malformed ones', () => {
+    expect(
+      validateProviderCatalog({ ...base, ui: { keyConsoleUrl: 'https://acme.dev/keys' } }).ui,
+    ).toEqual({ keyConsoleUrl: 'https://acme.dev/keys' });
+    expect(validateProviderCatalog({ ...base, ui: 'nope' }).ui).toBeUndefined();
+  });
+});
