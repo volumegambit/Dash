@@ -5,6 +5,8 @@ import { AnimatedPixelPet } from './AnimatedPixelPet.js';
 import { catAnimated } from './catAnimated.js';
 import { dogAnimated } from './dogAnimated.js';
 import { DEFAULT_PET, PET_KINDS } from './kinds.js';
+import { pigAnimated } from './pigAnimated.js';
+import { rabbitAnimated } from './rabbitAnimated.js';
 import { redPandaAnimated } from './redPandaAnimated.js';
 import type { AnimatedPetSprite } from './types.js';
 
@@ -13,6 +15,8 @@ export { DEFAULT_PET, PET_KINDS };
 export const PET_REGISTRY: Record<PetKind, AnimatedPetSprite> = {
   cat: catAnimated,
   dog: dogAnimated,
+  pig: pigAnimated,
+  rabbit: rabbitAnimated,
   'red-panda': redPandaAnimated,
 };
 

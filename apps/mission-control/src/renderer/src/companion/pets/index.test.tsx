@@ -5,6 +5,8 @@ import { CompanionPet, PET_REGISTRY, PetThumbnail } from './index.js';
 test('registry has every pet keyed by kind', () => {
   expect(PET_REGISTRY.cat.kind).toBe('cat');
   expect(PET_REGISTRY.dog.kind).toBe('dog');
+  expect(PET_REGISTRY.pig.kind).toBe('pig');
+  expect(PET_REGISTRY.rabbit.kind).toBe('rabbit');
   expect(PET_REGISTRY['red-panda'].kind).toBe('red-panda');
 });
 
