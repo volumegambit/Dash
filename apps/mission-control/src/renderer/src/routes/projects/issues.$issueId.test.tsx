@@ -276,6 +276,36 @@ describe('TaskDetail delete', () => {
     });
   });
 
+  it('metadata lists only non-MC sessions, muted; MC sessions have no chips', async () => {
+    const d = detail({
+      linked_sessions: [sessionLink(), sessionLink({ session_id: 'telegram-1' })],
+    });
+    useProjectsStore.setState({ detailById: { issue_1: d } });
+    mockApi.projectsGetIssue.mockResolvedValue(d);
+    mockApi.chatListConversations.mockResolvedValue([mcConversation]);
+    mockApi.chatGetMessages.mockResolvedValue([]);
+    render(<TaskDetail />);
+
+    // Non-MC row is a muted, inert span with the other-channel tooltip.
+    const row = await screen.findByTitle('Session from another channel');
+    expect(row.textContent).toContain('telegram-1');
+    // The MC session has a tab, not a chip; the count reflects non-MC only.
+    expect(screen.queryByTestId('session-chip-conv-42')).not.toBeInTheDocument();
+    expect(screen.getByText('Linked sessions (1)')).toBeInTheDocument();
+  });
+
+  it('hides the linked-sessions section when every session is an MC tab', async () => {
+    const d = detail({ linked_sessions: [sessionLink()] });
+    useProjectsStore.setState({ detailById: { issue_1: d } });
+    mockApi.projectsGetIssue.mockResolvedValue(d);
+    mockApi.chatListConversations.mockResolvedValue([mcConversation]);
+    mockApi.chatGetMessages.mockResolvedValue([]);
+    render(<TaskDetail />);
+
+    await screen.findByTestId('tab-session-conv-42');
+    expect(screen.queryByText(/^Linked sessions/)).not.toBeInTheDocument();
+  });
+
   it('renders no tab bar when the task has no MC sessions', async () => {
     const d = detail({ linked_sessions: [sessionLink({ session_id: 'telegram-1' })] });
     useProjectsStore.setState({ detailById: { issue_1: d } });

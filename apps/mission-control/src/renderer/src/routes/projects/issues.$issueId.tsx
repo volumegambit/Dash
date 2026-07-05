@@ -214,6 +214,11 @@ export function TaskDetail(): JSX.Element {
   // A selected session tab whose conversation vanished falls back to Task.
   const activeSessionTab =
     activeTab !== 'task' && mcSessions.some((l) => l.session_id === activeTab) ? activeTab : null;
+  // Sessions from other channels can't open in MC — listed inert in metadata,
+  // while MC sessions live in the main-column tabs.
+  const otherSessions = detail.linked_sessions.filter(
+    (l) => !conversations.some((c) => c.id === l.session_id),
+  );
 
   // session_linked events carry a raw session id; show the agent behind it.
   const sessionLinkedLabel = (event: IssueEvent): string => {
@@ -573,37 +578,22 @@ export function TaskDetail(): JSX.Element {
             </button>
           </div>
 
-          <p className="mb-1 mt-4 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[2px] text-accent">
-            Linked sessions ({detail.linked_sessions.length})
-          </p>
-          {/* MC-session chips select the embedded panel (open-in-Chat lives in
-              the panel header); sessions from other channels stay inert. */}
-          {detail.linked_sessions.map((link) => {
-            const label = `${link.agent_id ? `🤖 ${link.agent_id} · ` : ''}${link.session_id}`;
-            const isActive = link.session_id === activeSessionId;
-            return conversations.some((c) => c.id === link.session_id) ? (
-              <button
-                key={link.session_id}
-                type="button"
-                onClick={() => setSelectedSessionId(link.session_id)}
-                data-testid={`session-chip-${link.session_id}`}
-                title="Show session"
-                className={`mb-1 block w-full truncate bg-sidebar-hover px-2 py-1 text-left text-xs hover:text-accent ${
-                  isActive ? 'border-l-2 border-accent text-accent' : 'text-foreground'
-                }`}
-              >
-                {label}
-              </button>
-            ) : (
-              <span
-                key={link.session_id}
-                className="mb-1 block w-full truncate bg-sidebar-hover px-2 py-1 text-left text-xs text-muted"
-                title="Session from another channel"
-              >
-                {label}
-              </span>
-            );
-          })}
+          {otherSessions.length > 0 && (
+            <>
+              <p className="mb-1 mt-4 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[2px] text-accent">
+                Linked sessions ({otherSessions.length})
+              </p>
+              {otherSessions.map((link) => (
+                <span
+                  key={link.session_id}
+                  className="mb-1 block w-full truncate bg-sidebar-hover px-2 py-1 text-left text-xs text-muted"
+                  title="Session from another channel"
+                >
+                  {`${link.agent_id ? `🤖 ${link.agent_id} · ` : ''}${link.session_id}`}
+                </span>
+              ))}
+            </>
+          )}
 
           {/* Subtasks — hidden when this issue itself has a parent (one-level depth). */}
           {!detail.parent_issue_id && (
