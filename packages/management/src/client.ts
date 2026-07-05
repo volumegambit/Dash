@@ -353,6 +353,10 @@ export class ManagementClient {
     return this.requestWithBody<Issue>('PATCH', `/issues/${encodeURIComponent(id)}`, patch);
   }
 
+  async deleteIssue(id: string): Promise<void> {
+    await this.requestDelete(`/issues/${encodeURIComponent(id)}`);
+  }
+
   async addComment(issueId: string, body: string): Promise<IssueComment> {
     return this.requestWithBody<IssueComment>(
       'POST',
@@ -377,6 +381,18 @@ export class ManagementClient {
 
   async getIssueEvents(id: string): Promise<IssueEvent[]> {
     return this.request<IssueEvent[]>('GET', `/issues/${encodeURIComponent(id)}/events`);
+  }
+
+  async linkSession(
+    issueId: string,
+    sessionId: string,
+    agentId?: string,
+  ): Promise<SessionIssueLink> {
+    return this.requestWithBody<SessionIssueLink>(
+      'POST',
+      `/issues/${encodeURIComponent(issueId)}/sessions`,
+      { session_id: sessionId, agent_id: agentId ?? null },
+    );
   }
 
   async getIssueSessions(id: string): Promise<SessionIssueLink[]> {

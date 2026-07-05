@@ -228,6 +228,88 @@ describe('issues HTTP routes', () => {
     expect(res.status).toBe(404);
   });
 
+  it('deletes an issue and its subtasks', async () => {
+    const issue = await createIssue();
+    const subtask = await createIssue({ parent_issue_id: issue.id });
+
+    const delRes = await fetch(url(`/issues/${issue.id}`), {
+      method: 'DELETE',
+      headers: auth(),
+    });
+    expect(delRes.status).toBe(200);
+    expect(await delRes.json()).toEqual({ ok: true });
+
+    expect((await fetch(url(`/issues/${issue.id}`), { headers: auth() })).status).toBe(404);
+    expect((await fetch(url(`/issues/${subtask.id}`), { headers: auth() })).status).toBe(404);
+  });
+
+  it('deletes an issue by human key', async () => {
+    const issue = await createIssue();
+    const delRes = await fetch(url(`/issues/${issue.key}`), {
+      method: 'DELETE',
+      headers: auth(),
+    });
+    expect(delRes.status).toBe(200);
+    expect((await fetch(url(`/issues/${issue.id}`), { headers: auth() })).status).toBe(404);
+  });
+
+  it('404s delete of an unknown issue', async () => {
+    const res = await fetch(url('/issues/issue_missing'), {
+      method: 'DELETE',
+      headers: auth(),
+    });
+    expect(res.status).toBe(404);
+  });
+
+  it('links a session to an issue and surfaces it in detail', async () => {
+    const issue = await createIssue();
+    const res = await fetch(url(`/issues/${issue.id}/sessions`), {
+      method: 'POST',
+      headers: auth(),
+      body: JSON.stringify({ session_id: 'conv-42', agent_id: 'Developer' }),
+    });
+    expect(res.status).toBe(201);
+    const link = await res.json();
+    expect(link.session_id).toBe('conv-42');
+    expect(link.agent_id).toBe('Developer');
+    expect(link.issue_id).toBe(issue.id);
+
+    const detail = await (await fetch(url(`/issues/${issue.id}`), { headers: auth() })).json();
+    expect(detail.linked_sessions.map((l: { session_id: string }) => l.session_id)).toEqual([
+      'conv-42',
+    ]);
+  });
+
+  it('link is idempotent per (session, issue) — re-posting bumps reference_count', async () => {
+    const issue = await createIssue();
+    const post = () =>
+      fetch(url(`/issues/${issue.id}/sessions`), {
+        method: 'POST',
+        headers: auth(),
+        body: JSON.stringify({ session_id: 'conv-42' }),
+      });
+    await post();
+    const second = await (await post()).json();
+    expect(second.reference_count).toBe(2);
+  });
+
+  it('400s a session link without session_id and 404s an unknown issue', async () => {
+    const issue = await createIssue();
+    const noSession = await fetch(url(`/issues/${issue.id}/sessions`), {
+      method: 'POST',
+      headers: auth(),
+      body: JSON.stringify({}),
+    });
+    expect(noSession.status).toBe(400);
+
+    const missing = await fetch(url('/issues/issue_missing/sessions'), {
+      method: 'POST',
+      headers: auth(),
+      body: JSON.stringify({ session_id: 'conv-42' }),
+    });
+    expect(missing.status).toBe(404);
+  });
+
   it('404s comment edit/delete on an unknown issue id', async () => {
     const issue = await createIssue();
     const comment = await (

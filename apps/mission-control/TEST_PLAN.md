@@ -1197,6 +1197,38 @@ Take screenshots of every page and evaluate against these criteria. This section
 3. Click it.
 4. **Verify:** All tasks opens with a "Filtered to tasks involving agent …" banner and only that agent's tasks listed.
 
+### 27.15 Task detail — delete
+1. Create a task with one subtask and one comment (via UI or an agent).
+2. Open the task's detail page.
+3. **Verify:** A trash icon appears in the header, right of the status dropdown.
+4. Click the trash icon.
+5. **Verify:** It is replaced by an inline "Delete?" with Yes / No (no modal).
+6. Click "No".
+7. **Verify:** The confirm collapses back to the trash icon; nothing is deleted.
+8. Click the trash icon, then "Yes".
+9. **Verify:** The view navigates back to All tasks; the task AND its subtask are gone from All tasks, Kanban, and Inbox.
+10. Open a second MC window on Kanban before deleting another task.
+11. **Verify:** The card disappears from the second window without a refresh (issue.deleted broadcast).
+12. Delete a SUBTASK from its own detail page.
+13. **Verify:** The view navigates to the parent task's detail, and the subtask no longer appears in the parent's Subtasks list.
+
+### 27.16 Task detail — assign an agent & open its session
+**Precondition:** At least one active agent with a working provider key.
+1. Open a task's detail page.
+2. **Verify:** The right pane shows an "Assign agent" picker above Linked Sessions; disabled agents are not listed.
+3. Select an agent and click "Assign".
+4. **Verify:** You STAY on the task page; the button shows "Assigning…" then resets.
+5. **Verify:** Status flips to in_progress with sub-status agent_working, and a new chip appears under Linked Sessions showing 🤖 the agent's name + the session id — without a manual refresh.
+6. **Verify:** The timeline soon shows agent activity (agent run rows / comments) as the agent works the kickoff instructions.
+7. Click the new session chip.
+8. **Verify:** The Chat view opens with that conversation selected; its title is "KEY — task title"; the kickoff message and the agent's streaming reply are visible.
+9. Navigate back to the task.
+10. **Verify:** The chip is still there and re-opens the same conversation (no duplicate conversation is created).
+11. In Chat, ask the agent to add a comment to the task; return to the task detail.
+12. **Verify:** The comment appears in the timeline (agent-authored, non-highlighted).
+13. For a task with a linked session from a NON-MC channel (e.g. Telegram, seeded via that channel's agent), open its detail.
+14. **Verify:** That session's chip is muted and non-clickable with a "Session from another channel" tooltip.
+
 ---
 
 ## Section 28: Skills over chat

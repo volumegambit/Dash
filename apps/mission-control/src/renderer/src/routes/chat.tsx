@@ -1390,7 +1390,12 @@ export function Chat(): JSX.Element {
   // If navigated with search params, auto-create conversation — intentionally run once on mount
   // biome-ignore lint/correctness/useExhaustiveDependencies: intentionally run once on mount
   useEffect(() => {
-    if (search.agentId) {
+    if (search.conversationId) {
+      // Deep-link to an existing conversation (e.g. a task's linked session).
+      selectConversation(search.conversationId).catch((err) =>
+        console.error('[Chat] Failed to open conversation from search:', err),
+      );
+    } else if (search.agentId) {
       createConversation(search.agentId)
         .then((conv) => selectConversation(conv.id))
         .catch((err) => console.error('[Chat] Failed to create conversation from search:', err));
@@ -2009,8 +2014,15 @@ export function Chat(): JSX.Element {
 }
 
 export const Route = createFileRoute('/chat')({
-  validateSearch: (search: Record<string, unknown>) => ({
+  validateSearch: (
+    search: Record<string, unknown>,
+  ): { agentId: string; conversationId?: string } => ({
     agentId: typeof search.agentId === 'string' ? search.agentId : '',
+    // Optional so existing navigations that pass only agentId stay valid.
+    conversationId:
+      typeof search.conversationId === 'string' && search.conversationId
+        ? search.conversationId
+        : undefined,
   }),
   component: Chat,
 });

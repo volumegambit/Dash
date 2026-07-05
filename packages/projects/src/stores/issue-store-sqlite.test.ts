@@ -208,4 +208,87 @@ describe('IssueStoreSqlite', () => {
     const u = issues.update(i.id, { title: 'x' });
     expect(handler).toHaveBeenCalledWith({ issue: u });
   });
+
+  it('delete removes the issue and returns its final snapshot', () => {
+    const i = issues.create({ title: 'doomed' });
+    const deleted = issues.delete(i.id);
+    expect(deleted.id).toBe(i.id);
+    expect(issues.get(i.id)).toBeNull();
+  });
+
+  it('delete throws for an unknown issue', () => {
+    expect(() => issues.delete('issue_missing')).toThrow(/not found/i);
+  });
+
+  it('delete cascades to subtasks, comments, events, and session links', () => {
+    const parent = issues.create({ title: 'parent' });
+    const child = issues.create({ title: 'child', parent_issue_id: parent.id });
+    h.db
+      .prepare(
+        `INSERT INTO issue_comment (id, issue_id, author_type, author_id, body, created_at, updated_at, deleted_at)
+         VALUES ('cmt_1', ?, 'human', 'local', 'hi', 'now', 'now', NULL)`,
+      )
+      .run(parent.id);
+    h.db
+      .prepare(
+        `INSERT INTO session_issue_link
+           (session_id, issue_id, agent_id, first_referenced_at, last_referenced_at, reference_count)
+         VALUES ('sess', ?, NULL, 'now', 'now', 1)`,
+      )
+      .run(parent.id);
+
+    issues.delete(parent.id);
+
+    expect(issues.get(parent.id)).toBeNull();
+    expect(issues.get(child.id)).toBeNull();
+    const count = (table: string): number =>
+      (h.db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number }).n;
+    expect(count('issue_comment')).toBe(0);
+    expect(count('issue_event')).toBe(0);
+    expect(count('session_issue_link')).toBe(0);
+  });
+
+  it('delete cleans inbox_read rows for the issue and its subtasks', () => {
+    const parent = issues.create({ title: 'parent' });
+    const child = issues.create({ title: 'child', parent_issue_id: parent.id });
+    const other = issues.create({ title: 'other' });
+    const seed = h.db.prepare('INSERT INTO inbox_read (issue_id, last_seen_at) VALUES (?, ?)');
+    seed.run(parent.id, 'now');
+    seed.run(child.id, 'now');
+    seed.run(other.id, 'now');
+
+    issues.delete(parent.id);
+
+    const remaining = h.db.prepare('SELECT issue_id FROM inbox_read').all() as {
+      issue_id: string;
+    }[];
+    expect(remaining.map((r) => r.issue_id)).toEqual([other.id]);
+  });
+
+  it('delete emits issue.deleted for the issue and each cascaded subtask', () => {
+    const handler = vi.fn();
+    const parent = issues.create({ title: 'parent' });
+    const childA = issues.create({ title: 'a', parent_issue_id: parent.id });
+    const childB = issues.create({ title: 'b', parent_issue_id: parent.id });
+    emitter.on('issue.deleted', handler);
+
+    issues.delete(parent.id);
+
+    const deletedIds = handler.mock.calls.map(
+      (call) => (call[0] as { issue: { id: string } }).issue.id,
+    );
+    expect(deletedIds).toEqual([parent.id, childA.id, childB.id]);
+  });
+
+  it('deleting a subtask leaves the parent and siblings intact', () => {
+    const parent = issues.create({ title: 'parent' });
+    const childA = issues.create({ title: 'a', parent_issue_id: parent.id });
+    const childB = issues.create({ title: 'b', parent_issue_id: parent.id });
+
+    issues.delete(childA.id);
+
+    expect(issues.get(parent.id)?.id).toBe(parent.id);
+    expect(issues.get(childB.id)?.id).toBe(childB.id);
+    expect(issues.getDetail(parent.id)?.subtasks.map((s) => s.id)).toEqual([childB.id]);
+  });
 });

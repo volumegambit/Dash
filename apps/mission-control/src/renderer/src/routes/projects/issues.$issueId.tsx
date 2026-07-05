@@ -1,8 +1,10 @@
 import { createFileRoute, useNavigate } from '@tanstack/react-router';
-import { ArrowLeft, ChevronDown, ChevronRight } from 'lucide-react';
+import { ArrowLeft, ChevronDown, ChevronRight, Trash2 } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import type { IssueComment, IssueEvent, IssueStatus } from '../../../../shared/projects-ipc.js';
 import { Markdown } from '../../components/Markdown.js';
+import { useAgentsStore } from '../../stores/agents.js';
+import { useChatStore } from '../../stores/chat.js';
 import { useProjectsStore } from '../../stores/projects.js';
 import { isAgentRunEvent, mergeTimeline } from './-lib/timeline.js';
 
@@ -118,7 +120,7 @@ function Field({ label, value }: { label: string; value: string }): JSX.Element 
   );
 }
 
-function TaskDetail(): JSX.Element {
+export function TaskDetail(): JSX.Element {
   const { issueId } = Route.useParams();
   const navigate = useNavigate();
   const detail = useProjectsStore((s) => s.detailById[issueId]);
@@ -129,15 +131,29 @@ function TaskDetail(): JSX.Element {
   const addComment = useProjectsStore((s) => s.addComment);
   const deleteComment = useProjectsStore((s) => s.deleteComment);
   const createIssue = useProjectsStore((s) => s.createIssue);
+  const deleteIssue = useProjectsStore((s) => s.deleteIssue);
+  const assignAgent = useProjectsStore((s) => s.assignAgent);
+  const agents = useAgentsStore((s) => s.agents);
+  const loadAgents = useAgentsStore((s) => s.loadAgents);
+  const conversations = useChatStore((s) => s.conversations);
+  const loadConversations = useChatStore((s) => s.loadConversations);
 
   const [draft, setDraft] = useState('');
   const [subtaskTitle, setSubtaskTitle] = useState('');
   const [savingSubtask, setSavingSubtask] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [assignAgentId, setAssignAgentId] = useState('');
+  const [assigning, setAssigning] = useState(false);
 
   useEffect(() => {
     loadProjects();
     loadIssueDetail(issueId);
-  }, [loadIssueDetail, loadProjects, issueId]);
+    // Agents feed the assign picker; conversations decide which linked-session
+    // chips can open in Chat.
+    loadAgents();
+    loadConversations();
+  }, [loadIssueDetail, loadProjects, loadAgents, loadConversations, issueId]);
 
   if (!detail) {
     return <div className="p-8 text-muted">Loading task…</div>;
@@ -151,6 +167,40 @@ function TaskDetail(): JSX.Element {
     if (!body) return;
     setDraft('');
     await addComment(issueId, body);
+  };
+
+  const startAssign = async () => {
+    const agent = agents.find((a) => a.id === assignAgentId);
+    if (!agent || assigning) return;
+    setAssigning(true);
+    try {
+      await assignAgent(issueId, { id: agent.id, name: agent.name });
+      setAssignAgentId('');
+    } catch {
+      // Error surfaced via the store; keep the picker state for retry.
+    } finally {
+      setAssigning(false);
+    }
+  };
+
+  const confirmDeleteTask = async () => {
+    if (deleting) return;
+    setDeleting(true);
+    // Capture before the delete drops `detail` from the store.
+    const parentId = detail.parent_issue_id;
+    try {
+      await deleteIssue(issueId);
+    } catch {
+      // Store keeps the error; leave the page in place.
+      setDeleting(false);
+      setConfirmDelete(false);
+      return;
+    }
+    if (parentId) {
+      navigate({ to: '/projects/issues/$issueId', params: { issueId: parentId } });
+    } else {
+      navigate({ to: '/projects/all' });
+    }
   };
 
   const submitSubtask = async () => {
@@ -201,6 +251,38 @@ function TaskDetail(): JSX.Element {
             </option>
           ))}
         </select>
+        {confirmDelete ? (
+          <div className="flex items-center gap-1 text-xs">
+            <span className="text-red">Delete?</span>
+            <button
+              type="button"
+              onClick={confirmDeleteTask}
+              disabled={deleting}
+              className="px-1.5 py-0.5 text-red hover:bg-red-900/30 disabled:opacity-50"
+              data-testid="task-confirm-delete"
+            >
+              Yes
+            </button>
+            <button
+              type="button"
+              onClick={() => setConfirmDelete(false)}
+              className="px-1.5 py-0.5 text-muted hover:text-foreground"
+            >
+              No
+            </button>
+          </div>
+        ) : (
+          <button
+            type="button"
+            onClick={() => setConfirmDelete(true)}
+            className="p-1 text-muted transition-colors hover:text-red"
+            title="Delete task"
+            aria-label="Delete task"
+            data-testid="task-delete"
+          >
+            <Trash2 size={14} />
+          </button>
+        )}
       </div>
 
       <div className="flex min-h-0 flex-1">
@@ -271,19 +353,69 @@ function TaskDetail(): JSX.Element {
           />
 
           <p className="mb-1 mt-4 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[2px] text-accent">
+            Assign agent
+          </p>
+          <div className="flex gap-1">
+            <select
+              value={assignAgentId}
+              onChange={(e) => setAssignAgentId(e.target.value)}
+              disabled={assigning}
+              data-testid="task-assign-agent"
+              className="min-w-0 flex-1 border border-border bg-card-bg px-2 py-1 text-xs text-foreground focus:border-accent focus:outline-none disabled:opacity-50"
+            >
+              <option value="">Select agent…</option>
+              {agents
+                .filter((a) => a.status !== 'disabled')
+                .map((a) => (
+                  <option key={a.id} value={a.id}>
+                    {a.name}
+                  </option>
+                ))}
+            </select>
+            <button
+              type="button"
+              onClick={startAssign}
+              disabled={!assignAgentId || assigning}
+              data-testid="task-assign-start"
+              className="bg-accent px-2 py-1 text-xs text-white hover:opacity-90 disabled:opacity-50"
+            >
+              {assigning ? 'Assigning…' : 'Assign'}
+            </button>
+          </div>
+
+          <p className="mb-1 mt-4 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[2px] text-accent">
             Linked sessions ({detail.linked_sessions.length})
           </p>
-          {/* Display-only in v1: MC's chat route deep-links by agentId,
-              not by session id, so these chips are not navigable yet. */}
-          {detail.linked_sessions.map((link) => (
-            <span
-              key={link.session_id}
-              className="mb-1 block w-full truncate bg-sidebar-hover px-2 py-1 text-left text-xs text-muted"
-              title="Open-in-chat coming soon"
-            >
-              {link.session_id}
-            </span>
-          ))}
+          {/* Chips for sessions that exist as MC chat conversations open in
+              Chat; sessions from other channels (Telegram, …) stay inert. */}
+          {detail.linked_sessions.map((link) => {
+            const label = `${link.agent_id ? `🤖 ${link.agent_id} · ` : ''}${link.session_id}`;
+            return conversations.some((c) => c.id === link.session_id) ? (
+              <button
+                key={link.session_id}
+                type="button"
+                onClick={() =>
+                  navigate({
+                    to: '/chat',
+                    search: { agentId: '', conversationId: link.session_id },
+                  })
+                }
+                data-testid={`session-chip-${link.session_id}`}
+                title="Open in Chat"
+                className="mb-1 block w-full truncate bg-sidebar-hover px-2 py-1 text-left text-xs text-foreground hover:text-accent"
+              >
+                {label}
+              </button>
+            ) : (
+              <span
+                key={link.session_id}
+                className="mb-1 block w-full truncate bg-sidebar-hover px-2 py-1 text-left text-xs text-muted"
+                title="Session from another channel"
+              >
+                {label}
+              </span>
+            );
+          })}
 
           {/* Subtasks — hidden when this issue itself has a parent (one-level depth). */}
           {!detail.parent_issue_id && (

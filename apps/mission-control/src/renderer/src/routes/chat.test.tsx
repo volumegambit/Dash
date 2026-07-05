@@ -61,4 +61,16 @@ describe('Chat search params', () => {
       expect(mockApi.chatCreateConversation).toHaveBeenCalledWith('agent-1');
     });
   });
+
+  it('selects an existing conversation passed via search params', async () => {
+    useAgentsStore.setState({ agents: [agent1], loading: false, error: null });
+    mockUseSearch.mockReturnValue({ agentId: '', conversationId: 'conv-42' });
+    mockApi.chatGetMessages.mockResolvedValue([]);
+    render(<Chat />);
+    await vi.waitFor(() => {
+      expect(useChatStore.getState().selectedConversationId).toBe('conv-42');
+    });
+    // Deep-linking to a conversation must not spawn a new one.
+    expect(mockApi.chatCreateConversation).not.toHaveBeenCalled();
+  });
 });
