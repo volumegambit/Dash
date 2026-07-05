@@ -1,8 +1,4 @@
-import {
-  DEFAULT_CHANNEL_PORT,
-  DEFAULT_MANAGEMENT_PORT,
-  resolveGatewayPorts,
-} from './ports.js';
+import { DEFAULT_CHANNEL_PORT, DEFAULT_MANAGEMENT_PORT, resolveGatewayPorts } from './ports.js';
 
 describe('resolveGatewayPorts', () => {
   it('returns 9300/9200 defaults when env vars are unset', () => {
