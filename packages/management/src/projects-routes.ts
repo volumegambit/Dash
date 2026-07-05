@@ -234,6 +234,17 @@ function mountIssueRoutes(
     }
   });
 
+  app.delete('/issues/:id', (c) => {
+    const existing = db.issues.getByIdOrKey(c.req.param('id'));
+    if (!existing) return c.json({ error: 'Issue not found' }, 404);
+    try {
+      db.issues.delete(existing.id);
+      return c.json({ ok: true });
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
+    }
+  });
+
   app.post('/issues/:id/comments', async (c) => {
     let body: { body?: string };
     try {

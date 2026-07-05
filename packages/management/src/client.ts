@@ -353,6 +353,10 @@ export class ManagementClient {
     return this.requestWithBody<Issue>('PATCH', `/issues/${encodeURIComponent(id)}`, patch);
   }
 
+  async deleteIssue(id: string): Promise<void> {
+    await this.requestDelete(`/issues/${encodeURIComponent(id)}`);
+  }
+
   async addComment(issueId: string, body: string): Promise<IssueComment> {
     return this.requestWithBody<IssueComment>(
       'POST',

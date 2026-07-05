@@ -436,6 +436,13 @@ describe('ManagementClient', () => {
       expect(recording[0].url).toBe('/issues/i1/comments/c1');
     });
 
+    it('deleteIssue() DELETEs /issues/:id', async () => {
+      nextResponse = { ok: true };
+      await projClient.deleteIssue('i1');
+      expect(recording[0].method).toBe('DELETE');
+      expect(recording[0].url).toBe('/issues/i1');
+    });
+
     it('listInbox() GETs /inbox', async () => {
       nextResponse = [];
       await projClient.listInbox();

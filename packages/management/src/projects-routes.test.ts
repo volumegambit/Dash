@@ -228,6 +228,39 @@ describe('issues HTTP routes', () => {
     expect(res.status).toBe(404);
   });
 
+  it('deletes an issue and its subtasks', async () => {
+    const issue = await createIssue();
+    const subtask = await createIssue({ parent_issue_id: issue.id });
+
+    const delRes = await fetch(url(`/issues/${issue.id}`), {
+      method: 'DELETE',
+      headers: auth(),
+    });
+    expect(delRes.status).toBe(200);
+    expect(await delRes.json()).toEqual({ ok: true });
+
+    expect((await fetch(url(`/issues/${issue.id}`), { headers: auth() })).status).toBe(404);
+    expect((await fetch(url(`/issues/${subtask.id}`), { headers: auth() })).status).toBe(404);
+  });
+
+  it('deletes an issue by human key', async () => {
+    const issue = await createIssue();
+    const delRes = await fetch(url(`/issues/${issue.key}`), {
+      method: 'DELETE',
+      headers: auth(),
+    });
+    expect(delRes.status).toBe(200);
+    expect((await fetch(url(`/issues/${issue.id}`), { headers: auth() })).status).toBe(404);
+  });
+
+  it('404s delete of an unknown issue', async () => {
+    const res = await fetch(url('/issues/issue_missing'), {
+      method: 'DELETE',
+      headers: auth(),
+    });
+    expect(res.status).toBe(404);
+  });
+
   it('404s comment edit/delete on an unknown issue id', async () => {
     const issue = await createIssue();
     const comment = await (

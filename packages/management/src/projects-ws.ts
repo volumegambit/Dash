@@ -6,6 +6,7 @@ import type { UpgradeWebSocket } from 'hono/ws';
 export const PROJECTS_WS_TOPICS = [
   'issue.created',
   'issue.updated',
+  'issue.deleted',
   'issue.event.appended',
   'comment.added',
   'comment.edited',
@@ -39,7 +40,7 @@ interface BroadcastClient {
  * payload would silently no-op every reactive update. This unwraps each topic
  * to the contract MC already consumes, so MC needs no WS change.
  *
- * - issue.created / issue.updated      → bare Issue
+ * - issue.created / issue.updated / issue.deleted → bare Issue
  * - project.created / project.updated  → bare Project
  * - comment.added / comment.edited     → { issue_id } (from comment.issue_id)
  * - comment.deleted                    → { issue_id } (from issueId)
@@ -53,6 +54,7 @@ export function normalizeForWire<E extends ProjectsWsTopic>(
   switch (topic) {
     case 'issue.created':
     case 'issue.updated':
+    case 'issue.deleted':
       return (payload as ProjectsEventMap['issue.created']).issue;
     case 'project.created':
     case 'project.updated':
