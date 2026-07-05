@@ -1,9 +1,11 @@
 import { fireEvent, render } from '@testing-library/react';
 import { expect, test, vi } from 'vitest';
 import { PetPicker } from './PetPicker.js';
+import { PET_KINDS } from './kinds.js';
 
 test('renders a button per pet and marks the selected one', () => {
-  const { getByRole } = render(<PetPicker value="red-panda" onChange={() => {}} />);
+  const { getByRole, getAllByRole } = render(<PetPicker value="red-panda" onChange={() => {}} />);
+  expect(getAllByRole('button')).toHaveLength(PET_KINDS.length); // 68 pets across 8 crews
   expect(getByRole('button', { name: /red panda/i }).getAttribute('aria-pressed')).toBe('true');
   expect(getByRole('button', { name: /cat/i }).getAttribute('aria-pressed')).toBe('false');
 });
