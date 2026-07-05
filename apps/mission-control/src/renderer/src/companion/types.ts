@@ -1,7 +1,8 @@
 import type { McConversation, McMessage } from '@dash/mc';
 import type { McAgentEvent } from '../../../shared/ipc.js';
 
-export type CompanionStatus = 'working' | 'needs' | 'done' | 'error';
+export type { CompanionStatus } from '../../../shared/ipc.js';
+import type { CompanionStatus } from '../../../shared/ipc.js';
 
 export interface CompanionSession {
   conversationId: string;

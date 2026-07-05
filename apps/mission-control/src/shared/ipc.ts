@@ -75,6 +75,10 @@ export interface AppSettings {
 
 export type GatewayStatus = 'starting' | 'healthy' | 'unhealthy';
 
+// Coarse per-session status the pixel-tree companion renders. Single source of
+// truth: the renderer's companion/types.ts re-exports this.
+export type CompanionStatus = 'working' | 'needs' | 'done' | 'error';
+
 // --- MCP Connectors ---
 
 export interface McpConnectorInfo {
@@ -330,6 +334,14 @@ export interface MissionControlAPI {
 
   // Updates
   onUpdateAvailable(callback: (info: { version: string }) => void): () => void;
+
+  // Companion (pixel-tree widget). The main window publishes coarse per-session
+  // statuses; main forwards them into the widget window and can ask the main
+  // window to re-publish (replay) when the widget (re)opens.
+  companionPublishStatuses(statuses: CompanionStatus[]): void;
+  companionSetVisible(visible: boolean): Promise<void>;
+  onCompanionStatuses(callback: (statuses: CompanionStatus[]) => void): () => void;
+  onCompanionReplayRequest(callback: () => void): () => void;
 
   // Projects (gateway passthrough)
   projectsListProjects(status?: Project['status']): Promise<Project[]>;

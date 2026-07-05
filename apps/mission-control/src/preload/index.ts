@@ -1,5 +1,10 @@
 import { contextBridge, ipcRenderer } from 'electron';
-import type { McAgentEvent, McpStatusChange, MissionControlAPI } from '../shared/ipc.js';
+import type {
+  CompanionStatus,
+  McAgentEvent,
+  McpStatusChange,
+  MissionControlAPI,
+} from '../shared/ipc.js';
 import type { ProjectsEvent } from '../shared/projects-ipc.js';
 
 const api: MissionControlAPI = {
@@ -195,6 +200,22 @@ const api: MissionControlAPI = {
     const handler = (_: Electron.IpcRendererEvent, info: { version: string }) => callback(info);
     ipcRenderer.on('update:available', handler);
     return () => ipcRenderer.removeListener('update:available', handler);
+  },
+
+  // Companion (pixel-tree widget)
+  companionPublishStatuses: (statuses: CompanionStatus[]) =>
+    ipcRenderer.send('companion:statuses', statuses),
+  companionSetVisible: (visible: boolean) => ipcRenderer.invoke('companion:setVisible', visible),
+  onCompanionStatuses: (callback: (statuses: CompanionStatus[]) => void): (() => void) => {
+    const handler = (_: Electron.IpcRendererEvent, statuses: CompanionStatus[]) =>
+      callback(statuses);
+    ipcRenderer.on('companion:statuses', handler);
+    return () => ipcRenderer.removeListener('companion:statuses', handler);
+  },
+  onCompanionReplayRequest: (callback: () => void): (() => void) => {
+    const handler = () => callback();
+    ipcRenderer.on('companion:replay', handler);
+    return () => ipcRenderer.removeListener('companion:replay', handler);
   },
 
   // Projects

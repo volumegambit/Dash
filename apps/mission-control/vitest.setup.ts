@@ -205,6 +205,12 @@ function createMockApi(): MockApi {
     // Updates
     onUpdateAvailable: vi.fn().mockReturnValue(() => {}),
 
+    // Companion (pixel-tree widget)
+    companionPublishStatuses: vi.fn(),
+    companionSetVisible: vi.fn().mockResolvedValue(undefined),
+    onCompanionStatuses: vi.fn().mockReturnValue(() => {}),
+    onCompanionReplayRequest: vi.fn().mockReturnValue(() => {}),
+
     // Projects (gateway passthrough)
     projectsListProjects: vi.fn().mockResolvedValue([]),
     projectsCreateProject: vi.fn().mockResolvedValue(null),
