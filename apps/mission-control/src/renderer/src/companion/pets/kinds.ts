@@ -4,11 +4,13 @@ import type { PetKind } from '../../../../shared/ipc.js';
 export const PET_KINDS: readonly PetKind[] = [
   'astronaut',
   'bear',
+  'beauty-guru',
   'bigfoot',
   'bollywood-star',
   'cat',
   'chef',
   'dog',
+  'fitness-influencer',
   'fortune-god',
   'knight',
   'lion',
@@ -22,8 +24,12 @@ export const PET_KINDS: readonly PetKind[] = [
   'red-panda',
   'robot',
   'royal-guard',
+  'streamer',
+  'tech-reviewer',
+  'travel-vlogger',
   'unicorn',
   'wizard',
+  'wok-uncle',
 ];
 
 /** Pet used when the stored value is unset or invalid. */

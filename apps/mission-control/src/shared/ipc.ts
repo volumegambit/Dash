@@ -82,11 +82,13 @@ export type CompanionStatus = 'working' | 'needs' | 'done' | 'error';
 export type PetKind =
   | 'astronaut'
   | 'bear'
+  | 'beauty-guru'
   | 'bigfoot'
   | 'bollywood-star'
   | 'cat'
   | 'chef'
   | 'dog'
+  | 'fitness-influencer'
   | 'fortune-god'
   | 'knight'
   | 'lion'
@@ -100,8 +102,12 @@ export type PetKind =
   | 'red-panda'
   | 'robot'
   | 'royal-guard'
+  | 'streamer'
+  | 'tech-reviewer'
+  | 'travel-vlogger'
   | 'unicorn'
-  | 'wizard';
+  | 'wizard'
+  | 'wok-uncle';
 
 // --- MCP Connectors ---
 

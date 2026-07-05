@@ -4,11 +4,13 @@ import { aggregateMood } from '../aggregateMood.js';
 import { AnimatedPixelPet } from './AnimatedPixelPet.js';
 import { astronautAnimated } from './astronautAnimated.js';
 import { bearAnimated } from './bearAnimated.js';
+import { beautyGuruAnimated } from './beautyAnimated.js';
 import { bigfootAnimated } from './bigfootAnimated.js';
 import { bollywoodStarAnimated } from './bollywoodAnimated.js';
 import { catAnimated } from './catAnimated.js';
 import { chefAnimated } from './chefAnimated.js';
 import { dogAnimated } from './dogAnimated.js';
+import { fitnessInfluencerAnimated } from './fitnessAnimated.js';
 import { fortuneGodAnimated } from './fortuneAnimated.js';
 import { royalGuardAnimated } from './guardAnimated.js';
 import { DEFAULT_PET, PET_KINDS } from './kinds.js';
@@ -23,20 +25,26 @@ import { quokkaAnimated } from './quokkaAnimated.js';
 import { rabbitAnimated } from './rabbitAnimated.js';
 import { redPandaAnimated } from './redPandaAnimated.js';
 import { robotAnimated } from './robotAnimated.js';
+import { streamerAnimated } from './streamerAnimated.js';
+import { techReviewerAnimated } from './techAnimated.js';
+import { travelVloggerAnimated } from './travelAnimated.js';
 import type { AnimatedPetSprite } from './types.js';
 import { unicornAnimated } from './unicornAnimated.js';
 import { wizardAnimated } from './wizardAnimated.js';
+import { wokUncleAnimated } from './wokuncleAnimated.js';
 
 export { DEFAULT_PET, PET_KINDS };
 
 export const PET_REGISTRY: Record<PetKind, AnimatedPetSprite> = {
   astronaut: astronautAnimated,
   bear: bearAnimated,
+  'beauty-guru': beautyGuruAnimated,
   bigfoot: bigfootAnimated,
   'bollywood-star': bollywoodStarAnimated,
   cat: catAnimated,
   chef: chefAnimated,
   dog: dogAnimated,
+  'fitness-influencer': fitnessInfluencerAnimated,
   'fortune-god': fortuneGodAnimated,
   knight: knightAnimated,
   lion: lionAnimated,
@@ -50,8 +58,12 @@ export const PET_REGISTRY: Record<PetKind, AnimatedPetSprite> = {
   'red-panda': redPandaAnimated,
   robot: robotAnimated,
   'royal-guard': royalGuardAnimated,
+  streamer: streamerAnimated,
+  'tech-reviewer': techReviewerAnimated,
+  'travel-vlogger': travelVloggerAnimated,
   unicorn: unicornAnimated,
   wizard: wizardAnimated,
+  'wok-uncle': wokUncleAnimated,
 };
 
 function spriteFor(kind: PetKind): AnimatedPetSprite {
