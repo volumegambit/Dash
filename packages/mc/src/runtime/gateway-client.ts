@@ -32,6 +32,13 @@ export interface GatewayAgent {
      * a non-empty list scopes the agent to those plugins.
      */
     plugins?: string[];
+    /**
+     * Per-agent provider allow-list (ids). `undefined` / omitted = all available
+     * providers (backward-compat); a non-empty list scopes the agent to those
+     * providers. Filters both the MC model dropdown and runtime model resolution;
+     * does NOT touch gateway-wide provider trust/credentials.
+     */
+    providers?: string[];
     /** Per-agent swarm caps + gating. See {@link AgentSwarmConfig}. */
     swarm?: AgentSwarmConfig;
   };
@@ -88,6 +95,22 @@ export interface CreateAgentRequest {
    * — the gateway never persists or returns null.
    */
   plugins?: string[] | null;
+  /**
+   * Per-agent provider allow-list (ids). Filters both the MC model dropdown
+   * and runtime model resolution; does NOT touch gateway-wide provider
+   * trust/credentials. `undefined` / omitted = all available providers
+   * (backward-compat); a non-empty list scopes the agent to those providers.
+   * Flows to POST /agents and PUT /agents/:id, where the gateway accepts the
+   * `providers?` field.
+   *
+   * `null` is the WRITE-ONLY clear sentinel: sent on a PUT to clear a scoped
+   * selection back to "all". It survives JSON.stringify (unlike `undefined`,
+   * which is dropped — making the clear a silent no-op over the wire); the
+   * gateway treats null as "delete the key". The READ type
+   * (`GatewayAgent.config.providers`) intentionally stays `string[] | undefined`
+   * — the gateway never persists or returns null.
+   */
+  providers?: string[] | null;
   /**
    * Per-agent swarm caps + gating. See {@link AgentSwarmConfig}. Flows to
    * PUT /agents/:id where the gateway's `update()` replaces the whole `swarm`

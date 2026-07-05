@@ -92,6 +92,14 @@ export interface DashAgentConfig {
   fallbackModels?: string[];
   systemPrompt: string;
   tools?: string[];
+  /**
+   * Provider allow-list gating model resolution. `undefined` = no gating (any
+   * provider); `[]` = no provider allowed; otherwise the `provider/` segment of
+   * every resolved model (primary AND fallback) must be a member. Enforced in
+   * `resolveModelString` before catalog/pi-ai lookup, so a disallowed provider
+   * fails with a distinct policy error rather than "Unknown model".
+   */
+  allowedProviders?: string[];
   workspace?: string;
   skills?: {
     paths?: string[];
@@ -109,6 +117,16 @@ export interface AgentState {
   systemPrompt: string;
   model: string;
   fallbackModels?: string[];
+  /**
+   * Provider allow-list gating model resolution for THIS message. Carried on
+   * `AgentState` — rebuilt from the live config on every `chat()` — so the gate
+   * rides the exact same per-message mechanism as `model`/`fallbackModels`: a
+   * warm backend picks up allow-list changes on the next turn without a pool
+   * eviction, and the gate can never come from a different config generation
+   * than the model string it guards. `undefined` = no gating; `[]` = no provider
+   * allowed. See `DashAgentConfig.allowedProviders`.
+   */
+  allowedProviders?: string[];
   tools?: string[];
   workspace?: string;
   images?: ImageBlock[];

@@ -1,4 +1,4 @@
-import type { PluginRecord } from '@dash/management';
+import type { PluginRecord, RuntimePluginProvider } from '@dash/management';
 import type { AgentSwarmConfig, GatewayAgent } from '@dash/mc';
 import { ChevronDown, ChevronUp, FolderOpen, RotateCcw, X } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
@@ -7,6 +7,7 @@ import { HealthDot } from '../../../components/HealthDot.js';
 import { ModelChainEditor } from '../../../components/ModelChainEditor.js';
 import { parseAllowedModels, parsePositiveInt } from '../../../components/SwarmPanel.helpers.js';
 import { ALL_TOOL_IDS, TOOL_GROUPS } from '../../../components/deploy-options.js';
+import { sortProviders } from '../../../components/providers.js';
 import { useAvailableModels } from '../../../hooks/useAvailableModels.js';
 
 type AgentConfig = GatewayAgent['config'];
@@ -22,6 +23,9 @@ type ConfigPatch = {
   // `undefined`, which the wire drops, making the clear a no-op) and the gateway
   // treats it as "delete the key → all loaded plugins". A non-empty array scopes.
   plugins?: string[] | null;
+  // Same null-clear sentinel semantics as `plugins`: `null` clears the scope
+  // back to "all available providers"; a non-empty array scopes the agent.
+  providers?: string[] | null;
   // The gateway's `update()` replaces the whole `swarm` block wholesale
   // (shallow merge), so we always send the complete block.
   swarm?: AgentSwarmConfig;
@@ -48,7 +52,15 @@ export function AgentConfigTab({
 
   // Which card is open (null = all collapsed). Opening goes straight to edit mode.
   const [openCard, setOpenCard] = useState<
-    'workspace' | 'models' | 'prompt' | 'tools' | 'connectors' | 'plugins' | 'swarm' | null
+    | 'workspace'
+    | 'models'
+    | 'prompt'
+    | 'tools'
+    | 'connectors'
+    | 'plugins'
+    | 'providers'
+    | 'swarm'
+    | null
   >(null);
 
   // Workspace editing state
@@ -79,6 +91,13 @@ export function AgentConfigTab({
   // backward-compat behavior — NOT "no plugins".
   const [assignedPlugins, setAssignedPlugins] = useState<string[]>([]);
   const [poolPlugins, setPoolPlugins] = useState<PluginRecord[]>([]);
+
+  // Providers state. Per-agent provider selection is an allow-list over the
+  // runtime providers surfaced by the gateway. Empty = all: an empty selection
+  // means the agent can use every available provider (matching the gateway's
+  // `providers: undefined` backward-compat behavior) — NOT "no providers".
+  const [assignedProviders, setAssignedProviders] = useState<string[]>([]);
+  const [poolProviders, setPoolProviders] = useState<RuntimePluginProvider[]>([]);
 
   // Swarm editing state. Caps are kept as raw text so a blank field means
   // "use the gateway default" (undefined) rather than zero. `allowedModels` is
@@ -169,6 +188,57 @@ export function AgentConfigTab({
 
   const pluginLabel = (name: string): string =>
     poolPlugins.find((p) => p.name === name)?.displayName ?? name;
+
+  // Sync providers when agentConfig changes. Pool comes from the gateway's
+  // runtime providers (the same source the AI Providers page uses), sorted for
+  // stable display.
+  useEffect(() => {
+    setAssignedProviders(agentConfig?.providers ?? []);
+    window.api.plugins
+      .runtime()
+      .then((res) => setPoolProviders(sortProviders(res.providers)))
+      .catch(() => {});
+  }, [agentConfig]);
+
+  // Assignable options: any runtime provider not already assigned. Assigned ids
+  // stay visible as chips below (even if a provider later disappears from the
+  // runtime) so a user can always see and remove a scoped selection.
+  const unassignedProviders = poolProviders.filter((p) => !assignedProviders.includes(p.id));
+
+  // Distinguish "no restriction" (providers absent → all providers, the
+  // default) from an explicit `providers: []` (every provider BLOCKED). The UI
+  // itself can never produce `[]` — clearing the last chip writes `null` (= all,
+  // see handleUnassignProvider). So a persisted empty array can only arrive via
+  // the management API, and rendering it as "All providers (default)" would be a
+  // lie: such an agent can use NO provider and cannot resolve any model. We read
+  // the persisted config directly (not the transient `assignedProviders`) so a
+  // normal in-UI clear — which momentarily empties `assignedProviders` while it
+  // persists `null` — never flashes the blocked label.
+  const blockedByEmptyAllowList =
+    Array.isArray(agentConfig?.providers) && agentConfig.providers.length === 0;
+
+  const handleAssignProvider = useCallback(
+    async (id: string) => {
+      // Empty = all: a non-empty selection scopes the agent to those providers;
+      // clearing back to empty writes `null` (= all). `null` survives the wire;
+      // `undefined` would be dropped by JSON.stringify, making the clear a no-op.
+      const next = [...assignedProviders, id];
+      setAssignedProviders(next);
+      await updateConfig(agentId, { providers: next.length > 0 ? next : null });
+    },
+    [assignedProviders, agentId, updateConfig],
+  );
+
+  const handleUnassignProvider = useCallback(
+    async (id: string) => {
+      const next = assignedProviders.filter((p) => p !== id);
+      setAssignedProviders(next);
+      await updateConfig(agentId, { providers: next.length > 0 ? next : null });
+    },
+    [assignedProviders, agentId, updateConfig],
+  );
+
+  const providerLabel = (id: string): string => poolProviders.find((p) => p.id === id)?.label ?? id;
 
   // Sync chain model/fallbacks when agentConfig changes
   useEffect(() => {
@@ -417,6 +487,20 @@ export function AgentConfigTab({
               }}
               onRefresh={refreshModels}
               refreshing={modelsRefreshing}
+              // Live providers-card selection. Three cases:
+              //  - non-empty selection → filter the dropdown to those providers
+              //    (re-filters immediately as the card edits);
+              //  - API-set `providers: []` (blockedByEmptyAllowList) → pass `[]`
+              //    so EVERY model is correctly marked disallowed, matching the
+              //    gateway's block-all gate (undefined here would wrongly un-filter);
+              //  - absent (no restriction) → undefined disables filtering (all).
+              allowedProviders={
+                assignedProviders.length > 0
+                  ? assignedProviders
+                  : blockedByEmptyAllowList
+                    ? []
+                    : undefined
+              }
             />
             <div className="mt-3 flex justify-end gap-2">
               <button
@@ -732,6 +816,92 @@ export function AgentConfigTab({
                 No plugins installed.{' '}
                 <a href="#/settings/plugins" className="text-accent hover:underline">
                   Manage plugins
+                </a>{' '}
+                first.
+              </p>
+            ) : null}
+          </div>
+        )}
+      </div>
+
+      {/* Providers card. Per-agent provider allow-list over the runtime
+          providers. Empty = all available providers (default). */}
+      <div className="rounded-lg border border-border bg-card-bg">
+        <button
+          type="button"
+          onClick={() => setOpenCard(openCard === 'providers' ? null : 'providers')}
+          className="flex w-full items-center justify-between p-4 text-left"
+        >
+          <div>
+            <h3 className="text-sm font-medium">Providers</h3>
+            <p className="text-xs text-muted">
+              {assignedProviders.length > 0
+                ? `${assignedProviders.length} selected`
+                : blockedByEmptyAllowList
+                  ? 'No providers (agent blocked)'
+                  : 'All providers (default)'}
+            </p>
+          </div>
+          {openCard === 'providers' ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+        </button>
+
+        {openCard === 'providers' && (
+          <div className="border-t border-border p-4">
+            {assignedProviders.length > 0 ? (
+              <div className="mb-3 flex flex-wrap gap-2">
+                {assignedProviders.map((id) => (
+                  <span
+                    key={id}
+                    className="flex items-center gap-1 rounded bg-bg-hover px-2 py-1 text-sm"
+                  >
+                    {providerLabel(id)}
+                    <button
+                      type="button"
+                      aria-label={`Remove ${id}`}
+                      onClick={() => handleUnassignProvider(id)}
+                      className="ml-1 text-fg-muted hover:text-red-500"
+                    >
+                      <X size={12} />
+                    </button>
+                  </span>
+                ))}
+              </div>
+            ) : blockedByEmptyAllowList ? (
+              <p className="mb-3 text-sm text-red-500">
+                No providers (agent blocked). This agent's allow-list is empty (set via the API), so
+                it cannot use any provider and no model will resolve. Select a provider below to
+                unblock it.
+              </p>
+            ) : (
+              <p className="mb-3 text-sm text-muted">
+                All providers (default). This agent can use every provider. Select providers below
+                to scope it to a subset — the model dropdown filters to match.
+              </p>
+            )}
+
+            {unassignedProviders.length > 0 ? (
+              <select
+                onChange={(e) => {
+                  handleAssignProvider(e.target.value);
+                  e.target.value = '';
+                }}
+                defaultValue=""
+                className="rounded border border-border bg-bg-input px-3 py-1.5 text-sm"
+              >
+                <option value="" disabled>
+                  Add provider...
+                </option>
+                {unassignedProviders.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.label}
+                  </option>
+                ))}
+              </select>
+            ) : poolProviders.length === 0 ? (
+              <p className="text-sm text-fg-muted">
+                No providers available.{' '}
+                <a href="#/settings/ai-providers" className="text-accent hover:underline">
+                  Add providers
                 </a>{' '}
                 first.
               </p>

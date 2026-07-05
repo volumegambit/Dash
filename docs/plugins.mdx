@@ -226,6 +226,12 @@ Use **Add plugin...** to pick from the **loaded** plugins. Each one you add appe
 Per-agent selection controls **visibility only — it does not trust a plugin**. Trust is gateway-wide: selecting a plugin for an agent never makes its code run if the plugin isn't trusted, and a trusted plugin stays trusted regardless of which agents are scoped to it. Only **loaded** plugins are offered in the picker — a disabled or errored plugin contributes nothing to route.
 </Note>
 
+## Choosing AI providers per agent
+
+Alongside the Plugins card, each agent's **Config** tab also has a **Providers** card. By default it reads **"All providers (default)"** — the agent can use models from every available AI provider. Add one or more providers to restrict the agent to just those: its model dropdown immediately narrows to the allowed providers, and if the agent's current model belongs to a provider you removed, it stays visible marked **"(not allowed)"** so you can pick a replacement. An agent that tries to run on a disallowed provider gets a clear error instead of a response. Clear all the chips to return to the all-providers default.
+
+This is useful when an agent must only ever talk to a specific vendor — for example, keeping a customer-facing agent on Anthropic models only, regardless of which other providers are configured on the gateway.
+
 ## Marketplaces
 
 A **marketplace** is a published catalog of plugins you can browse and install by name. You point Dash at a marketplace source — a local path, a URL, or a git repo — and Dash reads its `marketplace.json` to list the plugins it offers.

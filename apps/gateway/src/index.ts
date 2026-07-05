@@ -478,6 +478,13 @@ async function main() {
           systemPrompt: agentConfig.systemPrompt,
           fallbackModels: agentConfig.fallbackModels,
           tools: agentConfig.tools,
+          // Per-agent provider allow-list (Plan P4). Threads the registry's
+          // `providers` into the backend's model-resolution policy gate
+          // (DashAgentConfig.allowedProviders): every resolved model — primary
+          // AND fallback chain — must carry an allow-listed `provider/` segment,
+          // else resolution fails with a distinct policy error. `undefined` =
+          // no gating (legacy agents). See backend-providers-wiring.test.ts.
+          allowedProviders: agentConfig.providers,
           skills: {
             ...agentConfig.skills,
             paths: [...(agentConfig.skills?.paths ?? []), ...skillDirs],

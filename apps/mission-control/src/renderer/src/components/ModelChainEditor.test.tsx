@@ -106,6 +106,82 @@ describe('ModelChainEditor', () => {
     expect(screen.getByText(/add api keys in settings/i)).toBeInTheDocument();
   });
 
+  it('renders every provider when allowedProviders is unset', () => {
+    const onChange = vi.fn();
+    render(
+      <ModelChainEditor
+        model="anthropic/claude-sonnet-4-20250514"
+        fallbackModels={[]}
+        availableModels={models}
+        onChange={onChange}
+      />,
+    );
+    // Both provider optgroups present; no filtering without the prop.
+    expect(screen.getByRole('group', { name: 'Anthropic' })).toBeInTheDocument();
+    expect(screen.getByRole('group', { name: 'OpenAI' })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: 'GPT-4o' })).toBeInTheDocument();
+  });
+
+  it('renders only allowed-provider options when allowedProviders is set', () => {
+    const onChange = vi.fn();
+    render(
+      <ModelChainEditor
+        model="anthropic/claude-sonnet-4-20250514"
+        fallbackModels={[]}
+        availableModels={models}
+        onChange={onChange}
+        allowedProviders={['anthropic']}
+      />,
+    );
+    // Anthropic optgroup + options stay.
+    expect(screen.getByRole('group', { name: 'Anthropic' })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: 'Claude Sonnet 4' })).toBeInTheDocument();
+    // OpenAI is filtered out entirely (not the selected value).
+    expect(screen.queryByRole('group', { name: 'OpenAI' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('option', { name: 'GPT-4o' })).not.toBeInTheDocument();
+  });
+
+  it('keeps a selected model from a disallowed provider visible, marked "(not allowed)"', () => {
+    const onChange = vi.fn();
+    // The primary model is an OpenAI model, but OpenAI is no longer allowed.
+    // It must remain visible so the conflict is obvious, marked as not allowed,
+    // rather than silently vanishing (which would reset the visible selection).
+    render(
+      <ModelChainEditor
+        model="openai/gpt-4o"
+        fallbackModels={[]}
+        availableModels={models}
+        onChange={onChange}
+        allowedProviders={['anthropic']}
+      />,
+    );
+    // The disallowed-but-selected option stays, suffixed.
+    expect(screen.getByRole('option', { name: /GPT-4o \(not allowed\)/i })).toBeInTheDocument();
+    // The select still shows it as the current value.
+    expect(screen.getByDisplayValue(/GPT-4o \(not allowed\)/i)).toBeInTheDocument();
+    // Other, unselected OpenAI models are still filtered out.
+    expect(screen.getByRole('group', { name: 'Anthropic' })).toBeInTheDocument();
+  });
+
+  it('keeps a selected fallback from a disallowed provider visible, marked "(not allowed)"', () => {
+    const onChange = vi.fn();
+    render(
+      <ModelChainEditor
+        model="anthropic/claude-sonnet-4-20250514"
+        fallbackModels={['openai/gpt-4o']}
+        availableModels={models}
+        onChange={onChange}
+        allowedProviders={['anthropic']}
+      />,
+    );
+    // The disallowed-but-selected fallback stays visible + marked. It appears
+    // in both the fallback row's select and the primary select's option list.
+    const marked = screen.getAllByRole('option', { name: /GPT-4o \(not allowed\)/i });
+    expect(marked.length).toBeGreaterThan(0);
+    // The fallback select shows it as the current value.
+    expect(screen.getByDisplayValue(/GPT-4o \(not allowed\)/i)).toBeInTheDocument();
+  });
+
   it('groups OpenRouter models under their own "OpenRouter" optgroup', async () => {
     const user = userEvent.setup();
     const onChange = vi.fn();

@@ -489,9 +489,25 @@ export class PiAgentBackend implements AgentBackend {
   /**
    * Resolve the model from "provider/model-id" format. Plugin catalogs win
    * over pi-ai's static registry (see resolve-model.ts for the rationale).
+   *
+   * `allowedProviders` gates the provider segment BEFORE any lookup. The caller
+   * ALWAYS passes it explicitly — there is deliberately no default:
+   *
+   * - `runModelChain` passes the LIVE `state.allowedProviders`, rebuilt from the
+   *   registry on every message, so the gate rides the same per-message
+   *   mechanism as the model string it guards. A warm backend therefore
+   *   enforces the CURRENT allow-list without a pool eviction, the gate can
+   *   never lag the model by a config generation, and — critically — a live
+   *   `undefined` (restriction CLEARED) genuinely means "no gating" instead of
+   *   silently resurrecting the frozen constructor value via a default param.
+   * - `start()` passes the frozen `this.config.allowedProviders` for the initial
+   *   warm-up resolution (there is no per-message `state` yet).
+   *
+   * `undefined` = no gating; `[]` = block every provider (must NOT fall through
+   * to any other list). See `resolveModelString`.
    */
-  private resolveModel(modelStr: string): Model<Api> {
-    return resolveModelString(modelStr, this.pluginModelCatalog);
+  private resolveModel(modelStr: string, allowedProviders: string[] | undefined): Model<Api> {
+    return resolveModelString(modelStr, this.pluginModelCatalog, allowedProviders);
   }
 
   /**
@@ -698,7 +714,10 @@ export class PiAgentBackend implements AgentBackend {
     // detect real store mutations (vs. identical re-reads) and leave any
     // OAuth tokens pi refreshes in-memory alone.
     this.lastAppliedKeys = { ...keys };
-    const model = this.resolveModel(this.config.model);
+    // Initial warm-up resolution uses the frozen config gate — there is no
+    // per-message `state` yet. The authoritative per-message gate rides
+    // `state.allowedProviders` in runModelChain().
+    const model = this.resolveModel(this.config.model, this.config.allowedProviders);
 
     // MCP: create manager if not injected and servers are configured
     if (!this.mcpManager && this.config.mcpServers?.length) {
@@ -915,9 +934,15 @@ export class PiAgentBackend implements AgentBackend {
       // Resolve and switch to this attempt's model. A malformed model string
       // is a config error, not a runtime failure — but we still try the next
       // model in the chain rather than giving up immediately.
+      //
+      // Gate on the LIVE per-message allow-list from `state` (not the frozen
+      // constructor copy) so a warm backend enforces the current policy: an
+      // agent scoped to specific providers AFTER this conversation warmed up
+      // refuses a now-disallowed provider on this turn, and one whose
+      // restriction was cleared allows again — all without a pool eviction.
       let model: Model<Api>;
       try {
-        model = this.resolveModel(modelStr);
+        model = this.resolveModel(modelStr, state.allowedProviders);
       } catch (err) {
         const resolveError = err instanceof Error ? err : new Error(String(err));
         if (isLastAttempt) {

@@ -29,6 +29,32 @@ function makeMockBackend(events: AgentEvent[]): AgentBackend {
   };
 }
 
+/**
+ * Mock backend that records the `AgentState` it receives on each run(). Used to
+ * prove that per-message config (model, allowedProviders, ...) is re-resolved
+ * live from the registry on every chat() — not frozen at backend construction.
+ */
+function makeStateCapturingBackend(): { backend: AgentBackend; states: AgentState[] } {
+  const states: AgentState[] = [];
+  const backend: AgentBackend = {
+    name: 'state-capture-backend',
+    start: async () => {},
+    stop: async () => {},
+    abort: () => {},
+    async *run(state: AgentState, _options: RunOptions): AsyncGenerator<AgentEvent> {
+      states.push(state);
+      yield { type: 'response', content: 'ok', usage: { inputTokens: 1, outputTokens: 1 } };
+    },
+  };
+  return { backend, states };
+}
+
+async function drain(gen: AsyncGenerator<AgentEvent>): Promise<void> {
+  for await (const _ of gen) {
+    // consume
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Swarm merge-wrapper test harness
 // ---------------------------------------------------------------------------
@@ -300,6 +326,71 @@ describe('AgentChatCoordinator', () => {
     expect(collected[0].type).toBe('error');
     const errorEvent = collected[0] as { type: 'error'; error: Error };
     expect(errorEvent.error.message).toMatch(/disabled/);
+    await agents.stop();
+  });
+});
+
+describe('AgentChatCoordinator live per-message provider allow-list', () => {
+  it('a WARM backend enforces a restriction added AFTER the conversation started (no eviction)', async () => {
+    const registry = new AgentRegistry();
+    // Register with NO provider restriction.
+    const { id } = registry.register({
+      name: 'live-agent',
+      model: 'anthropic/claude-sonnet-4-20250514',
+      systemPrompt: 'x',
+    });
+
+    const { backend, states } = makeStateCapturingBackend();
+    // createBackend is invoked once per pool entry; return the SAME instance so
+    // the second chat() reuses the warm backend (the exact scenario under test).
+    const agents = createAgentChatCoordinator({
+      registry,
+      poolMaxSize: 10,
+      createBackend: async () => backend,
+    });
+
+    // First message: warms the backend while the agent is unrestricted.
+    await drain(agents.chat({ agentId: id, conversationId: 'conv-1', text: 'one' }));
+    expect(states[0].allowedProviders).toBeUndefined();
+
+    // Restrict providers AFTER the conversation exists. No eviction happens.
+    registry.update(id, { providers: ['anthropic'] });
+
+    // Second message on the SAME warm backend picks up the live restriction.
+    await drain(agents.chat({ agentId: id, conversationId: 'conv-1', text: 'two' }));
+    expect(states[1].allowedProviders).toEqual(['anthropic']);
+
+    await agents.stop();
+  });
+
+  it('a WARM backend created UNDER a restriction allows again once the restriction is cleared', async () => {
+    const registry = new AgentRegistry();
+    // Register restricted to anthropic only.
+    const { id } = registry.register({
+      name: 'live-agent-2',
+      model: 'anthropic/claude-sonnet-4-20250514',
+      systemPrompt: 'x',
+      providers: ['anthropic'],
+    });
+
+    const { backend, states } = makeStateCapturingBackend();
+    const agents = createAgentChatCoordinator({
+      registry,
+      poolMaxSize: 10,
+      createBackend: async () => backend,
+    });
+
+    // First message: warms the backend while restricted.
+    await drain(agents.chat({ agentId: id, conversationId: 'conv-1', text: 'one' }));
+    expect(states[0].allowedProviders).toEqual(['anthropic']);
+
+    // Clear the restriction (null = MC clear sentinel → back to all).
+    registry.update(id, { providers: null });
+
+    // Second message on the warm backend sees the cleared (undefined) list.
+    await drain(agents.chat({ agentId: id, conversationId: 'conv-1', text: 'two' }));
+    expect(states[1].allowedProviders).toBeUndefined();
+
     await agents.stop();
   });
 });

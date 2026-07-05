@@ -46,6 +46,22 @@ export interface GatewayAgentConfig {
    * replaces the list wholesale (set to `undefined` to restore "all").
    */
   plugins?: string[];
+  /**
+   * Per-agent provider allow-list (Plan P4). `undefined` = ALL available
+   * providers (backward compat — legacy agents persisted before P4 have no key
+   * and MUST load as `undefined`, never `[]`/`null`). An explicit `[]` means
+   * "none" (the agent cannot resolve any model).
+   *
+   * Filters BOTH the MC model dropdown and runtime model resolution (including
+   * the fallback chain) down to the allow-listed provider ids. It does NOT
+   * touch gateway-wide provider trust or credentials — those are decided
+   * upstream; this only narrows which of the already-trusted providers an
+   * agent may use.
+   *
+   * Flows through `update()` exactly like `mcpServers`: a partial-update patch
+   * replaces the list wholesale (set to `undefined` to restore "all").
+   */
+  providers?: string[];
 }
 
 export type AgentStatus = 'registered' | 'active' | 'disabled';
@@ -126,7 +142,9 @@ export class AgentRegistry {
     await rename(tmpPath, this.filePath);
   }
 
-  register(config: GatewayAgentConfig & { plugins?: string[] | null }): RegisteredAgent {
+  register(
+    config: GatewayAgentConfig & { plugins?: string[] | null; providers?: string[] | null },
+  ): RegisteredAgent {
     const duplicate = [...this.agents.values()].find((a) => a.name === config.name);
     if (duplicate) {
       throw new Error(`Agent '${config.name}' is already registered`);
@@ -134,16 +152,19 @@ export class AgentRegistry {
     const id = randomUUID().slice(0, 8);
 
     // Defensive null-normalization (mirrors update()): if POST /agents carries
-    // `plugins: null` (the MC clear sentinel), strip the key so the stored
-    // config never holds null — filterPluginsByAgent only handles
-    // `string[] | undefined`. Rebuilding via rest-destructuring (rather than
-    // `delete`) produces a genuinely absent key and stays lint-clean.
-    let normalized: GatewayAgentConfig;
+    // `plugins: null` / `providers: null` (the MC clear sentinels), strip that
+    // key so the stored config never holds null — filterPluginsByAgent and
+    // model resolution only handle `string[] | undefined`. Rebuilding via
+    // rest-destructuring (rather than `delete`) produces genuinely absent keys
+    // and stays lint-clean. The two fields are normalized independently.
+    let normalized: GatewayAgentConfig = config as GatewayAgentConfig;
     if (config.plugins === null) {
-      const { plugins: _cleared, ...withoutPlugins } = config;
-      normalized = withoutPlugins;
-    } else {
-      normalized = config as GatewayAgentConfig;
+      const { plugins: _cleared, ...rest } = normalized;
+      normalized = rest;
+    }
+    if (config.providers === null) {
+      const { providers: _cleared, ...rest } = normalized;
+      normalized = rest;
     }
 
     // If no workspace was supplied and a resolver is configured, assign one.
@@ -187,27 +208,37 @@ export class AgentRegistry {
    */
   update(
     id: string,
-    patch: Partial<Omit<GatewayAgentConfig, 'name' | 'plugins'>> & { plugins?: string[] | null },
+    patch: Partial<Omit<GatewayAgentConfig, 'name' | 'plugins' | 'providers'>> & {
+      plugins?: string[] | null;
+      providers?: string[] | null;
+    },
   ): RegisteredAgent {
     const entry = this.agents.get(id);
     if (!entry) throw new Error(`Agent '${id}' not found`);
-    // `plugins: null` is the MC clear sentinel (survives JSON.stringify, unlike
-    // `undefined` which the wire would drop). It means "clear back to all loaded
-    // plugins". We STRIP the key rather than persist null — filterPluginsByAgent
-    // only handles `string[] | undefined`, so a stored null would break routing.
+    // `plugins: null` / `providers: null` are the MC clear sentinels (they
+    // survive JSON.stringify, unlike `undefined` which the wire would drop).
+    // Each means "clear back to all". We STRIP the key rather than persist null
+    // — filterPluginsByAgent and model resolution only handle
+    // `string[] | undefined`, so a stored null would break routing/resolution.
     // A non-null array sets the selection; an absent key leaves it unchanged.
-    const { plugins, ...rest } = patch;
-    const merged = { ...entry.config, ...rest };
+    // The two fields are handled independently.
+    const { plugins, providers, ...rest } = patch;
+    let merged: GatewayAgentConfig = { ...entry.config, ...rest };
     if (plugins === null) {
       // Rebuild without the key (rest-destructuring, not `delete`) so it is
       // genuinely absent (= all) and the code stays lint-clean.
       const { plugins: _cleared, ...withoutPlugins } = merged;
-      entry.config = withoutPlugins;
+      merged = withoutPlugins;
     } else if (plugins !== undefined) {
-      entry.config = { ...merged, plugins };
-    } else {
-      entry.config = merged;
+      merged = { ...merged, plugins };
     }
+    if (providers === null) {
+      const { providers: _cleared, ...withoutProviders } = merged;
+      merged = withoutProviders;
+    } else if (providers !== undefined) {
+      merged = { ...merged, providers };
+    }
+    entry.config = merged;
     return entry;
   }
 
