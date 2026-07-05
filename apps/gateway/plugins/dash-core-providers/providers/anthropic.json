@@ -65,11 +65,15 @@
         "header": "authorization",
         "valuePrefix": "Bearer ",
         "extraHeaders": {
-          "anthropic-beta": "oauth-2025-04-20"
+          "anthropic-beta": "oauth-2025-04-20",
+          "anthropic-version": "2023-06-01"
         }
       },
       {
-        "header": "x-api-key"
+        "header": "x-api-key",
+        "extraHeaders": {
+          "anthropic-version": "2023-06-01"
+        }
       }
     ],
     "listPath": "data",
@@ -94,7 +98,7 @@
       "tier": 2
     }
   ],
-  "reviewedAt": "2026-06-21",
+  "reviewedAt": "2026-07-06",
   "ui": {
     "keyConsoleUrl": "https://console.anthropic.com/settings/keys",
     "keyPlaceholder": "sk-ant-...",

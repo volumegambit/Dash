@@ -57,6 +57,18 @@ describe('bundled dash-core-providers catalogs (checked-in JSON invariants)', ()
     ]);
   });
 
+  it('anthropic modelsFetch auth rules all carry the anthropic-version header', async () => {
+    // api.anthropic.com/v1/models 400s without `anthropic-version` — every auth
+    // rule (x-api-key and the sk-ant-oat OAuth rule) must send it via
+    // extraHeaders, so live discovery works regardless of key shape.
+    const cat = validateProviderCatalog(await readCatalog('anthropic'));
+    const spec = cat.modelsFetch as ModelsFetchSpec;
+    expect(spec.auth.length).toBeGreaterThan(0);
+    for (const rule of spec.auth) {
+      expect(rule.extraHeaders?.['anthropic-version']).toBe('2023-06-01');
+    }
+  });
+
   it('openrouter is dynamic with tools + no-colon entry filters', async () => {
     const cat = validateProviderCatalog(await readCatalog('openrouter'));
     expect(cat.dynamicModels).toBe(true);
