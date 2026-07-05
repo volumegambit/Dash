@@ -1246,7 +1246,36 @@ describe('POST /agents/:agentId/conversation-title', () => {
       body: JSON.stringify({ text: 'my login form crashes on submit' }),
     });
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ title: 'Login bug triage' });
+    expect(await res.json()).toEqual({ title: 'Login bug triage', project: null });
+  });
+
+  it('infers a project when the projects DB is wired', async () => {
+    const titleCompleteFn = vi.fn().mockResolvedValue({
+      role: 'assistant',
+      content: [{ type: 'text', text: '{"title":"Fix login crash","project":"AUTH"}' }],
+      stopReason: 'stop',
+    });
+    const projectsDb = {
+      projects: {
+        list: vi.fn().mockReturnValue([
+          { id: 'p1', key: 'AUTH', name: 'Auth revamp', description: 'login & sessions' },
+          { id: 'p2', key: 'PETS', name: 'Companion pets', description: '' },
+        ]),
+      },
+    } as unknown as import('@dash/projects').ProjectsDb;
+    const { app, agentRegistry, credentialStore } = createApp({ titleCompleteFn, projectsDb });
+    await credentialStore.set('anthropic-api-key:default', 'sk-test');
+    const entry = registerAgent(agentRegistry);
+    const res = await app.request(`/agents/${entry.id}/conversation-title`, {
+      method: 'POST',
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ text: 'my login form crashes on submit' }),
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      title: 'Fix login crash',
+      project: { id: 'p1', key: 'AUTH' },
+    });
   });
 
   it('404s for an unknown agent', async () => {

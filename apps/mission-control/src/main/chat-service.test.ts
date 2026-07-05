@@ -622,7 +622,7 @@ describe('ChatService', () => {
   });
 });
 
-describe('ChatService auto-title', () => {
+describe('ChatService auto-title + auto-task', () => {
   let dataDir: string;
   let store: ConversationStore;
   let wss: WebSocketServer | undefined;
@@ -641,6 +641,37 @@ describe('ChatService auto-title', () => {
     );
   }
 
+  /**
+   * Fetch stub routing the three management calls the first-message hook
+   * makes. Pass null for a step to make that call fail with a 500.
+   */
+  function stubManagement(opts: {
+    title?: { title: string; project?: { id: string; key: string } | null } | null;
+    issue?: { id: string; key: string } | null;
+  }): ReturnType<typeof vi.fn> {
+    const fetchMock = vi.fn(async (url: string | URL) => {
+      const path = String(url);
+      if (path.includes('/conversation-title')) {
+        if (!opts.title) return new Response('boom', { status: 500 });
+        return new Response(JSON.stringify({ project: null, ...opts.title }), { status: 200 });
+      }
+      if (path.endsWith('/issues')) {
+        if (!opts.issue) return new Response('boom', { status: 500 });
+        return new Response(JSON.stringify(opts.issue), { status: 201 });
+      }
+      if (path.includes('/sessions')) {
+        return new Response(JSON.stringify({}), { status: 201 });
+      }
+      return new Response('not found', { status: 404 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    return fetchMock;
+  }
+
+  function callsTo(fetchMock: ReturnType<typeof vi.fn>, needle: string): unknown[][] {
+    return fetchMock.mock.calls.filter((c) => String(c[0]).includes(needle));
+  }
+
   /** Echo WS server so sendMessage's stream terminates cleanly. */
   async function startWs(): Promise<void> {
     wss = new WebSocketServer({ port });
@@ -653,9 +684,9 @@ describe('ChatService auto-title', () => {
     await new Promise<void>((r) => wss?.on('listening', r));
   }
 
-  async function flushTitle(): Promise<void> {
-    // generateTitle is fire-and-forget and its store write queues behind
-    // real fs I/O; a timed settle (not event-loop turns) covers it.
+  async function settle(): Promise<void> {
+    // The hook is fire-and-forget and its store write queues behind real
+    // fs I/O; a timed settle (not event-loop turns) covers it.
     await new Promise((r) => setTimeout(r, 150));
   }
 
@@ -678,69 +709,108 @@ describe('ChatService auto-title', () => {
     await rm(dataDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
   });
 
-  it('asks the gateway for a title on the first message and renames', async () => {
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValue(
-        new Response(JSON.stringify({ title: 'Login bug triage' }), { status: 200 }),
-      );
-    vi.stubGlobal('fetch', fetchMock);
+  it('titles the conversation, creates a linked task, and renames to "KEY — title"', async () => {
+    const fetchMock = stubManagement({
+      title: { title: 'Login bug triage', project: { id: 'p1', key: 'AUTH' } },
+      issue: { id: 'i1', key: 'AUTH-7' },
+    });
 
     const conv = await service.createConversation('agent-1');
     await service.sendMessage(conv.id, 'my login form crashes on submit');
-    // The rename is fire-and-forget and lands behind the assistant-append
-    // fs writes; poll until it does.
     await vi.waitFor(async () => {
-      expect((await store.get(conv.id))?.title).toBe('Login bug triage');
+      expect((await store.get(conv.id))?.title).toBe('AUTH-7 — Login bug triage');
     });
 
-    expect(fetchMock).toHaveBeenCalledWith(
-      'http://mgmt.test/agents/agent-1/conversation-title',
-      expect.objectContaining({
-        method: 'POST',
-        headers: expect.objectContaining({ authorization: 'Bearer tok' }),
-      }),
-    );
-    const updated = await store.get(conv.id);
-    expect(updated?.title).toBe('Login bug triage');
-    expect(onRenamed).toHaveBeenCalledWith(conv.id, 'Login bug triage');
+    const [, titleInit] = callsTo(fetchMock, '/conversation-title')[0] as [string, RequestInit];
+    expect(titleInit.method).toBe('POST');
+    expect((titleInit.headers as Record<string, string>).authorization).toBe('Bearer tok');
+
+    const [, issueInit] = callsTo(fetchMock, '/issues')[0] as [string, RequestInit];
+    const issueBody = JSON.parse(String(issueInit.body));
+    expect(issueBody.title).toBe('Login bug triage');
+    expect(issueBody.project_id).toBe('p1');
+    expect(issueBody.description).toContain('my login form crashes on submit');
+
+    const [linkUrl, linkInit] = callsTo(fetchMock, '/sessions')[0] as [string, RequestInit];
+    expect(linkUrl).toContain('/issues/i1/sessions');
+    expect(JSON.parse(String(linkInit.body))).toEqual({
+      session_id: conv.id,
+      agent_id: 'agent-1',
+    });
+
+    expect(onRenamed).toHaveBeenCalledWith(conv.id, 'AUTH-7 — Login bug triage');
   });
 
-  it('does not request a title for later messages', async () => {
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValue(new Response(JSON.stringify({ title: 'T' }), { status: 200 }));
-    vi.stubGlobal('fetch', fetchMock);
+  it('creates a standalone task when no project was inferred', async () => {
+    const fetchMock = stubManagement({
+      title: { title: 'Login bug triage', project: null },
+      issue: { id: 'i2', key: 'TASK-3' },
+    });
 
     const conv = await service.createConversation('agent-1');
-    await service.sendMessage(conv.id, 'first message');
-    await flushTitle();
-    await service.sendMessage(conv.id, 'second message');
-    await flushTitle();
+    await service.sendMessage(conv.id, 'my login form crashes on submit');
+    await vi.waitFor(async () => {
+      expect((await store.get(conv.id))?.title).toBe('TASK-3 — Login bug triage');
+    });
 
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [, issueInit] = callsTo(fetchMock, '/issues')[0] as [string, RequestInit];
+    expect(JSON.parse(String(issueInit.body)).project_id).toBeNull();
   });
 
-  it('keeps the truncated fallback title when the gateway call fails', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('boom')));
+  it('still creates the task with the placeholder title when titling fails', async () => {
+    stubManagement({ title: null, issue: { id: 'i3', key: 'TASK-4' } });
 
     const conv = await service.createConversation('agent-1');
     await service.sendMessage(conv.id, 'hello there companion');
-    await flushTitle();
+    await vi.waitFor(async () => {
+      expect((await store.get(conv.id))?.title).toBe('TASK-4 — hello there companion');
+    });
+  });
 
-    const updated = await store.get(conv.id);
-    expect(updated?.title).toBe('hello there companion');
+  it('keeps the plain title when task creation fails', async () => {
+    stubManagement({ title: { title: 'Login bug triage' }, issue: null });
+
+    const conv = await service.createConversation('agent-1');
+    await service.sendMessage(conv.id, 'my login form crashes on submit');
+    await vi.waitFor(async () => {
+      expect((await store.get(conv.id))?.title).toBe('Login bug triage');
+    });
+  });
+
+  it('keeps the truncated fallback when every management call fails', async () => {
+    stubManagement({ title: null, issue: null });
+
+    const conv = await service.createConversation('agent-1');
+    await service.sendMessage(conv.id, 'hello there companion');
+    await settle();
+
+    expect((await store.get(conv.id))?.title).toBe('hello there companion');
     expect(onRenamed).not.toHaveBeenCalled();
   });
 
-  it('skips titling without a management connection', async () => {
-    const fetchMock = vi.fn();
-    vi.stubGlobal('fetch', fetchMock);
+  it('does not run the hook for later messages', async () => {
+    const fetchMock = stubManagement({
+      title: { title: 'T' },
+      issue: { id: 'i5', key: 'TASK-5' },
+    });
+
+    const conv = await service.createConversation('agent-1');
+    await service.sendMessage(conv.id, 'first message');
+    await settle();
+    await service.sendMessage(conv.id, 'second message');
+    await settle();
+
+    expect(callsTo(fetchMock, '/conversation-title')).toHaveLength(1);
+    expect(fetchMock.mock.calls.filter((c) => String(c[0]).endsWith('/issues'))).toHaveLength(1);
+  });
+
+  it('skips everything without a management connection', async () => {
+    const fetchMock = stubManagement({ title: { title: 'T' }, issue: { id: 'x', key: 'K' } });
     service = makeTitledService({ managementBaseUrl: undefined, managementToken: undefined });
 
     const conv = await service.createConversation('agent-1');
     await service.sendMessage(conv.id, 'hello');
-    await flushTitle();
+    await settle();
 
     expect(fetchMock).not.toHaveBeenCalled();
   });
