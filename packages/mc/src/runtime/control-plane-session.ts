@@ -212,10 +212,21 @@ export function createControlPlaneSession(opts: ControlPlaneSessionOptions): Con
         timer.unref();
 
         const onListening = (): void => {
-          const redirectUri = `http://127.0.0.1:${LOOPBACK_PORT}/callback`;
-          const authUrl = opts.buildAuthUrl(encodeURIComponent(redirectUri), state, codeChallenge);
-          // Fire-and-await the browser; surface a launch failure as a rejection.
-          opts.openBrowser(authUrl).catch(fail);
+          // A throw from either seam inside this event handler would otherwise
+          // be an uncaught exception (crashing the process) AND leak the fixed
+          // port — route it through `fail` so signIn() rejects cleanly instead.
+          try {
+            const redirectUri = `http://127.0.0.1:${LOOPBACK_PORT}/callback`;
+            const authUrl = opts.buildAuthUrl(
+              encodeURIComponent(redirectUri),
+              state,
+              codeChallenge,
+            );
+            // Fire-and-await the browser; surface a launch failure as a rejection.
+            opts.openBrowser(authUrl).catch(fail);
+          } catch (err) {
+            fail(err instanceof Error ? err : new Error(String(err)));
+          }
         };
 
         // The redirect URI is a single fixed port, so two overlapping sign-ins

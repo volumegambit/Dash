@@ -271,6 +271,42 @@ describe('createControlPlaneSession', () => {
     await expect(session.signIn()).rejects.toThrow(/timed out/i);
   });
 
+  it('signIn rejects (and releases the loopback port) when buildAuthUrl throws', async () => {
+    // buildAuthUrl runs inside the server's `listening` event handler; a throw
+    // there must become a rejection of signIn(), not an uncaught exception
+    // that takes down the Electron main process — and the fixed port must be
+    // released so a corrected retry can bind it.
+    const store = memoryTokenStore();
+    const make = (
+      buildAuthUrl: (redirectUri: string, state: string, challenge: string) => string,
+    ) =>
+      createControlPlaneSession({
+        tokenStore: store,
+        buildAuthUrl,
+        openBrowser: async (url) => {
+          const u = new URL(url);
+          const redirectUri = decodeURIComponent(u.searchParams.get('redirect_uri') ?? '');
+          const state = u.searchParams.get('state') ?? '';
+          await hitCallback(`${redirectUri}?code=code-ok&state=${state}`);
+        },
+        exchangeCode: async () => ({ accessToken: 'tok', expiresAt: now() + 1000 }),
+        now,
+      });
+
+    const broken = make(() => {
+      throw new Error('sign-in is not configured');
+    });
+    await expect(broken.signIn()).rejects.toThrow(/not configured/);
+
+    // The port must be free again: a working session can complete a sign-in.
+    const working = make(
+      (redirectUri, state) =>
+        `https://auth.example/authorize?redirect_uri=${redirectUri}&state=${state}`,
+    );
+    await working.signIn();
+    expect(store.raw()).toBe('tok');
+  });
+
   it('refreshes the token when the in-memory cache is near expiry', async () => {
     const store = memoryTokenStore();
     let clock = now();

@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
-import { makeClerkSeams, readControlPlaneConfig } from './control-plane.js';
+import {
+  createControlPlaneRuntime,
+  makeClerkSeams,
+  readControlPlaneConfig,
+} from './control-plane.js';
 
 const config = {
   baseUrl: 'https://cp.test',
@@ -100,6 +104,25 @@ describe('makeClerkSeams', () => {
     const seams = makeClerkSeams(config, fetchImpl);
 
     await expect(seams.exchangeCode('bad-code', 'v')).rejects.toThrow(/token exchange/i);
+  });
+
+  it('signIn fails fast with an actionable error when the Clerk config is missing, without opening the browser', async () => {
+    // Regression: with DASH_CLERK_FRONTEND_API unset the authorize URL became
+    // `https:///oauth/authorize?…`, which browsers normalize to hostname
+    // "oauth" — the user's browser opened a garbage host while MC hung on
+    // "Opening browser…" until the 5-minute redirect timeout.
+    const openBrowser = vi.fn().mockResolvedValue(undefined);
+    const store = { get: async () => null, set: async () => {}, clear: async () => {} };
+    const { session } = createControlPlaneRuntime({
+      config: readControlPlaneConfig({}),
+      tokenStore: store,
+      openBrowser,
+    });
+
+    await expect(session.signIn()).rejects.toThrow(
+      /DASH_CLERK_FRONTEND_API and DASH_CLERK_CLIENT_ID/,
+    );
+    expect(openBrowser).not.toHaveBeenCalled();
   });
 
   it('throws when the token response carries no id_token', async () => {

@@ -157,12 +157,28 @@ export function createControlPlaneRuntime(opts: {
   openBrowser?: (url: string) => Promise<void>;
 }): { session: ControlPlaneSession; client: ControlPlaneClient } {
   const seams = makeClerkSeams(opts.config);
-  const session = createControlPlaneSession({
+  const inner = createControlPlaneSession({
     tokenStore: opts.tokenStore,
     buildAuthUrl: seams.buildAuthUrl,
     openBrowser: opts.openBrowser ?? ((url) => shell.openExternal(url)),
     exchangeCode: seams.exchangeCode,
   });
+  const session: ControlPlaneSession = {
+    ...inner,
+    // Fail fast when the Clerk env config is absent. Without this guard the
+    // authorize URL is built from an empty host (`https:///oauth/authorize`),
+    // which browsers normalize to the bogus hostname "oauth" — the user's
+    // browser opens a dead page while MC waits out the redirect timeout.
+    async signIn(): Promise<void> {
+      if (!opts.config.clerkFrontendApi || !opts.config.clerkClientId) {
+        throw new Error(
+          'Remote access sign-in is not configured: set DASH_CLERK_FRONTEND_API and ' +
+            'DASH_CLERK_CLIENT_ID, then restart Mission Control.',
+        );
+      }
+      return inner.signIn();
+    },
+  };
   const client = createControlPlaneClient(opts.config.baseUrl, () => session.getToken());
   return { session, client };
 }
