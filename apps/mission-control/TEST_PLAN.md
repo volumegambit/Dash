@@ -235,7 +235,7 @@ under a Node version missing a required symbol, or otherwise force the gateway s
 
 ### 5.3 Configuration Tab
 1. Click the "Configuration" tab
-2. **Verify:** Collapsible cards: Models, System Prompt, Tools, Connectors
+2. **Verify:** Collapsible cards: Models, System Prompt, Tools, Connectors, Plugins, Providers
 3. Click the Models card to expand it
 4. **Verify:** Primary model dropdown and fallback chain editor visible
 5. **Verify:** Save and Cancel buttons appear
@@ -247,6 +247,27 @@ under a Node version missing a required symbol, or otherwise force the gateway s
 ### 5.4 Chat Button
 1. Click the "Chat" button in the agent header
 2. **Verify:** Navigates to `/chat` with this agent pre-selected
+
+### 5.5 Providers Card (per-agent provider allow-list)
+
+**Precondition:** At least two providers are connected (e.g. Anthropic AND OpenAI, so the model dropdown has more than one provider's models). This agent's model belongs to one of them (say Anthropic).
+
+> Note: The Providers card mirrors the Plugins card. It scopes which providers this agent may use — the choices come from the gateway's runtime provider list (same catalog labels and `ui.sortOrder` as the AI Providers page). Leaving it empty means **all** providers (the default for every existing agent — no change in behavior). Selecting a subset filters the agent's model dropdown to those providers.
+
+1. On the agent detail page, click the "Configuration" tab and expand the **Providers** card
+2. **Verify:** The collapsed summary and expanded copy read **"All providers (default)"** — the expanded card explains the agent can use every provider and that selecting a subset filters the model dropdown to match
+3. **Verify:** An "Add provider..." dropdown lists the connected providers with their catalog labels, in catalog `ui.sortOrder` (e.g. Anthropic before OpenAI)
+4. Expand the **Models** card and note the primary model dropdown groups models by provider (optgroups for Anthropic, OpenAI, etc.)
+5. Back in the Providers card, select **only Anthropic** from the "Add provider..." dropdown
+6. **Verify:** An **Anthropic** chip (catalog label) appears and the summary now reads **"1 selected"**
+7. Re-open the **Models** card. **Verify:** The primary model dropdown now shows **only the Anthropic optgroup(s)** — OpenAI (and any other now-disallowed provider) optgroups are gone
+8. **Verify (disallowed-but-selected primary):** If the agent's primary model was an OpenAI model before you scoped it to Anthropic, that model stays visible in the dropdown with a **" (not allowed)"** suffix on its label (the value is kept, not silently dropped, so the conflict is obvious). If the agent started on an Anthropic model, set its primary to an OpenAI model first (before step 5), then re-check after scoping.
+9. Add a fallback model row, then scope providers so the fallback's provider is disallowed (or start from an agent that already has an OpenAI fallback). **Verify:** the previously-selected **fallback** row also keeps that model visible with the **" (not allowed)"** suffix (the marking applies to fallback rows, not just the primary)
+10. Navigate to **Chat**, select this Anthropic-scoped agent, and send a message on the disallowed (OpenAI) model. **Verify:** The message surfaces the policy error inline in the conversation — text of the form **`Provider "openai" is not allowed for this agent (allowed: anthropic)`** (red error text), rather than a normal model reply
+11. Return to Configuration → Providers, remove the **Anthropic** chip (click its ✕)
+12. **Verify:** The card returns to **"All providers (default)"** and the summary no longer shows a count
+13. Re-open the **Models** card. **Verify:** The model dropdown again lists **all** providers' optgroups (OpenAI restored), and any previously " (not allowed)"-marked model no longer carries the suffix
+14. **Verify (existing-agent default):** For an agent that has never had providers scoped, the Providers card shows "All providers (default)" and its model dropdown is unfiltered — confirming the allow-list is opt-in and does not change behavior for existing agents
 
 ---
 
