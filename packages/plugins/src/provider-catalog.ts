@@ -1,8 +1,27 @@
-import type { CatalogModel, ProviderCatalog } from '@dash/plugin-sdk';
+import type {
+  CatalogAuthRule,
+  CatalogModel,
+  CatalogUiHints,
+  ModelsFetchSpec,
+  ProviderCatalog,
+  SupportedPattern,
+} from '@dash/plugin-sdk';
 
 const KEBAB_CASE = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 
-const VALID_APIS = new Set(['openai-completions', 'anthropic-messages']);
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+
+const VALID_APIS = new Set([
+  'openai-completions',
+  'openai-responses',
+  'azure-openai-responses',
+  'openai-codex-responses',
+  'anthropic-messages',
+  'mistral-conversations',
+  'bedrock-converse-stream',
+  'google-generative-ai',
+  'google-vertex',
+]);
 
 /** Keep a recognized string field, or `undefined`. */
 function optString(v: unknown): string | undefined {
@@ -127,6 +146,94 @@ function validateModel(v: unknown, where: string): CatalogModel {
   };
 }
 
+function validateAuthRule(v: unknown, where: string): CatalogAuthRule {
+  if (typeof v !== 'object' || v === null || Array.isArray(v)) {
+    throw new Error(`${where}: auth rule must be an object`);
+  }
+  const r = v as Record<string, unknown>;
+  const whenKeyPrefix = optString(r.whenKeyPrefix);
+  const header = optString(r.header);
+  const valuePrefix = optString(r.valuePrefix);
+  const queryParam = optString(r.queryParam);
+  const extraHeaders = optStringRecord(r.extraHeaders);
+  if (header !== undefined && queryParam !== undefined) {
+    throw new Error(`${where}: auth rule must use header or queryParam, not both`);
+  }
+  if (header === undefined && queryParam === undefined) {
+    throw new Error(`${where}: auth rule needs a header or a queryParam`);
+  }
+  return {
+    ...(whenKeyPrefix !== undefined ? { whenKeyPrefix } : {}),
+    ...(header !== undefined ? { header } : {}),
+    ...(valuePrefix !== undefined ? { valuePrefix } : {}),
+    ...(queryParam !== undefined ? { queryParam } : {}),
+    ...(extraHeaders !== undefined ? { extraHeaders } : {}),
+  };
+}
+
+function validateModelsFetch(v: unknown, where: string): ModelsFetchSpec {
+  if (typeof v !== 'object' || v === null || Array.isArray(v)) {
+    throw new Error(`${where}: modelsFetch must be an object`);
+  }
+  const f = v as Record<string, unknown>;
+  if (typeof f.url !== 'string' || f.url.length === 0) {
+    throw new Error(`${where}: modelsFetch 'url' must be a non-empty string`);
+  }
+  if (!Array.isArray(f.auth)) {
+    throw new Error(`${where}: modelsFetch 'auth' must be an array of auth rules`);
+  }
+  const auth = f.auth.map((r, i) => validateAuthRule(r, `${where}.auth[${i}]`));
+  if (typeof f.listPath !== 'string' || f.listPath.length === 0) {
+    throw new Error(`${where}: modelsFetch 'listPath' must be a non-empty string`);
+  }
+  if (typeof f.idPath !== 'string' || f.idPath.length === 0) {
+    throw new Error(`${where}: modelsFetch 'idPath' must be a non-empty string`);
+  }
+  const namePath = optString(f.namePath);
+  const stripIdPrefix = optString(f.stripIdPrefix);
+  return {
+    url: f.url,
+    auth,
+    listPath: f.listPath,
+    idPath: f.idPath,
+    ...(namePath !== undefined ? { namePath } : {}),
+    ...(stripIdPrefix !== undefined ? { stripIdPrefix } : {}),
+  };
+}
+
+function validateSupportedPatterns(v: unknown, where: string): SupportedPattern[] {
+  if (!Array.isArray(v)) throw new Error(`${where}: supportedPatterns must be an array`);
+  return v.map((p, i) => {
+    if (typeof p !== 'object' || p === null || Array.isArray(p)) {
+      throw new Error(`${where}[${i}]: pattern entry must be an object`);
+    }
+    const e = p as Record<string, unknown>;
+    if (typeof e.pattern !== 'string' || e.pattern.length === 0) {
+      throw new Error(`${where}[${i}]: 'pattern' must be a non-empty string`);
+    }
+    if (typeof e.tier !== 'number') {
+      throw new Error(`${where}[${i}]: 'tier' must be a number`);
+    }
+    return { pattern: e.pattern, tier: e.tier };
+  });
+}
+
+function optUiHints(v: unknown): CatalogUiHints | undefined {
+  if (typeof v !== 'object' || v === null || Array.isArray(v)) return undefined;
+  const u = v as Record<string, unknown>;
+  const keyConsoleUrl = optString(u.keyConsoleUrl);
+  const keyPlaceholder = optString(u.keyPlaceholder);
+  const docsUrl = optString(u.docsUrl);
+  if (keyConsoleUrl === undefined && keyPlaceholder === undefined && docsUrl === undefined) {
+    return undefined;
+  }
+  return {
+    ...(keyConsoleUrl !== undefined ? { keyConsoleUrl } : {}),
+    ...(keyPlaceholder !== undefined ? { keyPlaceholder } : {}),
+    ...(docsUrl !== undefined ? { docsUrl } : {}),
+  };
+}
+
 /**
  * Validates a parsed provider-catalog JSON object against Dash semantics:
  * kebab-case `id`, string `label`/`credentialPrefix`/`baseUrl`, `api` ∈
@@ -167,7 +274,7 @@ export function validateProviderCatalog(raw: unknown): ProviderCatalog {
     throw new Error("provider catalog 'baseUrl' must be a non-empty string");
   }
   if (typeof c.api !== 'string' || !VALID_APIS.has(c.api)) {
-    throw new Error("provider catalog 'api' must be 'openai-completions' or 'anthropic-messages'");
+    throw new Error("provider catalog 'api' must be one of pi-ai's known API shapes");
   }
   if (!Array.isArray(c.models)) {
     throw new Error("provider catalog 'models' must be an array");
@@ -181,6 +288,23 @@ export function validateProviderCatalog(raw: unknown): ProviderCatalog {
   const dynamicModelDefaults = optModelDefaults(c.dynamicModelDefaults);
   const placeholderKey = optString(c.placeholderKey);
 
+  const modelsFetch =
+    c.modelsFetch !== undefined
+      ? validateModelsFetch(c.modelsFetch, `catalog "${c.id}"`)
+      : undefined;
+  const supportedPatterns =
+    c.supportedPatterns !== undefined
+      ? validateSupportedPatterns(c.supportedPatterns, `catalog "${c.id}" supportedPatterns`)
+      : undefined;
+  let reviewedAt: string | undefined;
+  if (c.reviewedAt !== undefined) {
+    if (typeof c.reviewedAt !== 'string' || !ISO_DATE.test(c.reviewedAt)) {
+      throw new Error(`catalog "${c.id}": reviewedAt must be an ISO date (YYYY-MM-DD)`);
+    }
+    reviewedAt = c.reviewedAt;
+  }
+  const ui = optUiHints(c.ui);
+
   return {
     id: c.id,
     label: c.label,
@@ -191,5 +315,9 @@ export function validateProviderCatalog(raw: unknown): ProviderCatalog {
     ...(dynamicModels !== undefined ? { dynamicModels } : {}),
     ...(dynamicModelDefaults !== undefined ? { dynamicModelDefaults } : {}),
     ...(placeholderKey !== undefined ? { placeholderKey } : {}),
+    ...(modelsFetch !== undefined ? { modelsFetch } : {}),
+    ...(supportedPatterns !== undefined ? { supportedPatterns } : {}),
+    ...(reviewedAt !== undefined ? { reviewedAt } : {}),
+    ...(ui !== undefined ? { ui } : {}),
   };
 }

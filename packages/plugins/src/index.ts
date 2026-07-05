@@ -23,6 +23,7 @@ export {
   validateManifest,
 } from './manifest.js';
 export { validateProviderCatalog } from './provider-catalog.js';
+export * from './catalog-fetch.js';
 export { HOOKS_FILE, readHooksJson, validateHooksJson } from './hooks-manifest.js';
 export { PluginConfigStore } from './config-store.js';
 export { heuristicPluginScan, scanText } from './scanner.js';
