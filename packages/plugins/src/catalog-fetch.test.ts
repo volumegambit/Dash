@@ -3,7 +3,7 @@ import { CatalogFetchError, fetchCatalogModels } from './catalog-fetch.js';
 /** Stub fetch returning a canned JSON body and capturing the request. */
 function stubFetch(body: unknown, status = 200) {
   const calls: { url: string; headers: Record<string, string> }[] = [];
-  const impl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+  const impl = (async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
     calls.push({
       url: String(input),
       headers: Object.fromEntries(Object.entries((init?.headers as Record<string, string>) ?? {})),
