@@ -79,6 +79,8 @@ export type GatewayStatus = 'starting' | 'healthy' | 'unhealthy';
 // truth: the renderer's companion/types.ts re-exports this.
 export type CompanionStatus = 'working' | 'needs' | 'done' | 'error';
 
+export type PetKind = 'cat' | 'red-panda';
+
 // --- MCP Connectors ---
 
 export interface McpConnectorInfo {
