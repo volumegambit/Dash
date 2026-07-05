@@ -199,7 +199,7 @@ type RemoveSkillInput = Static<typeof removeSkillSchema>;
 
 /**
  * Create the remove_skill tool. Deletes a managed/installed/created skill.
- * Bundled skills are read-only and cannot be removed.
+ * Plugin-provided skills are read-only and cannot be removed.
  */
 export function createRemoveSkillTool(
   managedSkillsDir: string,
@@ -210,7 +210,7 @@ export function createRemoveSkillTool(
     name: 'remove_skill',
     label: 'Remove Skill',
     description:
-      'Uninstall a previously installed or created skill by name. Bundled skills cannot be removed.',
+      'Uninstall a previously installed or created skill by name. Plugin-provided skills cannot be removed.',
     parameters: removeSkillSchema,
     execute: async (
       _toolCallId: string,

@@ -480,7 +480,7 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
         ? 404
         : code === 'duplicate'
           ? 409
-          : code === 'bundled' ||
+          : code === 'plugin' ||
               code === 'dangerous' ||
               code === 'invalid' ||
               code === 'scan_failed'
@@ -508,7 +508,6 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
     const parsed = await parseJsonBody<{
       paths?: string[];
       urls?: string[];
-      includeBundled?: boolean;
     }>(c);
     if (!parsed.ok) return parsed.response;
     const skills = { ...entry.config.skills, ...parsed.body };

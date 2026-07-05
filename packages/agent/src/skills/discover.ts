@@ -7,8 +7,6 @@ export interface DiscoverSkillsOptions {
   managedSkillsDir?: string;
   /** Additional skill directories from agent config. */
   paths?: string[];
-  /** @deprecated No-op since built-in plugins replaced the bundled library. Removed in a later task. */
-  includeBundled?: boolean;
 }
 
 /**

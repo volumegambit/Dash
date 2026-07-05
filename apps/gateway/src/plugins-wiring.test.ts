@@ -33,7 +33,7 @@ describe('gateway plugin → skill wiring', () => {
     const loaded = await loadPlugins({ pluginsDir, entries: { disco: { enabled: true } } });
 
     // Mirror the gateway merge: plugin skill dirs appended to agent skills.paths.
-    const skills = await discoverSkills({ paths: loaded.skillDirs, includeBundled: false });
+    const skills = await discoverSkills({ paths: loaded.skillDirs });
     expect(skills.map((s) => s.name)).toContain('greeter');
   });
 

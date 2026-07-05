@@ -1157,11 +1157,11 @@ describe('skill routes', () => {
     });
   });
 
-  it('PUT /agents/:id/skills/:name → 422 on a bundled refusal', async () => {
+  it('PUT /agents/:id/skills/:name → 422 on a plugin refusal', async () => {
     const { app, agentRegistry, agents } = createApp();
     const { id } = registerAgent(agentRegistry);
     (agents.updateSkillContent as ReturnType<typeof vi.fn>).mockRejectedValue(
-      Object.assign(new Error('bundled read-only'), { code: 'bundled' }),
+      Object.assign(new Error('plugin read-only'), { code: 'plugin' }),
     );
     const res = await app.request(`/agents/${id}/skills/foo`, {
       method: 'PUT',
@@ -1171,14 +1171,14 @@ describe('skill routes', () => {
     expect(res.status).toBe(422);
   });
 
-  it('DELETE /agents/:id/skills/:name → 200, and 422 when bundled', async () => {
+  it('DELETE /agents/:id/skills/:name → 200, and 422 when plugin', async () => {
     const { app, agentRegistry, agents } = createApp();
     const { id } = registerAgent(agentRegistry);
     expect(
       (await app.request(`/agents/${id}/skills/foo`, { method: 'DELETE', headers: AUTH })).status,
     ).toBe(200);
     (agents.removeSkill as ReturnType<typeof vi.fn>).mockRejectedValue(
-      Object.assign(new Error('bundled'), { code: 'bundled' }),
+      Object.assign(new Error('plugin'), { code: 'plugin' }),
     );
     expect(
       (await app.request(`/agents/${id}/skills/deep-research`, { method: 'DELETE', headers: AUTH }))
@@ -1215,9 +1215,9 @@ describe('skill routes', () => {
     const patched = await app.request(`/agents/${id}/skills/config`, {
       method: 'PATCH',
       headers: JSON_AUTH,
-      body: JSON.stringify({ includeBundled: false }),
+      body: JSON.stringify({ paths: ['/extra/skills'] }),
     });
     expect(patched.status).toBe(200);
-    expect(await patched.json()).toEqual({ includeBundled: false });
+    expect(await patched.json()).toEqual({ paths: ['/extra/skills'] });
   });
 });

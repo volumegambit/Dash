@@ -293,7 +293,7 @@ describe('AgentChatCoordinator skill mutations', () => {
     // The old bundled tier is gone; the read-only tier a user must not be able
     // to delete is now plugin-contributed skills (source: 'plugin'). They live
     // under the plugin skill dir, never the agent's managed dir, so a remove
-    // request cannot delete them — it rejects with 'not_found'.
+    // request cannot delete them — it rejects with 'plugin'.
     const root = await mkdtemp(join(tmpdir(), 'dash-coord-skills-'));
     try {
       const managed = join(root, 'managed');
@@ -325,7 +325,7 @@ describe('AgentChatCoordinator skill mutations', () => {
       if (!plugin) throw new Error('expected a plugin skill');
       expect(plugin.editable).toBe(false);
       await expect(agents.removeSkill(id, plugin.name)).rejects.toMatchObject({
-        code: 'not_found',
+        code: 'plugin',
       });
       await agents.stop();
     } finally {

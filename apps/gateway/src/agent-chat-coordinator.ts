@@ -111,7 +111,7 @@ export interface AgentChatCoordinator {
    * while mid-stream conversations finish on their old wiring undisturbed.
    */
   evictAll(): Promise<void>;
-  /** List the skills available to an agent (bundled + per-agent). */
+  /** List the skills available to an agent (plugin + per-agent). */
   listSkills(agentId: string): Promise<SkillDiscoveryResult[]>;
   /** Get one skill (with content) by name, or null. */
   getSkill(agentId: string, name: string): Promise<SkillDiscoveryResult | null>;
@@ -124,7 +124,7 @@ export interface AgentChatCoordinator {
   updateSkillContent(agentId: string, name: string, body: string): Promise<WrittenSkill>;
   /** Install a skill from a git/URL/local source (security-scanned, fail-closed). */
   installSkill(agentId: string, source: string, name?: string): Promise<InstalledSkill>;
-  /** Remove a managed/agent/remote skill (bundled refused). */
+  /** Remove a managed/agent/remote skill (plugin refused). */
   removeSkill(agentId: string, name: string): Promise<{ name: string }>;
   stats(): AgentChatCoordinatorStats;
   stop(): Promise<void>;
@@ -213,12 +213,11 @@ export function createAgentChatCoordinator(
       pluginSkillDirs.some((dir) => location.startsWith(dir.endsWith(sep) ? dir : dir + sep));
     // Mirror PiAgentBackend.listSkills so the HTTP skills API returns exactly
     // what chat can load. Discovery precedence (first wins by name): managed >
-    // config paths > plugin skill dirs > bundled. Plugin command/agent files
-    // are appended flat and lose name collisions to discovered skills.
+    // config paths > plugin skill dirs. Plugin command/agent files are appended
+    // flat and lose name collisions to discovered skills.
     const discovered = await discoverSkills({
       managedSkillsDir: options.managedSkillsDir?.(entry.config),
       paths: [...(entry.config.skills?.paths ?? []), ...pluginSkillDirs],
-      includeBundled: entry.config.skills?.includeBundled,
     });
     const flat = await loadFlatSkills(pluginCommandFiles);
     const seen = new Set(discovered.map((s) => s.name));
