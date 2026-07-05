@@ -3,7 +3,13 @@ import type { PetKind } from '../../../../shared/ipc.js';
 import { PetThumbnail } from './index.js';
 import { PET_KINDS } from './kinds.js';
 
-const LABEL: Record<PetKind, string> = { cat: 'Cat', 'red-panda': 'Red panda' };
+const LABEL: Record<PetKind, string> = {
+  cat: 'Cat',
+  dog: 'Dog',
+  pig: 'Pig',
+  rabbit: 'Rabbit',
+  'red-panda': 'Red panda',
+};
 
 export function PetPicker({
   value,
