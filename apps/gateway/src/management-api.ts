@@ -903,7 +903,11 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
   // replace its truncated-first-message placeholder with a short
   // LLM-generated title. One cheap completion on the agent's own model
   // (its provider credentials are guaranteed — the agent couldn't chat
-  // otherwise). Failures return 502 and MC keeps the placeholder.
+  // otherwise). When the projects DB is wired, the same completion also
+  // classifies the conversation into one of the active projects; the
+  // response then carries `project: { id, key } | null` so MC can file the
+  // conversation's auto-created task. Failures return 502 and MC keeps the
+  // placeholder.
   app.post('/agents/:agentId/conversation-title', async (c) => {
     const agentId = c.req.param('agentId');
     const entry = agentRegistry.get(agentId);
@@ -912,17 +916,26 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
     if (!parsed.ok) return parsed.response;
     const text = typeof parsed.body.text === 'string' ? parsed.body.text.trim() : '';
     if (!text) return c.json({ error: 'text is required' }, 400);
+    const activeProjects = options.projectsDb?.projects.list({ status: 'active' }) ?? [];
     try {
       const storeKeys = await credentialStore.readProviderApiKeys();
-      const title = await generateConversationTitle({
+      const { title, projectKey } = await generateConversationTitle({
         modelStr: entry.config.model,
         allowedProviders: entry.config.providers,
         pluginModelCatalog: options.getPluginWiringState?.().pluginModelCatalog,
         providerApiKeys: { ...storeKeys, ...(entry.config.providerApiKeys ?? {}) },
         text,
+        projects: activeProjects.map((p) => ({
+          key: p.key,
+          name: p.name,
+          description: p.description?.slice(0, 200) || undefined,
+        })),
         completeFn: options.titleCompleteFn,
       });
-      return c.json({ title });
+      const project = projectKey
+        ? (activeProjects.find((p) => p.key === projectKey) ?? null)
+        : null;
+      return c.json({ title, project: project ? { id: project.id, key: project.key } : null });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       logger.warn(`conversation title generation failed for agent "${agentId}": ${message}`);

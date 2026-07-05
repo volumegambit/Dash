@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { CompleteFn } from './conversation-title.js';
-import { generateConversationTitle, sanitizeTitle } from './conversation-title.js';
+import { generateConversationTitle, parseTitleReply, sanitizeTitle } from './conversation-title.js';
 
 function makeCompleteFn(reply: string): CompleteFn {
   return vi.fn().mockResolvedValue({
@@ -44,12 +44,40 @@ describe('generateConversationTitle', () => {
 
   it('returns the sanitized model reply', async () => {
     const completeFn = makeCompleteFn('"Login bug investigation."');
-    const title = await generateConversationTitle({
+    const result = await generateConversationTitle({
       ...base,
       text: 'my login form crashes when I submit',
       completeFn,
     });
-    expect(title).toBe('Login bug investigation');
+    expect(result).toEqual({ title: 'Login bug investigation', projectKey: null });
+  });
+
+  it('classifies into a project when candidates are provided', async () => {
+    const completeFn = makeCompleteFn('{"title":"Fix login crash","project":"AUTH"}');
+    const result = await generateConversationTitle({
+      ...base,
+      text: 'my login form crashes when I submit',
+      projects: [
+        { key: 'AUTH', name: 'Auth revamp' },
+        { key: 'PETS', name: 'Companion pets' },
+      ],
+      completeFn,
+    });
+    expect(result).toEqual({ title: 'Fix login crash', projectKey: 'AUTH' });
+    const [, context] = (completeFn as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(context.systemPrompt).toContain('AUTH: Auth revamp');
+    expect(context.systemPrompt).toContain('PETS: Companion pets');
+  });
+
+  it('drops an inferred project the candidate list does not contain', async () => {
+    const completeFn = makeCompleteFn('{"title":"Fix login crash","project":"NOPE"}');
+    const result = await generateConversationTitle({
+      ...base,
+      text: 'my login form crashes',
+      projects: [{ key: 'AUTH', name: 'Auth revamp' }],
+      completeFn,
+    });
+    expect(result).toEqual({ title: 'Fix login crash', projectKey: null });
   });
 
   it('passes the user text and the provider api key to the completion', async () => {
@@ -95,5 +123,29 @@ describe('generateConversationTitle', () => {
         completeFn: makeCompleteFn('A title'),
       }),
     ).rejects.toThrow(/not allowed/);
+  });
+});
+
+describe('parseTitleReply', () => {
+  const projects = [{ key: 'AUTH', name: 'Auth revamp' }];
+
+  it('parses JSON with a matching project key case-insensitively', () => {
+    expect(parseTitleReply('{"title":"Fix login","project":"auth"}', projects)).toEqual({
+      title: 'Fix login',
+      projectKey: 'AUTH',
+    });
+  });
+
+  it('tolerates code fences and surrounding prose', () => {
+    expect(
+      parseTitleReply('Sure! ```json\n{"title":"Fix login","project":null}\n```', projects),
+    ).toEqual({ title: 'Fix login', projectKey: null });
+  });
+
+  it('falls back to plain-title parsing for non-JSON replies', () => {
+    expect(parseTitleReply('"Fix login."', projects)).toEqual({
+      title: 'Fix login',
+      projectKey: null,
+    });
   });
 });
