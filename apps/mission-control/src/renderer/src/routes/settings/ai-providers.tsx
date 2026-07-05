@@ -1,10 +1,13 @@
 import { providerSecretKey } from '@dash/mc/provider-keys';
 import { createFileRoute } from '@tanstack/react-router';
-import { KeyRound, Loader, LogIn, Plus, Trash2, X } from 'lucide-react';
+import { KeyRound, Loader, LogIn, Plus, RefreshCw, Trash2, X } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ProviderConnectModal } from '../../components/ProviderConnectModal.js';
-import { type PluginProviderOption, separateProviders } from '../../components/providers-index.js';
-import { PROVIDERS, type Provider, type ProviderConfig } from '../../components/providers.js';
+import {
+  BUNDLED_PROVIDERS_PLUGIN,
+  providerConnectConfig,
+  sortProviders,
+} from '../../components/providers.js';
 import { useRuntimeProviders } from '../../hooks/useRuntimeProviders.js';
 
 const KEY_NAME_PATTERN = /^[a-zA-Z0-9-]+$/;
@@ -25,47 +28,20 @@ interface ProviderKeyEntry {
   isOAuth?: boolean;
 }
 
-/**
- * Build a {@link ProviderConfig} for a plugin-contributed provider. Plugin
- * providers aren't in PROVIDER_CONFIG, so the modal needs a synthesized config:
- * a generic explanation, a single paste step, and no console/help URLs (which
- * the modal renders conditionally). `secretKey` uses the standard
- * `{id}-api-key:default` slot.
- */
-function pluginProviderConfig(p: PluginProviderOption): ProviderConfig {
-  return {
-    title: `Connect to ${p.name}`,
-    secretKey: providerSecretKey(p.id, 'default'),
-    placeholder: 'API key',
-    consoleUrl: '',
-    apiKeysUrl: '',
-    helpUrl: '',
-    helpLabel: '',
-    explanation: `Paste your ${p.name} API key to connect it. This provider is contributed by a plugin.`,
-    steps: ['Paste your API key below.'],
-  };
-}
-
 export function AiProviders(): JSX.Element {
-  // Runtime plugin providers (from the gateway via T1 IPC). Degrades gracefully:
-  // on load/error, `plugin` is empty and the core providers still render.
-  const { providers: runtimeProviders } = useRuntimeProviders();
-  const { plugin: pluginProviders } = useMemo(
-    () => separateProviders(runtimeProviders),
-    [runtimeProviders],
-  );
+  // Every provider — bundled and plugin-contributed — comes from the gateway
+  // via the T1 IPC bridge. There is no hardcoded core list anymore.
+  const { providers: runtimeProviders, loading, error, refetch } = useRuntimeProviders();
+  const providers = useMemo(() => sortProviders(runtimeProviders), [runtimeProviders]);
 
   const [providerKeys, setProviderKeys] = useState<Record<string, ProviderKeyEntry[]>>({});
-  // `provider` is widened to string to also carry plugin provider ids. Plugin
-  // entries pass a synthesized `config`; core entries leave it undefined and the
-  // modal falls back to PROVIDER_CONFIG.
   const [modal, setModal] = useState<{
-    provider: Provider | string;
+    provider: string;
     keyName?: string;
-    config?: ProviderConfig;
+    config: ReturnType<typeof providerConnectConfig>;
   } | null>(null);
   const [disconnectConfirm, setDisconnectConfirm] = useState<{
-    provider: Provider | string;
+    provider: string;
     keyName: string;
   } | null>(null);
   const [oauthLoading, setOauthLoading] = useState<OAuthProvider | null>(null);
@@ -89,10 +65,10 @@ export function AiProviders(): JSX.Element {
     // slot. This is the standardized convention the gateway refreshes against.
     const oauthRefreshSlots = new Set(allKeys.filter((k: string) => k.includes('-oauth-refresh:')));
     const grouped: Record<string, ProviderKeyEntry[]> = {};
-    // Load keys for both core providers and plugin-contributed ones. Plugin keys
-    // use the same `{id}-api-key:{name}` convention via providerSecretKey, so the
-    // grouping logic is identical — only the id set differs.
-    const ids = [...PROVIDERS.map((p) => p.id), ...pluginProviders.map((p) => p.id)];
+    // Load keys for every gateway provider. All keys use the same
+    // `{id}-api-key:{name}` convention via providerSecretKey, so the grouping
+    // logic is uniform.
+    const ids = providers.map((p) => p.id);
     for (const id of ids) {
       const prefix = `${id}-api-key:`;
       const matching = allKeys.filter((k: string) => k.startsWith(prefix));
@@ -104,7 +80,7 @@ export function AiProviders(): JSX.Element {
       grouped[id] = entries;
     }
     setProviderKeys(grouped);
-  }, [pluginProviders]);
+  }, [providers]);
 
   useEffect(() => {
     loadKeys();
@@ -115,7 +91,7 @@ export function AiProviders(): JSX.Element {
     loadKeys();
   };
 
-  const handleDisconnect = async (provider: Provider | string, keyName: string): Promise<void> => {
+  const handleDisconnect = async (provider: string, keyName: string): Promise<void> => {
     await window.api.credentialsRemove(providerSecretKey(provider, keyName));
     // Clean up OAuth metadata (standardized {provider}-oauth-* slots)
     await window.api.credentialsRemove(`${provider}-oauth-refresh:${keyName}`).catch(() => {});
@@ -191,10 +167,7 @@ export function AiProviders(): JSX.Element {
     }
   };
 
-  const handleDisconnectRequest = async (
-    provider: Provider | string,
-    keyName: string,
-  ): Promise<void> => {
+  const handleDisconnectRequest = async (provider: string, keyName: string): Promise<void> => {
     await handleDisconnect(provider, keyName);
   };
 
@@ -253,346 +226,242 @@ export function AiProviders(): JSX.Element {
           Configured Providers
         </p>
 
-        <div className="flex flex-col gap-3 mt-4">
-          {PROVIDERS.map((p) => {
-            const keys = providerKeys[p.id] ?? [];
-            const hasKeys = keys.length > 0;
-            const oauthProviderId = hasOAuthSupport(p.id) ? p.id : null;
-            const oauthSupported = oauthProviderId !== null;
-            const oauthConfig = oauthProviderId ? OAUTH_CONFIG[oauthProviderId] : null;
-            const isThisOAuthLoading = oauthLoading === p.id;
-            const isAnyOAuthLoading = oauthLoading !== null;
+        {/* Loading: gateway fetch in flight. */}
+        {loading && providers.length === 0 && (
+          <div className="mt-6 flex items-center justify-center py-12">
+            <Loader size={24} className="animate-spin text-muted" />
+          </div>
+        )}
 
-            return (
-              <div key={p.id} className="bg-card-bg border border-border">
-                {/* Provider row */}
-                <div className="px-5 py-4 flex items-center gap-4 hover:bg-card-hover transition-colors">
-                  <div className="flex-1 min-w-0">
-                    <p className="font-semibold text-foreground">{p.name}</p>
-                    <p className="font-[family-name:var(--font-mono)] text-xs text-muted mt-0.5">
-                      {hasKeys ? keys.map((k) => k.name).join(', ') : 'No key configured'}
-                    </p>
-                  </div>
+        {/* Error or empty: nothing to configure. Both offer a Retry that
+            re-fetches the runtime providers from the gateway. */}
+        {!loading && providers.length === 0 && (
+          <div className="mt-6 rounded-lg border border-border bg-card-bg p-6 text-center">
+            <h2 className="text-base font-semibold text-foreground">No AI providers available</h2>
+            <p className="mx-auto mt-2 max-w-md text-sm text-muted">
+              {error
+                ? error.message
+                : 'The gateway reported no provider catalogs. The built-in dash-core-providers plugin may be disabled — re-enable it under Settings → Plugins, or install a provider plugin.'}
+            </p>
+            <button
+              type="button"
+              onClick={() => refetch()}
+              className="mt-4 inline-flex items-center gap-1.5 rounded-lg border border-border px-4 py-2 text-sm font-medium text-muted hover:text-foreground hover:bg-card-hover transition-colors"
+            >
+              <RefreshCw size={14} />
+              Retry
+            </button>
+          </div>
+        )}
 
-                  <div className="flex items-center gap-3">
-                    {/* Status badge */}
-                    {hasKeys ? (
-                      <span className="bg-green-tint text-green rounded px-2 py-0.5 text-[10px] font-[family-name:var(--font-mono)] font-semibold">
-                        Active
-                      </span>
-                    ) : (
-                      <span className="bg-red-tint text-red rounded px-2 py-0.5 text-[10px] font-[family-name:var(--font-mono)] font-semibold">
-                        Disabled
-                      </span>
-                    )}
+        {providers.length > 0 && (
+          <div className="flex flex-col gap-3 mt-4">
+            {providers.map((p) => {
+              const keys = providerKeys[p.id] ?? [];
+              const hasKeys = keys.length > 0;
+              const oauthProviderId = hasOAuthSupport(p.id) ? p.id : null;
+              const oauthSupported = oauthProviderId !== null;
+              const oauthConfig = oauthProviderId ? OAUTH_CONFIG[oauthProviderId] : null;
+              const isThisOAuthLoading = oauthLoading === p.id;
+              const isAnyOAuthLoading = oauthLoading !== null;
+              const showSourceBadge = p.pluginName !== BUNDLED_PROVIDERS_PLUGIN;
 
-                    {/* OAuth button */}
-                    {oauthSupported && oauthConfig && (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          if (p.id === 'anthropic') {
-                            handleClaudeOAuthStart();
-                          } else {
-                            setCodexOAuthName(suggestCodexLabel());
-                            setOauthError(null);
-                            setCodexOAuthModal(true);
-                          }
-                        }}
-                        disabled={isAnyOAuthLoading}
-                        className="inline-flex items-center gap-1 rounded-lg border border-green-700 bg-green-900/20 px-3 py-1.5 text-xs font-medium text-green hover:bg-green-900/40 disabled:opacity-50"
-                      >
-                        {isThisOAuthLoading ? (
-                          <Loader size={14} className="animate-spin" />
-                        ) : (
-                          <LogIn size={14} />
+              return (
+                <div key={p.id} className="bg-card-bg border border-border">
+                  {/* Provider row */}
+                  <div className="px-5 py-4 flex items-center gap-4 hover:bg-card-hover transition-colors">
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2">
+                        <p className="font-semibold text-foreground">{p.label}</p>
+                        {showSourceBadge && (
+                          <span className="rounded bg-accent/20 px-1.5 py-0.5 text-[10px] font-medium text-accent">
+                            {p.pluginName}
+                          </span>
                         )}
-                        {isThisOAuthLoading ? 'Logging in...' : oauthConfig.label}
-                      </button>
-                    )}
+                      </div>
+                      {p.ui?.description && (
+                        <p className="text-xs text-muted mt-0.5">{p.ui.description}</p>
+                      )}
+                      <p className="font-[family-name:var(--font-mono)] text-xs text-muted mt-0.5">
+                        {hasKeys ? keys.map((k) => k.name).join(', ') : 'No key configured'}
+                      </p>
+                    </div>
 
-                    {/* Add Key button */}
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setModal({
-                          provider: p.id,
-                          keyName: hasKeys ? undefined : 'default',
-                        })
-                      }
-                      className="inline-flex items-center gap-1 rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-muted hover:text-foreground hover:bg-card-hover transition-colors"
-                      aria-label={`Add key for ${p.name}`}
-                    >
-                      <Plus size={14} />
-                      Add Key
-                    </button>
+                    <div className="flex items-center gap-3">
+                      {/* Status badge */}
+                      {hasKeys ? (
+                        <span className="bg-green-tint text-green rounded px-2 py-0.5 text-[10px] font-[family-name:var(--font-mono)] font-semibold">
+                          Active
+                        </span>
+                      ) : (
+                        <span className="bg-red-tint text-red rounded px-2 py-0.5 text-[10px] font-[family-name:var(--font-mono)] font-semibold">
+                          Disabled
+                        </span>
+                      )}
 
-                    {/* Delete button */}
-                    {hasKeys && keys.length === 1 && (
+                      {/* OAuth button */}
+                      {oauthSupported && oauthConfig && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (p.id === 'anthropic') {
+                              handleClaudeOAuthStart();
+                            } else {
+                              setCodexOAuthName(suggestCodexLabel());
+                              setOauthError(null);
+                              setCodexOAuthModal(true);
+                            }
+                          }}
+                          disabled={isAnyOAuthLoading}
+                          className="inline-flex items-center gap-1 rounded-lg border border-green-700 bg-green-900/20 px-3 py-1.5 text-xs font-medium text-green hover:bg-green-900/40 disabled:opacity-50"
+                        >
+                          {isThisOAuthLoading ? (
+                            <Loader size={14} className="animate-spin" />
+                          ) : (
+                            <LogIn size={14} />
+                          )}
+                          {isThisOAuthLoading ? 'Logging in...' : oauthConfig.label}
+                        </button>
+                      )}
+
+                      {/* Add Key button */}
                       <button
                         type="button"
                         onClick={() =>
-                          setDisconnectConfirm({ provider: p.id, keyName: keys[0].name })
+                          setModal({
+                            provider: p.id,
+                            keyName: hasKeys ? undefined : 'default',
+                            config: providerConnectConfig(p),
+                          })
                         }
-                        className="text-muted hover:text-foreground transition-colors"
-                        aria-label={`Remove ${p.name}`}
+                        className="inline-flex items-center gap-1 rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-muted hover:text-foreground hover:bg-card-hover transition-colors"
+                        aria-label={`Add key for ${p.label}`}
                       >
-                        <Trash2 size={15} />
+                        <Plus size={14} />
+                        Add Key
                       </button>
-                    )}
-                  </div>
-                </div>
 
-                {/* OAuth error */}
-                {oauthError?.provider === p.id && (
-                  <div className="mx-5 mb-4 rounded border border-red-900/50 bg-red-900/20 px-3 py-2 text-xs text-red">
-                    {oauthError.message}
-                  </div>
-                )}
-
-                {/* Key entries */}
-                {keys.length > 0 && (
-                  <div className="px-5 pb-4 space-y-2">
-                    {keys.map((entry) => {
-                      const isConfirming =
-                        disconnectConfirm?.provider === p.id &&
-                        disconnectConfirm?.keyName === entry.name;
-                      const oauthConfigForEntry =
-                        oauthSupported && entry.isOAuth
-                          ? OAUTH_CONFIG[p.id as OAuthProvider]
-                          : null;
-
-                      return (
-                        <div
-                          key={entry.name}
-                          className="flex items-center justify-between rounded border border-border bg-background px-3 py-2"
-                        >
-                          <div className="flex items-center gap-2">
-                            <span className="text-xs font-medium text-foreground">
-                              {entry.name}
-                            </span>
-                            {entry.isOAuth && oauthConfigForEntry && (
-                              <span className="rounded bg-green-900/30 px-1.5 py-0.5 text-[10px] font-medium text-green">
-                                {oauthConfigForEntry.badgeLabel}
-                              </span>
-                            )}
-                            <span className="text-xs text-muted">••••••••</span>
-                          </div>
-                          <div className="flex items-center gap-2">
-                            {!isConfirming && (
-                              <>
-                                {entry.isOAuth && oauthProviderId ? (
-                                  <button
-                                    type="button"
-                                    onClick={() => handleOAuthLogin(oauthProviderId, entry.name)}
-                                    disabled={isAnyOAuthLoading}
-                                    className="text-xs text-accent hover:underline disabled:opacity-50"
-                                  >
-                                    Re-login
-                                  </button>
-                                ) : (
-                                  <button
-                                    type="button"
-                                    onClick={() =>
-                                      setModal({ provider: p.id, keyName: entry.name })
-                                    }
-                                    className="text-xs text-accent hover:underline"
-                                  >
-                                    Update
-                                  </button>
-                                )}
-                                <button
-                                  type="button"
-                                  onClick={() =>
-                                    setDisconnectConfirm({
-                                      provider: p.id,
-                                      keyName: entry.name,
-                                    })
-                                  }
-                                  className="text-xs text-muted hover:text-foreground"
-                                >
-                                  Remove
-                                </button>
-                              </>
-                            )}
-                            {isConfirming && (
-                              <div className="flex items-center gap-2">
-                                <span className="text-xs text-muted">Remove key?</span>
-                                <button
-                                  type="button"
-                                  onClick={() => handleDisconnectRequest(p.id, entry.name)}
-                                  className="text-xs text-red hover:underline"
-                                >
-                                  Yes, remove
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => setDisconnectConfirm(null)}
-                                  className="text-xs text-muted hover:text-foreground"
-                                >
-                                  Cancel
-                                </button>
-                              </div>
-                            )}
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
-
-        {/* Plugin-contributed providers. Rendered only when present; their
-            absence (loading or gateway error) leaves the core list above
-            untouched, so the page never blocks on the runtime fetch. */}
-        {pluginProviders.length > 0 && (
-          <>
-            <p className="mt-8 font-[family-name:var(--font-mono)] text-[11px] uppercase tracking-[2px] text-accent">
-              Plugin Providers
-            </p>
-            <div className="flex flex-col gap-3 mt-4">
-              {pluginProviders.map((p) => {
-                const keys = providerKeys[p.id] ?? [];
-                const hasKeys = keys.length > 0;
-
-                return (
-                  <div key={p.id} className="bg-card-bg border border-border">
-                    {/* Provider row */}
-                    <div className="px-5 py-4 flex items-center gap-4 hover:bg-card-hover transition-colors">
-                      <div className="flex-1 min-w-0">
-                        <p className="font-semibold text-foreground">{p.name}</p>
-                        <p className="font-[family-name:var(--font-mono)] text-xs text-muted mt-0.5">
-                          {hasKeys ? keys.map((k) => k.name).join(', ') : 'No key configured'}
-                        </p>
-                      </div>
-
-                      <div className="flex items-center gap-3">
-                        {/* Status badge */}
-                        {hasKeys ? (
-                          <span className="bg-green-tint text-green rounded px-2 py-0.5 text-[10px] font-[family-name:var(--font-mono)] font-semibold">
-                            Active
-                          </span>
-                        ) : (
-                          <span className="bg-red-tint text-red rounded px-2 py-0.5 text-[10px] font-[family-name:var(--font-mono)] font-semibold">
-                            Disabled
-                          </span>
-                        )}
-
-                        {/* Add Key button */}
+                      {/* Delete button */}
+                      {hasKeys && keys.length === 1 && (
                         <button
                           type="button"
                           onClick={() =>
-                            setModal({
-                              provider: p.id,
-                              keyName: hasKeys ? undefined : 'default',
-                              config: pluginProviderConfig(p),
-                            })
+                            setDisconnectConfirm({ provider: p.id, keyName: keys[0].name })
                           }
-                          className="inline-flex items-center gap-1 rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-muted hover:text-foreground hover:bg-card-hover transition-colors"
-                          aria-label={`Add key for ${p.name}`}
+                          className="text-muted hover:text-foreground transition-colors"
+                          aria-label={`Remove ${p.label}`}
                         >
-                          <Plus size={14} />
-                          Add Key
+                          <Trash2 size={15} />
                         </button>
-
-                        {/* Delete button */}
-                        {hasKeys && keys.length === 1 && (
-                          <button
-                            type="button"
-                            onClick={() =>
-                              setDisconnectConfirm({ provider: p.id, keyName: keys[0].name })
-                            }
-                            className="text-muted hover:text-foreground transition-colors"
-                            aria-label={`Remove ${p.name}`}
-                          >
-                            <Trash2 size={15} />
-                          </button>
-                        )}
-                      </div>
+                      )}
                     </div>
+                  </div>
 
-                    {/* Key entries */}
-                    {keys.length > 0 && (
-                      <div className="px-5 pb-4 space-y-2">
-                        {keys.map((entry) => {
-                          const isConfirming =
-                            disconnectConfirm?.provider === p.id &&
-                            disconnectConfirm?.keyName === entry.name;
+                  {/* OAuth error */}
+                  {oauthError?.provider === p.id && (
+                    <div className="mx-5 mb-4 rounded border border-red-900/50 bg-red-900/20 px-3 py-2 text-xs text-red">
+                      {oauthError.message}
+                    </div>
+                  )}
 
-                          return (
-                            <div
-                              key={entry.name}
-                              className="flex items-center justify-between rounded border border-border bg-background px-3 py-2"
-                            >
-                              <div className="flex items-center gap-2">
-                                <span className="text-xs font-medium text-foreground">
-                                  {entry.name}
+                  {/* Key entries */}
+                  {keys.length > 0 && (
+                    <div className="px-5 pb-4 space-y-2">
+                      {keys.map((entry) => {
+                        const isConfirming =
+                          disconnectConfirm?.provider === p.id &&
+                          disconnectConfirm?.keyName === entry.name;
+                        const oauthConfigForEntry =
+                          oauthSupported && entry.isOAuth
+                            ? OAUTH_CONFIG[p.id as OAuthProvider]
+                            : null;
+
+                        return (
+                          <div
+                            key={entry.name}
+                            className="flex items-center justify-between rounded border border-border bg-background px-3 py-2"
+                          >
+                            <div className="flex items-center gap-2">
+                              <span className="text-xs font-medium text-foreground">
+                                {entry.name}
+                              </span>
+                              {entry.isOAuth && oauthConfigForEntry && (
+                                <span className="rounded bg-green-900/30 px-1.5 py-0.5 text-[10px] font-medium text-green">
+                                  {oauthConfigForEntry.badgeLabel}
                                 </span>
-                                <span className="text-xs text-muted">••••••••</span>
-                              </div>
-                              <div className="flex items-center gap-2">
-                                {!isConfirming && (
-                                  <>
+                              )}
+                              <span className="text-xs text-muted">••••••••</span>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              {!isConfirming && (
+                                <>
+                                  {entry.isOAuth && oauthProviderId ? (
+                                    <button
+                                      type="button"
+                                      onClick={() => handleOAuthLogin(oauthProviderId, entry.name)}
+                                      disabled={isAnyOAuthLoading}
+                                      className="text-xs text-accent hover:underline disabled:opacity-50"
+                                    >
+                                      Re-login
+                                    </button>
+                                  ) : (
                                     <button
                                       type="button"
                                       onClick={() =>
                                         setModal({
                                           provider: p.id,
                                           keyName: entry.name,
-                                          config: pluginProviderConfig(p),
+                                          config: providerConnectConfig(p),
                                         })
                                       }
                                       className="text-xs text-accent hover:underline"
                                     >
                                       Update
                                     </button>
-                                    <button
-                                      type="button"
-                                      onClick={() =>
-                                        setDisconnectConfirm({
-                                          provider: p.id,
-                                          keyName: entry.name,
-                                        })
-                                      }
-                                      className="text-xs text-muted hover:text-foreground"
-                                    >
-                                      Remove
-                                    </button>
-                                  </>
-                                )}
-                                {isConfirming && (
-                                  <div className="flex items-center gap-2">
-                                    <span className="text-xs text-muted">Remove key?</span>
-                                    <button
-                                      type="button"
-                                      onClick={() => handleDisconnectRequest(p.id, entry.name)}
-                                      className="text-xs text-red hover:underline"
-                                    >
-                                      Yes, remove
-                                    </button>
-                                    <button
-                                      type="button"
-                                      onClick={() => setDisconnectConfirm(null)}
-                                      className="text-xs text-muted hover:text-foreground"
-                                    >
-                                      Cancel
-                                    </button>
-                                  </div>
-                                )}
-                              </div>
+                                  )}
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      setDisconnectConfirm({
+                                        provider: p.id,
+                                        keyName: entry.name,
+                                      })
+                                    }
+                                    className="text-xs text-muted hover:text-foreground"
+                                  >
+                                    Remove
+                                  </button>
+                                </>
+                              )}
+                              {isConfirming && (
+                                <div className="flex items-center gap-2">
+                                  <span className="text-xs text-muted">Remove key?</span>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleDisconnectRequest(p.id, entry.name)}
+                                    className="text-xs text-red hover:underline"
+                                  >
+                                    Yes, remove
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => setDisconnectConfirm(null)}
+                                    className="text-xs text-muted hover:text-foreground"
+                                  >
+                                    Cancel
+                                  </button>
+                                </div>
+                              )}
                             </div>
-                          );
-                        })}
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          </>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
         )}
       </div>
 

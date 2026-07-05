@@ -1,9 +1,67 @@
 import '@testing-library/jest-dom/vitest';
+import type { RuntimePluginProvider } from '@dash/management';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { UserEvent } from '@testing-library/user-event';
 import { mockApi } from '../../../../vitest.setup.js';
 import { SetupWizard } from './SetupWizard.js';
+
+// The five bundled providers as the gateway reports them. The wizard fetches
+// these once the gateway is up (post-consent). anthropic carries sortOrder 0,
+// so it is selected by default.
+const BUNDLED: RuntimePluginProvider[] = [
+  {
+    id: 'anthropic',
+    label: 'Anthropic',
+    credentialPrefix: 'anthropic-api-key',
+    pluginName: 'dash-core-providers',
+    ui: {
+      description: 'Claude models',
+      keyConsoleUrl: 'https://console.anthropic.com/settings/keys',
+      keyPlaceholder: 'sk-ant-...',
+      docsUrl: 'https://docs.anthropic.com/en/docs/initial-setup',
+      sortOrder: 0,
+    },
+  },
+  {
+    id: 'openai',
+    label: 'OpenAI',
+    credentialPrefix: 'openai-api-key',
+    pluginName: 'dash-core-providers',
+    ui: {
+      description: 'GPT models',
+      keyConsoleUrl: 'https://platform.openai.com/api-keys',
+      keyPlaceholder: 'sk-...',
+      sortOrder: 1,
+    },
+  },
+  {
+    id: 'google',
+    label: 'Google Gemini',
+    credentialPrefix: 'google-api-key',
+    pluginName: 'dash-core-providers',
+    ui: {
+      description: 'Gemini models',
+      keyConsoleUrl: 'https://aistudio.google.com/app/apikey',
+      keyPlaceholder: 'AIza...',
+      sortOrder: 2,
+    },
+  },
+  {
+    id: 'moonshotai',
+    label: 'Kimi (Moonshot)',
+    credentialPrefix: 'moonshotai-api-key',
+    pluginName: 'dash-core-providers',
+    ui: { description: 'Kimi K2 models', keyPlaceholder: 'sk-...', sortOrder: 3 },
+  },
+  {
+    id: 'openrouter',
+    label: 'OpenRouter',
+    credentialPrefix: 'openrouter-api-key',
+    pluginName: 'dash-core-providers',
+    ui: { description: 'Many models, one key', keyPlaceholder: 'sk-or-v1-...', sortOrder: 4 },
+  },
+];
 
 /**
  * Click through the keychain-consent step so the following assertions
@@ -19,6 +77,10 @@ async function clickThroughConsent(user: UserEvent): Promise<void> {
 
 describe('SetupWizard', () => {
   const noop = () => {};
+
+  beforeEach(() => {
+    mockApi.plugins.runtime.mockResolvedValue({ providers: BUNDLED, plugins: [] });
+  });
 
   describe('keychain-consent step (initial)', () => {
     it('is the initial step when needsSetup=true', () => {
@@ -104,13 +166,34 @@ describe('SetupWizard', () => {
   });
 
   describe('provider step', () => {
-    it('shows "Claude by Anthropic" and "Continue with Claude by Anthropic" by default', async () => {
+    it('shows the gateway providers with Anthropic selected by default', async () => {
       const user = userEvent.setup();
       render(<SetupWizard needsSetup={true} onComplete={noop} />);
       await clickThroughConsent(user);
       await screen.findByText('Choose Your AI Provider');
-      expect(screen.getByText('Claude by Anthropic')).toBeInTheDocument();
-      expect(screen.getByText(/Continue with Claude by Anthropic/)).toBeInTheDocument();
+      // All five labels render.
+      expect(await screen.findByText('Anthropic')).toBeInTheDocument();
+      expect(screen.getByText('OpenAI')).toBeInTheDocument();
+      expect(screen.getByText('Google Gemini')).toBeInTheDocument();
+      expect(screen.getByText('Kimi (Moonshot)')).toBeInTheDocument();
+      expect(screen.getByText('OpenRouter')).toBeInTheDocument();
+      // Anthropic (sortOrder 0) is selected by default.
+      expect(screen.getByText(/Continue with Anthropic/)).toBeInTheDocument();
+    });
+
+    it('shows an error with Retry when runtime() rejects, and Retry proceeds', async () => {
+      const user = userEvent.setup();
+      mockApi.plugins.runtime.mockRejectedValueOnce(new Error('gateway down'));
+      render(<SetupWizard needsSetup={true} onComplete={noop} />);
+      await clickThroughConsent(user);
+      await screen.findByText('Choose Your AI Provider');
+      // Error surfaced with a Retry affordance.
+      expect(await screen.findByText('gateway down')).toBeInTheDocument();
+      const retry = screen.getByRole('button', { name: /Retry/i });
+      // Next fetch resolves.
+      mockApi.plugins.runtime.mockResolvedValue({ providers: BUNDLED, plugins: [] });
+      await user.click(retry);
+      expect(await screen.findByText(/Continue with Anthropic/)).toBeInTheDocument();
     });
   });
 
@@ -121,10 +204,11 @@ describe('SetupWizard', () => {
 
       await clickThroughConsent(user);
       await screen.findByText('Choose Your AI Provider');
+      await screen.findByText(/Continue with Anthropic/);
 
       // Navigate from provider to api-key step
-      await user.click(screen.getByText(/Continue with Claude by Anthropic/));
-      expect(screen.getByText('Connect to Claude')).toBeInTheDocument();
+      await user.click(screen.getByText(/Continue with Anthropic/));
+      expect(screen.getByText('Connect to Anthropic')).toBeInTheDocument();
 
       await user.type(screen.getByPlaceholderText('sk-ant-...'), 'sk-ant-test-key-123');
       await user.click(screen.getByText('Save API Key'));
@@ -143,7 +227,8 @@ describe('SetupWizard', () => {
 
       await clickThroughConsent(user);
       await screen.findByText('Choose Your AI Provider');
-      await user.click(screen.getByText(/Continue with Claude by Anthropic/));
+      await screen.findByText(/Continue with Anthropic/);
+      await user.click(screen.getByText(/Continue with Anthropic/));
       await user.type(screen.getByPlaceholderText('sk-ant-...'), 'sk-ant-test-key-123');
       await user.click(screen.getByText('Save API Key'));
 
@@ -156,24 +241,28 @@ describe('SetupWizard', () => {
 
       await clickThroughConsent(user);
       await screen.findByText('Choose Your AI Provider');
-      await user.click(screen.getByText(/Continue with Claude by Anthropic/));
-      expect(screen.getByText('Connect to Claude')).toBeInTheDocument();
+      await screen.findByText(/Continue with Anthropic/);
+      await user.click(screen.getByText(/Continue with Anthropic/));
+      expect(screen.getByText('Connect to Anthropic')).toBeInTheDocument();
 
       await user.click(screen.getByText('Back'));
       expect(screen.getByText('Choose Your AI Provider')).toBeInTheDocument();
     });
 
-    it('calls openExternal with console URL when console link clicked', async () => {
+    it('calls openExternal with the API keys URL when the API Keys link clicked', async () => {
       const user = userEvent.setup();
       render(<SetupWizard needsSetup={true} onComplete={noop} />);
 
       await clickThroughConsent(user);
       await screen.findByText('Choose Your AI Provider');
-      await user.click(screen.getByText(/Continue with Claude by Anthropic/));
+      await screen.findByText(/Continue with Anthropic/);
+      await user.click(screen.getByText(/Continue with Anthropic/));
 
-      await user.click(screen.getByText('console.anthropic.com'));
+      await user.click(screen.getByText('API Keys'));
 
-      expect(mockApi.openExternal).toHaveBeenCalledWith('https://console.anthropic.com');
+      expect(mockApi.openExternal).toHaveBeenCalledWith(
+        'https://console.anthropic.com/settings/keys',
+      );
     });
   });
 
@@ -184,7 +273,8 @@ describe('SetupWizard', () => {
 
       await clickThroughConsent(user);
       await screen.findByText('Choose Your AI Provider');
-      await user.click(screen.getByText(/Continue with Claude by Anthropic/));
+      await screen.findByText(/Continue with Anthropic/);
+      await user.click(screen.getByText(/Continue with Anthropic/));
 
       // The OAuth CTA is visible above the API-key instructions
       const oauthBtn = screen.getByRole('button', { name: /Sign in with Claude/ });
@@ -201,7 +291,8 @@ describe('SetupWizard', () => {
 
       await clickThroughConsent(user);
       await screen.findByText('Choose Your AI Provider');
-      await user.click(screen.getByText(/Continue with Claude by Anthropic/));
+      await screen.findByText(/Continue with Anthropic/);
+      await user.click(screen.getByText(/Continue with Anthropic/));
       await user.click(screen.getByRole('button', { name: /Sign in with Claude/ }));
 
       await screen.findByText('Finish Claude login');
@@ -224,7 +315,8 @@ describe('SetupWizard', () => {
 
       await clickThroughConsent(user);
       await screen.findByText('Choose Your AI Provider');
-      await user.click(screen.getByText(/Continue with Claude by Anthropic/));
+      await screen.findByText(/Continue with Anthropic/);
+      await user.click(screen.getByText(/Continue with Anthropic/));
       await user.click(screen.getByRole('button', { name: /Sign in with Claude/ }));
       await screen.findByText('Finish Claude login');
       await user.type(screen.getByLabelText('Authorization code'), 'bad-code');
@@ -241,7 +333,8 @@ describe('SetupWizard', () => {
 
       await clickThroughConsent(user);
       await screen.findByText('Choose Your AI Provider');
-      await user.click(screen.getByText(/OpenAI \(GPT-4o, o3\)/));
+      await screen.findByText('OpenAI');
+      await user.click(screen.getByText('OpenAI'));
       await user.click(screen.getByText(/Continue with OpenAI/));
       expect(screen.getByText('Connect to OpenAI')).toBeInTheDocument();
 
@@ -257,7 +350,8 @@ describe('SetupWizard', () => {
 
       await clickThroughConsent(user);
       await screen.findByText('Choose Your AI Provider');
-      await user.click(screen.getByText(/Google Gemini/));
+      await screen.findByText('Google Gemini');
+      await user.click(screen.getByText('Google Gemini'));
       await user.click(screen.getByText(/Continue with Google Gemini/));
       expect(screen.getByText('Connect to Google Gemini')).toBeInTheDocument();
 

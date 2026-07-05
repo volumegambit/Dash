@@ -1,22 +1,19 @@
 import { providerSecretKey } from '@dash/mc/provider-keys';
 import { ExternalLink, KeyRound, X } from 'lucide-react';
 import { useState } from 'react';
-import { PROVIDER_CONFIG, type Provider, type ProviderConfig } from './providers.js';
+import type { ProviderConfig } from './providers.js';
 
 const KEY_NAME_PATTERN = /^[a-zA-Z0-9-]+$/;
 
 interface ProviderConnectModalProps {
+  /** Runtime provider id (a plain string) — used to build the credential slot. */
+  provider: string;
   /**
-   * Provider id. Core providers use the {@link Provider} union; plugin
-   * providers pass a free-form runtime provider id (a plain string).
+   * The connect-flow config for this provider, derived from its catalog ui
+   * hints via {@link providerConnectConfig}. Empty URL fields cause the
+   * matching instruction step to be omitted.
    */
-  provider: Provider | string;
-  /**
-   * Optional UI config. Omit for core providers — the modal falls back to
-   * {@link PROVIDER_CONFIG} keyed by `provider`. Plugin providers pass a
-   * synthesized {@link ProviderConfig} since they aren't in PROVIDER_CONFIG.
-   */
-  providerConfig?: ProviderConfig;
+  providerConfig: ProviderConfig;
   keyName?: string;
   onClose: () => void;
   onSaved: () => void;
@@ -29,7 +26,7 @@ export function ProviderConnectModal({
   onClose,
   onSaved,
 }: ProviderConnectModalProps): JSX.Element {
-  const config = providerConfig ?? PROVIDER_CONFIG[provider as Provider];
+  const config = providerConfig;
   const [keyNameInput, setKeyNameInput] = useState(keyName ?? '');
   const [apiKey, setApiKey] = useState('');
   const [saving, setSaving] = useState(false);

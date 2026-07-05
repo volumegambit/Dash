@@ -1,58 +1,103 @@
-import { PROVIDERS, PROVIDER_CONFIG } from './providers.js';
+import type { RuntimePluginProvider } from '@dash/management';
+import { describe, expect, it } from 'vitest';
+import { providerConnectConfig, sortProviders } from './providers.js';
 
-describe('PROVIDERS', () => {
-  it('has at least one available provider', () => {
-    const available = PROVIDERS.filter((p) => p.available);
-    expect(available.length).toBeGreaterThanOrEqual(1);
+function provider(overrides: Partial<RuntimePluginProvider>): RuntimePluginProvider {
+  return {
+    id: 'x',
+    label: 'X',
+    credentialPrefix: 'x-api-key',
+    pluginName: 'dash-core-providers',
+    ...overrides,
+  };
+}
+
+describe('sortProviders', () => {
+  it('orders by ui.sortOrder ascending, then id', () => {
+    const input: RuntimePluginProvider[] = [
+      provider({ id: 'zeta', label: 'Zeta', ui: { sortOrder: 2 } }),
+      provider({ id: 'alpha', label: 'Alpha', ui: { sortOrder: 0 } }),
+      provider({ id: 'beta', label: 'Beta', ui: { sortOrder: 1 } }),
+    ];
+    expect(sortProviders(input).map((p) => p.id)).toEqual(['alpha', 'beta', 'zeta']);
   });
 
-  it('every provider has a matching config entry', () => {
-    for (const provider of PROVIDERS) {
-      expect(PROVIDER_CONFIG[provider.id]).toBeDefined();
-    }
+  it('places providers with a missing sortOrder last, then sorts by id', () => {
+    const input: RuntimePluginProvider[] = [
+      provider({ id: 'nohint-b', label: 'No Hint B' }),
+      provider({ id: 'ranked', label: 'Ranked', ui: { sortOrder: 5 } }),
+      provider({ id: 'nohint-a', label: 'No Hint A' }),
+    ];
+    expect(sortProviders(input).map((p) => p.id)).toEqual(['ranked', 'nohint-a', 'nohint-b']);
+  });
+
+  it('breaks ties on equal sortOrder by id', () => {
+    const input: RuntimePluginProvider[] = [
+      provider({ id: 'c', ui: { sortOrder: 1 } }),
+      provider({ id: 'a', ui: { sortOrder: 1 } }),
+      provider({ id: 'b', ui: { sortOrder: 1 } }),
+    ];
+    expect(sortProviders(input).map((p) => p.id)).toEqual(['a', 'b', 'c']);
+  });
+
+  it('does not mutate its input', () => {
+    const input: RuntimePluginProvider[] = [
+      provider({ id: 'b', ui: { sortOrder: 1 } }),
+      provider({ id: 'a', ui: { sortOrder: 0 } }),
+    ];
+    const before = input.map((p) => p.id);
+    sortProviders(input);
+    expect(input.map((p) => p.id)).toEqual(before);
   });
 });
 
-describe('PROVIDER_CONFIG', () => {
-  it('anthropic consoleUrl points to console.anthropic.com', () => {
-    expect(PROVIDER_CONFIG.anthropic.consoleUrl).toBe('https://console.anthropic.com');
+describe('providerConnectConfig', () => {
+  it('derives the full config from ui hints', () => {
+    const p = provider({
+      id: 'x',
+      label: 'X Labs',
+      ui: {
+        keyConsoleUrl: 'https://x.example/keys',
+        keyPlaceholder: 'sk-x-...',
+        docsUrl: 'https://x.example/docs',
+      },
+    });
+    const config = providerConnectConfig(p);
+    expect(config.title).toBe('Connect to X Labs');
+    expect(config.secretKey).toBe('x-api-key:default');
+    expect(config.placeholder).toBe('sk-x-...');
+    expect(config.consoleUrl).toBe('');
+    expect(config.apiKeysUrl).toBe('https://x.example/keys');
+    expect(config.helpUrl).toBe('https://x.example/docs');
+    expect(config.helpLabel).toBe('X Labs documentation');
+    expect(config.explanation).toContain('X Labs');
+    expect(config.steps).toHaveLength(2);
+    expect(config.steps[0]).toContain('API keys page');
+    expect(config.steps[1]).toContain('sk-x-...');
   });
 
-  it('anthropic apiKeysUrl points to console.anthropic.com/settings/keys', () => {
-    expect(PROVIDER_CONFIG.anthropic.apiKeysUrl).toBe(
-      'https://console.anthropic.com/settings/keys',
-    );
+  it('falls back to a generic paste flow when no ui hints are present', () => {
+    const p = provider({ id: 'plain', label: 'Plain Provider', ui: undefined });
+    const config = providerConnectConfig(p);
+    expect(config.title).toBe('Connect to Plain Provider');
+    expect(config.secretKey).toBe('plain-api-key:default');
+    expect(config.placeholder).toBe('API key');
+    expect(config.consoleUrl).toBe('');
+    expect(config.apiKeysUrl).toBe('');
+    expect(config.helpUrl).toBe('');
+    expect(config.helpLabel).toBe('');
+    expect(config.steps[0]).toContain('Plain Provider');
+    expect(config.steps[1]).toBe('Paste it below.');
   });
 
-  it('anthropic helpUrl points to Anthropic docs', () => {
-    expect(PROVIDER_CONFIG.anthropic.helpUrl).toMatch(/^https:\/\/docs\.anthropic\.com\//);
-  });
-
-  it('openrouter config uses openrouter.ai and the sk-or-v1- key hint', () => {
-    expect(PROVIDER_CONFIG.openrouter.consoleUrl).toBe('https://openrouter.ai');
-    expect(PROVIDER_CONFIG.openrouter.apiKeysUrl).toBe('https://openrouter.ai/settings/keys');
-    expect(PROVIDER_CONFIG.openrouter.secretKey).toBe('openrouter-api-key:default');
-    // Steer users to an OpenRouter key (sk-or-v1-), not a plain OpenAI sk- key.
-    expect(PROVIDER_CONFIG.openrouter.placeholder).toContain('sk-or-v1-');
-    expect(PROVIDER_CONFIG.openrouter.steps.join(' ')).toContain('sk-or-v1-');
-  });
-
-  it('every provider config has valid URLs', () => {
-    for (const [id, config] of Object.entries(PROVIDER_CONFIG)) {
-      expect(config.consoleUrl, `${id} consoleUrl`).toMatch(/^https:\/\//);
-      expect(config.apiKeysUrl, `${id} apiKeysUrl`).toMatch(/^https:\/\//);
-      expect(config.helpUrl, `${id} helpUrl`).toMatch(/^https:\/\//);
-    }
-  });
-
-  it('every provider config has non-empty required fields', () => {
-    for (const [id, config] of Object.entries(PROVIDER_CONFIG)) {
-      expect(config.title, `${id} title`).toBeTruthy();
-      expect(config.secretKey, `${id} secretKey`).toBeTruthy();
-      expect(config.placeholder, `${id} placeholder`).toBeTruthy();
-      expect(config.explanation, `${id} explanation`).toBeTruthy();
-      expect(config.helpLabel, `${id} helpLabel`).toBeTruthy();
-      expect(config.steps.length, `${id} steps`).toBeGreaterThanOrEqual(1);
-    }
+  it('leaves helpLabel empty when docsUrl is absent', () => {
+    const p = provider({
+      id: 'nodoc',
+      label: 'No Docs',
+      ui: { keyConsoleUrl: 'https://nodoc.example/keys' },
+    });
+    const config = providerConnectConfig(p);
+    expect(config.helpUrl).toBe('');
+    expect(config.helpLabel).toBe('');
   });
 });

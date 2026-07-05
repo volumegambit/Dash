@@ -1,3 +1,4 @@
+import type { RuntimePluginProvider } from '@dash/management';
 import {
   ArrowRight,
   Bot,
@@ -7,10 +8,12 @@ import {
   Loader,
   Lock,
   LogIn,
+  RefreshCw,
 } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import { useRuntimeProviders } from '../hooks/useRuntimeProviders.js';
 import { DashSquadMark } from './DashSquadLogo.js';
-import { PROVIDERS, PROVIDER_CONFIG, type Provider } from './providers.js';
+import { providerConnectConfig, sortProviders } from './providers.js';
 
 type Step = 'keychain-consent' | 'setting-up' | 'provider' | 'api-key' | 'done';
 
@@ -26,7 +29,9 @@ export function SetupWizard({ needsSetup, onComplete }: SetupWizardProps): JSX.E
   // straight to 'done'.
   const initialStep: Step = needsSetup ? 'keychain-consent' : 'done';
   const [step, setStep] = useState<Step>(initialStep);
-  const [provider, setProvider] = useState<Provider>('anthropic');
+  // The selected provider is a full gateway provider object (not an id), so the
+  // key step can derive its connect config directly.
+  const [provider, setProvider] = useState<RuntimePluginProvider | null>(null);
 
   return (
     <div className="flex h-full items-center justify-center bg-background text-foreground">
@@ -52,7 +57,7 @@ export function SetupWizard({ needsSetup, onComplete }: SetupWizardProps): JSX.E
             onNext={() => setStep('api-key')}
           />
         )}
-        {step === 'api-key' && (
+        {step === 'api-key' && provider && (
           <ApiKeyStep
             provider={provider}
             onBack={() => setStep('provider')}
@@ -174,10 +179,23 @@ function ProviderStep({
   onSelect,
   onNext,
 }: {
-  selected: Provider;
-  onSelect: (p: Provider) => void;
+  selected: RuntimePluginProvider | null;
+  onSelect: (p: RuntimePluginProvider) => void;
   onNext: () => void;
 }): JSX.Element {
+  // The gateway is up by the time we reach this step (post 'setting-up'), so
+  // the provider list comes straight from it.
+  const { providers: runtimeProviders, loading, error, refetch } = useRuntimeProviders();
+  const providers = useMemo(() => sortProviders(runtimeProviders), [runtimeProviders]);
+
+  // Default-select the first sorted provider once the list loads (sortOrder 0
+  // keeps anthropic first). Only sets when nothing is selected yet.
+  useEffect(() => {
+    if (!selected && providers.length > 0) {
+      onSelect(providers[0]);
+    }
+  }, [selected, providers, onSelect]);
+
   return (
     <div>
       <div className="text-center">
@@ -188,47 +206,70 @@ function ProviderStep({
           &mdash; you only need one, but you can add more later in Settings.
         </p>
 
-        <div className="mt-6 space-y-3 text-left">
-          {PROVIDERS.map((p) => (
-            <button
-              key={p.id}
-              type="button"
-              disabled={!p.available}
-              onClick={() => onSelect(p.id)}
-              className={`w-full rounded-lg border-2 px-4 py-4 text-left transition-colors ${
-                selected === p.id
-                  ? 'border-accent bg-accent-tint'
-                  : 'border-border bg-card-bg hover:border-muted'
-              } ${!p.available ? 'cursor-not-allowed opacity-40' : ''}`}
-            >
-              <div className="flex items-center justify-between">
-                <span className="text-sm font-semibold text-foreground">{p.name}</span>
-                {selected === p.id && <CheckCircle size={18} className="text-accent" />}
-                {!p.available && (
-                  <span className="rounded-full bg-border px-2 py-0.5 text-[10px] font-medium text-muted">
-                    Coming soon
-                  </span>
-                )}
-              </div>
-              <p className="mt-1 text-xs text-muted">{p.description}</p>
-            </button>
-          ))}
-        </div>
+        {loading && providers.length === 0 && (
+          <div className="mt-8 flex justify-center">
+            <Loader size={24} className="animate-spin text-muted" />
+          </div>
+        )}
 
-        <button
-          type="button"
-          onClick={onNext}
-          className="mt-6 inline-flex w-full items-center justify-center gap-2 rounded-lg bg-accent px-6 py-3 text-sm font-medium text-white transition-colors hover:bg-primary-hover"
-        >
-          Continue with {PROVIDERS.find((p) => p.id === selected)?.name ?? 'selected provider'}
-          <ArrowRight size={16} />
-        </button>
+        {!loading && providers.length === 0 && (
+          <div className="mt-6 rounded-lg border border-border bg-card-bg p-6 text-left">
+            <p className="text-sm text-muted">
+              {error
+                ? error.message
+                : 'The gateway reported no provider catalogs. Make sure the built-in dash-core-providers plugin is enabled.'}
+            </p>
+            <button
+              type="button"
+              onClick={() => refetch()}
+              className="mt-4 inline-flex items-center gap-1.5 rounded-lg border border-border px-4 py-2 text-sm font-medium text-muted hover:text-foreground hover:bg-card-hover transition-colors"
+            >
+              <RefreshCw size={14} />
+              Retry
+            </button>
+          </div>
+        )}
+
+        {providers.length > 0 && (
+          <div className="mt-6 space-y-3 text-left">
+            {providers.map((p) => (
+              <button
+                key={p.id}
+                type="button"
+                onClick={() => onSelect(p)}
+                className={`w-full rounded-lg border-2 px-4 py-4 text-left transition-colors ${
+                  selected?.id === p.id
+                    ? 'border-accent bg-accent-tint'
+                    : 'border-border bg-card-bg hover:border-muted'
+                }`}
+              >
+                <div className="flex items-center justify-between">
+                  <span className="text-sm font-semibold text-foreground">{p.label}</span>
+                  {selected?.id === p.id && <CheckCircle size={18} className="text-accent" />}
+                </div>
+                {p.ui?.description && <p className="mt-1 text-xs text-muted">{p.ui.description}</p>}
+              </button>
+            ))}
+          </div>
+        )}
+
+        {providers.length > 0 && (
+          <button
+            type="button"
+            onClick={onNext}
+            disabled={!selected}
+            className="mt-6 inline-flex w-full items-center justify-center gap-2 rounded-lg bg-accent px-6 py-3 text-sm font-medium text-white transition-colors hover:bg-primary-hover disabled:opacity-50"
+          >
+            Continue with {selected?.label ?? 'selected provider'}
+            <ArrowRight size={16} />
+          </button>
+        )}
       </div>
     </div>
   );
 }
 
-const OAUTH_LABEL: Partial<Record<Provider, string>> = {
+const OAUTH_LABEL: Record<string, string> = {
   anthropic: 'Sign in with Claude (Pro/Max)',
   openai: 'Sign in with ChatGPT (Codex)',
 };
@@ -237,13 +278,17 @@ function ApiKeyStep({
   provider,
   onBack,
   onDone,
-}: { provider: Provider; onBack: () => void; onDone: () => void }): JSX.Element {
-  const config = PROVIDER_CONFIG[provider];
+}: {
+  provider: RuntimePluginProvider;
+  onBack: () => void;
+  onDone: () => void;
+}): JSX.Element {
+  const config = providerConnectConfig(provider);
   const [apiKey, setApiKey] = useState('');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const oauthLabel = OAUTH_LABEL[provider];
+  const oauthLabel = OAUTH_LABEL[provider.id];
   const [oauthLoading, setOauthLoading] = useState(false);
   const [oauthError, setOauthError] = useState<string | null>(null);
   const [claudeFlow, setClaudeFlow] = useState<{ state: string; verifier: string } | null>(null);
@@ -332,6 +377,9 @@ function ApiKeyStep({
   };
 
   const consoleDomain = config.consoleUrl.replace(/^https?:\/\//, '');
+  // How many leading URL-based steps render (console + API keys). Providers
+  // without those URLs omit the steps, so provider-specific steps renumber.
+  const urlStepCount = (config.consoleUrl ? 1 : 0) + (config.apiKeysUrl ? 1 : 0);
 
   if (claudeFlow) {
     return (
@@ -396,19 +444,19 @@ function ApiKeyStep({
           <div className="mt-5 space-y-3 text-left">
             <button
               type="button"
-              onClick={provider === 'anthropic' ? handleClaudeOAuthStart : handleCodexOAuth}
+              onClick={provider.id === 'anthropic' ? handleClaudeOAuthStart : handleCodexOAuth}
               disabled={oauthLoading || saving}
               className="inline-flex w-full items-center justify-center gap-2 rounded-lg border border-accent bg-accent-tint px-4 py-3 text-sm font-semibold text-accent transition-colors hover:bg-accent/20 disabled:opacity-50"
             >
               {oauthLoading ? <Loader size={16} className="animate-spin" /> : <LogIn size={16} />}
               {oauthLoading
-                ? provider === 'openai'
+                ? provider.id === 'openai'
                   ? 'Waiting for browser sign-in…'
                   : 'Opening browser…'
                 : oauthLabel}
             </button>
             <p className="text-center text-[11px] text-muted">
-              {provider === 'anthropic'
+              {provider.id === 'anthropic'
                 ? 'Use your Claude Pro or Max subscription — no API key required.'
                 : 'Use your ChatGPT Plus or Pro subscription — no API key required.'}
             </p>
@@ -432,57 +480,65 @@ function ApiKeyStep({
             How to get your key
           </p>
           <ol className="space-y-2">
-            <li className="flex gap-2 text-xs text-muted">
-              <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-accent/20 text-[10px] font-bold text-accent">
-                1
-              </span>
-              <span className="pt-0.5">
-                Go to{' '}
-                <button
-                  type="button"
-                  onClick={() => handleOpenUrl(config.consoleUrl)}
-                  className="inline-flex items-center gap-0.5 font-medium text-accent hover:underline"
-                >
-                  {consoleDomain}
-                  <ExternalLink size={10} />
-                </button>{' '}
-                and create a free account (or sign in).
-              </span>
-            </li>
-            <li className="flex gap-2 text-xs text-muted">
-              <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-accent/20 text-[10px] font-bold text-accent">
-                2
-              </span>
-              <span className="pt-0.5">
-                Navigate to{' '}
-                <button
-                  type="button"
-                  onClick={() => handleOpenUrl(config.apiKeysUrl)}
-                  className="inline-flex items-center gap-0.5 font-medium text-accent hover:underline"
-                >
-                  API Keys
-                  <ExternalLink size={10} />
-                </button>{' '}
-                in the dashboard.
-              </span>
-            </li>
+            {/* URL-based steps only render when the provider supplies the URLs.
+                Providers without them start at the provider-specific steps. */}
+            {config.consoleUrl && (
+              <li className="flex gap-2 text-xs text-muted">
+                <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-accent/20 text-[10px] font-bold text-accent">
+                  1
+                </span>
+                <span className="pt-0.5">
+                  Go to{' '}
+                  <button
+                    type="button"
+                    onClick={() => handleOpenUrl(config.consoleUrl)}
+                    className="inline-flex items-center gap-0.5 font-medium text-accent hover:underline"
+                  >
+                    {consoleDomain}
+                    <ExternalLink size={10} />
+                  </button>{' '}
+                  and create a free account (or sign in).
+                </span>
+              </li>
+            )}
+            {config.apiKeysUrl && (
+              <li className="flex gap-2 text-xs text-muted">
+                <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-accent/20 text-[10px] font-bold text-accent">
+                  {config.consoleUrl ? 2 : 1}
+                </span>
+                <span className="pt-0.5">
+                  Navigate to{' '}
+                  <button
+                    type="button"
+                    onClick={() => handleOpenUrl(config.apiKeysUrl)}
+                    className="inline-flex items-center gap-0.5 font-medium text-accent hover:underline"
+                  >
+                    API Keys
+                    <ExternalLink size={10} />
+                  </button>{' '}
+                  in the dashboard.
+                </span>
+              </li>
+            )}
             {config.steps.map((step, i) => (
               <li key={step} className="flex gap-2 text-xs text-muted">
                 <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-accent/20 text-[10px] font-bold text-accent">
-                  {i + 3}
+                  {i + 1 + urlStepCount}
                 </span>
                 <span className="pt-0.5">{step}</span>
               </li>
             ))}
           </ol>
-          <button
-            type="button"
-            onClick={() => handleOpenUrl(config.helpUrl)}
-            className="mt-3 inline-flex items-center gap-1 text-xs font-medium text-accent hover:underline"
-          >
-            <ExternalLink size={12} />
-            {config.helpLabel}
-          </button>
+          {config.helpUrl && (
+            <button
+              type="button"
+              onClick={() => handleOpenUrl(config.helpUrl)}
+              className="mt-3 inline-flex items-center gap-1 text-xs font-medium text-accent hover:underline"
+            >
+              <ExternalLink size={12} />
+              {config.helpLabel}
+            </button>
+          )}
         </div>
 
         <form onSubmit={handleSubmit} className="mt-5 space-y-4 text-left">

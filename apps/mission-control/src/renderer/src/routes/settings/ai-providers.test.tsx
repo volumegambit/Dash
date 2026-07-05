@@ -1,47 +1,157 @@
 import '@testing-library/jest-dom/vitest';
+import type { RuntimePluginProvider } from '@dash/management';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { mockApi } from '../../../../../vitest.setup.js';
 import { AiProviders } from './ai-providers.js';
 
+// The five bundled providers as the gateway reports them (pluginName
+// dash-core-providers, ui hints incl. sortOrder), plus one third-party
+// provider from plugin 'llmpack'.
+const BUNDLED: RuntimePluginProvider[] = [
+  {
+    id: 'anthropic',
+    label: 'Anthropic',
+    credentialPrefix: 'anthropic-api-key',
+    pluginName: 'dash-core-providers',
+    ui: { description: 'Claude models', keyPlaceholder: 'sk-ant-...', sortOrder: 0 },
+  },
+  {
+    id: 'openai',
+    label: 'OpenAI',
+    credentialPrefix: 'openai-api-key',
+    pluginName: 'dash-core-providers',
+    ui: { description: 'GPT models', keyPlaceholder: 'sk-...', sortOrder: 1 },
+  },
+  {
+    id: 'google',
+    label: 'Google Gemini',
+    credentialPrefix: 'google-api-key',
+    pluginName: 'dash-core-providers',
+    ui: { description: 'Gemini models', keyPlaceholder: 'AIza...', sortOrder: 2 },
+  },
+  {
+    id: 'moonshotai',
+    label: 'Kimi (Moonshot)',
+    credentialPrefix: 'moonshotai-api-key',
+    pluginName: 'dash-core-providers',
+    ui: { description: 'Kimi K2 models', keyPlaceholder: 'sk-...', sortOrder: 3 },
+  },
+  {
+    id: 'openrouter',
+    label: 'OpenRouter',
+    credentialPrefix: 'openrouter-api-key',
+    pluginName: 'dash-core-providers',
+    ui: { description: 'Many models, one key', keyPlaceholder: 'sk-or-v1-...', sortOrder: 4 },
+  },
+];
+
+const PLUGIN_PROVIDER: RuntimePluginProvider = {
+  id: 'myllm',
+  label: 'My LLM',
+  credentialPrefix: 'myllm-api-key',
+  pluginName: 'llmpack',
+  ui: { description: 'A plugin-contributed provider', sortOrder: 10 },
+};
+
+function mockRuntime(providers: RuntimePluginProvider[]): void {
+  mockApi.plugins.runtime.mockResolvedValue({ providers, plugins: [] });
+}
+
 describe('AiProviders page', () => {
   beforeEach(() => {
-    // Default: anthropic has one key, others have none
     mockApi.credentialsList.mockResolvedValue(['anthropic-api-key:default']);
+    mockRuntime([...BUNDLED, PLUGIN_PROVIDER]);
+  });
+
+  it('renders one card per gateway provider in sortOrder order', async () => {
+    render(<AiProviders />);
+    await screen.findByText('Anthropic');
+    const labels = [
+      'Anthropic',
+      'OpenAI',
+      'Google Gemini',
+      'Kimi (Moonshot)',
+      'OpenRouter',
+      'My LLM',
+    ];
+    for (const label of labels) {
+      expect(screen.getByText(label)).toBeInTheDocument();
+    }
+    // Add Key: one per provider = 6.
+    await waitFor(() => {
+      expect(screen.getAllByText('Add Key')).toHaveLength(6);
+    });
+  });
+
+  it('badges only the non-bundled provider with its plugin name', async () => {
+    render(<AiProviders />);
+    await screen.findByText('My LLM');
+    // Third-party provider is badged with its plugin name.
+    expect(screen.getByText('llmpack')).toBeInTheDocument();
+    // Bundled providers are not badged with the bundled plugin name.
+    expect(screen.queryByText('dash-core-providers')).not.toBeInTheDocument();
+  });
+
+  it('renders the provider ui.description as a subtitle', async () => {
+    render(<AiProviders />);
+    await screen.findByText('A plugin-contributed provider');
+    expect(screen.getByText('Claude models')).toBeInTheDocument();
   });
 
   it('shows connected status indicator for providers with a key', async () => {
     render(<AiProviders />);
-    expect(await screen.findByText('Claude by Anthropic')).toBeInTheDocument();
-    // Key entries load asynchronously from credentialsList
+    expect(await screen.findByText('Anthropic')).toBeInTheDocument();
     expect(await screen.findByText('Active')).toBeInTheDocument();
   });
 
-  it('shows Add Key button for every provider', async () => {
+  it('shows an OAuth login button only for anthropic and openai', async () => {
     render(<AiProviders />);
-    await waitFor(() => {
-      const addButtons = screen.getAllByText('Add Key');
-      // one per provider (anthropic, openai, google, moonshotai, openrouter)
-      expect(addButtons).toHaveLength(5);
-    });
-  });
-
-  it('surfaces Moonshot as an API-key-only provider (label shown, no OAuth login button)', async () => {
-    render(<AiProviders />);
-    expect(await screen.findByText('Kimi by Moonshot')).toBeInTheDocument();
-    // Only Anthropic + OpenAI expose an OAuth "...Login Key" button; Moonshot,
-    // Google, and OpenRouter are API-key only, so the count must stay at 2.
+    await screen.findByText('Anthropic');
     await waitFor(() => {
       expect(screen.getAllByText(/Login Key$/)).toHaveLength(2);
     });
   });
 
+  it('opens the modal with the derived title when Add Key clicked for the plugin provider', async () => {
+    const user = userEvent.setup();
+    render(<AiProviders />);
+    await screen.findByText('My LLM');
+    const addButton = await screen.findByRole('button', { name: /Add key for My LLM/i });
+    await user.click(addButton);
+    expect(await screen.findByText('Connect to My LLM')).toBeInTheDocument();
+  });
+
+  it('saves a plugin credential under {pluginId}-api-key:{keyName}', async () => {
+    const user = userEvent.setup();
+    render(<AiProviders />);
+    await screen.findByText('My LLM');
+    const addButton = await screen.findByRole('button', { name: /Add key for My LLM/i });
+    await user.click(addButton);
+    await screen.findByText('Connect to My LLM');
+    await user.type(screen.getByLabelText('API key'), 'plugin-secret');
+    await user.click(screen.getByText('Save API Key'));
+    expect(mockApi.credentialsSet).toHaveBeenCalledWith('myllm-api-key:default', 'plugin-secret');
+  });
+
+  it('groups keys per id loaded from credentialsList', async () => {
+    mockApi.credentialsList.mockResolvedValue([
+      'anthropic-api-key:default',
+      'myllm-api-key:default',
+    ]);
+    render(<AiProviders />);
+    await screen.findByText('My LLM');
+    const defaults = await screen.findAllByText('default');
+    expect(defaults.length).toBeGreaterThanOrEqual(2);
+  });
+
   it('opens modal when Add Key is clicked for unconnected provider', async () => {
     const user = userEvent.setup();
     render(<AiProviders />);
+    await screen.findByText('OpenAI');
     await waitFor(() => screen.getAllByText('Add Key'));
     await user.click(screen.getAllByText('Add Key')[1]);
-    expect(screen.getByText('Connect to OpenAI')).toBeInTheDocument();
+    expect(await screen.findByText('Connect to OpenAI')).toBeInTheDocument();
   });
 
   it('shows Update and Remove buttons for connected provider key', async () => {
@@ -61,7 +171,7 @@ describe('AiProviders page', () => {
     expect(screen.getByText('Yes, remove')).toBeInTheDocument();
   });
 
-  it('calls credentialsRemove and refreshes when disconnect confirmed', async () => {
+  it('calls credentialsRemove with the composite key and oauth-slot cleanup when disconnect confirmed', async () => {
     const user = userEvent.setup();
     mockApi.credentialsRemove.mockResolvedValue(undefined);
     render(<AiProviders />);
@@ -69,12 +179,15 @@ describe('AiProviders page', () => {
     await user.click(screen.getByText('Remove'));
     await user.click(screen.getByText('Yes, remove'));
     expect(mockApi.credentialsRemove).toHaveBeenCalledWith('anthropic-api-key:default');
+    expect(mockApi.credentialsRemove).toHaveBeenCalledWith('anthropic-oauth-refresh:default');
+    expect(mockApi.credentialsRemove).toHaveBeenCalledWith('anthropic-oauth-expires:default');
   });
 
   it('pre-fills key name as default when provider has no keys', async () => {
     const user = userEvent.setup();
     mockApi.credentialsList.mockResolvedValue([]);
     render(<AiProviders />);
+    await screen.findByText('Anthropic');
     await waitFor(() => screen.getAllByText('Add Key'));
     await user.click(screen.getAllByText('Add Key')[0]);
     const keyNameInput = screen.getByLabelText('Key name');
@@ -82,56 +195,29 @@ describe('AiProviders page', () => {
   });
 });
 
-describe('AiProviders page — plugin providers', () => {
+describe('AiProviders page — non-happy states', () => {
   beforeEach(() => {
-    mockApi.credentialsList.mockResolvedValue(['anthropic-api-key:default']);
-    mockApi.plugins.runtime.mockResolvedValue({
-      providers: [{ id: 'myprov', label: 'My Provider', credentialPrefix: 'myprov-api-key' }],
-      plugins: [],
-    });
+    mockApi.credentialsList.mockResolvedValue([]);
   });
 
-  it('renders both a core provider and a plugin provider', async () => {
-    render(<AiProviders />);
-    // Core provider still rendered.
-    expect(await screen.findByText('Claude by Anthropic')).toBeInTheDocument();
-    // Plugin provider rendered alongside core.
-    expect(await screen.findByText('My Provider')).toBeInTheDocument();
-  });
-
-  it('shows existing plugin keys loaded from credentialsList', async () => {
-    mockApi.credentialsList.mockResolvedValue([
-      'anthropic-api-key:default',
-      'myprov-api-key:default',
-    ]);
-    render(<AiProviders />);
-    await screen.findByText('My Provider');
-    // The plugin key name appears in the key entry list (alongside the core one).
-    const defaults = await screen.findAllByText('default');
-    expect(defaults.length).toBeGreaterThanOrEqual(2);
-  });
-
-  it('saves a plugin credential under {pluginId}-api-key:{keyName}', async () => {
+  it('renders the error card with Retry when runtime() rejects, and Retry refetches', async () => {
     const user = userEvent.setup();
+    mockApi.plugins.runtime.mockRejectedValueOnce(new Error('gateway down'));
     render(<AiProviders />);
-    await screen.findByText('My Provider');
-    // Open the plugin provider's connect modal.
-    const addButton = await screen.findByRole('button', { name: /Add key for My Provider/i });
-    await user.click(addButton);
-    // Synthesized config title.
-    expect(await screen.findByText('Connect to My Provider')).toBeInTheDocument();
-    await user.type(screen.getByLabelText('API key'), 'plugin-secret');
-    await user.click(screen.getByText('Save API Key'));
-    expect(mockApi.credentialsSet).toHaveBeenCalledWith('myprov-api-key:default', 'plugin-secret');
+    expect(await screen.findByText('gateway down')).toBeInTheDocument();
+    const retry = screen.getByRole('button', { name: /Retry/i });
+
+    // Next fetch resolves with providers.
+    mockRuntime(BUNDLED);
+    await user.click(retry);
+    expect(await screen.findByText('Anthropic')).toBeInTheDocument();
   });
 
-  it('still renders core providers when plugin runtime errors (graceful)', async () => {
-    mockApi.plugins.runtime.mockRejectedValue(new Error('gateway down'));
+  it('renders the no-providers card naming dash-core-providers when providers is empty', async () => {
+    mockRuntime([]);
     render(<AiProviders />);
-    // Core providers must still render despite the plugin-runtime failure.
-    expect(await screen.findByText('Claude by Anthropic')).toBeInTheDocument();
-    expect(await screen.findByText('Kimi by Moonshot')).toBeInTheDocument();
-    // No plugin provider shown.
-    expect(screen.queryByText('My Provider')).not.toBeInTheDocument();
+    expect(await screen.findByText('No AI providers available')).toBeInTheDocument();
+    expect(screen.getByText(/dash-core-providers/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Retry/i })).toBeInTheDocument();
   });
 });
