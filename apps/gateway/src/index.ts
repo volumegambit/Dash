@@ -23,6 +23,7 @@ import { createNodeWebSocket } from '@hono/node-ws';
 import { Hono } from 'hono';
 import { createAgentChatCoordinator } from './agent-chat-coordinator.js';
 import { AgentRegistry } from './agent-registry.js';
+import { ensureCoreProvidersPlugin } from './bundled-plugin.js';
 import { ChannelRegistry } from './channel-registry.js';
 import { mountChatWs } from './chat-ws.js';
 import { parseFlags } from './config.js';
@@ -143,6 +144,16 @@ async function main() {
   // Resolved ONCE here and reused by the boot load, every hot-reload, and the
   // DELETE /plugins/:name realpath guard, so all three agree on the exact dir.
   const pluginsDir = resolve(dataDir, 'plugins');
+  // Boot-install the bundled core-providers plugin BEFORE loading entries so
+  // this boot (not the next) serves its catalogs. Fatal on failure: a gateway
+  // with zero providers is broken, and the bundle ships inside the package so
+  // there is no legitimate missing-file case.
+  await ensureCoreProvidersPlugin({
+    dataDir,
+    bundledDir: resolve(__dirname, '../plugins/dash-core-providers'),
+    configStore: pluginConfigStore,
+    logger,
+  });
   const pluginEntries = await pluginConfigStore.load();
   const loadedPlugins = await loadPlugins({
     pluginsDir,

@@ -67,10 +67,8 @@ export async function ensureCoreProvidersPlugin(
   const installedVersion = await readManifestVersion(installedDir);
 
   if (installedVersion !== bundledVersion) {
-    logger.info(
-      `[plugins] installing bundled ${PLUGIN_NAME} v${bundledVersion}` +
-        (installedVersion ? ` (was v${installedVersion})` : ''),
-    );
+    const was = installedVersion ? ` (was v${installedVersion})` : '';
+    logger.info(`[plugins] installing bundled ${PLUGIN_NAME} v${bundledVersion}${was}`);
     // Clean upgrade: remove any prior copy so a version bump can't leave stale
     // files, then copy the whole bundle recursively.
     await rm(installedDir, { recursive: true, force: true });
