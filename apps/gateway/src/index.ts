@@ -6,7 +6,7 @@ import { config } from 'dotenv';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 config({ path: resolve(__dirname, '../../../.env') });
 
-import type { AgentClient } from '@dash/agent';
+import type { AgentClient, ExtraTool } from '@dash/agent';
 import { PiAgentBackend, createOAuthRefreshers } from '@dash/agent';
 import { TelegramAdapter, WhatsAppAdapter } from '@dash/channels';
 import type { ChannelAdapter } from '@dash/channels';
@@ -19,6 +19,7 @@ import { gatewayDir, migrateLegacyLayout, workspacesDir } from '@dash/paths';
 import { PluginConfigStore, loadPlugins } from '@dash/plugins';
 import { createProjectsTools, openProjectsDb } from '@dash/projects';
 import { getBuiltinPluginsDir } from '@dash/skills';
+import { SwarmCoordinator, createSwarmTools } from '@dash/swarm';
 import { serve } from '@hono/node-server';
 import { createNodeWebSocket } from '@hono/node-ws';
 import { Hono } from 'hono';
@@ -27,7 +28,7 @@ import { AgentRegistry } from './agent-registry.js';
 import { ensureCoreProvidersPlugin } from './bundled-plugin.js';
 import { ChannelRegistry } from './channel-registry.js';
 import { mountChatWs } from './chat-ws.js';
-import { parseFlags } from './config.js';
+import { parseFlags, resolveSwarmConfig } from './config.js';
 import { createControlPlaneClient } from './control-plane-client.js';
 import { GatewayCredentialStore } from './credential-store.js';
 import { createDialTokenManager } from './dial-token-manager.js';
@@ -49,6 +50,7 @@ import {
   reloadPluginsUnderMutex,
 } from './plugins-wiring.js';
 import { type RelayClient, startRelayClient } from './relay-client.js';
+import { createGatewayWorkerFactory } from './swarm-wiring.js';
 
 async function main() {
   const flags = parseFlags(process.argv.slice(2));
@@ -282,6 +284,53 @@ async function main() {
   if (migratedAgents > 0) {
     logger.info(`[migrate] rewrote ${migratedAgents} agent(s) off skills.includeBundled`);
   }
+
+  // Shared pull-based credential source. The chat-path backend factory below
+  // builds its own inline copy (it also needs it before this point in the file
+  // layout); this top-level instance feeds the swarm worker factory, whose
+  // STRIPPED workers need the same live keys (OAuth-refreshed, plugin
+  // placeholder-keyed) as a normal agent backend. Reads `wiringState.*` LIVE so
+  // a plugin hot-reload is observed by workers spawned after it.
+  const swarmCredentialProvider = async (): Promise<Record<string, string>> => {
+    await oauthRefreshCoordinator.refreshExpiring();
+    const keys = await credentialStore.readProviderApiKeys();
+    for (const { catalog } of wiringState.pluginProviderConfigs) {
+      if (catalog.placeholderKey && !keys[catalog.id]) {
+        keys[catalog.id] = catalog.placeholderKey;
+      }
+    }
+    return keys;
+  };
+
+  // The swarm coordinator: one per gateway. Owns every live swarm run's worker
+  // pool + event channel, enforces the global concurrent-worker ceiling and the
+  // per-agent caps, and appends straggler worker_done events out-of-band to the
+  // event log on the consumer-gone finalize path. Constructed BEFORE the chat
+  // coordinator so the merge wrapper (which attaches turns) and the swarm-tool
+  // injection in createBackend both address the same instance. Swarm config is
+  // resolved from defaults today (no env/flag override wired yet) — the shape is
+  // ready for one via resolveSwarmConfig.
+  const swarmConfig = resolveSwarmConfig();
+  const swarmCoordinator = new SwarmCoordinator({
+    workerFactory: createGatewayWorkerFactory({
+      credentialProvider: swarmCredentialProvider,
+      dataDir,
+      // No logger: the gateway's StructuredLogger (from @dash/logging) is not
+      // assignable to @dash/agent's Logger (different `error` arity), and the
+      // chat-path PiAgentBackend is likewise constructed with an undefined
+      // logger — workers stay consistent with that.
+    }),
+    // EventLogStore.append is synchronous (returns the assigned seq); the swarm
+    // sink expects a Promise. Wrap so the coordinator's fire-and-forget
+    // out-of-band append is type-correct and never throws into the loop.
+    eventLog: {
+      append: (agentId, conversationId, messageId, payload) =>
+        Promise.resolve(eventLogStore.append(agentId, conversationId, messageId, payload)),
+    },
+    globalMaxConcurrentWorkers: swarmConfig.maxConcurrentWorkersGlobal,
+    defaultCaps: swarmConfig.defaults,
+  });
+
   const agents = createAgentChatCoordinator({
     registry,
     poolMaxSize: Number(process.env.POOL_MAX_SIZE ?? '200'),
@@ -294,7 +343,13 @@ async function main() {
     // read-only `listSkills` route immediately — no boot snapshot.
     getPluginSkillDirs: () => wiringState.skillDirs,
     getPluginCommandFiles: () => wiringState.commandFiles,
-    createBackend: async (agentConfig, conversationId) => {
+    // Swarm merge wiring. `isEnabled` is a live registry read so a mid-turn
+    // PUT /agents/:id that flips swarm.enabled takes effect on the next chat.
+    swarm: {
+      coordinator: swarmCoordinator,
+      isEnabled: (id) => registry.get(id)?.config.swarm?.enabled === true,
+    },
+    createBackend: async (agentConfig, conversationId, agentId) => {
       const sessionDir = resolve(dataDir, 'sessions', agentConfig.name, conversationId);
       await mkdir(sessionDir, { recursive: true });
 
@@ -418,21 +473,41 @@ async function main() {
         mcpManager,
         mcpConfigStore,
         mcpAgentContext,
-        createProjectsTools({
-          db: projectsDb,
-          // The session id changes per run(); the accessor closure reads the
-          // backend's in-flight conversation id so each link write uses the
-          // right id without rebuilding tools per run.
-          getSessionId: () => backend.getCurrentSessionId(),
-          // Projects identifies an agent by config.name (NOT the registry
-          // entry.id used for chat addressing). name is unique + immutable and
-          // is already the gateway's on-disk identity key (sessions/<name>/,
-          // skills/<name>/), so created_by_agent_id and
-          // session_issue_link.agent_id are keyed on name. CONTRACT: any
-          // consumer of the `agents_involved` filter (e.g. MC's "Tasks (n)"
-          // deep-link) must pass config.name.
-          getAgentId: () => agentConfig.name,
-        }),
+        // Orchestrator-side extra tools: the projects tools always, plus the
+        // swarm tools (spawn/wait/send/check) ONLY when this agent is
+        // swarm-enabled. The swarm tools are keyed by the REGISTRY `agentId`
+        // (threaded through the factory) — the same key the merge wrapper's
+        // attach() uses — so each tool call resolves the live run for this turn.
+        // The conversationId is late-bound to the backend's in-flight session id
+        // (mirroring the projects tools) so it tracks the right run per call.
+        [
+          ...createProjectsTools({
+            db: projectsDb,
+            // The session id changes per run(); the accessor closure reads the
+            // backend's in-flight conversation id so each link write uses the
+            // right id without rebuilding tools per run.
+            getSessionId: () => backend.getCurrentSessionId(),
+            // Projects identifies an agent by config.name (NOT the registry
+            // entry.id used for chat addressing). name is unique + immutable and
+            // is already the gateway's on-disk identity key (sessions/<name>/,
+            // skills/<name>/), so created_by_agent_id and
+            // session_issue_link.agent_id are keyed on name. CONTRACT: any
+            // consumer of the `agents_involved` filter (e.g. MC's "Tasks (n)"
+            // deep-link) must pass config.name.
+            getAgentId: () => agentConfig.name,
+          }),
+          // SwarmExtraTool is a structural copy of ExtraTool (details? is
+          // optional there, required here) — the same duck-typed shape the
+          // worker side casts in swarm-wiring.ts. Cast so the combined array
+          // matches the backend's ExtraTool[] slot.
+          ...(agentConfig.swarm?.enabled
+            ? (createSwarmTools({
+                coordinator: swarmCoordinator,
+                agentId,
+                conversationId: () => backend.getCurrentSessionId() ?? '',
+              }) as unknown as ExtraTool[])
+            : []),
+        ],
         commandFiles,
         // Plugin hook engine — composes tool hooks onto pi's agent and fires
         // SessionStart/Stop around each run. Shared across all agents; a no-op
@@ -740,6 +815,10 @@ async function main() {
     relayClient?.stop();
     dialTokenManager?.stop();
     await mcpManager.stop();
+    // Finalize every live swarm run (cancels in-flight workers, aborts their
+    // orchestrators) BEFORE the chat coordinator tears down its warm backends,
+    // so no worker outlives the pool it borrowed its identity from.
+    swarmCoordinator.stop();
     await agents.stop();
     await gateway.stop();
     managementServer.close();
