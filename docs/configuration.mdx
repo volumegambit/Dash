@@ -232,6 +232,8 @@ Supported events:
 | `PreToolUse` | Before a tool executes (matched by tool name) | Allow or deny the tool call |
 | `PostToolUse` | After a tool executes (matched by tool name) | Block the result, or append context |
 | `Stop` | After the run completes | Cleanup (its output is logged, not injected) |
+| `SubagentStart` | When an [agent swarm](/tools#swarm-orchestration) worker starts (matched by worker role) | Observe worker starts — log, notify, audit |
+| `SubagentStop` | When a swarm worker finishes, fails, or is cancelled (matched by worker role) | Observe worker results — log, notify, audit |
 
 Each event maps to an array of matcher groups; each group has an optional `matcher` (a tool name, a `|`-separated list, or a regex — omit or use `*` to match everything) and a `hooks` array of `{ "type": "command", "command": "...", "timeout": <seconds> }` entries.
 
@@ -264,7 +266,7 @@ The string `${CLAUDE_PLUGIN_ROOT}` in a command is substituted with the plugin's
 
 **Fail-open by design.** A hook that errors, times out, exits non-zero (other than `2`), or prints malformed JSON is ignored — the run proceeds as if the hook had allowed it. Hooks never crash the gateway.
 
-**Where each event fires.** `SessionStart`, `PreToolUse`, `PostToolUse`, and `Stop` fire on **every** agent run, whether the run was reached through Mission Control chat or an inbound channel. `UserPromptSubmit` fires **only on the channel path** (Telegram, WhatsApp); it does not run for Mission Control chat messages.
+**Where each event fires.** `SessionStart`, `PreToolUse`, `PostToolUse`, and `Stop` fire on **every** agent run, whether the run was reached through Mission Control chat or an inbound channel. `UserPromptSubmit` fires **only on the channel path** (Telegram, WhatsApp); it does not run for Mission Control chat messages. `SubagentStart` and `SubagentStop` fire only for swarm-enabled agents, around each worker's lifecycle; their stdin payload carries `worker_id`, `role`, and (on stop) the terminal `status` (`done`, `failed`, or `cancelled`). They are observe-only — a Subagent hook cannot block a worker, and its output is logged, not injected.
 
 ### LLM providers
 
