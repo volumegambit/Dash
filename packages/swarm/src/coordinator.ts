@@ -505,6 +505,17 @@ export class SwarmCoordinator {
     }
   }
 
+  /**
+   * Push an externally-reconstructed finalized run snapshot into the panel
+   * history ring buffer. Used at gateway boot to surface runs a previous
+   * process died in the middle of (rebuilt from the durable event log) —
+   * without it a crash-interrupted run vanishes from the panel entirely.
+   * Never touches live-turn state.
+   */
+  restoreFinalizedRun(snapshot: RunSnapshot): void {
+    this.pushHistory(snapshot.agentId, snapshot);
+  }
+
   activeWorkerCount(): number {
     let n = 0;
     for (const turn of this.live.values()) {
