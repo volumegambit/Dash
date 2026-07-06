@@ -1222,6 +1222,37 @@ describe('skill routes', () => {
   });
 });
 
+// MC's GatewaySupervisor POSTs this before falling back to SIGTERM
+// (packages/mc/src/runtime/process.ts shutdownStaleProcess). Until this route
+// existed the graceful path 404'd and every MC-initiated restart was
+// signal-based.
+describe('POST /lifecycle/shutdown', () => {
+  it('requires auth', async () => {
+    const { app } = createApp({ onShutdown: vi.fn() });
+    const res = await app.request('/lifecycle/shutdown', { method: 'POST' });
+    expect(res.status).toBe(401);
+  });
+
+  it('returns 200 before invoking onShutdown, then invokes it', async () => {
+    const onShutdown = vi.fn();
+    const { app } = createApp({ onShutdown });
+    const res = await app.request('/lifecycle/shutdown', { method: 'POST', headers: AUTH });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true });
+    // The handler must NOT run teardown before responding — the gateway's
+    // shutdown sequence closes this very server and exits the process, which
+    // would kill the in-flight response. It defers instead.
+    expect(onShutdown).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(onShutdown).toHaveBeenCalledTimes(1));
+  });
+
+  it('is not mounted when onShutdown is not wired', async () => {
+    const { app } = createApp();
+    const res = await app.request('/lifecycle/shutdown', { method: 'POST', headers: AUTH });
+    expect(res.status).toBe(404);
+  });
+});
+
 describe('POST /agents/:agentId/conversation-title', () => {
   function registerAgent(agentRegistry: ReturnType<typeof makeAgentRegistry>) {
     return (agentRegistry.register as ReturnType<typeof vi.fn>)({
