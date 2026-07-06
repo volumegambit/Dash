@@ -93,7 +93,10 @@ export type McAgentEvent =
       report: string;
       usage?: { inputTokens: number; outputTokens: number };
     }
-  | { type: 'error'; error: string; timestamp: string };
+  | { type: 'error'; error: string; timestamp: string }
+  // Transient provider failure the backend is auto-retrying (pi auto-retry).
+  // Rendered as a "Retrying…" notice, not a terminal error.
+  | { type: 'agent_retry'; attempt: number; reason: string };
 
 export interface TelegramBotInfo {
   username: string;

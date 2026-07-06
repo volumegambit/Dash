@@ -108,3 +108,56 @@ describe('MessageBubble unresolved tool calls', () => {
     expect(container.querySelector('.lucide-ban')).not.toBeNull();
   });
 });
+
+describe('MessageBubble auto-retry rendering', () => {
+  function assistantMessage(events: Record<string, unknown>[]) {
+    return {
+      id: 'm1',
+      role: 'assistant' as const,
+      content: { type: 'assistant' as const, events },
+      timestamp: '2026-07-06T00:00:00Z',
+    };
+  }
+
+  const transientError = {
+    type: 'error',
+    error: 'Request timed out.',
+    timestamp: '2026-07-06T00:00:01Z',
+  } satisfies McAgentEvent;
+
+  const retry = {
+    type: 'agent_retry',
+    attempt: 1,
+    reason: 'Request timed out.',
+  } satisfies McAgentEvent;
+
+  it('folds a transient error into a retry notice when agent_retry follows', () => {
+    const { container } = render(
+      <MessageBubble message={assistantMessage([])} streamingEvents={[transientError, retry]} />,
+    );
+    expect(container.textContent).toContain('Retrying (attempt 1)');
+    // The superseded error must not render as a terminal red error block
+    expect(container.querySelector('.text-red')).toBeNull();
+  });
+
+  it('still renders a terminal error red when no retry follows', () => {
+    const { container } = render(
+      <MessageBubble message={assistantMessage([])} streamingEvents={[transientError]} />,
+    );
+    expect(container.querySelector('.text-red')).not.toBeNull();
+    expect(container.textContent).toContain('Request timed out.');
+    expect(container.textContent).not.toContain('Retrying');
+  });
+
+  it('renders retry notice followed by recovered content', () => {
+    const { container } = render(
+      <MessageBubble
+        message={assistantMessage([])}
+        streamingEvents={[transientError, retry, { type: 'text_delta', text: 'Recovered fine.' }]}
+      />,
+    );
+    expect(container.textContent).toContain('Retrying (attempt 1)');
+    expect(container.textContent).toContain('Recovered fine.');
+    expect(container.querySelector('.text-red')).toBeNull();
+  });
+});

@@ -621,6 +621,13 @@ under a Node version missing a required symbol, or otherwise force the gateway s
 2. **Verify:** The tool result shows an error state (red icon, error text)
 3. **Verify:** The error does not crash the entire chat — subsequent messages can still be sent
 
+### 14.4 Transient Provider Error — Auto-Retry
+1. Trigger a transient provider failure at the start of a turn (e.g., briefly cut network connectivity just before sending a message, restoring it a few seconds later; or use a flaky provider). The backend auto-retries transient errors ("Request timed out.", 429/5xx, connection resets) with backoff
+2. **Verify:** The chat does NOT show a terminal red error block for the transient failure. Instead a muted "Retrying (attempt N) — <reason>" notice with a spinner appears
+3. **Verify:** When the retry succeeds, the assistant's response streams in below the retry notice — the turn completes normally with usage/context updating
+4. **Verify:** The turn never freezes: no case where an error block sits above a perpetual spinner while nothing else arrives (regression guard — pi emits `agent_end` with `willRetry: true` between attempts; the backend must not end the stream there)
+5. If retries are exhausted (persistent failure), **Verify:** a red error block appears (Section 14.1 behavior) and the turn ends
+
 ---
 
 ## Section 15: Chat — Credential & MCP Banners

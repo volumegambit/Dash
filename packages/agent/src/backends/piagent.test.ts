@@ -471,6 +471,120 @@ describe('PiAgentBackend lifecycle', () => {
 
     await backend.stop();
   });
+
+  it('run() keeps streaming across pi auto-retry (agent_end with willRetry: true)', async () => {
+    const { createAgentSession } = await import('@earendil-works/pi-coding-agent');
+
+    // Reproduces the "chat dies at Request timed out." bug: pi persists the
+    // failed assistant message, emits agent_end with willRetry: true, then
+    // auto-retries and finishes the turn. The backend must NOT treat the
+    // mid-retry agent_end as end-of-turn — the retry's events belong to the
+    // same run() stream.
+    // biome-ignore lint/suspicious/noExplicitAny: test mock callback type
+    let subscribeCb: ((event: any) => void) | null = null;
+    const mockAgent = { setSystemPrompt: vi.fn() };
+    const mockSession = {
+      dispose: vi.fn(),
+      // biome-ignore lint/suspicious/noExplicitAny: test mock callback type
+      subscribe: vi.fn((cb: any) => {
+        subscribeCb = cb;
+        return vi.fn();
+      }),
+      prompt: vi.fn(async () => {
+        // Attempt 1: transient provider failure
+        subscribeCb?.({
+          type: 'message_end',
+          message: {
+            role: 'assistant',
+            stopReason: 'error',
+            errorMessage: 'Request timed out.',
+          },
+        });
+        // pi emits agent_end BETWEEN attempts, flagged willRetry
+        subscribeCb?.({ type: 'agent_end', messages: [], willRetry: true });
+        subscribeCb?.({
+          type: 'auto_retry_start',
+          attempt: 1,
+          maxAttempts: 5,
+          delayMs: 0,
+          errorMessage: 'Request timed out.',
+        });
+        // Backoff, then the retry succeeds
+        await new Promise((r) => setTimeout(r, 5));
+        subscribeCb?.({
+          type: 'message_update',
+          message: {},
+          assistantMessageEvent: {
+            type: 'text_delta',
+            contentIndex: 0,
+            delta: 'Recovered',
+            partial: {},
+          },
+        });
+        subscribeCb?.({
+          type: 'message_end',
+          message: {
+            role: 'assistant',
+            usage: {
+              input: 10,
+              output: 5,
+              cacheRead: 0,
+              cacheWrite: 0,
+              totalTokens: 15,
+              cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+            },
+          },
+        });
+        subscribeCb?.({ type: 'agent_end', messages: [], willRetry: false });
+      }),
+      abort: vi.fn(),
+      setModel: vi.fn().mockResolvedValue(undefined),
+      getActiveToolNames: vi.fn(() => ['read']),
+      setActiveToolsByName: vi.fn(),
+      agent: mockAgent,
+    };
+
+    vi.mocked(createAgentSession).mockResolvedValueOnce({
+      // biome-ignore lint/suspicious/noExplicitAny: test mock for partial session object
+      session: mockSession as any,
+      // biome-ignore lint/suspicious/noExplicitAny: test mock
+      extensionsResult: {} as any,
+    });
+
+    const backend = new PiAgentBackend(
+      { model: 'anthropic/claude-sonnet-4-20250514', systemPrompt: 'Test' },
+      { anthropic: 'test-key' },
+    );
+
+    await backend.start('/tmp/test');
+
+    const events: AgentEvent[] = [];
+    for await (const ev of backend.run(
+      {
+        channelId: 'ch-1',
+        conversationId: 'conv-1',
+        model: 'anthropic/claude-sonnet-4-20250514',
+        message: 'hello',
+        systemPrompt: 'Test',
+      },
+      {},
+    )) {
+      events.push(ev);
+    }
+
+    expect(events).toEqual([
+      { type: 'error', error: new Error('Request timed out.') },
+      { type: 'agent_retry', attempt: 1, reason: 'Request timed out.' },
+      { type: 'text_delta', text: 'Recovered' },
+      {
+        type: 'response',
+        content: 'Recovered',
+        usage: { inputTokens: 10, outputTokens: 5, cacheReadTokens: 0, cacheWriteTokens: 0 },
+      },
+    ]);
+
+    await backend.stop();
+  });
 });
 
 describe('PiAgentBackend plugin hooks', () => {
