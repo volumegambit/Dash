@@ -50,6 +50,7 @@ import {
   globToRegex,
   validateProviderCatalog,
 } from '@dash/plugins';
+import { localDateStamp } from './local-date.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, '..');
@@ -330,7 +331,7 @@ async function applyChanges(catalogs: LoadedCatalog[], reports: ProviderReport[]
   };
 
   const env = loadEnvLocal();
-  const today = new Date().toISOString().slice(0, 10);
+  const today = localDateStamp();
   const byId = new Map(reports.map((r) => [r.provider, r]));
 
   for (const { file, path, catalog } of catalogs) {
