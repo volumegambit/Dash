@@ -121,6 +121,33 @@ describe('ChatService', () => {
     expect(statuses).toContain('done');
   });
 
+  it('streams through a remote chatBaseUrl with relay headers', async () => {
+    const port = BASE_PORT + 110;
+    const seenHeaders: Array<string | string[] | undefined> = [];
+    service = new ChatService(store, onEvent, onDone, onError, {
+      chatBaseUrl: `ws://localhost:${port}`,
+      chatToken: 'chat-token',
+      headers: { 'x-dash-relay-credential': 'relay-cred' },
+    });
+
+    wss = new WebSocketServer({ port });
+    wss.on('connection', (ws, req) => {
+      seenHeaders.push(req.headers['x-dash-relay-credential']);
+      ws.on('message', (raw) => {
+        const msg = JSON.parse(String(raw));
+        ws.send(JSON.stringify({ type: 'done', id: msg.id }));
+      });
+    });
+    await new Promise<void>((r) => wss?.on('listening', r));
+
+    const conv = await service.createConversation('agent-1');
+    await service.sendMessage(conv.id, 'hello');
+    await new Promise((r) => setTimeout(r, 100));
+
+    expect(seenHeaders).toEqual(['relay-cred']);
+    expect(onDone).toHaveBeenCalledWith(conv.id);
+  });
+
   it('emits onSessionStatus needs on a question event and error on an error frame', async () => {
     const port = BASE_PORT + 130;
     service = makeService(port);

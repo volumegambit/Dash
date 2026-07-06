@@ -169,6 +169,10 @@ const api: MissionControlAPI = {
     ipcRenderer.on('gateway:status', listener);
     return () => ipcRenderer.removeListener('gateway:status', listener);
   },
+  gatewayConnectionGet: () => ipcRenderer.invoke('gatewayConnection:get'),
+  gatewayConnectionUseLocal: () => ipcRenderer.invoke('gatewayConnection:useLocal'),
+  gatewayConnectionSaveRelay: (input) => ipcRenderer.invoke('gatewayConnection:saveRelay', input),
+  gatewayDeployVps: (input) => ipcRenderer.invoke('gateway:deployVps', input),
 
   // Gateway events (SSE)
   onGatewayEvent: (callback: (eventType: string, data: string) => void): (() => void) => {

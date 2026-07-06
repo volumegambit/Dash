@@ -31,12 +31,31 @@ export type {
   TokenExchangeResult,
 } from './runtime/control-plane-session.js';
 export { createDefaultKeychainStore, InMemoryKeychainStore } from './security/keychain-store.js';
-export type { KeychainStore, IssuedGateway } from './security/keychain-store.js';
+export type {
+  KeychainStore,
+  IssuedGateway,
+  RemoteGatewaySecrets,
+} from './security/keychain-store.js';
+export {
+  buildVpsGatewayDeployScript,
+  deployGatewayToVps,
+  deriveRelayConnectionUrls,
+} from './runtime/vps-gateway-deploy.js';
+export type {
+  RelayConnectionUrls,
+  SshRunner,
+  VpsGatewayDeployRequest,
+  VpsGatewayDeployResult,
+} from './runtime/vps-gateway-deploy.js';
 export { ConversationStore } from './conversations.js';
 export type { McConversation, McMessage } from './conversations.js';
 export type { MessagingApp, RoutingRule, RoutingCondition } from './types.js';
 export { SettingsStore } from './settings-store.js';
-export type { AppSettings } from './settings-store.js';
+export type {
+  AppSettings,
+  GatewayConnectionMode,
+  GatewayConnectionSettings,
+} from './settings-store.js';
 export { getPlatformDataDir } from './platform-paths.js';
 export { GatewayManagementClient, GatewayHttpError } from './runtime/gateway-client.js';
 export type {

@@ -14,21 +14,26 @@ import type {
 import { ManagementClient } from '@dash/management';
 import {
   ConversationStore,
-  type GatewayManagementClient,
+  GatewayManagementClient,
   GatewayStateStore,
   GatewaySupervisor,
   SettingsStore,
   createDefaultKeychainStore,
   defaultProcessSpawner,
+  deployGatewayToVps,
+  generateToken,
   resolveGatewayPorts,
 } from '@dash/mc';
 import type {
   ControlPlaneClient,
   CreateAgentRequest,
   GatewayChannel,
+  GatewayConnectionSettings,
   GatewaySupervisorOptions,
   IssuedGateway,
   ProcessSpawner,
+  RemoteGatewaySecrets,
+  VpsGatewayDeployRequest,
 } from '@dash/mc';
 import { desktopDir, gatewayDir, logsDir, migrateLegacyLayout } from '@dash/paths';
 import { app, dialog, ipcMain, shell } from 'electron';
@@ -39,6 +44,9 @@ import type {
   CompanionSelection,
   ControlPlaneStatus,
   DeviceInfo,
+  GatewayConnectionStatus,
+  GatewayRelayConnectionInput,
+  McVpsGatewayDeployRequest,
   PairingInfo,
   SetupStatus,
 } from '../shared/ipc.js';
@@ -201,6 +209,46 @@ function getSettingsStore(): SettingsStore {
   return new SettingsStore(DATA_DIR);
 }
 
+const RELAY_CREDENTIAL_HEADER = 'x-dash-relay-credential';
+
+interface ActiveGatewayEndpoint {
+  mode: 'local' | 'remote';
+  managementBaseUrl: string;
+  chatBaseUrl: string;
+  managementToken: string;
+  chatToken: string;
+  headers: Record<string, string>;
+}
+
+function localGatewayProfile(): GatewayConnectionSettings {
+  return { mode: 'local' };
+}
+
+function trimTrailingSlash(value: string): string {
+  return value.replace(/\/+$/, '');
+}
+
+function websocketBaseFromHttpBase(baseUrl: string): string {
+  const url = new URL(baseUrl);
+  url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+  url.pathname = '';
+  url.search = '';
+  url.hash = '';
+  return trimTrailingSlash(url.toString());
+}
+
+function headersForRemoteGateway(secrets: RemoteGatewaySecrets): Record<string, string> {
+  return secrets.relayCredential ? { [RELAY_CREDENTIAL_HEADER]: secrets.relayCredential } : {};
+}
+
+function publicGatewayConnectionStatus(
+  profile: GatewayConnectionSettings,
+  hasRemoteSecrets: boolean,
+  health: GatewayConnectionStatus['health'] = 'unknown',
+): GatewayConnectionStatus {
+  return { profile, hasRemoteSecrets, health };
+}
+
 function getChatService(getWindow: () => BrowserWindow | undefined): ChatService {
   if (!chatService) {
     chatService = new ChatService(
@@ -289,6 +337,85 @@ export async function registerIpcHandlers(
   });
   const gw = getGatewaySupervisor(gwOptions, keychain, controlPlaneClient);
 
+  const getGatewayConnectionProfile = async (): Promise<GatewayConnectionSettings> =>
+    (await getSettingsStore().get()).gatewayConnection ?? localGatewayProfile();
+
+  const getRemoteGatewayEndpoint = async (): Promise<ActiveGatewayEndpoint | null> => {
+    const profile = await getGatewayConnectionProfile();
+    if (profile.mode === 'local') return null;
+    if (!profile.managementBaseUrl) {
+      throw new Error('Remote gateway profile is missing its management URL');
+    }
+    const secrets = await keychain.getRemoteGatewaySecrets();
+    if (!secrets) {
+      throw new Error('Remote gateway credentials are missing; reconnect the gateway');
+    }
+    const managementBaseUrl = trimTrailingSlash(profile.managementBaseUrl);
+    return {
+      mode: 'remote',
+      managementBaseUrl,
+      chatBaseUrl: trimTrailingSlash(
+        profile.chatBaseUrl ?? websocketBaseFromHttpBase(managementBaseUrl),
+      ),
+      managementToken: secrets.managementToken,
+      chatToken: secrets.chatToken,
+      headers: headersForRemoteGateway(secrets),
+    };
+  };
+
+  const getActiveGatewayEndpoint = async (): Promise<ActiveGatewayEndpoint | null> => {
+    const remote = await getRemoteGatewayEndpoint();
+    if (remote) return remote;
+    const gatewayState = await new GatewayStateStore(DATA_DIR).read();
+    const chatToken = await gw.getChatToken();
+    const managementToken = await gw.getGatewayToken();
+    if (!gatewayState || !chatToken || !managementToken) return null;
+    return {
+      mode: 'local',
+      managementBaseUrl: `http://127.0.0.1:${gatewayState.port}`,
+      chatBaseUrl: `ws://127.0.0.1:${gatewayState.channelPort}`,
+      managementToken,
+      chatToken,
+      headers: {},
+    };
+  };
+
+  const getGatewayManagementClient = async (
+    ensureLocal = true,
+  ): Promise<GatewayManagementClient | null> => {
+    const remote = await getRemoteGatewayEndpoint();
+    if (remote) {
+      return new GatewayManagementClient(
+        remote.managementBaseUrl,
+        remote.managementToken,
+        remote.headers,
+      );
+    }
+    return ensureLocal ? getClient(gw) : gw.getClient();
+  };
+
+  const getRequiredGatewayManagementClient = async (): Promise<GatewayManagementClient> => {
+    const client = await getGatewayManagementClient();
+    if (!client) throw new Error('Gateway not running');
+    return client;
+  };
+
+  const getGatewayConnectionStatus = async (): Promise<GatewayConnectionStatus> => {
+    const profile = await getGatewayConnectionProfile();
+    const hasRemoteSecrets = Boolean(await keychain.getRemoteGatewaySecrets());
+    let health: GatewayConnectionStatus['health'] = 'unknown';
+    try {
+      const client = await getGatewayManagementClient(false);
+      if (client) {
+        await client.health();
+        health = 'healthy';
+      }
+    } catch {
+      health = 'unhealthy';
+    }
+    return publicGatewayConnectionStatus(profile, hasRemoteSecrets, health);
+  };
+
   // First-run detection: if there's no gateway-state.json yet, we
   // have never successfully started the gateway on this machine and
   // the OS keychain has not yet been touched by the Electron binary.
@@ -307,6 +434,10 @@ export async function registerIpcHandlers(
   // the OS keychain (via the supervisor); both must be populated or the
   // call throws with the given feature name in the error message.
   const getDirectManagementClient = async (feature: string): Promise<ManagementClient> => {
+    const remote = await getRemoteGatewayEndpoint();
+    if (remote) {
+      return new ManagementClient(remote.managementBaseUrl, remote.managementToken, remote.headers);
+    }
     const gatewayState = await new GatewayStateStore(DATA_DIR).read();
     if (!gatewayState) {
       throw new Error(`Gateway not running — ${feature} unavailable`);
@@ -327,16 +458,15 @@ export async function registerIpcHandlers(
   // uses them to call the gateway's event-log replay endpoint after
   // a dropped WebSocket.
   const refreshChatServiceConnection = async () => {
-    const gatewayState = await new GatewayStateStore(DATA_DIR).read();
-    const chatToken = await gw.getChatToken();
-    const managementToken = await gw.getGatewayToken();
-    if (gatewayState) {
+    const endpoint = await getActiveGatewayEndpoint();
+    if (endpoint) {
       const svc = getChatService(getWindow);
       svc.setGatewayConnection({
-        channelPort: gatewayState.channelPort,
-        chatToken: chatToken ?? undefined,
-        managementBaseUrl: `http://127.0.0.1:${gatewayState.port}`,
-        managementToken: managementToken ?? undefined,
+        chatBaseUrl: endpoint.chatBaseUrl,
+        chatToken: endpoint.chatToken,
+        managementBaseUrl: endpoint.managementBaseUrl,
+        managementToken: endpoint.managementToken,
+        headers: endpoint.headers,
       });
       // Fire-and-forget startup reconciliation: scan every
       // conversation for incomplete turns (user message with no
@@ -381,10 +511,13 @@ export async function registerIpcHandlers(
     hasExistingGatewayState,
   );
   if (configuredAtLaunch) {
-    try {
-      await gw.ensureRunning();
-    } catch (err) {
-      console.error('Gateway startup failed on MC launch:', err);
+    const launchProfile = await getGatewayConnectionProfile();
+    if (launchProfile.mode === 'local') {
+      try {
+        await gw.ensureRunning();
+      } catch (err) {
+        console.error('Gateway startup failed on MC launch:', err);
+      }
     }
     await refreshChatServiceConnection();
   } else {
@@ -407,24 +540,25 @@ export async function registerIpcHandlers(
     const win = getWindow();
     if (win && !win.isDestroyed()) win.webContents.send('gateway:status', status);
   };
-  gatewayPoller = new GatewayPoller(async () => gw.getClient());
+  gatewayPoller = new GatewayPoller(async () => getGatewayManagementClient(false));
 
   // SSE subscription to gateway events
   let sseAbort: AbortController | null = null;
 
   async function connectToGatewayEvents(): Promise<void> {
     sseAbort?.abort();
-    const gatewayState = await new GatewayStateStore(DATA_DIR).read();
-    if (!gatewayState) return;
-    const token = await gw.getGatewayToken();
-    if (!token) return;
+    const endpoint = await getActiveGatewayEndpoint();
+    if (!endpoint) return;
 
     const abort = new AbortController();
     sseAbort = abort;
 
     try {
-      const res = await fetch(`http://127.0.0.1:${gatewayState.port}/events`, {
-        headers: { Authorization: `Bearer ${token}` },
+      const res = await fetch(`${endpoint.managementBaseUrl}/events`, {
+        headers: {
+          ...endpoint.headers,
+          Authorization: `Bearer ${endpoint.managementToken}`,
+        },
         signal: abort.signal,
       });
       if (!res.ok || !res.body) return;
@@ -486,15 +620,14 @@ export async function registerIpcHandlers(
     projectsWs?.close();
     projectsWs = null;
     void (async () => {
-      const gatewayState = await new GatewayStateStore(DATA_DIR).read();
-      const token = gatewayState ? await gw.getGatewayToken() : null;
-      if (!gatewayState || !token) {
+      const endpoint = await getActiveGatewayEndpoint();
+      if (!endpoint) {
         // State/token not readable yet (e.g. first boot race) — retry.
         scheduleProjectsWsReconnect();
         return;
       }
-      const url = `ws://127.0.0.1:${gatewayState.port}/projects/ws?token=${encodeURIComponent(token)}`;
-      const ws = new WebSocket(url);
+      const url = `${websocketBaseFromHttpBase(endpoint.managementBaseUrl)}/projects/ws?token=${encodeURIComponent(endpoint.managementToken)}`;
+      const ws = new WebSocket(url, { headers: endpoint.headers });
       projectsWs = ws;
       ws.addEventListener('message', (event) => {
         let frame: { topic?: string; payload?: unknown };
@@ -570,27 +703,27 @@ export async function registerIpcHandlers(
   // -----------------------------------------------------------------------
 
   ipcMain.handle('agents:list', async () => {
-    const client = await getClient(gw);
+    const client = await getRequiredGatewayManagementClient();
     return client.listAgents();
   });
 
   ipcMain.handle('agents:get', async (_e, id: string) => {
-    const client = await getClient(gw);
+    const client = await getRequiredGatewayManagementClient();
     return client.getAgent(id);
   });
 
   ipcMain.handle('agents:create', async (_e, config: CreateAgentRequest) => {
-    const client = await getClient(gw);
+    const client = await getRequiredGatewayManagementClient();
     return client.createAgent(config);
   });
 
   ipcMain.handle('agents:update', async (_e, id: string, patch: Partial<CreateAgentRequest>) => {
-    const client = await getClient(gw);
+    const client = await getRequiredGatewayManagementClient();
     return client.updateAgent(id, patch);
   });
 
   ipcMain.handle('agents:remove', async (_e, id: string) => {
-    const client = await getClient(gw);
+    const client = await getRequiredGatewayManagementClient();
     await client.removeAgent(id);
   });
 
@@ -668,17 +801,7 @@ export async function registerIpcHandlers(
       keychain,
       controlPlaneClient,
     });
-    const state = await new GatewayStateStore(DATA_DIR).read();
-    const chatToken = await gw.getChatToken();
-    const managementToken = await gw.getGatewayToken();
-    if (state && chatService) {
-      chatService.setGatewayConnection({
-        channelPort: state.channelPort,
-        chatToken: chatToken ?? undefined,
-        managementBaseUrl: `http://127.0.0.1:${state.port}`,
-        managementToken: managementToken ?? undefined,
-      });
-    }
+    await refreshChatServiceConnection();
   });
 
   ipcMain.handle('devices:list', async (): Promise<DeviceInfo[]> => {
@@ -698,12 +821,12 @@ export async function registerIpcHandlers(
   });
 
   ipcMain.handle('agents:disable', async (_e, id: string) => {
-    const client = await getClient(gw);
+    const client = await getRequiredGatewayManagementClient();
     await client.disableAgent(id);
   });
 
   ipcMain.handle('agents:enable', async (_e, id: string) => {
-    const client = await getClient(gw);
+    const client = await getRequiredGatewayManagementClient();
     await client.enableAgent(id);
   });
 
@@ -712,12 +835,12 @@ export async function registerIpcHandlers(
   // -----------------------------------------------------------------------
 
   ipcMain.handle('channels:list', async () => {
-    const client = await getClient(gw);
+    const client = await getRequiredGatewayManagementClient();
     return client.listChannels();
   });
 
   ipcMain.handle('channels:get', async (_e, name: string) => {
-    const client = await getClient(gw);
+    const client = await getRequiredGatewayManagementClient();
     return client.getChannel(name);
   });
 
@@ -733,7 +856,7 @@ export async function registerIpcHandlers(
         routing: GatewayChannel['routing'];
       },
     ) => {
-      const client = await getClient(gw);
+      const client = await getRequiredGatewayManagementClient();
       // If token provided, store as credential first
       if (config.token) {
         await client.setCredential(`channel:${config.name}:token`, config.token);
@@ -754,13 +877,13 @@ export async function registerIpcHandlers(
       name: string,
       patch: Partial<Pick<GatewayChannel, 'globalDenyList' | 'routing'>>,
     ) => {
-      const client = await getClient(gw);
+      const client = await getRequiredGatewayManagementClient();
       await client.updateChannel(name, patch);
     },
   );
 
   ipcMain.handle('channels:remove', async (_e, name: string) => {
-    const client = await getClient(gw);
+    const client = await getRequiredGatewayManagementClient();
     await client.removeChannel(name);
   });
 
@@ -788,7 +911,7 @@ export async function registerIpcHandlers(
   // -----------------------------------------------------------------------
 
   ipcMain.handle('credentials:set', async (_e, key: string, value: string) => {
-    const client = await getClient(gw);
+    const client = await getRequiredGatewayManagementClient();
     await client.setCredential(key, value);
     // Storing a credential is the reliable "onboarding finished" moment —
     // the wizard's API-key step lands here with a live gateway.
@@ -796,12 +919,12 @@ export async function registerIpcHandlers(
   });
 
   ipcMain.handle('credentials:list', async () => {
-    const client = await getClient(gw);
+    const client = await getRequiredGatewayManagementClient();
     return client.listCredentials();
   });
 
   ipcMain.handle('credentials:remove', async (_e, key: string) => {
-    const client = await getClient(gw);
+    const client = await getRequiredGatewayManagementClient();
     await client.removeCredential(key);
   });
 
@@ -815,7 +938,7 @@ export async function registerIpcHandlers(
       if (!result) {
         return { success: false, error: 'OAuth flow was cancelled or timed out' };
       }
-      const client = await getClient(gw);
+      const client = await getRequiredGatewayManagementClient();
       // Access token feeds the agent; refresh + expiry let the gateway keep it
       // fresh (see OAuthRefreshCoordinator). Standardized {provider}-oauth-* slots.
       await client.setCredential(`openai-api-key:${keyName}`, result.accessToken);
@@ -863,7 +986,7 @@ export async function registerIpcHandlers(
         if (!result) {
           return { success: false, error: 'Failed to create API key' };
         }
-        const client = await getClient(gw);
+        const client = await getRequiredGatewayManagementClient();
         // Access token feeds the agent; refresh + expiry let the gateway keep it
         // fresh (see OAuthRefreshCoordinator). All three use the standardized
         // {provider}-oauth-* slot convention.
@@ -893,7 +1016,7 @@ export async function registerIpcHandlers(
     if (!conversationsMigrated) {
       conversationsMigrated = true;
       try {
-        const client = await getClient(gw);
+        const client = await getRequiredGatewayManagementClient();
         const agents = await client.listAgents();
         const convStore = new ConversationStore(DATA_DIR);
         await convStore.migrate((agentName) => {
@@ -1074,27 +1197,85 @@ export async function registerIpcHandlers(
     return gatewayPoller?.getCurrentStatus() ?? 'starting';
   });
 
-  ipcMain.handle('gateway:restart', async () => {
-    await gw.restart();
-    // Update chat service connection with new gateway. Chat token
-    // and management token are keychain-resident; read them via
-    // the supervisor.
-    const state = await new GatewayStateStore(DATA_DIR).read();
-    const chatToken = await gw.getChatToken();
-    const managementToken = await gw.getGatewayToken();
-    if (state && chatService) {
-      chatService.setGatewayConnection({
-        channelPort: state.channelPort,
-        chatToken: chatToken ?? undefined,
-        managementBaseUrl: `http://127.0.0.1:${state.port}`,
-        managementToken: managementToken ?? undefined,
+  ipcMain.handle('gatewayConnection:get', async (): Promise<GatewayConnectionStatus> => {
+    return getGatewayConnectionStatus();
+  });
+
+  ipcMain.handle('gatewayConnection:useLocal', async (): Promise<GatewayConnectionStatus> => {
+    await getSettingsStore().set({
+      gatewayConnection: { mode: 'local', updatedAt: new Date().toISOString() },
+    });
+    await gw.ensureRunning();
+    await refreshChatServiceConnection();
+    return getGatewayConnectionStatus();
+  });
+
+  ipcMain.handle(
+    'gatewayConnection:saveRelay',
+    async (_e, input: GatewayRelayConnectionInput): Promise<GatewayConnectionStatus> => {
+      const managementBaseUrl = trimTrailingSlash(input.managementBaseUrl.trim());
+      if (!managementBaseUrl) throw new Error('Management URL is required');
+      const chatBaseUrl = trimTrailingSlash(
+        input.chatBaseUrl?.trim() || websocketBaseFromHttpBase(managementBaseUrl),
+      );
+      const profile: GatewayConnectionSettings = {
+        mode: input.mode,
+        name: input.name?.trim() || undefined,
+        managementBaseUrl,
+        chatBaseUrl,
+        updatedAt: new Date().toISOString(),
+      };
+      await keychain.setRemoteGatewaySecrets({
+        managementToken: input.managementToken,
+        chatToken: input.chatToken,
+        relayCredential: input.relayCredential?.trim() || undefined,
       });
+      await getSettingsStore().set({ gatewayConnection: profile });
+      await refreshChatServiceConnection();
+      return getGatewayConnectionStatus();
+    },
+  );
+
+  ipcMain.handle(
+    'gateway:deployVps',
+    async (_e, input: McVpsGatewayDeployRequest): Promise<GatewayConnectionStatus> => {
+      const managementToken = input.managementToken?.trim() || generateToken();
+      const chatToken = input.chatToken?.trim() || generateToken();
+      const request: VpsGatewayDeployRequest = {
+        ...input,
+        managementToken,
+        chatToken,
+      };
+      const result = await deployGatewayToVps(request);
+      const profile: GatewayConnectionSettings = {
+        mode: 'relay',
+        name: input.name?.trim() || result.name,
+        managementBaseUrl: result.managementBaseUrl,
+        chatBaseUrl: result.chatBaseUrl,
+        updatedAt: new Date().toISOString(),
+      };
+      await keychain.setRemoteGatewaySecrets({
+        managementToken,
+        chatToken,
+        relayCredential: input.relayCredential?.trim() || undefined,
+      });
+      await getSettingsStore().set({ gatewayConnection: profile });
+      await refreshChatServiceConnection();
+      return getGatewayConnectionStatus();
+    },
+  );
+
+  ipcMain.handle('gateway:restart', async () => {
+    if ((await getGatewayConnectionProfile()).mode !== 'local') {
+      throw new Error('Restart from Mission Control is only available for the local gateway');
     }
+    await gw.restart();
+    await refreshChatServiceConnection();
   });
 
   ipcMain.handle('gateway:status', async () => {
     try {
-      const client = await getClient(gw);
+      const client = await getRequiredGatewayManagementClient();
       await client.health();
       return 'healthy';
     } catch {
@@ -1121,7 +1302,7 @@ export async function registerIpcHandlers(
       isConfigured: async () =>
         isSetupConfigured(await getSettingsStore().get(), existsSync(gatewayStateJsonPath)),
       ensureHealthyClient: async () => {
-        const client = await getClient(gw);
+        const client = await getRequiredGatewayManagementClient();
         await client.health();
         return client;
       },
@@ -1149,17 +1330,17 @@ export async function registerIpcHandlers(
   // through — the gateway handles persistence, bootstrap fallback, and
   // SUPPORTED_MODELS filtering.
   ipcMain.handle('models:list', async () => {
-    const client = await getClient(gw);
+    const client = await getRequiredGatewayManagementClient();
     return client.listModels();
   });
 
   ipcMain.handle('models:refresh', async () => {
-    const client = await getClient(gw);
+    const client = await getRequiredGatewayManagementClient();
     return client.refreshModels();
   });
 
   ipcMain.handle('models:debug', async () => {
-    const client = await getClient(gw);
+    const client = await getRequiredGatewayManagementClient();
     return client.debugModels();
   });
 
@@ -1340,7 +1521,7 @@ export async function registerIpcHandlers(
   // -----------------------------------------------------------------------
 
   ipcMain.handle('whatsapp:startPairing', async (_event, appId: string) => {
-    const client = await getClient(gw);
+    const client = await getRequiredGatewayManagementClient();
 
     // Wrap gateway credentials with prefix for this pairing session
     const prefix = `whatsapp-auth:${appId}:`;

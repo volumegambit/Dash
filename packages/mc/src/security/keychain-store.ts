@@ -33,6 +33,9 @@ const ISSUED_GATEWAY_ID_ACCOUNT = 'issued-gateway-id';
 const ISSUED_GATEWAY_SUBDOMAIN_ACCOUNT = 'issued-gateway-subdomain';
 const ISSUED_GATEWAY_HOST_ACCOUNT = 'issued-gateway-host';
 const ISSUED_GATEWAY_DIAL_TOKEN_ACCOUNT = 'issued-gateway-dial-token';
+const REMOTE_GATEWAY_MANAGEMENT_TOKEN_ACCOUNT = 'remote-gateway-management-token';
+const REMOTE_GATEWAY_CHAT_TOKEN_ACCOUNT = 'remote-gateway-chat-token';
+const REMOTE_GATEWAY_RELAY_CREDENTIAL_ACCOUNT = 'remote-gateway-relay-credential';
 
 /**
  * The gateway identity the hosted control plane issues at enrollment. The
@@ -49,6 +52,12 @@ export interface IssuedGateway {
   subdomain: string;
   host: string;
   dialToken?: string;
+}
+
+export interface RemoteGatewaySecrets {
+  managementToken: string;
+  chatToken: string;
+  relayCredential?: string;
 }
 
 export interface KeychainStore {
@@ -98,6 +107,12 @@ export interface KeychainStore {
    */
   getIssuedGateway(): Promise<IssuedGateway | null>;
   setIssuedGateway(value: IssuedGateway): Promise<void>;
+  /**
+   * Secrets used when Mission Control connects to a gateway it did not spawn,
+   * usually through a relay or hosted Dash gateway endpoint.
+   */
+  getRemoteGatewaySecrets(): Promise<RemoteGatewaySecrets | null>;
+  setRemoteGatewaySecrets(value: RemoteGatewaySecrets): Promise<void>;
   /**
    * Remove all gateway secrets (management + chat tokens, relay token, gateway
    * id, relay admin secret, control-plane token, issued gateway record) from
@@ -198,6 +213,28 @@ class DefaultKeychainStore implements KeychainStore {
     (await this.entry(ISSUED_GATEWAY_DIAL_TOKEN_ACCOUNT)).setPassword(value.dialToken ?? '');
   }
 
+  async getRemoteGatewaySecrets(): Promise<RemoteGatewaySecrets | null> {
+    const managementToken = await (
+      await this.entry(REMOTE_GATEWAY_MANAGEMENT_TOKEN_ACCOUNT)
+    ).getPassword();
+    const chatToken = await (await this.entry(REMOTE_GATEWAY_CHAT_TOKEN_ACCOUNT)).getPassword();
+    if (!managementToken || !chatToken) return null;
+    const relayCredential = await (
+      await this.entry(REMOTE_GATEWAY_RELAY_CREDENTIAL_ACCOUNT)
+    ).getPassword();
+    return relayCredential
+      ? { managementToken, chatToken, relayCredential }
+      : { managementToken, chatToken };
+  }
+
+  async setRemoteGatewaySecrets(value: RemoteGatewaySecrets): Promise<void> {
+    (await this.entry(REMOTE_GATEWAY_MANAGEMENT_TOKEN_ACCOUNT)).setPassword(value.managementToken);
+    (await this.entry(REMOTE_GATEWAY_CHAT_TOKEN_ACCOUNT)).setPassword(value.chatToken);
+    (await this.entry(REMOTE_GATEWAY_RELAY_CREDENTIAL_ACCOUNT)).setPassword(
+      value.relayCredential ?? '',
+    );
+  }
+
   async clearAllGatewayTokens(): Promise<void> {
     for (const account of [
       GATEWAY_TOKEN_ACCOUNT,
@@ -210,6 +247,9 @@ class DefaultKeychainStore implements KeychainStore {
       ISSUED_GATEWAY_SUBDOMAIN_ACCOUNT,
       ISSUED_GATEWAY_DIAL_TOKEN_ACCOUNT,
       ISSUED_GATEWAY_HOST_ACCOUNT,
+      REMOTE_GATEWAY_MANAGEMENT_TOKEN_ACCOUNT,
+      REMOTE_GATEWAY_CHAT_TOKEN_ACCOUNT,
+      REMOTE_GATEWAY_RELAY_CREDENTIAL_ACCOUNT,
     ]) {
       try {
         (await this.entry(account)).deletePassword();
@@ -303,6 +343,26 @@ export class InMemoryKeychainStore implements KeychainStore {
     else this.store.delete(ISSUED_GATEWAY_DIAL_TOKEN_ACCOUNT);
   }
 
+  async getRemoteGatewaySecrets(): Promise<RemoteGatewaySecrets | null> {
+    const managementToken = this.store.get(REMOTE_GATEWAY_MANAGEMENT_TOKEN_ACCOUNT);
+    const chatToken = this.store.get(REMOTE_GATEWAY_CHAT_TOKEN_ACCOUNT);
+    if (!managementToken || !chatToken) return null;
+    const relayCredential = this.store.get(REMOTE_GATEWAY_RELAY_CREDENTIAL_ACCOUNT);
+    return relayCredential
+      ? { managementToken, chatToken, relayCredential }
+      : { managementToken, chatToken };
+  }
+
+  async setRemoteGatewaySecrets(value: RemoteGatewaySecrets): Promise<void> {
+    this.store.set(REMOTE_GATEWAY_MANAGEMENT_TOKEN_ACCOUNT, value.managementToken);
+    this.store.set(REMOTE_GATEWAY_CHAT_TOKEN_ACCOUNT, value.chatToken);
+    if (value.relayCredential) {
+      this.store.set(REMOTE_GATEWAY_RELAY_CREDENTIAL_ACCOUNT, value.relayCredential);
+    } else {
+      this.store.delete(REMOTE_GATEWAY_RELAY_CREDENTIAL_ACCOUNT);
+    }
+  }
+
   async clearAllGatewayTokens(): Promise<void> {
     this.store.delete(GATEWAY_TOKEN_ACCOUNT);
     this.store.delete(CHAT_TOKEN_ACCOUNT);
@@ -314,5 +374,8 @@ export class InMemoryKeychainStore implements KeychainStore {
     this.store.delete(ISSUED_GATEWAY_SUBDOMAIN_ACCOUNT);
     this.store.delete(ISSUED_GATEWAY_DIAL_TOKEN_ACCOUNT);
     this.store.delete(ISSUED_GATEWAY_HOST_ACCOUNT);
+    this.store.delete(REMOTE_GATEWAY_MANAGEMENT_TOKEN_ACCOUNT);
+    this.store.delete(REMOTE_GATEWAY_CHAT_TOKEN_ACCOUNT);
+    this.store.delete(REMOTE_GATEWAY_RELAY_CREDENTIAL_ACCOUNT);
   }
 }

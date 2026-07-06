@@ -96,6 +96,22 @@ describe('GatewayManagementClient', () => {
       const client = new GatewayManagementClient(BASE_URL, TOKEN);
       await expect(client.health()).rejects.toBeInstanceOf(GatewayHttpError);
     });
+
+    it('includes extra relay headers on health checks', async () => {
+      mockOk({ status: 'healthy', startedAt: '2026-04-01T00:00:00Z', agents: 0, channels: 0 });
+
+      const client = new GatewayManagementClient(BASE_URL, TOKEN, {
+        'x-dash-relay-credential': 'relay-cred',
+      });
+      await client.health();
+
+      expect(fetchSpy).toHaveBeenCalledWith(
+        `${BASE_URL}/health`,
+        expect.objectContaining({
+          headers: expect.objectContaining({ 'x-dash-relay-credential': 'relay-cred' }),
+        }),
+      );
+    });
   });
 
   describe('getRelayIdentity()', () => {

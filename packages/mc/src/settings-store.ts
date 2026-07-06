@@ -8,6 +8,21 @@ export interface AppSettings {
   setupCompletedAt?: string;
   /** Persisted top-left position of the always-on-top companion widget window. */
   companionWindowPos?: { x: number; y: number };
+  /**
+   * Non-secret gateway connection profile for Mission Control. Secrets for
+   * remote profiles live in the OS keychain.
+   */
+  gatewayConnection?: GatewayConnectionSettings;
+}
+
+export type GatewayConnectionMode = 'local' | 'relay' | 'hosted';
+
+export interface GatewayConnectionSettings {
+  mode: GatewayConnectionMode;
+  name?: string;
+  managementBaseUrl?: string;
+  chatBaseUrl?: string;
+  updatedAt?: string;
 }
 
 export class SettingsStore {

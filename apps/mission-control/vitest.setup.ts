@@ -192,6 +192,36 @@ function createMockApi(): MockApi {
     gatewayGetStatus: vi.fn().mockResolvedValue('healthy'),
     gatewayRestart: vi.fn().mockResolvedValue(undefined),
     gatewayOnStatus: vi.fn().mockReturnValue(() => {}),
+    gatewayConnectionGet: vi.fn().mockResolvedValue({
+      profile: { mode: 'local' },
+      hasRemoteSecrets: false,
+      health: 'unknown',
+    }),
+    gatewayConnectionUseLocal: vi.fn().mockResolvedValue({
+      profile: { mode: 'local' },
+      hasRemoteSecrets: false,
+      health: 'unknown',
+    }),
+    gatewayConnectionSaveRelay: vi.fn().mockResolvedValue({
+      profile: {
+        mode: 'relay',
+        name: 'gw-1',
+        managementBaseUrl: 'https://gw-1.relay.example.com',
+        chatBaseUrl: 'wss://gw-1.relay.example.com',
+      },
+      hasRemoteSecrets: true,
+      health: 'unknown',
+    }),
+    gatewayDeployVps: vi.fn().mockResolvedValue({
+      profile: {
+        mode: 'relay',
+        name: 'gw-1',
+        managementBaseUrl: 'https://gw-1.relay.example.com',
+        chatBaseUrl: 'wss://gw-1.relay.example.com',
+      },
+      hasRemoteSecrets: true,
+      health: 'unknown',
+    }),
 
     // Gateway events (SSE)
     onGatewayEvent: vi.fn().mockReturnValue(() => {}),

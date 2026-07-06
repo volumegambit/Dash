@@ -5,8 +5,16 @@ import type { McAgentEvent } from '../shared/ipc.js';
 import type { SessionStatus } from './session-status-sync.js';
 
 export interface GatewayConnection {
-  channelPort: number;
+  channelPort?: number;
   chatToken?: string;
+  /**
+   * WebSocket base URL for a remote/relay gateway (for example
+   * "wss://gw.relay.example.com"). When absent, ChatService falls back to the
+   * local channel port.
+   */
+  chatBaseUrl?: string;
+  /** Extra hop-by-hop headers, e.g. the relay pairing credential. */
+  headers?: Record<string, string>;
   /**
    * Base URL of the gateway's management HTTP API (e.g.
    * "http://127.0.0.1:9300"). Used for the replay endpoint that
@@ -106,6 +114,13 @@ export class ChatService {
     this.gatewayConnection = connection;
   }
 
+  private chatWebSocketUrl(gc: GatewayConnection): string {
+    const base = gc.chatBaseUrl
+      ? gc.chatBaseUrl.replace(/\/+$/, '')
+      : `ws://localhost:${gc.channelPort}`;
+    return `${base}/ws/chat${gc.chatToken ? `?token=${encodeURIComponent(gc.chatToken)}` : ''}`;
+  }
+
   /** Authenticated JSON fetch against the gateway management API. */
   private async managementFetch(path: string, body: unknown): Promise<Response | null> {
     const gc = this.gatewayConnection;
@@ -113,6 +128,7 @@ export class ChatService {
     return fetch(`${gc.managementBaseUrl}${path}`, {
       method: 'POST',
       headers: {
+        ...gc.headers,
         authorization: `Bearer ${gc.managementToken}`,
         'content-type': 'application/json',
       },
@@ -225,7 +241,7 @@ export class ChatService {
       `/conversations/${encodeURIComponent(conversationId)}/events?sinceSeq=${sinceSeq}`;
     try {
       const res = await fetch(url, {
-        headers: { Authorization: `Bearer ${gc.managementToken}` },
+        headers: { ...gc.headers, Authorization: `Bearer ${gc.managementToken}` },
       });
       if (!res.ok) return [];
       const body = (await res.json()) as { entries?: ReplayedEventLogEntry[] };
@@ -287,11 +303,10 @@ export class ChatService {
     }
 
     if (!this.gatewayConnection) throw new Error('Gateway connection not configured');
-    const { channelPort, chatToken } = this.gatewayConnection;
-    const url = `ws://localhost:${channelPort}/ws/chat${chatToken ? `?token=${encodeURIComponent(chatToken)}` : ''}`;
+    const url = this.chatWebSocketUrl(this.gatewayConnection);
     const msgId = randomUUID();
     const agentId = conversation.agentId;
-    const ws = new WebSocket(url);
+    const ws = new WebSocket(url, { headers: this.gatewayConnection.headers });
     this.activeStreams.set(conversationId, { ws, msgId });
 
     const accumulatedEvents: McAgentEvent[] = [];

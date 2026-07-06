@@ -15,10 +15,12 @@ import type {
   CreateAgentRequest,
   GatewayAgent,
   GatewayChannel,
+  GatewayConnectionSettings,
   GatewayModelsDebugResponse,
   GatewayModelsResponse,
   McConversation,
   McMessage,
+  VpsGatewayDeployRequest,
 } from '@dash/mc';
 import type {
   CreateIssueInput,
@@ -37,6 +39,7 @@ import type {
 // can import them from this single IPC facade module.
 export type { CreateAgentRequest, GatewayAgent, GatewayChannel } from '@dash/mc';
 export type { ChannelHealthEntry } from '@dash/management';
+export type { GatewayConnectionSettings } from '@dash/mc';
 
 // Top-level setup/onboarding status. Distinguishes a genuine first run
 // (`needs-setup`) from a configured user whose gateway cannot start
@@ -304,6 +307,30 @@ export interface DeviceInfo {
   label: string | null;
 }
 
+export interface GatewayConnectionStatus {
+  profile: GatewayConnectionSettings;
+  hasRemoteSecrets: boolean;
+  health: 'unknown' | 'healthy' | 'unhealthy';
+}
+
+export interface GatewayRelayConnectionInput {
+  mode: 'relay' | 'hosted';
+  name?: string;
+  managementBaseUrl: string;
+  chatBaseUrl?: string;
+  managementToken: string;
+  chatToken: string;
+  relayCredential?: string;
+}
+
+export interface McVpsGatewayDeployRequest
+  extends Omit<VpsGatewayDeployRequest, 'managementToken' | 'chatToken'> {
+  name?: string;
+  managementToken?: string;
+  chatToken?: string;
+  relayCredential?: string;
+}
+
 export interface MissionControlAPI {
   getVersion(): Promise<string>;
 
@@ -473,6 +500,10 @@ export interface MissionControlAPI {
   gatewayGetStatus(): Promise<GatewayStatus>;
   gatewayRestart(): Promise<void>;
   gatewayOnStatus(callback: (status: GatewayStatus) => void): () => void;
+  gatewayConnectionGet(): Promise<GatewayConnectionStatus>;
+  gatewayConnectionUseLocal(): Promise<GatewayConnectionStatus>;
+  gatewayConnectionSaveRelay(input: GatewayRelayConnectionInput): Promise<GatewayConnectionStatus>;
+  gatewayDeployVps(input: McVpsGatewayDeployRequest): Promise<GatewayConnectionStatus>;
 
   // Gateway events (SSE)
   onGatewayEvent(callback: (eventType: string, data: string) => void): () => void;

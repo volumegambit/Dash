@@ -207,10 +207,15 @@ export class GatewayManagementClient {
   constructor(
     private baseUrl: string,
     private token: string,
+    private extraHeaders: Record<string, string> = {},
   ) {}
 
   private headers(): Record<string, string> {
-    return { Authorization: `Bearer ${this.token}`, 'Content-Type': 'application/json' };
+    return {
+      ...this.extraHeaders,
+      Authorization: `Bearer ${this.token}`,
+      'Content-Type': 'application/json',
+    };
   }
 
   private async throwIfNotOk(res: Response, label: string): Promise<void> {
@@ -223,6 +228,7 @@ export class GatewayManagementClient {
   // Health — unauthenticated, short-timeout, used by supervisor hot path.
   async health(): Promise<GatewayHealthResponse> {
     const res = await fetch(`${this.baseUrl}/health`, {
+      headers: this.extraHeaders,
       signal: AbortSignal.timeout(HOT_PATH_TIMEOUT_MS),
     });
     await this.throwIfNotOk(res, 'health');
