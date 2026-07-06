@@ -70,6 +70,7 @@ const VISIBLE_EVENT_TYPES = new Set([
   'tool_use_start',
   'tool_result',
   'error',
+  'agent_retry',
   'question',
   'context_compacted',
   // Swarm worker events render a WorkerCard, so a turn of only worker events
@@ -95,6 +96,9 @@ function renderEvents(
   let toolName = '';
   let toolInput: Record<string, unknown> | undefined;
   let toolOutputBuffer = '';
+  // Index of the most recently pushed error element, so an agent_retry event
+  // can fold the transient error it supersedes into the retry notice.
+  let lastErrorElementIndex: number | null = null;
 
   // Pre-scan: group all worker_* events by workerId so we can render one card
   // per worker at its spawn position and let the status/done events fall
@@ -233,6 +237,7 @@ function renderEvents(
         msg.toLowerCase().includes('authentication') ||
         msg.toLowerCase().includes('unauthorized') ||
         /invalid.*key/i.test(msg);
+      lastErrorElementIndex = elements.length;
       elements.push(
         <div key={`err-${blockCount++}`} className="mb-3 text-red">
           <div className="flex items-center gap-2">
@@ -258,6 +263,27 @@ function renderEvents(
               </button>
             </div>
           )}
+        </div>,
+      );
+    } else if (event.type === 'agent_retry') {
+      // The backend is auto-retrying a transient provider failure. The error
+      // event that triggered it renders just before this one — fold it into
+      // the retry notice so the turn doesn't look terminally failed while the
+      // retry is in flight. A final (non-retried) failure still renders red:
+      // no agent_retry follows it.
+      if (lastErrorElementIndex === elements.length - 1) {
+        elements.pop();
+        lastErrorElementIndex = null;
+      }
+      elements.push(
+        <div
+          key={`retry-${blockCount++}`}
+          className="mb-3 flex items-center gap-2 text-xs text-muted"
+        >
+          <Loader size={12} className="animate-spin" />
+          <span>
+            Retrying (attempt {event.attempt}) — {truncate(event.reason, 160)}
+          </span>
         </div>,
       );
     }
