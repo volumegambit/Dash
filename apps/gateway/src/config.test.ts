@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { parseFlags } from './config.js';
+import {
+  DEFAULT_SWARM_CONFIG,
+  parseFlags,
+  resolveSwarmConfig,
+  swarmOverridesFromEnv,
+} from './config.js';
 
 describe('parseFlags', () => {
   it('returns empty for no flags', () => {
@@ -77,5 +82,88 @@ describe('parseFlags', () => {
 
   it('ignores flags without values', () => {
     expect(parseFlags(['--token'])).toEqual({});
+  });
+});
+
+describe('swarmOverridesFromEnv', () => {
+  it('returns empty overrides and no warnings when no swarm env vars are set', () => {
+    expect(swarmOverridesFromEnv({})).toEqual({ overrides: {}, warnings: [] });
+  });
+
+  it('reads the global ceiling from SWARM_MAX_CONCURRENT_WORKERS_GLOBAL', () => {
+    const { overrides, warnings } = swarmOverridesFromEnv({
+      SWARM_MAX_CONCURRENT_WORKERS_GLOBAL: '32',
+    });
+    expect(overrides).toEqual({ maxConcurrentWorkersGlobal: 32 });
+    expect(warnings).toEqual([]);
+  });
+
+  it('reads every per-agent default cap from its SWARM_DEFAULT_* variable', () => {
+    const { overrides, warnings } = swarmOverridesFromEnv({
+      SWARM_DEFAULT_MAX_CONCURRENT_WORKERS: '4',
+      SWARM_DEFAULT_MAX_WORKERS_PER_RUN: '48',
+      SWARM_DEFAULT_MAX_STEERS_PER_WORKER: '20',
+      SWARM_DEFAULT_MAX_RUN_SECONDS: '3600',
+    });
+    expect(overrides).toEqual({
+      defaults: {
+        maxConcurrentWorkers: 4,
+        maxWorkersPerRun: 48,
+        maxSteersPerWorker: 20,
+        maxRunSeconds: 3600,
+      },
+    });
+    expect(warnings).toEqual([]);
+  });
+
+  it('only includes the defaults that are actually set so the merge fills the rest', () => {
+    const { overrides } = swarmOverridesFromEnv({ SWARM_DEFAULT_MAX_RUN_SECONDS: '900' });
+    expect(overrides).toEqual({ defaults: { maxRunSeconds: 900 } });
+
+    const resolved = resolveSwarmConfig(overrides);
+    expect(resolved.defaults.maxRunSeconds).toBe(900);
+    expect(resolved.defaults.maxConcurrentWorkers).toBe(
+      DEFAULT_SWARM_CONFIG.defaults.maxConcurrentWorkers,
+    );
+    expect(resolved.maxConcurrentWorkersGlobal).toBe(
+      DEFAULT_SWARM_CONFIG.maxConcurrentWorkersGlobal,
+    );
+  });
+
+  it('rejects non-numeric values with a warning naming the variable', () => {
+    const { overrides, warnings } = swarmOverridesFromEnv({
+      SWARM_MAX_CONCURRENT_WORKERS_GLOBAL: 'lots',
+    });
+    expect(overrides).toEqual({});
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain('SWARM_MAX_CONCURRENT_WORKERS_GLOBAL');
+    expect(warnings[0]).toContain('lots');
+  });
+
+  it('rejects zero, negative, and fractional values', () => {
+    const { overrides, warnings } = swarmOverridesFromEnv({
+      SWARM_MAX_CONCURRENT_WORKERS_GLOBAL: '0',
+      SWARM_DEFAULT_MAX_WORKERS_PER_RUN: '-5',
+      SWARM_DEFAULT_MAX_RUN_SECONDS: '1.5',
+    });
+    expect(overrides).toEqual({});
+    expect(warnings).toHaveLength(3);
+  });
+
+  it('keeps valid overrides while warning about invalid ones', () => {
+    const { overrides, warnings } = swarmOverridesFromEnv({
+      SWARM_MAX_CONCURRENT_WORKERS_GLOBAL: '64',
+      SWARM_DEFAULT_MAX_STEERS_PER_WORKER: 'nope',
+    });
+    expect(overrides).toEqual({ maxConcurrentWorkersGlobal: 64 });
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain('SWARM_DEFAULT_MAX_STEERS_PER_WORKER');
+  });
+
+  it('treats an empty-string variable as unset', () => {
+    expect(swarmOverridesFromEnv({ SWARM_MAX_CONCURRENT_WORKERS_GLOBAL: '' })).toEqual({
+      overrides: {},
+      warnings: [],
+    });
   });
 });

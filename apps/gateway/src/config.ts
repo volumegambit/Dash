@@ -72,6 +72,54 @@ export function resolveSwarmConfig(
   };
 }
 
+/** Partial swarm config accepted by {@link resolveSwarmConfig}. */
+export type SwarmConfigOverrides = Partial<{
+  maxConcurrentWorkersGlobal: number;
+  defaults: Partial<GatewaySwarmDefaults>;
+}>;
+
+const SWARM_ENV_VARS = [
+  ['SWARM_MAX_CONCURRENT_WORKERS_GLOBAL', 'maxConcurrentWorkersGlobal', null],
+  ['SWARM_DEFAULT_MAX_CONCURRENT_WORKERS', 'maxConcurrentWorkers', 'defaults'],
+  ['SWARM_DEFAULT_MAX_WORKERS_PER_RUN', 'maxWorkersPerRun', 'defaults'],
+  ['SWARM_DEFAULT_MAX_STEERS_PER_WORKER', 'maxSteersPerWorker', 'defaults'],
+  ['SWARM_DEFAULT_MAX_RUN_SECONDS', 'maxRunSeconds', 'defaults'],
+] as const;
+
+/**
+ * Read gateway swarm cap overrides from environment variables. Each variable
+ * must be a positive integer; anything else is skipped and reported in
+ * `warnings` (for the caller to log) so a typo'd cap never silently NaNs the
+ * coordinator or gets dropped without a trace. Unset and empty-string
+ * variables are simply absent from the result, letting
+ * {@link resolveSwarmConfig} fill them from {@link DEFAULT_SWARM_CONFIG}.
+ */
+export function swarmOverridesFromEnv(env: Record<string, string | undefined> = process.env): {
+  overrides: SwarmConfigOverrides;
+  warnings: string[];
+} {
+  const overrides: SwarmConfigOverrides = {};
+  const warnings: string[] = [];
+
+  for (const [envVar, field, nest] of SWARM_ENV_VARS) {
+    const raw = env[envVar];
+    if (raw === undefined || raw === '') continue;
+    const value = Number(raw);
+    if (!Number.isInteger(value) || value <= 0) {
+      warnings.push(`ignoring ${envVar}="${raw}" — expected a positive integer`);
+      continue;
+    }
+    if (nest === 'defaults') {
+      overrides.defaults ??= {};
+      overrides.defaults[field] = value;
+    } else {
+      overrides[field] = value;
+    }
+  }
+
+  return { overrides, warnings };
+}
+
 export function parseFlags(argv: string[]): LoadConfigOptions {
   const options: LoadConfigOptions = {};
 

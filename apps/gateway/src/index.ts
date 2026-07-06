@@ -27,7 +27,7 @@ import { AgentRegistry } from './agent-registry.js';
 import { ensureCoreProvidersPlugin } from './bundled-plugin.js';
 import { ChannelRegistry } from './channel-registry.js';
 import { mountChatWs } from './chat-ws.js';
-import { parseFlags, resolveSwarmConfig } from './config.js';
+import { parseFlags, resolveSwarmConfig, swarmOverridesFromEnv } from './config.js';
 import { createControlPlaneClient } from './control-plane-client.js';
 import { GatewayCredentialStore } from './credential-store.js';
 import { createDialTokenManager } from './dial-token-manager.js';
@@ -306,10 +306,21 @@ async function main() {
   // per-agent caps, and appends straggler worker_done events out-of-band to the
   // event log on the consumer-gone finalize path. Constructed BEFORE the chat
   // coordinator so the merge wrapper (which attaches turns) and the swarm-tool
-  // injection in createBackend both address the same instance. Swarm config is
-  // resolved from defaults today (no env/flag override wired yet) — the shape is
-  // ready for one via resolveSwarmConfig.
-  const swarmConfig = resolveSwarmConfig();
+  // injection in createBackend both address the same instance. Caps come from
+  // built-in defaults, overridable per-process via SWARM_* env vars (see
+  // swarmOverridesFromEnv) — invalid values are logged and skipped, never
+  // silently applied.
+  const { overrides: swarmOverrides, warnings: swarmEnvWarnings } = swarmOverridesFromEnv();
+  for (const warning of swarmEnvWarnings) {
+    logger.warn(`[swarm] ${warning}`);
+  }
+  const swarmConfig = resolveSwarmConfig(swarmOverrides);
+  if (Object.keys(swarmOverrides).length > 0) {
+    logger.info(
+      `[swarm] env overrides active — global=${swarmConfig.maxConcurrentWorkersGlobal} ` +
+        `defaults=${JSON.stringify(swarmConfig.defaults)}`,
+    );
+  }
   // Throttle the coordinator's run-changed pokes to at most one EventBus emit per
   // run per second. The coordinator fires onRunChanged on every state transition
   // (spawn, worker terminal, finalize) — a busy run would otherwise flood the SSE
