@@ -49,6 +49,7 @@ import {
   reloadPluginsUnderMutex,
 } from './plugins-wiring.js';
 import { type RelayClient, startRelayClient } from './relay-client.js';
+import { recoverInterruptedSwarmTurns } from './swarm-log-recovery.js';
 import { createGatewayWorkerFactory } from './swarm-wiring.js';
 
 async function main() {
@@ -383,6 +384,17 @@ async function main() {
         });
       },
     },
+  });
+
+  // Repair swarm turns a previous gateway process died in the middle of:
+  // synthesize worker_done{cancelled} + a terminal error marker into the
+  // event log (so MC's replay terminalizes instead of spinning forever) and
+  // restore the interrupted runs into the panel history. Runs before any
+  // server accepts traffic, so no live turn can exist yet.
+  recoverInterruptedSwarmTurns({
+    eventLog: eventLogStore,
+    restoreRun: (snapshot) => swarmCoordinator.restoreFinalizedRun(snapshot),
+    log: (message) => logger.info(message),
   });
 
   const agents = createAgentChatCoordinator({

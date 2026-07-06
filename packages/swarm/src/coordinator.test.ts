@@ -691,6 +691,57 @@ describe('SwarmCoordinator', () => {
     });
   });
 
+  // Boot-time crash recovery: restored snapshots surface via the panel API.
+  describe('restoreFinalizedRun', () => {
+    function restoredSnapshot() {
+      return {
+        runId: 'crashed-run',
+        agentId: AGENT_ID,
+        conversationId: CONVO_ID,
+        startedAt: 1000,
+        endedAt: 2000,
+        finalized: true,
+        workerCount: 1,
+        activeCount: 0,
+        workers: [
+          {
+            workerId: 'w-1',
+            role: 'researcher',
+            status: 'cancelled' as const,
+            brief: 'find things',
+            model: 'orch-model',
+            report: 'Gateway restarted while this worker was running.',
+            usage: { inputTokens: 0, outputTokens: 0 },
+          },
+        ],
+      };
+    }
+
+    it('a restored snapshot is listed by getRuns and retrievable by getRun', () => {
+      const { factory } = makeFactory();
+      const coord = new SwarmCoordinator({ workerFactory: factory });
+
+      coord.restoreFinalizedRun(restoredSnapshot());
+
+      const runs = coord.getRuns(AGENT_ID);
+      expect(runs).toHaveLength(1);
+      expect(runs[0]).toMatchObject({ runId: 'crashed-run', finalized: true, workerCount: 1 });
+      const snap = coord.getRun(AGENT_ID, 'crashed-run');
+      expect(snap?.workers[0]).toMatchObject({ workerId: 'w-1', status: 'cancelled' });
+    });
+
+    it('restored snapshots count toward the per-agent ring buffer cap', () => {
+      const { factory } = makeFactory();
+      const coord = new SwarmCoordinator({ workerFactory: factory });
+      for (let i = 0; i < 21; i++) {
+        coord.restoreFinalizedRun({ ...restoredSnapshot(), runId: `run-${i}` });
+      }
+      expect(coord.getRuns(AGENT_ID)).toHaveLength(20);
+      expect(coord.getRun(AGENT_ID, 'run-0')).toBeUndefined();
+      expect(coord.getRun(AGENT_ID, 'run-20')).toBeDefined();
+    });
+  });
+
   // Behavior 11: panel ops.
   describe('panel ops', () => {
     it('cancelWorker on a terminal worker returns {ok:false, reason:"worker terminal"}', async () => {

@@ -167,6 +167,66 @@ describe('SqliteEventLogStore', () => {
   });
 
   // ------------------------------------------------------------------
+  // listInterrupted — mid-turn tail detection
+  // ------------------------------------------------------------------
+
+  it('listInterrupted returns nothing for an empty store', () => {
+    expect(store.listInterrupted()).toEqual([]);
+  });
+
+  it('listInterrupted flags a conversation whose newest entry is a non-terminal event', () => {
+    store.append('agent-a', 'conv-1', 'msg-1', evt('one'));
+    store.append('agent-a', 'conv-1', 'msg-1', evt('two'));
+
+    expect(store.listInterrupted()).toEqual([
+      { agentId: 'agent-a', conversationId: 'conv-1', lastMsgId: 'msg-1', lastTerminalSeq: 0 },
+    ]);
+  });
+
+  it('listInterrupted excludes conversations ending on a done or error marker', () => {
+    store.append('agent-a', 'conv-done', 'm1', evt('a'));
+    store.append('agent-a', 'conv-done', 'm1', { type: 'done' });
+    store.append('agent-a', 'conv-err', 'm2', evt('b'));
+    store.append('agent-a', 'conv-err', 'm2', { type: 'error', error: 'boom' });
+
+    expect(store.listInterrupted()).toEqual([]);
+  });
+
+  it('listInterrupted reports the most recent terminal seq and the tail msgId', () => {
+    // A completed first turn, then a second turn cut off mid-stream.
+    store.append('agent-a', 'conv-1', 'msg-1', evt('turn one'));
+    store.append('agent-a', 'conv-1', 'msg-1', { type: 'done' }); // seq 2
+    store.append('agent-a', 'conv-1', 'msg-2', evt('turn two'));
+    store.append('agent-a', 'conv-1', 'msg-2', evt('cut off here'));
+
+    expect(store.listInterrupted()).toEqual([
+      { agentId: 'agent-a', conversationId: 'conv-1', lastMsgId: 'msg-2', lastTerminalSeq: 2 },
+    ]);
+  });
+
+  it('listInterrupted scans across agents and conversations independently', () => {
+    store.append('agent-a', 'conv-1', 'm1', evt('a'));
+    store.append('agent-a', 'conv-1', 'm1', { type: 'done' });
+    store.append('agent-a', 'conv-2', 'm2', evt('dangling'));
+    store.append('agent-b', 'conv-1', 'm3', evt('also dangling'));
+
+    const interrupted = store.listInterrupted();
+    expect(interrupted).toHaveLength(2);
+    expect(interrupted).toContainEqual({
+      agentId: 'agent-a',
+      conversationId: 'conv-2',
+      lastMsgId: 'm2',
+      lastTerminalSeq: 0,
+    });
+    expect(interrupted).toContainEqual({
+      agentId: 'agent-b',
+      conversationId: 'conv-1',
+      lastMsgId: 'm3',
+      lastTerminalSeq: 0,
+    });
+  });
+
+  // ------------------------------------------------------------------
   // Persistence across reopen
   // ------------------------------------------------------------------
 
