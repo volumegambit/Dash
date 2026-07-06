@@ -14,11 +14,13 @@ import { bigfootAnimated } from './bigfootAnimated.js';
 import { blacksmithAnimated } from './blacksmithAnimated.js';
 import { bollywoodStarAnimated } from './bollywoodAnimated.js';
 import { bossAnimated } from './bossAnimated.js';
+import { bubbleTeaMakerAnimated } from './bubbleTeaMakerAnimated.js';
 import { butcherAnimated } from './butcherAnimated.js';
 import { catAnimated } from './catAnimated.js';
 import { chefAnimated } from './chefAnimated.js';
 import { combatMedicAnimated } from './combatMedicAnimated.js';
 import { dairyFarmerAnimated } from './dairyFarmerAnimated.js';
+import { deliveryCourierAnimated } from './deliveryCourierAnimated.js';
 import { detectiveAnimated } from './detectiveAnimated.js';
 import { dishwasherAnimated } from './dishwasherAnimated.js';
 import { dogAnimated } from './dogAnimated.js';
@@ -30,46 +32,49 @@ import { fishermanAnimated } from './fishermanAnimated.js';
 import { fitnessInfluencerAnimated } from './fitnessAnimated.js';
 import { fortuneGodAnimated } from './fortuneAnimated.js';
 import { fruitPickerAnimated } from './fruitPickerAnimated.js';
-import { generalAnimated } from './generalAnimated.js';
 import { royalGuardAnimated } from './guardAnimated.js';
-import { hostessAnimated } from './hostessAnimated.js';
 import { internAnimated } from './internAnimated.js';
 import { itSupportAnimated } from './itSupportAnimated.js';
 import { k9HandlerAnimated } from './k9HandlerAnimated.js';
+import { kettlebellAthleteAnimated } from './kettlebellAthleteAnimated.js';
 import { DEFAULT_PET, PET_KINDS } from './kinds.js';
 import { knightAnimated } from './knightAnimated.js';
 import { ladderFirefighterAnimated } from './ladderFirefighterAnimated.js';
 import { lionAnimated } from './lionAnimated.js';
 import { manekiNekoAnimated } from './manekiAnimated.js';
 import { merlionAnimated } from './merlionAnimated.js';
+import { motorcycleCopAnimated } from './motorcycleCopAnimated.js';
 import { ninjaAnimated } from './ninjaAnimated.js';
 import { pastryChefAnimated } from './pastryChefAnimated.js';
 import { pigAnimated } from './pigAnimated.js';
 import { pirateAnimated } from './pirateAnimated.js';
-import { policeChiefAnimated } from './policeChiefAnimated.js';
 import { policeOfficerAnimated } from './policeOfficerAnimated.js';
 import { quokkaAnimated } from './quokkaAnimated.js';
 import { rabbitAnimated } from './rabbitAnimated.js';
-import { radioOperatorAnimated } from './radioOperatorAnimated.js';
 import { receptionistAnimated } from './receptionistAnimated.js';
 import { redPandaAnimated } from './redPandaAnimated.js';
+import { riflemanAnimated } from './riflemanAnimated.js';
 import { robotAnimated } from './robotAnimated.js';
+import { rocketSoldierAnimated } from './rocketSoldierAnimated.js';
 import { rookieFirefighterAnimated } from './rookieFirefighterAnimated.js';
+import { rowerAnimated } from './rowerAnimated.js';
 import { scarecrowAnimated } from './scarecrowAnimated.js';
 import { scoutAnimated } from './scoutAnimated.js';
 import { sergeantAnimated } from './sergeantAnimated.js';
 import { shepherdAnimated } from './shepherdAnimated.js';
+import { sledPusherAnimated } from './sledPusherAnimated.js';
 import { sommelierAnimated } from './sommelierAnimated.js';
 import { sousChefAnimated } from './sousChefAnimated.js';
 import { streamerAnimated } from './streamerAnimated.js';
 import { sushiChefAnimated } from './sushiChefAnimated.js';
 import { swatAnimated } from './swatAnimated.js';
 import { techReviewerAnimated } from './techAnimated.js';
-import { townCrierAnimated } from './townCrierAnimated.js';
 import { travelVloggerAnimated } from './travelAnimated.js';
 import type { AnimatedPetSprite } from './types.js';
 import { unicornAnimated } from './unicornAnimated.js';
 import { waiterAnimated } from './waiterAnimated.js';
+import { wallBallerAnimated } from './wallBallerAnimated.js';
+import { weightlifterAnimated } from './weightlifterAnimated.js';
 import { wizardAnimated } from './wizardAnimated.js';
 import { wokUncleAnimated } from './wokuncleAnimated.js';
 
@@ -118,17 +123,17 @@ export const PET_REGISTRY: Record<PetKind, AnimatedPetSprite> = {
   barista: baristaAnimated,
   sommelier: sommelierAnimated,
   bartender: bartenderAnimated,
-  hostess: hostessAnimated,
+  'bubble-tea-maker': bubbleTeaMakerAnimated,
   sergeant: sergeantAnimated,
   scout: scoutAnimated,
   'combat-medic': combatMedicAnimated,
-  'radio-operator': radioOperatorAnimated,
-  general: generalAnimated,
+  rifleman: riflemanAnimated,
+  'rocket-soldier': rocketSoldierAnimated,
   'police-officer': policeOfficerAnimated,
   detective: detectiveAnimated,
   'k9-handler': k9HandlerAnimated,
   swat: swatAnimated,
-  'police-chief': policeChiefAnimated,
+  'motorcycle-cop': motorcycleCopAnimated,
   firefighter: firefighterAnimated,
   'fire-chief': fireChiefAnimated,
   'ladder-firefighter': ladderFirefighterAnimated,
@@ -138,12 +143,17 @@ export const PET_REGISTRY: Record<PetKind, AnimatedPetSprite> = {
   blacksmith: blacksmithAnimated,
   fisherman: fishermanAnimated,
   shepherd: shepherdAnimated,
-  'town-crier': townCrierAnimated,
+  'delivery-courier': deliveryCourierAnimated,
   farmer: farmerAnimated,
   'dairy-farmer': dairyFarmerAnimated,
   'fruit-picker': fruitPickerAnimated,
   beekeeper: beekeeperAnimated,
   scarecrow: scarecrowAnimated,
+  'sled-pusher': sledPusherAnimated,
+  'wall-baller': wallBallerAnimated,
+  rower: rowerAnimated,
+  'kettlebell-athlete': kettlebellAthleteAnimated,
+  weightlifter: weightlifterAnimated,
 };
 
 function spriteFor(kind: PetKind): AnimatedPetSprite {
