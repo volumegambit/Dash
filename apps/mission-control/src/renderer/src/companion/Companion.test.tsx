@@ -35,14 +35,16 @@ describe('Companion (headless publisher)', () => {
     useUIStore.setState({ companionVisible: true });
   });
 
-  it('publishes the current statuses on mount and renders no DOM', () => {
+  it('publishes per-agent status entries on mount and renders no DOM', () => {
     seedOneWorkingSession();
     useUIStore.setState({ companionVisible: true });
 
     const { container } = render(<Companion />);
 
     expect(container.firstChild).toBeNull();
-    expect(mockApi.companionPublishStatuses).toHaveBeenCalledWith(['working']);
+    expect(mockApi.companionPublishStatuses).toHaveBeenCalledWith([
+      { agentId: 'a1', agentName: 'Ops Bot', status: 'working', preview: 'thinking' },
+    ]);
   });
 
   it('re-publishes when a replay is requested (widget just opened)', () => {
@@ -61,7 +63,9 @@ describe('Companion (headless publisher)', () => {
     expect(replay).toBeTypeOf('function');
     replay?.();
 
-    expect(mockApi.companionPublishStatuses).toHaveBeenCalledWith(['working']);
+    expect(mockApi.companionPublishStatuses).toHaveBeenCalledWith([
+      { agentId: 'a1', agentName: 'Ops Bot', status: 'working', preview: 'thinking' },
+    ]);
   });
 
   it('publishes the selected pet when visible and on replay', () => {

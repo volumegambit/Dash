@@ -1,7 +1,7 @@
 import { join } from 'node:path';
 import type { SettingsStore } from '@dash/mc';
 import { BrowserWindow, app, screen } from 'electron';
-import type { CompanionStatus, PetKind } from '../shared/ipc.js';
+import type { CompanionAgentStatus, PetKind } from '../shared/ipc.js';
 import { clampToVisible } from './companion-window-clamp.js';
 
 /** Widget window size: the pet sprite at 128px plus a little padding. */
@@ -109,8 +109,8 @@ export function getCompanionWindow(): BrowserWindow | undefined {
   return companionWindow;
 }
 
-/** Push the latest per-session statuses into the widget window, if open. */
-export function forwardStatuses(statuses: CompanionStatus[]): void {
+/** Push the latest per-agent session statuses into the widget window, if open. */
+export function forwardStatuses(statuses: CompanionAgentStatus[]): void {
   if (companionWindow && !companionWindow.isDestroyed()) {
     companionWindow.webContents.send('companion:statuses', statuses);
   }

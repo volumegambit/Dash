@@ -1,4 +1,5 @@
 import { useEffect } from 'react';
+import type { CompanionAgentStatus } from '../../../shared/ipc.js';
 import { useAgentsStore } from '../stores/agents.js';
 import { useChatStore } from '../stores/chat.js';
 import { useUIStore } from '../stores/ui.js';
@@ -18,8 +19,17 @@ export function Companion(): null {
   const companionVisible = useUIStore((s) => s.companionVisible);
   const companionPet = useUIStore((s) => s.companionPet);
 
-  const statuses = selectCompanionSessions(buildSnapshot(chat, agents)).map((s) => s.status);
-  const key = statuses.join(',');
+  const statuses: CompanionAgentStatus[] = selectCompanionSessions(buildSnapshot(chat, agents)).map(
+    (s) => ({
+      agentId: s.agentId,
+      agentName: s.agentName,
+      status: s.status,
+      preview: s.preview,
+    }),
+  );
+  // Content hash: any change to an entry's identity, status, or preview must
+  // re-publish, so the widget reflects live tool activity in its bubbles.
+  const key = statuses.map((s) => `${s.agentId}:${s.status}:${s.preview}`).join('|');
 
   // Keep the widget window's existence in sync with the persisted preference.
   useEffect(() => {

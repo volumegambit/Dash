@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import type {
-  CompanionStatus,
+  CompanionAgentStatus,
   McAgentEvent,
   McpStatusChange,
   MissionControlAPI,
@@ -218,11 +218,11 @@ const api: MissionControlAPI = {
   },
 
   // Companion (pet widget)
-  companionPublishStatuses: (statuses: CompanionStatus[]) =>
+  companionPublishStatuses: (statuses: CompanionAgentStatus[]) =>
     ipcRenderer.send('companion:statuses', statuses),
   companionSetVisible: (visible: boolean) => ipcRenderer.invoke('companion:setVisible', visible),
-  onCompanionStatuses: (callback: (statuses: CompanionStatus[]) => void): (() => void) => {
-    const handler = (_: Electron.IpcRendererEvent, statuses: CompanionStatus[]) =>
+  onCompanionStatuses: (callback: (statuses: CompanionAgentStatus[]) => void): (() => void) => {
+    const handler = (_: Electron.IpcRendererEvent, statuses: CompanionAgentStatus[]) =>
       callback(statuses);
     ipcRenderer.on('companion:statuses', handler);
     return () => ipcRenderer.removeListener('companion:statuses', handler);

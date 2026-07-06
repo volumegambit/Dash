@@ -35,7 +35,7 @@ import { app, dialog, ipcMain, shell } from 'electron';
 import type { BrowserWindow } from 'electron';
 import WebSocket from 'ws';
 import type {
-  CompanionStatus,
+  CompanionAgentStatus,
   ControlPlaneStatus,
   DeviceInfo,
   PairingInfo,
@@ -1045,7 +1045,7 @@ export async function registerIpcHandlers(
 
   // Main window publishes coarse per-session statuses; forward them into the
   // widget window (a no-op when the widget is closed).
-  ipcMain.on('companion:statuses', (_event, statuses: CompanionStatus[]) => {
+  ipcMain.on('companion:statuses', (_event, statuses: CompanionAgentStatus[]) => {
     forwardStatuses(statuses);
   });
 

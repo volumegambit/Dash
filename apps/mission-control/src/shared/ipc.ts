@@ -114,6 +114,19 @@ export type GatewayStatus = 'starting' | 'healthy' | 'unhealthy';
 // truth: the renderer's companion/types.ts re-exports this.
 export type CompanionStatus = 'working' | 'needs' | 'done' | 'error';
 
+// One entry per live session the companion tracks, carrying the identity of
+// the agent it belongs to plus a short human-readable preview of what that
+// session is doing right now (the live tool, the question, the error, or the
+// final text). Crew mode groups these by `agentId` to map fleet members to
+// agents; the speech bubbles render `preview`. The single-pet path derives its
+// aggregate mood from `entries.map((e) => e.status)`, unchanged.
+export interface CompanionAgentStatus {
+  agentId: string;
+  agentName: string;
+  status: CompanionStatus;
+  preview: string;
+}
+
 export type PetKind =
   | 'astronaut'
   | 'bear'
@@ -467,10 +480,10 @@ export interface MissionControlAPI {
   // Companion widget. The main window publishes coarse per-session statuses and
   // the selected pet; main forwards both into the widget window and can ask the
   // main window to re-publish (replay) when the widget (re)opens.
-  companionPublishStatuses(statuses: CompanionStatus[]): void;
+  companionPublishStatuses(statuses: CompanionAgentStatus[]): void;
   companionPublishPet(pet: PetKind): void;
   companionSetVisible(visible: boolean): Promise<void>;
-  onCompanionStatuses(callback: (statuses: CompanionStatus[]) => void): () => void;
+  onCompanionStatuses(callback: (statuses: CompanionAgentStatus[]) => void): () => void;
   onCompanionPet(callback: (pet: PetKind) => void): () => void;
   onCompanionReplayRequest(callback: () => void): () => void;
 
