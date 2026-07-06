@@ -38,6 +38,21 @@ export type EventLogPayload =
   | { type: 'done' }
   | { type: 'error'; error: string };
 
+/**
+ * A conversation whose newest log entry is a non-terminal payload —
+ * the stream was cut off before a `done`/`error` marker landed
+ * (gateway crash mid-turn, or an aborted turn that never logged its
+ * terminal). Returned by `listInterrupted` for boot-time recovery.
+ */
+export interface InterruptedConversation {
+  agentId: string;
+  conversationId: string;
+  /** msg_id of the newest entry — the message the cut-off tail belongs to. */
+  lastMsgId: string;
+  /** seq of the most recent done/error marker, 0 when the log has none. */
+  lastTerminalSeq: number;
+}
+
 export interface EventLogStore {
   /**
    * Append a logged event. Returns the assigned per-conversation
@@ -54,6 +69,15 @@ export interface EventLogStore {
    * Callers pass `sinceSeq = 0` to read from the beginning.
    */
   readSince(agentId: string, conversationId: string, sinceSeq: number): EventLogEntry[];
+
+  /**
+   * Every conversation whose newest entry is a non-terminal payload,
+   * i.e. the log ends mid-turn. Used once at gateway boot to detect
+   * turns a previous process died in the middle of; the caller reads
+   * the tail via `readSince(lastTerminalSeq)` and appends synthesized
+   * terminal events.
+   */
+  listInterrupted(): InterruptedConversation[];
 
   /**
    * Delete every entry for an agent. Called from `DELETE /agents/:id`

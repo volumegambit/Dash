@@ -1,7 +1,12 @@
 import { mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import Database, { type Database as DatabaseType, type Statement } from 'better-sqlite3';
-import type { EventLogEntry, EventLogPayload, EventLogStore } from './event-log-store.js';
+import type {
+  EventLogEntry,
+  EventLogPayload,
+  EventLogStore,
+  InterruptedConversation,
+} from './event-log-store.js';
 
 /**
  * SQLite-backed `EventLogStore` adapter. All SQL — schema, prepared
@@ -62,6 +67,7 @@ export class SqliteEventLogStore implements EventLogStore {
   private readonly nextSeqStmt: Statement;
   private readonly insertEventStmt: Statement;
   private readonly selectSinceStmt: Statement;
+  private readonly listInterruptedStmt: Statement;
   private readonly deleteAgentStmt: Statement;
   private readonly deleteConversationStmt: Statement;
 
@@ -101,6 +107,26 @@ export class SqliteEventLogStore implements EventLogStore {
       FROM agent_stream_events
       WHERE agent_id = ? AND conversation_id = ? AND seq > ?
       ORDER BY seq ASC
+    `);
+
+    // A conversation is "interrupted" when its newest entry is a
+    // non-terminal payload. Rather than json_extract-ing the newest
+    // row's type, compare seqs: the max seq of any done/error marker
+    // (0 if none) is below MAX(seq) exactly when the tail is a plain
+    // event. json_extract needs no index — this runs once per boot.
+    this.listInterruptedStmt = this.db.prepare(`
+      SELECT
+        e.agent_id,
+        e.conversation_id,
+        (SELECT m.msg_id FROM agent_stream_events m
+          WHERE m.agent_id = e.agent_id AND m.conversation_id = e.conversation_id
+          ORDER BY m.seq DESC LIMIT 1) AS last_msg_id,
+        COALESCE((SELECT MAX(t.seq) FROM agent_stream_events t
+          WHERE t.agent_id = e.agent_id AND t.conversation_id = e.conversation_id
+            AND json_extract(t.payload, '$.type') IN ('done', 'error')), 0) AS last_terminal_seq
+      FROM agent_stream_events e
+      GROUP BY e.agent_id, e.conversation_id
+      HAVING last_terminal_seq < MAX(e.seq)
     `);
 
     this.deleteAgentStmt = this.db.prepare('DELETE FROM agent_stream_events WHERE agent_id = ?');
@@ -146,6 +172,21 @@ export class SqliteEventLogStore implements EventLogStore {
       conversationId: row.conversation_id,
       timestamp: row.timestamp,
       payload: JSON.parse(row.payload) as EventLogPayload,
+    }));
+  }
+
+  listInterrupted(): InterruptedConversation[] {
+    const rows = this.listInterruptedStmt.all() as Array<{
+      agent_id: string;
+      conversation_id: string;
+      last_msg_id: string;
+      last_terminal_seq: number;
+    }>;
+    return rows.map((row) => ({
+      agentId: row.agent_id,
+      conversationId: row.conversation_id,
+      lastMsgId: row.last_msg_id,
+      lastTerminalSeq: row.last_terminal_seq,
     }));
   }
 
