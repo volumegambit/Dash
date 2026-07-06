@@ -3,6 +3,35 @@ import { join } from 'node:path';
 import type { AgentClient } from '@dash/agent';
 import { SLASH_HELP, formatSkillList, parseSlashCommand } from '@dash/channels';
 import type { ChannelAdapter, InboundMessage, MessageHook, MessageLogEntry } from '@dash/channels';
+import { describeError, withTimeout } from './shutdown.js';
+
+/**
+ * Upper bound on a single adapter's stop() during gateway shutdown. Adapter
+ * stops can hit the network (grammY's Bot.stop() calls the Telegram API) and
+ * hang or reject on timeouts — neither may block or abort shutdown.
+ */
+export const ADAPTER_STOP_TIMEOUT_MS = 5000;
+
+/**
+ * Best-effort adapter stop: bounded by ADAPTER_STOP_TIMEOUT_MS, never throws.
+ * From the caller's perspective the channel is already out of the routing
+ * tables, which is what matters; a failed stop() is an operator diagnostic,
+ * not a reason to abort the surrounding shutdown/deregistration.
+ */
+async function stopAdapterSafely(channelName: string, adapter: ChannelAdapter): Promise<void> {
+  try {
+    await withTimeout(
+      adapter.stop(),
+      ADAPTER_STOP_TIMEOUT_MS,
+      `adapter stop for channel "${channelName}"`,
+    );
+  } catch (err) {
+    console.warn(
+      `[gateway] adapter.stop() failed for channel="${channelName}" (continuing):`,
+      describeError(err),
+    );
+  }
+}
 
 interface RoutingRule {
   globalDenyList: string[];
@@ -349,16 +378,16 @@ export function createDynamicGateway(options?: DynamicGatewayOptions): DynamicGa
       agents.delete(agentId);
 
       const removedChannels: string[] = [];
-      const toStop: ChannelAdapter[] = [];
+      const toStop: Array<[string, ChannelAdapter]> = [];
       for (const [name, state] of [...channels.entries()]) {
         state.rules = state.rules.filter((r) => r.agentId !== agentId);
         if (state.rules.length === 0) {
-          toStop.push(state.adapter);
+          toStop.push([name, state.adapter]);
           channels.delete(name);
           removedChannels.push(name);
         }
       }
-      await Promise.all(toStop.map((a) => a.stop()));
+      await Promise.all(toStop.map(([name, a]) => stopAdapterSafely(name, a)));
       return removedChannels;
     },
 
@@ -391,18 +420,10 @@ export function createDynamicGateway(options?: DynamicGatewayOptions): DynamicGa
       const state = channels.get(channelName);
       if (!state) return false;
       channels.delete(channelName);
-      try {
-        await state.adapter.stop();
-      } catch (err) {
-        // Don't rethrow — the channel is out of the gateway's routing
-        // tables and cannot receive new messages, which is what callers
-        // care about. A stop() that threw still counts as "stopped" from
-        // the routing perspective; log so operators can diagnose.
-        console.warn(
-          `[gateway] stopChannel: adapter.stop() threw for channel="${channelName}":`,
-          err instanceof Error ? err.message : err,
-        );
-      }
+      // A stop() that threw still counts as "stopped" from the routing
+      // perspective — the channel is out of the gateway's routing tables
+      // and cannot receive new messages, which is what callers care about.
+      await stopAdapterSafely(channelName, state.adapter);
       return true;
     },
 
@@ -414,7 +435,12 @@ export function createDynamicGateway(options?: DynamicGatewayOptions): DynamicGa
     },
 
     async stop() {
-      await Promise.all([...channels.values()].map((s) => s.adapter.stop()));
+      // Best-effort, bounded, and never rejecting: one adapter failing (or
+      // hanging) to stop must not prevent the others from stopping, and the
+      // caller (the process shutdown handler) must always regain control.
+      await Promise.all(
+        [...channels.entries()].map(([name, s]) => stopAdapterSafely(name, s.adapter)),
+      );
       channels.clear();
       agents.clear();
     },
