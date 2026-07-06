@@ -10,8 +10,8 @@ export function GeneralSettings(): JSX.Element {
   const [restartStatus, setRestartStatus] = useState<'idle' | 'success' | 'error'>('idle');
   const companionVisible = useUIStore((s) => s.companionVisible);
   const setCompanionVisible = useUIStore((s) => s.setCompanionVisible);
-  const companionPet = useUIStore((s) => s.companionPet);
-  const setCompanionPet = useUIStore((s) => s.setCompanionPet);
+  const companionSelection = useUIStore((s) => s.companionSelection);
+  const setCompanionSelection = useUIStore((s) => s.setCompanionSelection);
 
   useEffect(() => {
     window.api.getVersion().then(setVersion);
@@ -74,7 +74,8 @@ export function GeneralSettings(): JSX.Element {
           </h2>
           <p className="mb-3 text-xs text-muted">
             Your companion floats on your desktop and shows which sessions are working, need you, or
-            finished while you were away.
+            finished while you were away. Pick a single pet, or a crew — a crew shows one member per
+            running agent, each with a speech bubble of what it's doing.
           </p>
           <label className="flex cursor-pointer items-center gap-3">
             <input
@@ -85,7 +86,9 @@ export function GeneralSettings(): JSX.Element {
             />
             <span className="text-xs font-medium text-foreground">Show the companion</span>
           </label>
-          {companionVisible && <PetPicker value={companionPet} onChange={setCompanionPet} />}
+          {companionVisible && (
+            <PetPicker value={companionSelection} onChange={setCompanionSelection} />
+          )}
         </div>
 
         <div className="mt-6 rounded-lg border border-border bg-card-bg p-4">
