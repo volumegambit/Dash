@@ -43,15 +43,17 @@ Leave any cap **blank** to inherit the gateway default (below). A cap change **t
 
 ### Gateway swarm defaults
 
-The gateway also enforces a **global** ceiling across every agent's runs and supplies the per-agent defaults above. These are built-in and rarely need changing:
+The gateway also enforces a **global** ceiling across every agent's runs and supplies the per-agent defaults above. Each one can be overridden with an environment variable set where the gateway runs:
 
-| Setting | Default | Description |
-|---------|---------|-------------|
-| `maxConcurrentWorkersGlobal` | `16` | Hard ceiling on workers running **at once across all agents** on this gateway. A spawn that would exceed it fails until other workers finish. |
-| `defaults.maxConcurrentWorkers` | `8` | Per-agent default used when an agent's own `maxConcurrentWorkers` is blank. |
-| `defaults.maxWorkersPerRun` | `24` | Per-agent default for `maxWorkersPerRun`. |
-| `defaults.maxSteersPerWorker` | `10` | Per-agent default for `maxSteersPerWorker`. |
-| `defaults.maxRunSeconds` | `1800` | Per-agent default for `maxRunSeconds`. |
+| Setting | Default | Environment variable | Description |
+|---------|---------|----------------------|-------------|
+| `maxConcurrentWorkersGlobal` | `16` | `SWARM_MAX_CONCURRENT_WORKERS_GLOBAL` | Hard ceiling on workers running **at once across all agents** on this gateway. A spawn that would exceed it fails until other workers finish. |
+| `defaults.maxConcurrentWorkers` | `8` | `SWARM_DEFAULT_MAX_CONCURRENT_WORKERS` | Per-agent default used when an agent's own `maxConcurrentWorkers` is blank. |
+| `defaults.maxWorkersPerRun` | `24` | `SWARM_DEFAULT_MAX_WORKERS_PER_RUN` | Per-agent default for `maxWorkersPerRun`. |
+| `defaults.maxSteersPerWorker` | `10` | `SWARM_DEFAULT_MAX_STEERS_PER_WORKER` | Per-agent default for `maxSteersPerWorker`. |
+| `defaults.maxRunSeconds` | `1800` | `SWARM_DEFAULT_MAX_RUN_SECONDS` | Per-agent default for `maxRunSeconds`. |
+
+Values must be **positive whole numbers** — anything else is ignored with a warning in the gateway log, and the built-in default is used instead. When Mission Control manages the gateway for you, set the variable in the environment you launch Mission Control from — the gateway inherits it. Restart the gateway (or Mission Control) to apply a change.
 
 Worker transcripts are written under `~/.dash/gateway/sessions/<agent-name>/.swarm/` and are never auto-deleted — see [Troubleshooting](/troubleshooting#swarm) if you need to find or clean them up.
 
@@ -91,6 +93,8 @@ Dash needs no environment variables for normal Mission Control use. These are av
 | `DASH_HOME` | Root directory for everything Dash stores on disk (default: `~/.dash`). |
 | `MC_DATA_DIR` | Override just the Mission Control app's data folder (used by tests and QA). |
 | `POOL_MAX_SIZE` | Maximum number of agent runtimes kept in memory by the gateway (default: `200`). |
+| `SWARM_MAX_CONCURRENT_WORKERS_GLOBAL` | Ceiling on swarm workers running at once across **all** agents (default: `16`). |
+| `SWARM_DEFAULT_*` | Per-agent swarm cap defaults — see [Gateway swarm defaults](#gateway-swarm-defaults) for the full list. |
 | `NODE_ENV` | Set to `production` to quiet the gateway's verbose request logging. |
 
 Provider API keys are **not** read from environment variables when you use Mission Control — they live in the encrypted credential store (see [Secrets](/secrets)). When running the gateway standalone, you can supply them as environment variables (e.g. `ANTHROPIC_API_KEY`); see [AI Providers](/ai-providers#configuring-credentials).
