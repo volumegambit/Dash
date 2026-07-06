@@ -107,6 +107,15 @@ export interface GatewayManagementOptions {
    * Absent in tests that don't exercise identity.
    */
   relayIdentity?: { publicKeyB64: string };
+  /**
+   * Graceful-shutdown trigger. When present, mounts `POST /lifecycle/shutdown`
+   * (bearer-authed), which MC's GatewaySupervisor calls before escalating to
+   * SIGTERM. The entrypoint wires this to the same shutdown sequence as the
+   * signal handlers. The route responds 200 first and invokes this on a short
+   * deferral — the sequence closes this very server and exits the process, so
+   * running it inline would kill the in-flight response.
+   */
+  onShutdown?: () => void | Promise<void>;
 }
 
 /**
@@ -355,6 +364,26 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
       channels: channelRegistry.list().length,
     });
   });
+
+  // --- Lifecycle ---
+  // Bearer-authed (the app.use('*') middleware above). MC's GatewaySupervisor
+  // POSTs this as its graceful-shutdown attempt before SIGTERM
+  // (shutdownStaleProcess in packages/mc/src/runtime/process.ts). Respond
+  // first, tear down on a deferral: the shutdown sequence closes this server
+  // and exits the process, which would otherwise drop the in-flight response.
+  // MC also SIGTERMs right after — the entrypoint's shutdown() is idempotent,
+  // so the overlap is harmless.
+  if (options.onShutdown) {
+    const onShutdown = options.onShutdown;
+    app.post('/lifecycle/shutdown', (c) => {
+      setTimeout(() => {
+        Promise.resolve(onShutdown()).catch((err) => {
+          logger.error('lifecycle shutdown failed', err instanceof Error ? err : undefined);
+        });
+      }, 100);
+      return c.json({ ok: true });
+    });
+  }
 
   // --- Relay identity ---
   // Authed (behind the bearer middleware registered above, app.use('*')). MC

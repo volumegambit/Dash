@@ -843,6 +843,59 @@ describe('GatewaySupervisor.restart()', () => {
     expect(args[args.indexOf('--control-plane-url') + 1]).toBe('https://cp.dash.example');
   });
 
+  it('POSTs /lifecycle/shutdown with the bearer token before SIGTERM', async () => {
+    // Pins the graceful half of shutdownStaleProcess: the gateway management
+    // API mounts POST /lifecycle/shutdown (apps/gateway/src/management-api.ts),
+    // and the supervisor must hit it with our token before falling through to
+    // signals.
+    const store = new GatewayStateStore(tmpDir);
+    await store.write({
+      pid: 55555,
+      startedAt: '2026-01-01T00:00:00Z',
+      port: 9300,
+      channelPort: 9200,
+    });
+    const keychain = new InMemoryKeychainStore();
+    await keychain.setGatewayToken('our-token');
+    await keychain.setChatToken('chat-tok');
+
+    const spawner = createMockSpawner(77777);
+    const killer = createMockKiller(new Set([55555]));
+    let probeCall = 0;
+    const probe = vi.fn(async (): Promise<PortOwnerProbeResult> => {
+      probeCall++;
+      return probeCall === 1 ? probeOwner('2026-01-01T00:00:00Z', 55555) : { type: 'free' };
+    }) as PortOwnerProbe & ReturnType<typeof vi.fn>;
+
+    const gp = new GatewaySupervisor(
+      makeOptions(tmpDir, { makeGatewayClient: () => createMockGatewayClient() }),
+      spawner,
+      killer,
+      probe,
+      keychain,
+    );
+
+    const fetchSpy = vi.fn(async () => new Response(JSON.stringify({ ok: true }), { status: 200 }));
+    vi.stubGlobal('fetch', fetchSpy);
+    try {
+      await gp.restart();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+
+    expect(fetchSpy).toHaveBeenCalledWith(
+      'http://localhost:9300/lifecycle/shutdown',
+      expect.objectContaining({
+        method: 'POST',
+        headers: { Authorization: 'Bearer our-token' },
+      }),
+    );
+    // Graceful attempt strictly precedes the signal escalation.
+    const firstFetch = fetchSpy.mock.invocationCallOrder[0];
+    const firstSignal = (killer.signal as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0];
+    expect(firstFetch).toBeLessThan(firstSignal);
+  });
+
   it('escalates SIGTERM to SIGKILL when the gateway ignores SIGTERM', async () => {
     const store = new GatewayStateStore(tmpDir);
     await store.write({

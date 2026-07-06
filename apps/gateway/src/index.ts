@@ -749,6 +749,10 @@ async function main() {
     pluginsDir,
     dataDir,
     relayIdentity: { publicKeyB64: relayIdentity.publicKeyB64 },
+    // Same teardown as the SIGTERM/SIGINT handlers. `shutdown` is declared
+    // after serve() below (it closes over the servers); this closure only
+    // runs at request time, long after it exists.
+    onShutdown: () => shutdown('POST /lifecycle/shutdown'),
     eventLogStore,
     // Mounts the swarm panel routes + threads the cancel cascade into the
     // disable/delete agent handlers. Same instance the chat coordinator attaches
@@ -888,7 +892,16 @@ async function main() {
 
   console.log('Server ready');
 
+  // Idempotency guard: MC's supervisor POSTs /lifecycle/shutdown and then
+  // SIGTERMs, so overlapping invocations are the normal case — the second
+  // must not re-run teardown against already-closed stores.
+  let shuttingDown = false;
   const shutdown = async (signal: string) => {
+    if (shuttingDown) {
+      console.log(`\nReceived ${signal} while already shutting down; ignoring`);
+      return;
+    }
+    shuttingDown = true;
     console.log(`\nReceived ${signal}, shutting down...`);
     relayClient?.stop();
     dialTokenManager?.stop();
