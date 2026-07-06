@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { ConversationStore, McConversation, McMessage } from '@dash/mc';
 import WebSocket from 'ws';
 import type { McAgentEvent } from '../shared/ipc.js';
+import type { SessionStatus } from './session-status-sync.js';
 
 export interface GatewayConnection {
   channelPort: number;
@@ -45,6 +46,14 @@ interface ReplayedEventLogEntry {
 export class ChatService {
   private activeStreams = new Map<string, { ws: WebSocket; msgId: string }>();
 
+  /**
+   * Attached by the main process (where the projects client is in scope)
+   * to sync the owning task's status from the session lifecycle. Kept as a
+   * settable listener rather than a constructor arg so ChatService needs no
+   * knowledge of the projects API.
+   */
+  private sessionStatusListener?: (conversationId: string, status: SessionStatus) => void;
+
   constructor(
     private store: ConversationStore,
     private onEvent: (conversationId: string, event: McAgentEvent) => void,
@@ -53,6 +62,45 @@ export class ChatService {
     private gatewayConnection?: GatewayConnection,
     private onConversationRenamed?: (conversationId: string, title: string) => void,
   ) {}
+
+  setSessionStatusListener(
+    listener: (conversationId: string, status: SessionStatus) => void,
+  ): void {
+    this.sessionStatusListener = listener;
+  }
+
+  /**
+   * Forward an agent event to the UI callback, and — when the agent is
+   * asking the human a question — surface a 'needs' session status so the
+   * owning task can flip to waiting_on_human.
+   */
+  private emitEvent(conversationId: string, event: McAgentEvent): void {
+    this.onEvent(conversationId, event);
+    if (event.type === 'question') {
+      this.sessionStatusListener?.(conversationId, 'needs');
+    }
+  }
+
+  /** Fire the turn-complete callback plus a 'done' session status. */
+  private emitDone(conversationId: string): void {
+    this.onDone(conversationId);
+    this.sessionStatusListener?.(conversationId, 'done');
+  }
+
+  /** Fire the turn-error callback plus an 'error' session status. */
+  private emitError(conversationId: string, error: string): void {
+    this.onError(conversationId, error);
+    this.sessionStatusListener?.(conversationId, 'error');
+  }
+
+  async setConversationIssueId(conversationId: string, issueId: string): Promise<void> {
+    return this.store.setIssueId(conversationId, issueId);
+  }
+
+  /** The owning task id recorded for a conversation, if any. */
+  async getConversationIssueId(conversationId: string): Promise<string | undefined> {
+    return (await this.store.get(conversationId))?.issueId;
+  }
 
   setGatewayConnection(connection: GatewayConnection): void {
     this.gatewayConnection = connection;
@@ -137,6 +185,8 @@ export class ChatService {
             session_id: conversationId,
             agent_id: agentId,
           }).catch(() => null);
+          // Record ownership so session-status sync can find this task.
+          await this.store.setIssueId(conversationId, issue.id).catch(() => {});
         }
       }
     } catch {
@@ -225,6 +275,9 @@ export class ChatService {
       timestamp: new Date().toISOString(),
     };
     await this.store.appendMessage(conversationId, userMessage);
+    // The agent is about to work this turn — sync the owning task to
+    // in_progress / agent_working. Idempotent when already there.
+    this.sessionStatusListener?.(conversationId, 'working');
 
     // First message of a new conversation: generate a title, create the
     // conversation's task (filed under an inferred project when possible),
@@ -310,18 +363,18 @@ export class ChatService {
 
       if (msg.type === 'event' && msg.event) {
         accumulatedEvents.push(msg.event);
-        this.onEvent(conversationId, msg.event);
+        this.emitEvent(conversationId, msg.event);
       } else if (msg.type === 'done') {
         terminated = true;
         this.activeStreams.delete(conversationId);
         ws.close();
         // Persist first, then fire onDone — see persistAssistantMessage.
-        void persistAssistantMessage().then(() => this.onDone(conversationId));
+        void persistAssistantMessage().then(() => this.emitDone(conversationId));
       } else if (msg.type === 'error') {
         terminated = true;
         this.activeStreams.delete(conversationId);
         ws.close();
-        this.onError(conversationId, msg.error ?? 'Unknown error');
+        this.emitError(conversationId, msg.error ?? 'Unknown error');
       }
     });
 
@@ -354,7 +407,7 @@ export class ChatService {
           for (const entry of missing) {
             if (entry.payload.type === 'event') {
               accumulatedEvents.push(entry.payload.event);
-              this.onEvent(conversationId, entry.payload.event);
+              this.emitEvent(conversationId, entry.payload.event);
             } else if (entry.payload.type === 'done') {
               replayedTerminal = 'done';
             } else if (entry.payload.type === 'error') {
@@ -364,11 +417,11 @@ export class ChatService {
 
           if (replayedTerminal === 'done') {
             await persistAssistantMessage();
-            this.onDone(conversationId);
+            this.emitDone(conversationId);
             return;
           }
           if (replayedTerminal && typeof replayedTerminal === 'object') {
-            this.onError(conversationId, replayedTerminal.error);
+            this.emitError(conversationId, replayedTerminal.error);
             return;
           }
           // Replay returned no terminal — the stream is still
@@ -377,12 +430,12 @@ export class ChatService {
           // them, and surface a connection-dropped error so the
           // user knows the response is incomplete.
           if (accumulatedEvents.length > 0) await persistAssistantMessage();
-          this.onError(conversationId, 'WebSocket connection dropped');
+          this.emitError(conversationId, 'WebSocket connection dropped');
         } catch {
           // Reconciliation itself failed — fall back to the old
           // "save partial events" behaviour.
           if (accumulatedEvents.length > 0) await persistAssistantMessage();
-          this.onError(conversationId, 'WebSocket connection dropped');
+          this.emitError(conversationId, 'WebSocket connection dropped');
         }
       })();
     });
@@ -512,7 +565,7 @@ export class ChatService {
       if (entry.seq > highestSeq) highestSeq = entry.seq;
       if (entry.payload.type === 'event') {
         newEvents.push(entry.payload.event);
-        this.onEvent(conv.id, entry.payload.event);
+        this.emitEvent(conv.id, entry.payload.event);
       } else if (entry.payload.type === 'done') {
         terminal = 'done';
       } else if (entry.payload.type === 'error') {
@@ -536,9 +589,9 @@ export class ChatService {
     }
 
     if (terminal === 'done') {
-      this.onDone(conv.id);
+      this.emitDone(conv.id);
     } else if (terminal && typeof terminal === 'object') {
-      this.onError(conv.id, terminal.error);
+      this.emitError(conv.id, terminal.error);
     }
   }
 }
