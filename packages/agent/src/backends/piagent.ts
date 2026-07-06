@@ -1171,15 +1171,20 @@ export class PiAgentBackend implements AgentBackend {
         // (e.g. Anthropic 401 auth failures) via `stopReason: 'error'` on the
         // assistant message — if we don't surface these, the chat UI just sees
         // an empty response and the user has no idea what went wrong.
+        //
+        // pi fires message_end for EVERY message committed to the session
+        // (user prompts and tool results included), not just assistant turns.
+        // Only an assistant message marks a completed model call — anything
+        // else would emit a bogus empty response with zeroed usage.
         const endEvent = event as Extract<AgentSessionEvent, { type: 'message_end' }>;
-        const msg = endEvent.message as
-          | (AssistantMessage & { stopReason?: string; errorMessage?: string })
-          | undefined;
-        if (msg?.stopReason === 'error') {
+        const rawMsg = endEvent.message as { role?: string } | undefined;
+        if (rawMsg?.role !== 'assistant') return null;
+        const msg = rawMsg as AssistantMessage & { stopReason?: string; errorMessage?: string };
+        if (msg.stopReason === 'error') {
           const errMsg = msg.errorMessage ?? 'Model call failed';
           return { type: 'error', error: new Error(errMsg) };
         }
-        const usage: Usage | undefined = msg?.usage;
+        const usage: Usage | undefined = msg.usage;
         return {
           type: 'response',
           content: this.fullText,

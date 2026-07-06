@@ -1,10 +1,10 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import type {
-  CompanionStatus,
+  CompanionAgentStatus,
+  CompanionSelection,
   McAgentEvent,
   McpStatusChange,
   MissionControlAPI,
-  PetKind,
 } from '../shared/ipc.js';
 import type { ProjectsEvent } from '../shared/projects-ipc.js';
 
@@ -218,11 +218,11 @@ const api: MissionControlAPI = {
   },
 
   // Companion (pet widget)
-  companionPublishStatuses: (statuses: CompanionStatus[]) =>
+  companionPublishStatuses: (statuses: CompanionAgentStatus[]) =>
     ipcRenderer.send('companion:statuses', statuses),
   companionSetVisible: (visible: boolean) => ipcRenderer.invoke('companion:setVisible', visible),
-  onCompanionStatuses: (callback: (statuses: CompanionStatus[]) => void): (() => void) => {
-    const handler = (_: Electron.IpcRendererEvent, statuses: CompanionStatus[]) =>
+  onCompanionStatuses: (callback: (statuses: CompanionAgentStatus[]) => void): (() => void) => {
+    const handler = (_: Electron.IpcRendererEvent, statuses: CompanionAgentStatus[]) =>
       callback(statuses);
     ipcRenderer.on('companion:statuses', handler);
     return () => ipcRenderer.removeListener('companion:statuses', handler);
@@ -232,9 +232,11 @@ const api: MissionControlAPI = {
     ipcRenderer.on('companion:replay', handler);
     return () => ipcRenderer.removeListener('companion:replay', handler);
   },
-  companionPublishPet: (pet: PetKind) => ipcRenderer.send('companion:pet', pet),
-  onCompanionPet: (callback: (pet: PetKind) => void): (() => void) => {
-    const handler = (_: Electron.IpcRendererEvent, pet: PetKind) => callback(pet);
+  companionPublishPet: (selection: CompanionSelection) =>
+    ipcRenderer.send('companion:pet', selection),
+  onCompanionPet: (callback: (selection: CompanionSelection) => void): (() => void) => {
+    const handler = (_: Electron.IpcRendererEvent, selection: CompanionSelection) =>
+      callback(selection);
     ipcRenderer.on('companion:pet', handler);
     return () => ipcRenderer.removeListener('companion:pet', handler);
   },

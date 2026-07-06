@@ -1,9 +1,15 @@
 import { create } from 'zustand';
-import type { PetKind } from '../../../shared/ipc.js';
-import { DEFAULT_PET, PET_KINDS } from '../companion/pets/kinds.js';
+import type { CompanionSelection } from '../../../shared/ipc.js';
+import {
+  parseCompanionSelection,
+  serializeCompanionSelection,
+} from '../companion/pets/companionSelection.js';
 
 const COMPANION_VISIBLE_KEY = 'dash.companion.visible';
-const COMPANION_PET_KEY = 'dash.companion.pet';
+// Holds a CompanionSelection string (a PetKind or `crew:<CrewKind>`). The key
+// is unchanged from when it held only a PetKind, so old values migrate for
+// free: a persisted pet id is already a valid selection.
+const COMPANION_SELECTION_KEY = 'dash.companion.pet';
 
 function loadCompanionVisible(): boolean {
   try {
@@ -16,14 +22,18 @@ function loadCompanionVisible(): boolean {
   return true;
 }
 
-export function loadCompanionPet(): PetKind {
+/**
+ * Load the persisted companion selection, normalized: unknown or malformed
+ * values (including invalid crews) collapse to the default pet.
+ */
+export function loadCompanionSelection(): CompanionSelection {
+  let raw: string | null = null;
   try {
-    const v = localStorage.getItem(COMPANION_PET_KEY);
-    if (v && (PET_KINDS as readonly string[]).includes(v)) return v as PetKind;
+    raw = localStorage.getItem(COMPANION_SELECTION_KEY);
   } catch {
     // ignore
   }
-  return DEFAULT_PET;
+  return serializeCompanionSelection(parseCompanionSelection(raw));
 }
 
 interface UIState {
@@ -32,8 +42,8 @@ interface UIState {
   expandSidebar: () => void;
   companionVisible: boolean;
   setCompanionVisible: (visible: boolean) => void;
-  companionPet: PetKind;
-  setCompanionPet: (pet: PetKind) => void;
+  companionSelection: CompanionSelection;
+  setCompanionSelection: (selection: CompanionSelection) => void;
 }
 
 export const useUIStore = create<UIState>((set) => ({
@@ -49,13 +59,13 @@ export const useUIStore = create<UIState>((set) => ({
     }
     set({ companionVisible });
   },
-  companionPet: loadCompanionPet(),
-  setCompanionPet: (companionPet) => {
+  companionSelection: loadCompanionSelection(),
+  setCompanionSelection: (companionSelection) => {
     try {
-      localStorage.setItem(COMPANION_PET_KEY, companionPet);
+      localStorage.setItem(COMPANION_SELECTION_KEY, companionSelection);
     } catch {
       // ignore
     }
-    set({ companionPet });
+    set({ companionSelection });
   },
 }));
