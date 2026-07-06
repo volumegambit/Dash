@@ -772,6 +772,65 @@ describe('SwarmCoordinator', () => {
     });
   });
 
+  // Subagent hook threading: the hooks option handed to the coordinator must
+  // reach every WorkerHandle (via run.register) — this is the seam the gateway
+  // uses to fire the SubagentStart/SubagentStop plugin hook events.
+  describe('subagent hooks', () => {
+    function makeHookRecorder() {
+      const starts: Array<{ workerId: string; role: string }> = [];
+      const stops: Array<{ workerId: string; role: string; status: string }> = [];
+      return {
+        starts,
+        stops,
+        hooks: {
+          subagentStart: (w: { workerId: string; role: string }) => starts.push(w),
+          subagentStop: (w: { workerId: string; role: string; status: string }) => stops.push(w),
+        },
+      };
+    }
+
+    it('fires subagentStart on spawn and subagentStop{done} when the worker completes', async () => {
+      const { factory, backends } = makeFactory();
+      const { starts, stops, hooks } = makeHookRecorder();
+      const coord = new SwarmCoordinator({ workerFactory: factory, hooks });
+      coord.attach(baseAttach());
+      const { workerId } = coord.spawnWorker(AGENT_ID, CONVO_ID, {
+        role: 'researcher',
+        brief: 'b',
+      });
+      // start fires synchronously inside spawnWorker (handle.start in register).
+      expect(starts).toEqual([{ workerId, role: 'researcher' }]);
+      expect(stops).toEqual([]);
+      const seg = await backends[0].onNextSegment();
+      seg.complete();
+      await new Promise((r) => setTimeout(r, 0));
+      expect(stops).toEqual([{ workerId, role: 'researcher', status: 'done' }]);
+    });
+
+    it('fires subagentStop{cancelled} when finalize cancels a live worker', async () => {
+      const { factory, backends } = makeFactory();
+      const { stops, hooks } = makeHookRecorder();
+      const coord = new SwarmCoordinator({ workerFactory: factory, hooks });
+      const a = coord.attach(baseAttach());
+      const { workerId } = coord.spawnWorker(AGENT_ID, CONVO_ID, { role: 'coder', brief: 'b' });
+      await backends[0].onNextSegment();
+      a.finalize({ consumerAlive: true });
+      expect(stops).toEqual([{ workerId, role: 'coder', status: 'cancelled' }]);
+    });
+
+    it('fires subagentStop{failed} when the backend errors', async () => {
+      const { starts, stops, hooks } = makeHookRecorder();
+      const failingFactory: WorkerFactory = () => Promise.reject(new Error('backend boom'));
+      const coord = new SwarmCoordinator({ workerFactory: failingFactory, hooks });
+      coord.attach(baseAttach());
+      const { workerId } = coord.spawnWorker(AGENT_ID, CONVO_ID, { role: 'tester', brief: 'b' });
+      expect(starts).toEqual([{ workerId, role: 'tester' }]);
+      // Let the rejected backend promise drive finalizeFailed.
+      await new Promise((r) => setTimeout(r, 0));
+      expect(stops).toEqual([{ workerId, role: 'tester', status: 'failed' }]);
+    });
+  });
+
   // sendToWorker (tool-facing).
   describe('sendToWorker', () => {
     it('steers a live worker returning {ok:true}', async () => {
