@@ -5,7 +5,8 @@ import { mockApi } from '../../../../vitest.setup.js';
 import { GatewayRuntimeSettings } from './GatewayRuntimeSettings.js';
 
 describe('GatewayRuntimeSettings', () => {
-  it('shows the active local gateway status', async () => {
+  it('shows a compact local gateway summary and opens the connection wizard', async () => {
+    const user = userEvent.setup();
     mockApi.gatewayConnectionGet.mockResolvedValue({
       profile: { mode: 'local' },
       hasRemoteSecrets: false,
@@ -15,21 +16,66 @@ describe('GatewayRuntimeSettings', () => {
     render(<GatewayRuntimeSettings />);
 
     expect(await screen.findByTestId('gateway-runtime-status')).toHaveTextContent(
-      'Local gateway - healthy',
+      'This computer - healthy',
     );
+    expect(screen.queryByLabelText('Management URL')).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: /change gateway/i }));
+
+    expect(screen.getByRole('heading', { name: /choose a gateway/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /use this computer/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /connect existing gateway/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /self-host on a vps/i })).toBeInTheDocument();
+    expect(screen.queryByText(/hosted dash gateway/i)).not.toBeInTheDocument();
   });
 
-  it('saves a relay endpoint with tokens and relay credential', async () => {
+  it('tests an existing gateway before enabling activation', async () => {
     const user = userEvent.setup();
+    mockApi.gatewayConnectionTest.mockResolvedValueOnce({
+      ok: true,
+      status: {
+        profile: {
+          mode: 'relay',
+          name: 'prod',
+          managementBaseUrl: 'https://gw.relay.example.com',
+          chatBaseUrl: 'wss://gw.relay.example.com',
+        },
+        hasRemoteSecrets: true,
+        health: 'healthy',
+      },
+    });
+
     render(<GatewayRuntimeSettings />);
 
-    await user.type(screen.getByLabelText('Name'), 'prod');
+    await user.click(await screen.findByRole('button', { name: /change gateway/i }));
+    await user.click(screen.getByRole('button', { name: /connect existing gateway/i }));
+    await user.type(screen.getByLabelText('Gateway name'), 'prod');
     await user.type(screen.getByLabelText('Management URL'), 'https://gw.relay.example.com');
     await user.type(screen.getByLabelText('Chat URL'), 'wss://gw.relay.example.com');
     await user.type(screen.getByLabelText('Management token'), 'mgmt-token');
     await user.type(screen.getByLabelText('Chat token'), 'chat-token');
     await user.type(screen.getByLabelText('Relay credential'), 'relay-cred');
-    await user.click(screen.getByRole('button', { name: /save endpoint/i }));
+
+    const useGateway = screen.getByRole('button', { name: /use this gateway/i });
+    expect(useGateway).toBeDisabled();
+
+    await user.click(screen.getByRole('button', { name: /test connection/i }));
+
+    await waitFor(() => {
+      expect(mockApi.gatewayConnectionTest).toHaveBeenCalledWith({
+        mode: 'relay',
+        name: 'prod',
+        managementBaseUrl: 'https://gw.relay.example.com',
+        chatBaseUrl: 'wss://gw.relay.example.com',
+        managementToken: 'mgmt-token',
+        chatToken: 'chat-token',
+        relayCredential: 'relay-cred',
+      });
+    });
+    expect(await screen.findByText(/connection looks good/i)).toBeInTheDocument();
+    expect(useGateway).toBeEnabled();
+
+    await user.click(useGateway);
 
     await waitFor(() => {
       expect(mockApi.gatewayConnectionSaveRelay).toHaveBeenCalledWith({
@@ -44,10 +90,36 @@ describe('GatewayRuntimeSettings', () => {
     });
   });
 
-  it('deploys a VPS gateway with required SSH and relay fields', async () => {
+  it('keeps an existing gateway inactive when the connection test fails', async () => {
+    const user = userEvent.setup();
+    mockApi.gatewayConnectionTest.mockResolvedValueOnce({
+      ok: false,
+      message: 'Could not reach that gateway. Check the URL and tokens, then try again.',
+    });
+
+    render(<GatewayRuntimeSettings />);
+
+    await user.click(await screen.findByRole('button', { name: /change gateway/i }));
+    await user.click(screen.getByRole('button', { name: /connect existing gateway/i }));
+    await user.type(screen.getByLabelText('Management URL'), 'https://broken.example.com');
+    await user.type(screen.getByLabelText('Management token'), 'bad-mgmt');
+    await user.type(screen.getByLabelText('Chat token'), 'bad-chat');
+    await user.click(screen.getByRole('button', { name: /test connection/i }));
+
+    expect(await screen.findByText(/could not reach that gateway/i)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /use this gateway/i })).toBeDisabled();
+    expect(mockApi.gatewayConnectionSaveRelay).not.toHaveBeenCalled();
+  });
+
+  it('keeps VPS deployment behind the advanced self-host path', async () => {
     const user = userEvent.setup();
     render(<GatewayRuntimeSettings />);
 
+    await user.click(await screen.findByRole('button', { name: /change gateway/i }));
+
+    expect(screen.queryByLabelText('Host')).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: /self-host on a vps/i }));
     await user.type(screen.getByLabelText('Host'), '203.0.113.10');
     await user.type(screen.getByLabelText('User'), 'dash');
     await user.type(screen.getByLabelText('Gateway id'), 'gw-1');
@@ -70,11 +142,21 @@ describe('GatewayRuntimeSettings', () => {
     });
   });
 
-  it('switches back to the local gateway', async () => {
+  it('switches back to the local gateway from the summary', async () => {
     const user = userEvent.setup();
+    mockApi.gatewayConnectionGet.mockResolvedValue({
+      profile: {
+        mode: 'relay',
+        name: 'prod',
+        managementBaseUrl: 'https://gw.relay.example.com',
+      },
+      hasRemoteSecrets: true,
+      health: 'healthy',
+    });
+
     render(<GatewayRuntimeSettings />);
 
-    await user.click(await screen.findByRole('button', { name: /use local/i }));
+    await user.click(await screen.findByRole('button', { name: /use this computer/i }));
 
     expect(mockApi.gatewayConnectionUseLocal).toHaveBeenCalled();
   });

@@ -129,24 +129,23 @@ There are no `--config` or `--secrets` flags, and the gateway does not read any 
 Mission Control can also use a gateway that runs somewhere else, such as a VPS.
 Open **Settings → General → Gateway** to choose where MC should connect.
 
-**Local gateway** is the default. Mission Control starts the gateway on this
+The gateway row shows the active connection. Click **Change gateway** to switch.
+
+**Use this computer** is the default. Mission Control starts the gateway on this
 machine and talks to it over loopback.
 
-**Relay or hosted endpoint** connects Mission Control to an existing gateway URL.
-Enter the management URL, chat URL, management token, chat token, and relay
-credential if your relay requires one. The URLs are saved in Mission Control's
-settings. Tokens and relay credentials stay in the OS keychain.
+**Connect existing gateway** connects Mission Control to a gateway URL you already
+have. Enter the management URL, chat URL, management token, chat token, and relay
+credential if your relay requires one. Click **Test connection** first. Mission
+Control only enables **Use this gateway** after the gateway answers successfully.
+URLs are saved in Mission Control's settings. Tokens and relay credentials stay
+in the OS keychain.
 
-**Deploy to VPS** connects over SSH, installs Dash on the server, creates a
-`dash-gateway` systemd user service, starts the gateway with your relay settings,
-and then saves the resulting relay endpoint in Mission Control. You need a VPS
-that already has Node.js, npm, git, and systemd user services available.
-
-<Note>
-  A hosted Dash gateway will use the same endpoint shape: a management URL, chat
-  URL, and gateway tokens. The current flow can connect to one once those details
-  are issued, but it does not create hosted gateways for you yet.
-</Note>
+**Self-host on a VPS** is the advanced path. It connects over SSH, installs Dash
+on the server, creates a `dash-gateway` systemd user service, starts the gateway
+with your relay settings, tests the deployed gateway, and then saves the resulting
+relay endpoint in Mission Control. You need a VPS that already has Node.js, npm,
+git, and systemd user services available.
 
 ## Credentials
 

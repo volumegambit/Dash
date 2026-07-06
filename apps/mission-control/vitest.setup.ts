@@ -202,6 +202,19 @@ function createMockApi(): MockApi {
       hasRemoteSecrets: false,
       health: 'unknown',
     }),
+    gatewayConnectionTest: vi.fn().mockResolvedValue({
+      ok: true,
+      status: {
+        profile: {
+          mode: 'relay',
+          name: 'gw-1',
+          managementBaseUrl: 'https://gw-1.relay.example.com',
+          chatBaseUrl: 'wss://gw-1.relay.example.com',
+        },
+        hasRemoteSecrets: true,
+        health: 'healthy',
+      },
+    }),
     gatewayConnectionSaveRelay: vi.fn().mockResolvedValue({
       profile: {
         mode: 'relay',

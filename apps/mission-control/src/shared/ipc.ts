@@ -313,6 +313,10 @@ export interface GatewayConnectionStatus {
   health: 'unknown' | 'healthy' | 'unhealthy';
 }
 
+export type GatewayConnectionTestResult =
+  | { ok: true; status: GatewayConnectionStatus }
+  | { ok: false; message: string };
+
 export interface GatewayRelayConnectionInput {
   mode: 'relay' | 'hosted';
   name?: string;
@@ -502,6 +506,7 @@ export interface MissionControlAPI {
   gatewayOnStatus(callback: (status: GatewayStatus) => void): () => void;
   gatewayConnectionGet(): Promise<GatewayConnectionStatus>;
   gatewayConnectionUseLocal(): Promise<GatewayConnectionStatus>;
+  gatewayConnectionTest(input: GatewayRelayConnectionInput): Promise<GatewayConnectionTestResult>;
   gatewayConnectionSaveRelay(input: GatewayRelayConnectionInput): Promise<GatewayConnectionStatus>;
   gatewayDeployVps(input: McVpsGatewayDeployRequest): Promise<GatewayConnectionStatus>;
 

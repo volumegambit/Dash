@@ -60,6 +60,16 @@ import {
   forwardStatuses,
 } from './companion-window.js';
 import { createControlPlaneRuntime, readControlPlaneConfig } from './control-plane.js';
+import {
+  REMOTE_GATEWAY_TEST_FAILURE,
+  headersForRemoteGateway,
+  localGatewayProfile,
+  publicGatewayConnectionStatus,
+  saveGatewayRelayConnection,
+  testGatewayRelayConnection,
+  trimTrailingSlash,
+  websocketBaseFromHttpBase,
+} from './gateway-connection.js';
 import { GatewayPoller } from './gateway-poller.js';
 import { buildPairingInfo } from './pairing.js';
 import { issuePatchForSessionStatus } from './session-status-sync.js';
@@ -209,8 +219,6 @@ function getSettingsStore(): SettingsStore {
   return new SettingsStore(DATA_DIR);
 }
 
-const RELAY_CREDENTIAL_HEADER = 'x-dash-relay-credential';
-
 interface ActiveGatewayEndpoint {
   mode: 'local' | 'remote';
   managementBaseUrl: string;
@@ -218,35 +226,6 @@ interface ActiveGatewayEndpoint {
   managementToken: string;
   chatToken: string;
   headers: Record<string, string>;
-}
-
-function localGatewayProfile(): GatewayConnectionSettings {
-  return { mode: 'local' };
-}
-
-function trimTrailingSlash(value: string): string {
-  return value.replace(/\/+$/, '');
-}
-
-function websocketBaseFromHttpBase(baseUrl: string): string {
-  const url = new URL(baseUrl);
-  url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
-  url.pathname = '';
-  url.search = '';
-  url.hash = '';
-  return trimTrailingSlash(url.toString());
-}
-
-function headersForRemoteGateway(secrets: RemoteGatewaySecrets): Record<string, string> {
-  return secrets.relayCredential ? { [RELAY_CREDENTIAL_HEADER]: secrets.relayCredential } : {};
-}
-
-function publicGatewayConnectionStatus(
-  profile: GatewayConnectionSettings,
-  hasRemoteSecrets: boolean,
-  health: GatewayConnectionStatus['health'] = 'unknown',
-): GatewayConnectionStatus {
-  return { profile, hasRemoteSecrets, health };
 }
 
 function getChatService(getWindow: () => BrowserWindow | undefined): ChatService {
@@ -481,6 +460,21 @@ export async function registerIpcHandlers(
         );
       });
     }
+  };
+
+  const checkRemoteGateway = async (
+    profile: GatewayConnectionSettings,
+    secrets: RemoteGatewaySecrets,
+  ): Promise<void> => {
+    if (!profile.managementBaseUrl) {
+      throw new Error('Remote gateway profile is missing its management URL');
+    }
+    const client = new GatewayManagementClient(
+      trimTrailingSlash(profile.managementBaseUrl),
+      secrets.managementToken,
+      headersForRemoteGateway(secrets),
+    );
+    await client.health();
   };
 
   // Idempotently record that onboarding is complete. Monotonic: written
@@ -1210,29 +1204,24 @@ export async function registerIpcHandlers(
     return getGatewayConnectionStatus();
   });
 
+  ipcMain.handle('gatewayConnection:test', async (_e, input: GatewayRelayConnectionInput) =>
+    testGatewayRelayConnection(input, {
+      now: () => new Date().toISOString(),
+      checkRemoteGateway,
+    }),
+  );
+
   ipcMain.handle(
     'gatewayConnection:saveRelay',
     async (_e, input: GatewayRelayConnectionInput): Promise<GatewayConnectionStatus> => {
-      const managementBaseUrl = trimTrailingSlash(input.managementBaseUrl.trim());
-      if (!managementBaseUrl) throw new Error('Management URL is required');
-      const chatBaseUrl = trimTrailingSlash(
-        input.chatBaseUrl?.trim() || websocketBaseFromHttpBase(managementBaseUrl),
-      );
-      const profile: GatewayConnectionSettings = {
-        mode: input.mode,
-        name: input.name?.trim() || undefined,
-        managementBaseUrl,
-        chatBaseUrl,
-        updatedAt: new Date().toISOString(),
-      };
-      await keychain.setRemoteGatewaySecrets({
-        managementToken: input.managementToken,
-        chatToken: input.chatToken,
-        relayCredential: input.relayCredential?.trim() || undefined,
+      return saveGatewayRelayConnection(input, {
+        now: () => new Date().toISOString(),
+        checkRemoteGateway,
+        setRemoteGatewaySecrets: (secrets) => keychain.setRemoteGatewaySecrets(secrets),
+        setGatewayConnection: (profile) => getSettingsStore().set({ gatewayConnection: profile }),
+        refreshChatServiceConnection,
+        getGatewayConnectionStatus,
       });
-      await getSettingsStore().set({ gatewayConnection: profile });
-      await refreshChatServiceConnection();
-      return getGatewayConnectionStatus();
     },
   );
 
@@ -1254,11 +1243,17 @@ export async function registerIpcHandlers(
         chatBaseUrl: result.chatBaseUrl,
         updatedAt: new Date().toISOString(),
       };
-      await keychain.setRemoteGatewaySecrets({
+      const secrets = {
         managementToken,
         chatToken,
         relayCredential: input.relayCredential?.trim() || undefined,
-      });
+      };
+      try {
+        await checkRemoteGateway(profile, secrets);
+      } catch {
+        throw new Error(REMOTE_GATEWAY_TEST_FAILURE);
+      }
+      await keychain.setRemoteGatewaySecrets(secrets);
       await getSettingsStore().set({ gatewayConnection: profile });
       await refreshChatServiceConnection();
       return getGatewayConnectionStatus();

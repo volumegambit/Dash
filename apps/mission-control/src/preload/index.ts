@@ -171,6 +171,7 @@ const api: MissionControlAPI = {
   },
   gatewayConnectionGet: () => ipcRenderer.invoke('gatewayConnection:get'),
   gatewayConnectionUseLocal: () => ipcRenderer.invoke('gatewayConnection:useLocal'),
+  gatewayConnectionTest: (input) => ipcRenderer.invoke('gatewayConnection:test', input),
   gatewayConnectionSaveRelay: (input) => ipcRenderer.invoke('gatewayConnection:saveRelay', input),
   gatewayDeployVps: (input) => ipcRenderer.invoke('gateway:deployVps', input),
 

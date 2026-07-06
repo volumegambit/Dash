@@ -119,17 +119,19 @@ Something not working? Here are the most common issues and how to fix them.
     shows agents from the local machine.
 
     **Fix:** Open **Settings → General → Gateway** and check the active gateway
-    status. If it says **Local gateway**, save the relay or hosted endpoint again.
-    If you want to return to local mode, click **Use local**.
+    status. If it says **This computer**, click **Change gateway**, choose
+    **Connect existing gateway**, test the connection, then click **Use this gateway**.
+    If you want to return to local mode, click **Use this computer**.
   </Accordion>
 
   <Accordion title="Remote gateway is unhealthy">
-    **Symptom:** **Settings → General → Gateway** shows a relay or hosted endpoint
+    **Symptom:** **Settings → General → Gateway** shows an existing gateway
     with an unhealthy status.
 
     **Fix:** Confirm the management URL is reachable, the management token is
-    correct, and the relay credential is still valid. For a VPS deployment, SSH to
-    the server and run:
+    correct, and the relay credential is still valid. Click **Change gateway** and
+    test the connection again before using it. For a VPS deployment, SSH to the
+    server and run:
 
     ```bash
     systemctl --user status dash-gateway.service
@@ -139,17 +141,20 @@ Something not working? Here are the most common issues and how to fix them.
   <Accordion title="VPS deployment fails">
     **Symptom:** **Deploy and connect** fails before the gateway is saved.
 
-    **Fix:** Make sure the SSH host, user, port, and key are correct. The VPS must
-    have `git`, `node`, `npm`, and `systemctl --user` available. If the relay URL
-    or gateway id is wrong, fix those fields and deploy again.
+    **Fix:** Open **Settings → General → Gateway**, click **Change gateway**, then
+    choose **Self-host on a VPS**. Make sure the SSH host, user, port, and key are
+    correct. The VPS must have `git`, `node`, `npm`, and `systemctl --user`
+    available. If the relay URL or gateway id is wrong, fix those fields and
+    deploy again.
   </Accordion>
 
   <Accordion title="Chat opens but messages do not stream">
     **Symptom:** Mission Control can list agents, but chat messages hang or fail.
 
-    **Fix:** Check the chat URL and chat token in **Settings → General → Gateway**.
-    The chat URL should use `wss://` for HTTPS relays and point at the same gateway
-    host as the management URL.
+    **Fix:** Open **Settings → General → Gateway**, click **Change gateway**, choose
+    **Connect existing gateway**, and test the connection again. The chat URL should
+    use `wss://` for HTTPS relays and point at the same gateway host as the
+    management URL.
   </Accordion>
 </AccordionGroup>
 

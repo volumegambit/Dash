@@ -990,68 +990,81 @@ The Settings page has its own left sub-nav with seven sections: **General** (Gat
 the preamble.
 
 1. On Settings → General, locate the "Gateway" section
-2. **Verify:** The runtime status row shows "Local gateway - healthy" and the local endpoint
+2. **Verify:** The runtime status row shows "This computer - healthy" and the local endpoint
    beneath it
-3. **Verify:** "Use local", "Connect endpoint", and "Deploy to VPS" controls are visible
-4. Click "Use local"
-5. **Verify:** The runtime status remains "Local gateway - healthy"
-6. Restart Mission Control with the same isolated data directory
-7. **Verify:** The app opens normally and still reports the local gateway as healthy
+3. **Verify:** The raw management URL/token fields are not visible by default
+4. Click "Change gateway"
+5. **Verify:** The wizard shows "Use this computer", "Connect existing gateway", and
+   "Self-host on a VPS"
+6. **Verify:** No hosted Dash gateway option is visible in this release
+7. Click "Use this computer"
+8. **Verify:** The runtime status remains "This computer - healthy"
+9. Restart Mission Control with the same isolated data directory
+10. **Verify:** The app opens normally and still reports the local gateway as healthy
 
-### 22.2B Connect Relay or Hosted Gateway (General)
+### 22.2B Connect Existing Gateway (General)
 **Precondition:** Gateway is healthy. Use isolated QA data. If testing a real remote gateway,
 use test-only management and chat tokens.
 
-1. On Settings → General, in "Connect endpoint", choose "Relay"
-2. Enter a name, management URL, chat URL, management token, chat token, and optional relay
-   credential
-3. Click "Save endpoint"
-4. **Verify:** The runtime status changes to the saved gateway name and reports "healthy" when
-   the remote gateway is reachable, or "unhealthy" when the endpoint is unreachable
-5. **Verify:** The settings file contains only the gateway profile metadata (`mode`, name, URLs,
+1. On Settings → General, click "Change gateway"
+2. Click "Connect existing gateway"
+3. Enter a gateway name, management URL, chat URL, management token, chat token, and optional
+   relay credential
+4. **Verify:** "Use this gateway" is disabled before the connection is tested
+5. Click "Test connection"
+6. **Verify:** A reachable gateway shows "Connection looks good"
+7. Click "Use this gateway"
+8. **Verify:** The runtime status changes to the saved gateway name and reports "healthy"
+9. **Verify:** The settings file contains only the gateway profile metadata (`mode`, name, URLs,
    timestamp) and does not contain the management token, chat token, or relay credential
-6. Restart Mission Control with the same isolated data directory
-7. **Verify:** A reachable saved relay profile is used on startup
-8. Click "Use local"
-9. **Verify:** The status returns to "Local gateway - healthy" and the local gateway can list
+10. Restart Mission Control with the same isolated data directory
+11. **Verify:** A reachable saved relay profile is used on startup
+12. Click "Use this computer"
+13. **Verify:** The status returns to "This computer - healthy" and the local gateway can list
    agents
-10. Repeat steps 1-9 with Mode set to "Hosted"
-11. **Verify:** The saved profile mode is `hosted`, and "Use local" still restores the local
-    gateway
 
 ### 22.2C Connect Endpoint Failure Recovery (General)
 **Precondition:** Gateway is healthy in an isolated QA profile.
 
-1. Save a relay profile with `http://127.0.0.1:9` as the management URL and
-   `ws://127.0.0.1:9` as the chat URL, using dummy tokens
-2. **Verify:** The runtime status reports the saved remote profile as "unhealthy"
-3. Restart Mission Control with the same isolated data directory
-4. **Verify:** The gateway failure recovery screen appears instead of silently falling back to
-   local
-5. Restore local mode using the Settings UI if available; otherwise use a clean isolated profile
-   and record the recovery limitation as a failure
-6. **Verify:** After restoring local mode and reloading, the app returns to Settings → General
-   with "Local gateway - healthy"
+1. Open Change gateway → Connect existing gateway
+2. Enter `http://127.0.0.1:9` as the management URL, `ws://127.0.0.1:9` as the chat URL, and
+   dummy tokens
+3. Click "Test connection"
+4. **Verify:** Mission Control shows "Could not reach that gateway. Check the URL and tokens,
+   then try again."
+5. **Verify:** "Use this gateway" remains disabled and the active gateway profile is not changed
+6. For startup recovery, create an isolated profile with an unreachable saved relay profile, or
+   temporarily break a previously reachable test relay
+7. Restart Mission Control with the same isolated data directory
+8. **Verify:** The gateway failure recovery screen says "Saved gateway is not reachable"
+9. Click "Edit gateway connection"
+10. **Verify:** The same gateway chooser opens
+11. Go back to the recovery screen, click "Use this computer"
+12. **Verify:** The app recovers and returns to the local gateway with "This computer - healthy"
 
 ### 22.2D Deploy Gateway to VPS (General)
 **Precondition:** Use a disposable VPS with SSH access, a test relay domain/token, and an
 isolated MC profile. Do not run this against a personal gateway or production relay.
 
-1. On Settings → General, click "Deploy and connect" with the required fields empty
-2. **Verify:** A validation error is shown and no gateway profile is changed
-3. Fill Host, User, SSH port, SSH key, Gateway id, Relay URL, Relay token, optional VPS relay
+1. On Settings → General, click "Change gateway"
+2. **Verify:** VPS fields are not visible before choosing the advanced path
+3. Click "Self-host on a VPS"
+4. Click "Deploy and connect" with the required fields empty
+5. **Verify:** A validation error is shown and no gateway profile is changed
+6. Fill Host, User, SSH port, SSH key, Gateway id, Relay URL, Relay token, optional VPS relay
    credential, Repo URL, and Branch
-4. Click "Deploy and connect"
-5. **Verify:** The button changes to "Deploying..." and is disabled while SSH deployment runs
-6. **Verify:** On the VPS, the `dash-gateway` user systemd service is installed, enabled, and
+7. Click "Deploy and connect"
+8. **Verify:** The button changes to "Deploying..." and is disabled while SSH deployment runs
+9. **Verify:** On the VPS, the `dash-gateway` user systemd service is installed, enabled, and
    running
-7. **Verify:** The runtime status changes to the derived relay gateway name and reports
+10. **Verify:** Mission Control tests the deployed gateway before saving the profile
+11. **Verify:** The runtime status changes to the derived relay gateway name and reports
    "healthy"
-8. **Verify:** Pair Device shows the relay host rather than the local network host
-9. Restart Mission Control
-10. **Verify:** The saved relay gateway is reused on startup without re-entering tokens
-11. Click "Use local"
-12. **Verify:** MC returns to the local gateway without deleting the remote secrets from the
+12. **Verify:** Pair Device shows the relay host rather than the local network host
+13. Restart Mission Control
+14. **Verify:** The saved relay gateway is reused on startup without re-entering tokens
+15. Click "Use this computer"
+16. **Verify:** MC returns to the local gateway without deleting the remote secrets from the
     OS credential store
 
 ### 22.3 Gateway Restart — Connector Recovery
