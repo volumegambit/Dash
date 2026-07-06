@@ -53,12 +53,26 @@ export interface LifecycleResult {
   additionalContext?: string;
 }
 
+export interface SubagentStartInput {
+  workerId: string;
+  /** Swarm worker role — the subject a SubagentStart/SubagentStop matcher tests. */
+  role: string;
+  sessionId?: string;
+  cwd?: string;
+}
+export interface SubagentStopInput extends SubagentStartInput {
+  /** Terminal worker status: done | failed | cancelled. */
+  status: string;
+}
+
 export interface HookEngine {
   runPreToolUse(input: ToolPreInput): Promise<ToolPreDecision>;
   runPostToolUse(input: ToolPostInput): Promise<ToolPostDecision>;
   runUserPromptSubmit(input: PromptInput): Promise<PromptDecision>;
   runSessionStart(input: LifecycleInput): Promise<LifecycleResult>;
   runStop(input: LifecycleInput): Promise<LifecycleResult>;
+  runSubagentStart(input: SubagentStartInput): Promise<LifecycleResult>;
+  runSubagentStop(input: SubagentStopInput): Promise<LifecycleResult>;
   /** any hooks registered at all (lets the backend skip wiring when empty). */
   readonly hasHooks: boolean;
 }
@@ -481,6 +495,48 @@ export function createHookEngine(
         // turn's output has already been streamed to the client — there is
         // nothing left to continue into, so blocking would be a no-op. Only
         // additionalContext is collected.
+        if (outcome.additionalContext) contexts.push(outcome.additionalContext);
+      }
+      return { additionalContext: joinContext(contexts) };
+    },
+
+    // Subagent lifecycle events fire around swarm worker lifecycles. The
+    // matcher is tested against the worker ROLE (the swarm analog of Claude
+    // Code's agent type). Block decisions are NOT honored on either event: the
+    // WorkerHandle seam that triggers these is a synchronous fire-and-forget
+    // callback — by the time a hook could answer, the worker is already
+    // running (start) or terminal (stop). Only additionalContext is collected.
+
+    async runSubagentStart(input) {
+      const cwd = input.cwd ?? process.cwd();
+      const contexts: string[] = [];
+      for (const { entry, command } of selectHooks('SubagentStart', input.role)) {
+        const payload: StdinPayload = {
+          session_id: input.sessionId,
+          cwd,
+          hook_event_name: 'SubagentStart',
+          worker_id: input.workerId,
+          role: input.role,
+        };
+        const outcome = await runOne(entry, command, payload, cwd);
+        if (outcome.additionalContext) contexts.push(outcome.additionalContext);
+      }
+      return { additionalContext: joinContext(contexts) };
+    },
+
+    async runSubagentStop(input) {
+      const cwd = input.cwd ?? process.cwd();
+      const contexts: string[] = [];
+      for (const { entry, command } of selectHooks('SubagentStop', input.role)) {
+        const payload: StdinPayload = {
+          session_id: input.sessionId,
+          cwd,
+          hook_event_name: 'SubagentStop',
+          worker_id: input.workerId,
+          role: input.role,
+          status: input.status,
+        };
+        const outcome = await runOne(entry, command, payload, cwd);
         if (outcome.additionalContext) contexts.push(outcome.additionalContext);
       }
       return { additionalContext: joinContext(contexts) };

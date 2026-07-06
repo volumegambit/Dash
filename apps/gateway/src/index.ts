@@ -346,6 +346,32 @@ async function main() {
     globalMaxConcurrentWorkers: swarmConfig.maxConcurrentWorkersGlobal,
     defaultCaps: swarmConfig.defaults,
     onRunChanged: emitSwarmRunChanged,
+    // Fire the SubagentStart/SubagentStop plugin hook events around worker
+    // lifecycles (swarm design §6). The WorkerHandle seam is a synchronous
+    // void callback, so the async engine runs fire-and-forget — a Subagent
+    // hook can observe (log, notify, audit) but never block a worker. Read
+    // the engine LIVE through the mutable `wiringState` holder (same reload
+    // discipline as messageHook above) and short-circuit when no trusted
+    // plugin declares hooks. The engine itself is fail-open and never
+    // rejects, so the dangling promise is safe. cwd falls back to the
+    // gateway dataDir: the seam predates worker workspace resolution.
+    hooks: {
+      subagentStart: (w) => {
+        const { hookEngine } = wiringState;
+        if (!hookEngine.hasHooks) return;
+        void hookEngine.runSubagentStart({ workerId: w.workerId, role: w.role, cwd: dataDir });
+      },
+      subagentStop: (w) => {
+        const { hookEngine } = wiringState;
+        if (!hookEngine.hasHooks) return;
+        void hookEngine.runSubagentStop({
+          workerId: w.workerId,
+          role: w.role,
+          status: w.status,
+          cwd: dataDir,
+        });
+      },
+    },
   });
 
   const agents = createAgentChatCoordinator({

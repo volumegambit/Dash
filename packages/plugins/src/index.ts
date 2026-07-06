@@ -56,6 +56,8 @@ export type {
   LifecycleResult,
   PromptDecision,
   PromptInput,
+  SubagentStartInput,
+  SubagentStopInput,
   ToolPostDecision,
   ToolPostInput,
   ToolPreDecision,
