@@ -285,6 +285,53 @@ describe('runStop', () => {
   });
 });
 
+describe('runSubagentStart', () => {
+  it('matches against role and concatenates additionalContext', async () => {
+    const e = createHookEngine([
+      entry({ SubagentStart: [{ matcher: 'researcher', hooks: [cmd('addctx.js', 'SUBSTART')] }] }),
+    ]);
+    const matched = await e.runSubagentStart({ workerId: 'w-1', role: 'researcher' });
+    expect(matched.additionalContext).toContain('SUBSTART');
+    const unmatched = await e.runSubagentStart({ workerId: 'w-1', role: 'coder' });
+    expect(unmatched.additionalContext).toBeUndefined();
+  });
+
+  it('an absent matcher fires for every role', async () => {
+    const e = createHookEngine([
+      entry({ SubagentStart: [{ hooks: [cmd('addctx.js', 'ANYROLE')] }] }),
+    ]);
+    const d = await e.runSubagentStart({ workerId: 'w-1', role: 'whatever' });
+    expect(d.additionalContext).toContain('ANYROLE');
+  });
+});
+
+describe('runSubagentStop', () => {
+  it('matches against role and concatenates additionalContext', async () => {
+    const e = createHookEngine([
+      entry({ SubagentStop: [{ matcher: 'researcher', hooks: [cmd('addctx.js', 'SUBSTOP')] }] }),
+    ]);
+    const matched = await e.runSubagentStop({
+      workerId: 'w-1',
+      role: 'researcher',
+      status: 'done',
+    });
+    expect(matched.additionalContext).toContain('SUBSTOP');
+    const unmatched = await e.runSubagentStop({ workerId: 'w-1', role: 'coder', status: 'done' });
+    expect(unmatched.additionalContext).toBeUndefined();
+  });
+
+  it('a failing hook fails open and does not stop a later hook', async () => {
+    const { warnings, logger } = makeLogger();
+    const e = createHookEngine(
+      [entry({ SubagentStop: [{ hooks: [cmd('boom.js'), cmd('addctx.js', 'AFTERBOOM')] }] })],
+      { logger },
+    );
+    const d = await e.runSubagentStop({ workerId: 'w-1', role: 'r', status: 'failed' });
+    expect(d.additionalContext).toContain('AFTERBOOM');
+    expect(warnings.length).toBeGreaterThan(0);
+  });
+});
+
 describe('large undrained stdin payloads (async EPIPE fail-open)', () => {
   // A payload comfortably larger than the OS pipe buffer (~64 KB). When the
   // child never reads stdin, the engine's pending stdin.end() write blocks,
@@ -385,6 +432,43 @@ describe('stdin payload shape', () => {
       cwd: dir,
       hook_event_name: 'SessionStart',
       source: 'startup',
+    });
+  });
+
+  it('writes a SubagentStart payload with worker_id and role', async () => {
+    const out = join(dir, 'stdin3.json');
+    const e = createHookEngine([
+      entry({ SubagentStart: [{ hooks: [cmd('echo-stdin.js', out)] }] }),
+    ]);
+    await e.runSubagentStart({ workerId: 'w-7', role: 'researcher', sessionId: 's-3', cwd: dir });
+    const payload = JSON.parse(await readFile(out, 'utf8'));
+    expect(payload).toMatchObject({
+      session_id: 's-3',
+      cwd: dir,
+      hook_event_name: 'SubagentStart',
+      worker_id: 'w-7',
+      role: 'researcher',
+    });
+  });
+
+  it('writes a SubagentStop payload with worker_id, role, and status', async () => {
+    const out = join(dir, 'stdin4.json');
+    const e = createHookEngine([entry({ SubagentStop: [{ hooks: [cmd('echo-stdin.js', out)] }] })]);
+    await e.runSubagentStop({
+      workerId: 'w-7',
+      role: 'researcher',
+      status: 'done',
+      sessionId: 's-3',
+      cwd: dir,
+    });
+    const payload = JSON.parse(await readFile(out, 'utf8'));
+    expect(payload).toMatchObject({
+      session_id: 's-3',
+      cwd: dir,
+      hook_event_name: 'SubagentStop',
+      worker_id: 'w-7',
+      role: 'researcher',
+      status: 'done',
     });
   });
 });
