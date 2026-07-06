@@ -229,6 +229,14 @@ export class SwarmRun {
     if (this.finalized) return [];
     this.finalizedAt = Date.now();
 
+    // Workers still live at entry are the only ones whose worker_done has not
+    // already ridden the live channel — already-terminal workers emitted theirs
+    // at completion time. Snapshot before cancelAll terminalizes them so the
+    // returned events cover exactly what THIS call produced (no double-logging).
+    const cancelledHere = new Set(
+      this.order.filter((id) => !TERMINAL.has((this.handles.get(id) as WorkerHandle).status)),
+    );
+
     // 1) Cancel non-terminal workers; worker_done{cancelled} lands in the channel first.
     this.cancelAll(reason);
 
@@ -242,13 +250,16 @@ export class SwarmRun {
     // 4) Stop the wall-clock timer.
     clearTimeout(this.wallClockTimer);
 
-    // Return terminal worker_done events for optional out-of-band logging.
-    return this.terminalDoneEvents();
+    // Return ONLY the worker_done events this call produced (cancellations) for
+    // optional out-of-band logging — events from earlier terminal transitions
+    // already reached the consumer via the live channel.
+    return this.terminalDoneEvents(cancelledHere);
   }
 
-  private terminalDoneEvents(): AgentEvent[] {
+  private terminalDoneEvents(only: ReadonlySet<string>): AgentEvent[] {
     const events: AgentEvent[] = [];
     for (const id of this.order) {
+      if (!only.has(id)) continue;
       const h = this.handles.get(id) as WorkerHandle;
       if (!TERMINAL.has(h.status)) continue;
       const status = h.status as 'done' | 'failed' | 'cancelled';

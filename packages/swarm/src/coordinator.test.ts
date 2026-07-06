@@ -601,6 +601,39 @@ describe('SwarmCoordinator', () => {
       });
     });
 
+    it('does not re-append a worker_done that already rode the live stream (completed before WS cancel)', async () => {
+      const { factory, backends } = makeFactory();
+      const { sink, appends } = makeEventLog();
+      const coord = new SwarmCoordinator({ workerFactory: factory, eventLog: sink });
+      coord.attach(baseAttach({ messageId: 'm-1' }));
+
+      // Worker A completes normally: its worker_done{done} was pushed to the
+      // live channel at completion time (and logged by the chat-ws consumer).
+      const { workerId: doneId } = coord.spawnWorker(AGENT_ID, CONVO_ID, { role: 'a', brief: 'b' });
+      const segA = await backends[0].onNextSegment();
+      segA.complete();
+      await new Promise((r) => setTimeout(r, 0));
+      const statuses = coord.checkWorkers(AGENT_ID, CONVO_ID);
+      expect(statuses.find((w) => w.workerId === doneId)?.status).toBe('done');
+
+      // Worker B is still running when the user cancels the turn over the WS.
+      const { workerId: liveId } = coord.spawnWorker(AGENT_ID, CONVO_ID, { role: 'b', brief: 'b' });
+      await backends[1].onNextSegment();
+
+      expect(coord.cancelTurn(AGENT_ID, CONVO_ID)).toBe(true);
+      await Promise.resolve();
+
+      // Only worker B's cancellation was unlogged; re-appending worker A's done
+      // event would duplicate it in the durable log.
+      const logged = appends.map((x) => x.payload.event);
+      expect(logged).toHaveLength(1);
+      expect(logged[0]).toMatchObject({
+        type: 'worker_done',
+        workerId: liveId,
+        status: 'cancelled',
+      });
+    });
+
     it('NEVER appends to the eventLog on consumerAlive finalize (avoids double-log)', async () => {
       const { factory, backends } = makeFactory();
       const { sink, appends } = makeEventLog();
