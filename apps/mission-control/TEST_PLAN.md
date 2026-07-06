@@ -984,6 +984,76 @@ The Settings page has its own left sub-nav with seven sections: **General** (Gat
 15. Send a new message
 16. **Verify:** The agent responds successfully (gateway is fully operational)
 
+### 22.2A Gateway Runtime Profile (General)
+**Precondition:** Gateway is healthy. For manual QA, use an isolated `MC_DATA_DIR`,
+`DASH_HOME`, `MC_GATEWAY_MANAGEMENT_PORT`, and `MC_GATEWAY_CHANNEL_PORT` as described in
+the preamble.
+
+1. On Settings → General, locate the "Gateway" section
+2. **Verify:** The runtime status row shows "Local gateway - healthy" and the local endpoint
+   beneath it
+3. **Verify:** "Use local", "Connect endpoint", and "Deploy to VPS" controls are visible
+4. Click "Use local"
+5. **Verify:** The runtime status remains "Local gateway - healthy"
+6. Restart Mission Control with the same isolated data directory
+7. **Verify:** The app opens normally and still reports the local gateway as healthy
+
+### 22.2B Connect Relay or Hosted Gateway (General)
+**Precondition:** Gateway is healthy. Use isolated QA data. If testing a real remote gateway,
+use test-only management and chat tokens.
+
+1. On Settings → General, in "Connect endpoint", choose "Relay"
+2. Enter a name, management URL, chat URL, management token, chat token, and optional relay
+   credential
+3. Click "Save endpoint"
+4. **Verify:** The runtime status changes to the saved gateway name and reports "healthy" when
+   the remote gateway is reachable, or "unhealthy" when the endpoint is unreachable
+5. **Verify:** The settings file contains only the gateway profile metadata (`mode`, name, URLs,
+   timestamp) and does not contain the management token, chat token, or relay credential
+6. Restart Mission Control with the same isolated data directory
+7. **Verify:** A reachable saved relay profile is used on startup
+8. Click "Use local"
+9. **Verify:** The status returns to "Local gateway - healthy" and the local gateway can list
+   agents
+10. Repeat steps 1-9 with Mode set to "Hosted"
+11. **Verify:** The saved profile mode is `hosted`, and "Use local" still restores the local
+    gateway
+
+### 22.2C Connect Endpoint Failure Recovery (General)
+**Precondition:** Gateway is healthy in an isolated QA profile.
+
+1. Save a relay profile with `http://127.0.0.1:9` as the management URL and
+   `ws://127.0.0.1:9` as the chat URL, using dummy tokens
+2. **Verify:** The runtime status reports the saved remote profile as "unhealthy"
+3. Restart Mission Control with the same isolated data directory
+4. **Verify:** The gateway failure recovery screen appears instead of silently falling back to
+   local
+5. Restore local mode using the Settings UI if available; otherwise use a clean isolated profile
+   and record the recovery limitation as a failure
+6. **Verify:** After restoring local mode and reloading, the app returns to Settings → General
+   with "Local gateway - healthy"
+
+### 22.2D Deploy Gateway to VPS (General)
+**Precondition:** Use a disposable VPS with SSH access, a test relay domain/token, and an
+isolated MC profile. Do not run this against a personal gateway or production relay.
+
+1. On Settings → General, click "Deploy and connect" with the required fields empty
+2. **Verify:** A validation error is shown and no gateway profile is changed
+3. Fill Host, User, SSH port, SSH key, Gateway id, Relay URL, Relay token, optional VPS relay
+   credential, Repo URL, and Branch
+4. Click "Deploy and connect"
+5. **Verify:** The button changes to "Deploying..." and is disabled while SSH deployment runs
+6. **Verify:** On the VPS, the `dash-gateway` user systemd service is installed, enabled, and
+   running
+7. **Verify:** The runtime status changes to the derived relay gateway name and reports
+   "healthy"
+8. **Verify:** Pair Device shows the relay host rather than the local network host
+9. Restart Mission Control
+10. **Verify:** The saved relay gateway is reused on startup without re-entering tokens
+11. Click "Use local"
+12. **Verify:** MC returns to the local gateway without deleting the remote secrets from the
+    OS credential store
+
 ### 22.3 Gateway Restart — Connector Recovery
 1. If MCP connectors are configured:
 2. Navigate to Settings → Connectors (MCP), note connector statuses (should be green)
