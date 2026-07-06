@@ -251,6 +251,11 @@ export function PluginsScreen(): JSX.Element {
                         )}
                       </div>
 
+                      {/* Description */}
+                      {plugin.description && (
+                        <p className="text-xs text-muted mb-2">{plugin.description}</p>
+                      )}
+
                       {/* Failure message */}
                       {plugin.failure && (
                         <p className="text-xs text-red-400 mb-2">{plugin.failure}</p>

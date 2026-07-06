@@ -60,6 +60,22 @@ describe('PluginsScreen', () => {
     expect(screen.getByText(/Disabled/)).toBeInTheDocument();
   });
 
+  it('renders the plugin description when present', async () => {
+    mockApi.plugins.list.mockResolvedValue([
+      makeRecord({
+        description: 'Developer skills: code review, PR workflow, systematic debugging',
+      }),
+      makeRecord({ name: 'bare', displayName: 'Bare Plugin', description: undefined }),
+    ]);
+    render(<PluginsScreen />);
+
+    expect(
+      await screen.findByText('Developer skills: code review, PR workflow, systematic debugging'),
+    ).toBeInTheDocument();
+    // A plugin without a description still renders its card normally.
+    expect(screen.getByText('Bare Plugin')).toBeInTheDocument();
+  });
+
   it('shows activated contributions and struck-through noop contributions', async () => {
     mockApi.plugins.list.mockResolvedValue([makeRecord({ activated: ['skills'], noop: ['mcp'] })]);
     render(<PluginsScreen />);

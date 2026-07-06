@@ -1376,7 +1376,7 @@ Covers the Plugins screen (P3), plugin trust, per-agent plugin selection (P5), a
 
 **Preconditions:** Gateway running and MC connected (Sections 1–2). No test plugins installed yet.
 
-1. Navigate to Settings → Plugins. **Verify:** the five built-in plugins (Assistant, Communication, Creative, Developer, Skill Management) are listed, each with a "Built-in" badge, status "Loaded", a skills contribution tag, an Enable/Disable control, and NO Remove button.
+1. Navigate to Settings → Plugins. **Verify:** the five built-in plugins (Assistant, Communication, Creative, Developer, Skill Management) are listed, each with a "Built-in" badge, status "Loaded", a skills contribution tag, an Enable/Disable control, and NO Remove button. Each card shows a one-line **description** under the title (e.g. Developer: "Developer skills: code review, PR workflow, systematic debugging, writing tests"); a plugin whose manifest has no `description` shows no description line (no "undefined"/blank row).
 2. Disable "Developer". **Verify:** status flips to Disabled; in a chat with any agent, `load_skill code-review` no longer finds the skill. Re-enable and verify it returns.
 3. Install a plugin from a local path source (any valid plugin dir; the E2E demo plugin layout works). **Verify:** it appears with Enable/Disable, Trust, and Remove controls and NO Built-in badge.
 4. Install form: submit a source that resolves to the name `dash-dev`. **Verify:** the install is rejected with a built-in name error; the built-in row is unaffected.
