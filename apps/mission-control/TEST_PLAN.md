@@ -1491,6 +1491,15 @@ An **orphan** card is a worker whose terminal event landed in a *different* pers
 2. Re-open the conversation. **Verify:** the split worker renders as a **compact standalone card** whose collapsed summary reads **"worker done"** / **"worker failed"** / **"worker cancelled"** (lowercase status), sourced from the terminal event's self-describing role — it is not dropped and does not error the message render.
 3. **Verify:** an orphan card is **not** counted in the pinned strip (it represents a finished worker from a prior message, not live work).
 
+### 31.4B Gateway dies mid-run → boot-time terminalization
+When the gateway process is killed hard mid-run, nothing gets to write the turn's terminal state: the event log ends with `worker_spawned` events that have no `worker_done` and no done/error stream marker. On its **next boot** the gateway repairs this: it appends a synthesized `worker_done` (**Cancelled**, report `Gateway restarted while this worker was running.`) per dangling worker plus a terminal turn error, and restores the interrupted run into the swarm panel history.
+1. Start a swarm turn and, while workers are still **Running**, kill the gateway process hard (`kill -9`; for MC's managed gateway, force-quit MC too so its own reconcile can't run first).
+2. Restart the gateway (relaunch MC) and let MC reconnect and reconcile. **Verify:** the gateway boot log contains a `[swarm-recovery] terminalized N dangling worker(s)…` line.
+3. Re-open the conversation. **Verify:** no worker card or `wait_workers` tool block is left spinning — every worker that never finished shows **Cancelled** (typically as orphan "worker cancelled" cards in a recovered message, per 31.4), and the turn surfaces the error **"Gateway restarted while this swarm run was in progress — remaining workers were cancelled."**
+4. Open the swarm supervision panel. **Verify:** it does **not** read "No swarm runs yet" — the interrupted run is listed as **" · finished"**, and its worker table shows the dangling workers as **Cancelled** (workers that finished before the crash keep their real status, e.g. **Done** with their report).
+5. Restart the gateway once more. **Verify:** nothing changes — the repair is idempotent (no duplicate cancelled cards, no extra error).
+6. **Non-swarm turns are untouched:** cancel a plain (non-swarm) turn mid-stream, then restart the gateway. **Verify:** that conversation gets **no** synthesized error appended — boot recovery only repairs turns with dangling workers.
+
 ### 31.5 Pinned strip counts
 1. During a live swarm turn with multiple workers, **Verify:** a **pinned swarm strip** appears (a people/`Users` icon plus a summary line) reading e.g. **"3 workers · 2 running · 1 waiting"** — singular **"1 worker"** when only one, and the "running"/"waiting" parts only appear when non-zero.
 2. **Verify:** a row of small status dots follows, one per non-orphan worker, colored by state (running=accent, waiting=yellow, done=green, failed=red, cancelled=muted). Hovering a dot shows **"{role}: {status}"**.

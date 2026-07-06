@@ -202,6 +202,14 @@ Something not working? Here are the most common issues and how to fix them.
     **Fix:** A swarm turn has a wall-clock cap (`maxRunSeconds`, default **1800** = 30 minutes). When it's hit, the run closes, any in-flight workers are settled, and their cards terminalize. New spawns into a closed turn fail with `swarm turn is closed — cannot spawn`. If your workloads legitimately run longer, raise `maxRunSeconds` on the agent's **Swarm** card.
   </Accordion>
 
+  <Accordion title="The gateway restarted mid-swarm-run">
+    The gateway process died (crash, force-quit, machine reboot) while workers were still running.
+
+    **Recovery is automatic.** On its next start the gateway detects the interrupted run and closes it out: every worker that never finished is marked **Cancelled** with the note `Gateway restarted while this worker was running.`, and the chat turn ends with the error `Gateway restarted while this swarm run was in progress — remaining workers were cancelled.` Once Mission Control reconnects, the conversation's worker cards stop spinning and show those terminal states, and the run appears as finished in the swarm supervision panel.
+
+    Workers do not resume after a restart — re-send the prompt to run the swarm again.
+  </Accordion>
+
   <Accordion title="Where are the worker transcripts?">
     Each worker runs its own session, stored **separately** from the agent's normal conversations so it doesn't clutter the conversation list:
 
