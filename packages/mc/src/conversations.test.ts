@@ -49,6 +49,18 @@ describe('ConversationStore', () => {
     expect(await store.get('nonexistent')).toBeNull();
   });
 
+  it('setIssueId persists the owning issue id and survives reload', async () => {
+    const conv = await store.create('agent-123');
+    await store.setIssueId(conv.id, 'issue_42');
+
+    const reloaded = new ConversationStore(dataDir);
+    expect((await reloaded.get(conv.id))?.issueId).toBe('issue_42');
+  });
+
+  it('setIssueId is a no-op for an unknown conversation', async () => {
+    await expect(store.setIssueId('nope', 'issue_42')).resolves.toBeUndefined();
+  });
+
   it('deletes a conversation and its messages', async () => {
     const conv = await store.create('agent-123');
     await store.appendMessage(conv.id, {

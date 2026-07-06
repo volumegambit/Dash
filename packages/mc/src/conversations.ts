@@ -19,6 +19,9 @@ export interface McConversation {
   title: string;
   createdAt: string;
   updatedAt: string;
+  /** The owning task this conversation was filed as / dispatched for.
+   *  Set at link time; used by the main process to sync task status. */
+  issueId?: string;
 }
 
 export interface McMessageImage {
@@ -192,6 +195,16 @@ export class ConversationStore {
       if (idx !== -1) {
         conversations[idx].title = title;
         conversations[idx].updatedAt = new Date().toISOString();
+        await this.writeIndex(conversations);
+      }
+    });
+  }
+
+  async setIssueId(id: string, issueId: string): Promise<void> {
+    await this.updateIndex(async (conversations) => {
+      const idx = conversations.findIndex((c) => c.id === id);
+      if (idx !== -1) {
+        conversations[idx].issueId = issueId;
         await this.writeIndex(conversations);
       }
     });

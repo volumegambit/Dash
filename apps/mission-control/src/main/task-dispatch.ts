@@ -13,6 +13,9 @@ export interface TaskDispatchDeps {
   getIssue(idOrKey: string): Promise<{ id: string; key: string; title: string }>;
   createConversation(agentId: string): Promise<{ id: string }>;
   linkSession(issueId: string, sessionId: string, agentName: string): Promise<unknown>;
+  /** Persist the owning issue id on the conversation so the main process
+   *  can sync the task's status from the session lifecycle. */
+  setIssueId(sessionId: string, issueId: string): Promise<unknown>;
   /** Only ever called with the dispatch patch — typed literally so the
    *  ManagementClient.patchIssue(Partial<Issue>) lambda needs no cast. */
   patchIssue(
@@ -51,6 +54,7 @@ export async function assignAgentToTask(
   const issue = await deps.getIssue(issueIdOrKey);
   const conversation = await deps.createConversation(agentId);
   await deps.linkSession(issue.id, conversation.id, agentName);
+  await deps.setIssueId(conversation.id, issue.id);
   await deps.patchIssue(issue.id, { status: 'in_progress', sub_status: 'agent_working' });
   await deps.renameConversation(conversation.id, `${issue.key} — ${issue.title}`);
   await deps.sendMessage(conversation.id, buildTaskKickoffPrompt(issue));

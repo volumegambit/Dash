@@ -6,6 +6,7 @@ function makeDeps() {
     getIssue: vi.fn().mockResolvedValue({ id: 'issue_1', key: 'TASK-2', title: 'Fix the thing' }),
     createConversation: vi.fn().mockResolvedValue({ id: 'conv-42' }),
     linkSession: vi.fn().mockResolvedValue(undefined),
+    setIssueId: vi.fn().mockResolvedValue(undefined),
     patchIssue: vi.fn().mockResolvedValue(undefined),
     renameConversation: vi.fn().mockResolvedValue(undefined),
     sendMessage: vi.fn().mockResolvedValue(undefined),
@@ -44,6 +45,7 @@ describe('assignAgentToTask', () => {
     expect(deps.createConversation).toHaveBeenCalledWith('agent-reg-id');
     // Link keyed on agent NAME (session_issue_link contract), not registry id.
     expect(deps.linkSession).toHaveBeenCalledWith('issue_1', 'conv-42', 'Developer');
+    expect(deps.setIssueId).toHaveBeenCalledWith('conv-42', 'issue_1');
     expect(deps.patchIssue).toHaveBeenCalledWith('issue_1', {
       status: 'in_progress',
       sub_status: 'agent_working',

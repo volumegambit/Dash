@@ -20,11 +20,14 @@ describe('ChatService', () => {
   let onEvent: ReturnType<typeof vi.fn>;
   let onDone: ReturnType<typeof vi.fn>;
   let onError: ReturnType<typeof vi.fn>;
+  let onSessionStatus: ReturnType<typeof vi.fn>;
   let service: ChatService;
 
   function makeService(port: number, token?: string): ChatService {
     const gw: GatewayConnection = { channelPort: port, chatToken: token };
-    return new ChatService(store, onEvent, onDone, onError, gw);
+    const svc = new ChatService(store, onEvent, onDone, onError, gw);
+    svc.setSessionStatusListener(onSessionStatus);
+    return svc;
   }
 
   beforeEach(async () => {
@@ -34,6 +37,7 @@ describe('ChatService', () => {
     onEvent = vi.fn();
     onDone = vi.fn();
     onError = vi.fn();
+    onSessionStatus = vi.fn();
     service = makeService(BASE_PORT);
   });
 
@@ -86,6 +90,64 @@ describe('ChatService', () => {
     expect(msgs).toHaveLength(2); // user + assistant
     expect(msgs[0].role).toBe('user');
     expect(msgs[1].role).toBe('assistant');
+  });
+
+  it('emits onSessionStatus working on send and done when the turn ends', async () => {
+    const port = BASE_PORT + 120;
+    service = makeService(port);
+
+    wss = new WebSocketServer({ port });
+    wss.on('connection', (ws) => {
+      ws.on('message', (raw) => {
+        const msg = JSON.parse(String(raw));
+        ws.send(
+          JSON.stringify({
+            type: 'event',
+            id: msg.id,
+            event: { type: 'text_delta', text: 'Hi' },
+          }),
+        );
+        ws.send(JSON.stringify({ type: 'done', id: msg.id }));
+      });
+    });
+    await new Promise<void>((r) => wss?.on('listening', r));
+
+    const conv = await service.createConversation('agent-1');
+    await service.sendMessage(conv.id, 'hello');
+    await new Promise((r) => setTimeout(r, 100));
+
+    const statuses = onSessionStatus.mock.calls.map((c) => c[1]);
+    expect(onSessionStatus.mock.calls[0]).toEqual([conv.id, 'working']);
+    expect(statuses).toContain('done');
+  });
+
+  it('emits onSessionStatus needs on a question event and error on an error frame', async () => {
+    const port = BASE_PORT + 130;
+    service = makeService(port);
+
+    wss = new WebSocketServer({ port });
+    wss.on('connection', (ws) => {
+      ws.on('message', (raw) => {
+        const msg = JSON.parse(String(raw));
+        ws.send(
+          JSON.stringify({
+            type: 'event',
+            id: msg.id,
+            event: { type: 'question', id: 'q1', question: 'Which env?', options: [] },
+          }),
+        );
+        ws.send(JSON.stringify({ type: 'error', id: msg.id, error: 'boom' }));
+      });
+    });
+    await new Promise<void>((r) => wss?.on('listening', r));
+
+    const conv = await service.createConversation('agent-1');
+    await service.sendMessage(conv.id, 'go');
+    await new Promise((r) => setTimeout(r, 100));
+
+    const statuses = onSessionStatus.mock.calls.map((c) => c[1]);
+    expect(statuses).toContain('needs');
+    expect(statuses).toContain('error');
   });
 
   it('calls onError when gateway sends error', async () => {
