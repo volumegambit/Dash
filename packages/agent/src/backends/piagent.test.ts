@@ -286,6 +286,42 @@ describe('PiAgentBackend.normalizeEvent', () => {
     });
   });
 
+  it('returns null for message_end of a user message', () => {
+    // pi emits message_end whenever ANY message is committed to the session
+    // transcript — including the user's own prompt. Only assistant messages
+    // mark a completed model turn; user message_end must not produce a bogus
+    // empty response event (which polluted the stream and reset MC's token
+    // display to "0 in · 0 out").
+    const backend = makeBackend();
+    const result = backend.normalizeEvent({
+      type: 'message_end',
+      message: {
+        role: 'user',
+        content: 'Hello there',
+        timestamp: 0,
+      },
+      // biome-ignore lint/suspicious/noExplicitAny: test mock for partial event object
+    } as any);
+    expect(result).toBeNull();
+  });
+
+  it('returns null for message_end of a toolResult message', () => {
+    const backend = makeBackend();
+    const result = backend.normalizeEvent({
+      type: 'message_end',
+      message: {
+        role: 'toolResult',
+        toolCallId: 'call_1',
+        toolName: 'bash',
+        content: [{ type: 'text', text: 'ok' }],
+        isError: false,
+        timestamp: 0,
+      },
+      // biome-ignore lint/suspicious/noExplicitAny: test mock for partial event object
+    } as any);
+    expect(result).toBeNull();
+  });
+
   it('returns context_compacted for compaction_end', () => {
     const backend = makeBackend();
     // Simulate compaction_start with overflow reason
