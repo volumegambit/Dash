@@ -54,6 +54,7 @@ import {
 import { createControlPlaneRuntime, readControlPlaneConfig } from './control-plane.js';
 import { GatewayPoller } from './gateway-poller.js';
 import { buildPairingInfo } from './pairing.js';
+import { issuePatchForSessionStatus } from './session-status-sync.js';
 import { assignAgentToTask } from './task-dispatch.js';
 
 const DATA_DIR = process.env.MC_DATA_DIR || desktopDir();
@@ -1244,6 +1245,26 @@ export async function registerIpcHandlers(
 
   const getProjectsClient = (): Promise<ManagementClient> => getDirectManagementClient('Projects');
 
+  // Sync a session's runtime status onto its owning task. Attached here
+  // (not at ChatService construction) because the projects client lives in
+  // this scope. Best-effort: any failure is logged, never thrown into the
+  // chat stream.
+  getChatService(getWindow).setSessionStatusListener((conversationId, status) => {
+    void (async () => {
+      try {
+        const chat = getChatService(getWindow);
+        const issueId = await chat.getConversationIssueId(conversationId);
+        if (!issueId) return;
+        const client = await getProjectsClient();
+        const issue = await client.getIssue(issueId);
+        const patch = issuePatchForSessionStatus(issue, status);
+        if (patch) await client.patchIssue(issueId, patch);
+      } catch (err) {
+        console.error('[chat] session-status sync failed:', err);
+      }
+    })();
+  });
+
   ipcMain.handle('projects:listProjects', async (_e, status?: string) =>
     (await getProjectsClient()).listProjects(status as Project['status'] | undefined),
   );
@@ -1285,6 +1306,7 @@ export async function registerIpcHandlers(
           getIssue: (idOrKey) => client.getIssue(idOrKey),
           createConversation: (id) => chat.createConversation(id),
           linkSession: (iid, sid, name) => client.linkSession(iid, sid, name),
+          setIssueId: (sid, iid) => chat.setConversationIssueId(sid, iid),
           patchIssue: (iid, patch) => client.patchIssue(iid, patch),
           renameConversation: (cid, title) => chat.renameConversation(cid, title),
           sendMessage: (cid, text) => chat.sendMessage(cid, text),
