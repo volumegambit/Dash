@@ -78,6 +78,13 @@ export function createCompanionWindow(opts: {
     });
     companionWindow.setAlwaysOnTop(true, 'floating');
     companionWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+    // On macOS, setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
+    // implicitly removes the app from the dock (electron/electron#26350), which
+    // would make the dock tile vanish once the widget opens even though the main
+    // window is still up. Re-show it to keep the app's dock presence.
+    if (process.platform === 'darwin') {
+      void app.dock?.show();
+    }
     companionWindow.on('moved', () => {
       const [x, y] = companionWindow?.getPosition() ?? [0, 0];
       void opts.settings.set({ companionWindowPos: { x, y } });

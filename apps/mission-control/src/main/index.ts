@@ -1,5 +1,5 @@
 import { join } from 'node:path';
-import { BrowserWindow, app } from 'electron';
+import { BrowserWindow, app, nativeImage } from 'electron';
 import { autoUpdater } from 'electron-updater';
 import { destroyCompanionWindow } from './companion-window.js';
 import { registerIpcHandlers } from './ipc';
@@ -43,6 +43,17 @@ function createWindow(): void {
 }
 
 app.whenReady().then(async () => {
+  // In dev on macOS the dock shows the stock Electron icon, because the real
+  // icon is only baked into the packaged .app by electron-builder. Apply it at
+  // runtime so `mc:dev` shows the Dash icon. (No-op when packaged: the bundle
+  // already carries build/icon.icns.)
+  if (!app.isPackaged && process.platform === 'darwin') {
+    const icon = nativeImage.createFromPath(join(__dirname, '../../build/icon.png'));
+    if (!icon.isEmpty()) {
+      app.dock.setIcon(icon);
+    }
+  }
+
   // Show environment badge on macOS dock icon for test builds
   // (dev builds get "Dash (dev)" via the plist patch in scripts/patch-electron-name.sh)
   if (!app.isPackaged && process.platform === 'darwin' && process.env.MC_DATA_DIR) {
