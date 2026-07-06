@@ -114,6 +114,19 @@ export type GatewayStatus = 'starting' | 'healthy' | 'unhealthy';
 // truth: the renderer's companion/types.ts re-exports this.
 export type CompanionStatus = 'working' | 'needs' | 'done' | 'error';
 
+// One entry per live session the companion tracks, carrying the identity of
+// the agent it belongs to plus a short human-readable preview of what that
+// session is doing right now (the live tool, the question, the error, or the
+// final text). Crew mode groups these by `agentId` to map fleet members to
+// agents; the speech bubbles render `preview`. The single-pet path derives its
+// aggregate mood from `entries.map((e) => e.status)`, unchanged.
+export interface CompanionAgentStatus {
+  agentId: string;
+  agentName: string;
+  status: CompanionStatus;
+  preview: string;
+}
+
 export type PetKind =
   | 'astronaut'
   | 'bear'
@@ -188,6 +201,26 @@ export type PetKind =
   | 'rower'
   | 'kettlebell-athlete'
   | 'weightlifter';
+
+// A themed group of five pets that can be selected as a whole; the widget then
+// renders the crew as a fleet, one member per running agent. The renderer's
+// companion/pets/crews.ts owns the rosters and re-exports this type.
+export type CrewKind =
+  | 'kitchen'
+  | 'office'
+  | 'wait'
+  | 'soldier'
+  | 'police'
+  | 'fire'
+  | 'villager'
+  | 'farmer'
+  | 'gym';
+
+// What the user selected for the companion widget: either a single pet or a
+// whole crew (rendered as a fleet). Persisted as a string in localStorage and
+// forwarded over IPC. Old persisted `PetKind` values parse as `{ type: 'pet' }`
+// unchanged (see parseCompanionSelection).
+export type CompanionSelection = PetKind | `crew:${CrewKind}`;
 
 // --- MCP Connectors ---
 
@@ -467,11 +500,11 @@ export interface MissionControlAPI {
   // Companion widget. The main window publishes coarse per-session statuses and
   // the selected pet; main forwards both into the widget window and can ask the
   // main window to re-publish (replay) when the widget (re)opens.
-  companionPublishStatuses(statuses: CompanionStatus[]): void;
-  companionPublishPet(pet: PetKind): void;
+  companionPublishStatuses(statuses: CompanionAgentStatus[]): void;
+  companionPublishPet(selection: CompanionSelection): void;
   companionSetVisible(visible: boolean): Promise<void>;
-  onCompanionStatuses(callback: (statuses: CompanionStatus[]) => void): () => void;
-  onCompanionPet(callback: (pet: PetKind) => void): () => void;
+  onCompanionStatuses(callback: (statuses: CompanionAgentStatus[]) => void): () => void;
+  onCompanionPet(callback: (selection: CompanionSelection) => void): () => void;
   onCompanionReplayRequest(callback: () => void): () => void;
 
   // Projects (gateway passthrough)

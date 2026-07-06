@@ -13,6 +13,41 @@ export interface WindowSize {
   height: number;
 }
 
+/** Compact window for a single pet (128px sprite + padding). */
+export const PET_WINDOW: WindowSize = { width: 140, height: 190 };
+
+/**
+ * Wide window for a crew's five-pet fleet: 5 × 88px sprites + gaps and side
+ * padding, with vertical headroom for the staggered row and speech bubbles.
+ */
+export const CREW_WINDOW: WindowSize = { width: 476, height: 200 };
+
+/**
+ * The widget window size for a selection string. Crew selections (prefixed
+ * `crew:`) get the wide fleet window; everything else — including old persisted
+ * pet ids and unknown values — gets the compact pet window.
+ */
+export function windowSizeFor(selection: string): WindowSize {
+  return selection.startsWith('crew:') ? CREW_WINDOW : PET_WINDOW;
+}
+
+/**
+ * Resize the widget in place, keeping its bottom-right corner anchored (the
+ * default resting corner), so switching between a pet and a crew grows/shrinks
+ * toward the screen edge rather than jumping. Returns the new top-left origin
+ * for `oldSize → newSize` given the current top-left `pos`.
+ */
+export function anchoredResize(
+  pos: { x: number; y: number },
+  oldSize: WindowSize,
+  newSize: WindowSize,
+): { x: number; y: number } {
+  return {
+    x: pos.x + oldSize.width - newSize.width,
+    y: pos.y + oldSize.height - newSize.height,
+  };
+}
+
 /** Minimum on-screen overlap (px) required in each axis to keep a position. */
 const MIN_OVERLAP = 40;
 

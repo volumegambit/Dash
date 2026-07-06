@@ -15,6 +15,21 @@
         -webkit-app-region: drag;
         user-select: none;
       }
+      @keyframes companion-bubble-in {
+        from {
+          opacity: 0;
+          transform: translateX(-50%) translateY(3px);
+        }
+        to {
+          opacity: 1;
+          transform: translateX(-50%) translateY(0);
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        * {
+          animation: none !important;
+        }
+      }
     </style>
   </head>
   <body>

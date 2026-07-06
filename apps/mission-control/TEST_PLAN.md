@@ -1387,7 +1387,9 @@ Covers the Plugins screen (P3), plugin trust, per-agent plugin selection (P5), a
 
 ## Section 30: Companion widget (floating pet)
 
-**Precondition:** App running, gateway healthy, at least one agent created, and the **Show the companion** toggle enabled (Settings → General → Companion). The companion is a separate always-on-top desktop window (not part of the main MC window); the in-app component is a headless publisher that streams session statuses and the selected pet to that window over IPC. The widget renders a **selectable, frame-animated pixel-art pet** (PixelLab-generated) — one of **68 pets** — animals (cat, dog with green head-ribbon, pig, rabbit, red panda, bear, lion, quokka, unicorn), characters (wizard, ninja, chef, pirate, knight, robot, astronaut, Bigfoot, Bollywood star, royal guard), cultural icons (Fortune God/Cai Shen, Merlion, maneki-neko), influencer archetypes (wok uncle, fitness influencer, streamer, beauty guru, tech reviewer, travel vlogger), and **eight themed crews** of five members each — **kitchen** (sous chef, pastry chef, sushi chef, butcher, dishwasher), **office** (boss, accountant, intern, IT support, receptionist), **wait** (waiter, barista, sommelier, bartender, hostess), **soldier** (sergeant, scout, combat medic, radio operator, general), **police** (police officer, detective, K9 handler, SWAT, police chief), **fire** (firefighter, fire chief, ladder firefighter, rookie firefighter, fire dalmatian), **villager** (baker, blacksmith, fisherman, shepherd, town crier), and **farmer** (farmer, dairy farmer, fruit picker, beekeeper, scarecrow) — default **red panda**. It shows one **aggregate mood** for all sessions: each mood plays a distinct, pet-appropriate animation — working is especially characterful (dog runs, rabbit digs, pig roots, wizard casts fireballs, chef chops, Fortune God counts gold coins, Merlion spouts water, royal guard marches in place) and shows the mood hue as a small **collar badge dot**. Mood priority (highest wins): **error** (red `#f87171`) > **needs** (amber `#f5c518`) > **working** (blue `#3da5d9`) > **done** (green `#34c759`) > **idle** (gray `#9aa0a6` — no sessions).
+**Precondition:** App running, gateway healthy, at least one agent created, and the **Show the companion** toggle enabled (Settings → General → Companion). The companion is a separate always-on-top desktop window (not part of the main MC window); the in-app component is a headless publisher that streams per-agent session statuses (each carrying the agent's identity and a short **activity preview**) and the selected pet **or crew** to that window over IPC. The user selects **either a single pet or a whole crew** (Settings → General → Companion → PetPicker, which has a **Crews** section above the **Pets** grid). A single-pet selection renders one **selectable, frame-animated pixel-art pet** (PixelLab-generated) — one of **73 pets** — animals (cat, dog with green head-ribbon, pig, rabbit, red panda, bear, lion, quokka, unicorn), characters (wizard, ninja, chef, pirate, knight, robot, astronaut, Bigfoot, Bollywood star, royal guard), cultural icons (Fortune God/Cai Shen, Merlion, maneki-neko), influencer archetypes (wok uncle, fitness influencer, streamer, beauty guru, tech reviewer, travel vlogger), and the members of **nine themed crews** of five each — **kitchen** (sous chef, pastry chef, sushi chef, butcher, dishwasher), **office** (boss, accountant, intern, IT support, receptionist), **wait staff** (waiter, barista, sommelier, bartender, bubble-tea maker), **soldiers** (sergeant, scout, combat medic, rifleman, rocket soldier), **police** (police officer, detective, K9 handler, SWAT, motorcycle cop), **fire crew** (firefighter, fire chief, ladder firefighter, rookie firefighter, fire dalmatian), **villagers** (baker, blacksmith, fisherman, shepherd, delivery courier), **farmers** (farmer, dairy farmer, fruit picker, beekeeper, scarecrow), and **gym** (sled pusher, wall baller, rower, kettlebell athlete, weightlifter) — default **red panda**. A **crew** selection renders all five members side by side as a **fleet**: member *i* mirrors the *i*-th running agent (agents sorted by name), each member showing that agent's own aggregate mood; extra members render idle.
+
+For a single pet, the widget shows one **aggregate mood** across all sessions; each mood plays a distinct, pet-appropriate animation — working is especially characterful (dog runs, rabbit digs, pig roots, wizard casts fireballs, chef chops, Fortune God counts gold coins, Merlion spouts water, royal guard marches in place) — and shows the mood hue as a small **collar badge dot**. Mood priority (highest wins): **error** (red `#f87171`) > **needs** (amber `#f5c518`) > **working** (blue `#3da5d9`) > **done** (green `#34c759`) > **idle** (gray `#9aa0a6` — no sessions). A **speech bubble** above the pet (or each crew member) surfaces what the agent is doing — the live tool (e.g. "Edit: auth.ts"), the question when it needs you, the error, or the final result when done.
 
 ### 30.1 Widget appears and floats
 1. Launch MC with the companion enabled.
@@ -1397,7 +1399,7 @@ Covers the Plugins screen (P3), plugin trust, per-agent plugin selection (P5), a
 5. **Verify:** The widget still floats **on top of** that other app.
 
 ### 30.2 Pet picker swaps the pet live
-1. In Settings → General → Companion, confirm the **PetPicker** grid of 68 labeled thumbnails wraps neatly below the **Show the companion** checkbox, with the current pet highlighted.
+1. In Settings → General → Companion, confirm the **PetPicker** shows a **Crews** section (nine crew cards, each a row of five 24px thumbnails + label) above a **Pets** grid of 73 labeled thumbnails, both wrapping neatly below the **Show the companion** checkbox, with the current selection highlighted.
 2. Click the **Cat** thumbnail.
 3. **Verify:** The floating widget swaps to the **cat** sprite **live** (no restart needed).
 4. Click the **Red panda** thumbnail.
@@ -1461,6 +1463,38 @@ Spot-check at least five pets including one humanoid (e.g. wizard) and one v3-cu
 7. In Settings → General → Companion, **verify:** all PetPicker thumbnails play their idle animations (static under reduced motion).
 11. Clear all sessions (none active or needing attention).
 12. **Verify:** The pet returns to **idle/asleep** (gray).
+
+### 30.11 Crew selection & fleet display
+The companion can render a whole **crew** as a fleet instead of a single pet: five members side by side, member *i* mirroring the *i*-th running agent (agents sorted by name).
+1. In Settings → General → Companion → PetPicker, open the **Crews** section and click the **Kitchen** crew card.
+2. **Verify:** The widget window **grows wider** and renders the **five kitchen members** (sous chef, pastry chef, sushi chef, butcher, dishwasher) side by side, anchored at the same bottom-right corner (it grows leftward, not off-screen). With no agents running, all five are **idle** (gray collar dots).
+3. Create/enable **two agents** and drive one into **working** and the other into **error** (each with an active session).
+4. **Verify:** The first two fleet members (agents **sorted by name**) show those agents' moods — one blue (working), one red (error) — and the remaining three stay **idle**. Each member's collar dot reflects **its own** agent's mood (this is not a single aggregate).
+5. Stop/clear the working agent's session.
+6. **Verify:** That member returns to **idle**; the other member is unchanged.
+7. Reselect a **single pet** (e.g. **Red panda**) in the picker.
+8. **Verify:** The widget window **shrinks back** to the compact single-pet size, anchored at the same corner, and shows just that pet.
+9. Reselect a crew, then fully quit and relaunch MC.
+10. **Verify:** The **crew selection persists** — the widget reopens as the fleet (wide window), not a single pet, and the picker shows that crew highlighted.
+11. Enable OS reduced-motion and reopen the widget on a crew.
+12. **Verify:** Each member holds a **static frame** for its mood (no animation); collar dots still show the right hues.
+
+### 30.12 Companion speech bubbles
+A bubble above the pet (or each crew member) surfaces what the agent is actually doing.
+1. With a **single pet** selected, start a task that runs tools (e.g. an edit).
+2. **Verify:** A small mood-tinted **speech bubble** appears above the pet showing the **live tool** activity (e.g. "Edit: auth.ts"); it updates as the tool changes and truncates long text with an ellipsis.
+3. Trigger a state where the agent **asks a question** (needs you).
+4. **Verify:** The bubble shows the **question text** (amber-tinted).
+5. Force an **error**.
+6. **Verify:** The bubble shows the **error text** (red-tinted).
+7. Let the session **finish** (done).
+8. **Verify:** The bubble shows the **final text** briefly (~4s) then **fades**, so it reads as a notification rather than permanent chrome.
+9. Clear all sessions (idle).
+10. **Verify:** **No bubble** is shown when idle.
+11. Switch to a **crew** and run two agents.
+12. **Verify:** Each active member shows **its own** bubble with that agent's activity; the bubbles are staggered so they don't overlap in the five-wide row. Idle members show no bubble.
+13. Enable OS reduced-motion.
+14. **Verify:** Bubbles still appear with the right text but **without** the fade-in animation.
 
 ## Section 31: Agent Swarm
 
