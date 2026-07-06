@@ -37,9 +37,10 @@ npm run mc:dev
 
 ### 1.1 Gateway Initialization
 1. Launch the app
-2. **Verify:** A setup wizard screen is visible (not the dashboard)
-3. **Verify:** A loading spinner or "Setting up" message is shown while the gateway initializes
-4. Wait for initialization to complete (or fail)
+2. **Verify:** The window appears already dark — no white-screen flash before the first render (the main window is created hidden and revealed on `ready-to-show`)
+3. **Verify:** A setup wizard screen is visible (not the dashboard)
+4. **Verify:** A loading spinner or "Setting up" message is shown while the gateway initializes
+5. Wait for initialization to complete (or fail)
 
 ### 1.2 Provider Selection (gateway-driven)
 
