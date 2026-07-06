@@ -998,12 +998,14 @@ export class PiAgentBackend implements AgentBackend {
         }
       };
 
-      // Subscribe to session events
+      // Subscribe to session events. Note: `agent_end` is NOT treated as
+      // end-of-turn here — pi emits it BETWEEN auto-retry attempts (flagged
+      // `willRetry: true`) and before compaction/queued-message continuations,
+      // then keeps going via `agent.continue()`. Ending on the first agent_end
+      // froze the stream mid-turn: the consumer saw the transient error and
+      // nothing else while the retried turn ran invisibly to completion.
       const unsubscribe = this.session.subscribe((event: AgentSessionEvent) => {
         pushEvent(event);
-        if (event.type === 'agent_end') {
-          pushEvent({ type: '__done__' });
-        }
       });
 
       // Convert Dash ImageBlock[] to PiAgent ImageContent[]
@@ -1013,13 +1015,21 @@ export class PiAgentBackend implements AgentBackend {
         mimeType: img.mediaType,
       }));
 
-      // Fire prompt (runs concurrently with event consumption)
-      const promptPromise = this.session.prompt(state.message, { images }).catch((err) => {
-        pushEvent({
-          type: '__error__',
-          error: err instanceof Error ? err : new Error(String(err)),
-        });
-      });
+      // Fire prompt (runs concurrently with event consumption). The prompt
+      // promise settling is the authoritative end-of-turn signal: it resolves
+      // only after retries, compaction continuations, and queued follow-ups
+      // have all drained (pi emits every session event before it settles).
+      const promptPromise = this.session.prompt(state.message, { images }).then(
+        () => {
+          pushEvent({ type: '__done__' });
+        },
+        (err) => {
+          pushEvent({
+            type: '__error__',
+            error: err instanceof Error ? err : new Error(String(err)),
+          });
+        },
+      );
 
       // Track whether we've yielded any normalized event. Once true, we can't
       // safely retry — retrying would duplicate or corrupt the output stream.
