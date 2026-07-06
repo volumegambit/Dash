@@ -3,6 +3,7 @@ import { BrowserWindow, app } from 'electron';
 import { autoUpdater } from 'electron-updater';
 import { destroyCompanionWindow } from './companion-window.js';
 import { registerIpcHandlers } from './ipc';
+import { buildMainWindowOptions, revealWhenReady } from './main-window.js';
 import { setupAutoUpdater } from './updater.js';
 
 let mainWindow: BrowserWindow | undefined;
@@ -17,19 +18,10 @@ function getAppTitle(): string {
 
 function createWindow(): void {
   const title = getAppTitle();
-  mainWindow = new BrowserWindow({
-    width: 1200,
-    height: 800,
-    minWidth: 800,
-    minHeight: 600,
-    title,
-    backgroundColor: '#0a0a0a',
-    webPreferences: {
-      preload: join(__dirname, '../preload/index.js'),
-      contextIsolation: true,
-      nodeIntegration: false,
-    },
-  });
+  mainWindow = new BrowserWindow(
+    buildMainWindowOptions(title, join(__dirname, '../preload/index.js')),
+  );
+  revealWhenReady(mainWindow);
 
   // Prevent the HTML <title> from overriding our environment-aware title
   mainWindow.on('page-title-updated', (e) => {
