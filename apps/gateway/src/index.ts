@@ -49,6 +49,7 @@ import {
   reloadPluginsUnderMutex,
 } from './plugins-wiring.js';
 import { type RelayClient, startRelayClient } from './relay-client.js';
+import { safeStep } from './shutdown.js';
 import { recoverInterruptedSwarmTurns } from './swarm-log-recovery.js';
 import { createGatewayWorkerFactory } from './swarm-wiring.js';
 
@@ -895,6 +896,12 @@ async function main() {
   // Idempotency guard: MC's supervisor POSTs /lifecycle/shutdown and then
   // SIGTERMs, so overlapping invocations are the normal case — the second
   // must not re-run teardown against already-closed stores.
+  //
+  // Every step is best-effort (safeStep logs and continues): a channel
+  // adapter failing to stop — e.g. grammY's Bot.stop() rejecting on a
+  // Telegram network timeout — must not abort the rest of shutdown. The
+  // handler itself never rejects, so it can't become an unhandled rejection
+  // that hard-crashes the process before the DB closes below.
   let shuttingDown = false;
   const shutdown = async (signal: string) => {
     if (shuttingDown) {
@@ -903,28 +910,28 @@ async function main() {
     }
     shuttingDown = true;
     console.log(`\nReceived ${signal}, shutting down...`);
-    relayClient?.stop();
-    dialTokenManager?.stop();
-    await mcpManager.stop();
+    await safeStep('relayClient.stop', () => relayClient?.stop());
+    await safeStep('dialTokenManager.stop', () => dialTokenManager?.stop());
+    await safeStep('mcpManager.stop', () => mcpManager.stop());
     // Finalize every live swarm run (cancels in-flight workers, aborts their
     // orchestrators) BEFORE the chat coordinator tears down its warm backends,
     // so no worker outlives the pool it borrowed its identity from.
-    swarmCoordinator.stop();
-    await agents.stop();
-    await gateway.stop();
-    managementServer.close();
-    channelServer.close();
+    await safeStep('swarmCoordinator.stop', () => swarmCoordinator.stop());
+    await safeStep('agents.stop', () => agents.stop());
+    await safeStep('gateway.stop', () => gateway.stop());
+    await safeStep('managementServer.close', () => managementServer.close());
+    await safeStep('channelServer.close', () => channelServer.close());
     // Close the event-log DB last so any in-flight appends from the
     // agents/gateway shutdown path land cleanly. WAL checkpoints are
     // flushed on close, so the next gateway start sees a consistent
     // database.
-    eventLogStore.close();
-    projectsDb.db.close();
+    await safeStep('eventLogStore.close', () => eventLogStore.close());
+    await safeStep('projectsDb.close', () => projectsDb.db.close());
     process.exit(0);
   };
 
-  process.on('SIGINT', () => shutdown('SIGINT'));
-  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('SIGINT', () => void shutdown('SIGINT'));
+  process.on('SIGTERM', () => void shutdown('SIGTERM'));
 }
 
 /**

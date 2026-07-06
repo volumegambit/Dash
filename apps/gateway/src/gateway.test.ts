@@ -2,7 +2,7 @@ import type { AgentClient } from '@dash/agent';
 import type { ChannelAdapter, InboundMessage } from '@dash/channels';
 import { SLASH_HELP, formatSkillList } from '@dash/channels';
 import { describe, expect, it, vi } from 'vitest';
-import { createDynamicGateway } from './gateway.js';
+import { ADAPTER_STOP_TIMEOUT_MS, createDynamicGateway } from './gateway.js';
 
 function makeFakeAgent(): AgentClient {
   return {
@@ -446,6 +446,7 @@ describe('createDynamicGateway', () => {
   });
 
   it('stopChannel does not rethrow if adapter.stop() fails', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const gw = createDynamicGateway();
     gw.registerAgent('agent1', makeFakeAgent());
     const adapter = makeFakeAdapter('telegram');
@@ -458,6 +459,7 @@ describe('createDynamicGateway', () => {
     // Must still resolve true (channel is removed from routing tables)
     await expect(gw.stopChannel('tg1')).resolves.toBe(true);
     expect(gw.channelCount()).toBe(0);
+    warnSpy.mockRestore();
   });
 
   it('deregisterAgent removes rules and stops empty channels', async () => {
@@ -599,5 +601,87 @@ describe('createDynamicGateway — messageHook (UserPromptSubmit on channel path
 
     expect(agent.chat).toHaveBeenCalledTimes(1);
     expect((agent.chat as ReturnType<typeof vi.fn>).mock.calls[0][2]).toBe('hello');
+  });
+});
+
+describe('shutdown resilience', () => {
+  async function registerChannelWith(
+    gw: ReturnType<typeof createDynamicGateway>,
+    name: string,
+    adapter: ChannelAdapter,
+    agentId = 'agent1',
+  ) {
+    await gw.registerChannel(name, adapter, {
+      globalDenyList: [],
+      routing: [{ condition: { type: 'default' }, agentId, allowList: [], denyList: [] }],
+    });
+  }
+
+  it('stop() resolves and stops every adapter even when one stop() rejects', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const gw = createDynamicGateway();
+    gw.registerAgent('agent1', makeFakeAgent());
+
+    const failing = makeFakeAdapter('telegram');
+    (failing.stop as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new Error("Network request for 'getUpdates' failed"),
+    );
+    const healthy = makeFakeAdapter('whatsapp');
+
+    await registerChannelWith(gw, 'tg1', failing);
+    await registerChannelWith(gw, 'wa1', healthy);
+
+    await expect(gw.stop()).resolves.toBeUndefined();
+
+    expect(healthy.stop).toHaveBeenCalled();
+    expect(gw.channelCount()).toBe(0);
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('tg1'),
+      expect.stringContaining('getUpdates'),
+    );
+    warnSpy.mockRestore();
+  });
+
+  it('stop() resolves after the adapter-stop timeout when an adapter stop hangs', async () => {
+    vi.useFakeTimers();
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const gw = createDynamicGateway();
+      gw.registerAgent('agent1', makeFakeAgent());
+
+      const hanging = makeFakeAdapter('telegram');
+      (hanging.stop as ReturnType<typeof vi.fn>).mockImplementation(() => new Promise(() => {}));
+      await registerChannelWith(gw, 'tg1', hanging);
+
+      let stopped = false;
+      const stopPromise = gw.stop().then(() => {
+        stopped = true;
+      });
+      await vi.advanceTimersByTimeAsync(ADAPTER_STOP_TIMEOUT_MS);
+      await stopPromise;
+
+      expect(stopped).toBe(true);
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining('tg1'),
+        expect.stringContaining('timed out'),
+      );
+    } finally {
+      warnSpy.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it('deregisterAgent resolves even when a removed channel adapter stop() rejects', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const gw = createDynamicGateway();
+    gw.registerAgent('agent1', makeFakeAgent());
+
+    const failing = makeFakeAdapter('telegram');
+    (failing.stop as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('ETIMEDOUT'));
+    await registerChannelWith(gw, 'tg1', failing);
+
+    await expect(gw.deregisterAgent('agent1')).resolves.toEqual(['tg1']);
+    expect(gw.channelCount()).toBe(0);
+    warnSpy.mockRestore();
   });
 });
