@@ -70,7 +70,7 @@ describe('Companion (headless publisher)', () => {
 
   it('publishes the selected pet when visible and on replay', () => {
     seedOneWorkingSession();
-    useUIStore.setState({ companionVisible: true, companionPet: 'cat' });
+    useUIStore.setState({ companionVisible: true, companionSelection: 'cat' });
 
     let replay: (() => void) | undefined;
     mockApi.onCompanionReplayRequest.mockImplementation((cb: () => void) => {

@@ -202,6 +202,26 @@ export type PetKind =
   | 'kettlebell-athlete'
   | 'weightlifter';
 
+// A themed group of five pets that can be selected as a whole; the widget then
+// renders the crew as a fleet, one member per running agent. The renderer's
+// companion/pets/crews.ts owns the rosters and re-exports this type.
+export type CrewKind =
+  | 'kitchen'
+  | 'office'
+  | 'wait'
+  | 'soldier'
+  | 'police'
+  | 'fire'
+  | 'villager'
+  | 'farmer'
+  | 'gym';
+
+// What the user selected for the companion widget: either a single pet or a
+// whole crew (rendered as a fleet). Persisted as a string in localStorage and
+// forwarded over IPC. Old persisted `PetKind` values parse as `{ type: 'pet' }`
+// unchanged (see parseCompanionSelection).
+export type CompanionSelection = PetKind | `crew:${CrewKind}`;
+
 // --- MCP Connectors ---
 
 export interface McpConnectorInfo {
@@ -481,10 +501,10 @@ export interface MissionControlAPI {
   // the selected pet; main forwards both into the widget window and can ask the
   // main window to re-publish (replay) when the widget (re)opens.
   companionPublishStatuses(statuses: CompanionAgentStatus[]): void;
-  companionPublishPet(pet: PetKind): void;
+  companionPublishPet(selection: CompanionSelection): void;
   companionSetVisible(visible: boolean): Promise<void>;
   onCompanionStatuses(callback: (statuses: CompanionAgentStatus[]) => void): () => void;
-  onCompanionPet(callback: (pet: PetKind) => void): () => void;
+  onCompanionPet(callback: (selection: CompanionSelection) => void): () => void;
   onCompanionReplayRequest(callback: () => void): () => void;
 
   // Projects (gateway passthrough)

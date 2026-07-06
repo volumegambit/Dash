@@ -36,10 +36,10 @@ import type { BrowserWindow } from 'electron';
 import WebSocket from 'ws';
 import type {
   CompanionAgentStatus,
+  CompanionSelection,
   ControlPlaneStatus,
   DeviceInfo,
   PairingInfo,
-  PetKind,
   SetupStatus,
 } from '../shared/ipc.js';
 import { ChatService } from './chat-service.js';
@@ -1049,10 +1049,11 @@ export async function registerIpcHandlers(
     forwardStatuses(statuses);
   });
 
-  // Renderer publishes the selected pet; forward it into the widget window
-  // (a no-op when the widget is closed).
-  ipcMain.on('companion:pet', (_event, pet: PetKind) => {
-    forwardPet(pet);
+  // Renderer publishes the selected pet or crew; forward it into the widget
+  // window (a no-op when the widget is closed). The window also resizes itself
+  // to fit a single pet vs. a five-wide fleet.
+  ipcMain.on('companion:pet', (_event, selection: CompanionSelection) => {
+    forwardPet(selection);
   });
 
   // Renderer toggles widget visibility (drives creation/teardown).

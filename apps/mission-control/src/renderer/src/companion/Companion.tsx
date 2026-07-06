@@ -17,7 +17,7 @@ export function Companion(): null {
   const chat = useChatStore();
   const agents = useAgentsStore();
   const companionVisible = useUIStore((s) => s.companionVisible);
-  const companionPet = useUIStore((s) => s.companionPet);
+  const companionSelection = useUIStore((s) => s.companionSelection);
 
   const statuses: CompanionAgentStatus[] = selectCompanionSessions(buildSnapshot(chat, agents)).map(
     (s) => ({
@@ -42,11 +42,11 @@ export function Companion(): null {
     if (!companionVisible) return undefined;
     const publish = (): void => {
       window.api.companionPublishStatuses(statuses);
-      window.api.companionPublishPet(companionPet);
+      window.api.companionPublishPet(companionSelection);
     };
     publish();
     return window.api.onCompanionReplayRequest(publish);
-  }, [key, companionVisible, companionPet]);
+  }, [key, companionVisible, companionSelection]);
 
   return null;
 }

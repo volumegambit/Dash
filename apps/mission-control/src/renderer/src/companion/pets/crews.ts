@@ -1,16 +1,6 @@
-import type { PetKind } from '../../../../shared/ipc.js';
+import type { CrewKind, PetKind } from '../../../../shared/ipc.js';
 
-/** A themed group of five pets the user can select as a whole. */
-export type CrewKind =
-  | 'kitchen'
-  | 'office'
-  | 'wait'
-  | 'soldier'
-  | 'police'
-  | 'fire'
-  | 'villager'
-  | 'farmer'
-  | 'gym';
+export type { CrewKind };
 
 type CrewMembers = readonly [PetKind, PetKind, PetKind, PetKind, PetKind];
 
