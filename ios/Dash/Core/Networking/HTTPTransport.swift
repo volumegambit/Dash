@@ -243,8 +243,11 @@ actor HTTPTransport {
   }
 
   private func duration(seconds: Double) -> Duration? {
+    guard seconds.isFinite, seconds >= 0 else {
+      return nil
+    }
     let milliseconds = (seconds * 1_000).rounded()
-    guard milliseconds.isFinite, milliseconds >= 0, milliseconds < Double(Int64.max) else {
+    guard milliseconds.isFinite, milliseconds < Double(Int64.max) else {
       return nil
     }
     return .milliseconds(Int64(milliseconds))

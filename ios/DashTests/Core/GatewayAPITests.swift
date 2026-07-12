@@ -315,6 +315,11 @@ struct GatewayAPITests {
       fixture: "errors/rate-limited.json",
       headers: ["Retry-After": "9223372036854776"]
     )
+    try URLProtocolStub.enqueue(
+      status: 429,
+      fixture: "errors/rate-limited.json",
+      headers: ["Retry-After": "-0.0004"]
+    )
     URLProtocolStub.enqueue(
       status: 429,
       data: Data(
@@ -330,6 +335,10 @@ struct GatewayAPITests {
     )
     let api = makeAPI()
 
+    #expect(
+      await gatewayError { try await api.listAgents() }
+        == .rateLimited(retryAfter: .seconds(30))
+    )
     #expect(
       await gatewayError { try await api.listAgents() }
         == .rateLimited(retryAfter: .seconds(30))
