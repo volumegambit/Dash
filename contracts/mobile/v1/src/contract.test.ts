@@ -95,6 +95,27 @@ async function listFixtureFiles(dir: string, prefix = ''): Promise<string[]> {
 }
 
 describe('mobile v1 contract fixtures', () => {
+  it('returns the revisioned tombstone from conversation deletion', async () => {
+    const openapi = parse(await readFile(join(root, 'openapi.yaml'), 'utf8')) as {
+      paths?: Record<
+        string,
+        {
+          delete?: {
+            responses?: Record<
+              string,
+              { content?: Record<string, { schema?: Record<string, unknown> }> }
+            >;
+          };
+        }
+      >;
+    };
+    expect(
+      openapi.paths?.['/conversations/{id}']?.delete?.responses?.['200']?.content?.[
+        'application/json'
+      ]?.schema,
+    ).toEqual({ $ref: '#/components/schemas/ConversationSummary' });
+  });
+
   it('matches every manifest case to its declared schema and polarity', async () => {
     const openapi = parse(await readFile(join(root, 'openapi.yaml'), 'utf8')) as object;
     const ws = JSON.parse(await readFile(join(root, 'chat-ws.schema.json'), 'utf8')) as object;

@@ -238,11 +238,11 @@ paths:
         - $ref: '#/components/parameters/IfMatch'
       responses:
         '200':
-          description: Conversation archived or deleted.
+          description: Revisioned conversation tombstone after content deletion.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/MobileActionResponse'
+                $ref: '#/components/schemas/ConversationSummary'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '404':
