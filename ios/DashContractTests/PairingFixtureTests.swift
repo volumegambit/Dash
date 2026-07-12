@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 @testable import Dash
 
@@ -27,5 +28,31 @@ struct PairingFixtureTests {
     #expect(payload.chatPort == nil)
     #expect(payload.secure == true)
     #expect(payload.relayCredential == "relay-device-credential")
+  }
+
+  @Test("canonical pairing fixtures validate")
+  func canonicalValidation() throws {
+    let lan = try FixtureLoader.decode(PairingPayload.self, "pairing-lan-v1.json")
+    let relay = try FixtureLoader.decode(PairingPayload.self, "pairing-relay-v2.json")
+    #expect(try lan.validated(profileID: UUID()).0.mode == .lan)
+    #expect(try relay.validated(profileID: UUID()).0.mode == .relay)
+  }
+
+  @Test("schema-invalid pairing producers fail semantic validation")
+  func invalidProducers() throws {
+    let unsupported = try FixtureLoader.decode(
+      PairingPayload.self,
+      "errors/unsupported-pairing-version.json"
+    )
+    let missingCredential = try FixtureLoader.decode(
+      PairingPayload.self,
+      "errors/missing-relay-credential.json"
+    )
+    #expect(throws: PairingValidationError.self) {
+      try unsupported.validated(profileID: UUID())
+    }
+    #expect(throws: PairingValidationError.self) {
+      try missingCredential.validated(profileID: UUID())
+    }
   }
 }
