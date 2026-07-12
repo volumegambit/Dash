@@ -1,6 +1,7 @@
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { SqliteEventLogStore } from './event-log-store-sqlite.js';
 import type { EventLogPayload } from './event-log-store.js';
@@ -248,5 +249,17 @@ describe('SqliteEventLogStore', () => {
     // a double-closed handle — close() on an already-closed DB is
     // safe in better-sqlite3, but let's be explicit.
     store = new SqliteEventLogStore({ dataDir: tmpDir });
+  });
+
+  it('leaves an injected database open for its owner', () => {
+    const database = new Database(join(tmpDir, 'shared.db'));
+    const injected = new SqliteEventLogStore({ database });
+    injected.append('agent-a', 'conv-1', 'msg-1', evt('shared'));
+
+    injected.close();
+
+    expect(database.open).toBe(true);
+    expect(injected.readSince('agent-a', 'conv-1', 0)).toHaveLength(1);
+    database.close();
   });
 });
