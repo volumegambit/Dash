@@ -27,11 +27,58 @@ function isAscendingReplay(value: unknown): boolean {
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 
 function parseSse(raw: string): unknown[] {
+  expect(raw.endsWith('\n\n')).toBe(true);
   return raw
+    .slice(0, -2)
     .split('\n\n')
-    .map((block) => block.split('\n').find((line) => line.startsWith('data: ')))
-    .filter((line): line is string => Boolean(line))
-    .map((line) => JSON.parse(line.slice(6)) as unknown);
+    .map((block) => {
+      const lines = block.split('\n');
+      const event = lines.find((line) => line.startsWith('event: '))?.slice(7);
+      const data = lines.find((line) => line.startsWith('data: '))?.slice(6);
+      expect(event).toBeTruthy();
+      expect(data).toBeTruthy();
+      const value = JSON.parse(data as string) as { type?: unknown };
+      expect(value.type).toBe(event);
+      return value;
+    });
+}
+
+function assertCanonicalAgentEvent(value: unknown): void {
+  if (typeof value !== 'object' || value === null) return;
+  const event = value as Record<string, unknown>;
+  if (event.type === 'text_delta') {
+    expect(event).toEqual({ type: 'text_delta', text: expect.any(String) });
+  } else if (event.type === 'question') {
+    expect(event).toEqual({
+      type: 'question',
+      id: expect.any(String),
+      question: expect.any(String),
+      options: expect.any(Array),
+    });
+  } else if (event.type === 'response') {
+    expect(event).toEqual({
+      type: 'response',
+      content: expect.any(String),
+      usage: {
+        inputTokens: expect.any(Number),
+        outputTokens: expect.any(Number),
+      },
+    });
+  }
+}
+
+function assertCanonicalAgentEvents(value: unknown): void {
+  if (Array.isArray(value)) {
+    value.forEach(assertCanonicalAgentEvents);
+    return;
+  }
+  if (typeof value !== 'object' || value === null) return;
+  const object = value as Record<string, unknown>;
+  if (object.type === 'event') assertCanonicalAgentEvent(object.event);
+  if (object.type === 'assistant' && Array.isArray(object.events)) {
+    object.events.forEach(assertCanonicalAgentEvent);
+  }
+  Object.values(object).forEach(assertCanonicalAgentEvents);
 }
 
 async function listFixtureFiles(dir: string, prefix = ''): Promise<string[]> {
@@ -77,10 +124,12 @@ describe('mobile v1 contract fixtures', () => {
           ? `mobile-openapi#/components/schemas/${fixture.schema}`
           : `mobile-chat-ws#/$defs/${fixture.schema}`;
       const validate = ajv.compile({ $ref: ref });
-      const results = values.map(
-        (value) =>
-          validate(value) && (fixture.schema === 'ReplayPage' ? isAscendingReplay(value) : true),
-      );
+      const results = values.map((value) => {
+        if (fixture.valid) assertCanonicalAgentEvents(value);
+        return (
+          validate(value) && (fixture.schema === 'ReplayPage' ? isAscendingReplay(value) : true)
+        );
+      });
       expect(results.every(Boolean), `${fixture.file}: ${ajv.errorsText(validate.errors)}`).toBe(
         fixture.valid,
       );

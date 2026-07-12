@@ -10,7 +10,7 @@
         "type": "event",
         "event": {
           "type": "text_delta",
-          "delta": "Ready "
+          "text": "Ready "
         }
       }
     },

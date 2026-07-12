@@ -23,7 +23,7 @@
         "type": "event",
         "event": {
           "type": "text_delta",
-          "delta": "Ready "
+          "text": "Ready "
         }
       }
     },
@@ -37,8 +37,9 @@
         "type": "event",
         "event": {
           "type": "question",
-          "questionId": "question-01",
-          "question": "Confirm mobile access?"
+          "id": "question-01",
+          "question": "Confirm mobile access?",
+          "options": ["Yes", "No"]
         }
       }
     },
@@ -52,7 +53,11 @@
         "type": "event",
         "event": {
           "type": "response",
-          "text": "Ready from the gateway."
+          "content": "Ready from the gateway.",
+          "usage": {
+            "inputTokens": 12,
+            "outputTokens": 6
+          }
         }
       }
     },

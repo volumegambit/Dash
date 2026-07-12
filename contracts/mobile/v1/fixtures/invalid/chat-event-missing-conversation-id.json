@@ -4,6 +4,6 @@
   "seq": 2,
   "event": {
     "type": "text_delta",
-    "delta": "Ready "
+    "text": "Ready "
   }
 }

@@ -26,7 +26,7 @@
         "events": [
           {
             "type": "text_delta",
-            "delta": "Ready from the gateway."
+            "text": "Ready from the gateway."
           }
         ]
       },
