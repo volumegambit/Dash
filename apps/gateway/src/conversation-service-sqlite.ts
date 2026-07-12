@@ -343,6 +343,14 @@ export class SqliteConversationService {
       if (current.status === 'deleted') {
         throw new ConversationServiceError('not_found', 'Conversation was deleted', 410, false);
       }
+      if (current.status === 'archived') {
+        throw new ConversationServiceError(
+          'validation_failed',
+          'Archived conversations cannot be deleted',
+          409,
+          false,
+        );
+      }
       if (current.active_turn_id !== null) {
         throw new ConversationServiceError(
           'conversation_busy',

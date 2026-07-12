@@ -234,6 +234,19 @@ describe('SqliteConversationService schema', () => {
     expect(() => service.update(created.id, 1, { title: 'Nope' })).toThrowError(
       ConversationServiceError,
     );
+    service.eventLog.append('agent-01', created.id, 'turn-archived', {
+      type: 'event',
+      event: { type: 'text_delta', text: 'preserved' },
+    });
+    expect(() => service.delete(created.id, 1)).toThrowError(
+      expect.objectContaining({
+        code: 'validation_failed',
+        status: 409,
+        retryable: false,
+      }),
+    );
+    expect(service.get(created.id)).toMatchObject({ status: 'archived', revision: 1 });
+    expect(service.eventLog.readSince('agent-01', created.id, 0)).toHaveLength(1);
     db.prepare("UPDATE conversations SET status = 'idle' WHERE id = ?").run(created.id);
     service.delete(created.id, 1);
     expect(() => service.update(created.id, 2, { title: 'Nope' })).toThrowError(
@@ -293,7 +306,7 @@ describe('SqliteConversationService schema', () => {
     );
     service.eventLog.append('agent-01', created.id, 'turn-01', {
       type: 'event',
-      event: { type: 'text_delta', delta: 'hello' },
+      event: { type: 'text_delta', text: 'hello' },
     });
     timestamp = '2026-07-12T00:00:02.000Z';
 
@@ -333,7 +346,7 @@ describe('SqliteConversationService schema', () => {
     ).run(created.id);
     service.eventLog.append('agent-01', created.id, 'turn-active', {
       type: 'event',
-      event: { type: 'text_delta', delta: 'still running' },
+      event: { type: 'text_delta', text: 'still running' },
     });
 
     expect(() => service.delete(created.id, 0)).toThrowError(
@@ -445,7 +458,7 @@ describe('SqliteConversationService schema', () => {
     });
     service.eventLog.append('agent-01', created.id, turnId, {
       type: 'event',
-      event: { type: 'text_delta', delta: 'Hi' },
+      event: { type: 'text_delta', text: 'Hi' },
     });
     service.eventLog.append('agent-01', created.id, turnId, {
       type: 'done',
@@ -455,7 +468,7 @@ describe('SqliteConversationService schema', () => {
     const page = service.listMessages({ conversationId: created.id, limit: 10 });
     expect(page.items[1].content).toEqual({
       type: 'assistant',
-      events: [{ type: 'text_delta', delta: 'Hi' }],
+      events: [{ type: 'text_delta', text: 'Hi' }],
     });
     const expectedPreview = [...userText.trim().replace(/\s+/g, ' ')].slice(0, 120).join('');
     expect(service.get(created.id)?.lastMessagePreview).toBe(expectedPreview);
