@@ -261,7 +261,7 @@ paths:
     get:
       operationId: listConversationMessages
       parameters:
-        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/BeforeCursor'
       responses:
         '200':
           description: A stable page of persisted messages.
@@ -333,6 +333,11 @@ components:
       schema: { type: string, format: uuid }
     Cursor:
       name: cursor
+      in: query
+      required: false
+      schema: { type: string, minLength: 1 }
+    BeforeCursor:
+      name: before
       in: query
       required: false
       schema: { type: string, minLength: 1 }

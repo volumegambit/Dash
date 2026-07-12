@@ -116,6 +116,22 @@ describe('mobile v1 contract fixtures', () => {
     ).toEqual({ $ref: '#/components/schemas/ConversationSummary' });
   });
 
+  it('uses the frozen before cursor for backward message pagination', async () => {
+    const openapi = parse(await readFile(join(root, 'openapi.yaml'), 'utf8')) as {
+      paths?: Record<string, { get?: { parameters?: Array<Record<string, unknown>> } }>;
+      components?: { parameters?: Record<string, Record<string, unknown>> };
+    };
+    expect(openapi.paths?.['/conversations/{id}/messages']?.get?.parameters).toContainEqual({
+      $ref: '#/components/parameters/BeforeCursor',
+    });
+    expect(openapi.components?.parameters?.BeforeCursor).toEqual({
+      name: 'before',
+      in: 'query',
+      required: false,
+      schema: { type: 'string', minLength: 1 },
+    });
+  });
+
   it('matches every manifest case to its declared schema and polarity', async () => {
     const openapi = parse(await readFile(join(root, 'openapi.yaml'), 'utf8')) as object;
     const ws = JSON.parse(await readFile(join(root, 'chat-ws.schema.json'), 'utf8')) as object;
