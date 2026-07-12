@@ -1,7 +1,8 @@
 import { existsSync } from 'node:fs';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // We need to import makePackagedSpawner — it doesn't exist yet, so this will fail
@@ -9,10 +10,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { InMemoryKeychainStore } from '@dash/mc';
 import { verifyConversationGateway } from './gateway-connection.js';
 import {
+  ConversationLifecycleEpoch,
+  GatewayEventStreamManager,
+  configurePendingConversationRuntime,
+  conversationContextFromOfflineProfile,
+  createGatewaySubscriptionLifecycle,
   createLegacyWireChatAdapter,
+  disposePendingConversationRuntime,
   enrollGateway,
   isSetupConfigured,
   makePackagedSpawner,
+  parseConversationInvalidations,
   pluginInstallHandler,
   pluginReloadHandler,
   pluginRemoveHandler,
@@ -22,7 +30,404 @@ import {
   projectsAssignAgentHandler,
   resolveSetupStatus,
   shutdownGatewayOnQuit,
+  verifiedConversationContext,
 } from './ipc.js';
+
+const mobileFixtures = resolve(
+  dirname(fileURLToPath(import.meta.url)),
+  '../../../../contracts/mobile/v1/fixtures',
+);
+
+async function fixture<T>(name: string): Promise<T> {
+  return JSON.parse(await readFile(resolve(mobileFixtures, name), 'utf8')) as T;
+}
+
+function deferred<T>(): { promise: Promise<T>; resolve(value: T): void } {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
+describe('conversation sync lifecycle selection', () => {
+  it('verifies capabilities and authenticated identity before selecting gateway authority', async () => {
+    const health = await fixture<{
+      status: 'healthy';
+      startedAt: string;
+      agents: number;
+      channels: number;
+      apiVersion: number;
+      capabilities: ['conversation-sync-v1', 'chat-resume-v1'];
+    }>('health-capabilities.json');
+    const identity = await fixture<{ gatewayId: string; publicKey: string }>('identity.json');
+    const client = {
+      health: vi.fn().mockResolvedValue(health),
+      getIdentity: vi.fn().mockResolvedValue(identity),
+    };
+
+    await expect(verifiedConversationContext(client)).resolves.toEqual({
+      gatewayId: identity.gatewayId,
+      apiVersion: health.apiVersion,
+      capabilities: health.capabilities,
+    });
+    expect(client.health.mock.invocationCallOrder[0]).toBeLessThan(
+      client.getIdentity.mock.invocationCallOrder[0],
+    );
+  });
+
+  it('selects explicit legacy authority without requiring an identity route', async () => {
+    const client = {
+      health: vi.fn().mockResolvedValue({
+        status: 'healthy',
+        startedAt: '2026-07-12T00:00:00Z',
+        agents: 1,
+        channels: 0,
+        apiVersion: 0,
+        capabilities: [],
+      }),
+      getIdentity: vi.fn(),
+    };
+
+    await expect(verifiedConversationContext(client)).resolves.toEqual({
+      gatewayId: null,
+      apiVersion: 0,
+      capabilities: [],
+    });
+    expect(client.getIdentity).not.toHaveBeenCalled();
+  });
+
+  it('restores a persisted capable identity as offline instead of selecting legacy writes', () => {
+    expect(
+      conversationContextFromOfflineProfile({
+        mode: 'relay',
+        gatewayId: 'gateway-1',
+        apiVersion: 1,
+        capabilities: ['conversation-sync-v1', 'chat-resume-v1'],
+      }),
+    ).toEqual({
+      gatewayId: 'gateway-1',
+      online: false,
+      capabilities: ['conversation-sync-v1', 'chat-resume-v1'],
+    });
+  });
+
+  it('constructs and configures a pending capable runtime without activating ChatService', () => {
+    const repository = { offline: false };
+    const transport = { closeAll: vi.fn() };
+    const controller = { configure: vi.fn() };
+    const activeChatService = { setResumableTransport: vi.fn() };
+    const createRepository = vi.fn(() => repository);
+    const createTransport = vi.fn(() => transport);
+
+    const pending = configurePendingConversationRuntime({
+      controller: controller as never,
+      context: {
+        gatewayId: 'gateway-1',
+        online: true,
+        capabilities: ['conversation-sync-v1', 'chat-resume-v1'],
+      },
+      existing: null,
+      createRepository: createRepository as never,
+      createTransport: createTransport as never,
+    });
+
+    expect(pending).toMatchObject({ gatewayId: 'gateway-1', repository, transport });
+    expect(controller.configure).toHaveBeenCalledWith({
+      gatewayId: 'gateway-1',
+      online: true,
+      capabilities: ['conversation-sync-v1', 'chat-resume-v1'],
+      repository,
+    });
+    expect(activeChatService.setResumableTransport).not.toHaveBeenCalled();
+  });
+
+  it('restores a known capable pending repository read-only while offline', () => {
+    const repository = { offline: false };
+    const transport = { closeAll: vi.fn() };
+    const controller = { configure: vi.fn() };
+    const existing = { gatewayId: 'gateway-1', repository, transport };
+
+    const pending = configurePendingConversationRuntime({
+      controller: controller as never,
+      context: {
+        gatewayId: 'gateway-1',
+        online: false,
+        capabilities: ['conversation-sync-v1'],
+      },
+      existing: existing as never,
+      createRepository: vi.fn() as never,
+      createTransport: vi.fn() as never,
+    });
+
+    expect(transport.closeAll).toHaveBeenCalledOnce();
+    expect(pending).toEqual({ gatewayId: 'gateway-1', repository, transport: null });
+    expect(controller.configure).toHaveBeenCalledWith({
+      gatewayId: 'gateway-1',
+      online: false,
+      capabilities: ['conversation-sync-v1'],
+      repository,
+    });
+  });
+
+  it('replaces a different gateway runtime and detaches its transport once', () => {
+    const previousTransport = { closeAll: vi.fn() };
+    const nextRepository = { offline: false };
+
+    const pending = configurePendingConversationRuntime({
+      controller: { configure: vi.fn() } as never,
+      context: {
+        gatewayId: 'gateway-2',
+        online: true,
+        capabilities: ['conversation-sync-v1', 'chat-resume-v1'],
+      },
+      existing: {
+        gatewayId: 'gateway-1',
+        repository: { offline: false },
+        transport: previousTransport,
+      } as never,
+      createRepository: vi.fn(() => nextRepository) as never,
+      createTransport: vi.fn(() => ({ closeAll: vi.fn() })) as never,
+    });
+
+    expect(previousTransport.closeAll).toHaveBeenCalledOnce();
+    expect(pending?.repository).toBe(nextRepository);
+  });
+
+  it('rebinds an online repository when credentials rotate for the same gateway', () => {
+    const previousRepository = { offline: false, client: 'old' };
+    const nextRepository = { offline: false, client: 'new' };
+    const previousTransport = { closeAll: vi.fn() };
+    const createRepository = vi.fn(() => nextRepository);
+
+    const pending = configurePendingConversationRuntime({
+      controller: { configure: vi.fn() } as never,
+      context: {
+        gatewayId: 'gateway-1',
+        online: true,
+        capabilities: ['conversation-sync-v1', 'chat-resume-v1'],
+      },
+      existing: {
+        gatewayId: 'gateway-1',
+        repository: previousRepository,
+        transport: previousTransport,
+      } as never,
+      createRepository: createRepository as never,
+      createTransport: vi.fn(() => ({ closeAll: vi.fn() })) as never,
+    });
+
+    expect(createRepository).toHaveBeenCalledOnce();
+    expect(pending?.repository).toBe(nextRepository);
+    expect(previousTransport.closeAll).toHaveBeenCalledOnce();
+  });
+
+  it('selects explicit legacy authority without touching the active ChatService transport', () => {
+    const controller = { configure: vi.fn() };
+    const activeChatTransport = { closeAll: vi.fn() };
+
+    const pending = configurePendingConversationRuntime({
+      controller: controller as never,
+      context: { gatewayId: null, online: true, capabilities: [] },
+      existing: null,
+      createRepository: vi.fn() as never,
+      createTransport: vi.fn() as never,
+    });
+
+    expect(pending).toBeNull();
+    expect(controller.configure).toHaveBeenCalledWith({
+      gatewayId: null,
+      online: true,
+      capabilities: [],
+      repository: null,
+    });
+    expect(activeChatTransport.closeAll).not.toHaveBeenCalled();
+  });
+
+  it('maps frozen SSE invalidations to origin-aware conversation cache actions', async () => {
+    const changed = await readFile(resolve(mobileFixtures, 'sse-conversation-changed.txt'), 'utf8');
+    const deleted = await readFile(resolve(mobileFixtures, 'sse-conversation-deleted.txt'), 'utf8');
+
+    expect(parseConversationInvalidations(`${changed}\n${deleted}`)).toEqual([
+      expect.objectContaining({
+        type: 'changed',
+        conversation: { id: expect.any(String), origin: 'gateway' },
+      }),
+      expect.objectContaining({
+        type: 'deleted',
+        conversation: { id: expect.any(String), origin: 'gateway' },
+      }),
+    ]);
+  });
+});
+
+describe('gateway event stream lifecycle', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('invalidates an obsolete conversation lifecycle transition', () => {
+    const lifecycle = new ConversationLifecycleEpoch();
+    const first = lifecycle.begin();
+    expect(first()).toBe(true);
+
+    const second = lifecycle.begin();
+    expect(first()).toBe(false);
+    expect(second()).toBe(true);
+
+    lifecycle.invalidate();
+    expect(second()).toBe(false);
+  });
+
+  it.each([
+    ['a non-OK response', { ok: false, body: null }],
+    [
+      'end-of-stream',
+      {
+        ok: true,
+        body: { getReader: () => ({ read: vi.fn().mockResolvedValue({ done: true }) }) },
+      },
+    ],
+  ])('retries after %s while the gateway remains selected', async (_label, response) => {
+    vi.useFakeTimers();
+    const fetchStream = vi.fn().mockResolvedValue(response);
+    const manager = new GatewayEventStreamManager({
+      getEndpoint: vi.fn().mockResolvedValue({
+        managementBaseUrl: 'https://gateway.example.com',
+        managementToken: 'token',
+        headers: {},
+      }),
+      fetchStream: fetchStream as never,
+      retryMs: 1000,
+      onEvent: vi.fn(),
+    });
+
+    manager.start();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fetchStream).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(fetchStream).toHaveBeenCalledTimes(2);
+    manager.stop();
+  });
+
+  it('retries when the active endpoint cannot be resolved', async () => {
+    vi.useFakeTimers();
+    const getEndpoint = vi.fn().mockRejectedValue(new Error('credentials unavailable'));
+    const manager = new GatewayEventStreamManager({
+      getEndpoint,
+      fetchStream: vi.fn() as never,
+      retryMs: 1000,
+      onEvent: vi.fn(),
+    });
+
+    manager.start();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(getEndpoint).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(getEndpoint).toHaveBeenCalledTimes(2);
+    manager.stop();
+  });
+
+  it('drops late events from an obsolete gateway stream after restart', async () => {
+    const firstRead = deferred<{ done: boolean; value?: Uint8Array }>();
+    const secondRead = deferred<{ done: boolean; value?: Uint8Array }>();
+    const firstReader = { read: vi.fn(() => firstRead.promise) };
+    const secondReader = { read: vi.fn(() => secondRead.promise) };
+    const fetchStream = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, body: { getReader: () => firstReader } })
+      .mockResolvedValueOnce({ ok: true, body: { getReader: () => secondReader } });
+    const onEvent = vi.fn();
+    const manager = new GatewayEventStreamManager({
+      getEndpoint: vi.fn().mockResolvedValue({
+        managementBaseUrl: 'https://gateway.example.com',
+        managementToken: 'token',
+        headers: {},
+      }),
+      fetchStream: fetchStream as never,
+      retryMs: 1000,
+      onEvent,
+    });
+
+    manager.start();
+    await vi.waitFor(() => expect(firstReader.read).toHaveBeenCalledOnce());
+    manager.restart();
+    await vi.waitFor(() => expect(secondReader.read).toHaveBeenCalledOnce());
+
+    firstRead.resolve({
+      done: false,
+      value: new TextEncoder().encode(
+        'event: conversation:deleted\ndata: {"conversationId":"old-id"}\n',
+      ),
+    });
+    await Promise.resolve();
+
+    expect(onEvent).not.toHaveBeenCalled();
+    manager.stop();
+    secondRead.resolve({ done: true });
+  });
+
+  it('aborts the active stream and suppresses retry after stop', async () => {
+    vi.useFakeTimers();
+    const pendingRead = deferred<{ done: boolean; value?: Uint8Array }>();
+    const fetchStream = vi.fn().mockResolvedValue({
+      ok: true,
+      body: { getReader: () => ({ read: vi.fn(() => pendingRead.promise) }) },
+    });
+    const manager = new GatewayEventStreamManager({
+      getEndpoint: vi.fn().mockResolvedValue({
+        managementBaseUrl: 'https://gateway.example.com',
+        managementToken: 'token',
+        headers: {},
+      }),
+      fetchStream: fetchStream as never,
+      retryMs: 1000,
+      onEvent: vi.fn(),
+    });
+
+    manager.start();
+    await vi.advanceTimersByTimeAsync(0);
+    const signal = (fetchStream.mock.calls[0][1] as RequestInit).signal as AbortSignal;
+    manager.stop();
+    expect(signal.aborted).toBe(true);
+
+    pendingRead.resolve({ done: true });
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(fetchStream).toHaveBeenCalledTimes(1);
+  });
+
+  it('restarts and stops both gateway-owned subscriptions together', () => {
+    const controls = {
+      startEvents: vi.fn(),
+      stopEvents: vi.fn(),
+      connectProjects: vi.fn(),
+      disconnectProjects: vi.fn(),
+    };
+    const lifecycle = createGatewaySubscriptionLifecycle(controls);
+
+    lifecycle.restart();
+    expect(controls.stopEvents).toHaveBeenCalledBefore(controls.startEvents);
+    expect(controls.disconnectProjects).toHaveBeenCalledBefore(controls.connectProjects);
+
+    lifecycle.stop();
+    expect(controls.stopEvents).toHaveBeenCalledTimes(2);
+    expect(controls.disconnectProjects).toHaveBeenCalledTimes(2);
+  });
+
+  it('disposes the pending resumable transport during shutdown', () => {
+    const transport = { closeAll: vi.fn() };
+
+    expect(
+      disposePendingConversationRuntime({
+        gatewayId: 'gateway-1',
+        repository: { offline: false },
+        transport,
+      } as never),
+    ).toBeNull();
+    expect(transport.closeAll).toHaveBeenCalledOnce();
+  });
+});
 
 describe('legacy renderer chat wire adapters', () => {
   const view = {

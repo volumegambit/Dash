@@ -15,9 +15,12 @@ import type {
 import { ManagementClient } from '@dash/management';
 import {
   ConversationStore,
+  GatewayConversationCache,
+  GatewayConversationRepository,
   GatewayManagementClient,
   GatewayStateStore,
   GatewaySupervisor,
+  LegacyConversationRepository,
   SettingsStore,
   createDefaultKeychainStore,
   defaultProcessSpawner,
@@ -29,6 +32,7 @@ import type {
   ControlPlaneClient,
   ConversationMessagePage,
   ConversationRef,
+  ConversationRepository,
   CreateAgentRequest,
   GatewayChannel,
   GatewayConnectionSettings,
@@ -41,7 +45,7 @@ import type {
   RemoteGatewaySecrets,
   VpsGatewayDeployRequest,
 } from '@dash/mc';
-import type { MobileImage, MobileImageMediaType } from '@dash/mobile-contract';
+import type { MobileCapability, MobileImage, MobileImageMediaType } from '@dash/mobile-contract';
 import { desktopDir, gatewayDir, logsDir, migrateLegacyLayout } from '@dash/paths';
 import { app, dialog, ipcMain, shell } from 'electron';
 import type { BrowserWindow } from 'electron';
@@ -67,6 +71,7 @@ import {
   forwardStatuses,
 } from './companion-window.js';
 import { createControlPlaneRuntime, readControlPlaneConfig } from './control-plane.js';
+import { ConversationController } from './conversation-controller.js';
 import {
   REMOTE_GATEWAY_TEST_FAILURE,
   headersForRemoteGateway,
@@ -80,10 +85,286 @@ import {
 } from './gateway-connection.js';
 import { GatewayPoller } from './gateway-poller.js';
 import { buildPairingInfo } from './pairing.js';
+import { ResumableChatTransport } from './resumable-chat-transport.js';
 import { issuePatchForSessionStatus } from './session-status-sync.js';
 import { assignAgentToTask } from './task-dispatch.js';
 
 const DATA_DIR = process.env.MC_DATA_DIR || desktopDir();
+const legacyStore = new ConversationStore(DATA_DIR);
+const legacyRepository = new LegacyConversationRepository(legacyStore, () => '');
+const conversationController = new ConversationController(legacyRepository);
+
+export interface ConversationInvalidation {
+  type: 'changed' | 'deleted';
+  conversation: ConversationRef;
+}
+
+export interface PendingConversationRuntime {
+  gatewayId: string;
+  repository: ConversationRepository;
+  transport: ResumableChatTransport | null;
+}
+
+export async function verifiedConversationContext(
+  client: Pick<GatewayManagementClient, 'health' | 'getIdentity'>,
+): Promise<{ gatewayId: string | null; apiVersion: number; capabilities: MobileCapability[] }> {
+  const verified = await verifyConversationGateway(client);
+  return {
+    gatewayId: verified.identity?.gatewayId ?? null,
+    apiVersion: verified.apiVersion,
+    capabilities: verified.capabilities,
+  };
+}
+
+export function conversationContextFromOfflineProfile(profile: GatewayConnectionSettings): {
+  gatewayId: string | null;
+  online: false;
+  capabilities: MobileCapability[] | null;
+} {
+  return {
+    gatewayId: profile.gatewayId ?? null,
+    online: false,
+    capabilities: profile.capabilities ?? null,
+  };
+}
+
+export function configurePendingConversationRuntime(options: {
+  controller: ConversationController;
+  context: {
+    gatewayId: string | null;
+    online: boolean;
+    capabilities: MobileCapability[] | null;
+  };
+  existing: PendingConversationRuntime | null;
+  createRepository(): ConversationRepository;
+  createTransport(): ResumableChatTransport;
+}): PendingConversationRuntime | null {
+  const { controller, context, existing } = options;
+  const capable = context.capabilities?.includes('conversation-sync-v1') ?? false;
+  if (!capable || !context.gatewayId) {
+    existing?.transport?.closeAll();
+    controller.configure({
+      gatewayId: context.gatewayId,
+      online: context.online,
+      capabilities: context.capabilities,
+      repository: null,
+    });
+    return null;
+  }
+
+  const repository =
+    !context.online && existing?.gatewayId === context.gatewayId
+      ? existing.repository
+      : options.createRepository();
+  if (!context.online) {
+    existing?.transport?.closeAll();
+    controller.configure({ ...context, repository });
+    return { gatewayId: context.gatewayId, repository, transport: null };
+  }
+
+  existing?.transport?.closeAll();
+  const transport = options.createTransport();
+  controller.configure({ ...context, repository });
+  return { gatewayId: context.gatewayId, repository, transport };
+}
+
+export function disposePendingConversationRuntime(
+  runtime: PendingConversationRuntime | null,
+): null {
+  runtime?.transport?.closeAll();
+  return null;
+}
+
+export function parseConversationInvalidations(value: string): ConversationInvalidation[] {
+  const invalidations: ConversationInvalidation[] = [];
+  for (const block of value.split(/\r?\n\r?\n+/)) {
+    let eventType = '';
+    let data = '';
+    for (const line of block.split(/\r?\n/)) {
+      if (line.startsWith('event:')) eventType = line.slice(6).trim();
+      if (line.startsWith('data:')) data = line.slice(5).trim();
+    }
+    if (!['conversation:changed', 'conversation:deleted'].includes(eventType) || !data) {
+      continue;
+    }
+    try {
+      const payload = JSON.parse(data) as { conversationId?: unknown };
+      if (typeof payload.conversationId !== 'string') continue;
+      invalidations.push({
+        type: eventType === 'conversation:deleted' ? 'deleted' : 'changed',
+        conversation: { id: payload.conversationId, origin: 'gateway' },
+      });
+    } catch {
+      // Ignore malformed hints; REST remains authoritative.
+    }
+  }
+  return invalidations;
+}
+
+export class ConversationLifecycleEpoch {
+  private epoch = 0;
+
+  begin(): () => boolean {
+    const current = ++this.epoch;
+    return () => current === this.epoch;
+  }
+
+  invalidate(): void {
+    this.epoch++;
+  }
+}
+
+interface GatewayEventEndpoint {
+  managementBaseUrl: string;
+  managementToken: string;
+  headers: Record<string, string>;
+}
+
+interface GatewayEventReader {
+  read(): Promise<{ done: boolean; value?: Uint8Array }>;
+}
+
+interface GatewayEventResponse {
+  ok: boolean;
+  body: { getReader(): GatewayEventReader } | null;
+}
+
+export interface GatewayEventStreamManagerOptions {
+  getEndpoint(): Promise<GatewayEventEndpoint | null>;
+  fetchStream(url: string, init: RequestInit): Promise<GatewayEventResponse>;
+  retryMs: number;
+  onEvent(eventType: string, data: string): void | Promise<void>;
+  onWarning?(error: unknown): void;
+}
+
+export class GatewayEventStreamManager {
+  private abort: AbortController | null = null;
+  private retry: ReturnType<typeof setTimeout> | null = null;
+  private generation = 0;
+  private stopped = true;
+
+  constructor(private readonly options: GatewayEventStreamManagerOptions) {}
+
+  start(): void {
+    this.restart();
+  }
+
+  restart(): void {
+    this.stopped = false;
+    this.cancelCurrent();
+    this.open(this.generation);
+  }
+
+  stop(): void {
+    this.stopped = true;
+    this.cancelCurrent();
+  }
+
+  private cancelCurrent(): void {
+    this.generation++;
+    this.abort?.abort();
+    this.abort = null;
+    if (this.retry) clearTimeout(this.retry);
+    this.retry = null;
+  }
+
+  private isCurrent(generation: number): boolean {
+    return !this.stopped && generation === this.generation;
+  }
+
+  private scheduleRetry(generation: number): void {
+    if (!this.isCurrent(generation) || this.retry) return;
+    this.retry = setTimeout(() => {
+      this.retry = null;
+      if (!this.isCurrent(generation)) return;
+      const nextGeneration = ++this.generation;
+      this.open(nextGeneration);
+    }, this.options.retryMs);
+  }
+
+  private open(generation: number): void {
+    void this.read(generation);
+  }
+
+  private async read(generation: number): Promise<void> {
+    let abort: AbortController | null = null;
+    try {
+      const endpoint = await this.options.getEndpoint();
+      if (!this.isCurrent(generation) || !endpoint) return;
+
+      abort = new AbortController();
+      this.abort = abort;
+      const response = await this.options.fetchStream(
+        `${trimTrailingSlash(endpoint.managementBaseUrl)}/events`,
+        {
+          headers: {
+            ...endpoint.headers,
+            Authorization: `Bearer ${endpoint.managementToken}`,
+          },
+          signal: abort.signal,
+        },
+      );
+      if (!this.isCurrent(generation)) return;
+      if (!response.ok || !response.body) {
+        this.scheduleRetry(generation);
+        return;
+      }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let eventType = '';
+      while (this.isCurrent(generation)) {
+        const { done, value } = await reader.read();
+        if (!this.isCurrent(generation)) return;
+        if (done) {
+          this.scheduleRetry(generation);
+          return;
+        }
+        if (!value) continue;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() ?? '';
+        for (const line of lines) {
+          if (line.startsWith('event:')) {
+            eventType = line.slice(6).trim();
+          } else if (line.startsWith('data:') && eventType) {
+            const data = line.slice(5).trimStart();
+            await this.options.onEvent(eventType, data);
+            if (!this.isCurrent(generation)) return;
+            eventType = '';
+          }
+        }
+      }
+    } catch (error) {
+      if (!this.isCurrent(generation)) return;
+      this.options.onWarning?.(error);
+      this.scheduleRetry(generation);
+    } finally {
+      if (abort && this.isCurrent(generation) && this.abort === abort) this.abort = null;
+    }
+  }
+}
+
+export function createGatewaySubscriptionLifecycle(controls: {
+  startEvents(): void;
+  stopEvents(): void;
+  connectProjects(): void;
+  disconnectProjects(): void;
+}): { restart(): void; stop(): void } {
+  return {
+    restart(): void {
+      controls.stopEvents();
+      controls.disconnectProjects();
+      controls.startEvents();
+      controls.connectProjects();
+    },
+    stop(): void {
+      controls.stopEvents();
+      controls.disconnectProjects();
+    },
+  };
+}
 
 /** Best-effort LAN IPv4 so a phone on the same Wi-Fi can reach the gateway. */
 function getLanIp(): string {
@@ -132,6 +413,7 @@ function initMcLogging(): void {
 let chatService: ChatService | undefined;
 let gatewayPoller: GatewayPoller | undefined;
 let gatewaySupervisor: GatewaySupervisor | undefined;
+let pendingConversationRuntime: PendingConversationRuntime | null = null;
 // Long-lived WebSocket to the gateway's /projects/ws. Re-broadcasts each
 // { topic, payload } frame to the renderer over the `projects:event` IPC
 // channel. Reconnected from the gateway health poller's `healthy` branch
@@ -375,7 +657,7 @@ export async function projectsAssignAgentHandler(
 function getChatService(getWindow: () => BrowserWindow | undefined): ChatService {
   if (!chatService) {
     chatService = new ChatService(
-      new ConversationStore(DATA_DIR),
+      legacyStore,
       (conversationId, event) => {
         const win = getWindow();
         if (win && !win.isDestroyed()) win.webContents.send('chat:event', conversationId, event);
@@ -573,6 +855,124 @@ export async function registerIpcHandlers(
   };
 
   const getSkillsClient = (): Promise<ManagementClient> => getDirectManagementClient('Skills API');
+  const conversationLifecycle = new ConversationLifecycleEpoch();
+
+  const sendConversationInvalidation = (invalidation: ConversationInvalidation): void => {
+    const win = getWindow();
+    if (win && !win.isDestroyed()) {
+      win.webContents.send('chat:conversationInvalidated', invalidation);
+    }
+  };
+
+  const gatewayConversationRepository = (): GatewayConversationRepository | null =>
+    pendingConversationRuntime?.repository instanceof GatewayConversationRepository
+      ? pendingConversationRuntime.repository
+      : null;
+
+  const chatUrl = (endpoint: ActiveGatewayEndpoint): string =>
+    `${trimTrailingSlash(endpoint.chatBaseUrl)}/ws/chat?token=${encodeURIComponent(endpoint.chatToken)}`;
+
+  const configureConversationRuntime = (
+    context: {
+      gatewayId: string | null;
+      online: boolean;
+      capabilities: MobileCapability[] | null;
+    },
+    client: GatewayManagementClient,
+    endpoint: ActiveGatewayEndpoint,
+  ): void => {
+    const gatewayId = context.gatewayId;
+    pendingConversationRuntime = configurePendingConversationRuntime({
+      controller: conversationController,
+      context,
+      existing: pendingConversationRuntime,
+      createRepository: () => {
+        if (!gatewayId) throw new Error('Verified gateway identity is missing');
+        return new GatewayConversationRepository(
+          gatewayId,
+          client,
+          new GatewayConversationCache(DATA_DIR, gatewayId),
+          (conversation) => sendConversationInvalidation({ type: 'deleted', conversation }),
+        );
+      },
+      createTransport: () =>
+        new ResumableChatTransport({
+          connection: { url: chatUrl(endpoint), headers: endpoint.headers },
+          channelId: 'mission-control',
+          replay: (ref, agentId, sinceSeq) => conversationController.replay(ref, agentId, sinceSeq),
+          onFrame: (frame) => {
+            const win = getWindow();
+            if (win && !win.isDestroyed()) win.webContents.send('chat:frame', frame);
+          },
+          onConnectionError: (conversationId, error) => {
+            const win = getWindow();
+            if (win && !win.isDestroyed()) {
+              win.webContents.send('chat:connectionError', {
+                conversation: { id: conversationId, origin: 'gateway' },
+                kind: error.kind,
+                message: error.message,
+                retryAfterMs: error.retryAfterMs,
+                closeCode: error.closeCode,
+              });
+            }
+          },
+          onProtocolError: (conversationId, message) => {
+            const win = getWindow();
+            if (win && !win.isDestroyed())
+              win.webContents.send('chat:error', conversationId, message);
+          },
+        }),
+    });
+  };
+
+  const restoreOfflineConversationRuntime = async (
+    isCurrent: () => boolean = () => true,
+  ): Promise<boolean> => {
+    const profile = await getGatewayConnectionProfile();
+    if (!isCurrent()) return false;
+    const context = conversationContextFromOfflineProfile(profile);
+    const endpoint = await getActiveGatewayEndpoint().catch(() => null);
+    if (!isCurrent()) return false;
+    if (endpoint && context.gatewayId && context.capabilities?.includes('conversation-sync-v1')) {
+      const client = new GatewayManagementClient(
+        endpoint.managementBaseUrl,
+        endpoint.managementToken,
+        endpoint.headers,
+      );
+      configureConversationRuntime(context, client, endpoint);
+    } else {
+      pendingConversationRuntime = configurePendingConversationRuntime({
+        controller: conversationController,
+        context,
+        existing: pendingConversationRuntime,
+        createRepository: () => {
+          if (!context.gatewayId) throw new Error('Gateway identity unavailable');
+          const offline = async (): Promise<never> => {
+            throw new TypeError('Gateway connection unavailable');
+          };
+          const client = {
+            listConversations: offline,
+            getConversation: offline,
+            createConversation: offline,
+            getConversationMessages: offline,
+            patchConversation: offline,
+            deleteConversation: offline,
+            replayConversationEvents: offline,
+          } as unknown as GatewayManagementClient;
+          return new GatewayConversationRepository(
+            context.gatewayId,
+            client,
+            new GatewayConversationCache(DATA_DIR, context.gatewayId),
+            (conversation) => sendConversationInvalidation({ type: 'deleted', conversation }),
+          );
+        },
+        createTransport: () => {
+          throw new Error('Gateway connection unavailable');
+        },
+      });
+    }
+    return true;
+  };
 
   // Read gateway state and pass connection to ChatService. The chat
   // token lives in the OS keychain (not gateway-state.json), so pull
@@ -580,30 +980,57 @@ export async function registerIpcHandlers(
   // Also forward the management API base URL + token — ChatService
   // uses them to call the gateway's event-log replay endpoint after
   // a dropped WebSocket.
-  const refreshChatServiceConnection = async () => {
-    const endpoint = await getActiveGatewayEndpoint();
-    if (endpoint) {
-      const svc = getChatService(getWindow);
-      svc.setGatewayConnection({
-        chatBaseUrl: endpoint.chatBaseUrl,
-        chatToken: endpoint.chatToken,
-        managementBaseUrl: endpoint.managementBaseUrl,
-        managementToken: endpoint.managementToken,
-        headers: endpoint.headers,
-      });
-      // Fire-and-forget startup reconciliation: scan every
-      // conversation for incomplete turns (user message with no
-      // reply, or an assistant message missing a `response` event)
-      // and fetch whatever the gateway logged while MC was down.
-      // Catches the case where MC crashed or was force-quit before
-      // the WebSocket close handler's own reconciliation could run.
-      svc.reconcileAllConversations().catch((err) => {
-        console.error(
-          '[ChatService] Startup reconciliation failed:',
-          err instanceof Error ? err.message : err,
-        );
-      });
+  const refreshChatServiceConnection = async (
+    isCurrent: () => boolean = conversationLifecycle.begin(),
+  ): Promise<boolean> => {
+    const endpoint = await getActiveGatewayEndpoint().catch(() => null);
+    if (!isCurrent()) return false;
+    if (!endpoint) {
+      await restoreOfflineConversationRuntime(isCurrent);
+      return false;
     }
+    const svc = getChatService(getWindow);
+    svc.setGatewayConnection({
+      chatBaseUrl: endpoint.chatBaseUrl,
+      chatToken: endpoint.chatToken,
+      managementBaseUrl: endpoint.managementBaseUrl,
+      managementToken: endpoint.managementToken,
+      headers: endpoint.headers,
+    });
+    const client = new GatewayManagementClient(
+      endpoint.managementBaseUrl,
+      endpoint.managementToken,
+      endpoint.headers,
+    );
+    try {
+      const verified = await verifiedConversationContext(client);
+      if (!isCurrent()) return false;
+      const current = await getGatewayConnectionProfile();
+      if (!isCurrent()) return false;
+      const { gatewayId: _previousGatewayId, ...profileWithoutGatewayId } = current;
+      await getSettingsStore().set({
+        gatewayConnection: {
+          ...profileWithoutGatewayId,
+          ...(verified.gatewayId ? { gatewayId: verified.gatewayId } : {}),
+          apiVersion: verified.apiVersion,
+          capabilities: verified.capabilities,
+        },
+      });
+      if (!isCurrent()) return false;
+      configureConversationRuntime({ ...verified, online: true }, client, endpoint);
+    } catch {
+      await restoreOfflineConversationRuntime(isCurrent);
+      return false;
+    }
+    // The renderer still uses the legacy wire until Tasks 8-9, so the
+    // pending capable runtime is deliberately not installed on ChatService.
+    svc.reconcileAllConversations().catch((err) => {
+      console.error(
+        '[ChatService] Startup reconciliation failed:',
+        err instanceof Error ? err.message : err,
+      );
+    });
+    return true;
   };
 
   const checkRemoteGateway = async (
@@ -680,61 +1107,32 @@ export async function registerIpcHandlers(
   };
   gatewayPoller = new GatewayPoller(async () => getGatewayManagementClient(false));
 
-  // SSE subscription to gateway events
-  let sseAbort: AbortController | null = null;
-
-  async function connectToGatewayEvents(): Promise<void> {
-    sseAbort?.abort();
-    const endpoint = await getActiveGatewayEndpoint();
-    if (!endpoint) return;
-
-    const abort = new AbortController();
-    sseAbort = abort;
-
-    try {
-      const res = await fetch(`${endpoint.managementBaseUrl}/events`, {
-        headers: {
-          ...endpoint.headers,
-          Authorization: `Bearer ${endpoint.managementToken}`,
-        },
-        signal: abort.signal,
-      });
-      if (!res.ok || !res.body) return;
-
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-
-        const lines = buffer.split('\n');
-        buffer = lines.pop() ?? '';
-        let eventType = '';
-        for (const line of lines) {
-          if (line.startsWith('event: ')) {
-            eventType = line.slice(7).trim();
-          } else if (line.startsWith('data: ') && eventType) {
-            const data = line.slice(6);
-            const win = getWindow();
-            if (win && !win.isDestroyed()) {
-              win.webContents.send('gateway:event', eventType, data);
-            }
-            eventType = '';
-          }
-        }
+  let shuttingDown = false;
+  const gatewayEventStream = new GatewayEventStreamManager({
+    getEndpoint: getActiveGatewayEndpoint,
+    fetchStream: (url, init) => fetch(url, init),
+    retryMs: 5_000,
+    onEvent: async (eventType, data) => {
+      const win = getWindow();
+      if (win && !win.isDestroyed()) {
+        win.webContents.send('gateway:event', eventType, data);
       }
-    } catch (err) {
-      if (!abort.signal.aborted) {
-        console.warn(
-          '[sse] Gateway event stream disconnected:',
-          err instanceof Error ? err.message : err,
-        );
-      }
-    }
-  }
+      if (eventType !== 'conversation:changed' && eventType !== 'conversation:deleted') return;
+      const [invalidation] = parseConversationInvalidations(`event: ${eventType}\ndata: ${data}\n`);
+      if (!invalidation) return;
+      await gatewayConversationRepository()?.invalidate(
+        invalidation.conversation.id,
+        invalidation.type === 'deleted',
+      );
+      sendConversationInvalidation(invalidation);
+    },
+    onWarning: (error) => {
+      console.warn(
+        '[sse] Gateway event stream disconnected:',
+        error instanceof Error ? error.message : error,
+      );
+    },
+  });
 
   // Long-lived WebSocket subscription to the gateway's /projects/ws. Each
   // frame is `{ topic, payload }` where `payload` is already normalized by the
@@ -746,28 +1144,43 @@ export async function registerIpcHandlers(
   // that fails) while the gateway stays healthy would never be retried —
   // scheduleProjectsWsReconnect() self-heals those cases.
   let projectsWsRetry: NodeJS.Timeout | null = null;
-  function scheduleProjectsWsReconnect(): void {
-    if (projectsWsRetry) return;
+  let projectsSubscriptionGeneration = 0;
+
+  function scheduleProjectsWsReconnect(generation: number): void {
+    if (shuttingDown || generation !== projectsSubscriptionGeneration || projectsWsRetry) return;
     projectsWsRetry = setTimeout(() => {
       projectsWsRetry = null;
-      if (!projectsWs) connectToProjectsWs();
+      if (!shuttingDown && generation === projectsSubscriptionGeneration && !projectsWs) {
+        connectToProjectsWs();
+      }
     }, 5_000);
     projectsWsRetry.unref();
   }
-  function connectToProjectsWs(): void {
-    projectsWs?.close();
+
+  function disconnectProjectsWs(): void {
+    projectsSubscriptionGeneration++;
+    if (projectsWsRetry) clearTimeout(projectsWsRetry);
+    projectsWsRetry = null;
+    const ws = projectsWs;
     projectsWs = null;
+    ws?.close();
+  }
+
+  function connectToProjectsWs(): void {
+    const generation = ++projectsSubscriptionGeneration;
     void (async () => {
       const endpoint = await getActiveGatewayEndpoint();
+      if (shuttingDown || generation !== projectsSubscriptionGeneration) return;
       if (!endpoint) {
         // State/token not readable yet (e.g. first boot race) — retry.
-        scheduleProjectsWsReconnect();
+        scheduleProjectsWsReconnect(generation);
         return;
       }
       const url = `${websocketBaseFromHttpBase(endpoint.managementBaseUrl)}/projects/ws?token=${encodeURIComponent(endpoint.managementToken)}`;
       const ws = new WebSocket(url, { headers: endpoint.headers });
       projectsWs = ws;
       ws.addEventListener('message', (event) => {
+        if (generation !== projectsSubscriptionGeneration) return;
         let frame: { topic?: string; payload?: unknown };
         try {
           frame = JSON.parse(String(event.data));
@@ -784,9 +1197,9 @@ export async function registerIpcHandlers(
         }
       });
       ws.addEventListener('close', () => {
-        if (projectsWs === ws) {
+        if (generation === projectsSubscriptionGeneration && projectsWs === ws) {
           projectsWs = null;
-          scheduleProjectsWsReconnect();
+          scheduleProjectsWsReconnect(generation);
         }
       });
       ws.addEventListener('error', () => {
@@ -795,12 +1208,47 @@ export async function registerIpcHandlers(
     })();
   }
 
+  const gatewaySubscriptions = createGatewaySubscriptionLifecycle({
+    startEvents: () => gatewayEventStream.start(),
+    stopEvents: () => gatewayEventStream.stop(),
+    connectProjects: connectToProjectsWs,
+    disconnectProjects: disconnectProjectsWs,
+  });
+
+  const refreshGatewayConnection = async (): Promise<void> => {
+    gatewaySubscriptions.stop();
+    const isCurrent = conversationLifecycle.begin();
+    const online = await refreshChatServiceConnection(isCurrent);
+    if (online && isCurrent() && !shuttingDown) gatewaySubscriptions.restart();
+  };
+
   gatewayPoller.start(
     (status: string) => {
       sendGatewayStatus(status);
       if (status === 'healthy') {
-        connectToGatewayEvents().catch(() => {});
-        if (!projectsWs) connectToProjectsWs();
+        void refreshGatewayConnection().catch((error) => {
+          console.warn(
+            '[chat] failed to refresh healthy gateway conversation context:',
+            error instanceof Error ? error.message : error,
+          );
+        });
+      } else if (status === 'unhealthy') {
+        gatewaySubscriptions.stop();
+        const isCurrent = conversationLifecycle.begin();
+        void restoreOfflineConversationRuntime(isCurrent)
+          .then((applied) => {
+            if (!applied || !isCurrent()) return;
+            sendConversationInvalidation({
+              type: 'changed',
+              conversation: { id: '*', origin: 'gateway' },
+            });
+          })
+          .catch((error) => {
+            console.warn(
+              '[chat] failed to restore offline conversation context:',
+              error instanceof Error ? error.message : error,
+            );
+          });
       }
     },
     (serverName: string, mcpStatus: string) => {
@@ -939,7 +1387,7 @@ export async function registerIpcHandlers(
       keychain,
       controlPlaneClient,
     });
-    await refreshChatServiceConnection();
+    await refreshGatewayConnection();
   });
 
   ipcMain.handle('devices:list', async (): Promise<DeviceInfo[]> => {
@@ -1157,8 +1605,7 @@ export async function registerIpcHandlers(
       try {
         const client = await getRequiredGatewayManagementClient();
         const agents = await client.listAgents();
-        const convStore = new ConversationStore(DATA_DIR);
-        await convStore.migrate((agentName) => {
+        await legacyStore.migrate((agentName) => {
           const match = agents.find((a) => a.name === agentName);
           return match?.id ?? null;
         });
@@ -1345,7 +1792,7 @@ export async function registerIpcHandlers(
       gatewayConnection: { mode: 'local', updatedAt: new Date().toISOString() },
     });
     await gw.ensureRunning();
-    await refreshChatServiceConnection();
+    await refreshGatewayConnection();
     return getGatewayConnectionStatus();
   });
 
@@ -1364,7 +1811,7 @@ export async function registerIpcHandlers(
         checkRemoteGateway,
         setRemoteGatewaySecrets: (secrets) => keychain.setRemoteGatewaySecrets(secrets),
         setGatewayConnection: (profile) => getSettingsStore().set({ gatewayConnection: profile }),
-        refreshChatServiceConnection,
+        refreshChatServiceConnection: refreshGatewayConnection,
         getGatewayConnectionStatus,
       });
     },
@@ -1400,7 +1847,7 @@ export async function registerIpcHandlers(
       }
       await keychain.setRemoteGatewaySecrets(secrets);
       await getSettingsStore().set({ gatewayConnection: profile });
-      await refreshChatServiceConnection();
+      await refreshGatewayConnection();
       return getGatewayConnectionStatus();
     },
   );
@@ -1410,7 +1857,7 @@ export async function registerIpcHandlers(
       throw new Error('Restart from Mission Control is only available for the local gateway');
     }
     await gw.restart();
-    await refreshChatServiceConnection();
+    await refreshGatewayConnection();
   });
 
   ipcMain.handle('gateway:status', async () => {
@@ -1455,7 +1902,7 @@ export async function registerIpcHandlers(
     // Now that the keychain has been touched (and on first run,
     // approved by the user), wire up the chat service connection
     // that was deferred at startup.
-    await refreshChatServiceConnection();
+    await refreshGatewayConnection();
   });
 
   ipcMain.handle('app:quit', () => {
@@ -1723,11 +2170,10 @@ export async function registerIpcHandlers(
   // -----------------------------------------------------------------------
 
   app.on('before-quit', async () => {
-    if (projectsWsRetry) clearTimeout(projectsWsRetry);
-    // Detach before close so the close handler doesn't schedule a reconnect.
-    const ws = projectsWs;
-    projectsWs = null;
-    ws?.close();
+    shuttingDown = true;
+    conversationLifecycle.invalidate();
+    gatewaySubscriptions.stop();
+    pendingConversationRuntime = disposePendingConversationRuntime(pendingConversationRuntime);
     gatewayPoller?.stop();
     await shutdownGatewayOnQuit(DATA_DIR);
   });
