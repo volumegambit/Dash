@@ -476,3 +476,382 @@ describe('SqliteConversationService schema', () => {
     service.close();
   });
 });
+
+describe('SqliteConversationService durable turns', () => {
+  let tmpDir: string;
+  let service: SqliteConversationService;
+  let uuidCounter: number;
+  let timestamp: string;
+
+  beforeEach(async () => {
+    tmpDir = await mkdtemp(join(tmpdir(), 'conversation-turns-'));
+    uuidCounter = 0;
+    timestamp = '2026-07-12T01:00:00.000Z';
+    service = new SqliteConversationService({
+      dataDir: tmpDir,
+      now: () => timestamp,
+      uuid: () => `00000000-0000-4000-8000-${String(++uuidCounter).padStart(12, '0')}`,
+    });
+  });
+
+  afterEach(async () => {
+    service.close();
+    await rm(tmpDir, { recursive: true, force: true });
+  });
+
+  function createConversation(requestId = 'create-01', agentId = 'agent-01') {
+    return service.create({
+      agentId,
+      agentName: `Helper ${agentId}`,
+      requestId,
+    });
+  }
+
+  it('accepts a turn atomically with a durable lease, messages, and accepted journal entry', () => {
+    const conversation = createConversation();
+    timestamp = '2026-07-12T01:00:01.000Z';
+
+    const accepted = service.acceptTurn({
+      agentId: 'agent-01',
+      conversationId: conversation.id,
+      turnId: 'turn-01',
+      text: 'Hello from mobile',
+      images: [{ mediaType: 'image/png', data: 'aGVsbG8=' }],
+    });
+
+    expect(accepted).toMatchObject({
+      created: true,
+      firstUserMessage: true,
+      seq: 1,
+      conversation: {
+        revision: 2,
+        status: 'running',
+        activeTurnId: 'turn-01',
+        lastSeq: 1,
+        updatedAt: timestamp,
+      },
+      userMessage: {
+        conversationId: conversation.id,
+        turnId: 'turn-01',
+        ordinal: 1,
+        role: 'user',
+        status: 'accepted',
+        content: {
+          type: 'user',
+          text: 'Hello from mobile',
+          images: [{ mediaType: 'image/png', data: 'aGVsbG8=' }],
+        },
+      },
+      assistantMessage: {
+        conversationId: conversation.id,
+        turnId: 'turn-01',
+        ordinal: 2,
+        role: 'assistant',
+        status: 'streaming',
+        content: { type: 'assistant', events: [] },
+      },
+    });
+    expect(service.eventLog.readSince('agent-01', conversation.id, 0)).toEqual([
+      expect.objectContaining({
+        seq: 1,
+        msgId: 'turn-01',
+        payload: {
+          type: 'accepted',
+          userMessageId: accepted.userMessage.id,
+          assistantMessageId: accepted.assistantMessage.id,
+          revision: 2,
+        },
+      }),
+    ]);
+    expect(service.listMessages({ conversationId: conversation.id, limit: 10 }).items).toEqual([
+      accepted.userMessage,
+      accepted.assistantMessage,
+    ]);
+  });
+
+  it('excludes a second client while preserving idempotent retry and per-conversation leases', () => {
+    const conversation = createConversation();
+    const other = createConversation('create-02');
+    const first = service.acceptTurn({
+      agentId: 'agent-01',
+      conversationId: conversation.id,
+      turnId: 'turn-01',
+      text: 'Hello',
+    });
+
+    const retry = service.acceptTurn({
+      agentId: 'agent-01',
+      conversationId: conversation.id,
+      turnId: 'turn-01',
+      text: 'A retry body is ignored',
+    });
+    expect(retry).toMatchObject({
+      userMessage: { id: first.userMessage.id, content: { type: 'user', text: 'Hello' } },
+      assistantMessage: { id: first.assistantMessage.id },
+      seq: first.seq,
+      created: false,
+    });
+    expect(service.listMessages({ conversationId: conversation.id, limit: 10 }).items).toHaveLength(
+      2,
+    );
+    expect(() =>
+      service.acceptTurn({
+        agentId: 'agent-01',
+        conversationId: conversation.id,
+        turnId: 'turn-02',
+        text: 'Competing turn',
+      }),
+    ).toThrowError(
+      expect.objectContaining({
+        code: 'conversation_busy',
+        details: { activeTurnId: 'turn-01' },
+      }),
+    );
+
+    const parallel = service.acceptTurn({
+      agentId: 'agent-01',
+      conversationId: other.id,
+      turnId: 'turn-02',
+      text: 'Independent turn',
+    });
+    expect(parallel.conversation).toMatchObject({ status: 'running', activeTurnId: 'turn-02' });
+    expect(first.conversation).toMatchObject({ status: 'running', activeTurnId: 'turn-01' });
+  });
+
+  it('persists JSON-safe live events and refuses late events after terminal', () => {
+    const conversation = createConversation();
+    service.acceptTurn({
+      agentId: 'agent-01',
+      conversationId: conversation.id,
+      turnId: 'turn-01',
+      text: 'Run a tool',
+    });
+
+    const frame = service.appendTurnEvent(conversation.id, 'turn-01', {
+      type: 'tool_result',
+      id: 'tool-01',
+      name: 'nested-errors',
+      content: 'finished',
+      details: {
+        direct: new Error('direct failure'),
+        nested: [{ reason: new Error('deep failure') }],
+      },
+    });
+    expect(frame).toMatchObject({
+      seq: 2,
+      conversation: { revision: 2, lastSeq: 2, activeTurnId: 'turn-01' },
+      payload: {
+        type: 'event',
+        event: {
+          type: 'tool_result',
+          details: { direct: 'direct failure', nested: [{ reason: 'deep failure' }] },
+        },
+      },
+    });
+    expect(service.eventLog.readSince('agent-01', conversation.id, 1)[0]).toMatchObject({
+      seq: 2,
+      payload: frame?.payload,
+    });
+
+    service.finishTurn({
+      conversationId: conversation.id,
+      turnId: 'turn-01',
+      outcome: 'completed',
+    });
+    expect(
+      service.appendTurnEvent(conversation.id, 'turn-01', { type: 'text_delta', text: 'late' }),
+    ).toBeNull();
+    expect(service.eventLog.readSince('agent-01', conversation.id, 0)).toHaveLength(3);
+  });
+
+  it.each([
+    {
+      outcome: 'completed' as const,
+      expectedStatus: 'completed',
+      expectedPayload: { type: 'done', outcome: 'completed' },
+    },
+    {
+      outcome: 'cancelled' as const,
+      expectedStatus: 'cancelled',
+      expectedPayload: { type: 'done', outcome: 'cancelled' },
+    },
+    {
+      outcome: 'failed' as const,
+      expectedStatus: 'failed',
+      expectedPayload: {
+        type: 'error',
+        error: 'Provider unavailable',
+        code: 'gateway_offline',
+        retryable: true,
+      },
+    },
+  ])('finishes $outcome exactly once and releases the lease', (testCase) => {
+    const conversation = createConversation(`create-${testCase.outcome}`);
+    service.acceptTurn({
+      agentId: 'agent-01',
+      conversationId: conversation.id,
+      turnId: `turn-${testCase.outcome}`,
+      text: 'Hello',
+    });
+    const input =
+      testCase.outcome === 'failed'
+        ? ({
+            conversationId: conversation.id,
+            turnId: `turn-${testCase.outcome}`,
+            outcome: 'failed' as const,
+            error: 'Provider unavailable',
+            code: 'gateway_offline' as const,
+            retryable: true,
+          } as const)
+        : ({
+            conversationId: conversation.id,
+            turnId: `turn-${testCase.outcome}`,
+            outcome: testCase.outcome,
+          } as const);
+
+    const terminal = service.finishTurn(input);
+    expect(terminal).toMatchObject({
+      seq: 2,
+      payload: testCase.expectedPayload,
+      conversation: { status: 'idle', activeTurnId: null, revision: 3, lastSeq: 2 },
+    });
+    expect(
+      service.listMessages({ conversationId: conversation.id, limit: 10 }).items[1],
+    ).toMatchObject({ status: testCase.expectedStatus });
+
+    const retry = service.finishTurn(input);
+    expect(retry).toEqual(terminal);
+    expect(service.eventLog.readSince('agent-01', conversation.id, 0)).toHaveLength(2);
+  });
+
+  it('recovers a partial turn once while preserving its accepted content and events', () => {
+    const conversation = createConversation();
+    service.acceptTurn({
+      agentId: 'agent-01',
+      conversationId: conversation.id,
+      turnId: 'turn-01',
+      text: 'Keep my partial response',
+    });
+    service.appendTurnEvent(conversation.id, 'turn-01', {
+      type: 'text_delta',
+      text: 'Partial answer',
+    });
+    service.close();
+    service = new SqliteConversationService({ dataDir: tmpDir, now: () => timestamp });
+
+    expect(service.recoverInterruptedTurns()).toEqual({
+      conversationsInterrupted: 1,
+      terminalsAppended: 1,
+    });
+    expect(service.get(conversation.id)).toMatchObject({
+      status: 'interrupted',
+      activeTurnId: null,
+      revision: 3,
+      lastSeq: 3,
+    });
+    expect(service.listMessages({ conversationId: conversation.id, limit: 10 }).items).toEqual([
+      expect.objectContaining({ role: 'user', status: 'accepted' }),
+      expect.objectContaining({
+        role: 'assistant',
+        status: 'interrupted',
+        content: {
+          type: 'assistant',
+          events: [{ type: 'text_delta', text: 'Partial answer' }],
+        },
+      }),
+    ]);
+    expect(service.eventLog.readSince('agent-01', conversation.id, 2)).toEqual([
+      expect.objectContaining({
+        seq: 3,
+        payload: {
+          type: 'error',
+          error: 'Gateway restarted while this turn was in progress.',
+          code: 'gateway_offline',
+          retryable: true,
+        },
+      }),
+    ]);
+    expect(service.recoverInterruptedTurns()).toEqual({
+      conversationsInterrupted: 0,
+      terminalsAppended: 0,
+    });
+  });
+
+  it('sets an automatic title only while the exact default title is still present', () => {
+    const automatic = createConversation('create-auto');
+    const changed = service.trySetAutoTitle(automatic.id, '  First useful question  ');
+    expect(changed).toMatchObject({ title: 'First useful question', revision: 2 });
+    expect(service.trySetAutoTitle(automatic.id, 'A later guess')).toBeNull();
+
+    const manual = createConversation('create-manual');
+    service.update(manual.id, 1, { title: 'Manual title' });
+    expect(service.trySetAutoTitle(manual.id, 'Automatic title')).toBeNull();
+    expect(service.get(manual.id)).toMatchObject({ title: 'Manual title', revision: 2 });
+  });
+
+  it('archives every live agent conversation without deleting messages or events', () => {
+    const active = createConversation('create-active');
+    const idle = createConversation('create-idle');
+    const deleted = createConversation('create-deleted');
+    const otherAgent = createConversation('create-other', 'agent-02');
+    service.acceptTurn({
+      agentId: 'agent-01',
+      conversationId: active.id,
+      turnId: 'turn-active',
+      text: 'Preserve this',
+    });
+    service.delete(deleted.id, deleted.revision);
+
+    const archived = service.archiveAgentConversations('agent-01');
+    expect(archived.map((item) => item.id)).toEqual([idle.id, active.id].sort().reverse());
+    expect(archived).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: active.id, status: 'archived', activeTurnId: null }),
+        expect.objectContaining({ id: idle.id, status: 'archived', activeTurnId: null }),
+      ]),
+    );
+    expect(service.listMessages({ conversationId: active.id, limit: 10 }).items).toHaveLength(2);
+    expect(service.eventLog.readSince('agent-01', active.id, 0)).toHaveLength(1);
+    expect(service.get(deleted.id, { includeDeleted: true })).toMatchObject({ status: 'deleted' });
+    expect(service.get(otherAgent.id)).toMatchObject({ status: 'idle', revision: 1 });
+    expect(() =>
+      service.acceptTurn({
+        agentId: 'agent-01',
+        conversationId: active.id,
+        turnId: 'turn-after-archive',
+        text: 'Do not reopen',
+      }),
+    ).toThrowError(expect.objectContaining({ code: 'validation_failed' }));
+  });
+
+  it('keeps an active turn intact until cancellation releases the delete guard', () => {
+    const conversation = createConversation();
+    service.acceptTurn({
+      agentId: 'agent-01',
+      conversationId: conversation.id,
+      turnId: 'turn-active',
+      text: 'Do not purge this while active',
+    });
+
+    expect(() => service.delete(conversation.id, 0)).toThrowError(
+      expect.objectContaining({
+        code: 'conversation_busy',
+        details: { activeTurnId: 'turn-active' },
+      }),
+    );
+    expect(service.listMessages({ conversationId: conversation.id, limit: 10 }).items).toHaveLength(
+      2,
+    );
+    expect(service.eventLog.readSince('agent-01', conversation.id, 0)).toHaveLength(1);
+
+    const cancellation = service.finishTurn({
+      conversationId: conversation.id,
+      turnId: 'turn-active',
+      outcome: 'cancelled',
+    });
+    expect(cancellation.conversation.revision).toBe(3);
+    const tombstone = service.delete(conversation.id, cancellation.conversation.revision);
+    expect(tombstone).toMatchObject({ status: 'deleted', revision: 4 });
+    expect(service.eventLog.readSince('agent-01', conversation.id, 0)).toEqual([]);
+  });
+});

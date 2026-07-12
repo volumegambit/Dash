@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import type { AgentEvent } from '@dash/agent';
 import type { RunSnapshot } from '@dash/swarm';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { SqliteConversationService } from './conversation-service-sqlite.js';
 import { SqliteEventLogStore } from './event-log-store-sqlite.js';
 import type { EventLogPayload } from './event-log-store.js';
 import { recoverInterruptedSwarmTurns } from './swarm-log-recovery.js';
@@ -220,5 +221,70 @@ describe('recoverInterruptedSwarmTurns', () => {
       type: 'error',
     });
     expect(failures.some((m) => m.includes('restore exploded'))).toBe(true);
+  });
+});
+
+describe('swarm and canonical conversation recovery ordering', () => {
+  let tmpDir: string;
+  let service: SqliteConversationService;
+
+  beforeEach(async () => {
+    tmpDir = await mkdtemp(join(tmpdir(), 'swarm-conversation-recovery-'));
+    let id = 0;
+    service = new SqliteConversationService({
+      dataDir: tmpDir,
+      now: () => '2026-07-12T00:00:00.000Z',
+      uuid: () => `00000000-0000-4000-8000-${String(++id).padStart(12, '0')}`,
+    });
+  });
+
+  afterEach(async () => {
+    service.close();
+    await rm(tmpDir, { recursive: true, force: true });
+  });
+
+  it('lets swarm repair append worker terminals before generic recovery reuses its error', () => {
+    const conversation = service.create({
+      agentId: 'agent-a',
+      agentName: 'Swarm Helper',
+      requestId: 'create-01',
+    });
+    service.acceptTurn({
+      agentId: 'agent-a',
+      conversationId: conversation.id,
+      turnId: 'turn-01',
+      text: 'Delegate this',
+    });
+    service.appendTurnEvent(conversation.id, 'turn-01', {
+      type: 'worker_spawned',
+      workerId: 'worker-01',
+      runId: 'run-01',
+      role: 'researcher',
+      brief: 'Research the answer',
+      model: 'test-model',
+    });
+
+    expect(recoverInterruptedSwarmTurns({ eventLog: service.eventLog })).toEqual({
+      conversationsRepaired: 1,
+      workersCancelled: 1,
+    });
+    expect(service.recoverInterruptedTurns()).toEqual({
+      conversationsInterrupted: 1,
+      terminalsAppended: 0,
+    });
+
+    const entries = service.eventLog.readSince('agent-a', conversation.id, 0);
+    expect(entries.filter((entry) => entry.payload.type === 'error')).toHaveLength(1);
+    expect(entries.at(-2)?.payload).toMatchObject({
+      type: 'event',
+      event: { type: 'worker_done', workerId: 'worker-01', status: 'cancelled' },
+    });
+    expect(entries.at(-1)?.payload).toMatchObject({ type: 'error' });
+    expect(service.get(conversation.id)).toMatchObject({
+      status: 'interrupted',
+      activeTurnId: null,
+      revision: 3,
+      lastSeq: entries.at(-1)?.seq,
+    });
   });
 });
