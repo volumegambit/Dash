@@ -19,40 +19,54 @@ if ! xcrun simctl list runtimes | grep -F "$RUNTIME_ID" | grep -Fqv 'unavailable
 fi
 xcrun simctl list runtimes | grep -F "$RUNTIME_ID" | grep -Fqv 'unavailable'
 
-has_device() {
+device_udid() {
   local name="$1"
-  xcrun simctl list devices available | awk -v runtime="-- $RUNTIME_NAME --" -v name="$name" '
-    $0 == runtime { inside = 1; next }
-    /^-- / { inside = 0 }
-    inside && index($0, name " (") { found = 1 }
-    END { exit(found ? 0 : 1) }
-  '
+  local type="$2"
+  xcrun simctl list devices available --json | xcrun swift -e '
+    import Darwin
+    import Foundation
+
+    struct DeviceList: Decodable {
+      let devices: [String: [Device]]
+    }
+
+    struct Device: Decodable {
+      let name: String
+      let udid: String
+      let deviceTypeIdentifier: String
+      let isAvailable: Bool?
+    }
+
+    guard CommandLine.arguments.count == 4 else { exit(64) }
+    let runtime = CommandLine.arguments[1]
+    let name = CommandLine.arguments[2]
+    let type = CommandLine.arguments[3]
+    let data = FileHandle.standardInput.readDataToEndOfFile()
+    let list = try JSONDecoder().decode(DeviceList.self, from: data)
+    guard let device = list.devices[runtime]?.first(where: {
+      $0.name == name && $0.deviceTypeIdentifier == type && $0.isAvailable != false
+    }) else {
+      exit(1)
+    }
+    print(device.udid)
+  ' "$RUNTIME_ID" "$name" "$type"
 }
 
 ensure_device() {
   local name="$1"
   local type="$2"
-  if ! has_device "$name"; then
+  if ! device_udid "$name" "$type" >/dev/null; then
     xcrun simctl create "$name" "$type" "$RUNTIME_ID" >/dev/null
   fi
-  has_device "$name"
-}
-
-device_udid() {
-  local name="$1"
-  xcrun simctl list devices available | awk -v runtime="-- $RUNTIME_NAME --" -v name="$name" '
-    $0 == runtime { inside = 1; next }
-    /^-- / { inside = 0 }
-    inside && index($0, name " (") { print; exit }
-  ' | grep -Eo '[0-9A-Fa-f]{8}(-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}'
+  device_udid "$name" "$type" >/dev/null
 }
 
 ensure_device "$IPHONE_NAME" "$IPHONE_TYPE"
 ensure_device "$IPAD_NAME" "$IPAD_TYPE"
 
 case "${1:-}" in
-  --iphone-udid) device_udid "$IPHONE_NAME"; exit 0 ;;
-  --ipad-udid) device_udid "$IPAD_NAME"; exit 0 ;;
+  --iphone-udid) device_udid "$IPHONE_NAME" "$IPHONE_TYPE"; exit 0 ;;
+  --ipad-udid) device_udid "$IPAD_NAME" "$IPAD_TYPE"; exit 0 ;;
   '') ;;
   *) printf 'Usage: %s [--iphone-udid|--ipad-udid]\n' "$0" >&2; exit 64 ;;
 esac
