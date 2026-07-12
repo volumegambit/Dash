@@ -136,6 +136,34 @@ struct ContractFixtureTests {
     try expectRoundTrip(MobileWSClientFrame.self, "chat-cancel.json")
   }
 
+  @Test("conversation patch construction preserves omitted, value, and null")
+  func patchConstruction() throws {
+    let clearAndSet = try PatchConversationRequest(
+      owningIssueId: .null,
+      projectId: .value("project-1")
+    )
+    let object = try #require(
+      JSONSerialization.jsonObject(
+        with: ContractCoding.encoder().encode(clearAndSet)
+      ) as? [String: Any]
+    )
+    #expect(object.keys.sorted() == ["owningIssueId", "projectId"])
+    #expect(object["owningIssueId"] is NSNull)
+    #expect(object["projectId"] as? String == "project-1")
+
+    let titleOnly = try PatchConversationRequest(title: "Renamed")
+    let titleObject = try #require(
+      JSONSerialization.jsonObject(
+        with: ContractCoding.encoder().encode(titleOnly)
+      ) as? [String: Any]
+    )
+    #expect(titleObject.keys.sorted() == ["title"])
+
+    #expect(throws: PatchConversationRequestError.self) {
+      try PatchConversationRequest()
+    }
+  }
+
   @Test("new iOS turn builder freezes channel and resumability")
   func newTurnBuilder() {
     let frame = MobileWSClientFrame.newTurn(

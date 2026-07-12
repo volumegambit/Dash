@@ -125,6 +125,16 @@ struct CreateConversationRequest: Codable, Hashable, Sendable {
   let projectId: String?
 }
 
+enum NullablePatchField<Value: Hashable & Sendable>: Hashable, Sendable {
+  case omitted
+  case value(Value)
+  case null
+}
+
+enum PatchConversationRequestError: Error, Equatable, Sendable {
+  case emptyPatch
+}
+
 struct PatchConversationRequest: Codable, Hashable, Sendable {
   let title: String?
   let owningIssueId: String?
@@ -132,15 +142,21 @@ struct PatchConversationRequest: Codable, Hashable, Sendable {
 
   private let includedKeys: Set<String>
 
-  init(title: String?, owningIssueId: String?, projectId: String?) {
+  init(
+    title: String? = nil,
+    owningIssueId: NullablePatchField<String> = .omitted,
+    projectId: NullablePatchField<String> = .omitted
+  ) throws {
     self.title = title
-    self.owningIssueId = owningIssueId
-    self.projectId = projectId
-    includedKeys = [
-      title == nil ? nil : CodingKeys.title.rawValue,
-      owningIssueId == nil ? nil : CodingKeys.owningIssueId.rawValue,
-      projectId == nil ? nil : CodingKeys.projectId.rawValue,
-    ].compactMap { $0 }.reduce(into: []) { $0.insert($1) }
+    self.owningIssueId = if case let .value(value) = owningIssueId { value } else { nil }
+    self.projectId = if case let .value(value) = projectId { value } else { nil }
+
+    var keys: Set<String> = []
+    if title != nil { keys.insert(CodingKeys.title.rawValue) }
+    if owningIssueId != .omitted { keys.insert(CodingKeys.owningIssueId.rawValue) }
+    if projectId != .omitted { keys.insert(CodingKeys.projectId.rawValue) }
+    guard keys.isEmpty == false else { throw PatchConversationRequestError.emptyPatch }
+    includedKeys = keys
   }
 
   private enum CodingKeys: String, CodingKey {
@@ -158,6 +174,7 @@ struct PatchConversationRequest: Codable, Hashable, Sendable {
   }
 
   func encode(to encoder: Encoder) throws {
+    guard includedKeys.isEmpty == false else { throw PatchConversationRequestError.emptyPatch }
     var container = encoder.container(keyedBy: CodingKeys.self)
     if includedKeys.contains(CodingKeys.title.rawValue) {
       try container.encodeIfPresent(title, forKey: .title)

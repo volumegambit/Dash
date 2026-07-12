@@ -177,6 +177,8 @@ private func validatedHost(_ value: String) throws -> String {
   let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
   guard trimmed.isEmpty == false,
     trimmed.rangeOfCharacter(from: .whitespacesAndNewlines) == nil,
+    trimmed.rangeOfCharacter(from: .controlCharacters) == nil,
+    trimmed.rangeOfCharacter(from: CharacterSet(charactersIn: "/\\?#@%")) == nil,
     URLComponents(string: trimmed)?.scheme == nil,
     let components = URLComponents(string: "//\(trimmed)"),
     let host = components.host,
@@ -186,7 +188,7 @@ private func validatedHost(_ value: String) throws -> String {
     components.port == nil,
     components.query == nil,
     components.fragment == nil,
-    components.path.isEmpty || components.path == "/"
+    components.path.isEmpty
   else {
     throw PairingValidationError.invalidHost
   }

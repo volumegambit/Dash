@@ -4,7 +4,12 @@ import Testing
 
 @Suite("connection endpoint and pairing validation")
 struct ConnectionEndpointTests {
-  @Test(arguments: ["https://host", "host/path", "host?x=1", "host#fragment"])
+  @Test(
+    arguments: [
+      "https://host", "host/path", "host/", "host?x=1", "host#fragment", "host%2Fpath",
+      "host%3Fx=1", "user%40host", "host%20evil", "host%00evil",
+    ]
+  )
   func rejectsNonHostInput(_ host: String) throws {
     let payload = PairingPayload(
       v: 1,
