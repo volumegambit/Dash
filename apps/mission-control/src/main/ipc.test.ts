@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { InMemoryKeychainStore } from '@dash/mc';
 import { verifyConversationGateway } from './gateway-connection.js';
 import {
+  createLegacyWireChatAdapter,
   enrollGateway,
   isSetupConfigured,
   makePackagedSpawner,
@@ -18,9 +19,155 @@ import {
   pluginRuntimeHandler,
   pluginSetStateHandler,
   pluginsListHandler,
+  projectsAssignAgentHandler,
   resolveSetupStatus,
   shutdownGatewayOnQuit,
 } from './ipc.js';
+
+describe('legacy renderer chat wire adapters', () => {
+  const view = {
+    id: 'conversation-1',
+    agentId: 'agent-1',
+    agentName: 'Developer',
+    title: 'Local chat',
+    revision: 0,
+    status: 'idle' as const,
+    activeTurnId: null,
+    owningIssueId: 'issue-1',
+    projectId: null,
+    lastSeq: 0,
+    lastMessagePreview: 'hello',
+    createdAt: '2026-07-12T00:00:00Z',
+    updatedAt: '2026-07-12T00:00:01Z',
+    origin: 'local' as const,
+    offline: false,
+    readOnly: false,
+  };
+  const page = {
+    items: [
+      {
+        id: 'message-1',
+        conversationId: view.id,
+        turnId: 'legacy:message-1',
+        ordinal: 1,
+        role: 'user' as const,
+        status: 'completed' as const,
+        content: { type: 'user' as const, text: 'hello' },
+        createdAt: '2026-07-12T00:00:01Z',
+        updatedAt: '2026-07-12T00:00:01Z',
+      },
+    ],
+    nextCursor: null,
+    throughSeq: 0,
+  };
+
+  function makeChat() {
+    return {
+      listConversations: vi.fn().mockResolvedValue({
+        items: [view],
+        nextCursor: null,
+        authority: 'legacy',
+        gatewayOnline: true,
+      }),
+      createConversation: vi.fn().mockResolvedValue(view),
+      getMessages: vi.fn().mockResolvedValue(page),
+      renameConversation: vi.fn().mockResolvedValue({ ...view, title: 'Renamed' }),
+      deleteConversation: vi.fn().mockResolvedValue(undefined),
+      sendMessage: vi.fn().mockResolvedValue(undefined),
+      cancel: vi.fn().mockResolvedValue(undefined),
+      answerQuestion: vi.fn().mockResolvedValue(undefined),
+    };
+  }
+
+  it('routes every current bare-ID chat consumer through an explicit local ref', async () => {
+    const chat = makeChat();
+    const ids = ['request-1', 'turn-1'];
+    const adapter = createLegacyWireChatAdapter(chat, () => ids.shift() as string);
+
+    await expect(adapter.listConversations()).resolves.toEqual([
+      {
+        id: view.id,
+        agentId: view.agentId,
+        title: view.title,
+        issueId: view.owningIssueId,
+        createdAt: view.createdAt,
+        updatedAt: view.updatedAt,
+      },
+    ]);
+    await expect(adapter.createConversation('agent-1')).resolves.toMatchObject({ id: view.id });
+    await expect(adapter.getMessages(view.id)).resolves.toEqual([
+      {
+        id: 'message-1',
+        role: 'user',
+        content: { type: 'user', text: 'hello' },
+        timestamp: '2026-07-12T00:00:01Z',
+      },
+    ]);
+    await adapter.renameConversation(view.id, 'Renamed');
+    await adapter.deleteConversation(view.id);
+    await adapter.sendMessage(view.id, 'hello', [{ mediaType: 'image/png', data: 'aGVsbG8=' }]);
+    await adapter.cancel(view.id);
+    await adapter.answerQuestion(view.id, 'question-1', 'Yes');
+
+    const ref = { id: view.id, origin: 'local' };
+    expect(chat.createConversation).toHaveBeenCalledWith('agent-1', 'request-1');
+    expect(chat.getMessages).toHaveBeenCalledWith(ref);
+    expect(chat.renameConversation).toHaveBeenCalledWith(ref, 0, 'Renamed');
+    expect(chat.deleteConversation).toHaveBeenCalledWith(ref, 0);
+    expect(chat.sendMessage).toHaveBeenCalledWith(ref, 'turn-1', 'hello', [
+      { mediaType: 'image/png', data: 'aGVsbG8=' },
+    ]);
+    expect(chat.cancel).toHaveBeenCalledWith(ref, undefined);
+    expect(chat.answerQuestion).toHaveBeenCalledWith(ref, undefined, 'question-1', 'Yes');
+  });
+});
+
+describe('projects assignment canonical IDs and refs', () => {
+  it('allocates stable request/turn IDs, preserves origin internally, and unwraps only for HTTP/IPC', async () => {
+    const conversation = { id: 'shared-id', origin: 'gateway' as const };
+    const client = {
+      getIssue: vi.fn().mockResolvedValue({
+        id: 'issue-1',
+        key: 'TASK-1',
+        title: 'Fix it',
+        project_id: 'project-1',
+      }),
+      linkSession: vi.fn().mockResolvedValue(undefined),
+      patchIssue: vi.fn().mockResolvedValue(undefined),
+    };
+    const chat = {
+      createConversation: vi.fn().mockResolvedValue({
+        id: conversation.id,
+        origin: conversation.origin,
+      }),
+      sendMessage: vi.fn().mockResolvedValue(undefined),
+    };
+    const ids = ['request-project', 'turn-project'];
+
+    await expect(
+      projectsAssignAgentHandler(
+        client,
+        chat,
+        'TASK-1',
+        'agent-1',
+        'Developer',
+        () => ids.shift() as string,
+      ),
+    ).resolves.toBe(conversation.id);
+
+    expect(chat.createConversation).toHaveBeenCalledWith('agent-1', 'request-project', {
+      title: 'TASK-1 — Fix it',
+      owningIssueId: 'issue-1',
+      projectId: 'project-1',
+    });
+    expect(client.linkSession).toHaveBeenCalledWith('issue-1', conversation.id, 'Developer');
+    expect(chat.sendMessage).toHaveBeenCalledWith(
+      conversation,
+      'turn-project',
+      expect.stringContaining('TASK-1'),
+    );
+  });
+});
 
 describe('remote gateway capability verification wiring', () => {
   it('requires identity from a capable gateway', async () => {

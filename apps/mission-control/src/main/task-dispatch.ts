@@ -8,22 +8,26 @@
  * projects/issues tool (tool calls only link lazily).
  */
 
+import type { ConversationRef } from '@dash/mc';
+
 export interface TaskDispatchDeps {
   /** Resolve id or human key to the issue (throws/rejects when missing). */
-  getIssue(idOrKey: string): Promise<{ id: string; key: string; title: string }>;
-  createConversation(agentId: string): Promise<{ id: string }>;
-  linkSession(issueId: string, sessionId: string, agentName: string): Promise<unknown>;
-  /** Persist the owning issue id on the conversation so the main process
-   *  can sync the task's status from the session lifecycle. */
-  setIssueId(sessionId: string, issueId: string): Promise<unknown>;
+  getIssue(
+    idOrKey: string,
+  ): Promise<{ id: string; key: string; title: string; project_id: string | null }>;
+  createConversation(
+    agentId: string,
+    requestId: string,
+    metadata: { title: string; owningIssueId: string; projectId?: string },
+  ): Promise<ConversationRef>;
+  linkSession(issueId: string, conversation: ConversationRef, agentName: string): Promise<unknown>;
   /** Only ever called with the dispatch patch — typed literally so the
    *  ManagementClient.patchIssue(Partial<Issue>) lambda needs no cast. */
   patchIssue(
     issueId: string,
     patch: { status: 'in_progress'; sub_status: 'agent_working' },
   ): Promise<unknown>;
-  renameConversation(conversationId: string, title: string): Promise<void>;
-  sendMessage(conversationId: string, text: string): Promise<void>;
+  sendMessage(conversation: ConversationRef, turnId: string, text: string): Promise<void>;
 }
 
 export function buildTaskKickoffPrompt(issue: { key: string; title: string }): string {
@@ -43,20 +47,25 @@ export function buildTaskKickoffPrompt(issue: { key: string; title: string }): s
  * Dispatch an agent onto a task. `agentId` is the registry id (chat
  * addressing); `agentName` is the agent's config.name — the key
  * session_issue_link and the agents_involved filter use. Returns the new
- * conversation id.
+ * conversation reference without discarding its authority origin.
  */
 export async function assignAgentToTask(
   deps: TaskDispatchDeps,
   issueIdOrKey: string,
   agentId: string,
   agentName: string,
-): Promise<string> {
+  requestId: string,
+  turnId: string,
+): Promise<ConversationRef> {
   const issue = await deps.getIssue(issueIdOrKey);
-  const conversation = await deps.createConversation(agentId);
-  await deps.linkSession(issue.id, conversation.id, agentName);
-  await deps.setIssueId(conversation.id, issue.id);
+  const title = `${issue.key} — ${issue.title}`;
+  const conversation = await deps.createConversation(agentId, requestId, {
+    title,
+    owningIssueId: issue.id,
+    ...(issue.project_id === null ? {} : { projectId: issue.project_id }),
+  });
+  await deps.linkSession(issue.id, conversation, agentName);
   await deps.patchIssue(issue.id, { status: 'in_progress', sub_status: 'agent_working' });
-  await deps.renameConversation(conversation.id, `${issue.key} — ${issue.title}`);
-  await deps.sendMessage(conversation.id, buildTaskKickoffPrompt(issue));
-  return conversation.id;
+  await deps.sendMessage(conversation, turnId, buildTaskKickoffPrompt(issue));
+  return conversation;
 }

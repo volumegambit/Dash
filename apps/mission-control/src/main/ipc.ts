@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { createWriteStream, existsSync, mkdirSync } from 'node:fs';
 import { mkdir, readFile } from 'node:fs/promises';
 import { networkInterfaces } from 'node:os';
@@ -26,15 +27,21 @@ import {
 } from '@dash/mc';
 import type {
   ControlPlaneClient,
+  ConversationMessagePage,
+  ConversationRef,
   CreateAgentRequest,
   GatewayChannel,
   GatewayConnectionSettings,
   GatewaySupervisorOptions,
   IssuedGateway,
+  McConversation,
+  McConversationView,
+  McMessage,
   ProcessSpawner,
   RemoteGatewaySecrets,
   VpsGatewayDeployRequest,
 } from '@dash/mc';
+import type { MobileImage, MobileImageMediaType } from '@dash/mobile-contract';
 import { desktopDir, gatewayDir, logsDir, migrateLegacyLayout } from '@dash/paths';
 import { app, dialog, ipcMain, shell } from 'electron';
 import type { BrowserWindow } from 'electron';
@@ -229,6 +236,142 @@ interface ActiveGatewayEndpoint {
   headers: Record<string, string>;
 }
 
+type LegacyWireChatPort = Pick<
+  ChatService,
+  | 'listConversations'
+  | 'createConversation'
+  | 'getMessages'
+  | 'renameConversation'
+  | 'deleteConversation'
+  | 'sendMessage'
+  | 'cancel'
+  | 'answerQuestion'
+>;
+
+const MOBILE_IMAGE_TYPES = new Set<MobileImageMediaType>([
+  'image/jpeg',
+  'image/png',
+  'image/gif',
+  'image/webp',
+]);
+
+function legacyWireConversation(conversation: McConversationView): McConversation {
+  return {
+    id: conversation.id,
+    agentId: conversation.agentId,
+    title: conversation.title,
+    createdAt: conversation.createdAt,
+    updatedAt: conversation.updatedAt,
+    ...(conversation.owningIssueId ? { issueId: conversation.owningIssueId } : {}),
+  };
+}
+
+function legacyWireMessages(page: ConversationMessagePage): McMessage[] {
+  return page.items.map((message) => ({
+    id: message.id,
+    role: message.role,
+    content:
+      message.content.type === 'user'
+        ? {
+            type: 'user',
+            text: message.content.text,
+            ...(message.content.images?.length ? { images: message.content.images } : {}),
+          }
+        : { type: 'assistant', events: message.content.events },
+    timestamp: message.createdAt,
+  }));
+}
+
+function canonicalLegacyImages(
+  images?: Array<{ mediaType: string; data: string }>,
+): MobileImage[] | undefined {
+  if (!images) return undefined;
+  const canonical = images.flatMap((image): MobileImage[] =>
+    MOBILE_IMAGE_TYPES.has(image.mediaType as MobileImageMediaType)
+      ? [{ mediaType: image.mediaType as MobileImageMediaType, data: image.data }]
+      : [],
+  );
+  return canonical.length > 0 ? canonical : undefined;
+}
+
+export function createLegacyWireChatAdapter(
+  chat: LegacyWireChatPort,
+  createId: () => string = randomUUID,
+) {
+  const ref = (id: string): ConversationRef => ({ id, origin: 'local' });
+  return {
+    async listConversations(): Promise<McConversation[]> {
+      return (await chat.listConversations()).items.map(legacyWireConversation);
+    },
+    async createConversation(agentId: string): Promise<McConversation> {
+      return legacyWireConversation(await chat.createConversation(agentId, createId()));
+    },
+    async getMessages(conversationId: string): Promise<McMessage[]> {
+      return legacyWireMessages(await chat.getMessages(ref(conversationId)));
+    },
+    renameConversation(conversationId: string, title: string) {
+      return chat.renameConversation(ref(conversationId), 0, title);
+    },
+    deleteConversation(conversationId: string) {
+      return chat.deleteConversation(ref(conversationId), 0);
+    },
+    sendMessage(
+      conversationId: string,
+      text: string,
+      images?: Array<{ mediaType: string; data: string }>,
+    ) {
+      return chat.sendMessage(ref(conversationId), createId(), text, canonicalLegacyImages(images));
+    },
+    cancel(conversationId: string) {
+      return chat.cancel(ref(conversationId), undefined);
+    },
+    answerQuestion(conversationId: string, questionId: string, answer: string) {
+      return chat.answerQuestion(ref(conversationId), undefined, questionId, answer);
+    },
+  };
+}
+
+export async function projectsAssignAgentHandler(
+  client: {
+    getIssue(
+      idOrKey: string,
+    ): Promise<{ id: string; key: string; title: string; project_id: string | null }>;
+    linkSession(issueId: string, sessionId: string, agentName: string): Promise<unknown>;
+    patchIssue(
+      issueId: string,
+      patch: { status: 'in_progress'; sub_status: 'agent_working' },
+    ): Promise<unknown>;
+  },
+  chat: Pick<ChatService, 'createConversation' | 'sendMessage'>,
+  issueId: string,
+  agentId: string,
+  agentName: string,
+  createId: () => string = randomUUID,
+): Promise<string> {
+  const requestId = createId();
+  const turnId = createId();
+  const conversation = await assignAgentToTask(
+    {
+      getIssue: (idOrKey) => client.getIssue(idOrKey),
+      createConversation: async (id, request, metadata) => {
+        const created = await chat.createConversation(id, request, metadata);
+        return { id: created.id, origin: created.origin };
+      },
+      linkSession: (iid, ref, name) => client.linkSession(iid, ref.id, name),
+      patchIssue: (iid, patch) => client.patchIssue(iid, patch),
+      sendMessage: async (ref, turn, text) => {
+        await chat.sendMessage(ref, turn, text);
+      },
+    },
+    issueId,
+    agentId,
+    agentName,
+    requestId,
+    turnId,
+  );
+  return conversation.id;
+}
+
 function getChatService(getWindow: () => BrowserWindow | undefined): ChatService {
   if (!chatService) {
     chatService = new ChatService(
@@ -246,10 +389,10 @@ function getChatService(getWindow: () => BrowserWindow | undefined): ChatService
         if (win && !win.isDestroyed()) win.webContents.send('chat:error', conversationId, error);
       },
       undefined,
-      (conversationId, title) => {
+      (conversation, title) => {
         const win = getWindow();
         if (win && !win.isDestroyed())
-          win.webContents.send('chat:conversationRenamed', conversationId, title);
+          win.webContents.send('chat:conversationRenamed', conversation.id, title);
       },
     );
   }
@@ -1007,6 +1150,7 @@ export async function registerIpcHandlers(
 
   // Migrate legacy conversations (deploymentId+agentName → agentId) on first list
   let conversationsMigrated = false;
+  const getLegacyWireChat = () => createLegacyWireChatAdapter(getChatService(getWindow));
   ipcMain.handle('chat:listConversations', async () => {
     if (!conversationsMigrated) {
       conversationsMigrated = true;
@@ -1023,23 +1167,23 @@ export async function registerIpcHandlers(
         conversationsMigrated = false;
       }
     }
-    return getChatService(getWindow).listConversations();
+    return getLegacyWireChat().listConversations();
   });
 
   ipcMain.handle('chat:createConversation', (_event, agentId: string) =>
-    getChatService(getWindow).createConversation(agentId),
+    getLegacyWireChat().createConversation(agentId),
   );
 
   ipcMain.handle('chat:getMessages', (_event, conversationId: string) =>
-    getChatService(getWindow).getMessages(conversationId),
+    getLegacyWireChat().getMessages(conversationId),
   );
 
   ipcMain.handle('chat:renameConversation', (_event, conversationId: string, title: string) =>
-    getChatService(getWindow).renameConversation(conversationId, title),
+    getLegacyWireChat().renameConversation(conversationId, title),
   );
 
   ipcMain.handle('chat:deleteConversation', (_event, conversationId: string) =>
-    getChatService(getWindow).deleteConversation(conversationId),
+    getLegacyWireChat().deleteConversation(conversationId),
   );
 
   ipcMain.handle(
@@ -1049,7 +1193,7 @@ export async function registerIpcHandlers(
       conversationId: string,
       text: string,
       images?: { mediaType: string; data: string }[],
-    ) => getChatService(getWindow).sendMessage(conversationId, text, images),
+    ) => getLegacyWireChat().sendMessage(conversationId, text, images),
   );
 
   // NOTE: these two are fired from the preload with `ipcRenderer.send`
@@ -1059,13 +1203,13 @@ export async function registerIpcHandlers(
   // the chat stop button a renderer-side no-op (swarm workers kept running
   // after "stop"; see TEST_PLAN 31.9).
   ipcMain.on('chat:cancel', (_event, conversationId: string) => {
-    getChatService(getWindow).cancel(conversationId);
+    void getLegacyWireChat().cancel(conversationId);
   });
 
   ipcMain.on(
     'chat:answer-question',
     (_event, conversationId: string, questionId: string, answer: string) => {
-      getChatService(getWindow).answerQuestion(conversationId, questionId, answer);
+      void getLegacyWireChat().answerQuestion(conversationId, questionId, answer);
     },
   );
 
@@ -1431,7 +1575,7 @@ export async function registerIpcHandlers(
     void (async () => {
       try {
         const chat = getChatService(getWindow);
-        const issueId = await chat.getConversationIssueId(conversationId);
+        const issueId = await chat.getConversationIssueId({ id: conversationId, origin: 'local' });
         if (!issueId) return;
         const client = await getProjectsClient();
         const issue = await client.getIssue(issueId);
@@ -1479,20 +1623,7 @@ export async function registerIpcHandlers(
     async (_e, issueId: string, agentId: string, agentName: string) => {
       const client = await getProjectsClient();
       const chat = getChatService(getWindow);
-      return assignAgentToTask(
-        {
-          getIssue: (idOrKey) => client.getIssue(idOrKey),
-          createConversation: (id) => chat.createConversation(id),
-          linkSession: (iid, sid, name) => client.linkSession(iid, sid, name),
-          setIssueId: (sid, iid) => chat.setConversationIssueId(sid, iid),
-          patchIssue: (iid, patch) => client.patchIssue(iid, patch),
-          renameConversation: (cid, title) => chat.renameConversation(cid, title),
-          sendMessage: (cid, text) => chat.sendMessage(cid, text),
-        },
-        issueId,
-        agentId,
-        agentName,
-      );
+      return projectsAssignAgentHandler(client, chat, issueId, agentId, agentName);
     },
   );
   ipcMain.handle('projects:addComment', async (_e, issueId: string, body: string) =>

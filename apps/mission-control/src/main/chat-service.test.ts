@@ -1,17 +1,59 @@
-import { mkdir, rm } from 'node:fs/promises';
+import { mkdir, readFile, rm } from 'node:fs/promises';
 // @vitest-environment node
 // Override jsdom (set in vitest.config.ts for this package). Needs Node for WebSocketServer and filesystem I/O.
 import { createServer } from 'node:http';
 import type { Server } from 'node:http';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { ConversationStore } from '@dash/mc';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import {
+  ConversationRepositoryOfflineError,
+  ConversationStore,
+  GatewayHttpError,
+  LegacyConversationRepository,
+} from '@dash/mc';
+import type { ConversationRef, McConversationView } from '@dash/mc';
+import type { MobileWsServerFrame } from '@dash/mobile-contract';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { WebSocketServer } from 'ws';
 import type { GatewayConnection } from './chat-service.js';
 import { ChatService } from './chat-service.js';
+import { ConversationController } from './conversation-controller.js';
+import type { ResumableChatTransport } from './resumable-chat-transport.js';
+import { FixtureGatewayConversationRepository } from './test-support/fixture-gateway-conversation-repository.js';
 
 const BASE_PORT = 19700 + Math.floor(Math.random() * 200);
+const LEGACY_REQUEST_ID = 'legacy-request';
+const LEGACY_TURN_ID = 'legacy-turn';
+
+function localRef(id: string): ConversationRef {
+  return { id, origin: 'local' };
+}
+
+function createLocal(service: ChatService, agentId: string) {
+  return service.createConversation(agentId, LEGACY_REQUEST_ID);
+}
+
+function sendLocal(
+  service: ChatService,
+  conversationId: string,
+  text: string,
+  images?: Array<{ mediaType: 'image/png'; data: string }>,
+) {
+  return service.sendMessage(localRef(conversationId), LEGACY_TURN_ID, text, images);
+}
+
+async function localMessages(service: ChatService, conversationId: string) {
+  return (await service.getMessages(localRef(conversationId))).items;
+}
+
+async function fixture<T>(name: string): Promise<T> {
+  const root = resolve(
+    dirname(fileURLToPath(import.meta.url)),
+    '../../../../contracts/mobile/v1/fixtures',
+  );
+  return JSON.parse(await readFile(resolve(root, name), 'utf8')) as T;
+}
 
 describe('ChatService', () => {
   let dataDir: string;
@@ -50,10 +92,28 @@ describe('ChatService', () => {
   });
 
   it('creates and lists conversations', async () => {
-    const conv = await service.createConversation('agent-1');
+    const conv = await createLocal(service, 'agent-1');
     expect(conv.agentId).toBe('agent-1');
     const list = await service.listConversations();
-    expect(list).toHaveLength(1);
+    expect(list.items).toHaveLength(1);
+  });
+
+  it('applies canonical task metadata on the controller-free legacy create path', async () => {
+    const created = await service.createConversation('agent-1', 'request-task', {
+      title: 'TASK-1 — Fix it',
+      owningIssueId: 'issue-1',
+      projectId: 'project-1',
+    });
+
+    expect(created).toMatchObject({
+      title: 'TASK-1 — Fix it',
+      owningIssueId: 'issue-1',
+      origin: 'local',
+    });
+    await expect(store.get(created.id)).resolves.toMatchObject({
+      title: 'TASK-1 — Fix it',
+      issueId: 'issue-1',
+    });
   });
 
   it('sends user message then streams events and done', async () => {
@@ -76,8 +136,8 @@ describe('ChatService', () => {
     });
     await new Promise<void>((r) => wss?.on('listening', r));
 
-    const conv = await service.createConversation('agent-1');
-    await service.sendMessage(conv.id, 'hello');
+    const conv = await createLocal(service, 'agent-1');
+    await sendLocal(service, conv.id, 'hello');
 
     // Wait for async WS event processing
     await new Promise((r) => setTimeout(r, 100));
@@ -86,7 +146,7 @@ describe('ChatService', () => {
     expect(onDone).toHaveBeenCalledWith(conv.id);
 
     // Messages should be persisted
-    const msgs = await service.getMessages(conv.id);
+    const msgs = await store.getMessages(conv.id);
     expect(msgs).toHaveLength(2); // user + assistant
     expect(msgs[0].role).toBe('user');
     expect(msgs[1].role).toBe('assistant');
@@ -112,8 +172,8 @@ describe('ChatService', () => {
     });
     await new Promise<void>((r) => wss?.on('listening', r));
 
-    const conv = await service.createConversation('agent-1');
-    await service.sendMessage(conv.id, 'hello');
+    const conv = await createLocal(service, 'agent-1');
+    await sendLocal(service, conv.id, 'hello');
     await new Promise((r) => setTimeout(r, 100));
 
     const statuses = onSessionStatus.mock.calls.map((c) => c[1]);
@@ -140,8 +200,8 @@ describe('ChatService', () => {
     });
     await new Promise<void>((r) => wss?.on('listening', r));
 
-    const conv = await service.createConversation('agent-1');
-    await service.sendMessage(conv.id, 'hello');
+    const conv = await createLocal(service, 'agent-1');
+    await sendLocal(service, conv.id, 'hello');
     await new Promise((r) => setTimeout(r, 100));
 
     expect(seenHeaders).toEqual(['relay-cred']);
@@ -168,8 +228,8 @@ describe('ChatService', () => {
     });
     await new Promise<void>((r) => wss?.on('listening', r));
 
-    const conv = await service.createConversation('agent-1');
-    await service.sendMessage(conv.id, 'go');
+    const conv = await createLocal(service, 'agent-1');
+    await sendLocal(service, conv.id, 'go');
     await new Promise((r) => setTimeout(r, 100));
 
     const statuses = onSessionStatus.mock.calls.map((c) => c[1]);
@@ -196,8 +256,8 @@ describe('ChatService', () => {
     });
     await new Promise<void>((r) => wss?.on('listening', r));
 
-    const conv = await service.createConversation('agent-1');
-    await service.sendMessage(conv.id, 'hello');
+    const conv = await createLocal(service, 'agent-1');
+    await sendLocal(service, conv.id, 'hello');
     await new Promise((r) => setTimeout(r, 100));
 
     expect(onError).toHaveBeenCalledWith(conv.id, 'agent exploded');
@@ -205,8 +265,8 @@ describe('ChatService', () => {
 
   it('throws if gateway connection is not configured', async () => {
     const noGwService = new ChatService(store, onEvent, onDone, onError);
-    const conv = await noGwService.createConversation('agent-1');
-    await expect(noGwService.sendMessage(conv.id, 'hello')).rejects.toThrow(
+    const conv = await createLocal(noGwService, 'agent-1');
+    await expect(sendLocal(noGwService, conv.id, 'hello')).rejects.toThrow(
       'Gateway connection not configured',
     );
   });
@@ -226,14 +286,14 @@ describe('ChatService', () => {
     });
     await new Promise<void>((r) => wss?.on('listening', r));
 
-    const conv = await service.createConversation('agent-1');
+    const conv = await createLocal(service, 'agent-1');
     // Don't await — sendMessage sets up the WS and returns quickly for a hanging server
-    service.sendMessage(conv.id, 'hello').catch(() => {});
+    sendLocal(service, conv.id, 'hello').catch(() => {});
 
     // Give time for WS to open and message to be sent
     await new Promise((r) => setTimeout(r, 50));
 
-    service.cancel(conv.id);
+    await service.cancel(localRef(conv.id), LEGACY_TURN_ID);
 
     // Give time for WS close to propagate
     await new Promise((r) => setTimeout(r, 50));
@@ -258,8 +318,8 @@ describe('ChatService', () => {
       managementToken: 'tok',
     });
 
-    const conv = await svc.createConversation('agent-9');
-    svc.cancel(conv.id); // no sendMessage — no active stream entry
+    const conv = await createLocal(svc, 'agent-9');
+    await svc.cancel(localRef(conv.id), LEGACY_TURN_ID); // no sendMessage — no active stream entry
     await vi.waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith(
         `http://mgmt.test/agents/agent-9/conversations/${conv.id}/swarm/cancel`,
@@ -287,14 +347,14 @@ describe('ChatService', () => {
     });
     await new Promise<void>((r) => wss?.on('listening', r));
 
-    const conv = await service.createConversation('agent-1');
-    service.sendMessage(conv.id, 'hello').catch(() => {});
+    const conv = await createLocal(service, 'agent-1');
+    sendLocal(service, conv.id, 'hello').catch(() => {});
     await vi.waitFor(() => {
       expect(received.length).toBeGreaterThan(0);
     });
     const msgId = received[0].id;
 
-    service.cancel(conv.id);
+    await service.cancel(localRef(conv.id), LEGACY_TURN_ID);
     await vi.waitFor(() => {
       expect(closed).toBe(true);
     });
@@ -330,8 +390,8 @@ describe('ChatService', () => {
     });
     await new Promise<void>((r) => wss?.on('listening', r));
 
-    const conv = await service.createConversation('agent-1');
-    service.sendMessage(conv.id, 'hello').catch(() => {});
+    const conv = await createLocal(service, 'agent-1');
+    sendLocal(service, conv.id, 'hello').catch(() => {});
 
     // Wait for question event to arrive
     await vi.waitFor(() => {
@@ -342,7 +402,7 @@ describe('ChatService', () => {
     });
 
     // Send answer
-    service.answerQuestion(conv.id, 'q-1', 'A');
+    await service.answerQuestion(localRef(conv.id), LEGACY_TURN_ID, 'q-1', 'A');
 
     // Wait for the answer to be received by the mock server
     await vi.waitFor(() => {
@@ -356,8 +416,10 @@ describe('ChatService', () => {
     });
   });
 
-  it('answerQuestion throws if no active stream', () => {
-    expect(() => service.answerQuestion('nonexistent', 'q-1', 'A')).toThrow('No active stream');
+  it('answerQuestion throws if no active stream', async () => {
+    await expect(
+      service.answerQuestion(localRef('nonexistent'), LEGACY_TURN_ID, 'q-1', 'A'),
+    ).rejects.toThrow('No active stream');
   });
 
   // ------------------------------------------------------------------
@@ -449,8 +511,8 @@ describe('ChatService', () => {
     });
     await new Promise<void>((r) => wss?.on('listening', r));
 
-    const conv = await service.createConversation('agent-1');
-    await service.sendMessage(conv.id, 'hi');
+    const conv = await createLocal(service, 'agent-1');
+    await sendLocal(service, conv.id, 'hi');
 
     // Wait for the WS drop + reconciliation to complete.
     await vi.waitFor(() => {
@@ -476,7 +538,7 @@ describe('ChatService', () => {
     expect(onError).not.toHaveBeenCalled();
 
     // Assistant message persisted with all 3 events.
-    const msgs = await service.getMessages(conv.id);
+    const msgs = await localMessages(service, conv.id);
     expect(msgs).toHaveLength(2);
     expect(msgs[1].role).toBe('assistant');
     const assistantContent = msgs[1].content as { events?: unknown[] };
@@ -522,8 +584,8 @@ describe('ChatService', () => {
     });
     await new Promise<void>((r) => wss?.on('listening', r));
 
-    const conv = await service.createConversation('agent-1');
-    await service.sendMessage(conv.id, 'hi');
+    const conv = await createLocal(service, 'agent-1');
+    await sendLocal(service, conv.id, 'hi');
 
     await vi.waitFor(() => {
       expect(onError).toHaveBeenCalledWith(conv.id, 'WebSocket connection dropped');
@@ -531,7 +593,7 @@ describe('ChatService', () => {
 
     expect(onDone).not.toHaveBeenCalled();
     // The one live event we did see is still persisted.
-    const msgs = await service.getMessages(conv.id);
+    const msgs = await localMessages(service, conv.id);
     expect(msgs).toHaveLength(2);
     const assistantContent = msgs[1].content as { events?: unknown[] };
     expect(assistantContent.events).toHaveLength(1);
@@ -599,7 +661,7 @@ describe('ChatService', () => {
 
     // Set up a conversation that has a user message but NO
     // assistant reply — the classic "crashed mid-chat" state.
-    const conv = await service.createConversation('agent-1');
+    const conv = await createLocal(service, 'agent-1');
     await store.appendMessage(conv.id, {
       id: 'u1',
       role: 'user',
@@ -615,7 +677,7 @@ describe('ChatService', () => {
     expect(onDone).toHaveBeenCalledWith(conv.id);
 
     // A new assistant message was appended carrying `lastSeq`.
-    const msgs = await service.getMessages(conv.id);
+    const msgs = await store.getMessages(conv.id);
     expect(msgs).toHaveLength(2);
     expect(msgs[1].role).toBe('assistant');
     const assistantContent = msgs[1].content as {
@@ -645,7 +707,7 @@ describe('ChatService', () => {
       managementToken: 'test-token',
     });
 
-    const conv = await service.createConversation('agent-1');
+    const conv = await createLocal(service, 'agent-1');
     await store.appendMessage(conv.id, {
       id: 'u1',
       role: 'user',
@@ -700,7 +762,7 @@ describe('ChatService', () => {
       managementToken: 'test-token',
     });
 
-    const conv = await service.createConversation('agent-1');
+    const conv = await createLocal(service, 'agent-1');
     await store.appendMessage(conv.id, {
       id: 'u1',
       role: 'user',
@@ -733,7 +795,7 @@ describe('ChatService', () => {
       channelPort: 0,
       // no managementBaseUrl / managementToken
     });
-    const conv = await service.createConversation('agent-1');
+    const conv = await createLocal(service, 'agent-1');
     await store.appendMessage(conv.id, {
       id: 'u1',
       role: 'user',
@@ -761,11 +823,312 @@ describe('ChatService', () => {
     });
     await new Promise<void>((r) => wss?.on('listening', r));
 
-    const conv = await noGwService.createConversation('agent-1');
-    await noGwService.sendMessage(conv.id, 'hello');
+    const conv = await createLocal(noGwService, 'agent-1');
+    await sendLocal(noGwService, conv.id, 'hello');
     await new Promise((r) => setTimeout(r, 100));
 
     expect(onDone).toHaveBeenCalledWith(conv.id);
+  });
+});
+
+describe('ChatService gateway conversations', () => {
+  let dataDir: string;
+  let store: ConversationStore;
+  let gateway: FixtureGatewayConversationRepository;
+  let controller: ConversationController;
+  let resumable: {
+    send: ReturnType<typeof vi.fn>;
+    subscribe: ReturnType<typeof vi.fn>;
+    cancel: ReturnType<typeof vi.fn>;
+    answer: ReturnType<typeof vi.fn>;
+    closeAll: ReturnType<typeof vi.fn>;
+  };
+  let service: ChatService;
+
+  beforeEach(async () => {
+    dataDir = join(tmpdir(), `chat-service-gateway-${Date.now()}-${Math.random()}`);
+    await mkdir(dataDir, { recursive: true });
+    store = new ConversationStore(dataDir);
+    gateway = await FixtureGatewayConversationRepository.load();
+    controller = new ConversationController(
+      new LegacyConversationRepository(store, (agentId) => agentId),
+    );
+    controller.configure({
+      gatewayId: 'gateway-1',
+      online: true,
+      capabilities: ['conversation-sync-v1', 'chat-resume-v1'],
+      repository: gateway,
+    });
+    resumable = {
+      send: vi.fn(),
+      subscribe: vi.fn().mockResolvedValue(undefined),
+      cancel: vi.fn(),
+      answer: vi.fn(),
+      closeAll: vi.fn(),
+    };
+    service = new ChatService(
+      store,
+      vi.fn(),
+      vi.fn(),
+      vi.fn(),
+      { channelPort: 9 },
+      undefined,
+      controller,
+      resumable as unknown as ResumableChatTransport,
+    );
+  });
+
+  afterEach(async () => {
+    vi.unstubAllGlobals();
+    await rm(dataDir, { recursive: true, force: true });
+  });
+
+  async function gatewayView(): Promise<McConversationView> {
+    return (await controller.list({ limit: 50 })).items.find(
+      (item) => item.origin === 'gateway',
+    ) as McConversationView;
+  }
+
+  it('returns durable acceptance and never appends capable messages to ConversationStore', async () => {
+    const append = vi.spyOn(store, 'appendMessage');
+    const accepted =
+      await fixture<Extract<MobileWsServerFrame, { type: 'accepted' }>>('chat-accepted.json');
+    resumable.send.mockResolvedValue(accepted);
+    const conversation = await gatewayView();
+
+    await expect(
+      service.sendMessage(
+        { id: conversation.id, origin: 'gateway' },
+        accepted.id,
+        'hello from Mission Control',
+      ),
+    ).resolves.toEqual(accepted);
+    expect(resumable.send).toHaveBeenCalledWith(
+      conversation,
+      accepted.id,
+      'hello from Mission Control',
+      undefined,
+    );
+    expect(append).not.toHaveBeenCalled();
+    await expect(store.listAll()).resolves.toEqual([]);
+  });
+
+  it('preserves the current non-resumable local path for an older gateway', async () => {
+    controller.configure({ gatewayId: 'old', online: true, capabilities: [], repository: null });
+    const local = await service.createConversation('agent-1', 'request-local');
+    await service.sendMessage({ id: local.id, origin: 'local' }, 'legacy-turn', 'hello');
+
+    expect(resumable.send).not.toHaveBeenCalled();
+    expect((await store.getMessages(local.id))[0]).toMatchObject({ role: 'user' });
+  });
+
+  it.each(['capable', 'unresolved'] as const)(
+    'rejects a local-ref send while conversation authority is %s',
+    async (mode) => {
+      const local = await store.create('agent-local');
+      if (mode === 'unresolved') {
+        controller.configure({
+          gatewayId: null,
+          online: false,
+          capabilities: null,
+          repository: null,
+        });
+      }
+      const append = vi.spyOn(store, 'appendMessage');
+
+      await expect(
+        service.sendMessage({ id: local.id, origin: 'local' }, 'stale-local-turn', 'do not send'),
+      ).rejects.toBeInstanceOf(ConversationRepositoryOfflineError);
+
+      expect(append).not.toHaveBeenCalled();
+      expect(resumable.send).not.toHaveBeenCalled();
+      await expect(store.getMessages(local.id)).resolves.toEqual([]);
+    },
+  );
+
+  it('subscribes to a turn that is active on iOS from transcript throughSeq', async () => {
+    const conversation = await gatewayView();
+    const active = { ...conversation, status: 'running' as const, activeTurnId: 'ios-turn-1' };
+    vi.spyOn(gateway, 'get').mockResolvedValue(active);
+    vi.spyOn(gateway, 'messages').mockResolvedValue({
+      items: [],
+      nextCursor: null,
+      throughSeq: 14,
+    });
+
+    await service.getMessages({ id: active.id, origin: 'gateway' });
+
+    expect(resumable.subscribe).toHaveBeenCalledWith(active, 'ios-turn-1', 14);
+  });
+
+  it('rejects known-capable offline create, send, rename, and delete without local fallback', async () => {
+    const conversation = await gatewayView();
+    gateway.setOffline(true);
+    controller.configure({
+      gatewayId: 'gateway-1',
+      online: false,
+      capabilities: ['conversation-sync-v1'],
+      repository: gateway,
+    });
+    const ref = { id: conversation.id, origin: 'gateway' as const };
+
+    await expect(service.createConversation('agent-1', 'request-offline')).rejects.toBeInstanceOf(
+      ConversationRepositoryOfflineError,
+    );
+    await expect(service.sendMessage(ref, 'turn-offline', 'hello')).rejects.toBeInstanceOf(
+      ConversationRepositoryOfflineError,
+    );
+    await expect(
+      service.renameConversation(ref, conversation.revision, 'Offline rename'),
+    ).rejects.toBeInstanceOf(ConversationRepositoryOfflineError);
+    await expect(service.deleteConversation(ref, conversation.revision)).rejects.toBeInstanceOf(
+      ConversationRepositoryOfflineError,
+    );
+    await expect(store.listAll()).resolves.toEqual([]);
+  });
+
+  it('uses the canonical active turn for gateway cancel and answer', async () => {
+    const conversation = await gatewayView();
+    const active = { ...conversation, status: 'running' as const, activeTurnId: 'ios-turn-1' };
+    vi.spyOn(gateway, 'get').mockResolvedValue(active);
+    const ref = { id: active.id, origin: 'gateway' as const };
+
+    await service.cancel(ref, 'ios-turn-1');
+    await service.answerQuestion(ref, 'ios-turn-1', 'question-1', 'Yes');
+
+    expect(resumable.cancel).toHaveBeenCalledWith(active.id, 'ios-turn-1');
+    expect(resumable.answer).toHaveBeenCalledWith(active.id, 'ios-turn-1', 'question-1', 'Yes');
+    await expect(service.cancel(ref, 'wrong-turn')).rejects.toThrow('active turn');
+    await expect(service.answerQuestion(ref, 'wrong-turn', 'question-1', 'No')).rejects.toThrow(
+      'active turn',
+    );
+  });
+
+  it('returns canonical transcript message IDs without creating legacy shadows', async () => {
+    const conversation = await gatewayView();
+
+    const page = await service.getMessages({ id: conversation.id, origin: 'gateway' });
+
+    expect(page.items.map((message) => message.id)).toEqual([
+      '018f0f4a-5c42-7a8b-9c01-3234567890ab',
+      '018f0f4a-5c42-7a8b-9c01-4234567890ab',
+    ]);
+    expect(page.throughSeq).toBe(5);
+    await expect(store.getMessages(conversation.id)).resolves.toEqual([]);
+  });
+
+  it('closes the prior resumable transport when replacing it', () => {
+    const replacement = { closeAll: vi.fn() } as unknown as ResumableChatTransport;
+
+    service.setResumableTransport(replacement);
+
+    expect(resumable.closeAll).toHaveBeenCalledOnce();
+  });
+
+  it('starts gateway title and task bookkeeping only after durable acceptance', async () => {
+    const conversation = await gatewayView();
+    const untitled = { ...conversation, title: 'New Conversation' };
+    vi.spyOn(gateway, 'get').mockResolvedValue(untitled);
+    let accept: ((frame: Extract<MobileWsServerFrame, { type: 'accepted' }>) => void) | undefined;
+    resumable.send.mockReturnValue(
+      new Promise((resolve) => {
+        accept = resolve;
+      }),
+    );
+    const fetchMock = vi.fn(async (url: string | URL) => {
+      const path = String(url);
+      if (path.includes('/conversation-title')) {
+        return new Response(JSON.stringify({ title: 'Accepted title', project: null }), {
+          status: 200,
+        });
+      }
+      if (path.endsWith('/issues')) {
+        return new Response(JSON.stringify({ id: 'issue-accepted', key: 'TASK-9' }), {
+          status: 201,
+        });
+      }
+      return new Response('{}', { status: 201 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    service.setGatewayConnection({
+      channelPort: 9,
+      managementBaseUrl: 'http://mgmt.test',
+      managementToken: 'token',
+    });
+
+    const pending = service.sendMessage(
+      { id: untitled.id, origin: 'gateway' },
+      'turn-accepted',
+      'hello',
+    );
+    await Promise.resolve();
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    accept?.(
+      await fixture<Extract<MobileWsServerFrame, { type: 'accepted' }>>('chat-accepted.json'),
+    );
+    await pending;
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled());
+  });
+
+  it('retries one revision conflict and preserves a concurrent manual title', async () => {
+    const conversation = await gatewayView();
+    const untitled = { ...conversation, title: 'New Conversation', revision: 2 };
+    const manuallyRenamed = { ...untitled, title: 'Human title', revision: 3 };
+    vi.spyOn(gateway, 'get')
+      .mockResolvedValueOnce(untitled)
+      .mockResolvedValueOnce(untitled)
+      .mockResolvedValue(manuallyRenamed);
+    const patch = vi
+      .spyOn(gateway, 'patch')
+      .mockRejectedValueOnce(
+        new GatewayHttpError(409, 'patch conversation', '', {
+          code: 'revision_conflict',
+          error: 'Revision changed',
+          retryable: true,
+        }),
+      )
+      .mockResolvedValue({
+        ...manuallyRenamed,
+        owningIssueId: 'issue-retry',
+        projectId: 'project-retry',
+        revision: 4,
+      });
+    resumable.send.mockResolvedValue(
+      await fixture<Extract<MobileWsServerFrame, { type: 'accepted' }>>('chat-accepted.json'),
+    );
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string | URL) => {
+        const path = String(url);
+        if (path.includes('/conversation-title')) {
+          return new Response(
+            JSON.stringify({ title: 'Generated title', project: { id: 'project-retry' } }),
+            { status: 200 },
+          );
+        }
+        if (path.endsWith('/issues')) {
+          return new Response(JSON.stringify({ id: 'issue-retry', key: 'TASK-10' }), {
+            status: 201,
+          });
+        }
+        return new Response('{}', { status: 201 });
+      }),
+    );
+    service.setGatewayConnection({
+      channelPort: 9,
+      managementBaseUrl: 'http://mgmt.test',
+      managementToken: 'token',
+    });
+
+    await service.sendMessage({ id: untitled.id, origin: 'gateway' }, 'turn-revision', 'hello');
+
+    await vi.waitFor(() => expect(patch).toHaveBeenCalledTimes(2));
+    expect(patch.mock.calls[1]).toEqual([
+      untitled.id,
+      3,
+      { owningIssueId: 'issue-retry', projectId: 'project-retry' },
+    ]);
   });
 });
 
@@ -862,8 +1225,8 @@ describe('ChatService auto-title + auto-task', () => {
       issue: { id: 'i1', key: 'AUTH-7' },
     });
 
-    const conv = await service.createConversation('agent-1');
-    await service.sendMessage(conv.id, 'my login form crashes on submit');
+    const conv = await createLocal(service, 'agent-1');
+    await sendLocal(service, conv.id, 'my login form crashes on submit');
     await vi.waitFor(async () => {
       expect((await store.get(conv.id))?.title).toBe('AUTH-7 — Login bug triage');
     });
@@ -885,7 +1248,7 @@ describe('ChatService auto-title + auto-task', () => {
       agent_id: 'agent-1',
     });
 
-    expect(onRenamed).toHaveBeenCalledWith(conv.id, 'AUTH-7 — Login bug triage');
+    expect(onRenamed).toHaveBeenCalledWith(localRef(conv.id), 'AUTH-7 — Login bug triage');
   });
 
   it('creates a standalone task when no project was inferred', async () => {
@@ -894,8 +1257,8 @@ describe('ChatService auto-title + auto-task', () => {
       issue: { id: 'i2', key: 'TASK-3' },
     });
 
-    const conv = await service.createConversation('agent-1');
-    await service.sendMessage(conv.id, 'my login form crashes on submit');
+    const conv = await createLocal(service, 'agent-1');
+    await sendLocal(service, conv.id, 'my login form crashes on submit');
     await vi.waitFor(async () => {
       expect((await store.get(conv.id))?.title).toBe('TASK-3 — Login bug triage');
     });
@@ -907,8 +1270,8 @@ describe('ChatService auto-title + auto-task', () => {
   it('still creates the task with the placeholder title when titling fails', async () => {
     stubManagement({ title: null, issue: { id: 'i3', key: 'TASK-4' } });
 
-    const conv = await service.createConversation('agent-1');
-    await service.sendMessage(conv.id, 'hello there companion');
+    const conv = await createLocal(service, 'agent-1');
+    await sendLocal(service, conv.id, 'hello there companion');
     await vi.waitFor(async () => {
       expect((await store.get(conv.id))?.title).toBe('TASK-4 — hello there companion');
     });
@@ -917,8 +1280,8 @@ describe('ChatService auto-title + auto-task', () => {
   it('keeps the plain title when task creation fails', async () => {
     stubManagement({ title: { title: 'Login bug triage' }, issue: null });
 
-    const conv = await service.createConversation('agent-1');
-    await service.sendMessage(conv.id, 'my login form crashes on submit');
+    const conv = await createLocal(service, 'agent-1');
+    await sendLocal(service, conv.id, 'my login form crashes on submit');
     await vi.waitFor(async () => {
       expect((await store.get(conv.id))?.title).toBe('Login bug triage');
     });
@@ -927,8 +1290,8 @@ describe('ChatService auto-title + auto-task', () => {
   it('keeps the truncated fallback when every management call fails', async () => {
     stubManagement({ title: null, issue: null });
 
-    const conv = await service.createConversation('agent-1');
-    await service.sendMessage(conv.id, 'hello there companion');
+    const conv = await createLocal(service, 'agent-1');
+    await sendLocal(service, conv.id, 'hello there companion');
     await settle();
 
     expect((await store.get(conv.id))?.title).toBe('hello there companion');
@@ -941,10 +1304,10 @@ describe('ChatService auto-title + auto-task', () => {
       issue: { id: 'i5', key: 'TASK-5' },
     });
 
-    const conv = await service.createConversation('agent-1');
-    await service.sendMessage(conv.id, 'first message');
+    const conv = await createLocal(service, 'agent-1');
+    await sendLocal(service, conv.id, 'first message');
     await settle();
-    await service.sendMessage(conv.id, 'second message');
+    await sendLocal(service, conv.id, 'second message');
     await settle();
 
     expect(callsTo(fetchMock, '/conversation-title')).toHaveLength(1);
@@ -955,8 +1318,8 @@ describe('ChatService auto-title + auto-task', () => {
     const fetchMock = stubManagement({ title: { title: 'T' }, issue: { id: 'x', key: 'K' } });
     service = makeTitledService({ managementBaseUrl: undefined, managementToken: undefined });
 
-    const conv = await service.createConversation('agent-1');
-    await service.sendMessage(conv.id, 'hello');
+    const conv = await createLocal(service, 'agent-1');
+    await sendLocal(service, conv.id, 'hello');
     await settle();
 
     expect(fetchMock).not.toHaveBeenCalled();
