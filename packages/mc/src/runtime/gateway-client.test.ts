@@ -609,6 +609,8 @@ describe('GatewayManagementClient', () => {
       await expect(client.health()).resolves.toEqual(health);
       await expect(client.getIdentity()).resolves.toEqual(identity);
       expect(health.capabilities).toContain('conversation-sync-v1');
+      expect(fetchSpy.mock.calls[0][0]).toBe(`${BASE_URL}/health`);
+      expect(fetchSpy.mock.calls[1][0]).toBe(`${BASE_URL}/mobile/v1/identity`);
       expect(fetchSpy.mock.calls[1][1]).toEqual(
         expect.objectContaining({ headers: expect.objectContaining(AUTH_HEADER) }),
       );
@@ -639,10 +641,10 @@ describe('GatewayManagementClient', () => {
         client.getConversationMessages('conv-1', { limit: 100, before: 'cursor-1' }),
       ).resolves.toEqual(messages);
       expect(String(fetchSpy.mock.calls[0][0])).toContain(
-        '/conversations?agentId=agent-1&limit=50',
+        '/mobile/v1/conversations?agentId=agent-1&limit=50',
       );
       expect(String(fetchSpy.mock.calls[1][0])).toContain(
-        '/conversations/conv-1/messages?limit=100&before=cursor-1',
+        '/mobile/v1/conversations/conv-1/messages?limit=100&before=cursor-1',
       );
       expect(fetchSpy.mock.calls[0][1]).toEqual(
         expect.objectContaining({
@@ -667,7 +669,7 @@ describe('GatewayManagementClient', () => {
       ).resolves.toEqual(summary);
       await expect(client.getConversation('conv/1')).resolves.toEqual(summary);
       expect(fetchSpy.mock.calls[0]).toEqual([
-        `${BASE_URL}/conversations`,
+        `${BASE_URL}/mobile/v1/conversations`,
         expect.objectContaining({
           method: 'POST',
           headers: expect.objectContaining(AUTH_HEADER),
@@ -680,7 +682,7 @@ describe('GatewayManagementClient', () => {
           }),
         }),
       ]);
-      expect(fetchSpy.mock.calls[1][0]).toBe(`${BASE_URL}/conversations/conv%2F1`);
+      expect(fetchSpy.mock.calls[1][0]).toBe(`${BASE_URL}/mobile/v1/conversations/conv%2F1`);
     });
 
     it('patches and deletes conversations with quoted revision preconditions', async () => {
@@ -701,7 +703,7 @@ describe('GatewayManagementClient', () => {
       ).resolves.toEqual(summary);
       await expect(client.deleteConversation('conv/1', 3)).resolves.toEqual(tombstone);
       expect(fetchSpy.mock.calls[0]).toEqual([
-        `${BASE_URL}/conversations/conv%2F1`,
+        `${BASE_URL}/mobile/v1/conversations/conv%2F1`,
         expect.objectContaining({
           method: 'PATCH',
           headers: expect.objectContaining({ 'If-Match': '"2"' }),
@@ -709,7 +711,7 @@ describe('GatewayManagementClient', () => {
         }),
       ]);
       expect(fetchSpy.mock.calls[1]).toEqual([
-        `${BASE_URL}/conversations/conv%2F1`,
+        `${BASE_URL}/mobile/v1/conversations/conv%2F1`,
         expect.objectContaining({
           method: 'DELETE',
           headers: expect.objectContaining({ 'If-Match': '"3"' }),
@@ -722,9 +724,11 @@ describe('GatewayManagementClient', () => {
       fetchSpy.mockResolvedValueOnce(new Response(JSON.stringify(replay), { status: 200 }));
 
       const client = new GatewayManagementClient(BASE_URL, TOKEN);
-      await expect(client.replayConversationEvents('agent/1', 'conv/1', 2)).resolves.toEqual(replay);
+      await expect(client.replayConversationEvents('agent/1', 'conv/1', 2)).resolves.toEqual(
+        replay,
+      );
       expect(fetchSpy.mock.calls[0]).toEqual([
-        `${BASE_URL}/agents/agent%2F1/conversations/conv%2F1/events?sinceSeq=2`,
+        `${BASE_URL}/mobile/v1/agents/agent%2F1/conversations/conv%2F1/events?sinceSeq=2`,
         expect.objectContaining({ headers: expect.objectContaining(AUTH_HEADER) }),
       ]);
     });
@@ -739,8 +743,10 @@ describe('GatewayManagementClient', () => {
       const client = new GatewayManagementClient(BASE_URL, TOKEN);
       await client.listConversations();
       await client.getConversationMessages('conv-1');
-      expect(String(fetchSpy.mock.calls[0][0])).toBe(`${BASE_URL}/conversations`);
-      expect(String(fetchSpy.mock.calls[1][0])).toBe(`${BASE_URL}/conversations/conv-1/messages`);
+      expect(String(fetchSpy.mock.calls[0][0])).toBe(`${BASE_URL}/mobile/v1/conversations`);
+      expect(String(fetchSpy.mock.calls[1][0])).toBe(
+        `${BASE_URL}/mobile/v1/conversations/conv-1/messages`,
+      );
     });
 
     it('sends If-Match and exposes a frozen revision conflict', async () => {

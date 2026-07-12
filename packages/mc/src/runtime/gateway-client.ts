@@ -215,6 +215,7 @@ export class GatewayHttpError extends Error {
  * tool roundtrips.
  */
 const HOT_PATH_TIMEOUT_MS = 2_000;
+const MOBILE_API_PREFIX = '/mobile/v1';
 
 export class GatewayManagementClient {
   constructor(
@@ -256,7 +257,7 @@ export class GatewayManagementClient {
   }
 
   async getIdentity(): Promise<GatewayIdentity> {
-    const res = await fetch(`${this.baseUrl}/identity`, {
+    const res = await fetch(`${this.baseUrl}${MOBILE_API_PREFIX}/identity`, {
       headers: this.headers(),
       signal: AbortSignal.timeout(HOT_PATH_TIMEOUT_MS),
     });
@@ -269,7 +270,12 @@ export class GatewayManagementClient {
   // (loopback-only, but the management API is bearer-gated). MC never sees the
   // private key — it stays 0600 on the gateway disk.
   async getRelayIdentity(): Promise<{ publicKey: string }> {
-    const identity = await this.getIdentity();
+    const res = await fetch(`${this.baseUrl}/identity`, {
+      headers: this.headers(),
+      signal: AbortSignal.timeout(HOT_PATH_TIMEOUT_MS),
+    });
+    await this.throwIfNotOk(res, 'getRelayIdentity');
+    const identity = (await res.json()) as { publicKey: string };
     return { publicKey: identity.publicKey };
   }
 
@@ -420,7 +426,7 @@ export class GatewayManagementClient {
   async listConversations(
     params: { agentId?: string; limit?: number; cursor?: string } = {},
   ): Promise<ConversationPage> {
-    const url = new URL(`${this.baseUrl}/conversations`);
+    const url = new URL(`${this.baseUrl}${MOBILE_API_PREFIX}/conversations`);
     if (params.agentId) url.searchParams.set('agentId', params.agentId);
     if (params.limit !== undefined) url.searchParams.set('limit', String(params.limit));
     if (params.cursor) url.searchParams.set('cursor', params.cursor);
@@ -434,7 +440,7 @@ export class GatewayManagementClient {
     requestId: string,
     metadata: Partial<Pick<ConversationSummary, 'title' | 'owningIssueId' | 'projectId'>> = {},
   ): Promise<ConversationSummary> {
-    const res = await fetch(`${this.baseUrl}/conversations`, {
+    const res = await fetch(`${this.baseUrl}${MOBILE_API_PREFIX}/conversations`, {
       method: 'POST',
       headers: this.headers(),
       body: JSON.stringify({ agentId, requestId, ...metadata }),
@@ -444,9 +450,12 @@ export class GatewayManagementClient {
   }
 
   async getConversation(id: string): Promise<ConversationSummary> {
-    const res = await fetch(`${this.baseUrl}/conversations/${encodeURIComponent(id)}`, {
-      headers: this.headers(),
-    });
+    const res = await fetch(
+      `${this.baseUrl}${MOBILE_API_PREFIX}/conversations/${encodeURIComponent(id)}`,
+      {
+        headers: this.headers(),
+      },
+    );
     await this.throwIfNotOk(res, 'getConversation');
     return res.json() as Promise<ConversationSummary>;
   }
@@ -456,20 +465,26 @@ export class GatewayManagementClient {
     revision: number,
     patch: Partial<Pick<ConversationSummary, 'title' | 'owningIssueId' | 'projectId'>>,
   ): Promise<ConversationSummary> {
-    const res = await fetch(`${this.baseUrl}/conversations/${encodeURIComponent(id)}`, {
-      method: 'PATCH',
-      headers: { ...this.headers(), 'If-Match': `"${revision}"` },
-      body: JSON.stringify(patch),
-    });
+    const res = await fetch(
+      `${this.baseUrl}${MOBILE_API_PREFIX}/conversations/${encodeURIComponent(id)}`,
+      {
+        method: 'PATCH',
+        headers: { ...this.headers(), 'If-Match': `"${revision}"` },
+        body: JSON.stringify(patch),
+      },
+    );
     await this.throwIfNotOk(res, 'patchConversation');
     return res.json() as Promise<ConversationSummary>;
   }
 
   async deleteConversation(id: string, revision: number): Promise<ConversationSummary> {
-    const res = await fetch(`${this.baseUrl}/conversations/${encodeURIComponent(id)}`, {
-      method: 'DELETE',
-      headers: { ...this.headers(), 'If-Match': `"${revision}"` },
-    });
+    const res = await fetch(
+      `${this.baseUrl}${MOBILE_API_PREFIX}/conversations/${encodeURIComponent(id)}`,
+      {
+        method: 'DELETE',
+        headers: { ...this.headers(), 'If-Match': `"${revision}"` },
+      },
+    );
     await this.throwIfNotOk(res, 'deleteConversation');
     return res.json() as Promise<ConversationSummary>;
   }
@@ -478,7 +493,9 @@ export class GatewayManagementClient {
     id: string,
     params: { limit?: number; before?: string } = {},
   ): Promise<ConversationMessagePage> {
-    const url = new URL(`${this.baseUrl}/conversations/${encodeURIComponent(id)}/messages`);
+    const url = new URL(
+      `${this.baseUrl}${MOBILE_API_PREFIX}/conversations/${encodeURIComponent(id)}/messages`,
+    );
     if (params.limit !== undefined) url.searchParams.set('limit', String(params.limit));
     if (params.before) url.searchParams.set('before', params.before);
     const res = await fetch(url, { headers: this.headers() });
@@ -492,7 +509,7 @@ export class GatewayManagementClient {
     sinceSeq: number,
   ): Promise<ReplayPage> {
     const path =
-      `/agents/${encodeURIComponent(agentId)}/conversations/` +
+      `${MOBILE_API_PREFIX}/agents/${encodeURIComponent(agentId)}/conversations/` +
       `${encodeURIComponent(conversationId)}/events?sinceSeq=${sinceSeq}`;
     const res = await fetch(`${this.baseUrl}${path}`, { headers: this.headers() });
     await this.throwIfNotOk(res, 'replayConversationEvents');

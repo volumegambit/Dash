@@ -295,7 +295,7 @@ export class GatewayEventStreamManager {
       abort = new AbortController();
       this.abort = abort;
       const response = await this.options.fetchStream(
-        `${trimTrailingSlash(endpoint.managementBaseUrl)}/events`,
+        `${trimTrailingSlash(endpoint.managementBaseUrl)}/mobile/v1/events`,
         {
           headers: {
             ...endpoint.headers,
