@@ -1,0 +1,2 @@
+event: conversation:deleted
+data: {"type":"conversation:deleted","conversationId":"018f0f4a-5c42-7a8b-9c01-1234567890ab","revision":3}

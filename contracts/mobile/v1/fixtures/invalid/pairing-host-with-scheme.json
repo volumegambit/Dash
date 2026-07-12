@@ -1,0 +1,6 @@
+{
+  "v": 1,
+  "host": "https://gateway.dash.example",
+  "mgmtToken": "mgmt-test-token",
+  "chatToken": "chat-test-token"
+}

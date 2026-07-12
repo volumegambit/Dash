@@ -1,0 +1,8 @@
+{
+  "code": "capability_required",
+  "error": "Gateway does not advertise the required capability",
+  "retryable": false,
+  "details": {
+    "capability": "conversation-sync-v1"
+  }
+}

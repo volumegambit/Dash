@@ -19,6 +19,8 @@ export default defineConfig({
     globals: true,
     clearMocks: true,
     include: [
+      'contracts/*/*/src/**/*.test.ts',
+      'ios/scripts/**/*.test.ts',
       'packages/*/src/**/*.test.ts',
       'apps/*/src/**/*.test.{ts,tsx}',
       'scripts/**/*.test.ts',

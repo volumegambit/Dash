@@ -1,0 +1,31 @@
+{
+  "entries": [
+    {
+      "seq": 2,
+      "msgId": "018f0f4a-5c42-7a8b-9c01-2234567890ab",
+      "agentId": "agent-01",
+      "conversationId": "018f0f4a-5c42-7a8b-9c01-1234567890ab",
+      "timestamp": "2026-07-12T00:00:02.000Z",
+      "payload": {
+        "type": "event",
+        "event": {
+          "type": "text_delta",
+          "delta": "Ready "
+        }
+      }
+    },
+    {
+      "seq": 1,
+      "msgId": "018f0f4a-5c42-7a8b-9c01-2234567890ab",
+      "agentId": "agent-01",
+      "conversationId": "018f0f4a-5c42-7a8b-9c01-1234567890ab",
+      "timestamp": "2026-07-12T00:00:01.000Z",
+      "payload": {
+        "type": "accepted",
+        "userMessageId": "018f0f4a-5c42-7a8b-9c01-3234567890ab",
+        "assistantMessageId": "018f0f4a-5c42-7a8b-9c01-4234567890ab",
+        "revision": 2
+      }
+    }
+  ]
+}

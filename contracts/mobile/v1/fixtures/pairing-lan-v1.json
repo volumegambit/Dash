@@ -1,0 +1,9 @@
+{
+  "v": 1,
+  "host": "192.168.1.50",
+  "mgmtToken": "mgmt-test-token",
+  "chatToken": "chat-test-token",
+  "mgmtPort": 9300,
+  "chatPort": 9200,
+  "secure": false
+}

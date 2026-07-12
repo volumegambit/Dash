@@ -1,0 +1,8 @@
+{
+  "code": "conversation_busy",
+  "error": "Conversation already has an active turn",
+  "retryable": true,
+  "details": {
+    "activeTurnId": "018f0f4a-5c42-7a8b-9c01-2234567890ab"
+  }
+}

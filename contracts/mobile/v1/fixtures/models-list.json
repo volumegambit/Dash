@@ -1,0 +1,18 @@
+{
+  "models": [
+    {
+      "value": "anthropic/claude-sonnet-4-5",
+      "label": "Claude Sonnet 4.5",
+      "provider": "anthropic"
+    },
+    {
+      "value": "openai/gpt-5-mini",
+      "label": "GPT-5 mini",
+      "provider": "openai"
+    }
+  ],
+  "source": "live",
+  "errors": {},
+  "fetchedAt": "2026-07-12T00:00:00.000Z",
+  "supportedModelsReviewedAt": "2026-07-05"
+}

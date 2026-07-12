@@ -1,0 +1,39 @@
+{
+  "items": [
+    {
+      "id": "018f0f4a-5c42-7a8b-9c01-3234567890ab",
+      "conversationId": "018f0f4a-5c42-7a8b-9c01-1234567890ab",
+      "turnId": "018f0f4a-5c42-7a8b-9c01-2234567890ab",
+      "ordinal": 1,
+      "role": "user",
+      "status": "completed",
+      "content": {
+        "type": "user",
+        "text": "Is the mobile connection ready?"
+      },
+      "createdAt": "2026-07-12T00:00:01.000Z",
+      "updatedAt": "2026-07-12T00:00:01.000Z"
+    },
+    {
+      "id": "018f0f4a-5c42-7a8b-9c01-4234567890ab",
+      "conversationId": "018f0f4a-5c42-7a8b-9c01-1234567890ab",
+      "turnId": "018f0f4a-5c42-7a8b-9c01-2234567890ab",
+      "ordinal": 2,
+      "role": "assistant",
+      "status": "completed",
+      "content": {
+        "type": "assistant",
+        "events": [
+          {
+            "type": "text_delta",
+            "delta": "Ready from the gateway."
+          }
+        ]
+      },
+      "createdAt": "2026-07-12T00:00:02.000Z",
+      "updatedAt": "2026-07-12T00:00:05.000Z"
+    }
+  ],
+  "nextCursor": null,
+  "throughSeq": 5
+}
