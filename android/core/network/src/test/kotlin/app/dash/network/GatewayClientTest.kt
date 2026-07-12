@@ -36,7 +36,7 @@ class GatewayClientTest {
         val list = client().listAgents()
         assertEquals("Ada", list.single().name)
         val req = server.takeRequest()
-        assertEquals("/agents", req.path)
+        assertEquals("/mobile/v1/agents", req.path)
         assertEquals("Bearer tok", req.getHeader("Authorization"))
     }
 
@@ -56,19 +56,20 @@ class GatewayClientTest {
         client().enable("agent-1")
         val req = server.takeRequest()
         assertEquals("POST", req.method)
-        assertEquals("/agents/agent-1/enable", req.path)
+        assertEquals("/mobile/v1/agents/agent-1/enable", req.path)
         assertEquals("Bearer tok", req.getHeader("Authorization"))
     }
 
     @Test fun disablePostsToDisablePath() = runTest {
         server.enqueue(MockResponse().setResponseCode(200).setBody("{}"))
         client().disable("agent-1")
-        assertEquals("/agents/agent-1/disable", server.takeRequest().path)
+        assertEquals("/mobile/v1/agents/agent-1/disable", server.takeRequest().path)
     }
 
     @Test fun healthTrueOn200() = runTest {
         server.enqueue(MockResponse().setResponseCode(200).setBody("{}"))
         assertTrue(client().health())
+        assertEquals("/mobile/v1/health", server.takeRequest().path)
     }
 
     @Test fun healthFalseOn500() = runTest {

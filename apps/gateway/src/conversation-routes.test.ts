@@ -264,6 +264,23 @@ describe('conversation REST routes', () => {
     expect(detail.status).toBe(200);
     expect(detail.headers.get('etag')).toBe('"3"');
     expect(await detail.json()).toEqual(deleted);
+
+    for (const mutation of [
+      { method: 'PATCH', body: JSON.stringify({ title: 'Too late' }) },
+      { method: 'DELETE' },
+    ]) {
+      const response = await app.request(`/conversations/${created.id}`, {
+        method: mutation.method,
+        headers: { ...JSON_HEADERS, 'If-Match': '"3"' },
+        ...(mutation.body ? { body: mutation.body } : {}),
+      });
+      expect(response.status).toBe(410);
+      expect(await response.json()).toEqual({
+        code: 'not_found',
+        error: 'Conversation was deleted',
+        retryable: false,
+      });
+    }
   });
 
   it('keeps a busy transcript until explicit cancellation and a refreshed delete revision', async () => {

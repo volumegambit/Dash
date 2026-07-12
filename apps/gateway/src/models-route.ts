@@ -43,6 +43,8 @@ export interface ModelsRouteOptions {
   getProviderConfigs: () => ProviderConfigEntry[];
   /** Test override for `discoverCatalogModels`. */
   discover?: typeof discoverCatalogModels;
+  /** Expose only the frozen mobile GET shape, without debug or refresh extensions. */
+  strictReadOnly?: boolean;
 }
 
 /**
@@ -147,6 +149,12 @@ export function createModelsRoute(options: ModelsRouteOptions): Hono {
     appendPluginModels(resp, expandPluginModelsForRoute(options.getProviderConfigs()));
 
   app.get('/', async (c) => {
+    if (options.strictReadOnly && new URL(c.req.url).searchParams.size > 0) {
+      return c.json(
+        { code: 'validation_failed', error: 'Unknown models query parameter', retryable: false },
+        400,
+      );
+    }
     if (c.req.query('debug') === 'true') {
       const response = withStaticModels(await getOrRefresh());
       const credentials = await credentialStore.readProviderApiKeys();
@@ -170,12 +178,14 @@ export function createModelsRoute(options: ModelsRouteOptions): Hono {
     return c.json(withStaticModels(await getOrRefresh()));
   });
 
-  app.post('/refresh', async (c) => {
-    // Force-fresh: clear in-flight (so a stale refresh from before a credential
-    // change doesn't get joined) and run a new discover.
-    inFlight = null;
-    return c.json(withStaticModels(await refreshNow()));
-  });
+  if (!options.strictReadOnly) {
+    app.post('/refresh', async (c) => {
+      // Force-fresh: clear in-flight (so a stale refresh from before a credential
+      // change doesn't get joined) and run a new discover.
+      inFlight = null;
+      return c.json(withStaticModels(await refreshNow()));
+    });
+  }
 
   return app;
 }

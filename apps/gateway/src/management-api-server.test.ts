@@ -298,6 +298,194 @@ describe('createGatewayManagementApp', () => {
     });
   });
 
+  describe('explicit mobile v1 namespace', () => {
+    it('mounts health, identity, models, and the full agent lifecycle', async () => {
+      const { app } = createApp();
+
+      expect((await app.request('/mobile/v1/health')).status).toBe(200);
+      expect((await app.request('/mobile/v1/identity')).status).toBe(401);
+      expect((await app.request('/mobile/v1/identity', { headers: AUTH })).status).toBe(200);
+      expect((await app.request('/mobile/v1/models', { headers: AUTH })).status).toBe(200);
+      const debugModels = await app.request('/mobile/v1/models?debug=true', { headers: AUTH });
+      expect(debugModels.status).toBe(400);
+      expect(await debugModels.json()).toMatchObject({
+        code: 'validation_failed',
+        retryable: false,
+      });
+      expect(
+        (
+          await app.request('/mobile/v1/models/refresh', {
+            method: 'POST',
+            headers: AUTH,
+          })
+        ).status,
+      ).toBe(404);
+
+      const created = await app.request('/mobile/v1/agents', {
+        method: 'POST',
+        headers: JSON_HEADERS,
+        body: JSON.stringify({ name: 'mobile', model: 'test/model', systemPrompt: 'Help.' }),
+      });
+      expect(created.status).toBe(201);
+      const agent = (await created.json()) as { id: string };
+      expect((await app.request('/mobile/v1/agents', { headers: AUTH })).status).toBe(200);
+      expect((await app.request(`/mobile/v1/agents/${agent.id}`, { headers: AUTH })).status).toBe(
+        200,
+      );
+      expect(
+        (
+          await app.request(`/mobile/v1/agents/${agent.id}`, {
+            method: 'PUT',
+            headers: JSON_HEADERS,
+            body: JSON.stringify({ systemPrompt: 'Updated.' }),
+          })
+        ).status,
+      ).toBe(200);
+      expect(
+        (
+          await app.request(`/mobile/v1/agents/${agent.id}/disable`, {
+            method: 'POST',
+            headers: AUTH,
+          })
+        ).status,
+      ).toBe(200);
+      expect(
+        (
+          await app.request(`/mobile/v1/agents/${agent.id}/enable`, {
+            method: 'POST',
+            headers: AUTH,
+          })
+        ).status,
+      ).toBe(200);
+      expect(
+        (
+          await app.request(`/mobile/v1/agents/${agent.id}`, {
+            method: 'DELETE',
+            headers: AUTH,
+          })
+        ).status,
+      ).toBe(200);
+    });
+
+    it('rejects every rich-only create and update key without registry side effects', async () => {
+      const richOnlyCreateValues: Record<string, unknown> = {
+        fallbackModels: [],
+        tools: [],
+        skills: {},
+        providerApiKeys: {},
+        workspace: '/tmp/mobile',
+        maxTokens: 1,
+        mcpServers: [],
+        swarm: {},
+        plugins: [],
+        providers: [],
+      };
+      for (const [key, value] of Object.entries(richOnlyCreateValues)) {
+        const { app, agentRegistry, gateway } = createApp();
+        const response = await app.request('/mobile/v1/agents', {
+          method: 'POST',
+          headers: JSON_HEADERS,
+          body: JSON.stringify({
+            name: 'mobile',
+            model: 'test/model',
+            systemPrompt: 'Help.',
+            [key]: value,
+          }),
+        });
+        expect(response.status, key).toBe(400);
+        expect(await response.json()).toMatchObject({
+          code: 'validation_failed',
+          retryable: false,
+        });
+        expect(agentRegistry.register, key).not.toHaveBeenCalled();
+        expect(agentRegistry.save, key).not.toHaveBeenCalled();
+        expect(gateway.registerAgent, key).not.toHaveBeenCalled();
+      }
+
+      const { app, agentRegistry, agents } = createApp();
+      const entry = (agentRegistry.register as ReturnType<typeof vi.fn>)({
+        name: 'mobile',
+        model: 'test/model',
+        systemPrompt: 'Help.',
+      });
+      vi.mocked(agentRegistry.update).mockClear();
+      vi.mocked(agentRegistry.save).mockClear();
+      for (const [key, value] of Object.entries({ name: 'renamed', ...richOnlyCreateValues })) {
+        const response = await app.request(`/mobile/v1/agents/${entry.id}`, {
+          method: 'PUT',
+          headers: JSON_HEADERS,
+          body: JSON.stringify({ [key]: value }),
+        });
+        expect(response.status, key).toBe(400);
+        expect(await response.json()).toMatchObject({
+          code: 'validation_failed',
+          retryable: false,
+        });
+      }
+      expect(agentRegistry.update).not.toHaveBeenCalled();
+      expect(agentRegistry.save).not.toHaveBeenCalled();
+      expect(agents.evict).not.toHaveBeenCalled();
+    });
+
+    it('mounts conversations, messages, replay, and deletion under the prefix', async () => {
+      const tmpDir = await mkdtemp(join(tmpdir(), 'mobile-v1-routes-'));
+      const conversationService = new SqliteConversationService({ dataDir: tmpDir });
+      try {
+        const { app, agentRegistry } = createApp({ conversationService });
+        const agent = (agentRegistry.register as ReturnType<typeof vi.fn>)({
+          name: 'Mobile Helper',
+          model: 'test/model',
+          systemPrompt: '',
+        });
+        const createdResponse = await app.request('/mobile/v1/conversations', {
+          method: 'POST',
+          headers: JSON_HEADERS,
+          body: JSON.stringify({ agentId: agent.id, requestId: 'mobile-v1-create' }),
+        });
+        expect(createdResponse.status).toBe(201);
+        const created = (await createdResponse.json()) as { id: string; revision: number };
+
+        expect((await app.request('/mobile/v1/conversations', { headers: AUTH })).status).toBe(200);
+        expect(
+          (await app.request(`/mobile/v1/conversations/${created.id}`, { headers: AUTH })).status,
+        ).toBe(200);
+        expect(
+          (
+            await app.request(`/mobile/v1/conversations/${created.id}/messages`, {
+              headers: AUTH,
+            })
+          ).status,
+        ).toBe(200);
+        const patched = await app.request(`/mobile/v1/conversations/${created.id}`, {
+          method: 'PATCH',
+          headers: { ...JSON_HEADERS, 'If-Match': `"${created.revision}"` },
+          body: JSON.stringify({ title: 'Versioned' }),
+        });
+        expect(patched.status).toBe(200);
+        const revision = ((await patched.json()) as { revision: number }).revision;
+        expect(
+          (
+            await app.request(
+              `/mobile/v1/agents/${agent.id}/conversations/${created.id}/events?sinceSeq=0`,
+              { headers: AUTH },
+            )
+          ).status,
+        ).toBe(200);
+        expect(
+          (
+            await app.request(`/mobile/v1/conversations/${created.id}`, {
+              method: 'DELETE',
+              headers: { ...AUTH, 'If-Match': `"${revision}"` },
+            })
+          ).status,
+        ).toBe(200);
+      } finally {
+        conversationService.close();
+        await rm(tmpDir, { recursive: true, force: true });
+      }
+    });
+  });
+
   // Agent CRUD
   describe('POST /agents', () => {
     it('creates agent with ID', async () => {
@@ -1686,26 +1874,29 @@ describe('canonical and legacy conversation replay', () => {
     }
   });
 
-  it('serializes conversation invalidations through the existing SSE stream', async () => {
-    const eventBus = new EventBus();
-    const { app } = createApp({ eventBus });
-    const abort = new AbortController();
-    const response = await app.request('/events', { headers: AUTH, signal: abort.signal });
-    expect(response.status).toBe(200);
-    expect(response.headers.get('content-type')).toContain('text/event-stream');
-    const reader = response.body?.getReader();
-    expect(reader).toBeDefined();
-    eventBus.emit({
-      type: 'conversation:changed',
-      conversationId: '018f0f4a-5c42-7a8b-9c01-1234567890ab',
-      revision: 2,
-    });
-    const chunk = await reader?.read();
-    expect(new TextDecoder().decode(chunk?.value)).toBe(
-      'event: conversation:changed\n' +
-        'data: {"type":"conversation:changed","conversationId":"018f0f4a-5c42-7a8b-9c01-1234567890ab","revision":2}\n\n',
-    );
-    abort.abort();
-    await reader?.cancel();
-  });
+  it.each(['/events', '/mobile/v1/events'])(
+    'serializes conversation invalidations through the %s SSE stream',
+    async (path) => {
+      const eventBus = new EventBus();
+      const { app } = createApp({ eventBus });
+      const abort = new AbortController();
+      const response = await app.request(path, { headers: AUTH, signal: abort.signal });
+      expect(response.status).toBe(200);
+      expect(response.headers.get('content-type')).toContain('text/event-stream');
+      const reader = response.body?.getReader();
+      expect(reader).toBeDefined();
+      eventBus.emit({
+        type: 'conversation:changed',
+        conversationId: '018f0f4a-5c42-7a8b-9c01-1234567890ab',
+        revision: 2,
+      });
+      const chunk = await reader?.read();
+      expect(new TextDecoder().decode(chunk?.value)).toBe(
+        'event: conversation:changed\n' +
+          'data: {"type":"conversation:changed","conversationId":"018f0f4a-5c42-7a8b-9c01-1234567890ab","revision":2}\n\n',
+      );
+      abort.abort();
+      await reader?.cancel();
+    },
+  );
 });

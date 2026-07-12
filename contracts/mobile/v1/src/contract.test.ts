@@ -95,6 +95,32 @@ async function listFixtureFiles(dir: string, prefix = ''): Promise<string[]> {
 }
 
 describe('mobile v1 contract fixtures', () => {
+  it('publishes the frozen REST surface under the explicit mobile v1 namespace', async () => {
+    const openapi = parse(await readFile(join(root, 'openapi.yaml'), 'utf8')) as {
+      servers?: Array<{ url?: string }>;
+    };
+    expect(openapi.servers).toEqual([{ url: '/mobile/v1' }]);
+  });
+
+  it('documents tombstoned conversation mutations as structured gone responses', async () => {
+    const openapi = parse(await readFile(join(root, 'openapi.yaml'), 'utf8')) as {
+      paths?: Record<
+        string,
+        {
+          patch?: { responses?: Record<string, unknown> };
+          delete?: { responses?: Record<string, unknown> };
+        }
+      >;
+    };
+    const conversation = openapi.paths?.['/conversations/{id}'];
+    expect(conversation?.patch?.responses?.['410']).toEqual({
+      $ref: '#/components/responses/Gone',
+    });
+    expect(conversation?.delete?.responses?.['410']).toEqual({
+      $ref: '#/components/responses/Gone',
+    });
+  });
+
   it('returns the revisioned tombstone from conversation deletion', async () => {
     const openapi = parse(await readFile(join(root, 'openapi.yaml'), 'utf8')) as {
       paths?: Record<

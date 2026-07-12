@@ -7,7 +7,9 @@ no runtime behavior; `src/index.ts` exports types only.
 ## Contract documents
 
 - `openapi.yaml` describes the authenticated management, conversation, replay, and SSE APIs.
-  Only `GET /health` is unauthenticated.
+  The frozen REST surface is rooted at `/mobile/v1`; only `GET /mobile/v1/health` is
+  unauthenticated. The gateway retains unprefixed aliases for compatibility, but native clients
+  use the versioned namespace.
 - `chat-ws.schema.json` describes capable v1 fixture frames and compatibility unions for the
   existing chat WebSocket wire protocol.
 - `src/types.ts` is the shared compile-time view of the same JSON wire values.
@@ -88,6 +90,8 @@ Negative conformance fixtures live under `fixtures/invalid/`:
   properties without rejecting the containing frame.
 - Fixed DTOs reject unknown fields. Pairing payloads deliberately allow unknown non-secret
   metadata so future pairing producers remain forward compatible.
+- Mutating a tombstoned conversation with `PATCH`, or repeating its `DELETE`, returns HTTP 410
+  with a non-retryable `not_found` error. `GET` still returns the revisioned tombstone.
 - Any change to a TypeScript wire type or schema requires coordinated updates to the other
   contract document, every affected positive and negative fixture, and `manifest.json` in the
   same change.
