@@ -1,0 +1,5 @@
+.tools/
+DerivedData/
+*.xcresult
+**/xcuserdata/
+**/*.xcuserstate

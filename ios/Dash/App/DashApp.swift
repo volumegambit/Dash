@@ -1,0 +1,8 @@
+import SwiftUI
+
+@main
+struct DashApp: App {
+  var body: some Scene {
+    WindowGroup { RootView() }
+  }
+}
