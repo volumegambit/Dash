@@ -2,7 +2,7 @@ import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { verifyAssertion } from '@dash/relay';
-import { loadOrCreateGatewayIdentity } from './gateway-identity.js';
+import { loadOrCreateGatewayId, loadOrCreateGatewayIdentity } from './gateway-identity.js';
 
 let dir: string;
 
@@ -28,6 +28,14 @@ describe('gateway-identity', () => {
     const first = await loadOrCreateGatewayIdentity(dir);
     const second = await loadOrCreateGatewayIdentity(dir);
     expect(second.publicKeyB64).toBe(first.publicKeyB64);
+  });
+
+  it('persists a generated gateway id and honors an explicit id', async () => {
+    const generated = await loadOrCreateGatewayId(undefined, dir);
+    expect(generated).toMatch(/^[0-9a-f-]{36}$/);
+    expect(await loadOrCreateGatewayId(undefined, dir)).toBe(generated);
+    expect((await stat(join(dir, 'relay-gateway-id'))).mode & 0o777).toBe(0o600);
+    expect(await loadOrCreateGatewayId('gateway-from-cli', dir)).toBe('gateway-from-cli');
   });
 
   it('signProof produces a relay-dial assertion that verifies against the pubkey', async () => {

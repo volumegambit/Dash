@@ -5,6 +5,7 @@ import type { ChannelAdapter } from '@dash/channels';
 import { TelegramAdapter, WhatsAppAdapter } from '@dash/channels';
 import { type StructuredLogger, createConsoleLogger } from '@dash/logging';
 import { mountProjectsRoutes } from '@dash/management';
+import type { GatewayIdentity, MobileCapability } from '@dash/mobile-contract';
 import type { PluginConfigStore } from '@dash/plugins';
 import { heuristicPluginScan, installPluginToDir, realpathContained } from '@dash/plugins';
 import type { ProjectsDb } from '@dash/projects';
@@ -27,11 +28,14 @@ import type { ModelsStore } from './models-store.js';
 import type { PluginWiringState } from './plugins-wiring.js';
 import { mountSwarmRoutes } from './swarm-management.js';
 
+const MOBILE_CAPABILITIES: MobileCapability[] = ['conversation-sync-v1', 'chat-resume-v1'];
+
 export interface GatewayManagementOptions {
   gateway: DynamicGateway;
   agents: AgentChatCoordinator;
   agentRegistry: AgentRegistry;
   channelRegistry: ChannelRegistry;
+  identity: GatewayIdentity;
   credentialStore: GatewayCredentialStore;
   /**
    * Persistent model store. Created in `apps/gateway/src/index.ts` from
@@ -101,12 +105,6 @@ export interface GatewayManagementOptions {
    * when this is absent.
    */
   dataDir?: string;
-  /**
-   * The gateway's relay identity (public key only). When present, mounts
-   * `GET /identity` so MC can read the pubkey over loopback at relay opt-in.
-   * Absent in tests that don't exercise identity.
-   */
-  relayIdentity?: { publicKeyB64: string };
   /**
    * Graceful-shutdown trigger. When present, mounts `POST /lifecycle/shutdown`
    * (bearer-authed), which MC's GatewaySupervisor calls before escalating to
@@ -362,6 +360,8 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
       pid: process.pid,
       agents: agentRegistry.list().length,
       channels: channelRegistry.list().length,
+      apiVersion: 1,
+      capabilities: MOBILE_CAPABILITIES,
     });
   });
 
@@ -385,14 +385,9 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
     });
   }
 
-  // --- Relay identity ---
-  // Authed (behind the bearer middleware registered above, app.use('*')). MC
-  // reads this over loopback at relay opt-in to register the gateway's public
-  // key with the control plane.
-  if (options.relayIdentity) {
-    const { publicKeyB64 } = options.relayIdentity;
-    app.get('/identity', (c) => c.json({ publicKey: publicKeyB64 }));
-  }
+  // --- Gateway identity ---
+  // Authed (behind the bearer middleware registered above) and always mounted.
+  app.get('/identity', (c) => c.json(options.identity));
 
   // --- Agent routes ---
 

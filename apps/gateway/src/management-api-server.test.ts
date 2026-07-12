@@ -167,6 +167,7 @@ function createApp(overrides: Record<string, unknown> = {}) {
     channelRegistry: makeChannelRegistry(),
     credentialStore: makeCredentialStore(),
     modelsStore: makeModelsStore(),
+    identity: { gatewayId: 'gateway-test-id', publicKey: 'PUBKEY_B64' },
     startedAt: '2026-04-03T00:00:00Z',
     token: 'test-token',
     ...overrides,
@@ -213,18 +214,26 @@ describe('createGatewayManagementApp', () => {
       const body = await res.json();
       expect(body.agents).toBe(1);
     });
+
+    it('advertises the frozen mobile capabilities without auth', async () => {
+      const { app } = createApp();
+      const response = await app.request('/health');
+      expect(await response.json()).toMatchObject({
+        apiVersion: 1,
+        capabilities: ['conversation-sync-v1', 'chat-resume-v1'],
+      });
+    });
   });
 
   describe('GET /identity', () => {
-    it('returns the relay public key and is bearer-gated', async () => {
-      const { app } = createApp({ relayIdentity: { publicKeyB64: 'PUBKEY_B64' } });
-
-      const unauth = await app.request('/identity');
-      expect(unauth.status).toBe(401);
-
-      const res = await app.request('/identity', { headers: AUTH });
-      expect(res.status).toBe(200);
-      expect(await res.json()).toEqual({ publicKey: 'PUBKEY_B64' });
+    it('always exposes stable identity behind bearer auth', async () => {
+      const { app } = createApp();
+      expect((await app.request('/identity')).status).toBe(401);
+      const response = await app.request('/identity', { headers: AUTH });
+      expect(await response.json()).toEqual({
+        gatewayId: 'gateway-test-id',
+        publicKey: 'PUBKEY_B64',
+      });
     });
   });
 

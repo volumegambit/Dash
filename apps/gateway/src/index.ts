@@ -14,6 +14,7 @@ import { createConsoleLogger } from '@dash/logging';
 import { mountProjectsWs } from '@dash/management';
 import { FileTokenStore, McpManager } from '@dash/mcp';
 import type { McpAgentContext } from '@dash/mcp';
+import type { GatewayIdentity } from '@dash/mobile-contract';
 import { gatewayDir, migrateLegacyLayout, workspacesDir } from '@dash/paths';
 import { PluginConfigStore, RESERVED_PROVIDER_IDS, loadPlugins } from '@dash/plugins';
 import { createProjectsTools, openProjectsDb } from '@dash/projects';
@@ -34,7 +35,7 @@ import { createDialTokenManager } from './dial-token-manager.js';
 import { EventBus } from './event-bus.js';
 import { SqliteEventLogStore } from './event-log-store-sqlite.js';
 import type { EventLogStore } from './event-log-store.js';
-import { loadOrCreateGatewayIdentity } from './gateway-identity.js';
+import { loadOrCreateGatewayId, loadOrCreateGatewayIdentity } from './gateway-identity.js';
 import { createDynamicGateway } from './gateway.js';
 import { createGatewayManagementApp } from './management-api.js';
 import { McpConfigStore } from './mcp-store.js';
@@ -90,7 +91,12 @@ async function main() {
   // generates an Ed25519 keypair (private key 0600 at <dataDir>/relay-gateway-key)
   // and signs the short-lived holder-of-key assertions used by relay dial-in and
   // control-plane token refresh.
+  const gatewayId = await loadOrCreateGatewayId(flags.gatewayId, dataDir);
   const relayIdentity = await loadOrCreateGatewayIdentity(dataDir);
+  const mobileIdentity: GatewayIdentity = {
+    gatewayId,
+    publicKey: relayIdentity.publicKeyB64,
+  };
 
   // Initialize credential store
   const credentialStore = new GatewayCredentialStore(dataDir);
@@ -740,6 +746,7 @@ async function main() {
     channelRegistry,
     credentialStore,
     modelsStore,
+    identity: mobileIdentity,
     // Plugin management routes (GET/PUT/DELETE /plugins, POST /plugins/reload,
     // GET /runtime/plugins). The wiring is read through a LIVE getter so the
     // routes always see the current state after a reload; the store + reload
@@ -749,7 +756,6 @@ async function main() {
     reloadPlugins,
     pluginsDir,
     dataDir,
-    relayIdentity: { publicKeyB64: relayIdentity.publicKeyB64 },
     // Same teardown as the SIGTERM/SIGINT handlers. `shutdown` is declared
     // after serve() below (it closes over the servers); this closure only
     // runs at request time, long after it exists.
@@ -830,8 +836,6 @@ async function main() {
   let relayClient: RelayClient | undefined;
   let dialTokenManager: ReturnType<typeof createDialTokenManager> | undefined;
   if (flags.relayUrl) {
-    const gatewayId = await resolveGatewayId(flags.gatewayId, dataDir);
-
     if (flags.controlPlaneUrl) {
       // Autonomous mode: the manager refreshes via the control plane (holder-of-
       // key assertion) on boot, proactively before expiry, and reactively on a
@@ -932,29 +936,6 @@ async function main() {
 
   process.on('SIGINT', () => void shutdown('SIGINT'));
   process.on('SIGTERM', () => void shutdown('SIGTERM'));
-}
-
-/**
- * Resolve a stable per-gateway id for relay routing. An explicit --gateway-id
- * wins (the MC supervisor passes one cached in the keychain). Otherwise persist
- * a generated id under the data dir so it survives restarts: the relay routes by
- * `<gatewayId>` subdomain and the phone's pairing payload encodes it, so it must
- * not change between launches.
- */
-async function resolveGatewayId(explicit: string | undefined, dataDir: string): Promise<string> {
-  if (explicit) return explicit;
-  const { readFile, writeFile } = await import('node:fs/promises');
-  const idPath = resolve(dataDir, 'relay-gateway-id');
-  try {
-    const existing = (await readFile(idPath, 'utf8')).trim();
-    if (existing) return existing;
-  } catch {
-    // Not created yet — fall through and generate one.
-  }
-  const { randomUUID } = await import('node:crypto');
-  const id = randomUUID();
-  await writeFile(idPath, id, { mode: 0o600 });
-  return id;
 }
 
 main().catch((err) => {
