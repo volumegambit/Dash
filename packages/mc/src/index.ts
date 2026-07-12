@@ -49,6 +49,16 @@ export type {
 } from './runtime/vps-gateway-deploy.js';
 export { ConversationStore } from './conversations.js';
 export type { McConversation, McMessage } from './conversations.js';
+export { ConversationRepositoryOfflineError } from './conversation-repository.js';
+export type {
+  ConversationAuthorityMode,
+  ConversationOrigin,
+  ConversationRef,
+  ConversationRepository,
+  McConversationListResult,
+  McConversationView,
+} from './conversation-repository.js';
+export { LegacyConversationRepository } from './legacy-conversation-repository.js';
 export type { MessagingApp, RoutingRule, RoutingCondition } from './types.js';
 export { SettingsStore } from './settings-store.js';
 export type {
