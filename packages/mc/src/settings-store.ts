@@ -1,6 +1,7 @@
 import { existsSync } from 'node:fs';
 import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import type { MobileCapability } from '@dash/mobile-contract';
 
 export interface AppSettings {
   defaultModel?: string;
@@ -23,6 +24,9 @@ export interface GatewayConnectionSettings {
   managementBaseUrl?: string;
   chatBaseUrl?: string;
   updatedAt?: string;
+  gatewayId?: string;
+  apiVersion?: number;
+  capabilities?: MobileCapability[];
 }
 
 export class SettingsStore {

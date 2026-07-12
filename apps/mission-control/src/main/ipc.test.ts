@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 // We need to import makePackagedSpawner — it doesn't exist yet, so this will fail
 // Import it from ipc.ts after you implement it
 import { InMemoryKeychainStore } from '@dash/mc';
+import { verifyConversationGateway } from './gateway-connection.js';
 import {
   enrollGateway,
   isSetupConfigured,
@@ -20,6 +21,45 @@ import {
   resolveSetupStatus,
   shutdownGatewayOnQuit,
 } from './ipc.js';
+
+describe('remote gateway capability verification wiring', () => {
+  it('requires identity from a capable gateway', async () => {
+    const identity = { gatewayId: 'gateway-01', publicKey: 'dash-test-public-key' };
+    const client = {
+      health: vi.fn().mockResolvedValue({
+        status: 'healthy',
+        startedAt: '2026-07-12T00:00:00.000Z',
+        agents: 1,
+        channels: 1,
+        apiVersion: 1,
+        capabilities: ['conversation-sync-v1', 'chat-resume-v1'],
+      }),
+      getIdentity: vi.fn().mockResolvedValue(identity),
+    };
+
+    await expect(verifyConversationGateway(client)).resolves.toMatchObject({ identity });
+    expect(client.getIdentity).toHaveBeenCalledOnce();
+  });
+
+  it('does not probe identity on an explicitly old gateway', async () => {
+    const client = {
+      health: vi.fn().mockResolvedValue({
+        status: 'healthy',
+        startedAt: '2026-07-12T00:00:00.000Z',
+        agents: 1,
+        channels: 1,
+      }),
+      getIdentity: vi.fn(),
+    };
+
+    await expect(verifyConversationGateway(client)).resolves.toEqual({
+      identity: null,
+      apiVersion: 0,
+      capabilities: [],
+    });
+    expect(client.getIdentity).not.toHaveBeenCalled();
+  });
+});
 
 describe('enrollGateway', () => {
   it('reads the gateway pubkey, claims the subdomain, persists {id,subdomain,host}, restarts', async () => {

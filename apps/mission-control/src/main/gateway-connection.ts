@@ -1,4 +1,9 @@
-import type { GatewayConnectionSettings, RemoteGatewaySecrets } from '@dash/mc';
+import type {
+  GatewayConnectionSettings,
+  GatewayManagementClient,
+  RemoteGatewaySecrets,
+} from '@dash/mc';
+import type { GatewayIdentity, MobileCapability } from '@dash/mobile-contract';
 import type {
   GatewayConnectionStatus,
   GatewayConnectionTestResult,
@@ -15,12 +20,18 @@ export interface NormalizedGatewayRelayConnection {
   secrets: RemoteGatewaySecrets;
 }
 
+export interface VerifiedGatewayMetadata {
+  identity: GatewayIdentity | null;
+  apiVersion: number;
+  capabilities: MobileCapability[];
+}
+
 export interface GatewayRelayConnectionDeps {
   now(): string;
   checkRemoteGateway(
     profile: GatewayConnectionSettings,
     secrets: RemoteGatewaySecrets,
-  ): Promise<void>;
+  ): Promise<VerifiedGatewayMetadata>;
   setRemoteGatewaySecrets(secrets: RemoteGatewaySecrets): Promise<void>;
   setGatewayConnection(profile: GatewayConnectionSettings): Promise<void>;
   refreshChatServiceConnection(): Promise<void>;
@@ -54,6 +65,19 @@ export function publicGatewayConnectionStatus(
   health: GatewayConnectionStatus['health'] = 'unknown',
 ): GatewayConnectionStatus {
   return { profile, hasRemoteSecrets, health };
+}
+
+export async function verifyConversationGateway(
+  client: Pick<GatewayManagementClient, 'health' | 'getIdentity'>,
+): Promise<VerifiedGatewayMetadata> {
+  const health = await client.health();
+  const apiVersion = health.apiVersion ?? 0;
+  const capabilities = health.capabilities ?? [];
+  if (!capabilities.includes('conversation-sync-v1')) {
+    return { identity: null, apiVersion, capabilities };
+  }
+  const identity = await client.getIdentity();
+  return { identity, apiVersion, capabilities };
 }
 
 export function normalizeGatewayRelayInput(
@@ -132,14 +156,20 @@ export async function saveGatewayRelayConnection(
   deps: GatewayRelayConnectionDeps,
 ): Promise<GatewayConnectionStatus> {
   const normalized = normalizeGatewayRelayInput(input, deps.now());
-  try {
-    await deps.checkRemoteGateway(normalized.profile, normalized.secrets);
-  } catch {
-    throw new Error(REMOTE_GATEWAY_TEST_FAILURE);
-  }
+  const verified = await deps
+    .checkRemoteGateway(normalized.profile, normalized.secrets)
+    .catch(() => {
+      throw new Error(REMOTE_GATEWAY_TEST_FAILURE);
+    });
+  const profile: GatewayConnectionSettings = {
+    ...normalized.profile,
+    ...(verified.identity ? { gatewayId: verified.identity.gatewayId } : {}),
+    apiVersion: verified.apiVersion,
+    capabilities: verified.capabilities,
+  };
 
   await deps.setRemoteGatewaySecrets(normalized.secrets);
-  await deps.setGatewayConnection(normalized.profile);
+  await deps.setGatewayConnection(profile);
   await deps.refreshChatServiceConnection();
   return deps.getGatewayConnectionStatus();
 }

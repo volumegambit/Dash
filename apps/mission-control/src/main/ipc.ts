@@ -68,6 +68,7 @@ import {
   saveGatewayRelayConnection,
   testGatewayRelayConnection,
   trimTrailingSlash,
+  verifyConversationGateway,
   websocketBaseFromHttpBase,
 } from './gateway-connection.js';
 import { GatewayPoller } from './gateway-poller.js';
@@ -465,7 +466,7 @@ export async function registerIpcHandlers(
   const checkRemoteGateway = async (
     profile: GatewayConnectionSettings,
     secrets: RemoteGatewaySecrets,
-  ): Promise<void> => {
+  ) => {
     if (!profile.managementBaseUrl) {
       throw new Error('Remote gateway profile is missing its management URL');
     }
@@ -474,7 +475,7 @@ export async function registerIpcHandlers(
       secrets.managementToken,
       headersForRemoteGateway(secrets),
     );
-    await client.health();
+    return verifyConversationGateway(client);
   };
 
   // Idempotently record that onboarding is complete. Monotonic: written
