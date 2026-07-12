@@ -789,7 +789,7 @@ describe('SqliteConversationService durable turns', () => {
     expect(service.get(manual.id)).toMatchObject({ title: 'Manual title', revision: 2 });
   });
 
-  it('archives every live agent conversation without deleting messages or events', () => {
+  it('requires active turns to be terminal before archiving every live agent conversation', () => {
     const active = createConversation('create-active');
     const idle = createConversation('create-idle');
     const deleted = createConversation('create-deleted');
@@ -802,6 +802,33 @@ describe('SqliteConversationService durable turns', () => {
     });
     service.delete(deleted.id, deleted.revision);
 
+    expect(() => service.archiveAgentConversations('agent-01')).toThrowError(
+      expect.objectContaining({
+        code: 'conversation_busy',
+        status: 409,
+        retryable: false,
+        details: { activeTurnId: 'turn-active' },
+      }),
+    );
+    expect(service.get(active.id)).toMatchObject({
+      status: 'running',
+      activeTurnId: 'turn-active',
+      revision: 2,
+    });
+    expect(service.get(idle.id)).toMatchObject({ status: 'idle', revision: 1 });
+    expect(service.listMessages({ conversationId: active.id, limit: 10 }).items).toEqual([
+      expect.objectContaining({ role: 'user', status: 'accepted' }),
+      expect.objectContaining({ role: 'assistant', status: 'streaming' }),
+    ]);
+    expect(service.eventLog.readSince('agent-01', active.id, 0)).toEqual([
+      expect.objectContaining({ payload: expect.objectContaining({ type: 'accepted' }) }),
+    ]);
+
+    service.finishTurn({
+      conversationId: active.id,
+      turnId: 'turn-active',
+      outcome: 'cancelled',
+    });
     const archived = service.archiveAgentConversations('agent-01');
     expect(archived.map((item) => item.id)).toEqual([idle.id, active.id].sort().reverse());
     expect(archived).toEqual(
@@ -811,7 +838,14 @@ describe('SqliteConversationService durable turns', () => {
       ]),
     );
     expect(service.listMessages({ conversationId: active.id, limit: 10 }).items).toHaveLength(2);
-    expect(service.eventLog.readSince('agent-01', active.id, 0)).toHaveLength(1);
+    expect(service.listMessages({ conversationId: active.id, limit: 10 }).items[1]).toMatchObject({
+      role: 'assistant',
+      status: 'cancelled',
+    });
+    expect(service.eventLog.readSince('agent-01', active.id, 0)).toEqual([
+      expect.objectContaining({ payload: expect.objectContaining({ type: 'accepted' }) }),
+      expect.objectContaining({ payload: { type: 'done', outcome: 'cancelled' } }),
+    ]);
     expect(service.get(deleted.id, { includeDeleted: true })).toMatchObject({ status: 'deleted' });
     expect(service.get(otherAgent.id)).toMatchObject({ status: 'idle', revision: 1 });
     expect(() =>

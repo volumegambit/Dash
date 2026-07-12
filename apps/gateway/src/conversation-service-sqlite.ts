@@ -833,6 +833,23 @@ export class SqliteConversationService implements ConversationService {
 
   archiveAgentConversations(agentId: string): ConversationSummary[] {
     return this.db.transaction(() => {
+      const active = this.db
+        .prepare(`
+          SELECT * FROM conversations
+          WHERE agent_id = ? AND active_turn_id IS NOT NULL AND deleted_at IS NULL
+          ORDER BY updated_at ASC, id ASC
+          LIMIT 1
+        `)
+        .get(agentId) as ConversationRow | undefined;
+      if (active !== undefined) {
+        throw new ConversationServiceError(
+          'conversation_busy',
+          'Conversation has an active turn',
+          409,
+          false,
+          { activeTurnId: active.active_turn_id },
+        );
+      }
       const timestamp = this.now();
       const changed = this.db
         .prepare(`
