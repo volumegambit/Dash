@@ -31,7 +31,7 @@ export interface ModelsDebugResponse extends ModelsRouteResponse {
   providersAvailable: string[];
 }
 
-export interface ModelsRouteOptions {
+export interface ModelsControllerOptions {
   store: ModelsStore;
   credentialStore: GatewayCredentialStore;
   /**
@@ -43,12 +43,24 @@ export interface ModelsRouteOptions {
   getProviderConfigs: () => ProviderConfigEntry[];
   /** Test override for `discoverCatalogModels`. */
   discover?: typeof discoverCatalogModels;
+}
+
+export interface ModelsRouteController {
+  get(): Promise<ModelsRouteResponse>;
+  refresh(): Promise<ModelsRouteResponse>;
+  debug(): Promise<ModelsDebugResponse>;
+}
+
+export interface ModelsRouteOptions extends ModelsControllerOptions {
   /** Expose only the frozen mobile GET shape, without debug or refresh extensions. */
   strictReadOnly?: boolean;
+  /** Share discovery, persistence, and the in-flight request across mounted route aliases. */
+  controller?: ModelsRouteController;
 }
 
 /**
- * Build a Hono sub-app exposing `GET /models` and `POST /models/refresh`.
+ * Build the shared model discovery and cache controller used by one or more
+ * HTTP route views.
  *
  * `GET /models` reads the persisted store and returns immediately on a hit. On
  * a miss (no file, the catalog fingerprint moved, or after an explicit
@@ -65,17 +77,13 @@ export interface ModelsRouteOptions {
  * The cold-fetch path is mutex-guarded so concurrent callers share one fetch
  * instead of all racing to hit provider /v1/models endpoints.
  */
-export function createModelsRoute(options: ModelsRouteOptions): Hono {
+export function createModelsController(options: ModelsControllerOptions): ModelsRouteController {
   const { store, credentialStore } = options;
   const discover = options.discover ?? discoverCatalogModels;
-  const app = new Hono();
 
-  // Read the loaded catalogs LIVE on each request so a plugin hot-reload that
-  // adds/removes a provider is reflected without a restart.
-  const catalogs = () => options.getProviderConfigs().map((p) => p.catalog);
-
-  // Promise mutex — when a refresh is in flight, all callers share it.
+  // Promise mutex shared by every HTTP surface backed by this controller.
   let inFlight: Promise<ModelsRouteResponse> | null = null;
+  let generation = 0;
 
   /**
    * Resolve a catalog credential from the encrypted store. Reads lazily so
@@ -86,67 +94,127 @@ export function createModelsRoute(options: ModelsRouteOptions): Hono {
     return keys[catalogId] ?? null;
   };
 
-  async function refreshNow(): Promise<ModelsRouteResponse> {
-    if (inFlight) return inFlight;
-    inFlight = (async () => {
-      // Snapshot the live catalogs ONCE so the fingerprint and the discover run
-      // against an identical set — a plugin hot-reload between the two calls
-      // can't leave the persisted fingerprint out of step with the fetched models.
-      const cats = catalogs();
-      const fingerprint = newestCatalogReviewedAt(cats);
-      const result = await discover(cats, credentialResolver);
-      const fetchedAt = new Date().toISOString();
-      if (result.providersConfigured === 0) {
-        // No credentials configured at all → serve an empty live list tagged
-        // `bootstrap`. Do NOT persist it: the render-time merge below fills in
-        // every catalog's static models (the bootstrap list), and the moment a
-        // credential is added the next refresh overwrites cleanly.
-        return {
+  const withStaticModels = (
+    response: ModelsRouteResponse,
+    providerConfigs: ProviderConfigEntry[],
+  ): ModelsRouteResponse =>
+    appendPluginModels(response, expandPluginModelsForRoute(providerConfigs));
+
+  function track(
+    operation: (operationGeneration: number) => Promise<ModelsRouteResponse>,
+  ): Promise<ModelsRouteResponse> {
+    const operationGeneration = ++generation;
+    const tracked = operation(operationGeneration).finally(() => {
+      if (inFlight === tracked) inFlight = null;
+    });
+    inFlight = tracked;
+    return tracked;
+  }
+
+  async function discoverAndRender(
+    providerConfigs: ProviderConfigEntry[],
+    operationGeneration: number,
+  ): Promise<ModelsRouteResponse> {
+    const catalogs = providerConfigs.map((provider) => provider.catalog);
+    const fingerprint = newestCatalogReviewedAt(catalogs);
+    const result = await discover(catalogs, credentialResolver);
+    const fetchedAt = new Date().toISOString();
+    if (result.providersConfigured === 0) {
+      if (operationGeneration === generation) {
+        // A credential-less replacement must still own the final persisted
+        // state. ModelsStore serializes this clear behind any save that the
+        // displaced operation already queued.
+        await store.clear();
+      }
+      return withStaticModels(
+        {
           models: [],
-          source: 'bootstrap' as const,
+          source: 'bootstrap',
           errors: {},
           fetchedAt,
           supportedModelsReviewedAt: fingerprint,
-        };
-      }
-      // At least one provider had a credential — persist whatever we got back
-      // (could include errors for some providers).
+        },
+        providerConfigs,
+      );
+    }
+    if (operationGeneration === generation) {
       await store.save(result.models, fingerprint);
-      return {
+    }
+    return withStaticModels(
+      {
         models: result.models,
-        source: 'live' as const,
+        source: 'live',
         errors: result.errors,
         fetchedAt,
         supportedModelsReviewedAt: fingerprint,
-      };
-    })();
-    try {
-      return await inFlight;
-    } finally {
+      },
+      providerConfigs,
+    );
+  }
+
+  const controller: ModelsRouteController = {
+    get() {
+      if (inFlight) return inFlight;
+      return track(async (operationGeneration) => {
+        const providerConfigs = options.getProviderConfigs();
+        const fingerprint = newestCatalogReviewedAt(
+          providerConfigs.map((provider) => provider.catalog),
+        );
+        const stored = await store.load(fingerprint);
+        if (operationGeneration !== generation) return controller.get();
+        if (stored && stored.models.length > 0) {
+          return withStaticModels(
+            {
+              models: stored.models,
+              source: 'live',
+              errors: {},
+              fetchedAt: stored.fetchedAt,
+              supportedModelsReviewedAt: stored.supportedModelsReviewedAt,
+            },
+            providerConfigs,
+          );
+        }
+        return discoverAndRender(providerConfigs, operationGeneration);
+      });
+    },
+
+    refresh() {
+      // Preserve the legacy force-fresh behavior: do not join work that began
+      // before the explicit refresh request.
       inFlight = null;
-    }
-  }
+      return track((operationGeneration) =>
+        discoverAndRender(options.getProviderConfigs(), operationGeneration),
+      );
+    },
 
-  async function getOrRefresh(): Promise<ModelsRouteResponse> {
-    const stored = await store.load(newestCatalogReviewedAt(catalogs()));
-    if (stored && stored.models.length > 0) {
+    async debug() {
+      const response = await controller.get();
+      const credentials = await credentialStore.readProviderApiKeys();
+      const providerConfigs = options.getProviderConfigs();
+      const catalogs = providerConfigs.map((provider) => provider.catalog);
       return {
-        models: stored.models,
-        source: 'live',
-        errors: {},
-        fetchedAt: stored.fetchedAt,
-        supportedModelsReviewedAt: stored.supportedModelsReviewedAt,
+        ...response,
+        bootstrap: expandPluginModelsForRoute(providerConfigs),
+        patterns: catalogs.flatMap((catalog) =>
+          (catalog.supportedPatterns ?? []).map((pattern) => ({
+            provider: catalog.id,
+            pattern: pattern.pattern,
+            tier: pattern.tier,
+          })),
+        ),
+        providersConfigured: Object.keys(credentials),
+        providersAvailable: catalogs.map((catalog) => catalog.id),
       };
-    }
-    return refreshNow();
-  }
+    },
+  };
 
-  // Merge every catalog's static models into a response at render time (never
-  // persisted): live core models win on a value clash, plugin/static models are
-  // appended in dropdown order. This IS the bootstrap list on the zero-credential
-  // path, and the deduped append of static ids on the live path.
-  const withStaticModels = (resp: ModelsRouteResponse): ModelsRouteResponse =>
-    appendPluginModels(resp, expandPluginModelsForRoute(options.getProviderConfigs()));
+  return controller;
+}
+
+/** Mount a legacy or strict read-only HTTP view over a models controller. */
+export function createModelsRoute(options: ModelsRouteOptions): Hono {
+  const app = new Hono();
+  const controller = options.controller ?? createModelsController(options);
 
   app.get('/', async (c) => {
     if (options.strictReadOnly && new URL(c.req.url).searchParams.size > 0) {
@@ -156,34 +224,14 @@ export function createModelsRoute(options: ModelsRouteOptions): Hono {
       );
     }
     if (c.req.query('debug') === 'true') {
-      const response = withStaticModels(await getOrRefresh());
-      const credentials = await credentialStore.readProviderApiKeys();
-      const providersConfigured = Object.keys(credentials);
-      const cats = catalogs();
-      const debug: ModelsDebugResponse = {
-        ...response,
-        bootstrap: expandPluginModelsForRoute(options.getProviderConfigs()),
-        patterns: cats.flatMap((cat) =>
-          (cat.supportedPatterns ?? []).map((p) => ({
-            provider: cat.id,
-            pattern: p.pattern,
-            tier: p.tier,
-          })),
-        ),
-        providersConfigured,
-        providersAvailable: cats.map((cat) => cat.id),
-      };
-      return c.json(debug);
+      return c.json(await controller.debug());
     }
-    return c.json(withStaticModels(await getOrRefresh()));
+    return c.json(await controller.get());
   });
 
   if (!options.strictReadOnly) {
     app.post('/refresh', async (c) => {
-      // Force-fresh: clear in-flight (so a stale refresh from before a credential
-      // change doesn't get joined) and run a new discover.
-      inFlight = null;
-      return c.json(withStaticModels(await refreshNow()));
+      return c.json(await controller.refresh());
     });
   }
 

@@ -5,7 +5,7 @@ import type { ProviderCatalog } from '@dash/plugin-sdk';
 import type { ProviderConfigEntry } from '@dash/plugins';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { GatewayCredentialStore } from './credential-store.js';
-import { createModelsRoute } from './models-route.js';
+import { createModelsController, createModelsRoute } from './models-route.js';
 import { ModelsStore } from './models-store.js';
 
 function makeCredentialStore(keys: Record<string, string> = {}): GatewayCredentialStore {
@@ -196,22 +196,25 @@ describe('createModelsRoute', () => {
     expect(discover).toHaveBeenCalledOnce();
   });
 
-  it('mutex: concurrent GET /models on empty store discover only once', async () => {
+  it('mutex: concurrent legacy and strict mobile GETs discover once and match', async () => {
     let resolveDiscover!: (v: unknown) => void;
     const discoverPromise = new Promise((resolve) => {
       resolveDiscover = resolve;
     });
     const discover = vi.fn().mockReturnValue(discoverPromise);
-    const app = createModelsRoute({
+    const options = {
       store,
       credentialStore: makeCredentialStore({ anthropic: 'sk-ant' }),
       getProviderConfigs: () => makeConfigs([anthropicCatalog]),
       discover,
-    });
+    };
+    const controller = createModelsController(options);
+    const legacy = createModelsRoute({ ...options, controller });
+    const mobile = createModelsRoute({ ...options, controller, strictReadOnly: true });
 
     const [r1, r2, r3] = await Promise.all([
       (async () => {
-        const promise = app.request('/');
+        const promise = legacy.request('/');
         await new Promise((r) => setTimeout(r, 10));
         resolveDiscover({
           models: [{ value: 'anthropic/claude-opus-4-5', label: 'X', provider: 'anthropic' }],
@@ -220,14 +223,178 @@ describe('createModelsRoute', () => {
         });
         return promise;
       })(),
-      app.request('/'),
-      app.request('/'),
+      mobile.request('/'),
+      legacy.request('/'),
     ]);
 
     expect(discover).toHaveBeenCalledTimes(1);
     expect(r1.status).toBe(200);
     expect(r2.status).toBe(200);
     expect(r3.status).toBe(200);
+    const legacyBody = await r1.json();
+    expect(await r2.json()).toEqual(legacyBody);
+    expect(await r3.json()).toEqual(legacyBody);
+  });
+
+  it('explicit refresh prevents a displaced discovery from overwriting the cache', async () => {
+    let resolveStale!: (value: unknown) => void;
+    let resolveFresh!: (value: unknown) => void;
+    const staleDiscovery = new Promise((resolve) => {
+      resolveStale = resolve;
+    });
+    const freshDiscovery = new Promise((resolve) => {
+      resolveFresh = resolve;
+    });
+    const discover = vi
+      .fn()
+      .mockReturnValueOnce(staleDiscovery)
+      .mockReturnValueOnce(freshDiscovery);
+    const options = {
+      store,
+      credentialStore: makeCredentialStore({ anthropic: 'sk-ant' }),
+      getProviderConfigs: () => makeConfigs([anthropicCatalog]),
+      discover,
+    };
+    const controller = createModelsController(options);
+    const legacy = createModelsRoute({ ...options, controller });
+    const mobile = createModelsRoute({ ...options, controller, strictReadOnly: true });
+
+    const staleRequest = mobile.request('/');
+    await vi.waitFor(() => expect(discover).toHaveBeenCalledTimes(1));
+    const refreshRequest = legacy.request('/refresh', { method: 'POST' });
+    await vi.waitFor(() => expect(discover).toHaveBeenCalledTimes(2));
+    const joinedMobileRequest = mobile.request('/');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(discover).toHaveBeenCalledTimes(2);
+
+    resolveFresh({
+      models: [{ value: 'anthropic/fresh', label: 'Fresh', provider: 'anthropic' }],
+      errors: {},
+      providersConfigured: 1,
+    });
+    const [refreshResponse, joinedMobileResponse] = await Promise.all([
+      refreshRequest,
+      joinedMobileRequest,
+    ]);
+    expect(await joinedMobileResponse.json()).toEqual(await refreshResponse.json());
+
+    resolveStale({
+      models: [{ value: 'anthropic/stale', label: 'Stale', provider: 'anthropic' }],
+      errors: {},
+      providersConfigured: 1,
+    });
+    expect((await staleRequest).status).toBe(200);
+    expect((await store.load('2026-07-01'))?.models.map((model) => model.value)).toEqual([
+      'anthropic/fresh',
+    ]);
+  });
+
+  it('an older request finalizer cannot detach callers from a pending refresh', async () => {
+    let resolveStale!: (value: unknown) => void;
+    let resolveFresh!: (value: unknown) => void;
+    const staleDiscovery = new Promise((resolve) => {
+      resolveStale = resolve;
+    });
+    const freshDiscovery = new Promise((resolve) => {
+      resolveFresh = resolve;
+    });
+    const discover = vi
+      .fn()
+      .mockReturnValueOnce(staleDiscovery)
+      .mockReturnValueOnce(freshDiscovery);
+    const options = {
+      store,
+      credentialStore: makeCredentialStore({ anthropic: 'sk-ant' }),
+      getProviderConfigs: () => makeConfigs([anthropicCatalog]),
+      discover,
+    };
+    const controller = createModelsController(options);
+    const legacy = createModelsRoute({ ...options, controller });
+    const mobile = createModelsRoute({ ...options, controller, strictReadOnly: true });
+
+    const staleRequest = mobile.request('/');
+    await vi.waitFor(() => expect(discover).toHaveBeenCalledTimes(1));
+    const refreshRequest = legacy.request('/refresh', { method: 'POST' });
+    await vi.waitFor(() => expect(discover).toHaveBeenCalledTimes(2));
+
+    resolveStale({
+      models: [{ value: 'anthropic/stale', label: 'Stale', provider: 'anthropic' }],
+      errors: {},
+      providersConfigured: 1,
+    });
+    expect((await staleRequest).status).toBe(200);
+
+    const joinedMobileRequest = mobile.request('/');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(discover).toHaveBeenCalledTimes(2);
+
+    resolveFresh({
+      models: [{ value: 'anthropic/fresh', label: 'Fresh', provider: 'anthropic' }],
+      errors: {},
+      providersConfigured: 1,
+    });
+    const [refreshResponse, joinedMobileResponse] = await Promise.all([
+      refreshRequest,
+      joinedMobileRequest,
+    ]);
+    expect(await joinedMobileResponse.json()).toEqual(await refreshResponse.json());
+  });
+
+  it('a zero-credential refresh clears a stale save that was already queued', async () => {
+    let releaseSave!: () => void;
+    const saveGate = new Promise<void>((resolve) => {
+      releaseSave = resolve;
+    });
+    let cachedModels: string[] | null = null;
+    let writeQueue = Promise.resolve();
+    const enqueue = (write: () => Promise<void>): Promise<void> => {
+      const run = writeQueue.then(write, write);
+      writeQueue = run.then(
+        () => {},
+        () => {},
+      );
+      return run;
+    };
+    const queuedStore = {
+      load: vi.fn().mockResolvedValue(null),
+      save: vi.fn((models: Parameters<ModelsStore['save']>[0]) =>
+        enqueue(async () => {
+          await saveGate;
+          cachedModels = models.map((model) => model.value);
+        }),
+      ),
+      clear: vi.fn(() =>
+        enqueue(async () => {
+          cachedModels = null;
+        }),
+      ),
+    } as unknown as ModelsStore;
+    const discover = vi
+      .fn()
+      .mockResolvedValueOnce({
+        models: [{ value: 'anthropic/stale', label: 'Stale', provider: 'anthropic' }],
+        errors: {},
+        providersConfigured: 1,
+      })
+      .mockResolvedValueOnce({ models: [], errors: {}, providersConfigured: 0 });
+    const controller = createModelsController({
+      store: queuedStore,
+      credentialStore: makeCredentialStore({}),
+      getProviderConfigs: () => makeConfigs([anthropicCatalog]),
+      discover,
+    });
+
+    const staleRequest = controller.get();
+    await vi.waitFor(() => expect(queuedStore.save).toHaveBeenCalledOnce());
+    const refreshRequest = controller.refresh();
+    await vi.waitFor(() => expect(discover).toHaveBeenCalledTimes(2));
+    releaseSave();
+
+    const [staleResponse, refreshResponse] = await Promise.all([staleRequest, refreshRequest]);
+    expect(staleResponse.source).toBe('live');
+    expect(refreshResponse.source).toBe('bootstrap');
+    expect(queuedStore.clear).toHaveBeenCalledOnce();
+    expect(cachedModels).toBeNull();
   });
 
   it('GET /models?debug=true carries catalog-derived bootstrap, patterns, and providers', async () => {

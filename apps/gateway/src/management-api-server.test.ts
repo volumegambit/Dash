@@ -299,6 +299,30 @@ describe('createGatewayManagementApp', () => {
   });
 
   describe('explicit mobile v1 namespace', () => {
+    it('shares one cold models request across legacy and mobile namespaces', async () => {
+      const modelsStore = makeModelsStore();
+      let resolveLoad!: (value: null) => void;
+      const coldLoad = new Promise<null>((resolve) => {
+        resolveLoad = resolve;
+      });
+      vi.mocked(modelsStore.load).mockReturnValue(coldLoad);
+      const { app } = createApp({ modelsStore });
+
+      const legacyRequest = app.request('/models', { headers: AUTH });
+      const mobileRequest = app.request('/mobile/v1/models', { headers: AUTH });
+      await vi.waitFor(() => expect(modelsStore.load).toHaveBeenCalled());
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      const coldLoadsBeforeRelease = vi.mocked(modelsStore.load).mock.calls.length;
+      resolveLoad(null);
+
+      const [legacyResponse, mobileResponse] = await Promise.all([legacyRequest, mobileRequest]);
+      expect(legacyResponse.status).toBe(200);
+      expect(mobileResponse.status).toBe(200);
+      expect(coldLoadsBeforeRelease).toBe(1);
+      expect(modelsStore.load).toHaveBeenCalledOnce();
+      expect(await mobileResponse.json()).toEqual(await legacyResponse.json());
+    });
+
     it('mounts health, identity, models, and the full agent lifecycle', async () => {
       const { app } = createApp();
 

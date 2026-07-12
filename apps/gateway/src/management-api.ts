@@ -24,7 +24,7 @@ import type { EventBus, GatewayEvent } from './event-bus.js';
 import type { DynamicGateway } from './gateway.js';
 import type { McpManagementDeps } from './mcp-management.js';
 import { mountMcpRoutes } from './mcp-management.js';
-import { createModelsRoute } from './models-route.js';
+import { createModelsController, createModelsRoute } from './models-route.js';
 import type { ModelsStore } from './models-store.js';
 import type { PluginWiringState } from './plugins-wiring.js';
 import { mountSwarmRoutes } from './swarm-management.js';
@@ -1106,18 +1106,20 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
   });
 
   // --- Models routes ---
-  const createMobileModelsRoute = (strictReadOnly = false) =>
-    createModelsRoute({
-      store: options.modelsStore,
-      credentialStore,
-      strictReadOnly,
-      // Read provider catalogs LIVE through the wiring getter so a hot-reload
-      // that adds/removes a plugin provider is reflected on the next GET
-      // /models — not a boot snapshot. Empty when plugins aren't wired (tests).
-      getProviderConfigs: () => options.getPluginWiringState?.().pluginProviderConfigs ?? [],
-    });
-  app.route('/models', createMobileModelsRoute());
-  mobileV1.route('/models', createMobileModelsRoute(true));
+  const modelsOptions = {
+    store: options.modelsStore,
+    credentialStore,
+    // Read provider catalogs LIVE through the wiring getter so a hot-reload
+    // that adds/removes a plugin provider is reflected on the next GET
+    // /models — not a boot snapshot. Empty when plugins aren't wired (tests).
+    getProviderConfigs: () => options.getPluginWiringState?.().pluginProviderConfigs ?? [],
+  };
+  const modelsController = createModelsController(modelsOptions);
+  app.route('/models', createModelsRoute({ ...modelsOptions, controller: modelsController }));
+  mobileV1.route(
+    '/models',
+    createModelsRoute({ ...modelsOptions, controller: modelsController, strictReadOnly: true }),
+  );
 
   // --- Event-log replay ---
   //
