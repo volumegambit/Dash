@@ -79,6 +79,17 @@
                ReferencedContainer = "container:Dash.xcodeproj">
             </BuildableReference>
          </TestableReference>
+         <TestableReference
+            skipped = "NO"
+            parallelizable = "NO">
+            <BuildableReference
+               BuildableIdentifier = "primary"
+               BlueprintIdentifier = "08C6DD7A7257BDED60C1FB91"
+               BuildableName = "DashContractTests.xctest"
+               BlueprintName = "DashContractTests"
+               ReferencedContainer = "container:Dash.xcodeproj">
+            </BuildableReference>
+         </TestableReference>
       </Testables>
       <CommandLineArguments>
       </CommandLineArguments>

@@ -89,6 +89,7 @@ schemes:
       gatherCoverageData: true
       targets:
         - DashTests
+        - DashContractTests
   DashIntegration:
     build:
       targets:
