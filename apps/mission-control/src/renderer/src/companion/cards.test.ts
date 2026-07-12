@@ -2,9 +2,14 @@ import { describe, expect, it } from 'vitest';
 import { attentionIds, newAttentionIds, statusIcon, timeAgo, visibleCards } from './cards.js';
 import type { CompanionSession } from './types.js';
 
-function sess(id: string, status: CompanionSession['status']): CompanionSession {
+function sess(
+  id: string,
+  status: CompanionSession['status'],
+  origin: 'gateway' | 'local' = 'gateway',
+): CompanionSession {
   return {
-    conversationId: id,
+    conversation: { id, origin },
+    conversationKey: `${origin}:${id}`,
     agentId: 'a',
     agentName: 'A',
     title: id,
@@ -54,12 +59,23 @@ describe('visibleCards', () => {
 describe('attention diffing', () => {
   it('collects needs/error/done ids only', () => {
     const ids = attentionIds([sess('1', 'working'), sess('2', 'needs'), sess('3', 'done')]);
-    expect([...ids].sort()).toEqual(['2', '3']);
+    expect([...ids].sort()).toEqual(['gateway:2', 'gateway:3']);
   });
 
   it('returns ids that newly entered an attention state', () => {
-    const prev = new Set(['2']);
+    const prev = new Set(['gateway:2']);
     const fresh = newAttentionIds(prev, [sess('2', 'needs'), sess('3', 'done')]);
-    expect(fresh).toEqual(['3']);
+    expect(fresh).toEqual(['gateway:3']);
+  });
+
+  it('treats the same bare ID from gateway and local history as distinct attention', () => {
+    const prev = new Set(['gateway:shared-id']);
+
+    expect(
+      newAttentionIds(prev, [
+        sess('shared-id', 'needs', 'gateway'),
+        sess('shared-id', 'done', 'local'),
+      ]),
+    ).toEqual(['local:shared-id']);
   });
 });

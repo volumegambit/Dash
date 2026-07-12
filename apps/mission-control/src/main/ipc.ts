@@ -175,6 +175,54 @@ export function disposePendingConversationRuntime(
   return null;
 }
 
+export function activatePendingConversationRuntime(
+  service: Pick<ChatService, 'setResumableTransport'>,
+  runtime: PendingConversationRuntime | null,
+): void {
+  service.setResumableTransport(runtime?.transport ?? undefined);
+}
+
+export function createCanonicalChatHandlers(
+  chat: Pick<
+    ChatService,
+    | 'listConversations'
+    | 'createConversation'
+    | 'getMessages'
+    | 'sendMessage'
+    | 'renameConversation'
+    | 'deleteConversation'
+    | 'cancel'
+    | 'answerQuestion'
+  >,
+  controller: Pick<ConversationController, 'find'>,
+) {
+  return {
+    listConversations: (cursor?: string) => chat.listConversations(cursor),
+    getConversation: (conversation: ConversationRef) => controller.find(conversation),
+    createConversation: (agentId: string, requestId: string) =>
+      chat.createConversation(agentId, requestId),
+    getMessages: (conversation: ConversationRef, before?: string) =>
+      chat.getMessages(conversation, before),
+    sendMessage: (
+      conversation: ConversationRef,
+      turnId: string,
+      text: string,
+      images?: MobileImage[],
+    ) => chat.sendMessage(conversation, turnId, text, images),
+    renameConversation: (conversation: ConversationRef, revision: number, title: string) =>
+      chat.renameConversation(conversation, revision, title),
+    deleteConversation: (conversation: ConversationRef, revision: number) =>
+      chat.deleteConversation(conversation, revision),
+    cancel: (conversation: ConversationRef, turnId: string) => chat.cancel(conversation, turnId),
+    answerQuestion: (
+      conversation: ConversationRef,
+      turnId: string,
+      questionId: string,
+      answer: string,
+    ) => chat.answerQuestion(conversation, turnId, questionId, answer),
+  };
+}
+
 export function parseConversationInvalidations(value: string): ConversationInvalidation[] {
   const invalidations: ConversationInvalidation[] = [];
   for (const block of value.split(/\r?\n\r?\n+/)) {
@@ -676,6 +724,8 @@ function getChatService(getWindow: () => BrowserWindow | undefined): ChatService
         if (win && !win.isDestroyed())
           win.webContents.send('chat:conversationRenamed', conversation.id, title);
       },
+      conversationController,
+      pendingConversationRuntime?.transport ?? undefined,
     );
   }
   return chatService;
@@ -923,6 +973,7 @@ export async function registerIpcHandlers(
           },
         }),
     });
+    if (chatService) activatePendingConversationRuntime(chatService, pendingConversationRuntime);
   };
 
   const restoreOfflineConversationRuntime = async (
@@ -970,6 +1021,7 @@ export async function registerIpcHandlers(
           throw new Error('Gateway connection unavailable');
         },
       });
+      if (chatService) activatePendingConversationRuntime(chatService, pendingConversationRuntime);
     }
     return true;
   };
@@ -1598,8 +1650,9 @@ export async function registerIpcHandlers(
 
   // Migrate legacy conversations (deploymentId+agentName → agentId) on first list
   let conversationsMigrated = false;
-  const getLegacyWireChat = () => createLegacyWireChatAdapter(getChatService(getWindow));
-  ipcMain.handle('chat:listConversations', async () => {
+  const getCanonicalChat = () =>
+    createCanonicalChatHandlers(getChatService(getWindow), conversationController);
+  ipcMain.handle('chat:listConversations', async (_event, cursor?: string) => {
     if (!conversationsMigrated) {
       conversationsMigrated = true;
       try {
@@ -1614,33 +1667,37 @@ export async function registerIpcHandlers(
         conversationsMigrated = false;
       }
     }
-    return getLegacyWireChat().listConversations();
+    return getCanonicalChat().listConversations(cursor);
   });
 
-  ipcMain.handle('chat:createConversation', (_event, agentId: string) =>
-    getLegacyWireChat().createConversation(agentId),
+  ipcMain.handle('chat:getConversation', (_event, conversation: ConversationRef) =>
+    getCanonicalChat().getConversation(conversation),
   );
 
-  ipcMain.handle('chat:getMessages', (_event, conversationId: string) =>
-    getLegacyWireChat().getMessages(conversationId),
+  ipcMain.handle('chat:createConversation', (_event, agentId: string, requestId: string) =>
+    getCanonicalChat().createConversation(agentId, requestId),
   );
 
-  ipcMain.handle('chat:renameConversation', (_event, conversationId: string, title: string) =>
-    getLegacyWireChat().renameConversation(conversationId, title),
+  ipcMain.handle('chat:getMessages', (_event, conversation: ConversationRef, before?: string) =>
+    getCanonicalChat().getMessages(conversation, before),
   );
 
-  ipcMain.handle('chat:deleteConversation', (_event, conversationId: string) =>
-    getLegacyWireChat().deleteConversation(conversationId),
+  ipcMain.handle(
+    'chat:renameConversation',
+    (_event, conversation: ConversationRef, revision: number, title: string) =>
+      getCanonicalChat().renameConversation(conversation, revision, title),
+  );
+
+  ipcMain.handle(
+    'chat:deleteConversation',
+    (_event, conversation: ConversationRef, revision: number) =>
+      getCanonicalChat().deleteConversation(conversation, revision),
   );
 
   ipcMain.handle(
     'chat:sendMessage',
-    (
-      _event,
-      conversationId: string,
-      text: string,
-      images?: { mediaType: string; data: string }[],
-    ) => getLegacyWireChat().sendMessage(conversationId, text, images),
+    (_event, conversation: ConversationRef, turnId: string, text: string, images?: MobileImage[]) =>
+      getCanonicalChat().sendMessage(conversation, turnId, text, images),
   );
 
   // NOTE: these two are fired from the preload with `ipcRenderer.send`
@@ -1649,14 +1706,14 @@ export async function registerIpcHandlers(
   // answers `invoke` and silently drops `send` messages. That mismatch made
   // the chat stop button a renderer-side no-op (swarm workers kept running
   // after "stop"; see TEST_PLAN 31.9).
-  ipcMain.on('chat:cancel', (_event, conversationId: string) => {
-    void getLegacyWireChat().cancel(conversationId);
+  ipcMain.on('chat:cancel', (_event, conversation: ConversationRef, turnId: string) => {
+    void getCanonicalChat().cancel(conversation, turnId);
   });
 
   ipcMain.on(
     'chat:answer-question',
-    (_event, conversationId: string, questionId: string, answer: string) => {
-      void getLegacyWireChat().answerQuestion(conversationId, questionId, answer);
+    (_event, conversation: ConversationRef, turnId: string, questionId: string, answer: string) => {
+      void getCanonicalChat().answerQuestion(conversation, turnId, questionId, answer);
     },
   );
 

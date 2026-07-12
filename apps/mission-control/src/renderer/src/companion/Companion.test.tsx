@@ -17,16 +17,37 @@ function seedOneWorkingSession(): void {
       {
         id: 'c1',
         agentId: 'a1',
+        agentName: 'Ops Bot',
         title: 'T-c1',
+        revision: 1,
+        status: 'running',
+        activeTurnId: 'turn-c1',
+        owningIssueId: null,
+        projectId: null,
+        lastSeq: 1,
+        lastMessagePreview: null,
         createdAt: '2026-06-21T10:00:00.000Z',
         updatedAt: '2026-06-21T10:00:00.000Z',
+        origin: 'gateway',
+        offline: false,
+        readOnly: false,
       } as never,
     ],
-    selectedConversationId: null,
+    selectedConversationRef: null,
     messages: {},
-    streamingEvents: { c1: [{ type: 'text_delta', text: 'thinking' }] as never },
-    sending: { c1: true },
-    unreadConversations: new Set<string>(),
+    streamingFrames: {
+      'gateway:c1': [
+        {
+          type: 'event',
+          id: 'turn-c1',
+          conversationId: 'c1',
+          seq: 1,
+          event: { type: 'text_delta', text: 'thinking' },
+        },
+      ],
+    },
+    sending: { 'gateway:c1': true },
+    unreadConversations: new Set(),
   });
 }
 

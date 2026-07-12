@@ -1,7 +1,9 @@
+import type { MobileWsServerFrame } from '@dash/mobile-contract';
 import { contextBridge, ipcRenderer } from 'electron';
 import type {
   CompanionAgentStatus,
   CompanionSelection,
+  ConversationInvalidation,
   McAgentEvent,
   McpStatusChange,
   MissionControlAPI,
@@ -51,20 +53,35 @@ const api: MissionControlAPI = {
     ipcRenderer.invoke('claude:completeOAuth', keyName, code, state, verifier),
 
   // Chat
-  chatCreateConversation: (agentId) => ipcRenderer.invoke('chat:createConversation', agentId),
-  chatListConversations: () => ipcRenderer.invoke('chat:listConversations'),
-  chatGetMessages: (conversationId) => ipcRenderer.invoke('chat:getMessages', conversationId),
-  chatSend: (conversationId, text, images) =>
-    ipcRenderer.invoke('chat:sendMessage', conversationId, text, images),
-  chatCancel: (conversationId) => ipcRenderer.send('chat:cancel', conversationId),
-  chatRenameConversation: (conversationId, title) =>
-    ipcRenderer.invoke('chat:renameConversation', conversationId, title),
-  chatDeleteConversation: (conversationId) =>
-    ipcRenderer.invoke('chat:deleteConversation', conversationId),
-  chatAnswerQuestion: (conversationId, questionId, answer) =>
-    ipcRenderer.send('chat:answer-question', conversationId, questionId, answer),
+  chatCreateConversation: (agentId, requestId) =>
+    ipcRenderer.invoke('chat:createConversation', agentId, requestId),
+  chatListConversations: (cursor) => ipcRenderer.invoke('chat:listConversations', cursor),
+  chatGetConversation: (conversation) => ipcRenderer.invoke('chat:getConversation', conversation),
+  chatGetMessages: (conversation, before) =>
+    ipcRenderer.invoke('chat:getMessages', conversation, before),
+  chatSend: (conversation, turnId, text, images) =>
+    ipcRenderer.invoke('chat:sendMessage', conversation, turnId, text, images),
+  chatCancel: (conversation, turnId) => ipcRenderer.send('chat:cancel', conversation, turnId),
+  chatRenameConversation: (conversation, revision, title) =>
+    ipcRenderer.invoke('chat:renameConversation', conversation, revision, title),
+  chatDeleteConversation: (conversation, revision) =>
+    ipcRenderer.invoke('chat:deleteConversation', conversation, revision),
+  chatAnswerQuestion: (conversation, turnId, questionId, answer) =>
+    ipcRenderer.send('chat:answer-question', conversation, turnId, questionId, answer),
 
   // Events
+  onChatFrame: (callback) => {
+    const listener = (_event: Electron.IpcRendererEvent, frame: MobileWsServerFrame) =>
+      callback(frame);
+    ipcRenderer.on('chat:frame', listener);
+    return () => ipcRenderer.removeListener('chat:frame', listener);
+  },
+  onChatConversationInvalidated: (callback) => {
+    const listener = (_event: Electron.IpcRendererEvent, event: ConversationInvalidation) =>
+      callback(event);
+    ipcRenderer.on('chat:conversationInvalidated', listener);
+    return () => ipcRenderer.removeListener('chat:conversationInvalidated', listener);
+  },
   onAgentEvent: (callback) => {
     const listener = (
       _event: Electron.IpcRendererEvent,

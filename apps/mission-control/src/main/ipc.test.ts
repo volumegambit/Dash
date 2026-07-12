@@ -12,8 +12,10 @@ import { verifyConversationGateway } from './gateway-connection.js';
 import {
   ConversationLifecycleEpoch,
   GatewayEventStreamManager,
+  activatePendingConversationRuntime,
   configurePendingConversationRuntime,
   conversationContextFromOfflineProfile,
+  createCanonicalChatHandlers,
   createGatewaySubscriptionLifecycle,
   createLegacyWireChatAdapter,
   disposePendingConversationRuntime,
@@ -74,6 +76,61 @@ describe('conversation sync lifecycle selection', () => {
     expect(client.health.mock.invocationCallOrder[0]).toBeLessThan(
       client.getIdentity.mock.invocationCallOrder[0],
     );
+  });
+
+  it('activates and detaches the pending resumable transport atomically', () => {
+    const setResumableTransport = vi.fn();
+    const transport = { closeAll: vi.fn() };
+
+    activatePendingConversationRuntime(
+      { setResumableTransport } as never,
+      {
+        gatewayId: 'gateway-1',
+        repository: { offline: false },
+        transport,
+      } as never,
+    );
+    activatePendingConversationRuntime({ setResumableTransport } as never, null);
+
+    expect(setResumableTransport).toHaveBeenNthCalledWith(1, transport);
+    expect(setResumableTransport).toHaveBeenNthCalledWith(2, undefined);
+  });
+
+  it('forwards canonical refs, cursors, revisions, and turn IDs through handler bodies', async () => {
+    const ref = { id: 'conversation-1', origin: 'gateway' as const };
+    const chat = {
+      listConversations: vi.fn(),
+      createConversation: vi.fn(),
+      getMessages: vi.fn(),
+      sendMessage: vi.fn(),
+      renameConversation: vi.fn(),
+      deleteConversation: vi.fn(),
+      cancel: vi.fn(),
+      answerQuestion: vi.fn(),
+    };
+    const controller = { find: vi.fn() };
+    const handlers = createCanonicalChatHandlers(chat as never, controller as never);
+    const images = [{ mediaType: 'image/png' as const, data: 'aGVsbG8=' }];
+
+    await handlers.listConversations('cursor-1');
+    await handlers.getConversation(ref);
+    await handlers.createConversation('agent-1', 'request-1');
+    await handlers.getMessages(ref, 'before-1');
+    await handlers.sendMessage(ref, 'turn-1', 'hello', images);
+    await handlers.renameConversation(ref, 4, 'Renamed');
+    await handlers.deleteConversation(ref, 5);
+    handlers.cancel(ref, 'turn-1');
+    handlers.answerQuestion(ref, 'turn-1', 'question-1', 'Yes');
+
+    expect(chat.listConversations).toHaveBeenCalledWith('cursor-1');
+    expect(controller.find).toHaveBeenCalledWith(ref);
+    expect(chat.createConversation).toHaveBeenCalledWith('agent-1', 'request-1');
+    expect(chat.getMessages).toHaveBeenCalledWith(ref, 'before-1');
+    expect(chat.sendMessage).toHaveBeenCalledWith(ref, 'turn-1', 'hello', images);
+    expect(chat.renameConversation).toHaveBeenCalledWith(ref, 4, 'Renamed');
+    expect(chat.deleteConversation).toHaveBeenCalledWith(ref, 5);
+    expect(chat.cancel).toHaveBeenCalledWith(ref, 'turn-1');
+    expect(chat.answerQuestion).toHaveBeenCalledWith(ref, 'turn-1', 'question-1', 'Yes');
   });
 
   it('selects explicit legacy authority without requiring an identity route', async () => {

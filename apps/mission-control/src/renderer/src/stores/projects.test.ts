@@ -1,4 +1,4 @@
-import type { McConversation } from '@dash/mc';
+import type { McConversationView } from '@dash/mc';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { mockApi } from '../../../../vitest.setup.js';
 import type { Issue, IssueDetail, Project } from '../../../shared/projects-ipc.js';
@@ -39,14 +39,29 @@ function project(id: string, patch: Partial<Project> = {}): Project {
   };
 }
 
-function conversation(id: string): McConversation {
+function conversation(id: string): McConversationView {
   return {
     id,
     agentId: 'Developer',
+    agentName: 'Developer',
     title: id,
+    revision: 1,
+    status: 'idle',
+    activeTurnId: null,
+    owningIssueId: '1',
+    projectId: null,
+    lastSeq: 0,
+    lastMessagePreview: null,
     createdAt: '2026-07-05T00:00:00Z',
     updatedAt: '2026-07-05T00:00:00Z',
+    origin: 'gateway',
+    offline: false,
+    readOnly: false,
   };
+}
+
+function conversationResult(items: McConversationView[]) {
+  return { items, nextCursor: null, authority: 'gateway' as const, gatewayOnline: true };
 }
 
 beforeEach(() => {
@@ -154,7 +169,7 @@ describe('useProjectsStore.applyEvent', () => {
     // a conversation this window has never loaded; the task page's session
     // tabs filter linked_sessions by the chat store's list, so the store must
     // refresh it — no component ever calls loadConversations for these.
-    mockApi.chatListConversations.mockResolvedValue([conversation('sess-1')]);
+    mockApi.chatListConversations.mockResolvedValue(conversationResult([conversation('sess-1')]));
 
     useProjectsStore.getState().applyEvent({
       topic: 'session.linked',
@@ -170,7 +185,7 @@ describe('useProjectsStore.applyEvent', () => {
   it('refreshes both the cached detail and the conversation list on session.linked', async () => {
     const detail = { ...issue('1'), comments: [], events: [], linked_sessions: [], subtasks: [] };
     useProjectsStore.setState({ detailById: { '1': detail as IssueDetail } });
-    mockApi.chatListConversations.mockResolvedValue([conversation('sess-1')]);
+    mockApi.chatListConversations.mockResolvedValue(conversationResult([conversation('sess-1')]));
 
     useProjectsStore.getState().applyEvent({ topic: 'session.linked', payload: { issue_id: '1' } });
 
