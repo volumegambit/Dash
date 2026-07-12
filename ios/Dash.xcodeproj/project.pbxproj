@@ -15,14 +15,14 @@
 		4668E2120763FEBBA5FF9E4F /* ContractFixtureTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B9DA6410B51480914E590149 /* ContractFixtureTests.swift */; };
 		4B2D73FD82135021FFF69FBB /* RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7122407C2DFAE0725F3C7A19 /* RootView.swift */; };
 		5403241B637660E5DE8681DD /* ConnectionEndpointTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B92A2E043D415EDF91976BDB /* ConnectionEndpointTests.swift */; };
+		75940C10FE042FE6E7082B97 /* fixtures in Resources */ = {isa = PBXBuildFile; fileRef = 7F905FA5BADAB9C3505C5E98 /* fixtures */; };
 		8813C9D311DEA458B7FA15E6 /* DashApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6E1586AC3AA8DD659BA93386 /* DashApp.swift */; };
 		91EF1051BCC6B72B4E9A56C4 /* ConversationContracts.swift in Sources */ = {isa = PBXBuildFile; fileRef = A79D0DEB74140756418F452C /* ConversationContracts.swift */; };
-		9D6B353D3A96935E7ADCC754 /* fixtures in Resources */ = {isa = PBXBuildFile; fileRef = FF9506A0D5A278E9BB8C41C1 /* fixtures */; };
 		A1C69662A84EE2E815659753 /* JSONValue.swift in Sources */ = {isa = PBXBuildFile; fileRef = D04890795A14A3900A409B70 /* JSONValue.swift */; };
 		A28037E25E69980E8380A091 /* ProjectSmokeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B234BC90E4C8944A1E68EABA /* ProjectSmokeTests.swift */; };
 		A50C5000B180850E674F96C9 /* ConnectionSecrets.swift in Sources */ = {isa = PBXBuildFile; fileRef = 065F18C3588CFDD4442702AA /* ConnectionSecrets.swift */; };
+		A7A8810ABA993753A93E0AEA /* fixtures in Resources */ = {isa = PBXBuildFile; fileRef = 7F905FA5BADAB9C3505C5E98 /* fixtures */; };
 		AAF7A259A5BA4EA200E9B14C /* AgentEvent.swift in Sources */ = {isa = PBXBuildFile; fileRef = A30305EF93D85E9870B576CF /* AgentEvent.swift */; };
-		AB8C72EC28A0AA8A1D1CA9F1 /* fixtures in Resources */ = {isa = PBXBuildFile; fileRef = FF9506A0D5A278E9BB8C41C1 /* fixtures */; };
 		BBC747B6CA26A72967389392 /* KeychainStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = D73BB49241AB21544EE52337 /* KeychainStore.swift */; };
 		C4CA2B38B085B40D3243B048 /* KeychainStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 40C319EEC75937C1BB5E6F70 /* KeychainStoreTests.swift */; };
 		DE173F96B5CDCE15F9A5945A /* FixtureLoader.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8D0AD75CCB7719441B1328C0 /* FixtureLoader.swift */; };
@@ -76,6 +76,7 @@
 		5F46829415E81F961F0AB6AD /* Release.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Release.xcconfig; sourceTree = "<group>"; };
 		6E1586AC3AA8DD659BA93386 /* DashApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DashApp.swift; sourceTree = "<group>"; };
 		7122407C2DFAE0725F3C7A19 /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
+		7F905FA5BADAB9C3505C5E98 /* fixtures */ = {isa = PBXFileReference; lastKnownFileType = folder; name = fixtures; path = ../contracts/mobile/v1/fixtures; sourceTree = SOURCE_ROOT; };
 		81664675C56F74B53EE930CE /* Dash.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = Dash.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		8D0AD75CCB7719441B1328C0 /* FixtureLoader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FixtureLoader.swift; sourceTree = "<group>"; };
 		A30305EF93D85E9870B576CF /* AgentEvent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentEvent.swift; sourceTree = "<group>"; };
@@ -92,18 +93,9 @@
 		DF5183054A5FC76462D2E6E1 /* ConnectionEndpoint.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectionEndpoint.swift; sourceTree = "<group>"; };
 		E2CAF389B04EB957A4A047B7 /* PairingFixtureTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PairingFixtureTests.swift; sourceTree = "<group>"; };
 		EEF957521D399CF0D79B78B8 /* AgentContracts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentContracts.swift; sourceTree = "<group>"; };
-		FF9506A0D5A278E9BB8C41C1 /* fixtures */ = {isa = PBXFileReference; lastKnownFileType = folder; name = fixtures; path = ../contracts/mobile/v1/fixtures; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
-		1E4997F61E884EBCF78839A2 /* v1 */ = {
-			isa = PBXGroup;
-			children = (
-				FF9506A0D5A278E9BB8C41C1 /* fixtures */,
-			);
-			path = v1;
-			sourceTree = "<group>";
-		};
 		270CD88767882910C84D1C46 /* Security */ = {
 			isa = PBXGroup;
 			children = (
@@ -143,14 +135,6 @@
 			path = Networking;
 			sourceTree = "<group>";
 		};
-		342F8487CE3A976359B10025 /* contracts */ = {
-			isa = PBXGroup;
-			children = (
-				90C69DFD4B4703F4B836CB9F /* mobile */,
-			);
-			path = contracts;
-			sourceTree = "<group>";
-		};
 		5D79DC69DAB65B7D3ED39C7F /* Config */ = {
 			isa = PBXGroup;
 			children = (
@@ -167,6 +151,14 @@
 				BF63D93795D70EF22218E585 /* Info.plist */,
 			);
 			path = Resources;
+			sourceTree = "<group>";
+		};
+		772F3D949268B020A4A13285 /* ContractFixtures */ = {
+			isa = PBXGroup;
+			children = (
+				7F905FA5BADAB9C3505C5E98 /* fixtures */,
+			);
+			name = ContractFixtures;
 			sourceTree = "<group>";
 		};
 		818513E3A8037D1099744852 /* App */ = {
@@ -186,14 +178,6 @@
 				270CD88767882910C84D1C46 /* Security */,
 			);
 			path = Core;
-			sourceTree = "<group>";
-		};
-		90C69DFD4B4703F4B836CB9F /* mobile */ = {
-			isa = PBXGroup;
-			children = (
-				1E4997F61E884EBCF78839A2 /* v1 */,
-			);
-			path = mobile;
 			sourceTree = "<group>";
 		};
 		9734F6B1F6C35313C5665874 /* DashTests */ = {
@@ -218,21 +202,12 @@
 			isa = PBXGroup;
 			children = (
 				5D79DC69DAB65B7D3ED39C7F /* Config */,
+				772F3D949268B020A4A13285 /* ContractFixtures */,
 				27D8C0EC393C5F57AA9DA427 /* Dash */,
 				FFFB81C9DFD1D7226C9FAC72 /* DashContractTests */,
 				9734F6B1F6C35313C5665874 /* DashTests */,
-				B1450450DFA5010951932636 /* ios-native */,
 				2FEA4D269AE13CBC16B87AB7 /* Products */,
 			);
-			sourceTree = "<group>";
-		};
-		B1450450DFA5010951932636 /* ios-native */ = {
-			isa = PBXGroup;
-			children = (
-				342F8487CE3A976359B10025 /* contracts */,
-			);
-			name = "ios-native";
-			path = ..;
 			sourceTree = "<group>";
 		};
 		F47F7F840F06665235B5CBD7 /* Contracts */ = {
@@ -405,7 +380,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				AB8C72EC28A0AA8A1D1CA9F1 /* fixtures in Resources */,
+				75940C10FE042FE6E7082B97 /* fixtures in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -413,7 +388,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				9D6B353D3A96935E7ADCC754 /* fixtures in Resources */,
+				A7A8810ABA993753A93E0AEA /* fixtures in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
