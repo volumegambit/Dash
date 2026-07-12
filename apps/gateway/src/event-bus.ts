@@ -4,6 +4,8 @@ export type GatewayEvent =
   | { type: 'channel:config-changed'; channel: string; fields: string[] }
   | { type: 'channel:removed'; channel: string }
   | { type: 'channel:restarted'; channel: string; reason: string }
+  | { type: 'conversation:changed'; conversationId: string; revision: number }
+  | { type: 'conversation:deleted'; conversationId: string; revision: number }
   | { type: 'mcp:server-added'; server: string }
   | { type: 'mcp:server-removed'; server: string }
   | { type: 'plugin:config-changed'; plugin: string; fields: string[] }

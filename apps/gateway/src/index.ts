@@ -30,11 +30,10 @@ import { ChannelRegistry } from './channel-registry.js';
 import { mountChatWs } from './chat-ws.js';
 import { parseFlags, resolveSwarmConfig, swarmOverridesFromEnv } from './config.js';
 import { createControlPlaneClient } from './control-plane-client.js';
+import { SqliteConversationService } from './conversation-service-sqlite.js';
 import { GatewayCredentialStore } from './credential-store.js';
 import { createDialTokenManager } from './dial-token-manager.js';
 import { EventBus } from './event-bus.js';
-import { SqliteEventLogStore } from './event-log-store-sqlite.js';
-import type { EventLogStore } from './event-log-store.js';
 import { loadOrCreateGatewayId, loadOrCreateGatewayIdentity } from './gateway-identity.js';
 import { createDynamicGateway } from './gateway.js';
 import { createGatewayManagementApp } from './management-api.js';
@@ -124,7 +123,8 @@ async function main() {
   // endpoint + GC on agent deletion). Kept behind the `EventLogStore`
   // interface so future backends (LMDB, Postgres, etc.) only need a
   // new adapter class in this one spot.
-  const eventLogStore: EventLogStore = new SqliteEventLogStore({ dataDir });
+  const conversationService = new SqliteConversationService({ dataDir });
+  const eventLogStore = conversationService.eventLog;
 
   // Projects DB — durable task/issue records. Opened once and shared by the
   // agent tools (via createBackend) and the management API (routes + WS).
@@ -403,6 +403,13 @@ async function main() {
     restoreRun: (snapshot) => swarmCoordinator.restoreFinalizedRun(snapshot),
     log: (message) => logger.info(message),
   });
+  const conversationRecovery = conversationService.recoverInterruptedTurns();
+  if (conversationRecovery.conversationsInterrupted > 0) {
+    logger.info(
+      `[conversation-recovery] interrupted ${conversationRecovery.conversationsInterrupted} turn(s), ` +
+        `appended ${conversationRecovery.terminalsAppended} terminal(s)`,
+    );
+  }
 
   const agents = createAgentChatCoordinator({
     registry,
@@ -760,7 +767,7 @@ async function main() {
     // after serve() below (it closes over the servers); this closure only
     // runs at request time, long after it exists.
     onShutdown: () => shutdown('POST /lifecycle/shutdown'),
-    eventLogStore,
+    conversationService,
     // Mounts the swarm panel routes + threads the cancel cascade into the
     // disable/delete agent handlers. Same instance the chat coordinator attaches
     // turns to, so the panel reads live runs.
@@ -929,7 +936,7 @@ async function main() {
     // agents/gateway shutdown path land cleanly. WAL checkpoints are
     // flushed on close, so the next gateway start sees a consistent
     // database.
-    await safeStep('eventLogStore.close', () => eventLogStore.close());
+    await safeStep('conversationService.close', () => conversationService.close());
     await safeStep('projectsDb.close', () => projectsDb.db.close());
     process.exit(0);
   };

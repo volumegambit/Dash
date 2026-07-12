@@ -1,9 +1,14 @@
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { AgentChatCoordinator } from './agent-chat-coordinator.js';
 import { AgentRegistry } from './agent-registry.js';
 import type { RegisteredAgent } from './agent-registry.js';
 import type { ChannelRegistry, RegisteredChannel } from './channel-registry.js';
+import { SqliteConversationService } from './conversation-service-sqlite.js';
+import type { ConversationService } from './conversation-service.js';
 import type { GatewayCredentialStore } from './credential-store.js';
 import { EventBus } from './event-bus.js';
 import type { DynamicGateway } from './gateway.js';
@@ -159,6 +164,32 @@ function makeModelsStore() {
   } as unknown as import('./models-store.js').ModelsStore;
 }
 
+function makeConversationService(): ConversationService {
+  return {
+    eventLog: {
+      append: vi.fn(() => 1),
+      readSince: vi.fn(() => []),
+      listInterrupted: vi.fn(() => []),
+      deleteAgent: vi.fn(),
+      deleteConversation: vi.fn(),
+      close: vi.fn(),
+    },
+    create: vi.fn(),
+    get: vi.fn(() => null),
+    list: vi.fn(() => ({ items: [], nextCursor: null })),
+    update: vi.fn(),
+    delete: vi.fn(),
+    listMessages: vi.fn(() => ({ items: [], nextCursor: null, throughSeq: 0 })),
+    acceptTurn: vi.fn(),
+    appendTurnEvent: vi.fn(() => null),
+    finishTurn: vi.fn(),
+    trySetAutoTitle: vi.fn(() => null),
+    archiveAgentConversations: vi.fn(() => []),
+    recoverInterruptedTurns: vi.fn(() => ({ conversationsInterrupted: 0, terminalsAppended: 0 })),
+    close: vi.fn(),
+  } as unknown as ConversationService;
+}
+
 function createApp(overrides: Record<string, unknown> = {}) {
   const deps = {
     gateway: makeGateway(),
@@ -167,6 +198,7 @@ function createApp(overrides: Record<string, unknown> = {}) {
     channelRegistry: makeChannelRegistry(),
     credentialStore: makeCredentialStore(),
     modelsStore: makeModelsStore(),
+    conversationService: makeConversationService(),
     identity: { gatewayId: 'gateway-test-id', publicKey: 'PUBKEY_B64' },
     startedAt: '2026-04-03T00:00:00Z',
     token: 'test-token',
@@ -243,6 +275,11 @@ describe('createGatewayManagementApp', () => {
       const { app } = createApp();
       const res = await app.request('/agents');
       expect(res.status).toBe(401);
+      expect(await res.json()).toEqual({
+        code: 'unauthorized',
+        error: 'Unauthorized',
+        retryable: false,
+      });
     });
 
     it('allows requests with valid token', async () => {
@@ -568,6 +605,137 @@ describe('createGatewayManagementApp', () => {
       const { app } = createApp();
       const res = await app.request('/agents/nope/enable', { method: 'POST', headers: AUTH });
       expect(res.status).toBe(404);
+    });
+  });
+
+  describe('structured mobile agent errors', () => {
+    it.each([
+      {
+        label: 'malformed create JSON',
+        path: '/agents',
+        method: 'POST',
+        body: '{',
+      },
+      {
+        label: 'unknown create field',
+        path: '/agents',
+        method: 'POST',
+        body: JSON.stringify({
+          name: 'x',
+          model: 'test/model',
+          systemPrompt: '',
+          unknown: true,
+        }),
+      },
+      {
+        label: 'invalid create field',
+        path: '/agents',
+        method: 'POST',
+        body: JSON.stringify({ name: 'x', model: 3, systemPrompt: '' }),
+      },
+    ])('returns MobileApiError for $label', async (testCase) => {
+      const { app } = createApp();
+      const response = await app.request(testCase.path, {
+        method: testCase.method,
+        headers: JSON_HEADERS,
+        body: testCase.body,
+      });
+      expect(response.status).toBe(400);
+      expect(await response.json()).toMatchObject({
+        code: 'validation_failed',
+        retryable: false,
+      });
+    });
+
+    it('returns MobileApiError for invalid update JSON, unknown keys, and wrong field types', async () => {
+      const cases = ['{', JSON.stringify({ unknown: true }), JSON.stringify({ model: 3 })];
+      for (const body of cases) {
+        const { app, agentRegistry } = createApp();
+        const entry = (agentRegistry.register as ReturnType<typeof vi.fn>)({
+          name: 'x',
+          model: 'test/model',
+          systemPrompt: '',
+        });
+        const response = await app.request(`/agents/${entry.id}`, {
+          method: 'PUT',
+          headers: JSON_HEADERS,
+          body,
+        });
+        expect(response.status).toBe(400);
+        expect(await response.json()).toMatchObject({
+          code: 'validation_failed',
+          retryable: false,
+        });
+      }
+    });
+
+    it.each([
+      { path: '/agents/missing', method: 'GET' },
+      { path: '/agents/missing', method: 'PUT', body: JSON.stringify({ model: 'test/model' }) },
+      { path: '/agents/missing', method: 'DELETE' },
+      { path: '/agents/missing/enable', method: 'POST' },
+      { path: '/agents/missing/disable', method: 'POST' },
+    ])('returns the frozen not-found body for $method $path', async (testCase) => {
+      const { app } = createApp();
+      const response = await app.request(testCase.path, {
+        method: testCase.method,
+        headers: testCase.body ? JSON_HEADERS : AUTH,
+        ...(testCase.body ? { body: testCase.body } : {}),
+      });
+      expect(response.status).toBe(404);
+      expect(await response.json()).toEqual({
+        code: 'not_found',
+        error: 'Agent not found',
+        retryable: false,
+      });
+    });
+
+    it.each(['enable', 'disable'])('contains an injected %s failure', async (action) => {
+      const { app, agentRegistry } = createApp();
+      const entry = (agentRegistry.register as ReturnType<typeof vi.fn>)({
+        name: 'x',
+        model: 'test/model',
+        systemPrompt: '',
+      });
+      (
+        agentRegistry[action as 'enable' | 'disable'] as ReturnType<typeof vi.fn>
+      ).mockImplementation(() => {
+        throw new Error('injected action failure');
+      });
+
+      const response = await app.request(`/agents/${entry.id}/${action}`, {
+        method: 'POST',
+        headers: AUTH,
+      });
+      expect(response.status).toBe(500);
+      expect(await response.json()).toEqual({
+        code: 'gateway_offline',
+        error: 'Internal gateway error',
+        retryable: true,
+      });
+    });
+
+    it('contains an injected delete failure', async () => {
+      const { app, agentRegistry, gateway } = createApp();
+      const entry = (agentRegistry.register as ReturnType<typeof vi.fn>)({
+        name: 'x',
+        model: 'test/model',
+        systemPrompt: '',
+      });
+      (gateway.deregisterAgent as ReturnType<typeof vi.fn>).mockRejectedValue(
+        new Error('injected delete failure'),
+      );
+
+      const response = await app.request(`/agents/${entry.id}`, {
+        method: 'DELETE',
+        headers: AUTH,
+      });
+      expect(response.status).toBe(500);
+      expect(await response.json()).toEqual({
+        code: 'gateway_offline',
+        error: 'Internal gateway error',
+        retryable: true,
+      });
     });
   });
 
@@ -1361,5 +1529,180 @@ describe('POST /agents/:agentId/conversation-title', () => {
       body: JSON.stringify({ text: 'hello' }),
     });
     expect(res.status).toBe(401);
+  });
+});
+
+describe('canonical and legacy conversation replay', () => {
+  it('replays archived canonical history after the agent registry entry is deleted', async () => {
+    const tmpDir = await mkdtemp(join(tmpdir(), 'management-replay-'));
+    const conversationService = new SqliteConversationService({ dataDir: tmpDir });
+    try {
+      const { app, agentRegistry } = createApp({
+        conversationService,
+        eventLogStore: conversationService.eventLog,
+      });
+      const agent = (agentRegistry.register as ReturnType<typeof vi.fn>)({
+        name: 'Archived Helper',
+        model: 'test/model',
+        systemPrompt: '',
+      });
+      const conversation = conversationService.create({
+        agentId: agent.id,
+        agentName: agent.name,
+        requestId: 'create-01',
+      });
+      conversationService.acceptTurn({
+        agentId: agent.id,
+        conversationId: conversation.id,
+        turnId: 'turn-01',
+        text: 'Remember this',
+      });
+      conversationService.appendTurnEvent(conversation.id, 'turn-01', {
+        type: 'text_delta',
+        text: 'Remembered',
+      });
+      conversationService.finishTurn({
+        conversationId: conversation.id,
+        turnId: 'turn-01',
+        outcome: 'completed',
+      });
+
+      const removed = await app.request(`/agents/${agent.id}`, { method: 'DELETE', headers: AUTH });
+      expect(removed.status).toBe(200);
+      expect(conversationService.get(conversation.id)).toMatchObject({ status: 'archived' });
+
+      const replay = await app.request(
+        `/agents/${agent.id}/conversations/${conversation.id}/events?sinceSeq=0`,
+        { headers: AUTH },
+      );
+      expect(replay.status).toBe(200);
+      expect(
+        (await replay.json()).entries.map(
+          (entry: { payload: { type: string } }) => entry.payload.type,
+        ),
+      ).toEqual(['accepted', 'event', 'done']);
+    } finally {
+      conversationService.close();
+      await rm(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves ascending legacy replay for local-only conversation IDs', async () => {
+    const tmpDir = await mkdtemp(join(tmpdir(), 'management-legacy-replay-'));
+    const conversationService = new SqliteConversationService({ dataDir: tmpDir });
+    try {
+      const { app, agentRegistry } = createApp({
+        conversationService,
+        eventLogStore: conversationService.eventLog,
+      });
+      const agent = (agentRegistry.register as ReturnType<typeof vi.fn>)({
+        name: 'Legacy Helper',
+        model: 'test/model',
+        systemPrompt: '',
+      });
+      conversationService.eventLog.append(agent.id, 'local-only', 'turn-01', {
+        type: 'event',
+        event: { type: 'text_delta', text: 'one' },
+      });
+      conversationService.eventLog.append(agent.id, 'local-only', 'turn-01', {
+        type: 'done',
+        outcome: 'completed',
+      });
+
+      const replay = await app.request(
+        `/agents/${agent.id}/conversations/local-only/events?sinceSeq=1`,
+        { headers: AUTH },
+      );
+      expect(replay.status).toBe(200);
+      expect(await replay.json()).toEqual({
+        entries: [
+          expect.objectContaining({
+            seq: 2,
+            msgId: 'turn-01',
+            agentId: agent.id,
+            conversationId: 'local-only',
+            payload: { type: 'done', outcome: 'completed' },
+          }),
+        ],
+      });
+    } finally {
+      conversationService.close();
+      await rm(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not expose another agent canonical row or fall through from a tombstone', async () => {
+    const tmpDir = await mkdtemp(join(tmpdir(), 'management-replay-guards-'));
+    const conversationService = new SqliteConversationService({ dataDir: tmpDir });
+    try {
+      const { app, agentRegistry } = createApp({
+        conversationService,
+        eventLogStore: conversationService.eventLog,
+      });
+      const owner = (agentRegistry.register as ReturnType<typeof vi.fn>)({
+        name: 'Owner',
+        model: 'test/model',
+        systemPrompt: '',
+      });
+      const other = (agentRegistry.register as ReturnType<typeof vi.fn>)({
+        name: 'Other',
+        model: 'test/model',
+        systemPrompt: '',
+      });
+      const conversation = conversationService.create({
+        agentId: owner.id,
+        agentName: owner.name,
+        requestId: 'create-01',
+      });
+
+      const wrongOwner = await app.request(
+        `/agents/${other.id}/conversations/${conversation.id}/events`,
+        { headers: AUTH },
+      );
+      expect(wrongOwner.status).toBe(404);
+      expect(await wrongOwner.json()).toEqual({
+        code: 'not_found',
+        error: 'Conversation not found',
+        retryable: false,
+      });
+
+      conversationService.delete(conversation.id, conversation.revision);
+      conversationService.eventLog.append(owner.id, conversation.id, 'legacy-after-delete', {
+        type: 'event',
+        event: { type: 'text_delta', text: 'must not leak' },
+      });
+      const tombstone = await app.request(
+        `/agents/${owner.id}/conversations/${conversation.id}/events`,
+        { headers: AUTH },
+      );
+      expect(tombstone.status).toBe(200);
+      expect(await tombstone.json()).toEqual({ entries: [] });
+    } finally {
+      conversationService.close();
+      await rm(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('serializes conversation invalidations through the existing SSE stream', async () => {
+    const eventBus = new EventBus();
+    const { app } = createApp({ eventBus });
+    const abort = new AbortController();
+    const response = await app.request('/events', { headers: AUTH, signal: abort.signal });
+    expect(response.status).toBe(200);
+    expect(response.headers.get('content-type')).toContain('text/event-stream');
+    const reader = response.body?.getReader();
+    expect(reader).toBeDefined();
+    eventBus.emit({
+      type: 'conversation:changed',
+      conversationId: '018f0f4a-5c42-7a8b-9c01-1234567890ab',
+      revision: 2,
+    });
+    const chunk = await reader?.read();
+    expect(new TextDecoder().decode(chunk?.value)).toBe(
+      'event: conversation:changed\n' +
+        'data: {"type":"conversation:changed","conversationId":"018f0f4a-5c42-7a8b-9c01-1234567890ab","revision":2}\n\n',
+    );
+    abort.abort();
+    await reader?.cancel();
   });
 });

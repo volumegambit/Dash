@@ -5,7 +5,7 @@ import type { ChannelAdapter } from '@dash/channels';
 import { TelegramAdapter, WhatsAppAdapter } from '@dash/channels';
 import { type StructuredLogger, createConsoleLogger } from '@dash/logging';
 import { mountProjectsRoutes } from '@dash/management';
-import type { GatewayIdentity, MobileCapability } from '@dash/mobile-contract';
+import type { GatewayIdentity, MobileApiError, MobileCapability } from '@dash/mobile-contract';
 import type { PluginConfigStore } from '@dash/plugins';
 import { heuristicPluginScan, installPluginToDir, realpathContained } from '@dash/plugins';
 import type { ProjectsDb } from '@dash/projects';
@@ -16,10 +16,11 @@ import type { Context } from 'hono';
 import type { AgentChatCoordinator } from './agent-chat-coordinator.js';
 import type { AgentRegistry, GatewayAgentConfig, RegisteredAgent } from './agent-registry.js';
 import type { ChannelRegistry, ChannelRoutingRule } from './channel-registry.js';
+import { mountConversationRoutes } from './conversation-routes.js';
+import type { ConversationService } from './conversation-service.js';
 import { type CompleteFn, generateConversationTitle } from './conversation-title.js';
 import type { GatewayCredentialStore } from './credential-store.js';
 import type { EventBus, GatewayEvent } from './event-bus.js';
-import type { EventLogStore } from './event-log-store.js';
 import type { DynamicGateway } from './gateway.js';
 import type { McpManagementDeps } from './mcp-management.js';
 import { mountMcpRoutes } from './mcp-management.js';
@@ -44,13 +45,8 @@ export interface GatewayManagementOptions {
    * `GET /models` triggers a fresh fetch with the new credential set.
    */
   modelsStore: ModelsStore;
-  /**
-   * Durable event log used by the chat-ws streaming path to record
-   * every outbound event. The management API exposes a replay
-   * endpoint that MC polls after a WebSocket drop. Optional only so
-   * tests that don't exercise replay can skip wiring it up.
-   */
-  eventLogStore?: EventLogStore;
+  /** Canonical conversation metadata, messages, and the shared durable event journal. */
+  conversationService: ConversationService;
   /** Shared projects DB. When present, mounts /projects + /issues + /inbox. */
   projectsDb?: ProjectsDb;
   /**
@@ -166,6 +162,161 @@ async function parseJsonBody<T = Record<string, unknown>>(
   } catch {
     return { ok: false, response: c.json({ error: 'Invalid JSON' }, 400) };
   }
+}
+
+const AGENT_CREATE_KEYS = new Set([
+  'name',
+  'model',
+  'systemPrompt',
+  'fallbackModels',
+  'tools',
+  'skills',
+  'providerApiKeys',
+  'workspace',
+  'maxTokens',
+  'mcpServers',
+  'swarm',
+  'plugins',
+  'providers',
+]);
+const AGENT_UPDATE_KEYS = new Set([...AGENT_CREATE_KEYS].filter((key) => key !== 'name'));
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return (
+    value !== null &&
+    typeof value === 'object' &&
+    !Array.isArray(value) &&
+    Object.getPrototypeOf(value) === Object.prototype
+  );
+}
+
+function requireAgentStringArray(value: unknown, field: string): void {
+  if (
+    !Array.isArray(value) ||
+    value.some((item) => typeof item !== 'string' || item.trim().length === 0)
+  ) {
+    throw new Error(`${field} must be an array of nonblank strings`);
+  }
+}
+
+function validateAgentSkills(value: unknown): void {
+  if (!isPlainRecord(value) || Object.keys(value).some((key) => !['paths', 'urls'].includes(key))) {
+    throw new Error('skills must contain only paths and urls');
+  }
+  if (value.paths !== undefined) requireAgentStringArray(value.paths, 'skills.paths');
+  if (value.urls !== undefined) requireAgentStringArray(value.urls, 'skills.urls');
+}
+
+function validateAgentSwarm(value: unknown): void {
+  const allowed = new Set([
+    'enabled',
+    'maxConcurrentWorkers',
+    'maxWorkersPerRun',
+    'maxSteersPerWorker',
+    'maxRunSeconds',
+    'allowedModels',
+  ]);
+  if (!isPlainRecord(value) || Object.keys(value).some((key) => !allowed.has(key))) {
+    throw new Error('swarm contains unknown or invalid fields');
+  }
+  if (value.enabled !== undefined && typeof value.enabled !== 'boolean') {
+    throw new Error('swarm.enabled must be a boolean');
+  }
+  for (const key of ['maxConcurrentWorkers', 'maxWorkersPerRun', 'maxRunSeconds'] as const) {
+    const item = value[key];
+    if (item !== undefined && (!Number.isInteger(item) || (item as number) < 1)) {
+      throw new Error(`swarm.${key} must be a positive integer`);
+    }
+  }
+  if (
+    value.maxSteersPerWorker !== undefined &&
+    (!Number.isInteger(value.maxSteersPerWorker) || (value.maxSteersPerWorker as number) < 0)
+  ) {
+    throw new Error('swarm.maxSteersPerWorker must be a non-negative integer');
+  }
+  if (value.allowedModels !== undefined) {
+    requireAgentStringArray(value.allowedModels, 'swarm.allowedModels');
+  }
+}
+
+function validateAgentField(key: string, value: unknown): void {
+  if (key === 'name' || key === 'model') {
+    if (typeof value !== 'string' || value.trim().length === 0) {
+      throw new Error(`${key} must be a nonblank string`);
+    }
+    return;
+  }
+  if (key === 'systemPrompt' || key === 'workspace') {
+    if (typeof value !== 'string') throw new Error(`${key} must be a string`);
+    return;
+  }
+  if (
+    key === 'fallbackModels' ||
+    key === 'tools' ||
+    key === 'mcpServers' ||
+    key === 'plugins' ||
+    key === 'providers'
+  ) {
+    if ((key === 'plugins' || key === 'providers') && value === null) return;
+    requireAgentStringArray(value, key);
+    return;
+  }
+  if (key === 'skills') {
+    validateAgentSkills(value);
+    return;
+  }
+  if (key === 'providerApiKeys') {
+    if (!isPlainRecord(value) || Object.values(value).some((item) => typeof item !== 'string')) {
+      throw new Error('providerApiKeys must map providers to strings');
+    }
+    return;
+  }
+  if (key === 'maxTokens') {
+    if (!Number.isInteger(value) || (value as number) < 1) {
+      throw new Error('maxTokens must be a positive integer');
+    }
+    return;
+  }
+  if (key === 'swarm') validateAgentSwarm(value);
+}
+
+function parseAgentCreateRequest(value: unknown): GatewayAgentConfig {
+  if (!isPlainRecord(value)) throw new Error('Request body must be an object');
+  if (Object.keys(value).some((key) => !AGENT_CREATE_KEYS.has(key))) {
+    throw new Error('Request body contains unknown fields');
+  }
+  for (const key of ['name', 'model', 'systemPrompt']) {
+    if (!Object.hasOwn(value, key)) {
+      throw new Error('Missing required fields: name, model, systemPrompt');
+    }
+  }
+  for (const [key, item] of Object.entries(value)) validateAgentField(key, item);
+  return value as unknown as GatewayAgentConfig;
+}
+
+type AgentUpdateRequest = Parameters<AgentRegistry['update']>[1];
+
+function parseAgentUpdateRequest(value: unknown): AgentUpdateRequest {
+  if (!isPlainRecord(value)) throw new Error('Request body must be an object');
+  const keys = Object.keys(value);
+  if (keys.length === 0) throw new Error('Request body must not be empty');
+  if (keys.some((key) => !AGENT_UPDATE_KEYS.has(key))) {
+    throw new Error('Request body contains unknown fields');
+  }
+  for (const [key, item] of Object.entries(value)) validateAgentField(key, item);
+  return value as AgentUpdateRequest;
+}
+
+function mobileValidationError(error: string): MobileApiError {
+  return { code: 'validation_failed', error, retryable: false };
+}
+
+function mobileAgentNotFound(): MobileApiError {
+  return { code: 'not_found', error: 'Agent not found', retryable: false };
+}
+
+function mobileGatewayError(): MobileApiError {
+  return { code: 'gateway_offline', error: 'Internal gateway error', retryable: true };
 }
 
 /**
@@ -337,7 +488,7 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
     if (token) {
       const auth = c.req.header('Authorization');
       if (!auth || auth !== `Bearer ${token}`) {
-        return c.json({ error: 'Unauthorized' }, 401);
+        return c.json({ code: 'unauthorized', error: 'Unauthorized', retryable: false }, 401);
       }
     }
     await next();
@@ -389,27 +540,47 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
   // Authed (behind the bearer middleware registered above) and always mounted.
   app.get('/identity', (c) => c.json(options.identity));
 
+  mountConversationRoutes(app, {
+    conversations: options.conversationService,
+    agentRegistry,
+    eventBus,
+  });
+
   // --- Agent routes ---
 
   app.post('/agents', async (c) => {
+    let raw: unknown;
+    try {
+      raw = await c.req.json<unknown>();
+    } catch {
+      return c.json(mobileValidationError('Request body must be valid JSON'), 400);
+    }
     let body: GatewayAgentConfig;
     try {
-      body = await c.req.json<GatewayAgentConfig>();
-    } catch {
-      return c.json({ error: 'Invalid JSON' }, 400);
+      body = parseAgentCreateRequest(raw);
+    } catch (error) {
+      return c.json(
+        mobileValidationError(error instanceof Error ? error.message : 'Request body is invalid'),
+        400,
+      );
     }
-    if (!body.name || !body.model || body.systemPrompt == null) {
-      return c.json({ error: 'Missing required fields: name, model, systemPrompt' }, 400);
+    let entry: RegisteredAgent;
+    try {
+      entry = agentRegistry.register(body);
+    } catch (error) {
+      return c.json(
+        mobileValidationError(error instanceof Error ? error.message : 'Agent config is invalid'),
+        400,
+      );
     }
     try {
-      const entry = agentRegistry.register(body);
       gateway.registerAgent(entry.id, buildBridgeClient(entry.id));
       await agentRegistry.save();
       eventBus?.emit({ type: 'agent:config-changed', agent: entry.name, fields: ['*'] });
       return c.json(stripSecrets(entry), 201);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Internal error';
-      return c.json({ error: message }, 409);
+    } catch (error) {
+      logger.error('mobile agent create failed', error instanceof Error ? error : undefined);
+      return c.json(mobileGatewayError(), 500);
     }
   });
 
@@ -419,43 +590,66 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
 
   app.get('/agents/:id', (c) => {
     const entry = agentRegistry.get(c.req.param('id'));
-    if (!entry) return c.json({ error: 'not found' }, 404);
+    if (!entry) return c.json(mobileAgentNotFound(), 404);
     return c.json(stripSecrets(entry));
   });
 
   app.put('/agents/:id', async (c) => {
     const id = c.req.param('id');
     const entry = agentRegistry.get(id);
-    if (!entry) return c.json({ error: 'not found' }, 404);
-    const parsed = await parseJsonBody<Partial<Omit<GatewayAgentConfig, 'name'>>>(c);
-    if (!parsed.ok) return parsed.response;
+    if (!entry) return c.json(mobileAgentNotFound(), 404);
+    let raw: unknown;
+    try {
+      raw = await c.req.json<unknown>();
+    } catch {
+      return c.json(mobileValidationError('Request body must be valid JSON'), 400);
+    }
+    let body: AgentUpdateRequest;
+    try {
+      body = parseAgentUpdateRequest(raw);
+    } catch (error) {
+      return c.json(
+        mobileValidationError(error instanceof Error ? error.message : 'Request body is invalid'),
+        400,
+      );
+    }
     // Snapshot the pre-update swarm block so we can detect a swarm-config change
     // after the update and evict warm backends (a running orchestrator caches
     // its swarm gate/caps; eviction forces the next chat to rebuild with the new
     // config). Deep-compared via JSON.stringify — the block is plain data.
     const oldSwarm = JSON.stringify(entry.config.swarm);
+    let updated: RegisteredAgent;
     try {
-      const updated = agentRegistry.update(id, parsed.body);
+      updated = agentRegistry.update(id, body);
+    } catch (error) {
+      return c.json(
+        mobileValidationError(error instanceof Error ? error.message : 'Agent config is invalid'),
+        400,
+      );
+    }
+    try {
       await agentRegistry.save();
       eventBus?.emit({
         type: 'agent:config-changed',
         agent: entry.name,
-        fields: Object.keys(parsed.body),
+        fields: Object.keys(body),
       });
       if (JSON.stringify(updated.config.swarm) !== oldSwarm) {
         await agents.evict(id);
       }
       return c.json(stripSecrets(updated));
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Internal error';
-      return c.json({ error: message }, 500);
+    } catch (error) {
+      logger.error('mobile agent update failed', error instanceof Error ? error : undefined, {
+        agentId: id,
+      });
+      return c.json(mobileGatewayError(), 500);
     }
   });
 
   app.delete('/agents/:id', async (c) => {
     const id = c.req.param('id');
     const entry = agentRegistry.get(id);
-    if (!entry) return c.json({ error: 'not found' }, 404);
+    if (!entry) return c.json(mobileAgentNotFound(), 404);
     try {
       const removedChannels = await gateway.deregisterAgent(id);
       for (const name of removedChannels) {
@@ -473,32 +667,29 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
       // the registry remove means races that race a delete with a chat
       // get aborted rather than serving a deleted agent's state.
       await agents.evict(id);
+      const archived = options.conversationService?.archiveAgentConversations(id) ?? [];
+      for (const conversation of archived) {
+        eventBus?.emit({
+          type: 'conversation:changed',
+          conversationId: conversation.id,
+          revision: conversation.revision,
+        });
+      }
       agentRegistry.remove(id);
       await agentRegistry.save();
       await channelRegistry.save();
-      // Wipe the agent's durable event log last. If this throws we
-      // still return ok — the registry + channel removal has already
-      // happened and is the user-visible contract of DELETE; an
-      // orphaned event-log row for a removed agent is benign (no
-      // replay endpoint will return it because the agent lookup
-      // fails first).
-      try {
-        options.eventLogStore?.deleteAgent(id);
-      } catch (err) {
-        logger.warn?.('Failed to delete event logs for agent', {
-          agentId: id,
-          error: err instanceof Error ? err.message : String(err),
-        });
-      }
       return c.json({ ok: true });
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Internal error';
-      return c.json({ error: message }, 500);
+    } catch (error) {
+      logger.error('mobile agent delete failed', error instanceof Error ? error : undefined, {
+        agentId: id,
+      });
+      return c.json(mobileGatewayError(), 500);
     }
   });
 
   app.post('/agents/:id/disable', async (c) => {
     const id = c.req.param('id');
+    if (!agentRegistry.get(id)) return c.json(mobileAgentNotFound(), 404);
     try {
       agentRegistry.disable(id);
       await agentRegistry.save();
@@ -509,23 +700,26 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
       options.swarmCoordinator?.cancelRunsFor(id);
       await agents.evict(id);
       return c.json({ ok: true });
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Internal error';
-      if (message.includes('not found')) return c.json({ error: message }, 404);
-      return c.json({ error: message }, 500);
+    } catch (error) {
+      logger.error('mobile agent disable failed', error instanceof Error ? error : undefined, {
+        agentId: id,
+      });
+      return c.json(mobileGatewayError(), 500);
     }
   });
 
   app.post('/agents/:id/enable', async (c) => {
     const id = c.req.param('id');
+    if (!agentRegistry.get(id)) return c.json(mobileAgentNotFound(), 404);
     try {
       agentRegistry.enable(id);
       await agentRegistry.save();
       return c.json({ ok: true });
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Internal error';
-      if (message.includes('not found')) return c.json({ error: message }, 404);
-      return c.json({ error: message }, 500);
+    } catch (error) {
+      logger.error('mobile agent enable failed', error instanceof Error ? error : undefined, {
+        agentId: id,
+      });
+      return c.json(mobileGatewayError(), 500);
     }
   });
 
@@ -903,23 +1097,39 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
   // passes `sinceSeq` as a query param; the gateway returns every
   // entry with `seq > sinceSeq` in seq order. Empty array when
   // there's nothing to replay.
-  if (options.eventLogStore) {
-    const eventLogStore = options.eventLogStore;
-    app.get('/agents/:agentId/conversations/:conversationId/events', (c) => {
-      const agentId = c.req.param('agentId');
-      const conversationId = c.req.param('conversationId');
-      if (!agentRegistry.get(agentId)) {
-        return c.json({ error: 'agent not found' }, 404);
-      }
-      const sinceSeqRaw = c.req.query('sinceSeq');
-      const sinceSeq = sinceSeqRaw === undefined ? 0 : Number.parseInt(sinceSeqRaw, 10);
-      if (!Number.isFinite(sinceSeq) || sinceSeq < 0) {
-        return c.json({ error: 'invalid sinceSeq' }, 400);
-      }
-      const entries = eventLogStore.readSince(agentId, conversationId, sinceSeq);
-      return c.json({ entries });
+  app.get('/agents/:agentId/conversations/:conversationId/events', (c) => {
+    const agentId = c.req.param('agentId');
+    const conversationId = c.req.param('conversationId');
+    const url = new URL(c.req.url);
+    if ([...url.searchParams.keys()].some((key) => key !== 'sinceSeq')) {
+      return c.json(mobileValidationError('Unknown replay query parameter'), 400);
+    }
+    const values = url.searchParams.getAll('sinceSeq');
+    if (values.length > 1 || (values.length === 1 && !/^(0|[1-9][0-9]*)$/.test(values[0]))) {
+      return c.json(mobileValidationError('sinceSeq must be a non-negative integer'), 400);
+    }
+    const sinceSeq = values.length === 0 ? 0 : Number.parseInt(values[0], 10);
+    if (!Number.isSafeInteger(sinceSeq)) {
+      return c.json(mobileValidationError('sinceSeq must be a non-negative integer'), 400);
+    }
+
+    const conversation = options.conversationService.get(conversationId, {
+      includeDeleted: true,
     });
-  }
+    if (conversation && conversation.agentId !== agentId) {
+      return c.json({ code: 'not_found', error: 'Conversation not found', retryable: false }, 404);
+    }
+    if (conversation?.status === 'deleted') return c.json({ entries: [] });
+    if (!conversation && !agentRegistry.get(agentId)) {
+      return c.json({ code: 'not_found', error: 'Agent not found', retryable: false }, 404);
+    }
+    const entries = options.conversationService.eventLog.readSince(
+      agentId,
+      conversationId,
+      sinceSeq,
+    );
+    return c.json({ entries });
+  });
 
   // --- Conversation title generation ---
   //
