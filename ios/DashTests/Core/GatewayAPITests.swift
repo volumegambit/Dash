@@ -303,6 +303,44 @@ struct GatewayAPITests {
     #expect(await gatewayError { try await api.listAgents() } == .notFound)
   }
 
+  @Test("unrepresentable Retry-After seconds fall back safely")
+  func unrepresentableRetryAfter() async throws {
+    try URLProtocolStub.enqueue(
+      status: 429,
+      fixture: "errors/rate-limited.json",
+      headers: ["Retry-After": "1e309"]
+    )
+    try URLProtocolStub.enqueue(
+      status: 429,
+      fixture: "errors/rate-limited.json",
+      headers: ["Retry-After": "9223372036854776"]
+    )
+    URLProtocolStub.enqueue(
+      status: 429,
+      data: Data(
+        """
+        {
+          "code": "rate_limited",
+          "error": "Too many mobile requests",
+          "retryable": true,
+          "details": { "retryAfterSeconds": 1e300 }
+        }
+        """.utf8
+      )
+    )
+    let api = makeAPI()
+
+    #expect(
+      await gatewayError { try await api.listAgents() }
+        == .rateLimited(retryAfter: .seconds(30))
+    )
+    #expect(
+      await gatewayError { try await api.listAgents() }
+        == .rateLimited(retryAfter: .seconds(30))
+    )
+    #expect(await gatewayError { try await api.listAgents() } == .rateLimited(retryAfter: nil))
+  }
+
   @Test("contract decode failures require an app update")
   func decodeFailureMapping() async throws {
     URLProtocolStub.enqueue(status: 200, data: Data("{}".utf8))

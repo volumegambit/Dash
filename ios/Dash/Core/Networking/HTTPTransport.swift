@@ -218,8 +218,8 @@ actor HTTPTransport {
     body: MobileAPIError?
   ) async -> Duration? {
     if let value = response.value(forHTTPHeaderField: "Retry-After") {
-      if let seconds = Double(value), seconds >= 0 {
-        return duration(seconds: seconds)
+      if let seconds = Double(value), let duration = duration(seconds: seconds) {
+        return duration
       }
       if let date = retryAfterDate(value) {
         let interval = max(0, date.timeIntervalSince(await clock.now()))
@@ -227,9 +227,9 @@ actor HTTPTransport {
       }
     }
     if case .number(let seconds)? = body?.details?.objectValue?["retryAfterSeconds"],
-      seconds >= 0
+      let duration = duration(seconds: seconds)
     {
-      return duration(seconds: seconds)
+      return duration
     }
     return nil
   }
@@ -242,8 +242,12 @@ actor HTTPTransport {
     return formatter.date(from: value)
   }
 
-  private func duration(seconds: Double) -> Duration {
-    .milliseconds(Int64((seconds * 1_000).rounded()))
+  private func duration(seconds: Double) -> Duration? {
+    let milliseconds = (seconds * 1_000).rounded()
+    guard milliseconds.isFinite, milliseconds >= 0, milliseconds < Double(Int64.max) else {
+      return nil
+    }
+    return .milliseconds(Int64(milliseconds))
   }
 
   private func decodeDetail<Value: Decodable>(
