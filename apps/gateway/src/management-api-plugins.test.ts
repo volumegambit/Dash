@@ -34,6 +34,8 @@ function stubGateway(): DynamicGateway {
 function stubAgents(): AgentChatCoordinator {
   return {
     chat: vi.fn(),
+    answerQuestion: vi.fn().mockResolvedValue(undefined),
+    cancel: vi.fn().mockReturnValue(false),
     evict: vi.fn().mockResolvedValue(undefined),
     evictAll: vi.fn().mockResolvedValue(undefined),
     listSkills: vi.fn().mockResolvedValue([]),

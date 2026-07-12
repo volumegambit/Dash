@@ -137,6 +137,13 @@ export interface AgentChatCoordinator {
     text: string,
     images?: ImageBlock[],
   ): Promise<void>;
+  answerQuestion(
+    agentId: string,
+    conversationId: string,
+    questionId: string,
+    answer: string,
+  ): Promise<void>;
+  cancel(agentId: string, conversationId: string): boolean;
   /**
    * Evict all warm conversation backends for an agent. Aborts any in-flight
    * streams and calls `backend.stop()` on each evicted entry. Safe to call
@@ -535,6 +542,19 @@ export function createAgentChatCoordinator(
       if (backend.followUp) {
         await backend.followUp(text, images);
       }
+    },
+
+    async answerQuestion(agentId, conversationId, questionId, answer) {
+      const entry = pool.get(agentId, conversationId);
+      if (!entry) throw new Error('No active conversation to answer');
+      await entry.agent.answerQuestion(questionId, [[answer]]);
+    },
+
+    cancel(agentId, conversationId) {
+      const entry = pool.get(agentId, conversationId);
+      if (!entry) return false;
+      entry.backend.abort();
+      return true;
     },
 
     async evict(agentId) {
