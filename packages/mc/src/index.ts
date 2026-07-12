@@ -59,6 +59,8 @@ export type {
   McConversationView,
 } from './conversation-repository.js';
 export { LegacyConversationRepository } from './legacy-conversation-repository.js';
+export { GatewayConversationCache } from './gateway-conversation-cache.js';
+export { GatewayConversationRepository } from './gateway-conversation-repository.js';
 export type { MessagingApp, RoutingRule, RoutingCondition } from './types.js';
 export { SettingsStore } from './settings-store.js';
 export type {
