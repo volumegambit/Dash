@@ -1,3 +1,13 @@
+import type {
+  ConversationMessagePage,
+  ConversationPage,
+  ConversationSummary,
+  GatewayIdentity,
+  MobileApiError,
+  MobileCapability,
+  ReplayPage,
+} from '@dash/mobile-contract';
+
 /**
  * Per-agent swarm caps + gating. Mirror of the gateway's `AgentSwarmConfig`
  * (`apps/gateway/src/agent-registry.ts`). `enabled` gates whether the agent may
@@ -174,6 +184,8 @@ export interface GatewayHealthResponse {
   agents: number;
   channels: number;
   mcpServers?: Array<{ name: string; status: string }>;
+  apiVersion?: number;
+  capabilities?: MobileCapability[];
 }
 
 /**
@@ -189,6 +201,7 @@ export class GatewayHttpError extends Error {
     public readonly status: number,
     public readonly label: string,
     public readonly body: string,
+    public readonly apiError?: MobileApiError,
   ) {
     super(`Gateway ${label} failed: ${status} ${body}`.trimEnd());
     this.name = 'GatewayHttpError';
@@ -219,10 +232,17 @@ export class GatewayManagementClient {
   }
 
   private async throwIfNotOk(res: Response, label: string): Promise<void> {
-    if (!res.ok) {
-      const body = await res.text().catch(() => '');
-      throw new GatewayHttpError(res.status, label, body);
+    if (res.ok) return;
+    const body = await res.text().catch(() => '');
+    let apiError: MobileApiError | undefined;
+    if (body && res.headers.get('content-type')?.includes('application/json')) {
+      try {
+        apiError = JSON.parse(body) as MobileApiError;
+      } catch {
+        apiError = undefined;
+      }
     }
+    throw new GatewayHttpError(res.status, label, body, apiError);
   }
 
   // Health — unauthenticated, short-timeout, used by supervisor hot path.
@@ -235,17 +255,22 @@ export class GatewayManagementClient {
     return res.json() as Promise<GatewayHealthResponse>;
   }
 
+  async getIdentity(): Promise<GatewayIdentity> {
+    const res = await fetch(`${this.baseUrl}/identity`, {
+      headers: this.headers(),
+      signal: AbortSignal.timeout(HOT_PATH_TIMEOUT_MS),
+    });
+    await this.throwIfNotOk(res, 'getIdentity');
+    return res.json() as Promise<GatewayIdentity>;
+  }
+
   // Relay identity — the gateway's own Ed25519 public key, read over loopback
   // at relay opt-in so MC can register it with the control plane. Authed
   // (loopback-only, but the management API is bearer-gated). MC never sees the
   // private key — it stays 0600 on the gateway disk.
   async getRelayIdentity(): Promise<{ publicKey: string }> {
-    const res = await fetch(`${this.baseUrl}/identity`, {
-      headers: this.headers(),
-      signal: AbortSignal.timeout(HOT_PATH_TIMEOUT_MS),
-    });
-    await this.throwIfNotOk(res, 'getRelayIdentity');
-    return res.json() as Promise<{ publicKey: string }>;
+    const identity = await this.getIdentity();
+    return { publicKey: identity.publicKey };
   }
 
   // Agents
@@ -389,6 +414,89 @@ export class GatewayManagementClient {
       headers: this.headers(),
     });
     await this.throwIfNotOk(res, 'removeCredential');
+  }
+
+  // Conversations
+  async listConversations(
+    params: { agentId?: string; limit?: number; cursor?: string } = {},
+  ): Promise<ConversationPage> {
+    const url = new URL(`${this.baseUrl}/conversations`);
+    if (params.agentId) url.searchParams.set('agentId', params.agentId);
+    if (params.limit !== undefined) url.searchParams.set('limit', String(params.limit));
+    if (params.cursor) url.searchParams.set('cursor', params.cursor);
+    const res = await fetch(url, { headers: this.headers() });
+    await this.throwIfNotOk(res, 'listConversations');
+    return res.json() as Promise<ConversationPage>;
+  }
+
+  async createConversation(
+    agentId: string,
+    requestId: string,
+    metadata: Partial<Pick<ConversationSummary, 'title' | 'owningIssueId' | 'projectId'>> = {},
+  ): Promise<ConversationSummary> {
+    const res = await fetch(`${this.baseUrl}/conversations`, {
+      method: 'POST',
+      headers: this.headers(),
+      body: JSON.stringify({ agentId, requestId, ...metadata }),
+    });
+    await this.throwIfNotOk(res, 'createConversation');
+    return res.json() as Promise<ConversationSummary>;
+  }
+
+  async getConversation(id: string): Promise<ConversationSummary> {
+    const res = await fetch(`${this.baseUrl}/conversations/${encodeURIComponent(id)}`, {
+      headers: this.headers(),
+    });
+    await this.throwIfNotOk(res, 'getConversation');
+    return res.json() as Promise<ConversationSummary>;
+  }
+
+  async patchConversation(
+    id: string,
+    revision: number,
+    patch: Partial<Pick<ConversationSummary, 'title' | 'owningIssueId' | 'projectId'>>,
+  ): Promise<ConversationSummary> {
+    const res = await fetch(`${this.baseUrl}/conversations/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      headers: { ...this.headers(), 'If-Match': `"${revision}"` },
+      body: JSON.stringify(patch),
+    });
+    await this.throwIfNotOk(res, 'patchConversation');
+    return res.json() as Promise<ConversationSummary>;
+  }
+
+  async deleteConversation(id: string, revision: number): Promise<ConversationSummary> {
+    const res = await fetch(`${this.baseUrl}/conversations/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+      headers: { ...this.headers(), 'If-Match': `"${revision}"` },
+    });
+    await this.throwIfNotOk(res, 'deleteConversation');
+    return res.json() as Promise<ConversationSummary>;
+  }
+
+  async getConversationMessages(
+    id: string,
+    params: { limit?: number; before?: string } = {},
+  ): Promise<ConversationMessagePage> {
+    const url = new URL(`${this.baseUrl}/conversations/${encodeURIComponent(id)}/messages`);
+    if (params.limit !== undefined) url.searchParams.set('limit', String(params.limit));
+    if (params.before) url.searchParams.set('before', params.before);
+    const res = await fetch(url, { headers: this.headers() });
+    await this.throwIfNotOk(res, 'getConversationMessages');
+    return res.json() as Promise<ConversationMessagePage>;
+  }
+
+  async replayConversationEvents(
+    agentId: string,
+    conversationId: string,
+    sinceSeq: number,
+  ): Promise<ReplayPage> {
+    const path =
+      `/agents/${encodeURIComponent(agentId)}/conversations/` +
+      `${encodeURIComponent(conversationId)}/events?sinceSeq=${sinceSeq}`;
+    const res = await fetch(`${this.baseUrl}${path}`, { headers: this.headers() });
+    await this.throwIfNotOk(res, 'replayConversationEvents');
+    return res.json() as Promise<ReplayPage>;
   }
 
   // Models — gateway is the single source of truth. The store survives

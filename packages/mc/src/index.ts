@@ -59,6 +59,15 @@ export type {
 export { getPlatformDataDir } from './platform-paths.js';
 export { GatewayManagementClient, GatewayHttpError } from './runtime/gateway-client.js';
 export type {
+  ConversationMessagePage,
+  ConversationPage,
+  ConversationSummary,
+  GatewayIdentity,
+  MobileApiError,
+  MobileCapability,
+  ReplayPage,
+} from '@dash/mobile-contract';
+export type {
   GatewayAgent,
   AgentSwarmConfig,
   GatewayChannel,
