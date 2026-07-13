@@ -302,6 +302,10 @@ private actor FailingConversationListPersistence: ConversationListPersisting {
 
   func replaceAgents(_ values: [RegisteredAgentDTO], gatewayID: String) {}
 
+  func upsertAgent(_ value: RegisteredAgentDTO, gatewayID: String) {}
+
+  func removeAgent(gatewayID: String, agentID: String) {}
+
   func upsertConversations(_ values: [ConversationSummaryDTO], gatewayID: String) throws {
     try write(values.first)
   }

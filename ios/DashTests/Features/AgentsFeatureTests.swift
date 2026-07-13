@@ -318,6 +318,23 @@ struct AgentsFeatureTests {
     #expect(feature.startedConversationID == conversation.id)
   }
 
+  @Test("offline Start Chat cannot reuse a prior conversation destination")
+  func offlineStartChatClearsPriorDestination() async {
+    let value = agent(id: "agent")
+    let conversation = conversationSummary(id: "prior-conversation", agent: value)
+    let service = FakeAgentsService()
+    await service.enqueueConversation(.success(conversation))
+    let feature = makeOnlineFeature(service: service, agents: [value])
+    await feature.startChat(agentID: value.id)
+    #expect(feature.startedConversationID == conversation.id)
+
+    feature.consume(snapshot(connection: .offline, agents: [value]))
+    await feature.startChat(agentID: value.id)
+
+    #expect(await service.startedAgentIDs == [value.id])
+    #expect(feature.startedConversationID == nil)
+  }
+
   private func makeFeature(service: FakeAgentsService) -> AgentsFeature {
     AgentsFeature(gatewayID: "gateway", service: service)
   }
@@ -558,6 +575,41 @@ struct LiveAgentsServiceTests {
     #expect(await gateway.deletedAgentIDs == [value.id])
   }
 
+  @Test("an agent update cannot clobber an interleaved canonical cache replacement")
+  func updatePreservesInterleavedCanonicalAgents() async throws {
+    let target = serviceAgent(name: "Before")
+    let staleOther = serviceAgent(id: "agent-other", name: "Stale other")
+    let updated = serviceAgent(name: "Updated")
+    let canonicalOther = serviceAgent(id: staleOther.id, name: "Canonical other")
+    let canonicalNew = serviceAgent(id: "agent-new", name: "Canonical new")
+    let mutationGate = TestGate()
+    let store = InterleavingAgentPersistence(
+      agents: [target, staleOther],
+      mutationGate: mutationGate
+    )
+    let service = makeService(
+      store: store,
+      conversations: AgentServiceConversationStub(),
+      gateway: AgentServiceGatewayStub(updatedAgent: updated)
+    )
+
+    let update = Task {
+      try await service.update(
+        id: target.id,
+        request: UpdateAgentRequest(model: "updated/model", systemPrompt: nil)
+      )
+    }
+    await mutationGate.waitUntilWaiting()
+    await store.installFullSync([target, canonicalOther, canonicalNew])
+    await mutationGate.release()
+
+    #expect(try await update.value == updated)
+    let persisted = await store.persistedAgents()
+    #expect(persisted.first(where: { $0.id == target.id }) == updated)
+    #expect(persisted.first(where: { $0.id == staleOther.id }) == canonicalOther)
+    #expect(persisted.first(where: { $0.id == canonicalNew.id }) == canonicalNew)
+  }
+
   @Test("ambiguous Start Chat reconciles with the same request ID")
   func startConversationReusesRequestID() async throws {
     let canonical = serviceConversation(agent: serviceAgent())
@@ -610,6 +662,44 @@ struct LiveAgentsServiceTests {
     #expect(await conversations.shutdownCallCount == 1)
   }
 
+  @Test("shutdown during Start Chat resolution preserves its retained request ID")
+  func shutdownPreservesResolvingConversationRequestID() async throws {
+    let canonical = serviceConversation(agent: serviceAgent())
+    let clearGate = TestGate()
+    let shutdownGate = TestGate()
+    let conversations = AgentServiceConversationStub(
+      canonicalConversation: canonical,
+      clearGate: clearGate,
+      shutdownGate: shutdownGate
+    )
+    let service = LiveAgentsService(
+      gatewayID: gatewayID,
+      store: try PersistenceStore.inMemory(),
+      conversations: conversations,
+      makeAPI: { throw GatewayError.updateRequired }
+    )
+
+    let start = Task { () -> Error? in
+      do {
+        _ = try await service.startConversation(agentID: canonical.agentId)
+        return nil
+      } catch {
+        return error
+      }
+    }
+    await clearGate.waitUntilWaiting()
+    let requestID = try #require(await conversations.createRequests.first?.requestId)
+    let shutdown = Task { await service.shutdown() }
+    await shutdownGate.waitUntilWaiting()
+    await shutdownGate.release()
+    await clearGate.release()
+    let startError = await start.value
+    await shutdown.value
+
+    #expect(startError is CancellationError)
+    #expect(await conversations.retainedRequestID(agentID: canonical.agentId) == requestID)
+  }
+
   private func makeService(
     store: any ConversationListPersisting,
     conversations: any ConversationListServicing,
@@ -623,12 +713,15 @@ struct LiveAgentsServiceTests {
     )
   }
 
-  private func serviceAgent() -> RegisteredAgentDTO {
+  private func serviceAgent(
+    id: String = "agent-service",
+    name: String = "Service agent"
+  ) -> RegisteredAgentDTO {
     RegisteredAgentDTO(
-      id: "agent-service",
-      name: "Service agent",
+      id: id,
+      name: name,
       config: AgentConfigDTO(
-        name: "Service agent",
+        name: name,
         model: "anthropic/model",
         systemPrompt: "Be useful",
         fallbackModels: nil,
@@ -675,7 +768,12 @@ private actor AgentServiceCounter {
 }
 
 private actor AgentServiceGatewayStub: AgentsGatewayServicing {
+  private let updatedAgent: RegisteredAgentDTO?
   private(set) var deletedAgentIDs: [String] = []
+
+  init(updatedAgent: RegisteredAgentDTO? = nil) {
+    self.updatedAgent = updatedAgent
+  }
 
   func listAgents() throws -> [RegisteredAgentDTO] { [] }
 
@@ -695,7 +793,8 @@ private actor AgentServiceGatewayStub: AgentsGatewayServicing {
   ) throws -> RegisteredAgentDTO {
     _ = id
     _ = request
-    throw GatewayError.updateRequired
+    guard let updatedAgent else { throw GatewayError.updateRequired }
+    return updatedAgent
   }
 
   func setAgentEnabled(id: String, enabled: Bool) {
@@ -714,15 +813,90 @@ private actor AgentServiceGatewayStub: AgentsGatewayServicing {
   func shutdown() {}
 }
 
+private actor InterleavingAgentPersistence: ConversationListPersisting {
+  private var storedAgents: [RegisteredAgentDTO]
+  private let mutationGate: TestGate
+
+  init(agents: [RegisteredAgentDTO], mutationGate: TestGate) {
+    storedAgents = agents
+    self.mutationGate = mutationGate
+  }
+
+  func conversations(gatewayID: String, limit: Int) -> [CachedConversation] {
+    _ = gatewayID
+    _ = limit
+    return []
+  }
+
+  func agents(gatewayID: String) async -> [RegisteredAgentDTO] {
+    _ = gatewayID
+    let stale = storedAgents
+    await mutationGate.wait()
+    return stale
+  }
+
+  func replaceAgents(_ values: [RegisteredAgentDTO], gatewayID: String) {
+    _ = gatewayID
+    storedAgents = values
+  }
+
+  func upsertAgent(_ value: RegisteredAgentDTO, gatewayID: String) async {
+    _ = gatewayID
+    await mutationGate.wait()
+    if let index = storedAgents.firstIndex(where: { $0.id == value.id }) {
+      storedAgents[index] = value
+    } else {
+      storedAgents.append(value)
+    }
+  }
+
+  func removeAgent(gatewayID: String, agentID: String) {
+    _ = gatewayID
+    storedAgents.removeAll { $0.id == agentID }
+  }
+
+  func upsertConversations(_ values: [ConversationSummaryDTO], gatewayID: String) {
+    _ = values
+    _ = gatewayID
+  }
+
+  func applyTombstone(_ value: ConversationSummaryDTO, gatewayID: String) {
+    _ = value
+    _ = gatewayID
+  }
+
+  func removeConversation(gatewayID: String, conversationID: String) {
+    _ = gatewayID
+    _ = conversationID
+  }
+
+  func installFullSync(_ values: [RegisteredAgentDTO]) {
+    storedAgents = values
+  }
+
+  func persistedAgents() -> [RegisteredAgentDTO] {
+    storedAgents
+  }
+}
+
 private actor AgentServiceConversationStub: ConversationListServicing {
   private let canonicalConversation: ConversationSummaryDTO?
+  private let clearGate: TestGate?
+  private let shutdownGate: TestGate?
+  private var retainedRequestIDs: [String: String] = [:]
   private(set) var createRequests: [CreateConversationRequest] = []
   private(set) var reconcileRequests: [CreateConversationRequest] = []
   private(set) var clearedAgentIDs: [String] = []
   private(set) var shutdownCallCount = 0
 
-  init(canonicalConversation: ConversationSummaryDTO? = nil) {
+  init(
+    canonicalConversation: ConversationSummaryDTO? = nil,
+    clearGate: TestGate? = nil,
+    shutdownGate: TestGate? = nil
+  ) {
     self.canonicalConversation = canonicalConversation
+    self.clearGate = clearGate
+    self.shutdownGate = shutdownGate
   }
 
   func cachedConversations() -> [CachedConversation] { [] }
@@ -767,9 +941,21 @@ private actor AgentServiceConversationStub: ConversationListServicing {
   func replace(_ summary: ConversationSummaryDTO) { _ = summary }
   func remove(id: String) { _ = id }
   func retainedCreateRequestID(agentID: String, suggested: String) -> String {
-    _ = agentID
+    if let retained = retainedRequestIDs[agentID] { return retained }
+    retainedRequestIDs[agentID] = suggested
     return suggested
   }
-  func clearRetainedCreateRequestID(agentID: String) { clearedAgentIDs.append(agentID) }
-  func shutdown() { shutdownCallCount += 1 }
+  func clearRetainedCreateRequestID(agentID: String) async {
+    await clearGate?.wait()
+    retainedRequestIDs[agentID] = nil
+    clearedAgentIDs.append(agentID)
+  }
+  func shutdown() async {
+    shutdownCallCount += 1
+    await shutdownGate?.wait()
+  }
+
+  func retainedRequestID(agentID: String) -> String? {
+    retainedRequestIDs[agentID]
+  }
 }

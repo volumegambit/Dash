@@ -131,8 +131,7 @@ actor LiveAgentsService: AgentsServicing {
     defer { finishOperation() }
     try await resolvedAPI().deleteAgent(id: id)
     try validate(lifecycle)
-    let retained = try await store.agents(gatewayID: gatewayID).filter { $0.id != id }
-    try await store.replaceAgents(retained, gatewayID: gatewayID)
+    try await store.removeAgent(gatewayID: gatewayID, agentID: id)
     try validate(lifecycle)
   }
 
@@ -154,14 +153,20 @@ actor LiveAgentsService: AgentsServicing {
     do {
       let value = try await conversations.create(request)
       try validate(lifecycle)
-      await conversations.clearRetainedCreateRequestID(agentID: agentID)
-      try validate(lifecycle)
+      try await clearRetainedCreateRequestID(
+        agentID: agentID,
+        requestID: retained,
+        lifecycle: lifecycle
+      )
       return value
     } catch GatewayError.mutationOutcomeUnknown, GatewayError.transport {
       let value = try await conversations.reconcileCreate(request)
       try validate(lifecycle)
-      await conversations.clearRetainedCreateRequestID(agentID: agentID)
-      try validate(lifecycle)
+      try await clearRetainedCreateRequestID(
+        agentID: agentID,
+        requestID: retained,
+        lifecycle: lifecycle
+      )
       return value
     } catch is CancellationError {
       throw CancellationError()
@@ -187,13 +192,24 @@ actor LiveAgentsService: AgentsServicing {
   }
 
   private func persist(_ value: RegisteredAgentDTO) async throws {
-    var values = try await store.agents(gatewayID: gatewayID)
-    if let index = values.firstIndex(where: { $0.id == value.id }) {
-      values[index] = value
-    } else {
-      values.append(value)
+    try await store.upsertAgent(value, gatewayID: gatewayID)
+  }
+
+  private func clearRetainedCreateRequestID(
+    agentID: String,
+    requestID: String,
+    lifecycle: UInt64
+  ) async throws {
+    await conversations.clearRetainedCreateRequestID(agentID: agentID)
+    do {
+      try validate(lifecycle)
+    } catch {
+      _ = await conversations.retainedCreateRequestID(
+        agentID: agentID,
+        suggested: requestID
+      )
+      throw error
     }
-    try await store.replaceAgents(values, gatewayID: gatewayID)
   }
 
   private func beginOperation() throws -> UInt64 {
@@ -481,17 +497,20 @@ final class AgentsFeature {
     }
   }
 
-  func startChat(agentID: String) async {
-    guard requireMutation() else { return }
+  @discardableResult
+  func startChat(agentID: String) async -> String? {
     startedConversationID = nil
+    guard requireMutation() else { return nil }
     do {
       let value = try await service.startConversation(agentID: agentID)
       startedConversationID = value.id
       mutationError = nil
+      return value.id
     } catch is CancellationError {
-      return
+      return nil
     } catch {
       await handleMutationFailure(error)
+      return nil
     }
   }
 

@@ -53,7 +53,11 @@ struct AgentsListView: View {
             .contentShape(Rectangle())
           }
           .buttonStyle(.plain)
+          .listRowBackground(
+            isSelected(agent.id) ? DashTheme.accent.opacity(0.12) : Color.clear
+          )
           .accessibilityElement(children: .combine)
+          .accessibilityAddTraits(isSelected(agent.id) ? .isSelected : [])
           .accessibilityIdentifier("agent.row.\(agent.id)")
         }
       }
@@ -93,6 +97,11 @@ struct AgentsListView: View {
       get: { feature.mutationError != nil },
       set: { if $0 == false { feature.mutationError = nil } }
     )
+  }
+
+  private func isSelected(_ agentID: String) -> Bool {
+    horizontalSizeClass == .regular
+      && appModel.splitAgentSelection?.selectsAgent(agentID) == true
   }
 }
 

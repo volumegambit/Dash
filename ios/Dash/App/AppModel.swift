@@ -19,7 +19,11 @@ final class AppModel {
   var selectedTab: AppTab = .conversations
   var pairingPath: [PairingRoute] = []
   var conversationPath: [ConversationRoute] = []
-  var agentPath: [AgentRoute] = []
+  var agentPath: [AgentRoute] = [] {
+    didSet {
+      splitAgentSelection = agentPath.last
+    }
+  }
   var splitConversationSelection: ConversationRoute?
   var splitAgentSelection: AgentRoute?
   var banner: AppBanner?
@@ -78,18 +82,16 @@ final class AppModel {
         retiredFeature !== conversationListFeature
       {
         await retiredFeature.shutdown()
-        guard activeEpoch == publishedEpoch, sameEngine(syncEngine, prepared.engine) else { return }
       }
       if let retiredFeature = retired.agentsFeature,
         retiredFeature !== agentsFeature
       {
         await retiredFeature.shutdown()
-        guard activeEpoch == publishedEpoch, sameEngine(syncEngine, prepared.engine) else { return }
       }
       if let retiredEngine = retired.engine, sameEngine(retiredEngine, prepared.engine) == false {
         await retiredEngine.shutdown()
-        guard activeEpoch == publishedEpoch, sameEngine(syncEngine, prepared.engine) else { return }
       }
+      guard activeEpoch == publishedEpoch, sameEngine(syncEngine, prepared.engine) else { return }
       await startPreparedEngine(prepared.engine, activeEpoch: publishedEpoch)
     } catch {
       guard isCurrent(epoch) else { return }
@@ -113,18 +115,16 @@ final class AppModel {
         retiredFeature !== conversationListFeature
       {
         await retiredFeature.shutdown()
-        guard activeEpoch == publishedEpoch, sameEngine(syncEngine, prepared.engine) else { return }
       }
       if let retiredFeature = retired.agentsFeature,
         retiredFeature !== agentsFeature
       {
         await retiredFeature.shutdown()
-        guard activeEpoch == publishedEpoch, sameEngine(syncEngine, prepared.engine) else { return }
       }
       if let retiredEngine = retired.engine, sameEngine(retiredEngine, prepared.engine) == false {
         await retiredEngine.shutdown()
-        guard activeEpoch == publishedEpoch, sameEngine(syncEngine, prepared.engine) else { return }
       }
+      guard activeEpoch == publishedEpoch, sameEngine(syncEngine, prepared.engine) else { return }
       await startPreparedEngine(prepared.engine, activeEpoch: publishedEpoch)
     } catch {
       guard isCurrent(epoch) else { return }
@@ -479,7 +479,7 @@ final class AppModel {
     }
     guard activeEpoch == epoch else { return }
     let cached = snapshot?.conversations ?? conversationListFeature?.conversations ?? []
-    let agents = snapshot?.agents ?? agentsFeature?.agents ?? conversationListFeature?.agents ?? []
+    let agents = agentsFeature?.agents ?? snapshot?.agents ?? conversationListFeature?.agents ?? []
     consume(
       SyncSnapshot(
         connection: state,

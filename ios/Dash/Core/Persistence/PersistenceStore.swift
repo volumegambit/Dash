@@ -280,6 +280,32 @@ actor PersistenceStore {
     try modelContext.save()
   }
 
+  func upsertAgent(_ value: RegisteredAgentDTO, gatewayID: String) throws {
+    let data = try ContractCoding.encoder().encode(value)
+    if let record = try agentRecord(gatewayID: gatewayID, agentID: value.id) {
+      record.agentData = data
+      record.updatedAt = Date()
+    } else {
+      modelContext.insert(
+        AgentRecord(
+          scopedID: scopedID(gatewayID: gatewayID, resourceID: value.id),
+          gatewayID: gatewayID,
+          agentID: value.id,
+          agentData: data,
+          updatedAt: Date()
+        )
+      )
+    }
+    try modelContext.save()
+  }
+
+  func removeAgent(gatewayID: String, agentID: String) throws {
+    if let record = try agentRecord(gatewayID: gatewayID, agentID: agentID) {
+      modelContext.delete(record)
+    }
+    try modelContext.save()
+  }
+
   func agents(gatewayID: String) throws -> [RegisteredAgentDTO] {
     let targetGatewayID = gatewayID
     let descriptor = FetchDescriptor<AgentRecord>(
@@ -507,6 +533,15 @@ actor PersistenceStore {
   private func messageRecord(scopedID: String) throws -> MessageRecord? {
     let key = scopedID
     var descriptor = FetchDescriptor<MessageRecord>(
+      predicate: #Predicate { $0.scopedID == key }
+    )
+    descriptor.fetchLimit = 1
+    return try modelContext.fetch(descriptor).first
+  }
+
+  private func agentRecord(gatewayID: String, agentID: String) throws -> AgentRecord? {
+    let key = scopedID(gatewayID: gatewayID, resourceID: agentID)
+    var descriptor = FetchDescriptor<AgentRecord>(
       predicate: #Predicate { $0.scopedID == key }
     )
     descriptor.fetchLimit = 1

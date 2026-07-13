@@ -218,15 +218,14 @@ struct AgentDetailView: View {
     defer { isWorking = false }
     await feature.delete(id: agentID, confirmedName: deleteName)
     guard feature.agents.contains(where: { $0.id == agentID }) == false else { return }
-    appModel.splitAgentSelection = nil
+    appModel.agentPath.removeAll()
     dismiss()
   }
 
   private func startChat() async {
     isWorking = true
     defer { isWorking = false }
-    await feature.startChat(agentID: agentID)
-    guard let conversationID = feature.startedConversationID else { return }
+    guard let conversationID = await feature.startChat(agentID: agentID) else { return }
     appModel.openConversation(
       conversationID,
       presentation: horizontalSizeClass == .regular ? .regular : .compact

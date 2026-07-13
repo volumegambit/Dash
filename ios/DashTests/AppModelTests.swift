@@ -83,6 +83,32 @@ struct AppModelTests {
     #expect(model.splitAgentSelection == .edit("regular"))
   }
 
+  @Test("compact agent back navigation keeps regular-width selection in sync")
+  func compactAgentBackNavigationSynchronizesSelection() {
+    let model = AppModel(
+      dependencies: dependencies(profile: nil, engine: FakeAppSyncEngine())
+    )
+    model.openAgent(.detail("agent-1"), presentation: .compact)
+    model.openAgent(.edit("agent-1"), presentation: .compact)
+
+    model.agentPath.removeLast()
+
+    #expect(model.splitAgentSelection == .detail("agent-1"))
+
+    model.agentPath.removeAll()
+
+    #expect(model.splitAgentSelection == nil)
+  }
+
+  @Test("agent routes identify the row selected in regular width")
+  func agentRouteSelectionIdentity() {
+    #expect(AgentRoute.detail("agent-1").selectsAgent("agent-1"))
+    #expect(AgentRoute.edit("agent-1").selectsAgent("agent-1"))
+    #expect(AgentRoute.startChat("agent-1").selectsAgent("agent-1"))
+    #expect(AgentRoute.detail("agent-2").selectsAgent("agent-1") == false)
+    #expect(AgentRoute.create.selectsAgent("agent-1") == false)
+  }
+
   @Test("disconnect keeps paired content visible until teardown completes")
   func disconnectWaitsForTeardown() async throws {
     let shutdownGate = TestGate()
@@ -245,6 +271,76 @@ struct AppModelTests {
     #expect(model.selectedProfile == nil)
     #expect(model.banner == nil)
     #expect(await engine.shutdownCallCount == 1)
+  }
+
+  @Test("a superseded activation drains every retired feature and engine exactly once")
+  func supersededActivationDrainsRetiredResources() async {
+    let original = connectionProfile()
+    let replacement = replacementProfile()
+    let newest = replacementProfile(gatewayID: "gateway-3")
+    let originalEngine = FakeAppSyncEngine()
+    let replacementEngine = FakeAppSyncEngine()
+    let newestEngine = FakeAppSyncEngine()
+    let originalConversationService = AppModelConversationService()
+    let originalConversationFeature = ConversationListFeature(
+      gatewayID: original.gatewayID,
+      service: originalConversationService
+    )
+    let originalShutdownGate = TestGate()
+    let originalAgentsService = AppModelAgentsService(shutdownGate: originalShutdownGate)
+    let replacementAgentsService = AppModelAgentsService()
+    let newestAgentsService = AppModelAgentsService()
+    let originalAgentsFeature = AgentsFeature(
+      gatewayID: original.gatewayID,
+      service: originalAgentsService
+    )
+    let replacementAgentsFeature = AgentsFeature(
+      gatewayID: replacement.gatewayID,
+      service: replacementAgentsService
+    )
+    let newestAgentsFeature = AgentsFeature(
+      gatewayID: newest.gatewayID,
+      service: newestAgentsService
+    )
+    let model = AppModel(
+      dependencies: AppDependencies(
+        clock: TestAppClock(now: Date(timeIntervalSince1970: 100)),
+        loadProfile: { original },
+        makeSyncEngine: { profile in
+          switch profile.gatewayID {
+          case original.gatewayID: originalEngine
+          case replacement.gatewayID: replacementEngine
+          default: newestEngine
+          }
+        },
+        makeConversationListFeature: { profile in
+          profile.gatewayID == original.gatewayID ? originalConversationFeature : nil
+        },
+        makeAgentsFeature: { profile in
+          switch profile.gatewayID {
+          case original.gatewayID: originalAgentsFeature
+          case replacement.gatewayID: replacementAgentsFeature
+          default: newestAgentsFeature
+          }
+        }
+      )
+    )
+    await model.start()
+
+    let installReplacement = Task { await model.installPairedProfile(replacement) }
+    await originalShutdownGate.waitUntilWaiting()
+    await model.installPairedProfile(newest)
+    await originalShutdownGate.release()
+    await installReplacement.value
+
+    #expect(model.selectedProfile == newest)
+    #expect(await originalConversationService.shutdownCallCount == 1)
+    #expect(await originalAgentsService.shutdownCallCount == 1)
+    #expect(await replacementAgentsService.shutdownCallCount == 1)
+    #expect(await newestAgentsService.shutdownCallCount == 0)
+    #expect(await originalEngine.shutdownCallCount == 1)
+    #expect(await replacementEngine.shutdownCallCount == 1)
+    #expect(await newestEngine.shutdownCallCount == 0)
   }
 
   @Test("background intent reaches an engine created after the transition")
@@ -596,6 +692,43 @@ struct AppModelTests {
     #expect(feature.mutationsAllowed == false)
   }
 
+  @Test("agent service authority loss preserves the feature's newer canonical agents")
+  func agentServiceErrorPreservesCanonicalAgents() async {
+    let engine = FakeAppSyncEngine()
+    let profile = connectionProfile()
+    let stale = agent()
+    let canonical = agent(model: "canonical/model")
+    let service = AppModelAgentsService(
+      actionError: .unauthorized,
+      refreshedAgents: [canonical]
+    )
+    let feature = AgentsFeature(gatewayID: profile.gatewayID, service: service)
+    let model = AppModel(
+      dependencies: AppDependencies(
+        clock: TestAppClock(now: Date(timeIntervalSince1970: 100)),
+        loadProfile: { profile },
+        makeSyncEngine: { _ in engine },
+        makeAgentsFeature: { _ in feature }
+      )
+    )
+    await model.start()
+    model.consume(
+      SyncSnapshot(
+        connection: .online,
+        conversations: [],
+        agents: [stale],
+        lastSuccessfulSyncAt: Date(timeIntervalSince1970: 100)
+      )
+    )
+    await feature.refresh()
+    #expect(feature.agents == [canonical])
+
+    await feature.setEnabled(id: canonical.id, enabled: false, confirmed: true)
+
+    #expect(model.connectionState == .repairRequired)
+    #expect(feature.agents == [canonical])
+  }
+
   @Test("Keychain forget failure keeps cached agents in repair state")
   func keychainFailureKeepsAgentsFeature() async {
     let engine = FakeAppSyncEngine()
@@ -894,13 +1027,13 @@ struct AppModelTests {
     )
   }
 
-  private func agent() -> RegisteredAgentDTO {
+  private func agent(model: String = "test/model") -> RegisteredAgentDTO {
     RegisteredAgentDTO(
       id: "agent-old",
       name: "Old agent",
       config: AgentConfigDTO(
         name: "Old agent",
-        model: "test/model",
+        model: model,
         systemPrompt: "",
         fallbackModels: nil,
         tools: nil,
@@ -1013,14 +1146,22 @@ private enum TestAppDependencyError: Error {
 
 private actor AppModelAgentsService: AgentsServicing {
   private let actionError: GatewayError?
+  private let refreshedAgents: [RegisteredAgentDTO]
+  private let shutdownGate: TestGate?
   private(set) var shutdownCallCount = 0
 
-  init(actionError: GatewayError? = nil) {
+  init(
+    actionError: GatewayError? = nil,
+    refreshedAgents: [RegisteredAgentDTO] = [],
+    shutdownGate: TestGate? = nil
+  ) {
     self.actionError = actionError
+    self.refreshedAgents = refreshedAgents
+    self.shutdownGate = shutdownGate
   }
 
   func cachedAgents() -> [RegisteredAgentDTO] { [] }
-  func refreshAgents() -> [RegisteredAgentDTO] { [] }
+  func refreshAgents() -> [RegisteredAgentDTO] { refreshedAgents }
   func models() -> [ModelDTO] { [] }
 
   func create(_ request: CreateAgentRequest) throws -> RegisteredAgentDTO {
@@ -1047,8 +1188,9 @@ private actor AppModelAgentsService: AgentsServicing {
     throw GatewayError.updateRequired
   }
 
-  func shutdown() {
+  func shutdown() async {
     shutdownCallCount += 1
+    await shutdownGate?.wait()
   }
 }
 
