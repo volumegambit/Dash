@@ -371,7 +371,7 @@ describe('canonical conversation UI', () => {
     expect(screen.getByText('Cached')).toBeInTheDocument();
   });
 
-  it('answers a remote question while other mutations stay locked', async () => {
+  it('keeps remote Stop and question answers enabled while other mutations stay locked', async () => {
     const ref = { id: gatewayConversation.id, origin: 'gateway' as const };
     const running = {
       ...gatewayConversation,
@@ -394,7 +394,10 @@ describe('canonical conversation UI', () => {
     expect(screen.getByPlaceholderText('Conversation active on another device')).toBeDisabled();
     expect(screen.getByTestId('status-bar-rename')).toBeDisabled();
     expect(screen.getByTestId('status-bar-delete')).toBeDisabled();
-    expect(screen.queryByLabelText('Stop active turn')).toBeNull();
+    const stop = screen.getByLabelText('Stop active turn');
+    expect(stop).toBeEnabled();
+    await userEvent.click(stop);
+    expect(mockApi.chatCancel).toHaveBeenCalledWith(ref, 'ios-turn');
     await userEvent.click(screen.getByText('Yes'));
     expect(mockApi.chatAnswerQuestion).toHaveBeenCalledWith(
       ref,

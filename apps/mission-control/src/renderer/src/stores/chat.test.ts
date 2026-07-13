@@ -582,7 +582,7 @@ describe('canonical chat store', () => {
     expect(mockApi.chatDeleteConversation).not.toHaveBeenCalled();
   });
 
-  it('does not cancel a turn owned by another device', () => {
+  it('cancels a remote turn with the canonical active turn ID', () => {
     const ref = { id: gatewayConversation.id, origin: 'gateway' as const };
     useChatStore.setState({
       conversations: [{ ...gatewayConversation, status: 'running', activeTurnId: 'remote-turn' }],
@@ -593,7 +593,22 @@ describe('canonical chat store', () => {
 
     useChatStore.getState().cancelMessage(ref);
 
-    expect(mockApi.chatCancel).not.toHaveBeenCalled();
+    expect(mockApi.chatCancel).toHaveBeenCalledWith(ref, 'remote-turn');
+  });
+
+  it('preserves local cancellation through its canonical active turn', () => {
+    const ref = { id: gatewayConversation.id, origin: 'gateway' as const };
+    useChatStore.setState({
+      conversations: [{ ...gatewayConversation, status: 'running', activeTurnId: 'local-turn' }],
+      localTurnIds: { 'gateway:shared-id': 'local-turn' },
+      sending: { 'gateway:shared-id': true },
+      gatewayOnline: true,
+    });
+
+    useChatStore.getState().cancelMessage(ref);
+
+    expect(mockApi.chatCancel).toHaveBeenCalledWith(ref, 'local-turn');
+    expect(useChatStore.getState().sending['gateway:shared-id']).toBe(false);
   });
 
   it('contains rejected invalidation listener work instead of detaching an unhandled promise', async () => {

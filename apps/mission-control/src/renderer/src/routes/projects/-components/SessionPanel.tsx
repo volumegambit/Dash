@@ -151,7 +151,7 @@ export function SessionPanel({
             disabled={composerLocked}
             className="w-full border border-border bg-background p-2 text-sm text-foreground placeholder:text-muted focus:border-accent focus:outline-none disabled:opacity-50"
           />
-          {conversation?.activeTurnId && !remoteActive && (
+          {conversation?.activeTurnId && (
             <button
               type="button"
               onClick={() => cancelMessage(conversationRef)}

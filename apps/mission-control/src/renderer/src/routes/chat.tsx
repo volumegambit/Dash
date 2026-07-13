@@ -2624,7 +2624,7 @@ export function Chat(): JSX.Element {
                 >
                   <Paperclip size={16} />
                 </button>
-                {selectedConversation?.activeTurnId && !remoteActive ? (
+                {selectedConversation?.activeTurnId ? (
                   <button
                     type="button"
                     onClick={() =>

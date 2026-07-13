@@ -536,9 +536,8 @@ export const useChatStore = create<ChatState>((set, get) => {
     cancelMessage(ref) {
       const key = conversationKey(ref);
       const conversation = exactConversation(ref);
-      const turnId = get().localTurnIds[key];
+      const turnId = conversation?.activeTurnId ?? get().localTurnIds[key];
       if (!conversation || !turnId) return;
-      if (conversation.activeTurnId && conversation.activeTurnId !== turnId) return;
       window.api.chatCancel(ref, turnId);
       set((state) => ({ sending: { ...state.sending, [key]: false } }));
     },
