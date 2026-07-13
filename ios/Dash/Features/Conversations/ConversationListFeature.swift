@@ -391,7 +391,11 @@ actor LiveConversationListService: ConversationListServicing {
         throw error
       }
       if current.status == .deleted { return current }
-      guard current.revision > revision else { throw error }
+      guard current.revision >= revision else { throw GatewayError.updateRequired }
+      if current.revision == revision {
+        if case .notFound = error { throw GatewayError.updateRequired }
+        throw error
+      }
       guard current.title == title else {
         throw GatewayError.revisionConflict(current: current)
       }
@@ -418,7 +422,10 @@ actor LiveConversationListService: ConversationListServicing {
       }
       if current.status == .deleted { return current }
       guard current.revision >= revision else { throw GatewayError.updateRequired }
-      if current.revision == revision { throw error }
+      if current.revision == revision {
+        if case .notFound = error { throw GatewayError.updateRequired }
+        throw error
+      }
       throw GatewayError.revisionConflict(current: current)
     }
   }

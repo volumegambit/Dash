@@ -133,6 +133,30 @@ struct ConversationListServiceTests {
     #expect(URLProtocolStub.requests.map(\.httpMethod) == ["PATCH", "GET", "PATCH", "GET"])
   }
 
+  @Test("a PATCH retry not-found with an active point read requires an update")
+  func renameRetryNotFoundActiveRecovery() async throws {
+    let base = summary(title: "Original", revision: 2)
+    URLProtocolStub.enqueue(failure: URLError(.timedOut))
+    URLProtocolStub.enqueue(status: 200, data: try encode(base))
+    try URLProtocolStub.enqueue(status: 410, fixture: "errors/not-found.json")
+    URLProtocolStub.enqueue(status: 200, data: try encode(base))
+    let store = try PersistenceStore.inMemory()
+    try await store.upsertConversations([base], gatewayID: gatewayID)
+    let service = makeService(store: store)
+
+    let error = await gatewayError {
+      try await service.rename(
+        id: base.id,
+        title: "Renamed",
+        revision: base.revision
+      )
+    }
+
+    #expect(error == .updateRequired)
+    #expect(URLProtocolStub.requests.map(\.httpMethod) == ["PATCH", "GET", "PATCH", "GET"])
+    #expect(try await store.conversation(gatewayID: gatewayID, id: base.id)?.summary == base)
+  }
+
   @Test("a still-unresolved PATCH retry reports an unknown outcome")
   func unresolvedRenameRetry() async throws {
     let base = summary(title: "Original", revision: 2)
@@ -223,6 +247,26 @@ struct ConversationListServiceTests {
 
     #expect(result == tombstone)
     #expect(URLProtocolStub.requests.map(\.httpMethod) == ["DELETE", "GET", "DELETE", "GET"])
+  }
+
+  @Test("a DELETE retry not-found with an active point read requires an update")
+  func deleteRetryNotFoundActiveRecovery() async throws {
+    let base = summary(revision: 2)
+    URLProtocolStub.enqueue(failure: URLError(.timedOut))
+    URLProtocolStub.enqueue(status: 200, data: try encode(base))
+    try URLProtocolStub.enqueue(status: 404, fixture: "errors/not-found.json")
+    URLProtocolStub.enqueue(status: 200, data: try encode(base))
+    let store = try PersistenceStore.inMemory()
+    try await store.upsertConversations([base], gatewayID: gatewayID)
+    let service = makeService(store: store)
+
+    let error = await gatewayError {
+      try await service.delete(id: base.id, revision: base.revision)
+    }
+
+    #expect(error == .updateRequired)
+    #expect(URLProtocolStub.requests.map(\.httpMethod) == ["DELETE", "GET", "DELETE", "GET"])
+    #expect(try await store.conversation(gatewayID: gatewayID, id: base.id)?.summary == base)
   }
 
   @Test("a landed mutation survives one local persistence failure")
