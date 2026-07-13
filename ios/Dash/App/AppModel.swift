@@ -149,6 +149,12 @@ final class AppModel {
     }
   }
 
+  func makePairingFeature() -> PairingFeature {
+    dependencies.pairingFeatureFactory.make { [weak self] profile in
+      await self?.installPairedProfile(profile)
+    }
+  }
+
   func sceneDidEnterBackground() async {
     isBackgrounded = true
     activeEngineSceneRevision &+= 1

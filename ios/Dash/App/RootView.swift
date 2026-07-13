@@ -20,18 +20,7 @@ struct RootView: View {
   }
 
   private var pairingNavigation: some View {
-    @Bindable var appModel = appModel
-    return NavigationStack(path: $appModel.pairingPath) {
-      FeatureSlotView(title: "Connect", systemImage: "link")
-        .navigationDestination(for: PairingRoute.self) { route in
-          switch route {
-          case .scanner:
-            FeatureSlotView(title: "Scan code", systemImage: "qrcode.viewfinder")
-          case .manual:
-            FeatureSlotView(title: "Enter manually", systemImage: "keyboard")
-          }
-        }
-    }
+    PairingNavigationView(appModel: appModel)
   }
 
   private var compactNavigation: some View {
@@ -157,6 +146,32 @@ struct RootView: View {
     case .startChat:
       FeatureSlotView(title: "New conversation", systemImage: "bubble.left.and.text.bubble.right")
     }
+  }
+}
+
+@MainActor
+private struct PairingNavigationView: View {
+  @Bindable var appModel: AppModel
+  @State private var feature: PairingFeature
+
+  init(appModel: AppModel) {
+    self.appModel = appModel
+    _feature = State(initialValue: appModel.makePairingFeature())
+  }
+
+  var body: some View {
+    NavigationStack(path: $appModel.pairingPath) {
+      ConnectView()
+        .navigationDestination(for: PairingRoute.self) { route in
+          switch route {
+          case .scanner:
+            QRScannerView()
+          case .manual:
+            ManualEntryView()
+          }
+        }
+    }
+    .environment(feature)
   }
 }
 
