@@ -569,6 +569,8 @@ enum ChatReducer {
           case .failed: .failed
           case .cancelled: .cancelled
           }
+        worker.detail = nil
+        worker.question = nil
         worker.report = report
         worker.usage = usage
       }

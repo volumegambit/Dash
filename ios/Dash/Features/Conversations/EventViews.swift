@@ -3,13 +3,16 @@ import SwiftUI
 struct AssistantEventViews: View {
   let projection: AssistantMessageProjection
   let onAnswer: (String, String) -> Void
+  let exposesResponseToAccessibility: Bool
 
   init(
     projection: AssistantMessageProjection,
-    onAnswer: @escaping (String, String) -> Void = { _, _ in }
+    onAnswer: @escaping (String, String) -> Void = { _, _ in },
+    exposesResponseToAccessibility: Bool
   ) {
     self.projection = projection
     self.onAnswer = onAnswer
+    self.exposesResponseToAccessibility = exposesResponseToAccessibility
   }
 
   var body: some View {
@@ -24,6 +27,7 @@ struct AssistantEventViews: View {
       if !projection.text.isEmpty {
         Text(projection.text)
           .textSelection(.enabled)
+          .accessibilityHidden(!exposesResponseToAccessibility)
       }
 
       ForEach(projection.toolCards) { tool in
@@ -187,12 +191,12 @@ struct QuestionView: View {
   let question: QuestionState
   let onAnswer: (String, String) -> Void
 
-  @State private var freeText: String
+  @State private var draft: QuestionDraftState
 
   init(question: QuestionState, onAnswer: @escaping (String, String) -> Void) {
     self.question = question
     self.onAnswer = onAnswer
-    _freeText = State(initialValue: question.answer ?? "")
+    _draft = State(initialValue: QuestionDraftState(question: question))
   }
 
   var body: some View {
@@ -214,18 +218,19 @@ struct QuestionView: View {
       }
 
       HStack(alignment: .bottom) {
-        TextField("Type an answer", text: $freeText, axis: .vertical)
+        TextField("Type an answer", text: $draft.text, axis: .vertical)
           .textFieldStyle(.roundedBorder)
           .frame(minHeight: 44)
           .disabled(question.answer != nil)
 
         Button("Send") {
-          onAnswer(question.id, freeText)
+          onAnswer(question.id, draft.text)
         }
         .buttonStyle(.borderedProminent)
         .frame(minHeight: 44)
         .disabled(
-          question.answer != nil || freeText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+          question.answer != nil
+            || draft.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         )
       }
 
@@ -237,6 +242,24 @@ struct QuestionView: View {
     .padding(10)
     .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
     .accessibilityElement(children: .contain)
+    .onChange(of: question.id) { _, _ in
+      draft.reconcile(with: question)
+    }
+  }
+}
+
+struct QuestionDraftState: Equatable {
+  private(set) var questionID: String
+  var text: String
+
+  init(question: QuestionState) {
+    questionID = question.id
+    text = question.answer ?? ""
+  }
+
+  mutating func reconcile(with question: QuestionState) {
+    guard question.id != questionID else { return }
+    self = QuestionDraftState(question: question)
   }
 }
 

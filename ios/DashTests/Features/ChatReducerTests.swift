@@ -362,6 +362,55 @@ struct ChatReducerTests {
     #expect(state.messages.last?.assistant?.pendingQuestion?.answer == "Custom answer")
   }
 
+  @Test("question draft resets when the question identity changes")
+  func questionDraftResetsForNewQuestion() {
+    var draft = QuestionDraftState(
+      question: QuestionState(id: "question-1", question: "First?", options: [], answer: nil)
+    )
+    draft.text = "Answer for the first question"
+
+    draft.reconcile(
+      with: QuestionState(id: "question-2", question: "Second?", options: [], answer: nil)
+    )
+
+    #expect(draft.questionID == "question-2")
+    #expect(draft.text.isEmpty)
+  }
+
+  @Test("worker done clears waiting-input detail and question")
+  func workerDoneClearsWaitingInput() {
+    var state = acceptedState(cursor: 1)
+    _ = apply(
+      .workerStatus(
+        workerId: "worker-1",
+        runId: "run-1",
+        role: "researcher",
+        status: .waitingInput,
+        detail: "Need context",
+        question: "Continue?"
+      ),
+      seq: 2,
+      to: &state
+    )
+    _ = apply(
+      .workerDone(
+        workerId: "worker-1",
+        runId: "run-1",
+        role: "researcher",
+        status: .done,
+        report: "Complete",
+        usage: nil
+      ),
+      seq: 3,
+      to: &state
+    )
+
+    let worker = state.messages.last?.assistant?.workerCards.first
+    #expect(worker?.status == .done)
+    #expect(worker?.detail == nil)
+    #expect(worker?.question == nil)
+  }
+
   @Test("response content is a fallback and usage is retained")
   func responseFallbackAndUsage() {
     var fallback = acceptedState(cursor: 1)
@@ -444,6 +493,41 @@ struct ChatReducerTests {
     #expect(state.messages.last?.assistant?.terminal == .completed)
     #expect(first == [.persistCursor(3), .announceFinalResponse("Final answer")])
     #expect(second.isEmpty)
+  }
+
+  @Test("streamed tokens do not change the message accessibility label")
+  func streamingAccessibilityLabelIsStable() {
+    var state = acceptedState(cursor: 1)
+    _ = apply(.textDelta(text: "First token"), seq: 2, to: &state)
+    let initialLabel = state.messages.last?.accessibilityStatusLabel
+
+    _ = apply(.textDelta(text: " second token"), seq: 3, to: &state)
+
+    #expect(state.messages.last?.accessibilityStatusLabel == initialLabel)
+    #expect(initialLabel == "Assistant message, streaming")
+  }
+
+  @Test("assistant response text becomes accessibility-visible only at terminal state")
+  func assistantTextAccessibilityWaitsForTerminal() {
+    var state = acceptedState(cursor: 1)
+    _ = apply(.textDelta(text: "Final answer"), seq: 2, to: &state)
+
+    #expect(state.messages.last?.exposesAssistantTextToAccessibility == false)
+
+    _ = ChatReducer.reduce(
+      state: &state,
+      action: .frame(
+        .done(
+          id: "turn-1",
+          conversationId: "conv-1",
+          seq: 3,
+          outcome: .completed
+        )
+      )
+    )
+
+    #expect(state.messages.last?.exposesAssistantTextToAccessibility == true)
+    #expect(state.messages.last?.accessibilityStatusLabel == "Assistant message, completed")
   }
 
   @Test("a terminal frame advances the authoritative summary cursor")

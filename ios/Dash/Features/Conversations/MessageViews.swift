@@ -44,7 +44,7 @@ struct ChatMessageView: View {
         .padding(12)
         .background(bubbleBackground, in: RoundedRectangle(cornerRadius: 16))
         .accessibilityElement(children: .contain)
-        .accessibilityLabel(accessibilityDescription)
+        .accessibilityLabel(message.accessibilityStatusLabel)
 
       if message.role == .assistant {
         Spacer(minLength: 44)
@@ -62,7 +62,11 @@ struct ChatMessageView: View {
       }
     case .assistant:
       if let assistant = message.assistant {
-        AssistantEventViews(projection: assistant, onAnswer: onAnswer)
+        AssistantEventViews(
+          projection: assistant,
+          onAnswer: onAnswer,
+          exposesResponseToAccessibility: message.exposesAssistantTextToAccessibility
+        )
       }
     }
   }
@@ -70,11 +74,13 @@ struct ChatMessageView: View {
   private var bubbleBackground: Color {
     message.role == .user ? DashTheme.accent.opacity(0.14) : Color.secondary.opacity(0.1)
   }
+}
 
-  private var accessibilityDescription: String {
-    let role = message.role == .user ? "User" : "Assistant"
+extension ChatMessageState {
+  var accessibilityStatusLabel: String {
+    let role = role == .user ? "User" : "Assistant"
     let status =
-      switch message.status {
+      switch status {
       case .accepted: "accepted"
       case .streaming: "streaming"
       case .completed: "completed"
@@ -82,11 +88,17 @@ struct ChatMessageView: View {
       case .failed: "failed"
       case .interrupted: "interrupted"
       }
-    let content = message.user?.text ?? message.assistant?.text ?? ""
-    if content.isEmpty {
-      return "\(role) message, \(status)"
+    return "\(role) message, \(status)"
+  }
+
+  var exposesAssistantTextToAccessibility: Bool {
+    guard role == .assistant else { return true }
+    return switch status {
+    case .accepted, .streaming:
+      false
+    case .completed, .cancelled, .failed, .interrupted:
+      true
     }
-    return "\(role) message, \(status): \(content)"
   }
 }
 
