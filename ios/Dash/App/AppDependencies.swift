@@ -49,6 +49,7 @@ struct AppDependencies: Sendable {
   let forgetProfileSelection: @MainActor @Sendable (ConnectionProfileSnapshot) -> Void
   let makeConversationListFeature:
     @MainActor @Sendable (ConnectionProfileSnapshot) -> ConversationListFeature?
+  let makeAgentsFeature: @MainActor @Sendable (ConnectionProfileSnapshot) -> AgentsFeature?
   let pairingFeatureFactory: PairingFeatureFactory
 
   init(
@@ -70,6 +71,9 @@ struct AppDependencies: Sendable {
     makeConversationListFeature: @escaping @MainActor @Sendable (
       ConnectionProfileSnapshot
     ) -> ConversationListFeature? = { _ in nil },
+    makeAgentsFeature: @escaping @MainActor @Sendable (
+      ConnectionProfileSnapshot
+    ) -> AgentsFeature? = { _ in nil },
     pairingFeatureFactory: PairingFeatureFactory = .unavailable
   ) {
     self.clock = clock
@@ -80,6 +84,7 @@ struct AppDependencies: Sendable {
     self.clearProfileData = clearProfileData
     self.forgetProfileSelection = forgetProfileSelection
     self.makeConversationListFeature = makeConversationListFeature
+    self.makeAgentsFeature = makeAgentsFeature
     self.pairingFeatureFactory = pairingFeatureFactory
   }
 
@@ -191,6 +196,28 @@ struct AppDependencies: Sendable {
           }
         )
         return ConversationListFeature(gatewayID: profile.gatewayID, service: service)
+      },
+      makeAgentsFeature: { profile in
+        let makeProfileAPI: @Sendable () async throws -> GatewayAPI = {
+          guard let secrets = try await keychain.load(for: profile.id) else {
+            throw AppDependencyError.missingSecrets(profileID: profile.id)
+          }
+          let endpoint = ConnectionEndpoint(profile: profile.profile, secrets: secrets)
+          return makeAPI(makeCancellableTransport(endpoint, secrets))
+        }
+        let conversationService = LiveConversationListService(
+          gatewayID: profile.gatewayID,
+          store: store,
+          pendingCreates: pendingConversationCreates,
+          makeAPI: makeProfileAPI
+        )
+        let service = LiveAgentsService(
+          gatewayID: profile.gatewayID,
+          store: store,
+          conversations: conversationService,
+          makeAPI: makeProfileAPI
+        )
+        return AgentsFeature(gatewayID: profile.gatewayID, service: service)
       },
       pairingFeatureFactory: PairingFeatureFactory(
         verifier: PairingVerifier(

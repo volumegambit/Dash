@@ -38,7 +38,7 @@ struct RootView: View {
       .tag(AppTab.conversations)
 
       NavigationStack(path: $appModel.agentPath) {
-        FeatureSlotView(title: "Agents", systemImage: "person.2")
+        agentsListRoot
           .navigationDestination(for: AgentRoute.self) { route in
             agentDestination(route)
           }
@@ -75,13 +75,16 @@ struct RootView: View {
         case .conversations:
           conversationListRoot
         case .agents:
-          FeatureSlotView(title: "Agents", systemImage: "person.2")
+          agentsListRoot
         case .settings:
           FeatureSlotView(title: "Settings", systemImage: "gearshape")
         }
       }
       .navigationDestination(for: ConversationRoute.self) { route in
         conversationDestination(route)
+      }
+      .navigationDestination(for: AgentRoute.self) { route in
+        agentDestination(route)
       }
     } detail: {
       NavigationStack {
@@ -96,11 +99,26 @@ struct RootView: View {
             )
           }
         case .agents:
-          ContentUnavailableView("Select an agent", systemImage: "person.crop.circle")
+          if let selection = appModel.splitAgentSelection {
+            agentDestination(selection)
+          } else {
+            ContentUnavailableView("Select an agent", systemImage: "person.crop.circle")
+          }
         case .settings:
           FeatureSlotView(title: "Settings", systemImage: "gearshape")
         }
       }
+    }
+  }
+
+  @ViewBuilder
+  private var agentsListRoot: some View {
+    if let feature = appModel.agentsFeature {
+      AgentsListView()
+        .environment(feature)
+        .id(ObjectIdentifier(feature))
+    } else {
+      FeatureSlotView(title: "Agents", systemImage: "person.2")
     }
   }
 
@@ -136,15 +154,30 @@ struct RootView: View {
 
   @ViewBuilder
   private func agentDestination(_ route: AgentRoute) -> some View {
-    switch route {
-    case .detail:
+    if let feature = appModel.agentsFeature {
+      Group {
+        switch route {
+        case .detail(let id):
+          AgentDetailView(agentID: id)
+        case .create:
+          AgentEditorView(original: nil)
+        case .edit(let id):
+          if let agent = feature.agents.first(where: { $0.id == id }) {
+            AgentEditorView(original: agent)
+          } else {
+            ContentUnavailableView(
+              "Agent unavailable",
+              systemImage: "person.crop.circle.badge.questionmark"
+            )
+          }
+        case .startChat(let id):
+          AgentDetailView(agentID: id)
+        }
+      }
+      .environment(feature)
+      .id(route)
+    } else {
       FeatureSlotView(title: "Agent", systemImage: "person.crop.circle")
-    case .create:
-      FeatureSlotView(title: "Create agent", systemImage: "person.badge.plus")
-    case .edit:
-      FeatureSlotView(title: "Edit agent", systemImage: "person.crop.circle.badge.checkmark")
-    case .startChat:
-      FeatureSlotView(title: "New conversation", systemImage: "bubble.left.and.text.bubble.right")
     }
   }
 }
