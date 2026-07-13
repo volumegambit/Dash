@@ -1,10 +1,10 @@
 import '@testing-library/jest-dom/vitest';
 import type { ConversationRef, McConversationView } from '@dash/mc';
 import type { ConversationMessage, MobileWsServerFrame } from '@dash/mobile-contract';
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { mockApi } from '../../../../vitest.setup.js';
-import type { McAgentEvent } from '../../../shared/ipc.js';
+import { type McAgentEvent, unwrapChatIpcResult } from '../../../shared/ipc.js';
 import { useAgentsStore } from '../stores/agents.js';
 import { conversationKey, useChatStore } from '../stores/chat.js';
 
@@ -110,8 +110,37 @@ function setCanonicalState(
   });
 }
 
-beforeEach(() => {
+function revisionConflict(current: McConversationView): Error {
+  try {
+    unwrapChatIpcResult({
+      ok: false,
+      error: {
+        message: 'rename failed',
+        apiError: {
+          code: 'revision_conflict',
+          error: 'Conversation revision does not match If-Match',
+          retryable: false,
+          details: { current },
+        },
+      },
+    });
+  } catch (error) {
+    return error as Error;
+  }
+  throw new Error('Expected IPC error reconstruction to throw');
+}
+
+beforeEach(async () => {
+  cleanup();
+  await new Promise((resolve) => setTimeout(resolve, 0));
   vi.clearAllMocks();
+  mockApi.chatListConversations.mockReset();
+  mockApi.chatGetConversation.mockReset();
+  mockApi.chatGetMessages.mockReset();
+  mockApi.chatCreateConversation.mockReset();
+  mockApi.chatSend.mockReset();
+  mockApi.chatRenameConversation.mockReset();
+  mockApi.chatDeleteConversation.mockReset();
   mockUseSearch.mockReturnValue({ agentId: '' });
   mockNavigate.mockClear();
   useAgentsStore.setState({ agents: [agent1], loading: false, error: null });
@@ -139,6 +168,12 @@ describe('Chat search params', () => {
     render(<Chat />);
     await vi.waitFor(() => {
       expect(mockApi.chatCreateConversation).toHaveBeenCalledWith('agent-1', expect.any(String));
+    });
+    await vi.waitFor(() => {
+      expect(useChatStore.getState().selectedConversationRef).toEqual({
+        id: gatewayConversation.id,
+        origin: 'gateway',
+      });
     });
   });
 
@@ -336,7 +371,7 @@ describe('canonical conversation UI', () => {
     expect(screen.getByText('Cached')).toBeInTheDocument();
   });
 
-  it('shows replayed output and locks the composer when another device owns the turn', () => {
+  it('answers a remote question while other mutations stay locked', async () => {
     const ref = { id: gatewayConversation.id, origin: 'gateway' as const };
     const running = {
       ...gatewayConversation,
@@ -348,7 +383,7 @@ describe('canonical conversation UI', () => {
       id: 'ios-turn',
       conversationId: ref.id,
       seq: 1,
-      event: { type: 'text_delta', text: 'replayed from iOS' },
+      event: { type: 'question', id: 'remote-question', question: 'Ship?', options: ['Yes'] },
     };
     setCanonicalState([running], ref);
     useChatStore.setState({ streamingFrames: { [conversationKey(ref)]: [eventFrame] } });
@@ -356,10 +391,16 @@ describe('canonical conversation UI', () => {
     render(<Chat />);
 
     expect(screen.getByText('Active on another device')).toBeInTheDocument();
-    expect(screen.getByText(/replayed from iOS/)).toBeInTheDocument();
     expect(screen.getByPlaceholderText('Conversation active on another device')).toBeDisabled();
     expect(screen.getByTestId('status-bar-rename')).toBeDisabled();
     expect(screen.getByTestId('status-bar-delete')).toBeDisabled();
+    await userEvent.click(screen.getByText('Yes'));
+    expect(mockApi.chatAnswerQuestion).toHaveBeenCalledWith(
+      ref,
+      'ios-turn',
+      'remote-question',
+      'Yes',
+    );
   });
 
   it('keeps Stop for a locally owned canonical turn while rename and delete stay locked', async () => {
@@ -401,26 +442,100 @@ describe('canonical conversation UI', () => {
   it('passes the canonical revision for idle rename and delete actions', async () => {
     const ref = { id: gatewayConversation.id, origin: 'gateway' as const };
     setCanonicalState([gatewayConversation], ref);
+    mockApi.chatListConversations.mockImplementation(() => new Promise(() => {}));
     mockApi.chatRenameConversation.mockResolvedValue({
       ...gatewayConversation,
       title: 'Renamed conversation',
       revision: 3,
     });
     render(<Chat />);
+    await waitFor(() => expect(mockApi.chatListConversations).toHaveBeenCalled());
+    await waitFor(() =>
+      expect(useChatStore.getState().conversations[0]).toMatchObject({ status: 'idle' }),
+    );
 
     await userEvent.click(screen.getByTestId('status-bar-rename'));
     const input = screen.getByTestId('status-bar-rename-input');
-    await userEvent.clear(input);
-    await userEvent.type(input, 'Renamed conversation{Enter}');
-    expect(mockApi.chatRenameConversation).toHaveBeenCalledWith(
-      ref,
-      gatewayConversation.revision,
-      'Renamed conversation',
+    fireEvent.change(input, { target: { value: 'Renamed conversation' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    await waitFor(() =>
+      expect(mockApi.chatRenameConversation).toHaveBeenCalledWith(
+        ref,
+        gatewayConversation.revision,
+        'Renamed conversation',
+      ),
     );
 
     await userEvent.click(screen.getByTestId('status-bar-delete'));
     await userEvent.click(screen.getByTestId('status-bar-confirm-delete'));
     expect(mockApi.chatDeleteConversation).toHaveBeenCalledWith(ref, 3);
+  });
+
+  it('retains the status-bar rename draft on conflict and retries with the new revision', async () => {
+    const ref = { id: gatewayConversation.id, origin: 'gateway' as const };
+    const current = { ...gatewayConversation, revision: 4, title: 'Concurrent title' };
+    const renamed = { ...current, revision: 5, title: 'My pending title' };
+    setCanonicalState([gatewayConversation], ref);
+    mockApi.chatListConversations.mockImplementation(() => new Promise(() => {}));
+    mockApi.chatRenameConversation
+      .mockRejectedValueOnce(revisionConflict(current))
+      .mockResolvedValueOnce(renamed);
+    render(<Chat />);
+
+    await userEvent.click(screen.getByTestId('status-bar-rename'));
+    const input = screen.getByTestId('status-bar-rename-input');
+    fireEvent.change(input, { target: { value: 'My pending title' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+
+    await waitFor(() => expect(mockApi.chatRenameConversation).toHaveBeenCalled());
+    expect(mockApi.chatRenameConversation).toHaveBeenCalledTimes(1);
+    await waitFor(() =>
+      expect(screen.getByTestId('status-bar-rename-input')).toHaveValue('My pending title'),
+    );
+    expect(useChatStore.getState().conversations[0]).toMatchObject(current);
+    fireEvent.keyDown(screen.getByTestId('status-bar-rename-input'), { key: 'Enter' });
+
+    await waitFor(() => expect(screen.queryByTestId('status-bar-rename-input')).toBeNull());
+    expect(mockApi.chatRenameConversation).toHaveBeenNthCalledWith(
+      1,
+      ref,
+      gatewayConversation.revision,
+      'My pending title',
+    );
+    expect(mockApi.chatRenameConversation).toHaveBeenNthCalledWith(
+      2,
+      ref,
+      current.revision,
+      'My pending title',
+    );
+  });
+
+  it('retains the browser rename draft on conflict for an explicit retry', async () => {
+    const ref = { id: gatewayConversation.id, origin: 'gateway' as const };
+    const current = { ...gatewayConversation, revision: 4, title: 'Concurrent title' };
+    const renamed = { ...current, revision: 5, title: 'Browser draft' };
+    setCanonicalState([gatewayConversation], ref);
+    mockApi.chatListConversations.mockImplementation(() => new Promise(() => {}));
+    mockApi.chatRenameConversation
+      .mockRejectedValueOnce(revisionConflict(current))
+      .mockResolvedValueOnce(renamed);
+    render(<Chat />);
+
+    await userEvent.click(screen.getByLabelText('Browse conversations'));
+    await userEvent.click(screen.getByLabelText(`Rename ${gatewayConversation.title}`));
+    const input = screen.getByDisplayValue(gatewayConversation.title);
+    fireEvent.change(input, { target: { value: 'Browser draft' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+
+    await waitFor(() => expect(screen.getByDisplayValue('Browser draft')).toBeInTheDocument());
+    fireEvent.keyDown(screen.getByDisplayValue('Browser draft'), { key: 'Enter' });
+    await waitFor(() => expect(screen.queryByDisplayValue('Browser draft')).toBeNull());
+    expect(mockApi.chatRenameConversation).toHaveBeenNthCalledWith(
+      2,
+      ref,
+      current.revision,
+      'Browser draft',
+    );
   });
 });
 

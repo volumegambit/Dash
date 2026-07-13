@@ -62,7 +62,7 @@ export function SessionPanel({
       conversation?.status === 'running' ||
       conversation?.activeTurnId,
   );
-  const questionLocked = offline || readOnly || remoteActive;
+  const questionLocked = offline || readOnly;
   const placeholder = offline
     ? 'Reconnect to send a message'
     : readOnly

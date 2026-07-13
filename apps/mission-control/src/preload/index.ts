@@ -1,6 +1,7 @@
 import type { MobileWsServerFrame } from '@dash/mobile-contract';
 import { contextBridge, ipcRenderer } from 'electron';
 import type {
+  ChatIpcResult,
   CompanionAgentStatus,
   CompanionSelection,
   ConversationInvalidation,
@@ -8,7 +9,19 @@ import type {
   McpStatusChange,
   MissionControlAPI,
 } from '../shared/ipc.js';
+import { unwrapChatIpcResult } from '../shared/ipc.js';
 import type { ProjectsEvent } from '../shared/projects-ipc.js';
+
+type ApiResult<K extends keyof MissionControlAPI> = MissionControlAPI[K] extends (
+  ...args: never[]
+) => Promise<infer T>
+  ? T
+  : never;
+
+async function invokeChat<T>(channel: string, ...args: unknown[]): Promise<T> {
+  const result = (await ipcRenderer.invoke(channel, ...args)) as ChatIpcResult<T>;
+  return unwrapChatIpcResult(result);
+}
 
 const api: MissionControlAPI = {
   getVersion: () => ipcRenderer.invoke('app:getVersion'),
@@ -54,18 +67,29 @@ const api: MissionControlAPI = {
 
   // Chat
   chatCreateConversation: (agentId, requestId) =>
-    ipcRenderer.invoke('chat:createConversation', agentId, requestId),
-  chatListConversations: (cursor) => ipcRenderer.invoke('chat:listConversations', cursor),
-  chatGetConversation: (conversation) => ipcRenderer.invoke('chat:getConversation', conversation),
+    invokeChat<ApiResult<'chatCreateConversation'>>('chat:createConversation', agentId, requestId),
+  chatListConversations: (cursor) =>
+    invokeChat<ApiResult<'chatListConversations'>>('chat:listConversations', cursor),
+  chatGetConversation: (conversation) =>
+    invokeChat<ApiResult<'chatGetConversation'>>('chat:getConversation', conversation),
   chatGetMessages: (conversation, before) =>
-    ipcRenderer.invoke('chat:getMessages', conversation, before),
+    invokeChat<ApiResult<'chatGetMessages'>>('chat:getMessages', conversation, before),
   chatSend: (conversation, turnId, text, images) =>
-    ipcRenderer.invoke('chat:sendMessage', conversation, turnId, text, images),
+    invokeChat<ApiResult<'chatSend'>>('chat:sendMessage', conversation, turnId, text, images),
   chatCancel: (conversation, turnId) => ipcRenderer.send('chat:cancel', conversation, turnId),
   chatRenameConversation: (conversation, revision, title) =>
-    ipcRenderer.invoke('chat:renameConversation', conversation, revision, title),
+    invokeChat<ApiResult<'chatRenameConversation'>>(
+      'chat:renameConversation',
+      conversation,
+      revision,
+      title,
+    ),
   chatDeleteConversation: (conversation, revision) =>
-    ipcRenderer.invoke('chat:deleteConversation', conversation, revision),
+    invokeChat<ApiResult<'chatDeleteConversation'>>(
+      'chat:deleteConversation',
+      conversation,
+      revision,
+    ),
   chatAnswerQuestion: (conversation, turnId, questionId, answer) =>
     ipcRenderer.send('chat:answer-question', conversation, turnId, questionId, answer),
 

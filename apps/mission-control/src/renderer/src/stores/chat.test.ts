@@ -2,7 +2,7 @@ import type { ConversationRef, McConversationView } from '@dash/mc';
 import type { ConversationMessage, MobileWsServerFrame } from '@dash/mobile-contract';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { mockApi } from '../../../../vitest.setup.js';
-import { conversationKey, useChatStore } from './chat.js';
+import { conversationKey, initChatListeners, useChatStore } from './chat.js';
 
 const gatewayConversation: McConversationView = {
   id: 'shared-id',
@@ -50,6 +50,14 @@ function message(
     createdAt: '2026-07-12T00:00:01Z',
     updatedAt: '2026-07-12T00:00:01Z',
   };
+}
+
+function deferred<T>(): { promise: Promise<T>; resolve(value: T): void } {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
 }
 
 beforeEach(() => {
@@ -271,6 +279,70 @@ describe('canonical chat store', () => {
     expect(useChatStore.getState().conversations).toContainEqual(running);
   });
 
+  it('refreshes list authority and passive locks for gateway lifecycle invalidations', async () => {
+    const wildcard = { id: '*', origin: 'gateway' as const };
+    useChatStore.setState({
+      conversations: [gatewayConversation],
+      gatewayOnline: true,
+      conversationAuthority: 'gateway',
+    });
+    mockApi.chatListConversations
+      .mockResolvedValueOnce({
+        items: [{ ...gatewayConversation, offline: true, readOnly: true }],
+        nextCursor: null,
+        authority: 'gateway',
+        gatewayOnline: false,
+      })
+      .mockResolvedValueOnce({
+        items: [gatewayConversation],
+        nextCursor: null,
+        authority: 'gateway',
+        gatewayOnline: true,
+      });
+
+    await useChatStore
+      .getState()
+      .invalidateConversation({ type: 'changed', conversation: wildcard });
+    expect(useChatStore.getState()).toMatchObject({
+      gatewayOnline: false,
+      conversations: [{ offline: true, readOnly: true }],
+    });
+
+    await useChatStore
+      .getState()
+      .invalidateConversation({ type: 'changed', conversation: wildcard });
+    expect(useChatStore.getState()).toMatchObject({
+      gatewayOnline: true,
+      conversations: [{ offline: false, readOnly: false }],
+    });
+    expect(mockApi.chatGetConversation).not.toHaveBeenCalled();
+  });
+
+  it('ignores a delayed stale summary after a newer invalidation fetch resolves', async () => {
+    const ref = { id: gatewayConversation.id, origin: 'gateway' as const };
+    const stale = deferred<McConversationView | null>();
+    const current = deferred<McConversationView | null>();
+    mockApi.chatGetConversation
+      .mockReturnValueOnce(stale.promise)
+      .mockReturnValueOnce(current.promise);
+
+    const staleRefresh = useChatStore
+      .getState()
+      .invalidateConversation({ type: 'changed', conversation: ref });
+    const currentRefresh = useChatStore
+      .getState()
+      .invalidateConversation({ type: 'changed', conversation: ref });
+    current.resolve({ ...gatewayConversation, revision: 5, title: 'Current title' });
+    await currentRefresh;
+    stale.resolve({ ...gatewayConversation, revision: 3, title: 'Stale title' });
+    await staleRefresh;
+
+    expect(useChatStore.getState().conversations[0]).toMatchObject({
+      revision: 5,
+      title: 'Current title',
+    });
+  });
+
   it('deletes only the matching origin and preserves same-ID local state', async () => {
     const gatewayRef = { id: 'shared-id', origin: 'gateway' as const };
     useChatStore.setState({
@@ -351,5 +423,27 @@ describe('canonical chat store', () => {
 
     expect(mockApi.chatRenameConversation).not.toHaveBeenCalled();
     expect(mockApi.chatDeleteConversation).not.toHaveBeenCalled();
+  });
+
+  it('contains rejected invalidation listener work instead of detaching an unhandled promise', async () => {
+    let listener!: (event: {
+      type: 'changed';
+      conversation: { id: string; origin: 'gateway' };
+    }) => void;
+    mockApi.onChatConversationInvalidated.mockImplementation((callback) => {
+      listener = callback;
+      return () => undefined;
+    });
+    const original = useChatStore.getState().invalidateConversation;
+    const rejected = vi.fn().mockRejectedValue(new Error('refresh failed'));
+    useChatStore.setState({ invalidateConversation: rejected });
+
+    initChatListeners();
+    listener({ type: 'changed', conversation: { id: '*', origin: 'gateway' } });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(rejected).toHaveBeenCalledOnce();
+    useChatStore.setState({ invalidateConversation: original });
   });
 });

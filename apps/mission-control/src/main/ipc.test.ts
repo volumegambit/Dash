@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 // We need to import makePackagedSpawner — it doesn't exist yet, so this will fail
 // Import it from ipc.ts after you implement it
 import { InMemoryKeychainStore } from '@dash/mc';
+import { captureChatIpcResult, unwrapChatIpcResult } from '../shared/ipc.js';
 import { verifyConversationGateway } from './gateway-connection.js';
 import {
   ConversationLifecycleEpoch,
@@ -51,6 +52,36 @@ function deferred<T>(): { promise: Promise<T>; resolve(value: T): void } {
   });
   return { promise, resolve };
 }
+
+describe('canonical chat IPC boundary', () => {
+  it('preserves structured mobile errors across Electron serialization', async () => {
+    const apiError = await fixture<{
+      code: 'revision_conflict';
+      error: string;
+      retryable: false;
+      details: { current: { revision: number; title: string } };
+    }>('errors/revision-conflict.json');
+    const gatewayError = Object.assign(new Error('rename failed'), { apiError });
+
+    const wireValue = structuredClone(
+      await captureChatIpcResult(async () => {
+        throw gatewayError;
+      }),
+    );
+
+    expect(() => unwrapChatIpcResult(wireValue)).toThrow('rename failed');
+    try {
+      unwrapChatIpcResult(wireValue);
+    } catch (error) {
+      expect(error).toMatchObject({
+        apiError: {
+          code: 'revision_conflict',
+          details: { current: { revision: 2, title: 'Mobile launch check' } },
+        },
+      });
+    }
+  });
+});
 
 describe('conversation sync lifecycle selection', () => {
   it('verifies capabilities and authenticated identity before selecting gateway authority', async () => {

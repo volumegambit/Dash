@@ -38,6 +38,7 @@ import {
   type ConversationKey,
   conversationKey,
   conversationRefFromKey,
+  isRevisionConflict,
   useChatStore,
 } from '../stores/chat.js';
 import { useConnectorsStore } from '../stores/connectors.js';
@@ -1289,7 +1290,7 @@ function ConversationBrowser({
   openTabKeys: ConversationKey[];
   onOpen: (ref: ConversationRef) => void;
   onDelete: (ref: ConversationRef) => void;
-  onRename: (ref: ConversationRef, title: string) => void;
+  onRename: (ref: ConversationRef, title: string) => Promise<void>;
   onLoadMore: () => void;
   onClose: () => void;
 }): JSX.Element {
@@ -1300,6 +1301,11 @@ function ConversationBrowser({
   const [confirmDeleteKey, setConfirmDeleteKey] = useState<ConversationKey | null>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const renameInputRef = useRef<HTMLInputElement>(null);
+  const renameAttemptRef = useRef<{
+    key: ConversationKey;
+    draft: string;
+    state: 'pending' | 'conflict';
+  } | null>(null);
 
   const matching = searchTerm.trim()
     ? conversations.filter(
@@ -1337,17 +1343,37 @@ function ConversationBrowser({
     setConfirmDeleteKey(null);
   }, []);
 
-  const commitRename = useCallback(() => {
-    if (!editingKey) return;
-    const trimmed = editValue.trim();
-    const conv = conversations.find(
-      (item) => conversationKey({ id: item.id, origin: item.origin }) === editingKey,
-    );
-    if (trimmed && conv && trimmed !== conv.title) {
-      onRename({ id: conv.id, origin: conv.origin }, trimmed);
-    }
-    setEditingKey(null);
-  }, [editingKey, editValue, conversations, onRename]);
+  const commitRename = useCallback(
+    async (explicit = false, draft = editValue) => {
+      if (!editingKey) return;
+      const trimmed = draft.trim();
+      const conv = conversations.find(
+        (item) => conversationKey({ id: item.id, origin: item.origin }) === editingKey,
+      );
+      if (trimmed && conv && trimmed !== conv.title) {
+        const attempt = renameAttemptRef.current;
+        if (
+          attempt?.key === editingKey &&
+          attempt.draft === trimmed &&
+          (attempt.state === 'pending' || !explicit)
+        ) {
+          return;
+        }
+        renameAttemptRef.current = { key: editingKey, draft: trimmed, state: 'pending' };
+        try {
+          await onRename({ id: conv.id, origin: conv.origin }, trimmed);
+        } catch (error) {
+          if (isRevisionConflict(error)) {
+            renameAttemptRef.current = { key: editingKey, draft: trimmed, state: 'conflict' };
+            return;
+          }
+        }
+      }
+      renameAttemptRef.current = null;
+      setEditingKey(null);
+    },
+    [editingKey, editValue, conversations, onRename],
+  );
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
@@ -1395,11 +1421,11 @@ function ConversationBrowser({
                 value={editValue}
                 onChange={(e) => setEditValue(e.target.value)}
                 onKeyDown={(e) => {
-                  if (e.key === 'Enter') commitRename();
+                  if (e.key === 'Enter') void commitRename(true, e.currentTarget.value);
                   if (e.key === 'Escape') setEditingKey(null);
                   e.stopPropagation();
                 }}
-                onBlur={commitRename}
+                onBlur={(e) => void commitRename(false, e.currentTarget.value)}
                 className="w-full border border-accent bg-card-bg px-2 py-1 text-xs text-foreground focus:outline-none"
               />
             </div>
@@ -1603,6 +1629,16 @@ export function Chat(): JSX.Element {
   const [inlineRenameTabId, setInlineRenameTabId] = useState<string | null>(null);
   const [inlineRenameTitle, setInlineRenameTitle] = useState('');
   const renameRef = useRef<HTMLInputElement>(null);
+  const statusRenameAttemptRef = useRef<{
+    ref: ConversationKey;
+    draft: string;
+    state: 'pending' | 'conflict';
+  } | null>(null);
+  const inlineRenameAttemptRef = useRef<{
+    ref: ConversationKey;
+    draft: string;
+    state: 'pending' | 'conflict';
+  } | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -1633,8 +1669,7 @@ export function Chat(): JSX.Element {
     !selectedConversation ||
       selectedConversation.readOnly ||
       selectedConversation.offline ||
-      !gatewayOnline ||
-      remoteActive,
+      !gatewayOnline,
   );
 
   const navigateToLogs = useCallback(
@@ -1660,6 +1695,36 @@ export function Chat(): JSX.Element {
       }
     },
     [selectedConversationRef, questionLocked],
+  );
+
+  const commitStatusRename = useCallback(
+    async (explicit = false, draft = renamingTitle) => {
+      if (draft === null || !selectedConversationRef) return;
+      const trimmed = draft.trim();
+      if (trimmed && trimmed !== selectedConversation?.title) {
+        const key = conversationKey(selectedConversationRef);
+        const attempt = statusRenameAttemptRef.current;
+        if (
+          attempt?.ref === key &&
+          attempt.draft === trimmed &&
+          (attempt.state === 'pending' || !explicit)
+        ) {
+          return;
+        }
+        statusRenameAttemptRef.current = { ref: key, draft: trimmed, state: 'pending' };
+        try {
+          await renameConversation(selectedConversationRef, trimmed);
+        } catch (error) {
+          if (isRevisionConflict(error)) {
+            statusRenameAttemptRef.current = { ref: key, draft: trimmed, state: 'conflict' };
+            return;
+          }
+        }
+      }
+      statusRenameAttemptRef.current = null;
+      setRenamingTitle(null);
+    },
+    [renameConversation, renamingTitle, selectedConversation, selectedConversationRef],
   );
 
   useEffect(() => {
@@ -2078,7 +2143,7 @@ export function Chat(): JSX.Element {
             void selectConversation(ref);
           }}
           onDelete={(ref) => void deleteConversation(ref)}
-          onRename={(ref, title) => void renameConversation(ref, title)}
+          onRename={(ref, title) => renameConversation(ref, title)}
           onLoadMore={() => void loadMoreConversations()}
           onClose={() => setShowBrowser(false)}
         />
@@ -2104,11 +2169,39 @@ export function Chat(): JSX.Element {
               conv.status === 'deleted' ||
               conv.status === 'running' ||
               conv.activeTurnId !== null;
-            const commitInlineRename = (): void => {
-              const trimmed = inlineRenameTitle.trim();
+            const commitInlineRename = async (
+              explicit = false,
+              draft = inlineRenameTitle,
+            ): Promise<void> => {
+              const trimmed = draft.trim();
               if (!tabMutationLocked && trimmed && trimmed !== conv.title) {
-                void renameConversation(tabRef, trimmed);
+                const attempt = inlineRenameAttemptRef.current;
+                if (
+                  attempt?.ref === tabKey &&
+                  attempt.draft === trimmed &&
+                  (attempt.state === 'pending' || !explicit)
+                ) {
+                  return;
+                }
+                inlineRenameAttemptRef.current = {
+                  ref: tabKey,
+                  draft: trimmed,
+                  state: 'pending',
+                };
+                try {
+                  await renameConversation(tabRef, trimmed);
+                } catch (error) {
+                  if (isRevisionConflict(error)) {
+                    inlineRenameAttemptRef.current = {
+                      ref: tabKey,
+                      draft: trimmed,
+                      state: 'conflict',
+                    };
+                    return;
+                  }
+                }
               }
+              inlineRenameAttemptRef.current = null;
               setInlineRenameTabId(null);
             };
             return (
@@ -2152,10 +2245,12 @@ export function Chat(): JSX.Element {
                     onDoubleClick={(e) => e.stopPropagation()}
                     onKeyDown={(e) => {
                       e.stopPropagation();
-                      if (e.key === 'Enter') commitInlineRename();
+                      if (e.key === 'Enter') {
+                        void commitInlineRename(true, e.currentTarget.value);
+                      }
                       if (e.key === 'Escape') setInlineRenameTabId(null);
                     }}
-                    onBlur={commitInlineRename}
+                    onBlur={(e) => void commitInlineRename(false, e.currentTarget.value)}
                     // biome-ignore lint/a11y/noAutofocus: entering rename mode should focus the input
                     autoFocus
                     className="min-w-0 flex-1 border border-accent bg-background px-1 text-xs text-foreground focus:outline-none"
@@ -2291,21 +2386,11 @@ export function Chat(): JSX.Element {
                       onChange={(e) => setRenamingTitle(e.target.value)}
                       onKeyDown={(e) => {
                         if (e.key === 'Enter') {
-                          const trimmed = renamingTitle.trim();
-                          if (trimmed && trimmed !== selectedConversation?.title) {
-                            void renameConversation(selectedConversationRef, trimmed);
-                          }
-                          setRenamingTitle(null);
+                          void commitStatusRename(true, e.currentTarget.value);
                         }
                         if (e.key === 'Escape') setRenamingTitle(null);
                       }}
-                      onBlur={() => {
-                        const trimmed = renamingTitle.trim();
-                        if (trimmed && trimmed !== selectedConversation?.title) {
-                          void renameConversation(selectedConversationRef, trimmed);
-                        }
-                        setRenamingTitle(null);
-                      }}
+                      onBlur={(e) => void commitStatusRename(false, e.currentTarget.value)}
                       className="w-40 border border-accent bg-[#141414] px-2 py-0.5 text-xs text-foreground focus:outline-none"
                       data-testid="status-bar-rename-input"
                     />

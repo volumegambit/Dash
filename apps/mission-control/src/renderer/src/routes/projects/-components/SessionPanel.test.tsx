@@ -123,22 +123,28 @@ describe('SessionPanel', () => {
     expect(screen.getByPlaceholderText('Reconnect to send a message')).toBeDisabled();
   });
 
-  it('renders a remote active turn, locks send, and offers explicit cancel', async () => {
+  it('answers a remote question while send stays locked and cancel remains available', async () => {
     reset({ status: 'running', activeTurnId: 'ios-turn' });
     const frame: MobileWsServerFrame = {
       type: 'event',
       id: 'ios-turn',
       conversationId: ref.id,
       seq: 1,
-      event: { type: 'text_delta', text: 'remote progress' },
+      event: { type: 'question', id: 'remote-question', question: 'Ship?', options: ['Yes'] },
     };
     useChatStore.setState({ streamingFrames: { [key]: [frame] } });
 
     render(<SessionPanel conversationRef={ref} />);
 
     expect(screen.getByText('Active on another device')).toBeInTheDocument();
-    expect(screen.getByText(/remote progress/)).toBeInTheDocument();
     expect(screen.getByPlaceholderText('Conversation active on another device')).toBeDisabled();
+    await userEvent.click(screen.getByText('Yes'));
+    expect(mockApi.chatAnswerQuestion).toHaveBeenCalledWith(
+      ref,
+      'ios-turn',
+      'remote-question',
+      'Yes',
+    );
     await userEvent.click(screen.getByLabelText('Stop active turn'));
     expect(mockApi.chatCancel).toHaveBeenCalledWith(ref, 'ios-turn');
   });

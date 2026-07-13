@@ -55,7 +55,9 @@ function mergeConversations(
     current.map((conversation) => [conversationKey(refFor(conversation)), conversation]),
   );
   for (const conversation of incoming) {
-    byKey.set(conversationKey(refFor(conversation)), conversation);
+    const key = conversationKey(refFor(conversation));
+    const existing = byKey.get(key);
+    if (!existing || conversation.revision >= existing.revision) byKey.set(key, conversation);
   }
   return sortConversations([...byKey.values()]);
 }
@@ -77,6 +79,10 @@ function mobileError(error: unknown): MobileApiError | null {
   return 'code' in candidate && typeof candidate.code === 'string'
     ? (candidate as MobileApiError)
     : null;
+}
+
+export function isRevisionConflict(error: unknown): boolean {
+  return mobileError(error)?.code === 'revision_conflict';
 }
 
 export interface ChatState {
@@ -581,6 +587,10 @@ export const useChatStore = create<ChatState>((set, get) => {
         purgeConversation(ref);
         return;
       }
+      if (ref.origin === 'gateway' && ref.id === '*') {
+        await get().loadConversations();
+        return;
+      }
       try {
         const conversation = await window.api.chatGetConversation(ref);
         if (!conversation || conversation.status === 'deleted') {
@@ -607,10 +617,16 @@ export function initChatListeners(): void {
   initialized = true;
 
   window.api.onChatFrame((frame) => {
-    void useChatStore.getState().applyFrame(frame);
+    void useChatStore
+      .getState()
+      .applyFrame(frame)
+      .catch(() => undefined);
   });
   window.api.onChatConversationInvalidated((event) => {
-    void useChatStore.getState().invalidateConversation(event);
+    void useChatStore
+      .getState()
+      .invalidateConversation(event)
+      .catch(() => undefined);
   });
   window.api.onAgentEvent((conversationId, event: McAgentEvent) => {
     const state = useChatStore.getState();

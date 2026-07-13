@@ -61,6 +61,7 @@ import type {
   PairingInfo,
   SetupStatus,
 } from '../shared/ipc.js';
+import { captureChatIpcResult } from '../shared/ipc.js';
 import { ChatService } from './chat-service.js';
 import { completeClaudeOAuth, prepareClaudeOAuth } from './claude-auth.js';
 import { startCodexOAuth } from './codex-auth.js';
@@ -1271,7 +1272,13 @@ export async function registerIpcHandlers(
     gatewaySubscriptions.stop();
     const isCurrent = conversationLifecycle.begin();
     const online = await refreshChatServiceConnection(isCurrent);
-    if (online && isCurrent() && !shuttingDown) gatewaySubscriptions.restart();
+    if (online && isCurrent() && !shuttingDown) {
+      gatewaySubscriptions.restart();
+      sendConversationInvalidation({
+        type: 'changed',
+        conversation: { id: '*', origin: 'gateway' },
+      });
+    }
   };
 
   gatewayPoller.start(
@@ -1653,51 +1660,57 @@ export async function registerIpcHandlers(
   const getCanonicalChat = () =>
     createCanonicalChatHandlers(getChatService(getWindow), conversationController);
   ipcMain.handle('chat:listConversations', async (_event, cursor?: string) => {
-    if (!conversationsMigrated) {
-      conversationsMigrated = true;
-      try {
-        const client = await getRequiredGatewayManagementClient();
-        const agents = await client.listAgents();
-        await legacyStore.migrate((agentName) => {
-          const match = agents.find((a) => a.name === agentName);
-          return match?.id ?? null;
-        });
-      } catch {
-        // Gateway not ready — migration will retry next time
-        conversationsMigrated = false;
+    return captureChatIpcResult(async () => {
+      if (!conversationsMigrated) {
+        conversationsMigrated = true;
+        try {
+          const client = await getRequiredGatewayManagementClient();
+          const agents = await client.listAgents();
+          await legacyStore.migrate((agentName) => {
+            const match = agents.find((a) => a.name === agentName);
+            return match?.id ?? null;
+          });
+        } catch {
+          // Gateway not ready — migration will retry next time
+          conversationsMigrated = false;
+        }
       }
-    }
-    return getCanonicalChat().listConversations(cursor);
+      return getCanonicalChat().listConversations(cursor);
+    });
   });
 
   ipcMain.handle('chat:getConversation', (_event, conversation: ConversationRef) =>
-    getCanonicalChat().getConversation(conversation),
+    captureChatIpcResult(() => getCanonicalChat().getConversation(conversation)),
   );
 
   ipcMain.handle('chat:createConversation', (_event, agentId: string, requestId: string) =>
-    getCanonicalChat().createConversation(agentId, requestId),
+    captureChatIpcResult(() => getCanonicalChat().createConversation(agentId, requestId)),
   );
 
   ipcMain.handle('chat:getMessages', (_event, conversation: ConversationRef, before?: string) =>
-    getCanonicalChat().getMessages(conversation, before),
+    captureChatIpcResult(() => getCanonicalChat().getMessages(conversation, before)),
   );
 
   ipcMain.handle(
     'chat:renameConversation',
     (_event, conversation: ConversationRef, revision: number, title: string) =>
-      getCanonicalChat().renameConversation(conversation, revision, title),
+      captureChatIpcResult(() =>
+        getCanonicalChat().renameConversation(conversation, revision, title),
+      ),
   );
 
   ipcMain.handle(
     'chat:deleteConversation',
     (_event, conversation: ConversationRef, revision: number) =>
-      getCanonicalChat().deleteConversation(conversation, revision),
+      captureChatIpcResult(() => getCanonicalChat().deleteConversation(conversation, revision)),
   );
 
   ipcMain.handle(
     'chat:sendMessage',
     (_event, conversation: ConversationRef, turnId: string, text: string, images?: MobileImage[]) =>
-      getCanonicalChat().sendMessage(conversation, turnId, text, images),
+      captureChatIpcResult(() =>
+        getCanonicalChat().sendMessage(conversation, turnId, text, images),
+      ),
   );
 
   // NOTE: these two are fired from the preload with `ipcRenderer.send`
