@@ -42,6 +42,7 @@ export interface AcceptedTurn {
   userMessage: ConversationMessage;
   assistantMessage: ConversationMessage;
   seq: number;
+  revision: number;
   created: boolean;
   firstUserMessage: boolean;
 }

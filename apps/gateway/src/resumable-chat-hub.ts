@@ -6,6 +6,7 @@ import type {
 import type { AgentChatCoordinator } from './agent-chat-coordinator.js';
 import type { ConversationAutoTitleService } from './conversation-auto-title.js';
 import {
+  type AcceptedTurn,
   type ConversationService,
   ConversationServiceError,
   type PersistedTurnFrame,
@@ -85,6 +86,18 @@ function frameFromPersisted(live: LiveTurn, persisted: PersistedTurnFrame): Mobi
     timestamp: '',
     payload: persisted.payload,
   });
+}
+
+function frameFromAccepted(frame: ResumableSendFrame, accepted: AcceptedTurn): MobileWsServerFrame {
+  return {
+    type: 'accepted',
+    id: frame.id,
+    conversationId: frame.conversationId,
+    userMessageId: accepted.userMessage.id,
+    assistantMessageId: accepted.assistantMessage.id,
+    revision: accepted.revision,
+    seq: accepted.seq,
+  };
 }
 
 export function createResumableChatHub(options: ResumableChatHubOptions): ResumableChatHub {
@@ -192,8 +205,8 @@ export function createResumableChatHub(options: ResumableChatHubOptions): Resuma
     if (live.terminal) return;
     if (sink) live.subscribers.add(sink);
     if (live.cancelled) return;
-    live.cancelled = true;
     finish(live, 'cancelled');
+    live.cancelled = true;
     live.controller.abort();
     agents.cancel(live.agentId, live.conversationId);
     options.swarmCoordinator?.cancelTurn(live.agentId, live.conversationId);
@@ -208,18 +221,7 @@ export function createResumableChatHub(options: ResumableChatHubOptions): Resuma
         text: frame.text,
         images: frame.images,
       });
-      const acceptedEntry = conversations.eventLog
-        .readSince(frame.agentId, frame.conversationId, Math.max(0, accepted.seq - 1))
-        .find(
-          (entry) =>
-            entry.seq === accepted.seq &&
-            entry.msgId === frame.id &&
-            entry.payload.type === 'accepted',
-        );
-      if (!acceptedEntry) {
-        throw new Error(`Turn ${frame.id} is missing its durable accepted frame`);
-      }
-      const acceptedSent = send(sink, frameFromEntry(acceptedEntry));
+      const acceptedSent = send(sink, frameFromAccepted(frame, accepted));
 
       if (!accepted.created) {
         if (acceptedSent && replay(frame.agentId, frame.conversationId, accepted.seq, sink)) {

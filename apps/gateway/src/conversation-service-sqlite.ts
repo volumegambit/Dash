@@ -570,6 +570,7 @@ export class SqliteConversationService implements ConversationService {
           userMessage: this.mapStoredMessage(user),
           assistantMessage: this.mapStoredMessage(assistant),
           seq: accepted.seq,
+          revision: accepted.payload.revision,
           created: false,
           firstUserMessage: user.ordinal === 1,
         };
@@ -675,6 +676,7 @@ export class SqliteConversationService implements ConversationService {
         userMessage: this.mapStoredMessage(user),
         assistantMessage: this.mapStoredMessage(assistant),
         seq,
+        revision: nextRevision,
         created: true,
         firstUserMessage: userOrdinal === 1,
       };

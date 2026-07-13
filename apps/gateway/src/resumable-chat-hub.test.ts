@@ -235,6 +235,7 @@ describe('ResumableChatHub', () => {
     const scripted = register(conversation.id);
     let acceptedWasReadable = false;
     let everyFrameWasReadable = true;
+    const readSince = vi.spyOn(conversations.eventLog, 'readSince');
     const sink = makeSink((frame) => {
       const durable = conversations.eventLog
         .readSince(conversation.agentId, conversation.id, 0)
@@ -249,6 +250,8 @@ describe('ResumableChatHub', () => {
 
     hub.start(sendFrame(conversation), sink);
     expect(acceptedWasReadable).toBe(true);
+    expect(readSince).toHaveBeenCalledOnce();
+    readSince.mockRestore();
     expect(sink.frames).toEqual([
       expect.objectContaining({
         type: 'accepted',
@@ -506,6 +509,46 @@ describe('ResumableChatHub', () => {
     expect(conversations.eventLog.readSince(conversation.agentId, conversation.id, 0)).toHaveLength(
       3,
     );
+    scripted.finish();
+    await vi.waitFor(() => expect(scripted.return).toHaveBeenCalledOnce());
+  });
+
+  it('retries cancellation when durable terminal persistence fails', async () => {
+    const conversation = createConversation();
+    const scripted = register(conversation.id);
+    const sink = makeSink();
+    hub.start(sendFrame(conversation), sink);
+    vi.spyOn(conversations, 'finishTurn').mockImplementationOnce(() => {
+      throw new Error('SQLite unavailable');
+    });
+
+    await expect(hub.cancel('turn-01', sink)).rejects.toThrow('SQLite unavailable');
+
+    const request = harness.chat.mock.calls[0]?.[0] as ChatRequest;
+    expect(request.signal?.aborted).toBe(false);
+    expect(harness.cancel).not.toHaveBeenCalled();
+    expect(swarmCancel).not.toHaveBeenCalled();
+    expect(conversations.get(conversation.id)).toMatchObject({
+      status: 'running',
+      activeTurnId: 'turn-01',
+      lastSeq: 1,
+    });
+    expect(sink.frames.filter((frame) => frame.type === 'done')).toEqual([]);
+
+    await hub.cancel('turn-01', sink);
+
+    expect(request.signal?.aborted).toBe(true);
+    expect(harness.cancel).toHaveBeenCalledOnce();
+    expect(swarmCancel).toHaveBeenCalledOnce();
+    expect(conversations.get(conversation.id)).toMatchObject({
+      status: 'idle',
+      activeTurnId: null,
+      lastSeq: 2,
+    });
+    expect(sink.frames.filter((frame) => frame.type === 'done')).toEqual([
+      expect.objectContaining({ outcome: 'cancelled', seq: 2 }),
+    ]);
+
     scripted.finish();
     await vi.waitFor(() => expect(scripted.return).toHaveBeenCalledOnce());
   });
