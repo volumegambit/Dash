@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+
 @testable import Dash
 
 private final class ContractFixtureBundleToken {}
@@ -46,7 +47,8 @@ struct ContractFixtureTests {
 
     let fractional = try FixtureLoader.decode(HealthResponse.self, "health-capabilities.json")
     let noFraction = Data(
-      #"{"status":"healthy","startedAt":"2026-07-12T00:00:00Z","pid":1,"agents":0,"channels":0,"apiVersion":1,"capabilities":[]}"#.utf8
+      #"{"status":"healthy","startedAt":"2026-07-12T00:00:00Z","pid":1,"agents":0,"channels":0,"apiVersion":1,"capabilities":[]}"#
+        .utf8
     )
     let standard = try ContractCoding.decoder().decode(HealthResponse.self, from: noFraction)
     #expect(standard.startedAt == fractional.startedAt)
@@ -224,11 +226,24 @@ struct ContractFixtureTests {
       try CapableServerFrame.validating(missingOutcome)
     }
 
-    let partialError = Data(#"{"type":"error","id":"e1","conversationId":"c1","error":"failed"}"#.utf8)
-    let errorFrame = try ContractCoding.decoder().decode(MobileWSServerFrame.self, from: partialError)
-    #expect(throws: ContractValidationError.self) {
-      try CapableServerFrame.validating(errorFrame)
+    let admissionJSON = Data(
+      #"{"type":"error","id":"e1","conversationId":"c1","error":"failed","code":"conversation_busy"}"#
+        .utf8
+    )
+    let admissionError = try ContractCoding.decoder().decode(
+      MobileWSServerFrame.self,
+      from: admissionJSON
+    )
+    guard
+      case .error(_, let conversationID, let seq, _, _, _, _) =
+        try CapableServerFrame
+        .validating(admissionError)
+    else {
+      Issue.record("expected admission error")
+      return
     }
+    #expect(conversationID != nil)
+    #expect(seq == nil)
 
     let preAcceptanceError = Data(#"{"type":"error","id":"e1","error":"failed"}"#.utf8)
     let preAcceptance = try ContractCoding.decoder().decode(
@@ -426,8 +441,9 @@ struct ContractFixtureTests {
   }
 
   private func bundledFixtureFiles() throws -> [String] {
-    guard let root = Bundle(for: ContractFixtureBundleToken.self).resourceURL?
-      .appendingPathComponent("fixtures", isDirectory: true),
+    guard
+      let root = Bundle(for: ContractFixtureBundleToken.self).resourceURL?
+        .appendingPathComponent("fixtures", isDirectory: true),
       let enumerator = FileManager.default.enumerator(atPath: root.path)
     else {
       throw FixtureError.missing("fixtures/<root>")

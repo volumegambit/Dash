@@ -37,6 +37,65 @@ struct ConversationSyncEngineTests {
     #expect(canonical.mutationsAllowed)
   }
 
+  @Test("transport reconnect retries the full authoritative bootstrap")
+  func reconnectRetriesAgentsAndConversations() async throws {
+    let store = try PersistenceStore.inMemory()
+    let api = FakeConversationSyncAPI()
+    let canonicalAgent = agent(id: "agent-remote", name: "Remote Agent")
+    await api.enqueueAgents(.failure(.transport("bootstrap unavailable")))
+    await api.enqueueAgents(.success([canonicalAgent]))
+    await api.enqueueConversationPage(
+      .success(
+        .init(items: [summary(id: "remote", title: "Remote")], nextCursor: nil)
+      )
+    )
+    let engine = makeEngine(store: store, api: api)
+
+    await engine.bootstrap()
+    await eventually { await api.agentListCallCount == 2 }
+    await eventually {
+      (try? await store.agents(gatewayID: "gw")) == [canonicalAgent]
+    }
+    await eventually { await api.conversationListCalls.count == 1 }
+
+    #expect(await api.agentListCallCount == 2)
+    #expect(await api.conversationListCalls.count == 1)
+    #expect(try await store.agents(gatewayID: "gw") == [canonicalAgent])
+    #expect(try await store.conversation(gatewayID: "gw", id: "remote") != nil)
+    await engine.shutdown()
+  }
+
+  @Test("authoritative reset replaces agents removed on another device")
+  func resetRefreshRemovesStaleAgents() async throws {
+    let store = try PersistenceStore.inMemory()
+    let stale = agent(id: "removed", name: "Removed")
+    try await store.replaceAgents([stale], gatewayID: "gw")
+    let api = FakeConversationSyncAPI()
+    await api.enqueueAgents(.success([]))
+    await api.enqueueConversationPage(.success(.init(items: [], nextCursor: nil)))
+    let engine = makeEngine(store: store, api: api)
+
+    await engine.refreshConversations(reset: true)
+
+    #expect(try await store.agents(gatewayID: "gw").isEmpty)
+    #expect(await api.agentListCallCount == 1)
+  }
+
+  @Test("foreground reconciliation replaces agents removed on another device")
+  func foregroundRemovesStaleAgents() async throws {
+    let store = try PersistenceStore.inMemory()
+    let stale = agent(id: "removed", name: "Removed")
+    try await store.replaceAgents([stale], gatewayID: "gw")
+    let api = FakeConversationSyncAPI()
+    await api.enqueueAgents(.success([]))
+    let engine = makeEngine(store: store, api: api)
+
+    await engine.sceneWillEnterForeground()
+
+    #expect(try await store.agents(gatewayID: "gw").isEmpty)
+    #expect(await api.agentListCallCount == 1)
+  }
+
   @Test("conversation pagination carries the opaque cursor and preserves gateway order")
   func pagination() async throws {
     let store = try PersistenceStore.inMemory()
@@ -96,6 +155,110 @@ struct ConversationSyncEngineTests {
         ]
     )
     #expect(await api.conversationCalls == ["oldest"])
+  }
+
+  @Test("concurrent older load and reset serialize gateway order and opaque cursor")
+  func concurrentResetSupersedesOlderLoad() async throws {
+    let store = try PersistenceStore.inMemory()
+    let api = FakeConversationSyncAPI()
+    await api.enqueueConversationPage(
+      .success(
+        .init(
+          items: [summary(id: "current", title: "Current", updatedAt: instant(20))],
+          nextCursor: "old-cursor"
+        )
+      )
+    )
+    let engine = makeEngine(store: store, api: api)
+    let recorder = SnapshotRecorder()
+    let collector = Task {
+      for await snapshot in await engine.snapshots() {
+        await recorder.append(snapshot)
+      }
+    }
+    await engine.bootstrap()
+    await eventually { await recorder.count >= 2 }
+
+    let olderGate = TestGate()
+    await api.enqueueConversationPage(
+      .success(
+        .init(
+          items: [summary(id: "older", title: "Older", updatedAt: instant(10))],
+          nextCursor: nil
+        )
+      ),
+      waitingOn: olderGate
+    )
+    await api.enqueueConversationPage(
+      .success(
+        .init(
+          items: [
+            summary(id: "older", title: "Canonical older", revision: 2, updatedAt: instant(30)),
+            summary(id: "current", title: "Canonical current", revision: 2, updatedAt: instant(20)),
+          ],
+          nextCursor: "new-cursor"
+        )
+      )
+    )
+    await api.enqueueConversationPage(
+      .success(.init(items: [], nextCursor: nil))
+    )
+
+    let older = Task { await engine.loadOlderConversations() }
+    await olderGate.waitUntilWaiting()
+    let reset = Task { await engine.refreshConversations(reset: true) }
+    await reset.value
+    await olderGate.release()
+    await older.value
+    await settleSyncWork()
+
+    #expect(await recorder.last?.conversations.map(\.id) == ["older", "current"])
+    await engine.loadOlderConversations()
+    #expect(
+      await api.conversationListCalls
+        == [
+          .init(agentID: nil, limit: 50, cursor: nil),
+          .init(agentID: nil, limit: 50, cursor: "old-cursor"),
+          .init(agentID: nil, limit: 50, cursor: nil),
+          .init(agentID: nil, limit: 50, cursor: "new-cursor"),
+        ]
+    )
+    collector.cancel()
+    await engine.shutdown()
+  }
+
+  @Test("older conversation load cannot start while an authoritative reset is in flight")
+  func resetBlocksOlderConversationLoad() async throws {
+    let store = try PersistenceStore.inMemory()
+    let api = FakeConversationSyncAPI()
+    await api.enqueueConversationPage(
+      .success(.init(items: [summary(id: "initial", title: "Initial")], nextCursor: "older"))
+    )
+    let resetGate = TestGate()
+    await api.enqueueConversationPage(
+      .success(.init(items: [summary(id: "reset", title: "Reset")], nextCursor: nil)),
+      waitingOn: resetGate
+    )
+    await api.enqueueConversationPage(
+      .success(.init(items: [summary(id: "unexpected", title: "Unexpected")], nextCursor: nil))
+    )
+    let engine = makeEngine(store: store, api: api)
+    await engine.bootstrap()
+    let reset = Task { await engine.refreshConversations(reset: true) }
+    await resetGate.waitUntilWaiting()
+
+    await engine.loadOlderConversations()
+    await resetGate.release()
+    await reset.value
+
+    #expect(
+      await api.conversationListCalls
+        == [
+          .init(agentID: nil, limit: 50, cursor: nil),
+          .init(agentID: nil, limit: 50, cursor: nil),
+        ]
+    )
+    #expect(try await store.conversation(gatewayID: "gw", id: "unexpected") == nil)
   }
 
   @Test("SSE invalidations refresh canonical summaries instead of persisting hint bodies")
@@ -188,6 +351,113 @@ struct ConversationSyncEngineTests {
     #expect(await api.messageListCalls.count == 1)
   }
 
+  @Test("concurrent older-message load cannot regress a newer reset cursor")
+  func concurrentOlderMessageLoadAndReset() async throws {
+    let store = try PersistenceStore.inMemory()
+    try await store.upsertConversations(
+      [summary(id: "c", title: "Conversation")],
+      gatewayID: "gw"
+    )
+    let api = FakeConversationSyncAPI()
+    await api.enqueueMessages(
+      conversationID: "c",
+      result: .success(
+        .init(items: [message(id: "initial")], nextCursor: "older-1", throughSeq: 1)
+      )
+    )
+    let olderGate = TestGate()
+    await api.enqueueMessages(
+      conversationID: "c",
+      result: .success(
+        .init(items: [message(id: "stale-older")], nextCursor: nil, throughSeq: 2)
+      ),
+      waitingOn: olderGate
+    )
+    await api.enqueueMessages(
+      conversationID: "c",
+      result: .success(
+        .init(items: [message(id: "reset")], nextCursor: "fresh-older", throughSeq: 3)
+      )
+    )
+    await api.enqueueMessages(
+      conversationID: "c",
+      result: .success(
+        .init(items: [message(id: "fresh-older")], nextCursor: nil, throughSeq: 4)
+      )
+    )
+    let engine = makeEngine(store: store, api: api)
+    await engine.loadMessages(conversationID: "c", reset: true)
+    let staleOlder = Task { await engine.loadOlderMessages(conversationID: "c") }
+    await olderGate.waitUntilWaiting()
+
+    await engine.loadMessages(conversationID: "c", reset: true)
+    await olderGate.release()
+    await staleOlder.value
+    await engine.loadOlderMessages(conversationID: "c")
+
+    #expect(
+      await api.messageListCalls
+        == [
+          .init(conversationID: "c", limit: 50, before: nil),
+          .init(conversationID: "c", limit: 50, before: "older-1"),
+          .init(conversationID: "c", limit: 50, before: nil),
+          .init(conversationID: "c", limit: 50, before: "fresh-older"),
+        ]
+    )
+    #expect(try await store.cursor(gatewayID: "gw", conversationID: "c") == 4)
+  }
+
+  @Test("older message load cannot start while a canonical reset is in flight")
+  func messageResetBlocksOlderLoad() async throws {
+    let store = try PersistenceStore.inMemory()
+    try await store.upsertConversations(
+      [summary(id: "c", title: "Conversation")],
+      gatewayID: "gw"
+    )
+    let api = FakeConversationSyncAPI()
+    await api.enqueueMessages(
+      conversationID: "c",
+      result: .success(
+        .init(items: [message(id: "initial")], nextCursor: "older", throughSeq: 1)
+      )
+    )
+    let resetGate = TestGate()
+    await api.enqueueMessages(
+      conversationID: "c",
+      result: .success(
+        .init(items: [message(id: "reset")], nextCursor: nil, throughSeq: 3)
+      ),
+      waitingOn: resetGate
+    )
+    await api.enqueueMessages(
+      conversationID: "c",
+      result: .success(
+        .init(items: [message(id: "unexpected")], nextCursor: nil, throughSeq: 2)
+      )
+    )
+    let engine = makeEngine(store: store, api: api)
+    await engine.loadMessages(conversationID: "c", reset: true)
+    let reset = Task { await engine.loadMessages(conversationID: "c", reset: true) }
+    await resetGate.waitUntilWaiting()
+
+    await engine.loadOlderMessages(conversationID: "c")
+    await resetGate.release()
+    await reset.value
+
+    #expect(
+      await api.messageListCalls
+        == [
+          .init(conversationID: "c", limit: 50, before: nil),
+          .init(conversationID: "c", limit: 50, before: nil),
+        ]
+    )
+    #expect(
+      try await store.messages(gatewayID: "gw", conversationID: "c").map(\.id).contains(
+        "unexpected"
+      ) == false
+    )
+  }
+
   @Test("foreground reconciliation resumes only the canonical running turn through stored sequence")
   func foregroundReconciliation() async throws {
     let store = try PersistenceStore.inMemory()
@@ -200,11 +470,19 @@ struct ConversationSyncEngineTests {
           activeTurnID: "turn-running",
           updatedAt: instant(20)
         ),
+        summary(
+          id: "running-two",
+          title: "Running two",
+          status: .running,
+          activeTurnID: "turn-running-two",
+          updatedAt: instant(15)
+        ),
         summary(id: "completed", title: "Completed", updatedAt: instant(10)),
       ],
       gatewayID: "gw"
     )
     try await store.advanceCursor(gatewayID: "gw", conversationID: "running", to: 4)
+    try await store.advanceCursor(gatewayID: "gw", conversationID: "running-two", to: 2)
     try await store.advanceCursor(gatewayID: "gw", conversationID: "completed", to: 8)
     let api = FakeConversationSyncAPI()
     await api.enqueueConversation(
@@ -217,6 +495,19 @@ struct ConversationSyncEngineTests {
           status: .running,
           activeTurnID: "turn-running",
           updatedAt: instant(22)
+        )
+      )
+    )
+    await api.enqueueConversation(
+      id: "running-two",
+      result: .success(
+        summary(
+          id: "running-two",
+          title: "Running two",
+          revision: 2,
+          status: .running,
+          activeTurnID: "turn-running-two",
+          updatedAt: instant(17)
         )
       )
     )
@@ -239,6 +530,22 @@ struct ConversationSyncEngineTests {
       )
     )
     await api.enqueueMessages(
+      conversationID: "running-two",
+      result: .success(
+        .init(
+          items: [
+            message(
+              id: "running-two-message",
+              conversationID: "running-two",
+              turnID: "turn-running-two"
+            )
+          ],
+          nextCursor: nil,
+          throughSeq: 3
+        )
+      )
+    )
+    await api.enqueueMessages(
       conversationID: "completed",
       result: .success(
         .init(
@@ -253,19 +560,28 @@ struct ConversationSyncEngineTests {
     let chat = FakeConversationChat()
     let engine = makeEngine(store: store, api: api, chat: chat)
 
+    await engine.sceneDidEnterBackground()
     await engine.sceneWillEnterForeground()
 
     #expect(try await store.cursor(gatewayID: "gw", conversationID: "running") == 6)
+    #expect(try await store.cursor(gatewayID: "gw", conversationID: "running-two") == 3)
     #expect(try await store.cursor(gatewayID: "gw", conversationID: "completed") == 9)
     #expect(
       await chat.calls
         == [
+          .suspend,
           .connect,
           .resume(
             turnID: "turn-running",
             agentID: "agent-1",
             conversationID: "running",
             sinceSeq: 6
+          ),
+          .resume(
+            turnID: "turn-running-two",
+            agentID: "agent-1",
+            conversationID: "running-two",
+            sinceSeq: 3
           ),
         ]
     )
@@ -317,6 +633,143 @@ struct ConversationSyncEngineTests {
     #expect(online.conversations.map(\.id) == ["online"])
   }
 
+  @Test("a public refresh cannot commit after shutdown while its request is suspended")
+  func shutdownInvalidatesSuspendedPublicRefresh() async throws {
+    let store = try PersistenceStore.inMemory()
+    let api = FakeConversationSyncAPI()
+    let gate = TestGate()
+    await api.enqueueConversationPage(
+      .success(.init(items: [summary(id: "late", title: "Late")], nextCursor: nil)),
+      waitingOn: gate
+    )
+    let chat = FakeConversationChat()
+    let engine = makeEngine(store: store, api: api, chat: chat)
+    let refresh = Task { await engine.refreshConversations(reset: true) }
+    await gate.waitUntilWaiting()
+
+    await engine.shutdown()
+    await gate.release()
+    await refresh.value
+
+    #expect(try await store.conversation(gatewayID: "gw", id: "late") == nil)
+    #expect(await chat.calls == [.shutdown])
+  }
+
+  @Test("shutdown during the successful-sync clock read cannot write stale metadata")
+  func shutdownInvalidatesSuccessfulSyncClockRead() async throws {
+    let store = try PersistenceStore.inMemory()
+    let api = FakeConversationSyncAPI()
+    let nowGate = TestGate()
+    let clock = GatedNowClock(value: instant(100), gate: nowGate)
+    let engine = makeEngine(store: store, api: api, clock: clock)
+    let refresh = Task { await engine.refreshConversations(reset: true) }
+    await nowGate.waitUntilWaiting()
+
+    await engine.shutdown()
+    await nowGate.release()
+    await refresh.value
+
+    #expect(try await store.profile(gatewayID: "gw")?.profile.lastSuccessfulSyncAt == nil)
+  }
+
+  @Test("shutdown waits for owned invalidation work and rejects its late result")
+  func shutdownQuiescesOwnedInvalidation() async throws {
+    let store = try PersistenceStore.inMemory()
+    let api = FakeConversationSyncAPI()
+    let invalidations = FakeInvalidationSource()
+    await api.enqueueConversationPage(
+      .success(.init(items: [summary(id: "c", title: "Initial")], nextCursor: nil))
+    )
+    let pointGate = TestGate()
+    await api.enqueueConversation(
+      id: "c",
+      result: .success(summary(id: "c", title: "Late", revision: 2)),
+      waitingOn: pointGate
+    )
+    let engine = makeEngine(store: store, api: api, invalidations: invalidations)
+    await engine.bootstrap()
+    invalidations.yield(.conversationChanged(conversationID: "c", revision: 2))
+    await pointGate.waitUntilWaiting()
+
+    let completion = CompletionProbe()
+    let shutdown = Task {
+      await engine.shutdown()
+      await completion.finish()
+    }
+    await settleSyncWork()
+
+    #expect(await completion.isFinished == false)
+    await pointGate.release()
+    await shutdown.value
+    #expect(try await store.conversation(gatewayID: "gw", id: "c")?.summary.revision == 1)
+  }
+
+  @Test("a stale background transition cannot suspend chat after shutdown")
+  func staleBackgroundCannotSuspendAfterShutdown() async throws {
+    let store = try PersistenceStore.inMemory()
+    let api = FakeConversationSyncAPI()
+    let invalidations = FakeInvalidationSource()
+    let chat = FakeConversationChat()
+    await api.enqueueConversationPage(
+      .success(.init(items: [summary(id: "c", title: "Initial")], nextCursor: nil))
+    )
+    let pointGate = TestGate()
+    await api.enqueueConversation(
+      id: "c",
+      result: .success(summary(id: "c", title: "Late", revision: 2)),
+      waitingOn: pointGate
+    )
+    let engine = makeEngine(store: store, api: api, invalidations: invalidations, chat: chat)
+    await engine.bootstrap()
+    invalidations.yield(.conversationChanged(conversationID: "c", revision: 2))
+    await pointGate.waitUntilWaiting()
+    let background = Task { await engine.sceneDidEnterBackground() }
+    await settleSyncWork()
+
+    await engine.shutdown()
+    await pointGate.release()
+    await background.value
+
+    #expect(await chat.calls == [.shutdown])
+  }
+
+  @Test("shutdown rejects new mutations and later background callbacks without side effects")
+  func shutdownRejectsNewPublicWork() async throws {
+    let store = try PersistenceStore.inMemory()
+    let api = FakeConversationSyncAPI()
+    let chat = FakeConversationChat()
+    let engine = makeEngine(store: store, api: api, chat: chat)
+    await engine.bootstrap()
+    await engine.shutdown()
+
+    let createError = await syncGatewayError {
+      _ = try await engine.createConversation(
+        .init(
+          agentId: "agent-1",
+          requestId: "after-shutdown",
+          title: nil,
+          owningIssueId: nil,
+          projectId: nil
+        )
+      )
+    }
+    let sendError = await syncGatewayError {
+      try await engine.sendTurn(
+        id: "turn-after-shutdown",
+        agentID: "agent-1",
+        conversationID: "conversation-after-shutdown",
+        text: "Do not send",
+        images: []
+      )
+    }
+    await engine.sceneDidEnterBackground()
+
+    #expect(createError == .transport("Mutations require an online gateway"))
+    #expect(sendError == .transport("Mutations require an online gateway"))
+    #expect(await api.createRequests.isEmpty)
+    #expect(await chat.calls == [.shutdown])
+  }
+
   @Test(
     "gateway failures map to stable repair states",
     arguments: [
@@ -349,6 +802,45 @@ struct ConversationSyncEngineTests {
     #expect(failure.mutationsAllowed == false)
   }
 
+  @Test(
+    "late reachability hints cannot overwrite authoritative gateway failures",
+    arguments: [
+      (GatewayError.unauthorized, GatewayConnectionState.repairRequired),
+      (
+        GatewayError.rateLimited(retryAfter: .seconds(30)),
+        GatewayConnectionState.rateLimited(retryAt: instant(130))
+      ),
+      (GatewayError.gatewayOffline, GatewayConnectionState.gatewayOffline),
+      (GatewayError.updateRequired, GatewayConnectionState.updateRequired),
+    ]
+  )
+  func reachabilityPreservesAuthoritativeFailure(
+    error: GatewayError,
+    expected: GatewayConnectionState
+  ) async throws {
+    let store = try PersistenceStore.inMemory()
+    let api = FakeConversationSyncAPI()
+    let reachability = FakeReachability()
+    await api.enqueueConversationPage(.failure(error))
+    let engine = makeEngine(store: store, api: api, reachability: reachability)
+    let recorder = SnapshotRecorder()
+    let collector = Task {
+      for await snapshot in await engine.snapshots() {
+        await recorder.append(snapshot)
+      }
+    }
+    await engine.bootstrap()
+    await eventually { await recorder.count >= 2 }
+
+    reachability.yield(.unsatisfied)
+    reachability.yield(.satisfied)
+    await settleSyncWork()
+
+    #expect(await recorder.last?.connection == expected)
+    collector.cancel()
+    await engine.shutdown()
+  }
+
   @Test("ambiguous create retries the idempotent request with the exact request ID")
   func ambiguousCreateReusesRequestID() async throws {
     let store = try PersistenceStore.inMemory()
@@ -374,6 +866,54 @@ struct ConversationSyncEngineTests {
     #expect(await api.createRequests == [request, request])
     #expect(await api.agentListCallCount == 2)
     #expect(try await store.conversation(gatewayID: "gw", id: "created")?.summary == canonical)
+  }
+
+  @Test(
+    "create failures map connection state before rethrowing the exact gateway error",
+    arguments: [
+      (GatewayError.unauthorized, GatewayConnectionState.repairRequired),
+      (
+        GatewayError.rateLimited(retryAfter: .seconds(30)),
+        GatewayConnectionState.rateLimited(retryAt: instant(130))
+      ),
+      (GatewayError.gatewayOffline, GatewayConnectionState.gatewayOffline),
+      (GatewayError.updateRequired, GatewayConnectionState.updateRequired),
+    ]
+  )
+  func createFailureMapsAndRethrows(
+    error: GatewayError,
+    expected: GatewayConnectionState
+  ) async throws {
+    let store = try PersistenceStore.inMemory()
+    let api = FakeConversationSyncAPI()
+    await api.enqueueCreate(.failure(error))
+    let engine = makeEngine(store: store, api: api)
+    let recorder = SnapshotRecorder()
+    let collector = Task {
+      for await snapshot in await engine.snapshots() {
+        await recorder.append(snapshot)
+      }
+    }
+    await engine.bootstrap()
+    await eventually { await recorder.count >= 2 }
+
+    let thrown = await syncGatewayError {
+      _ = try await engine.createConversation(
+        .init(
+          agentId: "agent-1",
+          requestId: "request-stable",
+          title: "Create",
+          owningIssueId: nil,
+          projectId: nil
+        )
+      )
+    }
+    await settleSyncWork()
+
+    #expect(thrown == error)
+    #expect(await recorder.last?.connection == expected)
+    collector.cancel()
+    await engine.shutdown()
   }
 
   @Test("ambiguous send re-reads by turn ID and resumes the same durable mutation")
@@ -475,7 +1015,14 @@ struct ConversationSyncEngineTests {
     let chat = FakeConversationChat()
     await chat.enqueueSend(.failure(.unauthorized))
     let engine = makeEngine(store: store, api: api, chat: chat)
+    let recorder = SnapshotRecorder()
+    let collector = Task {
+      for await snapshot in await engine.snapshots() {
+        await recorder.append(snapshot)
+      }
+    }
     await engine.bootstrap()
+    await eventually { await recorder.count >= 2 }
 
     let error = await syncGatewayError {
       try await engine.sendTurn(
@@ -494,6 +1041,99 @@ struct ConversationSyncEngineTests {
     }
     #expect(sends == ["turn-stable"])
     #expect(await api.messageListCalls.isEmpty)
+    await settleSyncWork()
+    #expect(await recorder.last?.connection == .repairRequired)
+    collector.cancel()
+    await engine.shutdown()
+  }
+
+  @Test("ambiguous-send audit failures map state and rethrow")
+  func ambiguousSendAuditFailureMapsAndRethrows() async throws {
+    let store = try PersistenceStore.inMemory()
+    let api = FakeConversationSyncAPI()
+    await api.enqueueMessages(conversationID: "c", result: .failure(.gatewayOffline))
+    let chat = FakeConversationChat()
+    await chat.enqueueSend(.failure(.transport("ambiguous send")))
+    let engine = makeEngine(store: store, api: api, chat: chat)
+    let recorder = SnapshotRecorder()
+    let collector = Task {
+      for await snapshot in await engine.snapshots() {
+        await recorder.append(snapshot)
+      }
+    }
+    await engine.bootstrap()
+    await eventually { await recorder.count >= 2 }
+
+    let error = await syncGatewayError {
+      try await engine.sendTurn(
+        id: "turn-stable",
+        agentID: "agent-1",
+        conversationID: "c",
+        text: "Audit once",
+        images: []
+      )
+    }
+    await settleSyncWork()
+
+    #expect(error == .gatewayOffline)
+    #expect(await recorder.last?.connection == .gatewayOffline)
+    #expect(await api.messageListCalls.map(\.conversationID) == ["c"])
+    collector.cancel()
+    await engine.shutdown()
+  }
+
+  @Test("ambiguous-send resume failures map state and rethrow")
+  func ambiguousSendResumeFailureMapsAndRethrows() async throws {
+    let store = try PersistenceStore.inMemory()
+    let api = FakeConversationSyncAPI()
+    await api.enqueueMessages(
+      conversationID: "c",
+      result: .success(
+        .init(
+          items: [message(id: "m", turnID: "turn-stable", status: .streaming)],
+          nextCursor: nil,
+          throughSeq: 4
+        )
+      )
+    )
+    let chat = FakeConversationChat()
+    await chat.enqueueSend(.failure(.transport("ambiguous send")))
+    await chat.enqueueResume(.failure(.updateRequired))
+    let engine = makeEngine(store: store, api: api, chat: chat)
+    let recorder = SnapshotRecorder()
+    let collector = Task {
+      for await snapshot in await engine.snapshots() {
+        await recorder.append(snapshot)
+      }
+    }
+    await engine.bootstrap()
+    await eventually { await recorder.count >= 2 }
+
+    let error = await syncGatewayError {
+      try await engine.sendTurn(
+        id: "turn-stable",
+        agentID: "agent-1",
+        conversationID: "c",
+        text: "Resume once",
+        images: []
+      )
+    }
+    await settleSyncWork()
+
+    #expect(error == .updateRequired)
+    #expect(await recorder.last?.connection == .updateRequired)
+    #expect(
+      await chat.calls.contains(
+        .resume(
+          turnID: "turn-stable",
+          agentID: "agent-1",
+          conversationID: "c",
+          sinceSeq: 4
+        )
+      )
+    )
+    collector.cancel()
+    await engine.shutdown()
   }
 
   @Test("list omission point-audits tombstones and 404s without inferring deletion")
@@ -657,6 +1297,65 @@ struct ConversationSyncEngineTests {
     )
   }
 
+  private func agent(id: String, name: String) -> RegisteredAgentDTO {
+    RegisteredAgentDTO(
+      id: id,
+      name: name,
+      config: AgentConfigDTO(
+        name: name,
+        model: "provider/model",
+        systemPrompt: "System prompt for \(name)",
+        fallbackModels: nil,
+        tools: nil,
+        skills: nil,
+        workspace: nil,
+        maxTokens: nil,
+        mcpServers: nil,
+        swarm: nil,
+        plugins: nil,
+        providers: nil
+      ),
+      status: .registered,
+      registeredAt: instant(0)
+    )
+  }
+
+}
+
+private actor SnapshotRecorder {
+  private var snapshots: [SyncSnapshot] = []
+
+  var count: Int { snapshots.count }
+  var last: SyncSnapshot? { snapshots.last }
+
+  func append(_ snapshot: SyncSnapshot) {
+    snapshots.append(snapshot)
+  }
+}
+
+private actor CompletionProbe {
+  private(set) var isFinished = false
+
+  func finish() {
+    isFinished = true
+  }
+}
+
+private actor GatedNowClock: AppClock {
+  private let value: Date
+  private let gate: TestGate
+
+  init(value: Date, gate: TestGate) {
+    self.value = value
+    self.gate = gate
+  }
+
+  func now() async -> Date {
+    await gate.wait()
+    return value
+  }
+
+  func sleep(for _: Duration) async throws {}
 }
 
 private func eventually(
@@ -668,6 +1367,12 @@ private func eventually(
     await Task.yield()
   }
   Issue.record("Condition did not become true")
+}
+
+private func settleSyncWork() async {
+  for _ in 0..<1_000 {
+    await Task.yield()
+  }
 }
 
 private func instant(_ seconds: Int) -> Date {

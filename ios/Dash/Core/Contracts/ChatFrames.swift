@@ -303,9 +303,6 @@ enum CapableServerFrame: Hashable, Sendable {
       guard let outcome else { throw ContractValidationError.requiredCapableField("outcome") }
       return .done(id: id, conversationId: conversationId, seq: seq, outcome: outcome)
     case let .error(id, conversationId, seq, error, code, retryable, activeTurnId):
-      if conversationId != nil, seq == nil {
-        throw ContractValidationError.requiredCapableField("seq")
-      }
       if conversationId == nil, seq != nil {
         throw ContractValidationError.requiredCapableField("conversationId")
       }

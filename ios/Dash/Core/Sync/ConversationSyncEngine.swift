@@ -52,11 +52,12 @@ protocol ConversationChatting: Sendable {
     conversationID: String,
     sinceSeq: Int
   ) async throws
-  func disconnect() async
+  func suspend() async
+  func shutdown() async
 }
 
 extension ChatConnection: ConversationChatting {
-  func disconnect() async {
+  func shutdown() async {
     detach()
   }
 }
@@ -82,6 +83,12 @@ struct SyncSnapshot: Equatable, Sendable {
 }
 
 actor ConversationSyncEngine {
+  private struct MessageLoadToken: Equatable, Sendable {
+    let conversationID: String
+    let generation: Int
+    let lifecycle: Int
+  }
+
   private let gatewayID: String
   private let store: PersistenceStore
   private let api: any ConversationSyncAPI
@@ -108,6 +115,14 @@ actor ConversationSyncEngine {
   private var reconnectAttempt = 0
   private var chatConnected = false
   private var isShutdown = false
+  private var lifecycleGeneration = 0
+  private var sceneGeneration = 0
+  private var conversationGeneration = 0
+  private var conversationResetGeneration: Int?
+  private var olderConversationGeneration: Int?
+  private var messageGenerations: [String: Int] = [:]
+  private var messageResetTokens: [String: MessageLoadToken] = [:]
+  private var olderMessageTokens: [String: MessageLoadToken] = [:]
 
   init(
     gatewayID: String,
@@ -138,84 +153,177 @@ actor ConversationSyncEngine {
 
   func bootstrap() async {
     guard isShutdown == false else { return }
+    let lifecycle = lifecycleGeneration
+    conversationGeneration += 1
+    let conversations = conversationGeneration
+    conversationResetGeneration = conversations
+    olderConversationGeneration = nil
+    defer {
+      if conversationResetGeneration == conversations {
+        conversationResetGeneration = nil
+      }
+    }
     do {
-      try await reloadSnapshot()
+      try await reloadSnapshot(lifecycle: lifecycle, conversations: conversations)
+      try validate(lifecycle: lifecycle, conversations: conversations)
       publish(.connecting)
       startReachability()
       let agents = try await api.listAgents()
+      try validate(lifecycle: lifecycle, conversations: conversations)
       try await store.replaceAgents(agents, gatewayID: gatewayID)
-      try await refreshConversationsFromNetwork(reset: true)
-      try await recordSuccessfulSync()
+      try validate(lifecycle: lifecycle, conversations: conversations)
+      try await refreshConversationsFromNetwork(
+        reset: true,
+        lifecycle: lifecycle,
+        conversations: conversations
+      )
+      try await recordSuccessfulSync(lifecycle: lifecycle, conversations: conversations)
+      try validate(lifecycle: lifecycle, conversations: conversations)
       reconnectAttempt = 0
-      try await reloadSnapshot()
+      try await reloadSnapshot(lifecycle: lifecycle, conversations: conversations)
+      try validate(lifecycle: lifecycle, conversations: conversations)
       publish(.online)
       startInvalidations()
+    } catch is CancellationError {
+      return
     } catch {
-      await handle(error)
+      await handle(error, lifecycle: lifecycle)
     }
   }
 
   func refreshConversations(reset: Bool) async {
     guard isShutdown == false else { return }
+    let conversations: Int
+    if reset {
+      conversationGeneration += 1
+      conversations = conversationGeneration
+      conversationResetGeneration = conversations
+      olderConversationGeneration = nil
+    } else {
+      guard
+        conversationCursor != nil,
+        conversationResetGeneration == nil,
+        olderConversationGeneration == nil
+      else { return }
+      conversations = conversationGeneration
+      olderConversationGeneration = conversations
+    }
+    let lifecycle = lifecycleGeneration
+    defer {
+      if reset {
+        if conversationResetGeneration == conversations {
+          conversationResetGeneration = nil
+        }
+      } else if olderConversationGeneration == conversations {
+        olderConversationGeneration = nil
+      }
+    }
     do {
-      try await refreshConversationsFromNetwork(reset: reset)
-      try await recordSuccessfulSync()
+      if reset {
+        let agents = try await api.listAgents()
+        try validate(lifecycle: lifecycle, conversations: conversations)
+        try await store.replaceAgents(agents, gatewayID: gatewayID)
+        try validate(lifecycle: lifecycle, conversations: conversations)
+      }
+      try await refreshConversationsFromNetwork(
+        reset: reset,
+        lifecycle: lifecycle,
+        conversations: conversations
+      )
+      try await recordSuccessfulSync(lifecycle: lifecycle, conversations: conversations)
+      try validate(lifecycle: lifecycle, conversations: conversations)
       reconnectAttempt = 0
-      try await reloadSnapshot()
+      try await reloadSnapshot(lifecycle: lifecycle, conversations: conversations)
+      try validate(lifecycle: lifecycle, conversations: conversations)
       publish(.online)
       startInvalidations()
+    } catch is CancellationError {
+      return
     } catch {
-      await handle(error)
+      await handle(error, lifecycle: lifecycle)
     }
   }
 
   func loadOlderConversations() async {
-    guard conversationCursor != nil else { return }
     await refreshConversations(reset: false)
   }
 
   func refreshConversation(id: String) async {
     guard isShutdown == false else { return }
+    let lifecycle = lifecycleGeneration
+    let conversations = conversationGeneration
     do {
       let summary = try await api.conversation(id: id)
-      try await persist(summary)
-      try await recordSuccessfulSync()
-      try await reloadSnapshot()
+      try validate(lifecycle: lifecycle, conversations: conversations)
+      try await persist(summary, lifecycle: lifecycle, conversations: conversations)
+      try await recordSuccessfulSync(lifecycle: lifecycle, conversations: conversations)
+      try validate(lifecycle: lifecycle, conversations: conversations)
+      try await reloadSnapshot(lifecycle: lifecycle, conversations: conversations)
+      try validate(lifecycle: lifecycle, conversations: conversations)
       publish(.online)
     } catch GatewayError.notFound {
       do {
+        try validate(lifecycle: lifecycle, conversations: conversations)
         try await store.removeConversation(gatewayID: gatewayID, conversationID: id)
+        try validate(lifecycle: lifecycle, conversations: conversations)
         conversationOrder.removeAll { $0 == id }
-        try await reloadSnapshot()
+        try await reloadSnapshot(lifecycle: lifecycle, conversations: conversations)
+        try validate(lifecycle: lifecycle, conversations: conversations)
         publish(.online)
+      } catch is CancellationError {
+        return
       } catch {
-        await handle(error)
+        await handle(error, lifecycle: lifecycle)
       }
+    } catch is CancellationError {
+      return
     } catch {
-      await handle(error)
+      await handle(error, lifecycle: lifecycle)
     }
   }
 
   func loadMessages(conversationID: String, reset: Bool) async {
     guard isShutdown == false else { return }
+    let lifecycle = lifecycleGeneration
+    let conversations = conversationGeneration
     do {
-      _ = try await loadMessagesFromNetwork(conversationID: conversationID, reset: reset)
-      try await reloadSnapshot()
+      if reset {
+        _ = try await resetMessagesFromNetwork(
+          conversationID: conversationID,
+          lifecycle: lifecycle,
+          conversations: conversations
+        )
+      } else {
+        guard let messages = beginOlderMessageLoad(conversationID: conversationID) else { return }
+        defer { finishOlderMessageLoad(messages) }
+        _ = try await loadMessagesFromNetwork(
+          conversationID: conversationID,
+          reset: false,
+          lifecycle: lifecycle,
+          conversations: conversations,
+          messages: messages
+        )
+      }
+      try await reloadSnapshot(lifecycle: lifecycle, conversations: conversations)
+      try validate(lifecycle: lifecycle, conversations: conversations)
       publish(.online)
     } catch PersistenceStoreError.conversationDeleted {
       return
+    } catch is CancellationError {
+      return
     } catch {
-      await handle(error)
+      await handle(error, lifecycle: lifecycle)
     }
   }
 
   func loadOlderMessages(conversationID: String) async {
-    guard messageCursors[conversationID] != nil else { return }
     await loadMessages(conversationID: conversationID, reset: false)
   }
 
   func consumeLiveFrame(_ frame: MobileWSServerFrame, agentID: String) async {
     guard isShutdown == false else { return }
+    let lifecycle = lifecycleGeneration
+    let conversations = conversationGeneration
     do {
       let capable = try CapableServerFrame.validating(frame)
       guard let sequenced = capable.sequenced else { return }
@@ -223,6 +331,7 @@ actor ConversationSyncEngine {
         gatewayID: gatewayID,
         conversationID: sequenced.conversationID
       )
+      try validate(lifecycle: lifecycle, conversations: conversations)
       var reconciler =
         reconcilers[sequenced.conversationID]
         ?? SequenceReconciler(lastAppliedSeq: storedCursor)
@@ -237,6 +346,7 @@ actor ConversationSyncEngine {
           conversationID: sequenced.conversationID,
           sinceSeq: sinceSeq
         )
+        try validate(lifecycle: lifecycle, conversations: conversations)
         var replayReconciler = SequenceReconciler(lastAppliedSeq: sinceSeq)
         for entry in replay.entries {
           guard
@@ -260,9 +370,10 @@ actor ConversationSyncEngine {
         }
       }
 
-      let page = try await loadMessagesFromNetwork(
+      let page = try await resetMessagesFromNetwork(
         conversationID: sequenced.conversationID,
-        reset: true
+        lifecycle: lifecycle,
+        conversations: conversations
       )
       guard page.throughSeq >= sequenced.seq else {
         throw GatewayError.updateRequired
@@ -270,60 +381,103 @@ actor ConversationSyncEngine {
       reconcilers[sequenced.conversationID] = SequenceReconciler(
         lastAppliedSeq: page.throughSeq
       )
-      try await reloadSnapshot()
+      try await reloadSnapshot(lifecycle: lifecycle, conversations: conversations)
+      try validate(lifecycle: lifecycle, conversations: conversations)
       publish(.online)
     } catch PersistenceStoreError.conversationDeleted {
       return
+    } catch is CancellationError {
+      return
     } catch {
-      await handle(error)
+      await handle(error, lifecycle: lifecycle)
     }
   }
 
   func sceneDidEnterBackground() async {
-    invalidationTask?.cancel()
+    guard isShutdown == false else { return }
+    sceneGeneration += 1
+    let scene = sceneGeneration
+    lifecycleGeneration += 1
+    conversationGeneration += 1
+    conversationResetGeneration = nil
+    olderConversationGeneration = nil
+    messageResetTokens.removeAll()
+    olderMessageTokens.removeAll()
+    let invalidation = invalidationTask
+    let reconnect = reconnectTask
+    invalidation?.cancel()
     invalidationTask = nil
-    reconnectTask?.cancel()
+    reconnect?.cancel()
     reconnectTask = nil
-    await chat.disconnect()
+    await invalidation?.value
+    await reconnect?.value
+    guard isShutdown == false, scene == sceneGeneration else { return }
     chatConnected = false
+    await chat.suspend()
   }
 
   func sceneWillEnterForeground() async {
     guard isShutdown == false else { return }
+    sceneGeneration += 1
+    conversationGeneration += 1
+    let lifecycle = lifecycleGeneration
+    let conversations = conversationGeneration
     startReachability()
     do {
+      let agents = try await api.listAgents()
+      try validate(lifecycle: lifecycle, conversations: conversations)
+      try await store.replaceAgents(agents, gatewayID: gatewayID)
+      try validate(lifecycle: lifecycle, conversations: conversations)
       let cached = try await store.conversations(gatewayID: gatewayID, limit: 1_000)
+      try validate(lifecycle: lifecycle, conversations: conversations)
       for value in cached {
         let canonical: ConversationSummaryDTO
         do {
           canonical = try await api.conversation(id: value.id)
+          try validate(lifecycle: lifecycle, conversations: conversations)
         } catch GatewayError.notFound {
+          try validate(lifecycle: lifecycle, conversations: conversations)
           try await store.removeConversation(gatewayID: gatewayID, conversationID: value.id)
+          try validate(lifecycle: lifecycle, conversations: conversations)
           conversationOrder.removeAll { $0 == value.id }
           continue
         }
-        try await persist(canonical)
+        try await persist(
+          canonical,
+          lifecycle: lifecycle,
+          conversations: conversations
+        )
         guard canonical.status != .deleted else { continue }
-        _ = try await loadMessagesFromNetwork(conversationID: canonical.id, reset: true)
+        _ = try await resetMessagesFromNetwork(
+          conversationID: canonical.id,
+          lifecycle: lifecycle,
+          conversations: conversations
+        )
         guard canonical.status == .running, let turnID = canonical.activeTurnId else { continue }
-        try await ensureChatConnected()
+        try await ensureChatConnected(lifecycle: lifecycle)
         let cursor = try await store.cursor(
           gatewayID: gatewayID,
           conversationID: canonical.id
         )
+        try validate(lifecycle: lifecycle, conversations: conversations)
         try await chat.resume(
           turnID: turnID,
           agentID: canonical.agentId,
           conversationID: canonical.id,
           sinceSeq: cursor
         )
+        try validate(lifecycle: lifecycle, conversations: conversations)
       }
-      try await recordSuccessfulSync()
-      try await reloadSnapshot()
+      try await recordSuccessfulSync(lifecycle: lifecycle, conversations: conversations)
+      try validate(lifecycle: lifecycle, conversations: conversations)
+      try await reloadSnapshot(lifecycle: lifecycle, conversations: conversations)
+      try validate(lifecycle: lifecycle, conversations: conversations)
       publish(.online)
       startInvalidations()
+    } catch is CancellationError {
+      return
     } catch {
-      await handle(error)
+      await handle(error, lifecycle: lifecycle)
     }
   }
 
@@ -331,20 +485,22 @@ actor ConversationSyncEngine {
     _ request: CreateConversationRequest
   ) async throws -> ConversationSummaryDTO {
     try requireOnlineMutation()
+    let lifecycle = lifecycleGeneration
     do {
-      let summary = try await api.createConversation(request)
-      try await persist(summary)
-      try await reloadSnapshot()
-      publish(.online)
-      return summary
-    } catch GatewayError.mutationOutcomeUnknown {
-      try await clock.sleep(for: backoff.delay(attempt: 0, unitRandom: 0.5))
-      _ = try await api.listAgents()
-      let summary = try await api.createConversation(request)
-      try await persist(summary)
-      try await reloadSnapshot()
-      publish(.online)
-      return summary
+      do {
+        return try await createAndPersist(request, lifecycle: lifecycle)
+      } catch GatewayError.mutationOutcomeUnknown {
+        try await clock.sleep(for: backoff.delay(attempt: 0, unitRandom: 0.5))
+        try validate(lifecycle: lifecycle)
+        _ = try await api.listAgents()
+        try validate(lifecycle: lifecycle)
+        return try await createAndPersist(request, lifecycle: lifecycle)
+      }
+    } catch is CancellationError {
+      throw CancellationError()
+    } catch {
+      await handle(error, lifecycle: lifecycle)
+      throw error
     }
   }
 
@@ -356,60 +512,94 @@ actor ConversationSyncEngine {
     images: [MessageImage]
   ) async throws {
     try requireOnlineMutation()
-    try await ensureChatConnected()
+    let lifecycle = lifecycleGeneration
     do {
-      try await chat.sendTurn(
-        id: id,
-        agentID: agentID,
-        conversationID: conversationID,
-        text: text,
-        images: images
-      )
-    } catch let error as GatewayError {
-      guard case .transport = error else { throw error }
-      try await recoverAmbiguousSend(
-        id: id,
-        agentID: agentID,
-        conversationID: conversationID,
-        text: text,
-        images: images
-      )
-    } catch is URLError {
-      try await recoverAmbiguousSend(
-        id: id,
-        agentID: agentID,
-        conversationID: conversationID,
-        text: text,
-        images: images
-      )
+      try await ensureChatConnected(lifecycle: lifecycle)
+      do {
+        try await chat.sendTurn(
+          id: id,
+          agentID: agentID,
+          conversationID: conversationID,
+          text: text,
+          images: images
+        )
+        try validate(lifecycle: lifecycle)
+      } catch let error as GatewayError {
+        guard case .transport = error else { throw error }
+        try await recoverAmbiguousSend(
+          id: id,
+          agentID: agentID,
+          conversationID: conversationID,
+          text: text,
+          images: images,
+          lifecycle: lifecycle
+        )
+      } catch is URLError {
+        try await recoverAmbiguousSend(
+          id: id,
+          agentID: agentID,
+          conversationID: conversationID,
+          text: text,
+          images: images,
+          lifecycle: lifecycle
+        )
+      }
+    } catch is CancellationError {
+      throw CancellationError()
+    } catch {
+      await handle(error, lifecycle: lifecycle)
+      throw error
     }
   }
 
   func shutdown() async {
     guard isShutdown == false else { return }
     isShutdown = true
-    invalidationTask?.cancel()
-    reconnectTask?.cancel()
-    reachabilityTask?.cancel()
+    sceneGeneration += 1
+    lifecycleGeneration += 1
+    conversationGeneration += 1
+    conversationResetGeneration = nil
+    olderConversationGeneration = nil
+    messageResetTokens.removeAll()
+    olderMessageTokens.removeAll()
+    let invalidation = invalidationTask
+    let reconnect = reconnectTask
+    let reachable = reachabilityTask
+    invalidation?.cancel()
+    reconnect?.cancel()
+    reachable?.cancel()
     invalidationTask = nil
     reconnectTask = nil
     reachabilityTask = nil
-    await chat.disconnect()
+    await invalidation?.value
+    await reconnect?.value
+    await reachable?.value
+    await chat.shutdown()
     chatConnected = false
     continuation.finish()
   }
 
-  private func refreshConversationsFromNetwork(reset: Bool) async throws {
+  private func refreshConversationsFromNetwork(
+    reset: Bool,
+    lifecycle: Int,
+    conversations: Int
+  ) async throws {
     let knownIDs =
       if reset {
         Set(try await store.conversations(gatewayID: gatewayID, limit: 1_000).map(\.id))
       } else {
         Set<String>()
       }
+    try validate(lifecycle: lifecycle, conversations: conversations)
     let cursor = reset ? nil : conversationCursor
     let page = try await api.conversations(agentId: nil, limit: pageSize, cursor: cursor)
+    try validate(lifecycle: lifecycle, conversations: conversations)
     for item in page.items {
-      try await persist(item)
+      try await persist(
+        item,
+        lifecycle: lifecycle,
+        conversations: conversations
+      )
     }
     let pageIDs = page.items.filter { $0.status != .deleted }.map(\.id)
     if reset {
@@ -426,20 +616,46 @@ actor ConversationSyncEngine {
     for id in omitted {
       do {
         let canonical = try await api.conversation(id: id)
-        try await persist(canonical)
+        try validate(lifecycle: lifecycle, conversations: conversations)
+        try await persist(
+          canonical,
+          lifecycle: lifecycle,
+          conversations: conversations
+        )
         if canonical.status != .deleted, conversationOrder.contains(id) == false {
           conversationOrder.append(id)
         }
       } catch GatewayError.notFound {
+        try validate(lifecycle: lifecycle, conversations: conversations)
         try await store.removeConversation(gatewayID: gatewayID, conversationID: id)
+        try validate(lifecycle: lifecycle, conversations: conversations)
         conversationOrder.removeAll { $0 == id }
       }
     }
   }
 
+  private func resetMessagesFromNetwork(
+    conversationID: String,
+    lifecycle: Int,
+    conversations: Int?
+  ) async throws -> ConversationMessagePageDTO {
+    let messages = beginMessageReset(conversationID: conversationID)
+    defer { finishMessageReset(messages) }
+    return try await loadMessagesFromNetwork(
+      conversationID: conversationID,
+      reset: true,
+      lifecycle: lifecycle,
+      conversations: conversations,
+      messages: messages
+    )
+  }
+
   private func loadMessagesFromNetwork(
     conversationID: String,
-    reset: Bool
+    reset: Bool,
+    lifecycle: Int,
+    conversations: Int?,
+    messages: MessageLoadToken
   ) async throws -> ConversationMessagePageDTO {
     let before = reset ? nil : messageCursors[conversationID]
     let page = try await api.messages(
@@ -447,31 +663,42 @@ actor ConversationSyncEngine {
       limit: pageSize,
       before: before
     )
+    try validate(lifecycle: lifecycle, conversations: conversations, messages: messages)
     try await store.mergeMessages(
       page.items,
       gatewayID: gatewayID,
       conversationID: conversationID
     )
+    try validate(lifecycle: lifecycle, conversations: conversations, messages: messages)
     try await store.advanceCursor(
       gatewayID: gatewayID,
       conversationID: conversationID,
       to: page.throughSeq
     )
-    messageCursors[conversationID] = page.nextCursor
+    try validate(lifecycle: lifecycle, conversations: conversations, messages: messages)
     let durableCursor = try await store.cursor(
       gatewayID: gatewayID,
       conversationID: conversationID
     )
+    try validate(lifecycle: lifecycle, conversations: conversations, messages: messages)
+    messageCursors[conversationID] = page.nextCursor
     reconcilers[conversationID] = SequenceReconciler(lastAppliedSeq: durableCursor)
     return page
   }
 
-  private func persist(_ summary: ConversationSummaryDTO) async throws {
+  private func persist(
+    _ summary: ConversationSummaryDTO,
+    lifecycle: Int,
+    conversations: Int?
+  ) async throws {
+    try validate(lifecycle: lifecycle, conversations: conversations)
     if summary.status == .deleted {
       try await store.applyTombstone(summary, gatewayID: gatewayID)
+      try validate(lifecycle: lifecycle, conversations: conversations)
       conversationOrder.removeAll { $0 == summary.id }
     } else {
       try await store.upsertConversations([summary], gatewayID: gatewayID)
+      try validate(lifecycle: lifecycle, conversations: conversations)
       if conversationOrder.contains(summary.id) == false {
         conversationOrder.append(summary.id)
       }
@@ -483,9 +710,14 @@ actor ConversationSyncEngine {
     agentID: String,
     conversationID: String,
     text: String,
-    images: [MessageImage]
+    images: [MessageImage],
+    lifecycle: Int
   ) async throws {
-    let page = try await loadMessagesFromNetwork(conversationID: conversationID, reset: true)
+    let page = try await resetMessagesFromNetwork(
+      conversationID: conversationID,
+      lifecycle: lifecycle,
+      conversations: nil
+    )
     let sameTurn = page.items.filter { $0.turnId == id }
     if sameTurn.isEmpty {
       try await chat.sendTurn(
@@ -495,6 +727,7 @@ actor ConversationSyncEngine {
         text: text,
         images: images
       )
+      try validate(lifecycle: lifecycle)
       return
     }
     let isTerminal = sameTurn.allSatisfy { message in
@@ -502,32 +735,59 @@ actor ConversationSyncEngine {
     }
     guard isTerminal == false else { return }
     let cursor = try await store.cursor(gatewayID: gatewayID, conversationID: conversationID)
+    try validate(lifecycle: lifecycle)
     try await chat.resume(
       turnID: id,
       agentID: agentID,
       conversationID: conversationID,
       sinceSeq: cursor
     )
+    try validate(lifecycle: lifecycle)
   }
 
-  private func reloadSnapshot() async throws {
+  private func createAndPersist(
+    _ request: CreateConversationRequest,
+    lifecycle: Int
+  ) async throws -> ConversationSummaryDTO {
+    let summary = try await api.createConversation(request)
+    try validate(lifecycle: lifecycle)
+    try await persist(summary, lifecycle: lifecycle, conversations: nil)
+    try await reloadSnapshot(lifecycle: lifecycle)
+    try validate(lifecycle: lifecycle)
+    publish(.online)
+    return summary
+  }
+
+  private func reloadSnapshot(lifecycle: Int, conversations: Int? = nil) async throws {
+    try validate(lifecycle: lifecycle, conversations: conversations)
     let cached = try await store.conversations(gatewayID: gatewayID, limit: 1_000)
+    try validate(lifecycle: lifecycle, conversations: conversations)
+    let ordered: [CachedConversation]
     if conversationOrder.isEmpty {
-      snapshotConversations = cached
+      ordered = cached
     } else {
       let values = Dictionary(uniqueKeysWithValues: cached.map { ($0.id, $0) })
-      snapshotConversations = conversationOrder.compactMap { values[$0] }
+      var snapshot = conversationOrder.compactMap { values[$0] }
       for value in cached where conversationOrder.contains(value.id) == false {
-        snapshotConversations.append(value)
+        snapshot.append(value)
       }
+      ordered = snapshot
     }
-    snapshotAgents = try await store.agents(gatewayID: gatewayID)
-    lastSuccessfulSyncAt = try await store.profile(gatewayID: gatewayID)?
-      .profile.lastSuccessfulSyncAt
+    let agents = try await store.agents(gatewayID: gatewayID)
+    try validate(lifecycle: lifecycle, conversations: conversations)
+    let lastSync = try await store.profile(gatewayID: gatewayID)?.profile.lastSuccessfulSyncAt
+    try validate(lifecycle: lifecycle, conversations: conversations)
+    snapshotConversations = ordered
+    snapshotAgents = agents
+    lastSuccessfulSyncAt = lastSync
   }
 
-  private func recordSuccessfulSync() async throws {
-    try await store.markSuccessfulSync(gatewayID: gatewayID, at: await clock.now())
+  private func recordSuccessfulSync(lifecycle: Int, conversations: Int? = nil) async throws {
+    try validate(lifecycle: lifecycle, conversations: conversations)
+    let now = await clock.now()
+    try validate(lifecycle: lifecycle, conversations: conversations)
+    try await store.markSuccessfulSync(gatewayID: gatewayID, at: now)
+    try validate(lifecycle: lifecycle, conversations: conversations)
   }
 
   private func publish(_ state: GatewayConnectionState) {
@@ -544,6 +804,7 @@ actor ConversationSyncEngine {
 
   private func startInvalidations() {
     guard invalidationTask == nil, isShutdown == false else { return }
+    let lifecycle = lifecycleGeneration
     invalidationTask = Task { [weak self] in
       guard let self else { return }
       let events = await self.invalidations.eventStream()
@@ -555,7 +816,7 @@ actor ConversationSyncEngine {
       } catch is CancellationError {
         return
       } catch {
-        await self.invalidationFailed(error)
+        await self.invalidationFailed(error, lifecycle: lifecycle)
       }
     }
   }
@@ -568,9 +829,10 @@ actor ConversationSyncEngine {
     }
   }
 
-  private func invalidationFailed(_ error: Error) async {
+  private func invalidationFailed(_ error: Error, lifecycle: Int) async {
+    guard isCurrent(lifecycle: lifecycle) else { return }
     invalidationTask = nil
-    await handle(error)
+    await handle(error, lifecycle: lifecycle)
   }
 
   private func startReachability() {
@@ -585,6 +847,7 @@ actor ConversationSyncEngine {
   }
 
   private func reachabilityChanged(_ status: ReachabilityStatus) {
+    guard isShutdown == false, connection.isAuthoritativeFailure == false else { return }
     switch status {
     case .satisfied:
       if connection == .offline {
@@ -595,19 +858,21 @@ actor ConversationSyncEngine {
     }
   }
 
-  private func ensureChatConnected() async throws {
+  private func ensureChatConnected(lifecycle: Int) async throws {
     guard chatConnected == false else { return }
     try await chat.connect()
+    try validate(lifecycle: lifecycle)
     chatConnected = true
   }
 
   private func requireOnlineMutation() throws {
-    guard connection == .online else {
+    guard isShutdown == false, connection == .online else {
       throw GatewayError.transport("Mutations require an online gateway")
     }
   }
 
-  private func handle(_ error: Error) async {
+  private func handle(_ error: Error, lifecycle: Int) async {
+    guard isCurrent(lifecycle: lifecycle) else { return }
     let gatewayError =
       error as? GatewayError
       ?? GatewayError.transport(error.localizedDescription)
@@ -616,6 +881,7 @@ actor ConversationSyncEngine {
       publish(.repairRequired)
     case .rateLimited(let retryAfter):
       let now = await clock.now()
+      guard isCurrent(lifecycle: lifecycle) else { return }
       let delay = retryAfter ?? backoff.delay(attempt: 0, unitRandom: 0.5)
       publish(.rateLimited(retryAt: now.addingTimeInterval(delay.timeInterval)))
     case .gatewayOffline:
@@ -623,13 +889,14 @@ actor ConversationSyncEngine {
     case .updateRequired, .capabilityRequired:
       publish(.updateRequired)
     case .transport:
-      scheduleReconnect()
+      scheduleReconnect(lifecycle: lifecycle)
     default:
       publish(.offline)
     }
   }
 
-  private func scheduleReconnect() {
+  private func scheduleReconnect(lifecycle: Int) {
+    guard isCurrent(lifecycle: lifecycle) else { return }
     reconnectAttempt += 1
     let attempt = reconnectAttempt
     let delay = backoff.delay(attempt: attempt - 1, unitRandom: 0.5)
@@ -638,20 +905,99 @@ actor ConversationSyncEngine {
     reconnectTask = Task { [weak self] in
       guard let self else { return }
       let retryAt = (await clock.now()).addingTimeInterval(delay.timeInterval)
-      await self.publishReconnect(attempt: attempt, retryAt: retryAt)
+      await self.publishReconnect(attempt: attempt, retryAt: retryAt, lifecycle: lifecycle)
       do {
         try await clock.sleep(for: delay)
       } catch {
         return
       }
-      if Task.isCancelled == false {
-        await self.refreshConversations(reset: true)
+      if Task.isCancelled == false, await self.isCurrent(lifecycle: lifecycle) {
+        await self.bootstrap()
       }
     }
   }
 
-  private func publishReconnect(attempt: Int, retryAt: Date) {
+  private func publishReconnect(attempt: Int, retryAt: Date, lifecycle: Int) {
+    guard isCurrent(lifecycle: lifecycle) else { return }
     publish(.reconnecting(attempt: attempt, retryAt: retryAt))
+  }
+
+  private func beginMessageReset(conversationID: String) -> MessageLoadToken {
+    let generation = messageGenerations[conversationID, default: 0] + 1
+    messageGenerations[conversationID] = generation
+    let token = MessageLoadToken(
+      conversationID: conversationID,
+      generation: generation,
+      lifecycle: lifecycleGeneration
+    )
+    messageResetTokens[conversationID] = token
+    olderMessageTokens[conversationID] = nil
+    return token
+  }
+
+  private func finishMessageReset(_ token: MessageLoadToken) {
+    if messageResetTokens[token.conversationID] == token {
+      messageResetTokens[token.conversationID] = nil
+    }
+  }
+
+  private func beginOlderMessageLoad(conversationID: String) -> MessageLoadToken? {
+    guard messageCursors[conversationID] != nil else { return nil }
+    guard messageResetTokens[conversationID] == nil, olderMessageTokens[conversationID] == nil
+    else { return nil }
+    let token = MessageLoadToken(
+      conversationID: conversationID,
+      generation: messageGenerations[conversationID, default: 0],
+      lifecycle: lifecycleGeneration
+    )
+    olderMessageTokens[conversationID] = token
+    return token
+  }
+
+  private func finishOlderMessageLoad(_ token: MessageLoadToken) {
+    if olderMessageTokens[token.conversationID] == token {
+      olderMessageTokens[token.conversationID] = nil
+    }
+  }
+
+  private func validate(
+    lifecycle: Int,
+    conversations: Int? = nil,
+    messages: MessageLoadToken? = nil
+  ) throws {
+    guard
+      isCurrent(lifecycle: lifecycle, conversations: conversations, messages: messages),
+      Task.isCancelled == false
+    else {
+      throw CancellationError()
+    }
+  }
+
+  private func isCurrent(
+    lifecycle: Int,
+    conversations: Int? = nil,
+    messages: MessageLoadToken? = nil
+  ) -> Bool {
+    guard isShutdown == false, lifecycle == lifecycleGeneration else { return false }
+    if let conversations, conversations != conversationGeneration { return false }
+    if let messages {
+      guard messages.lifecycle == lifecycleGeneration else { return false }
+      guard messageGenerations[messages.conversationID, default: 0] == messages.generation else {
+        return false
+      }
+    }
+    return true
+  }
+}
+
+extension GatewayConnectionState {
+  fileprivate var isAuthoritativeFailure: Bool {
+    switch self {
+    case .gatewayOffline, .rateLimited, .repairRequired, .updateRequired:
+      return true
+    case .connecting, .online, .reconnecting, .offline:
+      return false
+    }
   }
 }
 

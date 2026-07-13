@@ -127,6 +127,39 @@ struct ChatConnectionTests {
     await connection.detach()
   }
 
+  @Test("background suspension keeps the production chat seam reusable")
+  func suspendReconnectsAndResumes() async throws {
+    let first = FakeWebSocketTask()
+    let second = FakeWebSocketTask()
+    let session = FakeWebSocketSession(tasks: [first, second])
+    let connection = makeChatConnection(session: session)
+
+    try await connection.connect()
+    await connection.suspend()
+    try await connection.connect()
+    try await connection.resume(
+      turnID: turnID,
+      agentID: "agent-1",
+      conversationID: conversationID,
+      sinceSeq: 7
+    )
+
+    #expect(await first.closeCode == .goingAway)
+    #expect(
+      await second.sentFrames
+        == [
+          .resume(
+            id: turnID,
+            agentId: "agent-1",
+            conversationId: conversationID,
+            sinceSeq: 7
+          )
+        ]
+    )
+    #expect(session.requests.count == 2)
+    await connection.detach()
+  }
+
   @Test("a stale peer-close lookup cannot reconnect over a replacement socket")
   func stalePeerCloseCannotReconnect() async throws {
     let failed = FakeWebSocketTask()
@@ -297,11 +330,11 @@ struct ChatConnectionTests {
     #expect(await staleResume.value == .transport("Chat connection changed while sending"))
   }
 
-  @Test("only the active turn emits accepted event done and error frames with their sequences")
+  @Test("only the active turn emits accepted event and terminal done frames with their sequences")
   func activeTurnFilteringAndSequences() async throws {
     let task = FakeWebSocketTask()
     let connection = makeChatConnection(task: task)
-    let frames = Task { try await collectFrames(from: connection, count: 4) }
+    let frames = Task { try await collectFrames(from: connection, count: 3) }
     try await connection.connect()
     try await connection.sendTurn(
       id: turnID,
@@ -328,6 +361,82 @@ struct ChatConnectionTests {
     }
 
     #expect(try await frames.value == expected)
+    await connection.detach()
+  }
+
+  @Test("simultaneous resumed turns retain and emit both live subscriptions")
+  func simultaneousResumedTurns() async throws {
+    let otherTurnID = "018f0f4a-5c42-7a8b-9c01-9234567890ab"
+    let otherConversationID = "018f0f4a-5c42-7a8b-9c01-8234567890ab"
+    let task = FakeWebSocketTask()
+    let connection = makeChatConnection(task: task)
+    let received = Task { await framesUntilEnd(from: connection) }
+    try await connection.connect()
+    try await connection.resume(
+      turnID: turnID,
+      agentID: "agent-1",
+      conversationID: conversationID,
+      sinceSeq: 2
+    )
+    try await connection.resume(
+      turnID: otherTurnID,
+      agentID: "agent-2",
+      conversationID: otherConversationID,
+      sinceSeq: 4
+    )
+    let first = MobileWSServerFrame.event(
+      id: turnID,
+      conversationId: conversationID,
+      seq: 3,
+      event: .textDelta(text: "First")
+    )
+    let second = MobileWSServerFrame.event(
+      id: otherTurnID,
+      conversationId: otherConversationID,
+      seq: 5,
+      event: .textDelta(text: "Second")
+    )
+
+    await task.enqueue(.string(serverJSON(first)))
+    await task.enqueue(.string(serverJSON(second)))
+    await settleConcurrentWork()
+    await connection.detach()
+
+    #expect(await received.value == [first, second])
+  }
+
+  @Test("unsequenced conversation admission error remains a legal live frame")
+  func admissionErrorWithoutSequence() async throws {
+    let first = FakeWebSocketTask()
+    let second = FakeWebSocketTask()
+    let session = FakeWebSocketSession(tasks: [first, second])
+    let clock = TestAppClock(now: Date(timeIntervalSince1970: 0))
+    let connection = makeChatConnection(session: session, clock: clock)
+    let received = Task { try await collectFrames(from: connection, count: 1) }
+    try await connection.connect()
+    try await connection.resume(
+      turnID: "018f0f4a-5c42-7a8b-9c01-5234567890ab",
+      agentID: "agent-1",
+      conversationID: conversationID,
+      sinceSeq: 2
+    )
+    let admission = MobileWSServerFrame.error(
+      id: "018f0f4a-5c42-7a8b-9c01-5234567890ab",
+      conversationId: conversationID,
+      seq: nil,
+      error: "Conversation already has an active turn",
+      code: "conversation_busy",
+      retryable: true,
+      activeTurnId: turnID
+    )
+
+    await first.enqueue(.string(serverJSON(admission)))
+    #expect(try await received.value == [admission])
+    await first.fail()
+    await waitForRequestCount(2, in: session)
+    await settleConcurrentWork()
+
+    #expect(await second.sentFrames.isEmpty)
     await connection.detach()
   }
 
@@ -489,6 +598,255 @@ struct ChatConnectionTests {
     )
     #expect(await clock.sleeps == [.seconds(1)])
     #expect(session.requests.count == 2)
+    await connection.detach()
+  }
+
+  @Test("transient reconnect replays the active resume subscription")
+  func transientReconnectReplaysResume() async throws {
+    let otherTurnID = "018f0f4a-5c42-7a8b-9c01-9234567890ab"
+    let otherConversationID = "018f0f4a-5c42-7a8b-9c01-8234567890ab"
+    let first = FakeWebSocketTask()
+    let second = FakeWebSocketTask()
+    let session = FakeWebSocketSession(tasks: [first, second])
+    let clock = TestAppClock(now: Date(timeIntervalSince1970: 0))
+    let connection = makeChatConnection(session: session, clock: clock)
+    try await connection.connect()
+    try await connection.resume(
+      turnID: turnID,
+      agentID: "agent-1",
+      conversationID: conversationID,
+      sinceSeq: 7
+    )
+    try await connection.resume(
+      turnID: otherTurnID,
+      agentID: "agent-2",
+      conversationID: otherConversationID,
+      sinceSeq: 9
+    )
+
+    await first.fail()
+    await waitForRequestCount(2, in: session)
+    await settleConcurrentWork()
+
+    #expect(
+      await second.sentFrames
+        == [
+          .resume(
+            id: turnID,
+            agentId: "agent-1",
+            conversationId: conversationID,
+            sinceSeq: 7
+          ),
+          .resume(
+            id: otherTurnID,
+            agentId: "agent-2",
+            conversationId: otherConversationID,
+            sinceSeq: 9
+          ),
+        ]
+    )
+    await connection.detach()
+  }
+
+  @Test("transient reconnect audits a sent turn that has not been accepted yet")
+  func transientReconnectResumesPreAcceptedSend() async throws {
+    let first = FakeWebSocketTask()
+    let second = FakeWebSocketTask()
+    let session = FakeWebSocketSession(tasks: [first, second])
+    let clock = TestAppClock(now: Date(timeIntervalSince1970: 0))
+    let connection = makeChatConnection(session: session, clock: clock)
+    try await connection.connect()
+    try await connection.sendTurn(
+      id: turnID,
+      agentID: "agent-1",
+      conversationID: conversationID,
+      text: "Maybe accepted",
+      images: []
+    )
+
+    await first.fail()
+    await waitForRequestCount(2, in: session)
+    await settleConcurrentWork()
+
+    #expect(
+      await second.sentFrames
+        == [
+          .resume(
+            id: turnID,
+            agentId: "agent-1",
+            conversationId: conversationID,
+            sinceSeq: 0
+          )
+        ]
+    )
+    await connection.detach()
+  }
+
+  @Test("replayed pre-accepted turns enforce capable frame validation")
+  func replayedPreAcceptedTurnIsCapable() async throws {
+    let first = FakeWebSocketTask()
+    let second = FakeWebSocketTask()
+    let session = FakeWebSocketSession(tasks: [first, second])
+    let clock = TestAppClock(now: Date(timeIntervalSince1970: 0))
+    let connection = makeChatConnection(session: session, clock: clock)
+    let terminal = Task { await terminalError(from: connection) }
+    try await connection.connect()
+    try await connection.sendTurn(
+      id: turnID,
+      agentID: "agent-1",
+      conversationID: conversationID,
+      text: "Maybe accepted",
+      images: []
+    )
+    await second.holdNextSend()
+    await first.fail()
+    await second.waitForHeldSend()
+
+    await second.enqueue(
+      .string(
+        String(
+          data: try FixtureLoader.data("invalid/chat-event-missing-conversation-id.json"),
+          encoding: .utf8
+        )!))
+    await settleConcurrentWork()
+    await second.succeedHeldSend()
+    await second.fail(peerClose: .init(code: 4001, reason: Data("Unauthorized".utf8)))
+
+    #expect(await terminal.value == .updateRequired)
+  }
+
+  @Test("a stale replay-send failure cannot finish a suspended reusable stream")
+  func staleReplaySendFailureCannotFinishSuspendedStream() async throws {
+    let first = FakeWebSocketTask()
+    let replaySocket = FakeWebSocketTask()
+    let foregroundSocket = FakeWebSocketTask()
+    let session = FakeWebSocketSession(tasks: [first, replaySocket, foregroundSocket])
+    let clock = TestAppClock(now: Date(timeIntervalSince1970: 0))
+    let connection = makeChatConnection(session: session, clock: clock)
+    try await connection.connect()
+    try await connection.resume(
+      turnID: turnID,
+      agentID: "agent-1",
+      conversationID: conversationID,
+      sinceSeq: 7
+    )
+    await replaySocket.holdNextSend()
+    await first.fail()
+    await replaySocket.waitForHeldSend()
+
+    await connection.suspend()
+    await replaySocket.succeedHeldSend()
+    await settleConcurrentWork()
+
+    let reconnectError = await chatGatewayError { try await connection.connect() }
+    #expect(reconnectError == nil)
+    #expect(await foregroundSocket.resumeCount == 1)
+    await connection.detach()
+  }
+
+  @Test("a failed replay socket is closed before the next reconnect")
+  func failedReplaySocketIsClosedBeforeReplacement() async throws {
+    let first = FakeWebSocketTask()
+    let replaySocket = FakeWebSocketTask()
+    let replacement = FakeWebSocketTask()
+    let session = FakeWebSocketSession(tasks: [first, replaySocket, replacement])
+    let clock = TestAppClock(now: Date(timeIntervalSince1970: 0))
+    let connection = makeChatConnection(session: session, clock: clock)
+    try await connection.connect()
+    try await connection.resume(
+      turnID: turnID,
+      agentID: "agent-1",
+      conversationID: conversationID,
+      sinceSeq: 7
+    )
+    await replaySocket.holdNextSend()
+    await first.fail()
+    await replaySocket.waitForHeldSend()
+
+    await replaySocket.failHeldSend()
+    await waitForRequestCount(3, in: session)
+    await settleConcurrentWork()
+
+    #expect(await replaySocket.closeCode == .goingAway)
+    #expect(
+      await replacement.sentFrames
+        == [
+          .resume(
+            id: turnID,
+            agentId: "agent-1",
+            conversationId: conversationID,
+            sinceSeq: 7
+          )
+        ]
+    )
+    await connection.detach()
+  }
+
+  @Test("transient reconnect forgets terminal turns but retains live subscriptions")
+  func transientReconnectDropsTerminalTurns() async throws {
+    let failedTurnID = "018f0f4a-5c42-7a8b-9c01-9234567890ab"
+    let failedConversationID = "018f0f4a-5c42-7a8b-9c01-8234567890ab"
+    let liveTurnID = "018f0f4a-5c42-7a8b-9c01-7234567890ab"
+    let liveConversationID = "018f0f4a-5c42-7a8b-9c01-6234567890ab"
+    let first = FakeWebSocketTask()
+    let second = FakeWebSocketTask()
+    let session = FakeWebSocketSession(tasks: [first, second])
+    let clock = TestAppClock(now: Date(timeIntervalSince1970: 0))
+    let connection = makeChatConnection(session: session, clock: clock)
+    let terminalFrames = Task { try await collectFrames(from: connection, count: 2) }
+    try await connection.connect()
+    try await connection.resume(
+      turnID: turnID,
+      agentID: "agent-1",
+      conversationID: conversationID,
+      sinceSeq: 2
+    )
+    try await connection.resume(
+      turnID: failedTurnID,
+      agentID: "agent-2",
+      conversationID: failedConversationID,
+      sinceSeq: 4
+    )
+    try await connection.resume(
+      turnID: liveTurnID,
+      agentID: "agent-3",
+      conversationID: liveConversationID,
+      sinceSeq: 6
+    )
+    let done = MobileWSServerFrame.done(
+      id: turnID,
+      conversationId: conversationID,
+      seq: 3,
+      outcome: .completed
+    )
+    let failure = MobileWSServerFrame.error(
+      id: failedTurnID,
+      conversationId: failedConversationID,
+      seq: 5,
+      error: "Failed",
+      code: "gateway_offline",
+      retryable: true,
+      activeTurnId: nil
+    )
+    await first.enqueue(.string(serverJSON(done)))
+    await first.enqueue(.string(serverJSON(failure)))
+    #expect(try await terminalFrames.value == [done, failure])
+
+    await first.fail()
+    await waitForRequestCount(2, in: session)
+    await settleConcurrentWork()
+
+    #expect(
+      await second.sentFrames
+        == [
+          .resume(
+            id: liveTurnID,
+            agentId: "agent-3",
+            conversationId: liveConversationID,
+            sinceSeq: 6
+          )
+        ]
+    )
     await connection.detach()
   }
 
@@ -722,7 +1080,6 @@ struct ChatConnectionTests {
       try fixture("chat-accepted.json"),
       try fixture("chat-event.json"),
       try fixture("chat-done.json"),
-      try fixture("chat-error.json", replacingID: turnID),
     ]
   }
 }
@@ -750,6 +1107,20 @@ private func firstFrame(from connection: ChatConnection) async -> MobileWSServer
     return nil
   }
   return nil
+}
+
+private func framesUntilEnd(from connection: ChatConnection) async -> [MobileWSServerFrame] {
+  var frames: [MobileWSServerFrame] = []
+  do {
+    for try await event in await connection.events() {
+      if case .frame(let frame) = event {
+        frames.append(frame)
+      }
+    }
+  } catch {
+    return frames
+  }
+  return frames
 }
 
 private func collectStates(

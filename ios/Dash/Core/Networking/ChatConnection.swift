@@ -76,6 +76,14 @@ enum ChatConnectionEvent: Equatable, Sendable {
 actor ChatConnection {
   private static let reconnectLimit = 5
 
+  private struct TurnSubscription: Sendable {
+    let agentID: String
+    let conversationID: String
+    var sinceSeq: Int
+    var capable: Bool
+    let operationGeneration: Int
+  }
+
   private let endpoint: ConnectionEndpoint
   private let session: any WebSocketSessioning
   private let clock: any AppClock
@@ -86,8 +94,8 @@ actor ChatConnection {
   private var generation = 0
   private var turnOperationGeneration = 0
   private var reconnectAttempt = 0
-  private var activeTurnID: String?
-  private var capableTurnID: String?
+  private var turnSubscriptions: [String: TurnSubscription] = [:]
+  private var turnSubscriptionOrder: [String] = []
   private var state: ChatTransportState = .idle
   private var streamFinished = false
 
@@ -124,8 +132,14 @@ actor ChatConnection {
   ) async throws {
     turnOperationGeneration += 1
     let operationGeneration = turnOperationGeneration
-    activeTurnID = id
-    capableTurnID = nil
+    registerTurn(
+      id: id,
+      agentID: agentID,
+      conversationID: conversationID,
+      sinceSeq: 0,
+      capable: false,
+      operationGeneration: operationGeneration
+    )
     do {
       try await send(
         .newTurn(
@@ -137,7 +151,7 @@ actor ChatConnection {
         )
       )
     } catch {
-      clearTurn(ifOwnedBy: operationGeneration)
+      clearTurn(id: id, ifOwnedBy: operationGeneration)
       throw error
     }
   }
@@ -150,8 +164,14 @@ actor ChatConnection {
   ) async throws {
     turnOperationGeneration += 1
     let operationGeneration = turnOperationGeneration
-    activeTurnID = turnID
-    capableTurnID = turnID
+    registerTurn(
+      id: turnID,
+      agentID: agentID,
+      conversationID: conversationID,
+      sinceSeq: sinceSeq,
+      capable: true,
+      operationGeneration: operationGeneration
+    )
     do {
       try await send(
         .resume(
@@ -162,7 +182,7 @@ actor ChatConnection {
         )
       )
     } catch {
-      clearTurn(ifOwnedBy: operationGeneration)
+      clearTurn(id: turnID, ifOwnedBy: operationGeneration)
       throw error
     }
   }
@@ -177,6 +197,16 @@ actor ChatConnection {
 
   func detach() {
     detachNow()
+  }
+
+  func suspend() {
+    guard state != .detached else { return }
+    generation += 1
+    socket?.cancel(with: .goingAway, reason: nil)
+    socket = nil
+    clearAllTurns()
+    reconnectAttempt = 0
+    transition(to: .idle)
   }
 
   func probeAuthentication() async throws {
@@ -259,13 +289,20 @@ actor ChatConnection {
         let message = try await task.receive()
         guard loopGeneration == generation, state != .detached else { return }
         let frame = try decodedFrame(from: message)
-        guard frame.id == activeTurnID else { continue }
-        let capable = capableTurnID == frame.id || frame.isAccepted
+        guard var subscription = turnSubscriptions[frame.id] else { continue }
+        let capable = subscription.capable || frame.isAccepted
         _ = try validatedFrame(frame, capable: capable)
         if frame.isAccepted {
-          capableTurnID = frame.id
+          subscription.capable = true
         }
+        if let seq = frame.seq {
+          subscription.sinceSeq = max(subscription.sinceSeq, seq)
+        }
+        turnSubscriptions[frame.id] = subscription
         continuation.yield(.frame(frame))
+        if frame.isTerminal {
+          clearTurn(id: frame.id, ifOwnedBy: subscription.operationGeneration)
+        }
       }
     } catch is DecodingError {
       finish(throwing: .updateRequired, generation: loopGeneration)
@@ -309,10 +346,25 @@ actor ChatConnection {
       return
     }
     guard failedGeneration == generation, state != .detached else { return }
+    guard let currentSocket = socket, currentSocket === task else { return }
+    task.cancel(with: .goingAway, reason: nil)
+    socket = nil
     do {
       try startSocket()
     } catch {
       finish(throwing: .transport(error.localizedDescription), generation: generation)
+      return
+    }
+    let replayGeneration = generation
+    guard let replaySocket = socket else { return }
+    do {
+      try await replayTurnSubscriptions()
+    } catch {
+      await handleReceiveFailure(
+        error,
+        task: replaySocket,
+        generation: replayGeneration
+      )
     }
   }
 
@@ -416,9 +468,7 @@ actor ChatConnection {
     guard failedGeneration == generation, streamFinished == false else { return }
     socket?.cancel(with: .goingAway, reason: nil)
     socket = nil
-    turnOperationGeneration += 1
-    activeTurnID = nil
-    capableTurnID = nil
+    clearAllTurns()
     streamFinished = true
     continuation.finish(throwing: error)
   }
@@ -433,19 +483,63 @@ actor ChatConnection {
   }
 
   private func prepareForSocketReplacement() {
-    turnOperationGeneration += 1
-    activeTurnID = nil
-    capableTurnID = nil
+    clearAllTurns()
     guard let socket else { return }
     generation += 1
     socket.cancel(with: .goingAway, reason: nil)
     self.socket = nil
   }
 
-  private func clearTurn(ifOwnedBy operationGeneration: Int) {
-    guard operationGeneration == turnOperationGeneration else { return }
-    activeTurnID = nil
-    capableTurnID = nil
+  private func registerTurn(
+    id: String,
+    agentID: String,
+    conversationID: String,
+    sinceSeq: Int,
+    capable: Bool,
+    operationGeneration: Int
+  ) {
+    if turnSubscriptions[id] == nil {
+      turnSubscriptionOrder.append(id)
+    }
+    turnSubscriptions[id] = TurnSubscription(
+      agentID: agentID,
+      conversationID: conversationID,
+      sinceSeq: sinceSeq,
+      capable: capable,
+      operationGeneration: operationGeneration
+    )
+  }
+
+  private func clearTurn(id: String, ifOwnedBy operationGeneration: Int) {
+    guard turnSubscriptions[id]?.operationGeneration == operationGeneration else { return }
+    turnSubscriptions[id] = nil
+    turnSubscriptionOrder.removeAll { $0 == id }
+  }
+
+  private func clearAllTurns() {
+    turnOperationGeneration += 1
+    turnSubscriptions.removeAll()
+    turnSubscriptionOrder.removeAll()
+  }
+
+  private func replayTurnSubscriptions() async throws {
+    for id in turnSubscriptionOrder {
+      guard let subscription = turnSubscriptions[id] else { continue }
+      if var current = turnSubscriptions[id],
+        current.operationGeneration == subscription.operationGeneration
+      {
+        current.capable = true
+        turnSubscriptions[id] = current
+      }
+      try await send(
+        .resume(
+          id: id,
+          agentId: subscription.agentID,
+          conversationId: subscription.conversationID,
+          sinceSeq: subscription.sinceSeq
+        )
+      )
+    }
   }
 
   private func detachProbe(task: any WebSocketTasking, generation probeGeneration: Int) {
@@ -462,9 +556,7 @@ actor ChatConnection {
     transition(to: .detached)
     socket?.cancel(with: .goingAway, reason: nil)
     socket = nil
-    turnOperationGeneration += 1
-    activeTurnID = nil
-    capableTurnID = nil
+    clearAllTurns()
     if streamFinished == false {
       streamFinished = true
       continuation.finish()
@@ -486,5 +578,25 @@ extension MobileWSServerFrame {
   fileprivate var isAccepted: Bool {
     if case .accepted = self { return true }
     return false
+  }
+
+  fileprivate var seq: Int? {
+    switch self {
+    case .accepted(_, _, _, _, _, let seq):
+      return seq
+    case .event(_, _, let seq, _),
+      .done(_, _, let seq, _),
+      .error(_, _, let seq, _, _, _, _):
+      return seq
+    }
+  }
+
+  fileprivate var isTerminal: Bool {
+    switch self {
+    case .done, .error:
+      return true
+    case .accepted, .event:
+      return false
+    }
   }
 }

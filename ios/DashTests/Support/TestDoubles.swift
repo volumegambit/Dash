@@ -518,12 +518,27 @@ final class FakeWebSocketSession: WebSocketSessioning, @unchecked Sendable {
 
 actor TestGate {
   private var isReleased = false
+  private var waitCallCount = 0
   private var waiters: [CheckedContinuation<Void, Never>] = []
+  private var waitObservers: [(count: Int, continuation: CheckedContinuation<Void, Never>)] = []
 
   func wait() async {
+    waitCallCount += 1
+    let ready = waitObservers.filter { $0.count <= waitCallCount }
+    waitObservers.removeAll { $0.count <= waitCallCount }
+    for observer in ready {
+      observer.continuation.resume()
+    }
     guard isReleased == false else { return }
     await withCheckedContinuation { continuation in
       waiters.append(continuation)
+    }
+  }
+
+  func waitUntilWaiting(_ count: Int = 1) async {
+    guard waitCallCount < count else { return }
+    await withCheckedContinuation { continuation in
+      waitObservers.append((count: count, continuation: continuation))
     }
   }
 
@@ -540,6 +555,11 @@ actor TestGate {
 enum FakeSyncResult<Value: Sendable>: Sendable {
   case success(Value)
   case failure(GatewayError)
+}
+
+private struct GatedSyncResult<Value: Sendable>: Sendable {
+  let result: FakeSyncResult<Value>
+  let gate: TestGate?
 }
 
 actor FakeConversationSyncAPI: ConversationSyncAPI {
@@ -562,9 +582,9 @@ actor FakeConversationSyncAPI: ConversationSyncAPI {
   }
 
   private var agentResults: [FakeSyncResult<[RegisteredAgentDTO]>] = []
-  private var conversationPageResults: [FakeSyncResult<ConversationPageDTO>] = []
-  private var conversationResults: [String: [FakeSyncResult<ConversationSummaryDTO>]] = [:]
-  private var messageResults: [String: [FakeSyncResult<ConversationMessagePageDTO>]] = [:]
+  private var conversationPageResults: [GatedSyncResult<ConversationPageDTO>] = []
+  private var conversationResults: [String: [GatedSyncResult<ConversationSummaryDTO>]] = [:]
+  private var messageResults: [String: [GatedSyncResult<ConversationMessagePageDTO>]] = [:]
   private var replayResults: [FakeSyncResult<ReplayPageDTO>] = []
   private var createResults: [FakeSyncResult<ConversationSummaryDTO>] = []
   private var conversationGate: TestGate?
@@ -580,22 +600,27 @@ actor FakeConversationSyncAPI: ConversationSyncAPI {
     agentResults.append(result)
   }
 
-  func enqueueConversationPage(_ result: FakeSyncResult<ConversationPageDTO>) {
-    conversationPageResults.append(result)
+  func enqueueConversationPage(
+    _ result: FakeSyncResult<ConversationPageDTO>,
+    waitingOn gate: TestGate? = nil
+  ) {
+    conversationPageResults.append(.init(result: result, gate: gate))
   }
 
   func enqueueConversation(
     id: String,
-    result: FakeSyncResult<ConversationSummaryDTO>
+    result: FakeSyncResult<ConversationSummaryDTO>,
+    waitingOn gate: TestGate? = nil
   ) {
-    conversationResults[id, default: []].append(result)
+    conversationResults[id, default: []].append(.init(result: result, gate: gate))
   }
 
   func enqueueMessages(
     conversationID: String,
-    result: FakeSyncResult<ConversationMessagePageDTO>
+    result: FakeSyncResult<ConversationMessagePageDTO>,
+    waitingOn gate: TestGate? = nil
   ) {
-    messageResults[conversationID, default: []].append(result)
+    messageResults[conversationID, default: []].append(.init(result: result, gate: gate))
   }
 
   func enqueueReplay(_ result: FakeSyncResult<ReplayPageDTO>) {
@@ -622,13 +647,14 @@ actor FakeConversationSyncAPI: ConversationSyncAPI {
     cursor: String?
   ) async throws -> ConversationPageDTO {
     conversationListCalls.append(.init(agentID: agentId, limit: limit, cursor: cursor))
-    if let conversationGate {
-      await conversationGate.wait()
-    }
     guard conversationPageResults.isEmpty == false else {
       return ConversationPageDTO(items: [], nextCursor: nil)
     }
-    return try resolve(conversationPageResults.removeFirst())
+    let scripted = conversationPageResults.removeFirst()
+    if let gate = scripted.gate ?? conversationGate {
+      await gate.wait()
+    }
+    return try resolve(scripted.result)
   }
 
   func conversation(id: String) async throws -> ConversationSummaryDTO {
@@ -636,9 +662,12 @@ actor FakeConversationSyncAPI: ConversationSyncAPI {
     guard var results = conversationResults[id], results.isEmpty == false else {
       throw GatewayError.notFound
     }
-    let result = results.removeFirst()
+    let scripted = results.removeFirst()
     conversationResults[id] = results
-    return try resolve(result)
+    if let gate = scripted.gate {
+      await gate.wait()
+    }
+    return try resolve(scripted.result)
   }
 
   func messages(
@@ -652,9 +681,12 @@ actor FakeConversationSyncAPI: ConversationSyncAPI {
     guard var results = messageResults[conversationID], results.isEmpty == false else {
       return ConversationMessagePageDTO(items: [], nextCursor: nil, throughSeq: 0)
     }
-    let result = results.removeFirst()
+    let scripted = results.removeFirst()
     messageResults[conversationID] = results
-    return try resolve(result)
+    if let gate = scripted.gate {
+      await gate.wait()
+    }
+    return try resolve(scripted.result)
   }
 
   func replay(
@@ -742,18 +774,32 @@ actor FakeConversationChat: ConversationChatting {
       images: [MessageImage]
     )
     case resume(turnID: String, agentID: String, conversationID: String, sinceSeq: Int)
+    case suspend
+    case shutdown
     case disconnect
   }
 
+  private var connectResults: [FakeSyncResult<Void>] = []
   private var sendResults: [FakeSyncResult<Void>] = []
+  private var resumeResults: [FakeSyncResult<Void>] = []
   private(set) var calls: [Call] = []
+
+  func enqueueConnect(_ result: FakeSyncResult<Void>) {
+    connectResults.append(result)
+  }
 
   func enqueueSend(_ result: FakeSyncResult<Void>) {
     sendResults.append(result)
   }
 
+  func enqueueResume(_ result: FakeSyncResult<Void>) {
+    resumeResults.append(result)
+  }
+
   func connect() async throws {
     calls.append(.connect)
+    guard connectResults.isEmpty == false else { return }
+    _ = try resolve(connectResults.removeFirst())
   }
 
   func sendTurn(
@@ -790,6 +836,16 @@ actor FakeConversationChat: ConversationChatting {
         sinceSeq: sinceSeq
       )
     )
+    guard resumeResults.isEmpty == false else { return }
+    _ = try resolve(resumeResults.removeFirst())
+  }
+
+  func suspend() async {
+    calls.append(.suspend)
+  }
+
+  func shutdown() async {
+    calls.append(.shutdown)
   }
 
   func disconnect() async {
