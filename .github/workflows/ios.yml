@@ -7,17 +7,29 @@ on:
       - 'ios/**'
       - 'contracts/mobile/v1/**'
       - 'apps/website/app/icon.svg'
-      - 'apps/gateway/src/mobile-test-harness.ts'
-      - 'apps/gateway/src/mobile-test-harness-cli.ts'
+      - 'apps/gateway/src/chat-ws.ts'
+      - 'apps/gateway/src/conversation-*.ts'
+      - 'apps/gateway/src/management*.ts'
+      - 'apps/gateway/src/mobile-test-harness*'
+      - 'apps/gateway/src/resumable-chat-hub.ts'
+      - 'packages/mobile-contract/**'
+      - 'package.json'
+      - 'package-lock.json'
       - '.github/workflows/ios.yml'
   pull_request:
-    branches: [main]
+    branches: [main, codex/mc-vps-gateway-relay]
     paths:
       - 'ios/**'
       - 'contracts/mobile/v1/**'
       - 'apps/website/app/icon.svg'
-      - 'apps/gateway/src/mobile-test-harness.ts'
-      - 'apps/gateway/src/mobile-test-harness-cli.ts'
+      - 'apps/gateway/src/chat-ws.ts'
+      - 'apps/gateway/src/conversation-*.ts'
+      - 'apps/gateway/src/management*.ts'
+      - 'apps/gateway/src/mobile-test-harness*'
+      - 'apps/gateway/src/resumable-chat-hub.ts'
+      - 'packages/mobile-contract/**'
+      - 'package.json'
+      - 'package-lock.json'
       - '.github/workflows/ios.yml'
 
 concurrency:
@@ -42,9 +54,11 @@ jobs:
 
       - run: npm ci
 
+      - name: Build Node workspaces
+        run: npm run build
+
       - name: Verify shared mobile contract
         run: |
-          npm run build --workspace=@dash/mobile-contract
           npm run mobile:contract-check
 
       - name: Verify model catalog freshness
@@ -63,6 +77,7 @@ jobs:
           ios/scripts/tests/check-project.test.sh
           node ios/scripts/tests/ios-workflow.test.mjs
           node ios/scripts/tests/ios-readme.test.mjs
+          npx vitest run ios/scripts/run-live-gateway-tests.test.ts scripts/mobile-ci-config.test.ts
 
       - name: Verify deterministic AppIcon
         run: |
@@ -99,6 +114,13 @@ jobs:
           -resultBundlePath ios/UnitContract.xcresult
           test CODE_SIGNING_ALLOWED=NO
 
+      - name: iPad unit and contract tests
+        run: >-
+          xcodebuild -project ios/Dash.xcodeproj -scheme Dash
+          -destination "$IOS_IPAD_TEST_DESTINATION"
+          -resultBundlePath ios/iPadUnitContract.xcresult
+          test CODE_SIGNING_ALLOWED=NO
+
       - name: iPhone UI tests
         run: >-
           xcodebuild -project ios/Dash.xcodeproj -scheme DashUI
@@ -115,6 +137,9 @@ jobs:
           -only-testing:DashUITests/AgentsUITests/testIPadSplitNavigation
           -only-testing:DashUITests/AccessibilityUITests/testAccessibilityXXXL
           test CODE_SIGNING_ALLOWED=NO
+
+      - name: Real gateway integration matrix
+        run: node ios/scripts/run-live-gateway-tests.mjs
 
       - name: Generic iOS build without signing
         run: >-
