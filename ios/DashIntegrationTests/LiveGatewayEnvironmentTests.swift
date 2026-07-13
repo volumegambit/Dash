@@ -139,6 +139,33 @@ final class LiveGatewayEnvironmentTests: XCTestCase {
     XCTAssertEqual(snapshot.mutations.map(\.attempt), [1, 2])
     XCTAssertEqual(snapshot.observedRevisions, [4, 5])
   }
+
+  func testChatRecorderMarkerScopesReplayFrames() async throws {
+    let recorder = LiveChatRecorder()
+    let before = MobileWSServerFrame.event(
+      id: "turn-01",
+      conversationId: "conversation-01",
+      seq: 2,
+      event: .textDelta(text: "Before")
+    )
+    let replayed = MobileWSServerFrame.event(
+      id: "turn-01",
+      conversationId: "conversation-01",
+      seq: 3,
+      event: .textDelta(text: "Replayed")
+    )
+    await recorder.append(.frame(before))
+
+    let marker = await recorder.marker(turnID: "turn-01")
+    await recorder.append(.frame(replayed))
+
+    let observed = try await recorder.waitForFrame(turnID: "turn-01", after: marker) {
+      $0.liveSequence == 3
+    }
+    XCTAssertEqual(observed, replayed)
+    let frames = await recorder.frames(turnID: "turn-01", after: marker)
+    XCTAssertEqual(frames, [replayed])
+  }
 }
 
 private actor LiveInvalidationRetryProbe {

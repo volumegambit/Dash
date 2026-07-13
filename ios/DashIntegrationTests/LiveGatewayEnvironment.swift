@@ -208,6 +208,12 @@ final class LiveGatewayClient: Sendable {
   func rebuiltOverSharedStore() throws -> LiveGatewayClient {
     try environment.makeClient(store: store)
   }
+
+  func releaseSlowEvent() async throws {
+    try await transport.sendEmpty(
+      GatewayRequest(method: .post, path: ["__mobile-test", "slow", "release"])
+    )
+  }
 }
 
 enum LiveGatewayTestError: Error, Equatable, Sendable {
@@ -264,21 +270,26 @@ actor LiveChatRecorder {
     isFinished = true
   }
 
-  func frames(turnID: String) -> [MobileWSServerFrame] {
-    recordedFrames.filter { $0.liveTurnID == turnID }
+  func marker(turnID: String) -> Int {
+    recordedFrames.lazy.filter { $0.liveTurnID == turnID }.count
+  }
+
+  func frames(turnID: String, after marker: Int = 0) -> [MobileWSServerFrame] {
+    Array(recordedFrames.lazy.filter { $0.liveTurnID == turnID }.dropFirst(marker))
   }
 
   func waitForFrame(
     turnID: String,
+    after marker: Int = 0,
     timeout: Duration = .seconds(15),
     matching predicate: @escaping @Sendable (MobileWSServerFrame) -> Bool
   ) async throws -> MobileWSServerFrame {
     let clock = ContinuousClock()
     let deadline = clock.now.advanced(by: timeout)
     while clock.now < deadline {
-      if let frame = recordedFrames.first(where: {
-        $0.liveTurnID == turnID && predicate($0)
-      }) {
+      if let frame = recordedFrames.lazy.filter({ $0.liveTurnID == turnID }).dropFirst(marker)
+        .first(where: predicate)
+      {
         return frame
       }
       if let terminalError { throw terminalError }

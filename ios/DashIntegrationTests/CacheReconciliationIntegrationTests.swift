@@ -184,11 +184,22 @@ final class CacheReconciliationIntegrationTests: XCTestCase {
       text: "Continue while detached",
       images: []
     )
-    let accepted = try await recording.recorder.waitForFrame(turnID: turnID) {
+    _ = try await recording.recorder.waitForFrame(turnID: turnID) {
       $0.liveIsAccepted
     }
-    let detachedAt = try XCTUnwrap(accepted.liveSequence)
+    let initial = try await recording.recorder.waitForFrame(turnID: turnID) {
+      $0.liveEvent == .textDelta(text: "Starting")
+    }
+    let detachedAt = try XCTUnwrap(initial.liveSequence)
+    await client.sync.consumeLiveFrame(initial, agentID: environment.agentID)
+    try await waitForCursor(
+      detachedAt,
+      store: client.store,
+      gatewayID: environment.gatewayID,
+      conversationID: conversation.id
+    )
     await client.sync.sceneDidEnterBackground()
+    try await client.releaseSlowEvent()
     let missed = try await waitForReplayEvent(
       api: client.api,
       agentID: environment.agentID,
@@ -204,7 +215,7 @@ final class CacheReconciliationIntegrationTests: XCTestCase {
       gatewayID: environment.gatewayID,
       conversationID: conversation.id
     )
-    XCTAssertLessThan(detachedCursor, missed.seq)
+    XCTAssertEqual(detachedCursor, detachedAt)
 
     let stillRunning = try await client.api.conversation(id: conversation.id)
     XCTAssertEqual(stillRunning.status, .running)
@@ -227,8 +238,28 @@ final class CacheReconciliationIntegrationTests: XCTestCase {
     }
     XCTAssertEqual(recoveredEvents.filter { $0 == missedEvent }.count, 1)
 
+    let replayMarker = await recording.recorder.marker(turnID: turnID)
+    try await client.chat.resume(
+      turnID: turnID,
+      agentID: environment.agentID,
+      conversationID: conversation.id,
+      sinceSeq: detachedAt
+    )
+    let replayed = try await recording.recorder.waitForFrame(
+      turnID: turnID,
+      after: replayMarker
+    ) {
+      $0.liveSequence == missed.seq && $0.liveEvent == missedEvent
+    }
+    XCTAssertEqual(replayed.liveSequence, missed.seq)
+    XCTAssertEqual(replayed.liveEvent, missedEvent)
+    await client.sync.consumeLiveFrame(replayed, agentID: environment.agentID)
+
     try await client.chat.cancel(turnID: turnID)
-    let terminal = try await recording.recorder.waitForFrame(turnID: turnID) {
+    let terminal = try await recording.recorder.waitForFrame(
+      turnID: turnID,
+      after: replayMarker
+    ) {
       $0.liveOutcome != nil
     }
     XCTAssertEqual(terminal.liveOutcome, .cancelled)
@@ -241,10 +272,14 @@ final class CacheReconciliationIntegrationTests: XCTestCase {
       conversationID: conversation.id
     )
 
-    let frames = await recording.recorder.frames(turnID: turnID)
+    let frames = await recording.recorder.frames(turnID: turnID, after: replayMarker)
     let sequences = frames.compactMap(\.liveSequence)
     XCTAssertEqual(sequences, sequences.sorted())
     XCTAssertEqual(Set(sequences).count, sequences.count)
+    XCTAssertEqual(
+      frames.filter { $0.liveSequence == missed.seq && $0.liveEvent == missedEvent }.count,
+      1
+    )
     let cached = try await client.store.messages(
       gatewayID: environment.gatewayID,
       conversationID: conversation.id
