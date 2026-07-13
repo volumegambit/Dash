@@ -74,7 +74,10 @@ class ScriptedMobileBackend implements AgentBackend {
   private activeAbort: Deferred<void> | null = null;
   private activeAnswer: Deferred<string> | null = null;
 
-  constructor(private readonly scenario: MobileTestHarnessScenario) {}
+  constructor(
+    private readonly scenario: MobileTestHarnessScenario,
+    private readonly slowEventRelease: Promise<void>,
+  ) {}
 
   async start(_workspace: string): Promise<void> {
     this.stopped = false;
@@ -100,6 +103,12 @@ class ScriptedMobileBackend implements AgentBackend {
     this.activeAbort = aborted;
     try {
       if (this.scenario === 'slow') {
+        yield { type: 'text_delta', text: 'Starting' };
+        const released = await Promise.race([
+          this.slowEventRelease.then(() => true),
+          aborted.promise.then(() => false),
+        ]);
+        if (!released) return;
         yield { type: 'text_delta', text: 'Working' };
         await aborted.promise;
         return;
@@ -238,6 +247,7 @@ export async function startMobileTestHarness(
   const conversations = new SqliteConversationService({ dataDir });
   const eventBus = new EventBus();
   const gateway = createDynamicGateway({ dataDir });
+  const slowEventRelease = deferred<void>();
   let managementServer: OwnedServer | undefined;
   let chatServer: OwnedServer | undefined;
 
@@ -252,7 +262,7 @@ export async function startMobileTestHarness(
   const agents = createAgentChatCoordinator({
     registry: agentRegistry,
     poolMaxSize: 32,
-    createBackend: async () => new ScriptedMobileBackend(scenario),
+    createBackend: async () => new ScriptedMobileBackend(scenario, slowEventRelease.promise),
   });
   gateway.registerAgent(registered.id, {
     chat(channelId, conversationId, text) {
@@ -318,6 +328,16 @@ export async function startMobileTestHarness(
       startedAt: '2026-07-12T00:00:00.000Z',
       eventBus,
       logger,
+    });
+    managementApp.post('/__mobile-test/slow/release', (context) => {
+      if (context.req.header('Authorization') !== `Bearer ${managementToken}`) {
+        return context.json({ error: 'Unauthorized' }, 401);
+      }
+      if (scenario !== 'slow') {
+        return context.json({ error: 'Slow scenario is not active' }, 409);
+      }
+      slowEventRelease.resolve();
+      return context.body(null, 204);
     });
     const managementWebSocket = createNodeWebSocket({ app: managementApp });
     managementServer = await listen(managementApp, managementWebSocket.injectWebSocket);

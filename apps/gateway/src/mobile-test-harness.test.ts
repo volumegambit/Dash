@@ -174,6 +174,55 @@ describe('mobile test harness', () => {
     }
   });
 
+  it('holds the second slow event until the harness release signal', async () => {
+    const harness = await startMobileTestHarness({ scenario: 'slow' });
+    let chat: FrameInbox | undefined;
+    try {
+      const conversation = await createConversation(harness);
+      chat = await openChat(harness);
+      const turnId = randomUUID();
+      chat.send({
+        type: 'message',
+        id: turnId,
+        agentId: harness.agentId,
+        channelId: 'mobile-ios',
+        conversationId: conversation.id,
+        text: 'Wait for release',
+        resumable: true,
+      });
+
+      const first = await chat.waitFor((frame) => frame.type === 'event' && frame.id === turnId);
+      expect(first).toMatchObject({
+        type: 'event',
+        event: { type: 'text_delta', text: 'Starting' },
+      });
+      const beforeRelease = (await (
+        await mobileRequest(harness, `/conversations/${conversation.id}/messages`)
+      ).json()) as ConversationMessagePage;
+      expect(JSON.stringify(beforeRelease.items)).not.toContain('Working');
+
+      const released = await fetch(`${harness.managementBaseUrl}/__mobile-test/slow/release`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${harness.managementToken}` },
+      });
+      expect(released.status).toBe(204);
+      const second = await chat.waitFor(
+        (frame) =>
+          frame.type === 'event' &&
+          frame.id === turnId &&
+          frame.event.type === 'text_delta' &&
+          frame.event.text === 'Working',
+      );
+      expect(second).toMatchObject({
+        type: 'event',
+        event: { type: 'text_delta', text: 'Working' },
+      });
+    } finally {
+      await chat?.close();
+      await harness.stop();
+    }
+  });
+
   it('stops promptly without client cancellation while an SSE response is open', async () => {
     const harness = await startMobileTestHarness({ scenario: 'stream' });
     let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
