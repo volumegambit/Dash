@@ -62,7 +62,24 @@ struct AppModelTests {
 
     #expect(model.selectedTab == .conversations)
     #expect(model.splitConversationSelection == .transcript("conversation-deep"))
-    #expect(model.conversationPath.isEmpty)
+    #expect(model.conversationPath == [.transcript("conversation-deep")])
+  }
+
+  @Test("conversation navigation survives an adaptive width transition")
+  func conversationNavigationSurvivesWidthTransition() {
+    let model = AppModel(
+      dependencies: dependencies(profile: nil, engine: FakeAppSyncEngine())
+    )
+
+    model.openConversation("compact", presentation: .compact)
+
+    #expect(model.conversationPath == [.transcript("compact")])
+    #expect(model.splitConversationSelection == .transcript("compact"))
+
+    model.openConversation("regular", presentation: .regular)
+
+    #expect(model.conversationPath == [.transcript("regular")])
+    #expect(model.splitConversationSelection == .transcript("regular"))
   }
 
   @Test("disconnect keeps paired content visible until teardown completes")
@@ -458,6 +475,44 @@ struct AppModelTests {
     #expect(model.connectionState == .repairRequired)
     #expect(model.banner == .repairRequired)
     #expect(feature.mutationsAllowed == false)
+  }
+
+  @Test("a stale rate-limit callback cannot cross disconnect")
+  func staleRateLimitDoesNotCrossDisconnect() async throws {
+    let nowGate = TestGate()
+    let clock = GatedAppClock(
+      now: Date(timeIntervalSince1970: 100),
+      nowGate: nowGate
+    )
+    let profile = connectionProfile()
+    let service = AppModelConversationService(createError: .rateLimited(retryAfter: .seconds(5)))
+    let feature = ConversationListFeature(gatewayID: profile.gatewayID, service: service)
+    let model = AppModel(
+      dependencies: AppDependencies(
+        clock: clock,
+        loadProfile: { profile },
+        makeSyncEngine: { _ in FakeAppSyncEngine() },
+        makeConversationListFeature: { _ in feature }
+      )
+    )
+    await model.start()
+    let online = SyncSnapshot(
+      connection: .online,
+      conversations: [],
+      agents: [agent()],
+      lastSuccessfulSyncAt: Date(timeIntervalSince1970: 100)
+    )
+    model.consume(online)
+
+    let create = Task { await feature.create(agentID: "agent-old") }
+    await nowGate.waitUntilWaiting()
+    try await model.disconnectAndForget()
+    await nowGate.release()
+    await create.value
+
+    #expect(model.route == .connect)
+    #expect(model.connectionState == .connecting)
+    #expect(model.banner == nil)
   }
 
   @Test("conversation feature receives every snapshot while its view is off-screen")
@@ -873,6 +928,25 @@ private actor FakeForgetPipeline {
 
 private enum TestAppDependencyError: Error {
   case unavailable
+}
+
+private actor GatedAppClock: AppClock {
+  private let current: Date
+  private let nowGate: TestGate
+
+  init(now: Date, nowGate: TestGate) {
+    current = now
+    self.nowGate = nowGate
+  }
+
+  func now() async -> Date {
+    await nowGate.wait()
+    return current
+  }
+
+  func sleep(for duration: Duration) async throws {
+    _ = duration
+  }
 }
 
 private actor AppModelConversationService: ConversationListServicing {

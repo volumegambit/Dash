@@ -147,18 +147,28 @@ actor HTTPTransport {
     return url
   }
 
-  private func transportError(for error: Error, request: GatewayRequest) -> GatewayError {
+  private func transportError(for error: Error, request: GatewayRequest) -> any Error {
     let nsError = error as NSError
-    let isTimeout =
-      (error as? URLError)?.code == .timedOut
-      || (nsError.domain == NSURLErrorDomain && nsError.code == URLError.timedOut.rawValue)
-    if isTimeout, request.method.isMutation {
-      return .mutationOutcomeUnknown(
+    let urlErrorCode: URLError.Code? =
+      if let urlError = error as? URLError {
+        urlError.code
+      } else if nsError.domain == NSURLErrorDomain {
+        URLError.Code(rawValue: nsError.code)
+      } else {
+        nil
+      }
+    if error is CancellationError || urlErrorCode == .cancelled {
+      return CancellationError()
+    }
+    let outcomeIsAmbiguous =
+      urlErrorCode == .timedOut || urlErrorCode == .networkConnectionLost
+    if outcomeIsAmbiguous, request.method.isMutation {
+      return GatewayError.mutationOutcomeUnknown(
         resourceID: request.resourceID,
         requestID: request.requestID
       )
     }
-    return .transport(error.localizedDescription)
+    return GatewayError.transport(error.localizedDescription)
   }
 
   private func mapHTTPError(response: HTTPURLResponse, data: Data) async -> GatewayError {

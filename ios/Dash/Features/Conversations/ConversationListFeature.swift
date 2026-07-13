@@ -32,12 +32,15 @@ protocol ConversationListServicing: Actor {
 }
 
 protocol ConversationListPersisting: Actor {
-  func conversations(gatewayID: String, limit: Int) throws -> [CachedConversation]
-  func agents(gatewayID: String) throws -> [RegisteredAgentDTO]
-  func replaceAgents(_ values: [RegisteredAgentDTO], gatewayID: String) throws
-  func upsertConversations(_ values: [ConversationSummaryDTO], gatewayID: String) throws
-  func applyTombstone(_ value: ConversationSummaryDTO, gatewayID: String) throws
-  func removeConversation(gatewayID: String, conversationID: String) throws
+  func conversations(gatewayID: String, limit: Int) async throws -> [CachedConversation]
+  func agents(gatewayID: String) async throws -> [RegisteredAgentDTO]
+  func replaceAgents(_ values: [RegisteredAgentDTO], gatewayID: String) async throws
+  func upsertConversations(
+    _ values: [ConversationSummaryDTO],
+    gatewayID: String
+  ) async throws
+  func applyTombstone(_ value: ConversationSummaryDTO, gatewayID: String) async throws
+  func removeConversation(gatewayID: String, conversationID: String) async throws
 }
 
 extension PersistenceStore: ConversationListPersisting {}
@@ -325,9 +328,10 @@ actor LiveConversationListService: ConversationListServicing {
       if current.status == .deleted { return current }
       guard current.revision >= revision else { throw GatewayError.updateRequired }
       if current.revision == revision {
-        return try await api.patchConversation(
+        return try await retryRename(
+          api: api,
           id: id,
-          request: try PatchConversationRequest(title: title),
+          title: title,
           revision: revision
         )
       }
@@ -358,9 +362,64 @@ actor LiveConversationListService: ConversationListServicing {
       guard current.revision == revision else {
         throw GatewayError.revisionConflict(current: current)
       }
-      return try await api.deleteConversation(id: id, revision: revision)
+      return try await retryDelete(api: api, id: id, revision: revision)
     default:
       throw error
+    }
+  }
+
+  private func retryRename(
+    api: GatewayAPI,
+    id: String,
+    title: String,
+    revision: Int
+  ) async throws -> ConversationSummaryDTO {
+    do {
+      return try await api.patchConversation(
+        id: id,
+        request: try PatchConversationRequest(title: title),
+        revision: revision
+      )
+    } catch let error as GatewayError {
+      let current: ConversationSummaryDTO
+      switch error {
+      case .notFound, .mutationOutcomeUnknown:
+        current = try await api.conversation(id: id)
+      case .revisionConflict(let canonical):
+        current = canonical
+      default:
+        throw error
+      }
+      if current.status == .deleted { return current }
+      guard current.revision > revision else { throw error }
+      guard current.title == title else {
+        throw GatewayError.revisionConflict(current: current)
+      }
+      return current
+    }
+  }
+
+  private func retryDelete(
+    api: GatewayAPI,
+    id: String,
+    revision: Int
+  ) async throws -> ConversationSummaryDTO {
+    do {
+      return try await api.deleteConversation(id: id, revision: revision)
+    } catch let error as GatewayError {
+      let current: ConversationSummaryDTO
+      switch error {
+      case .notFound, .mutationOutcomeUnknown:
+        current = try await api.conversation(id: id)
+      case .revisionConflict(let canonical):
+        current = canonical
+      default:
+        throw error
+      }
+      if current.status == .deleted { return current }
+      guard current.revision >= revision else { throw GatewayError.updateRequired }
+      if current.revision == revision { throw error }
+      throw GatewayError.revisionConflict(current: current)
     }
   }
 
@@ -445,6 +504,21 @@ final class ConversationListFeature {
     }
     suppressedConversationIDs.formUnion(snapshot.removedConversationIDs)
     allConversations.removeAll { snapshot.removedConversationIDs.contains($0.id) }
+    if let selectedID, snapshot.removedConversationIDs.contains(selectedID) {
+      self.selectedID = nil
+    }
+    if let pendingConflict {
+      let conflictID: String
+      switch pendingConflict {
+      case .rename(let id, _), .delete(let id): conflictID = id
+      }
+      if snapshot.removedConversationIDs.contains(conflictID) {
+        self.pendingConflict = nil
+        if case .some(.revisionConflict) = mutationError {
+          mutationError = nil
+        }
+      }
+    }
     let scoped = snapshot.conversations.filter {
       $0.gatewayID == gatewayID && suppressedConversationIDs.contains($0.id) == false
     }
@@ -454,12 +528,16 @@ final class ConversationListFeature {
       return existing.summary.revision > incoming.summary.revision ? existing : incoming
     }
     let incomingIDs = Set(scoped.map(\.id))
-    merged.append(
-      contentsOf: allConversations.filter {
-        incomingIDs.contains($0.id) == false
-          && suppressedConversationIDs.contains($0.id) == false
+    let retained = allConversations.filter {
+      incomingIDs.contains($0.id) == false
+        && suppressedConversationIDs.contains($0.id) == false
+    }
+    for value in retained {
+      let insertionIndex = merged.firstIndex {
+        $0.summary.updatedAt < value.summary.updatedAt
       }
-    )
+      merged.insert(value, at: insertionIndex ?? merged.endIndex)
+    }
     allConversations = merged
     agents = snapshot.agents
     applyFilter()

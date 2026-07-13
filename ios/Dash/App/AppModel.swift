@@ -140,12 +140,14 @@ final class AppModel {
   func openConversation(_ id: String, presentation: NavigationPresentation) {
     selectedTab = .conversations
     let destination = ConversationRoute.transcript(id)
+    splitConversationSelection = destination
     switch presentation {
     case .compact:
-      conversationPath.append(destination)
+      if conversationPath.last != destination {
+        conversationPath.append(destination)
+      }
     case .regular:
-      conversationPath.removeAll()
-      splitConversationSelection = destination
+      conversationPath = [destination]
     }
   }
 
@@ -323,7 +325,11 @@ final class AppModel {
         self.activeEpoch == epoch,
         self.conversationListFeature === conversationFeature
       else { return }
-      await self.handleConversationGatewayError(error)
+      await self.handleConversationGatewayError(
+        error,
+        epoch: epoch,
+        feature: conversationFeature
+      )
     }
     conversationListFeature = conversationFeature
     selectedTab = .conversations
@@ -401,7 +407,12 @@ final class AppModel {
     conversationListFeature?.consume(self.snapshot)
   }
 
-  private func handleConversationGatewayError(_ error: GatewayError) async {
+  private func handleConversationGatewayError(
+    _ error: GatewayError,
+    epoch: UInt64,
+    feature: ConversationListFeature
+  ) async {
+    guard activeEpoch == epoch, conversationListFeature === feature else { return }
     let state: GatewayConnectionState
     switch error {
     case .unauthorized:
@@ -413,6 +424,7 @@ final class AppModel {
       let seconds =
         TimeInterval(components.seconds)
         + (TimeInterval(components.attoseconds) / 1e18)
+      guard activeEpoch == epoch, conversationListFeature === feature else { return }
       state = .rateLimited(retryAt: now.addingTimeInterval(max(0, seconds)))
     case .gatewayOffline:
       state = .gatewayOffline
@@ -424,8 +436,9 @@ final class AppModel {
       .mutationOutcomeUnknown:
       return
     }
-    let cached = snapshot?.conversations ?? conversationListFeature?.conversations ?? []
-    let agents = snapshot?.agents ?? conversationListFeature?.agents ?? []
+    guard activeEpoch == epoch, conversationListFeature === feature else { return }
+    let cached = snapshot?.conversations ?? feature.conversations
+    let agents = snapshot?.agents ?? feature.agents
     consume(
       SyncSnapshot(
         connection: state,

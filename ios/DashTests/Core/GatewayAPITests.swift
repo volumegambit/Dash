@@ -410,6 +410,28 @@ struct GatewayAPITests {
     )
     #expect(patch == .mutationOutcomeUnknown(resourceID: "conv-1", requestID: nil))
   }
+
+  @Test("a lost connection makes admitted mutations ambiguous")
+  func connectionLostMapping() async throws {
+    URLProtocolStub.enqueue(failure: URLError(.networkConnectionLost))
+    URLProtocolStub.enqueue(failure: URLError(.networkConnectionLost))
+    let api = makeAPI()
+
+    let read = await gatewayError { try await api.identity() }
+    let mutation = await gatewayError {
+      try await api.patchConversation(
+        id: "conv-1",
+        request: try PatchConversationRequest(title: "Renamed"),
+        revision: 2
+      )
+    }
+
+    guard case .transport = read else {
+      Issue.record("Expected a read transport error, received \(String(describing: read))")
+      return
+    }
+    #expect(mutation == .mutationOutcomeUnknown(resourceID: "conv-1", requestID: nil))
+  }
 }
 
 private struct RequiredCapableResponse: Decodable, Sendable {

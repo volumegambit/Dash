@@ -93,6 +93,63 @@ struct ConversationListServiceTests {
     #expect(URLProtocolStub.requests.last?.value(forHTTPHeaderField: "If-Match") == "\"2\"")
   }
 
+  @Test("an ambiguous PATCH retry timeout resolves the canonical rename")
+  func ambiguousRenameRetryRecovery() async throws {
+    let base = summary(title: "Original", revision: 2)
+    let renamed = summary(title: "Renamed", revision: 3)
+    URLProtocolStub.enqueue(failure: URLError(.timedOut))
+    URLProtocolStub.enqueue(status: 200, data: try encode(base))
+    URLProtocolStub.enqueue(failure: URLError(.timedOut))
+    URLProtocolStub.enqueue(status: 200, data: try encode(renamed))
+    let service = makeService(store: try PersistenceStore.inMemory())
+
+    let result = try await service.rename(
+      id: base.id,
+      title: renamed.title,
+      revision: base.revision
+    )
+
+    #expect(result == renamed)
+    #expect(URLProtocolStub.requests.map(\.httpMethod) == ["PATCH", "GET", "PATCH", "GET"])
+  }
+
+  @Test("a PATCH retry 410 resolves the canonical tombstone")
+  func renameRetryTombstoneRecovery() async throws {
+    let base = summary(title: "Original", revision: 2)
+    let tombstone = summary(title: "Original", revision: 3, status: .deleted)
+    URLProtocolStub.enqueue(failure: URLError(.timedOut))
+    URLProtocolStub.enqueue(status: 200, data: try encode(base))
+    try URLProtocolStub.enqueue(status: 410, fixture: "errors/not-found.json")
+    URLProtocolStub.enqueue(status: 200, data: try encode(tombstone))
+    let service = makeService(store: try PersistenceStore.inMemory())
+
+    let result = try await service.rename(
+      id: base.id,
+      title: "Renamed",
+      revision: base.revision
+    )
+
+    #expect(result == tombstone)
+    #expect(URLProtocolStub.requests.map(\.httpMethod) == ["PATCH", "GET", "PATCH", "GET"])
+  }
+
+  @Test("a still-unresolved PATCH retry reports an unknown outcome")
+  func unresolvedRenameRetry() async throws {
+    let base = summary(title: "Original", revision: 2)
+    URLProtocolStub.enqueue(failure: URLError(.timedOut))
+    URLProtocolStub.enqueue(status: 200, data: try encode(base))
+    URLProtocolStub.enqueue(failure: URLError(.timedOut))
+    URLProtocolStub.enqueue(status: 200, data: try encode(base))
+    let service = makeService(store: try PersistenceStore.inMemory())
+
+    let error = await gatewayError {
+      try await service.rename(id: base.id, title: "Renamed", revision: base.revision)
+    }
+
+    #expect(error == .mutationOutcomeUnknown(resourceID: base.id, requestID: nil))
+    #expect(URLProtocolStub.requests.map(\.httpMethod) == ["PATCH", "GET", "PATCH", "GET"])
+  }
+
   @Test("an ambiguous PATCH reports a newer conflicting canonical revision")
   func conflictingRenameRecovery() async throws {
     let current = summary(title: "Someone else's title", revision: 3)
@@ -134,6 +191,38 @@ struct ConversationListServiceTests {
 
     #expect(landed == tombstone)
     #expect(URLProtocolStub.requests.map(\.httpMethod) == ["DELETE", "GET"])
+  }
+
+  @Test("an ambiguous DELETE retry timeout resolves the canonical tombstone")
+  func ambiguousDeleteRetryRecovery() async throws {
+    let base = summary(revision: 2)
+    let tombstone = summary(revision: 3, status: .deleted)
+    URLProtocolStub.enqueue(failure: URLError(.timedOut))
+    URLProtocolStub.enqueue(status: 200, data: try encode(base))
+    URLProtocolStub.enqueue(failure: URLError(.timedOut))
+    URLProtocolStub.enqueue(status: 200, data: try encode(tombstone))
+    let service = makeService(store: try PersistenceStore.inMemory())
+
+    let result = try await service.delete(id: base.id, revision: base.revision)
+
+    #expect(result == tombstone)
+    #expect(URLProtocolStub.requests.map(\.httpMethod) == ["DELETE", "GET", "DELETE", "GET"])
+  }
+
+  @Test("a DELETE retry 410 resolves the canonical tombstone")
+  func deleteRetryTombstoneRecovery() async throws {
+    let base = summary(revision: 2)
+    let tombstone = summary(revision: 3, status: .deleted)
+    URLProtocolStub.enqueue(failure: URLError(.timedOut))
+    URLProtocolStub.enqueue(status: 200, data: try encode(base))
+    try URLProtocolStub.enqueue(status: 410, fixture: "errors/not-found.json")
+    URLProtocolStub.enqueue(status: 200, data: try encode(tombstone))
+    let service = makeService(store: try PersistenceStore.inMemory())
+
+    let result = try await service.delete(id: base.id, revision: base.revision)
+
+    #expect(result == tombstone)
+    #expect(URLProtocolStub.requests.map(\.httpMethod) == ["DELETE", "GET", "DELETE", "GET"])
   }
 
   @Test("a landed mutation survives one local persistence failure")
@@ -184,9 +273,57 @@ struct ConversationListServiceTests {
     try await waitForRequest()
 
     await service.shutdown()
-    _ = await mutation.result
+    let result = await mutation.result
 
     #expect(URLProtocolStub.stopLoadingCount > 0)
+    guard case .failure(let error) = result else {
+      Issue.record("Expected cancellation")
+      return
+    }
+    #expect(error is CancellationError)
+  }
+
+  @Test("shutdown waits for in-flight persistence and rejects later writes")
+  func shutdownDrainsPersistence() async throws {
+    let renamed = summary(title: "Persist before shutdown", revision: 3)
+    URLProtocolStub.enqueue(status: 200, data: try encode(renamed))
+    let writeGate = TestGate()
+    let store = GatedConversationListPersistence(writeGate: writeGate)
+    let service = makeService(store: store)
+    let mutation = Task {
+      try await service.rename(id: renamed.id, title: renamed.title, revision: 2)
+    }
+    await writeGate.waitUntilWaiting()
+
+    let completion = ShutdownCompletion()
+    let shutdown = Task {
+      await service.shutdown()
+      await completion.finish()
+    }
+    for _ in 0..<20 { await Task.yield() }
+
+    #expect(await completion.isFinished == false)
+    #expect(await store.writeAttempts == 1)
+
+    await writeGate.release()
+    await shutdown.value
+    let result = await mutation.result
+
+    #expect(await completion.isFinished)
+    #expect(await store.storedConversation == renamed)
+    guard case .failure(let error) = result else {
+      Issue.record("Expected lifecycle cancellation after persistence drained")
+      return
+    }
+    #expect(error is CancellationError)
+
+    do {
+      _ = try await service.rename(id: renamed.id, title: "Too late", revision: 3)
+      Issue.record("Expected cancellation")
+    } catch is CancellationError {
+      // Expected.
+    }
+    #expect(await store.writeAttempts == 1)
   }
 
   private func makeService(
@@ -285,6 +422,47 @@ struct ConversationListServiceTests {
 
 private enum TestPersistenceFailure: Error {
   case writeFailed
+}
+
+private actor ShutdownCompletion {
+  private(set) var isFinished = false
+
+  func finish() {
+    isFinished = true
+  }
+}
+
+private actor GatedConversationListPersistence: ConversationListPersisting {
+  private let writeGate: TestGate
+  private(set) var writeAttempts = 0
+  private(set) var storedConversation: ConversationSummaryDTO?
+
+  init(writeGate: TestGate) {
+    self.writeGate = writeGate
+  }
+
+  func conversations(gatewayID: String, limit: Int) -> [CachedConversation] { [] }
+  func agents(gatewayID: String) -> [RegisteredAgentDTO] { [] }
+  func replaceAgents(_ values: [RegisteredAgentDTO], gatewayID: String) {}
+
+  func upsertConversations(
+    _ values: [ConversationSummaryDTO],
+    gatewayID: String
+  ) async {
+    _ = gatewayID
+    writeAttempts += 1
+    await writeGate.wait()
+    storedConversation = values.first
+  }
+
+  func applyTombstone(_ value: ConversationSummaryDTO, gatewayID: String) async {
+    _ = gatewayID
+    writeAttempts += 1
+    await writeGate.wait()
+    storedConversation = value
+  }
+
+  func removeConversation(gatewayID: String, conversationID: String) {}
 }
 
 private actor FailingConversationListPersistence: ConversationListPersisting {

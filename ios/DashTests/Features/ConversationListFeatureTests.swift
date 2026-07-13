@@ -594,6 +594,25 @@ struct ConversationListFeatureTests {
     #expect(feature.conversations.map(\.id) == [canonical.id])
   }
 
+  @Test("a buffered snapshot omission keeps a newer canonical create first")
+  func snapshotOmissionPreservesCanonicalCreateOrder() async {
+    let older = summary(id: "older", updatedAt: 100)
+    let canonical = summary(id: "created", updatedAt: 200)
+    let service = FakeConversationListService()
+    await service.enqueueCreate(.success(canonical))
+    let feature = makeFeature(service: service)
+    feature.consume(
+      snapshot(connection: .online, conversations: [cachedConversation(older)])
+    )
+
+    await feature.create(agentID: canonical.agentId)
+    feature.consume(
+      snapshot(connection: .online, conversations: [cachedConversation(older)])
+    )
+
+    #expect(feature.conversations.map(\.id) == [canonical.id, older.id])
+  }
+
   @Test("an explicit sync removal drops a row and suppresses stale snapshots")
   func explicitSyncRemovalDropsRow() async {
     let local = summary(id: "removed", revision: 2)
@@ -613,6 +632,35 @@ struct ConversationListFeatureTests {
     feature.consume(snapshot(connection: .online, conversations: [cachedConversation(local)]))
 
     #expect(feature.conversations.isEmpty)
+  }
+
+  @Test("an explicit sync removal clears selection and conflict state")
+  func explicitSyncRemovalClearsConflict() async {
+    let local = summary(id: "removed", title: "Local", revision: 2)
+    let canonical = summary(id: local.id, title: "Remote", revision: 3)
+    let service = FakeConversationListService(cachedConversations: [cachedConversation(local)])
+    await service.enqueueRename(.failure(.revisionConflict(current: canonical)))
+    let feature = makeFeature(service: service)
+    feature.consume(snapshot(connection: .online, conversations: [cachedConversation(local)]))
+    feature.selectedID = local.id
+
+    await feature.rename(id: local.id, title: "Mine")
+    #expect(feature.mutationError == .revisionConflict(current: canonical))
+
+    feature.consume(
+      SyncSnapshot(
+        connection: .online,
+        conversations: [],
+        agents: [],
+        lastSuccessfulSyncAt: Date(timeIntervalSince1970: 200),
+        removedConversationIDs: [local.id]
+      )
+    )
+
+    #expect(feature.selectedID == nil)
+    #expect(feature.mutationError == nil)
+    await feature.retryConflict()
+    #expect(await service.renameCalls.count == 1)
   }
 
   private func makeFeature(
