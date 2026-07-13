@@ -163,11 +163,7 @@ final class CacheReconciliationIntegrationTests: XCTestCase {
     let environment = try LiveGatewayEnvironment.processInfo()
     try XCTSkipUnless(environment.scenario == "slow", "Requires the slow harness")
     let client = try environment.makeClient()
-    let recording = await LiveChatRecording.start(
-      chat: client.chat,
-      sync: client.sync,
-      agentID: environment.agentID
-    )
+    let recording = await LiveChatRecording.start(chat: client.chat)
     defer { recording.cancel() }
     await client.sync.bootstrap()
 
@@ -188,29 +184,55 @@ final class CacheReconciliationIntegrationTests: XCTestCase {
       text: "Continue while detached",
       images: []
     )
-    _ = try await recording.recorder.waitForFrame(turnID: turnID) { $0.liveIsAccepted }
-    let firstEvent = try await recording.recorder.waitForFrame(turnID: turnID) {
-      $0.liveEvent != nil
+    let accepted = try await recording.recorder.waitForFrame(turnID: turnID) {
+      $0.liveIsAccepted
     }
-    let detachedAt = try XCTUnwrap(firstEvent.liveSequence)
-
+    let detachedAt = try XCTUnwrap(accepted.liveSequence)
     await client.sync.sceneDidEnterBackground()
-    try await Task.sleep(for: .milliseconds(150))
+    let missed = try await waitForReplayEvent(
+      api: client.api,
+      agentID: environment.agentID,
+      conversationID: conversation.id,
+      sinceSequence: detachedAt
+    )
+    XCTAssertGreaterThan(missed.seq, detachedAt)
+    guard case .event(let missedEvent) = missed.payload else {
+      return XCTFail("Expected a durable event after backgrounding")
+    }
+    XCTAssertEqual(missedEvent, .textDelta(text: "Working"))
+    let detachedCursor = try await client.store.cursor(
+      gatewayID: environment.gatewayID,
+      conversationID: conversation.id
+    )
+    XCTAssertLessThan(detachedCursor, missed.seq)
+
     let stillRunning = try await client.api.conversation(id: conversation.id)
     XCTAssertEqual(stillRunning.status, .running)
     XCTAssertEqual(stillRunning.activeTurnId, turnID)
-    _ = try await client.api.replay(
-      agentID: environment.agentID,
-      conversationID: conversation.id,
-      sinceSeq: detachedAt
-    )
 
     await client.sync.sceneWillEnterForeground()
+    try await waitForCursor(
+      missed.seq,
+      store: client.store,
+      gatewayID: environment.gatewayID,
+      conversationID: conversation.id
+    )
+    let recovered = try await client.store.messages(
+      gatewayID: environment.gatewayID,
+      conversationID: conversation.id
+    )
+    let recoveredAssistant = try XCTUnwrap(recovered.first { $0.role == .assistant })
+    guard case .assistant(let recoveredEvents) = recoveredAssistant.content else {
+      return XCTFail("Expected a recovered assistant transcript")
+    }
+    XCTAssertEqual(recoveredEvents.filter { $0 == missedEvent }.count, 1)
+
     try await client.chat.cancel(turnID: turnID)
     let terminal = try await recording.recorder.waitForFrame(turnID: turnID) {
       $0.liveOutcome != nil
     }
     XCTAssertEqual(terminal.liveOutcome, .cancelled)
+    await client.sync.consumeLiveFrame(terminal, agentID: environment.agentID)
     let terminalSequence = try XCTUnwrap(terminal.liveSequence)
     try await waitForCursor(
       terminalSequence,
@@ -235,8 +257,39 @@ final class CacheReconciliationIntegrationTests: XCTestCase {
     XCTAssertEqual(cached, canonical.items)
     XCTAssertEqual(Set(cached.map(\.id)).count, cached.count)
     XCTAssertEqual(canonical.items.count, 2)
+    let canonicalAssistant = try XCTUnwrap(canonical.items.first { $0.role == .assistant })
+    guard case .assistant(let canonicalEvents) = canonicalAssistant.content else {
+      return XCTFail("Expected a canonical assistant transcript")
+    }
+    XCTAssertEqual(canonicalEvents.filter { $0 == missedEvent }.count, 1)
     await client.sync.shutdown()
   }
+}
+
+private func waitForReplayEvent(
+  api: GatewayAPI,
+  agentID: String,
+  conversationID: String,
+  sinceSequence: Int
+) async throws -> ReplayEntryDTO {
+  let clock = ContinuousClock()
+  let deadline = clock.now.advanced(by: .seconds(15))
+  while clock.now < deadline {
+    let replay = try await api.replay(
+      agentID: agentID,
+      conversationID: conversationID,
+      sinceSeq: sinceSequence
+    )
+    if let event = replay.entries.first(where: { entry in
+      guard entry.seq > sinceSequence else { return false }
+      guard case .event = entry.payload else { return false }
+      return true
+    }) {
+      return event
+    }
+    try await clock.sleep(for: .milliseconds(20))
+  }
+  throw LiveGatewayTestError.timeout
 }
 
 private func waitForCursor(

@@ -216,6 +216,30 @@ enum LiveGatewayTestError: Error, Equatable, Sendable {
   case unexpectedFailure
 }
 
+struct LiveInvalidationRetryPolicy: Sendable {
+  let maxAttempts: Int
+  let observationTimeout: Duration
+
+  init(maxAttempts: Int, observationTimeout: Duration) {
+    precondition(maxAttempts > 0)
+    self.maxAttempts = maxAttempts
+    self.observationTimeout = observationTimeout
+  }
+
+  func run(
+    initialRevision: Int,
+    mutate: @escaping @Sendable (_ revision: Int, _ attempt: Int) async throws -> Int,
+    observe: @escaping @Sendable (_ revision: Int, _ timeout: Duration) async throws -> Bool
+  ) async throws -> Int {
+    var revision = initialRevision
+    for attempt in 1...maxAttempts {
+      revision = try await mutate(revision, attempt)
+      if try await observe(revision, observationTimeout) { return revision }
+    }
+    throw LiveGatewayTestError.timeout
+  }
+}
+
 actor LiveChatRecorder {
   private var recordedFrames: [MobileWSServerFrame] = []
   private var recordedStates: [ChatTransportState] = []

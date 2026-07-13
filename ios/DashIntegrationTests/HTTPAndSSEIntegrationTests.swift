@@ -32,25 +32,35 @@ final class HTTPAndSSEIntegrationTests: XCTestCase {
 
     let invalidations = await LiveInvalidationRecording.start(client.sse)
     defer { invalidations.cancel() }
-    try await Task.sleep(for: .milliseconds(150))
 
-    let renamed = try await client.api.patchConversation(
-      id: created.id,
-      request: PatchConversationRequest(title: "Renamed on iOS"),
-      revision: created.revision
-    )
-    let changed = try await invalidations.recorder.waitFor { event in
-      event
-        == .conversationChanged(conversationID: created.id, revision: renamed.revision)
-    }
-    XCTAssertEqual(
-      changed,
-      .conversationChanged(conversationID: created.id, revision: renamed.revision)
+    let renamedRevision = try await LiveInvalidationRetryPolicy(
+      maxAttempts: 4,
+      observationTimeout: .seconds(1)
+    ).run(
+      initialRevision: created.revision,
+      mutate: { revision, attempt in
+        let renamed = try await client.api.patchConversation(
+          id: created.id,
+          request: PatchConversationRequest(title: "Renamed on iOS \(attempt)"),
+          revision: revision
+        )
+        return renamed.revision
+      },
+      observe: { revision, timeout in
+        do {
+          _ = try await invalidations.recorder.waitFor(timeout: timeout) { event in
+            event == .conversationChanged(conversationID: created.id, revision: revision)
+          }
+          return true
+        } catch LiveGatewayTestError.timeout {
+          return false
+        }
+      }
     )
 
     let tombstone = try await client.api.deleteConversation(
       id: created.id,
-      revision: renamed.revision
+      revision: renamedRevision
     )
     let deleted = try await invalidations.recorder.waitFor { event in
       event

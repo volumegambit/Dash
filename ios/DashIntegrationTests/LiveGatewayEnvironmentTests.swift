@@ -82,4 +82,84 @@ final class LiveGatewayEnvironmentTests: XCTestCase {
     XCTAssertTrue(client.store === client.conversationStore)
     XCTAssertTrue(client.store === client.syncStore)
   }
+
+  func testInvalidationRetryCarriesRevisionUntilEventArrives() async throws {
+    let probe = LiveInvalidationRetryProbe()
+    let policy = LiveInvalidationRetryPolicy(
+      maxAttempts: 3,
+      observationTimeout: .milliseconds(10)
+    )
+
+    let revision = try await policy.run(
+      initialRevision: 7,
+      mutate: { revision, attempt in
+        await probe.recordMutation(revision: revision, attempt: attempt)
+        return revision + 1
+      },
+      observe: { revision, timeout in
+        await probe.recordObservation(revision: revision, timeout: timeout)
+        return revision == 9
+      }
+    )
+
+    XCTAssertEqual(revision, 9)
+    let snapshot = await probe.snapshot()
+    XCTAssertEqual(snapshot.mutations.map(\.revision), [7, 8])
+    XCTAssertEqual(snapshot.mutations.map(\.attempt), [1, 2])
+    XCTAssertEqual(snapshot.observedRevisions, [8, 9])
+    XCTAssertEqual(snapshot.observationTimeouts, [.milliseconds(10), .milliseconds(10)])
+  }
+
+  func testInvalidationRetryStopsAtAttemptLimit() async throws {
+    let probe = LiveInvalidationRetryProbe()
+    let policy = LiveInvalidationRetryPolicy(
+      maxAttempts: 2,
+      observationTimeout: .milliseconds(10)
+    )
+
+    do {
+      _ = try await policy.run(
+        initialRevision: 3,
+        mutate: { revision, attempt in
+          await probe.recordMutation(revision: revision, attempt: attempt)
+          return revision + 1
+        },
+        observe: { revision, timeout in
+          await probe.recordObservation(revision: revision, timeout: timeout)
+          return false
+        }
+      )
+      XCTFail("Expected bounded invalidation retries to time out")
+    } catch {
+      XCTAssertEqual(error as? LiveGatewayTestError, .timeout)
+    }
+
+    let snapshot = await probe.snapshot()
+    XCTAssertEqual(snapshot.mutations.map(\.revision), [3, 4])
+    XCTAssertEqual(snapshot.mutations.map(\.attempt), [1, 2])
+    XCTAssertEqual(snapshot.observedRevisions, [4, 5])
+  }
+}
+
+private actor LiveInvalidationRetryProbe {
+  private var mutations: [(revision: Int, attempt: Int)] = []
+  private var observedRevisions: [Int] = []
+  private var observationTimeouts: [Duration] = []
+
+  func recordMutation(revision: Int, attempt: Int) {
+    mutations.append((revision, attempt))
+  }
+
+  func recordObservation(revision: Int, timeout: Duration) {
+    observedRevisions.append(revision)
+    observationTimeouts.append(timeout)
+  }
+
+  func snapshot() -> (
+    mutations: [(revision: Int, attempt: Int)],
+    observedRevisions: [Int],
+    observationTimeouts: [Duration]
+  ) {
+    (mutations, observedRevisions, observationTimeouts)
+  }
 }
