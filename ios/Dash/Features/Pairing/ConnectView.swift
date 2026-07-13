@@ -117,14 +117,3 @@ struct PairingStatusView: View {
       .accessibilityLabel(title)
   }
 }
-
-extension PairingState {
-  var isWorking: Bool {
-    switch self {
-    case .validating, .verifying:
-      true
-    case .idle, .failed, .paired:
-      false
-    }
-  }
-}
