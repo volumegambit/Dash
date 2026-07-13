@@ -592,6 +592,50 @@ describe('ResumableChatHub', () => {
     await vi.waitFor(() => expect(otherScript.return).toHaveBeenCalledOnce());
   });
 
+  it('fences agent admission before cancellation cleanup and keeps it fenced until allowed', async () => {
+    const cleanup = deferred<void>();
+    const active = createConversation('agent-01');
+    const duringCancellation = createConversation('agent-01');
+    const afterCancellation = createConversation('agent-01');
+    const afterAllow = createConversation('agent-01');
+    const scripted = register(active.id, makeScriptedStream(cleanup.promise));
+    harness.cancel.mockImplementation((_agentId: string, conversationId: string) => {
+      if (conversationId === active.id) scripted.finish();
+      return true;
+    });
+    hub.start(sendFrame(active, 'turn-active'), makeSink());
+    const accepted = vi.spyOn(conversations, 'acceptTurn');
+    (autoTitle.schedule as ReturnType<typeof vi.fn>).mockClear();
+    harness.chat.mockClear();
+
+    const cancellation = hub.cancelAgent('agent-01');
+    await vi.waitFor(() => expect(scripted.return).toHaveBeenCalledOnce());
+    try {
+      expect(() =>
+        hub.start(sendFrame(duringCancellation, 'turn-during-cancel'), makeSink()),
+      ).toThrow('Agent agent-01 is not accepting new turns');
+      expect(accepted).not.toHaveBeenCalled();
+      expect(autoTitle.schedule).not.toHaveBeenCalled();
+      expect(harness.chat).not.toHaveBeenCalled();
+
+      cleanup.resolve();
+      await cancellation;
+      expect(() =>
+        hub.start(sendFrame(afterCancellation, 'turn-after-cancel'), makeSink()),
+      ).toThrow('Agent agent-01 is not accepting new turns');
+
+      hub.allowAgent('agent-01');
+      register(afterAllow.id).finish();
+      hub.start(sendFrame(afterAllow, 'turn-after-allow'), makeSink());
+      expect(accepted).toHaveBeenCalledOnce();
+      expect(autoTitle.schedule).toHaveBeenCalledOnce();
+      expect(harness.chat).toHaveBeenCalledOnce();
+    } finally {
+      cleanup.resolve();
+      await cancellation;
+    }
+  });
+
   it('stop cancels every turn and waits for generator cleanup', async () => {
     const firstCleanup = deferred<void>();
     const secondCleanup = deferred<void>();

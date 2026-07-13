@@ -183,7 +183,10 @@ function makeConversationService(): ConversationService {
 }
 
 function makeResumableChatHub() {
-  return { cancelAgent: vi.fn().mockResolvedValue(undefined) };
+  return {
+    cancelAgent: vi.fn().mockResolvedValue(undefined),
+    allowAgent: vi.fn(),
+  };
 }
 
 // --- Controllable fake worker backend ---

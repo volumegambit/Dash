@@ -1,6 +1,7 @@
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import type { AgentEvent } from '@dash/agent';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { AgentChatCoordinator } from './agent-chat-coordinator.js';
@@ -13,6 +14,7 @@ import type { GatewayCredentialStore } from './credential-store.js';
 import { EventBus } from './event-bus.js';
 import type { DynamicGateway } from './gateway.js';
 import { createGatewayManagementApp } from './management-api.js';
+import { createResumableChatHub } from './resumable-chat-hub.js';
 
 // --- Mock factories ---
 
@@ -194,7 +196,18 @@ function makeConversationService(): ConversationService {
 }
 
 function makeResumableChatHub() {
-  return { cancelAgent: vi.fn().mockResolvedValue(undefined) };
+  return {
+    cancelAgent: vi.fn().mockResolvedValue(undefined),
+    allowAgent: vi.fn(),
+  };
+}
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
 }
 
 function createApp(overrides: Record<string, unknown> = {}) {
@@ -783,6 +796,141 @@ describe('createGatewayManagementApp', () => {
       const res = await app.request('/agents/nope', { method: 'DELETE', headers: AUTH });
       expect(res.status).toBe(404);
     });
+
+    it('fences new turns during cancellation and every later delete await', async () => {
+      const tmpDir = await mkdtemp(join(tmpdir(), 'management-delete-admission-'));
+      const conversationService = new SqliteConversationService({ dataDir: tmpDir });
+      const streamReleased = deferred<void>();
+      const cleanupStarted = deferred<void>();
+      const cleanupReleased = deferred<void>();
+      const deregistered = deferred<string[]>();
+      let deleteRequest: Promise<Response> | undefined;
+      let resumableChatHub: ReturnType<typeof createResumableChatHub> | undefined;
+      try {
+        const agents = makeAgents();
+        vi.mocked(agents.chat).mockImplementation(async function* (): AsyncGenerator<AgentEvent> {
+          try {
+            await streamReleased.promise;
+            yield { type: 'text_delta', text: 'Late cancellation event' };
+          } finally {
+            cleanupStarted.resolve(undefined);
+            await cleanupReleased.promise;
+          }
+        });
+        vi.mocked(agents.cancel).mockImplementation(() => {
+          streamReleased.resolve(undefined);
+          return true;
+        });
+        const autoTitle = {
+          schedule: vi.fn(),
+          flush: vi.fn().mockResolvedValue(undefined),
+        };
+        resumableChatHub = createResumableChatHub({
+          conversations: conversationService,
+          agents,
+          autoTitle,
+        });
+        const gateway = makeGateway();
+        vi.mocked(gateway.deregisterAgent).mockImplementation(() => deregistered.promise);
+        const { app, agentRegistry } = createApp({
+          agents,
+          conversationService,
+          resumableChatHub,
+          gateway,
+        });
+        const agent = (agentRegistry.register as ReturnType<typeof vi.fn>)({
+          name: 'Quiescing Helper',
+          model: 'test/model',
+          systemPrompt: '',
+        });
+        const active = conversationService.create({
+          agentId: agent.id,
+          agentName: agent.name,
+          requestId: 'create-active',
+        });
+        const duringCancellation = conversationService.create({
+          agentId: agent.id,
+          agentName: agent.name,
+          requestId: 'create-during-cancellation',
+        });
+        const duringCleanup = conversationService.create({
+          agentId: agent.id,
+          agentName: agent.name,
+          requestId: 'create-during-cleanup',
+        });
+        const acceptTurn = vi.spyOn(conversationService, 'acceptTurn');
+        const sink = { send: vi.fn() };
+        resumableChatHub.start(
+          {
+            type: 'message',
+            id: 'turn-active',
+            agentId: agent.id,
+            channelId: 'direct',
+            conversationId: active.id,
+            text: 'Finish safely',
+            resumable: true,
+          },
+          sink,
+        );
+        expect(acceptTurn).toHaveBeenCalledOnce();
+        expect(agents.chat).toHaveBeenCalledOnce();
+        expect(autoTitle.schedule).toHaveBeenCalledOnce();
+
+        deleteRequest = app.request(`/agents/${agent.id}`, { method: 'DELETE', headers: AUTH });
+        await cleanupStarted.promise;
+        expect(() =>
+          resumableChatHub.start(
+            {
+              type: 'message',
+              id: 'turn-during-cancel',
+              agentId: agent.id,
+              channelId: 'direct',
+              conversationId: duringCancellation.id,
+              text: 'Race cancellation',
+              resumable: true,
+            },
+            sink,
+          ),
+        ).toThrow('Agent a1 is not accepting new turns');
+        expect(acceptTurn).toHaveBeenCalledOnce();
+        expect(agents.chat).toHaveBeenCalledOnce();
+        expect(autoTitle.schedule).toHaveBeenCalledOnce();
+
+        cleanupReleased.resolve(undefined);
+        await vi.waitFor(() => expect(gateway.deregisterAgent).toHaveBeenCalledWith(agent.id));
+        expect(() =>
+          resumableChatHub.start(
+            {
+              type: 'message',
+              id: 'turn-during-cleanup',
+              agentId: agent.id,
+              channelId: 'direct',
+              conversationId: duringCleanup.id,
+              text: 'Race later cleanup',
+              resumable: true,
+            },
+            sink,
+          ),
+        ).toThrow('Agent a1 is not accepting new turns');
+        expect(acceptTurn).toHaveBeenCalledOnce();
+        expect(agents.chat).toHaveBeenCalledOnce();
+        expect(autoTitle.schedule).toHaveBeenCalledOnce();
+
+        deregistered.resolve([]);
+        expect((await deleteRequest).status).toBe(200);
+        for (const conversation of [active, duringCancellation, duringCleanup]) {
+          expect(conversationService.get(conversation.id)).toMatchObject({ status: 'archived' });
+        }
+      } finally {
+        streamReleased.resolve(undefined);
+        cleanupReleased.resolve(undefined);
+        deregistered.resolve([]);
+        if (deleteRequest) await deleteRequest;
+        if (resumableChatHub) await resumableChatHub.stop();
+        conversationService.close();
+        await rm(tmpDir, { recursive: true, force: true });
+      }
+    });
   });
 
   describe('POST /agents/:id/disable', () => {
@@ -813,7 +961,7 @@ describe('createGatewayManagementApp', () => {
 
   describe('POST /agents/:id/enable', () => {
     it('enables agent', async () => {
-      const { app, agentRegistry } = createApp();
+      const { app, agentRegistry, resumableChatHub } = createApp();
       const entry = (agentRegistry.register as ReturnType<typeof vi.fn>)({
         name: 'x',
         model: 'm',
@@ -827,6 +975,10 @@ describe('createGatewayManagementApp', () => {
       });
       expect(res.status).toBe(200);
       expect(agentRegistry.enable).toHaveBeenCalledWith(entry.id);
+      expect(resumableChatHub.allowAgent).toHaveBeenCalledWith(entry.id);
+      expect(vi.mocked(agentRegistry.save).mock.invocationCallOrder[0]).toBeLessThan(
+        resumableChatHub.allowAgent.mock.invocationCallOrder[0] as number,
+      );
     });
 
     it('returns 404 for unknown ID', async () => {
@@ -919,7 +1071,7 @@ describe('createGatewayManagementApp', () => {
     });
 
     it.each(['enable', 'disable'])('contains an injected %s failure', async (action) => {
-      const { app, agentRegistry } = createApp();
+      const { app, agentRegistry, resumableChatHub } = createApp();
       const entry = (agentRegistry.register as ReturnType<typeof vi.fn>)({
         name: 'x',
         model: 'test/model',
@@ -941,16 +1093,26 @@ describe('createGatewayManagementApp', () => {
         error: 'Internal gateway error',
         retryable: true,
       });
+      if (action === 'enable') expect(resumableChatHub.allowAgent).not.toHaveBeenCalled();
     });
 
-    it('contains an injected delete failure', async () => {
-      const { app, agentRegistry, gateway } = createApp();
+    it('keeps an agent fenced after a delete failure and permits a safe retry', async () => {
+      let fenced = false;
+      const resumableChatHub = {
+        cancelAgent: vi.fn(async () => {
+          fenced = true;
+        }),
+        allowAgent: vi.fn(() => {
+          fenced = false;
+        }),
+      };
+      const { app, agentRegistry, gateway } = createApp({ resumableChatHub });
       const entry = (agentRegistry.register as ReturnType<typeof vi.fn>)({
         name: 'x',
         model: 'test/model',
         systemPrompt: '',
       });
-      (gateway.deregisterAgent as ReturnType<typeof vi.fn>).mockRejectedValue(
+      (gateway.deregisterAgent as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
         new Error('injected delete failure'),
       );
 
@@ -964,6 +1126,16 @@ describe('createGatewayManagementApp', () => {
         error: 'Internal gateway error',
         retryable: true,
       });
+      expect(fenced).toBe(true);
+      expect(resumableChatHub.allowAgent).not.toHaveBeenCalled();
+
+      const retry = await app.request(`/agents/${entry.id}`, {
+        method: 'DELETE',
+        headers: AUTH,
+      });
+      expect(retry.status).toBe(200);
+      expect(resumableChatHub.cancelAgent).toHaveBeenCalledTimes(2);
+      expect(fenced).toBe(true);
     });
   });
 

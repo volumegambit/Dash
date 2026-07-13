@@ -37,6 +37,7 @@ export interface ResumableChatHub {
   cancel(turnId: string, sink: TurnFrameSink): Promise<void>;
   detach(sink: TurnFrameSink): void;
   cancelAgent(agentId: string): Promise<void>;
+  allowAgent(agentId: string): void;
   stop(): Promise<void>;
 }
 
@@ -103,10 +104,23 @@ function frameFromAccepted(frame: ResumableSendFrame, accepted: AcceptedTurn): M
 export function createResumableChatHub(options: ResumableChatHubOptions): ResumableChatHub {
   const { conversations, agents } = options;
   const turns = new Map<string, LiveTurn>();
+  const quiescingAgents = new Set<string>();
   let stopped = false;
 
   const assertAccepting = (): void => {
     if (stopped) throw new Error('Resumable chat hub is stopped');
+  };
+
+  const assertAgentAccepting = (agentId: string): void => {
+    assertAccepting();
+    if (quiescingAgents.has(agentId)) {
+      throw new ConversationServiceError(
+        'conversation_busy',
+        `Agent ${agentId} is not accepting new turns`,
+        409,
+        true,
+      );
+    }
   };
 
   const send = (sink: TurnFrameSink, frame: MobileWsServerFrame): boolean => {
@@ -219,7 +233,7 @@ export function createResumableChatHub(options: ResumableChatHubOptions): Resuma
 
   const hub: ResumableChatHub = {
     start(frame, sink) {
-      assertAccepting();
+      assertAgentAccepting(frame.agentId);
       const accepted = conversations.acceptTurn({
         agentId: frame.agentId,
         conversationId: frame.conversationId,
@@ -285,9 +299,14 @@ export function createResumableChatHub(options: ResumableChatHubOptions): Resuma
     },
 
     async cancelAgent(agentId) {
+      quiescingAgents.add(agentId);
       const matching = [...turns.values()].filter((live) => live.agentId === agentId);
       for (const live of matching) cancelLive(live);
       await Promise.all(matching.map((live) => live.promise));
+    },
+
+    allowAgent(agentId) {
+      quiescingAgents.delete(agentId);
     },
 
     async stop() {

@@ -49,7 +49,7 @@ export interface GatewayManagementOptions {
   /** Canonical conversation metadata, messages, and the shared durable event journal. */
   conversationService: ConversationService;
   /** Process-wide resumable turn owner used to quiesce an agent before backend eviction. */
-  resumableChatHub: Pick<ResumableChatHub, 'cancelAgent'>;
+  resumableChatHub: Pick<ResumableChatHub, 'allowAgent' | 'cancelAgent'>;
   /** Shared projects DB. When present, mounts /projects + /issues + /inbox. */
   projectsDb?: ProjectsDb;
   /**
@@ -743,6 +743,7 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
       try {
         agentRegistry.enable(id);
         await agentRegistry.save();
+        options.resumableChatHub.allowAgent(id);
         return c.json({ ok: true });
       } catch (error) {
         logger.error('mobile agent enable failed', error instanceof Error ? error : undefined, {
