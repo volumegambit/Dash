@@ -66,6 +66,37 @@ struct SettingsFeatureTests {
     #expect(await actions.calls == [.reconnect])
     #expect(feature.isReconnecting == false)
     #expect(feature.error == nil)
+    #expect(feature.canReconnect)
+  }
+
+  @Test("reconnect is unavailable during transitional rate-limit and repair states")
+  func reconnectUnavailableStates() async {
+    let states: [GatewayConnectionState] = [
+      .connecting,
+      .reconnecting(attempt: 1, retryAt: Date(timeIntervalSince1970: 10)),
+      .rateLimited(retryAt: Date(timeIntervalSince1970: 10)),
+      .repairRequired,
+      .updateRequired,
+    ]
+
+    for state in states {
+      let actions = SettingsActionRecorder()
+      let feature = makeFeature(connection: state, actions: actions)
+
+      #expect(feature.canReconnect == false)
+      await feature.reconnect()
+      #expect(await actions.calls.isEmpty)
+    }
+  }
+
+  @Test("reconnect progress keeps a meaningful accessibility title")
+  func reconnectProgressTitle() {
+    let feature = makeFeature()
+    #expect(feature.reconnectButtonTitle == "Reconnect")
+
+    feature.isReconnecting = true
+
+    #expect(feature.reconnectButtonTitle == "Reconnecting")
   }
 
   @Test("disconnect does nothing before confirmation")
@@ -77,6 +108,63 @@ struct SettingsFeatureTests {
 
     #expect(await actions.calls.isEmpty)
     #expect(feature.isForgetting == false)
+  }
+
+  @Test("confirmed disconnect cancels an in-flight reconnect before forgetting secrets")
+  func disconnectSupersedesReconnect() async {
+    let actions = CancellableSettingsActions()
+    let feature = SettingsFeature(
+      profile: profile(),
+      connection: .offline,
+      lastSuccessfulSyncAt: nil,
+      reconnectAction: { try await actions.reconnect() },
+      disconnectAction: { await actions.disconnect() }
+    )
+
+    let reconnect = Task { await feature.reconnect() }
+    await actions.waitUntilReconnecting()
+
+    await feature.disconnectAndForget(confirmed: true)
+    await actions.releaseReconnect()
+    await reconnect.value
+
+    #expect(await actions.calls == [.reconnectStarted, .reconnectCancelled, .disconnect])
+    #expect(feature.isReconnecting == false)
+    #expect(feature.isForgetting == false)
+  }
+
+  @Test("AppModel teardown cancels a settings verifier before deleting Keychain secrets")
+  func appModelTeardownCancelsReconnectBeforeKeychain() async throws {
+    let lifecycle = CancellableSettingsLifecycle()
+    let profile = profile()
+    let model = AppModel(
+      dependencies: AppDependencies(
+        clock: TestAppClock(now: Date(timeIntervalSince1970: 100)),
+        loadProfile: { profile },
+        makeSyncEngine: { _ in SettingsSyncEngine() },
+        verifyProfile: { _ in try await lifecycle.verify() },
+        deleteProfileSecrets: { _ in await lifecycle.deleteSecrets() }
+      )
+    )
+    await model.start()
+    model.consume(
+      SyncSnapshot(
+        connection: .offline,
+        conversations: [],
+        agents: [],
+        lastSuccessfulSyncAt: nil
+      )
+    )
+    let feature = try #require(model.settingsFeature)
+    let reconnect = Task { await feature.reconnect() }
+    await lifecycle.waitUntilVerifying()
+
+    try await model.disconnectAndForget()
+    await lifecycle.releaseVerification()
+    await reconnect.value
+
+    #expect(await lifecycle.events == [.verifyStarted, .verifyCancelled, .deleteSecrets])
+    #expect(model.selectedProfile == nil)
   }
 
   @Test("Keychain deletion failure keeps settings visible with retry guidance")
@@ -122,6 +210,14 @@ struct SettingsFeatureTests {
       )
     )
     await model.start()
+    model.consume(
+      SyncSnapshot(
+        connection: .offline,
+        conversations: [],
+        agents: [],
+        lastSuccessfulSyncAt: nil
+      )
+    )
     await events.clear()
     let feature = try #require(model.settingsFeature)
 
@@ -129,6 +225,35 @@ struct SettingsFeatureTests {
 
     #expect(await events.values == [.verify, .bootstrap])
     #expect(feature.error == nil)
+  }
+
+  @Test("AppModel reconnect never leaves an unexpected verifier failure connecting forever")
+  func appModelReconnectUnexpectedGatewayFailureIsOffline() async throws {
+    let profile = profile()
+    let model = AppModel(
+      dependencies: AppDependencies(
+        clock: TestAppClock(now: Date(timeIntervalSince1970: 100)),
+        loadProfile: { profile },
+        makeSyncEngine: { _ in SettingsSyncEngine() },
+        verifyProfile: { _ in throw GatewayError.notFound }
+      )
+    )
+    await model.start()
+    model.consume(
+      SyncSnapshot(
+        connection: .offline,
+        conversations: [],
+        agents: [],
+        lastSuccessfulSyncAt: nil
+      )
+    )
+    let feature = try #require(model.settingsFeature)
+
+    await feature.reconnect()
+
+    #expect(model.connectionState == .offline)
+    #expect(model.banner == .offline)
+    #expect(feature.connection == .offline)
   }
 
   @Test("AppModel keeps cached settings after Keychain failure")
@@ -204,6 +329,18 @@ struct SettingsFeatureTests {
     #expect(await gateway.calls == [.health, .shutdown])
   }
 
+  @Test("profile verifier rejects an unhealthy gateway before identity")
+  func profileVerifierHealthFailure() async {
+    let gateway = SettingsGatewayStub(status: "degraded")
+    let verifier = GatewayProfileVerifier { _, _ in gateway }
+
+    await #expect(throws: GatewayError.gatewayOffline) {
+      try await verifier.verify(profile: profile(), secrets: secrets())
+    }
+
+    #expect(await gateway.calls == [.health, .shutdown])
+  }
+
   @Test("profile verifier rejects a newer mobile API before identity")
   func profileVerifierAPIVersionFailure() async {
     let gateway = SettingsGatewayStub(apiVersion: 2)
@@ -228,6 +365,41 @@ struct SettingsFeatureTests {
     }
 
     #expect(await gateway.calls == [.health, .identity, .shutdown])
+  }
+
+  @Test("profile verifier rejects an empty stored public-key pin")
+  func profileVerifierEmptyPinFailure() async {
+    let gateway = SettingsGatewayStub(
+      identity: GatewayIdentityDTO(gatewayId: "gateway-settings", publicKey: "")
+    )
+    let verifier = GatewayProfileVerifier { _, _ in gateway }
+
+    await #expect(throws: GatewayProfileVerificationError.identityMismatch) {
+      try await verifier.verify(profile: profile(publicKey: ""), secrets: secrets())
+    }
+
+    #expect(await gateway.calls.isEmpty)
+  }
+
+  @Test("profile verifier stops before identity when cancelled after health")
+  func profileVerifierCancellationAfterHealth() async {
+    let gateway = CancellationIgnoringSettingsGateway()
+    let verifier = GatewayProfileVerifier { _, _ in gateway }
+    let operation = Task {
+      try await verifier.verify(profile: profile(), secrets: secrets())
+    }
+    await gateway.waitUntilCheckingHealth()
+
+    operation.cancel()
+    await gateway.releaseHealth()
+
+    do {
+      try await operation.value
+      Issue.record("Expected profile verification to preserve cancellation")
+    } catch {
+      #expect(error is CancellationError)
+    }
+    #expect(await gateway.calls == [.health, .shutdown])
   }
 
   private func makeFeature(
@@ -298,6 +470,82 @@ private actor SettingsActionRecorder {
   }
 }
 
+private actor CancellableSettingsActions {
+  enum Call: Equatable, Sendable {
+    case reconnectStarted
+    case reconnectCancelled
+    case disconnect
+  }
+
+  private let gate = TestGate()
+  private(set) var calls: [Call] = []
+
+  func reconnect() async throws {
+    calls.append(.reconnectStarted)
+    try await withTaskCancellationHandler {
+      await gate.wait()
+      try Task.checkCancellation()
+    } onCancel: {
+      Task { await self.cancelReconnect() }
+    }
+  }
+
+  func disconnect() {
+    calls.append(.disconnect)
+  }
+
+  func waitUntilReconnecting() async {
+    await gate.waitUntilWaiting()
+  }
+
+  func releaseReconnect() async {
+    await gate.release()
+  }
+
+  private func cancelReconnect() async {
+    calls.append(.reconnectCancelled)
+    await gate.release()
+  }
+}
+
+private actor CancellableSettingsLifecycle {
+  enum Event: Equatable, Sendable {
+    case verifyStarted
+    case verifyCancelled
+    case deleteSecrets
+  }
+
+  private let gate = TestGate()
+  private(set) var events: [Event] = []
+
+  func verify() async throws {
+    events.append(.verifyStarted)
+    try await withTaskCancellationHandler {
+      await gate.wait()
+      try Task.checkCancellation()
+    } onCancel: {
+      Task { await self.cancelVerification() }
+    }
+  }
+
+  func deleteSecrets() {
+    events.append(.deleteSecrets)
+  }
+
+  func waitUntilVerifying() async {
+    await gate.waitUntilWaiting()
+  }
+
+  func releaseVerification() async {
+    await gate.release()
+  }
+
+  private func cancelVerification() async {
+    events.append(.verifyCancelled)
+    await gate.release()
+  }
+}
+
 private actor SettingsLifecycleRecorder {
   enum Event: Equatable, Sendable {
     case verify
@@ -346,12 +594,14 @@ private actor SettingsGatewayStub: GatewayProfileChecking {
     case shutdown
   }
 
+  private let status: String
   private let apiVersion: Int
   private let capabilities: [MobileCapability]
   private let identityValue: GatewayIdentityDTO
   private(set) var calls: [Call] = []
 
   init(
+    status: String = "healthy",
     apiVersion: Int = 1,
     capabilities: [MobileCapability] = [.conversationSyncV1, .chatResumeV1],
     identity: GatewayIdentityDTO = GatewayIdentityDTO(
@@ -359,6 +609,7 @@ private actor SettingsGatewayStub: GatewayProfileChecking {
       publicKey: "abcdef-public-key-uvwxyz"
     )
   ) {
+    self.status = status
     self.apiVersion = apiVersion
     self.capabilities = capabilities
     identityValue = identity
@@ -367,7 +618,7 @@ private actor SettingsGatewayStub: GatewayProfileChecking {
   func health() -> HealthResponse {
     calls.append(.health)
     return HealthResponse(
-      status: "ok",
+      status: status,
       startedAt: Date(timeIntervalSince1970: 1),
       pid: 1,
       agents: 1,
@@ -384,5 +635,50 @@ private actor SettingsGatewayStub: GatewayProfileChecking {
 
   func shutdown() {
     calls.append(.shutdown)
+  }
+}
+
+private actor CancellationIgnoringSettingsGateway: GatewayProfileChecking {
+  enum Call: Equatable, Sendable {
+    case health
+    case identity
+    case shutdown
+  }
+
+  private let healthGate = TestGate()
+  private(set) var calls: [Call] = []
+
+  func health() async -> HealthResponse {
+    calls.append(.health)
+    await healthGate.wait()
+    return HealthResponse(
+      status: "healthy",
+      startedAt: Date(timeIntervalSince1970: 1),
+      pid: 1,
+      agents: 1,
+      channels: 0,
+      apiVersion: 1,
+      capabilities: [.conversationSyncV1, .chatResumeV1]
+    )
+  }
+
+  func identity() -> GatewayIdentityDTO {
+    calls.append(.identity)
+    return GatewayIdentityDTO(
+      gatewayId: "gateway-settings",
+      publicKey: "abcdef-public-key-uvwxyz"
+    )
+  }
+
+  func shutdown() {
+    calls.append(.shutdown)
+  }
+
+  func waitUntilCheckingHealth() async {
+    await healthGate.waitUntilWaiting()
+  }
+
+  func releaseHealth() async {
+    await healthGate.release()
   }
 }

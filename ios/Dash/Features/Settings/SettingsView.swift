@@ -34,13 +34,15 @@ struct SettingsView: View {
             if feature.isReconnecting {
               ProgressView()
             } else {
-              Label("Reconnect", systemImage: "arrow.clockwise")
+              Image(systemName: "arrow.clockwise")
             }
+            Text(feature.reconnectButtonTitle)
             Spacer()
           }
           .frame(minHeight: 44)
         }
-        .disabled(feature.isReconnecting || feature.isForgetting)
+        .disabled(feature.canReconnect == false)
+        .accessibilityLabel(feature.reconnectButtonTitle)
       }
 
       Section {
@@ -48,7 +50,7 @@ struct SettingsView: View {
           showForgetConfirmation = true
         }
         .frame(minHeight: 44)
-        .disabled(feature.isForgetting || feature.isReconnecting)
+        .disabled(feature.isForgetting)
         .accessibilityIdentifier("settings.disconnect")
 
         if feature.isForgetting {

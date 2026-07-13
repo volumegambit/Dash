@@ -44,6 +44,20 @@ final class SettingsFeature {
     }
   }
 
+  var canReconnect: Bool {
+    guard isReconnecting == false, isForgetting == false else { return false }
+    return switch connection {
+    case .online, .offline, .gatewayOffline:
+      true
+    case .connecting, .reconnecting, .rateLimited, .repairRequired, .updateRequired:
+      false
+    }
+  }
+
+  var reconnectButtonTitle: String {
+    isReconnecting ? "Reconnecting" : "Reconnect"
+  }
+
   var displayValues: String {
     [
       gatewayLabel,
@@ -57,6 +71,8 @@ final class SettingsFeature {
 
   @ObservationIgnored private let reconnectAction: @MainActor @Sendable () async throws -> Void
   @ObservationIgnored private let disconnectAction: @MainActor @Sendable () async throws -> Void
+  @ObservationIgnored private var reconnectTask: Task<Void, Error>?
+  @ObservationIgnored private var reconnectID: UUID?
 
   init(
     profile: ConnectionProfileSnapshot,
@@ -95,12 +111,27 @@ final class SettingsFeature {
   }
 
   func reconnect() async {
-    guard isReconnecting == false, isForgetting == false else { return }
+    guard canReconnect else { return }
+    let operationID = UUID()
+    let action = reconnectAction
+    let operation = Task { try await action() }
+    reconnectID = operationID
+    reconnectTask = operation
     isReconnecting = true
     error = nil
-    defer { isReconnecting = false }
+    defer {
+      if reconnectID == operationID {
+        reconnectID = nil
+        reconnectTask = nil
+        isReconnecting = false
+      }
+    }
     do {
-      try await reconnectAction()
+      try await withTaskCancellationHandler {
+        try await operation.value
+      } onCancel: {
+        operation.cancel()
+      }
     } catch is CancellationError {
       return
     } catch is AppDependencyError {
@@ -116,11 +147,36 @@ final class SettingsFeature {
     }
   }
 
+  func prepareForShutdown() {
+    reconnectTask?.cancel()
+  }
+
+  func shutdown() async {
+    let operationID = reconnectID
+    let operation = reconnectTask
+    operation?.cancel()
+    if let operation {
+      _ = await operation.result
+    }
+    if reconnectID == operationID {
+      reconnectTask = nil
+      reconnectID = nil
+      isReconnecting = false
+    }
+  }
+
   func disconnectAndForget(confirmed: Bool) async {
-    guard confirmed, isForgetting == false, isReconnecting == false else { return }
+    guard confirmed, isForgetting == false else { return }
     isForgetting = true
-    error = nil
     defer { isForgetting = false }
+    if let reconnectTask {
+      reconnectTask.cancel()
+      _ = await reconnectTask.result
+      self.reconnectTask = nil
+      reconnectID = nil
+      isReconnecting = false
+    }
+    error = nil
     do {
       try await disconnectAction()
     } catch SettingsDisconnectError.keychain {

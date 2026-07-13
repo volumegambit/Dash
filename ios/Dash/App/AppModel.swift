@@ -56,6 +56,7 @@ final class AppModel {
     let engine: (any AppSyncing)?
     let conversationFeature: ConversationListFeature?
     let agentsFeature: AgentsFeature?
+    let settingsFeature: SettingsFeature?
   }
 
   init(dependencies: AppDependencies) {
@@ -75,6 +76,12 @@ final class AppModel {
       guard let prepared = try await prepareActivation(profile, epoch: epoch) else { return }
       let retired = publish(profile, prepared: prepared)
       let publishedEpoch = activeEpoch
+      if let retiredFeature = retired.settingsFeature,
+        retiredFeature !== settingsFeature
+      {
+        await retiredFeature.shutdown()
+        guard activeEpoch == publishedEpoch, sameEngine(syncEngine, prepared.engine) else { return }
+      }
       if let retiredFeature = retired.conversationFeature,
         retiredFeature !== conversationListFeature
       {
@@ -110,6 +117,12 @@ final class AppModel {
       dependencies.rememberProfile(profile)
       let retired = publish(profile, prepared: prepared)
       let publishedEpoch = activeEpoch
+      if let retiredFeature = retired.settingsFeature,
+        retiredFeature !== settingsFeature
+      {
+        await retiredFeature.shutdown()
+        guard activeEpoch == publishedEpoch, sameEngine(syncEngine, prepared.engine) else { return }
+      }
       if let retiredFeature = retired.conversationFeature,
         retiredFeature !== conversationListFeature
       {
@@ -202,7 +215,14 @@ final class AppModel {
     } catch {
       guard activeEpoch == epoch, sameEngine(syncEngine, engine) else { return }
       if let gatewayError = error as? GatewayError {
-        await handleFeatureGatewayError(gatewayError, epoch: epoch)
+        switch gatewayError {
+        case .notFound, .validation, .revisionConflict, .conversationBusy,
+          .mutationOutcomeUnknown:
+          markCachedConnection(.offline)
+          banner = .offline
+        default:
+          await handleFeatureGatewayError(gatewayError, epoch: epoch)
+        }
       } else if error is AppDependencyError
         || error is GatewayProfileVerificationError
       {
@@ -241,6 +261,10 @@ final class AppModel {
     let epoch = beginTransition()
     let retired = detachActiveEngine()
     markCachedConnection(.connecting)
+    if let feature = retired.settingsFeature {
+      await feature.shutdown()
+      guard isCurrent(epoch) else { return }
+    }
     if let feature = retired.conversationFeature {
       await feature.shutdown()
       guard isCurrent(epoch) else { return }
@@ -368,8 +392,10 @@ final class AppModel {
     let retired = DetachedActivation(
       engine: syncEngine,
       conversationFeature: conversationListFeature,
-      agentsFeature: agentsFeature
+      agentsFeature: agentsFeature,
+      settingsFeature: settingsFeature
     )
+    retired.settingsFeature?.prepareForShutdown()
     let previousGatewayID = selectedProfile?.gatewayID
     snapshotTask?.cancel()
     activeEpoch &+= 1
@@ -454,10 +480,12 @@ final class AppModel {
     let retired = DetachedActivation(
       engine: syncEngine,
       conversationFeature: conversationListFeature,
-      agentsFeature: agentsFeature
+      agentsFeature: agentsFeature,
+      settingsFeature: settingsFeature
     )
     retired.conversationFeature?.prepareForShutdown()
     retired.agentsFeature?.prepareForShutdown()
+    retired.settingsFeature?.prepareForShutdown()
     snapshotTask?.cancel()
     snapshotTask = nil
     syncEngine = nil
