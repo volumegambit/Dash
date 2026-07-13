@@ -1,14 +1,21 @@
+import type { ConversationRef } from '@dash/mc';
 import { describe, expect, it, vi } from 'vitest';
 import { assignAgentToTask, buildTaskKickoffPrompt } from './task-dispatch.js';
 
-function makeDeps() {
+const gatewayConversation: ConversationRef = { id: 'shared-conversation', origin: 'gateway' };
+const localConversation: ConversationRef = { id: 'shared-conversation', origin: 'local' };
+
+function makeDeps(conversation: ConversationRef = gatewayConversation) {
   return {
-    getIssue: vi.fn().mockResolvedValue({ id: 'issue_1', key: 'TASK-2', title: 'Fix the thing' }),
-    createConversation: vi.fn().mockResolvedValue({ id: 'conv-42' }),
+    getIssue: vi.fn().mockResolvedValue({
+      id: 'issue_1',
+      key: 'TASK-2',
+      title: 'Fix the thing',
+      project_id: 'project-1',
+    }),
+    createConversation: vi.fn().mockResolvedValue(conversation),
     linkSession: vi.fn().mockResolvedValue(undefined),
-    setIssueId: vi.fn().mockResolvedValue(undefined),
     patchIssue: vi.fn().mockResolvedValue(undefined),
-    renameConversation: vi.fn().mockResolvedValue(undefined),
     sendMessage: vi.fn().mockResolvedValue(undefined),
   };
 }
@@ -26,51 +33,89 @@ describe('buildTaskKickoffPrompt', () => {
 });
 
 describe('assignAgentToTask', () => {
-  it('links the session BEFORE kicking off the agent, and returns the conversation id', async () => {
+  it.each([gatewayConversation, localConversation])(
+    'preserves the full $origin ref through link, send, and return',
+    async (conversation) => {
+      const deps = makeDeps(conversation);
+      const order: string[] = [];
+      deps.linkSession.mockImplementation(async () => {
+        order.push('link');
+      });
+      deps.patchIssue.mockImplementation(async () => {
+        order.push('patch');
+      });
+      deps.sendMessage.mockImplementation(async () => {
+        order.push('send');
+      });
+
+      const result = await assignAgentToTask(
+        deps,
+        'issue_1',
+        'agent-reg-id',
+        'Developer',
+        'request-123',
+        'turn-456',
+      );
+
+      expect(result).toEqual(conversation);
+      expect(deps.createConversation).toHaveBeenCalledWith('agent-reg-id', 'request-123', {
+        title: 'TASK-2 — Fix the thing',
+        owningIssueId: 'issue_1',
+        projectId: 'project-1',
+      });
+      expect(deps.linkSession).toHaveBeenCalledWith('issue_1', conversation, 'Developer');
+      expect(deps.patchIssue).toHaveBeenCalledWith('issue_1', {
+        status: 'in_progress',
+        sub_status: 'agent_working',
+      });
+      expect(deps.sendMessage).toHaveBeenCalledWith(
+        conversation,
+        'turn-456',
+        buildTaskKickoffPrompt({ key: 'TASK-2', title: 'Fix the thing' }),
+      );
+      expect(order).toEqual(['link', 'patch', 'send']);
+    },
+  );
+
+  it('omits a null project from canonical create metadata', async () => {
     const deps = makeDeps();
-    const order: string[] = [];
-    deps.linkSession.mockImplementation(async () => {
-      order.push('link');
-    });
-    deps.patchIssue.mockImplementation(async () => {
-      order.push('patch');
-    });
-    deps.sendMessage.mockImplementation(async () => {
-      order.push('send');
+    deps.getIssue.mockResolvedValue({
+      id: 'issue_2',
+      key: 'TASK-3',
+      title: 'Standalone task',
+      project_id: null,
     });
 
-    const conversationId = await assignAgentToTask(deps, 'issue_1', 'agent-reg-id', 'Developer');
-
-    expect(conversationId).toBe('conv-42');
-    expect(deps.createConversation).toHaveBeenCalledWith('agent-reg-id');
-    // Link keyed on agent NAME (session_issue_link contract), not registry id.
-    expect(deps.linkSession).toHaveBeenCalledWith('issue_1', 'conv-42', 'Developer');
-    expect(deps.setIssueId).toHaveBeenCalledWith('conv-42', 'issue_1');
-    expect(deps.patchIssue).toHaveBeenCalledWith('issue_1', {
-      status: 'in_progress',
-      sub_status: 'agent_working',
-    });
-    expect(deps.renameConversation).toHaveBeenCalledWith('conv-42', 'TASK-2 — Fix the thing');
-    expect(deps.sendMessage).toHaveBeenCalledWith(
-      'conv-42',
-      buildTaskKickoffPrompt({ key: 'TASK-2', title: 'Fix the thing' }),
+    await assignAgentToTask(
+      deps,
+      'TASK-3',
+      'agent-reg-id',
+      'Developer',
+      'request-null-project',
+      'turn-null-project',
     );
-    // The chip must exist before the agent starts streaming.
-    expect(order).toEqual(['link', 'patch', 'send']);
+
+    expect(deps.createConversation).toHaveBeenCalledWith('agent-reg-id', 'request-null-project', {
+      title: 'TASK-3 — Standalone task',
+      owningIssueId: 'issue_2',
+    });
+    expect(deps.createConversation.mock.calls[0][2]).not.toHaveProperty('projectId');
   });
 
   it('resolves the issue by id-or-key and dispatches against the resolved id', async () => {
     const deps = makeDeps();
-    await assignAgentToTask(deps, 'TASK-2', 'agent-reg-id', 'Developer');
+    await assignAgentToTask(deps, 'TASK-2', 'agent-reg-id', 'Developer', 'request-key', 'turn-key');
     expect(deps.getIssue).toHaveBeenCalledWith('TASK-2');
-    expect(deps.linkSession).toHaveBeenCalledWith('issue_1', 'conv-42', 'Developer');
+    expect(deps.linkSession).toHaveBeenCalledWith('issue_1', gatewayConversation, 'Developer');
     expect(deps.patchIssue).toHaveBeenCalledWith('issue_1', expect.anything());
   });
 
   it('does not create a conversation when the issue lookup fails', async () => {
     const deps = makeDeps();
     deps.getIssue.mockRejectedValue(new Error('Issue not found'));
-    await expect(assignAgentToTask(deps, 'issue_x', 'a', 'A')).rejects.toThrow('Issue not found');
+    await expect(
+      assignAgentToTask(deps, 'issue_x', 'a', 'A', 'request-fail', 'turn-fail'),
+    ).rejects.toThrow('Issue not found');
     expect(deps.createConversation).not.toHaveBeenCalled();
   });
 });

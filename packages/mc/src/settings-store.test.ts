@@ -1,8 +1,14 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import type { GatewayIdentity, MobileHealth } from '@dash/mobile-contract';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { SettingsStore } from './settings-store.js';
+
+async function fixture<T>(name: string): Promise<T> {
+  const url = new URL(`../../../contracts/mobile/v1/fixtures/${name}`, import.meta.url);
+  return JSON.parse(await readFile(url, 'utf8')) as T;
+}
 
 describe('SettingsStore', () => {
   let dir: string;
@@ -70,5 +76,34 @@ describe('SettingsStore', () => {
     const settings = await store.get();
     expect(settings.companionWindowPos).toEqual({ x: 1, y: 2 });
     expect(settings.defaultModel).toBe('m');
+  });
+
+  it('round-trips verified gateway identity metadata without persisting secrets', async () => {
+    const identity = await fixture<GatewayIdentity>('identity.json');
+    const health = await fixture<MobileHealth>('health-capabilities.json');
+
+    await store.set({
+      gatewayConnection: {
+        mode: 'relay',
+        name: 'Production',
+        managementBaseUrl: 'https://gateway.example.com',
+        chatBaseUrl: 'wss://gateway.example.com',
+        gatewayId: identity.gatewayId,
+        apiVersion: health.apiVersion,
+        capabilities: health.capabilities,
+      },
+    });
+
+    await expect(store.get()).resolves.toMatchObject({
+      gatewayConnection: {
+        gatewayId: identity.gatewayId,
+        apiVersion: 1,
+        capabilities: ['conversation-sync-v1', 'chat-resume-v1'],
+      },
+    });
+    const serialized = await readFile(join(dir, 'settings.json'), 'utf8');
+    expect(serialized).not.toContain('managementToken');
+    expect(serialized).not.toContain('chatToken');
+    expect(serialized).not.toContain('relayCredential');
   });
 });

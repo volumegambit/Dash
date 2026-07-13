@@ -1,4 +1,6 @@
 import '@testing-library/jest-dom/vitest';
+import type { ConversationRef, McConversationListResult, McConversationView } from '@dash/mc';
+import type { ConversationMessage } from '@dash/mobile-contract';
 import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { mockApi } from '../../../../../vitest.setup.js';
@@ -67,18 +69,82 @@ function sessionLink(patch: Partial<SessionIssueLink> = {}): SessionIssueLink {
   };
 }
 
-const mcConversation = {
+const mcConversation: McConversationView = {
   id: 'conv-42',
   agentId: 'agent-reg',
+  agentName: 'Developer',
   title: 'TASK-1 — Doomed task',
+  revision: 1,
+  status: 'idle',
+  activeTurnId: null,
+  owningIssueId: 'issue_1',
+  projectId: null,
+  lastSeq: 0,
+  lastMessagePreview: null,
   createdAt: '2026-06-01T00:00:00Z',
   updatedAt: '2026-06-01T00:00:00Z',
+  origin: 'gateway',
+  offline: false,
+  readOnly: false,
 };
+
+function conversationResult(items: McConversationView[]): McConversationListResult {
+  return {
+    items,
+    nextCursor: null,
+    authority: 'gateway',
+    gatewayOnline: true,
+  };
+}
+
+function mockConversations(items: McConversationView[]): void {
+  mockApi.chatListConversations.mockResolvedValue(conversationResult(items));
+  mockApi.chatGetConversation.mockImplementation(
+    async (ref: ConversationRef) =>
+      items.find((item) => item.id === ref.id && item.origin === ref.origin) ?? null,
+  );
+}
+
+function assistantMessage(id: string, conversationId: string, text: string): ConversationMessage {
+  return {
+    id,
+    conversationId,
+    turnId: `turn-${id}`,
+    ordinal: 1,
+    role: 'assistant',
+    status: 'completed',
+    content: { type: 'assistant', events: [{ type: 'text_delta', text }] },
+    createdAt: '2026-06-01T00:00:01Z',
+    updatedAt: '2026-06-01T00:00:01Z',
+  };
+}
+
+function messagePage(items: ConversationMessage[]) {
+  return { items, nextCursor: null, throughSeq: 0 };
+}
 
 beforeEach(() => {
   useProjectsStore.setState({ issuesById: {}, projectsById: {}, inbox: [], detailById: {} });
   useAgentsStore.setState({ agents: [], loading: false, error: null });
-  useChatStore.setState({ conversations: [], messages: {}, sending: {}, streamingEvents: {} });
+  useChatStore.setState({
+    conversations: [],
+    nextConversationCursor: null,
+    conversationAuthority: 'gateway',
+    gatewayOnline: true,
+    selectedConversationRef: null,
+    openTabKeys: [],
+    messages: {},
+    messageCursor: {},
+    throughSeq: {},
+    streamingFrames: {},
+    lastSeq: {},
+    localTurnIds: {},
+    sending: {},
+    unreadConversations: new Set(),
+    conversationError: null,
+  });
+  mockConversations([]);
+  mockApi.chatGetMessages.mockResolvedValue(messagePage([]));
   mockNavigate.mockClear();
 });
 
@@ -158,9 +224,12 @@ describe('TaskDetail delete', () => {
       .mockResolvedValue(after); // refetch after assign
     mockApi.agentsList.mockResolvedValue([devAgent]);
     mockApi.chatListConversations
-      .mockResolvedValueOnce([]) // mount load — conversation doesn't exist yet
-      .mockResolvedValue([mcConversation]);
-    mockApi.chatGetMessages.mockResolvedValue([]);
+      .mockResolvedValueOnce(conversationResult([])) // mount load — conversation doesn't exist yet
+      .mockResolvedValue(conversationResult([mcConversation]));
+    mockApi.chatGetConversation.mockImplementation(async (ref: ConversationRef) =>
+      ref.origin === 'gateway' && ref.id === mcConversation.id ? mcConversation : null,
+    );
+    mockApi.chatGetMessages.mockResolvedValue(messagePage([]));
     render(<TaskDetail />);
 
     await userEvent.selectOptions(await screen.findByTestId('task-assign-agent'), 'agent-reg');
@@ -175,10 +244,10 @@ describe('TaskDetail delete', () => {
   it('marks a streaming session tab with an activity dot', async () => {
     const d = detail({ linked_sessions: [sessionLink()] });
     useProjectsStore.setState({ detailById: { issue_1: d } });
-    useChatStore.setState({ sending: { 'conv-42': true } });
+    useChatStore.setState({ sending: { 'gateway:conv-42': true } });
     mockApi.projectsGetIssue.mockResolvedValue(d);
-    mockApi.chatListConversations.mockResolvedValue([mcConversation]);
-    mockApi.chatGetMessages.mockResolvedValue([]);
+    mockConversations([mcConversation]);
+    mockApi.chatGetMessages.mockResolvedValue(messagePage([]));
     render(<TaskDetail />);
 
     expect(await screen.findByTestId('tab-dot-conv-42')).toBeInTheDocument();
@@ -204,8 +273,8 @@ describe('TaskDetail delete', () => {
     const d = detail({ linked_sessions: [sessionLink()] });
     useProjectsStore.setState({ detailById: { issue_1: d } });
     mockApi.projectsGetIssue.mockResolvedValue(d);
-    mockApi.chatListConversations.mockResolvedValue([mcConversation]);
-    mockApi.chatGetMessages.mockResolvedValue([]);
+    mockConversations([mcConversation]);
+    mockApi.chatGetMessages.mockResolvedValue(messagePage([]));
     render(<TaskDetail />);
 
     // Task tab active by default: description/timeline visible, no transcript.
@@ -215,19 +284,43 @@ describe('TaskDetail delete', () => {
     expect(screen.queryByPlaceholderText('Reply to the agent…')).not.toBeInTheDocument();
   });
 
+  it('opens a project-linked conversation that is outside the first page', async () => {
+    const linked = sessionLink({ session_id: 'conv-page-51' });
+    const task = detail({ linked_sessions: [linked] });
+    const deep = { ...mcConversation, id: linked.session_id };
+    useProjectsStore.setState({ detailById: { issue_1: task } });
+    mockApi.projectsGetIssue.mockResolvedValue(task);
+    mockApi.chatListConversations.mockResolvedValue({
+      items: [{ ...mcConversation, id: 'first-page' }],
+      nextCursor: 'page-2',
+      authority: 'gateway',
+      gatewayOnline: true,
+    });
+    mockApi.chatGetConversation.mockImplementation(async (ref: ConversationRef) =>
+      ref.origin === 'gateway' && ref.id === deep.id ? deep : null,
+    );
+    mockApi.chatGetMessages.mockResolvedValue(messagePage([]));
+
+    render(<TaskDetail />);
+
+    expect(await screen.findByTestId('tab-session-conv-page-51')).toBeInTheDocument();
+    await userEvent.click(screen.getByTestId('tab-session-conv-page-51'));
+    await userEvent.click(screen.getByTestId('session-open-chat'));
+    expect(mockNavigate).toHaveBeenCalledWith({
+      to: '/chat',
+      search: { agentId: '', conversationId: 'conv-page-51', origin: 'gateway' },
+    });
+    expect(mockApi.chatCreateConversation).not.toHaveBeenCalled();
+  });
+
   it('switching to a session tab shows the transcript; Task tab returns', async () => {
     const d = detail({ linked_sessions: [sessionLink()] });
     useProjectsStore.setState({ detailById: { issue_1: d } });
     mockApi.projectsGetIssue.mockResolvedValue(d);
-    mockApi.chatListConversations.mockResolvedValue([mcConversation]);
-    mockApi.chatGetMessages.mockResolvedValue([
-      {
-        id: 'm1',
-        role: 'assistant',
-        content: { type: 'assistant', events: [{ type: 'text_delta', text: 'I loaded TASK-1' }] },
-        timestamp: '2026-06-01T00:00:01Z',
-      },
-    ]);
+    mockConversations([mcConversation]);
+    mockApi.chatGetMessages.mockResolvedValue(
+      messagePage([assistantMessage('m1', 'conv-42', 'I loaded TASK-1')]),
+    );
     render(<TaskDetail />);
 
     await userEvent.click(await screen.findByTestId('tab-session-conv-42'));
@@ -247,18 +340,10 @@ describe('TaskDetail delete', () => {
     const d = detail({ linked_sessions: [older, sessionLink()] });
     useProjectsStore.setState({ detailById: { issue_1: d } });
     mockApi.projectsGetIssue.mockResolvedValue(d);
-    mockApi.chatListConversations.mockResolvedValue([
-      mcConversation,
-      { ...mcConversation, id: 'conv-41' },
-    ]);
-    mockApi.chatGetMessages.mockImplementation(async (id: string) => [
-      {
-        id: `m-${id}`,
-        role: 'assistant',
-        content: { type: 'assistant', events: [{ type: 'text_delta', text: `transcript ${id}` }] },
-        timestamp: '2026-06-01T00:00:01Z',
-      },
-    ]);
+    mockConversations([mcConversation, { ...mcConversation, id: 'conv-41' }]);
+    mockApi.chatGetMessages.mockImplementation(async (ref: ConversationRef) =>
+      messagePage([assistantMessage(`m-${ref.id}`, ref.id, `transcript ${ref.id}`)]),
+    );
     render(<TaskDetail />);
 
     const tabs = await screen.findAllByTestId(/^tab-session-/);
@@ -272,7 +357,7 @@ describe('TaskDetail delete', () => {
     await userEvent.click(screen.getByTestId('session-open-chat'));
     expect(mockNavigate).toHaveBeenCalledWith({
       to: '/chat',
-      search: { agentId: '', conversationId: 'conv-41' },
+      search: { agentId: '', conversationId: 'conv-41', origin: 'gateway' },
     });
   });
 
@@ -282,8 +367,8 @@ describe('TaskDetail delete', () => {
     });
     useProjectsStore.setState({ detailById: { issue_1: d } });
     mockApi.projectsGetIssue.mockResolvedValue(d);
-    mockApi.chatListConversations.mockResolvedValue([mcConversation]);
-    mockApi.chatGetMessages.mockResolvedValue([]);
+    mockConversations([mcConversation]);
+    mockApi.chatGetMessages.mockResolvedValue(messagePage([]));
     render(<TaskDetail />);
 
     // Non-MC row is a muted, inert span with the other-channel tooltip.
@@ -298,8 +383,8 @@ describe('TaskDetail delete', () => {
     const d = detail({ linked_sessions: [sessionLink()] });
     useProjectsStore.setState({ detailById: { issue_1: d } });
     mockApi.projectsGetIssue.mockResolvedValue(d);
-    mockApi.chatListConversations.mockResolvedValue([mcConversation]);
-    mockApi.chatGetMessages.mockResolvedValue([]);
+    mockConversations([mcConversation]);
+    mockApi.chatGetMessages.mockResolvedValue(messagePage([]));
     render(<TaskDetail />);
 
     await screen.findByTestId('tab-session-conv-42');
@@ -310,7 +395,7 @@ describe('TaskDetail delete', () => {
     const d = detail({ linked_sessions: [sessionLink({ session_id: 'telegram-1' })] });
     useProjectsStore.setState({ detailById: { issue_1: d } });
     mockApi.projectsGetIssue.mockResolvedValue(d);
-    mockApi.chatListConversations.mockResolvedValue([]);
+    mockConversations([]);
     render(<TaskDetail />);
 
     expect(await screen.findByText('No description')).toBeInTheDocument();
@@ -326,8 +411,8 @@ describe('TaskDetail delete', () => {
     const before = detail();
     useProjectsStore.setState({ detailById: { issue_1: before } });
     mockApi.projectsGetIssue.mockResolvedValue(before);
-    mockApi.chatListConversations.mockResolvedValue([]);
-    mockApi.chatGetMessages.mockResolvedValue([]);
+    mockConversations([]);
+    mockApi.chatGetMessages.mockResolvedValue(messagePage([]));
     render(<TaskDetail />);
 
     expect(await screen.findByText('No description')).toBeInTheDocument();
@@ -337,7 +422,7 @@ describe('TaskDetail delete', () => {
     // list now include it, and the broadcast is the only signal we get.
     const after = detail({ linked_sessions: [sessionLink()] });
     mockApi.projectsGetIssue.mockResolvedValue(after);
-    mockApi.chatListConversations.mockResolvedValue([mcConversation]);
+    mockConversations([mcConversation]);
     act(() => {
       useProjectsStore
         .getState()
@@ -415,8 +500,8 @@ describe('TaskDetail delete', () => {
     const d = detail({ linked_sessions: [sessionLink()] });
     useProjectsStore.setState({ detailById: { issue_1: d } });
     mockApi.projectsGetIssue.mockResolvedValue(d);
-    mockApi.chatListConversations.mockResolvedValue([mcConversation]);
-    mockApi.chatGetMessages.mockResolvedValue([]);
+    mockConversations([mcConversation]);
+    mockApi.chatGetMessages.mockResolvedValue(messagePage([]));
     render(<TaskDetail />);
 
     // The composer shows where the comment will go.
@@ -430,13 +515,14 @@ describe('TaskDetail delete', () => {
     );
     await waitFor(() =>
       expect(mockApi.chatSend).toHaveBeenCalledWith(
-        'conv-42',
+        { id: 'conv-42', origin: 'gateway' },
+        expect.any(String),
         expect.stringContaining('ship it'),
         undefined,
       ),
     );
     // The feed message carries the task key for agent context.
-    expect(mockApi.chatSend.mock.calls[0][1]).toContain('TASK-1');
+    expect(mockApi.chatSend.mock.calls[0][2]).toContain('TASK-1');
   });
 
   it('does not feed the session when none is linked', async () => {
@@ -458,10 +544,10 @@ describe('TaskDetail delete', () => {
   it('skips the session feed while the agent is mid-run and says so', async () => {
     const d = detail({ linked_sessions: [sessionLink()] });
     useProjectsStore.setState({ detailById: { issue_1: d } });
-    useChatStore.setState({ sending: { 'conv-42': true } });
+    useChatStore.setState({ sending: { 'gateway:conv-42': true } });
     mockApi.projectsGetIssue.mockResolvedValue(d);
-    mockApi.chatListConversations.mockResolvedValue([mcConversation]);
-    mockApi.chatGetMessages.mockResolvedValue([]);
+    mockConversations([{ ...mcConversation, status: 'running', activeTurnId: 'turn-1' }]);
+    mockApi.chatGetMessages.mockResolvedValue(messagePage([]));
     render(<TaskDetail />);
 
     expect(await screen.findByText(/Agent is mid-run/)).toBeInTheDocument();
@@ -479,7 +565,7 @@ describe('TaskDetail delete', () => {
     const d = detail({ linked_sessions: [sessionLink({ session_id: 'tg-session' })] });
     useProjectsStore.setState({ detailById: { issue_1: d } });
     mockApi.projectsGetIssue.mockResolvedValue(d);
-    mockApi.chatListConversations.mockResolvedValue([]);
+    mockConversations([]);
     render(<TaskDetail />);
 
     expect(await screen.findByText(/tg-session/)).toBeInTheDocument();

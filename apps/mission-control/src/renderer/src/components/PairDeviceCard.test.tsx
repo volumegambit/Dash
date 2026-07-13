@@ -22,6 +22,20 @@ describe('PairDeviceCard', () => {
       expect(qr).toHaveAttribute('src', expect.stringContaining('data:image/svg+xml'));
     });
 
+    it('uses platform-neutral mobile pairing copy', async () => {
+      render(<PairDeviceCard />);
+
+      expect(
+        await screen.findByText('Scan this code with the Dash mobile app for Android or iOS.'),
+      ).toBeInTheDocument();
+      expect(screen.queryByText(/Dash Android app/i)).not.toBeInTheDocument();
+      expect(
+        await screen.findByRole('img', {
+          name: 'Pairing QR code for the Dash mobile app',
+        }),
+      ).toBeInTheDocument();
+    });
+
     it('shows the gateway host + a local-network label but never the raw tokens', async () => {
       render(<PairDeviceCard />);
       expect(await screen.findByText(/192\.168\.1\.50/)).toBeInTheDocument();

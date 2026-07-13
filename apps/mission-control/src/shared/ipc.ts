@@ -12,16 +12,23 @@ import type {
   SwarmWorkerActionResult,
 } from '@dash/management';
 import type {
+  ConversationRef,
   CreateAgentRequest,
   GatewayAgent,
   GatewayChannel,
   GatewayConnectionSettings,
   GatewayModelsDebugResponse,
   GatewayModelsResponse,
-  McConversation,
-  McMessage,
+  McConversationListResult,
+  McConversationView,
   VpsGatewayDeployRequest,
 } from '@dash/mc';
+import type {
+  ConversationMessagePage,
+  MobileApiError,
+  MobileImage,
+  MobileWsServerFrame,
+} from '@dash/mobile-contract';
 import type {
   CreateIssueInput,
   CreateProjectInput,
@@ -112,6 +119,62 @@ export interface AppSettings {
 }
 
 export type GatewayStatus = 'starting' | 'healthy' | 'unhealthy';
+
+export type ChatAcceptedFrame = Extract<MobileWsServerFrame, { type: 'accepted' }>;
+
+export interface ConversationInvalidation {
+  type: 'changed' | 'deleted';
+  conversation: ConversationRef;
+}
+
+export type ChatIpcResult<T> =
+  | { ok: true; value: T }
+  | { ok: false; error: { message: string; apiError?: MobileApiError } };
+
+function structuredMobileError(error: unknown): MobileApiError | undefined {
+  if (!error || typeof error !== 'object') return undefined;
+  const candidate = 'apiError' in error ? error.apiError : error;
+  if (
+    !candidate ||
+    typeof candidate !== 'object' ||
+    !('code' in candidate) ||
+    typeof candidate.code !== 'string' ||
+    !('error' in candidate) ||
+    typeof candidate.error !== 'string'
+  ) {
+    return undefined;
+  }
+  return candidate as MobileApiError;
+}
+
+export async function captureChatIpcResult<T>(
+  operation: () => Promise<T>,
+): Promise<ChatIpcResult<T>> {
+  try {
+    return { ok: true, value: await operation() };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const apiError = structuredMobileError(error);
+    if (apiError) return { ok: false, error: { message, apiError } };
+    if (error instanceof Error && error.name === 'ConversationRepositoryOfflineError') {
+      return {
+        ok: false,
+        error: {
+          message,
+          apiError: { code: 'gateway_offline', error: message, retryable: true },
+        },
+      };
+    }
+    return { ok: false, error: { message } };
+  }
+}
+
+export function unwrapChatIpcResult<T>(result: ChatIpcResult<T>): T {
+  if (result.ok) return result.value;
+  const error = new Error(result.error.message);
+  if (result.error.apiError) Object.assign(error, { apiError: result.error.apiError });
+  throw error;
+}
 
 // Coarse per-session status the companion pet renders. Single source of
 // truth: the renderer's companion/types.ts re-exports this.
@@ -391,20 +454,33 @@ export interface MissionControlAPI {
   ): Promise<{ success: boolean; error?: string }>;
 
   // Chat
-  chatCreateConversation(agentId: string): Promise<McConversation>;
-  chatListConversations(): Promise<McConversation[]>;
-  chatGetMessages(conversationId: string): Promise<McMessage[]>;
+  chatCreateConversation(agentId: string, requestId: string): Promise<McConversationView>;
+  chatListConversations(cursor?: string): Promise<McConversationListResult>;
+  chatGetConversation(conversation: ConversationRef): Promise<McConversationView | null>;
+  chatGetMessages(conversation: ConversationRef, before?: string): Promise<ConversationMessagePage>;
   chatSend(
-    conversationId: string,
+    conversation: ConversationRef,
+    turnId: string,
     text: string,
-    images?: { mediaType: string; data: string }[],
-  ): Promise<void>;
-  chatCancel(conversationId: string): void;
-  chatRenameConversation(conversationId: string, title: string): Promise<void>;
-  chatDeleteConversation(conversationId: string): Promise<void>;
-  chatAnswerQuestion(conversationId: string, questionId: string, answer: string): void;
+    images?: MobileImage[],
+  ): Promise<ChatAcceptedFrame | undefined>;
+  chatCancel(conversation: ConversationRef, turnId: string): void;
+  chatRenameConversation(
+    conversation: ConversationRef,
+    revision: number,
+    title: string,
+  ): Promise<McConversationView>;
+  chatDeleteConversation(conversation: ConversationRef, revision: number): Promise<void>;
+  chatAnswerQuestion(
+    conversation: ConversationRef,
+    turnId: string,
+    questionId: string,
+    answer: string,
+  ): void;
 
   // Events (push from main -> renderer)
+  onChatFrame(callback: (frame: MobileWsServerFrame) => void): () => void;
+  onChatConversationInvalidated(callback: (event: ConversationInvalidation) => void): () => void;
   onAgentEvent(callback: (conversationId: string, event: McAgentEvent) => void): () => void;
   onChatDone(callback: (conversationId: string) => void): () => void;
   onChatError(callback: (conversationId: string, error: string) => void): () => void;

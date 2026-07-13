@@ -58,9 +58,21 @@ Dash is flexible about where each piece runs.
     The main entry point. A single process that hosts agents in memory, runs both the channel server and management API, and owns all messaging platform connections. Creates agents with their assigned models and tools, and routes messages from external platforms (Telegram, WhatsApp) to agents. Agents, channels, and credentials are created at runtime through the management API rather than a config file. Supports CLI flags (`--token`, `--data-dir`, …) for standalone use — see [Configuration](/configuration#running-the-gateway-standalone).
   </Accordion>
   <Accordion title="Mission Control" icon="grid-2">
-    Desktop app (Electron) for managing the gateway and agents. Spawns the gateway on first launch, stores the management token in the OS keychain, and communicates with the gateway over HTTP (management) and WebSocket (chat). Includes a tabbed chat interface, agent deployment wizard, and connector management. Provider API keys are stored in an AES-256-GCM encrypted file (`credentials.enc`).
+    Desktop app (Electron) for managing the gateway and agents. Spawns the gateway on first launch, stores the management token in the OS keychain, and communicates with the gateway over HTTP (management) and WebSocket (chat). Includes a tabbed chat interface, shared conversation history, an agent deployment wizard, and connector management. Provider API keys are stored in an AES-256-GCM encrypted file (`credentials.enc`).
   </Accordion>
 </AccordionGroup>
+
+## Conversation history across devices
+
+For gateways that advertise `conversation-sync-v1`, the gateway owns conversation metadata,
+messages, revisions, active turns, and replay sequences. Mission Control keeps a
+gateway-identity-scoped read cache so history remains visible offline, but it never treats that
+cache as writable truth. A disconnected resumable chat socket detaches only that viewer; the
+gateway turn continues until it completes or a client sends an explicit cancel.
+
+Mission Control preserves its older local JSON/JSONL conversations separately. With a capable
+gateway they appear as read-only **On this Mac** history. With a gateway that explicitly lacks
+the capability, Mission Control keeps the original local-authoritative chat behavior.
 
 ## Gateway APIs
 
@@ -141,6 +153,10 @@ Here's what happens when a capable client sends a resumable message to one of yo
   </Step>
 </Steps>
 
+Mission Control and the Dash phone app see the same active turn when they use the same capable
+gateway. Either client can watch replayed output, answer a pending question, or explicitly cancel
+the turn. Closing one client does not cancel shared work.
+
 ## WebSocket protocol
 
 **Client → Server:**
@@ -169,19 +185,23 @@ starting a different turn while the lease is held returns `conversation_busy` an
 Messages without `resumable: true` retain the legacy connection-owned behavior: their events are
 not part of the canonical mobile turn contract, and closing their socket cancels their work.
 
-## Session persistence
+See the [API reference](/api-reference) for complete payload fields and structured error shapes.
 
-Dash keeps two complementary forms of conversation state.
+## Conversation and provider session persistence
 
-Provider session history is stored as append-only JSONL files under a directory keyed by agent
-and conversation:
+The canonical conversation record is what Mission Control and paired phone apps render. It owns
+the shared title, agent-name snapshot, messages, status, revision, and active turn.
+
+Separately, the agent runtime stores provider session state as append-only JSONL files (one JSON
+object per line), under a directory keyed by agent and conversation:
 
 ```
 ~/.dash/gateway/sessions/{agent-name}/{conversationId}/
 ```
 
 The agent replays these entries to reconstruct the model and tool context it needs for the next
-provider call.
+provider call. These provider session files are distinct from the canonical rendered conversation
+history shared by Mission Control and mobile clients.
 
 Cross-device conversation state is canonical in the gateway's SQLite database:
 
