@@ -33,6 +33,7 @@ final class AppModel {
   @ObservationIgnored private let dependencies: AppDependencies
   @ObservationIgnored private var syncEngine: (any AppSyncing)?
   @ObservationIgnored private var snapshotTask: Task<Void, Never>?
+  @ObservationIgnored private var chatFeatures: [String: ChatFeature] = [:]
   @ObservationIgnored private var transitionEpoch: UInt64 = 0
   @ObservationIgnored private var activeEpoch: UInt64 = 0
   @ObservationIgnored private var activeEngineBootstrapped = false
@@ -52,6 +53,7 @@ final class AppModel {
   private struct DetachedActivation {
     let engine: (any AppSyncing)?
     let conversationFeature: ConversationListFeature?
+    let chatFeatures: [ChatFeature]
   }
 
   init(dependencies: AppDependencies) {
@@ -75,6 +77,10 @@ final class AppModel {
         retiredFeature !== conversationListFeature
       {
         await retiredFeature.shutdown()
+        guard activeEpoch == publishedEpoch, sameEngine(syncEngine, prepared.engine) else { return }
+      }
+      for chatFeature in retired.chatFeatures {
+        await chatFeature.shutdown()
         guard activeEpoch == publishedEpoch, sameEngine(syncEngine, prepared.engine) else { return }
       }
       if let retiredEngine = retired.engine, sameEngine(retiredEngine, prepared.engine) == false {
@@ -106,6 +112,10 @@ final class AppModel {
         await retiredFeature.shutdown()
         guard activeEpoch == publishedEpoch, sameEngine(syncEngine, prepared.engine) else { return }
       }
+      for chatFeature in retired.chatFeatures {
+        await chatFeature.shutdown()
+        guard activeEpoch == publishedEpoch, sameEngine(syncEngine, prepared.engine) else { return }
+      }
       if let retiredEngine = retired.engine, sameEngine(retiredEngine, prepared.engine) == false {
         await retiredEngine.shutdown()
         guard activeEpoch == publishedEpoch, sameEngine(syncEngine, prepared.engine) else { return }
@@ -121,6 +131,9 @@ final class AppModel {
     self.snapshot = snapshot
     conversationListFeature?.consume(snapshot)
     connectionState = snapshot.connection
+    for feature in chatFeatures.values {
+      feature.setConnection(snapshot.connection)
+    }
     switch snapshot.connection {
     case .connecting, .online:
       banner = nil
@@ -155,6 +168,38 @@ final class AppModel {
     }
   }
 
+  func makeChatFeature(_ conversation: ConversationSummaryDTO) async -> ChatFeature? {
+    guard let profile = selectedProfile else { return nil }
+    let scope = chatScope(gatewayID: profile.gatewayID, conversationID: conversation.id)
+    if let feature = chatFeatures[scope] {
+      return feature
+    }
+
+    let epoch = activeEpoch
+    guard let feature = await dependencies.makeChatFeature(profile, conversation) else {
+      return nil
+    }
+    guard activeEpoch == epoch, selectedProfile == profile else {
+      await feature.shutdown()
+      return nil
+    }
+    if let existing = chatFeatures[scope] {
+      await feature.shutdown()
+      return existing
+    }
+    feature.setConnection(connectionState)
+    feature.setGatewayErrorHandler { [weak self, weak feature] error in
+      guard
+        let self,
+        let feature,
+        self.chatFeatures[scope] === feature
+      else { return }
+      await self.handleConversationGatewayError(error)
+    }
+    chatFeatures[scope] = feature
+    return feature
+  }
+
   func sceneDidEnterBackground() async {
     isBackgrounded = true
     activeEngineSceneRevision &+= 1
@@ -182,6 +227,10 @@ final class AppModel {
     markCachedConnection(.connecting)
     if let feature = retired.conversationFeature {
       await feature.shutdown()
+      guard isCurrent(epoch) else { return }
+    }
+    for chatFeature in retired.chatFeatures {
+      await chatFeature.shutdown()
       guard isCurrent(epoch) else { return }
     }
     if let engine = retired.engine {
@@ -302,8 +351,10 @@ final class AppModel {
   ) -> DetachedActivation {
     let retired = DetachedActivation(
       engine: syncEngine,
-      conversationFeature: conversationListFeature
+      conversationFeature: conversationListFeature,
+      chatFeatures: Array(chatFeatures.values)
     )
+    chatFeatures.removeAll()
     let previousGatewayID = selectedProfile?.gatewayID
     snapshotTask?.cancel()
     activeEpoch &+= 1
@@ -351,8 +402,10 @@ final class AppModel {
   private func detachActiveEngine(clearConversationFeature: Bool = false) -> DetachedActivation {
     let retired = DetachedActivation(
       engine: syncEngine,
-      conversationFeature: conversationListFeature
+      conversationFeature: conversationListFeature,
+      chatFeatures: Array(chatFeatures.values)
     )
+    chatFeatures.removeAll()
     retired.conversationFeature?.prepareForShutdown()
     snapshotTask?.cancel()
     snapshotTask = nil
@@ -449,6 +502,10 @@ final class AppModel {
   private func sameEngine(_ lhs: (any AppSyncing)?, _ rhs: any AppSyncing) -> Bool {
     guard let lhs else { return false }
     return ObjectIdentifier(lhs as AnyObject) == ObjectIdentifier(rhs as AnyObject)
+  }
+
+  private func chatScope(gatewayID: String, conversationID: String) -> String {
+    "\(gatewayID)\u{1f}\(conversationID)"
   }
 
   private func resetToConnect() {
