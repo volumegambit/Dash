@@ -244,13 +244,13 @@ Only use resumable frames after health advertises `chat-resume-v1`. A capable se
 `resumable: true` and uses one stable turn ID:
 
 ```json
-{"type":"message","id":"turn-01","agentId":"agent-01","channelId":"direct","conversationId":"conversation-01","text":"Hello","resumable":true}
+{"type":"message","id":"00000000-0000-4000-8000-000000000002","agentId":"agent-01","channelId":"direct","conversationId":"00000000-0000-4000-8000-000000000001","text":"Hello","resumable":true}
 ```
 
 The first durable server frame accepts the message and assigns its message IDs and sequence:
 
 ```json
-{"type":"accepted","id":"turn-01","conversationId":"conversation-01","userMessageId":"message-user-01","assistantMessageId":"message-assistant-01","revision":2,"seq":1}
+{"type":"accepted","id":"00000000-0000-4000-8000-000000000002","conversationId":"00000000-0000-4000-8000-000000000001","userMessageId":"00000000-0000-4000-8000-000000000003","assistantMessageId":"00000000-0000-4000-8000-000000000004","revision":2,"seq":1}
 ```
 
 **Client frames**
@@ -269,10 +269,11 @@ The first durable server frame accepts the message and assigns its message IDs a
 | `accepted` | User and assistant messages were created; includes `revision` and durable `seq` |
 | `event` | One agent event such as a text delta, tool event, question, or response |
 | `done` | Durable terminal with `outcome: completed` or `outcome: cancelled` |
-| `error` | Structured failure with `code`, `retryable`, and optional `activeTurnId` |
+| `error` | Durable terminal failure when `seq` is present; otherwise an unsequenced structured rejection |
 
-Each capable server frame is persisted before it is broadcast. Sequences are conversation-global
-and increase across turns. After a connection gap, call
+Every server frame with a durable `seq` is persisted before it is broadcast. Admission errors sent
+before a turn is accepted have no sequence and are not journaled or replayable. Durable sequences
+are conversation-global and increase across turns. After a connection gap, call
 `GET /agents/:agentId/conversations/:conversationId/events?sinceSeq=<last-seq>` on the versioned
 management API, apply entries in ascending sequence order, then send `resume` with the **same** turn
 ID and last durable sequence. Do not resend the message with a new turn ID.

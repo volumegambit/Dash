@@ -72,6 +72,17 @@ function expectFixtureKeys(
   }
 }
 
+function exampleFrame(markdown: string, type: string): JsonObject {
+  const matches = markdown
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.startsWith('{') && line.endsWith('}'))
+    .map((line) => firstObject(JSON.parse(line) as unknown))
+    .filter((value) => value.type === type);
+  expect(matches).toHaveLength(1);
+  return matches[0];
+}
+
 function mobileRequest(
   harness: RunningMobileTestHarness,
   path: string,
@@ -208,6 +219,21 @@ describe('mobile harness emitted contract output', () => {
     ]) {
       expect(docs).toContain(term);
     }
+  });
+
+  it('keeps documented WebSocket examples valid against the frozen contract', async () => {
+    const apiReference = await readFile(join(repoRoot, 'docs/api-reference.mdx'), 'utf8');
+    const troubleshooting = await readFile(join(repoRoot, 'docs/troubleshooting.mdx'), 'utf8');
+    const message = exampleFrame(apiReference, 'message');
+    const accepted = exampleFrame(apiReference, 'accepted');
+    const resume = exampleFrame(troubleshooting, 'resume');
+
+    expectSchema('chat-ws', 'ChatSend', message);
+    expectSchema('chat-ws', 'MobileWsClientFrame', message);
+    expectSchema('chat-ws', 'ChatAccepted', accepted);
+    expectSchema('chat-ws', 'MobileWsServerFrame', accepted);
+    expectSchema('chat-ws', 'ChatResume', resume);
+    expectSchema('chat-ws', 'MobileWsClientFrame', resume);
   });
 
   it('validates real health, identity, agent, action, conversation, and error DTOs', async () => {

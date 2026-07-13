@@ -60,7 +60,7 @@ Something not working? Here are the most common issues and how to fix them.
     send this frame with the original turn ID:
 
     ```json
-    {"type":"resume","id":"turn-01","agentId":"agent-01","conversationId":"conversation-01","sinceSeq":12}
+    {"type":"resume","id":"00000000-0000-4000-8000-000000000002","agentId":"agent-01","conversationId":"00000000-0000-4000-8000-000000000001","sinceSeq":12}
     ```
 
     Resume is idempotent. Do not resend the original `message` with a new turn ID.

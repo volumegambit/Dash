@@ -190,9 +190,10 @@ Cross-device conversation state is canonical in the gateway's SQLite database:
 ```
 
 That database owns conversation summaries and revisions, user and assistant messages, deletion
-tombstones, the active-turn lease, and the ordered replay journal. Phone and desktop clients are
-caches of this state; they reconcile from the Management API rather than treating local chat
-history as authoritative.
+tombstones, the active-turn lease, and the ordered replay journal. Dash mobile and capability-aware
+Mission Control clients cache this state and reconcile from the Management API rather than treating
+local chat history as authoritative. When the gateway does not advertise the required capabilities,
+Mission Control falls back to legacy connection-owned chat.
 
 ### Canonical turn durability
 
