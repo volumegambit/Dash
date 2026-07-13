@@ -62,6 +62,21 @@ function mergeConversations(
   return sortConversations([...byKey.values()]);
 }
 
+function reconcileFirstPage(
+  current: McConversationView[],
+  incoming: McConversationView[],
+): McConversationView[] {
+  const currentByKey = new Map(
+    current.map((conversation) => [conversationKey(refFor(conversation)), conversation]),
+  );
+  return sortConversations(
+    incoming.map((conversation) => {
+      const existing = currentByKey.get(conversationKey(refFor(conversation)));
+      return existing && existing.revision > conversation.revision ? existing : conversation;
+    }),
+  );
+}
+
 function withoutKey<T>(
   record: Record<ConversationKey, T>,
   key: ConversationKey,
@@ -137,6 +152,8 @@ function selectedAfterRemoval(
 }
 
 export const useChatStore = create<ChatState>((set, get) => {
+  let firstPageRequest = 0;
+
   const upsertConversation = (conversation: McConversationView): void => {
     set((state) => ({
       conversations: mergeConversations(state.conversations, [conversation]),
@@ -290,16 +307,19 @@ export const useChatStore = create<ChatState>((set, get) => {
     conversationError: null,
 
     async loadConversations() {
+      const request = ++firstPageRequest;
       try {
         const result = await window.api.chatListConversations();
-        set({
-          conversations: sortConversations(result.items),
+        if (request !== firstPageRequest) return;
+        set((state) => ({
+          conversations: reconcileFirstPage(state.conversations, result.items),
           nextConversationCursor: result.nextCursor,
           conversationAuthority: result.authority,
           gatewayOnline: result.gatewayOnline,
           conversationError: null,
-        });
+        }));
       } catch (error) {
+        if (request !== firstPageRequest) return;
         handleApiError(error);
         throw error;
       }
@@ -308,8 +328,10 @@ export const useChatStore = create<ChatState>((set, get) => {
     async loadMoreConversations() {
       const cursor = get().nextConversationCursor;
       if (!cursor) return;
+      const firstPageAtStart = firstPageRequest;
       try {
         const result = await window.api.chatListConversations(cursor);
+        if (firstPageAtStart !== firstPageRequest) return;
         set((state) => ({
           conversations: mergeConversations(state.conversations, result.items),
           nextConversationCursor: result.nextCursor,
@@ -317,6 +339,7 @@ export const useChatStore = create<ChatState>((set, get) => {
           gatewayOnline: result.gatewayOnline,
         }));
       } catch (error) {
+        if (firstPageAtStart !== firstPageRequest) return;
         handleApiError(error);
         throw error;
       }
@@ -509,8 +532,9 @@ export const useChatStore = create<ChatState>((set, get) => {
     cancelMessage(ref) {
       const key = conversationKey(ref);
       const conversation = exactConversation(ref);
-      const turnId = conversation?.activeTurnId ?? get().localTurnIds[key];
-      if (!turnId) return;
+      const turnId = get().localTurnIds[key];
+      if (!conversation || !turnId) return;
+      if (conversation.activeTurnId && conversation.activeTurnId !== turnId) return;
       window.api.chatCancel(ref, turnId);
       set((state) => ({ sending: { ...state.sending, [key]: false } }));
     },

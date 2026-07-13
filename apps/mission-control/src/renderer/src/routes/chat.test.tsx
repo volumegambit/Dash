@@ -394,6 +394,7 @@ describe('canonical conversation UI', () => {
     expect(screen.getByPlaceholderText('Conversation active on another device')).toBeDisabled();
     expect(screen.getByTestId('status-bar-rename')).toBeDisabled();
     expect(screen.getByTestId('status-bar-delete')).toBeDisabled();
+    expect(screen.queryByLabelText('Stop active turn')).toBeNull();
     await userEvent.click(screen.getByText('Yes'));
     expect(mockApi.chatAnswerQuestion).toHaveBeenCalledWith(
       ref,

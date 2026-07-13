@@ -107,6 +107,50 @@ describe('canonical chat store', () => {
     });
   });
 
+  it('drops an older overlapping list response while reconciling the authoritative first page', async () => {
+    const stale = deferred<{
+      items: McConversationView[];
+      nextCursor: string | null;
+      authority: 'gateway';
+      gatewayOnline: boolean;
+    }>();
+    const fresh = deferred<{
+      items: McConversationView[];
+      nextCursor: string | null;
+      authority: 'gateway';
+      gatewayOnline: boolean;
+    }>();
+    const latest = { ...gatewayConversation, revision: 6, title: 'Event revision' };
+    const removed = { ...gatewayConversation, id: 'removed-from-first-page' };
+    useChatStore.setState({ conversations: [latest, removed] });
+    mockApi.chatListConversations
+      .mockReturnValueOnce(stale.promise)
+      .mockReturnValueOnce(fresh.promise);
+
+    const staleLoad = useChatStore.getState().loadConversations();
+    const freshLoad = useChatStore.getState().loadConversations();
+    fresh.resolve({
+      items: [{ ...gatewayConversation, revision: 5, title: 'Fresh page title' }],
+      nextCursor: null,
+      authority: 'gateway',
+      gatewayOnline: true,
+    });
+    await freshLoad;
+    stale.resolve({
+      items: [{ ...gatewayConversation, revision: 3, title: 'Delayed stale title' }, removed],
+      nextCursor: 'stale-page',
+      authority: 'gateway',
+      gatewayOnline: false,
+    });
+    await staleLoad;
+
+    expect(useChatStore.getState()).toMatchObject({
+      conversations: [{ id: gatewayConversation.id, revision: 6, title: 'Event revision' }],
+      nextConversationCursor: null,
+      gatewayOnline: true,
+    });
+  });
+
   it('loads more without duplicating On-this-Mac history', async () => {
     useChatStore.setState({
       conversations: [gatewayConversation, localConversation],
@@ -423,6 +467,20 @@ describe('canonical chat store', () => {
 
     expect(mockApi.chatRenameConversation).not.toHaveBeenCalled();
     expect(mockApi.chatDeleteConversation).not.toHaveBeenCalled();
+  });
+
+  it('does not cancel a turn owned by another device', () => {
+    const ref = { id: gatewayConversation.id, origin: 'gateway' as const };
+    useChatStore.setState({
+      conversations: [{ ...gatewayConversation, status: 'running', activeTurnId: 'remote-turn' }],
+      localTurnIds: {},
+      sending: {},
+      gatewayOnline: true,
+    });
+
+    useChatStore.getState().cancelMessage(ref);
+
+    expect(mockApi.chatCancel).not.toHaveBeenCalled();
   });
 
   it('contains rejected invalidation listener work instead of detaching an unhandled promise', async () => {

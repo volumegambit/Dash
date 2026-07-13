@@ -123,7 +123,7 @@ describe('SessionPanel', () => {
     expect(screen.getByPlaceholderText('Reconnect to send a message')).toBeDisabled();
   });
 
-  it('answers a remote question while send stays locked and cancel remains available', async () => {
+  it('answers a remote question while send and cancel stay locked', async () => {
     reset({ status: 'running', activeTurnId: 'ios-turn' });
     const frame: MobileWsServerFrame = {
       type: 'event',
@@ -138,6 +138,7 @@ describe('SessionPanel', () => {
 
     expect(screen.getByText('Active on another device')).toBeInTheDocument();
     expect(screen.getByPlaceholderText('Conversation active on another device')).toBeDisabled();
+    expect(screen.queryByLabelText('Stop active turn')).toBeNull();
     await userEvent.click(screen.getByText('Yes'));
     expect(mockApi.chatAnswerQuestion).toHaveBeenCalledWith(
       ref,
@@ -145,8 +146,7 @@ describe('SessionPanel', () => {
       'remote-question',
       'Yes',
     );
-    await userEvent.click(screen.getByLabelText('Stop active turn'));
-    expect(mockApi.chatCancel).toHaveBeenCalledWith(ref, 'ios-turn');
+    expect(mockApi.chatCancel).not.toHaveBeenCalled();
   });
 
   it('answers a question with the canonical active turn ID', async () => {
