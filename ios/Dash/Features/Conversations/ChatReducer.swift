@@ -190,8 +190,10 @@ enum ChatReducer {
       return reduceFrame(frame, state: &state)
 
     case let .replayLoaded(entries):
+      let scopedEntries = entries.filter { $0.conversationId == state.conversation.id }
+      if !entries.isEmpty && scopedEntries.isEmpty { return [] }
       var effects: [ChatEffect] = []
-      for entry in entries.sorted(by: { $0.seq < $1.seq }) {
+      for entry in scopedEntries.sorted(by: { $0.seq < $1.seq }) {
         effects += reduceFrame(replayFrame(entry), state: &state)
         effects += consumePendingFrame(state: &state)
       }
@@ -237,6 +239,7 @@ enum ChatReducer {
     _ frame: MobileWSServerFrame,
     state: inout ChatState
   ) -> [ChatEffect] {
+    guard frameBelongsToConversation(frame, state: state) else { return [] }
     guard let seq = sequence(of: frame) else {
       return apply(frame, state: &state)
     }
@@ -331,6 +334,10 @@ enum ChatReducer {
 
     case let .error(id, _, _, error, code, _, activeTurnID):
       if code == "conversation_busy", let activeTurnID {
+        state.messages.removeAll { message in
+          message.turnID == id && message.role == .user && message.ordinal == nil
+            && message.status == .streaming
+        }
         state.activeTurnID = activeTurnID
         state.composerBlock = .remoteActiveTurn(activeTurnID)
         return []
@@ -738,6 +745,35 @@ enum ChatReducer {
     case let .event(_, _, seq, _): seq
     case let .done(_, _, seq, _): seq
     case let .error(_, _, seq, _, _, _, _): seq
+    }
+  }
+
+  private static func conversationID(of frame: MobileWSServerFrame) -> String? {
+    switch frame {
+    case let .accepted(_, conversationID, _, _, _, _): conversationID
+    case let .event(_, conversationID, _, _): conversationID
+    case let .done(_, conversationID, _, _): conversationID
+    case let .error(_, conversationID, _, _, _, _, _): conversationID
+    }
+  }
+
+  private static func frameBelongsToConversation(
+    _ frame: MobileWSServerFrame,
+    state: ChatState
+  ) -> Bool {
+    if let conversationID = conversationID(of: frame) {
+      return conversationID == state.conversation.id
+    }
+    let turnID = turnID(of: frame)
+    return state.activeTurnID == turnID || state.messages.contains { $0.turnID == turnID }
+  }
+
+  private static func turnID(of frame: MobileWSServerFrame) -> String {
+    switch frame {
+    case let .accepted(id, _, _, _, _, _): id
+    case let .event(id, _, _, _): id
+    case let .done(id, _, _, _): id
+    case let .error(id, _, _, _, _, _, _): id
     }
   }
 

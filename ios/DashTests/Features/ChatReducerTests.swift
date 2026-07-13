@@ -129,6 +129,114 @@ struct ChatReducerTests {
     #expect(effects.isEmpty)
   }
 
+  @Test("live frames for another conversation are ignored before sequencing")
+  func ignoresLiveFrameForAnotherConversation() {
+    var state = acceptedState(cursor: 1)
+    let before = state
+
+    let effects = ChatReducer.reduce(
+      state: &state,
+      action: .frame(
+        .event(
+          id: "other-turn",
+          conversationId: "conv-2",
+          seq: 2,
+          event: .textDelta(text: "wrong conversation")
+        )
+      )
+    )
+
+    #expect(state == before)
+    #expect(effects.isEmpty)
+  }
+
+  @Test("replay entries for another conversation are ignored before sequencing")
+  func ignoresReplayEntryForAnotherConversation() {
+    var state = acceptedState(cursor: 1)
+    let before = state
+    let replay = ReplayEntryDTO(
+      seq: 2,
+      msgId: "other-turn",
+      agentId: "agent-1",
+      conversationId: "conv-2",
+      timestamp: Date(timeIntervalSince1970: 2),
+      payload: .event(event: .textDelta(text: "wrong conversation"))
+    )
+
+    let effects = ChatReducer.reduce(state: &state, action: .replayLoaded([replay]))
+
+    #expect(state == before)
+    #expect(effects.isEmpty)
+  }
+
+  @Test("foreign-only replay cannot consume a pending current frame")
+  func foreignReplayDoesNotConsumePendingFrame() {
+    var state = acceptedState(cursor: 1)
+    state.pendingGapFrame = eventFrame(seq: 2, event: .textDelta(text: "pending"))
+    let before = state
+    let replay = ReplayEntryDTO(
+      seq: 2,
+      msgId: "other-turn",
+      agentId: "agent-1",
+      conversationId: "conv-2",
+      timestamp: Date(timeIntervalSince1970: 2),
+      payload: .event(event: .textDelta(text: "wrong conversation"))
+    )
+
+    let effects = ChatReducer.reduce(state: &state, action: .replayLoaded([replay]))
+
+    #expect(state == before)
+    #expect(effects.isEmpty)
+  }
+
+  @Test("empty replay consumes a pending frame made contiguous by a live arrival")
+  func emptyReplayConsumesNowContiguousPendingFrame() {
+    var state = chatState()
+    _ = ChatReducer.reduce(
+      state: &state,
+      action: .frame(eventFrame(seq: 2, event: .textDelta(text: "B")))
+    )
+    let firstEffects = ChatReducer.reduce(
+      state: &state,
+      action: .frame(eventFrame(seq: 1, event: .textDelta(text: "A")))
+    )
+
+    #expect(firstEffects == [.persistCursor(1)])
+    #expect(state.lastAppliedSeq == 1)
+    #expect(state.pendingGapFrame == eventFrame(seq: 2, event: .textDelta(text: "B")))
+
+    let replayEffects = ChatReducer.reduce(state: &state, action: .replayLoaded([]))
+
+    #expect(state.messages.last?.assistant?.text == "AB")
+    #expect(state.lastAppliedSeq == 2)
+    #expect(state.pendingGapFrame == nil)
+    #expect(replayEffects == [.persistCursor(2)])
+  }
+
+  @Test("unscoped admission errors from unknown turns are ignored")
+  func ignoresUnscopedAdmissionErrorForUnknownTurn() {
+    var state = acceptedState(cursor: 1)
+    let before = state
+
+    let effects = ChatReducer.reduce(
+      state: &state,
+      action: .frame(
+        .error(
+          id: "other-local-turn",
+          conversationId: nil,
+          seq: nil,
+          error: "Conversation is busy",
+          code: "conversation_busy",
+          retryable: false,
+          activeTurnId: "other-remote-turn"
+        )
+      )
+    )
+
+    #expect(state == before)
+    #expect(effects.isEmpty)
+  }
+
   @Test("a sequence gap requests replay without applying the pending frame")
   func gapRequestsReplay() {
     var state = acceptedState(cursor: 1)
@@ -641,9 +749,43 @@ struct ChatReducerTests {
     #expect(state.lastAppliedSeq == 0)
   }
 
-  @Test("conversation_busy identifies a remote active turn without advancing sequence")
+  @Test("conversation_busy removes the rejected optimistic send and adopts the remote turn")
   func busyAdmissionError() {
     var state = chatState()
+    _ = ChatReducer.reduce(
+      state: &state,
+      action: .cachedMessagesLoaded(
+        [
+          message(
+            id: "existing-user",
+            turnID: "existing-turn",
+            ordinal: 1,
+            role: .user,
+            status: .completed,
+            content: .user(text: "Existing", images: nil)
+          ),
+          message(
+            id: "existing-assistant",
+            turnID: "existing-turn",
+            ordinal: 2,
+            role: .assistant,
+            status: .completed,
+            content: .assistant(events: [.textDelta(text: "Canonical")])
+          ),
+        ],
+        cursor: 0
+      )
+    )
+    _ = ChatReducer.reduce(
+      state: &state,
+      action: .sendStarted(
+        turnID: "local-turn",
+        localUserID: "local-user",
+        text: "Rejected message",
+        images: []
+      )
+    )
+    let summaryBeforeAdmission = state.conversation
     let frame = MobileWSServerFrame.error(
       id: "local-turn",
       conversationId: nil,
@@ -658,6 +800,8 @@ struct ChatReducerTests {
 
     #expect(state.activeTurnID == "remote-turn")
     #expect(state.composerBlock == .remoteActiveTurn("remote-turn"))
+    #expect(state.messages.map(\.id) == ["existing-user", "existing-assistant"])
+    #expect(state.conversation == summaryBeforeAdmission)
     #expect(state.lastAppliedSeq == 0)
     #expect(effects.isEmpty)
   }
