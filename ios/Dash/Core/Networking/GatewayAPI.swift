@@ -7,6 +7,10 @@ actor GatewayAPI {
     self.transport = transport
   }
 
+  func shutdown() async {
+    await transport.shutdown()
+  }
+
   func health() async throws -> HealthResponse {
     try await transport.send(
       GatewayRequest(method: .get, path: mobilePath("health"))

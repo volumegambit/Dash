@@ -390,6 +390,118 @@ struct AppModelTests {
     #expect(await forget.calls == [.deleteSecrets, .clearData])
   }
 
+  @Test("Keychain forget failure keeps the cache-readable feature in repair state")
+  func keychainFailureKeepsConversationFeature() async {
+    let engine = FakeAppSyncEngine()
+    let profile = connectionProfile()
+    let service = AppModelConversationService()
+    let feature = ConversationListFeature(gatewayID: profile.gatewayID, service: service)
+    let model = AppModel(
+      dependencies: AppDependencies(
+        clock: TestAppClock(now: Date(timeIntervalSince1970: 100)),
+        loadProfile: { profile },
+        makeSyncEngine: { _ in engine },
+        deleteProfileSecrets: { _ in throw TestAppDependencyError.unavailable },
+        makeConversationListFeature: { _ in feature }
+      )
+    )
+    await model.start()
+    feature.consume(
+      SyncSnapshot(
+        connection: .online,
+        conversations: [CachedConversation(gatewayID: profile.gatewayID, summary: conversation())],
+        agents: [],
+        lastSuccessfulSyncAt: Date(timeIntervalSince1970: 100)
+      )
+    )
+
+    do {
+      try await model.disconnectAndForget()
+      Issue.record("Expected Keychain deletion to fail")
+    } catch {
+      #expect(error is TestAppDependencyError)
+    }
+
+    #expect(model.conversationListFeature === feature)
+    #expect(feature.conversations.map(\.id) == ["conversation-cached"])
+    #expect(feature.mutationsAllowed == false)
+    #expect(model.connectionState == .repairRequired)
+    #expect(await service.shutdownCallCount == 1)
+  }
+
+  @Test("conversation service authorization loss updates app authority")
+  func conversationServiceErrorUpdatesAppState() async {
+    let engine = FakeAppSyncEngine()
+    let profile = connectionProfile()
+    let service = AppModelConversationService(createError: .unauthorized)
+    let feature = ConversationListFeature(gatewayID: profile.gatewayID, service: service)
+    let model = AppModel(
+      dependencies: AppDependencies(
+        clock: TestAppClock(now: Date(timeIntervalSince1970: 100)),
+        loadProfile: { profile },
+        makeSyncEngine: { _ in engine },
+        makeConversationListFeature: { _ in feature }
+      )
+    )
+    await model.start()
+    let online = SyncSnapshot(
+      connection: .online,
+      conversations: [],
+      agents: [],
+      lastSuccessfulSyncAt: Date(timeIntervalSince1970: 100)
+    )
+    model.consume(online)
+    feature.consume(online)
+
+    await feature.create(agentID: "agent-1")
+
+    #expect(model.connectionState == .repairRequired)
+    #expect(model.banner == .repairRequired)
+    #expect(feature.mutationsAllowed == false)
+  }
+
+  @Test("conversation feature receives every snapshot while its view is off-screen")
+  func appModelOwnsConversationSnapshotDelivery() async {
+    let engine = FakeAppSyncEngine()
+    let profile = connectionProfile()
+    let feature = ConversationListFeature(
+      gatewayID: profile.gatewayID,
+      service: AppModelConversationService()
+    )
+    let model = AppModel(
+      dependencies: AppDependencies(
+        clock: TestAppClock(now: Date(timeIntervalSince1970: 100)),
+        loadProfile: { profile },
+        makeSyncEngine: { _ in engine },
+        makeConversationListFeature: { _ in feature }
+      )
+    )
+    await model.start()
+    let cached = CachedConversation(gatewayID: profile.gatewayID, summary: conversation())
+
+    model.consume(
+      SyncSnapshot(
+        connection: .online,
+        conversations: [cached],
+        agents: [],
+        lastSuccessfulSyncAt: Date(timeIntervalSince1970: 100)
+      )
+    )
+    #expect(feature.conversations == [cached])
+
+    model.consume(
+      SyncSnapshot(
+        connection: .online,
+        conversations: [],
+        agents: [],
+        lastSuccessfulSyncAt: Date(timeIntervalSince1970: 101),
+        removedConversationIDs: [cached.id]
+      )
+    )
+
+    #expect(feature.conversations.isEmpty)
+  }
+
   @Test("persistent profile selection clears before cache purge can suspend")
   func persistentSelectionClearsBeforeCachePurge() async throws {
     let engine = FakeAppSyncEngine()
@@ -508,6 +620,33 @@ struct AppModelTests {
     #expect(model.selectedProfile == replacement)
     #expect(model.snapshot == nil)
     #expect(model.connectionState == .connecting)
+  }
+
+  @Test("switching gateways clears every gateway-scoped navigation route")
+  func crossGatewayPublishClearsNavigation() async {
+    let original = connectionProfile()
+    let replacement = replacementProfile()
+    let originalEngine = FakeAppSyncEngine()
+    let replacementEngine = FakeAppSyncEngine()
+    let model = AppModel(
+      dependencies: AppDependencies(
+        clock: TestAppClock(now: Date(timeIntervalSince1970: 100)),
+        loadProfile: { original },
+        makeSyncEngine: { profile in
+          profile == original ? originalEngine : replacementEngine
+        }
+      )
+    )
+    await model.start()
+    model.conversationPath = [.newConversation, .transcript("old-conversation")]
+    model.splitConversationSelection = .transcript("old-conversation")
+    model.agentPath = [.detail("old-agent")]
+
+    await model.installPairedProfile(replacement)
+
+    #expect(model.conversationPath.isEmpty)
+    #expect(model.splitConversationSelection == nil)
+    #expect(model.agentPath.isEmpty)
   }
 
   @Test("same-gateway replacement keeps cache visible but non-writable until bootstrap")
@@ -734,4 +873,73 @@ private actor FakeForgetPipeline {
 
 private enum TestAppDependencyError: Error {
   case unavailable
+}
+
+private actor AppModelConversationService: ConversationListServicing {
+  private let createError: GatewayError?
+  private(set) var shutdownCallCount = 0
+
+  init(createError: GatewayError? = nil) {
+    self.createError = createError
+  }
+
+  func cachedConversations() -> [CachedConversation] { [] }
+  func cachedAgents() -> [RegisteredAgentDTO] { [] }
+  func refreshAgents() -> [RegisteredAgentDTO] { [] }
+
+  func conversations(
+    agentID: String?,
+    limit: Int,
+    cursor: String?
+  ) -> ConversationPageDTO {
+    _ = agentID
+    _ = limit
+    _ = cursor
+    return ConversationPageDTO(items: [], nextCursor: nil)
+  }
+
+  func create(_ request: CreateConversationRequest) throws -> ConversationSummaryDTO {
+    _ = request
+    if let createError { throw createError }
+    throw GatewayError.updateRequired
+  }
+
+  func reconcileCreate(_ request: CreateConversationRequest) throws -> ConversationSummaryDTO {
+    _ = request
+    throw createError ?? GatewayError.updateRequired
+  }
+
+  func rename(id: String, title: String, revision: Int) throws -> ConversationSummaryDTO {
+    _ = id
+    _ = title
+    _ = revision
+    throw GatewayError.updateRequired
+  }
+
+  func delete(id: String, revision: Int) throws -> ConversationSummaryDTO {
+    _ = id
+    _ = revision
+    throw GatewayError.updateRequired
+  }
+
+  func replace(_ summary: ConversationSummaryDTO) {
+    _ = summary
+  }
+
+  func remove(id: String) {
+    _ = id
+  }
+
+  func retainedCreateRequestID(agentID: String, suggested: String) -> String {
+    _ = agentID
+    return suggested
+  }
+
+  func clearRetainedCreateRequestID(agentID: String) {
+    _ = agentID
+  }
+
+  func shutdown() {
+    shutdownCallCount += 1
+  }
 }

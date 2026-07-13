@@ -38,13 +38,10 @@ struct RootView: View {
     @Bindable var appModel = appModel
     return TabView(selection: $appModel.selectedTab) {
       NavigationStack(path: $appModel.conversationPath) {
-        FeatureSlotView(
-          title: "Conversations",
-          systemImage: "bubble.left.and.bubble.right"
-        )
-        .navigationDestination(for: ConversationRoute.self) { route in
-          conversationDestination(route)
-        }
+        conversationListRoot
+          .navigationDestination(for: ConversationRoute.self) { route in
+            conversationDestination(route)
+          }
       }
       .tabItem {
         Label("Conversations", systemImage: "bubble.left.and.bubble.right")
@@ -83,6 +80,20 @@ struct RootView: View {
           .tag(tab)
       }
       .navigationTitle(Self.title)
+    } content: {
+      NavigationStack {
+        switch appModel.selectedTab {
+        case .conversations:
+          conversationListRoot
+        case .agents:
+          FeatureSlotView(title: "Agents", systemImage: "person.2")
+        case .settings:
+          FeatureSlotView(title: "Settings", systemImage: "gearshape")
+        }
+      }
+      .navigationDestination(for: ConversationRoute.self) { route in
+        conversationDestination(route)
+      }
     } detail: {
       NavigationStack {
         switch appModel.selectedTab {
@@ -90,17 +101,31 @@ struct RootView: View {
           if let selection = appModel.splitConversationSelection {
             conversationDestination(selection)
           } else {
-            FeatureSlotView(
-              title: "Conversations",
+            ContentUnavailableView(
+              "Select a conversation",
               systemImage: "bubble.left.and.bubble.right"
             )
           }
         case .agents:
-          FeatureSlotView(title: "Agents", systemImage: "person.2")
+          ContentUnavailableView("Select an agent", systemImage: "person.crop.circle")
         case .settings:
           FeatureSlotView(title: "Settings", systemImage: "gearshape")
         }
       }
+    }
+  }
+
+  @ViewBuilder
+  private var conversationListRoot: some View {
+    if let feature = appModel.conversationListFeature {
+      ConversationListView()
+        .environment(feature)
+        .id(ObjectIdentifier(feature))
+    } else {
+      FeatureSlotView(
+        title: "Conversations",
+        systemImage: "bubble.left.and.bubble.right"
+      )
     }
   }
 
@@ -110,7 +135,13 @@ struct RootView: View {
     case .transcript:
       FeatureSlotView(title: "Conversation", systemImage: "bubble.left.and.bubble.right")
     case .newConversation:
-      FeatureSlotView(title: "New conversation", systemImage: "square.and.pencil")
+      if let feature = appModel.conversationListFeature {
+        NewConversationView()
+          .environment(feature)
+          .id(ObjectIdentifier(feature))
+      } else {
+        FeatureSlotView(title: "New conversation", systemImage: "square.and.pencil")
+      }
     }
   }
 

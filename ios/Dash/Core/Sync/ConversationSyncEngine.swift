@@ -78,6 +78,21 @@ struct SyncSnapshot: Equatable, Sendable {
   let conversations: [CachedConversation]
   let agents: [RegisteredAgentDTO]
   let lastSuccessfulSyncAt: Date?
+  let removedConversationIDs: Set<String>
+
+  init(
+    connection: GatewayConnectionState,
+    conversations: [CachedConversation],
+    agents: [RegisteredAgentDTO],
+    lastSuccessfulSyncAt: Date?,
+    removedConversationIDs: Set<String> = []
+  ) {
+    self.connection = connection
+    self.conversations = conversations
+    self.agents = agents
+    self.lastSuccessfulSyncAt = lastSuccessfulSyncAt
+    self.removedConversationIDs = removedConversationIDs
+  }
 
   var mutationsAllowed: Bool { connection == .online }
 }
@@ -104,6 +119,7 @@ actor ConversationSyncEngine {
   private var connection: GatewayConnectionState = .connecting
   private var snapshotConversations: [CachedConversation] = []
   private var snapshotAgents: [RegisteredAgentDTO] = []
+  private var pendingRemovedConversationIDs: Set<String> = []
   private var lastSuccessfulSyncAt: Date?
   private var conversationOrder: [String] = []
   private var conversationCursor: String?
@@ -266,6 +282,7 @@ actor ConversationSyncEngine {
         try validate(lifecycle: lifecycle, conversations: conversations)
         try await store.removeConversation(gatewayID: gatewayID, conversationID: id)
         try validate(lifecycle: lifecycle, conversations: conversations)
+        pendingRemovedConversationIDs.insert(id)
         conversationOrder.removeAll { $0 == id }
         try await reloadSnapshot(lifecycle: lifecycle, conversations: conversations)
         try validate(lifecycle: lifecycle, conversations: conversations)
@@ -473,6 +490,7 @@ actor ConversationSyncEngine {
           try validate(lifecycle: lifecycle, conversations: conversations)
           try await store.removeConversation(gatewayID: gatewayID, conversationID: value.id)
           try validate(lifecycle: lifecycle, conversations: conversations)
+          pendingRemovedConversationIDs.insert(value.id)
           conversationOrder.removeAll { $0 == value.id }
           continue
         }
@@ -686,6 +704,7 @@ actor ConversationSyncEngine {
         try validate(lifecycle: lifecycle, conversations: conversations)
         try await store.removeConversation(gatewayID: gatewayID, conversationID: id)
         try validate(lifecycle: lifecycle, conversations: conversations)
+        pendingRemovedConversationIDs.insert(id)
         conversationOrder.removeAll { $0 == id }
       }
     }
@@ -736,6 +755,7 @@ actor ConversationSyncEngine {
     if summary.status == .deleted {
       try await store.applyTombstone(summary, gatewayID: gatewayID)
       try validate(lifecycle: lifecycle, conversations: conversations)
+      pendingRemovedConversationIDs.insert(summary.id)
       conversationOrder.removeAll { $0 == summary.id }
     } else {
       try await store.upsertConversations([summary], gatewayID: gatewayID)
@@ -836,12 +856,15 @@ actor ConversationSyncEngine {
 
   private func publish(_ state: GatewayConnectionState) {
     connection = state
+    let removedConversationIDs = pendingRemovedConversationIDs
+    pendingRemovedConversationIDs.removeAll()
     continuation.yield(
       SyncSnapshot(
         connection: state,
         conversations: snapshotConversations,
         agents: snapshotAgents,
-        lastSuccessfulSyncAt: lastSuccessfulSyncAt
+        lastSuccessfulSyncAt: lastSuccessfulSyncAt,
+        removedConversationIDs: removedConversationIDs
       )
     )
   }

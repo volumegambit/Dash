@@ -13,6 +13,8 @@ struct AppDependencies: Sendable {
   let deleteProfileSecrets: @Sendable (ConnectionProfileSnapshot) async throws -> Void
   let clearProfileData: @Sendable (ConnectionProfileSnapshot) async throws -> Void
   let forgetProfileSelection: @MainActor @Sendable (ConnectionProfileSnapshot) -> Void
+  let makeConversationListFeature:
+    @MainActor @Sendable (ConnectionProfileSnapshot) -> ConversationListFeature?
 
   init(
     clock: any AppClock,
@@ -29,7 +31,10 @@ struct AppDependencies: Sendable {
     },
     forgetProfileSelection: @escaping @MainActor @Sendable (ConnectionProfileSnapshot) -> Void = {
       _ in
-    }
+    },
+    makeConversationListFeature: @escaping @MainActor @Sendable (
+      ConnectionProfileSnapshot
+    ) -> ConversationListFeature? = { _ in nil }
   ) {
     self.clock = clock
     self.loadProfile = loadProfile
@@ -38,6 +43,7 @@ struct AppDependencies: Sendable {
     self.deleteProfileSecrets = deleteProfileSecrets
     self.clearProfileData = clearProfileData
     self.forgetProfileSelection = forgetProfileSelection
+    self.makeConversationListFeature = makeConversationListFeature
   }
 
   @MainActor
@@ -56,6 +62,7 @@ struct AppDependencies: Sendable {
     )
     let store = PersistenceStore(modelContainer: container)
     let keychain = SystemKeychainStore()
+    let pendingConversationCreates = PendingConversationCreateStore()
     let clock = SystemAppClock()
     let activeGatewayKey = "app.dash.ios.active-gateway-id"
 
@@ -65,6 +72,18 @@ struct AppDependencies: Sendable {
         ConnectionSecrets
       ) -> HTTPTransport = { endpoint, secrets in
         HTTPTransport(endpoint: endpoint, secrets: secrets, clock: clock)
+      }
+    let makeCancellableTransport:
+      @Sendable (
+        ConnectionEndpoint,
+        ConnectionSecrets
+      ) -> HTTPTransport = { endpoint, secrets in
+        HTTPTransport(
+          endpoint: endpoint,
+          secrets: secrets,
+          session: URLSession(configuration: .default),
+          clock: clock
+        )
       }
     let makeAPI: @Sendable (HTTPTransport) -> GatewayAPI = { transport in
       GatewayAPI(transport: transport)
@@ -115,9 +134,25 @@ struct AppDependencies: Sendable {
       },
       clearProfileData: { profile in
         try await store.clearGateway(gatewayID: profile.gatewayID)
+        await pendingConversationCreates.clear(gatewayID: profile.gatewayID)
       },
       forgetProfileSelection: { _ in
         UserDefaults.standard.removeObject(forKey: activeGatewayKey)
+      },
+      makeConversationListFeature: { profile in
+        let service = LiveConversationListService(
+          gatewayID: profile.gatewayID,
+          store: store,
+          pendingCreates: pendingConversationCreates,
+          makeAPI: {
+            guard let secrets = try await keychain.load(for: profile.id) else {
+              throw AppDependencyError.missingSecrets(profileID: profile.id)
+            }
+            let endpoint = ConnectionEndpoint(profile: profile.profile, secrets: secrets)
+            return makeAPI(makeCancellableTransport(endpoint, secrets))
+          }
+        )
+        return ConversationListFeature(gatewayID: profile.gatewayID, service: service)
       }
     )
   }

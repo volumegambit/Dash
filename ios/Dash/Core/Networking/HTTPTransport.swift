@@ -52,6 +52,10 @@ actor HTTPTransport {
     self.clock = clock
   }
 
+  func shutdown() {
+    session.invalidateAndCancel()
+  }
+
   func send<Response: Decodable>(
     _ request: GatewayRequest,
     body: (any Encodable & Sendable)? = nil,

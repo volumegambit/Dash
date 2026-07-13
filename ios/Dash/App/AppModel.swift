@@ -23,6 +23,7 @@ final class AppModel {
   var splitConversationSelection: ConversationRoute?
   var banner: AppBanner?
   var snapshot: SyncSnapshot?
+  var conversationListFeature: ConversationListFeature?
 
   var route: AppRoute {
     guard selectedProfile != nil else { return .connect }
@@ -48,6 +49,11 @@ final class AppModel {
     let snapshots: AsyncStream<SyncSnapshot>
   }
 
+  private struct DetachedActivation {
+    let engine: (any AppSyncing)?
+    let conversationFeature: ConversationListFeature?
+  }
+
   init(dependencies: AppDependencies) {
     self.dependencies = dependencies
   }
@@ -65,8 +71,14 @@ final class AppModel {
       guard let prepared = try await prepareActivation(profile, epoch: epoch) else { return }
       let retired = publish(profile, prepared: prepared)
       let publishedEpoch = activeEpoch
-      if let retired, sameEngine(retired, prepared.engine) == false {
-        await retired.shutdown()
+      if let retiredFeature = retired.conversationFeature,
+        retiredFeature !== conversationListFeature
+      {
+        await retiredFeature.shutdown()
+        guard activeEpoch == publishedEpoch, sameEngine(syncEngine, prepared.engine) else { return }
+      }
+      if let retiredEngine = retired.engine, sameEngine(retiredEngine, prepared.engine) == false {
+        await retiredEngine.shutdown()
         guard activeEpoch == publishedEpoch, sameEngine(syncEngine, prepared.engine) else { return }
       }
       await startPreparedEngine(prepared.engine, activeEpoch: publishedEpoch)
@@ -88,8 +100,14 @@ final class AppModel {
       dependencies.rememberProfile(profile)
       let retired = publish(profile, prepared: prepared)
       let publishedEpoch = activeEpoch
-      if let retired, sameEngine(retired, prepared.engine) == false {
-        await retired.shutdown()
+      if let retiredFeature = retired.conversationFeature,
+        retiredFeature !== conversationListFeature
+      {
+        await retiredFeature.shutdown()
+        guard activeEpoch == publishedEpoch, sameEngine(syncEngine, prepared.engine) else { return }
+      }
+      if let retiredEngine = retired.engine, sameEngine(retiredEngine, prepared.engine) == false {
+        await retiredEngine.shutdown()
         guard activeEpoch == publishedEpoch, sameEngine(syncEngine, prepared.engine) else { return }
       }
       await startPreparedEngine(prepared.engine, activeEpoch: publishedEpoch)
@@ -101,6 +119,7 @@ final class AppModel {
 
   func consume(_ snapshot: SyncSnapshot) {
     self.snapshot = snapshot
+    conversationListFeature?.consume(snapshot)
     connectionState = snapshot.connection
     switch snapshot.connection {
     case .connecting, .online:
@@ -155,8 +174,12 @@ final class AppModel {
     let epoch = beginTransition()
     let retired = detachActiveEngine()
     markCachedConnection(.connecting)
-    if let retired {
-      await retired.shutdown()
+    if let feature = retired.conversationFeature {
+      await feature.shutdown()
+      guard isCurrent(epoch) else { return }
+    }
+    if let engine = retired.engine {
+      await engine.shutdown()
       guard isCurrent(epoch) else { return }
     }
     do {
@@ -270,8 +293,11 @@ final class AppModel {
   private func publish(
     _ profile: ConnectionProfileSnapshot,
     prepared: PreparedActivation
-  ) -> (any AppSyncing)? {
-    let retired = syncEngine
+  ) -> DetachedActivation {
+    let retired = DetachedActivation(
+      engine: syncEngine,
+      conversationFeature: conversationListFeature
+    )
     let previousGatewayID = selectedProfile?.gatewayID
     snapshotTask?.cancel()
     activeEpoch &+= 1
@@ -283,11 +309,25 @@ final class AppModel {
     activeEngineSuspended = false
     activeEngineSuspensionStarted = false
     selectedProfile = profile
+    let conversationFeature = dependencies.makeConversationListFeature(profile)
+    conversationFeature?.setGatewayErrorHandler { [weak self, weak conversationFeature] error in
+      guard
+        let self,
+        let conversationFeature,
+        self.activeEpoch == epoch,
+        self.conversationListFeature === conversationFeature
+      else { return }
+      await self.handleConversationGatewayError(error)
+    }
+    conversationListFeature = conversationFeature
     selectedTab = .conversations
     pairingPath.removeAll()
     if previousGatewayID != nil, previousGatewayID != profile.gatewayID {
       snapshot = nil
       connectionState = .connecting
+      conversationPath.removeAll()
+      splitConversationSelection = nil
+      agentPath.removeAll()
     } else {
       markCachedConnection(.connecting)
     }
@@ -302,8 +342,12 @@ final class AppModel {
     return retired
   }
 
-  private func detachActiveEngine() -> (any AppSyncing)? {
-    let retired = syncEngine
+  private func detachActiveEngine(clearConversationFeature: Bool = false) -> DetachedActivation {
+    let retired = DetachedActivation(
+      engine: syncEngine,
+      conversationFeature: conversationListFeature
+    )
+    retired.conversationFeature?.prepareForShutdown()
     snapshotTask?.cancel()
     snapshotTask = nil
     syncEngine = nil
@@ -312,6 +356,9 @@ final class AppModel {
     activeEngineNeedsForegroundResume = false
     activeEngineSuspended = false
     activeEngineSuspensionStarted = false
+    if clearConversationFeature {
+      conversationListFeature = nil
+    }
     activeEpoch &+= 1
     return retired
   }
@@ -325,8 +372,10 @@ final class AppModel {
         connection: .repairRequired,
         conversations: snapshot.conversations,
         agents: snapshot.agents,
-        lastSuccessfulSyncAt: snapshot.lastSuccessfulSyncAt
+        lastSuccessfulSyncAt: snapshot.lastSuccessfulSyncAt,
+        removedConversationIDs: snapshot.removedConversationIDs
       )
+      conversationListFeature?.consume(self.snapshot)
     } else {
       snapshot = nil
     }
@@ -340,7 +389,45 @@ final class AppModel {
       connection: connection,
       conversations: snapshot.conversations,
       agents: snapshot.agents,
-      lastSuccessfulSyncAt: snapshot.lastSuccessfulSyncAt
+      lastSuccessfulSyncAt: snapshot.lastSuccessfulSyncAt,
+      removedConversationIDs: snapshot.removedConversationIDs
+    )
+    conversationListFeature?.consume(self.snapshot)
+  }
+
+  private func handleConversationGatewayError(_ error: GatewayError) async {
+    let state: GatewayConnectionState
+    switch error {
+    case .unauthorized:
+      state = .repairRequired
+    case .rateLimited(let retryAfter):
+      let now = await dependencies.clock.now()
+      let delay = retryAfter ?? .seconds(1)
+      let components = delay.components
+      let seconds =
+        TimeInterval(components.seconds)
+        + (TimeInterval(components.attoseconds) / 1e18)
+      state = .rateLimited(retryAt: now.addingTimeInterval(max(0, seconds)))
+    case .gatewayOffline:
+      state = .gatewayOffline
+    case .updateRequired, .capabilityRequired:
+      state = .updateRequired
+    case .transport, .server:
+      state = .offline
+    case .notFound, .validation, .revisionConflict, .conversationBusy,
+      .mutationOutcomeUnknown:
+      return
+    }
+    let cached = snapshot?.conversations ?? conversationListFeature?.conversations ?? []
+    let agents = snapshot?.agents ?? conversationListFeature?.agents ?? []
+    consume(
+      SyncSnapshot(
+        connection: state,
+        conversations: cached,
+        agents: agents,
+        lastSuccessfulSyncAt: snapshot?.lastSuccessfulSyncAt,
+        removedConversationIDs: snapshot?.removedConversationIDs ?? []
+      )
     )
   }
 
@@ -359,7 +446,7 @@ final class AppModel {
   }
 
   private func resetToConnect() {
-    _ = detachActiveEngine()
+    _ = detachActiveEngine(clearConversationFeature: true)
     selectedProfile = nil
     connectionState = .connecting
     selectedTab = .conversations
