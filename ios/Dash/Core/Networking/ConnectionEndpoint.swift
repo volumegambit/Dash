@@ -33,11 +33,12 @@ extension PairingPayload {
     let managementToken = try nonblank(mgmtToken, field: "mgmtToken")
     let normalizedChatToken = try nonblank(chatToken, field: "chatToken")
     let normalizedLabel = label?.trimmingCharacters(in: .whitespacesAndNewlines)
-    let profileLabel = if let normalizedLabel, normalizedLabel.isEmpty == false {
-      normalizedLabel
-    } else {
-      normalizedHost
-    }
+    let profileLabel =
+      if let normalizedLabel, normalizedLabel.isEmpty == false {
+        normalizedLabel
+      } else {
+        normalizedHost
+      }
 
     switch v {
     case 1:
@@ -125,7 +126,7 @@ struct ConnectionEndpoint: CustomStringConvertible, Sendable {
     let chatURL = try url(
       scheme: profile.secure ? "wss" : "ws",
       port: profile.chatPort,
-      path: "/ws",
+      path: "/ws/chat",
       query: [URLQueryItem(name: "token", value: secrets.chatToken)]
     )
     var request = URLRequest(url: chatURL)
@@ -160,10 +161,12 @@ struct ConnectionEndpoint: CustomStringConvertible, Sendable {
     let normalized = path.isEmpty ? "/" : (path.hasPrefix("/") ? path : "/\(path)")
     var allowed = CharacterSet.urlPathAllowed
     allowed.remove(charactersIn: "/?#%")
-    let encoded = try normalized
+    let encoded =
+      try normalized
       .split(separator: "/", omittingEmptySubsequences: false)
       .map { segment -> String in
-        guard let value = String(segment).addingPercentEncoding(withAllowedCharacters: allowed) else {
+        guard let value = String(segment).addingPercentEncoding(withAllowedCharacters: allowed)
+        else {
           throw URLError(.badURL)
         }
         return value
@@ -196,7 +199,7 @@ private func validatedHost(_ value: String) throws -> String {
 }
 
 private func validatedPort(_ value: Int, field: String) throws -> Int {
-  guard (1 ... 65_535).contains(value) else {
+  guard (1...65_535).contains(value) else {
     throw PairingValidationError.invalidPort(field)
   }
   return value

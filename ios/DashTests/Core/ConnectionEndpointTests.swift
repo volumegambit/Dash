@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+
 @testable import Dash
 
 @Suite("connection endpoint and pairing validation")
@@ -125,7 +126,8 @@ struct ConnectionEndpointTests {
   @Test("unknown pairing fields are ignored")
   func ignoresUnknownFields() throws {
     let data = Data(
-      #"{"v":1,"host":"gateway.local","mgmtToken":"m","chatToken":"c","future":{"enabled":true}}"#.utf8
+      #"{"v":1,"host":"gateway.local","mgmtToken":"m","chatToken":"c","future":{"enabled":true}}"#
+        .utf8
     )
     let raw = try ContractCoding.decoder().decode(PairingPayload.self, from: data)
     let (profile, _) = try raw.validated(profileID: UUID())
@@ -158,7 +160,7 @@ struct ConnectionEndpointTests {
     #expect(components.scheme == "wss")
     #expect(components.host == "gateway.relay.example")
     #expect(components.port == nil)
-    #expect(components.path == "/ws")
+    #expect(components.path == "/ws/chat")
     #expect(components.queryItems == [URLQueryItem(name: "token", value: "chat-secret")])
     #expect(request.value(forHTTPHeaderField: "x-dash-relay-credential") == "relay-secret")
     #expect(request.url?.absoluteString.contains("management-secret") == false)

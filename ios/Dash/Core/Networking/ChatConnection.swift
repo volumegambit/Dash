@@ -84,6 +84,7 @@ actor ChatConnection {
 
   private var socket: (any WebSocketTasking)?
   private var generation = 0
+  private var turnOperationGeneration = 0
   private var reconnectAttempt = 0
   private var activeTurnID: String?
   private var capableTurnID: String?
@@ -108,14 +109,8 @@ actor ChatConnection {
   }
 
   func connect() async throws {
-    guard state != .detached else {
-      throw GatewayError.transport("Chat connection is detached")
-    }
-    if let socket {
-      generation += 1
-      socket.cancel(with: .goingAway, reason: nil)
-      self.socket = nil
-    }
+    try requireReusableStream()
+    prepareForSocketReplacement()
     reconnectAttempt = 0
     try startSocket()
   }
@@ -127,6 +122,8 @@ actor ChatConnection {
     text: String,
     images: [MessageImage]
   ) async throws {
+    turnOperationGeneration += 1
+    let operationGeneration = turnOperationGeneration
     activeTurnID = id
     capableTurnID = nil
     do {
@@ -140,7 +137,7 @@ actor ChatConnection {
         )
       )
     } catch {
-      activeTurnID = nil
+      clearTurn(ifOwnedBy: operationGeneration)
       throw error
     }
   }
@@ -151,6 +148,8 @@ actor ChatConnection {
     conversationID: String,
     sinceSeq: Int
   ) async throws {
+    turnOperationGeneration += 1
+    let operationGeneration = turnOperationGeneration
     activeTurnID = turnID
     capableTurnID = turnID
     do {
@@ -163,8 +162,7 @@ actor ChatConnection {
         )
       )
     } catch {
-      activeTurnID = nil
-      capableTurnID = nil
+      clearTurn(ifOwnedBy: operationGeneration)
       throw error
     }
   }
@@ -182,16 +180,16 @@ actor ChatConnection {
   }
 
   func probeAuthentication() async throws {
-    guard state != .detached else {
-      throw GatewayError.transport("Chat connection is detached")
-    }
+    try requireReusableStream()
+    prepareForSocketReplacement()
     generation += 1
+    let probeGeneration = generation
     transition(to: .connecting)
     let task = session.webSocketTask(with: try endpoint.chatRequest())
     socket = task
     task.resume()
     transition(to: .connected)
-    defer { detachNow() }
+    defer { detachProbe(task: task, generation: probeGeneration) }
 
     let probeID = UUID().uuidString.lowercased()
     let conversationID = UUID().uuidString.lowercased()
@@ -286,7 +284,9 @@ actor ChatConnection {
     generation failedGeneration: Int
   ) async {
     guard failedGeneration == generation, state != .detached else { return }
-    if let close = await task.peerClose, let mapped = closeError(close) {
+    let close = await task.peerClose
+    guard failedGeneration == generation, state != .detached else { return }
+    if let close, let mapped = closeError(close) {
       finish(throwing: mapped, generation: failedGeneration)
       return
     }
@@ -406,8 +406,44 @@ actor ChatConnection {
     guard failedGeneration == generation, streamFinished == false else { return }
     socket?.cancel(with: .goingAway, reason: nil)
     socket = nil
+    turnOperationGeneration += 1
+    activeTurnID = nil
+    capableTurnID = nil
     streamFinished = true
     continuation.finish(throwing: error)
+  }
+
+  private func requireReusableStream() throws {
+    guard state != .detached else {
+      throw GatewayError.transport("Chat connection is detached")
+    }
+    guard streamFinished == false else {
+      throw GatewayError.transport("Chat connection stream is finished")
+    }
+  }
+
+  private func prepareForSocketReplacement() {
+    turnOperationGeneration += 1
+    activeTurnID = nil
+    capableTurnID = nil
+    guard let socket else { return }
+    generation += 1
+    socket.cancel(with: .goingAway, reason: nil)
+    self.socket = nil
+  }
+
+  private func clearTurn(ifOwnedBy operationGeneration: Int) {
+    guard operationGeneration == turnOperationGeneration else { return }
+    activeTurnID = nil
+    capableTurnID = nil
+  }
+
+  private func detachProbe(task: any WebSocketTasking, generation probeGeneration: Int) {
+    guard probeGeneration == generation else {
+      task.cancel(with: .goingAway, reason: nil)
+      return
+    }
+    detachNow()
   }
 
   private func detachNow() {
@@ -416,6 +452,7 @@ actor ChatConnection {
     transition(to: .detached)
     socket?.cancel(with: .goingAway, reason: nil)
     socket = nil
+    turnOperationGeneration += 1
     activeTurnID = nil
     capableTurnID = nil
     if streamFinished == false {

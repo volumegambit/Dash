@@ -202,21 +202,70 @@ func testURLSession() -> URLSession {
 }
 
 private actor FakeWebSocketTaskState {
+  private struct HeldSend {
+    let message: URLSessionWebSocketTask.Message
+    let continuation: CheckedContinuation<Void, Error>
+  }
+
   private enum ReceiveStep {
     case message(URLSessionWebSocketTask.Message)
     case failure(any Error)
   }
 
   private var sentMessages: [URLSessionWebSocketTask.Message] = []
+  private var shouldHoldNextSend = false
+  private var heldSends: [HeldSend] = []
+  private var heldSendWaiters: [CheckedContinuation<Void, Never>] = []
   private var receives: [ReceiveStep] = []
   private var receiveWaiters: [CheckedContinuation<URLSessionWebSocketTask.Message, Error>] = []
   private var sentWaiters: [CheckedContinuation<URLSessionWebSocketTask.Message, Never>] = []
   private var scriptedPeerClose: WebSocketCloseInfo?
+  private var shouldHoldNextPeerClose = false
+  private var peerCloseWaiter: CheckedContinuation<WebSocketCloseInfo?, Never>?
+  private var heldPeerCloseWaiters: [CheckedContinuation<Void, Never>] = []
 
   func recordSent(_ message: URLSessionWebSocketTask.Message) {
     sentMessages.append(message)
     if sentWaiters.isEmpty == false {
       sentWaiters.removeFirst().resume(returning: message)
+    }
+  }
+
+  func holdNextSend() {
+    shouldHoldNextSend = true
+  }
+
+  func send(_ message: URLSessionWebSocketTask.Message) async throws {
+    guard shouldHoldNextSend else {
+      recordSent(message)
+      return
+    }
+    shouldHoldNextSend = false
+    try await withCheckedThrowingContinuation { continuation in
+      heldSends.append(HeldSend(message: message, continuation: continuation))
+      let waiters = heldSendWaiters
+      heldSendWaiters.removeAll()
+      for waiter in waiters {
+        waiter.resume()
+      }
+    }
+  }
+
+  func waitForHeldSend() async {
+    guard heldSends.isEmpty else { return }
+    await withCheckedContinuation { continuation in
+      heldSendWaiters.append(continuation)
+    }
+  }
+
+  func resolveHeldSend(error: (any Error)?) {
+    guard heldSends.isEmpty == false else { return }
+    let held = heldSends.removeFirst()
+    if let error {
+      held.continuation.resume(throwing: error)
+    } else {
+      recordSent(held.message)
+      held.continuation.resume()
     }
   }
 
@@ -251,8 +300,33 @@ private actor FakeWebSocketTaskState {
     }
   }
 
-  func peerClose() -> WebSocketCloseInfo? {
-    scriptedPeerClose
+  func holdNextPeerClose() {
+    shouldHoldNextPeerClose = true
+  }
+
+  func peerClose() async -> WebSocketCloseInfo? {
+    guard shouldHoldNextPeerClose else { return scriptedPeerClose }
+    shouldHoldNextPeerClose = false
+    return await withCheckedContinuation { continuation in
+      peerCloseWaiter = continuation
+      let waiters = heldPeerCloseWaiters
+      heldPeerCloseWaiters.removeAll()
+      for waiter in waiters {
+        waiter.resume()
+      }
+    }
+  }
+
+  func waitForHeldPeerClose() async {
+    guard peerCloseWaiter == nil else { return }
+    await withCheckedContinuation { continuation in
+      heldPeerCloseWaiters.append(continuation)
+    }
+  }
+
+  func releasePeerClose() {
+    peerCloseWaiter?.resume(returning: scriptedPeerClose)
+    peerCloseWaiter = nil
   }
 
   private func deliver(_ step: ReceiveStep) {
@@ -294,7 +368,7 @@ final class FakeWebSocketTask: WebSocketTasking, @unchecked Sendable {
   }
 
   func send(_ message: URLSessionWebSocketTask.Message) async throws {
-    await state.recordSent(message)
+    try await state.send(message)
   }
 
   func receive() async throws -> URLSessionWebSocketTask.Message {
@@ -336,6 +410,30 @@ final class FakeWebSocketTask: WebSocketTasking, @unchecked Sendable {
 
   func enqueue(_ message: URLSessionWebSocketTask.Message) async {
     await state.enqueue(message)
+  }
+
+  func holdNextSend() async {
+    await state.holdNextSend()
+  }
+
+  func waitForHeldSend() async {
+    await state.waitForHeldSend()
+  }
+
+  func failHeldSend(error: any Error = URLError(.networkConnectionLost)) async {
+    await state.resolveHeldSend(error: error)
+  }
+
+  func holdNextPeerClose() async {
+    await state.holdNextPeerClose()
+  }
+
+  func waitForHeldPeerClose() async {
+    await state.waitForHeldPeerClose()
+  }
+
+  func releasePeerClose() async {
+    await state.releasePeerClose()
   }
 
   func fail(
