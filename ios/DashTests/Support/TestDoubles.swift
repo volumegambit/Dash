@@ -200,3 +200,215 @@ func testURLSession() -> URLSession {
   configuration.protocolClasses = [URLProtocolStub.self]
   return URLSession(configuration: configuration)
 }
+
+private actor FakeWebSocketTaskState {
+  private enum ReceiveStep {
+    case message(URLSessionWebSocketTask.Message)
+    case failure(any Error)
+  }
+
+  private var sentMessages: [URLSessionWebSocketTask.Message] = []
+  private var receives: [ReceiveStep] = []
+  private var receiveWaiters: [CheckedContinuation<URLSessionWebSocketTask.Message, Error>] = []
+  private var sentWaiters: [CheckedContinuation<URLSessionWebSocketTask.Message, Never>] = []
+  private var scriptedPeerClose: WebSocketCloseInfo?
+
+  func recordSent(_ message: URLSessionWebSocketTask.Message) {
+    sentMessages.append(message)
+    if sentWaiters.isEmpty == false {
+      sentWaiters.removeFirst().resume(returning: message)
+    }
+  }
+
+  func allSentMessages() -> [URLSessionWebSocketTask.Message] {
+    sentMessages
+  }
+
+  func nextSentMessage() async -> URLSessionWebSocketTask.Message {
+    if let message = sentMessages.last {
+      return message
+    }
+    return await withCheckedContinuation { continuation in
+      sentWaiters.append(continuation)
+    }
+  }
+
+  func enqueue(_ message: URLSessionWebSocketTask.Message) {
+    deliver(.message(message))
+  }
+
+  func fail(_ error: any Error, peerClose: WebSocketCloseInfo?) {
+    scriptedPeerClose = peerClose
+    deliver(.failure(error))
+  }
+
+  func receive() async throws -> URLSessionWebSocketTask.Message {
+    if receives.isEmpty == false {
+      return try value(from: receives.removeFirst())
+    }
+    return try await withCheckedThrowingContinuation { continuation in
+      receiveWaiters.append(continuation)
+    }
+  }
+
+  func peerClose() -> WebSocketCloseInfo? {
+    scriptedPeerClose
+  }
+
+  private func deliver(_ step: ReceiveStep) {
+    guard receiveWaiters.isEmpty == false else {
+      receives.append(step)
+      return
+    }
+    let waiter = receiveWaiters.removeFirst()
+    switch step {
+    case .message(let message):
+      waiter.resume(returning: message)
+    case .failure(let error):
+      waiter.resume(throwing: error)
+    }
+  }
+
+  private func value(
+    from step: ReceiveStep
+  ) throws -> URLSessionWebSocketTask.Message {
+    switch step {
+    case .message(let message):
+      return message
+    case .failure(let error):
+      throw error
+    }
+  }
+}
+
+final class FakeWebSocketTask: WebSocketTasking, @unchecked Sendable {
+  private let state = FakeWebSocketTaskState()
+  private let lock = NSLock()
+  private var recordedCloseCode: URLSessionWebSocketTask.CloseCode?
+  private var recordedResumeCount = 0
+
+  func resume() {
+    lock.lock()
+    recordedResumeCount += 1
+    lock.unlock()
+  }
+
+  func send(_ message: URLSessionWebSocketTask.Message) async throws {
+    await state.recordSent(message)
+  }
+
+  func receive() async throws -> URLSessionWebSocketTask.Message {
+    try await state.receive()
+  }
+
+  func cancel(with closeCode: URLSessionWebSocketTask.CloseCode, reason: Data?) {
+    lock.lock()
+    if recordedCloseCode == nil {
+      recordedCloseCode = closeCode
+    }
+    lock.unlock()
+    Task {
+      await state.fail(CancellationError(), peerClose: nil)
+    }
+  }
+
+  var peerClose: WebSocketCloseInfo? {
+    get async { await state.peerClose() }
+  }
+
+  var sentFrames: [MobileWSClientFrame] {
+    get async {
+      await state.allSentMessages().compactMap(decodeClientFrame)
+    }
+  }
+
+  var closeCode: URLSessionWebSocketTask.CloseCode? {
+    get async {
+      lock.withLock { recordedCloseCode }
+    }
+  }
+
+  var resumeCount: Int {
+    get async {
+      lock.withLock { recordedResumeCount }
+    }
+  }
+
+  func enqueue(_ message: URLSessionWebSocketTask.Message) async {
+    await state.enqueue(message)
+  }
+
+  func fail(
+    peerClose: WebSocketCloseInfo? = nil,
+    error: URLError = URLError(.networkConnectionLost)
+  ) async {
+    await state.fail(error, peerClose: peerClose)
+  }
+
+  func nextSentFrame() async -> MobileWSClientFrame {
+    let message = await state.nextSentMessage()
+    return decodeClientFrame(message)!
+  }
+
+  func waitForClose() async -> URLSessionWebSocketTask.CloseCode? {
+    while await closeCode == nil {
+      await Task.yield()
+    }
+    return await closeCode
+  }
+
+  private func decodeClientFrame(
+    _ message: URLSessionWebSocketTask.Message
+  ) -> MobileWSClientFrame? {
+    let data: Data
+    switch message {
+    case .string(let value):
+      data = Data(value.utf8)
+    case .data(let value):
+      data = value
+    @unknown default:
+      return nil
+    }
+    return try? ContractCoding.decoder().decode(MobileWSClientFrame.self, from: data)
+  }
+}
+
+private final class FakeWebSocketSessionState: @unchecked Sendable {
+  private let lock = NSLock()
+  private var tasks: [FakeWebSocketTask]
+  private var recordedRequests: [URLRequest] = []
+
+  init(tasks: [FakeWebSocketTask]) {
+    self.tasks = tasks
+  }
+
+  func nextTask(for request: URLRequest) -> FakeWebSocketTask {
+    lock.lock()
+    defer { lock.unlock() }
+    recordedRequests.append(request)
+    precondition(tasks.isEmpty == false, "FakeWebSocketSession has no scripted task")
+    return tasks.removeFirst()
+  }
+
+  var requests: [URLRequest] {
+    lock.lock()
+    defer { lock.unlock() }
+    return recordedRequests
+  }
+}
+
+final class FakeWebSocketSession: WebSocketSessioning, @unchecked Sendable {
+  private let state: FakeWebSocketSessionState
+
+  init(tasks: [FakeWebSocketTask]) {
+    state = FakeWebSocketSessionState(tasks: tasks)
+  }
+
+  var requests: [URLRequest] {
+    state.requests
+  }
+
+  func webSocketTask(with request: URLRequest) -> any WebSocketTasking {
+    state.nextTask(for: request)
+  }
+}

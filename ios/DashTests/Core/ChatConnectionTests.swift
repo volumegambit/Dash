@@ -1,0 +1,589 @@
+import Foundation
+import Testing
+
+@testable import Dash
+
+@Suite("Chat connection", .serialized)
+struct ChatConnectionTests {
+  private let turnID = "018f0f4a-5c42-7a8b-9c01-2234567890ab"
+  private let conversationID = "018f0f4a-5c42-7a8b-9c01-1234567890ab"
+
+  @Test("detach closes without sending cancel")
+  func detachDoesNotCancel() async throws {
+    let task = FakeWebSocketTask()
+    let connection = makeChatConnection(task: task)
+    try await connection.connect()
+    try await connection.sendTurn(
+      id: turnID,
+      agentID: "agent-1",
+      conversationID: conversationID,
+      text: "Hello",
+      images: []
+    )
+
+    await connection.detach()
+
+    #expect(await task.sentFrames.count == 1)
+    guard let first = await task.sentFrames.first, case .message = first else {
+      Issue.record("detach sent a non-message frame")
+      return
+    }
+    #expect(await task.waitForClose() == .goingAway)
+  }
+
+  @Test("explicit cancel sends the canonical frame without closing")
+  func explicitCancel() async throws {
+    let task = FakeWebSocketTask()
+    let connection = makeChatConnection(task: task)
+    try await connection.connect()
+
+    try await connection.cancel(turnID: turnID)
+
+    #expect(await task.sentFrames.last == .cancel(id: turnID))
+    #expect(await task.closeCode == nil)
+    await connection.detach()
+  }
+
+  @Test("message resume and answer use the frozen mobile frame shapes")
+  func outboundFrameShapes() async throws {
+    let task = FakeWebSocketTask()
+    let connection = makeChatConnection(task: task)
+    try await connection.connect()
+    let image = MessageImage(mediaType: .png, data: "aGVsbG8=")
+
+    try await connection.sendTurn(
+      id: turnID,
+      agentID: "agent-1",
+      conversationID: conversationID,
+      text: "Hello",
+      images: [image]
+    )
+    try await connection.resume(
+      turnID: turnID,
+      agentID: "agent-1",
+      conversationID: conversationID,
+      sinceSeq: 7
+    )
+    try await connection.answer(turnID: turnID, questionID: "question-1", answer: "Yes")
+
+    #expect(
+      await task.sentFrames == [
+        .newTurn(
+          id: turnID,
+          agentId: "agent-1",
+          conversationId: conversationID,
+          text: "Hello",
+          images: [image]
+        ),
+        .resume(
+          id: turnID,
+          agentId: "agent-1",
+          conversationId: conversationID,
+          sinceSeq: 7
+        ),
+        .answer(id: turnID, questionId: "question-1", answer: "Yes"),
+      ]
+    )
+    await connection.detach()
+  }
+
+  @Test("relay request preserves encoded chat token and relay header")
+  func relayRequest() async throws {
+    let task = FakeWebSocketTask()
+    let session = FakeWebSocketSession(tasks: [task])
+    let connection = ChatConnection(
+      endpoint: relayEndpoint(chatToken: "chat token&value"),
+      session: session
+    )
+
+    try await connection.connect()
+
+    let request = try #require(session.requests.first)
+    let url = try #require(request.url)
+    let components = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false))
+    #expect(components.path == "/ws")
+    #expect(components.queryItems == [URLQueryItem(name: "token", value: "chat token&value")])
+    #expect(request.url?.absoluteString.contains("token=chat%20token%26value") == true)
+    #expect(request.value(forHTTPHeaderField: "x-dash-relay-credential") == "relay-secret")
+    #expect(request.url?.absoluteString.contains("management-secret") == false)
+    #expect(request.url?.absoluteString.contains("relay-secret") == false)
+    await connection.detach()
+  }
+
+  @Test("a fresh connect replaces the previous socket")
+  func connectReplacesSocket() async throws {
+    let first = FakeWebSocketTask()
+    let second = FakeWebSocketTask()
+    let session = FakeWebSocketSession(tasks: [first, second])
+    let connection = makeChatConnection(session: session)
+
+    try await connection.connect()
+    try await connection.connect()
+
+    #expect(await first.closeCode == .goingAway)
+    #expect(await first.resumeCount == 1)
+    #expect(await second.resumeCount == 1)
+    #expect(session.requests.count == 2)
+    await connection.detach()
+  }
+
+  @Test("only the active turn emits accepted event done and error frames with their sequences")
+  func activeTurnFilteringAndSequences() async throws {
+    let task = FakeWebSocketTask()
+    let connection = makeChatConnection(task: task)
+    let frames = Task { try await collectFrames(from: connection, count: 4) }
+    try await connection.connect()
+    try await connection.sendTurn(
+      id: turnID,
+      agentID: "agent-1",
+      conversationID: conversationID,
+      text: "Hello",
+      images: []
+    )
+
+    await task.enqueue(
+      .string(
+        serverJSON(
+          .accepted(
+            id: "018f0f4a-5c42-7a8b-9c01-999999999999",
+            conversationId: conversationID,
+            userMessageId: "018f0f4a-5c42-7a8b-9c01-3234567890ab",
+            assistantMessageId: "018f0f4a-5c42-7a8b-9c01-4234567890ab",
+            revision: 2,
+            seq: 1
+          ))))
+    let expected = try canonicalFrames()
+    for frame in expected {
+      await task.enqueue(.string(serverJSON(frame)))
+    }
+
+    #expect(try await frames.value == expected)
+    await connection.detach()
+  }
+
+  @Test("malformed required fields on a resumed capable turn require an update")
+  func malformedCapableFrame() async throws {
+    let task = FakeWebSocketTask()
+    let connection = makeChatConnection(task: task)
+    let terminal = Task { await terminalError(from: connection) }
+    try await connection.connect()
+    try await connection.resume(
+      turnID: turnID,
+      agentID: "agent-1",
+      conversationID: conversationID,
+      sinceSeq: 0
+    )
+
+    await task.enqueue(
+      .string(
+        String(
+          data: try FixtureLoader.data("invalid/chat-event-missing-conversation-id.json"),
+          encoding: .utf8
+        )!))
+    await task.fail(peerClose: .init(code: 4001, reason: Data("Unauthorized".utf8)))
+
+    #expect(await terminal.value == .updateRequired)
+    #expect(await task.closeCode == .goingAway)
+  }
+
+  @Test("unknown agent events remain successful capable frames")
+  func unknownAgentEvent() async throws {
+    let task = FakeWebSocketTask()
+    let connection = makeChatConnection(task: task)
+    let frames = Task { try await collectFrames(from: connection, count: 2) }
+    try await connection.connect()
+    try await connection.sendTurn(
+      id: turnID,
+      agentID: "agent-1",
+      conversationID: conversationID,
+      text: "Hello",
+      images: []
+    )
+
+    let accepted = try fixture("chat-accepted.json")
+    let unknown = try fixtureLine("chat-resume.jsonl", index: 6, replacingID: turnID)
+    await task.enqueue(.string(serverJSON(accepted)))
+    await task.enqueue(.data(Data(serverJSON(unknown).utf8)))
+
+    let values = try await frames.value
+    #expect(values == [accepted, unknown])
+    guard case .event(_, _, let seq, let event) = values.last else {
+      Issue.record("Expected unknown agent event frame")
+      return
+    }
+    #expect(seq == 8)
+    guard case .unknown(let type, _) = event else {
+      Issue.record("Unknown agent event was rejected")
+      return
+    }
+    #expect(type == "future_runtime_marker")
+    await connection.detach()
+  }
+
+  @Test("invalid UTF-8 binary frames require an update")
+  func invalidBinaryUTF8() async throws {
+    let task = FakeWebSocketTask()
+    let connection = makeChatConnection(task: task)
+    let terminal = Task { await terminalError(from: connection) }
+    try await connection.connect()
+    try await connection.sendTurn(
+      id: turnID,
+      agentID: "agent-1",
+      conversationID: conversationID,
+      text: "Hello",
+      images: []
+    )
+
+    await task.enqueue(.data(Data([0xFF, 0xFE])))
+
+    #expect(await terminal.value == .updateRequired)
+    #expect(await task.closeCode == .goingAway)
+  }
+
+  @Test(arguments: [4001, 4401])
+  func authenticationCloseCodesAreUnauthorized(code: Int) async throws {
+    let task = FakeWebSocketTask()
+    let session = FakeWebSocketSession(tasks: [task])
+    let connection = makeChatConnection(session: session)
+    let terminal = Task { await terminalError(from: connection) }
+    try await connection.connect()
+
+    await task.fail(peerClose: .init(code: code, reason: Data("Unauthorized".utf8)))
+
+    #expect(await terminal.value == .unauthorized)
+    #expect(session.requests.count == 1)
+  }
+
+  @Test("rate limit close parses safe numeric and JSON reasons")
+  func rateLimitCloseReasons() async throws {
+    for (reason, expected) in [
+      ("30", GatewayError.rateLimited(retryAfter: .seconds(30))),
+      (#"{"retryAfterSeconds":12.5}"#, .rateLimited(retryAfter: .milliseconds(12_500))),
+      ("1e309", .rateLimited(retryAfter: nil)),
+      (#"{"retryAfterSeconds":true}"#, .rateLimited(retryAfter: nil)),
+      (#"{"retryAfterSeconds":1e300}"#, .rateLimited(retryAfter: nil)),
+      (#"{"retryAfterSeconds":-1}"#, .rateLimited(retryAfter: nil)),
+    ] {
+      let task = FakeWebSocketTask()
+      let connection = makeChatConnection(task: task)
+      let terminal = Task { await terminalError(from: connection) }
+      try await connection.connect()
+
+      await task.fail(peerClose: .init(code: 4429, reason: Data(reason.utf8)))
+
+      #expect(await terminal.value == expected)
+    }
+  }
+
+  @Test("ordinary socket loss reconnects once after clocked backoff")
+  func abnormalCloseReconnectsWithoutTightLoop() async throws {
+    let first = FakeWebSocketTask()
+    let second = FakeWebSocketTask()
+    let session = FakeWebSocketSession(tasks: [first, second])
+    let clock = TestAppClock(now: Date(timeIntervalSince1970: 0))
+    let connection = makeChatConnection(session: session, clock: clock)
+    let states = Task { try await collectStates(from: connection, count: 5) }
+    try await connection.connect()
+
+    await first.fail()
+
+    #expect(
+      try await states.value == [
+        .connecting,
+        .connected,
+        .reconnecting(attempt: 1),
+        .connecting,
+        .connected,
+      ]
+    )
+    #expect(await clock.sleeps == [.seconds(1)])
+    #expect(session.requests.count == 2)
+    await connection.detach()
+  }
+
+  @Test("ordinary socket loss stops after the bounded reconnect limit")
+  func reconnectLimit() async throws {
+    let tasks = (0...5).map { _ in FakeWebSocketTask() }
+    let session = FakeWebSocketSession(tasks: tasks)
+    let clock = TestAppClock(now: Date(timeIntervalSince1970: 0))
+    let connection = makeChatConnection(session: session, clock: clock)
+    let terminal = Task { await terminalError(from: connection) }
+    try await connection.connect()
+
+    for (index, task) in tasks.enumerated() {
+      await task.fail()
+      if index < tasks.count - 1 {
+        await waitForRequestCount(index + 2, in: session)
+      }
+    }
+
+    guard case .transport? = await terminal.value else {
+      Issue.record("Reconnect exhaustion did not terminate as transport loss")
+      return
+    }
+    #expect(session.requests.count == 6)
+    #expect(
+      await clock.sleeps
+        == [.seconds(1), .seconds(2), .seconds(4), .seconds(8), .seconds(16)]
+    )
+  }
+
+  @Test("authentication probe accepts structured not found and always detaches")
+  func authenticationProbe() async throws {
+    let task = FakeWebSocketTask()
+    let connection = makeChatConnection(task: task)
+    let probe = Task { try await connection.probeAuthentication() }
+
+    let sent = await task.nextSentFrame()
+    guard case .resume(let id, let agentID, let conversationID, let sinceSeq) = sent else {
+      Issue.record("Probe did not send resume")
+      return
+    }
+    #expect(agentID == "__dash_ios_pairing_probe__")
+    #expect(sinceSeq == 0)
+    #expect(UUID(uuidString: id) != nil)
+    #expect(UUID(uuidString: conversationID) != nil)
+    await task.enqueue(
+      .string(
+        serverJSON(
+          .error(
+            id: id,
+            conversationId: nil,
+            seq: nil,
+            error: "Conversation not found",
+            code: "not_found",
+            retryable: false,
+            activeTurnId: nil
+          ))))
+
+    try await probe.value
+    #expect(await task.waitForClose() == .goingAway)
+  }
+
+  @Test("authentication probe accepts any successfully decoded server frame")
+  func authenticationProbeAcceptsDecodedFrame() async throws {
+    let task = FakeWebSocketTask()
+    let connection = makeChatConnection(task: task)
+    let probe = Task { try await connection.probeAuthentication() }
+    _ = await task.nextSentFrame()
+
+    await task.enqueue(.string(serverJSON(try fixture("chat-accepted.json"))))
+
+    try await probe.value
+    #expect(await task.waitForClose() == .goingAway)
+  }
+
+  @Test("authentication probe accepts a decoded legacy frame without capable fields")
+  func authenticationProbeAcceptsLegacyFrame() async throws {
+    let task = FakeWebSocketTask()
+    let connection = makeChatConnection(task: task)
+    let probe = Task { try await connection.probeAuthentication() }
+    _ = await task.nextSentFrame()
+
+    await task.enqueue(
+      .string(
+        serverJSON(
+          .done(
+            id: "018f0f4a-5c42-7a8b-9c01-999999999999",
+            conversationId: nil,
+            seq: nil,
+            outcome: nil
+          ))))
+
+    try await probe.value
+    #expect(await task.waitForClose() == .goingAway)
+  }
+
+  @Test(arguments: [4001, 4401])
+  func authenticationProbeRejectsAuthClose(code: Int) async throws {
+    let task = FakeWebSocketTask()
+    let connection = makeChatConnection(task: task)
+    let probe = Task {
+      await chatGatewayError { try await connection.probeAuthentication() }
+    }
+    _ = await task.nextSentFrame()
+
+    await task.fail(peerClose: .init(code: code, reason: Data("Unauthorized".utf8)))
+
+    #expect(await probe.value == .unauthorized)
+    #expect(await task.waitForClose() == .goingAway)
+  }
+
+  @Test("authentication probe maps rate limit close reason")
+  func authenticationProbeRateLimit() async throws {
+    let task = FakeWebSocketTask()
+    let connection = makeChatConnection(task: task)
+    let probe = Task {
+      await chatGatewayError { try await connection.probeAuthentication() }
+    }
+    _ = await task.nextSentFrame()
+
+    await task.fail(peerClose: .init(code: 4429, reason: Data("15".utf8)))
+
+    #expect(await probe.value == .rateLimited(retryAfter: .seconds(15)))
+    #expect(await task.waitForClose() == .goingAway)
+  }
+
+  @Test("authentication probe times out after five clocked seconds and detaches")
+  func authenticationProbeTimeout() async throws {
+    let task = FakeWebSocketTask()
+    let clock = TestAppClock(now: Date(timeIntervalSince1970: 0))
+    let connection = makeChatConnection(task: task, clock: clock)
+
+    let error = await chatGatewayError {
+      try await connection.probeAuthentication()
+    }
+
+    #expect(error == .transport("Chat authentication probe timed out"))
+    #expect(await clock.sleeps.contains(.seconds(5)))
+    #expect(await task.waitForClose() == .goingAway)
+  }
+
+  private func makeChatConnection(
+    task: FakeWebSocketTask,
+    clock: any AppClock = SystemAppClock()
+  ) -> ChatConnection {
+    makeChatConnection(session: FakeWebSocketSession(tasks: [task]), clock: clock)
+  }
+
+  private func makeChatConnection(
+    session: FakeWebSocketSession,
+    clock: any AppClock = SystemAppClock()
+  ) -> ChatConnection {
+    ChatConnection(endpoint: lanEndpoint(), session: session, clock: clock)
+  }
+
+  private func lanEndpoint() -> ConnectionEndpoint {
+    endpoint(mode: .lan, chatToken: "chat-secret")
+  }
+
+  private func relayEndpoint(chatToken: String) -> ConnectionEndpoint {
+    endpoint(mode: .relay, chatToken: chatToken)
+  }
+
+  private func endpoint(mode: ConnectionMode, chatToken: String) -> ConnectionEndpoint {
+    let relay = mode == .relay
+    let profile = ConnectionProfile(
+      id: UUID(),
+      gatewayId: nil,
+      publicKey: nil,
+      label: "Test",
+      host: relay ? "gateway.relay.example" : "127.0.0.1",
+      managementPort: relay ? 443 : 9300,
+      chatPort: relay ? 443 : 9200,
+      secure: relay,
+      mode: mode,
+      createdAt: Date(timeIntervalSince1970: 0),
+      lastSuccessfulSyncAt: nil
+    )
+    let secrets = ConnectionSecrets(
+      managementToken: "management-secret",
+      chatToken: chatToken,
+      relayCredential: relay ? "relay-secret" : nil
+    )
+    return ConnectionEndpoint(profile: profile, secrets: secrets)
+  }
+
+  private func canonicalFrames() throws -> [MobileWSServerFrame] {
+    [
+      try fixture("chat-accepted.json"),
+      try fixture("chat-event.json"),
+      try fixture("chat-done.json"),
+      try fixture("chat-error.json", replacingID: turnID),
+    ]
+  }
+}
+
+private func collectFrames(
+  from connection: ChatConnection,
+  count: Int
+) async throws -> [MobileWSServerFrame] {
+  var frames: [MobileWSServerFrame] = []
+  for try await event in await connection.events() {
+    if case .frame(let frame) = event {
+      frames.append(frame)
+      if frames.count == count { break }
+    }
+  }
+  return frames
+}
+
+private func collectStates(
+  from connection: ChatConnection,
+  count: Int
+) async throws -> [ChatTransportState] {
+  var states: [ChatTransportState] = []
+  for try await event in await connection.events() {
+    if case .state(let state) = event {
+      states.append(state)
+      if states.count == count { break }
+    }
+  }
+  return states
+}
+
+private func terminalError(from connection: ChatConnection) async -> GatewayError? {
+  do {
+    for try await _ in await connection.events() {}
+    return nil
+  } catch let error as GatewayError {
+    return error
+  } catch {
+    Issue.record("Unexpected terminal error: \(error)")
+    return nil
+  }
+}
+
+private func chatGatewayError(
+  _ operation: () async throws -> Void
+) async -> GatewayError? {
+  do {
+    try await operation()
+    return nil
+  } catch let error as GatewayError {
+    return error
+  } catch {
+    Issue.record("Unexpected error: \(error)")
+    return nil
+  }
+}
+
+private func waitForRequestCount(_ count: Int, in session: FakeWebSocketSession) async {
+  while session.requests.count < count {
+    await Task.yield()
+  }
+}
+
+private func serverJSON(_ frame: MobileWSServerFrame) -> String {
+  let data = try! ContractCoding.encoder().encode(frame)
+  return String(data: data, encoding: .utf8)!
+}
+
+private func fixture(_ name: String, replacingID: String? = nil) throws -> MobileWSServerFrame {
+  var data = try FixtureLoader.data(name)
+  if let replacingID {
+    var object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+    object["id"] = replacingID
+    data = try JSONSerialization.data(withJSONObject: object)
+  }
+  return try ContractCoding.decoder().decode(MobileWSServerFrame.self, from: data)
+}
+
+private func fixtureLine(
+  _ name: String,
+  index: Int,
+  replacingID: String? = nil
+) throws -> MobileWSServerFrame {
+  let source = String(decoding: try FixtureLoader.data(name), as: UTF8.self)
+  let lines = source.split(whereSeparator: \.isNewline).map(String.init)
+  var data = Data(lines[index].utf8)
+  if let replacingID {
+    var object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+    object["id"] = replacingID
+    data = try JSONSerialization.data(withJSONObject: object)
+  }
+  return try ContractCoding.decoder().decode(
+    MobileWSServerFrame.self,
+    from: data
+  )
+}
