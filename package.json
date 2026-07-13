@@ -39,6 +39,7 @@
     "models:audit:apply": "tsx scripts/audit-models.ts --apply",
     "models:check": "tsx scripts/check-models-freshness.ts",
     "mobile:contract-check": "npm test --workspace=@dash/mobile-contract",
+    "mobile:e2e": "node --import tsx scripts/mobile-v1-e2e.mjs",
     "mobile:test-harness": "node --import tsx apps/gateway/src/mobile-test-harness-cli.ts",
     "preflight": "npm run lint && npm run build && npm test && npm run models:check",
     "test": "vitest run",
