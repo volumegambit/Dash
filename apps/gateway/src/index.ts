@@ -37,6 +37,7 @@ import { GatewayCredentialStore } from './credential-store.js';
 import { createDialTokenManager } from './dial-token-manager.js';
 import { EventBus } from './event-bus.js';
 import { loadOrCreateGatewayId, loadOrCreateGatewayIdentity } from './gateway-identity.js';
+import { recoverGatewayTurns } from './gateway-recovery.js';
 import { createDynamicGateway } from './gateway.js';
 import { createGatewayManagementApp } from './management-api.js';
 import { McpConfigStore } from './mcp-store.js';
@@ -53,7 +54,6 @@ import {
 import { type RelayClient, startRelayClient } from './relay-client.js';
 import { createResumableChatHub } from './resumable-chat-hub.js';
 import { safeStep } from './shutdown.js';
-import { recoverInterruptedSwarmTurns } from './swarm-log-recovery.js';
 import { createGatewayWorkerFactory } from './swarm-wiring.js';
 
 async function main() {
@@ -401,15 +401,15 @@ async function main() {
   // event log (so MC's replay terminalizes instead of spinning forever) and
   // restore the interrupted runs into the panel history. Runs before any
   // server accepts traffic, so no live turn can exist yet.
-  recoverInterruptedSwarmTurns({
+  const { conversations: conversationRecovery } = recoverGatewayTurns({
     eventLog: eventLogStore,
+    conversations: conversationService,
     restoreRun: (snapshot) => swarmCoordinator.restoreFinalizedRun(snapshot),
     log: (message) => logger.info(message),
   });
-  const conversationRecovery = conversationService.recoverInterruptedTurns();
   if (conversationRecovery.conversationsInterrupted > 0) {
     logger.info(
-      `[conversation-recovery] interrupted ${conversationRecovery.conversationsInterrupted} turn(s), ` +
+      `[conversation-recovery] interrupted ${conversationRecovery.conversationsInterrupted} conversation(s), ` +
         `appended ${conversationRecovery.terminalsAppended} terminal(s)`,
     );
   }
@@ -805,6 +805,7 @@ async function main() {
     // runs at request time, long after it exists.
     onShutdown: () => shutdown('POST /lifecycle/shutdown'),
     conversationService,
+    resumableChatHub,
     // Mounts the swarm panel routes + threads the cancel cascade into the
     // disable/delete agent handlers. Same instance the chat coordinator attaches
     // turns to, so the panel reads live runs.

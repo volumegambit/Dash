@@ -193,6 +193,10 @@ function makeConversationService(): ConversationService {
   } as unknown as ConversationService;
 }
 
+function makeResumableChatHub() {
+  return { cancelAgent: vi.fn().mockResolvedValue(undefined) };
+}
+
 function createApp(overrides: Record<string, unknown> = {}) {
   const deps = {
     gateway: makeGateway(),
@@ -202,6 +206,8 @@ function createApp(overrides: Record<string, unknown> = {}) {
     credentialStore: makeCredentialStore(),
     modelsStore: makeModelsStore(),
     conversationService: makeConversationService(),
+    resumableChatHub: makeResumableChatHub(),
+    eventBus: new EventBus(),
     identity: { gatewayId: 'gateway-test-id', publicKey: 'PUBKEY_B64' },
     startedAt: '2026-04-03T00:00:00Z',
     token: 'test-token',
@@ -744,7 +750,8 @@ describe('createGatewayManagementApp', () => {
 
   describe('DELETE /agents/:id', () => {
     it('removes agent and cleans up channels, pool, and registry', async () => {
-      const { app, agentRegistry, gateway, channelRegistry, agents } = createApp();
+      const { app, agentRegistry, gateway, channelRegistry, agents, resumableChatHub } =
+        createApp();
       const entry = (agentRegistry.register as ReturnType<typeof vi.fn>)({
         name: 'x',
         model: 'm',
@@ -756,12 +763,16 @@ describe('createGatewayManagementApp', () => {
         headers: AUTH,
       });
       expect(res.status).toBe(200);
+      expect(resumableChatHub.cancelAgent).toHaveBeenCalledWith(entry.id);
       expect(gateway.deregisterAgent).toHaveBeenCalledWith(entry.id);
       expect(channelRegistry.remove).toHaveBeenCalledWith('ch1');
       expect(channelRegistry.removeRoutesForAgent).toHaveBeenCalledWith(entry.id);
       // Warm pool entries must be evicted so in-flight streams are aborted
       // and backend.stop() runs on any cached DashAgent / AgentBackend.
       expect(agents.evict).toHaveBeenCalledWith(entry.id);
+      expect(resumableChatHub.cancelAgent.mock.invocationCallOrder[0]).toBeLessThan(
+        vi.mocked(agents.evict).mock.invocationCallOrder[0] as number,
+      );
       expect(agentRegistry.remove).toHaveBeenCalledWith(entry.id);
       expect(agentRegistry.save).toHaveBeenCalled();
       expect(channelRegistry.save).toHaveBeenCalled();
@@ -792,9 +803,11 @@ describe('createGatewayManagementApp', () => {
     });
 
     it('returns 404 for unknown ID', async () => {
-      const { app } = createApp();
+      const { app, agents, resumableChatHub } = createApp();
       const res = await app.request('/agents/nope/disable', { method: 'POST', headers: AUTH });
       expect(res.status).toBe(404);
+      expect(resumableChatHub.cancelAgent).not.toHaveBeenCalled();
+      expect(agents.evict).not.toHaveBeenCalled();
     });
   });
 
@@ -1752,9 +1765,23 @@ describe('canonical and legacy conversation replay', () => {
     const tmpDir = await mkdtemp(join(tmpdir(), 'management-replay-'));
     const conversationService = new SqliteConversationService({ dataDir: tmpDir });
     try {
-      const { app, agentRegistry } = createApp({
+      const eventBus = new EventBus();
+      const emit = vi.spyOn(eventBus, 'emit');
+      const deleteAgentEvents = vi.spyOn(conversationService.eventLog, 'deleteAgent');
+      let liveConversationId = '';
+      const resumableChatHub = {
+        cancelAgent: vi.fn(async () => {
+          conversationService.finishTurn({
+            conversationId: liveConversationId,
+            turnId: 'turn-01',
+            outcome: 'cancelled',
+          });
+        }),
+      };
+      const { app, agentRegistry, agents } = createApp({
         conversationService,
-        eventLogStore: conversationService.eventLog,
+        eventBus,
+        resumableChatHub,
       });
       const agent = (agentRegistry.register as ReturnType<typeof vi.fn>)({
         name: 'Archived Helper',
@@ -1766,6 +1793,7 @@ describe('canonical and legacy conversation replay', () => {
         agentName: agent.name,
         requestId: 'create-01',
       });
+      liveConversationId = conversation.id;
       conversationService.acceptTurn({
         agentId: agent.id,
         conversationId: conversation.id,
@@ -1776,15 +1804,55 @@ describe('canonical and legacy conversation replay', () => {
         type: 'text_delta',
         text: 'Remembered',
       });
-      conversationService.finishTurn({
-        conversationId: conversation.id,
-        turnId: 'turn-01',
-        outcome: 'completed',
+      const second = conversationService.create({
+        agentId: agent.id,
+        agentName: agent.name,
+        requestId: 'create-02',
       });
 
       const removed = await app.request(`/agents/${agent.id}`, { method: 'DELETE', headers: AUTH });
       expect(removed.status).toBe(200);
-      expect(conversationService.get(conversation.id)).toMatchObject({ status: 'archived' });
+      expect(resumableChatHub.cancelAgent).toHaveBeenCalledWith(agent.id);
+      expect(resumableChatHub.cancelAgent.mock.invocationCallOrder[0]).toBeLessThan(
+        vi.mocked(agents.evict).mock.invocationCallOrder[0] as number,
+      );
+      expect(agentRegistry.get(agent.id)).toBeUndefined();
+      expect(conversationService.get(conversation.id)).toMatchObject({
+        status: 'archived',
+        activeTurnId: null,
+        agentName: 'Archived Helper',
+      });
+      expect(conversationService.get(second.id)).toMatchObject({
+        status: 'archived',
+        activeTurnId: null,
+        agentName: 'Archived Helper',
+      });
+      expect(
+        conversationService.listMessages({ conversationId: conversation.id, limit: 10 }).items,
+      ).toEqual([
+        expect.objectContaining({
+          role: 'user',
+          content: { type: 'user', text: 'Remember this' },
+        }),
+        expect.objectContaining({
+          role: 'assistant',
+          status: 'cancelled',
+          content: {
+            type: 'assistant',
+            events: [{ type: 'text_delta', text: 'Remembered' }],
+          },
+        }),
+      ]);
+      expect(deleteAgentEvents).not.toHaveBeenCalled();
+      expect(emit).toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'conversation:changed', conversationId: conversation.id }),
+      );
+      expect(emit).toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'conversation:changed', conversationId: second.id }),
+      );
+      expect(vi.mocked(agentRegistry.save).mock.invocationCallOrder[0]).toBeLessThan(
+        emit.mock.invocationCallOrder[0] as number,
+      );
 
       const replay = await app.request(
         `/agents/${agent.id}/conversations/${conversation.id}/events?sinceSeq=0`,
@@ -1796,6 +1864,9 @@ describe('canonical and legacy conversation replay', () => {
           (entry: { payload: { type: string } }) => entry.payload.type,
         ),
       ).toEqual(['accepted', 'event', 'done']);
+      expect(
+        conversationService.eventLog.readSince(agent.id, conversation.id, 0).at(-1)?.payload,
+      ).toEqual({ type: 'done', outcome: 'cancelled' });
     } finally {
       conversationService.close();
       await rm(tmpDir, { recursive: true, force: true });

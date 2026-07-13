@@ -27,6 +27,7 @@ import { mountMcpRoutes } from './mcp-management.js';
 import { createModelsController, createModelsRoute } from './models-route.js';
 import type { ModelsStore } from './models-store.js';
 import type { PluginWiringState } from './plugins-wiring.js';
+import type { ResumableChatHub } from './resumable-chat-hub.js';
 import { mountSwarmRoutes } from './swarm-management.js';
 
 const MOBILE_CAPABILITIES: MobileCapability[] = ['conversation-sync-v1', 'chat-resume-v1'];
@@ -47,6 +48,8 @@ export interface GatewayManagementOptions {
   modelsStore: ModelsStore;
   /** Canonical conversation metadata, messages, and the shared durable event journal. */
   conversationService: ConversationService;
+  /** Process-wide resumable turn owner used to quiesce an agent before backend eviction. */
+  resumableChatHub: Pick<ResumableChatHub, 'cancelAgent'>;
   /** Shared projects DB. When present, mounts /projects + /issues + /inbox. */
   projectsDb?: ProjectsDb;
   /**
@@ -675,6 +678,7 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
       const entry = agentRegistry.get(id);
       if (!entry) return c.json(mobileAgentNotFound(), 404);
       try {
+        await options.resumableChatHub.cancelAgent(id);
         const removedChannels = await gateway.deregisterAgent(id);
         for (const name of removedChannels) {
           channelRegistry.remove(name);
@@ -691,7 +695,10 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
         // the registry remove means races that race a delete with a chat
         // get aborted rather than serving a deleted agent's state.
         await agents.evict(id);
-        const archived = options.conversationService?.archiveAgentConversations(id) ?? [];
+        const archived = options.conversationService.archiveAgentConversations(id);
+        agentRegistry.remove(id);
+        await agentRegistry.save();
+        await channelRegistry.save();
         for (const conversation of archived) {
           eventBus?.emit({
             type: 'conversation:changed',
@@ -699,9 +706,6 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
             revision: conversation.revision,
           });
         }
-        agentRegistry.remove(id);
-        await agentRegistry.save();
-        await channelRegistry.save();
         return c.json({ ok: true });
       } catch (error) {
         logger.error('mobile agent delete failed', error instanceof Error ? error : undefined, {
@@ -717,6 +721,7 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
       try {
         agentRegistry.disable(id);
         await agentRegistry.save();
+        await options.resumableChatHub.cancelAgent(id);
         // Disable must actually stop a running orchestrator: cancel its live swarm
         // runs, then evict the warm backend (which aborts the pinned in-flight
         // turn — intentional per the design, disable is a hard stop). Ordered so
