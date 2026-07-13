@@ -14,7 +14,7 @@ import { createConsoleLogger } from '@dash/logging';
 import { mountProjectsWs } from '@dash/management';
 import { FileTokenStore, McpManager } from '@dash/mcp';
 import type { McpAgentContext } from '@dash/mcp';
-import type { GatewayIdentity } from '@dash/mobile-contract';
+import type { ConversationSummary, GatewayIdentity } from '@dash/mobile-contract';
 import { gatewayDir, migrateLegacyLayout, workspacesDir } from '@dash/paths';
 import { PluginConfigStore, RESERVED_PROVIDER_IDS, loadPlugins } from '@dash/plugins';
 import { createProjectsTools, openProjectsDb } from '@dash/projects';
@@ -30,7 +30,9 @@ import { ChannelRegistry } from './channel-registry.js';
 import { mountChatWs } from './chat-ws.js';
 import { parseFlags, resolveSwarmConfig, swarmOverridesFromEnv } from './config.js';
 import { createControlPlaneClient } from './control-plane-client.js';
+import { createConversationAutoTitleService } from './conversation-auto-title.js';
 import { SqliteConversationService } from './conversation-service-sqlite.js';
+import { generateConversationTitle } from './conversation-title.js';
 import { GatewayCredentialStore } from './credential-store.js';
 import { createDialTokenManager } from './dial-token-manager.js';
 import { EventBus } from './event-bus.js';
@@ -49,6 +51,7 @@ import {
   reloadPluginsUnderMutex,
 } from './plugins-wiring.js';
 import { type RelayClient, startRelayClient } from './relay-client.js';
+import { createResumableChatHub } from './resumable-chat-hub.js';
 import { safeStep } from './shutdown.js';
 import { recoverInterruptedSwarmTurns } from './swarm-log-recovery.js';
 import { createGatewayWorkerFactory } from './swarm-wiring.js';
@@ -609,6 +612,40 @@ async function main() {
     },
   });
 
+  const emitConversationChanged = (summary: ConversationSummary): void => {
+    eventBus.emit({
+      type: 'conversation:changed',
+      conversationId: summary.id,
+      revision: summary.revision,
+    });
+  };
+  const conversationAutoTitle = createConversationAutoTitleService({
+    conversations: conversationService,
+    async generateTitle({ agentId, text }) {
+      const entry = registry.get(agentId);
+      if (!entry) throw new Error(`Agent '${agentId}' not found`);
+      await oauthRefreshCoordinator.refreshExpiring();
+      const storeKeys = await credentialStore.readProviderApiKeys();
+      const { title } = await generateConversationTitle({
+        modelStr: entry.config.model,
+        allowedProviders: entry.config.providers,
+        pluginModelCatalog: wiringState.pluginModelCatalog,
+        providerApiKeys: { ...storeKeys, ...(entry.config.providerApiKeys ?? {}) },
+        text,
+      });
+      return title;
+    },
+    onChanged: emitConversationChanged,
+    logger,
+  });
+  const resumableChatHub = createResumableChatHub({
+    conversations: conversationService,
+    agents,
+    autoTitle: conversationAutoTitle,
+    swarmCoordinator,
+    onChanged: emitConversationChanged,
+  });
+
   // --- Plugin hot-reload trigger ---
   //
   // The management routes cannot reassign this entrypoint's `wiringState`
@@ -815,6 +852,7 @@ async function main() {
   const verboseWs = flags.verbose || process.env.NODE_ENV !== 'production';
   mountChatWs(channelApp, {
     agents,
+    resumableChatHub,
     token: flags.chatToken,
     upgradeWebSocket,
     eventLogStore,
@@ -924,6 +962,8 @@ async function main() {
     await safeStep('relayClient.stop', () => relayClient?.stop());
     await safeStep('dialTokenManager.stop', () => dialTokenManager?.stop());
     await safeStep('mcpManager.stop', () => mcpManager.stop());
+    await safeStep('resumableChatHub.stop', () => resumableChatHub.stop());
+    await safeStep('conversationAutoTitle.flush', () => conversationAutoTitle.flush());
     // Finalize every live swarm run (cancels in-flight workers, aborts their
     // orchestrators) BEFORE the chat coordinator tears down its warm backends,
     // so no worker outlives the pool it borrowed its identity from.
