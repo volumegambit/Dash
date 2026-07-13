@@ -35,6 +35,8 @@ protocol ConversationListPersisting: Actor {
   func conversations(gatewayID: String, limit: Int) async throws -> [CachedConversation]
   func agents(gatewayID: String) async throws -> [RegisteredAgentDTO]
   func replaceAgents(_ values: [RegisteredAgentDTO], gatewayID: String) async throws
+  func upsertAgent(_ value: RegisteredAgentDTO, gatewayID: String) async throws
+  func removeAgent(gatewayID: String, agentID: String) async throws
   func upsertConversations(
     _ values: [ConversationSummaryDTO],
     gatewayID: String

@@ -82,6 +82,50 @@ struct AppModelTests {
     #expect(model.splitConversationSelection == .transcript("regular"))
   }
 
+  @Test("agent navigation survives an adaptive width transition")
+  func agentNavigationSurvivesWidthTransition() {
+    let model = AppModel(
+      dependencies: dependencies(profile: nil, engine: FakeAppSyncEngine())
+    )
+
+    model.openAgent(.detail("compact"), presentation: .compact)
+
+    #expect(model.selectedTab == .agents)
+    #expect(model.agentPath == [.detail("compact")])
+    #expect(model.splitAgentSelection == .detail("compact"))
+
+    model.openAgent(.edit("regular"), presentation: .regular)
+
+    #expect(model.agentPath == [.edit("regular")])
+    #expect(model.splitAgentSelection == .edit("regular"))
+  }
+
+  @Test("compact agent back navigation keeps regular-width selection in sync")
+  func compactAgentBackNavigationSynchronizesSelection() {
+    let model = AppModel(
+      dependencies: dependencies(profile: nil, engine: FakeAppSyncEngine())
+    )
+    model.openAgent(.detail("agent-1"), presentation: .compact)
+    model.openAgent(.edit("agent-1"), presentation: .compact)
+
+    model.agentPath.removeLast()
+
+    #expect(model.splitAgentSelection == .detail("agent-1"))
+
+    model.agentPath.removeAll()
+
+    #expect(model.splitAgentSelection == nil)
+  }
+
+  @Test("agent routes identify the row selected in regular width")
+  func agentRouteSelectionIdentity() {
+    #expect(AgentRoute.detail("agent-1").selectsAgent("agent-1"))
+    #expect(AgentRoute.edit("agent-1").selectsAgent("agent-1"))
+    #expect(AgentRoute.startChat("agent-1").selectsAgent("agent-1"))
+    #expect(AgentRoute.detail("agent-2").selectsAgent("agent-1") == false)
+    #expect(AgentRoute.create.selectsAgent("agent-1") == false)
+  }
+
   @Test("disconnect keeps paired content visible until teardown completes")
   func disconnectWaitsForTeardown() async throws {
     let shutdownGate = TestGate()
@@ -244,6 +288,76 @@ struct AppModelTests {
     #expect(model.selectedProfile == nil)
     #expect(model.banner == nil)
     #expect(await engine.shutdownCallCount == 1)
+  }
+
+  @Test("a superseded activation drains every retired feature and engine exactly once")
+  func supersededActivationDrainsRetiredResources() async {
+    let original = connectionProfile()
+    let replacement = replacementProfile()
+    let newest = replacementProfile(gatewayID: "gateway-3")
+    let originalEngine = FakeAppSyncEngine()
+    let replacementEngine = FakeAppSyncEngine()
+    let newestEngine = FakeAppSyncEngine()
+    let originalConversationService = AppModelConversationService()
+    let originalConversationFeature = ConversationListFeature(
+      gatewayID: original.gatewayID,
+      service: originalConversationService
+    )
+    let originalShutdownGate = TestGate()
+    let originalAgentsService = AppModelAgentsService(shutdownGate: originalShutdownGate)
+    let replacementAgentsService = AppModelAgentsService()
+    let newestAgentsService = AppModelAgentsService()
+    let originalAgentsFeature = AgentsFeature(
+      gatewayID: original.gatewayID,
+      service: originalAgentsService
+    )
+    let replacementAgentsFeature = AgentsFeature(
+      gatewayID: replacement.gatewayID,
+      service: replacementAgentsService
+    )
+    let newestAgentsFeature = AgentsFeature(
+      gatewayID: newest.gatewayID,
+      service: newestAgentsService
+    )
+    let model = AppModel(
+      dependencies: AppDependencies(
+        clock: TestAppClock(now: Date(timeIntervalSince1970: 100)),
+        loadProfile: { original },
+        makeSyncEngine: { profile in
+          switch profile.gatewayID {
+          case original.gatewayID: originalEngine
+          case replacement.gatewayID: replacementEngine
+          default: newestEngine
+          }
+        },
+        makeConversationListFeature: { profile in
+          profile.gatewayID == original.gatewayID ? originalConversationFeature : nil
+        },
+        makeAgentsFeature: { profile in
+          switch profile.gatewayID {
+          case original.gatewayID: originalAgentsFeature
+          case replacement.gatewayID: replacementAgentsFeature
+          default: newestAgentsFeature
+          }
+        }
+      )
+    )
+    await model.start()
+
+    let installReplacement = Task { await model.installPairedProfile(replacement) }
+    await originalShutdownGate.waitUntilWaiting()
+    await model.installPairedProfile(newest)
+    await originalShutdownGate.release()
+    await installReplacement.value
+
+    #expect(model.selectedProfile == newest)
+    #expect(await originalConversationService.shutdownCallCount == 1)
+    #expect(await originalAgentsService.shutdownCallCount == 1)
+    #expect(await replacementAgentsService.shutdownCallCount == 1)
+    #expect(await newestAgentsService.shutdownCallCount == 0)
+    #expect(await originalEngine.shutdownCallCount == 1)
+    #expect(await replacementEngine.shutdownCallCount == 1)
+    #expect(await newestEngine.shutdownCallCount == 0)
   }
 
   @Test("background intent reaches an engine created after the transition")
@@ -557,6 +671,159 @@ struct AppModelTests {
     #expect(feature.conversations.isEmpty)
   }
 
+  @Test("agents feature receives every snapshot while its view is off-screen")
+  func appModelOwnsAgentSnapshotDelivery() async {
+    let engine = FakeAppSyncEngine()
+    let profile = connectionProfile()
+    let feature = AgentsFeature(
+      gatewayID: profile.gatewayID,
+      service: AppModelAgentsService()
+    )
+    let model = AppModel(
+      dependencies: AppDependencies(
+        clock: TestAppClock(now: Date(timeIntervalSince1970: 100)),
+        loadProfile: { profile },
+        makeSyncEngine: { _ in engine },
+        makeAgentsFeature: { _ in feature }
+      )
+    )
+    await model.start()
+    let value = agent()
+
+    model.consume(
+      SyncSnapshot(
+        connection: .online,
+        conversations: [],
+        agents: [value],
+        lastSuccessfulSyncAt: Date(timeIntervalSince1970: 100)
+      )
+    )
+
+    #expect(feature.agents == [value])
+    #expect(feature.mutationsAllowed)
+
+    model.consume(
+      SyncSnapshot(
+        connection: .offline,
+        conversations: [],
+        agents: [value],
+        lastSuccessfulSyncAt: Date(timeIntervalSince1970: 100)
+      )
+    )
+
+    #expect(feature.agents == [value])
+    #expect(feature.mutationsAllowed == false)
+  }
+
+  @Test("agent service authorization loss updates app authority")
+  func agentServiceErrorUpdatesAppState() async {
+    let engine = FakeAppSyncEngine()
+    let profile = connectionProfile()
+    let service = AppModelAgentsService(actionError: .unauthorized)
+    let feature = AgentsFeature(gatewayID: profile.gatewayID, service: service)
+    let model = AppModel(
+      dependencies: AppDependencies(
+        clock: TestAppClock(now: Date(timeIntervalSince1970: 100)),
+        loadProfile: { profile },
+        makeSyncEngine: { _ in engine },
+        makeAgentsFeature: { _ in feature }
+      )
+    )
+    await model.start()
+    let value = agent()
+    model.consume(
+      SyncSnapshot(
+        connection: .online,
+        conversations: [],
+        agents: [value],
+        lastSuccessfulSyncAt: Date(timeIntervalSince1970: 100)
+      )
+    )
+
+    await feature.setEnabled(id: value.id, enabled: false, confirmed: true)
+
+    #expect(model.connectionState == .repairRequired)
+    #expect(model.banner == .repairRequired)
+    #expect(feature.mutationsAllowed == false)
+  }
+
+  @Test("agent service authority loss preserves the feature's newer canonical agents")
+  func agentServiceErrorPreservesCanonicalAgents() async {
+    let engine = FakeAppSyncEngine()
+    let profile = connectionProfile()
+    let stale = agent()
+    let canonical = agent(model: "canonical/model")
+    let service = AppModelAgentsService(
+      actionError: .unauthorized,
+      refreshedAgents: [canonical]
+    )
+    let feature = AgentsFeature(gatewayID: profile.gatewayID, service: service)
+    let model = AppModel(
+      dependencies: AppDependencies(
+        clock: TestAppClock(now: Date(timeIntervalSince1970: 100)),
+        loadProfile: { profile },
+        makeSyncEngine: { _ in engine },
+        makeAgentsFeature: { _ in feature }
+      )
+    )
+    await model.start()
+    model.consume(
+      SyncSnapshot(
+        connection: .online,
+        conversations: [],
+        agents: [stale],
+        lastSuccessfulSyncAt: Date(timeIntervalSince1970: 100)
+      )
+    )
+    await feature.refresh()
+    #expect(feature.agents == [canonical])
+
+    await feature.setEnabled(id: canonical.id, enabled: false, confirmed: true)
+
+    #expect(model.connectionState == .repairRequired)
+    #expect(feature.agents == [canonical])
+  }
+
+  @Test("Keychain forget failure keeps cached agents in repair state")
+  func keychainFailureKeepsAgentsFeature() async {
+    let engine = FakeAppSyncEngine()
+    let profile = connectionProfile()
+    let service = AppModelAgentsService()
+    let feature = AgentsFeature(gatewayID: profile.gatewayID, service: service)
+    let model = AppModel(
+      dependencies: AppDependencies(
+        clock: TestAppClock(now: Date(timeIntervalSince1970: 100)),
+        loadProfile: { profile },
+        makeSyncEngine: { _ in engine },
+        deleteProfileSecrets: { _ in throw TestAppDependencyError.unavailable },
+        makeAgentsFeature: { _ in feature }
+      )
+    )
+    await model.start()
+    let value = agent()
+    model.consume(
+      SyncSnapshot(
+        connection: .online,
+        conversations: [],
+        agents: [value],
+        lastSuccessfulSyncAt: Date(timeIntervalSince1970: 100)
+      )
+    )
+
+    do {
+      try await model.disconnectAndForget()
+      Issue.record("Expected Keychain deletion to fail")
+    } catch {
+      #expect(error is TestAppDependencyError)
+    }
+
+    #expect(model.agentsFeature === feature)
+    #expect(feature.agents == [value])
+    #expect(feature.mutationsAllowed == false)
+    #expect(model.connectionState == .repairRequired)
+    #expect(await service.shutdownCallCount == 1)
+  }
+
   @Test("persistent profile selection clears before cache purge can suspend")
   func persistentSelectionClearsBeforeCachePurge() async throws {
     let engine = FakeAppSyncEngine()
@@ -702,12 +969,14 @@ struct AppModelTests {
     model.conversationPath = [.newConversation, .transcript("old-conversation")]
     model.splitConversationSelection = .transcript("old-conversation")
     model.agentPath = [.detail("old-agent")]
+    model.splitAgentSelection = .detail("old-agent")
 
     await model.installPairedProfile(replacement)
 
     #expect(model.conversationPath.isEmpty)
     #expect(model.splitConversationSelection == nil)
     #expect(model.agentPath.isEmpty)
+    #expect(model.splitAgentSelection == nil)
   }
 
   @Test("same-gateway replacement keeps cache visible but non-writable until bootstrap")
@@ -819,13 +1088,13 @@ struct AppModelTests {
     )
   }
 
-  private func agent() -> RegisteredAgentDTO {
+  private func agent(model: String = "test/model") -> RegisteredAgentDTO {
     RegisteredAgentDTO(
       id: "agent-old",
       name: "Old agent",
       config: AgentConfigDTO(
         name: "Old agent",
-        model: "test/model",
+        model: model,
         systemPrompt: "",
         fallbackModels: nil,
         tools: nil,
@@ -952,6 +1221,56 @@ private actor GatedAppClock: AppClock {
 
   func sleep(for duration: Duration) async throws {
     _ = duration
+  }
+}
+
+private actor AppModelAgentsService: AgentsServicing {
+  private let actionError: GatewayError?
+  private let refreshedAgents: [RegisteredAgentDTO]
+  private let shutdownGate: TestGate?
+  private(set) var shutdownCallCount = 0
+
+  init(
+    actionError: GatewayError? = nil,
+    refreshedAgents: [RegisteredAgentDTO] = [],
+    shutdownGate: TestGate? = nil
+  ) {
+    self.actionError = actionError
+    self.refreshedAgents = refreshedAgents
+    self.shutdownGate = shutdownGate
+  }
+
+  func cachedAgents() -> [RegisteredAgentDTO] { [] }
+  func refreshAgents() -> [RegisteredAgentDTO] { refreshedAgents }
+  func models() -> [ModelDTO] { [] }
+
+  func create(_ request: CreateAgentRequest) throws -> RegisteredAgentDTO {
+    _ = request
+    throw GatewayError.updateRequired
+  }
+
+  func update(id: String, request: UpdateAgentRequest) throws -> RegisteredAgentDTO {
+    _ = id
+    _ = request
+    throw GatewayError.updateRequired
+  }
+
+  func setEnabled(id: String, enabled: Bool) throws -> RegisteredAgentDTO {
+    _ = id
+    _ = enabled
+    throw actionError ?? GatewayError.updateRequired
+  }
+
+  func delete(id: String) { _ = id }
+
+  func startConversation(agentID: String) throws -> ConversationSummaryDTO {
+    _ = agentID
+    throw GatewayError.updateRequired
+  }
+
+  func shutdown() async {
+    shutdownCallCount += 1
+    await shutdownGate?.wait()
   }
 }
 

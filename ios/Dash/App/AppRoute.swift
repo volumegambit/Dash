@@ -28,6 +28,15 @@ enum AgentRoute: Hashable, Sendable {
   case create
   case edit(String)
   case startChat(String)
+
+  func selectsAgent(_ agentID: String) -> Bool {
+    switch self {
+    case .detail(let id), .edit(let id), .startChat(let id):
+      id == agentID
+    case .create:
+      false
+    }
+  }
 }
 
 enum NavigationPresentation: Sendable {

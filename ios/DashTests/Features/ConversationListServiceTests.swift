@@ -488,6 +488,8 @@ private actor GatedConversationListPersistence: ConversationListPersisting {
   func conversations(gatewayID: String, limit: Int) -> [CachedConversation] { [] }
   func agents(gatewayID: String) -> [RegisteredAgentDTO] { [] }
   func replaceAgents(_ values: [RegisteredAgentDTO], gatewayID: String) {}
+  func upsertAgent(_ value: RegisteredAgentDTO, gatewayID: String) {}
+  func removeAgent(gatewayID: String, agentID: String) {}
 
   func upsertConversations(
     _ values: [ConversationSummaryDTO],
@@ -523,6 +525,10 @@ private actor FailingConversationListPersistence: ConversationListPersisting {
   func agents(gatewayID: String) -> [RegisteredAgentDTO] { [] }
 
   func replaceAgents(_ values: [RegisteredAgentDTO], gatewayID: String) {}
+
+  func upsertAgent(_ value: RegisteredAgentDTO, gatewayID: String) {}
+
+  func removeAgent(gatewayID: String, agentID: String) {}
 
   func upsertConversations(_ values: [ConversationSummaryDTO], gatewayID: String) throws {
     try write(values.first)

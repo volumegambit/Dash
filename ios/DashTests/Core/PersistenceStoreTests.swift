@@ -318,6 +318,27 @@ struct PersistenceStoreTests {
     #expect(try await store.agents(gatewayID: "gw-b").map(\.id) == ["b-1"])
   }
 
+  @Test("single-agent cache mutations preserve unrelated agents and gateways")
+  func singleAgentMutationsAreScoped() async throws {
+    let store = try PersistenceStore.inMemory()
+    let original = agent(id: "a-1", name: "Original")
+    let unrelated = agent(id: "a-2", name: "Unrelated")
+    let otherGateway = agent(id: "b-1", name: "Other gateway")
+    try await store.replaceAgents([original, unrelated], gatewayID: "gw-a")
+    try await store.replaceAgents([otherGateway], gatewayID: "gw-b")
+
+    let updated = agent(id: original.id, name: "Updated")
+    try await store.upsertAgent(updated, gatewayID: "gw-a")
+
+    #expect(try await store.agents(gatewayID: "gw-a") == [updated, unrelated])
+    #expect(try await store.agents(gatewayID: "gw-b") == [otherGateway])
+
+    try await store.removeAgent(gatewayID: "gw-a", agentID: original.id)
+
+    #expect(try await store.agents(gatewayID: "gw-a") == [unrelated])
+    #expect(try await store.agents(gatewayID: "gw-b") == [otherGateway])
+  }
+
   @Test("profile identity and successful sync timestamp round trip without secrets")
   func profileSync() async throws {
     let store = try PersistenceStore.inMemory()
