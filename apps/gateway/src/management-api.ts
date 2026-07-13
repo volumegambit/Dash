@@ -572,6 +572,28 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
   });
 
   // --- Agent routes ---
+  const agentLifecycleTails = new Map<string, Promise<void>>();
+
+  async function serializeAgentLifecycle<T>(
+    agentId: string,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    const previous = agentLifecycleTails.get(agentId) ?? Promise.resolve();
+    let release!: () => void;
+    const completed = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const tail = previous.then(() => completed);
+    agentLifecycleTails.set(agentId, tail);
+    await previous;
+    try {
+      return await operation();
+    } finally {
+      release();
+      if (agentLifecycleTails.get(agentId) === tail) agentLifecycleTails.delete(agentId);
+    }
+  }
+
   function mountAgentRoutes(
     target: Hono,
     createKeys: ReadonlySet<string>,
@@ -673,84 +695,107 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
       }
     });
 
-    target.delete('/agents/:id', async (c) => {
+    target.delete('/agents/:id', (c) => {
       const id = c.req.param('id');
-      const entry = agentRegistry.get(id);
-      if (!entry) return c.json(mobileAgentNotFound(), 404);
-      try {
-        await options.resumableChatHub.cancelAgent(id);
-        const removedChannels = await gateway.deregisterAgent(id);
-        for (const name of removedChannels) {
-          channelRegistry.remove(name);
-        }
-        channelRegistry.removeRoutesForAgent(id);
-        // Finalize any live swarm runs for this agent before eviction. cancelRunsFor
-        // cancels non-terminal workers + aborts the orchestrator synchronously, so
-        // the subsequent evict() tears down an already-quiesced backend.
-        options.swarmCoordinator?.cancelRunsFor(id);
-        // Evict warm backends before removing the registry entry so any
-        // in-flight streams are aborted and backend.stop() is called. The
-        // pool is keyed independently of the registry, so order doesn't
-        // affect correctness of the eviction itself — but doing it before
-        // the registry remove means races that race a delete with a chat
-        // get aborted rather than serving a deleted agent's state.
-        await agents.evict(id);
-        const archived = options.conversationService.archiveAgentConversations(id);
-        agentRegistry.remove(id);
-        await agentRegistry.save();
-        await channelRegistry.save();
-        for (const conversation of archived) {
+      return serializeAgentLifecycle(id, async () => {
+        const entry = agentRegistry.get(id);
+        if (!entry) return c.json(mobileAgentNotFound(), 404);
+        try {
+          await options.resumableChatHub.cancelAgent(id);
+          const removedChannels = await gateway.deregisterAgent(id);
+          for (const name of removedChannels) {
+            channelRegistry.remove(name);
+          }
+          channelRegistry.removeRoutesForAgent(id);
+          // Finalize any live swarm runs for this agent before eviction. cancelRunsFor
+          // cancels non-terminal workers + aborts the orchestrator synchronously, so
+          // the subsequent evict() tears down an already-quiesced backend.
+          options.swarmCoordinator?.cancelRunsFor(id);
+          // Evict warm backends before removing the registry entry so any
+          // in-flight streams are aborted and backend.stop() is called. The
+          // pool is keyed independently of the registry, so order doesn't
+          // affect correctness of the eviction itself — but doing it before
+          // the registry remove means races that race a delete with a chat
+          // get aborted rather than serving a deleted agent's state.
+          await agents.evict(id);
+          const archived = options.conversationService.archiveAgentConversations(id);
+          agentRegistry.remove(id);
+          await agentRegistry.save();
+          await channelRegistry.save();
+          for (const conversation of archived) {
+            eventBus?.emit({
+              type: 'conversation:changed',
+              conversationId: conversation.id,
+              revision: conversation.revision,
+            });
+          }
           eventBus?.emit({
-            type: 'conversation:changed',
-            conversationId: conversation.id,
-            revision: conversation.revision,
+            type: 'agent:config-changed',
+            agent: entry.name,
+            fields: ['removed'],
           });
+          return c.json({ ok: true });
+        } catch (error) {
+          logger.error('mobile agent delete failed', error instanceof Error ? error : undefined, {
+            agentId: id,
+          });
+          return c.json(mobileGatewayError(), 500);
         }
-        return c.json({ ok: true });
-      } catch (error) {
-        logger.error('mobile agent delete failed', error instanceof Error ? error : undefined, {
-          agentId: id,
-        });
-        return c.json(mobileGatewayError(), 500);
-      }
+      });
     });
 
-    target.post('/agents/:id/disable', async (c) => {
+    target.post('/agents/:id/disable', (c) => {
       const id = c.req.param('id');
-      if (!agentRegistry.get(id)) return c.json(mobileAgentNotFound(), 404);
-      try {
-        agentRegistry.disable(id);
-        await agentRegistry.save();
-        await options.resumableChatHub.cancelAgent(id);
-        // Disable must actually stop a running orchestrator: cancel its live swarm
-        // runs, then evict the warm backend (which aborts the pinned in-flight
-        // turn — intentional per the design, disable is a hard stop). Ordered so
-        // the swarm runs quiesce before the backend teardown.
-        options.swarmCoordinator?.cancelRunsFor(id);
-        await agents.evict(id);
-        return c.json({ ok: true });
-      } catch (error) {
-        logger.error('mobile agent disable failed', error instanceof Error ? error : undefined, {
-          agentId: id,
-        });
-        return c.json(mobileGatewayError(), 500);
-      }
+      return serializeAgentLifecycle(id, async () => {
+        const entry = agentRegistry.get(id);
+        if (!entry) return c.json(mobileAgentNotFound(), 404);
+        try {
+          agentRegistry.disable(id);
+          await agentRegistry.save();
+          await options.resumableChatHub.cancelAgent(id);
+          // Disable must actually stop a running orchestrator: cancel its live swarm
+          // runs, then evict the warm backend (which aborts the pinned in-flight
+          // turn — intentional per the design, disable is a hard stop). Ordered so
+          // the swarm runs quiesce before the backend teardown.
+          options.swarmCoordinator?.cancelRunsFor(id);
+          await agents.evict(id);
+          eventBus?.emit({
+            type: 'agent:config-changed',
+            agent: entry.name,
+            fields: ['enabled'],
+          });
+          return c.json({ ok: true });
+        } catch (error) {
+          logger.error('mobile agent disable failed', error instanceof Error ? error : undefined, {
+            agentId: id,
+          });
+          return c.json(mobileGatewayError(), 500);
+        }
+      });
     });
 
-    target.post('/agents/:id/enable', async (c) => {
+    target.post('/agents/:id/enable', (c) => {
       const id = c.req.param('id');
-      if (!agentRegistry.get(id)) return c.json(mobileAgentNotFound(), 404);
-      try {
-        agentRegistry.enable(id);
-        await agentRegistry.save();
-        options.resumableChatHub.allowAgent(id);
-        return c.json({ ok: true });
-      } catch (error) {
-        logger.error('mobile agent enable failed', error instanceof Error ? error : undefined, {
-          agentId: id,
-        });
-        return c.json(mobileGatewayError(), 500);
-      }
+      return serializeAgentLifecycle(id, async () => {
+        const entry = agentRegistry.get(id);
+        if (!entry) return c.json(mobileAgentNotFound(), 404);
+        try {
+          agentRegistry.enable(id);
+          await agentRegistry.save();
+          options.resumableChatHub.allowAgent(id);
+          eventBus?.emit({
+            type: 'agent:config-changed',
+            agent: entry.name,
+            fields: ['enabled'],
+          });
+          return c.json({ ok: true });
+        } catch (error) {
+          logger.error('mobile agent enable failed', error instanceof Error ? error : undefined, {
+            agentId: id,
+          });
+          return c.json(mobileGatewayError(), 500);
+        }
+      });
     });
   }
 
