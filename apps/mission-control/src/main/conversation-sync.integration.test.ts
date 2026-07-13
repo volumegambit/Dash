@@ -1018,6 +1018,13 @@ async function createConversationSyncHarness(options: HarnessOptions) {
     });
     await sendAndAccept(baseRef, accepted.id, 'file the mobile sync');
     await vi.waitFor(() => expect(client.patchCalls).toHaveLength(2));
+    await vi.waitFor(async () => {
+      await expect(gatewayCache.getConversation(baseRef.id)).resolves.toMatchObject({
+        title: 'Human title',
+        owningIssueId: 'issue-race',
+        projectId: 'project-race',
+      });
+    });
     const current = client.conversations.get(baseRef.id);
     if (!current) throw new Error('Canonical conversation is missing after linkage retry');
     return { current: clone(current), patchCalls: clone(client.patchCalls) };
