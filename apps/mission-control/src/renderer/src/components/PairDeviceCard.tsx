@@ -25,8 +25,8 @@ function qrPayload(i: PairingInfo): string {
 }
 
 /**
- * Read-only settings card that renders a QR code the Dash Android app scans to
- * pair. The QR encodes the gateway host + both tokens (and, over relay, the
+ * Read-only settings card that renders a QR code the Dash mobile app scans to
+ * pair on Android or iOS. The QR encodes the gateway host + both tokens (and, over relay, the
  * per-device relay credential); secrets are never shown as plaintext on screen.
  * The QR is built as an SVG data URI (pure JS, no canvas) so it renders
  * identically in Electron and under test.
@@ -55,7 +55,7 @@ export function PairDeviceCard(): JSX.Element {
         Pair Device
       </h2>
       <p className="mb-4 text-xs text-muted">
-        Scan this code with the Dash Android app to connect it to this gateway.
+        Scan this code with the Dash mobile app for Android or iOS.
       </p>
 
       {error && <p className="text-red text-sm">{error}</p>}
@@ -64,7 +64,7 @@ export function PairDeviceCard(): JSX.Element {
         <img
           data-testid="pairing-qr"
           src={qrSrc}
-          alt="Pairing QR code"
+          alt="Pairing QR code for the Dash mobile app"
           width={280}
           height={280}
           className="rounded-lg bg-white p-3"

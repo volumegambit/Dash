@@ -36,6 +36,47 @@ Something not working? Here are the most common issues and how to fix them.
   </Accordion>
 </AccordionGroup>
 
+## Conversation sync
+
+<AccordionGroup>
+  <Accordion title="My synced conversations are read-only">
+    **Fix:** Confirm that the saved gateway is reachable. Previously synced conversations stay
+    visible from cache while the gateway is offline, but cached history intentionally blocks
+    creating, sending, renaming, and deleting until that gateway reconnects.
+  </Accordion>
+
+  <Accordion title="A conversation says Active on another device">
+    **Fix:** Another paired client owns the canonical active turn. Wait for it to finish, watch the
+    shared stream in Mission Control, or explicitly stop it. Sending a second turn, renaming, and
+    deleting are blocked until the active turn ends.
+  </Accordion>
+
+  <Accordion title="Older conversations appear under On this Mac">
+    **Fix:** This is intentional. These conversations were stored locally by an older Mission
+    Control version. No automatic upload exists, and reconnecting a gateway does not move them.
+    They remain readable on that computer under **On this Mac**.
+  </Accordion>
+
+  <Accordion title="Rename or delete says the conversation changed">
+    **Fix:** Mission Control refreshed a revision conflict because another client changed the
+    canonical conversation first. Review the current title and state, then retry your rename or
+    delete.
+  </Accordion>
+
+  <Accordion title="Update Dash appears in chat">
+    **Fix:** The gateway returned a required contract shape this desktop version cannot decode.
+    Update Mission Control rather than clearing history. Your canonical conversation remains on
+    the gateway.
+  </Accordion>
+
+  <Accordion title="A project session does not open">
+    **Fix:** Refresh the task and confirm its gateway is reachable. Mission Control fetches linked
+    sessions by their canonical ID, including sessions beyond the first conversation page. A
+    deleted canonical conversation stays deleted, and Mission Control will not create an empty
+    replacement.
+  </Accordion>
+</AccordionGroup>
+
 ## Secrets and credentials
 
 <AccordionGroup>
@@ -281,29 +322,36 @@ Something not working? Here are the most common issues and how to fix them.
 ## Session issues
 
 <AccordionGroup>
-  <Accordion title="Corrupt JSONL">
-    If a session file has invalid JSON on a line (e.g. from a crash during write), the session loader will throw a parse error. To recover:
+  <Accordion title="Provider session JSONL is corrupt">
+    Provider session JSONL stores the model's working context separately from the canonical
+    conversation that Mission Control and paired phones display. If a provider session file has an
+    invalid line after a crash, the agent may fail to restore model context even though canonical
+    history remains visible. To recover:
 
     1. Find the conversation's session directory: `~/.dash/gateway/sessions/{agent-name}/{conversationId}/` and open the `.jsonl` session file inside it
     2. Open it in a text editor
     3. Remove or fix the malformed line(s) — each line should be a valid JSON object
     4. Restart Dash
 
-    Since JSONL is append-only, you can safely delete lines from the end without losing earlier conversation history.
+    Since provider session JSONL is append-only, you can remove malformed lines from the end
+    without damaging earlier model context. This does not edit the canonical rendered messages.
   </Accordion>
 
-  <Accordion title="Starting fresh">
-    To reset a conversation, delete its session directory:
+  <Accordion title="Starting with fresh provider context">
+    To reset only the agent's provider session state, delete its session directory:
 
     ```bash
     rm -rf ~/.dash/gateway/sessions/{agent-name}/{conversationId}
     ```
 
-    To reset all sessions:
+    To reset all provider session state:
 
     ```bash
     rm -rf ~/.dash/gateway/sessions
     ```
+
+    These commands do not delete canonical conversations shown by Mission Control or paired phone
+    apps. To remove shared history, reconnect the gateway and delete the conversation in Dash.
   </Accordion>
 
   <Accordion title="My data moved after updating">
