@@ -1,6 +1,6 @@
 import Foundation
 
-protocol WebSocketTasking: Sendable {
+protocol WebSocketTasking: AnyObject, Sendable {
   func resume()
   func send(_ message: URLSessionWebSocketTask.Message) async throws
   func receive() async throws -> URLSessionWebSocketTask.Message
@@ -320,11 +320,21 @@ actor ChatConnection {
     guard let socket, state == .connected else {
       throw GatewayError.transport("Chat connection is not connected")
     }
+    let sendGeneration = generation
     let data = try ContractCoding.encoder().encode(frame)
     guard let text = String(data: data, encoding: .utf8) else {
       throw GatewayError.updateRequired
     }
     try await socket.send(.string(text))
+    guard
+      sendGeneration == generation,
+      state == .connected,
+      streamFinished == false,
+      let currentSocket = self.socket,
+      currentSocket === socket
+    else {
+      throw GatewayError.transport("Chat connection changed while sending")
+    }
   }
 
   private func decodedFrame(

@@ -424,6 +424,10 @@ final class FakeWebSocketTask: WebSocketTasking, @unchecked Sendable {
     await state.resolveHeldSend(error: error)
   }
 
+  func succeedHeldSend() async {
+    await state.resolveHeldSend(error: nil)
+  }
+
   func holdNextPeerClose() async {
     await state.holdNextPeerClose()
   }

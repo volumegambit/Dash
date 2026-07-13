@@ -233,6 +233,70 @@ struct ChatConnectionTests {
     #expect(await terminal.value == .updateRequired)
   }
 
+  @Test("a send that succeeds on a replaced socket is rejected without clearing the newer turn")
+  func staleSuccessfulSendAfterReplacement() async throws {
+    let olderTurnID = "018f0f4a-5c42-7a8b-9c01-999999999999"
+    let replaced = FakeWebSocketTask()
+    let replacement = FakeWebSocketTask()
+    let session = FakeWebSocketSession(tasks: [replaced, replacement])
+    let connection = makeChatConnection(session: session)
+    let receivedFrame = Task { await firstFrame(from: connection) }
+    try await connection.connect()
+    await replaced.holdNextSend()
+    let staleSend = Task {
+      await chatGatewayError {
+        try await connection.sendTurn(
+          id: olderTurnID,
+          agentID: "agent-1",
+          conversationID: conversationID,
+          text: "Older",
+          images: []
+        )
+      }
+    }
+    await replaced.waitForHeldSend()
+
+    try await connection.connect()
+    try await connection.sendTurn(
+      id: turnID,
+      agentID: "agent-1",
+      conversationID: conversationID,
+      text: "Newer",
+      images: []
+    )
+    await replaced.succeedHeldSend()
+
+    #expect(await staleSend.value == .transport("Chat connection changed while sending"))
+    let accepted = try fixture("chat-accepted.json")
+    await replacement.enqueue(.string(serverJSON(accepted)))
+    await replacement.fail(peerClose: .init(code: 4001, reason: Data("Unauthorized".utf8)))
+    #expect(await receivedFrame.value == accepted)
+  }
+
+  @Test("a resume that succeeds after detach is rejected")
+  func staleSuccessfulResumeAfterDetach() async throws {
+    let task = FakeWebSocketTask()
+    let connection = makeChatConnection(task: task)
+    try await connection.connect()
+    await task.holdNextSend()
+    let staleResume = Task {
+      await chatGatewayError {
+        try await connection.resume(
+          turnID: turnID,
+          agentID: "agent-1",
+          conversationID: conversationID,
+          sinceSeq: 0
+        )
+      }
+    }
+    await task.waitForHeldSend()
+
+    await connection.detach()
+    await task.succeedHeldSend()
+
+    #expect(await staleResume.value == .transport("Chat connection changed while sending"))
+  }
+
   @Test("only the active turn emits accepted event done and error frames with their sequences")
   func activeTurnFilteringAndSequences() async throws {
     let task = FakeWebSocketTask()
