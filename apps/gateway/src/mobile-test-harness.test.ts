@@ -94,6 +94,19 @@ function turnFrames(inbox: FrameInbox, turnId: string): MobileWsServerFrame[] {
   return inbox.frames.filter((frame) => frame.id === turnId);
 }
 
+function settlesWithin<T>(promise: Promise<T>, timeoutMs = 1000): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(
+      () => reject(new Error(`Operation did not settle within ${timeoutMs}ms`)),
+      timeoutMs,
+    );
+  });
+  return Promise.race([promise, timeout]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
+}
+
 describe('mobile test harness', () => {
   it('starts real ephemeral management and chat listeners', async () => {
     const harness = await startMobileTestHarness({ scenario: 'stream' });
@@ -122,6 +135,65 @@ describe('mobile test harness', () => {
       });
       expect(code).toBe(4001);
     } finally {
+      await harness.stop();
+    }
+  });
+
+  it('stops idempotently with a live authenticated slow WebSocket client', async () => {
+    const harness = await startMobileTestHarness({ scenario: 'slow' });
+    let chat: FrameInbox | undefined;
+    try {
+      const conversation = await createConversation(harness);
+      chat = await openChat(harness);
+      const turnId = randomUUID();
+      chat.send({
+        type: 'message',
+        id: turnId,
+        agentId: harness.agentId,
+        channelId: 'mobile-ios',
+        conversationId: conversation.id,
+        text: 'Stay connected during shutdown',
+        resumable: true,
+      });
+      await chat.waitFor(
+        (frame) =>
+          frame.type === 'event' && frame.id === turnId && frame.event.type === 'text_delta',
+      );
+
+      const clientClosed = new Promise<void>((resolve) => {
+        chat?.socket.addEventListener('close', () => resolve(), { once: true });
+      });
+      const stopping = harness.stop();
+      expect(harness.stop()).toBe(stopping);
+      await settlesWithin(stopping);
+      await settlesWithin(clientClosed);
+      expect(chat.socket.readyState).toBe(WebSocket.CLOSED);
+    } finally {
+      if (chat && chat.socket.readyState !== WebSocket.CLOSED) chat.socket.terminate();
+      await harness.stop();
+    }
+  });
+
+  it('stops promptly without client cancellation while an SSE response is open', async () => {
+    const harness = await startMobileTestHarness({ scenario: 'stream' });
+    let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+    try {
+      const eventsResponsePromise = fetch(`${harness.managementBaseUrl}/mobile/v1/events`, {
+        headers: { Authorization: `Bearer ${harness.managementToken}` },
+      });
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      await createConversation(harness);
+      const eventsResponse = await eventsResponsePromise;
+      expect(eventsResponse.status).toBe(200);
+      reader = eventsResponse.body?.getReader();
+      if (!reader) throw new Error('SSE response has no body reader');
+      expect((await reader.read()).done).toBe(false);
+      const clientClosed = reader.closed.catch(() => undefined);
+
+      await settlesWithin(harness.stop());
+      await settlesWithin(clientClosed);
+    } finally {
+      await reader?.cancel().catch(() => undefined);
       await harness.stop();
     }
   });

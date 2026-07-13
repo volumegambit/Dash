@@ -1,6 +1,6 @@
 import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import type { Server } from 'node:http';
-import type { AddressInfo } from 'node:net';
+import type { AddressInfo, Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AgentBackend, AgentEvent, AgentState, RunOptions } from '@dash/agent';
@@ -147,32 +147,76 @@ class ScriptedMobileBackend implements AgentBackend {
   }
 }
 
-async function listen(app: Hono, injectWebSocket: (server: Server) => void): Promise<Server> {
-  let resolveListening!: () => void;
-  let rejectListening!: (error: Error) => void;
-  const listening = new Promise<void>((resolve, reject) => {
-    resolveListening = resolve;
-    rejectListening = reject;
-  });
-  const server = serve({ fetch: app.fetch, hostname: '127.0.0.1', port: 0 }) as Server;
-  server.once('listening', resolveListening);
-  server.once('error', rejectListening);
-  injectWebSocket(server);
-  await listening;
-  return server;
+interface OwnedServer {
+  server: Server;
+  close(): Promise<void>;
 }
 
-function portOf(server: Server): number {
-  const address = server.address() as AddressInfo | null;
+async function listen(app: Hono, injectWebSocket: (server: Server) => void): Promise<OwnedServer> {
+  const server = serve({ fetch: app.fetch, hostname: '127.0.0.1', port: 0 }) as Server;
+  const sockets = new Set<Socket>();
+  let closing = false;
+  let closePromise: Promise<void> | undefined;
+  const trackConnection = (socket: Socket): void => {
+    if (closing) {
+      socket.destroy();
+      return;
+    }
+    sockets.add(socket);
+    socket.once('close', () => sockets.delete(socket));
+  };
+  server.on('connection', trackConnection);
+
+  const close = (): Promise<void> => {
+    closePromise ??= new Promise<void>((resolve, reject) => {
+      closing = true;
+      const finish = (error?: Error): void => {
+        server.off('connection', trackConnection);
+        sockets.clear();
+        if (error) reject(error);
+        else resolve();
+      };
+      if (!server.listening) {
+        for (const socket of sockets) socket.destroy();
+        finish();
+        return;
+      }
+      server.close((error) => finish(error));
+      server.closeAllConnections();
+      for (const socket of sockets) socket.destroy();
+    });
+    return closePromise;
+  };
+
+  try {
+    injectWebSocket(server);
+    await new Promise<void>((resolve, reject) => {
+      const onListening = (): void => {
+        server.off('error', onError);
+        resolve();
+      };
+      const onError = (error: Error): void => {
+        server.off('listening', onListening);
+        reject(error);
+      };
+      server.once('listening', onListening);
+      server.once('error', onError);
+    });
+    return { server, close };
+  } catch (error) {
+    await close().catch(() => undefined);
+    throw error;
+  }
+}
+
+function portOf(ownedServer: OwnedServer): number {
+  const address = ownedServer.server.address() as AddressInfo | null;
   if (!address) throw new Error('Mobile test harness listener has no address');
   return address.port;
 }
 
-function closeServer(server: Server | undefined): Promise<void> {
-  if (!server?.listening) return Promise.resolve();
-  return new Promise<void>((resolve, reject) => {
-    server.close((error) => (error ? reject(error) : resolve()));
-  });
+function closeServer(server: OwnedServer | undefined): Promise<void> {
+  return server?.close() ?? Promise.resolve();
 }
 
 export async function startMobileTestHarness(
@@ -194,8 +238,8 @@ export async function startMobileTestHarness(
   const conversations = new SqliteConversationService({ dataDir });
   const eventBus = new EventBus();
   const gateway = createDynamicGateway({ dataDir });
-  let managementServer: Server | undefined;
-  let chatServer: Server | undefined;
+  let managementServer: OwnedServer | undefined;
+  let chatServer: OwnedServer | undefined;
 
   await credentialStore.init();
   const registered = agentRegistry.register({
