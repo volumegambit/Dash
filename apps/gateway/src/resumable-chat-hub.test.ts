@@ -460,6 +460,82 @@ describe('ResumableChatHub', () => {
     ]);
   });
 
+  it('rejects unknown, deleted, and foreign conversations before replay', () => {
+    const deleted = createConversation();
+    conversations.delete(deleted.id, deleted.revision);
+    const foreign = createConversation('agent-02');
+    const readSince = vi.spyOn(conversations.eventLog, 'readSince');
+    const cases = [
+      { name: 'unknown', conversationId: 'conversation-missing' },
+      { name: 'deleted', conversationId: deleted.id },
+      { name: 'foreign', conversationId: foreign.id },
+    ];
+
+    for (const testCase of cases) {
+      const sink = makeSink();
+      let error: unknown;
+      try {
+        hub.resume(
+          {
+            type: 'resume',
+            id: `turn-${testCase.name}`,
+            agentId: 'agent-01',
+            conversationId: testCase.conversationId,
+            sinceSeq: 0,
+          },
+          sink,
+        );
+      } catch (caught) {
+        error = caught;
+      }
+
+      expect(error, testCase.name).toBeInstanceOf(ConversationServiceError);
+      expect(error, testCase.name).toMatchObject({
+        code: 'not_found',
+        message: 'Conversation not found',
+        status: 404,
+        retryable: false,
+      });
+      expect(sink.frames, testCase.name).toEqual([]);
+    }
+    expect(readSince).not.toHaveBeenCalled();
+  });
+
+  it('keeps a completed conversation silent when resumed from its latest cursor', () => {
+    const conversation = createConversation();
+    conversations.acceptTurn({
+      agentId: conversation.agentId,
+      conversationId: conversation.id,
+      turnId: 'turn-complete',
+      text: 'Complete this',
+    });
+    const completed = conversations.finishTurn({
+      conversationId: conversation.id,
+      turnId: 'turn-complete',
+      outcome: 'completed',
+    });
+    const readSince = vi.spyOn(conversations.eventLog, 'readSince');
+    const sink = makeSink();
+
+    hub.resume(
+      {
+        type: 'resume',
+        id: 'turn-complete',
+        agentId: conversation.agentId,
+        conversationId: conversation.id,
+        sinceSeq: completed.conversation.lastSeq,
+      },
+      sink,
+    );
+
+    expect(sink.frames).toEqual([]);
+    expect(readSince).toHaveBeenCalledWith(
+      conversation.agentId,
+      conversation.id,
+      completed.conversation.lastSeq,
+    );
+  });
+
   it('answers a question while the original socket is detached', async () => {
     const conversation = createConversation();
     const scripted = register(conversation.id);

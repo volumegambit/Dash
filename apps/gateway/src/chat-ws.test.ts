@@ -409,9 +409,19 @@ function makeResumableHub() {
   const cancel = vi.fn<ResumableChatHub['cancel']>().mockResolvedValue(undefined);
   const detach = vi.fn<ResumableChatHub['detach']>();
   const cancelAgent = vi.fn<ResumableChatHub['cancelAgent']>().mockResolvedValue(undefined);
+  const allowAgent = vi.fn<ResumableChatHub['allowAgent']>();
   const stop = vi.fn<ResumableChatHub['stop']>().mockResolvedValue(undefined);
-  const hub: ResumableChatHub = { start, resume, answer, cancel, detach, cancelAgent, stop };
-  return { hub, start, resume, answer, cancel, detach, cancelAgent, stop };
+  const hub: ResumableChatHub = {
+    start,
+    resume,
+    answer,
+    cancel,
+    detach,
+    cancelAgent,
+    allowAgent,
+    stop,
+  };
+  return { hub, start, resume, answer, cancel, detach, cancelAgent, allowAgent, stop };
 }
 
 function makeSocket(): TestSocket {
@@ -587,6 +597,37 @@ describe('mountChatWs protocol ownership', () => {
     expect(harness.hub.cancel).not.toHaveBeenCalled();
     expect(harness.agents.cancel).not.toHaveBeenCalled();
     expect(harness.swarmCancel).not.toHaveBeenCalled();
+  });
+
+  it('maps an authenticated synthetic resume probe to a nonsequenced not-found frame', () => {
+    const harness = makeWsHarness({ token: 'secret' });
+    const connection = harness.connect('secret');
+    connection.handlers.onOpen?.({}, connection.socket);
+    harness.hub.resume.mockImplementationOnce(() => {
+      throw new ConversationServiceError('not_found', 'Conversation not found', 404, false);
+    });
+    const probe = Object.freeze({
+      type: 'resume',
+      id: 'turn-probe',
+      agentId: 'agent-probe',
+      conversationId: 'conversation-probe',
+      sinceSeq: 0,
+    } satisfies MobileWsClientFrame);
+    const expected = Object.freeze({
+      type: 'error',
+      id: probe.id,
+      conversationId: probe.conversationId,
+      error: 'Conversation not found',
+      code: 'not_found',
+      retryable: false,
+    } satisfies MobileWsServerFrame);
+
+    expect(() => dispatch(connection, probe)).not.toThrow();
+
+    const frames = sentFrames(connection.socket);
+    expect(frames).toEqual([expected]);
+    expect(frames[0]).not.toHaveProperty('seq');
+    expect(connection.socket.close).not.toHaveBeenCalled();
   });
 
   it('routes answers to a matching legacy stream and otherwise to the hub', async () => {

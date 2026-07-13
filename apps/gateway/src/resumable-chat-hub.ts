@@ -275,6 +275,10 @@ export function createResumableChatHub(options: ResumableChatHubOptions): Resuma
 
     resume(frame, sink) {
       assertAccepting();
+      const conversation = conversations.get(frame.conversationId);
+      if (!conversation || conversation.agentId !== frame.agentId) {
+        throw new ConversationServiceError('not_found', 'Conversation not found', 404, false);
+      }
       if (!replay(frame.agentId, frame.conversationId, frame.sinceSeq, sink)) return;
       attachIfLive(frame.id, frame.agentId, frame.conversationId, sink);
     },
