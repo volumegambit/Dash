@@ -5,6 +5,40 @@ enum AppDependencyError: Error, Equatable, Sendable {
   case missingSecrets(profileID: UUID)
 }
 
+typealias PairedProfileHandler =
+  @MainActor @Sendable (ConnectionProfileSnapshot) async -> Void
+
+struct PairingFeatureFactory: Sendable {
+  let verifier: any PairingVerifying
+  let installer: any PairingProfileInstalling
+  let makeScanner: @Sendable () -> any QRScanning
+
+  init(
+    verifier: any PairingVerifying,
+    installer: any PairingProfileInstalling,
+    makeScanner: @escaping @Sendable () -> any QRScanning = { UnavailableQRScanner() }
+  ) {
+    self.verifier = verifier
+    self.installer = installer
+    self.makeScanner = makeScanner
+  }
+
+  @MainActor
+  func make(onPaired: @escaping PairedProfileHandler) -> PairingFeature {
+    PairingFeature(
+      verifier: verifier,
+      installer: installer,
+      scanner: makeScanner(),
+      onPaired: onPaired
+    )
+  }
+
+  static let unavailable = PairingFeatureFactory(
+    verifier: UnavailablePairingVerifier(),
+    installer: UnavailablePairingInstaller()
+  )
+}
+
 struct AppDependencies: Sendable {
   let clock: any AppClock
   let loadProfile: @Sendable () async throws -> ConnectionProfileSnapshot?
@@ -13,6 +47,7 @@ struct AppDependencies: Sendable {
   let deleteProfileSecrets: @Sendable (ConnectionProfileSnapshot) async throws -> Void
   let clearProfileData: @Sendable (ConnectionProfileSnapshot) async throws -> Void
   let forgetProfileSelection: @MainActor @Sendable (ConnectionProfileSnapshot) -> Void
+  let pairingFeatureFactory: PairingFeatureFactory
 
   init(
     clock: any AppClock,
@@ -29,7 +64,8 @@ struct AppDependencies: Sendable {
     },
     forgetProfileSelection: @escaping @MainActor @Sendable (ConnectionProfileSnapshot) -> Void = {
       _ in
-    }
+    },
+    pairingFeatureFactory: PairingFeatureFactory = .unavailable
   ) {
     self.clock = clock
     self.loadProfile = loadProfile
@@ -38,6 +74,7 @@ struct AppDependencies: Sendable {
     self.deleteProfileSecrets = deleteProfileSecrets
     self.clearProfileData = clearProfileData
     self.forgetProfileSelection = forgetProfileSelection
+    self.pairingFeatureFactory = pairingFeatureFactory
   }
 
   @MainActor
@@ -82,6 +119,7 @@ struct AppDependencies: Sendable {
     let makeReachability: @Sendable () -> NetworkReachability = {
       NetworkReachability()
     }
+    let pairingMetadata = PersistencePairingMetadataStore(store: store)
 
     return AppDependencies(
       clock: clock,
@@ -118,7 +156,17 @@ struct AppDependencies: Sendable {
       },
       forgetProfileSelection: { _ in
         UserDefaults.standard.removeObject(forKey: activeGatewayKey)
-      }
+      },
+      pairingFeatureFactory: PairingFeatureFactory(
+        verifier: PairingVerifier(
+          makeGateway: { endpoint, secrets in
+            makeAPI(makeTransport(endpoint, secrets))
+          },
+          makeChat: makeChat
+        ),
+        installer: PairingProfileInstaller(keychain: keychain, metadata: pairingMetadata),
+        makeScanner: { QRScannerService() }
+      )
     )
   }
 }
