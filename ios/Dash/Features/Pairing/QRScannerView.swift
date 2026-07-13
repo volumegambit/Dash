@@ -53,7 +53,7 @@ struct QRScannerView: View {
     .toolbar {
       ToolbarItem(placement: .topBarLeading) {
         Button("Close") {
-          feature.invalidateScanning()
+          feature.cancelPairing()
           dismiss()
         }
         .frame(minWidth: 44, minHeight: 44)
@@ -61,7 +61,7 @@ struct QRScannerView: View {
     }
     .task { await feature.requestCameraAndScan() }
     .onDisappear {
-      feature.invalidateScanning()
+      feature.cancelPairing()
       Task { await feature.stopScanning() }
     }
   }
@@ -141,6 +141,45 @@ struct QRScannerPreview: UIViewRepresentable {
   }
 }
 
+protocol QRScannerPreviewRotating: AnyObject {
+  var videoRotationAngle: CGFloat { get set }
+  func isVideoRotationAngleSupported(_ angle: CGFloat) -> Bool
+}
+
+extension AVCaptureConnection: QRScannerPreviewRotating {}
+
+enum QRScannerPreviewRotation {
+  static func angle(for orientation: UIInterfaceOrientation) -> CGFloat? {
+    switch orientation {
+    case .portrait:
+      90
+    case .portraitUpsideDown:
+      270
+    case .landscapeLeft:
+      180
+    case .landscapeRight:
+      0
+    case .unknown:
+      nil
+    @unknown default:
+      nil
+    }
+  }
+
+  static func update(
+    _ connection: (any QRScannerPreviewRotating)?,
+    for orientation: UIInterfaceOrientation
+  ) {
+    guard let angle = angle(for: orientation),
+      let connection,
+      connection.isVideoRotationAngleSupported(angle)
+    else {
+      return
+    }
+    connection.videoRotationAngle = angle
+  }
+}
+
 final class QRScannerPreviewView: UIView {
   override class var layerClass: AnyClass { AVCaptureVideoPreviewLayer.self }
 
@@ -160,12 +199,28 @@ final class QRScannerPreviewView: UIView {
     previewLayer.videoGravity = .resizeAspectFill
   }
 
+  override func didMoveToWindow() {
+    super.didMoveToWindow()
+    updateRotation()
+  }
+
+  override func layoutSubviews() {
+    super.layoutSubviews()
+    updateRotation()
+  }
+
   func attach(_ source: QRScannerPreviewSource) {
     guard previewLayer.session !== source.session else { return }
     previewLayer.session = source.session
+    updateRotation()
   }
 
   func detach() {
     previewLayer.session = nil
+  }
+
+  private func updateRotation() {
+    guard let orientation = window?.windowScene?.interfaceOrientation else { return }
+    QRScannerPreviewRotation.update(previewLayer.connection, for: orientation)
   }
 }

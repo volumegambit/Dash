@@ -137,6 +137,43 @@ actor PersistencePairingMetadataStore: PairingMetadataStoring {
 
 protocol PairingProfileInstalling: Actor {
   func install(_ pairing: VerifiedPairing) async throws -> ConnectionProfileSnapshot
+  func install(
+    _ pairing: VerifiedPairing,
+    cancellation: PairingCancellation
+  ) async throws -> ConnectionProfileSnapshot
+}
+
+extension PairingProfileInstalling {
+  func install(
+    _ pairing: VerifiedPairing,
+    cancellation: PairingCancellation
+  ) async throws -> ConnectionProfileSnapshot {
+    try cancellation.check()
+    let installed = try await install(pairing)
+    try cancellation.check()
+    return installed
+  }
+}
+
+final class PairingCancellation: @unchecked Sendable {
+  private let lock = NSLock()
+  private var isCancelled = false
+
+  func cancel() {
+    lock.lock()
+    isCancelled = true
+    lock.unlock()
+  }
+
+  func check() throws {
+    try Task.checkCancellation()
+    lock.lock()
+    let cancelled = isCancelled
+    lock.unlock()
+    if cancelled {
+      throw CancellationError()
+    }
+  }
 }
 
 actor UnavailablePairingInstaller: PairingProfileInstalling {
@@ -162,6 +199,14 @@ actor PairingProfileInstaller: PairingProfileInstalling {
   }
 
   func install(_ pairing: VerifiedPairing) async throws -> ConnectionProfileSnapshot {
+    try await install(pairing, cancellation: PairingCancellation())
+  }
+
+  func install(
+    _ pairing: VerifiedPairing,
+    cancellation: PairingCancellation
+  ) async throws -> ConnectionProfileSnapshot {
+    try cancellation.check()
     let existing: ConnectionProfileSnapshot?
     do {
       existing = try await metadata.existingPairingProfile(
@@ -184,29 +229,51 @@ actor PairingProfileInstaller: PairingProfileInstalling {
     }
 
     do {
+      try cancellation.check()
       try await keychain.save(installedPairing.secrets, for: installedPairing.profile.id)
     } catch {
+      if error is CancellationError || Task.isCancelled {
+        try await rollbackKeychain(
+          profileID: installedPairing.profile.id,
+          previousSecrets: previousSecrets
+        )
+        throw CancellationError()
+      }
       throw PairingInstallError.keychain
     }
 
     do {
+      try cancellation.check()
       try await metadata.savePairingProfile(
         installedPairing.profile.profile,
         identity: installedPairing.identity
       )
     } catch {
-      do {
-        if let previousSecrets {
-          try await keychain.save(previousSecrets, for: installedPairing.profile.id)
-        } else {
-          try await keychain.delete(for: installedPairing.profile.id)
-        }
-      } catch {
-        throw PairingInstallError.metadataRollback
+      try await rollbackKeychain(
+        profileID: installedPairing.profile.id,
+        previousSecrets: previousSecrets
+      )
+      if error is CancellationError || Task.isCancelled {
+        throw CancellationError()
       }
       throw PairingInstallError.metadata
     }
     return installedPairing.profile
+  }
+
+  private func rollbackKeychain(
+    profileID: UUID,
+    previousSecrets: ConnectionSecrets?
+  ) async throws {
+    do {
+      if let previousSecrets {
+        try await keychain.save(previousSecrets, for: profileID)
+      } else {
+        try await keychain.delete(for: profileID)
+      }
+    } catch {
+      throw PairingInstallError.metadataRollback
+    }
   }
 }
 
@@ -333,6 +400,8 @@ final class PairingFeature {
     @MainActor @Sendable (ConnectionProfileSnapshot) async throws -> Void
   @ObservationIgnored private let announceFailure: @MainActor @Sendable (PairingFailure) -> Void
   @ObservationIgnored private var activeScanID: UUID?
+  @ObservationIgnored private var activePairingID: UUID?
+  @ObservationIgnored private var activePairingCancellation: PairingCancellation?
 
   init(
     verifier: any PairingVerifying,
@@ -352,30 +421,44 @@ final class PairingFeature {
 
   func pair(rawPayload: String) async {
     guard state.isWorking == false else { return }
+    let pairingID = UUID()
+    let cancellation = PairingCancellation()
+    activePairingID = pairingID
+    activePairingCancellation = cancellation
     activeScanID = nil
     self.rawPayload = rawPayload
     state = .validating
     await scanner.stop()
     do {
+      try requireActivePairing(pairingID)
       let payload = try ContractCoding.decoder().decode(
         PairingPayload.self,
         from: Data(rawPayload.utf8)
       )
-      try await pair(payload: payload)
+      try await pair(payload: payload, pairingID: pairingID, cancellation: cancellation)
     } catch {
-      fail(with: pairingFailure(for: error))
+      finishPairing(pairingID, with: error)
     }
   }
 
   func pair(manual: ManualPairingInput) async {
     guard state.isWorking == false else { return }
+    let pairingID = UUID()
+    let cancellation = PairingCancellation()
+    activePairingID = pairingID
+    activePairingCancellation = cancellation
     activeScanID = nil
     state = .validating
     await scanner.stop()
     do {
-      try await pair(payload: manual.payload())
+      try requireActivePairing(pairingID)
+      try await pair(
+        payload: manual.payload(),
+        pairingID: pairingID,
+        cancellation: cancellation
+      )
     } catch {
-      fail(with: pairingFailure(for: error))
+      finishPairing(pairingID, with: error)
     }
   }
 
@@ -429,19 +512,57 @@ final class PairingFeature {
     activeScanID = nil
   }
 
+  func cancelPairing() {
+    activeScanID = nil
+    activePairingCancellation?.cancel()
+    activePairingCancellation = nil
+    activePairingID = nil
+    if state.isWorking {
+      state = .idle
+    }
+  }
+
   func stopScanning() async {
     invalidateScanning()
     await scanner.stop()
   }
 
-  private func pair(payload: PairingPayload) async throws {
+  private func pair(
+    payload: PairingPayload,
+    pairingID: UUID,
+    cancellation: PairingCancellation
+  ) async throws {
     let pairing = try await verifier.verify(payload: payload) { [weak self] step in
+      guard self?.activePairingID == pairingID else { return }
       self?.state = .verifying(step)
     }
+    try requireActivePairing(pairingID)
     state = .verifying(.saving)
-    let installedProfile = try await installer.install(pairing)
+    let installedProfile = try await installer.install(pairing, cancellation: cancellation)
+    try requireActivePairing(pairingID)
     try await onPaired(installedProfile)
+    try requireActivePairing(pairingID)
     state = .paired(installedProfile)
+    activePairingID = nil
+    activePairingCancellation = nil
+  }
+
+  private func requireActivePairing(_ pairingID: UUID) throws {
+    try Task.checkCancellation()
+    guard activePairingID == pairingID else {
+      throw CancellationError()
+    }
+  }
+
+  private func finishPairing(_ pairingID: UUID, with error: Error) {
+    guard activePairingID == pairingID else { return }
+    activePairingID = nil
+    activePairingCancellation = nil
+    if error is CancellationError || Task.isCancelled {
+      state = .idle
+      return
+    }
+    fail(with: pairingFailure(for: error))
   }
 
   private func pairingFailure(for error: Error) -> PairingFailure {

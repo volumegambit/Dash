@@ -80,8 +80,14 @@ final class AppModel {
     _ = await activatePairedProfile(profile)
   }
 
-  private func activatePairedProfile(_ profile: ConnectionProfileSnapshot) async -> Bool {
+  private func activatePairedProfile(
+    _ profile: ConnectionProfileSnapshot,
+    reportsFailureInBanner: Bool = true
+  ) async -> Bool {
     guard isDisconnecting == false else { return false }
+    if reportsFailureInBanner == false, case .failed = banner {
+      banner = nil
+    }
     let epoch = beginTransition()
     do {
       guard let prepared = try await prepareActivation(profile, epoch: epoch) else { return false }
@@ -104,7 +110,9 @@ final class AppModel {
         && selectedProfile == profile
     } catch {
       guard isCurrent(epoch) else { return false }
-      banner = .failed(error.localizedDescription)
+      if reportsFailureInBanner {
+        banner = .failed(error.localizedDescription)
+      }
       return false
     }
   }
@@ -142,7 +150,10 @@ final class AppModel {
 
   func makePairingFeature() -> PairingFeature {
     dependencies.pairingFeatureFactory.make { [weak self] profile in
-      guard let self, await self.activatePairedProfile(profile) else {
+      guard
+        let self,
+        await self.activatePairedProfile(profile, reportsFailureInBanner: false)
+      else {
         throw AppDependencyError.pairingActivationFailed
       }
     }
@@ -304,6 +315,9 @@ final class AppModel {
     selectedTab = .conversations
     pairingPath.removeAll()
     if previousGatewayID != nil, previousGatewayID != profile.gatewayID {
+      conversationPath.removeAll()
+      agentPath.removeAll()
+      splitConversationSelection = nil
       snapshot = nil
       connectionState = .connecting
     } else {

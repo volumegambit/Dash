@@ -16,7 +16,11 @@ actor PersistenceStore {
     return PersistenceStore(modelContainer: container)
   }
 
-  func upsertProfile(_ profile: ConnectionProfile, identity: GatewayIdentityDTO) throws {
+  func upsertProfile(
+    _ profile: ConnectionProfile,
+    identity: GatewayIdentityDTO,
+    saveChanges: (@Sendable () throws -> Void)? = nil
+  ) throws {
     let gatewayID = identity.gatewayId
     if let record = try profileRecord(gatewayID: gatewayID) {
       record.profileID = profile.id
@@ -46,7 +50,16 @@ actor PersistenceStore {
         )
       )
     }
-    try modelContext.save()
+    do {
+      if let saveChanges {
+        try saveChanges()
+      } else {
+        try modelContext.save()
+      }
+    } catch {
+      modelContext.rollback()
+      throw error
+    }
   }
 
   func profile(gatewayID: String) throws -> ConnectionProfileSnapshot? {

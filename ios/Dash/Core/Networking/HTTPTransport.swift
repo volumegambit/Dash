@@ -111,6 +111,14 @@ actor HTTPTransport {
     do {
       (data, response) = try await session.data(for: request)
     } catch {
+      let nsError = error as NSError
+      if error is CancellationError
+        || Task.isCancelled
+        || (error as? URLError)?.code == .cancelled
+        || (nsError.domain == NSURLErrorDomain && nsError.code == URLError.cancelled.rawValue)
+      {
+        throw CancellationError()
+      }
       throw transportError(for: error, request: descriptor)
     }
     guard let httpResponse = response as? HTTPURLResponse else {

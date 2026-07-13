@@ -410,6 +410,25 @@ struct GatewayAPITests {
     )
     #expect(patch == .mutationOutcomeUnknown(resourceID: "conv-1", requestID: nil))
   }
+
+  @Test("cancelling an HTTP request remains structured cancellation")
+  func cancellationMapping() async {
+    URLProtocolStub.enqueue(status: 200, holdOpen: true)
+    let api = makeAPI()
+    let request = Task { try await api.identity() }
+
+    for _ in 0..<100 where URLProtocolStub.requests.isEmpty {
+      try? await Task.sleep(for: .milliseconds(1))
+    }
+    #expect(URLProtocolStub.requests.count == 1)
+
+    request.cancel()
+
+    await #expect(throws: CancellationError.self) {
+      try await request.value
+    }
+    #expect(URLProtocolStub.stopLoadingCount >= 1)
+  }
 }
 
 private struct RequiredCapableResponse: Decodable, Sendable {
