@@ -14,6 +14,7 @@ import { createConsoleLogger } from '@dash/logging';
 import { mountProjectsWs } from '@dash/management';
 import { FileTokenStore, McpManager } from '@dash/mcp';
 import type { McpAgentContext } from '@dash/mcp';
+import type { ConversationSummary, GatewayIdentity } from '@dash/mobile-contract';
 import { gatewayDir, migrateLegacyLayout, workspacesDir } from '@dash/paths';
 import { PluginConfigStore, RESERVED_PROVIDER_IDS, loadPlugins } from '@dash/plugins';
 import { createProjectsTools, openProjectsDb } from '@dash/projects';
@@ -29,12 +30,14 @@ import { ChannelRegistry } from './channel-registry.js';
 import { mountChatWs } from './chat-ws.js';
 import { parseFlags, resolveSwarmConfig, swarmOverridesFromEnv } from './config.js';
 import { createControlPlaneClient } from './control-plane-client.js';
+import { createConversationAutoTitleService } from './conversation-auto-title.js';
+import { SqliteConversationService } from './conversation-service-sqlite.js';
+import { generateConversationTitle } from './conversation-title.js';
 import { GatewayCredentialStore } from './credential-store.js';
 import { createDialTokenManager } from './dial-token-manager.js';
 import { EventBus } from './event-bus.js';
-import { SqliteEventLogStore } from './event-log-store-sqlite.js';
-import type { EventLogStore } from './event-log-store.js';
-import { loadOrCreateGatewayIdentity } from './gateway-identity.js';
+import { loadOrCreateGatewayId, loadOrCreateGatewayIdentity } from './gateway-identity.js';
+import { recoverGatewayTurns } from './gateway-recovery.js';
 import { createDynamicGateway } from './gateway.js';
 import { createGatewayManagementApp } from './management-api.js';
 import { McpConfigStore } from './mcp-store.js';
@@ -49,8 +52,8 @@ import {
   reloadPluginsUnderMutex,
 } from './plugins-wiring.js';
 import { type RelayClient, startRelayClient } from './relay-client.js';
+import { createResumableChatHub } from './resumable-chat-hub.js';
 import { safeStep } from './shutdown.js';
-import { recoverInterruptedSwarmTurns } from './swarm-log-recovery.js';
 import { createGatewayWorkerFactory } from './swarm-wiring.js';
 
 async function main() {
@@ -90,7 +93,12 @@ async function main() {
   // generates an Ed25519 keypair (private key 0600 at <dataDir>/relay-gateway-key)
   // and signs the short-lived holder-of-key assertions used by relay dial-in and
   // control-plane token refresh.
+  const gatewayId = await loadOrCreateGatewayId(flags.gatewayId, dataDir);
   const relayIdentity = await loadOrCreateGatewayIdentity(dataDir);
+  const mobileIdentity: GatewayIdentity = {
+    gatewayId,
+    publicKey: relayIdentity.publicKeyB64,
+  };
 
   // Initialize credential store
   const credentialStore = new GatewayCredentialStore(dataDir);
@@ -118,7 +126,8 @@ async function main() {
   // endpoint + GC on agent deletion). Kept behind the `EventLogStore`
   // interface so future backends (LMDB, Postgres, etc.) only need a
   // new adapter class in this one spot.
-  const eventLogStore: EventLogStore = new SqliteEventLogStore({ dataDir });
+  const conversationService = new SqliteConversationService({ dataDir });
+  const eventLogStore = conversationService.eventLog;
 
   // Projects DB — durable task/issue records. Opened once and shared by the
   // agent tools (via createBackend) and the management API (routes + WS).
@@ -392,11 +401,18 @@ async function main() {
   // event log (so MC's replay terminalizes instead of spinning forever) and
   // restore the interrupted runs into the panel history. Runs before any
   // server accepts traffic, so no live turn can exist yet.
-  recoverInterruptedSwarmTurns({
+  const { conversations: conversationRecovery } = recoverGatewayTurns({
     eventLog: eventLogStore,
+    conversations: conversationService,
     restoreRun: (snapshot) => swarmCoordinator.restoreFinalizedRun(snapshot),
     log: (message) => logger.info(message),
   });
+  if (conversationRecovery.conversationsInterrupted > 0) {
+    logger.info(
+      `[conversation-recovery] interrupted ${conversationRecovery.conversationsInterrupted} conversation(s), ` +
+        `appended ${conversationRecovery.terminalsAppended} terminal(s)`,
+    );
+  }
 
   const agents = createAgentChatCoordinator({
     registry,
@@ -596,6 +612,40 @@ async function main() {
     },
   });
 
+  const emitConversationChanged = (summary: ConversationSummary): void => {
+    eventBus.emit({
+      type: 'conversation:changed',
+      conversationId: summary.id,
+      revision: summary.revision,
+    });
+  };
+  const conversationAutoTitle = createConversationAutoTitleService({
+    conversations: conversationService,
+    async generateTitle({ agentId, text }) {
+      const entry = registry.get(agentId);
+      if (!entry) throw new Error(`Agent '${agentId}' not found`);
+      await oauthRefreshCoordinator.refreshExpiring();
+      const storeKeys = await credentialStore.readProviderApiKeys();
+      const { title } = await generateConversationTitle({
+        modelStr: entry.config.model,
+        allowedProviders: entry.config.providers,
+        pluginModelCatalog: wiringState.pluginModelCatalog,
+        providerApiKeys: { ...storeKeys, ...(entry.config.providerApiKeys ?? {}) },
+        text,
+      });
+      return title;
+    },
+    onChanged: emitConversationChanged,
+    logger,
+  });
+  const resumableChatHub = createResumableChatHub({
+    conversations: conversationService,
+    agents,
+    autoTitle: conversationAutoTitle,
+    swarmCoordinator,
+    onChanged: emitConversationChanged,
+  });
+
   // --- Plugin hot-reload trigger ---
   //
   // The management routes cannot reassign this entrypoint's `wiringState`
@@ -740,6 +790,7 @@ async function main() {
     channelRegistry,
     credentialStore,
     modelsStore,
+    identity: mobileIdentity,
     // Plugin management routes (GET/PUT/DELETE /plugins, POST /plugins/reload,
     // GET /runtime/plugins). The wiring is read through a LIVE getter so the
     // routes always see the current state after a reload; the store + reload
@@ -749,12 +800,12 @@ async function main() {
     reloadPlugins,
     pluginsDir,
     dataDir,
-    relayIdentity: { publicKeyB64: relayIdentity.publicKeyB64 },
     // Same teardown as the SIGTERM/SIGINT handlers. `shutdown` is declared
     // after serve() below (it closes over the servers); this closure only
     // runs at request time, long after it exists.
     onShutdown: () => shutdown('POST /lifecycle/shutdown'),
-    eventLogStore,
+    conversationService,
+    resumableChatHub,
     // Mounts the swarm panel routes + threads the cancel cascade into the
     // disable/delete agent handlers. Same instance the chat coordinator attaches
     // turns to, so the panel reads live runs.
@@ -802,6 +853,7 @@ async function main() {
   const verboseWs = flags.verbose || process.env.NODE_ENV !== 'production';
   mountChatWs(channelApp, {
     agents,
+    resumableChatHub,
     token: flags.chatToken,
     upgradeWebSocket,
     eventLogStore,
@@ -830,8 +882,6 @@ async function main() {
   let relayClient: RelayClient | undefined;
   let dialTokenManager: ReturnType<typeof createDialTokenManager> | undefined;
   if (flags.relayUrl) {
-    const gatewayId = await resolveGatewayId(flags.gatewayId, dataDir);
-
     if (flags.controlPlaneUrl) {
       // Autonomous mode: the manager refreshes via the control plane (holder-of-
       // key assertion) on boot, proactively before expiry, and reactively on a
@@ -913,6 +963,8 @@ async function main() {
     await safeStep('relayClient.stop', () => relayClient?.stop());
     await safeStep('dialTokenManager.stop', () => dialTokenManager?.stop());
     await safeStep('mcpManager.stop', () => mcpManager.stop());
+    await safeStep('resumableChatHub.stop', () => resumableChatHub.stop());
+    await safeStep('conversationAutoTitle.flush', () => conversationAutoTitle.flush());
     // Finalize every live swarm run (cancels in-flight workers, aborts their
     // orchestrators) BEFORE the chat coordinator tears down its warm backends,
     // so no worker outlives the pool it borrowed its identity from.
@@ -925,36 +977,13 @@ async function main() {
     // agents/gateway shutdown path land cleanly. WAL checkpoints are
     // flushed on close, so the next gateway start sees a consistent
     // database.
-    await safeStep('eventLogStore.close', () => eventLogStore.close());
+    await safeStep('conversationService.close', () => conversationService.close());
     await safeStep('projectsDb.close', () => projectsDb.db.close());
     process.exit(0);
   };
 
   process.on('SIGINT', () => void shutdown('SIGINT'));
   process.on('SIGTERM', () => void shutdown('SIGTERM'));
-}
-
-/**
- * Resolve a stable per-gateway id for relay routing. An explicit --gateway-id
- * wins (the MC supervisor passes one cached in the keychain). Otherwise persist
- * a generated id under the data dir so it survives restarts: the relay routes by
- * `<gatewayId>` subdomain and the phone's pairing payload encodes it, so it must
- * not change between launches.
- */
-async function resolveGatewayId(explicit: string | undefined, dataDir: string): Promise<string> {
-  if (explicit) return explicit;
-  const { readFile, writeFile } = await import('node:fs/promises');
-  const idPath = resolve(dataDir, 'relay-gateway-id');
-  try {
-    const existing = (await readFile(idPath, 'utf8')).trim();
-    if (existing) return existing;
-  } catch {
-    // Not created yet — fall through and generate one.
-  }
-  const { randomUUID } = await import('node:crypto');
-  const id = randomUUID();
-  await writeFile(idPath, id, { mode: 0o600 });
-  return id;
 }
 
 main().catch((err) => {

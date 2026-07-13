@@ -5,6 +5,7 @@ import type { ChannelAdapter } from '@dash/channels';
 import { TelegramAdapter, WhatsAppAdapter } from '@dash/channels';
 import { type StructuredLogger, createConsoleLogger } from '@dash/logging';
 import { mountProjectsRoutes } from '@dash/management';
+import type { GatewayIdentity, MobileApiError, MobileCapability } from '@dash/mobile-contract';
 import type { PluginConfigStore } from '@dash/plugins';
 import { heuristicPluginScan, installPluginToDir, realpathContained } from '@dash/plugins';
 import type { ProjectsDb } from '@dash/projects';
@@ -15,23 +16,28 @@ import type { Context } from 'hono';
 import type { AgentChatCoordinator } from './agent-chat-coordinator.js';
 import type { AgentRegistry, GatewayAgentConfig, RegisteredAgent } from './agent-registry.js';
 import type { ChannelRegistry, ChannelRoutingRule } from './channel-registry.js';
+import { mountConversationRoutes } from './conversation-routes.js';
+import type { ConversationService } from './conversation-service.js';
 import { type CompleteFn, generateConversationTitle } from './conversation-title.js';
 import type { GatewayCredentialStore } from './credential-store.js';
 import type { EventBus, GatewayEvent } from './event-bus.js';
-import type { EventLogStore } from './event-log-store.js';
 import type { DynamicGateway } from './gateway.js';
 import type { McpManagementDeps } from './mcp-management.js';
 import { mountMcpRoutes } from './mcp-management.js';
-import { createModelsRoute } from './models-route.js';
+import { createModelsController, createModelsRoute } from './models-route.js';
 import type { ModelsStore } from './models-store.js';
 import type { PluginWiringState } from './plugins-wiring.js';
+import type { ResumableChatHub } from './resumable-chat-hub.js';
 import { mountSwarmRoutes } from './swarm-management.js';
+
+const MOBILE_CAPABILITIES: MobileCapability[] = ['conversation-sync-v1', 'chat-resume-v1'];
 
 export interface GatewayManagementOptions {
   gateway: DynamicGateway;
   agents: AgentChatCoordinator;
   agentRegistry: AgentRegistry;
   channelRegistry: ChannelRegistry;
+  identity: GatewayIdentity;
   credentialStore: GatewayCredentialStore;
   /**
    * Persistent model store. Created in `apps/gateway/src/index.ts` from
@@ -40,13 +46,10 @@ export interface GatewayManagementOptions {
    * `GET /models` triggers a fresh fetch with the new credential set.
    */
   modelsStore: ModelsStore;
-  /**
-   * Durable event log used by the chat-ws streaming path to record
-   * every outbound event. The management API exposes a replay
-   * endpoint that MC polls after a WebSocket drop. Optional only so
-   * tests that don't exercise replay can skip wiring it up.
-   */
-  eventLogStore?: EventLogStore;
+  /** Canonical conversation metadata, messages, and the shared durable event journal. */
+  conversationService: ConversationService;
+  /** Process-wide resumable turn owner used to quiesce an agent before backend eviction. */
+  resumableChatHub: Pick<ResumableChatHub, 'allowAgent' | 'cancelAgent'>;
   /** Shared projects DB. When present, mounts /projects + /issues + /inbox. */
   projectsDb?: ProjectsDb;
   /**
@@ -101,12 +104,6 @@ export interface GatewayManagementOptions {
    * when this is absent.
    */
   dataDir?: string;
-  /**
-   * The gateway's relay identity (public key only). When present, mounts
-   * `GET /identity` so MC can read the pubkey over loopback at relay opt-in.
-   * Absent in tests that don't exercise identity.
-   */
-  relayIdentity?: { publicKeyB64: string };
   /**
    * Graceful-shutdown trigger. When present, mounts `POST /lifecycle/shutdown`
    * (bearer-authed), which MC's GatewaySupervisor calls before escalating to
@@ -170,6 +167,169 @@ async function parseJsonBody<T = Record<string, unknown>>(
   }
 }
 
+const AGENT_CREATE_KEYS = new Set([
+  'name',
+  'model',
+  'systemPrompt',
+  'fallbackModels',
+  'tools',
+  'skills',
+  'providerApiKeys',
+  'workspace',
+  'maxTokens',
+  'mcpServers',
+  'swarm',
+  'plugins',
+  'providers',
+]);
+const AGENT_UPDATE_KEYS = new Set([...AGENT_CREATE_KEYS].filter((key) => key !== 'name'));
+const MOBILE_AGENT_CREATE_KEYS = new Set(['name', 'model', 'systemPrompt']);
+const MOBILE_AGENT_UPDATE_KEYS = new Set(['model', 'systemPrompt']);
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return (
+    value !== null &&
+    typeof value === 'object' &&
+    !Array.isArray(value) &&
+    Object.getPrototypeOf(value) === Object.prototype
+  );
+}
+
+function requireAgentStringArray(value: unknown, field: string): void {
+  if (
+    !Array.isArray(value) ||
+    value.some((item) => typeof item !== 'string' || item.trim().length === 0)
+  ) {
+    throw new Error(`${field} must be an array of nonblank strings`);
+  }
+}
+
+function validateAgentSkills(value: unknown): void {
+  if (!isPlainRecord(value) || Object.keys(value).some((key) => !['paths', 'urls'].includes(key))) {
+    throw new Error('skills must contain only paths and urls');
+  }
+  if (value.paths !== undefined) requireAgentStringArray(value.paths, 'skills.paths');
+  if (value.urls !== undefined) requireAgentStringArray(value.urls, 'skills.urls');
+}
+
+function validateAgentSwarm(value: unknown): void {
+  const allowed = new Set([
+    'enabled',
+    'maxConcurrentWorkers',
+    'maxWorkersPerRun',
+    'maxSteersPerWorker',
+    'maxRunSeconds',
+    'allowedModels',
+  ]);
+  if (!isPlainRecord(value) || Object.keys(value).some((key) => !allowed.has(key))) {
+    throw new Error('swarm contains unknown or invalid fields');
+  }
+  if (value.enabled !== undefined && typeof value.enabled !== 'boolean') {
+    throw new Error('swarm.enabled must be a boolean');
+  }
+  for (const key of ['maxConcurrentWorkers', 'maxWorkersPerRun', 'maxRunSeconds'] as const) {
+    const item = value[key];
+    if (item !== undefined && (!Number.isInteger(item) || (item as number) < 1)) {
+      throw new Error(`swarm.${key} must be a positive integer`);
+    }
+  }
+  if (
+    value.maxSteersPerWorker !== undefined &&
+    (!Number.isInteger(value.maxSteersPerWorker) || (value.maxSteersPerWorker as number) < 0)
+  ) {
+    throw new Error('swarm.maxSteersPerWorker must be a non-negative integer');
+  }
+  if (value.allowedModels !== undefined) {
+    requireAgentStringArray(value.allowedModels, 'swarm.allowedModels');
+  }
+}
+
+function validateAgentField(key: string, value: unknown): void {
+  if (key === 'name' || key === 'model') {
+    if (typeof value !== 'string' || value.trim().length === 0) {
+      throw new Error(`${key} must be a nonblank string`);
+    }
+    return;
+  }
+  if (key === 'systemPrompt' || key === 'workspace') {
+    if (typeof value !== 'string') throw new Error(`${key} must be a string`);
+    return;
+  }
+  if (
+    key === 'fallbackModels' ||
+    key === 'tools' ||
+    key === 'mcpServers' ||
+    key === 'plugins' ||
+    key === 'providers'
+  ) {
+    if ((key === 'plugins' || key === 'providers') && value === null) return;
+    requireAgentStringArray(value, key);
+    return;
+  }
+  if (key === 'skills') {
+    validateAgentSkills(value);
+    return;
+  }
+  if (key === 'providerApiKeys') {
+    if (!isPlainRecord(value) || Object.values(value).some((item) => typeof item !== 'string')) {
+      throw new Error('providerApiKeys must map providers to strings');
+    }
+    return;
+  }
+  if (key === 'maxTokens') {
+    if (!Number.isInteger(value) || (value as number) < 1) {
+      throw new Error('maxTokens must be a positive integer');
+    }
+    return;
+  }
+  if (key === 'swarm') validateAgentSwarm(value);
+}
+
+function parseAgentCreateRequest(
+  value: unknown,
+  allowedKeys: ReadonlySet<string> = AGENT_CREATE_KEYS,
+): GatewayAgentConfig {
+  if (!isPlainRecord(value)) throw new Error('Request body must be an object');
+  if (Object.keys(value).some((key) => !allowedKeys.has(key))) {
+    throw new Error('Request body contains unknown fields');
+  }
+  for (const key of ['name', 'model', 'systemPrompt']) {
+    if (!Object.hasOwn(value, key)) {
+      throw new Error('Missing required fields: name, model, systemPrompt');
+    }
+  }
+  for (const [key, item] of Object.entries(value)) validateAgentField(key, item);
+  return value as unknown as GatewayAgentConfig;
+}
+
+type AgentUpdateRequest = Parameters<AgentRegistry['update']>[1];
+
+function parseAgentUpdateRequest(
+  value: unknown,
+  allowedKeys: ReadonlySet<string> = AGENT_UPDATE_KEYS,
+): AgentUpdateRequest {
+  if (!isPlainRecord(value)) throw new Error('Request body must be an object');
+  const keys = Object.keys(value);
+  if (keys.length === 0) throw new Error('Request body must not be empty');
+  if (keys.some((key) => !allowedKeys.has(key))) {
+    throw new Error('Request body contains unknown fields');
+  }
+  for (const [key, item] of Object.entries(value)) validateAgentField(key, item);
+  return value as AgentUpdateRequest;
+}
+
+function mobileValidationError(error: string): MobileApiError {
+  return { code: 'validation_failed', error, retryable: false };
+}
+
+function mobileAgentNotFound(): MobileApiError {
+  return { code: 'not_found', error: 'Agent not found', retryable: false };
+}
+
+function mobileGatewayError(): MobileApiError {
+  return { code: 'gateway_offline', error: 'Internal gateway error', retryable: true };
+}
+
 /**
  * Map a plugin install/marketplace error to an HTTP status + body. Mirrors
  * `mapSkillError`, keyed on the `code` carried by `PluginOpError`:
@@ -204,6 +364,7 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
   const logger = options.logger ?? createConsoleLogger('info', 'text', 'gateway-api');
   const startedAt = options.startedAt ?? new Date().toISOString();
   const app = new Hono();
+  const mobileV1 = new Hono();
 
   // Request/response logging middleware. Placed first so unauthorized
   // attempts are logged too, and so the duration measurement wraps auth +
@@ -214,7 +375,7 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
   // pre-reading here is non-destructive. Malformed JSON is caught and logged
   // as `[invalid json]`, leaving the handler's own try/catch to return 400.
   app.use('*', async (c, next) => {
-    if (c.req.path === '/health') {
+    if (c.req.path === '/health' || c.req.path === '/mobile/v1/health') {
       await next();
       return;
     }
@@ -332,14 +493,18 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
   // (mounted on this app by the gateway via mountProjectsWs) enforces the
   // same token itself through its ?token= query param.
   app.use('*', async (c, next) => {
-    if (c.req.path === '/health' || c.req.path === '/projects/ws') {
+    if (
+      c.req.path === '/health' ||
+      c.req.path === '/mobile/v1/health' ||
+      c.req.path === '/projects/ws'
+    ) {
       await next();
       return;
     }
     if (token) {
       const auth = c.req.header('Authorization');
       if (!auth || auth !== `Bearer ${token}`) {
-        return c.json({ error: 'Unauthorized' }, 401);
+        return c.json({ code: 'unauthorized', error: 'Unauthorized', retryable: false }, 401);
       }
     }
     await next();
@@ -347,7 +512,7 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
 
   // --- Health ---
 
-  app.get('/health', (c) => {
+  const healthHandler = (c: Context) => {
     return c.json({
       status: 'healthy',
       startedAt,
@@ -362,8 +527,12 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
       pid: process.pid,
       agents: agentRegistry.list().length,
       channels: channelRegistry.list().length,
+      apiVersion: 1,
+      capabilities: MOBILE_CAPABILITIES,
     });
-  });
+  };
+  app.get('/health', healthHandler);
+  mobileV1.get('/health', healthHandler);
 
   // --- Lifecycle ---
   // Bearer-authed (the app.use('*') middleware above). MC's GatewaySupervisor
@@ -385,154 +554,253 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
     });
   }
 
-  // --- Relay identity ---
-  // Authed (behind the bearer middleware registered above, app.use('*')). MC
-  // reads this over loopback at relay opt-in to register the gateway's public
-  // key with the control plane.
-  if (options.relayIdentity) {
-    const { publicKeyB64 } = options.relayIdentity;
-    app.get('/identity', (c) => c.json({ publicKey: publicKeyB64 }));
-  }
+  // --- Gateway identity ---
+  // Authed (behind the bearer middleware registered above) and always mounted.
+  const identityHandler = (c: Context) => c.json(options.identity);
+  app.get('/identity', identityHandler);
+  mobileV1.get('/identity', identityHandler);
+
+  mountConversationRoutes(app, {
+    conversations: options.conversationService,
+    agentRegistry,
+    eventBus,
+  });
+  mountConversationRoutes(mobileV1, {
+    conversations: options.conversationService,
+    agentRegistry,
+    eventBus,
+  });
 
   // --- Agent routes ---
+  const agentLifecycleTails = new Map<string, Promise<void>>();
 
-  app.post('/agents', async (c) => {
-    let body: GatewayAgentConfig;
+  async function serializeAgentLifecycle<T>(
+    agentId: string,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    const previous = agentLifecycleTails.get(agentId) ?? Promise.resolve();
+    let release!: () => void;
+    const completed = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const tail = previous.then(() => completed);
+    agentLifecycleTails.set(agentId, tail);
+    await previous;
     try {
-      body = await c.req.json<GatewayAgentConfig>();
-    } catch {
-      return c.json({ error: 'Invalid JSON' }, 400);
+      return await operation();
+    } finally {
+      release();
+      if (agentLifecycleTails.get(agentId) === tail) agentLifecycleTails.delete(agentId);
     }
-    if (!body.name || !body.model || body.systemPrompt == null) {
-      return c.json({ error: 'Missing required fields: name, model, systemPrompt' }, 400);
-    }
-    try {
-      const entry = agentRegistry.register(body);
-      gateway.registerAgent(entry.id, buildBridgeClient(entry.id));
-      await agentRegistry.save();
-      eventBus?.emit({ type: 'agent:config-changed', agent: entry.name, fields: ['*'] });
-      return c.json(stripSecrets(entry), 201);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Internal error';
-      return c.json({ error: message }, 409);
-    }
-  });
+  }
 
-  app.get('/agents', (c) => {
-    return c.json(agentRegistry.list().map(stripSecrets));
-  });
-
-  app.get('/agents/:id', (c) => {
-    const entry = agentRegistry.get(c.req.param('id'));
-    if (!entry) return c.json({ error: 'not found' }, 404);
-    return c.json(stripSecrets(entry));
-  });
-
-  app.put('/agents/:id', async (c) => {
-    const id = c.req.param('id');
-    const entry = agentRegistry.get(id);
-    if (!entry) return c.json({ error: 'not found' }, 404);
-    const parsed = await parseJsonBody<Partial<Omit<GatewayAgentConfig, 'name'>>>(c);
-    if (!parsed.ok) return parsed.response;
-    // Snapshot the pre-update swarm block so we can detect a swarm-config change
-    // after the update and evict warm backends (a running orchestrator caches
-    // its swarm gate/caps; eviction forces the next chat to rebuild with the new
-    // config). Deep-compared via JSON.stringify — the block is plain data.
-    const oldSwarm = JSON.stringify(entry.config.swarm);
-    try {
-      const updated = agentRegistry.update(id, parsed.body);
-      await agentRegistry.save();
-      eventBus?.emit({
-        type: 'agent:config-changed',
-        agent: entry.name,
-        fields: Object.keys(parsed.body),
-      });
-      if (JSON.stringify(updated.config.swarm) !== oldSwarm) {
-        await agents.evict(id);
-      }
-      return c.json(stripSecrets(updated));
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Internal error';
-      return c.json({ error: message }, 500);
-    }
-  });
-
-  app.delete('/agents/:id', async (c) => {
-    const id = c.req.param('id');
-    const entry = agentRegistry.get(id);
-    if (!entry) return c.json({ error: 'not found' }, 404);
-    try {
-      const removedChannels = await gateway.deregisterAgent(id);
-      for (const name of removedChannels) {
-        channelRegistry.remove(name);
-      }
-      channelRegistry.removeRoutesForAgent(id);
-      // Finalize any live swarm runs for this agent before eviction. cancelRunsFor
-      // cancels non-terminal workers + aborts the orchestrator synchronously, so
-      // the subsequent evict() tears down an already-quiesced backend.
-      options.swarmCoordinator?.cancelRunsFor(id);
-      // Evict warm backends before removing the registry entry so any
-      // in-flight streams are aborted and backend.stop() is called. The
-      // pool is keyed independently of the registry, so order doesn't
-      // affect correctness of the eviction itself — but doing it before
-      // the registry remove means races that race a delete with a chat
-      // get aborted rather than serving a deleted agent's state.
-      await agents.evict(id);
-      agentRegistry.remove(id);
-      await agentRegistry.save();
-      await channelRegistry.save();
-      // Wipe the agent's durable event log last. If this throws we
-      // still return ok — the registry + channel removal has already
-      // happened and is the user-visible contract of DELETE; an
-      // orphaned event-log row for a removed agent is benign (no
-      // replay endpoint will return it because the agent lookup
-      // fails first).
+  function mountAgentRoutes(
+    target: Hono,
+    createKeys: ReadonlySet<string>,
+    updateKeys: ReadonlySet<string>,
+  ): void {
+    target.post('/agents', async (c) => {
+      let raw: unknown;
       try {
-        options.eventLogStore?.deleteAgent(id);
-      } catch (err) {
-        logger.warn?.('Failed to delete event logs for agent', {
-          agentId: id,
-          error: err instanceof Error ? err.message : String(err),
-        });
+        raw = await c.req.json<unknown>();
+      } catch {
+        return c.json(mobileValidationError('Request body must be valid JSON'), 400);
       }
-      return c.json({ ok: true });
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Internal error';
-      return c.json({ error: message }, 500);
-    }
-  });
+      let body: GatewayAgentConfig;
+      try {
+        body = parseAgentCreateRequest(raw, createKeys);
+      } catch (error) {
+        return c.json(
+          mobileValidationError(error instanceof Error ? error.message : 'Request body is invalid'),
+          400,
+        );
+      }
+      let entry: RegisteredAgent;
+      try {
+        entry = agentRegistry.register(body);
+      } catch (error) {
+        return c.json(
+          mobileValidationError(error instanceof Error ? error.message : 'Agent config is invalid'),
+          400,
+        );
+      }
+      try {
+        gateway.registerAgent(entry.id, buildBridgeClient(entry.id));
+        await agentRegistry.save();
+        eventBus?.emit({ type: 'agent:config-changed', agent: entry.name, fields: ['*'] });
+        return c.json(stripSecrets(entry), 201);
+      } catch (error) {
+        logger.error('mobile agent create failed', error instanceof Error ? error : undefined);
+        return c.json(mobileGatewayError(), 500);
+      }
+    });
 
-  app.post('/agents/:id/disable', async (c) => {
-    const id = c.req.param('id');
-    try {
-      agentRegistry.disable(id);
-      await agentRegistry.save();
-      // Disable must actually stop a running orchestrator: cancel its live swarm
-      // runs, then evict the warm backend (which aborts the pinned in-flight
-      // turn — intentional per the design, disable is a hard stop). Ordered so
-      // the swarm runs quiesce before the backend teardown.
-      options.swarmCoordinator?.cancelRunsFor(id);
-      await agents.evict(id);
-      return c.json({ ok: true });
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Internal error';
-      if (message.includes('not found')) return c.json({ error: message }, 404);
-      return c.json({ error: message }, 500);
-    }
-  });
+    target.get('/agents', (c) => c.json(agentRegistry.list().map(stripSecrets)));
 
-  app.post('/agents/:id/enable', async (c) => {
-    const id = c.req.param('id');
-    try {
-      agentRegistry.enable(id);
-      await agentRegistry.save();
-      return c.json({ ok: true });
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Internal error';
-      if (message.includes('not found')) return c.json({ error: message }, 404);
-      return c.json({ error: message }, 500);
-    }
-  });
+    target.get('/agents/:id', (c) => {
+      const entry = agentRegistry.get(c.req.param('id'));
+      if (!entry) return c.json(mobileAgentNotFound(), 404);
+      return c.json(stripSecrets(entry));
+    });
+
+    target.put('/agents/:id', async (c) => {
+      const id = c.req.param('id');
+      const entry = agentRegistry.get(id);
+      if (!entry) return c.json(mobileAgentNotFound(), 404);
+      let raw: unknown;
+      try {
+        raw = await c.req.json<unknown>();
+      } catch {
+        return c.json(mobileValidationError('Request body must be valid JSON'), 400);
+      }
+      let body: AgentUpdateRequest;
+      try {
+        body = parseAgentUpdateRequest(raw, updateKeys);
+      } catch (error) {
+        return c.json(
+          mobileValidationError(error instanceof Error ? error.message : 'Request body is invalid'),
+          400,
+        );
+      }
+      // Snapshot the pre-update swarm block so we can detect a swarm-config change
+      // after the update and evict warm backends (a running orchestrator caches
+      // its swarm gate/caps; eviction forces the next chat to rebuild with the new
+      // config). Deep-compared via JSON.stringify — the block is plain data.
+      const oldSwarm = JSON.stringify(entry.config.swarm);
+      let updated: RegisteredAgent;
+      try {
+        updated = agentRegistry.update(id, body);
+      } catch (error) {
+        return c.json(
+          mobileValidationError(error instanceof Error ? error.message : 'Agent config is invalid'),
+          400,
+        );
+      }
+      try {
+        await agentRegistry.save();
+        eventBus?.emit({
+          type: 'agent:config-changed',
+          agent: entry.name,
+          fields: Object.keys(body),
+        });
+        if (JSON.stringify(updated.config.swarm) !== oldSwarm) {
+          await agents.evict(id);
+        }
+        return c.json(stripSecrets(updated));
+      } catch (error) {
+        logger.error('mobile agent update failed', error instanceof Error ? error : undefined, {
+          agentId: id,
+        });
+        return c.json(mobileGatewayError(), 500);
+      }
+    });
+
+    target.delete('/agents/:id', (c) => {
+      const id = c.req.param('id');
+      return serializeAgentLifecycle(id, async () => {
+        const entry = agentRegistry.get(id);
+        if (!entry) return c.json(mobileAgentNotFound(), 404);
+        try {
+          await options.resumableChatHub.cancelAgent(id);
+          const removedChannels = await gateway.deregisterAgent(id);
+          for (const name of removedChannels) {
+            channelRegistry.remove(name);
+          }
+          channelRegistry.removeRoutesForAgent(id);
+          // Finalize any live swarm runs for this agent before eviction. cancelRunsFor
+          // cancels non-terminal workers + aborts the orchestrator synchronously, so
+          // the subsequent evict() tears down an already-quiesced backend.
+          options.swarmCoordinator?.cancelRunsFor(id);
+          // Evict warm backends before removing the registry entry so any
+          // in-flight streams are aborted and backend.stop() is called. The
+          // pool is keyed independently of the registry, so order doesn't
+          // affect correctness of the eviction itself — but doing it before
+          // the registry remove means races that race a delete with a chat
+          // get aborted rather than serving a deleted agent's state.
+          await agents.evict(id);
+          const archived = options.conversationService.archiveAgentConversations(id);
+          agentRegistry.remove(id);
+          await agentRegistry.save();
+          await channelRegistry.save();
+          for (const conversation of archived) {
+            eventBus?.emit({
+              type: 'conversation:changed',
+              conversationId: conversation.id,
+              revision: conversation.revision,
+            });
+          }
+          eventBus?.emit({
+            type: 'agent:config-changed',
+            agent: entry.name,
+            fields: ['removed'],
+          });
+          return c.json({ ok: true });
+        } catch (error) {
+          logger.error('mobile agent delete failed', error instanceof Error ? error : undefined, {
+            agentId: id,
+          });
+          return c.json(mobileGatewayError(), 500);
+        }
+      });
+    });
+
+    target.post('/agents/:id/disable', (c) => {
+      const id = c.req.param('id');
+      return serializeAgentLifecycle(id, async () => {
+        const entry = agentRegistry.get(id);
+        if (!entry) return c.json(mobileAgentNotFound(), 404);
+        try {
+          agentRegistry.disable(id);
+          await agentRegistry.save();
+          await options.resumableChatHub.cancelAgent(id);
+          // Disable must actually stop a running orchestrator: cancel its live swarm
+          // runs, then evict the warm backend (which aborts the pinned in-flight
+          // turn — intentional per the design, disable is a hard stop). Ordered so
+          // the swarm runs quiesce before the backend teardown.
+          options.swarmCoordinator?.cancelRunsFor(id);
+          await agents.evict(id);
+          eventBus?.emit({
+            type: 'agent:config-changed',
+            agent: entry.name,
+            fields: ['enabled'],
+          });
+          return c.json({ ok: true });
+        } catch (error) {
+          logger.error('mobile agent disable failed', error instanceof Error ? error : undefined, {
+            agentId: id,
+          });
+          return c.json(mobileGatewayError(), 500);
+        }
+      });
+    });
+
+    target.post('/agents/:id/enable', (c) => {
+      const id = c.req.param('id');
+      return serializeAgentLifecycle(id, async () => {
+        const entry = agentRegistry.get(id);
+        if (!entry) return c.json(mobileAgentNotFound(), 404);
+        try {
+          agentRegistry.enable(id);
+          await agentRegistry.save();
+          options.resumableChatHub.allowAgent(id);
+          eventBus?.emit({
+            type: 'agent:config-changed',
+            agent: entry.name,
+            fields: ['enabled'],
+          });
+          return c.json({ ok: true });
+        } catch (error) {
+          logger.error('mobile agent enable failed', error instanceof Error ? error : undefined, {
+            agentId: id,
+          });
+          return c.json(mobileGatewayError(), 500);
+        }
+      });
+    });
+  }
+
+  mountAgentRoutes(app, AGENT_CREATE_KEYS, AGENT_UPDATE_KEYS);
+  mountAgentRoutes(mobileV1, MOBILE_AGENT_CREATE_KEYS, MOBILE_AGENT_UPDATE_KEYS);
 
   // --- Skill routes ---
   const mapSkillError = (
@@ -889,16 +1157,19 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
   });
 
   // --- Models routes ---
-  app.route(
+  const modelsOptions = {
+    store: options.modelsStore,
+    credentialStore,
+    // Read provider catalogs LIVE through the wiring getter so a hot-reload
+    // that adds/removes a plugin provider is reflected on the next GET
+    // /models — not a boot snapshot. Empty when plugins aren't wired (tests).
+    getProviderConfigs: () => options.getPluginWiringState?.().pluginProviderConfigs ?? [],
+  };
+  const modelsController = createModelsController(modelsOptions);
+  app.route('/models', createModelsRoute({ ...modelsOptions, controller: modelsController }));
+  mobileV1.route(
     '/models',
-    createModelsRoute({
-      store: options.modelsStore,
-      credentialStore,
-      // Read provider catalogs LIVE through the wiring getter so a hot-reload
-      // that adds/removes a plugin provider is reflected on the next GET
-      // /models — not a boot snapshot. Empty when plugins aren't wired (tests).
-      getProviderConfigs: () => options.getPluginWiringState?.().pluginProviderConfigs ?? [],
-    }),
+    createModelsRoute({ ...modelsOptions, controller: modelsController, strictReadOnly: true }),
   );
 
   // --- Event-log replay ---
@@ -908,23 +1179,44 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
   // passes `sinceSeq` as a query param; the gateway returns every
   // entry with `seq > sinceSeq` in seq order. Empty array when
   // there's nothing to replay.
-  if (options.eventLogStore) {
-    const eventLogStore = options.eventLogStore;
-    app.get('/agents/:agentId/conversations/:conversationId/events', (c) => {
-      const agentId = c.req.param('agentId');
-      const conversationId = c.req.param('conversationId');
-      if (!agentRegistry.get(agentId)) {
-        return c.json({ error: 'agent not found' }, 404);
-      }
-      const sinceSeqRaw = c.req.query('sinceSeq');
-      const sinceSeq = sinceSeqRaw === undefined ? 0 : Number.parseInt(sinceSeqRaw, 10);
-      if (!Number.isFinite(sinceSeq) || sinceSeq < 0) {
-        return c.json({ error: 'invalid sinceSeq' }, 400);
-      }
-      const entries = eventLogStore.readSince(agentId, conversationId, sinceSeq);
-      return c.json({ entries });
+  const replayConversationEventsHandler = (c: Context) => {
+    const agentId = c.req.param('agentId');
+    const conversationId = c.req.param('conversationId');
+    const url = new URL(c.req.url);
+    if ([...url.searchParams.keys()].some((key) => key !== 'sinceSeq')) {
+      return c.json(mobileValidationError('Unknown replay query parameter'), 400);
+    }
+    const values = url.searchParams.getAll('sinceSeq');
+    if (values.length > 1 || (values.length === 1 && !/^(0|[1-9][0-9]*)$/.test(values[0]))) {
+      return c.json(mobileValidationError('sinceSeq must be a non-negative integer'), 400);
+    }
+    const sinceSeq = values.length === 0 ? 0 : Number.parseInt(values[0], 10);
+    if (!Number.isSafeInteger(sinceSeq)) {
+      return c.json(mobileValidationError('sinceSeq must be a non-negative integer'), 400);
+    }
+
+    const conversation = options.conversationService.get(conversationId, {
+      includeDeleted: true,
     });
-  }
+    if (conversation && conversation.agentId !== agentId) {
+      return c.json({ code: 'not_found', error: 'Conversation not found', retryable: false }, 404);
+    }
+    if (conversation?.status === 'deleted') return c.json({ entries: [] });
+    if (!conversation && !agentRegistry.get(agentId)) {
+      return c.json({ code: 'not_found', error: 'Agent not found', retryable: false }, 404);
+    }
+    const entries = options.conversationService.eventLog.readSince(
+      agentId,
+      conversationId,
+      sinceSeq,
+    );
+    return c.json({ entries });
+  };
+  app.get('/agents/:agentId/conversations/:conversationId/events', replayConversationEventsHandler);
+  mobileV1.get(
+    '/agents/:agentId/conversations/:conversationId/events',
+    replayConversationEventsHandler,
+  );
 
   // --- Conversation title generation ---
   //
@@ -1244,7 +1536,7 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
 
   if (eventBus) {
     const bus = eventBus;
-    app.get('/events', (c) => {
+    const eventsHandler = (c: Context) => {
       return c.newResponse(
         new ReadableStream({
           start(controller) {
@@ -1280,8 +1572,12 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
           },
         },
       );
-    });
+    };
+    app.get('/events', eventsHandler);
+    mobileV1.get('/events', eventsHandler);
   }
+
+  app.route('/mobile/v1', mobileV1);
 
   return app;
 }

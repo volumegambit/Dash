@@ -40,4 +40,18 @@ describe('EventBus', () => {
     bus.emit({ type: 'mcp:server-removed', server: 'test' });
     expect(received).toHaveLength(1);
   });
+
+  it('delivers frozen conversation invalidation variants unchanged', () => {
+    const bus = new EventBus();
+    const received: GatewayEvent[] = [];
+    bus.subscribe((event) => received.push(event));
+
+    bus.emit({ type: 'conversation:changed', conversationId: 'conversation-01', revision: 2 });
+    bus.emit({ type: 'conversation:deleted', conversationId: 'conversation-01', revision: 3 });
+
+    expect(received).toEqual([
+      { type: 'conversation:changed', conversationId: 'conversation-01', revision: 2 },
+      { type: 'conversation:deleted', conversationId: 'conversation-01', revision: 3 },
+    ]);
+  });
 });

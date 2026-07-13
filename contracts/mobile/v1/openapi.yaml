@@ -3,6 +3,8 @@ info:
   title: Dash Mobile Conversation Sync API
   version: 1.0.0
   description: Frozen version 1 wire contract for Dash mobile clients.
+servers:
+  - url: /mobile/v1
 security:
   - bearerAuth: []
 paths:
@@ -232,6 +234,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/RevisionConflictError'
+        '410':
+          $ref: '#/components/responses/Gone'
     delete:
       operationId: deleteConversation
       parameters:
@@ -255,13 +259,15 @@ paths:
                 oneOf:
                   - $ref: '#/components/schemas/RevisionConflictError'
                   - $ref: '#/components/schemas/ConversationBusyError'
+        '410':
+          $ref: '#/components/responses/Gone'
   /conversations/{id}/messages:
     parameters:
       - $ref: '#/components/parameters/ConversationId'
     get:
       operationId: listConversationMessages
       parameters:
-        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/BeforeCursor'
       responses:
         '200':
           description: A stable page of persisted messages.
@@ -336,6 +342,11 @@ components:
       in: query
       required: false
       schema: { type: string, minLength: 1 }
+    BeforeCursor:
+      name: before
+      in: query
+      required: false
+      schema: { type: string, minLength: 1 }
     IfMatch:
       name: If-Match
       in: header
@@ -350,6 +361,12 @@ components:
             $ref: '#/components/schemas/MobileApiError'
     NotFound:
       description: Requested resource was not found.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/MobileApiError'
+    Gone:
+      description: The conversation was previously deleted and cannot be mutated.
       content:
         application/json:
           schema:

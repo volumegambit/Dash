@@ -29,8 +29,24 @@ import type {
  * that pair in `BEGIN IMMEDIATE`/`COMMIT` to serialize on SQLite's
  * writer lock across processes; flagged in the `append()` docstring.
  */
-export interface SqliteEventLogStoreOptions {
+interface OwnedSqliteEventLogStoreOptions {
   dataDir: string;
+  database?: never;
+}
+
+interface InjectedSqliteEventLogStoreOptions {
+  database: DatabaseType;
+  dataDir?: never;
+}
+
+export type SqliteEventLogStoreOptions =
+  | OwnedSqliteEventLogStoreOptions
+  | InjectedSqliteEventLogStoreOptions;
+
+function ownsDatabase(
+  options: SqliteEventLogStoreOptions,
+): options is OwnedSqliteEventLogStoreOptions {
+  return typeof options.dataDir === 'string';
 }
 
 /**
@@ -60,7 +76,7 @@ const SCHEMA_SQL = `
 
 export class SqliteEventLogStore implements EventLogStore {
   private readonly db: DatabaseType;
-  private readonly dbPath: string;
+  private readonly ownsDatabase: boolean;
 
   // Prepared statements — parsed once at construction, reused for
   // every call. Measurable throughput win over re-parsing each time.
@@ -72,10 +88,15 @@ export class SqliteEventLogStore implements EventLogStore {
   private readonly deleteConversationStmt: Statement;
 
   constructor(options: SqliteEventLogStoreOptions) {
-    this.dbPath = join(options.dataDir, 'agent-stream-events.db');
-    mkdirSync(dirname(this.dbPath), { recursive: true });
-
-    this.db = new Database(this.dbPath);
+    if (ownsDatabase(options)) {
+      this.ownsDatabase = true;
+      const dbPath = join(options.dataDir, 'agent-stream-events.db');
+      mkdirSync(dirname(dbPath), { recursive: true });
+      this.db = new Database(dbPath);
+    } else {
+      this.ownsDatabase = false;
+      this.db = options.database;
+    }
 
     // WAL mode: writers don't block readers, which matters once
     // autonomous agents are producing events in parallel. Per-run
@@ -85,6 +106,7 @@ export class SqliteEventLogStore implements EventLogStore {
     // dropped WebSocket events" — the durability contract is "what
     // the gateway already persisted, we can replay", not "every
     // event survives a kernel panic".
+    this.db.pragma('foreign_keys = ON');
     this.db.pragma('journal_mode = WAL');
     this.db.pragma('synchronous = NORMAL');
 
@@ -199,6 +221,6 @@ export class SqliteEventLogStore implements EventLogStore {
   }
 
   close(): void {
-    this.db.close();
+    if (this.ownsDatabase) this.db.close();
   }
 }

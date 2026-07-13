@@ -68,10 +68,13 @@ The gateway runs two servers with independent authentication:
 
 | Server | Protocol | Default port | Auth | Purpose |
 |--------|----------|-------------|------|---------|
-| Management API | HTTP | 9300 | Bearer token | Health, agents, channels, credentials, models |
-| Channel server | WebSocket | 9200 | Query param (`?token=`) | Real-time agent chat |
+| Management API | HTTP | 9300 | Bearer token | Health, identity, agents, conversation sync, credentials, and models |
+| Channel server | WebSocket | 9200 | Query param (`?token=`) | Real-time agent chat and turn resume |
 
-Both servers bind to `127.0.0.1` by default. Each has its own token — a management token cannot be used on the channel port, and vice versa.
+Both servers bind to `127.0.0.1` by default. Each has its own token — a management token cannot
+be used on the channel port, and vice versa. Native clients use the versioned `/mobile/v1`
+management routes. Chat remains on the unprefixed `/ws/chat` path. Clients check
+`GET /mobile/v1/health` before enabling conversation sync or resumable chat.
 
 ## Remote access identity
 
@@ -107,26 +110,34 @@ Mission Control needing to be open.
 
 ## Message flow
 
-Here's what happens when you send a message to one of your agents.
+Here's what happens when a capable client sends a resumable message to one of your agents.
 
 <Steps>
-  <Step title="Connect and authenticate">
-    Client opens a WebSocket to `ws://host:9200/ws/chat?token=...`
+  <Step title="Discover and load">
+    The client reads `GET /mobile/v1/health`, confirms `conversation-sync-v1` and
+    `chat-resume-v1`, then creates or loads the gateway's canonical conversation.
   </Step>
-  <Step title="Send a message">
-    Client sends a JSON message with the agent name, conversation ID, and text
+  <Step title="Connect and send">
+    The client opens `ws://host:9200/ws/chat?token=...` and sends one `message` frame with a
+    stable turn ID, the conversation ID, and `resumable: true`.
   </Step>
-  <Step title="Agent processes">
-    The agent loads the conversation's session history, appends the new message, and streams it to the LLM
+  <Step title="Accept atomically">
+    In one SQLite transaction, the gateway verifies that the conversation is writable, acquires
+    its active-turn lease, creates the user and assistant messages, and appends the first durable
+    sequence. It then returns `accepted` with those IDs and that sequence.
   </Step>
-  <Step title="Stream events">
-    As the LLM responds, events are streamed back in real time — text deltas, tool executions, and tool results
+  <Step title="Process at the gateway">
+    The gateway owns the provider run. The agent loads its provider session, calls the LLM, and
+    executes requested tools for up to 25 rounds.
   </Step>
-  <Step title="Tool loop">
-    If the model requests a tool (e.g., running a shell command), the agent executes it and sends the result back to the LLM. This can repeat up to 25 times per message
+  <Step title="Persist, then broadcast">
+    Each text delta, tool event, question, and terminal is assigned the next conversation-global
+    sequence and committed before the gateway broadcasts it to attached clients.
   </Step>
-  <Step title="Final response">
-    When the model finishes, the agent persists the full conversation and sends a completion signal
+  <Step title="Detach or finish">
+    Losing a socket only detaches that resumable subscriber. A client can replay missed sequences
+    and resume the same turn. A terminal `done` or `error` releases the lease; an explicit `cancel`
+    stops the provider run and records a cancelled terminal.
   </Step>
 </Steps>
 
@@ -136,32 +147,81 @@ Here's what happens when you send a message to one of your agents.
 
 | Type | Fields | Description |
 |------|--------|-------------|
-| `message` | `id`, `agentId`, `channelId`, `conversationId`, `text` | Send a chat message |
-| `cancel` | `id` | Cancel an in-flight request |
+| `message` | `id`, `agentId`, `channelId`, `conversationId`, `text`, `resumable` | Start a turn; set `resumable` to `true` only when the capability is advertised |
+| `resume` | `id`, `agentId`, `conversationId`, `sinceSeq` | Replay missed frames and attach to the same live turn |
+| `answer` | `id`, `questionId`, `answer` | Answer a question from the active turn |
+| `cancel` | `id` | Explicitly cancel the identified turn |
 
 **Server → Client:**
 
 | Type | Fields | Description |
 |------|--------|-------------|
-| `event` | `id`, `event` | A streaming event (text delta, tool use, response, etc.) |
-| `done` | `id` | Stream complete for this request |
-| `error` | `id`, `error` | Error message |
+| `accepted` | `id`, `conversationId`, message IDs, `revision`, `seq` | The resumable turn and its two message records are durable |
+| `event` | `id`, `conversationId`, `seq`, `event` | A durable streaming event such as text, tool use, or a question |
+| `done` | `id`, `conversationId`, `seq`, `outcome` | Durable completion or cancellation |
+| `error` | `id`, `conversationId`, `seq`, `error`, `code`, `retryable` | Durable failure, or a structured rejection before a turn starts |
 
-The `id` field correlates requests with responses, allowing multiple concurrent requests on a single connection.
+The `id` is the turn ID and correlates all frames for that turn. A conversation has at most one
+active turn across every device and socket. Retrying the same accepted turn ID is idempotent;
+starting a different turn while the lease is held returns `conversation_busy` and its
+`activeTurnId`.
+
+Messages without `resumable: true` retain the legacy connection-owned behavior: their events are
+not part of the canonical mobile turn contract, and closing their socket cancels their work.
 
 ## Session persistence
 
-Conversations are stored as append-only JSONL files (one JSON object per line), under a directory keyed by agent and conversation:
+Dash keeps two complementary forms of conversation state.
+
+Provider session history is stored as append-only JSONL files under a directory keyed by agent
+and conversation:
 
 ```
 ~/.dash/gateway/sessions/{agent-name}/{conversationId}/
 ```
 
-Each line records a timestamped event — user messages, assistant responses, and tool results. When an agent loads a session, it replays these entries to reconstruct the conversation history. This format is simple, crash-safe (partial writes don't corrupt earlier entries), and easy to inspect.
+The agent replays these entries to reconstruct the model and tool context it needs for the next
+provider call.
+
+Cross-device conversation state is canonical in the gateway's SQLite database:
+
+```
+<gateway-data-dir>/agent-stream-events.db
+```
+
+That database owns conversation summaries and revisions, user and assistant messages, deletion
+tombstones, the active-turn lease, and the ordered replay journal. Dash mobile and capability-aware
+Mission Control clients cache this state and reconcile from the Management API rather than treating
+local chat history as authoritative. When the gateway does not advertise the required capabilities,
+Mission Control falls back to legacy connection-owned chat.
+
+### Canonical turn durability
+
+Turn acceptance uses one transaction so the lease, both message records, and `accepted` replay
+entry either become visible together or not at all. Every later event is also persisted before it
+is sent. A client that receives sequence 12 can therefore rely on sequence 12 being replayable,
+even if its socket drops immediately afterward.
+
+The provider run belongs to the gateway, not to a WebSocket. Any number of clients may detach and
+resume the owning turn, but they all observe the same global lease and sequence. Explicit cancel
+is the operation that stops work; a network interruption is not.
+
+On startup, the gateway recovers any conversation left `running` by a process interruption. It
+records an interrupted terminal when one is missing, marks the assistant message and conversation
+`interrupted`, and releases the stale lease. Clients can replay that terminal before deciding
+whether to start a new turn.
 
 ## Event log and chat replay
 
-The gateway maintains a durable event log for each conversation. When a client reconnects (e.g. after Mission Control restarts), it can replay missed events from the log without re-sending the message to the LLM. This ensures chat continuity across reconnections.
+The gateway assigns a monotonically increasing sequence across all turns in a conversation. A
+client stores the highest sequence it has applied, then requests entries after that value from
+`GET /mobile/v1/agents/:agentId/conversations/:conversationId/events?sinceSeq=...`. Entries arrive
+in ascending order and can be applied exactly once by sequence.
+
+If the owning turn is still live, the client sends `resume` with the same turn ID and `sinceSeq`.
+The gateway replays the durable gap and attaches the socket for future frames without asking the
+LLM to process the prompt again. Conversation change events over the mobile SSE endpoint tell
+clients when to refresh summaries; they do not replace replay for chat content.
 
 ## Agent Swarm
 
