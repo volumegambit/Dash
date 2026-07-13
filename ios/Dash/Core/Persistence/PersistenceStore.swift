@@ -4,6 +4,7 @@ import SwiftData
 enum PersistenceStoreError: Error, Equatable, Sendable {
   case invalidTombstoneStatus
   case invalidStoredValue(String)
+  case conversationDeleted(gatewayID: String, conversationID: String)
 }
 
 @ModelActor
@@ -129,6 +130,7 @@ actor PersistenceStore {
     gatewayID: String,
     conversationID: String
   ) throws {
+    try requireWritableConversation(gatewayID: gatewayID, conversationID: conversationID)
     for value in values {
       let key = scopedID(gatewayID: gatewayID, resourceID: value.id)
       let content = try ContractCoding.encoder().encode(value.content)
@@ -209,6 +211,7 @@ actor PersistenceStore {
     gatewayID: String,
     conversationID: String
   ) throws {
+    try requireWritableConversation(gatewayID: gatewayID, conversationID: conversationID)
     let key = scopedID(gatewayID: gatewayID, resourceID: conversationID)
     let attachments = try ContractCoding.encoder().encode(draft.attachments)
     if let record = try draftRecord(scopedConversationID: key) {
@@ -278,6 +281,7 @@ actor PersistenceStore {
   }
 
   func advanceCursor(gatewayID: String, conversationID: String, to seq: Int) throws {
+    try requireWritableConversation(gatewayID: gatewayID, conversationID: conversationID)
     let key = scopedID(gatewayID: gatewayID, resourceID: conversationID)
     if let record = try replayCursorRecord(scopedConversationID: key) {
       record.lastSeq = max(record.lastSeq, seq)
@@ -373,6 +377,22 @@ actor PersistenceStore {
           updatedAt: value.updatedAt,
           deletedAt: value.deletedAt
         )
+      )
+    }
+  }
+
+  private func requireWritableConversation(
+    gatewayID: String,
+    conversationID: String
+  ) throws {
+    let record = try conversationRecord(
+      gatewayID: gatewayID,
+      conversationID: conversationID
+    )
+    guard record?.statusRaw != ConversationStatus.deleted.rawValue else {
+      throw PersistenceStoreError.conversationDeleted(
+        gatewayID: gatewayID,
+        conversationID: conversationID
       )
     }
   }

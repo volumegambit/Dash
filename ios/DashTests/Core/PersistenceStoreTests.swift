@@ -186,7 +186,6 @@ struct PersistenceStoreTests {
     #expect(retained.summary.revision == 5)
     try await expectConversationContentPurged(store)
 
-    try await cacheConversationContent(store, draft: draft)
     try await store.applyTombstone(tombstone, gatewayID: "gw")
     try await expectConversationContentPurged(store)
   }
@@ -204,6 +203,71 @@ struct PersistenceStoreTests {
 
     #expect(error == .invalidTombstoneStatus)
     #expect(try await store.conversation(gatewayID: "gw", id: "c") == nil)
+  }
+
+  @Test("a late message cannot repopulate a tombstoned conversation")
+  func tombstoneRejectsLateMessage() async throws {
+    let store = try await tombstonedStore()
+
+    let error = await persistenceError {
+      try await store.mergeMessages(
+        [message(id: "late-message")],
+        gatewayID: "gw",
+        conversationID: "c"
+      )
+    }
+
+    #expect(error == .conversationDeleted(gatewayID: "gw", conversationID: "c"))
+    #expect(try await store.messages(gatewayID: "gw", conversationID: "c").isEmpty)
+  }
+
+  @Test("a late draft attachment cannot repopulate a tombstoned conversation")
+  func tombstoneRejectsLateDraft() async throws {
+    let store = try await tombstonedStore()
+    let draft = ConversationDraft(
+      text: "late draft",
+      attachments: [
+        DraftAttachment(
+          id: UUID(uuidString: "018f0f4a-5c42-7a8b-9c01-1234567890ab")!,
+          mediaType: "image/png",
+          data: Data("late attachment".utf8)
+        )
+      ],
+      updatedAt: instant(80)
+    )
+
+    let error = await persistenceError {
+      try await store.saveDraft(draft, gatewayID: "gw", conversationID: "c")
+    }
+
+    #expect(error == .conversationDeleted(gatewayID: "gw", conversationID: "c"))
+    #expect(try await store.draft(gatewayID: "gw", conversationID: "c") == nil)
+  }
+
+  @Test("a late replay cursor cannot repopulate a tombstoned conversation")
+  func tombstoneRejectsLateCursor() async throws {
+    let store = try await tombstonedStore()
+
+    let error = await persistenceError {
+      try await store.advanceCursor(gatewayID: "gw", conversationID: "c", to: 99)
+    }
+
+    #expect(error == .conversationDeleted(gatewayID: "gw", conversationID: "c"))
+    #expect(try await store.cursor(gatewayID: "gw", conversationID: "c") == 0)
+  }
+
+  @Test("a conversation tombstone does not block gateway profile or agent writes")
+  func tombstoneDoesNotBlockGatewayWrites() async throws {
+    let store = try await tombstonedStore()
+    try await store.upsertProfile(
+      profile(),
+      identity: .init(gatewayId: "gw", publicKey: "public-key")
+    )
+    try await store.markSuccessfulSync(gatewayID: "gw", at: instant(90))
+    try await store.replaceAgents([agent(id: "agent-1", name: "Agent")], gatewayID: "gw")
+
+    #expect(try await store.profile(gatewayID: "gw")?.profile.lastSuccessfulSyncAt == instant(90))
+    #expect(try await store.agents(gatewayID: "gw").map(\.id) == ["agent-1"])
   }
 
   @Test("replay cursor advances monotonically")
@@ -347,6 +411,21 @@ struct PersistenceStoreTests {
     #expect(try await store.messages(gatewayID: "gw", conversationID: "c").isEmpty)
     #expect(try await store.cursor(gatewayID: "gw", conversationID: "c") == 0)
     #expect(try await store.draft(gatewayID: "gw", conversationID: "c") == nil)
+  }
+
+  private func tombstonedStore() async throws -> PersistenceStore {
+    let store = try PersistenceStore.inMemory()
+    try await store.applyTombstone(
+      summary(
+        id: "c",
+        title: "Deleted",
+        revision: 2,
+        status: .deleted,
+        deletedAt: instant(20)
+      ),
+      gatewayID: "gw"
+    )
+    return store
   }
 
   private func summary(
