@@ -40,6 +40,9 @@
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",
+    "ajv": "^8.17.1",
+    "ajv-formats": "^3.0.1",
+    "yaml": "^2.9.0",
     "tsx": "^4.19.0"
   },
   "tsup": {
