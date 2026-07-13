@@ -1,4 +1,5 @@
 import AVFoundation
+import Accessibility
 import Foundation
 import Observation
 
@@ -242,6 +243,15 @@ enum PairingState: Equatable, Sendable {
   case verifying(PairingVerificationStep)
   case failed(PairingFailure)
   case paired(ConnectionProfileSnapshot)
+
+  var isWorking: Bool {
+    switch self {
+    case .validating, .verifying:
+      true
+    case .idle, .failed, .paired:
+      false
+    }
+  }
 }
 
 @MainActor
@@ -259,21 +269,27 @@ final class PairingFeature {
   @ObservationIgnored private let scanner: any QRScanning
   @ObservationIgnored private let onPaired:
     @MainActor @Sendable (ConnectionProfileSnapshot) async -> Void
+  @ObservationIgnored private let announceFailure: @MainActor @Sendable (PairingFailure) -> Void
   @ObservationIgnored private var activeScanID: UUID?
 
   init(
     verifier: any PairingVerifying,
     installer: any PairingProfileInstalling,
     scanner: any QRScanning = UnavailableQRScanner(),
-    onPaired: @escaping @MainActor @Sendable (ConnectionProfileSnapshot) async -> Void
+    onPaired: @escaping @MainActor @Sendable (ConnectionProfileSnapshot) async -> Void,
+    announceFailure: @escaping @MainActor @Sendable (PairingFailure) -> Void = { failure in
+      AccessibilityNotification.Announcement("\(failure.title). \(failure.message)").post()
+    }
   ) {
     self.verifier = verifier
     self.installer = installer
     self.scanner = scanner
     self.onPaired = onPaired
+    self.announceFailure = announceFailure
   }
 
   func pair(rawPayload: String) async {
+    guard state.isWorking == false else { return }
     activeScanID = nil
     self.rawPayload = rawPayload
     state = .validating
@@ -285,18 +301,19 @@ final class PairingFeature {
       )
       try await pair(payload: payload)
     } catch {
-      state = .failed(pairingFailure(for: error))
+      fail(with: pairingFailure(for: error))
     }
   }
 
   func pair(manual: ManualPairingInput) async {
+    guard state.isWorking == false else { return }
     activeScanID = nil
     state = .validating
     await scanner.stop()
     do {
       try await pair(payload: manual.payload())
     } catch {
-      state = .failed(pairingFailure(for: error))
+      fail(with: pairingFailure(for: error))
     }
   }
 
@@ -335,11 +352,12 @@ final class PairingFeature {
     } catch {
       guard activeScanID == scanID else { return }
       activeScanID = nil
-      state = .failed(
-        PairingFailure(
-          title: "Couldn't scan code",
-          message: "Keep the code in the frame, or paste it instead."
-        )
+      fail(
+        with:
+          PairingFailure(
+            title: "Couldn't scan code",
+            message: "Keep the code in the frame, or paste it instead."
+          )
       )
     }
   }
@@ -413,6 +431,11 @@ final class PairingFeature {
       title: "Couldn't connect",
       message: "Check the pairing code and gateway, then try again."
     )
+  }
+
+  private func fail(with failure: PairingFailure) {
+    state = .failed(failure)
+    announceFailure(failure)
   }
 
   private func retryMessage(for duration: Duration?) -> String {

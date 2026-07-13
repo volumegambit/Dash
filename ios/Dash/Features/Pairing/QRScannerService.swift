@@ -8,6 +8,11 @@ protocol QRScanning: Actor {
   func stop()
 }
 
+protocol QRScannerRuntimeControlling: Sendable {
+  func start() async throws -> AsyncStream<String>
+  func stop()
+}
+
 enum QRScannerError: Error, Equatable, Sendable {
   case cameraUnavailable
   case inputUnavailable
@@ -16,10 +21,14 @@ enum QRScannerError: Error, Equatable, Sendable {
 }
 
 actor QRScannerService: QRScanning {
-  private let runtime: QRScannerRuntime
+  private let runtime: any QRScannerRuntimeControlling
 
   init() {
     runtime = QRScannerRuntime()
+  }
+
+  init(runtime: any QRScannerRuntimeControlling) {
+    self.runtime = runtime
   }
 
   func authorizationStatus() -> AVAuthorizationStatus {
@@ -31,8 +40,9 @@ actor QRScannerService: QRScanning {
   }
 
   func scan() async throws -> String {
-    let stream = try await runtime.start()
     return try await withTaskCancellationHandler {
+      try Task.checkCancellation()
+      let stream = try await runtime.start()
       for await value in stream {
         return value
       }
@@ -63,21 +73,28 @@ actor UnavailableQRScanner: QRScanning {
   func stop() {}
 }
 
-private final class QRScannerRuntime: @unchecked Sendable {
+private final class QRScannerRuntime: QRScannerRuntimeControlling, @unchecked Sendable {
   private let queue = DispatchQueue(label: "app.dash.ios.qr-scanner", qos: .userInitiated)
   private let session = AVCaptureSession()
   private let output = AVCaptureMetadataOutput()
+  private let requestLock = NSLock()
 
   private var isConfigured = false
   private var activeContinuation: AsyncStream<String>.Continuation?
   private var metadataDelegate: QRMetadataDelegate?
+  private var requestedScanID: UUID?
 
   func start() async throws -> AsyncStream<String> {
-    try await withCheckedThrowingContinuation { continuation in
+    let scanID = UUID()
+    setRequestedScanID(scanID)
+    return try await withCheckedThrowingContinuation { continuation in
       queue.async { [self] in
         do {
+          guard isRequested(scanID) else { throw QRScannerError.stopped }
           try configureIfNeeded()
-          finishActiveScan()
+          guard isRequested(scanID) else { throw QRScannerError.stopped }
+          finishCaptureSession()
+          guard isRequested(scanID) else { throw QRScannerError.stopped }
 
           let pair = AsyncStream.makeStream(
             of: String.self,
@@ -85,19 +102,26 @@ private final class QRScannerRuntime: @unchecked Sendable {
           )
           let delegate = QRMetadataDelegate(
             continuation: pair.continuation,
-            didFinish: { [weak self] in self?.finishActiveScan() }
+            didFinish: { [weak self] in self?.finishActiveScan(scanID: scanID) }
           )
           activeContinuation = pair.continuation
           metadataDelegate = delegate
           output.setMetadataObjectsDelegate(delegate, queue: queue)
           pair.continuation.onTermination = { [weak self] _ in
-            self?.stop()
+            self?.stop(scanID: scanID)
           }
+          guard isRequested(scanID) else { throw QRScannerError.stopped }
           if session.isRunning == false {
             session.startRunning()
           }
+          guard isRequested(scanID) else {
+            finishCaptureSession()
+            throw QRScannerError.stopped
+          }
           continuation.resume(returning: pair.stream)
         } catch {
+          _ = invalidate(scanID: scanID)
+          finishCaptureSession()
           continuation.resume(throwing: error)
         }
       }
@@ -105,8 +129,16 @@ private final class QRScannerRuntime: @unchecked Sendable {
   }
 
   func stop() {
+    invalidateAllRequests()
     queue.async { [self] in
-      finishActiveScan()
+      finishCaptureSession()
+    }
+  }
+
+  private func stop(scanID: UUID) {
+    guard invalidate(scanID: scanID) else { return }
+    queue.async { [self] in
+      finishCaptureSession()
     }
   }
 
@@ -140,7 +172,12 @@ private final class QRScannerRuntime: @unchecked Sendable {
     isConfigured = true
   }
 
-  private func finishActiveScan() {
+  private func finishActiveScan(scanID: UUID) {
+    guard invalidate(scanID: scanID) else { return }
+    finishCaptureSession()
+  }
+
+  private func finishCaptureSession() {
     output.setMetadataObjectsDelegate(nil, queue: nil)
     activeContinuation?.finish()
     activeContinuation = nil
@@ -148,6 +185,33 @@ private final class QRScannerRuntime: @unchecked Sendable {
     if session.isRunning {
       session.stopRunning()
     }
+  }
+
+  private func setRequestedScanID(_ scanID: UUID) {
+    requestLock.lock()
+    requestedScanID = scanID
+    requestLock.unlock()
+  }
+
+  private func isRequested(_ scanID: UUID) -> Bool {
+    requestLock.lock()
+    defer { requestLock.unlock() }
+    return requestedScanID == scanID
+  }
+
+  @discardableResult
+  private func invalidate(scanID: UUID) -> Bool {
+    requestLock.lock()
+    defer { requestLock.unlock() }
+    guard requestedScanID == scanID else { return false }
+    requestedScanID = nil
+    return true
+  }
+
+  private func invalidateAllRequests() {
+    requestLock.lock()
+    requestedScanID = nil
+    requestLock.unlock()
   }
 }
 

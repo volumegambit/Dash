@@ -243,6 +243,29 @@ struct PairingFeatureTests {
     }
   }
 
+  @Test("a curated pairing failure is announced without raw transport details")
+  func pairingFailureAnnouncement() async {
+    let announcements = PairingAnnouncementRecorder()
+    let feature = PairingFeature(
+      verifier: CapturingPairingVerifier(error: .transport("secret raw failure")),
+      installer: NoopPairingInstaller(),
+      onPaired: { _ in },
+      announceFailure: { failure in
+        announcements.values.append("\(failure.title). \(failure.message)")
+      }
+    )
+
+    await feature.pair(rawPayload: lanPayloadJSON)
+
+    #expect(
+      announcements.values
+        == [
+          "Gateway offline. Make sure the gateway is running and reachable, then try again."
+        ]
+    )
+    #expect(announcements.values.first?.contains("secret raw failure") == false)
+  }
+
   @Test("camera denial keeps paste and manual alternatives available")
   func cameraDenialFallback() async {
     let scanner = FakeQRScanner(status: .denied)
@@ -284,6 +307,44 @@ struct PairingFeatureTests {
 
     #expect(await verifier.payloads.isEmpty)
     #expect(feature.state == .idle)
+  }
+
+  @Test("cancelling a scan during startup stops the runtime before startup returns")
+  func scannerCancellationCoversStartup() async {
+    let gate = TestGate()
+    let runtime = DelayedQRScannerRuntime(gate: gate)
+    let scanner = QRScannerService(runtime: runtime)
+    let scan = Task { try await scanner.scan() }
+    await gate.waitUntilWaiting()
+
+    scan.cancel()
+    await gate.release()
+
+    await #expect(throws: QRScannerError.stopped) {
+      try await scan.value
+    }
+    #expect(runtime.stoppedBeforeStartReturned)
+    #expect(runtime.stopCallCount >= 1)
+  }
+
+  @Test("a pairing attempt already in flight rejects a second payload")
+  func pairingIsSingleFlight() async {
+    let gate = TestGate()
+    let verifier = FirstCallBlockingPairingVerifier(gate: gate)
+    let feature = PairingFeature(
+      verifier: verifier,
+      installer: NoopPairingInstaller(),
+      onPaired: { _ in }
+    )
+
+    let first = Task { await feature.pair(rawPayload: lanPayloadJSON) }
+    await gate.waitUntilWaiting()
+
+    await feature.pair(rawPayload: relayPayloadJSON)
+
+    #expect(await verifier.payloadVersions == [1])
+    await gate.release()
+    await first.value
   }
 
   @Test("AppDependencies pairing factory installs the verified profile through AppModel")
@@ -470,6 +531,39 @@ private actor CapturingPairingVerifier: PairingVerifying {
   }
 }
 
+private actor FirstCallBlockingPairingVerifier: PairingVerifying {
+  let gate: TestGate
+  private(set) var payloadVersions: [Int] = []
+
+  init(gate: TestGate) {
+    self.gate = gate
+  }
+
+  func verify(
+    payload: PairingPayload,
+    onStep: @escaping @MainActor @Sendable (PairingVerificationStep) -> Void
+  ) async throws -> VerifiedPairing {
+    payloadVersions.append(payload.v)
+    if payloadVersions.count == 1 {
+      await gate.wait()
+    }
+    await onStep(.reachability)
+    let (profile, secrets) = try payload.validated(profileID: UUID())
+    let identity = GatewayIdentityDTO(
+      gatewayId: "gateway-\(payload.v)",
+      publicKey: "public-key-\(payload.v)"
+    )
+    var identified = profile
+    identified.gatewayId = identity.gatewayId
+    identified.publicKey = identity.publicKey
+    return VerifiedPairing(
+      profile: ConnectionProfileSnapshot(gatewayID: identity.gatewayId, profile: identified),
+      identity: identity,
+      secrets: secrets
+    )
+  }
+}
+
 private actor NoopPairingInstaller: PairingProfileInstalling {
   func install(_ pairing: VerifiedPairing) async throws {
     _ = pairing
@@ -528,6 +622,49 @@ private actor ControllableQRScanner: QRScanning {
   }
 }
 
+private final class DelayedQRScannerRuntime: QRScannerRuntimeControlling, @unchecked Sendable {
+  let gate: TestGate
+  private let lock = NSLock()
+  private var isStopped = false
+  private var recordedStopCallCount = 0
+  private var recordedStoppedBeforeStartReturned = false
+
+  init(gate: TestGate) {
+    self.gate = gate
+  }
+
+  func start() async throws -> AsyncStream<String> {
+    await gate.wait()
+    recordStopStateAtStartReturn()
+    return AsyncStream { continuation in continuation.finish() }
+  }
+
+  private func recordStopStateAtStartReturn() {
+    lock.lock()
+    recordedStoppedBeforeStartReturned = isStopped
+    lock.unlock()
+  }
+
+  func stop() {
+    lock.lock()
+    isStopped = true
+    recordedStopCallCount += 1
+    lock.unlock()
+  }
+
+  var stoppedBeforeStartReturned: Bool {
+    lock.lock()
+    defer { lock.unlock() }
+    return recordedStoppedBeforeStartReturned
+  }
+
+  var stopCallCount: Int {
+    lock.lock()
+    defer { lock.unlock() }
+    return recordedStopCallCount
+  }
+}
+
 private actor PairingSyncEngine: AppSyncing {
   private(set) var bootstrapCallCount = 0
 
@@ -542,6 +679,11 @@ private actor PairingSyncEngine: AppSyncing {
   func sceneDidEnterBackground() async {}
   func sceneWillEnterForeground() async {}
   func shutdown() async {}
+}
+
+@MainActor
+private final class PairingAnnouncementRecorder {
+  var values: [String] = []
 }
 
 private func lanPayload() -> PairingPayload {
@@ -568,5 +710,15 @@ private let lanPayloadJSON = """
     "chatPort": 9200,
     "label": "Home",
     "secure": false
+  }
+  """
+
+private let relayPayloadJSON = """
+  {
+    "v": 2,
+    "host": "relay.example",
+    "mgmtToken": "management-token-2",
+    "chatToken": "chat-token-2",
+    "relayCredential": "relay-credential"
   }
   """
