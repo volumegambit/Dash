@@ -151,6 +151,119 @@ describe('canonical chat store', () => {
     });
   });
 
+  it('rejects pagination started while an authoritative first-page refresh is pending', async () => {
+    const firstPage = deferred<{
+      items: McConversationView[];
+      nextCursor: string | null;
+      authority: 'gateway';
+      gatewayOnline: boolean;
+    }>();
+    const stalePage = deferred<{
+      items: McConversationView[];
+      nextCursor: string | null;
+      authority: 'gateway';
+      gatewayOnline: boolean;
+    }>();
+    const removed = { ...gatewayConversation, id: 'deleted-during-refresh' };
+    useChatStore.setState({
+      conversations: [gatewayConversation, removed],
+      nextConversationCursor: 'page-2',
+      conversationAuthority: 'gateway',
+      gatewayOnline: false,
+    });
+    mockApi.chatListConversations
+      .mockReturnValueOnce(firstPage.promise)
+      .mockReturnValueOnce(stalePage.promise);
+
+    const refresh = useChatStore.getState().loadConversations();
+    const pagination = useChatStore.getState().loadMoreConversations();
+    firstPage.resolve({
+      items: [{ ...gatewayConversation, title: 'Authoritative title' }],
+      nextCursor: 'page-2',
+      authority: 'gateway',
+      gatewayOnline: true,
+    });
+    await refresh;
+    stalePage.resolve({
+      items: [removed],
+      nextCursor: 'stale-cursor',
+      authority: 'gateway',
+      gatewayOnline: false,
+    });
+    await pagination;
+
+    expect(mockApi.chatListConversations).toHaveBeenCalledTimes(1);
+    expect(useChatStore.getState()).toMatchObject({
+      conversations: [{ id: gatewayConversation.id, title: 'Authoritative title' }],
+      nextConversationCursor: 'page-2',
+      conversationAuthority: 'gateway',
+      gatewayOnline: true,
+    });
+
+    const pageTwo = { ...gatewayConversation, id: 'page-51' };
+    mockApi.chatListConversations.mockReset().mockResolvedValue({
+      items: [pageTwo],
+      nextCursor: null,
+      authority: 'gateway',
+      gatewayOnline: true,
+    });
+    await useChatStore.getState().loadMoreConversations();
+    expect(mockApi.chatListConversations).toHaveBeenCalledWith('page-2');
+    expect(useChatStore.getState().conversations.map((conversation) => conversation.id)).toEqual([
+      gatewayConversation.id,
+      pageTwo.id,
+    ]);
+  });
+
+  it('drops pagination when an authoritative first-page refresh starts after it', async () => {
+    const stalePage = deferred<{
+      items: McConversationView[];
+      nextCursor: string | null;
+      authority: 'gateway';
+      gatewayOnline: boolean;
+    }>();
+    const firstPage = deferred<{
+      items: McConversationView[];
+      nextCursor: string | null;
+      authority: 'gateway';
+      gatewayOnline: boolean;
+    }>();
+    const removed = { ...gatewayConversation, id: 'deleted-during-refresh' };
+    useChatStore.setState({
+      conversations: [gatewayConversation, removed],
+      nextConversationCursor: 'page-2',
+      conversationAuthority: 'gateway',
+      gatewayOnline: false,
+    });
+    mockApi.chatListConversations
+      .mockReturnValueOnce(stalePage.promise)
+      .mockReturnValueOnce(firstPage.promise);
+
+    const pagination = useChatStore.getState().loadMoreConversations();
+    const refresh = useChatStore.getState().loadConversations();
+    firstPage.resolve({
+      items: [{ ...gatewayConversation, title: 'Authoritative title' }],
+      nextCursor: null,
+      authority: 'gateway',
+      gatewayOnline: true,
+    });
+    await refresh;
+    stalePage.resolve({
+      items: [removed],
+      nextCursor: 'stale-cursor',
+      authority: 'gateway',
+      gatewayOnline: false,
+    });
+    await pagination;
+
+    expect(useChatStore.getState()).toMatchObject({
+      conversations: [{ id: gatewayConversation.id, title: 'Authoritative title' }],
+      nextConversationCursor: null,
+      conversationAuthority: 'gateway',
+      gatewayOnline: true,
+    });
+  });
+
   it('loads more without duplicating On-this-Mac history', async () => {
     useChatStore.setState({
       conversations: [gatewayConversation, localConversation],

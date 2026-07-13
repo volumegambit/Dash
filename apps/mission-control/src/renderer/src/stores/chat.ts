@@ -153,6 +153,7 @@ function selectedAfterRemoval(
 
 export const useChatStore = create<ChatState>((set, get) => {
   let firstPageRequest = 0;
+  let firstPagePending = false;
 
   const upsertConversation = (conversation: McConversationView): void => {
     set((state) => ({
@@ -308,6 +309,7 @@ export const useChatStore = create<ChatState>((set, get) => {
 
     async loadConversations() {
       const request = ++firstPageRequest;
+      firstPagePending = true;
       try {
         const result = await window.api.chatListConversations();
         if (request !== firstPageRequest) return;
@@ -318,8 +320,10 @@ export const useChatStore = create<ChatState>((set, get) => {
           gatewayOnline: result.gatewayOnline,
           conversationError: null,
         }));
+        firstPagePending = false;
       } catch (error) {
         if (request !== firstPageRequest) return;
+        firstPagePending = false;
         handleApiError(error);
         throw error;
       }
@@ -327,11 +331,11 @@ export const useChatStore = create<ChatState>((set, get) => {
 
     async loadMoreConversations() {
       const cursor = get().nextConversationCursor;
-      if (!cursor) return;
+      if (!cursor || firstPagePending) return;
       const firstPageAtStart = firstPageRequest;
       try {
         const result = await window.api.chatListConversations(cursor);
-        if (firstPageAtStart !== firstPageRequest) return;
+        if (firstPagePending || firstPageAtStart !== firstPageRequest) return;
         set((state) => ({
           conversations: mergeConversations(state.conversations, result.items),
           nextConversationCursor: result.nextCursor,
@@ -339,7 +343,7 @@ export const useChatStore = create<ChatState>((set, get) => {
           gatewayOnline: result.gatewayOnline,
         }));
       } catch (error) {
-        if (firstPageAtStart !== firstPageRequest) return;
+        if (firstPagePending || firstPageAtStart !== firstPageRequest) return;
         handleApiError(error);
         throw error;
       }
