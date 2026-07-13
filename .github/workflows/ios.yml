@@ -1,0 +1,129 @@
+name: iOS CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'ios/**'
+      - 'contracts/mobile/v1/**'
+      - 'apps/website/app/icon.svg'
+      - 'apps/gateway/src/mobile-test-harness.ts'
+      - 'apps/gateway/src/mobile-test-harness-cli.ts'
+      - '.github/workflows/ios.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'ios/**'
+      - 'contracts/mobile/v1/**'
+      - 'apps/website/app/icon.svg'
+      - 'apps/gateway/src/mobile-test-harness.ts'
+      - 'apps/gateway/src/mobile-test-harness-cli.ts'
+      - '.github/workflows/ios.yml'
+
+concurrency:
+  group: ios-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ios:
+    runs-on: macos-15
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: '16.3'
+
+      - run: npm ci
+
+      - name: Verify shared mobile contract
+        run: |
+          npm run build --workspace=@dash/mobile-contract
+          npm run mobile:contract-check
+
+      - name: Verify model catalog freshness
+        run: npm run models:check
+
+      - name: Verify Apple and generator toolchains
+        run: |
+          xcodebuild -version
+          xcrun swift --version
+          ios/scripts/bootstrap-xcodegen.sh
+
+      - name: Verify iOS setup scripts
+        run: |
+          ios/scripts/tests/bootstrap-xcodegen.test.sh
+          ios/scripts/tests/ensure-simulators.test.sh
+          ios/scripts/tests/check-project.test.sh
+          node ios/scripts/tests/ios-workflow.test.mjs
+          node ios/scripts/tests/ios-readme.test.mjs
+
+      - name: Verify deterministic AppIcon
+        run: |
+          ios/scripts/generate-app-icon.sh
+          git diff --exit-code -- ios/Dash/Resources/Assets.xcassets/AppIcon.appiconset
+          test -z "$(git status --porcelain --untracked-files=all -- \
+            ios/Dash/Resources/Assets.xcassets/AppIcon.appiconset)"
+
+      - name: Ensure pinned simulator runtime and devices
+        run: |
+          iphone_udid="$(ios/scripts/ensure-simulators.sh --iphone-udid)"
+          ipad_udid="$(ios/scripts/ensure-simulators.sh --ipad-udid)"
+          printf 'IOS_TEST_DESTINATION=platform=iOS Simulator,id=%s\n' \
+            "$iphone_udid" >> "$GITHUB_ENV"
+          printf 'IOS_IPAD_TEST_DESTINATION=platform=iOS Simulator,id=%s\n' \
+            "$ipad_udid" >> "$GITHUB_ENV"
+
+      - name: Verify generated project is committed
+        run: ios/scripts/check-project.sh
+
+      - name: Build simulator app and verify AppIcon diagnostics
+        run: |
+          set -o pipefail
+          xcodebuild -project ios/Dash.xcodeproj -scheme Dash \
+            -destination 'generic/platform=iOS Simulator' \
+            build CODE_SIGNING_ALLOWED=NO 2>&1 | tee ios/SimulatorBuild.log
+          test -z "$(rg -ni 'warning:.*(app ?icon|AppIcon)|AppIcon.*warning' \
+            ios/SimulatorBuild.log || true)"
+
+      - name: Unit and contract tests
+        run: >-
+          xcodebuild -project ios/Dash.xcodeproj -scheme Dash
+          -destination "$IOS_TEST_DESTINATION"
+          -resultBundlePath ios/UnitContract.xcresult
+          test CODE_SIGNING_ALLOWED=NO
+
+      - name: iPhone UI tests
+        run: >-
+          xcodebuild -project ios/Dash.xcodeproj -scheme DashUI
+          -destination "$IOS_TEST_DESTINATION"
+          -resultBundlePath ios/iPhoneUI.xcresult
+          test CODE_SIGNING_ALLOWED=NO
+
+      - name: iPad adaptive UI tests
+        run: >-
+          xcodebuild -project ios/Dash.xcodeproj -scheme DashUI
+          -destination "$IOS_IPAD_TEST_DESTINATION"
+          -resultBundlePath ios/iPadUI.xcresult
+          -only-testing:DashUITests/ConversationUITests/testIPadSplitNavigation
+          -only-testing:DashUITests/AgentsUITests/testIPadSplitNavigation
+          -only-testing:DashUITests/AccessibilityUITests/testAccessibilityXXXL
+          test CODE_SIGNING_ALLOWED=NO
+
+      - name: Generic iOS build without signing
+        run: >-
+          xcodebuild -project ios/Dash.xcodeproj -scheme Dash
+          -destination 'generic/platform=iOS'
+          build CODE_SIGNING_ALLOWED=NO
+
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: ios-xcresults
+          path: ios/*.xcresult

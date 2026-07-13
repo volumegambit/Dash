@@ -23,4 +23,11 @@ if [[ "$CONTRACT_SCHEME_REFERENCES" -ne "$EXPECTED_CONTRACT_SCHEME_REFERENCES" ]
     "$EXPECTED_CONTRACT_SCHEME_REFERENCES" "$CONTRACT_SCHEME_REFERENCES" >&2
   exit 1
 fi
-git diff --exit-code -- ios/Dash.xcodeproj
+if ! git diff --exit-code -- ios/Dash.xcodeproj; then
+  printf 'Regenerate with ios/scripts/generate-project.sh and commit ios/Dash.xcodeproj.\n' >&2
+  exit 1
+fi
+if [[ -n "$(git status --porcelain --untracked-files=all -- ios/Dash.xcodeproj)" ]]; then
+  printf 'Regenerate with ios/scripts/generate-project.sh and commit ios/Dash.xcodeproj.\n' >&2
+  exit 1
+fi
