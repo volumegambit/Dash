@@ -64,6 +64,10 @@ Dash is flexible about where each piece runs.
 
 ## Conversation history across devices
 
+Dash for iOS and capability-aware Mission Control share one view. They render the same
+gateway-authoritative conversation history. Android remains a legacy, non-resumable client in
+this release, so its private chat sessions are not part of that shared history.
+
 For gateways that advertise `conversation-sync-v1`, the gateway owns conversation metadata,
 messages, revisions, active turns, and replay sequences. Mission Control keeps a
 gateway-identity-scoped read cache so history remains visible offline, but it never treats that

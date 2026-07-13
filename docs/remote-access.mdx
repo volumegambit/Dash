@@ -3,7 +3,7 @@ title: "Remote Access"
 description: "Reach your agents from your phone over the internet, from anywhere."
 ---
 
-By default the Dash phone app connects to your gateway over your local Wi-Fi. The
+By default the Dash iOS or Android app connects to your gateway over your local Wi-Fi. The
 **hosted relay** lets you reach the same agents from anywhere — on cellular, at
 the office, travelling — without opening any ports on your home network.
 
@@ -71,10 +71,15 @@ ever connects *your* phones to *your* gateway.
   <Step title="Pair your phone by QR">
     Open **Settings → Devices**. With a gateway created, the QR code in the
     **Pair Device** section now carries your relay address and a per-device
-    credential. Scan it with the Dash Android app — your phone connects through
-    the relay from then on, wherever you are.
+    credential. Scan it with the Dash iOS or Android app — your phone or tablet connects
+    through the relay from then on, wherever you are.
   </Step>
 </Steps>
+
+Dash for iOS and Mission Control share the gateway-authoritative conversation history, including
+running turns, replay, renames, and deletions. Android remains a legacy, non-resumable client in
+this release: its chat sessions stay private to that app until the separate Android conversation
+sync migration. Both apps use the same LAN/relay pairing security boundaries.
 
 <Note>
 Your gateway's address is **permanent**. Once you claim a name it belongs to this

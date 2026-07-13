@@ -105,9 +105,10 @@ Your agent appears in the agents list. Click it to check that the status shows "
 
 Open the **Chat** tab, start a new conversation, select your agent, and type a message. You will see the agent thinking, using tools, and responding in real time.
 
-Your gateway keeps the canonical conversation history. When Mission Control and the Dash
-phone app are paired to the same gateway, both show the same conversations, titles, messages,
-running turns, and deletions.
+Your gateway keeps the canonical conversation history. When Mission Control and Dash for iOS are
+paired to the same gateway, both show the same conversations, titles, messages, running turns,
+and deletions. Android remains a legacy, non-resumable client in this release, so its private chat
+sessions do not join that shared list.
 
 Conversations created by older Mission Control versions remain available under **On this
 Mac**. They stay on that computer and are not uploaded automatically. If the gateway is
@@ -115,6 +116,17 @@ offline, previously synced conversations remain readable from cache, but creatin
 renaming, and deleting wait until the gateway reconnects.
 
 That is it — your first agent is deployed and ready to work.
+
+## Pair a phone or tablet
+
+In Mission Control, open **Settings → Devices**. The **Pair Device** card can link the Dash iOS or
+Android app over your local network, or through [Remote Access](/remote-access) after you enable it.
+Scan the displayed code in the app, or use its paste/manual fallback.
+
+The native iPhone and iPad client supports shared, resumable history and agent administration. See
+the repository's [iOS build, pairing, and troubleshooting guide](../ios/README.md). The Android app
+continues to provide its legacy private chat and monitoring experience until its separate
+conversation-sync migration.
 
 ## Other ways to run Dash
 
