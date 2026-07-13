@@ -1,6 +1,7 @@
 import AVFoundation
 import Foundation
 import Testing
+import UIKit
 
 @testable import Dash
 
@@ -146,6 +147,77 @@ struct PairingFeatureTests {
       return
     }
     #expect(failure.title == "Couldn't save connection")
+  }
+
+  @Test("same-gateway pairing reuses the canonical profile and Keychain account")
+  func sameGatewayPairingReusesCanonicalProfile() async throws {
+    let recorder = PairingCallRecorder()
+    let canonicalID = UUID(uuidString: "018f0f4a-5c42-7a8b-9c01-111111111111")!
+    let proposedID = UUID(uuidString: "018f0f4a-5c42-7a8b-9c01-222222222222")!
+    let priorSecrets = ConnectionSecrets(
+      managementToken: "old-management",
+      chatToken: "old-chat",
+      relayCredential: nil
+    )
+    let replacementSecrets = ConnectionSecrets(
+      managementToken: "new-management",
+      chatToken: "new-chat",
+      relayCredential: nil
+    )
+    let existing = existingPairingProfile(id: canonicalID)
+    let pairing = verifiedPairing(id: proposedID, secrets: replacementSecrets)
+    let keychain = RecordingPairingKeychain(
+      recorder: recorder,
+      initialSecrets: [canonicalID: priorSecrets]
+    )
+    let metadata = RecordingPairingMetadata(recorder: recorder, existingProfile: existing)
+    let installer = PairingProfileInstaller(keychain: keychain, metadata: metadata)
+
+    let installed = try await installer.install(pairing)
+
+    #expect(installed.id == canonicalID)
+    #expect(await keychain.storedSecrets == [canonicalID: replacementSecrets])
+    #expect(await keychain.savedProfileIDs == [canonicalID])
+    let saved = try #require(await metadata.savedProfiles.first)
+    #expect(saved.id == canonicalID)
+    #expect(saved.createdAt == existing.profile.createdAt)
+    #expect(saved.lastSuccessfulSyncAt == existing.profile.lastSuccessfulSyncAt)
+  }
+
+  @Test("same-gateway metadata failure restores prior Keychain secret bytes")
+  func sameGatewayMetadataFailureRestoresPriorSecrets() async {
+    let recorder = PairingCallRecorder()
+    let canonicalID = UUID(uuidString: "018f0f4a-5c42-7a8b-9c01-333333333333")!
+    let proposedID = UUID(uuidString: "018f0f4a-5c42-7a8b-9c01-444444444444")!
+    let priorSecrets = ConnectionSecrets(
+      managementToken: "old-management-exact",
+      chatToken: "old-chat-exact",
+      relayCredential: "old-relay-exact"
+    )
+    let replacementSecrets = ConnectionSecrets(
+      managementToken: "new-management",
+      chatToken: "new-chat",
+      relayCredential: "new-relay"
+    )
+    let keychain = RecordingPairingKeychain(
+      recorder: recorder,
+      initialSecrets: [canonicalID: priorSecrets]
+    )
+    let metadata = RecordingPairingMetadata(
+      recorder: recorder,
+      saveError: PairingTestError.save,
+      existingProfile: existingPairingProfile(id: canonicalID)
+    )
+    let installer = PairingProfileInstaller(keychain: keychain, metadata: metadata)
+
+    await #expect(throws: PairingInstallError.metadata) {
+      try await installer.install(verifiedPairing(id: proposedID, secrets: replacementSecrets))
+    }
+
+    #expect(await keychain.storedSecrets == [canonicalID: priorSecrets])
+    #expect(await keychain.savedProfileIDs == [canonicalID, canonicalID])
+    #expect(await keychain.savedSecrets == [replacementSecrets, priorSecrets])
+    #expect(await keychain.deletedProfileIDs.isEmpty)
   }
 
   @Test("relay manual entry constructs the canonical v2 TLS payload")
@@ -309,6 +381,31 @@ struct PairingFeatureTests {
     #expect(feature.state == .idle)
   }
 
+  @Test("a buffered QR result is ignored after the scanner task is cancelled")
+  func cancelledScannerIgnoresBufferedResult() async {
+    let scanner = ControllableQRScanner()
+    let verifier = CapturingPairingVerifier()
+    let feature = PairingFeature(
+      verifier: verifier,
+      installer: NoopPairingInstaller(),
+      scanner: scanner,
+      onPaired: { _ in }
+    )
+
+    let scanTask = Task { await feature.requestCameraAndScan() }
+    for _ in 0..<100 where await scanner.scanCallCount == 0 {
+      await Task.yield()
+    }
+    #expect(await scanner.scanCallCount == 1)
+
+    scanTask.cancel()
+    await scanner.returnLateResult(lanPayloadJSON)
+    await scanTask.value
+
+    #expect(await verifier.payloads.isEmpty)
+    #expect(feature.state == .idle)
+  }
+
   @Test("cancelling a scan during startup stops the runtime before startup returns")
   func scannerCancellationCoversStartup() async {
     let gate = TestGate()
@@ -325,6 +422,22 @@ struct PairingFeatureTests {
     }
     #expect(runtime.stoppedBeforeStartReturned)
     #expect(runtime.stopCallCount >= 1)
+  }
+
+  @Test("camera preview attaches, remains silent to VoiceOver, and detaches its session")
+  func cameraPreviewLifecycle() {
+    let session = AVCaptureSession()
+    let source = QRScannerPreviewSource(session: session)
+    let preview = QRScannerPreviewView(frame: .zero)
+
+    preview.attach(source)
+
+    #expect(preview.previewLayer.session === session)
+    #expect(preview.accessibilityElementsHidden)
+
+    preview.detach()
+
+    #expect(preview.previewLayer.session == nil)
   }
 
   @Test("a pairing attempt already in flight rejects a second payload")
@@ -368,6 +481,33 @@ struct PairingFeatureTests {
     #expect(appModel.selectedProfile?.gatewayID == "gateway-captured")
     #expect(appModel.route == .paired(tab: .conversations))
     #expect(await engine.bootstrapCallCount == 1)
+  }
+
+  @Test("activation failure leaves verified pairing retryable instead of reporting paired")
+  func activationFailureRemainsRetryable() async {
+    let verifier = CapturingPairingVerifier()
+    let dependencies = AppDependencies(
+      clock: TestAppClock(now: Date(timeIntervalSince1970: 1)),
+      loadProfile: { nil },
+      makeSyncEngine: { _ in throw PairingTestError.activation },
+      pairingFeatureFactory: PairingFeatureFactory(
+        verifier: verifier,
+        installer: NoopPairingInstaller()
+      )
+    )
+    let appModel = AppModel(dependencies: dependencies)
+    let feature = appModel.makePairingFeature()
+
+    await feature.pair(rawPayload: lanPayloadJSON)
+
+    #expect(appModel.selectedProfile == nil)
+    #expect(appModel.route == .connect)
+    guard case .failed(let failure) = feature.state else {
+      Issue.record("Expected retryable failure, received \(feature.state)")
+      return
+    }
+    #expect(failure.title == "Couldn't connect")
+    #expect(failure.message.contains("activation") == false)
   }
 }
 
@@ -440,34 +580,44 @@ private actor FakePairingChatProbe: PairingChatChecking {
 
 private enum PairingTestError: Error {
   case save
+  case activation
 }
 
 private actor RecordingPairingKeychain: KeychainStoring {
   let recorder: PairingCallRecorder
   let shouldFailSave: Bool
   private(set) var savedProfileIDs: [UUID] = []
+  private(set) var savedSecrets: [ConnectionSecrets] = []
+  private(set) var deletedProfileIDs: [UUID] = []
+  private(set) var storedSecrets: [UUID: ConnectionSecrets]
 
-  init(recorder: PairingCallRecorder, saveError: (any Error)? = nil) {
+  init(
+    recorder: PairingCallRecorder,
+    saveError: (any Error)? = nil,
+    initialSecrets: [UUID: ConnectionSecrets] = [:]
+  ) {
     self.recorder = recorder
     shouldFailSave = saveError != nil
+    storedSecrets = initialSecrets
   }
 
   func save(_ secrets: ConnectionSecrets, for profileID: UUID) async throws {
-    _ = secrets
     savedProfileIDs.append(profileID)
+    savedSecrets.append(secrets)
     await recorder.append(.keychainSave)
     if shouldFailSave {
       throw PairingTestError.save
     }
+    storedSecrets[profileID] = secrets
   }
 
   func load(for profileID: UUID) async throws -> ConnectionSecrets? {
-    _ = profileID
-    return nil
+    storedSecrets[profileID]
   }
 
   func delete(for profileID: UUID) async throws {
-    _ = profileID
+    deletedProfileIDs.append(profileID)
+    storedSecrets[profileID] = nil
     await recorder.append(.keychainDelete)
   }
 }
@@ -475,12 +625,24 @@ private actor RecordingPairingKeychain: KeychainStoring {
 private actor RecordingPairingMetadata: PairingMetadataStoring {
   let recorder: PairingCallRecorder
   let shouldFail: Bool
+  let existingProfile: ConnectionProfileSnapshot?
   private(set) var savedGatewayIDs: [String] = []
   private(set) var savedPublicKeys: [String] = []
+  private(set) var savedProfiles: [ConnectionProfile] = []
 
-  init(recorder: PairingCallRecorder, saveError: (any Error)? = nil) {
+  init(
+    recorder: PairingCallRecorder,
+    saveError: (any Error)? = nil,
+    existingProfile: ConnectionProfileSnapshot? = nil
+  ) {
     self.recorder = recorder
     shouldFail = saveError != nil
+    self.existingProfile = existingProfile
+  }
+
+  func existingPairingProfile(gatewayID: String) async throws -> ConnectionProfileSnapshot? {
+    guard existingProfile?.gatewayID == gatewayID else { return nil }
+    return existingProfile
   }
 
   func savePairingProfile(
@@ -488,6 +650,7 @@ private actor RecordingPairingMetadata: PairingMetadataStoring {
     identity: GatewayIdentityDTO
   ) async throws {
     savedGatewayIDs.append(identity.gatewayId)
+    savedProfiles.append(profile)
     if let publicKey = profile.publicKey {
       savedPublicKeys.append(publicKey)
     }
@@ -565,8 +728,8 @@ private actor FirstCallBlockingPairingVerifier: PairingVerifying {
 }
 
 private actor NoopPairingInstaller: PairingProfileInstalling {
-  func install(_ pairing: VerifiedPairing) async throws {
-    _ = pairing
+  func install(_ pairing: VerifiedPairing) async throws -> ConnectionProfileSnapshot {
+    pairing.profile
   }
 }
 
@@ -722,3 +885,49 @@ private let relayPayloadJSON = """
     "relayCredential": "relay-credential"
   }
   """
+
+private func existingPairingProfile(id: UUID) -> ConnectionProfileSnapshot {
+  ConnectionProfileSnapshot(
+    gatewayID: "gateway-verified",
+    profile: ConnectionProfile(
+      id: id,
+      gatewayId: "gateway-verified",
+      publicKey: "old-public-key",
+      label: "Old gateway",
+      host: "old-gateway.local",
+      managementPort: 9300,
+      chatPort: 9200,
+      secure: false,
+      mode: .lan,
+      createdAt: Date(timeIntervalSince1970: 10),
+      lastSuccessfulSyncAt: Date(timeIntervalSince1970: 20)
+    )
+  )
+}
+
+private func verifiedPairing(id: UUID, secrets: ConnectionSecrets) -> VerifiedPairing {
+  let identity = GatewayIdentityDTO(
+    gatewayId: "gateway-verified",
+    publicKey: "new-public-key"
+  )
+  return VerifiedPairing(
+    profile: ConnectionProfileSnapshot(
+      gatewayID: identity.gatewayId,
+      profile: ConnectionProfile(
+        id: id,
+        gatewayId: identity.gatewayId,
+        publicKey: identity.publicKey,
+        label: "Updated gateway",
+        host: "new-gateway.local",
+        managementPort: 9301,
+        chatPort: 9201,
+        secure: true,
+        mode: .lan,
+        createdAt: Date(timeIntervalSince1970: 30),
+        lastSuccessfulSyncAt: nil
+      )
+    ),
+    identity: identity,
+    secrets: secrets
+  )
+}

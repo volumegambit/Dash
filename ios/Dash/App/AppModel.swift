@@ -77,25 +77,35 @@ final class AppModel {
   }
 
   func installPairedProfile(_ profile: ConnectionProfileSnapshot) async {
-    guard isDisconnecting == false else { return }
+    _ = await activatePairedProfile(profile)
+  }
+
+  private func activatePairedProfile(_ profile: ConnectionProfileSnapshot) async -> Bool {
+    guard isDisconnecting == false else { return false }
     let epoch = beginTransition()
     do {
-      guard let prepared = try await prepareActivation(profile, epoch: epoch) else { return }
+      guard let prepared = try await prepareActivation(profile, epoch: epoch) else { return false }
       guard isCurrent(epoch) else {
         await prepared.engine.shutdown()
-        return
+        return false
       }
       dependencies.rememberProfile(profile)
       let retired = publish(profile, prepared: prepared)
       let publishedEpoch = activeEpoch
       if let retired, sameEngine(retired, prepared.engine) == false {
         await retired.shutdown()
-        guard activeEpoch == publishedEpoch, sameEngine(syncEngine, prepared.engine) else { return }
+        guard activeEpoch == publishedEpoch, sameEngine(syncEngine, prepared.engine) else {
+          return false
+        }
       }
       await startPreparedEngine(prepared.engine, activeEpoch: publishedEpoch)
+      return activeEpoch == publishedEpoch
+        && sameEngine(syncEngine, prepared.engine)
+        && selectedProfile == profile
     } catch {
-      guard isCurrent(epoch) else { return }
+      guard isCurrent(epoch) else { return false }
       banner = .failed(error.localizedDescription)
+      return false
     }
   }
 
@@ -132,7 +142,9 @@ final class AppModel {
 
   func makePairingFeature() -> PairingFeature {
     dependencies.pairingFeatureFactory.make { [weak self] profile in
-      await self?.installPairedProfile(profile)
+      guard let self, await self.activatePairedProfile(profile) else {
+        throw AppDependencyError.pairingActivationFailed
+      }
     }
   }
 

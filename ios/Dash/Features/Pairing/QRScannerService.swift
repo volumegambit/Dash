@@ -1,11 +1,24 @@
 @preconcurrency import AVFoundation
 import Foundation
 
+final class QRScannerPreviewSource: @unchecked Sendable {
+  let session: AVCaptureSession
+
+  init(session: AVCaptureSession = AVCaptureSession()) {
+    self.session = session
+  }
+}
+
 protocol QRScanning: Actor {
+  nonisolated var previewSource: QRScannerPreviewSource? { get }
   func authorizationStatus() -> AVAuthorizationStatus
   func requestAccess() async -> Bool
   func scan() async throws -> String
   func stop()
+}
+
+extension QRScanning {
+  nonisolated var previewSource: QRScannerPreviewSource? { nil }
 }
 
 protocol QRScannerRuntimeControlling: Sendable {
@@ -21,14 +34,21 @@ enum QRScannerError: Error, Equatable, Sendable {
 }
 
 actor QRScannerService: QRScanning {
+  nonisolated let previewSource: QRScannerPreviewSource?
   private let runtime: any QRScannerRuntimeControlling
 
   init() {
-    runtime = QRScannerRuntime()
+    let previewSource = QRScannerPreviewSource()
+    self.previewSource = previewSource
+    runtime = QRScannerRuntime(session: previewSource.session)
   }
 
-  init(runtime: any QRScannerRuntimeControlling) {
+  init(
+    runtime: any QRScannerRuntimeControlling,
+    previewSource: QRScannerPreviewSource? = nil
+  ) {
     self.runtime = runtime
+    self.previewSource = previewSource
   }
 
   func authorizationStatus() -> AVAuthorizationStatus {
@@ -44,6 +64,7 @@ actor QRScannerService: QRScanning {
       try Task.checkCancellation()
       let stream = try await runtime.start()
       for await value in stream {
+        try Task.checkCancellation()
         return value
       }
       throw QRScannerError.stopped
@@ -75,7 +96,7 @@ actor UnavailableQRScanner: QRScanning {
 
 private final class QRScannerRuntime: QRScannerRuntimeControlling, @unchecked Sendable {
   private let queue = DispatchQueue(label: "app.dash.ios.qr-scanner", qos: .userInitiated)
-  private let session = AVCaptureSession()
+  private let session: AVCaptureSession
   private let output = AVCaptureMetadataOutput()
   private let requestLock = NSLock()
 
@@ -83,6 +104,10 @@ private final class QRScannerRuntime: QRScannerRuntimeControlling, @unchecked Se
   private var activeContinuation: AsyncStream<String>.Continuation?
   private var metadataDelegate: QRMetadataDelegate?
   private var requestedScanID: UUID?
+
+  init(session: AVCaptureSession = AVCaptureSession()) {
+    self.session = session
+  }
 
   func start() async throws -> AsyncStream<String> {
     let scanID = UUID()
