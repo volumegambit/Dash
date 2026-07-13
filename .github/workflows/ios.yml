@@ -28,8 +28,6 @@ jobs:
   ios:
     runs-on: macos-15
     timeout-minutes: 120
-    env:
-      IOS_TEST_DESTINATION: platform=iOS Simulator,name=iPhone 16 Pro,OS=18.4
     steps:
       - uses: actions/checkout@v6
 
@@ -63,14 +61,24 @@ jobs:
           ios/scripts/tests/bootstrap-xcodegen.test.sh
           ios/scripts/tests/ensure-simulators.test.sh
           ios/scripts/tests/check-project.test.sh
+          node ios/scripts/tests/ios-workflow.test.mjs
+          node ios/scripts/tests/ios-readme.test.mjs
 
       - name: Verify deterministic AppIcon
         run: |
           ios/scripts/generate-app-icon.sh
           git diff --exit-code -- ios/Dash/Resources/Assets.xcassets/AppIcon.appiconset
+          test -z "$(git status --porcelain --untracked-files=all -- \
+            ios/Dash/Resources/Assets.xcassets/AppIcon.appiconset)"
 
       - name: Ensure pinned simulator runtime and devices
-        run: ios/scripts/ensure-simulators.sh
+        run: |
+          iphone_udid="$(ios/scripts/ensure-simulators.sh --iphone-udid)"
+          ipad_udid="$(ios/scripts/ensure-simulators.sh --ipad-udid)"
+          printf 'IOS_TEST_DESTINATION=platform=iOS Simulator,id=%s\n' \
+            "$iphone_udid" >> "$GITHUB_ENV"
+          printf 'IOS_IPAD_TEST_DESTINATION=platform=iOS Simulator,id=%s\n' \
+            "$ipad_udid" >> "$GITHUB_ENV"
 
       - name: Verify generated project is committed
         run: ios/scripts/check-project.sh
@@ -101,7 +109,8 @@ jobs:
       - name: iPad adaptive UI tests
         run: >-
           xcodebuild -project ios/Dash.xcodeproj -scheme DashUI
-          -destination 'platform=iOS Simulator,name=iPad Pro 13-inch (M4),OS=18.4'
+          -destination "$IOS_IPAD_TEST_DESTINATION"
+          -resultBundlePath ios/iPadUI.xcresult
           -only-testing:DashUITests/ConversationUITests/testIPadSplitNavigation
           -only-testing:DashUITests/AgentsUITests/testIPadSplitNavigation
           -only-testing:DashUITests/AccessibilityUITests/testAccessibilityXXXL

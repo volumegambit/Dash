@@ -19,7 +19,7 @@ lifecycle controls.
 
 ## Prerequisites
 
-- macOS with Xcode 16.3 or newer.
+- macOS with Xcode 16.3 selected. The pinned simulator scripts reject other Xcode versions.
 - An iOS 17 or newer device, or the iOS 18.4 simulator runtime used by this repository's tests.
 - Node.js 22 when running the shared contract checks or real-gateway integration harness.
 
@@ -47,6 +47,8 @@ Create or verify the pinned simulator devices first:
 
 ```bash
 ios/scripts/ensure-simulators.sh
+ios/scripts/ensure-simulators.sh --iphone-udid
+ios/scripts/ensure-simulators.sh --ipad-udid
 ```
 
 Build the app without signing:
@@ -64,8 +66,9 @@ xcodebuild -project ios/Dash.xcodeproj -scheme Dash \
 Run unit and contract tests on the pinned phone:
 
 ```bash
+IPHONE_UDID="$(ios/scripts/ensure-simulators.sh --iphone-udid)"
 xcodebuild -project ios/Dash.xcodeproj -scheme Dash \
-  -destination 'platform=iOS Simulator,name=iPhone 16 Pro,OS=18.4' \
+  -destination "platform=iOS Simulator,id=$IPHONE_UDID" \
   test CODE_SIGNING_ALLOWED=NO
 ```
 
@@ -76,8 +79,9 @@ xcodebuild -project ios/Dash.xcodeproj -scheme DashIntegration \
   -destination 'generic/platform=iOS Simulator' \
   build-for-testing CODE_SIGNING_ALLOWED=NO
 
+IPHONE_UDID="$(ios/scripts/ensure-simulators.sh --iphone-udid)"
 xcodebuild -project ios/Dash.xcodeproj -scheme DashUI \
-  -destination 'platform=iOS Simulator,name=iPhone 16 Pro,OS=18.4' \
+  -destination "platform=iOS Simulator,id=$IPHONE_UDID" \
   test CODE_SIGNING_ALLOWED=NO
 ```
 
@@ -95,9 +99,9 @@ Open Dash and choose one of three paths:
 
 For LAN pairing, the phone and gateway must be reachable on the same network. Enter the gateway
 host, management and chat ports, transport security choice, and the two gateway-issued tokens.
-For relay pairing, enter the relay host and the gateway-issued management, chat, and device
-credentials; relay connections use TLS on port 443. Do not substitute a management URL for the
-host field.
+For relay pairing, enter the relay host, gateway management and chat tokens, and the per-device
+relay credential from the pairing payload. Relay connections use TLS on port 443. Do not
+substitute a management URL for the host field.
 
 Before saving anything, the app validates the payload, checks gateway health and identity, and
 requires the mobile capabilities above. Connection secrets are then stored in Keychain. SwiftData
