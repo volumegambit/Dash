@@ -227,6 +227,41 @@ struct ConversationSyncEngineTests {
     await engine.shutdown()
   }
 
+  @Test("a stale reset failure cannot override a newer successful reset")
+  func newerSuccessfulResetSupersedesStaleFailure() async throws {
+    let store = try PersistenceStore.inMemory()
+    let api = FakeConversationSyncAPI()
+    let staleGate = TestGate()
+    await api.enqueueConversationPage(
+      .failure(.unauthorized),
+      waitingOn: staleGate
+    )
+    await api.enqueueConversationPage(
+      .success(.init(items: [summary(id: "current", title: "Current")], nextCursor: nil))
+    )
+    let engine = makeEngine(store: store, api: api)
+    let recorder = SnapshotRecorder()
+    let collector = Task {
+      for await snapshot in await engine.snapshots() {
+        await recorder.append(snapshot)
+      }
+    }
+
+    let stale = Task { await engine.refreshConversations(reset: true) }
+    await staleGate.waitUntilWaiting()
+    await engine.refreshConversations(reset: true)
+    await eventually { await recorder.last?.connection == .online }
+
+    await staleGate.release()
+    await stale.value
+    await settleSyncWork()
+
+    #expect(await recorder.last?.connection == .online)
+    #expect(await recorder.last?.mutationsAllowed == true)
+    collector.cancel()
+    await engine.shutdown()
+  }
+
   @Test("older conversation load cannot start while an authoritative reset is in flight")
   func resetBlocksOlderConversationLoad() async throws {
     let store = try PersistenceStore.inMemory()

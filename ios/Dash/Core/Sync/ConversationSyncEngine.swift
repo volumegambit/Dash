@@ -187,7 +187,7 @@ actor ConversationSyncEngine {
     } catch is CancellationError {
       return
     } catch {
-      await handle(error, lifecycle: lifecycle)
+      await handle(error, lifecycle: lifecycle, conversations: conversations)
     }
   }
 
@@ -240,7 +240,7 @@ actor ConversationSyncEngine {
     } catch is CancellationError {
       return
     } catch {
-      await handle(error, lifecycle: lifecycle)
+      await handle(error, lifecycle: lifecycle, conversations: conversations)
     }
   }
 
@@ -273,12 +273,12 @@ actor ConversationSyncEngine {
       } catch is CancellationError {
         return
       } catch {
-        await handle(error, lifecycle: lifecycle)
+        await handle(error, lifecycle: lifecycle, conversations: conversations)
       }
     } catch is CancellationError {
       return
     } catch {
-      await handle(error, lifecycle: lifecycle)
+      await handle(error, lifecycle: lifecycle, conversations: conversations)
     }
   }
 
@@ -286,33 +286,46 @@ actor ConversationSyncEngine {
     guard isShutdown == false else { return }
     let lifecycle = lifecycleGeneration
     let conversations = conversationGeneration
-    do {
+    let messages: MessageLoadToken
+    if reset {
+      messages = beginMessageReset(conversationID: conversationID)
+    } else {
+      guard let older = beginOlderMessageLoad(conversationID: conversationID) else { return }
+      messages = older
+    }
+    defer {
       if reset {
-        _ = try await resetMessagesFromNetwork(
-          conversationID: conversationID,
-          lifecycle: lifecycle,
-          conversations: conversations
-        )
+        finishMessageReset(messages)
       } else {
-        guard let messages = beginOlderMessageLoad(conversationID: conversationID) else { return }
-        defer { finishOlderMessageLoad(messages) }
-        _ = try await loadMessagesFromNetwork(
-          conversationID: conversationID,
-          reset: false,
-          lifecycle: lifecycle,
-          conversations: conversations,
-          messages: messages
-        )
+        finishOlderMessageLoad(messages)
       }
+    }
+    do {
+      _ = try await loadMessagesFromNetwork(
+        conversationID: conversationID,
+        reset: reset,
+        lifecycle: lifecycle,
+        conversations: conversations,
+        messages: messages
+      )
       try await reloadSnapshot(lifecycle: lifecycle, conversations: conversations)
-      try validate(lifecycle: lifecycle, conversations: conversations)
+      try validate(
+        lifecycle: lifecycle,
+        conversations: conversations,
+        messages: messages
+      )
       publish(.online)
     } catch PersistenceStoreError.conversationDeleted {
       return
     } catch is CancellationError {
       return
     } catch {
-      await handle(error, lifecycle: lifecycle)
+      await handle(
+        error,
+        lifecycle: lifecycle,
+        conversations: conversations,
+        messages: messages
+      )
     }
   }
 
@@ -324,6 +337,12 @@ actor ConversationSyncEngine {
     guard isShutdown == false else { return }
     let lifecycle = lifecycleGeneration
     let conversations = conversationGeneration
+    var messages: MessageLoadToken?
+    defer {
+      if let messages {
+        finishMessageReset(messages)
+      }
+    }
     do {
       let capable = try CapableServerFrame.validating(frame)
       guard let sequenced = capable.sequenced else { return }
@@ -370,10 +389,14 @@ actor ConversationSyncEngine {
         }
       }
 
-      let page = try await resetMessagesFromNetwork(
+      let messageReset = beginMessageReset(conversationID: sequenced.conversationID)
+      messages = messageReset
+      let page = try await loadMessagesFromNetwork(
         conversationID: sequenced.conversationID,
+        reset: true,
         lifecycle: lifecycle,
-        conversations: conversations
+        conversations: conversations,
+        messages: messageReset
       )
       guard page.throughSeq >= sequenced.seq else {
         throw GatewayError.updateRequired
@@ -389,7 +412,12 @@ actor ConversationSyncEngine {
     } catch is CancellationError {
       return
     } catch {
-      await handle(error, lifecycle: lifecycle)
+      await handle(
+        error,
+        lifecycle: lifecycle,
+        conversations: conversations,
+        messages: messages
+      )
     }
   }
 
@@ -422,6 +450,12 @@ actor ConversationSyncEngine {
     conversationGeneration += 1
     let lifecycle = lifecycleGeneration
     let conversations = conversationGeneration
+    var messages: MessageLoadToken?
+    defer {
+      if let messages {
+        finishMessageReset(messages)
+      }
+    }
     startReachability()
     do {
       let agents = try await api.listAgents()
@@ -448,11 +482,17 @@ actor ConversationSyncEngine {
           conversations: conversations
         )
         guard canonical.status != .deleted else { continue }
-        _ = try await resetMessagesFromNetwork(
+        let messageReset = beginMessageReset(conversationID: canonical.id)
+        messages = messageReset
+        _ = try await loadMessagesFromNetwork(
           conversationID: canonical.id,
+          reset: true,
           lifecycle: lifecycle,
-          conversations: conversations
+          conversations: conversations,
+          messages: messageReset
         )
+        finishMessageReset(messageReset)
+        messages = nil
         guard canonical.status == .running, let turnID = canonical.activeTurnId else { continue }
         try await ensureChatConnected(lifecycle: lifecycle)
         let cursor = try await store.cursor(
@@ -477,7 +517,12 @@ actor ConversationSyncEngine {
     } catch is CancellationError {
       return
     } catch {
-      await handle(error, lifecycle: lifecycle)
+      await handle(
+        error,
+        lifecycle: lifecycle,
+        conversations: conversations,
+        messages: messages
+      )
     }
   }
 
@@ -513,6 +558,12 @@ actor ConversationSyncEngine {
   ) async throws {
     try requireOnlineMutation()
     let lifecycle = lifecycleGeneration
+    var messages: MessageLoadToken?
+    defer {
+      if let messages {
+        finishMessageReset(messages)
+      }
+    }
     do {
       try await ensureChatConnected(lifecycle: lifecycle)
       do {
@@ -526,28 +577,34 @@ actor ConversationSyncEngine {
         try validate(lifecycle: lifecycle)
       } catch let error as GatewayError {
         guard case .transport = error else { throw error }
+        let messageReset = beginMessageReset(conversationID: conversationID)
+        messages = messageReset
         try await recoverAmbiguousSend(
           id: id,
           agentID: agentID,
           conversationID: conversationID,
           text: text,
           images: images,
-          lifecycle: lifecycle
+          lifecycle: lifecycle,
+          messages: messageReset
         )
       } catch is URLError {
+        let messageReset = beginMessageReset(conversationID: conversationID)
+        messages = messageReset
         try await recoverAmbiguousSend(
           id: id,
           agentID: agentID,
           conversationID: conversationID,
           text: text,
           images: images,
-          lifecycle: lifecycle
+          lifecycle: lifecycle,
+          messages: messageReset
         )
       }
     } catch is CancellationError {
       throw CancellationError()
     } catch {
-      await handle(error, lifecycle: lifecycle)
+      await handle(error, lifecycle: lifecycle, messages: messages)
       throw error
     }
   }
@@ -634,22 +691,6 @@ actor ConversationSyncEngine {
     }
   }
 
-  private func resetMessagesFromNetwork(
-    conversationID: String,
-    lifecycle: Int,
-    conversations: Int?
-  ) async throws -> ConversationMessagePageDTO {
-    let messages = beginMessageReset(conversationID: conversationID)
-    defer { finishMessageReset(messages) }
-    return try await loadMessagesFromNetwork(
-      conversationID: conversationID,
-      reset: true,
-      lifecycle: lifecycle,
-      conversations: conversations,
-      messages: messages
-    )
-  }
-
   private func loadMessagesFromNetwork(
     conversationID: String,
     reset: Bool,
@@ -711,12 +752,15 @@ actor ConversationSyncEngine {
     conversationID: String,
     text: String,
     images: [MessageImage],
-    lifecycle: Int
+    lifecycle: Int,
+    messages: MessageLoadToken
   ) async throws {
-    let page = try await resetMessagesFromNetwork(
+    let page = try await loadMessagesFromNetwork(
       conversationID: conversationID,
+      reset: true,
       lifecycle: lifecycle,
-      conversations: nil
+      conversations: nil,
+      messages: messages
     )
     let sameTurn = page.items.filter { $0.turnId == id }
     if sameTurn.isEmpty {
@@ -871,8 +915,15 @@ actor ConversationSyncEngine {
     }
   }
 
-  private func handle(_ error: Error, lifecycle: Int) async {
-    guard isCurrent(lifecycle: lifecycle) else { return }
+  private func handle(
+    _ error: Error,
+    lifecycle: Int,
+    conversations: Int? = nil,
+    messages: MessageLoadToken? = nil
+  ) async {
+    guard
+      isCurrent(lifecycle: lifecycle, conversations: conversations, messages: messages)
+    else { return }
     let gatewayError =
       error as? GatewayError
       ?? GatewayError.transport(error.localizedDescription)
@@ -881,7 +932,9 @@ actor ConversationSyncEngine {
       publish(.repairRequired)
     case .rateLimited(let retryAfter):
       let now = await clock.now()
-      guard isCurrent(lifecycle: lifecycle) else { return }
+      guard
+        isCurrent(lifecycle: lifecycle, conversations: conversations, messages: messages)
+      else { return }
       let delay = retryAfter ?? backoff.delay(attempt: 0, unitRandom: 0.5)
       publish(.rateLimited(retryAt: now.addingTimeInterval(delay.timeInterval)))
     case .gatewayOffline:
@@ -889,14 +942,24 @@ actor ConversationSyncEngine {
     case .updateRequired, .capabilityRequired:
       publish(.updateRequired)
     case .transport:
-      scheduleReconnect(lifecycle: lifecycle)
+      scheduleReconnect(
+        lifecycle: lifecycle,
+        conversations: conversations,
+        messages: messages
+      )
     default:
       publish(.offline)
     }
   }
 
-  private func scheduleReconnect(lifecycle: Int) {
-    guard isCurrent(lifecycle: lifecycle) else { return }
+  private func scheduleReconnect(
+    lifecycle: Int,
+    conversations: Int? = nil,
+    messages: MessageLoadToken? = nil
+  ) {
+    guard
+      isCurrent(lifecycle: lifecycle, conversations: conversations, messages: messages)
+    else { return }
     reconnectAttempt += 1
     let attempt = reconnectAttempt
     let delay = backoff.delay(attempt: attempt - 1, unitRandom: 0.5)
@@ -905,20 +968,40 @@ actor ConversationSyncEngine {
     reconnectTask = Task { [weak self] in
       guard let self else { return }
       let retryAt = (await clock.now()).addingTimeInterval(delay.timeInterval)
-      await self.publishReconnect(attempt: attempt, retryAt: retryAt, lifecycle: lifecycle)
+      await self.publishReconnect(
+        attempt: attempt,
+        retryAt: retryAt,
+        lifecycle: lifecycle,
+        conversations: conversations,
+        messages: messages
+      )
       do {
         try await clock.sleep(for: delay)
       } catch {
         return
       }
-      if Task.isCancelled == false, await self.isCurrent(lifecycle: lifecycle) {
+      if Task.isCancelled == false,
+        await self.isCurrent(
+          lifecycle: lifecycle,
+          conversations: conversations,
+          messages: messages
+        )
+      {
         await self.bootstrap()
       }
     }
   }
 
-  private func publishReconnect(attempt: Int, retryAt: Date, lifecycle: Int) {
-    guard isCurrent(lifecycle: lifecycle) else { return }
+  private func publishReconnect(
+    attempt: Int,
+    retryAt: Date,
+    lifecycle: Int,
+    conversations: Int?,
+    messages: MessageLoadToken?
+  ) {
+    guard
+      isCurrent(lifecycle: lifecycle, conversations: conversations, messages: messages)
+    else { return }
     publish(.reconnecting(attempt: attempt, retryAt: retryAt))
   }
 
