@@ -11,15 +11,91 @@ const startMissionControlAcceptanceClient =
 const DEFAULT_TIMEOUT_MS = 10_000;
 const socketReaders = new WeakMap();
 
-function timeout(label, timeoutMs = DEFAULT_TIMEOUT_MS) {
-  return new Promise((_, reject) => {
-    const timer = setTimeout(() => reject(new Error(`Timed out waiting for ${label}`)), timeoutMs);
+function timeout(label, timeoutMs = DEFAULT_TIMEOUT_MS, onExpire = undefined) {
+  let timer;
+  const promise = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      const error = new Error(`Timed out waiting for ${label}`);
+      onExpire?.(error);
+      reject(error);
+    }, timeoutMs);
     timer.unref?.();
   });
+  return { promise, cancel: () => clearTimeout(timer) };
 }
 
-function withTimeout(operation, label, timeoutMs = DEFAULT_TIMEOUT_MS) {
-  return Promise.race([operation, timeout(label, timeoutMs)]);
+async function withTimeout(operation, label, timeoutMs = DEFAULT_TIMEOUT_MS, onExpire = undefined) {
+  const deadline = timeout(label, timeoutMs, onExpire);
+  try {
+    return await Promise.race([operation, deadline.promise]);
+  } finally {
+    deadline.cancel();
+  }
+}
+
+export async function runCleanupActions(actions) {
+  const results = await Promise.allSettled(
+    actions.map((action) => Promise.resolve().then(() => action.run())),
+  );
+  const failures = results.flatMap((result) =>
+    result.status === 'rejected' ? [result.reason] : [],
+  );
+  if (failures.length > 0) {
+    const labels = actions
+      .filter((_action, index) => results[index]?.status === 'rejected')
+      .map((action) => action.label)
+      .join(', ');
+    throw new AggregateError(failures, `Mobile acceptance cleanup failed: ${labels}`);
+  }
+}
+
+export async function acquireAcceptanceResource(signal, resource, cleanup) {
+  const value = await resource;
+  if (!signal.aborted) return value;
+  try {
+    await cleanup(value);
+  } catch (cleanupError) {
+    throw new AggregateError(
+      [signal.reason, cleanupError],
+      'Late mobile acceptance resource cleanup failed',
+    );
+  }
+  throw signal.reason;
+}
+
+export async function runWithDeadlineAndCleanup(operation, cleanup, label, timeoutMs) {
+  const deadlineController = new AbortController();
+  let result;
+  let operationError;
+  try {
+    result = await withTimeout(
+      Promise.resolve().then(() => operation(deadlineController.signal)),
+      label,
+      timeoutMs,
+      (error) => deadlineController.abort(error),
+    );
+  } catch (error) {
+    operationError = error;
+  }
+
+  let cleanupError;
+  try {
+    await runCleanupActions(cleanup);
+  } catch (error) {
+    cleanupError = error;
+  }
+
+  if (operationError && cleanupError) {
+    const cleanupFailures =
+      cleanupError instanceof AggregateError ? cleanupError.errors : [cleanupError];
+    throw new AggregateError(
+      [operationError, ...cleanupFailures],
+      `${label} and its cleanup failed`,
+    );
+  }
+  if (cleanupError) throw cleanupError;
+  if (operationError) throw operationError;
+  return result;
 }
 
 function sleep(milliseconds) {
@@ -123,8 +199,63 @@ async function closeSocket(socket) {
   await withTimeout(closed, 'chat socket close', 2_000).catch(() => socket.terminate());
 }
 
-function frameSequence(frame) {
-  return typeof frame.seq === 'number' ? frame.seq : null;
+function isRecord(value) {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isPositiveSafeInteger(value) {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 1;
+}
+
+export function assertExpectedCapableFrame(frame, expected) {
+  if (!isRecord(frame) || typeof frame.type !== 'string') {
+    throw new Error('Gateway returned an invalid capable chat frame');
+  }
+  if (frame.id !== expected.turnId) {
+    throw new Error(
+      `Gateway returned an unexpected turn ${String(frame.id)}; expected ${expected.turnId}`,
+    );
+  }
+  if (frame.conversationId !== expected.conversationId) {
+    throw new Error(
+      `Gateway returned an unexpected conversation ${String(frame.conversationId)}; ` +
+        `expected ${expected.conversationId}`,
+    );
+  }
+  if (!isPositiveSafeInteger(frame.seq)) {
+    throw new Error(`Gateway frame for turn ${expected.turnId} is missing a durable sequence`);
+  }
+
+  switch (frame.type) {
+    case 'accepted':
+      if (
+        typeof frame.userMessageId !== 'string' ||
+        typeof frame.assistantMessageId !== 'string' ||
+        !isPositiveSafeInteger(frame.revision)
+      ) {
+        throw new Error('Gateway returned an invalid accepted frame');
+      }
+      break;
+    case 'event':
+      if (!isRecord(frame.event) || typeof frame.event.type !== 'string') {
+        throw new Error('Gateway returned an invalid event frame');
+      }
+      break;
+    case 'done':
+      if (frame.outcome !== 'completed' && frame.outcome !== 'cancelled') {
+        throw new Error('Gateway returned an invalid terminal outcome');
+      }
+      break;
+    case 'error':
+      if (typeof frame.error !== 'string') {
+        throw new Error('Gateway returned an invalid error frame');
+      }
+      break;
+    default:
+      throw new Error(`Gateway returned unsupported capable frame type ${frame.type}`);
+  }
+
+  return frame;
 }
 
 export function assertContiguousSequences(sequences) {
@@ -161,12 +292,10 @@ export async function openContractClient(harness) {
   const activeSockets = new Set();
   const summaries = new Map();
   const sequences = [];
-  let sequenceWasContiguous = true;
+  let sequenceWasContiguous = false;
 
   const record = (frame) => {
-    const sequence = frameSequence(frame);
-    if (sequence === null) return;
-    sequences.push(sequence);
+    sequences.push(frame.seq);
     sequenceWasContiguous = assertContiguousSequences(sequences);
   };
 
@@ -232,9 +361,12 @@ export async function openContractClient(harness) {
       let lastSeq = 0;
       let detached = false;
       while (!detached) {
-        const frame = await nextFrame(first);
+        const frame = assertExpectedCapableFrame(await nextFrame(first), {
+          turnId,
+          conversationId: canonical.id,
+        });
         record(frame);
-        lastSeq = frameSequence(frame) ?? lastSeq;
+        lastSeq = frame.seq;
         if (frame.type === 'event') detached = true;
         if (frame.type === 'done' || frame.type === 'error') {
           throw new Error('Stream completed before the detach checkpoint');
@@ -255,9 +387,12 @@ export async function openContractClient(harness) {
       );
       let terminal;
       while (!terminal) {
-        const frame = await nextFrame(resumed);
+        const frame = assertExpectedCapableFrame(await nextFrame(resumed), {
+          turnId,
+          conversationId: canonical.id,
+        });
         record(frame);
-        lastSeq = frameSequence(frame) ?? lastSeq;
+        lastSeq = frame.seq;
         if (frame.type === 'done' || frame.type === 'error') terminal = frame;
       }
       await closeSocket(resumed);
@@ -285,7 +420,10 @@ export async function openContractClient(harness) {
       );
       let sawAccepted = false;
       while (true) {
-        const frame = await nextFrame(socket);
+        const frame = assertExpectedCapableFrame(await nextFrame(socket), {
+          turnId,
+          conversationId: canonical.id,
+        });
         record(frame);
         if (frame.type === 'accepted') sawAccepted = true;
         if (frame.type === 'event') {
@@ -340,38 +478,60 @@ export async function renameThenSendStaleRevision(desktop, ios, conversation) {
   return response.status;
 }
 
-export async function runMobileV1Acceptance() {
-  const streamGateway = await startMobileTestHarness({ scenario: 'stream' });
+export async function runMobileV1Acceptance(options = {}) {
+  let streamGateway;
   let desktop;
   let ios;
-  try {
-    desktop = await startMissionControlAcceptanceClient(streamGateway);
-    ios = await openContractClient(streamGateway);
-    const healthCapabilities = await assertCapabilities(streamGateway);
-    const conversation = await desktop.create(randomUUID());
-    const acceptedTurnId = await desktop.send(conversation, randomUUID(), 'Hello');
-    const replayedTurnId = await ios.detachAndResume(conversation, acceptedTurnId);
-    const [desktopTranscript, iosTranscript] = await Promise.all([
-      desktop.messages(conversation),
-      ios.messages(conversation),
-    ]);
-    const concurrentRefreshMatched = await refreshBothAndCompare(desktop, ios, conversation);
-    const staleRenameStatus = await renameThenSendStaleRevision(desktop, ios, conversation);
-    await desktop.deleteAgent(streamGateway.agentId);
-    await Promise.all([desktop.refresh(), ios.refresh()]);
-    const [desktopAfterAgentDelete, iosAfterAgentDelete] = await Promise.all([
-      desktop.conversation(conversation),
-      ios.conversation(conversation),
-    ]);
-    const archivedAfterAgentDelete =
-      desktopAfterAgentDelete.status === 'archived' && iosAfterAgentDelete.status === 'archived';
+  let slowGateway;
+  let slowDesktop;
+  let slowIOS;
+  return runWithDeadlineAndCleanup(
+    async (signal) => {
+      streamGateway = await acquireAcceptanceResource(
+        signal,
+        startMobileTestHarness({ scenario: 'stream' }),
+        (gateway) => gateway.stop(),
+      );
+      desktop = await acquireAcceptanceResource(
+        signal,
+        startMissionControlAcceptanceClient(streamGateway),
+        (client) => client.close(),
+      );
+      ios = await acquireAcceptanceResource(signal, openContractClient(streamGateway), (client) =>
+        client.close(),
+      );
+      const healthCapabilities = await assertCapabilities(streamGateway);
+      const conversation = await desktop.create(randomUUID());
+      const acceptedTurnId = await desktop.send(conversation, randomUUID(), 'Hello');
+      const replayedTurnId = await ios.detachAndResume(conversation, acceptedTurnId);
+      const [desktopTranscript, iosTranscript] = await Promise.all([
+        desktop.messages(conversation),
+        ios.messages(conversation),
+      ]);
+      const concurrentRefreshMatched = await refreshBothAndCompare(desktop, ios, conversation);
+      const staleRenameStatus = await renameThenSendStaleRevision(desktop, ios, conversation);
+      await desktop.deleteAgent(streamGateway.agentId);
+      await Promise.all([desktop.refresh(), ios.refresh()]);
+      const [desktopAfterAgentDelete, iosAfterAgentDelete] = await Promise.all([
+        desktop.conversation(conversation),
+        ios.conversation(conversation),
+      ]);
+      const archivedAfterAgentDelete =
+        desktopAfterAgentDelete.status === 'archived' && iosAfterAgentDelete.status === 'archived';
 
-    const slowGateway = await startMobileTestHarness({ scenario: 'slow' });
-    let slowDesktop;
-    let slowIOS;
-    try {
-      slowDesktop = await startMissionControlAcceptanceClient(slowGateway);
-      slowIOS = await openContractClient(slowGateway);
+      slowGateway = await acquireAcceptanceResource(
+        signal,
+        startMobileTestHarness({ scenario: 'slow' }),
+        (gateway) => gateway.stop(),
+      );
+      slowDesktop = await acquireAcceptanceResource(
+        signal,
+        startMissionControlAcceptanceClient(slowGateway),
+        (client) => client.close(),
+      );
+      slowIOS = await acquireAcceptanceResource(signal, openContractClient(slowGateway), (client) =>
+        client.close(),
+      );
       const slowConversation = await slowDesktop.create(randomUUID());
       const slowTurn = await slowIOS.startAndWaitForFirstEvent(slowConversation, randomUUID());
       const busyErrorCode = await slowDesktop.expectBusy(slowConversation, randomUUID());
@@ -389,20 +549,18 @@ export async function runMobileV1Acceptance() {
         concurrentRefreshMatched,
         archivedAfterAgentDelete,
       };
-    } finally {
-      await Promise.allSettled([
-        slowIOS?.close() ?? Promise.resolve(),
-        slowDesktop?.close() ?? Promise.resolve(),
-        slowGateway.stop(),
-      ]);
-    }
-  } finally {
-    await Promise.allSettled([
-      ios?.close() ?? Promise.resolve(),
-      desktop?.close() ?? Promise.resolve(),
-      streamGateway.stop(),
-    ]);
-  }
+    },
+    [
+      { label: 'slow iOS-shaped client', run: () => slowIOS?.close() },
+      { label: 'slow Mission Control client', run: () => slowDesktop?.close() },
+      { label: 'slow gateway', run: () => slowGateway?.stop() },
+      { label: 'stream iOS-shaped client', run: () => ios?.close() },
+      { label: 'stream Mission Control client', run: () => desktop?.close() },
+      { label: 'stream gateway', run: () => streamGateway?.stop() },
+    ],
+    'mobile v1 acceptance',
+    options.timeoutMs ?? 20_000,
+  );
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
