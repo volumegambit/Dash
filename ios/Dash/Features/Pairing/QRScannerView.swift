@@ -12,18 +12,22 @@ struct QRScannerView: View {
         ZStack {
           RoundedRectangle(cornerRadius: 24)
             .fill(Color.black.gradient)
+          if let previewSource = feature.scannerPreviewSource {
+            QRScannerPreview(source: previewSource)
+              .clipShape(RoundedRectangle(cornerRadius: 24))
+          }
           RoundedRectangle(cornerRadius: 20)
             .strokeBorder(.white.opacity(0.8), lineWidth: 3)
             .frame(width: 230, height: 230)
-          Image(systemName: scannerSymbol)
-            .font(.system(size: 64, weight: .light))
-            .foregroundStyle(.white)
-            .accessibilityHidden(true)
+          if feature.cameraAuthorization != .authorized {
+            Image(systemName: scannerSymbol)
+              .font(.system(size: 64, weight: .light))
+              .foregroundStyle(.white)
+          }
         }
         .frame(maxWidth: 520)
         .aspectRatio(1, contentMode: .fit)
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(scannerLabel)
+        .accessibilityHidden(true)
 
         Text(scannerLabel)
           .font(.headline)
@@ -49,14 +53,15 @@ struct QRScannerView: View {
     .toolbar {
       ToolbarItem(placement: .topBarLeading) {
         Button("Close") {
+          feature.cancelPairing()
           dismiss()
-          Task { await feature.stopScanning() }
         }
         .frame(minWidth: 44, minHeight: 44)
       }
     }
     .task { await feature.requestCameraAndScan() }
     .onDisappear {
+      feature.cancelPairing()
       Task { await feature.stopScanning() }
     }
   }
@@ -65,6 +70,7 @@ struct QRScannerView: View {
     VStack(spacing: 10) {
       Button {
         let value = UIPasteboard.general.string ?? ""
+        feature.invalidateScanning()
         Task {
           await feature.stopScanning()
           await feature.pair(rawPayload: value)
@@ -111,5 +117,110 @@ struct QRScannerView: View {
     @unknown default:
       "Paste the code or enter the connection manually."
     }
+  }
+}
+
+struct QRScannerPreview: UIViewRepresentable {
+  let source: QRScannerPreviewSource
+
+  func makeUIView(context: Context) -> QRScannerPreviewView {
+    _ = context
+    let view = QRScannerPreviewView(frame: .zero)
+    view.attach(source)
+    return view
+  }
+
+  func updateUIView(_ uiView: QRScannerPreviewView, context: Context) {
+    _ = context
+    uiView.attach(source)
+  }
+
+  static func dismantleUIView(_ uiView: QRScannerPreviewView, coordinator: Void) {
+    _ = coordinator
+    uiView.detach()
+  }
+}
+
+protocol QRScannerPreviewRotating: AnyObject {
+  var videoRotationAngle: CGFloat { get set }
+  func isVideoRotationAngleSupported(_ angle: CGFloat) -> Bool
+}
+
+extension AVCaptureConnection: QRScannerPreviewRotating {}
+
+enum QRScannerPreviewRotation {
+  static func angle(for orientation: UIInterfaceOrientation) -> CGFloat? {
+    switch orientation {
+    case .portrait:
+      90
+    case .portraitUpsideDown:
+      270
+    case .landscapeLeft:
+      180
+    case .landscapeRight:
+      0
+    case .unknown:
+      nil
+    @unknown default:
+      nil
+    }
+  }
+
+  static func update(
+    _ connection: (any QRScannerPreviewRotating)?,
+    for orientation: UIInterfaceOrientation
+  ) {
+    guard let angle = angle(for: orientation),
+      let connection,
+      connection.isVideoRotationAngleSupported(angle)
+    else {
+      return
+    }
+    connection.videoRotationAngle = angle
+  }
+}
+
+final class QRScannerPreviewView: UIView {
+  override class var layerClass: AnyClass { AVCaptureVideoPreviewLayer.self }
+
+  var previewLayer: AVCaptureVideoPreviewLayer {
+    layer as! AVCaptureVideoPreviewLayer
+  }
+
+  override init(frame: CGRect) {
+    super.init(frame: frame)
+    accessibilityElementsHidden = true
+    previewLayer.videoGravity = .resizeAspectFill
+  }
+
+  required init?(coder: NSCoder) {
+    super.init(coder: coder)
+    accessibilityElementsHidden = true
+    previewLayer.videoGravity = .resizeAspectFill
+  }
+
+  override func didMoveToWindow() {
+    super.didMoveToWindow()
+    updateRotation()
+  }
+
+  override func layoutSubviews() {
+    super.layoutSubviews()
+    updateRotation()
+  }
+
+  func attach(_ source: QRScannerPreviewSource) {
+    guard previewLayer.session !== source.session else { return }
+    previewLayer.session = source.session
+    updateRotation()
+  }
+
+  func detach() {
+    previewLayer.session = nil
+  }
+
+  private func updateRotation() {
+    guard let orientation = window?.windowScene?.interfaceOrientation else { return }
+    QRScannerPreviewRotation.update(previewLayer.connection, for: orientation)
   }
 }

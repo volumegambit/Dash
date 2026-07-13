@@ -89,13 +89,23 @@ final class AppModel {
   }
 
   func installPairedProfile(_ profile: ConnectionProfileSnapshot) async {
-    guard isDisconnecting == false else { return }
+    _ = await activatePairedProfile(profile)
+  }
+
+  private func activatePairedProfile(
+    _ profile: ConnectionProfileSnapshot,
+    reportsFailureInBanner: Bool = true
+  ) async -> Bool {
+    guard isDisconnecting == false else { return false }
+    if reportsFailureInBanner == false, case .failed = banner {
+      banner = nil
+    }
     let epoch = beginTransition()
     do {
-      guard let prepared = try await prepareActivation(profile, epoch: epoch) else { return }
+      guard let prepared = try await prepareActivation(profile, epoch: epoch) else { return false }
       guard isCurrent(epoch) else {
         await prepared.engine.shutdown()
-        return
+        return false
       }
       dependencies.rememberProfile(profile)
       let retired = publish(profile, prepared: prepared)
@@ -104,16 +114,26 @@ final class AppModel {
         retiredFeature !== conversationListFeature
       {
         await retiredFeature.shutdown()
-        guard activeEpoch == publishedEpoch, sameEngine(syncEngine, prepared.engine) else { return }
+        guard activeEpoch == publishedEpoch, sameEngine(syncEngine, prepared.engine) else {
+          return false
+        }
       }
       if let retiredEngine = retired.engine, sameEngine(retiredEngine, prepared.engine) == false {
         await retiredEngine.shutdown()
-        guard activeEpoch == publishedEpoch, sameEngine(syncEngine, prepared.engine) else { return }
+        guard activeEpoch == publishedEpoch, sameEngine(syncEngine, prepared.engine) else {
+          return false
+        }
       }
       await startPreparedEngine(prepared.engine, activeEpoch: publishedEpoch)
+      return activeEpoch == publishedEpoch
+        && sameEngine(syncEngine, prepared.engine)
+        && selectedProfile == profile
     } catch {
-      guard isCurrent(epoch) else { return }
-      banner = .failed(error.localizedDescription)
+      guard isCurrent(epoch) else { return false }
+      if reportsFailureInBanner {
+        banner = .failed(error.localizedDescription)
+      }
+      return false
     }
   }
 
@@ -153,7 +173,12 @@ final class AppModel {
 
   func makePairingFeature() -> PairingFeature {
     dependencies.pairingFeatureFactory.make { [weak self] profile in
-      await self?.installPairedProfile(profile)
+      guard
+        let self,
+        await self.activatePairedProfile(profile, reportsFailureInBanner: false)
+      else {
+        throw AppDependencyError.pairingActivationFailed
+      }
     }
   }
 
@@ -335,6 +360,9 @@ final class AppModel {
     selectedTab = .conversations
     pairingPath.removeAll()
     if previousGatewayID != nil, previousGatewayID != profile.gatewayID {
+      conversationPath.removeAll()
+      agentPath.removeAll()
+      splitConversationSelection = nil
       snapshot = nil
       connectionState = .connecting
       conversationPath.removeAll()

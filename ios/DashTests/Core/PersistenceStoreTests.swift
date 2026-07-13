@@ -332,6 +332,26 @@ struct PersistenceStoreTests {
     #expect(cached.profile.lastSuccessfulSyncAt == instant(90))
   }
 
+  @Test("failed profile save rolls back dirty SwiftData metadata")
+  func failedProfileSaveRollsBackDirtyMetadata() async throws {
+    let store = try PersistenceStore.inMemory()
+    let originalIdentity = GatewayIdentityDTO(gatewayId: "gw", publicKey: "old-public-key")
+    let replacementIdentity = GatewayIdentityDTO(gatewayId: "gw", publicKey: "new-public-key")
+    try await store.upsertProfile(profile(label: "Original"), identity: originalIdentity)
+
+    await #expect(throws: PersistenceStoreTestError.save) {
+      try await store.upsertProfile(
+        profile(label: "Replacement"),
+        identity: replacementIdentity,
+        saveChanges: { throw PersistenceStoreTestError.save }
+      )
+    }
+
+    let retained = try #require(try await store.profile(gatewayID: "gw"))
+    #expect(retained.profile.label == "Original")
+    #expect(retained.profile.publicKey == "old-public-key")
+  }
+
   @Test("clearing a gateway removes every cache family without touching another gateway")
   func clearGateway() async throws {
     let store = try PersistenceStore.inMemory()
@@ -515,6 +535,10 @@ struct PersistenceStoreTests {
   private func instant(_ seconds: Int) -> Date {
     Date(timeIntervalSince1970: TimeInterval(seconds))
   }
+}
+
+private enum PersistenceStoreTestError: Error {
+  case save
 }
 
 private func persistenceError(

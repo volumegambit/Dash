@@ -3,10 +3,11 @@ import SwiftData
 
 enum AppDependencyError: Error, Equatable, Sendable {
   case missingSecrets(profileID: UUID)
+  case pairingActivationFailed
 }
 
 typealias PairedProfileHandler =
-  @MainActor @Sendable (ConnectionProfileSnapshot) async -> Void
+  @MainActor @Sendable (ConnectionProfileSnapshot) async throws -> Void
 
 struct PairingFeatureFactory: Sendable {
   let verifier: any PairingVerifying

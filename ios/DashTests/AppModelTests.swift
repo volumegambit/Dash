@@ -645,7 +645,7 @@ struct AppModelTests {
     await start.value
   }
 
-  @Test("switching gateways clears an empty old snapshot and its agents")
+  @Test("switching gateways clears old data and compact and split detail routes")
   func crossGatewayPublishClearsEntireSnapshot() async {
     let original = connectionProfile()
     let replacement = replacementProfile()
@@ -669,12 +669,18 @@ struct AppModelTests {
         lastSuccessfulSyncAt: Date(timeIntervalSince1970: 100)
       )
     )
+    model.conversationPath = [.transcript("old-compact-conversation")]
+    model.agentPath = [.detail("old-compact-agent")]
+    model.splitConversationSelection = .transcript("old-split-conversation")
 
     await model.installPairedProfile(replacement)
 
     #expect(model.selectedProfile == replacement)
     #expect(model.snapshot == nil)
     #expect(model.connectionState == .connecting)
+    #expect(model.conversationPath.isEmpty)
+    #expect(model.agentPath.isEmpty)
+    #expect(model.splitConversationSelection == nil)
   }
 
   @Test("switching gateways clears every gateway-scoped navigation route")
