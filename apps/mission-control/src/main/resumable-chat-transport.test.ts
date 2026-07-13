@@ -472,6 +472,37 @@ describe('ResumableChatTransport', () => {
     );
   });
 
+  it('accepts a pre-accept rejection that identifies its conversation without a durable seq', async () => {
+    const socket = new FakeSocket();
+    const delivered = vi.fn();
+    const transport = makeTransport(() => socket, delivered);
+    const pending = transport.send(conversation, turnId, 'hello');
+    const rejection = expect(pending).rejects.toMatchObject({
+      kind: 'server',
+      code: 'conversation_busy',
+      activeTurnId: 'turn-on-ios',
+    });
+    socket.open();
+    socket.frame({
+      type: 'error',
+      id: turnId,
+      conversationId: conversation.id,
+      error: 'Conversation already has an active turn',
+      code: 'conversation_busy',
+      retryable: true,
+      activeTurnId: 'turn-on-ios',
+    });
+
+    await rejection;
+    expect(delivered).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'error',
+        conversationId: conversation.id,
+        code: 'conversation_busy',
+      }),
+    );
+  });
+
   it('forwards unknown nested event JSON unchanged', async () => {
     const unknownEvent = (await jsonl<MobileWsServerFrame>('chat-resume.jsonl')).find(
       (frame) => frame.type === 'event' && frame.event.type === 'future_runtime_marker',

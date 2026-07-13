@@ -148,8 +148,9 @@ export function parseCapableServerFrame(value: unknown): MobileWsServerFrame {
       const hasSequence = Object.hasOwn(value, 'seq');
       if (
         typeof value.error !== 'string' ||
-        hasConversation !== hasSequence ||
-        (hasConversation && (typeof value.conversationId !== 'string' || !isInteger(value.seq))) ||
+        (hasSequence && !hasConversation) ||
+        (hasConversation && typeof value.conversationId !== 'string') ||
+        (hasSequence && !isInteger(value.seq)) ||
         (value.code !== undefined &&
           (typeof value.code !== 'string' ||
             !API_ERROR_CODES.has(value.code as MobileApiErrorCode))) ||
