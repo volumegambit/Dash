@@ -84,6 +84,7 @@ protocol ChatFeatureSynchronizing: Actor {
 
 protocol ChatFeatureTransporting: Actor {
   func events() async -> AsyncThrowingStream<ChatConnectionEvent, Error>
+  func resetAfterTerminalFailure() async
   func connect() async throws
   func sendTurn(
     id: String,
@@ -117,6 +118,17 @@ enum ChatDraftStatus: Equatable, Sendable {
   case failed
 }
 
+private enum DraftWriteResult: Sendable {
+  case saved
+  case cancelled
+  case failed
+
+  var didSave: Bool {
+    if case .saved = self { return true }
+    return false
+  }
+}
+
 enum ChatStatusPresentation: Equatable, Sendable {
   case reconnecting(attempt: Int)
   case offline
@@ -128,14 +140,20 @@ enum ChatStatusPresentation: Equatable, Sendable {
 }
 
 actor LiveChatFeatureTransport: ChatFeatureTransporting {
-  private let connection: ChatConnection
+  private let makeConnection: @Sendable () -> ChatConnection
+  private var connection: ChatConnection
 
-  init(connection: ChatConnection) {
-    self.connection = connection
+  init(makeConnection: @escaping @Sendable () -> ChatConnection) {
+    self.makeConnection = makeConnection
+    connection = makeConnection()
   }
 
   func events() async -> AsyncThrowingStream<ChatConnectionEvent, Error> {
     await connection.events()
+  }
+
+  func resetAfterTerminalFailure() {
+    connection = makeConnection()
   }
 
   func connect() async throws {
@@ -338,6 +356,7 @@ final class ChatFeature {
   private(set) var connection: GatewayConnectionState = .connecting
   private(set) var isAuthoritative = false
   private(set) var isLoadingInitial = false
+  private(set) var isSending = false
   private(set) var isCancelling = false
   private(set) var isShutdown = false
   private(set) var draftStatus: ChatDraftStatus = .saved
@@ -345,28 +364,40 @@ final class ChatFeature {
 
   var canSend: Bool {
     guard
-      isShutdown == false,
-      connection == .online,
-      isAuthoritative,
-      state.activeTurnID == nil,
-      state.composerBlock == nil
+      sendAuthorityIsAvailable,
+      isSending == false,
+      state.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+        || state.attachments.isEmpty == false
     else { return false }
-    return state.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
-      || state.attachments.isEmpty == false
+    return true
   }
 
   var draftEditingAllowed: Bool {
-    isShutdown == false && state.activeTurnID == nil && state.composerBlock == nil
+    isShutdown == false && isSending == false && state.activeTurnID == nil
+      && state.composerBlock == nil && isConversationReadOnly == false
+  }
+
+  var canAnswerQuestions: Bool {
+    turnMutationAuthorityIsAvailable
+  }
+
+  var canCancel: Bool {
+    turnMutationAuthorityIsAvailable
+      && state.activeTurnID.map(localTurnIDs.contains) == true
+      && cancelRequestSent == false
+      && cancelRequestInFlight == false
   }
 
   var composerDisabledReason: String? {
     if isShutdown { return "Chat session is closed" }
+    if isConversationReadOnly { return "This conversation is read-only" }
     if case .remoteActiveTurn? = state.composerBlock {
       return "This conversation is active on another device"
     }
     if state.composerBlock == .repairRequired { return "Re-pair this gateway to continue" }
     if state.composerBlock == .updateRequired { return "Update Dash to continue" }
     if connection != .online { return "Connect to the gateway to send" }
+    if isSending { return "Sending message" }
     if state.activeTurnID != nil { return "A response is in progress" }
     return nil
   }
@@ -403,14 +434,22 @@ final class ChatFeature {
   @ObservationIgnored private let validator: ImageAttachmentValidator
   @ObservationIgnored private let makeID: @Sendable () -> String
   @ObservationIgnored private var eventTask: Task<Void, Never>?
+  @ObservationIgnored private var eventTaskGeneration: UInt64 = 0
   @ObservationIgnored private var hasLoadedCache = false
   @ObservationIgnored private var isVisible = false
   @ObservationIgnored private var isConnected = false
   @ObservationIgnored private var wasReconnecting = false
   @ObservationIgnored private var cancelRequestSent = false
+  @ObservationIgnored private var cancelRequestInFlight = false
+  @ObservationIgnored private var answerRequestsInFlight: Set<String> = []
+  @ObservationIgnored private var submittedAnswers: [String: String] = [:]
   @ObservationIgnored private var localTurnIDs: Set<String> = []
+  @ObservationIgnored private var sendCompletionWaiters: [CheckedContinuation<Void, Never>] = []
+  @ObservationIgnored private var draftWriteTask: Task<DraftWriteResult, Never>?
+  @ObservationIgnored private var draftWriteRevision: UInt64 = 0
   @ObservationIgnored private var attachmentIntentRevision: UInt64 = 0
   @ObservationIgnored private var attachmentRequested = false
+  @ObservationIgnored private var canonicalRefreshRevision: UInt64 = 0
   @ObservationIgnored private var gatewayErrorHandler: ChatGatewayErrorHandler?
 
   init(
@@ -500,6 +539,7 @@ final class ChatFeature {
     isVisible = false
     await persistDraft()
     guard isCurrentAttachmentIntent(attachmentIntent, attached: false) else { return }
+    guard state.activeTurnID == nil else { return }
     await suspendForDetachment()
   }
 
@@ -526,6 +566,7 @@ final class ChatFeature {
         _ = ChatReducer.reduce(state: &next, action: .authoritativeSummary(canonical.summary))
       }
       state = next
+      reconcileSubmittedAnswers()
       isAuthoritative = connection == .online
     } catch is CancellationError {
       return
@@ -535,13 +576,13 @@ final class ChatFeature {
   }
 
   func updateDraft(_ text: String) async {
-    guard rejectIfShutdown() == false else { return }
+    guard rejectIfShutdown() == false, composerMutationAllowed else { return }
     state.draft = text
     await persistDraft()
   }
 
   func addSelections(_ selections: [ImageSelection]) async {
-    guard rejectIfShutdown() == false else { return }
+    guard rejectIfShutdown() == false, composerMutationAllowed else { return }
     do {
       state.attachments = try validator.prepare(selections, appendingTo: state.attachments)
       state.errorBanner = nil
@@ -552,7 +593,7 @@ final class ChatFeature {
   }
 
   func removeAttachment(id: UUID) async {
-    guard rejectIfShutdown() == false else { return }
+    guard rejectIfShutdown() == false, composerMutationAllowed else { return }
     state.attachments.removeAll { $0.id == id }
     await persistDraft()
   }
@@ -561,9 +602,12 @@ final class ChatFeature {
     guard rejectIfShutdown() == false else { return }
     guard canSend else { return }
     let text = state.draft.trimmingCharacters(in: .whitespacesAndNewlines)
+    let originalDraft = state.draft
+    let originalAttachments = state.attachments
     let images: [MessageImage]
     do {
-      images = try state.attachments.map { try $0.messageImage() }
+      let validated = try validator.prepare([], appendingTo: originalAttachments)
+      images = try validated.map { try $0.messageImage() }
     } catch {
       state.errorBanner = error.localizedDescription
       return
@@ -571,23 +615,37 @@ final class ChatFeature {
 
     let turnID = makeID()
     let localUserID = makeID()
-    localTurnIDs.insert(turnID)
+    isSending = true
+    defer { finishSendOperation() }
     state.draft = ""
     state.attachments = []
-    await persistDraft()
-    guard isShutdown == false else { return }
-    _ = ChatReducer.reduce(
-      state: &state,
-      action: .sendStarted(
-        turnID: turnID,
-        localUserID: localUserID,
-        text: text,
-        images: images
-      )
-    )
+    let didClearDraft = await persistDraft(text: "", attachments: [])
+    guard didClearDraft else {
+      state.draft = originalDraft
+      state.attachments = originalAttachments
+      return
+    }
+    guard sendAuthorityIsAvailable else {
+      await restoreComposer(text: originalDraft, attachments: originalAttachments)
+      return
+    }
 
     do {
       try await ensureConnected()
+      guard sendAuthorityIsAvailable else {
+        await restoreComposer(text: originalDraft, attachments: originalAttachments)
+        return
+      }
+      localTurnIDs.insert(turnID)
+      _ = ChatReducer.reduce(
+        state: &state,
+        action: .sendStarted(
+          turnID: turnID,
+          localUserID: localUserID,
+          text: text,
+          images: images
+        )
+      )
       try await transport.sendTurn(
         id: turnID,
         agentID: state.conversation.agentId,
@@ -596,45 +654,72 @@ final class ChatFeature {
         images: images
       )
     } catch is CancellationError {
+      if localTurnIDs.contains(turnID) == false {
+        await restoreComposer(text: originalDraft, attachments: originalAttachments)
+      }
       return
     } catch {
+      if localTurnIDs.contains(turnID) == false {
+        await restoreComposer(text: originalDraft, attachments: originalAttachments)
+      }
       await applyFailure(error)
     }
   }
 
   func answer(questionID: String, answer: String) async {
     guard rejectIfShutdown() == false else { return }
+    guard canAnswerQuestions else { return }
     let trimmed = answer.trimmingCharacters(in: .whitespacesAndNewlines)
     guard trimmed.isEmpty == false else { return }
     guard let turnID = turnID(forQuestion: questionID) else { return }
+    guard answerRequestsInFlight.insert(questionID).inserted else { return }
+    defer { answerRequestsInFlight.remove(questionID) }
     do {
       try await transport.answer(turnID: turnID, questionID: questionID, answer: trimmed)
+      guard isShutdown == false, self.turnID(forQuestion: questionID) == turnID else { return }
+      submittedAnswers[questionID] = trimmed
       _ = ChatReducer.reduce(
         state: &state,
         action: .answerSubmitted(questionID: questionID, answer: trimmed)
       )
+      state.errorBanner = nil
     } catch is CancellationError {
       return
     } catch {
-      await applyFailure(error)
+      if case .transport? = error as? GatewayError {
+        state.errorBanner = "That answer couldn't be sent. Try again."
+      } else {
+        await applyFailure(error)
+      }
     }
   }
 
   func cancel() async {
     guard rejectIfShutdown() == false else { return }
     guard
+      canCancel,
       let turnID = state.activeTurnID,
       localTurnIDs.contains(turnID),
-      cancelRequestSent == false
+      cancelRequestSent == false,
+      cancelRequestInFlight == false
     else { return }
+    cancelRequestInFlight = true
+    isCancelling = true
+    defer { cancelRequestInFlight = false }
     do {
       try await transport.cancel(turnID: turnID)
+      guard
+        isShutdown == false,
+        state.activeTurnID == turnID,
+        localTurnIDs.contains(turnID)
+      else { return }
       cancelRequestSent = true
-      isCancelling = true
       _ = ChatReducer.reduce(state: &state, action: .cancelRequested)
     } catch is CancellationError {
+      isCancelling = false
       return
     } catch {
+      isCancelling = false
       await applyFailure(error)
     }
   }
@@ -667,12 +752,19 @@ final class ChatFeature {
   func shutdown() async {
     guard isShutdown == false else { return }
     isShutdown = true
+    canonicalRefreshRevision &+= 1
     _ = beginAttachmentIntent(attached: false)
     isVisible = false
-    eventTask?.cancel()
+    let retiringEventTask = eventTask
+    retiringEventTask?.cancel()
     eventTask = nil
+    await waitForSendCompletion()
+    let retiringDraftWrite = draftWriteTask
     await transport.shutdown()
     await synchronizer.shutdown()
+    await retiringEventTask?.value
+    _ = await retiringDraftWrite?.value
+    draftWriteTask = nil
     isConnected = false
     state.transport = .detached
   }
@@ -707,36 +799,74 @@ final class ChatFeature {
     }
   }
 
-  private func persistDraft() async {
+  @discardableResult
+  private func persistDraft() async -> Bool {
+    await persistDraft(text: state.draft, attachments: state.attachments)
+  }
+
+  private func persistDraft(text: String, attachments: [PreparedAttachment]) async -> Bool {
+    draftWriteRevision &+= 1
+    let revision = draftWriteRevision
+    let previousWrite = draftWriteTask
+    let persistence = persistence
+    let clock = clock
+    let gatewayID = gatewayID
+    let conversationID = state.conversation.id
     draftStatus = .saving
-    do {
-      let now = await clock.now()
-      try await persistence.saveDraft(
-        ConversationDraft(text: state.draft, attachments: state.attachments, updatedAt: now),
-        gatewayID: gatewayID,
-        conversationID: state.conversation.id
-      )
-      draftStatus = .saved
-    } catch is CancellationError {
-      draftStatus = .failed
-    } catch {
-      draftStatus = .failed
-      state.errorBanner = "Draft couldn't be saved."
+    let write = Task {
+      _ = await previousWrite?.value
+      do {
+        let now = await clock.now()
+        try await persistence.saveDraft(
+          ConversationDraft(text: text, attachments: attachments, updatedAt: now),
+          gatewayID: gatewayID,
+          conversationID: conversationID
+        )
+        return DraftWriteResult.saved
+      } catch is CancellationError {
+        return DraftWriteResult.cancelled
+      } catch {
+        return DraftWriteResult.failed
+      }
     }
+    draftWriteTask = write
+    let result = await write.value
+    if revision == draftWriteRevision {
+      switch result {
+      case .saved:
+        draftStatus = .saved
+      case .cancelled:
+        draftStatus = .failed
+      case .failed:
+        draftStatus = .failed
+        state.errorBanner = "Draft couldn't be saved."
+      }
+    }
+    return result.didSave
   }
 
   private func refreshCanonical(preserveLiveProjection: Bool) async {
+    canonicalRefreshRevision &+= 1
+    let refreshRevision = canonicalRefreshRevision
     do {
       let canonical = try await synchronizer.refresh(
         conversationID: state.conversation.id,
         before: nil
       )
+      guard
+        isShutdown == false,
+        canonicalRefreshRevision == refreshRevision
+      else { return }
       applyCanonical(canonical, preserveLiveProjection: preserveLiveProjection)
       isAuthoritative = connection == .online
       state.errorBanner = nil
     } catch is CancellationError {
       return
     } catch {
+      guard
+        isShutdown == false,
+        canonicalRefreshRevision == refreshRevision
+      else { return }
       isAuthoritative = false
       await applyFailure(error)
     }
@@ -768,6 +898,7 @@ final class ChatFeature {
         isCancelling = false
       }
     }
+    reconcileSubmittedAnswers()
   }
 
   private func attachToCanonicalTurnIfNeeded() async {
@@ -778,6 +909,7 @@ final class ChatFeature {
       connection == .online,
       isShutdown == false
     else { return }
+    guard isConnected == false else { return }
     do {
       try await ensureConnected()
       let cursor = try await persistence.cursor(
@@ -815,6 +947,8 @@ final class ChatFeature {
 
   private func startEventTaskIfNeeded() {
     guard eventTask == nil, isShutdown == false else { return }
+    eventTaskGeneration &+= 1
+    let generation = eventTaskGeneration
     eventTask = Task { [weak self] in
       guard let self else { return }
       let events = await transport.events()
@@ -824,11 +958,22 @@ final class ChatFeature {
           await consume(event)
         }
       } catch is CancellationError {
+        finishEventTask(generation: generation)
         return
       } catch {
+        await transport.resetAfterTerminalFailure()
+        finishEventTask(generation: generation)
+        guard isShutdown == false else { return }
+        isConnected = false
+        wasReconnecting = false
         await applyFailure(error)
       }
     }
+  }
+
+  private func finishEventTask(generation: UInt64) {
+    guard eventTaskGeneration == generation else { return }
+    eventTask = nil
   }
 
   private func consume(_ event: ChatConnectionEvent) async {
@@ -937,17 +1082,21 @@ final class ChatFeature {
           self.retryAt = retryAt
         }
       }
-      state = next
+      state = preservingComposer(in: next, from: state)
+      reconcileSubmittedAnswers()
     } catch is CancellationError {
-      state = previous
+      state = preservingComposer(in: previous, from: state)
     } catch {
-      state = previous
+      state = preservingComposer(in: previous, from: state)
       await applyFailure(error)
     }
   }
 
   private func applyFailure(_ error: Error) async {
-    let gatewayError = error as? GatewayError ?? .transport(error.localizedDescription)
+    guard let gatewayError = error as? GatewayError else {
+      state.errorBanner = "Saved conversation data couldn't be updated."
+      return
+    }
     await applyReducerActionWithoutRecursion(.failure(gatewayError))
     switch gatewayError {
     case .unauthorized:
@@ -1003,6 +1152,79 @@ final class ChatFeature {
       message.assistant?.pendingQuestion?.id == questionID
         && message.assistant?.pendingQuestion?.answer == nil
     }?.turnID
+  }
+
+  private func reconcileSubmittedAnswers() {
+    var pendingQuestionIDs: Set<String> = []
+    for index in state.messages.indices {
+      guard var assistant = state.messages[index].assistant,
+        var question = assistant.pendingQuestion
+      else { continue }
+      pendingQuestionIDs.insert(question.id)
+      guard let answer = submittedAnswers[question.id] else { continue }
+      question.answer = answer
+      assistant.pendingQuestion = question
+      state.messages[index].assistant = assistant
+    }
+    submittedAnswers = submittedAnswers.filter { pendingQuestionIDs.contains($0.key) }
+  }
+
+  private var sendAuthorityIsAvailable: Bool {
+    isShutdown == false
+      && connection == .online
+      && isAuthoritative
+      && state.activeTurnID == nil
+      && state.composerBlock == nil
+      && isConversationReadOnly == false
+  }
+
+  private var turnMutationAuthorityIsAvailable: Bool {
+    isShutdown == false
+      && connection == .online
+      && isAuthoritative
+      && state.activeTurnID != nil
+      && state.composerBlock == nil
+      && isConversationReadOnly == false
+  }
+
+  private var composerMutationAllowed: Bool {
+    isShutdown == false
+      && isSending == false
+      && state.composerBlock == nil
+      && isConversationReadOnly == false
+  }
+
+  private func restoreComposer(text: String, attachments: [PreparedAttachment]) async {
+    state.draft = text
+    state.attachments = attachments
+    _ = await persistDraft(text: text, attachments: attachments)
+  }
+
+  private func finishSendOperation() {
+    isSending = false
+    let waiters = sendCompletionWaiters
+    sendCompletionWaiters.removeAll()
+    for waiter in waiters {
+      waiter.resume()
+    }
+  }
+
+  private func waitForSendCompletion() async {
+    guard isSending else { return }
+    await withCheckedContinuation { continuation in
+      sendCompletionWaiters.append(continuation)
+    }
+  }
+
+  private var isConversationReadOnly: Bool {
+    state.conversation.status == .archived || state.conversation.status == .deleted
+  }
+
+  private func preservingComposer(in value: ChatState, from current: ChatState) -> ChatState {
+    var preserved = value
+    preserved.draft = current.draft
+    preserved.attachments = current.attachments
+    return preserved
   }
 
   private func rejectIfShutdown() -> Bool {

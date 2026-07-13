@@ -77,16 +77,14 @@ final class AppModel {
         retiredFeature !== conversationListFeature
       {
         await retiredFeature.shutdown()
-        guard activeEpoch == publishedEpoch, sameEngine(syncEngine, prepared.engine) else { return }
       }
       for chatFeature in retired.chatFeatures {
         await chatFeature.shutdown()
-        guard activeEpoch == publishedEpoch, sameEngine(syncEngine, prepared.engine) else { return }
       }
       if let retiredEngine = retired.engine, sameEngine(retiredEngine, prepared.engine) == false {
         await retiredEngine.shutdown()
-        guard activeEpoch == publishedEpoch, sameEngine(syncEngine, prepared.engine) else { return }
       }
+      guard activeEpoch == publishedEpoch, sameEngine(syncEngine, prepared.engine) else { return }
       await startPreparedEngine(prepared.engine, activeEpoch: publishedEpoch)
     } catch {
       guard isCurrent(epoch) else { return }
@@ -110,16 +108,14 @@ final class AppModel {
         retiredFeature !== conversationListFeature
       {
         await retiredFeature.shutdown()
-        guard activeEpoch == publishedEpoch, sameEngine(syncEngine, prepared.engine) else { return }
       }
       for chatFeature in retired.chatFeatures {
         await chatFeature.shutdown()
-        guard activeEpoch == publishedEpoch, sameEngine(syncEngine, prepared.engine) else { return }
       }
       if let retiredEngine = retired.engine, sameEngine(retiredEngine, prepared.engine) == false {
         await retiredEngine.shutdown()
-        guard activeEpoch == publishedEpoch, sameEngine(syncEngine, prepared.engine) else { return }
       }
+      guard activeEpoch == publishedEpoch, sameEngine(syncEngine, prepared.engine) else { return }
       await startPreparedEngine(prepared.engine, activeEpoch: publishedEpoch)
     } catch {
       guard isCurrent(epoch) else { return }

@@ -92,7 +92,10 @@ struct ChatView: View {
           )
           .frame(maxWidth: .infinity, minHeight: 260)
         } else {
-          MessageListView(messages: feature.state.messages) { questionID, answer in
+          MessageListView(
+            messages: feature.state.messages,
+            isAnsweringEnabled: feature.canAnswerQuestions
+          ) { questionID, answer in
             Task { await feature.answer(questionID: questionID, answer: answer) }
           }
         }

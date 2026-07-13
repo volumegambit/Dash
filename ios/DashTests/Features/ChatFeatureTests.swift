@@ -126,6 +126,87 @@ struct ChatFeatureTests {
     #expect(await persistence.savedDrafts.last?.attachments.isEmpty == true)
   }
 
+  @Test("a failed draft clear aborts send and restores the unsent composer")
+  func failedDraftClearAbortsSend() async {
+    let persistence = FakeChatPersistence(failingSaveCalls: [2])
+    let chat = FakeChatFeatureTransport()
+    let feature = makeFeature(persistence: persistence, chat: chat)
+    feature.setConnection(.online)
+    await feature.appear()
+    await feature.updateDraft("Keep this message")
+
+    await feature.send()
+
+    #expect(await chat.calls.isEmpty)
+    #expect(feature.state.draft == "Keep this message")
+    #expect(feature.state.activeTurnID == nil)
+    #expect(feature.draftStatus == .failed)
+  }
+
+  @Test("authority loss while clearing the draft aborts send and restores the composer")
+  func authorityLossDuringDraftClearAbortsSend() async {
+    let clearGate = TestGate()
+    let persistence = FakeChatPersistence(saveGates: [2: clearGate])
+    let chat = FakeChatFeatureTransport()
+    let feature = makeFeature(persistence: persistence, chat: chat)
+    feature.setConnection(.online)
+    await feature.appear()
+    await feature.updateDraft("Keep this message")
+
+    let sending = Task { await feature.send() }
+    await clearGate.waitUntilWaiting()
+    feature.setConnection(.offline)
+    await clearGate.release()
+    await sending.value
+
+    #expect(await chat.calls.isEmpty)
+    #expect(feature.state.draft == "Keep this message")
+    #expect(await persistence.persistedDraft?.text == "Keep this message")
+    #expect(feature.state.activeTurnID == nil)
+  }
+
+  @Test("draft writes stay ordered when an older save finishes last")
+  func draftWritesRemainOrdered() async {
+    let firstSave = TestGate()
+    let persistence = FakeChatPersistence(saveGates: [1: firstSave])
+    let feature = makeFeature(persistence: persistence)
+
+    let older = Task { await feature.updateDraft("Old") }
+    await firstSave.waitUntilWaiting()
+    let newest = Task { await feature.updateDraft("Newest") }
+    await Task.yield()
+    await firstSave.release()
+    await older.value
+    await newest.value
+
+    #expect(await persistence.persistedDraft?.text == "Newest")
+    #expect(feature.state.draft == "Newest")
+  }
+
+  @Test("cached attachments are revalidated before base64 conversion")
+  func cachedAttachmentsAreRevalidatedBeforeSend() async {
+    let attachments = (0..<5).map { index in
+      PreparedAttachment(
+        id: UUID(uuidString: "00000000-0000-0000-0000-00000000000\(index)")!,
+        mediaType: ImageMediaType.png.rawValue,
+        data: Data([UInt8(index)])
+      )
+    }
+    let persistence = FakeChatPersistence(
+      draft: ConversationDraft(text: "", attachments: attachments, updatedAt: .distantPast)
+    )
+    let chat = FakeChatFeatureTransport()
+    let feature = makeFeature(persistence: persistence, chat: chat)
+    feature.setConnection(.online)
+    await feature.appear()
+
+    await feature.send()
+
+    #expect(await chat.calls.isEmpty)
+    #expect(feature.state.attachments == attachments)
+    #expect(feature.state.errorBanner == "Choose up to 4 images.")
+  }
+
   @Test("accepted replaces optimistic IDs and persists canonical messages")
   func acceptedReconcilesCanonicalMessages() async throws {
     let acceptedMessages = [
@@ -210,6 +291,60 @@ struct ChatFeatureTests {
       )
     }
     #expect(await sync.replayCalls.map(\.sinceSeq) == [1, 3])
+  }
+
+  @Test("a terminal transport failure resets its stream and can resume authoritatively")
+  func terminalTransportFailureCanRecover() async {
+    let running = summary(status: .running, activeTurnID: "turn-1", lastSeq: 4)
+    let persistence = FakeChatPersistence(cursor: 4)
+    let sync = FakeChatSynchronizer()
+    let chat = FakeChatFeatureTransport()
+    let feature = makeFeature(persistence: persistence, sync: sync, chat: chat)
+    feature.setConnection(.online)
+    await feature.appear()
+
+    await chat.finish(throwing: GatewayError.transport("socket exhausted"))
+    await eventually { await feature.connection == .offline }
+    await sync.enqueueRefresh(.success(snapshot(summary: running, throughSeq: 4)))
+
+    feature.setConnection(.online)
+    await feature.retryConnection()
+
+    #expect(await chat.calls.filter { $0 == .resetAfterTerminalFailure }.count == 1)
+    #expect(await chat.eventStreamRequestCount == 2)
+    #expect(await chat.calls.filter { $0 == .connect }.count == 1)
+    #expect(
+      await chat.calls.contains(
+        .resume(
+          turnID: "turn-1",
+          agentID: "agent-1",
+          conversationID: "conv-1",
+          sinceSeq: 4
+        )
+      )
+    )
+  }
+
+  @Test("an older failed refresh cannot override a newer authoritative refresh")
+  func staleRefreshFailureCannotOverrideAuthority() async {
+    let firstRefresh = TestGate()
+    let sync = FakeChatSynchronizer()
+    await sync.enqueueRefresh(.failure(.unauthorized), waitingOn: firstRefresh)
+    let feature = makeFeature(sync: sync)
+    feature.setConnection(.online)
+
+    let opening = Task { await feature.appear() }
+    await firstRefresh.waitUntilWaiting()
+    await sync.enqueueRefresh(.success(snapshot()))
+    await feature.retryConnection()
+    #expect(feature.connection == .online)
+    #expect(feature.isAuthoritative)
+
+    await firstRefresh.release()
+    await opening.value
+
+    #expect(feature.connection == .online)
+    #expect(feature.isAuthoritative)
   }
 
   @Test("gateway authority state outranks a stale socket reconnect banner")
@@ -361,6 +496,67 @@ struct ChatFeatureTests {
     #expect(await chat.calls.filter(\.isAnswer).count == 2)
   }
 
+  @Test("concurrent answer intents emit only one frame")
+  func concurrentAnswersSendOnce() async {
+    let answerGate = TestGate()
+    let chat = FakeChatFeatureTransport(answerGate: answerGate)
+    let feature = makeFeature(chat: chat)
+    feature.setConnection(.online)
+    await feature.appear()
+    await feature.updateDraft("Hello")
+    await feature.send()
+    await chat.yield(.frame(accepted(seq: 1)))
+    await chat.yield(.frame(question(seq: 2)))
+    await eventually { await pendingQuestion(in: feature)?.id == "question-1" }
+
+    let first = Task {
+      await feature.answer(questionID: "question-1", answer: "A")
+    }
+    await answerGate.waitUntilWaiting()
+    await feature.answer(questionID: "question-1", answer: "A")
+
+    #expect(await chat.calls.filter(\.isAnswer).count == 1)
+    await answerGate.release()
+    await first.value
+    #expect(pendingQuestion(in: feature)?.answer == "A")
+  }
+
+  @Test("a successful answer survives canonical refresh of the pending question")
+  func submittedAnswerSurvivesRefresh() async {
+    let chat = FakeChatFeatureTransport()
+    let sync = FakeChatSynchronizer()
+    let feature = makeFeature(sync: sync, chat: chat)
+    feature.setConnection(.online)
+    await feature.appear()
+    await feature.updateDraft("Hello")
+    await feature.send()
+    await chat.yield(.frame(accepted(seq: 1)))
+    await chat.yield(.frame(question(seq: 2)))
+    await eventually { await pendingQuestion(in: feature)?.id == "question-1" }
+    await feature.answer(questionID: "question-1", answer: "A")
+    let canonical = message(
+      id: "assistant-1",
+      turnID: "turn-1",
+      role: .assistant,
+      status: .streaming,
+      events: [.question(id: "question-1", question: "Choose", options: ["A", "B"])],
+      ordinal: 2
+    )
+    await sync.enqueueRefresh(
+      .success(
+        snapshot(
+          summary: summary(revision: 2, status: .running, activeTurnID: "turn-1", lastSeq: 2),
+          messages: [canonical],
+          throughSeq: 2
+        )
+      )
+    )
+
+    await feature.retryConnection()
+
+    #expect(pendingQuestion(in: feature)?.answer == "A")
+  }
+
   @Test("cancel sends once and stays active until durable cancelled done")
   func cancelWaitsForDone() async {
     let chat = FakeChatFeatureTransport()
@@ -388,6 +584,28 @@ struct ChatFeatureTests {
     #expect(feature.isCancelling == false)
     await feature.cancel()
     #expect(await chat.calls.filter(\.isCancel).count == 1)
+  }
+
+  @Test("concurrent cancel intents emit only one frame")
+  func concurrentCancelsSendOnce() async {
+    let cancelGate = TestGate()
+    let chat = FakeChatFeatureTransport(cancelGate: cancelGate)
+    let feature = makeFeature(chat: chat)
+    feature.setConnection(.online)
+    await feature.appear()
+    await feature.updateDraft("Hello")
+    await feature.send()
+    await chat.yield(.frame(accepted(seq: 1)))
+    await eventually { await feature.state.activeTurnID == "turn-1" }
+
+    let first = Task { await feature.cancel() }
+    await cancelGate.waitUntilWaiting()
+    await feature.cancel()
+
+    #expect(await chat.calls.filter(\.isCancel).count == 1)
+    await cancelGate.release()
+    await first.value
+    #expect(feature.isCancelling)
   }
 
   @Test("canonical completion clears cancellation state after detached delivery")
@@ -453,6 +671,72 @@ struct ChatFeatureTests {
     #expect(await persistence.savedDrafts.last?.text == "Can edit")
   }
 
+  @Test("offline authority blocks answer and cancel frames")
+  func offlineTurnMutationsAreBlocked() async {
+    let chat = FakeChatFeatureTransport()
+    let feature = makeFeature(chat: chat)
+    feature.setConnection(.online)
+    await feature.appear()
+    await feature.updateDraft("Hello")
+    await feature.send()
+    await chat.yield(.frame(accepted(seq: 1)))
+    await chat.yield(.frame(question(seq: 2)))
+    await eventually { await pendingQuestion(in: feature)?.id == "question-1" }
+    feature.setConnection(.offline)
+
+    await feature.answer(questionID: "question-1", answer: "A")
+    await feature.cancel()
+
+    #expect(await chat.calls.filter(\.isAnswer).isEmpty)
+    #expect(await chat.calls.filter(\.isCancel).isEmpty)
+  }
+
+  @Test("archived conversations remain readable but cannot edit or send")
+  func archivedConversationIsReadOnly() async {
+    let archived = summary(status: .archived)
+    let persistence = FakeChatPersistence(
+      draft: ConversationDraft(text: "Do not send", attachments: [], updatedAt: .distantPast)
+    )
+    let sync = FakeChatSynchronizer()
+    await sync.enqueueRefresh(.success(snapshot(summary: archived)))
+    let chat = FakeChatFeatureTransport()
+    let feature = makeFeature(persistence: persistence, sync: sync, chat: chat)
+    feature.setConnection(.online)
+
+    await feature.appear()
+    await feature.updateDraft("Changed")
+    await feature.addSelections([ImageSelection(data: Data([1]), type: .png)])
+    await feature.send()
+
+    #expect(feature.canSend == false)
+    #expect(feature.draftEditingAllowed == false)
+    #expect(feature.composerDisabledReason == "This conversation is read-only")
+    #expect(feature.state.draft == "Do not send")
+    #expect(feature.state.attachments.isEmpty)
+    #expect(await chat.calls.isEmpty)
+  }
+
+  @Test("canonical terminal transcripts do not expose stale questions")
+  func terminalTranscriptClearsQuestion() async {
+    let completed = message(
+      id: "assistant-1",
+      role: .assistant,
+      status: .completed,
+      events: [.question(id: "question-1", question: "Too late?", options: ["Yes"])],
+      ordinal: 1
+    )
+    let sync = FakeChatSynchronizer()
+    await sync.enqueueRefresh(
+      .success(snapshot(summary: summary(lastSeq: 2), messages: [completed], throughSeq: 2))
+    )
+    let feature = makeFeature(sync: sync)
+    feature.setConnection(.online)
+
+    await feature.appear()
+
+    #expect(pendingQuestion(in: feature) == nil)
+  }
+
   @Test("only final response posts one VoiceOver announcement")
   func announcesOnlyFinalResponse() async {
     let announcer = FakeChatAccessibilityAnnouncer(voiceOverRunning: true)
@@ -495,10 +779,77 @@ struct ChatFeatureTests {
     await feature.disappear()
     await feature.appear()
 
-    #expect(await chat.calls.filter { $0 == .suspendForDetachment }.count == 1)
-    #expect(await chat.calls.filter { $0 == .connect }.count == 2)
-    #expect(await chat.calls.filter(\.isResume).count == 2)
+    #expect(await chat.calls.filter { $0 == .suspendForDetachment }.isEmpty)
+    #expect(await chat.calls.filter { $0 == .connect }.count == 1)
+    #expect(await chat.calls.filter(\.isResume).count == 1)
     #expect(feature.isShutdown == false)
+  }
+
+  @Test("a hidden foreground turn stays attached until its durable terminal")
+  func hiddenActiveTurnStaysAttached() async {
+    let running = summary(status: .running, activeTurnID: "turn-1", lastSeq: 4)
+    let persistence = FakeChatPersistence(cursor: 4)
+    let sync = FakeChatSynchronizer()
+    await sync.enqueueRefresh(.success(snapshot(summary: running, throughSeq: 4)))
+    let chat = FakeChatFeatureTransport()
+    let feature = makeFeature(persistence: persistence, sync: sync, chat: chat)
+    feature.setConnection(.online)
+    await feature.appear()
+
+    await feature.disappear()
+
+    #expect(await chat.calls.filter { $0 == .suspendForDetachment }.isEmpty)
+    await chat.yield(
+      .frame(.done(id: "turn-1", conversationId: "conv-1", seq: 5, outcome: .completed))
+    )
+    await eventually {
+      await chat.calls.filter { $0 == .suspendForDetachment }.count == 1
+    }
+  }
+
+  @Test("cursor persistence cannot roll back a newer composer edit")
+  func cursorPersistencePreservesComposer() async {
+    let cursorGate = TestGate()
+    let persistence = FakeChatPersistence(advanceGate: cursorGate)
+    let chat = FakeChatFeatureTransport()
+    let feature = makeFeature(persistence: persistence, chat: chat)
+    feature.setConnection(.online)
+    await feature.appear()
+    await feature.updateDraft("Hello")
+    await feature.send()
+
+    await chat.yield(.frame(accepted(seq: 1)))
+    await cursorGate.waitUntilWaiting()
+    await feature.updateDraft("Next message")
+    await cursorGate.release()
+    await eventually { await feature.state.lastAppliedSeq == 1 }
+
+    #expect(feature.state.draft == "Next message")
+  }
+
+  @Test("a local cursor failure does not downgrade healthy gateway authority")
+  func localPersistenceFailureDoesNotMarkGatewayOffline() async {
+    let refreshGate = TestGate()
+    let persistence = FakeChatPersistence(failingAdvanceCalls: [1])
+    let sync = FakeChatSynchronizer()
+    let chat = FakeChatFeatureTransport()
+    let probe = ChatGatewayErrorProbe()
+    let feature = makeFeature(persistence: persistence, sync: sync, chat: chat)
+    feature.setGatewayErrorHandler { error in probe.record(error) }
+    feature.setConnection(.online)
+    await feature.appear()
+    await feature.updateDraft("Hello")
+    await feature.send()
+    await sync.enqueueRefresh(.success(snapshot()), waitingOn: refreshGate)
+
+    await chat.yield(.frame(accepted(seq: 1)))
+    await refreshGate.waitUntilWaiting()
+
+    #expect(feature.connection == .online)
+    #expect(feature.isAuthoritative)
+    #expect(feature.state.errorBanner == "Saved conversation data couldn't be updated.")
+    #expect(probe.errors.isEmpty)
+    await refreshGate.release()
   }
 
   @Test("terminal shutdown rejects later sends")
@@ -574,7 +925,54 @@ struct ChatFeatureTests {
     #expect(feature.isShutdown)
   }
 
+  @Test("a superseding activation still drains every retired chat")
+  func supersedingActivationDrainsRetiredChats() async {
+    let original = chatConnectionProfile(
+      gatewayID: "gateway-1",
+      id: UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")!
+    )
+    let replacement = chatConnectionProfile(
+      gatewayID: "gateway-2",
+      id: UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
+    )
+    let superseding = chatConnectionProfile(
+      gatewayID: "gateway-3",
+      id: UUID(uuidString: "99999999-8888-7777-6666-555555555555")!
+    )
+    let shutdownGate = TestGate()
+    let first = makeFeature(
+      conversation: summary(id: "conv-1"),
+      chat: FakeChatFeatureTransport(shutdownGate: shutdownGate)
+    )
+    let second = makeFeature(
+      conversation: summary(id: "conv-2"),
+      chat: FakeChatFeatureTransport(shutdownGate: shutdownGate)
+    )
+    let probe = ChatFeatureMapProbe(features: ["conv-1": first, "conv-2": second])
+    let model = AppModel(
+      dependencies: AppDependencies(
+        clock: TestAppClock(now: Date(timeIntervalSince1970: 100)),
+        loadProfile: { original },
+        makeSyncEngine: { _ in ChatLifecycleSyncEngine() },
+        makeChatFeature: { _, conversation in probe.make(conversation: conversation) }
+      )
+    )
+    await model.start()
+    _ = await model.makeChatFeature(summary(id: "conv-1"))
+    _ = await model.makeChatFeature(summary(id: "conv-2"))
+
+    let replacing = Task { await model.installPairedProfile(replacement) }
+    await shutdownGate.waitUntilWaiting()
+    await model.installPairedProfile(superseding)
+    await shutdownGate.release()
+    await replacing.value
+
+    #expect(first.isShutdown)
+    #expect(second.isShutdown)
+  }
+
   private func makeFeature(
+    conversation: ConversationSummaryDTO = summary(),
     persistence: FakeChatPersistence = FakeChatPersistence(),
     sync: FakeChatSynchronizer = FakeChatSynchronizer(),
     chat: FakeChatFeatureTransport = FakeChatFeatureTransport(),
@@ -584,7 +982,7 @@ struct ChatFeatureTests {
     let source = SequentialUUIDSource(ids: ids)
     return ChatFeature(
       gatewayID: "gateway-1",
-      conversation: summary(),
+      conversation: conversation,
       persistence: persistence,
       synchronizer: sync,
       transport: chat,
@@ -616,6 +1014,19 @@ private final class ChatFactoryProbe {
     self.profile = profile
     #expect(conversation.id == "conv-1")
     return feature
+  }
+}
+
+@MainActor
+private final class ChatFeatureMapProbe {
+  private let features: [String: ChatFeature]
+
+  init(features: [String: ChatFeature]) {
+    self.features = features
+  }
+
+  func make(conversation: ConversationSummaryDTO) -> ChatFeature? {
+    features[conversation.id]
   }
 }
 
@@ -668,22 +1079,42 @@ private enum FakeChatResult<Value: Sendable>: Sendable {
   case failure(GatewayError)
 }
 
+private enum FakeChatPersistenceError: Error {
+  case unavailable
+}
+
 private actor FakeChatPersistence: ChatFeaturePersisting {
   private let recorder: ChatOperationRecorder?
+  private let failingSaveCalls: Set<Int>
+  private let failingAdvanceCalls: Set<Int>
+  private let saveGates: [Int: TestGate]
+  private let advanceGate: TestGate?
   private var cachedMessages: [ConversationMessageDTO]
   private var cachedDraft: ConversationDraft?
+  private var saveCallCount = 0
+  private var advanceCallCount = 0
   private(set) var cursor: Int
   private(set) var savedDrafts: [ConversationDraft] = []
+
+  var persistedDraft: ConversationDraft? { cachedDraft }
 
   init(
     messages: [ConversationMessageDTO] = [],
     draft: ConversationDraft? = nil,
     cursor: Int = 0,
+    failingSaveCalls: Set<Int> = [],
+    failingAdvanceCalls: Set<Int> = [],
+    saveGates: [Int: TestGate] = [:],
+    advanceGate: TestGate? = nil,
     recorder: ChatOperationRecorder? = nil
   ) {
     cachedMessages = messages
     cachedDraft = draft
     self.cursor = cursor
+    self.failingSaveCalls = failingSaveCalls
+    self.failingAdvanceCalls = failingAdvanceCalls
+    self.saveGates = saveGates
+    self.advanceGate = advanceGate
     self.recorder = recorder
   }
 
@@ -706,6 +1137,11 @@ private actor FakeChatPersistence: ChatFeaturePersisting {
     gatewayID: String,
     conversationID: String
   ) async throws {
+    saveCallCount += 1
+    if let gate = saveGates[saveCallCount] { await gate.wait() }
+    guard failingSaveCalls.contains(saveCallCount) == false else {
+      throw FakeChatPersistenceError.unavailable
+    }
     cachedDraft = draft
     savedDrafts.append(draft)
     await recorder?.record(
@@ -715,6 +1151,11 @@ private actor FakeChatPersistence: ChatFeaturePersisting {
   }
 
   func advanceCursor(gatewayID: String, conversationID: String, to seq: Int) async throws {
+    advanceCallCount += 1
+    if let advanceGate { await advanceGate.wait() }
+    guard failingAdvanceCalls.contains(advanceCallCount) == false else {
+      throw FakeChatPersistenceError.unavailable
+    }
     cursor = max(cursor, seq)
     await recorder?.record("persist.cursor.\(seq)")
   }
@@ -796,20 +1237,42 @@ private actor FakeChatSynchronizer: ChatFeatureSynchronizing {
 
 private actor FakeChatFeatureTransport: ChatFeatureTransporting {
   private let recorder: ChatOperationRecorder?
-  private let stream: AsyncThrowingStream<ChatConnectionEvent, Error>
-  private let continuation: AsyncThrowingStream<ChatConnectionEvent, Error>.Continuation
+  private let answerGate: TestGate?
+  private let cancelGate: TestGate?
+  private let shutdownGate: TestGate?
+  private var didUseAnswerGate = false
+  private var didUseCancelGate = false
+  private var stream: AsyncThrowingStream<ChatConnectionEvent, Error>
+  private var continuation: AsyncThrowingStream<ChatConnectionEvent, Error>.Continuation
   private var answerResults: [FakeChatResult<Void>] = []
   private(set) var calls: [FakeChatTransportCall] = []
+  private(set) var eventStreamRequestCount = 0
 
-  init(recorder: ChatOperationRecorder? = nil) {
+  init(
+    recorder: ChatOperationRecorder? = nil,
+    answerGate: TestGate? = nil,
+    cancelGate: TestGate? = nil,
+    shutdownGate: TestGate? = nil
+  ) {
     self.recorder = recorder
+    self.answerGate = answerGate
+    self.cancelGate = cancelGate
+    self.shutdownGate = shutdownGate
     let pair = AsyncThrowingStream<ChatConnectionEvent, Error>.makeStream()
     stream = pair.stream
     continuation = pair.continuation
   }
 
   func events() async -> AsyncThrowingStream<ChatConnectionEvent, Error> {
-    stream
+    eventStreamRequestCount += 1
+    return stream
+  }
+
+  func resetAfterTerminalFailure() {
+    calls.append(.resetAfterTerminalFailure)
+    let pair = AsyncThrowingStream<ChatConnectionEvent, Error>.makeStream()
+    stream = pair.stream
+    continuation = pair.continuation
   }
 
   func enqueueAnswer(_ result: FakeChatResult<Void>) {
@@ -858,12 +1321,20 @@ private actor FakeChatFeatureTransport: ChatFeatureTransporting {
 
   func answer(turnID: String, questionID: String, answer: String) async throws {
     calls.append(.answer(turnID: turnID, questionID: questionID, answer: answer))
+    if didUseAnswerGate == false, let answerGate {
+      didUseAnswerGate = true
+      await answerGate.wait()
+    }
     guard answerResults.isEmpty == false else { return }
     _ = try resolve(answerResults.removeFirst())
   }
 
   func cancel(turnID: String) async throws {
     calls.append(.cancel(turnID: turnID))
+    if didUseCancelGate == false, let cancelGate {
+      didUseCancelGate = true
+      await cancelGate.wait()
+    }
   }
 
   func suspendForDetachment() async {
@@ -872,10 +1343,15 @@ private actor FakeChatFeatureTransport: ChatFeatureTransporting {
 
   func shutdown() async {
     calls.append(.shutdown)
+    if let shutdownGate { await shutdownGate.wait() }
   }
 
   func yield(_ event: ChatConnectionEvent) {
     continuation.yield(event)
+  }
+
+  func finish(throwing error: Error) {
+    continuation.finish(throwing: error)
   }
 
   private func resolve<Value>(_ result: FakeChatResult<Value>) throws -> Value {
@@ -899,6 +1375,7 @@ private enum FakeChatTransportCall: Equatable, Sendable {
   case answer(turnID: String, questionID: String, answer: String)
   case cancel(turnID: String)
   case suspendForDetachment
+  case resetAfterTerminalFailure
   case shutdown
 
   var sentPayload: (text: String, images: [MessageImage])? {
@@ -940,13 +1417,14 @@ private actor FakeChatAccessibilityAnnouncer: ChatAccessibilityAnnouncing {
 }
 
 private func summary(
+  id: String = "conv-1",
   revision: Int = 1,
   status: ConversationStatus = .idle,
   activeTurnID: String? = nil,
   lastSeq: Int = 0
 ) -> ConversationSummaryDTO {
   ConversationSummaryDTO(
-    id: "conv-1",
+    id: id,
     agentId: "agent-1",
     agentName: "Dash",
     title: "Test conversation",

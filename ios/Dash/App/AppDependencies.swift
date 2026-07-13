@@ -213,7 +213,7 @@ struct AppDependencies: Sendable {
           store: store,
           makeAPI: {
             guard let currentSecrets = try await keychain.load(for: profile.id) else {
-              throw AppDependencyError.missingSecrets(profileID: profile.id)
+              throw GatewayError.unauthorized
             }
             let currentEndpoint = ConnectionEndpoint(
               profile: profile.profile,
@@ -227,7 +227,7 @@ struct AppDependencies: Sendable {
           conversation: conversation,
           persistence: persistence,
           synchronizer: synchronizer,
-          transport: LiveChatFeatureTransport(connection: makeChat(endpoint)),
+          transport: LiveChatFeatureTransport(makeConnection: { makeChat(endpoint) }),
           clock: clock
         )
       },

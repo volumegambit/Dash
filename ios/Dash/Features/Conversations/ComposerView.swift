@@ -114,7 +114,7 @@ struct ComposerView: View {
             .frame(width: 44, height: 44)
         }
       }
-      .disabled(feature.isCancelling)
+      .disabled(feature.canCancel == false)
       .accessibilityLabel(feature.isCancelling ? "Cancelling response" : "Cancel response")
       .accessibilityIdentifier("chat.cancel")
     } else {
