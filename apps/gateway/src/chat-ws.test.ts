@@ -520,6 +520,48 @@ describe('mountChatWs protocol ownership', () => {
     expect(connection.handlers.onMessage).toBeUndefined();
   });
 
+  it('contains a valid JSON null frame as a structured validation error', () => {
+    const harness = makeWsHarness();
+    const connection = harness.connect();
+
+    expect(() =>
+      connection.handlers.onMessage?.({ data: 'null' }, connection.socket),
+    ).not.toThrow();
+    expect(sentFrames(connection.socket)).toEqual([
+      {
+        type: 'error',
+        id: '',
+        error: 'Invalid message: missing required fields',
+        code: 'validation_failed',
+        retryable: false,
+      },
+    ]);
+  });
+
+  it('safely carries optional frame identity into validation errors', () => {
+    const harness = makeWsHarness();
+    const connection = harness.connect();
+    const invalid = {
+      type: 'message',
+      id: 'turn-invalid',
+      conversationId: 'conversation-invalid',
+    };
+
+    expect(() =>
+      connection.handlers.onMessage?.({ data: JSON.stringify(invalid) }, connection.socket),
+    ).not.toThrow();
+    expect(sentFrames(connection.socket)).toEqual([
+      {
+        type: 'error',
+        id: 'turn-invalid',
+        conversationId: 'conversation-invalid',
+        error: 'Invalid message: missing required fields',
+        code: 'validation_failed',
+        retryable: false,
+      },
+    ]);
+  });
+
   it('routes resumable sends and resumes through one stable connection sink', () => {
     const harness = makeWsHarness();
     const connection = harness.connect();

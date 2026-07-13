@@ -632,6 +632,67 @@ describe('ResumableChatHub', () => {
     expect(stopped).toBe(true);
   });
 
+  it('closes turn admission before waiting for live generator cleanup', async () => {
+    const cleanup = deferred<void>();
+    const active = createConversation();
+    const rejected = createConversation();
+    const scripted = register(active.id, makeScriptedStream(cleanup.promise));
+    harness.cancel.mockImplementation((_agentId: string, conversationId: string) => {
+      if (conversationId === active.id) scripted.finish();
+      return true;
+    });
+    hub.start(sendFrame(active, 'turn-active'), makeSink());
+    (autoTitle.schedule as ReturnType<typeof vi.fn>).mockClear();
+    harness.chat.mockClear();
+
+    const stopping = hub.stop();
+    await vi.waitFor(() => expect(scripted.return).toHaveBeenCalledOnce());
+    try {
+      expect(() => hub.start(sendFrame(rejected, 'turn-rejected'), makeSink())).toThrow(
+        'Resumable chat hub is stopped',
+      );
+      expect(autoTitle.schedule).not.toHaveBeenCalled();
+      expect(harness.chat).not.toHaveBeenCalled();
+      expect(conversations.get(rejected.id)).toMatchObject({
+        status: 'idle',
+        activeTurnId: null,
+        lastSeq: 0,
+      });
+      expect(conversations.listMessages({ conversationId: rejected.id, limit: 10 }).items).toEqual(
+        [],
+      );
+    } finally {
+      cleanup.resolve();
+      await stopping;
+    }
+  });
+
+  it('rejects capable operations after the hub has stopped', async () => {
+    const conversation = createConversation();
+    const sink = makeSink();
+    await hub.stop();
+
+    expect(() => hub.start(sendFrame(conversation), sink)).toThrow('Resumable chat hub is stopped');
+    expect(() =>
+      hub.resume(
+        {
+          type: 'resume',
+          id: 'turn-01',
+          agentId: conversation.agentId,
+          conversationId: conversation.id,
+          sinceSeq: 0,
+        },
+        sink,
+      ),
+    ).toThrow('Resumable chat hub is stopped');
+    await expect(hub.answer('turn-01', 'question-01', 'Yes')).rejects.toThrow(
+      'Resumable chat hub is stopped',
+    );
+    await expect(hub.cancel('turn-01', sink)).rejects.toThrow('Resumable chat hub is stopped');
+    expect(autoTitle.schedule).not.toHaveBeenCalled();
+    expect(harness.chat).not.toHaveBeenCalled();
+  });
+
   it.each(['completed', 'failed'] as const)(
     'does not re-terminalize or cancel a %s turn while generator cleanup is pending',
     async (outcome) => {
@@ -649,9 +710,9 @@ describe('ResumableChatHub', () => {
       try {
         expect(harness.cancel).not.toHaveBeenCalled();
         expect(swarmCancel).not.toHaveBeenCalled();
-        await expect(hub.answer('turn-01', 'question-01', 'Too late')).rejects.toMatchObject({
-          code: 'not_found',
-        });
+        await expect(hub.answer('turn-01', 'question-01', 'Too late')).rejects.toThrow(
+          'Resumable chat hub is stopped',
+        );
         expect(harness.answerQuestion).not.toHaveBeenCalled();
         expect(sink.frames.filter((frame) => frame.type === sink.frames[1]?.type)).toHaveLength(1);
         expect(

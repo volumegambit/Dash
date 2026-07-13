@@ -103,6 +103,11 @@ function frameFromAccepted(frame: ResumableSendFrame, accepted: AcceptedTurn): M
 export function createResumableChatHub(options: ResumableChatHubOptions): ResumableChatHub {
   const { conversations, agents } = options;
   const turns = new Map<string, LiveTurn>();
+  let stopped = false;
+
+  const assertAccepting = (): void => {
+    if (stopped) throw new Error('Resumable chat hub is stopped');
+  };
 
   const send = (sink: TurnFrameSink, frame: MobileWsServerFrame): boolean => {
     try {
@@ -214,6 +219,7 @@ export function createResumableChatHub(options: ResumableChatHubOptions): Resuma
 
   const hub: ResumableChatHub = {
     start(frame, sink) {
+      assertAccepting();
       const accepted = conversations.acceptTurn({
         agentId: frame.agentId,
         conversationId: frame.conversationId,
@@ -254,11 +260,13 @@ export function createResumableChatHub(options: ResumableChatHubOptions): Resuma
     },
 
     resume(frame, sink) {
+      assertAccepting();
       if (!replay(frame.agentId, frame.conversationId, frame.sinceSeq, sink)) return;
       attachIfLive(frame.id, frame.agentId, frame.conversationId, sink);
     },
 
     async answer(turnId, questionId, answer) {
+      assertAccepting();
       const live = turns.get(turnId);
       if (!live || live.terminal) {
         throw new ConversationServiceError('not_found', `Turn ${turnId} is not live`, 404, false);
@@ -267,6 +275,7 @@ export function createResumableChatHub(options: ResumableChatHubOptions): Resuma
     },
 
     async cancel(turnId, sink) {
+      assertAccepting();
       const live = turns.get(turnId);
       if (live) cancelLive(live, sink);
     },
@@ -282,6 +291,7 @@ export function createResumableChatHub(options: ResumableChatHubOptions): Resuma
     },
 
     async stop() {
+      stopped = true;
       const active = [...turns.values()];
       for (const live of active) cancelLive(live);
       await Promise.all(active.map((live) => live.promise));

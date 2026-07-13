@@ -289,14 +289,20 @@ export function mountChatWs(app: Hono, options: ChatWsOptions): void {
 
           const msg = parseChatClientFrame(parsed);
           if (!msg) {
-            const id =
-              typeof (parsed as Record<string, unknown>).id === 'string'
-                ? ((parsed as Record<string, unknown>).id as string)
-                : '';
+            const invalid =
+              typeof parsed === 'object' && parsed !== null
+                ? (parsed as Record<string, unknown>)
+                : undefined;
+            const id = typeof invalid?.id === 'string' ? invalid.id : '';
+            const conversationId =
+              typeof invalid?.conversationId === 'string' ? invalid.conversationId : undefined;
             sendServerMessage(ws, {
               type: 'error',
               id,
+              ...(conversationId !== undefined ? { conversationId } : {}),
               error: 'Invalid message: missing required fields',
+              code: 'validation_failed',
+              retryable: false,
             });
             return;
           }
