@@ -125,6 +125,17 @@ actor PersistenceStore {
     try modelContext.save()
   }
 
+  func removeConversation(gatewayID: String, conversationID: String) throws {
+    if let record = try conversationRecord(
+      gatewayID: gatewayID,
+      conversationID: conversationID
+    ) {
+      modelContext.delete(record)
+    }
+    try purgeConversationContent(gatewayID: gatewayID, conversationID: conversationID)
+    try modelContext.save()
+  }
+
   func mergeMessages(
     _ values: [ConversationMessageDTO],
     gatewayID: String,

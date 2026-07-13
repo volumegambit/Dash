@@ -1,4 +1,5 @@
 import Foundation
+import Network
 
 @testable import Dash
 
@@ -512,5 +513,323 @@ final class FakeWebSocketSession: WebSocketSessioning, @unchecked Sendable {
 
   func webSocketTask(with request: URLRequest) -> any WebSocketTasking {
     state.nextTask(for: request)
+  }
+}
+
+actor TestGate {
+  private var isReleased = false
+  private var waiters: [CheckedContinuation<Void, Never>] = []
+
+  func wait() async {
+    guard isReleased == false else { return }
+    await withCheckedContinuation { continuation in
+      waiters.append(continuation)
+    }
+  }
+
+  func release() {
+    isReleased = true
+    let pending = waiters
+    waiters.removeAll()
+    for waiter in pending {
+      waiter.resume()
+    }
+  }
+}
+
+enum FakeSyncResult<Value: Sendable>: Sendable {
+  case success(Value)
+  case failure(GatewayError)
+}
+
+actor FakeConversationSyncAPI: ConversationSyncAPI {
+  struct ConversationListCall: Equatable, Sendable {
+    let agentID: String?
+    let limit: Int
+    let cursor: String?
+  }
+
+  struct MessageListCall: Equatable, Sendable {
+    let conversationID: String
+    let limit: Int
+    let before: String?
+  }
+
+  struct ReplayCall: Equatable, Sendable {
+    let agentID: String
+    let conversationID: String
+    let sinceSeq: Int
+  }
+
+  private var agentResults: [FakeSyncResult<[RegisteredAgentDTO]>] = []
+  private var conversationPageResults: [FakeSyncResult<ConversationPageDTO>] = []
+  private var conversationResults: [String: [FakeSyncResult<ConversationSummaryDTO>]] = [:]
+  private var messageResults: [String: [FakeSyncResult<ConversationMessagePageDTO>]] = [:]
+  private var replayResults: [FakeSyncResult<ReplayPageDTO>] = []
+  private var createResults: [FakeSyncResult<ConversationSummaryDTO>] = []
+  private var conversationGate: TestGate?
+
+  private(set) var conversationListCalls: [ConversationListCall] = []
+  private(set) var agentListCallCount = 0
+  private(set) var conversationCalls: [String] = []
+  private(set) var messageListCalls: [MessageListCall] = []
+  private(set) var replayCalls: [ReplayCall] = []
+  private(set) var createRequests: [CreateConversationRequest] = []
+
+  func enqueueAgents(_ result: FakeSyncResult<[RegisteredAgentDTO]>) {
+    agentResults.append(result)
+  }
+
+  func enqueueConversationPage(_ result: FakeSyncResult<ConversationPageDTO>) {
+    conversationPageResults.append(result)
+  }
+
+  func enqueueConversation(
+    id: String,
+    result: FakeSyncResult<ConversationSummaryDTO>
+  ) {
+    conversationResults[id, default: []].append(result)
+  }
+
+  func enqueueMessages(
+    conversationID: String,
+    result: FakeSyncResult<ConversationMessagePageDTO>
+  ) {
+    messageResults[conversationID, default: []].append(result)
+  }
+
+  func enqueueReplay(_ result: FakeSyncResult<ReplayPageDTO>) {
+    replayResults.append(result)
+  }
+
+  func enqueueCreate(_ result: FakeSyncResult<ConversationSummaryDTO>) {
+    createResults.append(result)
+  }
+
+  func holdConversationPages(on gate: TestGate) {
+    conversationGate = gate
+  }
+
+  func listAgents() async throws -> [RegisteredAgentDTO] {
+    agentListCallCount += 1
+    guard agentResults.isEmpty == false else { return [] }
+    return try resolve(agentResults.removeFirst())
+  }
+
+  func conversations(
+    agentId: String?,
+    limit: Int,
+    cursor: String?
+  ) async throws -> ConversationPageDTO {
+    conversationListCalls.append(.init(agentID: agentId, limit: limit, cursor: cursor))
+    if let conversationGate {
+      await conversationGate.wait()
+    }
+    guard conversationPageResults.isEmpty == false else {
+      return ConversationPageDTO(items: [], nextCursor: nil)
+    }
+    return try resolve(conversationPageResults.removeFirst())
+  }
+
+  func conversation(id: String) async throws -> ConversationSummaryDTO {
+    conversationCalls.append(id)
+    guard var results = conversationResults[id], results.isEmpty == false else {
+      throw GatewayError.notFound
+    }
+    let result = results.removeFirst()
+    conversationResults[id] = results
+    return try resolve(result)
+  }
+
+  func messages(
+    conversationID: String,
+    limit: Int,
+    before: String?
+  ) async throws -> ConversationMessagePageDTO {
+    messageListCalls.append(
+      .init(conversationID: conversationID, limit: limit, before: before)
+    )
+    guard var results = messageResults[conversationID], results.isEmpty == false else {
+      return ConversationMessagePageDTO(items: [], nextCursor: nil, throughSeq: 0)
+    }
+    let result = results.removeFirst()
+    messageResults[conversationID] = results
+    return try resolve(result)
+  }
+
+  func replay(
+    agentID: String,
+    conversationID: String,
+    sinceSeq: Int
+  ) async throws -> ReplayPageDTO {
+    replayCalls.append(
+      .init(agentID: agentID, conversationID: conversationID, sinceSeq: sinceSeq)
+    )
+    guard replayResults.isEmpty == false else { return ReplayPageDTO(entries: []) }
+    return try resolve(replayResults.removeFirst())
+  }
+
+  func createConversation(
+    _ request: CreateConversationRequest
+  ) async throws -> ConversationSummaryDTO {
+    createRequests.append(request)
+    guard createResults.isEmpty == false else {
+      throw GatewayError.transport("No scripted create result")
+    }
+    return try resolve(createResults.removeFirst())
+  }
+
+  private func resolve<Value>(_ result: FakeSyncResult<Value>) throws -> Value {
+    switch result {
+    case .success(let value):
+      return value
+    case .failure(let error):
+      throw error
+    }
+  }
+}
+
+final class FakeInvalidationSource: GatewayInvalidationStreaming, @unchecked Sendable {
+  private let stream: AsyncThrowingStream<GatewayInvalidationEvent, Error>
+  private let continuation: AsyncThrowingStream<GatewayInvalidationEvent, Error>.Continuation
+
+  init() {
+    let pair = AsyncThrowingStream<GatewayInvalidationEvent, Error>.makeStream()
+    stream = pair.stream
+    continuation = pair.continuation
+  }
+
+  func eventStream() async -> AsyncThrowingStream<GatewayInvalidationEvent, Error> {
+    stream
+  }
+
+  func yield(_ event: GatewayInvalidationEvent) {
+    continuation.yield(event)
+  }
+
+  func fail(_ error: GatewayError) {
+    continuation.finish(throwing: error)
+  }
+}
+
+final class FakeReachability: ReachabilityStreaming, @unchecked Sendable {
+  private let stream: AsyncStream<ReachabilityStatus>
+  private let continuation: AsyncStream<ReachabilityStatus>.Continuation
+
+  init() {
+    let pair = AsyncStream<ReachabilityStatus>.makeStream()
+    stream = pair.stream
+    continuation = pair.continuation
+  }
+
+  func statuses() -> AsyncStream<ReachabilityStatus> {
+    stream
+  }
+
+  func yield(_ status: ReachabilityStatus) {
+    continuation.yield(status)
+  }
+}
+
+actor FakeConversationChat: ConversationChatting {
+  enum Call: Equatable, Sendable {
+    case connect
+    case sendTurn(
+      id: String,
+      agentID: String,
+      conversationID: String,
+      text: String,
+      images: [MessageImage]
+    )
+    case resume(turnID: String, agentID: String, conversationID: String, sinceSeq: Int)
+    case disconnect
+  }
+
+  private var sendResults: [FakeSyncResult<Void>] = []
+  private(set) var calls: [Call] = []
+
+  func enqueueSend(_ result: FakeSyncResult<Void>) {
+    sendResults.append(result)
+  }
+
+  func connect() async throws {
+    calls.append(.connect)
+  }
+
+  func sendTurn(
+    id: String,
+    agentID: String,
+    conversationID: String,
+    text: String,
+    images: [MessageImage]
+  ) async throws {
+    calls.append(
+      .sendTurn(
+        id: id,
+        agentID: agentID,
+        conversationID: conversationID,
+        text: text,
+        images: images
+      )
+    )
+    guard sendResults.isEmpty == false else { return }
+    _ = try resolve(sendResults.removeFirst())
+  }
+
+  func resume(
+    turnID: String,
+    agentID: String,
+    conversationID: String,
+    sinceSeq: Int
+  ) async throws {
+    calls.append(
+      .resume(
+        turnID: turnID,
+        agentID: agentID,
+        conversationID: conversationID,
+        sinceSeq: sinceSeq
+      )
+    )
+  }
+
+  func disconnect() async {
+    calls.append(.disconnect)
+  }
+
+  private func resolve<Value>(_ result: FakeSyncResult<Value>) throws -> Value {
+    switch result {
+    case .success(let value):
+      return value
+    case .failure(let error):
+      throw error
+    }
+  }
+}
+
+final class FakeNetworkPathMonitor: NetworkPathMonitoring, @unchecked Sendable {
+  private let lock = NSLock()
+  private var handler: (@Sendable (NWPath) -> Void)?
+  private var recordedStartCount = 0
+  private var recordedCancelCount = 0
+
+  var pathUpdateHandler: (@Sendable (NWPath) -> Void)? {
+    get { lock.withLock { handler } }
+    set { lock.withLock { handler = newValue } }
+  }
+
+  var startCount: Int {
+    lock.withLock { recordedStartCount }
+  }
+
+  var cancelCount: Int {
+    lock.withLock { recordedCancelCount }
+  }
+
+  func start(queue: DispatchQueue) {
+    lock.withLock { recordedStartCount += 1 }
+  }
+
+  func cancel() {
+    lock.withLock { recordedCancelCount += 1 }
   }
 }
