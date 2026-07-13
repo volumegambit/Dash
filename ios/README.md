@@ -86,8 +86,24 @@ xcodebuild -project ios/Dash.xcodeproj -scheme DashUI \
 ```
 
 The integration target composes production HTTP, SSE, WebSocket, persistence, and sync types.
-Its live selectors need the repository's gateway harness and environment injection; never put
-tokens in a committed scheme or command history.
+Build the Node workspaces once, verify the runner contract, then run either one exact selector or
+the complete six-case live matrix:
+
+```bash
+npm run build
+npx vitest run ios/scripts/run-live-gateway-tests.test.ts
+
+node ios/scripts/run-live-gateway-tests.mjs --scenario question \
+  --only-testing \
+  DashIntegrationTests/ChatResumeIntegrationTests/testQuestionAnswer
+
+node ios/scripts/run-live-gateway-tests.mjs
+```
+
+The runner requires the pinned iOS 18.4 iPhone, starts a fresh repository gateway harness for each
+selector, and stops at the first failure. It scopes all seven test values to the simulator test
+host, removes them in `finally`, and terminates the harness without printing its credentials. Never
+put tokens in a committed scheme or command history.
 
 ## Pair a gateway
 

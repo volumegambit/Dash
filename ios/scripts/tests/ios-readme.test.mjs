@@ -44,5 +44,20 @@ assert.doesNotMatch(
   /mgmt-test-token|chat-test-token|relay-device-credential/,
   'README must not contain fixture credentials',
 );
+assert.match(
+  readme,
+  /node ios\/scripts\/run-live-gateway-tests\.mjs/,
+  'README must document the owned real-gateway runner',
+);
+assert.match(
+  readme,
+  /--scenario question[\s\\]+--only-testing[\s\\]+DashIntegrationTests\/ChatResumeIntegrationTests\/testQuestionAnswer/,
+  'README must include one exact focused real-gateway example',
+);
+assert.doesNotMatch(
+  readme,
+  /export DASH_TEST_|launchctl setenv DASH_TEST_/,
+  'README must not ask developers to place live gateway values in shell history',
+);
 
 console.log('PASS: iOS README matches the pinned toolchain and contains no fixture credentials');
