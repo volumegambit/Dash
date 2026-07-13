@@ -9,8 +9,10 @@ struct AppDependencies: Sendable {
   let clock: any AppClock
   let loadProfile: @Sendable () async throws -> ConnectionProfileSnapshot?
   let makeSyncEngine: @Sendable (ConnectionProfileSnapshot) async throws -> any AppSyncing
-  let rememberProfile: @Sendable (ConnectionProfileSnapshot) async -> Void
-  let forgetProfile: @Sendable (ConnectionProfileSnapshot) async throws -> Void
+  let rememberProfile: @MainActor @Sendable (ConnectionProfileSnapshot) -> Void
+  let deleteProfileSecrets: @Sendable (ConnectionProfileSnapshot) async throws -> Void
+  let clearProfileData: @Sendable (ConnectionProfileSnapshot) async throws -> Void
+  let forgetProfileSelection: @MainActor @Sendable (ConnectionProfileSnapshot) -> Void
 
   init(
     clock: any AppClock,
@@ -18,14 +20,24 @@ struct AppDependencies: Sendable {
     makeSyncEngine: @escaping @Sendable (
       ConnectionProfileSnapshot
     ) async throws -> any AppSyncing,
-    rememberProfile: @escaping @Sendable (ConnectionProfileSnapshot) async -> Void = { _ in },
-    forgetProfile: @escaping @Sendable (ConnectionProfileSnapshot) async throws -> Void
+    rememberProfile: @escaping @MainActor @Sendable (ConnectionProfileSnapshot) -> Void = { _ in },
+    deleteProfileSecrets: @escaping @Sendable (ConnectionProfileSnapshot) async throws -> Void = {
+      _ in
+    },
+    clearProfileData: @escaping @Sendable (ConnectionProfileSnapshot) async throws -> Void = {
+      _ in
+    },
+    forgetProfileSelection: @escaping @MainActor @Sendable (ConnectionProfileSnapshot) -> Void = {
+      _ in
+    }
   ) {
     self.clock = clock
     self.loadProfile = loadProfile
     self.makeSyncEngine = makeSyncEngine
     self.rememberProfile = rememberProfile
-    self.forgetProfile = forgetProfile
+    self.deleteProfileSecrets = deleteProfileSecrets
+    self.clearProfileData = clearProfileData
+    self.forgetProfileSelection = forgetProfileSelection
   }
 
   @MainActor
@@ -98,11 +110,28 @@ struct AppDependencies: Sendable {
       rememberProfile: { profile in
         UserDefaults.standard.set(profile.gatewayID, forKey: activeGatewayKey)
       },
-      forgetProfile: { profile in
+      deleteProfileSecrets: { profile in
         try await keychain.delete(for: profile.id)
+      },
+      clearProfileData: { profile in
         try await store.clearGateway(gatewayID: profile.gatewayID)
+      },
+      forgetProfileSelection: { _ in
         UserDefaults.standard.removeObject(forKey: activeGatewayKey)
       }
     )
+  }
+}
+
+struct AppDependenciesFactory {
+  let make: @MainActor () throws -> AppDependencies
+
+  init(_ make: @escaping @MainActor () throws -> AppDependencies) {
+    self.make = make
+  }
+
+  @MainActor
+  static var live: AppDependenciesFactory {
+    AppDependenciesFactory { try AppDependencies.live() }
   }
 }
