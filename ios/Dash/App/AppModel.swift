@@ -30,6 +30,7 @@ final class AppModel {
   var snapshot: SyncSnapshot?
   var conversationListFeature: ConversationListFeature?
   var agentsFeature: AgentsFeature?
+  var settingsFeature: SettingsFeature?
 
   var route: AppRoute {
     guard selectedProfile != nil else { return .connect }
@@ -59,6 +60,7 @@ final class AppModel {
     let engine: (any AppSyncing)?
     let conversationFeature: ConversationListFeature?
     let agentsFeature: AgentsFeature?
+    let settingsFeature: SettingsFeature?
   }
 
   init(dependencies: AppDependencies) {
@@ -78,6 +80,11 @@ final class AppModel {
       guard let prepared = try await prepareActivation(profile, epoch: epoch) else { return }
       let retired = publish(profile, prepared: prepared)
       let publishedEpoch = activeEpoch
+      if let retiredFeature = retired.settingsFeature,
+        retiredFeature !== settingsFeature
+      {
+        await retiredFeature.shutdown()
+      }
       if let retiredFeature = retired.conversationFeature,
         retiredFeature !== conversationListFeature
       {
@@ -121,6 +128,11 @@ final class AppModel {
       dependencies.rememberProfile(profile)
       let retired = publish(profile, prepared: prepared)
       let publishedEpoch = activeEpoch
+      if let retiredFeature = retired.settingsFeature,
+        retiredFeature !== settingsFeature
+      {
+        await retiredFeature.shutdown()
+      }
       if let retiredFeature = retired.conversationFeature,
         retiredFeature !== conversationListFeature
       {
@@ -154,6 +166,7 @@ final class AppModel {
     self.snapshot = snapshot
     conversationListFeature?.consume(snapshot)
     agentsFeature?.consume(snapshot)
+    settingsFeature?.consume(snapshot)
     connectionState = snapshot.connection
     switch snapshot.connection {
     case .connecting, .online:
@@ -209,6 +222,43 @@ final class AppModel {
     }
   }
 
+  func reconnect() async throws {
+    guard
+      let profile = selectedProfile,
+      let engine = syncEngine,
+      isDisconnecting == false
+    else { return }
+    let epoch = activeEpoch
+    markCachedConnection(.connecting)
+    do {
+      try await dependencies.verifyProfile(profile)
+      guard activeEpoch == epoch, sameEngine(syncEngine, engine) else { return }
+      await engine.bootstrap()
+      guard activeEpoch == epoch, sameEngine(syncEngine, engine) else { return }
+    } catch {
+      guard activeEpoch == epoch, sameEngine(syncEngine, engine) else { return }
+      if let gatewayError = error as? GatewayError {
+        switch gatewayError {
+        case .notFound, .validation, .revisionConflict, .conversationBusy,
+          .mutationOutcomeUnknown:
+          markCachedConnection(.offline)
+          banner = .offline
+        default:
+          await handleFeatureGatewayError(gatewayError, epoch: epoch)
+        }
+      } else if error is AppDependencyError
+        || error is GatewayProfileVerificationError
+      {
+        markCachedConnection(.repairRequired)
+        banner = .repairRequired
+      } else {
+        markCachedConnection(.offline)
+        banner = .offline
+      }
+      throw error
+    }
+  }
+
   func sceneDidEnterBackground() async {
     isBackgrounded = true
     activeEngineSceneRevision &+= 1
@@ -234,18 +284,19 @@ final class AppModel {
     let epoch = beginTransition()
     let retired = detachActiveEngine()
     markCachedConnection(.connecting)
+    if let feature = retired.settingsFeature {
+      await feature.shutdown()
+    }
     if let feature = retired.conversationFeature {
       await feature.shutdown()
-      guard isCurrent(epoch) else { return }
     }
     if let feature = retired.agentsFeature {
       await feature.shutdown()
-      guard isCurrent(epoch) else { return }
     }
     if let engine = retired.engine {
       await engine.shutdown()
-      guard isCurrent(epoch) else { return }
     }
+    guard isCurrent(epoch) else { return }
     do {
       try await dependencies.deleteProfileSecrets(profile)
       guard isCurrent(epoch) else { return }
@@ -361,8 +412,10 @@ final class AppModel {
     let retired = DetachedActivation(
       engine: syncEngine,
       conversationFeature: conversationListFeature,
-      agentsFeature: agentsFeature
+      agentsFeature: agentsFeature,
+      settingsFeature: settingsFeature
     )
+    retired.settingsFeature?.prepareForShutdown()
     let previousGatewayID = selectedProfile?.gatewayID
     snapshotTask?.cancel()
     activeEpoch &+= 1
@@ -396,6 +449,30 @@ final class AppModel {
       await self.handleFeatureGatewayError(error, epoch: epoch)
     }
     self.agentsFeature = agentsFeature
+    let carriesExistingState = previousGatewayID == nil || previousGatewayID == profile.gatewayID
+    let settingsFeature = SettingsFeature(
+      profile: profile,
+      connection: carriesExistingState ? (snapshot?.connection ?? .connecting) : .connecting,
+      lastSuccessfulSyncAt: carriesExistingState
+        ? (snapshot?.lastSuccessfulSyncAt ?? profile.profile.lastSuccessfulSyncAt)
+        : profile.profile.lastSuccessfulSyncAt,
+      reconnectAction: { [weak self] in
+        guard let self else { return }
+        try await self.reconnect()
+      },
+      disconnectAction: { [weak self] in
+        guard let self else { return }
+        do {
+          try await self.disconnectAndForget()
+        } catch {
+          if self.selectedProfile == nil {
+            throw SettingsDisconnectError.localCleanup
+          }
+          throw SettingsDisconnectError.keychain
+        }
+      }
+    )
+    self.settingsFeature = settingsFeature
     selectedTab = .conversations
     pairingPath.removeAll()
     if previousGatewayID != nil, previousGatewayID != profile.gatewayID {
@@ -423,10 +500,12 @@ final class AppModel {
     let retired = DetachedActivation(
       engine: syncEngine,
       conversationFeature: conversationListFeature,
-      agentsFeature: agentsFeature
+      agentsFeature: agentsFeature,
+      settingsFeature: settingsFeature
     )
     retired.conversationFeature?.prepareForShutdown()
     retired.agentsFeature?.prepareForShutdown()
+    retired.settingsFeature?.prepareForShutdown()
     snapshotTask?.cancel()
     snapshotTask = nil
     syncEngine = nil
@@ -438,6 +517,7 @@ final class AppModel {
     if clearFeatures {
       conversationListFeature = nil
       agentsFeature = nil
+      settingsFeature = nil
     }
     activeEpoch &+= 1
     return retired
@@ -461,20 +541,30 @@ final class AppModel {
       snapshot = nil
     }
     banner = .repairRequired
+    settingsFeature?.update(
+      connection: .repairRequired,
+      lastSuccessfulSyncAt: snapshot?.lastSuccessfulSyncAt
+    )
   }
 
   private func markCachedConnection(_ connection: GatewayConnectionState) {
     connectionState = connection
+    settingsFeature?.update(
+      connection: connection,
+      lastSuccessfulSyncAt: snapshot?.lastSuccessfulSyncAt
+    )
     guard let snapshot else { return }
-    self.snapshot = SyncSnapshot(
+    let updatedSnapshot = SyncSnapshot(
       connection: connection,
       conversations: snapshot.conversations,
       agents: snapshot.agents,
       lastSuccessfulSyncAt: snapshot.lastSuccessfulSyncAt,
       removedConversationIDs: snapshot.removedConversationIDs
     )
-    conversationListFeature?.consume(self.snapshot)
-    agentsFeature?.consume(self.snapshot)
+    self.snapshot = updatedSnapshot
+    conversationListFeature?.consume(updatedSnapshot)
+    agentsFeature?.consume(updatedSnapshot)
+    settingsFeature?.consume(updatedSnapshot)
   }
 
   private func handleFeatureGatewayError(_ error: GatewayError, epoch: UInt64) async {

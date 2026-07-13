@@ -44,6 +44,7 @@ struct AppDependencies: Sendable {
   let clock: any AppClock
   let loadProfile: @Sendable () async throws -> ConnectionProfileSnapshot?
   let makeSyncEngine: @Sendable (ConnectionProfileSnapshot) async throws -> any AppSyncing
+  let verifyProfile: @Sendable (ConnectionProfileSnapshot) async throws -> Void
   let rememberProfile: @MainActor @Sendable (ConnectionProfileSnapshot) -> Void
   let deleteProfileSecrets: @Sendable (ConnectionProfileSnapshot) async throws -> Void
   let clearProfileData: @Sendable (ConnectionProfileSnapshot) async throws -> Void
@@ -59,6 +60,7 @@ struct AppDependencies: Sendable {
     makeSyncEngine: @escaping @Sendable (
       ConnectionProfileSnapshot
     ) async throws -> any AppSyncing,
+    verifyProfile: @escaping @Sendable (ConnectionProfileSnapshot) async throws -> Void = { _ in },
     rememberProfile: @escaping @MainActor @Sendable (ConnectionProfileSnapshot) -> Void = { _ in },
     deleteProfileSecrets: @escaping @Sendable (ConnectionProfileSnapshot) async throws -> Void = {
       _ in
@@ -80,6 +82,7 @@ struct AppDependencies: Sendable {
     self.clock = clock
     self.loadProfile = loadProfile
     self.makeSyncEngine = makeSyncEngine
+    self.verifyProfile = verifyProfile
     self.rememberProfile = rememberProfile
     self.deleteProfileSecrets = deleteProfileSecrets
     self.clearProfileData = clearProfileData
@@ -145,6 +148,9 @@ struct AppDependencies: Sendable {
       NetworkReachability()
     }
     let pairingMetadata = PersistencePairingMetadataStore(store: store)
+    let profileVerifier = GatewayProfileVerifier { endpoint, secrets in
+      makeAPI(makeCancellableTransport(endpoint, secrets))
+    }
 
     return AppDependencies(
       clock: clock,
@@ -169,6 +175,12 @@ struct AppDependencies: Sendable {
           reachability: makeReachability(),
           clock: clock
         )
+      },
+      verifyProfile: { profile in
+        guard let secrets = try await keychain.load(for: profile.id) else {
+          throw AppDependencyError.missingSecrets(profileID: profile.id)
+        }
+        try await profileVerifier.verify(profile: profile, secrets: secrets)
       },
       rememberProfile: { profile in
         UserDefaults.standard.set(profile.gatewayID, forKey: activeGatewayKey)
