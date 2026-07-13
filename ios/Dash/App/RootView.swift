@@ -47,7 +47,7 @@ struct RootView: View {
       .tag(AppTab.agents)
 
       NavigationStack {
-        FeatureSlotView(title: "Settings", systemImage: "gearshape")
+        settingsRoot
       }
       .tabItem { Label("Settings", systemImage: "gearshape") }
       .tag(AppTab.settings)
@@ -105,9 +105,20 @@ struct RootView: View {
             ContentUnavailableView("Select an agent", systemImage: "person.crop.circle")
           }
         case .settings:
-          FeatureSlotView(title: "Settings", systemImage: "gearshape")
+          settingsRoot
         }
       }
+    }
+  }
+
+  @ViewBuilder
+  private var settingsRoot: some View {
+    if let feature = appModel.settingsFeature {
+      SettingsView()
+        .environment(feature)
+        .id(ObjectIdentifier(feature))
+    } else {
+      FeatureSlotView(title: "Settings", systemImage: "gearshape")
     }
   }
 
