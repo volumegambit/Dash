@@ -36,6 +36,79 @@ Something not working? Here are the most common issues and how to fix them.
   </Accordion>
 </AccordionGroup>
 
+## Conversation sync and resumable chat
+
+<AccordionGroup>
+  <Accordion title="Conversation is busy">
+    **Symptom:** A mutation returns HTTP `409` with `conversation_busy`, or chat returns an error
+    frame with the same code and an `activeTurnId`.
+
+    **Fix:** Refresh `GET /mobile/v1/conversations/:id` and use its `activeTurnId`. Replay from
+    your last applied sequence, then either send `resume` for that same turn ID or send `cancel`
+    for it. Wait until a terminal frame is durable and the refreshed summary no longer has an
+    active turn before retrying the mutation or starting another turn. Do not work around the
+    lease by sending the prompt again with a new ID; that can duplicate model work.
+  </Accordion>
+
+  <Accordion title="Chat has a sequence gap after reconnecting">
+    **Symptom:** The next durable WebSocket frame has a higher `seq` than expected, or a socket
+    closed while a resumable turn was running.
+
+    **Fix:** Keep the highest sequence you applied. Request
+    `GET /mobile/v1/agents/:agentId/conversations/:conversationId/events?sinceSeq=<last-seq>` and
+    apply the returned entries in ascending sequence order. If the same turn is still active,
+    send this frame with the original turn ID:
+
+    ```json
+    {"type":"resume","id":"turn-01","agentId":"agent-01","conversationId":"conversation-01","sinceSeq":12}
+    ```
+
+    Resume is idempotent. Do not resend the original `message` with a new turn ID.
+  </Accordion>
+
+  <Accordion title="Conversation revision conflict">
+    **Symptom:** `PATCH` or `DELETE` returns HTTP `409` with `revision_conflict` after another
+    client changed the conversation.
+
+    **Fix:** Replace your cached conversation summary with the complete summary in
+    `details.current`. Reapply the intended title or metadata change to that current value, then
+    retry with its revision in a quoted `If-Match` header. Do not automatically retry a delete
+    without first showing or checking the newer state.
+  </Accordion>
+
+  <Accordion title="Mobile request is unauthorized (401, 4001, or 4401)">
+    **Symptom:** A management request returns HTTP `401`, direct chat closes with WebSocket code
+    `4001`, or a relayed WebSocket closes with `4401`.
+
+    **Fix:** Check each credential at its own boundary. `/mobile/v1` management requests use the
+    management Bearer token; `/ws/chat` uses the separate chat token in `?token=`; a hosted relay
+    additionally requires the paired device's relay credential. A relay credential does not
+    replace either gateway token. Correct the mismatched token, or pair the phone again if its
+    credential was revoked. Never paste tokens into logs or support messages.
+  </Accordion>
+
+  <Accordion title="Mobile client is rate limited (429 or 4429)">
+    **Symptom:** HTTP returns `429`, a structured error reports `rate_limited`, or a relayed
+    WebSocket closes with code `4429`.
+
+    **Fix:** Stop reconnecting or retrying in a tight loop. Honor the HTTP `Retry-After` header or
+    the retry delay supplied by the relay, then reconnect once. If no delay is supplied, use
+    exponential backoff with jitter and reset it after a stable connection. Preserve your last
+    applied sequence so the eventual reconnect replays the gap instead of resending prompts.
+  </Accordion>
+
+  <Accordion title="Relay cannot reach the gateway (502 or gateway_offline)">
+    **Symptom:** The relay returns HTTP `502`, chat reports `gateway_offline`, or the phone can
+    reach Dash but not the paired gateway.
+
+    **Fix:** Bring the gateway machine online and make sure the Dash gateway is running, then let
+    its outbound relay connection re-establish. Until health succeeds, show cached conversation
+    history as read-only: do not queue metadata mutations, deletes, or prompts as though they were
+    accepted. Once connected, refresh summaries and replay from the last sequence. Re-pair only
+    if the device credential was actually revoked; an ordinary offline period does not require it.
+  </Accordion>
+</AccordionGroup>
+
 ## Secrets and credentials
 
 <AccordionGroup>

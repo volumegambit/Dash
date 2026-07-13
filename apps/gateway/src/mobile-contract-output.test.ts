@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
+import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { ConversationSummary, MobileWsServerFrame } from '@dash/mobile-contract';
@@ -13,6 +14,7 @@ type ContractDocument = 'openapi' | 'chat-ws';
 type JsonObject = Record<string, unknown>;
 
 const contractRoot = fileURLToPath(new URL('../../../contracts/mobile/v1/', import.meta.url));
+const repoRoot = fileURLToPath(new URL('../../../', import.meta.url));
 const fixturesRoot = join(contractRoot, 'fixtures');
 const openapi = parse(readFileSync(join(contractRoot, 'openapi.yaml'), 'utf8')) as object;
 const chatWs = JSON.parse(
@@ -190,6 +192,24 @@ class SseInbox {
 }
 
 describe('mobile harness emitted contract output', () => {
+  it('documents the mobile conversation surface', async () => {
+    const docs = await readFile(join(repoRoot, 'docs/api-reference.mdx'), 'utf8');
+    for (const term of [
+      'conversation-sync-v1',
+      'chat-resume-v1',
+      'GET /identity',
+      'GET /conversations',
+      'POST /conversations',
+      'PATCH /conversations/:id',
+      'DELETE /conversations/:id',
+      'GET /conversations/:id/messages',
+      'revision_conflict',
+      'conversation_busy',
+    ]) {
+      expect(docs).toContain(term);
+    }
+  });
+
   it('validates real health, identity, agent, action, conversation, and error DTOs', async () => {
     const harness = await startMobileTestHarness({ scenario: 'stream' });
     try {
