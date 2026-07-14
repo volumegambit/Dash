@@ -219,6 +219,30 @@ describe('ResumableChatTransport', () => {
     await vi.waitFor(() => expect(delivered).toEqual(stream.slice(0, 4)));
   });
 
+  it('defaults a legacy replay done without an outcome to completed', async () => {
+    const stream = await jsonl<MobileWsServerFrame>('chat-stream.jsonl');
+    const replayPage = await json<ReplayPage>('replay.json');
+    const replay = vi
+      .fn()
+      .mockResolvedValue(
+        replayPage.entries.map((entry) =>
+          entry.payload.type === 'done' ? { ...entry, payload: { type: 'done' as const } } : entry,
+        ),
+      );
+    const socket = new FakeSocket();
+    const delivered: MobileWsServerFrame[] = [];
+    const transport = makeTransport(
+      () => socket,
+      (frame) => delivered.push(frame),
+      { replay },
+    );
+    await transport.subscribe(conversation, turnId, 0);
+    socket.open();
+    socket.frame(stream[4]);
+
+    await vi.waitFor(() => expect(delivered).toEqual(stream));
+  });
+
   it('ignores replay entries at or behind the current sequence', async () => {
     const stream = await jsonl<MobileWsServerFrame>('chat-stream.jsonl');
     const replayPage = await json<ReplayPage>('replay.json');
@@ -424,7 +448,6 @@ describe('ResumableChatTransport', () => {
 
   it.each([
     ['blank turn ID', { ...conversation, id: conversation.id }, { id: '   ' }],
-    ['foreign turn ID', conversation, { id: 'turn-from-another-conversation' }],
     ['foreign conversation ID', conversation, { conversationId: 'foreign-conversation' }],
     ['non-positive sequence', conversation, { seq: 0 }],
     ['non-positive revision', conversation, { revision: 0 }],
@@ -442,6 +465,22 @@ describe('ResumableChatTransport', () => {
 
     await vi.waitFor(() => expect(onError).toHaveBeenCalledOnce());
     expect(onError.mock.calls[0][1]).toMatchObject({ kind: 'update_required' });
+    expect(delivered).not.toHaveBeenCalled();
+  });
+
+  it('rejects a foreign live turn ID while awaiting initial acceptance', async () => {
+    const accepted =
+      await json<Extract<MobileWsServerFrame, { type: 'accepted' }>>('chat-accepted.json');
+    const socket = new FakeSocket();
+    const delivered = vi.fn();
+    const onError = vi.fn();
+    const transport = makeTransport(() => socket, delivered, { onError });
+    const pending = transport.send(conversation, turnId, 'hello');
+    socket.open();
+    socket.frame({ ...accepted, id: 'foreign-turn' });
+
+    await expect(pending).rejects.toMatchObject({ kind: 'update_required' });
+    expect(onError).toHaveBeenCalledOnce();
     expect(delivered).not.toHaveBeenCalled();
   });
 
@@ -528,7 +567,6 @@ describe('ResumableChatTransport', () => {
   });
 
   it.each([
-    ['turn', { msgId: 'foreign-turn' }],
     ['agent', { agentId: 'foreign-agent' }],
     ['conversation', { conversationId: 'foreign-conversation' }],
     ['sequence', { seq: 0 }],
@@ -547,6 +585,125 @@ describe('ResumableChatTransport', () => {
     await vi.waitFor(() => expect(onError).toHaveBeenCalledOnce());
     expect(onError.mock.calls[0][1]).toMatchObject({ kind: 'update_required' });
     expect(delivered).not.toHaveBeenCalled();
+  });
+
+  it('consumes contiguous replay from an earlier turn before accepting the current live turn', async () => {
+    const accepted =
+      await json<Extract<MobileWsServerFrame, { type: 'accepted' }>>('chat-accepted.json');
+    const replayPage = await json<ReplayPage>('replay.json');
+    const earlierTurn = '018f0f4a-5c42-7a8b-9c01-earlier-turn';
+    const replay = vi.fn().mockResolvedValue([
+      { ...replayPage.entries[0], msgId: earlierTurn },
+      {
+        ...replayPage.entries[4],
+        seq: 2,
+        msgId: earlierTurn,
+        payload: { type: 'done', outcome: 'completed' },
+      },
+    ] satisfies ReplayEntry[]);
+    const socket = new FakeSocket();
+    const delivered: MobileWsServerFrame[] = [];
+    const transport = makeTransport(
+      () => socket,
+      (frame) => delivered.push(frame),
+      { replay },
+    );
+    const pending = transport.send(conversation, turnId, 'hello');
+    socket.open();
+    const currentAccepted = { ...accepted, seq: 3 };
+    socket.frame(currentAccepted);
+
+    await expect(pending).resolves.toEqual(currentAccepted);
+    expect(delivered).toEqual([currentAccepted]);
+  });
+
+  it('consumes prior-turn frames streamed directly by resume before delivering the active turn', async () => {
+    const accepted =
+      await json<Extract<MobileWsServerFrame, { type: 'accepted' }>>('chat-accepted.json');
+    const socket = new FakeSocket();
+    const delivered: MobileWsServerFrame[] = [];
+    const transport = makeTransport(
+      () => socket,
+      (frame) => delivered.push(frame),
+    );
+    await transport.subscribe(conversation, turnId, 0);
+    socket.open();
+    const earlierTurn = '018f0f4a-5c42-7a8b-9c01-earlier-turn';
+    socket.frame({ ...accepted, id: earlierTurn, seq: 1 });
+    socket.frame({
+      type: 'done',
+      id: earlierTurn,
+      conversationId: conversation.id,
+      seq: 2,
+      outcome: 'completed',
+    });
+    const currentAccepted = { ...accepted, seq: 3 };
+    socket.frame(currentAccepted);
+
+    await vi.waitFor(() => expect(delivered).toEqual([currentAccepted]));
+  });
+
+  it('preserves an unsequenced resume rejection as a structured server error', async () => {
+    const socket = new FakeSocket();
+    const delivered = vi.fn();
+    const onError = vi.fn();
+    const transport = makeTransport(() => socket, delivered, { onError });
+    await transport.subscribe(conversation, turnId, 4);
+    socket.open();
+    const rejected: MobileWsServerFrame = {
+      type: 'error',
+      id: turnId,
+      conversationId: conversation.id,
+      error: 'Conversation not found',
+      code: 'not_found',
+      retryable: false,
+    };
+    socket.frame(rejected);
+
+    await vi.waitFor(() => expect(onError).toHaveBeenCalledOnce());
+    expect(onError).toHaveBeenCalledWith(
+      conversation.id,
+      expect.objectContaining({ kind: 'server', code: 'not_found', retryable: false }),
+    );
+    expect(delivered).toHaveBeenCalledWith(rejected);
+  });
+
+  it('reports an unsequenced control rejection without terminating the active turn', async () => {
+    const socket = new FakeSocket();
+    const delivered = vi.fn();
+    const onError = vi.fn();
+    const transport = makeTransport(() => socket, delivered, { onError });
+    await transport.subscribe(conversation, turnId, 4);
+    socket.open();
+    transport.answer(conversation.id, turnId, 'question-01', 'Invalid answer');
+    const rejected: MobileWsServerFrame = {
+      type: 'error',
+      id: turnId,
+      error: 'Answer was rejected',
+      code: 'validation_failed',
+      retryable: true,
+    };
+    socket.frame(rejected);
+
+    await vi.waitFor(() => expect(onError).toHaveBeenCalledOnce());
+    expect(onError).toHaveBeenCalledWith(
+      conversation.id,
+      expect.objectContaining({ kind: 'server', code: 'validation_failed', retryable: true }),
+    );
+    expect(delivered).toHaveBeenCalledWith(rejected);
+    expect(socket.readyState).toBe(1);
+    expect(() =>
+      transport.answer(conversation.id, turnId, 'question-01', 'Try again'),
+    ).not.toThrow();
+    const continued: MobileWsServerFrame = {
+      type: 'event',
+      id: turnId,
+      conversationId: conversation.id,
+      seq: 5,
+      event: { type: 'text_delta', text: 'Still running' },
+    };
+    socket.frame(continued);
+    await vi.waitFor(() => expect(delivered).toHaveBeenCalledWith(continued));
   });
 
   it('reconnects from the last contiguous cursor when replay cannot fill a live terminal gap', async () => {
@@ -580,7 +737,10 @@ describe('ResumableChatTransport', () => {
     });
   });
 
-  it('reconnects rather than requiring an update when replay is temporarily offline', async () => {
+  it.each([
+    ['network failure', new TypeError('fetch failed')],
+    ['HTTP 500', new GatewayHttpError(500, 'replay conversation events', 'server error')],
+  ])('reconnects rather than requiring an update when replay hits %s', async (_label, failure) => {
     vi.useFakeTimers();
     const stream = await jsonl<MobileWsServerFrame>('chat-stream.jsonl');
     const first = new FakeSocket();
@@ -588,7 +748,7 @@ describe('ResumableChatTransport', () => {
     const sockets = [first, resumed];
     const onError = vi.fn();
     const transport = makeTransport(() => sockets.shift() as FakeSocket, vi.fn(), {
-      replay: vi.fn().mockRejectedValue(new TypeError('fetch failed')),
+      replay: vi.fn().mockRejectedValue(failure),
       onError,
     });
     await transport.subscribe(conversation, turnId, 0);

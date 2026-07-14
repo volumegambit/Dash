@@ -69,6 +69,7 @@ interface TurnState {
   lastSeq: number;
   terminal: boolean;
   accepted: boolean;
+  resuming: boolean;
   socket: ChatSocket | null;
   reconnectAttempt: number;
   reconnectTimer: ReturnType<typeof setTimeout> | null;
@@ -202,7 +203,7 @@ function replayFrame(entry: ReplayEntry): MobileWsServerFrame {
     case 'event':
       return { ...base, type: 'event', event: entry.payload.event };
     case 'done':
-      return { ...base, type: 'done', outcome: entry.payload.outcome };
+      return { ...base, type: 'done', outcome: entry.payload.outcome ?? 'completed' };
     case 'error':
       return {
         ...base,
@@ -254,7 +255,7 @@ function retryAfterFromHttpError(error: GatewayHttpError): number | undefined {
 function isReplayOfflineFailure(error: unknown): boolean {
   if (error instanceof ConversationRepositoryOfflineError) return true;
   if (error instanceof GatewayHttpError) {
-    return error.status === 502 || error.apiError?.code === 'gateway_offline';
+    return error.status >= 500 || error.apiError?.code === 'gateway_offline';
   }
   if (error instanceof TypeError) return true;
   return error instanceof DOMException && ['AbortError', 'TimeoutError'].includes(error.name);
@@ -354,6 +355,7 @@ export class ResumableChatTransport {
       lastSeq: conversation.lastSeq,
       terminal: false,
       accepted: false,
+      resuming: false,
       socket: null,
       reconnectAttempt: 0,
       reconnectTimer: null,
@@ -389,6 +391,7 @@ export class ResumableChatTransport {
       lastSeq: sinceSeq,
       terminal: false,
       accepted: true,
+      resuming: false,
       socket: null,
       reconnectAttempt: 0,
       reconnectTimer: null,
@@ -457,6 +460,7 @@ export class ResumableChatTransport {
       if (state.socket !== socket || state.terminal || this.closed) return;
       state.reconnectAttempt = 0;
       if (state.accepted) {
+        state.resuming = true;
         this.write(socket, {
           type: 'resume',
           id: state.turnId,
@@ -529,10 +533,13 @@ export class ResumableChatTransport {
   }
 
   private async receive(state: TurnState, frame: MobileWsServerFrame): Promise<void> {
-    this.assertOwnership(state, frame);
+    const replayingForeignTurn = state.resuming && frame.id !== state.turnId;
+    if (replayingForeignTurn) this.assertConversationOwnership(state, frame);
+    else this.assertOwnership(state, frame);
+    if (frame.id === state.turnId) state.resuming = false;
     const seq = sequence(frame);
     if (seq === null) {
-      if (frame.type === 'error' && !state.accepted) {
+      if (frame.type === 'error') {
         const error = new ResumableChatTransportError(
           'server',
           frame.error,
@@ -542,6 +549,8 @@ export class ResumableChatTransport {
         );
         state.rejectAccepted?.(error);
         this.options.onFrame(frame);
+        if (state.accepted) this.options.onConnectionError(state.conversation.id, error);
+        if (state.accepted && frame.conversationId === undefined) return;
         state.terminal = true;
         this.finish(state.conversation.id);
         return;
@@ -567,13 +576,21 @@ export class ResumableChatTransport {
         .map((entry) => this.parseReplayEntry(state, entry))
         .sort((a, b) => (sequence(a) as number) - (sequence(b) as number));
       for (const missing of replayFrames) {
-        await this.deliverIfNext(state, missing);
+        if (missing.id === state.turnId) {
+          await this.deliverIfNext(state, missing);
+        } else {
+          this.advanceReplayCursor(state, missing);
+        }
         if (state.terminal) return;
       }
       if (seq > state.lastSeq + 1) {
         this.restart(state);
         return;
       }
+    }
+    if (replayingForeignTurn) {
+      this.advanceReplayCursor(state, frame);
+      return;
     }
     await this.deliverIfNext(state, frame);
   }
@@ -596,6 +613,12 @@ export class ResumableChatTransport {
     if (state.terminal) this.finish(state.conversation.id);
   }
 
+  private advanceReplayCursor(state: TurnState, frame: MobileWsServerFrame): void {
+    const seq = sequence(frame);
+    if (seq === null || seq <= state.lastSeq || seq !== state.lastSeq + 1) return;
+    state.lastSeq = seq;
+  }
+
   private assertOwnership(state: TurnState, frame: MobileWsServerFrame): void {
     if (frame.id !== state.turnId) invalidFrame();
     if (
@@ -603,6 +626,12 @@ export class ResumableChatTransport {
       frame.conversationId !== undefined &&
       frame.conversationId !== state.conversation.id
     ) {
+      invalidFrame();
+    }
+  }
+
+  private assertConversationOwnership(state: TurnState, frame: MobileWsServerFrame): void {
+    if (!('conversationId' in frame) || frame.conversationId !== state.conversation.id) {
       invalidFrame();
     }
   }
@@ -616,15 +645,12 @@ export class ResumableChatTransport {
       !isNonblankString(value.conversationId) ||
       !isNonblankString(value.timestamp) ||
       !isRecord(value.payload) ||
-      value.msgId !== state.turnId ||
       value.agentId !== state.conversation.agentId ||
       value.conversationId !== state.conversation.id
     ) {
       return invalidFrame();
     }
-    const frame = parseCapableServerFrame(replayFrame(value as unknown as ReplayEntry));
-    this.assertOwnership(state, frame);
-    return frame;
+    return parseCapableServerFrame(replayFrame(value as unknown as ReplayEntry));
   }
 
   private sendWhenOpen(state: TurnState, frame: MobileWsClientFrame): void {

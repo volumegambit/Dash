@@ -81,7 +81,10 @@ describe('Mission Control mobile-v1 conversation sync', () => {
       'turn-request-1',
       'ship the sync',
     );
-    expect(accepted).toEqual(await harness.fixture('chat-accepted.json'));
+    expect(accepted).toEqual({
+      ...(await harness.fixture('chat-accepted.json')),
+      id: 'turn-request-1',
+    });
     expect(await harness.readLegacyDirectory()).toEqual(before);
   });
 
@@ -653,6 +656,7 @@ function resetRenderer(): void {
     sending: {},
     unreadConversations: new Set(),
     conversationError: null,
+    connectionIssue: null,
   });
 }
 
@@ -810,9 +814,10 @@ async function createConversationSyncHarness(options: HarnessOptions) {
     activeSocket.open();
     const accepted =
       await fixture<Extract<MobileWsServerFrame, { type: 'accepted' }>>('chat-accepted.json');
-    activeSocket.frame(accepted);
+    const matchingAccepted = { ...accepted, id: turnId };
+    activeSocket.frame(matchingAccepted);
     const result = await pending;
-    await vi.waitFor(() => expect(delivered).toContainEqual(accepted));
+    await vi.waitFor(() => expect(delivered).toContainEqual(matchingAccepted));
     return result;
   };
 
@@ -1126,6 +1131,7 @@ async function createConversationSyncHarness(options: HarnessOptions) {
 
   cleanups.push(async () => {
     transport.closeAll();
+    await flushRenderer();
     await rm(dataDir, { recursive: true, force: true });
     resetRenderer();
   });
