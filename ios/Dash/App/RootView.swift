@@ -133,7 +133,7 @@ struct RootView: View {
   @ViewBuilder
   private var agentsListRoot: some View {
     if let feature = appModel.agentsFeature {
-      AgentsListView()
+      AgentsListView(presentation: navigationPresentation)
         .environment(feature)
         .id(ObjectIdentifier(feature))
     } else {
@@ -144,7 +144,7 @@ struct RootView: View {
   @ViewBuilder
   private var conversationListRoot: some View {
     if let feature = appModel.conversationListFeature {
-      ConversationListView()
+      ConversationListView(presentation: navigationPresentation)
         .environment(feature)
         .id(ObjectIdentifier(feature))
     } else {
@@ -153,6 +153,10 @@ struct RootView: View {
         systemImage: "bubble.left.and.bubble.right"
       )
     }
+  }
+
+  private var navigationPresentation: NavigationPresentation {
+    horizontalSizeClass == .regular ? .regular : .compact
   }
 
   @ViewBuilder

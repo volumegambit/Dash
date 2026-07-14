@@ -3,7 +3,8 @@ import SwiftUI
 struct ConversationListView: View {
   @Environment(AppModel.self) private var appModel
   @Environment(ConversationListFeature.self) private var feature
-  @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+
+  let presentation: NavigationPresentation
 
   @State private var renameTarget: CachedConversation?
   @State private var renameTitle = ""
@@ -210,7 +211,7 @@ struct ConversationListView: View {
     Button {
       appModel.openConversation(
         conversation.id,
-        presentation: horizontalSizeClass == .regular ? .regular : .compact
+        presentation: presentation
       )
     } label: {
       VStack(alignment: .leading, spacing: 6) {
@@ -258,8 +259,8 @@ struct ConversationListView: View {
   }
 
   private func isSelected(_ conversationID: String) -> Bool {
-    horizontalSizeClass == .regular
-      && appModel.splitConversationSelection == .transcript(conversationID)
+    guard case .regular = presentation else { return false }
+    return appModel.splitConversationSelection == .transcript(conversationID)
   }
 }
 

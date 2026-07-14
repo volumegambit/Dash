@@ -3,7 +3,8 @@ import SwiftUI
 struct AgentsListView: View {
   @Environment(AppModel.self) private var appModel
   @Environment(AgentsFeature.self) private var feature
-  @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+
+  let presentation: NavigationPresentation
 
   var body: some View {
     List {
@@ -23,7 +24,7 @@ struct AgentsListView: View {
           Button {
             appModel.openAgent(
               .detail(agent.id),
-              presentation: horizontalSizeClass == .regular ? .regular : .compact
+              presentation: presentation
             )
           } label: {
             HStack(spacing: 12) {
@@ -71,7 +72,7 @@ struct AgentsListView: View {
         Button {
           appModel.openAgent(
             .create,
-            presentation: horizontalSizeClass == .regular ? .regular : .compact
+            presentation: presentation
           )
         } label: {
           Label("Create agent", systemImage: "person.badge.plus")
@@ -100,8 +101,8 @@ struct AgentsListView: View {
   }
 
   private func isSelected(_ agentID: String) -> Bool {
-    horizontalSizeClass == .regular
-      && appModel.splitAgentSelection?.selectsAgent(agentID) == true
+    guard case .regular = presentation else { return false }
+    return appModel.splitAgentSelection?.selectsAgent(agentID) == true
   }
 }
 
