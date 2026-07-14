@@ -319,6 +319,7 @@ struct ConversationListServiceTests {
     await service.shutdown()
     let result = await mutation.result
 
+    try await waitForStopLoading()
     #expect(URLProtocolStub.stopLoadingCount > 0)
     guard case .failure(let error) = result else {
       Issue.record("Expected cancellation")
@@ -461,6 +462,14 @@ struct ConversationListServiceTests {
       try await Task.sleep(for: .milliseconds(10))
     }
     Issue.record("Timed out waiting for the request")
+  }
+
+  private func waitForStopLoading() async throws {
+    for _ in 0..<100 {
+      if URLProtocolStub.stopLoadingCount > 0 { return }
+      try await Task.sleep(for: .milliseconds(10))
+    }
+    Issue.record("Timed out waiting for URLProtocol cancellation")
   }
 }
 
