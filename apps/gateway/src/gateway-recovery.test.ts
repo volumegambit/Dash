@@ -81,4 +81,11 @@ describe('gateway conversation composition', () => {
     expect(source.match(/conversationService\.close\(\)/g)).toHaveLength(1);
     expect(source).not.toContain('eventLogStore.close()');
   });
+
+  it('enables payload logging only through the explicit verbose flag', () => {
+    const source = readFileSync(new URL('./index.ts', import.meta.url), 'utf8');
+
+    expect(source).toContain('const verboseWs = flags.verbose === true;');
+    expect(source).not.toContain("process.env.NODE_ENV !== 'production'");
+  });
 });

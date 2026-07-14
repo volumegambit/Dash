@@ -311,6 +311,46 @@ describe('GatewayConversationRepository', () => {
     expect(repository.offline).toBe(false);
   });
 
+  it('audits cached off-page IDs once at startup instead of on every healthy refresh', async () => {
+    const fixturePage = await fixture<ConversationPage>('conversations-page.json');
+    const offPage = { ...fixturePage.items[0], id: 'conv-off-page', title: 'Off page' };
+    const visible = { ...fixturePage.items[0], id: 'conv-visible', title: 'Visible' };
+    await cache.putConversationPage({ items: [offPage], nextCursor: null }, { limit: 50 });
+
+    const client = makeClient();
+    client.listConversations.mockResolvedValue({ items: [visible], nextCursor: 'page-2' });
+    client.getConversation.mockResolvedValue(offPage);
+    const repository = new GatewayConversationRepository('gateway-1', client, cache);
+
+    await expect(repository.list({ limit: 50 })).resolves.toMatchObject({ items: [visible] });
+    await expect(repository.list({ limit: 50 })).resolves.toMatchObject({ items: [visible] });
+
+    expect(client.getConversation).toHaveBeenCalledTimes(1);
+    expect(client.getConversation).toHaveBeenCalledWith(offPage.id);
+    expect(repository.offline).toBe(false);
+  });
+
+  it('keeps a successful list online when a bounded reconciliation probe fails', async () => {
+    const fixturePage = await fixture<ConversationPage>('conversations-page.json');
+    const offPage = { ...fixturePage.items[0], id: 'conv-off-page', title: 'Off page' };
+    const visible = { ...fixturePage.items[0], id: 'conv-visible', title: 'Visible' };
+    const livePage = { items: [visible], nextCursor: 'page-2' };
+    await cache.putConversationPage({ items: [offPage], nextCursor: null }, { limit: 50 });
+
+    const client = makeClient();
+    client.listConversations.mockResolvedValue(livePage);
+    client.getConversation
+      .mockRejectedValueOnce(new TypeError('detail probe failed'))
+      .mockResolvedValueOnce(offPage);
+    const repository = new GatewayConversationRepository('gateway-1', client, cache);
+
+    await expect(repository.list({ limit: 50 })).resolves.toEqual(livePage);
+    expect(repository.offline).toBe(false);
+    await expect(repository.list({ limit: 50 })).resolves.toEqual(livePage);
+    expect(repository.offline).toBe(false);
+    expect(client.getConversation).toHaveBeenCalledTimes(2);
+  });
+
   it('reads messages online and uses the cached message fallback while offline', async () => {
     const page = await fixture<ConversationPage>('conversations-page.json');
     const messages = await fixture<ConversationMessagePage>('conversation-messages-page.json');

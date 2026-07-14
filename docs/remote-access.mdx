@@ -10,8 +10,11 @@ the office, travelling — without opening any ports on your home network.
 <Note>
 The hosted relay is run by Dash. You sign in to your Dash account, create a
 gateway, and pair your phone — there's no server to set up and no domain to buy.
-Your conversations and login tokens pass through the relay as sealed bytes; the
-relay forwards them but never reads them.
+Traffic is encrypted with TLS from your phone to the hosted relay and again from
+the relay to your gateway. The relay terminates those connections to route requests,
+so treat the Dash-hosted relay as a trusted service: it can process request headers
+and bodies while forwarding them. Pairing never gives a phone the gateway's
+administrative token; it uses a phone-scoped capability and a revocable device credential.
 </Note>
 
 ## When you need it
@@ -40,10 +43,11 @@ graph LR
     Gateway --- Agents["Your agents"]
 ```
 
-The relay just passes encrypted bytes along — it never reads your messages or your
-gateway's login tokens. Your Dash sign-in identifies you, each gateway gets its own
-address, and every phone you pair carries its own credential — so the relay only
-ever connects *your* phones to *your* gateway.
+TLS protects both network legs, while the hosted relay terminates each leg so it can
+route HTTP and WebSocket traffic. Your Dash sign-in identifies you, each gateway gets
+its own address, and every phone you pair carries its own revocable credential. The
+gateway still enforces one phone-scoped capability for both the mobile API and chat;
+the administrative bearer remains on the gateway machine.
 
 ## Set it up
 

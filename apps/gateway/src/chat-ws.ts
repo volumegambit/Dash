@@ -33,25 +33,98 @@ export interface ChatWsOptions {
   swarmCoordinator?: { cancelTurn(agentId: string, conversationId: string): boolean };
 }
 
-/** Truncate long fields (like base64 images) so logs stay readable. */
-function summarizeForLog(value: unknown): unknown {
-  if (typeof value === 'string')
-    return value.length > 200 ? `${value.slice(0, 200)}…(${value.length} chars)` : value;
-  if (Array.isArray(value)) return value.map(summarizeForLog);
-  if (value && typeof value === 'object') {
-    const out: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-      out[k] = summarizeForLog(v);
-    }
-    return out;
+const KNOWN_CLIENT_FRAME_TYPES = new Set(['message', 'resume', 'answer', 'cancel']);
+const STRUCTURAL_CLIENT_FIELDS = new Set([
+  'type',
+  'id',
+  'agentId',
+  'channelId',
+  'conversationId',
+  'questionId',
+  'sinceSeq',
+  'resumable',
+  'streamingBehavior',
+  'text',
+  'answer',
+  'images',
+]);
+
+/** Allowlist protocol metadata; never recursively serialize untrusted values. */
+function summarizeInboundForLog(raw: string, value: unknown): Record<string, unknown> {
+  const byteLength = Buffer.byteLength(raw);
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    return { frameType: 'invalid', byteLength };
   }
-  return value;
+  const record = value as Record<string, unknown>;
+  const type =
+    typeof record.type === 'string' && KNOWN_CLIENT_FRAME_TYPES.has(record.type)
+      ? record.type
+      : 'unknown';
+  const summary: Record<string, unknown> = {
+    frameType: type,
+    byteLength,
+    recognizedKeys: Object.keys(record)
+      .filter((key) => STRUCTURAL_CLIENT_FIELDS.has(key))
+      .sort(),
+  };
+  if (type === 'unknown') return summary;
+
+  for (const key of ['id', 'agentId', 'channelId', 'conversationId', 'questionId'] as const) {
+    const item = record[key];
+    if (typeof item === 'string') summary[`${key}Length`] = item.length;
+  }
+  if (typeof record.sinceSeq === 'number') summary.sinceSeq = record.sinceSeq;
+  if (typeof record.resumable === 'boolean') summary.resumable = record.resumable;
+  if (record.streamingBehavior === 'steer' || record.streamingBehavior === 'followUp') {
+    summary.streamingBehavior = record.streamingBehavior;
+  }
+  if (typeof record.text === 'string') summary.textLength = record.text.length;
+  if (typeof record.answer === 'string') summary.answerLength = record.answer.length;
+  if (Array.isArray(record.images)) {
+    summary.imageCount = record.images.length;
+    summary.imageDataCharacters = record.images.reduce((total, image) => {
+      if (!image || typeof image !== 'object') return total;
+      const data = (image as Record<string, unknown>).data;
+      return total + (typeof data === 'string' ? data.length : 0);
+    }, 0);
+  }
+  return summary;
+}
+
+/** Describe failures without serializing their message, stack, cause, or custom properties. */
+function summarizeErrorForLog(error: unknown): Record<string, unknown> {
+  if (error instanceof Error) {
+    return { errorKind: 'error', errorMessageLength: error.message.length };
+  }
+  if (typeof error === 'string') {
+    return { errorKind: 'string', errorMessageLength: error.length };
+  }
+  return {
+    errorKind: error === null ? 'null' : Array.isArray(error) ? 'array' : typeof error,
+  };
 }
 
 type WsServerMessage =
   | { type: 'event'; id: string; seq?: number; event: AgentEvent }
   | { type: 'done'; id: string; seq?: number }
   | { type: 'error'; id: string; seq?: number; error: string };
+
+function summarizeOutboundForLog(
+  msg: WsServerMessage | MobileWsServerFrame,
+): Record<string, unknown> {
+  const summary: Record<string, unknown> = { frameType: msg.type };
+  if (typeof msg.id === 'string') summary.idLength = msg.id.length;
+  if ('seq' in msg && typeof msg.seq === 'number') summary.seq = msg.seq;
+  if (msg.type === 'event') summary.eventType = msg.event?.type ?? 'unknown';
+  if (msg.type === 'error') {
+    summary.errorMessageLength = msg.error.length;
+    if ('code' in msg && typeof msg.code === 'string') summary.errorCode = msg.code;
+    if ('retryable' in msg && typeof msg.retryable === 'boolean') {
+      summary.retryable = msg.retryable;
+    }
+  }
+  return summary;
+}
 
 /**
  * A conversationId must be a plain identifier, never a filesystem path. It is
@@ -166,17 +239,14 @@ export function mountChatWs(app: Hono, options: ChatWsOptions): void {
     try {
       return eventLogStore.append(agentId, conversationId, msgId, payload);
     } catch (err) {
-      console.error(
-        '[chat-ws] event log append failed:',
-        err instanceof Error ? err.message : String(err),
-      );
+      console.error('[chat-ws] event log append failed', summarizeErrorForLog(err));
       return undefined;
     }
   };
 
   const logInbound = (raw: string, parsed: unknown): void => {
     if (!verbose) return;
-    console.log('[chat-ws] ← inbound', JSON.stringify(summarizeForLog(parsed)));
+    console.log('[chat-ws] ← inbound', JSON.stringify(summarizeInboundForLog(raw, parsed)));
   };
 
   const sendServerMessage = (
@@ -187,13 +257,7 @@ export function mountChatWs(app: Hono, options: ChatWsOptions): void {
       value instanceof Error ? value.message : value,
     );
     if (verbose) {
-      const summary =
-        msg.type === 'event'
-          ? `event:${msg.event?.type ?? '?'}`
-          : msg.type === 'error'
-            ? `error:${msg.error}`
-            : msg.type;
-      console.log(`[chat-ws] → outbound id=${msg.id} ${summary}`);
+      console.log('[chat-ws] → outbound', JSON.stringify(summarizeOutboundForLog(msg)));
     }
     ws.send(payload);
   };
@@ -205,10 +269,7 @@ export function mountChatWs(app: Hono, options: ChatWsOptions): void {
     error: unknown,
   ): void => {
     if (!(error instanceof ConversationServiceError)) {
-      console.error(
-        '[chat-ws] resumable dispatch failed:',
-        error instanceof Error ? error.message : String(error),
-      );
+      console.error('[chat-ws] resumable dispatch failed', summarizeErrorForLog(error));
     }
     const mapped = toMobileApiError(error);
     const activeTurnId = mapped.body.details?.activeTurnId;
@@ -241,10 +302,16 @@ export function mountChatWs(app: Hono, options: ChatWsOptions): void {
   app.get(
     '/ws/chat',
     upgradeWebSocket((c) => {
-      // Auth via query param
+      // Native clients keep credentials out of URLs with Authorization.
+      // Browser WebSockets cannot set headers, so retain query fallback only
+      // when the header is absent; a malformed/present header never downgrades.
       if (options.token) {
-        const token = c.req.query('token');
-        if (!token || token !== options.token) {
+        const authorization = c.req.header('Authorization');
+        const authorized =
+          authorization !== undefined
+            ? authorization === `Bearer ${options.token}`
+            : c.req.query('token') === options.token;
+        if (!authorized) {
           return {
             onOpen(_event, ws) {
               ws.close(4001, 'Unauthorized');
@@ -280,7 +347,7 @@ export function mountChatWs(app: Hono, options: ChatWsOptions): void {
           try {
             parsed = JSON.parse(raw);
           } catch {
-            if (verbose) console.log('[chat-ws] ← invalid JSON:', raw.slice(0, 200));
+            if (verbose) console.log(`[chat-ws] ← invalid JSON (${raw.length} bytes)`);
             sendServerMessage(ws, { type: 'error', id: '', error: 'Invalid JSON' });
             return;
           }
@@ -434,7 +501,7 @@ export function mountChatWs(app: Hono, options: ChatWsOptions): void {
               } catch (err) {
                 const errStr = err instanceof Error ? err.message : String(err);
                 if (verbose) {
-                  console.error('[chat-ws] stream threw:', err instanceof Error ? err.stack : err);
+                  console.error('[chat-ws] stream threw', summarizeErrorForLog(err));
                 }
 
                 if (!controller.signal.aborted) {

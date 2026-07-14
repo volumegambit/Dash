@@ -1,7 +1,7 @@
 import '@testing-library/jest-dom/vitest';
 import { render, screen } from '@testing-library/react';
 import { mockApi } from '../../../../vitest.setup.js';
-import { PairDeviceCard } from './PairDeviceCard.js';
+import { PairDeviceCard, qrPayload } from './PairDeviceCard.js';
 
 describe('PairDeviceCard', () => {
   describe('LAN pairing', () => {
@@ -9,10 +9,12 @@ describe('PairDeviceCard', () => {
       mockApi.pairingGetInfo.mockResolvedValue({
         mode: 'lan',
         host: '192.168.1.50',
-        mgmtPort: 9300,
-        chatPort: 9200,
-        mgmtToken: 'm-tok-secret',
-        chatToken: 'c-tok-secret',
+        secure: true,
+        mgmtPort: 9400,
+        chatPort: 9400,
+        mgmtToken: 'mobile-token-secret',
+        chatToken: 'mobile-token-secret',
+        tlsCertificateSha256: 'c'.repeat(64),
       });
     });
 
@@ -20,6 +22,20 @@ describe('PairDeviceCard', () => {
       render(<PairDeviceCard />);
       const qr = await screen.findByTestId('pairing-qr');
       expect(qr).toHaveAttribute('src', expect.stringContaining('data:image/svg+xml'));
+    });
+
+    it('encodes pinned HTTPS LAN pairing as the v3 wire shape', async () => {
+      const info = await mockApi.pairingGetInfo();
+      expect(JSON.parse(qrPayload(info))).toEqual({
+        v: 3,
+        host: '192.168.1.50',
+        secure: true,
+        mgmtPort: 9400,
+        chatPort: 9400,
+        mgmtToken: 'mobile-token-secret',
+        chatToken: 'mobile-token-secret',
+        tlsCertificateSha256: 'c'.repeat(64),
+      });
     });
 
     it('uses platform-neutral mobile pairing copy', async () => {
@@ -40,8 +56,8 @@ describe('PairDeviceCard', () => {
       render(<PairDeviceCard />);
       expect(await screen.findByText(/192\.168\.1\.50/)).toBeInTheDocument();
       expect(screen.getByTestId('pairing-mode')).toHaveTextContent('local network');
-      expect(screen.queryByText(/m-tok-secret/)).not.toBeInTheDocument();
-      expect(screen.queryByText(/c-tok-secret/)).not.toBeInTheDocument();
+      expect(screen.queryByText(/mobile-token-secret/)).not.toBeInTheDocument();
+      expect(screen.getByText(/The mobile token and pinned gateway identity/)).toBeInTheDocument();
     });
   });
 
@@ -51,8 +67,8 @@ describe('PairDeviceCard', () => {
         mode: 'relay',
         host: 'gw-1.relay.example.com',
         secure: true,
-        mgmtToken: 'm-tok-secret',
-        chatToken: 'c-tok-secret',
+        mgmtToken: 'mobile-token-secret',
+        chatToken: 'mobile-token-secret',
         relayCredential: 'relay-cred-secret',
       });
     });
@@ -68,9 +84,11 @@ describe('PairDeviceCard', () => {
     it('never shows the tokens or the relay credential as text', async () => {
       render(<PairDeviceCard />);
       await screen.findByTestId('pairing-qr');
-      expect(screen.queryByText(/m-tok-secret/)).not.toBeInTheDocument();
-      expect(screen.queryByText(/c-tok-secret/)).not.toBeInTheDocument();
+      expect(screen.queryByText(/mobile-token-secret/)).not.toBeInTheDocument();
       expect(screen.queryByText(/relay-cred-secret/)).not.toBeInTheDocument();
+      expect(
+        screen.getByText(/The mobile token and a per-device relay credential/),
+      ).toBeInTheDocument();
     });
   });
 });

@@ -30,6 +30,10 @@ describe('parseFlags', () => {
     expect(parseFlags(['--channel-port', '9201'])).toEqual({ channelPort: 9201 });
   });
 
+  it('parses --lan-port flag', () => {
+    expect(parseFlags(['--lan-port', '9401'])).toEqual({ lanPort: 9401 });
+  });
+
   it('parses --chat-token flag', () => {
     expect(parseFlags(['--chat-token', 'chat-secret'])).toEqual({ chatToken: 'chat-secret' });
   });
@@ -90,6 +94,8 @@ describe('validateGatewayStartupOptions', () => {
   const relayUrl = 'wss://relay.example.com';
   const expectedError =
     'Relay mode requires non-empty --token and --chat-token values to secure the management and chat servers';
+  const distinctTokenError =
+    'Management and mobile/chat tokens must be distinct when both are configured';
 
   it.each([
     ['both tokens are absent', {}],
@@ -113,6 +119,30 @@ describe('validateGatewayStartupOptions', () => {
         chatToken: '  chat-secret  ',
       }),
     ).not.toThrow();
+  });
+
+  it.each([
+    ['local LAN mode', {}],
+    ['relay mode', { relayUrl }],
+  ])('rejects equal management and mobile tokens in %s', (_description, mode) => {
+    expect(() =>
+      validateGatewayStartupOptions({
+        ...mode,
+        token: ' shared-secret ',
+        chatToken: 'shared-secret',
+      }),
+    ).toThrow(distinctTokenError);
+  });
+
+  it('does not echo an equal token in the distinct-token error', () => {
+    const privateToken = 'do-not-echo-shared-token';
+    try {
+      validateGatewayStartupOptions({ token: privateToken, chatToken: privateToken });
+      throw new Error('expected token validation to fail');
+    } catch (error) {
+      expect((error as Error).message).toBe(distinctTokenError);
+      expect((error as Error).message).not.toContain(privateToken);
+    }
   });
 
   it('keeps tokens optional in local-only mode', () => {

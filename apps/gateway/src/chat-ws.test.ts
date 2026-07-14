@@ -10,6 +10,7 @@ import { createAgentChatCoordinator } from './agent-chat-coordinator.js';
 import { AgentRegistry } from './agent-registry.js';
 import { isValidConversationId, mountChatWs, parseChatClientFrame } from './chat-ws.js';
 import { ConversationServiceError } from './conversation-service.js';
+import type { EventLogStore } from './event-log-store.js';
 import type { ResumableChatHub } from './resumable-chat-hub.js';
 
 const FIXTURE_ROOT = fileURLToPath(
@@ -435,7 +436,9 @@ function sentFrames(socket: TestSocket): MobileWsServerFrame[] {
 function makeWsHarness(
   options: {
     token?: string;
+    verbose?: boolean;
     streamFactory?: () => ScriptedStream;
+    eventLogStore?: EventLogStore;
   } = {},
 ) {
   const hub = makeResumableHub();
@@ -463,7 +466,12 @@ function makeWsHarness(
   } as unknown as AgentChatCoordinator;
   const swarmCancel = vi.fn().mockReturnValue(true);
   let createEvents:
-    | ((context: { req: { query(name: string): string | undefined } }) => CapturedHandlers)
+    | ((context: {
+        req: {
+          query(name: string): string | undefined;
+          header(name: string): string | undefined;
+        };
+      }) => CapturedHandlers)
     | undefined;
   const upgradeWebSocket = ((factory: typeof createEvents) => {
     createEvents = factory;
@@ -476,6 +484,8 @@ function makeWsHarness(
     upgradeWebSocket,
     resumableChatHub: hub.hub,
     swarmCoordinator: { cancelTurn: swarmCancel },
+    verbose: options.verbose,
+    eventLogStore: options.eventLogStore,
   });
 
   return {
@@ -491,9 +501,14 @@ function makeWsHarness(
     swarmCancel,
     requests,
     streams,
-    connect(token = options.token) {
+    connect(token = options.token, authorization?: string) {
       if (!createEvents) throw new Error('WebSocket handler was not mounted');
-      const handlers = createEvents({ req: { query: () => token } });
+      const handlers = createEvents({
+        req: {
+          query: () => token,
+          header: (name) => (name.toLowerCase() === 'authorization' ? authorization : undefined),
+        },
+      });
       return { handlers, socket: makeSocket() };
     },
   };
@@ -517,6 +532,158 @@ const RESUMABLE_MESSAGE = {
 } as const;
 
 describe('mountChatWs protocol ownership', () => {
+  it('redacts user content and malformed payloads from verbose logs', () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      const harness = makeWsHarness({ verbose: true });
+      const connection = harness.connect();
+
+      dispatch(connection, { ...RESUMABLE_MESSAGE, text: 'private prompt text' });
+      connection.handlers.onMessage?.(
+        {
+          data: JSON.stringify({
+            type: 'message',
+            id: 'private-turn-id-content',
+            agentId: 'private-agent-id-content',
+            channelId: 'private-channel-id-content',
+            conversationId: 'private-conversation-id-content',
+            questionId: 'private-question-id-content',
+          }),
+        },
+        connection.socket,
+      );
+      connection.handlers.onMessage?.(
+        {
+          data: JSON.stringify({
+            type: 'future-frame',
+            content: 'private future content',
+            nested: { arbitrary: 'private nested content' },
+          }),
+        },
+        connection.socket,
+      );
+      connection.handlers.onMessage?.({ data: 'private malformed payload' }, connection.socket);
+
+      const output = JSON.stringify(log.mock.calls);
+      expect(output).toContain('textLength');
+      for (const structuralLength of [
+        'idLength',
+        'agentIdLength',
+        'channelIdLength',
+        'conversationIdLength',
+        'questionIdLength',
+      ]) {
+        expect(output).toContain(structuralLength);
+      }
+      for (const privateValue of [
+        'private prompt text',
+        'private-turn-id-content',
+        'private-agent-id-content',
+        'private-channel-id-content',
+        'private-conversation-id-content',
+        'private-question-id-content',
+        'private future content',
+        'private nested content',
+        'private malformed payload',
+      ]) {
+        expect(output).not.toContain(privateValue);
+      }
+    } finally {
+      log.mockRestore();
+    }
+  });
+
+  it('prefers a valid Authorization bearer over a conflicting query token', () => {
+    const harness = makeWsHarness({ token: 'secret' });
+    const connection = harness.connect('wrong-query-token', 'Bearer secret');
+
+    connection.handlers.onOpen?.({}, connection.socket);
+
+    expect(connection.socket.close).not.toHaveBeenCalled();
+    expect(connection.handlers.onMessage).toBeDefined();
+  });
+
+  it('rejects an invalid Authorization bearer without falling back or logging credentials', () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const harness = makeWsHarness({ token: 'valid-query-token', verbose: true });
+      const connection = harness.connect(
+        'valid-query-token',
+        'Bearer private-invalid-header-token',
+      );
+
+      connection.handlers.onOpen?.({}, connection.socket);
+
+      expect(connection.socket.close).toHaveBeenCalledWith(4001, 'Unauthorized');
+      expect(connection.handlers.onMessage).toBeUndefined();
+      const output = JSON.stringify([...log.mock.calls, ...error.mock.calls]);
+      expect(output).not.toContain('valid-query-token');
+      expect(output).not.toContain('private-invalid-header-token');
+    } finally {
+      log.mockRestore();
+      error.mockRestore();
+    }
+  });
+
+  it('redacts stream and outbound error details from verbose logs', async () => {
+    const privateError = 'private stream failure with stack content';
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const harness = makeWsHarness({
+        verbose: true,
+        streamFactory: () => {
+          const scripted = makeScriptedStream();
+          vi.spyOn(scripted.stream, 'next').mockRejectedValueOnce(new Error(privateError));
+          return scripted;
+        },
+      });
+      const connection = harness.connect();
+
+      dispatch(connection, { ...RESUMABLE_MESSAGE, resumable: false });
+
+      await vi.waitFor(() =>
+        expect(sentFrames(connection.socket)).toContainEqual(
+          expect.objectContaining({ type: 'error', id: 'turn-01' }),
+        ),
+      );
+      const output = JSON.stringify([...log.mock.calls, ...error.mock.calls]);
+      expect(output).toContain('errorMessageLength');
+      expect(output).not.toContain(privateError);
+    } finally {
+      log.mockRestore();
+      error.mockRestore();
+    }
+  });
+
+  it('redacts event-log append failures', async () => {
+    const privateError = 'private event-log disk failure';
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const eventLogStore = {
+        append: vi.fn(() => {
+          throw new Error(privateError);
+        }),
+      } as unknown as EventLogStore;
+      const harness = makeWsHarness({
+        eventLogStore,
+        streamFactory: () =>
+          makeScriptedStream([{ type: 'text_delta', text: 'private assistant content' }]),
+      });
+      const connection = harness.connect();
+
+      dispatch(connection, { ...RESUMABLE_MESSAGE, resumable: false });
+
+      await vi.waitFor(() => expect(eventLogStore.append).toHaveBeenCalled());
+      const output = JSON.stringify(error.mock.calls);
+      expect(output).toContain('errorMessageLength');
+      expect(output).not.toContain(privateError);
+    } finally {
+      error.mockRestore();
+    }
+  });
+
   it('preserves the /ws/chat token route and unauthorized 4001 close', () => {
     const harness = makeWsHarness({ token: 'secret' });
     expect(harness.app.routes).toEqual(
@@ -797,10 +964,11 @@ describe('mountChatWs protocol ownership', () => {
         retryable: true,
       });
     });
-    expect(consoleError).toHaveBeenCalledWith(
-      '[chat-ws] resumable dispatch failed:',
-      'hub unavailable',
-    );
+    expect(consoleError).toHaveBeenCalledWith('[chat-ws] resumable dispatch failed', {
+      errorKind: 'error',
+      errorMessageLength: 'hub unavailable'.length,
+    });
+    expect(JSON.stringify(consoleError.mock.calls)).not.toContain('hub unavailable');
     consoleError.mockRestore();
   });
 });

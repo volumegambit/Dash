@@ -208,6 +208,14 @@ export class GatewayHttpError extends Error {
   }
 }
 
+/** The LAN TLS capability route responded, but its certificate pin was unusable. */
+export class InvalidGatewayLanTlsFingerprintError extends Error {
+  constructor() {
+    super('Gateway LAN TLS fingerprint response is invalid');
+    this.name = 'InvalidGatewayLanTlsFingerprintError';
+  }
+}
+
 /**
  * Default timeout for hot-path health/auth checks used by GatewaySupervisor.
  * Short enough that a blocked event loop in the gateway doesn't wedge MC's
@@ -215,7 +223,10 @@ export class GatewayHttpError extends Error {
  * tool roundtrips.
  */
 const HOT_PATH_TIMEOUT_MS = 2_000;
-const MOBILE_API_PREFIX = '/mobile/v1';
+// Mission Control holds the administrative bearer and therefore uses the
+// canonical unprefixed management routes. `/mobile/v1` is reserved for the
+// phone-scoped capability token carried by pairing payloads.
+const CANONICAL_API_PREFIX = '';
 
 export class GatewayManagementClient {
   constructor(
@@ -257,7 +268,7 @@ export class GatewayManagementClient {
   }
 
   async getIdentity(): Promise<GatewayIdentity> {
-    const res = await fetch(`${this.baseUrl}${MOBILE_API_PREFIX}/identity`, {
+    const res = await fetch(`${this.baseUrl}${CANONICAL_API_PREFIX}/identity`, {
       headers: this.headers(),
       signal: AbortSignal.timeout(HOT_PATH_TIMEOUT_MS),
     });
@@ -277,6 +288,31 @@ export class GatewayManagementClient {
     await this.throwIfNotOk(res, 'getRelayIdentity');
     const identity = (await res.json()) as { publicKey: string };
     return { publicKey: identity.publicKey };
+  }
+
+  /** Read the LAN HTTPS leaf pin over the loopback-only administrative API. */
+  async getLanTlsFingerprint(): Promise<string> {
+    const res = await fetch(`${this.baseUrl}/lan-tls`, {
+      headers: this.headers(),
+      signal: AbortSignal.timeout(HOT_PATH_TIMEOUT_MS),
+    });
+    await this.throwIfNotOk(res, 'getLanTlsFingerprint');
+    let body: unknown;
+    try {
+      body = (await res.json()) as { certificateSha256?: unknown };
+    } catch {
+      throw new InvalidGatewayLanTlsFingerprintError();
+    }
+    if (
+      typeof body !== 'object' ||
+      body === null ||
+      !('certificateSha256' in body) ||
+      typeof body.certificateSha256 !== 'string' ||
+      !/^[a-f0-9]{64}$/.test(body.certificateSha256)
+    ) {
+      throw new InvalidGatewayLanTlsFingerprintError();
+    }
+    return body.certificateSha256;
   }
 
   // Agents
@@ -426,7 +462,7 @@ export class GatewayManagementClient {
   async listConversations(
     params: { agentId?: string; limit?: number; cursor?: string } = {},
   ): Promise<ConversationPage> {
-    const url = new URL(`${this.baseUrl}${MOBILE_API_PREFIX}/conversations`);
+    const url = new URL(`${this.baseUrl}${CANONICAL_API_PREFIX}/conversations`);
     if (params.agentId) url.searchParams.set('agentId', params.agentId);
     if (params.limit !== undefined) url.searchParams.set('limit', String(params.limit));
     if (params.cursor) url.searchParams.set('cursor', params.cursor);
@@ -440,7 +476,7 @@ export class GatewayManagementClient {
     requestId: string,
     metadata: Partial<Pick<ConversationSummary, 'title' | 'owningIssueId' | 'projectId'>> = {},
   ): Promise<ConversationSummary> {
-    const res = await fetch(`${this.baseUrl}${MOBILE_API_PREFIX}/conversations`, {
+    const res = await fetch(`${this.baseUrl}${CANONICAL_API_PREFIX}/conversations`, {
       method: 'POST',
       headers: this.headers(),
       body: JSON.stringify({ agentId, requestId, ...metadata }),
@@ -451,7 +487,7 @@ export class GatewayManagementClient {
 
   async getConversation(id: string): Promise<ConversationSummary> {
     const res = await fetch(
-      `${this.baseUrl}${MOBILE_API_PREFIX}/conversations/${encodeURIComponent(id)}`,
+      `${this.baseUrl}${CANONICAL_API_PREFIX}/conversations/${encodeURIComponent(id)}`,
       {
         headers: this.headers(),
       },
@@ -466,7 +502,7 @@ export class GatewayManagementClient {
     patch: Partial<Pick<ConversationSummary, 'title' | 'owningIssueId' | 'projectId'>>,
   ): Promise<ConversationSummary> {
     const res = await fetch(
-      `${this.baseUrl}${MOBILE_API_PREFIX}/conversations/${encodeURIComponent(id)}`,
+      `${this.baseUrl}${CANONICAL_API_PREFIX}/conversations/${encodeURIComponent(id)}`,
       {
         method: 'PATCH',
         headers: { ...this.headers(), 'If-Match': `"${revision}"` },
@@ -479,7 +515,7 @@ export class GatewayManagementClient {
 
   async deleteConversation(id: string, revision: number): Promise<ConversationSummary> {
     const res = await fetch(
-      `${this.baseUrl}${MOBILE_API_PREFIX}/conversations/${encodeURIComponent(id)}`,
+      `${this.baseUrl}${CANONICAL_API_PREFIX}/conversations/${encodeURIComponent(id)}`,
       {
         method: 'DELETE',
         headers: { ...this.headers(), 'If-Match': `"${revision}"` },
@@ -494,7 +530,7 @@ export class GatewayManagementClient {
     params: { limit?: number; before?: string } = {},
   ): Promise<ConversationMessagePage> {
     const url = new URL(
-      `${this.baseUrl}${MOBILE_API_PREFIX}/conversations/${encodeURIComponent(id)}/messages`,
+      `${this.baseUrl}${CANONICAL_API_PREFIX}/conversations/${encodeURIComponent(id)}/messages`,
     );
     if (params.limit !== undefined) url.searchParams.set('limit', String(params.limit));
     if (params.before) url.searchParams.set('before', params.before);
@@ -509,7 +545,7 @@ export class GatewayManagementClient {
     sinceSeq: number,
   ): Promise<ReplayPage> {
     const path =
-      `${MOBILE_API_PREFIX}/agents/${encodeURIComponent(agentId)}/conversations/` +
+      `${CANONICAL_API_PREFIX}/agents/${encodeURIComponent(agentId)}/conversations/` +
       `${encodeURIComponent(conversationId)}/events?sinceSeq=${sinceSeq}`;
     const res = await fetch(`${this.baseUrl}${path}`, { headers: this.headers() });
     await this.throwIfNotOk(res, 'replayConversationEvents');

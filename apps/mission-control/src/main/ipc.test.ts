@@ -393,7 +393,7 @@ describe('gateway event stream lifecycle', () => {
     await vi.advanceTimersByTimeAsync(0);
     expect(fetchStream).toHaveBeenCalledTimes(1);
     expect(fetchStream).toHaveBeenCalledWith(
-      'https://gateway.example.com/mobile/v1/events',
+      'https://gateway.example.com/events',
       expect.anything(),
     );
 

@@ -348,10 +348,13 @@ export interface McpStatusChange {
 export interface LanPairingInfo {
   mode: 'lan';
   host: string;
+  secure: true;
   mgmtPort: number;
   chatPort: number;
   mgmtToken: string;
   chatToken: string;
+  /** Lowercase SHA-256 of the exact self-signed leaf certificate. */
+  tlsCertificateSha256: string;
 }
 
 /** Relay pairing: phone reaches the gateway over the internet via the relay. */

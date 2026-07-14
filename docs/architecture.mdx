@@ -80,17 +80,22 @@ the capability, Mission Control keeps the original local-authoritative chat beha
 
 ## Gateway APIs
 
-The gateway runs two servers with independent authentication:
+The gateway runs two loopback servers for host administration and a separate pinned-TLS listener
+for native devices:
 
 | Server | Protocol | Default port | Auth | Purpose |
 |--------|----------|-------------|------|---------|
 | Management API | HTTP | 9300 | Bearer token | Health, identity, agents, conversation sync, credentials, and models |
 | Channel server | WebSocket | 9200 | Query param (`?token=`) | Real-time agent chat and turn resume |
+| Mobile LAN server | HTTPS / WSS | 9400 | Phone-scoped bearer | `/mobile/v1` and `/ws/chat` only |
 
-Both servers bind to `127.0.0.1` by default. Each has its own token — a management token cannot
-be used on the channel port, and vice versa. Native clients use the versioned `/mobile/v1`
-management routes. Chat remains on the unprefixed `/ws/chat` path. Clients check
-`GET /mobile/v1/health` before enabling conversation sync or resumable chat.
+The management and channel servers bind to `127.0.0.1`. The LAN listener binds separately and
+exposes only the native-client routes; administrative paths such as credentials, plugins, and
+shutdown are not mounted there. A pairing QR carries the LAN listener's exact certificate
+fingerprint and one phone-scoped capability, never the administrative bearer. Native clients pin
+that certificate and send the capability in the encrypted `Authorization` header for both
+`/mobile/v1` HTTP/SSE requests and `/ws/chat` streaming. Clients check `GET /mobile/v1/health`
+before enabling conversation sync or resumable chat.
 
 ## Remote access identity
 
@@ -134,8 +139,9 @@ Here's what happens when a capable client sends a resumable message to one of yo
     `chat-resume-v1`, then creates or loads the gateway's canonical conversation.
   </Step>
   <Step title="Connect and send">
-    The client opens `ws://host:9200/ws/chat?token=...` and sends one `message` frame with a
-    stable turn ID, the conversation ID, and `resumable: true`.
+    Mission Control opens the loopback channel socket. A paired phone opens the pinned-TLS
+    `wss://host:9400/ws/chat` mobile socket. The client sends one `message` frame with a stable
+    turn ID, the conversation ID, and `resumable: true`.
   </Step>
   <Step title="Accept atomically">
     In one SQLite transaction, the gateway verifies that the conversation is writable, acquires

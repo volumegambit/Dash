@@ -4,7 +4,7 @@ import { PairDeviceCard } from '../../components/PairDeviceCard.js';
 import { RelaySettings } from '../../components/RelaySettings.js';
 
 export function DeviceSettings(): JSX.Element {
-  // The pairing QR payload switches from LAN (v1) to relay (v2) the moment a
+  // The pairing QR payload switches from pinned LAN (v3) to relay (v2) the moment a
   // gateway is enrolled, and both sections live on the same page — re-mount
   // the card on enrollment so it re-fetches instead of showing a stale LAN QR.
   const [pairingRefresh, setPairingRefresh] = useState(0);

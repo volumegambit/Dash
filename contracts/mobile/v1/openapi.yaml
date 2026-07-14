@@ -422,32 +422,46 @@ components:
       oneOf:
         - type: object
           additionalProperties: true
-          required: [v, host, mgmtToken, chatToken]
-          properties:
-            v: { const: 1 }
-            host:
-              type: string
-              minLength: 1
-              pattern: '^(?![A-Za-z][A-Za-z0-9+.-]*://)[^\s/]+$'
-            mgmtToken: { type: string, minLength: 1, pattern: '.*\S.*' }
-            chatToken: { type: string, minLength: 1, pattern: '.*\S.*' }
-            mgmtPort: { type: integer, minimum: 1, maximum: 65535 }
-            chatPort: { type: integer, minimum: 1, maximum: 65535 }
-            label: { type: string, minLength: 1 }
-            secure: { type: boolean }
-        - type: object
-          additionalProperties: true
+          $comment: Clients trim mgmtToken and chatToken before requiring equality and storing one phone-scoped capability.
           required: [v, host, secure, mgmtToken, chatToken, relayCredential]
           properties:
             v: { const: 2 }
             host:
               type: string
               minLength: 1
-              pattern: '^(?![A-Za-z][A-Za-z0-9+.-]*://)[^\s/]+$'
+              pattern: '^(?![A-Za-z][A-Za-z0-9+.-]*:)[^\s/\\?#@%]+$'
             secure: { const: true }
             mgmtToken: { type: string, minLength: 1, pattern: '.*\S.*' }
             chatToken: { type: string, minLength: 1, pattern: '.*\S.*' }
             relayCredential: { type: string, minLength: 1, pattern: '.*\S.*' }
+        - type: object
+          additionalProperties: true
+          $comment: Clients trim mgmtToken and chatToken before requiring equality; mgmtPort and chatPort are equal.
+          required:
+            [
+              v,
+              host,
+              secure,
+              mgmtToken,
+              chatToken,
+              mgmtPort,
+              chatPort,
+              tlsCertificateSha256,
+            ]
+          properties:
+            v: { const: 3 }
+            host:
+              type: string
+              minLength: 1
+              pattern: '^(?![A-Za-z][A-Za-z0-9+.-]*:)[^\s/\\?#@%]+$'
+            secure: { const: true }
+            mgmtToken: { type: string, minLength: 1, pattern: '.*\S.*' }
+            chatToken: { type: string, minLength: 1, pattern: '.*\S.*' }
+            mgmtPort: { type: integer, minimum: 1, maximum: 65535 }
+            chatPort: { type: integer, minimum: 1, maximum: 65535 }
+            tlsCertificateSha256:
+              type: string
+              pattern: '^[A-Fa-f0-9]{64}$'
     MobileAgent:
       type: object
       additionalProperties: false

@@ -1,6 +1,10 @@
 {
-  "v": 1,
+  "v": 3,
   "host": "https://gateway.dash.example",
-  "mgmtToken": "mgmt-test-token",
-  "chatToken": "chat-test-token"
+  "secure": true,
+  "mgmtToken": "mobile-test-token",
+  "chatToken": "mobile-test-token",
+  "mgmtPort": 9400,
+  "chatPort": 9400,
+  "tlsCertificateSha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 }

@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -74,9 +74,11 @@ function createMockGatewayClient(startedAt = '2026-01-01T00:00:00Z') {
     // alone doesn't prove our token is still valid). Must be stubbed here
     // or the reuse path silently falls through to a fresh spawn.
     listAgents: vi.fn().mockResolvedValue([]),
+    getLanTlsFingerprint: vi.fn().mockResolvedValue('a'.repeat(64)),
   } as unknown as GatewayManagementClient & {
     health: ReturnType<typeof vi.fn>;
     listAgents: ReturnType<typeof vi.fn>;
+    getLanTlsFingerprint: ReturnType<typeof vi.fn>;
   };
 }
 
@@ -209,7 +211,35 @@ describe('GatewaySupervisor.ensureRunning()', () => {
     expect(await keychain.getChatToken()).toBeTruthy();
   });
 
-  it('threads managementPort/channelPort options into probe, spawn args, client URL, and state.json', async () => {
+  it('rotates a legacy chat token that collides with the management token before spawn', async () => {
+    const legacySharedToken = 'legacy-shared-token';
+    const mockClient = createMockGatewayClient();
+    const spawner = createMockSpawner();
+    const probe = createMockProbe({ type: 'free' });
+    const keychain = new InMemoryKeychainStore();
+    await keychain.setGatewayToken(legacySharedToken);
+    await keychain.setChatToken(legacySharedToken);
+    const gp = new GatewaySupervisor(
+      makeOptions(tmpDir, { makeGatewayClient: () => mockClient }),
+      spawner,
+      undefined,
+      probe,
+      keychain,
+    );
+
+    await gp.ensureRunning();
+
+    const args = (spawner.spawn as ReturnType<typeof vi.fn>).mock.calls[0]?.[1] as string[];
+    const managementToken = args[args.indexOf('--token') + 1];
+    const chatToken = args[args.indexOf('--chat-token') + 1];
+    expect(managementToken).toBe(legacySharedToken);
+    expect(chatToken).toBeTruthy();
+    expect(chatToken).not.toBe(managementToken);
+    expect(await keychain.getGatewayToken()).toBe(legacySharedToken);
+    expect(await keychain.getChatToken()).toBe(chatToken);
+  });
+
+  it('threads management, channel, and LAN port options into spawn and state', async () => {
     const spawner = createMockSpawner();
     const probe = createMockProbe({ type: 'free' });
     const keychain = new InMemoryKeychainStore();
@@ -223,6 +253,7 @@ describe('GatewaySupervisor.ensureRunning()', () => {
         },
         managementPort: 9310,
         channelPort: 9210,
+        lanPort: 9410,
       }),
       spawner,
       undefined,
@@ -238,10 +269,12 @@ describe('GatewaySupervisor.ensureRunning()', () => {
     const spawnArgs = (spawner.spawn as ReturnType<typeof vi.fn>).mock.calls[0][1] as string[];
     expect(spawnArgs[spawnArgs.indexOf('--management-port') + 1]).toBe('9310');
     expect(spawnArgs[spawnArgs.indexOf('--channel-port') + 1]).toBe('9210');
+    expect(spawnArgs[spawnArgs.indexOf('--lan-port') + 1]).toBe('9410');
 
     const state = await new GatewayStateStore(tmpDir).read();
     expect(state?.port).toBe(9310);
     expect(state?.channelPort).toBe(9210);
+    expect(state?.lanPort).toBe(9410);
   });
 
   it('passes --data-dir when gatewayRuntimeDir is set', async () => {
@@ -410,6 +443,115 @@ describe('GatewaySupervisor.ensureRunning()', () => {
       (mockClient as unknown as { listAgents: { mock: { calls: unknown[] } } }).listAgents.mock
         .calls.length,
     ).toBe(1);
+  });
+
+  it('restarts an authenticated legacy gateway whose stored tokens collide', async () => {
+    const legacySharedToken = 'legacy-running-shared-token';
+    const { keychain } = await setupRunningGateway({
+      pid: 12345,
+      startedAt: '2026-01-01T00:00:00Z',
+      token: legacySharedToken,
+    });
+    await keychain.setChatToken(legacySharedToken);
+    const mockClient = createMockGatewayClient('2026-01-01T00:00:00Z');
+    const spawner = createMockSpawner(23456);
+    const killer = createMockKiller(new Set([12345]));
+    let probeCall = 0;
+    const probe = vi.fn(async (): Promise<PortOwnerProbeResult> => {
+      probeCall += 1;
+      return probeCall === 1 ? probeOwner('2026-01-01T00:00:00Z', 12345) : { type: 'free' };
+    }) as PortOwnerProbe & ReturnType<typeof vi.fn>;
+    const gp = new GatewaySupervisor(
+      makeOptions(tmpDir, { makeGatewayClient: () => mockClient }),
+      spawner,
+      killer,
+      probe,
+      keychain,
+    );
+
+    await gp.ensureRunning();
+
+    expect(killer.signal).toHaveBeenCalledWith(12345, 'SIGTERM');
+    expect(spawner.spawn).toHaveBeenCalledOnce();
+    expect(await keychain.getGatewayToken()).toBe(legacySharedToken);
+    expect(await keychain.getChatToken()).not.toBe(legacySharedToken);
+  });
+
+  it('upgrades an authenticated legacy gateway with distinct tokens but no LAN TLS route', async () => {
+    const managementToken = 'legacy-management-token';
+    const chatToken = 'legacy-chat-token';
+    // Write the old state shape directly: GatewayStateStore normalizes its
+    // missing lanPort to the current default, so state metadata cannot prove
+    // the running binary actually has the pinned TLS capability.
+    await writeFile(
+      join(tmpDir, 'gateway-state.json'),
+      JSON.stringify({
+        pid: 12345,
+        startedAt: '2026-01-01T00:00:00Z',
+        port: 9300,
+        channelPort: 9200,
+      }),
+    );
+    const keychain = new InMemoryKeychainStore();
+    await keychain.setGatewayToken(managementToken);
+    await keychain.setChatToken(chatToken);
+    expect((await new GatewayStateStore(tmpDir).read())?.lanPort).toBe(9400);
+    const mockClient = createMockGatewayClient('2026-01-01T00:00:00Z');
+    mockClient.getLanTlsFingerprint.mockRejectedValueOnce(
+      new GatewayHttpError(404, 'getLanTlsFingerprint', 'Not Found'),
+    );
+    const spawner = createMockSpawner(23456);
+    const killer = createMockKiller(new Set([12345]));
+    let probeCall = 0;
+    const probe = vi.fn(async (): Promise<PortOwnerProbeResult> => {
+      probeCall += 1;
+      return probeCall === 1 ? probeOwner('2026-01-01T00:00:00Z', 12345) : { type: 'free' };
+    }) as PortOwnerProbe & ReturnType<typeof vi.fn>;
+    const gp = new GatewaySupervisor(
+      makeOptions(tmpDir, { makeGatewayClient: () => mockClient }),
+      spawner,
+      killer,
+      probe,
+      keychain,
+    );
+
+    await gp.ensureRunning();
+
+    expect(mockClient.getLanTlsFingerprint).toHaveBeenCalledOnce();
+    expect(killer.signal).toHaveBeenCalledWith(12345, 'SIGTERM');
+    expect(spawner.spawn).toHaveBeenCalledOnce();
+    const args = (spawner.spawn as ReturnType<typeof vi.fn>).mock.calls[0]?.[1] as string[];
+    expect(args[args.indexOf('--token') + 1]).toBe(managementToken);
+    expect(args[args.indexOf('--chat-token') + 1]).toBe(chatToken);
+    expect(await keychain.getGatewayToken()).toBe(managementToken);
+    expect(await keychain.getChatToken()).toBe(chatToken);
+  });
+
+  it('never auto-upgrades a legacy gateway when the listener PID is unverified', async () => {
+    const { keychain } = await setupRunningGateway({
+      pid: 11111,
+      startedAt: '2026-01-01T00:00:00Z',
+      token: 'legacy-management-token',
+    });
+    await keychain.setChatToken('legacy-chat-token');
+    const mockClient = createMockGatewayClient('2026-01-01T00:00:00Z');
+    mockClient.getLanTlsFingerprint.mockRejectedValueOnce(
+      new GatewayHttpError(404, 'getLanTlsFingerprint', 'Not Found'),
+    );
+    const spawner = createMockSpawner();
+    const killer = createMockKiller(new Set([11111]));
+    const probe = createMockProbe(probeOwner('2026-01-01T00:00:00Z'));
+    const gp = new GatewaySupervisor(
+      makeOptions(tmpDir, { makeGatewayClient: () => mockClient }),
+      spawner,
+      killer,
+      probe,
+      keychain,
+    );
+
+    await expect(gp.ensureRunning()).rejects.toThrow(/listener PID could not be verified/);
+    expect(killer.signal).not.toHaveBeenCalled();
+    expect(spawner.spawn).not.toHaveBeenCalled();
   });
 
   it('reuses even when state.startedAt does not match probe.startedAt, as long as auth works', async () => {

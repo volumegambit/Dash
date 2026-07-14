@@ -1,4 +1,5 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
+import { request as httpsRequest } from 'node:https';
 import type {
   ConversationMessagePage,
   ConversationSummary,
@@ -14,8 +15,45 @@ function mobileRequest(
   init: RequestInit = {},
 ): Promise<Response> {
   const headers = new Headers(init.headers);
-  headers.set('Authorization', `Bearer ${harness.managementToken}`);
+  headers.set('Authorization', `Bearer ${harness.chatToken}`);
   return fetch(`${harness.managementBaseUrl}/mobile/v1${path}`, { ...init, headers });
+}
+
+function pinnedSurfaceRequest(
+  harness: RunningMobileTestHarness,
+  path: string,
+  token?: string,
+  method = 'GET',
+): Promise<{ status: number; certificateSha256: string }> {
+  return new Promise((resolve, reject) => {
+    const request = httpsRequest(
+      `${harness.mobileBaseUrl}${path}`,
+      {
+        method,
+        rejectUnauthorized: false,
+        headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+      },
+      (response) => {
+        const socket = response.socket as typeof response.socket & {
+          getPeerCertificate(): { raw?: Buffer };
+        };
+        const raw = socket.getPeerCertificate().raw;
+        if (!raw) {
+          reject(new Error('Pinned mobile TLS response has no peer leaf certificate'));
+          return;
+        }
+        response.resume();
+        response.once('end', () =>
+          resolve({
+            status: response.statusCode ?? 0,
+            certificateSha256: createHash('sha256').update(raw).digest('hex'),
+          }),
+        );
+      },
+    );
+    request.once('error', reject);
+    request.end();
+  });
 }
 
 async function createConversation(
@@ -125,6 +163,39 @@ describe('mobile test harness', () => {
     }
   });
 
+  it('serves only the pinned HTTPS mobile API and WSS chat surface on one port', async () => {
+    const harness = await startMobileTestHarness({ scenario: 'stream' });
+    try {
+      expect(harness.mobileBaseUrl).toMatch(/^https:\/\/127\.0\.0\.1:\d+$/);
+      expect(harness.mobileChatWebSocketUrl).toBe(
+        `${harness.mobileBaseUrl.replace('https://', 'wss://')}/ws/chat`,
+      );
+
+      const health = await pinnedSurfaceRequest(harness, '/mobile/v1/health');
+      expect(health.status).toBe(200);
+      expect(health.certificateSha256).toBe(harness.tlsCertificateSha256);
+      expect((await pinnedSurfaceRequest(harness, '/agents', harness.chatToken)).status).toBe(404);
+      expect((await pinnedSurfaceRequest(harness, '/mobile/v10', harness.chatToken)).status).toBe(
+        404,
+      );
+      expect(
+        (await pinnedSurfaceRequest(harness, '/mobile/v1/agents', harness.chatToken)).status,
+      ).toBe(200);
+
+      const socket = new WebSocket(
+        `${harness.mobileChatWebSocketUrl}?token=${encodeURIComponent(harness.chatToken)}`,
+        { rejectUnauthorized: false },
+      );
+      await new Promise<void>((resolve, reject) => {
+        socket.addEventListener('open', () => resolve(), { once: true });
+        socket.addEventListener('error', (event) => reject(event.error), { once: true });
+      });
+      socket.close();
+    } finally {
+      await harness.stop();
+    }
+  });
+
   it('closes a real gateway socket with 4001 for the wrong chat token', async () => {
     const harness = await startMobileTestHarness({ scenario: 'stream' });
     try {
@@ -201,10 +272,19 @@ describe('mobile test harness', () => {
       ).json()) as ConversationMessagePage;
       expect(JSON.stringify(beforeRelease.items)).not.toContain('Working');
 
-      const released = await fetch(`${harness.managementBaseUrl}/__mobile-test/slow/release`, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${harness.managementToken}` },
-      });
+      const adminDenied = await pinnedSurfaceRequest(
+        harness,
+        '/mobile/v1/__mobile-test/slow/release',
+        harness.managementToken,
+        'POST',
+      );
+      expect(adminDenied.status).toBe(401);
+      const released = await pinnedSurfaceRequest(
+        harness,
+        '/mobile/v1/__mobile-test/slow/release',
+        harness.chatToken,
+        'POST',
+      );
       expect(released.status).toBe(204);
       const second = await chat.waitFor(
         (frame) =>
@@ -228,7 +308,7 @@ describe('mobile test harness', () => {
     let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
     try {
       const eventsResponsePromise = fetch(`${harness.managementBaseUrl}/mobile/v1/events`, {
-        headers: { Authorization: `Bearer ${harness.managementToken}` },
+        headers: { Authorization: `Bearer ${harness.chatToken}` },
       });
       await new Promise((resolve) => setTimeout(resolve, 25));
       await createConversation(harness);

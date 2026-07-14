@@ -2,9 +2,10 @@ import type { PairingInfo } from '../shared/ipc.js';
 
 /** Inputs the pairing builder needs, resolved by the IPC handler. */
 export interface PairingInputs {
-  mgmtToken: string;
+  /** Capability bearer accepted only by the gateway's `/mobile/v1` namespace. */
+  mobileToken: string;
   chatToken: string;
-  lan: { host: string; mgmtPort: number; chatPort: number };
+  lan: { host: string; port: number; tlsCertificateSha256: string };
   /**
    * Hosted-relay config, present only when the gateway has been enrolled with
    * the control plane (a cached issued-gateway record with a `gatewayId` and the
@@ -47,7 +48,7 @@ export async function buildPairingInfo(
       mode: 'relay',
       host,
       secure: true,
-      mgmtToken: inputs.mgmtToken,
+      mgmtToken: inputs.mobileToken,
       chatToken: inputs.chatToken,
       relayCredential,
     };
@@ -55,9 +56,11 @@ export async function buildPairingInfo(
   return {
     mode: 'lan',
     host: inputs.lan.host,
-    mgmtPort: inputs.lan.mgmtPort,
-    chatPort: inputs.lan.chatPort,
-    mgmtToken: inputs.mgmtToken,
+    secure: true,
+    mgmtPort: inputs.lan.port,
+    chatPort: inputs.lan.port,
+    mgmtToken: inputs.mobileToken,
     chatToken: inputs.chatToken,
+    tlsCertificateSha256: inputs.lan.tlsCertificateSha256,
   };
 }

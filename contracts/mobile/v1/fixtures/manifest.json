@@ -5,6 +5,12 @@
       "file": "pairing-lan-v1.json",
       "document": "openapi",
       "schema": "PairingPayload",
+      "valid": false
+    },
+    {
+      "file": "pairing-lan-v3.json",
+      "document": "openapi",
+      "schema": "PairingPayload",
       "valid": true
     },
     {
@@ -241,6 +247,24 @@
     },
     {
       "file": "invalid/pairing-blank-secret.json",
+      "document": "openapi",
+      "schema": "PairingPayload",
+      "valid": false
+    },
+    {
+      "file": "invalid/pairing-v2-mismatched-mobile-token.json",
+      "document": "openapi",
+      "schema": "PairingPayload",
+      "valid": false
+    },
+    {
+      "file": "invalid/pairing-v3-mismatched-mobile-token.json",
+      "document": "openapi",
+      "schema": "PairingPayload",
+      "valid": false
+    },
+    {
+      "file": "invalid/pairing-v3-mismatched-ports.json",
       "document": "openapi",
       "schema": "PairingPayload",
       "valid": false

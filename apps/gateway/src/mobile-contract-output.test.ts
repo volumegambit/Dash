@@ -89,7 +89,7 @@ function mobileRequest(
   init: RequestInit = {},
 ): Promise<Response> {
   const headers = new Headers(init.headers);
-  headers.set('Authorization', `Bearer ${harness.managementToken}`);
+  headers.set('Authorization', `Bearer ${harness.chatToken}`);
   return fetch(`${harness.managementBaseUrl}/mobile/v1${path}`, { ...init, headers });
 }
 
@@ -595,7 +595,7 @@ describe('mobile harness emitted contract output', () => {
     let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
     try {
       const eventsResponsePromise = fetch(`${harness.managementBaseUrl}/mobile/v1/events`, {
-        headers: { Authorization: `Bearer ${harness.managementToken}` },
+        headers: { Authorization: `Bearer ${harness.chatToken}` },
         signal: abort.signal,
       });
       await new Promise((resolve) => setTimeout(resolve, 25));

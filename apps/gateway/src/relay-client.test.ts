@@ -42,9 +42,13 @@ describe('relay-client', () => {
   it('replays an HTTP open to loopback and pipes the response back, forwarding auth', async () => {
     let seenAuth: string | undefined;
     let seenHost: string | undefined;
+    let seenRelayCredential: string | undefined;
+    let seenConnectionScopedHeader: string | undefined;
     loopback = http.createServer((req, res) => {
       seenAuth = req.headers.authorization;
       seenHost = req.headers.host;
+      seenRelayCredential = req.headers['x-dash-relay-credential'] as string | undefined;
+      seenConnectionScopedHeader = req.headers['x-phone-hop'] as string | undefined;
       if (req.url === '/agents') {
         res.writeHead(200, { 'content-type': 'application/json' });
         res.end('{"ok":true}');
@@ -86,7 +90,12 @@ describe('relay-client', () => {
         kind: 'http',
         method: 'GET',
         path: '/agents',
-        headers: { authorization: 'Bearer apptoken' },
+        headers: {
+          authorization: 'Bearer apptoken',
+          connection: 'keep-alive, x-phone-hop',
+          'x-phone-hop': 'must-not-reach-loopback',
+          'x-dash-relay-credential': 'already-consumed-relay-credential',
+        },
       }),
     );
     ws.send(encodeFrame({ t: 'end', streamId: 1 }));
@@ -101,6 +110,8 @@ describe('relay-client', () => {
     // Phone auth forwarded verbatim; loopback Host rewritten to the local server.
     expect(seenAuth).toBe('Bearer apptoken');
     expect(seenHost).toBe(`127.0.0.1:${mgmtPort}`);
+    expect(seenRelayCredential).toBeUndefined();
+    expect(seenConnectionScopedHeader).toBeUndefined();
   });
 
   it('forwards an upstream error as a close frame', async () => {
@@ -274,6 +285,67 @@ describe('relay-client', () => {
     const dataFrame = received.find((f) => f.t === 'data') as Extract<Frame, { t: 'data' }>;
     expect(decodeChunk(dataFrame.chunk).toString()).toContain('"type":"event"');
     expect(dataFrame.binary).toBe(false); // text frame preserved as text
+  });
+
+  it('forwards WS Authorization while regenerating handshake headers and stripping relay auth', async () => {
+    let seenHeaders: http.IncomingHttpHeaders | undefined;
+    chat = new WebSocketServer({ port: 0, host: '127.0.0.1' });
+    await new Promise<void>((resolve) => chat?.on('listening', () => resolve()));
+    const chatPort = (chat.address() as AddressInfo).port;
+    chat.on('connection', (_socket, request) => {
+      seenHeaders = request.headers;
+    });
+
+    relay = new WebSocketServer({ port: 0, host: '127.0.0.1' });
+    await new Promise<void>((resolve) => relay?.on('listening', () => resolve()));
+    const relayPort = (relay.address() as AddressInfo).port;
+    const received: Frame[] = [];
+    const gatewaySocket = new Promise<WebSocket>((resolve) => {
+      relay?.on('connection', (socket) => {
+        socket.on('message', (raw: Buffer) => received.push(decodeFrame(raw.toString())));
+        resolve(socket);
+      });
+    });
+    client = startRelayClient({
+      relayUrl: `ws://127.0.0.1:${relayPort}`,
+      relayToken: 'rt',
+      gatewayId: 'g1',
+      managementPort: 9999,
+      channelPort: chatPort,
+    });
+
+    const socket = await gatewaySocket;
+    socket.send(
+      encodeFrame({
+        t: 'open',
+        streamId: 8,
+        target: 'chat',
+        kind: 'ws',
+        path: '/ws/chat?token=query-fallback',
+        headers: {
+          authorization: 'Malformed phone authorization',
+          host: 'phone.example',
+          connection: 'Upgrade, x-phone-hop',
+          upgrade: 'not-websocket',
+          'x-phone-hop': 'must-not-reach-loopback',
+          'x-phone-trace': 'forward-me',
+          'x-dash-relay-credential': 'already-consumed-relay-credential',
+          'sec-websocket-key': 'attacker-controlled-key',
+          'sec-websocket-version': '99',
+          'sec-websocket-extensions': 'attacker-extension',
+        },
+      }),
+    );
+
+    await waitFor(() => received.some((frame) => frame.t === 'head' && frame.status === 101));
+    expect(seenHeaders?.authorization).toBe('Malformed phone authorization');
+    expect(seenHeaders?.['x-phone-trace']).toBe('forward-me');
+    expect(seenHeaders?.['x-dash-relay-credential']).toBeUndefined();
+    expect(seenHeaders?.['x-phone-hop']).toBeUndefined();
+    expect(seenHeaders?.host).toBe(`127.0.0.1:${chatPort}`);
+    expect(seenHeaders?.['sec-websocket-key']).not.toBe('attacker-controlled-key');
+    expect(seenHeaders?.['sec-websocket-version']).toBe('13');
+    expect(seenHeaders?.['sec-websocket-extensions']).not.toBe('attacker-extension');
   });
 
   it('propagates a loopback 4001 close as a close frame', async () => {

@@ -104,7 +104,7 @@ function sleep(milliseconds) {
 
 export async function managementFetch(harness, path, init = {}, authenticated = true) {
   const headers = new Headers(init.headers);
-  if (authenticated) headers.set('Authorization', `Bearer ${harness.managementToken}`);
+  if (authenticated) headers.set('Authorization', `Bearer ${harness.chatToken}`);
   if (init.body !== undefined) headers.set('Content-Type', 'application/json');
   return fetch(`${harness.managementBaseUrl}${path}`, {
     ...init,

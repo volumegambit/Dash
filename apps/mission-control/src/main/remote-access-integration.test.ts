@@ -267,9 +267,13 @@ describe('hosted remote-access slice (main-process integration)', () => {
     // provisioner (exactly the IPC handler's wiring). Asserts the fixed v2 shape.
     const info = await buildPairingInfo(
       {
-        mgmtToken: 'm-tok',
+        mobileToken: 'mobile-tok',
         chatToken: 'c-tok',
-        lan: { host: '192.168.1.50', mgmtPort: 9300, chatPort: 9200 },
+        lan: {
+          host: '192.168.1.50',
+          port: 9400,
+          tlsCertificateSha256: 'a'.repeat(64),
+        },
         relay: { gatewayId: issued.gatewayId, host: issued.host },
       },
       async (gatewayId) => (await client.createPairing(gatewayId)).credential,
@@ -279,7 +283,7 @@ describe('hosted remote-access slice (main-process integration)', () => {
       mode: 'relay',
       host: `${issued.gatewayId}.relay.example.com`,
       secure: true,
-      mgmtToken: 'm-tok',
+      mgmtToken: 'mobile-tok',
       chatToken: 'c-tok',
       relayCredential: expect.any(String),
     });
@@ -297,7 +301,7 @@ describe('hosted remote-access slice (main-process integration)', () => {
       v: 2,
       host: `${issued.gatewayId}.relay.example.com`,
       secure: true,
-      mgmtToken: 'm-tok',
+      mgmtToken: 'mobile-tok',
       chatToken: 'c-tok',
       relayCredential: info.relayCredential,
     });
@@ -333,9 +337,13 @@ describe('hosted remote-access slice (main-process integration)', () => {
     await expect(
       buildPairingInfo(
         {
-          mgmtToken: 'm-tok',
+          mobileToken: 'mobile-tok',
           chatToken: 'c-tok',
-          lan: { host: '192.168.1.50', mgmtPort: 9300, chatPort: 9200 },
+          lan: {
+            host: '192.168.1.50',
+            port: 9400,
+            tlsCertificateSha256: 'a'.repeat(64),
+          },
           relay: { gatewayId: 'gw-unknown', host: 'relay.example.com' },
         },
         async (gatewayId) => (await client.createPairing(gatewayId)).credential,

@@ -40,22 +40,22 @@ export interface GatewayIdentity {
 
 export type PairingPayload =
   | {
-      v: 1;
-      host: string;
-      mgmtToken: string;
-      chatToken: string;
-      mgmtPort?: number;
-      chatPort?: number;
-      label?: string;
-      secure?: boolean;
-    }
-  | {
       v: 2;
       host: string;
       secure: true;
       mgmtToken: string;
       chatToken: string;
       relayCredential: string;
+    }
+  | {
+      v: 3;
+      host: string;
+      secure: true;
+      mgmtToken: string;
+      chatToken: string;
+      mgmtPort: number;
+      chatPort: number;
+      tlsCertificateSha256: string;
     };
 
 export interface MobileAgent {

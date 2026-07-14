@@ -1,8 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
 import { buildPairingInfo } from './pairing.js';
 
-const lan = { host: '192.168.1.50', mgmtPort: 9300, chatPort: 9200 };
-const base = { mgmtToken: 'm-tok', chatToken: 'c-tok', lan };
+const lan = {
+  host: '192.168.1.50',
+  port: 9400,
+  tlsCertificateSha256: 'a'.repeat(64),
+};
+const base = { mobileToken: 'mobile-tok', chatToken: 'c-tok', lan };
 
 /**
  * Mirror of the renderer's `qrPayload` for relay mode (PairDeviceCard.tsx). Kept
@@ -33,10 +37,12 @@ describe('buildPairingInfo', () => {
     expect(info).toEqual({
       mode: 'lan',
       host: '192.168.1.50',
-      mgmtPort: 9300,
-      chatPort: 9200,
-      mgmtToken: 'm-tok',
+      secure: true,
+      mgmtPort: 9400,
+      chatPort: 9400,
+      mgmtToken: 'mobile-tok',
       chatToken: 'c-tok',
+      tlsCertificateSha256: 'a'.repeat(64),
     });
     expect(provision).not.toHaveBeenCalled();
   });
@@ -51,7 +57,7 @@ describe('buildPairingInfo', () => {
       mode: 'relay',
       host: 'gw-1.relay.example.com',
       secure: true,
-      mgmtToken: 'm-tok',
+      mgmtToken: 'mobile-tok',
       chatToken: 'c-tok',
       relayCredential: 'minted-cred',
     });
@@ -71,7 +77,7 @@ describe('buildPairingInfo', () => {
       v: 2,
       host: 'gw-1.relay.example.com',
       secure: true,
-      mgmtToken: 'm-tok',
+      mgmtToken: 'mobile-tok',
       chatToken: 'c-tok',
       relayCredential: 'minted-cred',
     });

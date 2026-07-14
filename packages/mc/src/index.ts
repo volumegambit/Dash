@@ -96,6 +96,7 @@ export { GatewayStateStore } from './runtime/gateway-state.js';
 export type { GatewayState } from './runtime/gateway-state.js';
 export {
   DEFAULT_CHANNEL_PORT,
+  DEFAULT_LAN_PORT,
   DEFAULT_MANAGEMENT_PORT,
   resolveGatewayPorts,
 } from './runtime/ports.js';

@@ -2,8 +2,8 @@ import QRCode from 'qrcode';
 import { useEffect, useState } from 'react';
 import type { PairingInfo } from '../../../shared/ipc.js';
 
-/** Build the scannable QR payload from the pairing info (v1 LAN or v2 relay). */
-function qrPayload(i: PairingInfo): string {
+/** Build the scannable QR payload from the pairing info (v3 LAN or v2 relay). */
+export function qrPayload(i: PairingInfo): string {
   if (i.mode === 'relay') {
     return JSON.stringify({
       v: 2,
@@ -15,19 +15,21 @@ function qrPayload(i: PairingInfo): string {
     });
   }
   return JSON.stringify({
-    v: 1,
+    v: 3,
     host: i.host,
+    secure: i.secure,
     mgmtToken: i.mgmtToken,
     chatToken: i.chatToken,
     mgmtPort: i.mgmtPort,
     chatPort: i.chatPort,
+    tlsCertificateSha256: i.tlsCertificateSha256,
   });
 }
 
 /**
  * Read-only settings card that renders a QR code the Dash mobile app scans to
- * pair on Android or iOS. The QR encodes the gateway host + both tokens (and, over relay, the
- * per-device relay credential); secrets are never shown as plaintext on screen.
+ * pair on Android or iOS. The QR encodes the gateway host, one phone-scoped mobile token, and,
+ * over relay, the per-device relay credential; secrets are never shown as plaintext on screen.
  * The QR is built as an SVG data URI (pure JS, no canvas) so it renders
  * identically in Electron and under test.
  */
@@ -88,14 +90,14 @@ export function PairDeviceCard(): JSX.Element {
 
       {info?.mode === 'relay' ? (
         <p className="mt-2 max-w-md text-xs text-muted">
-          This code connects your phone over the internet through your relay. The connection tokens
-          and a per-device relay credential are embedded in the QR code and are never displayed
-          here.
+          This code connects your phone over the internet through your relay. The mobile token and a
+          per-device relay credential are embedded in the QR code and are never displayed here.
         </p>
       ) : (
         <p className="mt-2 max-w-md text-xs text-muted">
-          Your phone must be on the same Wi-Fi network. The connection tokens are embedded in the QR
-          code and are never displayed here. To pair over the internet, set up remote access below.
+          Your phone must be on the same Wi-Fi network. The mobile token and pinned gateway identity
+          are embedded in the QR code and are never displayed here. To pair over the internet, set
+          up remote access below.
         </p>
       )}
     </div>

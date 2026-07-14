@@ -14,7 +14,11 @@ import type {
   GatewayChannel,
   GatewayHealthResponse,
 } from './gateway-client.js';
-import { GatewayHttpError, GatewayManagementClient } from './gateway-client.js';
+import {
+  GatewayHttpError,
+  GatewayManagementClient,
+  InvalidGatewayLanTlsFingerprintError,
+} from './gateway-client.js';
 
 const BASE_URL = 'http://localhost:9300';
 const TOKEN = 'test-token';
@@ -149,6 +153,61 @@ describe('GatewayManagementClient', () => {
 
       const client = new GatewayManagementClient(BASE_URL, TOKEN);
       await expect(client.getRelayIdentity()).rejects.toBeInstanceOf(GatewayHttpError);
+    });
+  });
+
+  describe('getLanTlsFingerprint()', () => {
+    it('calls the admin-only LAN TLS route and returns the certificate fingerprint', async () => {
+      mockOk({ certificateSha256: 'b'.repeat(64) });
+
+      const client = new GatewayManagementClient(BASE_URL, TOKEN);
+      const result = await client.getLanTlsFingerprint();
+
+      expect(fetchSpy).toHaveBeenCalledWith(
+        `${BASE_URL}/lan-tls`,
+        expect.objectContaining({ headers: expect.objectContaining(AUTH_HEADER) }),
+      );
+      expect(result).toBe('b'.repeat(64));
+    });
+
+    it('rejects a malformed fingerprint as an explicit capability error', async () => {
+      mockOk({ certificateSha256: 'not-a-sha256-fingerprint' });
+
+      const client = new GatewayManagementClient(BASE_URL, TOKEN);
+
+      await expect(client.getLanTlsFingerprint()).rejects.toBeInstanceOf(
+        InvalidGatewayLanTlsFingerprintError,
+      );
+    });
+
+    it('rejects a non-JSON capability response as the same explicit error', async () => {
+      fetchSpy.mockResolvedValueOnce(
+        new Response('legacy route response', {
+          status: 200,
+          headers: { 'Content-Type': 'text/plain' },
+        }),
+      );
+
+      const client = new GatewayManagementClient(BASE_URL, TOKEN);
+
+      await expect(client.getLanTlsFingerprint()).rejects.toBeInstanceOf(
+        InvalidGatewayLanTlsFingerprintError,
+      );
+    });
+
+    it('rejects a null JSON capability response as the same explicit error', async () => {
+      fetchSpy.mockResolvedValueOnce(
+        new Response('null', {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      );
+
+      const client = new GatewayManagementClient(BASE_URL, TOKEN);
+
+      await expect(client.getLanTlsFingerprint()).rejects.toBeInstanceOf(
+        InvalidGatewayLanTlsFingerprintError,
+      );
     });
   });
 
@@ -610,7 +669,7 @@ describe('GatewayManagementClient', () => {
       await expect(client.getIdentity()).resolves.toEqual(identity);
       expect(health.capabilities).toContain('conversation-sync-v1');
       expect(fetchSpy.mock.calls[0][0]).toBe(`${BASE_URL}/health`);
-      expect(fetchSpy.mock.calls[1][0]).toBe(`${BASE_URL}/mobile/v1/identity`);
+      expect(fetchSpy.mock.calls[1][0]).toBe(`${BASE_URL}/identity`);
       expect(fetchSpy.mock.calls[1][1]).toEqual(
         expect.objectContaining({ headers: expect.objectContaining(AUTH_HEADER) }),
       );
@@ -641,10 +700,10 @@ describe('GatewayManagementClient', () => {
         client.getConversationMessages('conv-1', { limit: 100, before: 'cursor-1' }),
       ).resolves.toEqual(messages);
       expect(String(fetchSpy.mock.calls[0][0])).toContain(
-        '/mobile/v1/conversations?agentId=agent-1&limit=50',
+        '/conversations?agentId=agent-1&limit=50',
       );
       expect(String(fetchSpy.mock.calls[1][0])).toContain(
-        '/mobile/v1/conversations/conv-1/messages?limit=100&before=cursor-1',
+        '/conversations/conv-1/messages?limit=100&before=cursor-1',
       );
       expect(fetchSpy.mock.calls[0][1]).toEqual(
         expect.objectContaining({
@@ -669,7 +728,7 @@ describe('GatewayManagementClient', () => {
       ).resolves.toEqual(summary);
       await expect(client.getConversation('conv/1')).resolves.toEqual(summary);
       expect(fetchSpy.mock.calls[0]).toEqual([
-        `${BASE_URL}/mobile/v1/conversations`,
+        `${BASE_URL}/conversations`,
         expect.objectContaining({
           method: 'POST',
           headers: expect.objectContaining(AUTH_HEADER),
@@ -682,7 +741,7 @@ describe('GatewayManagementClient', () => {
           }),
         }),
       ]);
-      expect(fetchSpy.mock.calls[1][0]).toBe(`${BASE_URL}/mobile/v1/conversations/conv%2F1`);
+      expect(fetchSpy.mock.calls[1][0]).toBe(`${BASE_URL}/conversations/conv%2F1`);
     });
 
     it('patches and deletes conversations with quoted revision preconditions', async () => {
@@ -703,7 +762,7 @@ describe('GatewayManagementClient', () => {
       ).resolves.toEqual(summary);
       await expect(client.deleteConversation('conv/1', 3)).resolves.toEqual(tombstone);
       expect(fetchSpy.mock.calls[0]).toEqual([
-        `${BASE_URL}/mobile/v1/conversations/conv%2F1`,
+        `${BASE_URL}/conversations/conv%2F1`,
         expect.objectContaining({
           method: 'PATCH',
           headers: expect.objectContaining({ 'If-Match': '"2"' }),
@@ -711,7 +770,7 @@ describe('GatewayManagementClient', () => {
         }),
       ]);
       expect(fetchSpy.mock.calls[1]).toEqual([
-        `${BASE_URL}/mobile/v1/conversations/conv%2F1`,
+        `${BASE_URL}/conversations/conv%2F1`,
         expect.objectContaining({
           method: 'DELETE',
           headers: expect.objectContaining({ 'If-Match': '"3"' }),
@@ -728,7 +787,7 @@ describe('GatewayManagementClient', () => {
         replay,
       );
       expect(fetchSpy.mock.calls[0]).toEqual([
-        `${BASE_URL}/mobile/v1/agents/agent%2F1/conversations/conv%2F1/events?sinceSeq=2`,
+        `${BASE_URL}/agents/agent%2F1/conversations/conv%2F1/events?sinceSeq=2`,
         expect.objectContaining({ headers: expect.objectContaining(AUTH_HEADER) }),
       ]);
     });
@@ -743,10 +802,8 @@ describe('GatewayManagementClient', () => {
       const client = new GatewayManagementClient(BASE_URL, TOKEN);
       await client.listConversations();
       await client.getConversationMessages('conv-1');
-      expect(String(fetchSpy.mock.calls[0][0])).toBe(`${BASE_URL}/mobile/v1/conversations`);
-      expect(String(fetchSpy.mock.calls[1][0])).toBe(
-        `${BASE_URL}/mobile/v1/conversations/conv-1/messages`,
-      );
+      expect(String(fetchSpy.mock.calls[0][0])).toBe(`${BASE_URL}/conversations`);
+      expect(String(fetchSpy.mock.calls[1][0])).toBe(`${BASE_URL}/conversations/conv-1/messages`);
     });
 
     it('sends If-Match and exposes a frozen revision conflict', async () => {

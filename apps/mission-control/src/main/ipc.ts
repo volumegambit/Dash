@@ -346,7 +346,7 @@ export class GatewayEventStreamManager {
       abort = new AbortController();
       this.abort = abort;
       const response = await this.options.fetchStream(
-        `${trimTrailingSlash(endpoint.managementBaseUrl)}/mobile/v1/events`,
+        `${trimTrailingSlash(endpoint.managementBaseUrl)}/events`,
         {
           headers: {
             ...endpoint.headers,
@@ -756,8 +756,9 @@ export async function registerIpcHandlers(
   initMcLogging();
 
   const controlPlaneConfig = readControlPlaneConfig();
-  // Gateway ports are fixed (9300/9200) unless overridden via
-  // MC_GATEWAY_MANAGEMENT_PORT / MC_GATEWAY_CHANNEL_PORT — set by QA runs
+  // Gateway ports are fixed (9300/9200/9400) unless overridden via
+  // MC_GATEWAY_MANAGEMENT_PORT / MC_GATEWAY_CHANNEL_PORT /
+  // MC_GATEWAY_LAN_PORT — set by QA runs
   // and secondary profiles so they don't collide with a personal MC's
   // gateway. Resolved once here; every downstream URL follows via
   // gateway-state.json, which the supervisor writes with the real ports.
@@ -770,6 +771,7 @@ export async function registerIpcHandlers(
     controlPlaneUrl: controlPlaneConfig.baseUrl,
     managementPort: gatewayPorts.managementPort,
     channelPort: gatewayPorts.channelPort,
+    lanPort: gatewayPorts.lanPort,
   };
 
   // Hosted control plane wiring. A single shared keychain backs both the
@@ -1389,8 +1391,7 @@ export async function registerIpcHandlers(
   ipcMain.handle('pairing:getInfo', async (): Promise<PairingInfo> => {
     const gatewayState = await new GatewayStateStore(DATA_DIR).read();
     const chatToken = await gw.getChatToken();
-    const managementToken = await gw.getGatewayToken();
-    if (!managementToken || !chatToken) {
+    if (!chatToken) {
       throw new Error('Gateway not running — start it before pairing a device');
     }
     // Relay mode is available once the gateway is enrolled with the control
@@ -1398,14 +1399,19 @@ export async function registerIpcHandlers(
     // LAN pairing. The per-device credential is provisioned by the control
     // plane server-side — MC never holds the relay master secret.
     const issued = await gw.getIssuedGateway();
+    const managementClient = await getRequiredGatewayManagementClient();
+    const lanTlsFingerprint = await managementClient.getLanTlsFingerprint();
     return buildPairingInfo(
       {
-        mgmtToken: managementToken,
+        // The frozen pairing wire name is `mgmtToken`, but the value is the
+        // phone-scoped mobile capability. Never disclose the administrative
+        // management bearer to a paired device.
+        mobileToken: chatToken,
         chatToken,
         lan: {
           host: getLanIp(),
-          mgmtPort: gatewayState?.port ?? gatewayPorts.managementPort,
-          chatPort: gatewayState?.channelPort ?? gatewayPorts.channelPort,
+          port: gatewayState?.lanPort ?? gatewayPorts.lanPort,
+          tlsCertificateSha256: lanTlsFingerprint,
         },
         relay: issued ? { gatewayId: issued.gatewayId, host: issued.host } : undefined,
       },

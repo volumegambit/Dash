@@ -2,7 +2,7 @@
   "v": 2,
   "host": "gateway-01.relay.dash.example",
   "secure": true,
-  "mgmtToken": "mobile-test-token",
-  "chatToken": "mobile-test-token",
+  "mgmtToken": "mobile-token-a",
+  "chatToken": "mobile-token-b",
   "relayCredential": "relay-device-credential"
 }

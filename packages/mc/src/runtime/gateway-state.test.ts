@@ -27,6 +27,7 @@ describe('GatewayStateStore', () => {
       startedAt: '2026-03-08T00:00:00Z',
       port: 9300,
       channelPort: 9301,
+      lanPort: 9400,
     };
     await store.write(state);
     const read = await store.read();
@@ -77,6 +78,7 @@ describe('GatewayStateStore', () => {
       startedAt: '2026-03-08T00:00:00Z',
       port: 9300,
       channelPort: 9301,
+      lanPort: 9400,
     });
   });
 

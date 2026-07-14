@@ -1,4 +1,6 @@
 import type { Server } from 'node:http';
+import { createServer as createHttpsServer } from 'node:https';
+import { networkInterfaces } from 'node:os';
 import { delimiter, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { config } from 'dotenv';
@@ -44,6 +46,8 @@ import { EventBus } from './event-bus.js';
 import { loadOrCreateGatewayId, loadOrCreateGatewayIdentity } from './gateway-identity.js';
 import { recoverGatewayTurns } from './gateway-recovery.js';
 import { createDynamicGateway } from './gateway.js';
+import { createLanMobileApp } from './lan-mobile-app.js';
+import { loadOrCreateLanTlsIdentity } from './lan-tls.js';
 import { createGatewayManagementApp } from './management-api.js';
 import { McpConfigStore } from './mcp-store.js';
 import { migrateIncludeBundled } from './migrate-include-bundled.js';
@@ -67,6 +71,7 @@ async function main() {
 
   const managementPort = flags.managementPort ?? 9300;
   const channelPort = flags.channelPort ?? 9200;
+  const lanPort = flags.lanPort ?? 9400;
   const startedAt = new Date().toISOString();
 
   // One structured logger for the whole gateway process. Text format for
@@ -94,6 +99,18 @@ async function main() {
   // Ensure data dir exists
   const { mkdir } = await import('node:fs/promises');
   await mkdir(dataDir, { recursive: true });
+
+  // A public-LAN listener is safe only when both route namespaces have
+  // explicit credentials. Mission Control always supplies them; tokenless
+  // standalone gateway launches keep their historical loopback-only shape.
+  const hasLanCredentials = Boolean(flags.token?.trim() && flags.chatToken?.trim());
+  const lanAddresses = Object.values(networkInterfaces())
+    .flatMap((entries) => entries ?? [])
+    .filter((entry) => !entry.internal)
+    .map((entry) => entry.address);
+  const lanTls = hasLanCredentials
+    ? await loadOrCreateLanTlsIdentity(dataDir, lanAddresses)
+    : undefined;
 
   // Gateway cryptographic identity (always on, transport-independent). Loads or
   // generates an Ed25519 keypair (private key 0600 at <dataDir>/relay-gateway-key)
@@ -816,7 +833,11 @@ async function main() {
     // disable/delete agent handlers. Same instance the chat coordinator attaches
     // turns to, so the panel reads live runs.
     swarmCoordinator,
+    // Phones receive the chat capability, never the administrative bearer.
+    // The management app accepts it only under `/mobile/v1`.
+    mobileToken: flags.chatToken,
     token: flags.token,
+    lanTlsFingerprint: lanTls?.fingerprint,
     startedAt,
     eventBus,
     logger,
@@ -855,8 +876,10 @@ async function main() {
   const channelApp = new Hono();
   const { injectWebSocket, upgradeWebSocket } = createNodeWebSocket({ app: channelApp });
 
-  // Verbose WS logging in dev mode (opt in via --verbose OR NODE_ENV !== 'production')
-  const verboseWs = flags.verbose || process.env.NODE_ENV !== 'production';
+  // Payload diagnostics are explicit opt-in. Mission Control persists gateway
+  // stdout/stderr, so an inherited development environment must never enable
+  // chat-frame logging implicitly.
+  const verboseWs = flags.verbose === true;
   mountChatWs(channelApp, {
     agents,
     resumableChatHub,
@@ -878,8 +901,36 @@ async function main() {
 
   injectWebSocket(channelServer);
 
+  // One pinned HTTPS/WSS listener is the complete LAN-facing surface. It
+  // forwards only `/mobile/v1` into the canonical management app and mounts
+  // only `/ws/chat`; all administrative routes remain bound to loopback.
+  let lanServer: Server | undefined;
+  if (lanTls) {
+    const lanApp = createLanMobileApp(managementApp);
+    const { injectWebSocket: injectLanWebSocket, upgradeWebSocket: lanUpgradeWebSocket } =
+      createNodeWebSocket({ app: lanApp });
+    mountChatWs(lanApp, {
+      agents,
+      resumableChatHub,
+      token: flags.chatToken,
+      upgradeWebSocket: lanUpgradeWebSocket,
+      eventLogStore,
+      verbose: verboseWs,
+      swarmCoordinator,
+    });
+    lanServer = serve({
+      fetch: lanApp.fetch,
+      port: lanPort,
+      hostname: '0.0.0.0',
+      createServer: createHttpsServer,
+      serverOptions: { key: lanTls.privateKey, cert: lanTls.certificate },
+    }) as Server;
+    injectLanWebSocket(lanServer);
+  }
+
   console.log(`Gateway management API listening on port ${managementPort}`);
   console.log(`Gateway channel server listening on port ${channelPort}`);
+  if (lanServer) console.log(`Gateway pinned mobile LAN server listening on port ${lanPort}`);
 
   // Relay mode: when --relay-url is set, dial OUT to the relay and replay phone
   // traffic against our own loopback servers. With --control-plane-url present
@@ -979,6 +1030,7 @@ async function main() {
     await safeStep('gateway.stop', () => gateway.stop());
     await safeStep('managementServer.close', () => managementServer.close());
     await safeStep('channelServer.close', () => channelServer.close());
+    await safeStep('lanServer.close', () => lanServer?.close());
     // Close the event-log DB last so any in-flight appends from the
     // agents/gateway shutdown path land cleanly. WAL checkpoints are
     // flushed on close, so the next gateway start sees a consistent

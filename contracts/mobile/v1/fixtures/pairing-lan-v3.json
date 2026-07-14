@@ -4,7 +4,7 @@
   "secure": true,
   "mgmtToken": "mobile-test-token",
   "chatToken": "mobile-test-token",
-  "mgmtPort": 70000,
-  "chatPort": 70000,
+  "mgmtPort": 9400,
+  "chatPort": 9400,
   "tlsCertificateSha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 }

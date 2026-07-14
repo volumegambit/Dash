@@ -59,7 +59,12 @@ export interface GatewayManagementOptions {
    * swarms still construct the app; the swarm routes simply aren't mounted.
    */
   swarmCoordinator?: SwarmCoordinator;
+  /** Capability bearer accepted only by the `/mobile/v1` namespace. */
+  mobileToken?: string;
+  /** Administrative bearer accepted by every non-mobile management route. */
   token?: string;
+  /** SHA-256 fingerprint for the persistent LAN HTTPS leaf, exposed only to MC. */
+  lanTlsFingerprint?: string;
   startedAt?: string;
   eventBus?: EventBus;
   mcpDeps?: McpManagementDeps;
@@ -115,40 +120,28 @@ export interface GatewayManagementOptions {
   onShutdown?: () => void | Promise<void>;
 }
 
-/**
- * Keys whose values must never appear in logs. Matched case-insensitively
- * against every property name in a request body. The match is exact (not
- * substring) to keep this tight — fields like `workspace` or `deploymentKey`
- * stay visible, while `providerApiKeys`, `value` (credentials payload),
- * `token`, etc. get redacted.
- */
-const SECRET_KEY_PATTERN =
-  /^(providerApiKeys|token|managementToken|chatToken|relayCredential|secret|password|apiKey|apikey|value|credentials?)$/i;
-
-/**
- * Deep-clone a request body with any secret-keyed values replaced by
- * `[REDACTED]`. Non-mutating: returns a new object so the handler still
- * sees the unredacted body when it calls `c.req.json()` a second time.
- */
-function redactSecrets(value: unknown): unknown {
-  if (value === null || typeof value !== 'object') return value;
-  if (Array.isArray(value)) return value.map(redactSecrets);
-  const out: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-    if (SECRET_KEY_PATTERN.test(k)) {
-      out[k] = '[REDACTED]';
-    } else {
-      out[k] = redactSecrets(v);
-    }
-  }
-  return out;
-}
-
 /** Strip providerApiKeys from agent entries before returning to clients. */
 function stripSecrets(entry: RegisteredAgent): RegisteredAgent {
   const { config, ...rest } = entry;
   const { providerApiKeys: _, ...safeConfig } = config;
   return { ...rest, config: safeConfig as GatewayAgentConfig };
+}
+
+/** Describe failures without serializing their message, stack, cause, or custom properties. */
+function errorLogContext(
+  error: unknown,
+  context: Record<string, unknown> = {},
+): Record<string, unknown> {
+  if (error instanceof Error) {
+    return { ...context, errorKind: 'error', errorMessageLength: error.message.length };
+  }
+  if (typeof error === 'string') {
+    return { ...context, errorKind: 'string', errorMessageLength: error.length };
+  }
+  return {
+    ...context,
+    errorKind: error === null ? 'null' : Array.isArray(error) ? 'array' : typeof error,
+  };
 }
 
 /**
@@ -370,10 +363,10 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
   // attempts are logged too, and so the duration measurement wraps auth +
   // handler. `/health` is excluded to keep polling noise out of logs.
   //
-  // Bodies are captured via `c.req.json()`, which Hono caches per request —
-  // handlers that later call `c.req.json()` get the same parsed result, so
-  // pre-reading here is non-destructive. Malformed JSON is caught and logged
-  // as `[invalid json]`, leaving the handler's own try/catch to return 400.
+  // Request values are deliberately excluded. Agent prompts, conversation
+  // titles, answers, and query filters are user data, and Mission Control
+  // persists this stream to gateway.log. Shape-only metadata is sufficient
+  // for request diagnostics without creating a second transcript.
   app.use('*', async (c, next) => {
     if (c.req.path === '/health' || c.req.path === '/mobile/v1/health') {
       await next();
@@ -382,23 +375,14 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
     const start = Date.now();
     const method = c.req.method;
     const path = c.req.path;
-    const query = c.req.query();
-
-    let body: unknown;
-    if (method !== 'GET' && method !== 'DELETE') {
-      const contentType = c.req.header('Content-Type') ?? '';
-      if (contentType.includes('application/json')) {
-        try {
-          body = redactSecrets(await c.req.json());
-        } catch {
-          body = '[invalid json]';
-        }
-      }
-    }
+    const queryKeys = Object.keys(c.req.query()).sort();
+    const contentType = c.req.header('Content-Type') ?? '';
+    const hasJsonBody =
+      method !== 'GET' && method !== 'DELETE' && contentType.includes('application/json');
 
     const requestContext: Record<string, unknown> = { method, path };
-    if (Object.keys(query).length > 0) requestContext.query = redactSecrets(query);
-    if (body !== undefined) requestContext.body = body;
+    if (queryKeys.length > 0) requestContext.queryKeys = queryKeys;
+    if (hasJsonBody) requestContext.hasJsonBody = true;
     logger.info(`→ ${method} ${path}`, requestContext);
 
     try {
@@ -475,15 +459,15 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
         channel: channelName,
         reason: 'token-rotation',
       });
-      logger.info(`channel "${channelName}" restarted after token rotation`, {
+      logger.info('channel restarted after token rotation', {
         channel: channelName,
         reason: 'token-rotation',
       });
     } catch (err) {
       logger.error(
-        `channel "${channelName}" token-rotation restart failed`,
-        err instanceof Error ? err : undefined,
-        { channel: channelName },
+        'channel token-rotation restart failed',
+        undefined,
+        errorLogContext(err, { channel: channelName }),
       );
     }
   }
@@ -501,9 +485,12 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
       await next();
       return;
     }
-    if (token) {
+    const mobileRoute = c.req.path === '/mobile/v1' || c.req.path.startsWith('/mobile/v1/');
+    const expectedToken = mobileRoute ? options.mobileToken : token;
+    const authConfigured = token !== undefined || options.mobileToken !== undefined;
+    if (authConfigured) {
       const auth = c.req.header('Authorization');
-      if (!auth || auth !== `Bearer ${token}`) {
+      if (!expectedToken || !auth || auth !== `Bearer ${expectedToken}`) {
         return c.json({ code: 'unauthorized', error: 'Unauthorized', retryable: false }, 401);
       }
     }
@@ -547,7 +534,7 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
     app.post('/lifecycle/shutdown', (c) => {
       setTimeout(() => {
         Promise.resolve(onShutdown()).catch((err) => {
-          logger.error('lifecycle shutdown failed', err instanceof Error ? err : undefined);
+          logger.error('lifecycle shutdown failed', undefined, errorLogContext(err));
         });
       }, 100);
       return c.json({ ok: true });
@@ -559,6 +546,14 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
   const identityHandler = (c: Context) => c.json(options.identity);
   app.get('/identity', identityHandler);
   mobileV1.get('/identity', identityHandler);
+
+  // Mission Control reads this over the loopback-only administrative API when
+  // constructing a LAN pairing payload. It is deliberately absent from the
+  // phone-scoped namespace: the fingerprint is transferred out-of-band in the
+  // QR code and then treated as the trust anchor by native clients.
+  if (options.lanTlsFingerprint) {
+    app.get('/lan-tls', (c) => c.json({ certificateSha256: options.lanTlsFingerprint as string }));
+  }
 
   mountConversationRoutes(app, {
     conversations: options.conversationService,
@@ -630,7 +625,7 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
         eventBus?.emit({ type: 'agent:config-changed', agent: entry.name, fields: ['*'] });
         return c.json(stripSecrets(entry), 201);
       } catch (error) {
-        logger.error('mobile agent create failed', error instanceof Error ? error : undefined);
+        logger.error('mobile agent create failed', undefined, errorLogContext(error));
         return c.json(mobileGatewayError(), 500);
       }
     });
@@ -688,9 +683,11 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
         }
         return c.json(stripSecrets(updated));
       } catch (error) {
-        logger.error('mobile agent update failed', error instanceof Error ? error : undefined, {
-          agentId: id,
-        });
+        logger.error(
+          'mobile agent update failed',
+          undefined,
+          errorLogContext(error, { agentId: id }),
+        );
         return c.json(mobileGatewayError(), 500);
       }
     });
@@ -736,9 +733,11 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
           });
           return c.json({ ok: true });
         } catch (error) {
-          logger.error('mobile agent delete failed', error instanceof Error ? error : undefined, {
-            agentId: id,
-          });
+          logger.error(
+            'mobile agent delete failed',
+            undefined,
+            errorLogContext(error, { agentId: id }),
+          );
           return c.json(mobileGatewayError(), 500);
         }
       });
@@ -766,9 +765,11 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
           });
           return c.json({ ok: true });
         } catch (error) {
-          logger.error('mobile agent disable failed', error instanceof Error ? error : undefined, {
-            agentId: id,
-          });
+          logger.error(
+            'mobile agent disable failed',
+            undefined,
+            errorLogContext(error, { agentId: id }),
+          );
           return c.json(mobileGatewayError(), 500);
         }
       });
@@ -790,9 +791,11 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
           });
           return c.json({ ok: true });
         } catch (error) {
-          logger.error('mobile agent enable failed', error instanceof Error ? error : undefined, {
-            agentId: id,
-          });
+          logger.error(
+            'mobile agent enable failed',
+            undefined,
+            errorLogContext(error, { agentId: id }),
+          );
           return c.json(mobileGatewayError(), 500);
         }
       });
@@ -1259,7 +1262,7 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
       return c.json({ title, project: project ? { id: project.id, key: project.key } : null });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      logger.warn(`conversation title generation failed for agent "${agentId}": ${message}`);
+      logger.warn('conversation title generation failed', errorLogContext(err, { agentId }));
       return c.json({ error: message }, 502);
     }
   });

@@ -29,8 +29,11 @@ function isNetworkFailure(error: unknown): boolean {
   return error instanceof DOMException && ['AbortError', 'TimeoutError'].includes(error.name);
 }
 
+const RECONCILIATION_CONCURRENCY = 4;
+
 export class GatewayConversationRepository implements ConversationRepository {
   offline = false;
+  private needsReconciliation = true;
 
   constructor(
     readonly gatewayId: string,
@@ -47,26 +50,55 @@ export class GatewayConversationRepository implements ConversationRepository {
   private async reconcileAbsentCachedConversations(
     page: ConversationPage,
     params: { agentId?: string; limit?: number; cursor?: string },
-  ): Promise<void> {
-    if (params.cursor !== undefined || params.agentId !== undefined) return;
+  ): Promise<boolean | null> {
+    if (params.cursor !== undefined || params.agentId !== undefined) return null;
     const visibleIds = new Set(page.items.map((item) => item.id));
     const cachedIds = await this.cache.getConversationIds();
-    for (const id of cachedIds) {
-      if (visibleIds.has(id)) continue;
-      try {
-        const conversation = await this.client.getConversation(id);
-        if (conversation.status === 'deleted') {
-          await this.purgeDeletedConversation(id);
-        } else {
-          await this.cache.putConversation(conversation);
-        }
-      } catch (error) {
-        if (error instanceof GatewayHttpError && error.status === 404) {
-          await this.purgeDeletedConversation(id);
-          continue;
-        }
-        throw error;
+    const omittedIds = cachedIds.filter((id) => !visibleIds.has(id));
+    let complete = true;
+    for (let index = 0; index < omittedIds.length; index += RECONCILIATION_CONCURRENCY) {
+      const batch = omittedIds.slice(index, index + RECONCILIATION_CONCURRENCY);
+      const results = await Promise.all(
+        batch.map(async (id) => {
+          let conversation: ConversationSummary;
+          try {
+            conversation = await this.client.getConversation(id);
+          } catch (error) {
+            if (error instanceof GatewayHttpError && error.status === 404) {
+              await this.purgeDeletedConversation(id);
+              return true;
+            }
+            return false;
+          }
+          if (conversation.status === 'deleted') {
+            await this.purgeDeletedConversation(id);
+          } else {
+            await this.cache.putConversation(conversation);
+          }
+          return true;
+        }),
+      );
+      if (results.includes(false)) {
+        complete = false;
       }
+    }
+    return complete;
+  }
+
+  private markOffline(): void {
+    this.offline = true;
+    this.needsReconciliation = true;
+  }
+
+  private async reconcileAfterList(
+    page: ConversationPage,
+    params: { agentId?: string; limit?: number; cursor?: string },
+    shouldReconcile: boolean,
+  ): Promise<void> {
+    if (!shouldReconcile) return;
+    const complete = await this.reconcileAbsentCachedConversations(page, params);
+    if (complete !== null) {
+      this.needsReconciliation = !complete;
     }
   }
 
@@ -77,7 +109,7 @@ export class GatewayConversationRepository implements ConversationRepository {
       return value;
     } catch (error) {
       if (!isNetworkFailure(error)) throw error;
-      this.offline = true;
+      this.markOffline();
       return cached();
     }
   }
@@ -88,7 +120,7 @@ export class GatewayConversationRepository implements ConversationRepository {
       return await operation();
     } catch (error) {
       if (!isNetworkFailure(error)) throw error;
-      this.offline = true;
+      this.markOffline();
       throw new ConversationRepositoryOfflineError();
     }
   }
@@ -96,11 +128,12 @@ export class GatewayConversationRepository implements ConversationRepository {
   async list(
     params: { agentId?: string; limit?: number; cursor?: string } = {},
   ): Promise<ConversationPage> {
+    const shouldReconcile = this.needsReconciliation || this.offline;
     return this.readThrough(
       async () => {
         const page = await this.client.listConversations(params);
         await this.cache.putConversationPage(page, params);
-        await this.reconcileAbsentCachedConversations(page, params);
+        await this.reconcileAfterList(page, params, shouldReconcile);
         return page;
       },
       () => this.cache.getConversationPage(params),
@@ -202,7 +235,7 @@ export class GatewayConversationRepository implements ConversationRepository {
       return page.entries;
     } catch (error) {
       if (!isNetworkFailure(error)) throw error;
-      this.offline = true;
+      this.markOffline();
       throw new ConversationRepositoryOfflineError();
     }
   }

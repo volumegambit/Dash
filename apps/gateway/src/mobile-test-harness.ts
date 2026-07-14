@@ -1,5 +1,6 @@
 import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import type { Server } from 'node:http';
+import { createServer as createHttpsServer } from 'node:https';
 import type { AddressInfo, Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -17,6 +18,8 @@ import { SqliteConversationService } from './conversation-service-sqlite.js';
 import { GatewayCredentialStore } from './credential-store.js';
 import { EventBus } from './event-bus.js';
 import { createDynamicGateway } from './gateway.js';
+import { createLanMobileApp } from './lan-mobile-app.js';
+import { loadOrCreateLanTlsIdentity } from './lan-tls.js';
 import { createGatewayManagementApp } from './management-api.js';
 import { ModelsStore } from './models-store.js';
 import { createResumableChatHub } from './resumable-chat-hub.js';
@@ -33,6 +36,9 @@ export interface MobileTestHarnessOptions {
 export interface RunningMobileTestHarness {
   managementBaseUrl: string;
   chatWebSocketUrl: string;
+  mobileBaseUrl: string;
+  mobileChatWebSocketUrl: string;
+  tlsCertificateSha256: string;
   managementToken: string;
   chatToken: string;
   gatewayId: string;
@@ -161,8 +167,22 @@ interface OwnedServer {
   close(): Promise<void>;
 }
 
-async function listen(app: Hono, injectWebSocket: (server: Server) => void): Promise<OwnedServer> {
-  const server = serve({ fetch: app.fetch, hostname: '127.0.0.1', port: 0 }) as Server;
+async function listen(
+  app: Hono,
+  injectWebSocket: (server: Server) => void,
+  tls?: { privateKey: string; certificate: string },
+): Promise<OwnedServer> {
+  const server = serve(
+    tls
+      ? {
+          fetch: app.fetch,
+          hostname: '127.0.0.1',
+          port: 0,
+          createServer: createHttpsServer,
+          serverOptions: { key: tls.privateKey, cert: tls.certificate },
+        }
+      : { fetch: app.fetch, hostname: '127.0.0.1', port: 0 },
+  ) as Server;
   const sockets = new Set<Socket>();
   let closing = false;
   let closePromise: Promise<void> | undefined;
@@ -250,6 +270,7 @@ export async function startMobileTestHarness(
   const slowEventRelease = deferred<void>();
   let managementServer: OwnedServer | undefined;
   let chatServer: OwnedServer | undefined;
+  let lanServer: OwnedServer | undefined;
 
   await credentialStore.init();
   const registered = agentRegistry.register({
@@ -306,6 +327,7 @@ export async function startMobileTestHarness(
       await gateway.stop();
       await closeServer(managementServer);
       await closeServer(chatServer);
+      await closeServer(lanServer);
       conversations.close();
       await logger.close();
       if (ownsDataDir) await rm(dataDir, { recursive: true, force: true });
@@ -314,6 +336,7 @@ export async function startMobileTestHarness(
   };
 
   try {
+    const lanTls = await loadOrCreateLanTlsIdentity(dataDir, ['127.0.0.1']);
     const managementApp = createGatewayManagementApp({
       gateway,
       agents,
@@ -324,13 +347,15 @@ export async function startMobileTestHarness(
       modelsStore,
       conversationService: conversations,
       resumableChatHub: hub,
+      mobileToken: chatToken,
       token: managementToken,
+      lanTlsFingerprint: lanTls.fingerprint,
       startedAt: '2026-07-12T00:00:00.000Z',
       eventBus,
       logger,
     });
-    managementApp.post('/__mobile-test/slow/release', (context) => {
-      if (context.req.header('Authorization') !== `Bearer ${managementToken}`) {
+    managementApp.post('/mobile/v1/__mobile-test/slow/release', (context) => {
+      if (context.req.header('Authorization') !== `Bearer ${chatToken}`) {
         return context.json({ error: 'Unauthorized' }, 401);
       }
       if (scenario !== 'slow') {
@@ -354,11 +379,27 @@ export async function startMobileTestHarness(
     });
     chatServer = await listen(chatApp, chatWebSocket.injectWebSocket);
 
+    const lanApp = createLanMobileApp(managementApp);
+    const lanWebSocket = createNodeWebSocket({ app: lanApp });
+    mountChatWs(lanApp, {
+      agents,
+      resumableChatHub: hub,
+      token: chatToken,
+      upgradeWebSocket: lanWebSocket.upgradeWebSocket,
+      eventLogStore: conversations.eventLog,
+      verbose: false,
+    });
+    lanServer = await listen(lanApp, lanWebSocket.injectWebSocket, lanTls);
+
     const managementPort = portOf(managementServer);
     const chatPort = portOf(chatServer);
+    const lanPort = portOf(lanServer);
     return {
       managementBaseUrl: `http://127.0.0.1:${managementPort}`,
       chatWebSocketUrl: `ws://127.0.0.1:${chatPort}/ws/chat`,
+      mobileBaseUrl: `https://127.0.0.1:${lanPort}`,
+      mobileChatWebSocketUrl: `wss://127.0.0.1:${lanPort}/ws/chat`,
+      tlsCertificateSha256: lanTls.fingerprint,
       managementToken,
       chatToken,
       gatewayId,

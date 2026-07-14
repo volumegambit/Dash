@@ -1,6 +1,8 @@
 export interface LoadConfigOptions {
   managementPort?: number;
   channelPort?: number;
+  /** HTTPS/WSS mobile-only LAN surface. */
+  lanPort?: number;
   token?: string;
   chatToken?: string;
   dataDir?: string;
@@ -80,12 +82,18 @@ export type SwarmConfigOverrides = Partial<{
 
 /**
  * Relay traffic reaches the gateway's loopback servers through the outbound
- * tunnel, so both inner servers must require their own credentials. Local-only
- * mode keeps its historical token-optional behavior.
+ * tunnel, so both inner servers must require their own credentials. Two
+ * nonblank local credentials also enable the LAN listener, where the mobile
+ * bearer must never collapse into the administrative scope. Tokenless or
+ * partially configured local mode keeps its historical loopback-only behavior.
  */
 export function validateGatewayStartupOptions(options: LoadConfigOptions): void {
-  if (options.relayUrl === undefined) return;
-  if (!options.token?.trim() || !options.chatToken?.trim()) {
+  const managementToken = options.token?.trim();
+  const mobileToken = options.chatToken?.trim();
+  if (managementToken && mobileToken && managementToken === mobileToken) {
+    throw new Error('Management and mobile/chat tokens must be distinct when both are configured');
+  }
+  if (options.relayUrl !== undefined && (!managementToken || !mobileToken)) {
     throw new Error(
       'Relay mode requires non-empty --token and --chat-token values to secure the management and chat servers',
     );
@@ -149,6 +157,9 @@ export function parseFlags(argv: string[]): LoadConfigOptions {
       i++;
     } else if (argv[i] === '--channel-port' && argv[i + 1]) {
       options.channelPort = Number(argv[i + 1]);
+      i++;
+    } else if (argv[i] === '--lan-port' && argv[i + 1]) {
+      options.lanPort = Number(argv[i + 1]);
       i++;
     } else if (argv[i] === '--chat-token' && argv[i + 1]) {
       options.chatToken = argv[i + 1];

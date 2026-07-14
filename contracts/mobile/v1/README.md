@@ -40,8 +40,10 @@ fixtures omit it.
 
 The root fixtures are:
 
-- Pairing and gateway: `pairing-lan-v1.json`, `pairing-relay-v2.json`,
-  `health-capabilities.json`, and `identity.json`.
+- Pairing and gateway: current secure payloads are `pairing-lan-v3.json` and
+  `pairing-relay-v2.json`; `pairing-lan-v1.json` is retained as a negative migration fixture so
+  clients keep rejecting legacy plaintext pairing. Gateway fixtures are `health-capabilities.json`
+  and `identity.json`.
 - Agents and models: `agents-list.json`, `agent-create.json`, `agent-update.json`,
   `agent-action-ok.json`, and `models-list.json`.
 - Conversations and replay: `conversation-create.json`, `conversation-patch.json`,
@@ -63,7 +65,8 @@ Structured error fixtures live under `fixtures/errors/`:
 Negative conformance fixtures live under `fixtures/invalid/`:
 
 - Pairing and gateway: `pairing-host-with-scheme.json`, `pairing-port-out-of-range.json`,
-  `pairing-blank-secret.json`, `health-missing-api-version.json`, and
+  `pairing-blank-secret.json`, the v2/v3 mismatched-mobile-token fixtures,
+  `pairing-v3-mismatched-ports.json`, `health-missing-api-version.json`, and
   `identity-missing-gateway-id.json`.
 - Agents and models: `agents-list-secret-leak.json`, `agent-action-not-ok.json`, and
   `models-list-missing-provider.json`.
@@ -90,6 +93,13 @@ Negative conformance fixtures live under `fixtures/invalid/`:
   properties without rejecting the containing frame.
 - Fixed DTOs reject unknown fields. Pairing payloads deliberately allow unknown non-secret
   metadata so future pairing producers remain forward compatible.
+- Both secure pairing modes carry one phone-scoped capability in the frozen `mgmtToken` and
+  `chatToken` fields. Clients trim both values before comparing them and store the single
+  normalized capability. Direct LAN v3 also uses one pinned-TLS listener, so `mgmtPort` and
+  `chatPort` must be equal. Contract checks enforce both semantic invariants in addition to JSON
+  Schema.
+- Pairing producers emit lowercase SHA-256 certificate fingerprints. Native clients may accept
+  uppercase input but normalize the stored pin to lowercase before connecting.
 - Mutating a tombstoned conversation with `PATCH`, or repeating its `DELETE`, returns HTTP 410
   with a non-retryable `not_found` error. `GET` still returns the revisioned tombstone.
 - Any change to a TypeScript wire type or schema requires coordinated updates to the other
