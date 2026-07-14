@@ -123,7 +123,7 @@ export interface GatewayManagementOptions {
  * `token`, etc. get redacted.
  */
 const SECRET_KEY_PATTERN =
-  /^(providerApiKeys|token|secret|password|apiKey|apikey|value|credentials?)$/i;
+  /^(providerApiKeys|token|managementToken|chatToken|relayCredential|secret|password|apiKey|apikey|value|credentials?)$/i;
 
 /**
  * Deep-clone a request body with any secret-keyed values replaced by
@@ -397,7 +397,7 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
     }
 
     const requestContext: Record<string, unknown> = { method, path };
-    if (Object.keys(query).length > 0) requestContext.query = query;
+    if (Object.keys(query).length > 0) requestContext.query = redactSecrets(query);
     if (body !== undefined) requestContext.body = body;
     logger.info(`→ ${method} ${path}`, requestContext);
 

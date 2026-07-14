@@ -317,6 +317,26 @@ describe('createGatewayManagementApp', () => {
     });
   });
 
+  describe('request logging', () => {
+    it('redacts secret query values while preserving non-secret diagnostics', async () => {
+      const info = vi.fn();
+      const { app } = createApp({ logger: { info } });
+
+      const response = await app.request('/agents?token=query-secret&cursor=page-2', {
+        headers: AUTH,
+      });
+
+      expect(response.status).toBe(200);
+      expect(info).toHaveBeenCalledWith(
+        '→ GET /agents',
+        expect.objectContaining({
+          query: { token: '[REDACTED]', cursor: 'page-2' },
+        }),
+      );
+      expect(JSON.stringify(info.mock.calls)).not.toContain('query-secret');
+    });
+  });
+
   describe('explicit mobile v1 namespace', () => {
     it('shares one cold models request across legacy and mobile namespaces', async () => {
       const modelsStore = makeModelsStore();
