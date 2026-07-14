@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { rm } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -95,6 +96,17 @@ export function buildHarnessEnvironment(readiness, scenario) {
     }
   }
   return values;
+}
+
+export function assertSinglePassedTest(summary) {
+  if (
+    summary?.result !== 'Passed' ||
+    summary?.passedTests !== 1 ||
+    summary?.failedTests !== 0 ||
+    summary?.skippedTests !== 0
+  ) {
+    throw new Error('Live gateway result must contain exactly one passed test and no other tests');
+  }
 }
 
 function runnerUsage() {
@@ -380,6 +392,8 @@ async function preflightAndSelectDestination() {
 
 async function runCase(entry, destination) {
   process.stdout.write(`[live-ios] ${entry.scenario}: ${entry.target}\n`);
+  const bundlePath = `ios/LiveGateway-${entry.target.replace(/[^A-Za-z0-9._-]+/g, '-')}.xcresult`;
+  await rm(resolve(ROOT_DIR, bundlePath), { recursive: true, force: true });
   const harness = startHarness(entry.scenario);
   try {
     const readiness = await harness.readiness;
@@ -396,6 +410,8 @@ async function runCase(entry, destination) {
           destination,
           '-collect-test-diagnostics',
           'never',
+          '-resultBundlePath',
+          bundlePath,
           `-only-testing:${entry.target}`,
           'test',
           'CODE_SIGNING_ALLOWED=NO',
@@ -408,14 +424,38 @@ async function runCase(entry, destination) {
       ),
     );
     const diagnostics = harness.diagnostics();
+    let outcome = result.code;
+    if (outcome === 0) {
+      const summaryResult = await runCommand(
+        'xcrun',
+        ['xcresulttool', 'get', 'test-results', 'summary', '--path', bundlePath],
+        {
+          captureStdout: true,
+          timeoutMs: 30_000,
+          label: `${entry.target} result verification`,
+        },
+      );
+      try {
+        if (summaryResult.code !== 0) throw new Error('xcresulttool could not read the result');
+        assertSinglePassedTest(JSON.parse(summaryResult.stdout));
+      } catch {
+        process.stderr.write(
+          `[live-ios] ${entry.target} did not execute exactly one passing test\n`,
+        );
+        outcome = 1;
+      }
+    }
     if (diagnostics.unexpectedStdout) {
       process.stderr.write('[live-ios] gateway harness emitted unexpected stdout\n');
-      return 1;
+      outcome = 1;
     }
-    if (result.code !== 0 && diagnostics.stderr.length > 0) {
+    if (outcome !== 0 && diagnostics.stderr.length > 0) {
       process.stderr.write('[live-ios] gateway harness reported diagnostics; values redacted\n');
     }
-    return result.code;
+    if (outcome === 0) {
+      await rm(resolve(ROOT_DIR, bundlePath), { recursive: true, force: true });
+    }
+    return outcome;
   } finally {
     await terminate(harness.child);
   }

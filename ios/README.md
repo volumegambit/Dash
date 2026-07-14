@@ -101,9 +101,11 @@ node ios/scripts/run-live-gateway-tests.mjs
 ```
 
 The runner requires the pinned iOS 18.4 iPhone, starts a fresh repository gateway harness for each
-selector, and stops at the first failure. It scopes all seven test values to the simulator test
-host, removes them in `finally`, and terminates the harness without printing its credentials. Never
-put tokens in a committed scheme or command history.
+selector, requires exactly one passed and non-skipped test, and stops at the first failure. It
+scopes all seven test values to the simulator test host, removes them in `finally`, and terminates
+the harness without printing its credentials. Successful result bundles are removed; a failed
+selector keeps its secret-free `ios/LiveGateway-*.xcresult` for CI diagnostics. Never put tokens in
+a committed scheme or command history.
 
 ## Pair a gateway
 

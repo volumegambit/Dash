@@ -1,4 +1,5 @@
 import {
+  assertSinglePassedTest,
   buildHarnessEnvironment,
   defaultScenarioMatrix,
   parseRunnerArguments,
@@ -86,5 +87,25 @@ describe('live gateway iOS runner', () => {
       DASH_TEST_AGENT_ID: 'agent-1',
       DASH_TEST_SCENARIO: 'slow',
     });
+  });
+
+  it('requires one executed, non-skipped test in every live result bundle', () => {
+    expect(() =>
+      assertSinglePassedTest({
+        result: 'Passed',
+        passedTests: 1,
+        failedTests: 0,
+        skippedTests: 0,
+      }),
+    ).not.toThrow();
+
+    for (const summary of [
+      { result: 'Passed', passedTests: 0, failedTests: 0, skippedTests: 0 },
+      { result: 'Passed', passedTests: 0, failedTests: 0, skippedTests: 1 },
+      { result: 'Failed', passedTests: 0, failedTests: 1, skippedTests: 0 },
+      { result: 'Passed', passedTests: 2, failedTests: 0, skippedTests: 0 },
+    ]) {
+      expect(() => assertSinglePassedTest(summary)).toThrow(/exactly one passed test/);
+    }
   });
 });
