@@ -85,6 +85,7 @@ beforeEach(() => {
     sending: {},
     unreadConversations: new Set(),
     conversationError: null,
+    connectionIssue: null,
   });
 });
 
@@ -581,6 +582,22 @@ describe('canonical chat store', () => {
       offline: true,
       readOnly: true,
     });
+  });
+
+  it('preserves a repair-required connection issue separately from gateway offline', () => {
+    useChatStore.setState({ gatewayOnline: false });
+    const issue = {
+      conversation: { id: '*', origin: 'gateway' as const },
+      kind: 'repair_required' as const,
+      message: 'Gateway authorization failed. Reconnect this gateway to continue.',
+      retryable: false,
+    };
+
+    useChatStore.getState().handleConnectionIssue(issue);
+
+    expect(useChatStore.getState().connectionIssue).toEqual(issue);
+    expect(useChatStore.getState().conversationError).toBe(issue.message);
+    expect(useChatStore.getState().gatewayOnline).toBe(false);
   });
 
   it.each([

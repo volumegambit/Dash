@@ -100,6 +100,12 @@ const api: MissionControlAPI = {
     ipcRenderer.on('chat:frame', listener);
     return () => ipcRenderer.removeListener('chat:frame', listener);
   },
+  onChatConnectionError: (callback) => {
+    const listener = (_event: Electron.IpcRendererEvent, issue: Parameters<typeof callback>[0]) =>
+      callback(issue);
+    ipcRenderer.on('chat:connectionError', listener);
+    return () => ipcRenderer.removeListener('chat:connectionError', listener);
+  },
   onChatConversationInvalidated: (callback) => {
     const listener = (_event: Electron.IpcRendererEvent, event: ConversationInvalidation) =>
       callback(event);

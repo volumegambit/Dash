@@ -11,6 +11,10 @@ function statusLabel(status: GatewayConnectionStatus | null): string {
 
 function statusText(status: GatewayConnectionStatus | null): string {
   if (!status) return 'Checking...';
+  if (status.issue?.kind === 'repair_required')
+    return `${statusLabel(status)} - reconnect required`;
+  if (status.issue?.kind === 'update_required') return `${statusLabel(status)} - update required`;
+  if (status.issue?.kind === 'rate_limited') return `${statusLabel(status)} - rate limited`;
   return `${statusLabel(status)} - ${status.health}`;
 }
 
@@ -63,6 +67,7 @@ export function GatewayRuntimeSettings(): JSX.Element {
             </span>
           </div>
           <p className="mt-1 truncate font-mono text-[11px] text-muted">{currentEndpoint}</p>
+          {status?.issue && <p className="mt-1 text-xs text-red">{status.issue.message}</p>}
         </div>
         <div className="flex flex-wrap gap-2">
           {currentMode !== 'local' && (

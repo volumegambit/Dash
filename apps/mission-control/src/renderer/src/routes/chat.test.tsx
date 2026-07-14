@@ -101,6 +101,7 @@ function setCanonicalState(
     sending: {},
     unreadConversations: new Set(),
     conversationError: null,
+    connectionIssue: null,
   });
   mockApi.chatListConversations.mockResolvedValue({
     items: conversations,
@@ -369,6 +370,27 @@ describe('canonical conversation UI', () => {
     expect(screen.getByTestId('status-bar-delete')).toBeDisabled();
     await userEvent.click(screen.getByLabelText('Browse conversations'));
     expect(screen.getByText('Cached')).toBeInTheDocument();
+  });
+
+  it('shows a reconnect-required issue instead of a generic offline banner', () => {
+    const ref = { id: gatewayConversation.id, origin: 'gateway' as const };
+    setCanonicalState([{ ...gatewayConversation, offline: true, readOnly: true }], ref);
+    useChatStore.setState({
+      gatewayOnline: false,
+      connectionIssue: {
+        conversation: { id: '*', origin: 'gateway' },
+        kind: 'repair_required',
+        message: 'Gateway authorization failed. Reconnect this gateway to continue.',
+        retryable: false,
+      },
+    });
+
+    render(<Chat />);
+
+    expect(screen.getByText(/gateway authorization failed/i)).toBeInTheDocument();
+    expect(
+      screen.queryByText('Gateway offline — cached conversations are read-only.'),
+    ).not.toBeInTheDocument();
   });
 
   it('keeps remote Stop and question answers enabled while other mutations stay locked', async () => {

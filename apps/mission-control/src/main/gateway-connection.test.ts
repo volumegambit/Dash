@@ -1,10 +1,11 @@
 import { readFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type { RemoteGatewaySecrets } from '@dash/mc';
+import { GatewayHttpError, type RemoteGatewaySecrets } from '@dash/mc';
 import type { GatewayIdentity, MobileHealth } from '@dash/mobile-contract';
 import type { GatewayConnectionStatus, GatewayRelayConnectionInput } from '../shared/ipc.js';
 import {
+  classifyConversationGatewayFailure,
   normalizeGatewayRelayInput,
   saveGatewayRelayConnection,
   testGatewayRelayConnection,
@@ -106,6 +107,43 @@ describe('gateway connection helpers', () => {
 
     await expect(verifyConversationGateway(client)).rejects.toThrow('401 Unauthorized');
   });
+
+  it.each([
+    [
+      'identity authorization',
+      new GatewayHttpError(401, 'get identity', '', {
+        code: 'unauthorized',
+        error: 'Unauthorized',
+        retryable: false,
+      }),
+      { kind: 'repair_required', retryable: false },
+    ],
+    [
+      'identity rate limit',
+      new GatewayHttpError(429, 'get identity', '', {
+        code: 'rate_limited',
+        error: 'Too many requests',
+        retryable: true,
+        details: { retryAfterMs: 9_000 },
+      }),
+      { kind: 'rate_limited', retryable: true, retryAfterMs: 9_000 },
+    ],
+    [
+      'capability mismatch',
+      new GatewayHttpError(426, 'get identity', '', {
+        code: 'capability_required',
+        error: 'Upgrade required',
+        retryable: false,
+      }),
+      { kind: 'update_required', retryable: false },
+    ],
+    ['network outage', new TypeError('fetch failed'), { kind: 'gateway_offline', retryable: true }],
+  ])(
+    'classifies %s without collapsing it into a generic offline state',
+    (_label, error, expected) => {
+      expect(classifyConversationGatewayFailure(error)).toMatchObject(expected);
+    },
+  );
 
   it('normalizes an existing gateway connection and derives the chat URL', () => {
     const normalized = normalizeGatewayRelayInput(validInput, '2026-07-06T12:00:00.000Z');

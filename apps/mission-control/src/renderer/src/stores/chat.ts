@@ -12,7 +12,11 @@ import type {
   MobileWsServerFrame,
 } from '@dash/mobile-contract';
 import { create } from 'zustand';
-import type { ConversationInvalidation, McAgentEvent } from '../../../shared/ipc.js';
+import type {
+  ChatConnectionIssue,
+  ConversationInvalidation,
+  McAgentEvent,
+} from '../../../shared/ipc.js';
 import {
   applySequencedFrame,
   mergeCanonicalMessages,
@@ -116,6 +120,7 @@ export interface ChatState {
   sending: Record<ConversationKey, boolean>;
   unreadConversations: Set<ConversationKey>;
   conversationError: string | null;
+  connectionIssue: ChatConnectionIssue | null;
 
   loadConversations(): Promise<void>;
   loadMoreConversations(): Promise<void>;
@@ -132,6 +137,7 @@ export interface ChatState {
   cancelMessage(ref: ConversationRef): void;
   answerQuestion(ref: ConversationRef, questionId: string, answer: string): void;
   applyFrame(frame: MobileWsServerFrame): Promise<void>;
+  handleConnectionIssue(issue: ChatConnectionIssue): void;
   invalidateConversation(event: ConversationInvalidation): Promise<void>;
 }
 
@@ -306,6 +312,7 @@ export const useChatStore = create<ChatState>((set, get) => {
     sending: {},
     unreadConversations: new Set(),
     conversationError: null,
+    connectionIssue: null,
 
     async loadConversations() {
       const request = ++firstPageRequest;
@@ -319,6 +326,7 @@ export const useChatStore = create<ChatState>((set, get) => {
           conversationAuthority: result.authority,
           gatewayOnline: result.gatewayOnline,
           conversationError: null,
+          connectionIssue: null,
         }));
         firstPagePending = false;
       } catch (error) {
@@ -614,6 +622,10 @@ export const useChatStore = create<ChatState>((set, get) => {
       if (frame.type === 'done' || frame.type === 'error') await refreshTerminal(ref);
     },
 
+    handleConnectionIssue(issue) {
+      set({ connectionIssue: issue, conversationError: issue.message });
+    },
+
     async invalidateConversation(event) {
       const ref = event.conversation;
       if (event.type === 'deleted') {
@@ -654,6 +666,9 @@ export function initChatListeners(): void {
       .getState()
       .applyFrame(frame)
       .catch(() => undefined);
+  });
+  window.api.onChatConnectionError((issue) => {
+    useChatStore.getState().handleConnectionIssue(issue);
   });
   window.api.onChatConversationInvalidated((event) => {
     void useChatStore

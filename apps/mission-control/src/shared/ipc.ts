@@ -127,6 +127,25 @@ export interface ConversationInvalidation {
   conversation: ConversationRef;
 }
 
+export type GatewayConnectionIssueKind =
+  | 'gateway_offline'
+  | 'repair_required'
+  | 'rate_limited'
+  | 'server'
+  | 'update_required';
+
+export interface GatewayConnectionIssue {
+  kind: GatewayConnectionIssueKind;
+  message: string;
+  retryable: boolean;
+  retryAfterMs?: number;
+  closeCode?: number;
+}
+
+export interface ChatConnectionIssue extends GatewayConnectionIssue {
+  conversation: ConversationRef;
+}
+
 export type ChatIpcResult<T> =
   | { ok: true; value: T }
   | { ok: false; error: { message: string; apiError?: MobileApiError } };
@@ -374,6 +393,7 @@ export interface GatewayConnectionStatus {
   profile: GatewayConnectionSettings;
   hasRemoteSecrets: boolean;
   health: 'unknown' | 'healthy' | 'unhealthy';
+  issue?: GatewayConnectionIssue;
 }
 
 export type GatewayConnectionTestResult =
@@ -480,6 +500,7 @@ export interface MissionControlAPI {
 
   // Events (push from main -> renderer)
   onChatFrame(callback: (frame: MobileWsServerFrame) => void): () => void;
+  onChatConnectionError(callback: (issue: ChatConnectionIssue) => void): () => void;
   onChatConversationInvalidated(callback: (event: ConversationInvalidation) => void): () => void;
   onAgentEvent(callback: (conversationId: string, event: McAgentEvent) => void): () => void;
   onChatDone(callback: (conversationId: string) => void): () => void;

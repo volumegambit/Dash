@@ -51,6 +51,7 @@ import { app, dialog, ipcMain, shell } from 'electron';
 import type { BrowserWindow } from 'electron';
 import WebSocket from 'ws';
 import type {
+  ChatConnectionIssue,
   CompanionAgentStatus,
   CompanionSelection,
   ControlPlaneStatus,
@@ -75,6 +76,7 @@ import { createControlPlaneRuntime, readControlPlaneConfig } from './control-pla
 import { ConversationController } from './conversation-controller.js';
 import {
   REMOTE_GATEWAY_TEST_FAILURE,
+  classifyConversationGatewayFailure,
   headersForRemoteGateway,
   localGatewayProfile,
   publicGatewayConnectionStatus,
@@ -860,16 +862,18 @@ export async function registerIpcHandlers(
     const profile = await getGatewayConnectionProfile();
     const hasRemoteSecrets = Boolean(await keychain.getRemoteGatewaySecrets());
     let health: GatewayConnectionStatus['health'] = 'unknown';
+    let issue: GatewayConnectionStatus['issue'];
     try {
       const client = await getGatewayManagementClient(false);
       if (client) {
-        await client.health();
+        await verifyConversationGateway(client);
         health = 'healthy';
       }
-    } catch {
+    } catch (error) {
       health = 'unhealthy';
+      issue = classifyConversationGatewayFailure(error);
     }
-    return publicGatewayConnectionStatus(profile, hasRemoteSecrets, health);
+    return publicGatewayConnectionStatus(profile, hasRemoteSecrets, health, issue);
   };
 
   // First-run detection: if there's no gateway-state.json yet, we
@@ -915,6 +919,11 @@ export async function registerIpcHandlers(
     }
   };
 
+  const sendChatConnectionIssue = (issue: ChatConnectionIssue): void => {
+    const win = getWindow();
+    if (win && !win.isDestroyed()) win.webContents.send('chat:connectionError', issue);
+  };
+
   const gatewayConversationRepository = (): GatewayConversationRepository | null =>
     pendingConversationRuntime?.repository instanceof GatewayConversationRepository
       ? pendingConversationRuntime.repository
@@ -956,16 +965,14 @@ export async function registerIpcHandlers(
             if (win && !win.isDestroyed()) win.webContents.send('chat:frame', frame);
           },
           onConnectionError: (conversationId, error) => {
-            const win = getWindow();
-            if (win && !win.isDestroyed()) {
-              win.webContents.send('chat:connectionError', {
-                conversation: { id: conversationId, origin: 'gateway' },
-                kind: error.kind,
-                message: error.message,
-                retryAfterMs: error.retryAfterMs,
-                closeCode: error.closeCode,
-              });
-            }
+            sendChatConnectionIssue({
+              conversation: { id: conversationId, origin: 'gateway' },
+              kind: error.kind,
+              message: error.message,
+              retryable: error.retryable ?? false,
+              ...(error.retryAfterMs !== undefined ? { retryAfterMs: error.retryAfterMs } : {}),
+              ...(error.closeCode !== undefined ? { closeCode: error.closeCode } : {}),
+            });
           },
           onProtocolError: (conversationId, message) => {
             const win = getWindow();
@@ -1071,8 +1078,15 @@ export async function registerIpcHandlers(
       });
       if (!isCurrent()) return false;
       configureConversationRuntime({ ...verified, online: true }, client, endpoint);
-    } catch {
+    } catch (error) {
+      const issue = classifyConversationGatewayFailure(error);
       await restoreOfflineConversationRuntime(isCurrent);
+      if (isCurrent()) {
+        sendChatConnectionIssue({
+          conversation: { id: '*', origin: 'gateway' },
+          ...issue,
+        });
+      }
       return false;
     }
     // The renderer still uses the legacy wire until Tasks 8-9, so the

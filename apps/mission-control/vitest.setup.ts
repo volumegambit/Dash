@@ -117,6 +117,7 @@ function createMockApi(): MockApi {
 
     // Events (push from main -> renderer)
     onChatFrame: vi.fn().mockReturnValue(() => {}),
+    onChatConnectionError: vi.fn().mockReturnValue(() => {}),
     onChatConversationInvalidated: vi.fn().mockReturnValue(() => {}),
     onAgentEvent: vi.fn().mockReturnValue(() => {}),
     onChatDone: vi.fn().mockReturnValue(() => {}),

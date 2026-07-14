@@ -1592,6 +1592,7 @@ export function Chat(): JSX.Element {
     sending,
     unreadConversations,
     conversationError,
+    connectionIssue,
     loadConversations,
     loadMoreConversations,
     ensureConversation,
@@ -2449,7 +2450,12 @@ export function Chat(): JSX.Element {
             </div>
           )}
 
-          {!gatewayOnline && selectedConversation?.origin === 'gateway' && (
+          {connectionIssue && selectedConversation?.origin === 'gateway' && (
+            <div className="shrink-0 border-b border-border bg-yellow-900/20 px-6 py-2 text-xs text-yellow-200">
+              {connectionIssue.message}
+            </div>
+          )}
+          {!connectionIssue && !gatewayOnline && selectedConversation?.origin === 'gateway' && (
             <div className="shrink-0 border-b border-border bg-yellow-900/20 px-6 py-2 text-xs text-yellow-200">
               Gateway offline — cached conversations are read-only.
             </div>
