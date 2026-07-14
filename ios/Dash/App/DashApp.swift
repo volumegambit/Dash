@@ -2,7 +2,7 @@ import SwiftUI
 
 @main
 struct DashApp: App {
-  @State private var launch = AppLaunch()
+  @State private var launch = AppLaunch(factory: .processEnvironment)
 
   var body: some Scene {
     WindowGroup {
