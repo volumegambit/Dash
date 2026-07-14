@@ -79,6 +79,8 @@ struct PairingVerifier: Sendable {
 
     await onStep(.reachability)
     let health = try await gateway.health()
+    guard health.status == "healthy" else { throw GatewayError.gatewayOffline }
+    guard health.apiVersion == 1 else { throw GatewayError.updateRequired }
 
     await onStep(.capabilities)
     let capabilities = Set(health.capabilities)

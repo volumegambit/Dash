@@ -55,6 +55,32 @@ struct PairingFeatureTests {
     }
   }
 
+  @Test("verification rejects unhealthy or incompatible mobile APIs before identity")
+  func healthContractGate() async {
+    let cases: [(status: String, apiVersion: Int, expected: GatewayError)] = [
+      ("starting", 1, .gatewayOffline),
+      ("healthy", 2, .updateRequired),
+    ]
+
+    for value in cases {
+      let recorder = PairingCallRecorder()
+      let gateway = FakePairingGateway(
+        recorder: recorder,
+        status: value.status,
+        apiVersion: value.apiVersion
+      )
+      let verifier = PairingVerifier(
+        makeGateway: { _, _ in gateway },
+        makeChat: { _ in FakePairingChatProbe(recorder: recorder) }
+      )
+
+      await #expect(throws: value.expected) {
+        try await verifier.verify(payload: lanPayload()) { _ in }
+      }
+      #expect(await recorder.values == [.health])
+    }
+  }
+
   @Test("successful pairing verifies before Keychain, metadata, and activation")
   func persistenceOrder() async throws {
     let recorder = PairingCallRecorder()
@@ -634,25 +660,31 @@ private actor PairingCallRecorder {
 
 private actor FakePairingGateway: PairingGatewayChecking {
   let recorder: PairingCallRecorder
+  let status: String
+  let apiVersion: Int
   let capabilities: [MobileCapability]
 
   init(
     recorder: PairingCallRecorder,
+    status: String = "healthy",
+    apiVersion: Int = 1,
     capabilities: [MobileCapability] = [.conversationSyncV1, .chatResumeV1]
   ) {
     self.recorder = recorder
+    self.status = status
+    self.apiVersion = apiVersion
     self.capabilities = capabilities
   }
 
   func health() async throws -> HealthResponse {
     await recorder.append(.health)
     return HealthResponse(
-      status: "ok",
+      status: status,
       startedAt: Date(timeIntervalSince1970: 1),
       pid: 1,
       agents: 1,
       channels: 0,
-      apiVersion: 1,
+      apiVersion: apiVersion,
       capabilities: capabilities
     )
   }
