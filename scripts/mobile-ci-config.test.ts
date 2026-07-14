@@ -14,9 +14,7 @@ describe('mobile CI wiring', () => {
       expect.arrayContaining([
         'ios/**',
         'contracts/mobile/v1/**',
-        'apps/gateway/src/chat-ws.ts',
-        'apps/gateway/src/conversation-*.ts',
-        'apps/gateway/src/mobile-test-harness*',
+        'apps/gateway/src/**',
       ]),
     );
     expect(branches).toEqual(expect.arrayContaining(['main', 'codex/mc-vps-gateway-relay']));
