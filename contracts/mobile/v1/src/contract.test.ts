@@ -102,6 +102,31 @@ describe('mobile v1 contract fixtures', () => {
     expect(openapi.servers).toEqual([{ url: '/mobile/v1' }]);
   });
 
+  it('documents the exact conversation list query parameters', async () => {
+    const openapi = parse(await readFile(join(root, 'openapi.yaml'), 'utf8')) as {
+      paths?: Record<string, { get?: { parameters?: Array<Record<string, unknown>> } }>;
+      components?: { parameters?: Record<string, Record<string, unknown>> };
+    };
+
+    expect(openapi.paths?.['/conversations']?.get?.parameters).toEqual([
+      { $ref: '#/components/parameters/ConversationAgentId' },
+      { $ref: '#/components/parameters/ConversationLimit' },
+      { $ref: '#/components/parameters/Cursor' },
+    ]);
+    expect(openapi.components?.parameters?.ConversationAgentId).toEqual({
+      name: 'agentId',
+      in: 'query',
+      required: false,
+      schema: { type: 'string', minLength: 1 },
+    });
+    expect(openapi.components?.parameters?.ConversationLimit).toEqual({
+      name: 'limit',
+      in: 'query',
+      required: false,
+      schema: { type: 'integer', minimum: 1, maximum: 100, default: 50 },
+    });
+  });
+
   it('documents tombstoned conversation mutations as structured gone responses', async () => {
     const openapi = parse(await readFile(join(root, 'openapi.yaml'), 'utf8')) as {
       paths?: Record<
@@ -118,6 +143,19 @@ describe('mobile v1 contract fixtures', () => {
     });
     expect(conversation?.delete?.responses?.['410']).toEqual({
       $ref: '#/components/responses/Gone',
+    });
+  });
+
+  it('documents If-Match as the quoted revision ETag sent on the wire', async () => {
+    const openapi = parse(await readFile(join(root, 'openapi.yaml'), 'utf8')) as {
+      components?: { parameters?: Record<string, Record<string, unknown>> };
+    };
+
+    expect(openapi.components?.parameters?.IfMatch).toEqual({
+      name: 'If-Match',
+      in: 'header',
+      required: true,
+      schema: { type: 'string', pattern: '^"(0|[1-9][0-9]*)"$' },
     });
   });
 
@@ -142,13 +180,20 @@ describe('mobile v1 contract fixtures', () => {
     ).toEqual({ $ref: '#/components/schemas/ConversationSummary' });
   });
 
-  it('uses the frozen before cursor for backward message pagination', async () => {
+  it('documents the exact backward message pagination parameters', async () => {
     const openapi = parse(await readFile(join(root, 'openapi.yaml'), 'utf8')) as {
       paths?: Record<string, { get?: { parameters?: Array<Record<string, unknown>> } }>;
       components?: { parameters?: Record<string, Record<string, unknown>> };
     };
-    expect(openapi.paths?.['/conversations/{id}/messages']?.get?.parameters).toContainEqual({
-      $ref: '#/components/parameters/BeforeCursor',
+    expect(openapi.paths?.['/conversations/{id}/messages']?.get?.parameters).toEqual([
+      { $ref: '#/components/parameters/MessageLimit' },
+      { $ref: '#/components/parameters/BeforeCursor' },
+    ]);
+    expect(openapi.components?.parameters?.MessageLimit).toEqual({
+      name: 'limit',
+      in: 'query',
+      required: false,
+      schema: { type: 'integer', minimum: 1, maximum: 200, default: 100 },
     });
     expect(openapi.components?.parameters?.BeforeCursor).toEqual({
       name: 'before',

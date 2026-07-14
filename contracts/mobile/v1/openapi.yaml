@@ -160,6 +160,8 @@ paths:
     get:
       operationId: listConversations
       parameters:
+        - $ref: '#/components/parameters/ConversationAgentId'
+        - $ref: '#/components/parameters/ConversationLimit'
         - $ref: '#/components/parameters/Cursor'
       responses:
         '200':
@@ -267,6 +269,7 @@ paths:
     get:
       operationId: listConversationMessages
       parameters:
+        - $ref: '#/components/parameters/MessageLimit'
         - $ref: '#/components/parameters/BeforeCursor'
       responses:
         '200':
@@ -337,6 +340,21 @@ components:
       in: path
       required: true
       schema: { type: string, format: uuid }
+    ConversationAgentId:
+      name: agentId
+      in: query
+      required: false
+      schema: { type: string, minLength: 1 }
+    ConversationLimit:
+      name: limit
+      in: query
+      required: false
+      schema: { type: integer, minimum: 1, maximum: 100, default: 50 }
+    MessageLimit:
+      name: limit
+      in: query
+      required: false
+      schema: { type: integer, minimum: 1, maximum: 200, default: 100 }
     Cursor:
       name: cursor
       in: query
@@ -351,7 +369,7 @@ components:
       name: If-Match
       in: header
       required: true
-      schema: { type: integer, minimum: 1 }
+      schema: { type: string, pattern: '^"(0|[1-9][0-9]*)"$' }
   responses:
     Unauthorized:
       description: Missing or invalid bearer token.
