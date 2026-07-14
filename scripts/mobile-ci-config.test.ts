@@ -11,11 +11,7 @@ describe('mobile CI wiring', () => {
     const commands = steps.map((step: { run?: string }) => step.run ?? '').join('\n');
 
     expect(paths).toEqual(
-      expect.arrayContaining([
-        'ios/**',
-        'contracts/mobile/v1/**',
-        'apps/gateway/src/**',
-      ]),
+      expect.arrayContaining(['ios/**', 'contracts/mobile/v1/**', 'apps/gateway/src/**']),
     );
     expect(branches).toEqual(expect.arrayContaining(['main', 'codex/mc-vps-gateway-relay']));
     expect(commands).toContain('ios/scripts/check-project.sh');

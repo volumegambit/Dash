@@ -14,20 +14,19 @@ describe('mobile documentation', () => {
       ios,
       qa,
       mcQA,
-    ] =
-      await Promise.all([
-        readFile('README.md', 'utf8'),
-        readFile('docs/getting-started.mdx', 'utf8'),
-        readFile('docs/remote-access.mdx', 'utf8'),
-        readFile('docs/architecture.mdx', 'utf8'),
-        readFile('docs/api-reference.mdx', 'utf8'),
-        readFile('docs/troubleshooting.mdx', 'utf8'),
-        readFile('docs/ios.mdx', 'utf8'),
-        readFile('docs/docs.json', 'utf8'),
-        readFile('ios/README.md', 'utf8'),
-        readFile('ios/QA_CHECKLIST.md', 'utf8'),
-        readFile('apps/mission-control/TEST_PLAN.md', 'utf8'),
-      ]);
+    ] = await Promise.all([
+      readFile('README.md', 'utf8'),
+      readFile('docs/getting-started.mdx', 'utf8'),
+      readFile('docs/remote-access.mdx', 'utf8'),
+      readFile('docs/architecture.mdx', 'utf8'),
+      readFile('docs/api-reference.mdx', 'utf8'),
+      readFile('docs/troubleshooting.mdx', 'utf8'),
+      readFile('docs/ios.mdx', 'utf8'),
+      readFile('docs/docs.json', 'utf8'),
+      readFile('ios/README.md', 'utf8'),
+      readFile('ios/QA_CHECKLIST.md', 'utf8'),
+      readFile('apps/mission-control/TEST_PLAN.md', 'utf8'),
+    ]);
 
     expect(root).toContain('| `ios/` |');
     expect(root).toContain('| `android/` |');
