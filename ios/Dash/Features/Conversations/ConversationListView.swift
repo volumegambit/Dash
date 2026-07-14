@@ -48,6 +48,7 @@ struct ConversationListView: View {
         }
       }
     }
+    .accessibilityIdentifier("conversation.list")
     .listStyle(.plain)
     .navigationTitle("Conversations")
     .refreshable { await feature.refresh() }
@@ -61,6 +62,7 @@ struct ConversationListView: View {
             .frame(minWidth: 44, minHeight: 44)
         }
         .disabled(feature.mutationsAllowed == false)
+        .accessibilityIdentifier("conversation.new")
         .accessibilityHint(
           feature.mutationsAllowed ? "" : "Connect to the gateway to create a conversation"
         )
@@ -248,6 +250,7 @@ struct ConversationListView: View {
     }
     .buttonStyle(.plain)
     .accessibilityElement(children: .combine)
+    .accessibilityIdentifier("conversation.row.\(conversation.id)")
   }
 }
 

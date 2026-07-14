@@ -31,6 +31,7 @@ struct AssistantEventViews: View {
         Text(projection.text)
           .textSelection(.enabled)
           .accessibilityHidden(!exposesResponseToAccessibility)
+          .accessibilityIdentifier("chat.final.response")
       }
 
       ForEach(projection.toolCards) { tool in
@@ -142,6 +143,7 @@ struct ToolCardView: View {
     .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
     .accessibilityElement(children: .contain)
     .accessibilityLabel("Tool \(tool.name), \(tool.status.title)")
+    .accessibilityIdentifier("chat.tool.\(tool.id)")
   }
 }
 
@@ -191,6 +193,7 @@ struct WorkerCardView: View {
     .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
     .accessibilityElement(children: .contain)
     .accessibilityLabel("Worker \(worker.role), \(worker.status.title)")
+    .accessibilityIdentifier("chat.worker.\(worker.key.workerID)")
   }
 }
 
@@ -256,6 +259,7 @@ struct QuestionView: View {
     .padding(10)
     .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
     .accessibilityElement(children: .contain)
+    .accessibilityIdentifier("chat.question.\(question.id)")
     .onChange(of: question.id) { _, _ in
       draft.reconcile(with: question)
     }

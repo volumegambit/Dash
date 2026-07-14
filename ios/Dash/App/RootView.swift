@@ -34,6 +34,7 @@ struct RootView: View {
       }
       .tabItem {
         Label("Conversations", systemImage: "bubble.left.and.bubble.right")
+          .accessibilityIdentifier(AppTab.conversations.accessibilityID)
       }
       .tag(AppTab.conversations)
 
@@ -43,13 +44,19 @@ struct RootView: View {
             agentDestination(route)
           }
       }
-      .tabItem { Label("Agents", systemImage: "person.2") }
+      .tabItem {
+        Label("Agents", systemImage: "person.2")
+          .accessibilityIdentifier(AppTab.agents.accessibilityID)
+      }
       .tag(AppTab.agents)
 
       NavigationStack {
         settingsRoot
       }
-      .tabItem { Label("Settings", systemImage: "gearshape") }
+      .tabItem {
+        Label("Settings", systemImage: "gearshape")
+          .accessibilityIdentifier(AppTab.settings.accessibilityID)
+      }
       .tag(AppTab.settings)
     }
   }
@@ -66,6 +73,7 @@ struct RootView: View {
       List(AppTab.allCases, selection: selection) { tab in
         Label(tab.title, systemImage: tab.systemImage)
           .frame(minWidth: 44, minHeight: 44)
+          .accessibilityIdentifier(tab.accessibilityID)
           .tag(tab)
       }
       .navigationTitle(Self.title)
@@ -285,6 +293,10 @@ private struct FeatureSlotView: View {
 }
 
 extension AppTab {
+  fileprivate var accessibilityID: String {
+    "tab.\(rawValue)"
+  }
+
   fileprivate var title: LocalizedStringKey {
     switch self {
     case .conversations: "Conversations"

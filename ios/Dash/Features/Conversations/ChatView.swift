@@ -111,6 +111,7 @@ struct ChatView: View {
     }
     .scrollDismissesKeyboard(.interactively)
     .defaultScrollAnchor(.bottom)
+    .accessibilityIdentifier("chat.transcript")
   }
 
   @ViewBuilder

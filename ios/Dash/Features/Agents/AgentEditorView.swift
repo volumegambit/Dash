@@ -29,6 +29,7 @@ struct AgentEditorView: View {
         TextField("Name", text: $draft.name)
           .textInputAutocapitalization(.words)
           .disabled(original != nil)
+          .accessibilityIdentifier("agent.editor.name")
         if original != nil {
           Text("Agent names are read-only after creation.")
             .font(.caption)
@@ -38,6 +39,7 @@ struct AgentEditorView: View {
         TextField("Model", text: $draft.model)
           .textInputAutocapitalization(.never)
           .autocorrectionDisabled()
+          .accessibilityIdentifier("agent.editor.model")
       }
 
       if let configuredMissingModel {
@@ -60,6 +62,7 @@ struct AgentEditorView: View {
       Section("System prompt") {
         TextField("Instructions for this agent", text: $draft.systemPrompt, axis: .vertical)
           .lineLimit(5...12)
+          .accessibilityIdentifier("agent.editor.prompt")
       }
 
       Section {
@@ -79,6 +82,7 @@ struct AgentEditorView: View {
         }
         .buttonStyle(.borderedProminent)
         .disabled(feature.mutationsAllowed == false || isSaving)
+        .accessibilityIdentifier("agent.editor.save")
       }
     }
     .navigationTitle(original == nil ? "Create agent" : "Edit agent")

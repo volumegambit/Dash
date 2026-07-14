@@ -49,12 +49,14 @@ struct AgentDetailView: View {
             }
             .buttonStyle(.borderedProminent)
             .disabled(feature.mutationsAllowed == false || isWorking)
+            .accessibilityIdentifier("agent.startChat")
           }
 
           configurationSection(agent)
           integrationsSection(agent)
           swarmSection(agent)
         }
+        .accessibilityIdentifier("agent.detail.\(agentID)")
       } else {
         ContentUnavailableView(
           "Agent unavailable",
@@ -74,6 +76,7 @@ struct AgentDetailView: View {
             )
           }
           .disabled(feature.mutationsAllowed == false || isWorking)
+          .accessibilityIdentifier("agent.edit")
         }
         ToolbarItem(placement: .topBarTrailing) {
           Menu {
@@ -101,6 +104,7 @@ struct AgentDetailView: View {
               .frame(minWidth: 44, minHeight: 44)
           }
           .disabled(feature.mutationsAllowed == false || isWorking)
+          .accessibilityIdentifier("agent.actions")
         }
       }
     }

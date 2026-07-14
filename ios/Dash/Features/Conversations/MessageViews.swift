@@ -55,6 +55,7 @@ struct ChatMessageView: View {
         .background(bubbleBackground, in: RoundedRectangle(cornerRadius: 16))
         .accessibilityElement(children: .contain)
         .accessibilityLabel(message.accessibilityStatusLabel)
+        .accessibilityIdentifier("chat.message.\(message.id)")
 
       if message.role == .assistant {
         Spacer(minLength: 44)
