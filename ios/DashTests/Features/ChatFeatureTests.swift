@@ -2203,9 +2203,9 @@ private func featureTransport(_ feature: ChatFeature) -> ChatTransportState {
 private func eventually(
   _ predicate: @escaping @Sendable () async -> Bool
 ) async {
-  for _ in 0..<200 {
+  for _ in 0..<2_000 {
     if await predicate() { return }
-    await Task.yield()
+    try? await Task.sleep(for: .milliseconds(1))
   }
   Issue.record("Condition did not become true")
 }

@@ -32,7 +32,16 @@ import Testing
           "malformed-port",
         ]
       )
-      #expect(UITestPasteboardFixture.canonicalLAN.contents.contains("mgmt-test-token"))
+      #expect(
+        UITestPasteboardFixture.canonicalLAN.contents.contains(
+          #""mgmtToken":"mobile-test-token""#
+        )
+      )
+      #expect(
+        UITestPasteboardFixture.canonicalLAN.contents.contains(
+          #""chatToken":"mobile-test-token""#
+        )
+      )
       #expect(UITestPasteboardFixture.canonicalRelay.contents.contains("relay-device-credential"))
       #expect(UITestPasteboardFixture.malformedScheme.contents == "dash://pair?payload=not-json")
     }

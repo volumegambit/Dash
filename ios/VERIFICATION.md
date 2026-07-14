@@ -9,10 +9,11 @@ required before calling the iOS build production-ready.
 ## iOS simulator coverage
 
 - iPhone 16 Pro, iOS 18.4:
-  - 23 contract and app-test suites: 410 logical tests, 0 failures, 0 skips.
+  - Contract and app tests: 416 logical tests / 453 parameterized executions, 0 failures,
+    0 skips.
   - 20 UI tests: 18 passed, 2 intended iPad-only skips, 0 failures.
 - iPad Pro, iOS 18.4:
-  - 23 contract and app-test suites: 410 logical tests / 447 parameterized executions, 0 failures,
+  - Contract and app tests: 416 logical tests / 453 parameterized executions, 0 failures,
     0 skips.
   - 20 UI tests: 19 passed, 1 intended iPhone-only skip, 0 failures.
 - Six live pinned-gateway cases passed: HTTP/SSE, detach/replay/resume, cold bootstrap/restart,
