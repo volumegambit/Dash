@@ -36,8 +36,8 @@ fun PairingScreen(
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     var host by rememberSaveable { mutableStateOf("") }
-    var mgmtToken by rememberSaveable { mutableStateOf("") }
-    var chatToken by rememberSaveable { mutableStateOf("") }
+    var mobileToken by rememberSaveable { mutableStateOf("") }
+    var tlsCertificateSha256 by rememberSaveable { mutableStateOf("") }
     val current = state
 
     Column(
@@ -72,26 +72,28 @@ fun PairingScreen(
             modifier = Modifier.fillMaxWidth(),
         )
         OutlinedTextField(
-            value = mgmtToken,
-            onValueChange = { mgmtToken = it },
-            label = { Text("Management token") },
+            value = mobileToken,
+            onValueChange = { mobileToken = it },
+            label = { Text("Mobile token") },
             singleLine = true,
             visualTransformation = PasswordVisualTransformation(),
             modifier = Modifier.fillMaxWidth(),
         )
         OutlinedTextField(
-            value = chatToken,
-            onValueChange = { chatToken = it },
-            label = { Text("Chat token") },
+            value = tlsCertificateSha256,
+            onValueChange = { tlsCertificateSha256 = it },
+            label = { Text("Certificate SHA-256") },
+            supportingText = { Text("Paste the fingerprint from the trusted pairing code") },
             singleLine = true,
-            visualTransformation = PasswordVisualTransformation(),
             modifier = Modifier.fillMaxWidth(),
         )
         if (current is PairingUiState.Error) {
             Text(current.message, color = MaterialTheme.colorScheme.error)
         }
         Button(
-            onClick = { viewModel.submitManual(host, mgmtToken, chatToken) },
+            onClick = {
+                viewModel.submitManual(host, mobileToken, tlsCertificateSha256)
+            },
             enabled = current !is PairingUiState.Validating,
             modifier = Modifier.fillMaxWidth(),
         ) {

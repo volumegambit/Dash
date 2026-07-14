@@ -12,7 +12,7 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
 
 /**
- * Talks to the gateway's frozen `/mobile/v1` HTTP API (management port 9300 by default).
+ * Talks to the gateway's frozen `/mobile/v1` HTTP API at the profile's management endpoint.
  *
  * Endpoints: apps/gateway/src/management-api.ts. All calls send
  * `Authorization: Bearer <mgmtToken>`; non-2xx responses throw [GatewayHttpError].
@@ -22,7 +22,7 @@ class GatewayClient(
     private val mgmtToken: String,
     private val client: OkHttpClient = OkHttpClient(),
     /** Per-device relay credential; when set, sent on every request so the relay
-     *  admits this device. Null for LAN/adb connections. */
+     *  admits this device. Null for pinned LAN connections. */
     private val relayCredential: String? = null,
 ) {
     private val base = "${baseUrl.trimEnd('/')}/mobile/v1"

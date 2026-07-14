@@ -30,6 +30,7 @@ class ProfileStore(
             mgmtToken = cipher.decrypt(mgmtEnc),
             chatToken = cipher.decrypt(chatEnc),
             secure = prefs[SECURE] ?: false,
+            tlsCertificateSha256 = prefs[TLS_CERTIFICATE_SHA256],
             relayCredential = prefs[RELAY_CRED]?.let { cipher.decrypt(it) },
         )
     }
@@ -43,6 +44,12 @@ class ProfileStore(
             prefs[MGMT_TOKEN] = cipher.encrypt(profile.mgmtToken)
             prefs[CHAT_TOKEN] = cipher.encrypt(profile.chatToken)
             prefs[SECURE] = profile.secure
+            val certificateSha256 = profile.tlsCertificateSha256
+            if (certificateSha256 != null) {
+                prefs[TLS_CERTIFICATE_SHA256] = certificateSha256
+            } else {
+                prefs.remove(TLS_CERTIFICATE_SHA256)
+            }
             // Encrypt the relay credential too; clear any stale value for LAN profiles.
             val cred = profile.relayCredential
             if (cred != null) prefs[RELAY_CRED] = cipher.encrypt(cred) else prefs.remove(RELAY_CRED)
@@ -61,6 +68,7 @@ class ProfileStore(
         val MGMT_TOKEN = stringPreferencesKey("mgmt_token_enc")
         val CHAT_TOKEN = stringPreferencesKey("chat_token_enc")
         val SECURE = booleanPreferencesKey("secure")
+        val TLS_CERTIFICATE_SHA256 = stringPreferencesKey("tls_certificate_sha256")
         val RELAY_CRED = stringPreferencesKey("relay_credential_enc")
     }
 }

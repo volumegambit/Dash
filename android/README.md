@@ -4,14 +4,16 @@ A native Android client for [Dash](../README.md). It's a thin **remote client** 
 running Dash gateway — it does **not** run agents on-device or spawn the gateway
 (that stays Mission Control's job on the desktop).
 
-**v1 scope:** chat with your agents (streaming) and monitor/toggle them. Deploying
-agents, connectors, projects, messaging channels, and the relay are out of scope for v1.
+**v1 scope:** chat with your agents (streaming) and monitor/toggle them over a local or
+already-paired relay connection. Deploying agents, connectors, projects, messaging channels,
+and configuring remote access remain in Mission Control.
 
 ## Architecture
 
 Native **Kotlin + Jetpack Compose**, **MVVM + Repository + Flow**. A multi-module
-Gradle project that talks to the gateway's existing HTTP management API (`:9300`) and
-chat WebSocket (`:9200/ws`). Streamed `AgentEvent`s arrive as a Kotlin `Flow` from an
+Gradle project that talks to the gateway's pinned-TLS mobile API
+(`https://<host>:9400/mobile/v1`) and chat WebSocket
+(`wss://<host>:9400/ws/chat`). Streamed `AgentEvent`s arrive as a Kotlin `Flow` from an
 OkHttp WebSocket.
 
 ```
@@ -72,32 +74,38 @@ tests require a device/emulator and are not part of `./gradlew test`.**
 CI runs `./gradlew test` + `assembleDebug` via `.github/workflows/android.yml`, triggered
 only on `android/**` changes (separate from the Node CI so each toolchain stays isolated).
 
-## Connecting in development (before the relay exists)
+## Connecting
 
-The app needs a gateway **host + management token + chat token**. Two ways to get them:
+The app needs a gateway **host + phone-scoped Mobile token**. Local pairing also pins the
+gateway certificate; relay pairing adds a revocable device credential. Two ways to connect:
 
 1. **Pair via QR (recommended).** In Mission Control, open **Settings → Devices** and scan
-   the QR in the **Pair Device** card with the app. The QR encodes the desktop's LAN IP + both tokens.
-2. **Manual entry.** Type the host/IP and paste both tokens on the app's connect screen.
+   the QR in the **Pair Device** card with the app. LAN pairing payloads use version 3 and
+   include the desktop's LAN IP, Mobile token, port 9400, and exact SHA-256
+   leaf-certificate fingerprint.
+2. **Manual entry (advanced local recovery).** Type the host/IP, Mobile token, and certificate
+   SHA-256 fingerprint. The local port is fixed at 9400. Mission Control deliberately keeps the
+   token and fingerprint inside the QR instead of displaying copyable values, so the normal user
+   flow is QR scanning; manual entry is for operators who already obtained those values through
+   trusted local development tooling.
 
 For a device/emulator that should reach a gateway on *this* machine:
 
 ```bash
-# Same Wi-Fi: use the Mac's LAN IP (shown on the Pair Device card in Settings → Devices), or
-# tunnel localhost over USB/emulator with adb reverse:
-adb reverse tcp:9300 tcp:9300   # management API
-adb reverse tcp:9200 tcp:9200   # chat WebSocket
-# then pair with host = localhost
+# Same Wi-Fi: use the Mac's LAN IP shown in Settings → Devices, or tunnel the
+# pinned-TLS mobile listener over USB/emulator:
+adb reverse tcp:9400 tcp:9400
+# Manual host = localhost uses port 9400. It also requires a Mobile token and
+# certificate fingerprint already obtained through trusted local development tooling.
 ```
 
-Connection details are stored in an encrypted DataStore (Android Keystore-backed). The WS
-token currently travels as a `?token=` query param over plain `ws://` on the LAN — fine
-for the same-network/dev posture, and hardened to TLS by the future **Dash relay**, which
-slots in as a new `ConnectionProfile` (the app's `secure` flag flips `ws→wss`/`http→https`)
-with no other changes.
+Connection details are stored in an encrypted DataStore (Android Keystore-backed). LAN
+connections require HTTPS/WSS and accept only the exact leaf certificate fingerprint from
+the v3 pairing payload. HTTP and WebSocket requests send the Mobile token in the encrypted
+`Authorization` header, never in the URL. Legacy v1 plaintext or split-token profiles route back
+to pairing; scan a current Mission Control QR instead. Relay profiles use the public relay's normal
+TLS validation.
 
 ## Roadmap
 
-- **Dash relay** — reach the desktop gateway from anywhere (adds TLS + a real pairing
-  handoff). The app is already structured for it behind `ConnectionProfile`.
 - **Push notifications**, deploy/connectors/projects parity, and instrumented UI tests.

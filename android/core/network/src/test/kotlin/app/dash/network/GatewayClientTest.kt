@@ -90,4 +90,66 @@ class GatewayClientTest {
         client().listAgents() // no relay credential
         assertNull(server.takeRequest().getHeader("x-dash-relay-credential"))
     }
+
+    @Test fun exactLeafPinAllowsSelfSignedHttps() = runTest {
+        val tlsServer = MockWebServer()
+        tlsServer.useHttps(TlsTestFixture.serverSocketFactory, false)
+        tlsServer.start()
+        try {
+            tlsServer.enqueue(MockResponse().setResponseCode(200).setBody("[]"))
+            val pinned = PinnedTlsClientFactory.create(
+                baseClient = ok,
+                expectedHost = "localhost",
+                certificateSha256 = TlsTestFixture.certificateSha256,
+            )
+            val agents = GatewayClient(tlsServer.url("/").toString(), "tok", pinned).listAgents()
+            assertTrue(agents.isEmpty())
+            assertEquals("Bearer tok", tlsServer.takeRequest().getHeader("Authorization"))
+        } finally {
+            tlsServer.shutdown()
+        }
+    }
+
+    @Test fun wrongLeafPinRejectsHttpsBeforeBearerIsSent() = runTest {
+        val tlsServer = MockWebServer()
+        tlsServer.useHttps(TlsTestFixture.serverSocketFactory, false)
+        tlsServer.start()
+        try {
+            val pinned = PinnedTlsClientFactory.create(
+                baseClient = ok,
+                expectedHost = "localhost",
+                certificateSha256 = TlsTestFixture.differentCertificateSha256,
+            )
+            assertTrue(!GatewayClient(tlsServer.url("/").toString(), "tok", pinned).health())
+            assertEquals(0, tlsServer.requestCount)
+        } finally {
+            tlsServer.shutdown()
+        }
+    }
+
+    @Test fun pinnedClientRejectsUnexpectedHostEvenWithMatchingCertificate() = runTest {
+        val tlsServer = MockWebServer()
+        tlsServer.useHttps(TlsTestFixture.serverSocketFactory, false)
+        tlsServer.start()
+        try {
+            val pinned = PinnedTlsClientFactory.create(
+                baseClient = ok,
+                expectedHost = "gateway.local",
+                certificateSha256 = TlsTestFixture.certificateSha256,
+            )
+            assertTrue(!GatewayClient(tlsServer.url("/").toString(), "tok", pinned).health())
+            assertEquals(0, tlsServer.requestCount)
+        } finally {
+            tlsServer.shutdown()
+        }
+    }
+
+    @Test fun pinnedClientRejectsMalformedDigest() {
+        try {
+            PinnedTlsClientFactory.create(ok, "localhost", "not-a-sha256")
+            fail("expected malformed certificate digest to be rejected")
+        } catch (_: IllegalArgumentException) {
+            // Expected.
+        }
+    }
 }

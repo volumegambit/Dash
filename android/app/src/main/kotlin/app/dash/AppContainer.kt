@@ -11,6 +11,7 @@ import app.dash.connection.ProfileStore
 import app.dash.connection.TokenCipher
 import app.dash.network.ChatSocket
 import app.dash.network.GatewayClient
+import app.dash.network.PinnedTlsClientFactory
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -36,12 +37,26 @@ class AppContainer(context: Context) {
 
     val profileStore: ProfileStore = ProfileStore(dataStore, cipher)
 
-    fun gatewayClient(profile: ConnectionProfile): GatewayClient =
-        GatewayClient(profile.mgmtBaseUrl, profile.mgmtToken, okHttp, profile.relayCredential)
+    fun gatewayClient(profile: ConnectionProfile): GatewayClient = GatewayClient(
+        profile.mgmtBaseUrl,
+        profile.mgmtToken,
+        clientFor(profile),
+        profile.relayCredential,
+    )
 
     fun chatSocket(profile: ConnectionProfile): ChatSocket =
-        ChatSocket(profile.chatWsUrl, okHttp, profile.relayCredential)
+        ChatSocket(
+            profile.chatWsUrl,
+            profile.chatToken,
+            clientFor(profile),
+            profile.relayCredential,
+        )
 
     suspend fun healthCheck(profile: ConnectionProfile): Boolean =
         gatewayClient(profile).health()
+
+    private fun clientFor(profile: ConnectionProfile): OkHttpClient {
+        val certificateSha256 = profile.tlsCertificateSha256 ?: return okHttp
+        return PinnedTlsClientFactory.create(okHttp, profile.host, certificateSha256)
+    }
 }

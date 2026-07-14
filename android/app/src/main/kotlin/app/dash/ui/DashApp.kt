@@ -41,7 +41,7 @@ fun DashApp(container: AppContainer) {
                 }
 
             is ProfileState.Ready ->
-                if (s.profile == null) {
+                if (s.profile == null || s.profile.requiresRepair) {
                     PairingNavHost(container)
                 } else {
                     MainNavHost(container, s.profile)

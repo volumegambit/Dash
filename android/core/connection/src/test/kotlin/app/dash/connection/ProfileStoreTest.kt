@@ -17,6 +17,9 @@ import org.robolectric.RobolectricTestRunner
 
 @RunWith(RobolectricTestRunner::class)
 class ProfileStoreTest {
+    private val certificateSha256 =
+        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
     private val fakeCipher = object : TokenCipher {
         override fun encrypt(plaintext: String) = "enc($plaintext)"
         override fun decrypt(ciphertext: String) =
@@ -78,6 +81,23 @@ class ProfileStoreTest {
         scope.cancel()
     }
 
+    @Test fun roundTripsPinnedTlsCertificateDigest() = runBlocking {
+        val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+        val store = newStore(scope)
+        store.save(
+            ConnectionProfile(
+                "LAN",
+                "10.0.0.5",
+                mgmtToken = "m",
+                chatToken = "c",
+                secure = true,
+                tlsCertificateSha256 = certificateSha256,
+            ),
+        )
+        assertEquals(certificateSha256, store.profile().first()!!.tlsCertificateSha256)
+        scope.cancel()
+    }
+
     @Test fun lanProfileHasNullRelayCredential() = runBlocking {
         val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
         val store = newStore(scope)
@@ -95,6 +115,33 @@ class ProfileStoreTest {
         // Re-pairing over LAN must not leave the old relay credential behind.
         store.save(ConnectionProfile("l", "h", mgmtToken = "m", chatToken = "c"))
         assertNull(store.profile().first()!!.relayCredential)
+        scope.cancel()
+    }
+
+    @Test fun savingUnpinnedProfileClearsStaleCertificateDigest() = runBlocking {
+        val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+        val store = newStore(scope)
+        store.save(
+            ConnectionProfile(
+                "LAN",
+                "10.0.0.5",
+                mgmtToken = "m",
+                chatToken = "c",
+                secure = true,
+                tlsCertificateSha256 = certificateSha256,
+            ),
+        )
+        store.save(
+            ConnectionProfile(
+                "Relay",
+                "gateway.relay.example",
+                mgmtToken = "m",
+                chatToken = "c",
+                secure = true,
+                relayCredential = "relay-credential",
+            ),
+        )
+        assertNull(store.profile().first()!!.tlsCertificateSha256)
         scope.cancel()
     }
 }
