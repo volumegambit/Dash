@@ -94,6 +94,7 @@ function legacyView(record: McConversation): McConversationView {
 
 export class ChatService {
   private activeStreams = new Map<string, { ws: WebSocket; msgId: string }>();
+  private readonly backgroundTasks = new Set<Promise<void>>();
 
   /**
    * Attached by the main process (where the projects client is in scope)
@@ -123,6 +124,20 @@ export class ChatService {
     listener: (conversationId: string, status: SessionStatus) => void,
   ): void {
     this.sessionStatusListener = listener;
+  }
+
+  async drainBackgroundTasks(): Promise<void> {
+    while (this.backgroundTasks.size > 0) {
+      await Promise.allSettled([...this.backgroundTasks]);
+    }
+  }
+
+  private runInBackground(task: Promise<void>): void {
+    this.backgroundTasks.add(task);
+    void task.then(
+      () => this.backgroundTasks.delete(task),
+      () => this.backgroundTasks.delete(task),
+    );
   }
 
   /**
@@ -440,7 +455,7 @@ export class ChatService {
     }
     const accepted = await this.resumable.send(conversation, turnId, text, images);
     if (conversation.title === 'New Conversation') {
-      void this.titleAndFileTask(conversation, text);
+      this.runInBackground(this.titleAndFileTask(conversation, text));
     }
     return accepted;
   }
@@ -501,7 +516,7 @@ export class ChatService {
     // conversation's task (filed under an inferred project when possible),
     // and link the two — all in the background.
     if (conversation.title === 'New Conversation') {
-      void this.titleAndFileTask(legacyView(conversation), text);
+      this.runInBackground(this.titleAndFileTask(legacyView(conversation), text));
     }
 
     if (!this.gatewayConnection) throw new Error('Gateway connection not configured');

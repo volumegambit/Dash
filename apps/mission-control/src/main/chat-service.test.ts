@@ -1195,9 +1195,7 @@ describe('ChatService auto-title + auto-task', () => {
   }
 
   async function settle(): Promise<void> {
-    // The hook is fire-and-forget and its store write queues behind real
-    // fs I/O; a timed settle (not event-loop turns) covers it.
-    await new Promise((r) => setTimeout(r, 150));
+    await service.drainBackgroundTasks();
   }
 
   beforeEach(async () => {
@@ -1210,6 +1208,7 @@ describe('ChatService auto-title + auto-task', () => {
   });
 
   afterEach(async () => {
+    await service.drainBackgroundTasks();
     vi.unstubAllGlobals();
     if (wss) {
       await new Promise<void>((r) => wss?.close(() => r()));

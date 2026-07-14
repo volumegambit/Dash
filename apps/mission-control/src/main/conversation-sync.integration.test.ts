@@ -1131,6 +1131,7 @@ async function createConversationSyncHarness(options: HarnessOptions) {
 
   cleanups.push(async () => {
     transport.closeAll();
+    await service.drainBackgroundTasks();
     await flushRenderer();
     await rm(dataDir, { recursive: true, force: true });
     resetRenderer();

@@ -2259,6 +2259,7 @@ export async function registerIpcHandlers(
     gatewaySubscriptions.stop();
     pendingConversationRuntime = disposePendingConversationRuntime(pendingConversationRuntime);
     gatewayPoller?.stop();
+    await chatService?.drainBackgroundTasks();
     await shutdownGatewayOnQuit(DATA_DIR);
   });
 }
