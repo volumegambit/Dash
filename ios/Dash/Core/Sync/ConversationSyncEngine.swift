@@ -511,20 +511,6 @@ actor ConversationSyncEngine {
         )
         finishMessageReset(messageReset)
         messages = nil
-        guard canonical.status == .running, let turnID = canonical.activeTurnId else { continue }
-        try await ensureChatConnected(lifecycle: lifecycle)
-        let cursor = try await store.cursor(
-          gatewayID: gatewayID,
-          conversationID: canonical.id
-        )
-        try validate(lifecycle: lifecycle, conversations: conversations)
-        try await chat.resume(
-          turnID: turnID,
-          agentID: canonical.agentId,
-          conversationID: canonical.id,
-          sinceSeq: cursor
-        )
-        try validate(lifecycle: lifecycle, conversations: conversations)
       }
       try await recordSuccessfulSync(lifecycle: lifecycle, conversations: conversations)
       try validate(lifecycle: lifecycle, conversations: conversations)

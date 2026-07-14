@@ -493,7 +493,7 @@ struct ConversationSyncEngineTests {
     )
   }
 
-  @Test("foreground reconciliation resumes only the canonical running turn through stored sequence")
+  @Test("foreground canonical reconciliation refreshes running state without owning chat")
   func foregroundReconciliation() async throws {
     let store = try PersistenceStore.inMemory()
     try await store.upsertConversations(
@@ -520,6 +520,8 @@ struct ConversationSyncEngineTests {
     try await store.advanceCursor(gatewayID: "gw", conversationID: "running-two", to: 2)
     try await store.advanceCursor(gatewayID: "gw", conversationID: "completed", to: 8)
     let api = FakeConversationSyncAPI()
+    let canonicalAgent = agent(id: "agent-1", name: "Canonical Agent")
+    await api.enqueueAgents(.success([canonicalAgent]))
     await api.enqueueConversation(
       id: "running",
       result: .success(
@@ -601,25 +603,97 @@ struct ConversationSyncEngineTests {
     #expect(try await store.cursor(gatewayID: "gw", conversationID: "running") == 6)
     #expect(try await store.cursor(gatewayID: "gw", conversationID: "running-two") == 3)
     #expect(try await store.cursor(gatewayID: "gw", conversationID: "completed") == 9)
+    #expect(try await store.agents(gatewayID: "gw") == [canonicalAgent])
     #expect(
-      await chat.calls
-        == [
-          .suspend,
-          .connect,
-          .resume(
-            turnID: "turn-running",
-            agentID: "agent-1",
-            conversationID: "running",
-            sinceSeq: 6
-          ),
-          .resume(
-            turnID: "turn-running-two",
-            agentID: "agent-1",
-            conversationID: "running-two",
-            sinceSeq: 3
-          ),
-        ]
+      try await store.messages(gatewayID: "gw", conversationID: "running").map(\.id)
+        == ["running-message"]
     )
+    #expect(await chat.calls == [.suspend])
+  }
+
+  @Test("foreground canonical reconciliation restarts SSE invalidations without owning chat")
+  func foregroundRestartsInvalidations() async throws {
+    let store = try PersistenceStore.inMemory()
+    let api = FakeConversationSyncAPI()
+    let invalidations = RestartableInvalidationSource()
+    let chat = FakeConversationChat()
+    await api.enqueueAgents(.success([]))
+    await api.enqueueConversationPage(
+      .success(
+        .init(
+          items: [
+            summary(
+              id: "c",
+              title: "Initial",
+              status: .running,
+              activeTurnID: "turn-1"
+            )
+          ],
+          nextCursor: nil
+        )
+      )
+    )
+    let engine = ConversationSyncEngine(
+      gatewayID: "gw",
+      store: store,
+      api: api,
+      invalidations: invalidations,
+      chat: chat,
+      reachability: FakeReachability(),
+      clock: TestAppClock(now: instant(100))
+    )
+    await engine.bootstrap()
+    await eventually { await invalidations.subscriptionCount == 1 }
+    await engine.sceneDidEnterBackground()
+
+    await api.enqueueAgents(.success([]))
+    await api.enqueueConversation(
+      id: "c",
+      result: .success(
+        summary(
+          id: "c",
+          title: "Foreground",
+          revision: 2,
+          status: .running,
+          activeTurnID: "turn-1"
+        )
+      )
+    )
+    await api.enqueueMessages(
+      conversationID: "c",
+      result: .success(
+        .init(
+          items: [message(id: "foreground-message")],
+          nextCursor: nil,
+          throughSeq: 2
+        )
+      )
+    )
+
+    await engine.sceneWillEnterForeground()
+    await eventually { await invalidations.subscriptionCount == 2 }
+
+    await api.enqueueConversation(
+      id: "c",
+      result: .success(
+        summary(
+          id: "c",
+          title: "Invalidated",
+          revision: 3,
+          status: .running,
+          activeTurnID: "turn-1"
+        )
+      )
+    )
+    await invalidations.yield(.conversationChanged(conversationID: "c", revision: 3))
+    await eventually {
+      let cached = try? await store.conversation(gatewayID: "gw", id: "c")
+      return cached?.summary.revision == 3
+    }
+
+    #expect(await api.conversationCalls == ["c", "c"])
+    #expect(await chat.calls == [.suspend])
+    await engine.shutdown()
   }
 
   @Test("offline reachability publishes cached state but cannot override authenticated success")
@@ -1355,6 +1429,22 @@ struct ConversationSyncEngineTests {
     )
   }
 
+}
+
+private actor RestartableInvalidationSource: GatewayInvalidationStreaming {
+  private var continuation: AsyncThrowingStream<GatewayInvalidationEvent, Error>.Continuation?
+  private(set) var subscriptionCount = 0
+
+  func eventStream() async -> AsyncThrowingStream<GatewayInvalidationEvent, Error> {
+    let pair = AsyncThrowingStream<GatewayInvalidationEvent, Error>.makeStream()
+    continuation = pair.continuation
+    subscriptionCount += 1
+    return pair.stream
+  }
+
+  func yield(_ event: GatewayInvalidationEvent) {
+    continuation?.yield(event)
+  }
 }
 
 private actor SnapshotRecorder {

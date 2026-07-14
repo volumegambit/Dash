@@ -239,6 +239,7 @@ final class CacheReconciliationIntegrationTests: XCTestCase {
     XCTAssertEqual(recoveredEvents.filter { $0 == missedEvent }.count, 1)
 
     let replayMarker = await recording.recorder.marker(turnID: turnID)
+    try await client.chat.connect()
     try await client.chat.resume(
       turnID: turnID,
       agentID: environment.agentID,
