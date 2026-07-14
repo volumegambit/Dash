@@ -174,7 +174,10 @@ final class ChatResumeIntegrationTests: XCTestCase {
     XCTAssertNotEqual(summary.status, .running)
 
     let badClient = try environment.replacing(chatToken: "incorrect-token").makeClient()
-    let rawCloseCode = try await closeCode(for: badClient.endpoint.chatRequest())
+    let rawCloseCode = try await closeCode(
+      for: badClient.endpoint.chatRequest(),
+      session: GatewayURLSessionFactory.make(profile: badClient.endpoint.profile)
+    )
     XCTAssertEqual(rawCloseCode, 4001)
 
     let badRecording = await LiveChatRecording.start(chat: badClient.chat)
@@ -227,10 +230,13 @@ private func waitForReplay(
   throw LiveGatewayTestError.timeout
 }
 
-private func closeCode(for request: URLRequest) async throws -> Int {
-  let task = URLSession.shared.webSocketTask(with: request)
+private func closeCode(for request: URLRequest, session: URLSession) async throws -> Int {
+  let task = session.webSocketTask(with: request)
   task.resume()
-  defer { task.cancel(with: .goingAway, reason: nil) }
+  defer {
+    task.cancel(with: .goingAway, reason: nil)
+    session.invalidateAndCancel()
+  }
   do {
     _ = try await task.receive()
   } catch {

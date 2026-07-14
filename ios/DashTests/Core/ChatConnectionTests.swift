@@ -87,7 +87,7 @@ struct ChatConnectionTests {
     await connection.detach()
   }
 
-  @Test("relay request preserves encoded chat token and relay header")
+  @Test("relay request keeps chat credentials out of the URL")
   func relayRequest() async throws {
     let task = FakeWebSocketTask()
     let session = FakeWebSocketSession(tasks: [task])
@@ -102,8 +102,9 @@ struct ChatConnectionTests {
     let url = try #require(request.url)
     let components = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false))
     #expect(components.path == "/ws/chat")
-    #expect(components.queryItems == [URLQueryItem(name: "token", value: "chat token&value")])
-    #expect(request.url?.absoluteString.contains("token=chat%20token%26value") == true)
+    #expect(components.queryItems == nil)
+    #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer chat token&value")
+    #expect(request.url?.absoluteString.contains("chat%20token") == false)
     #expect(request.value(forHTTPHeaderField: "x-dash-relay-credential") == "relay-secret")
     #expect(request.url?.absoluteString.contains("management-secret") == false)
     #expect(request.url?.absoluteString.contains("relay-secret") == false)
@@ -439,6 +440,125 @@ struct ChatConnectionTests {
     await connection.detach()
   }
 
+  @Test("a capable event before new-turn acceptance requires an update")
+  func eventBeforeAcceptanceRequiresUpdate() async throws {
+    let task = FakeWebSocketTask()
+    let connection = makeChatConnection(task: task)
+    let terminal = Task { await terminalError(from: connection) }
+    try await connection.connect()
+    try await connection.sendTurn(
+      id: turnID,
+      agentID: "agent-1",
+      conversationID: conversationID,
+      text: "Hello",
+      images: []
+    )
+
+    await task.enqueue(
+      .string(
+        serverJSON(
+          .event(
+            id: turnID,
+            conversationId: conversationID,
+            seq: 1,
+            event: .textDelta(text: "Too early")
+          ))))
+    await task.fail(peerClose: .init(code: 4001, reason: Data("Unauthorized".utf8)))
+
+    #expect(await terminal.value == .updateRequired)
+    #expect(await task.closeCode == .goingAway)
+  }
+
+  @Test("a capable done before new-turn acceptance requires an update")
+  func doneBeforeAcceptanceRequiresUpdate() async throws {
+    let task = FakeWebSocketTask()
+    let connection = makeChatConnection(task: task)
+    let terminal = Task { await terminalError(from: connection) }
+    try await connection.connect()
+    try await connection.sendTurn(
+      id: turnID,
+      agentID: "agent-1",
+      conversationID: conversationID,
+      text: "Hello",
+      images: []
+    )
+
+    await task.enqueue(
+      .string(
+        serverJSON(
+          .done(
+            id: turnID,
+            conversationId: conversationID,
+            seq: 1,
+            outcome: .completed
+          ))))
+    await task.fail(peerClose: .init(code: 4001, reason: Data("Unauthorized".utf8)))
+
+    #expect(await terminal.value == .updateRequired)
+    #expect(await task.closeCode == .goingAway)
+  }
+
+  @Test("a valid rejection before new-turn acceptance remains a legal frame")
+  func rejectionBeforeAcceptanceRemainsLegal() async throws {
+    let task = FakeWebSocketTask()
+    let connection = makeChatConnection(task: task)
+    let received = Task { try await collectFrames(from: connection, count: 1) }
+    try await connection.connect()
+    try await connection.sendTurn(
+      id: turnID,
+      agentID: "agent-1",
+      conversationID: conversationID,
+      text: "Hello",
+      images: []
+    )
+    let rejection = MobileWSServerFrame.error(
+      id: turnID,
+      conversationId: conversationID,
+      seq: nil,
+      error: "Conversation already has an active turn",
+      code: "conversation_busy",
+      retryable: true,
+      activeTurnId: "other-turn"
+    )
+
+    await task.enqueue(.string(serverJSON(rejection)))
+
+    #expect(try await received.value == [rejection])
+    await connection.detach()
+  }
+
+  @Test("a sequenced error before new-turn acceptance requires an update")
+  func sequencedErrorBeforeAcceptanceRequiresUpdate() async throws {
+    let task = FakeWebSocketTask()
+    let connection = makeChatConnection(task: task)
+    let terminal = Task { await terminalError(from: connection) }
+    try await connection.connect()
+    try await connection.sendTurn(
+      id: turnID,
+      agentID: "agent-1",
+      conversationID: conversationID,
+      text: "Hello",
+      images: []
+    )
+
+    await task.enqueue(
+      .string(
+        serverJSON(
+          .error(
+            id: turnID,
+            conversationId: conversationID,
+            seq: 1,
+            error: "Terminal after hidden admission",
+            code: "server_error",
+            retryable: false,
+            activeTurnId: nil
+          ))))
+    await task.fail(peerClose: .init(code: 4001, reason: Data("Unauthorized".utf8)))
+
+    #expect(await terminal.value == .updateRequired)
+    #expect(await task.closeCode == .goingAway)
+  }
+
   @Test("malformed required fields on a resumed capable turn require an update")
   func malformedCapableFrame() async throws {
     let task = FakeWebSocketTask()
@@ -597,6 +717,65 @@ struct ChatConnectionTests {
     )
     #expect(await clock.sleeps == [.seconds(1)])
     #expect(session.requests.count == 2)
+    await connection.detach()
+  }
+
+  @Test("a validated frame resets reconnect backoff for the next independent outage")
+  func validatedFrameResetsReconnectBackoff() async throws {
+    let first = FakeWebSocketTask()
+    let recovered = FakeWebSocketTask()
+    let secondRecovery = FakeWebSocketTask()
+    let session = FakeWebSocketSession(tasks: [first, recovered, secondRecovery])
+    let clock = TestAppClock(now: Date(timeIntervalSince1970: 0))
+    let connection = makeChatConnection(session: session, clock: clock)
+    let frameReceived = TestGate()
+    let events = Task { () throws -> ([ChatTransportState], [MobileWSServerFrame]) in
+      var states: [ChatTransportState] = []
+      var frames: [MobileWSServerFrame] = []
+      for try await event in await connection.events() {
+        switch event {
+        case .state(let state):
+          states.append(state)
+        case .frame(let frame):
+          frames.append(frame)
+          await frameReceived.release()
+        }
+        if states.count == 8, frames.count == 1 { break }
+      }
+      return (states, frames)
+    }
+    let accepted = try fixture("chat-accepted.json")
+    try await connection.connect()
+    try await connection.sendTurn(
+      id: turnID,
+      agentID: "agent-1",
+      conversationID: conversationID,
+      text: "Recover twice",
+      images: []
+    )
+
+    await first.fail()
+    await waitForRequestCount(2, in: session)
+    await recovered.enqueue(.string(serverJSON(accepted)))
+    await frameReceived.wait()
+    await recovered.fail()
+    let (states, frames) = try await events.value
+
+    #expect(
+      states == [
+        .connecting,
+        .connected,
+        .reconnecting(attempt: 1),
+        .connecting,
+        .connected,
+        .reconnecting(attempt: 1),
+        .connecting,
+        .connected,
+      ]
+    )
+    #expect(frames == [accepted])
+    #expect(await clock.sleeps == [.seconds(1), .seconds(1)])
+    #expect(session.requests.count == 3)
     await connection.detach()
   }
 
@@ -1059,10 +1238,13 @@ struct ChatConnectionTests {
       publicKey: nil,
       label: "Test",
       host: relay ? "gateway.relay.example" : "127.0.0.1",
-      managementPort: relay ? 443 : 9300,
-      chatPort: relay ? 443 : 9200,
-      secure: relay,
+      managementPort: relay ? 443 : 9400,
+      chatPort: relay ? 443 : 9400,
+      secure: true,
       mode: mode,
+      tlsCertificateSha256: relay
+        ? nil
+        : "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
       createdAt: Date(timeIntervalSince1970: 0),
       lastSuccessfulSyncAt: nil
     )

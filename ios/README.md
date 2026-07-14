@@ -102,7 +102,7 @@ node ios/scripts/run-live-gateway-tests.mjs
 
 The runner requires the pinned iOS 18.4 iPhone, starts a fresh repository gateway harness for each
 selector, requires exactly one passed and non-skipped test, and stops at the first failure. It
-scopes all seven test values to the simulator test host, removes them in `finally`, and terminates
+scopes every test value to the simulator test host, removes them in `finally`, and terminates
 the harness without printing its credentials. Successful result bundles are removed; a failed
 selector keeps its secret-free `ios/LiveGateway-*.xcresult` for CI diagnostics. Never put tokens in
 a committed scheme or command history.
@@ -115,11 +115,13 @@ Open Dash and choose one of three paths:
 2. **Paste Pairing Code** reads a complete payload already on the clipboard.
 3. **Enter Manually** accepts the connection fields without camera access.
 
-For LAN pairing, the phone and gateway must be reachable on the same network. Enter the gateway
-host, management and chat ports, transport security choice, and the two gateway-issued tokens.
-For relay pairing, enter the relay host, gateway management and chat tokens, and the per-device
-relay credential from the pairing payload. Relay connections use TLS on port 443. Do not
-substitute a management URL for the host field.
+For LAN pairing, the phone and gateway must be reachable on the same network. Current pairing
+codes use version 3, one pinned-TLS mobile listener (port 9400 by default), a phone-scoped mobile
+token, and the gateway certificate's exact SHA-256 fingerprint. The app rejects legacy plaintext
+version 1 codes; generate a fresh code in Mission Control. For relay pairing, use the relay host,
+the phone-scoped mobile capability, and the per-device relay credential from the pairing payload. Relay
+connections use TLS on port 443. Never enter Dash's administrative management bearer on a phone,
+and do not substitute a management URL for the host field.
 
 Before saving anything, the app validates the payload, checks gateway health and identity, and
 requires the mobile capabilities above. Connection secrets are then stored in Keychain. SwiftData
@@ -143,6 +145,9 @@ metadata without those secrets.
 The gateway is the source of truth. Cached rows remain readable during an outage, while canonical
 writes are disabled. A foreground transition refreshes canonical state and restarts invalidation
 events. The visible chat separately replays durable events before its running turn resumes.
+Messages whose admission could not be confirmed remain durably pending across launches and are
+never retried automatically. An explicit retry reuses the original turn ID so gateway admission is
+idempotent.
 Disconnect & Forget stops transports before deleting Keychain material, purging that gateway's
 SwiftData cache, and clearing the selected profile.
 
@@ -174,8 +179,9 @@ gateway identity changed.
 ### LAN connection fails
 
 Confirm the iPhone and gateway share a reachable network, Local Network access is enabled for
-Dash in Settings, the host contains no scheme or path, and both configured ports are reachable.
-The app permits local networking through ATS but does not enable arbitrary insecure loads.
+Dash in Settings, the host contains no scheme or path, and the pinned-TLS mobile port is reachable.
+If the certificate changed, generate a fresh pairing code. Dash does not enable an ATS cleartext
+exception and never falls back from HTTPS/WSS to plaintext.
 
 ### Camera or local networking in Simulator
 

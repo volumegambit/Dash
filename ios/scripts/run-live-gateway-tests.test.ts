@@ -65,12 +65,13 @@ describe('live gateway iOS runner', () => {
     ]);
   });
 
-  it('maps readiness into exactly the seven Swift environment values', () => {
+  it('maps pinned mobile readiness into exactly the eight Swift environment values', () => {
     expect(
       buildHarnessEnvironment(
         {
-          managementBaseUrl: 'http://127.0.0.1:9300',
-          chatWebSocketUrl: 'ws://127.0.0.1:9200/ws/chat',
+          mobileBaseUrl: 'https://127.0.0.1:9400',
+          mobileChatWebSocketUrl: 'wss://127.0.0.1:9400/ws/chat',
+          tlsCertificateSha256: 'a'.repeat(64),
           managementToken: 'management-secret',
           chatToken: 'chat-secret',
           gatewayId: 'gateway-1',
@@ -79,9 +80,10 @@ describe('live gateway iOS runner', () => {
         'slow',
       ),
     ).toEqual({
-      DASH_TEST_MANAGEMENT_URL: 'http://127.0.0.1:9300',
-      DASH_TEST_CHAT_URL: 'ws://127.0.0.1:9200/ws/chat',
-      DASH_TEST_MANAGEMENT_TOKEN: 'management-secret',
+      DASH_TEST_MANAGEMENT_URL: 'https://127.0.0.1:9400',
+      DASH_TEST_CHAT_URL: 'wss://127.0.0.1:9400/ws/chat',
+      DASH_TEST_TLS_CERTIFICATE_SHA256: 'a'.repeat(64),
+      DASH_TEST_MANAGEMENT_TOKEN: 'chat-secret',
       DASH_TEST_CHAT_TOKEN: 'chat-secret',
       DASH_TEST_GATEWAY_ID: 'gateway-1',
       DASH_TEST_AGENT_ID: 'agent-1',

@@ -52,43 +52,51 @@ struct ConnectionEndpointTests {
     #expect(throws: PairingValidationError.self) {
       try payload(chatToken: "\t").validated(profileID: UUID())
     }
+    #expect(throws: PairingValidationError.self) {
+      try payload(chatToken: "different-mobile-token").validated(profileID: UUID())
+    }
+    #expect(throws: PairingValidationError.self) {
+      try payload(
+        v: 2,
+        chatToken: "different-mobile-token",
+        secure: true,
+        relayCredential: "relay-credential"
+      ).validated(profileID: UUID())
+    }
   }
 
-  @Test("LAN defaults trim metadata and discard relay material")
-  func lanDefaults() throws {
-    let profileID = UUID()
-    let raw = PairingPayload(
-      v: 1,
-      host: " 192.168.1.50 ",
-      mgmtToken: " management ",
-      chatToken: " chat ",
-      mgmtPort: nil,
-      chatPort: nil,
-      label: " Home Gateway ",
-      secure: nil,
-      relayCredential: " unexpected "
-    )
-    let (profile, secrets) = try raw.validated(profileID: profileID)
-    #expect(profile.id == profileID)
-    #expect(profile.host == "192.168.1.50")
-    #expect(profile.label == "Home Gateway")
-    #expect(profile.mode == .lan)
-    #expect(profile.secure == false)
-    #expect(profile.managementPort == 9300)
-    #expect(profile.chatPort == 9200)
-    #expect(secrets.managementToken == "management")
-    #expect(secrets.chatToken == "chat")
-    #expect(secrets.relayCredential == nil)
+  @Test("legacy plaintext LAN payloads require re-pairing")
+  func legacyLANRejected() {
+    #expect(throws: PairingValidationError.insecureLanPairing) {
+      try payload(v: 1).validated(profileID: UUID())
+    }
   }
 
-  @Test("LAN honors secure mode and explicit ports")
+  @Test("v3 LAN requires one pinned TLS port and normalizes the fingerprint")
   func secureLAN() throws {
-    let raw = payload(mgmtPort: 443, chatPort: 443, secure: true)
+    let raw = try FixtureLoader.decode(PairingPayload.self, "pairing-lan-v3.json")
     let (profile, _) = try raw.validated(profileID: UUID())
     #expect(profile.mode == .lan)
     #expect(profile.secure)
-    #expect(profile.managementPort == 443)
-    #expect(profile.chatPort == 443)
+    #expect(profile.managementPort == 9400)
+    #expect(profile.chatPort == 9400)
+    #expect(
+      profile.tlsCertificateSha256
+        == "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    )
+  }
+
+  @Test("v3 LAN rejects plaintext, split ports, and malformed pins")
+  func secureLANValidation() {
+    #expect(throws: PairingValidationError.insecureLanPairing) {
+      try payload(secure: false).validated(profileID: UUID())
+    }
+    #expect(throws: PairingValidationError.mismatchedLANPorts) {
+      try payload(mgmtPort: 9400, chatPort: 9401).validated(profileID: UUID())
+    }
+    #expect(throws: PairingValidationError.invalidCertificatePin) {
+      try payload(tlsCertificateSha256: "abc").validated(profileID: UUID())
+    }
   }
 
   @Test("relay forces TLS, 443, and a credential")
@@ -110,6 +118,10 @@ struct ConnectionEndpointTests {
     #expect(throws: PairingValidationError.self) {
       try payload(v: 2, secure: false, relayCredential: "  ").validated(profileID: UUID())
     }
+    #expect(throws: PairingValidationError.insecureRelayPairing) {
+      try payload(v: 2, secure: false, relayCredential: "relay-credential")
+        .validated(profileID: UUID())
+    }
   }
 
   @Test(arguments: ["127.0.0.1", "192.168.1.50", "[2001:db8::1]"])
@@ -126,7 +138,7 @@ struct ConnectionEndpointTests {
   @Test("unknown pairing fields are ignored")
   func ignoresUnknownFields() throws {
     let data = Data(
-      #"{"v":1,"host":"gateway.local","mgmtToken":"m","chatToken":"c","future":{"enabled":true}}"#
+      #"{"v":3,"host":"gateway.local","secure":true,"mgmtToken":"m","chatToken":"m","mgmtPort":9400,"chatPort":9400,"tlsCertificateSha256":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","future":{"enabled":true}}"#
         .utf8
     )
     let raw = try ContractCoding.decoder().decode(PairingPayload.self, from: data)
@@ -141,9 +153,9 @@ struct ConnectionEndpointTests {
       path: "/agents/agent #1/models",
       query: [URLQueryItem(name: "cursor", value: "a b&c")]
     )
-    #expect(url.scheme == "http")
+    #expect(url.scheme == "https")
     #expect(url.host == "192.168.1.50")
-    #expect(url.port == 9300)
+    #expect(url.port == 9400)
     #expect(url.path == "/agents/agent #1/models")
     #expect(url.absoluteString.contains("agent%20%231"))
     #expect(url.absoluteString.contains("cursor=a%20b%26c"))
@@ -151,7 +163,7 @@ struct ConnectionEndpointTests {
     #expect(url.absoluteString.contains("chat-secret") == false)
   }
 
-  @Test("chat request contains only the chat token and relay header")
+  @Test("chat request keeps the chat token out of the URL and uses bearer auth")
   func chatRequest() throws {
     let endpoint = relayEndpoint()
     let request = try endpoint.chatRequest()
@@ -161,16 +173,19 @@ struct ConnectionEndpointTests {
     #expect(components.host == "gateway.relay.example")
     #expect(components.port == nil)
     #expect(components.path == "/ws/chat")
-    #expect(components.queryItems == [URLQueryItem(name: "token", value: "chat-secret")])
+    #expect(components.queryItems == nil)
+    #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer chat-secret")
     #expect(request.value(forHTTPHeaderField: "x-dash-relay-credential") == "relay-secret")
     #expect(request.url?.absoluteString.contains("management-secret") == false)
+    #expect(request.url?.absoluteString.contains("chat-secret") == false)
   }
 
   @Test("LAN chat request uses its configured port and no relay header")
   func lanChatRequest() throws {
     let request = try lanEndpoint().chatRequest()
-    #expect(request.url?.scheme == "ws")
-    #expect(request.url?.port == 9200)
+    #expect(request.url?.scheme == "wss")
+    #expect(request.url?.port == 9400)
+    #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer chat-secret")
     #expect(request.value(forHTTPHeaderField: "x-dash-relay-credential") == nil)
   }
 
@@ -184,14 +199,16 @@ struct ConnectionEndpointTests {
   }
 
   private func payload(
-    v: Int = 1,
+    v: Int = 3,
     host: String = "gateway.local",
     mgmtToken: String = "m",
-    chatToken: String = "c",
-    mgmtPort: Int? = nil,
-    chatPort: Int? = nil,
-    secure: Bool? = nil,
-    relayCredential: String? = nil
+    chatToken: String = "m",
+    mgmtPort: Int? = 9400,
+    chatPort: Int? = 9400,
+    secure: Bool? = true,
+    relayCredential: String? = nil,
+    tlsCertificateSha256: String? =
+      "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
   ) -> PairingPayload {
     PairingPayload(
       v: v,
@@ -202,7 +219,8 @@ struct ConnectionEndpointTests {
       chatPort: chatPort,
       label: nil,
       secure: secure,
-      relayCredential: relayCredential
+      relayCredential: relayCredential,
+      tlsCertificateSha256: tlsCertificateSha256
     )
   }
 
@@ -214,10 +232,12 @@ struct ConnectionEndpointTests {
         publicKey: nil,
         label: "Home",
         host: "192.168.1.50",
-        managementPort: 9300,
-        chatPort: 9200,
-        secure: false,
+        managementPort: 9400,
+        chatPort: 9400,
+        secure: true,
         mode: .lan,
+        tlsCertificateSha256:
+          "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
         createdAt: Date(timeIntervalSince1970: 0),
         lastSuccessfulSyncAt: nil
       ),

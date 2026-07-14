@@ -90,6 +90,7 @@ actor HTTPTransport {
     body: (any Encodable & Sendable)?,
     ifMatch: Int?
   ) async throws -> (Data, HTTPURLResponse) {
+    try endpoint.requireTrustedTransport()
     var request = URLRequest(url: try url(for: descriptor))
     request.httpMethod = descriptor.method.rawValue
     request.setValue("application/json", forHTTPHeaderField: "Accept")

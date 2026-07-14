@@ -208,6 +208,7 @@ struct PairingFeatureTests {
     #expect(saved.id == canonicalID)
     #expect(saved.createdAt == existing.profile.createdAt)
     #expect(saved.lastSuccessfulSyncAt == existing.profile.lastSuccessfulSyncAt)
+    #expect(saved.tlsCertificateSha256 == pairing.profile.profile.tlsCertificateSha256)
   }
 
   @Test("same-gateway metadata failure restores prior Keychain secret bytes")
@@ -260,10 +261,7 @@ struct PairingFeatureTests {
         mode: .relay,
         host: "relay.example",
         managementPort: "1234",
-        chatPort: "5678",
-        secure: false,
-        managementToken: " management ",
-        chatToken: " chat ",
+        mobileToken: " mobile ",
         relayCredential: " relay "
       )
     )
@@ -278,9 +276,42 @@ struct PairingFeatureTests {
     let (profile, secrets) = try payload.validated(profileID: UUID())
     #expect(profile.managementPort == 443)
     #expect(profile.chatPort == 443)
-    #expect(secrets.managementToken == "management")
-    #expect(secrets.chatToken == "chat")
+    #expect(secrets.managementToken == "mobile")
+    #expect(secrets.chatToken == "mobile")
     #expect(secrets.relayCredential == "relay")
+  }
+
+  @Test("LAN manual entry constructs one-port pinned v3 TLS payload")
+  func lanManualEntry() async throws {
+    let verifier = CapturingPairingVerifier()
+    let feature = PairingFeature(
+      verifier: verifier,
+      installer: NoopPairingInstaller(),
+      onPaired: { _ in }
+    )
+    let pin = "0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF"
+
+    await feature.pair(
+      manual: ManualPairingInput(
+        mode: .lan,
+        host: "gateway.local",
+        managementPort: "9400",
+        mobileToken: " mobile ",
+        relayCredential: "",
+        tlsCertificateSha256: pin
+      )
+    )
+
+    let payload = try #require(await verifier.payloads.first)
+    #expect(payload.v == 3)
+    #expect(payload.secure == true)
+    #expect(payload.mgmtPort == 9400)
+    #expect(payload.chatPort == 9400)
+    #expect(payload.mgmtToken == " mobile ")
+    #expect(payload.chatToken == " mobile ")
+    #expect(payload.tlsCertificateSha256 == pin)
+    let (profile, _) = try payload.validated(profileID: UUID())
+    #expect(profile.tlsCertificateSha256 == pin.lowercased())
   }
 
   @Test("invalid LAN port stops before any verification")
@@ -297,10 +328,7 @@ struct PairingFeatureTests {
         mode: .lan,
         host: "gateway.local",
         managementPort: "not-a-port",
-        chatPort: "9200",
-        secure: false,
-        managementToken: "management",
-        chatToken: "chat",
+        mobileToken: "mobile",
         relayCredential: ""
       )
     )
@@ -504,7 +532,7 @@ struct PairingFeatureTests {
 
     await feature.pair(rawPayload: relayPayloadJSON)
 
-    #expect(await verifier.payloadVersions == [1])
+    #expect(await verifier.payloadVersions == [3])
     await gate.release()
     await first.value
   }
@@ -1035,28 +1063,31 @@ private final class PairingAnnouncementRecorder {
 
 private func lanPayload() -> PairingPayload {
   PairingPayload(
-    v: 1,
+    v: 3,
     host: "gateway.local",
-    mgmtToken: "management-token",
-    chatToken: "chat-token",
-    mgmtPort: 9300,
-    chatPort: 9200,
+    mgmtToken: "mobile-token",
+    chatToken: "mobile-token",
+    mgmtPort: 9400,
+    chatPort: 9400,
     label: "Home",
-    secure: false,
-    relayCredential: nil
+    secure: true,
+    relayCredential: nil,
+    tlsCertificateSha256:
+      "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
   )
 }
 
 private let lanPayloadJSON = """
   {
-    "v": 1,
+    "v": 3,
     "host": "gateway.local",
-    "mgmtToken": "management-token",
-    "chatToken": "chat-token",
-    "mgmtPort": 9300,
-    "chatPort": 9200,
+    "mgmtToken": "mobile-token",
+    "chatToken": "mobile-token",
+    "mgmtPort": 9400,
+    "chatPort": 9400,
     "label": "Home",
-    "secure": false
+    "secure": true,
+    "tlsCertificateSha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
   }
   """
 
@@ -1064,8 +1095,9 @@ private let relayPayloadJSON = """
   {
     "v": 2,
     "host": "relay.example",
-    "mgmtToken": "management-token-2",
-    "chatToken": "chat-token-2",
+    "secure": true,
+    "mgmtToken": "mobile-token-2",
+    "chatToken": "mobile-token-2",
     "relayCredential": "relay-credential"
   }
   """
@@ -1107,6 +1139,8 @@ private func verifiedPairing(id: UUID, secrets: ConnectionSecrets) -> VerifiedPa
         chatPort: 9201,
         secure: true,
         mode: .lan,
+        tlsCertificateSha256:
+          "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
         createdAt: Date(timeIntervalSince1970: 30),
         lastSuccessfulSyncAt: nil
       )

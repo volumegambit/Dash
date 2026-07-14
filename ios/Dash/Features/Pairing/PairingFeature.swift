@@ -295,6 +295,7 @@ extension VerifiedPairing {
       chatPort: proposed.chatPort,
       secure: proposed.secure,
       mode: proposed.mode,
+      tlsCertificateSha256: proposed.tlsCertificateSha256,
       createdAt: existing.profile.createdAt,
       lastSuccessfulSyncAt: existing.profile.lastSuccessfulSyncAt
     )
@@ -322,37 +323,38 @@ struct ManualPairingInput: Equatable, Sendable {
   var mode: ManualPairingMode = .lan
   var host = ""
   var managementPort = ""
-  var chatPort = ""
-  var secure = false
-  var managementToken = ""
-  var chatToken = ""
+  var mobileToken = ""
   var relayCredential = ""
+  var tlsCertificateSha256 = ""
 
   func payload() throws -> PairingPayload {
     switch mode {
     case .lan:
+      let lanPort = try port(managementPort, field: "mgmtPort") ?? 9400
       return PairingPayload(
-        v: 1,
+        v: 3,
         host: host,
-        mgmtToken: managementToken,
-        chatToken: chatToken,
-        mgmtPort: try port(managementPort, field: "mgmtPort"),
-        chatPort: try port(chatPort, field: "chatPort"),
+        mgmtToken: mobileToken,
+        chatToken: mobileToken,
+        mgmtPort: lanPort,
+        chatPort: lanPort,
         label: nil,
-        secure: secure,
-        relayCredential: nil
+        secure: true,
+        relayCredential: nil,
+        tlsCertificateSha256: tlsCertificateSha256
       )
     case .relay:
       return PairingPayload(
         v: 2,
         host: host,
-        mgmtToken: managementToken,
-        chatToken: chatToken,
+        mgmtToken: mobileToken,
+        chatToken: mobileToken,
         mgmtPort: nil,
         chatPort: nil,
         label: nil,
         secure: true,
-        relayCredential: relayCredential
+        relayCredential: relayCredential,
+        tlsCertificateSha256: nil
       )
     }
   }

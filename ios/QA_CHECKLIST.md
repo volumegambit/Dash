@@ -16,7 +16,7 @@ replace camera, Keychain, local-network, cellular relay, or background execution
 ## Pairing and security
 
 - [ ] Fresh install: camera denied -> paste/manual fallback remains usable
-- [ ] LAN v1 QR on same Wi-Fi -> health, identity, agents, and chat succeed
+- [ ] LAN v3 QR on same Wi-Fi -> pinned HTTPS/WSS health, agents, and chat succeed
 - [ ] Relay v2 QR on cellular -> HTTPS/WSS chat succeeds
 - [ ] Revoke this device in Mission Control -> iOS requests re-pairing
 - [ ] Disconnect & Forget -> Keychain item and gateway cache are removed

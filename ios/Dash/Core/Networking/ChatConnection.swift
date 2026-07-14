@@ -48,7 +48,7 @@ private final class URLSessionWebSocketTaskAdapter: WebSocketTasking, @unchecked
   }
 }
 
-private final class URLSessionWebSocketSession: WebSocketSessioning, @unchecked Sendable {
+final class URLSessionWebSocketSession: WebSocketSessioning, @unchecked Sendable {
   private let session: URLSession
 
   init(session: URLSession = .shared) {
@@ -101,11 +101,15 @@ actor ChatConnection {
 
   init(
     endpoint: ConnectionEndpoint,
-    session: any WebSocketSessioning = URLSessionWebSocketSession(),
+    session: (any WebSocketSessioning)? = nil,
     clock: any AppClock = SystemAppClock()
   ) {
     self.endpoint = endpoint
-    self.session = session
+    self.session =
+      session
+      ?? URLSessionWebSocketSession(
+        session: GatewayURLSessionFactory.make(profile: endpoint.profile)
+      )
     self.clock = clock
     let pair = AsyncThrowingStream<ChatConnectionEvent, Error>.makeStream()
     stream = pair.stream
@@ -215,6 +219,7 @@ actor ChatConnection {
     generation += 1
     let probeGeneration = generation
     transition(to: .connecting)
+    try endpoint.requireTrustedTransport()
     let task = session.webSocketTask(with: try endpoint.chatRequest())
     socket = task
     task.resume()
@@ -274,6 +279,7 @@ actor ChatConnection {
     generation += 1
     let currentGeneration = generation
     transition(to: .connecting)
+    try endpoint.requireTrustedTransport()
     let task = session.webSocketTask(with: try endpoint.chatRequest())
     socket = task
     task.resume()
@@ -292,6 +298,7 @@ actor ChatConnection {
         guard var subscription = turnSubscriptions[frame.id] else { continue }
         let capable = subscription.capable || frame.isAccepted
         _ = try validatedFrame(frame, capable: capable)
+        reconnectAttempt = 0
         if frame.isAccepted {
           subscription.capable = true
         }
@@ -417,7 +424,12 @@ actor ChatConnection {
     _ frame: MobileWSServerFrame,
     capable: Bool
   ) throws -> CapableServerFrame? {
-    guard capable else { return nil }
+    guard capable else {
+      if case .error(_, _, nil, _, _, _, _) = frame {
+        return try CapableServerFrame.validating(frame)
+      }
+      throw ContractValidationError.requiredCapableField("accepted")
+    }
     return try CapableServerFrame.validating(frame)
   }
 

@@ -130,7 +130,7 @@ struct ComposerView: View {
       .disabled(feature.canSend == false)
       .keyboardShortcut(.return, modifiers: .command)
       .accessibilityLabel("Send message")
-      .accessibilityHint(feature.isAuthoritative ? "" : "Connect to the gateway to send")
+      .accessibilityHint(feature.composerDisabledReason ?? "")
       .accessibilityIdentifier("chat.send")
     }
   }

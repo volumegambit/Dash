@@ -4,8 +4,10 @@ import XCTest
 
 final class LiveGatewayEnvironmentTests: XCTestCase {
   private let completeEnvironment = [
-    "DASH_TEST_MANAGEMENT_URL": "http://127.0.0.1:49100",
-    "DASH_TEST_CHAT_URL": "ws://127.0.0.1:49200/ws/chat",
+    "DASH_TEST_MANAGEMENT_URL": "https://127.0.0.1:49100",
+    "DASH_TEST_CHAT_URL": "wss://127.0.0.1:49100/ws/chat",
+    "DASH_TEST_TLS_CERTIFICATE_SHA256":
+      "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
     "DASH_TEST_MANAGEMENT_TOKEN": "management-secret",
     "DASH_TEST_CHAT_TOKEN": "chat-secret",
     "DASH_TEST_GATEWAY_ID": "gateway-live-01",
@@ -13,11 +15,15 @@ final class LiveGatewayEnvironmentTests: XCTestCase {
     "DASH_TEST_SCENARIO": "stream",
   ]
 
-  func testEnvironmentMapsAllSevenVariables() throws {
+  func testEnvironmentMapsAllEightVariables() throws {
     let environment = try LiveGatewayEnvironment.environment(completeEnvironment)
 
-    XCTAssertEqual(environment.managementURL.absoluteString, "http://127.0.0.1:49100")
-    XCTAssertEqual(environment.chatURL.absoluteString, "ws://127.0.0.1:49200/ws/chat")
+    XCTAssertEqual(environment.managementURL.absoluteString, "https://127.0.0.1:49100")
+    XCTAssertEqual(environment.chatURL.absoluteString, "wss://127.0.0.1:49100/ws/chat")
+    XCTAssertEqual(
+      environment.tlsCertificateSha256,
+      "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    )
     XCTAssertEqual(environment.managementToken, "management-secret")
     XCTAssertEqual(environment.chatToken, "chat-secret")
     XCTAssertEqual(environment.gatewayID, "gateway-live-01")
@@ -73,12 +79,11 @@ final class LiveGatewayEnvironmentTests: XCTestCase {
 
     XCTAssertEqual(
       try client.endpoint.managementURL(path: "/", query: []).absoluteString,
-      "http://127.0.0.1:49100/"
+      "https://127.0.0.1:49100/"
     )
-    XCTAssertEqual(
-      try client.endpoint.chatRequest().url?.absoluteString,
-      "ws://127.0.0.1:49200/ws/chat?token=chat-secret"
-    )
+    let chatRequest = try client.endpoint.chatRequest()
+    XCTAssertEqual(chatRequest.url?.absoluteString, "wss://127.0.0.1:49100/ws/chat")
+    XCTAssertEqual(chatRequest.value(forHTTPHeaderField: "Authorization"), "Bearer chat-secret")
     XCTAssertTrue(client.store === client.conversationStore)
     XCTAssertTrue(client.store === client.syncStore)
   }

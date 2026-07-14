@@ -522,36 +522,30 @@ struct ConversationSyncEngineTests {
     let api = FakeConversationSyncAPI()
     let canonicalAgent = agent(id: "agent-1", name: "Canonical Agent")
     await api.enqueueAgents(.success([canonicalAgent]))
-    await api.enqueueConversation(
-      id: "running",
-      result: .success(
-        summary(
-          id: "running",
-          title: "Running",
-          revision: 2,
-          status: .running,
-          activeTurnID: "turn-running",
-          updatedAt: instant(22)
+    await api.enqueueConversationPage(
+      .success(
+        .init(
+          items: [
+            summary(
+              id: "running",
+              title: "Running",
+              revision: 2,
+              status: .running,
+              activeTurnID: "turn-running",
+              updatedAt: instant(22)
+            ),
+            summary(
+              id: "running-two",
+              title: "Running two",
+              revision: 2,
+              status: .running,
+              activeTurnID: "turn-running-two",
+              updatedAt: instant(17)
+            ),
+            summary(id: "completed", title: "Completed", revision: 2, updatedAt: instant(12)),
+          ],
+          nextCursor: nil
         )
-      )
-    )
-    await api.enqueueConversation(
-      id: "running-two",
-      result: .success(
-        summary(
-          id: "running-two",
-          title: "Running two",
-          revision: 2,
-          status: .running,
-          activeTurnID: "turn-running-two",
-          updatedAt: instant(17)
-        )
-      )
-    )
-    await api.enqueueConversation(
-      id: "completed",
-      result: .success(
-        summary(id: "completed", title: "Completed", revision: 2, updatedAt: instant(12))
       )
     )
     await api.enqueueMessages(
@@ -582,18 +576,6 @@ struct ConversationSyncEngineTests {
         )
       )
     )
-    await api.enqueueMessages(
-      conversationID: "completed",
-      result: .success(
-        .init(
-          items: [
-            message(id: "completed-message", conversationID: "completed", turnID: "turn-completed")
-          ],
-          nextCursor: nil,
-          throughSeq: 9
-        )
-      )
-    )
     let chat = FakeConversationChat()
     let engine = makeEngine(store: store, api: api, chat: chat)
 
@@ -602,13 +584,395 @@ struct ConversationSyncEngineTests {
 
     #expect(try await store.cursor(gatewayID: "gw", conversationID: "running") == 6)
     #expect(try await store.cursor(gatewayID: "gw", conversationID: "running-two") == 3)
-    #expect(try await store.cursor(gatewayID: "gw", conversationID: "completed") == 9)
+    #expect(try await store.cursor(gatewayID: "gw", conversationID: "completed") == 8)
     #expect(try await store.agents(gatewayID: "gw") == [canonicalAgent])
     #expect(
       try await store.messages(gatewayID: "gw", conversationID: "running").map(\.id)
         == ["running-message"]
     )
+    #expect(await api.messageListCalls.map(\.conversationID) == ["running", "running-two"])
+    #expect(await api.conversationCalls.isEmpty)
     #expect(await chat.calls == [.suspend])
+  }
+
+  @Test("foreground reset discovers remote conversations across every canonical page before audit")
+  func foregroundDiscoversRemoteConversationsAcrossPages() async throws {
+    let store = try PersistenceStore.inMemory()
+    try await store.upsertConversations(
+      [
+        summary(
+          id: "cached-running",
+          title: "Cached running",
+          status: .running,
+          activeTurnID: "turn-running",
+          updatedAt: instant(10)
+        )
+      ],
+      gatewayID: "gw"
+    )
+    let api = FakeConversationSyncAPI()
+    await api.enqueueAgents(.success([]))
+    await api.enqueueConversationPage(
+      .success(
+        .init(
+          items: [
+            summary(
+              id: "created-remotely",
+              title: "Created remotely",
+              updatedAt: instant(30)
+            )
+          ],
+          nextCursor: "page-2"
+        )
+      )
+    )
+    await api.enqueueConversationPage(
+      .success(
+        .init(
+          items: [
+            summary(
+              id: "cached-running",
+              title: "Canonical running",
+              revision: 2,
+              status: .running,
+              activeTurnID: "turn-running",
+              updatedAt: instant(20)
+            )
+          ],
+          nextCursor: nil
+        )
+      )
+    )
+    await api.enqueueMessages(
+      conversationID: "cached-running",
+      result: .success(
+        .init(
+          items: [message(id: "running-message", conversationID: "cached-running")],
+          nextCursor: nil,
+          throughSeq: 2
+        )
+      )
+    )
+    let engine = makeEngine(store: store, api: api, pageSize: 1)
+
+    await engine.sceneDidEnterBackground()
+    await engine.sceneWillEnterForeground()
+
+    #expect(
+      await api.conversationListCalls
+        == [
+          .init(agentID: nil, limit: 1, cursor: nil),
+          .init(agentID: nil, limit: 1, cursor: "page-2"),
+        ]
+    )
+    #expect(await api.conversationCalls.isEmpty)
+    #expect(await api.messageListCalls.map(\.conversationID) == ["cached-running"])
+    #expect(try await store.conversation(gatewayID: "gw", id: "created-remotely") != nil)
+  }
+
+  @Test("foreground deletion audit isolates a failed detail probe")
+  func foregroundDeletionAuditIsolatesDetailFailure() async throws {
+    let store = try PersistenceStore.inMemory()
+    try await store.upsertConversations(
+      [
+        summary(id: "probe-failed", title: "Probe failed"),
+        summary(id: "removed", title: "Removed"),
+      ],
+      gatewayID: "gw"
+    )
+    let api = FakeConversationSyncAPI()
+    await api.enqueueAgents(.success([]))
+    await api.enqueueConversationPage(.success(.init(items: [], nextCursor: nil)))
+    await api.enqueueConversation(
+      id: "probe-failed",
+      result: .failure(.validation("Malformed conversation"))
+    )
+    await api.enqueueConversation(id: "removed", result: .failure(.notFound))
+    let engine = makeEngine(store: store, api: api)
+    let recorder = SnapshotRecorder()
+    let collector = Task {
+      for await snapshot in await engine.snapshots() {
+        await recorder.append(snapshot)
+      }
+    }
+
+    await engine.sceneDidEnterBackground()
+    await engine.sceneWillEnterForeground()
+
+    #expect(await api.conversationCalls == ["probe-failed", "removed"])
+    #expect(try await store.conversation(gatewayID: "gw", id: "probe-failed") != nil)
+    #expect(try await store.conversation(gatewayID: "gw", id: "removed") == nil)
+    #expect(await recorder.last?.connection == .online)
+    collector.cancel()
+    await engine.shutdown()
+  }
+
+  @Test("foreground transcript refresh isolates one active conversation failure")
+  func foregroundTranscriptRefreshIsolatesFailure() async throws {
+    let store = try PersistenceStore.inMemory()
+    try await store.upsertConversations(
+      [
+        summary(
+          id: "failed-running",
+          title: "Failed running",
+          status: .running,
+          activeTurnID: "turn-failed"
+        ),
+        summary(
+          id: "live-running",
+          title: "Live running",
+          status: .running,
+          activeTurnID: "turn-live"
+        ),
+      ],
+      gatewayID: "gw"
+    )
+    let api = FakeConversationSyncAPI()
+    await api.enqueueAgents(.success([]))
+    await api.enqueueConversationPage(
+      .success(
+        .init(
+          items: [
+            summary(
+              id: "failed-running",
+              title: "Failed running",
+              revision: 2,
+              status: .running,
+              activeTurnID: "turn-failed"
+            ),
+            summary(
+              id: "live-running",
+              title: "Live running",
+              revision: 2,
+              status: .running,
+              activeTurnID: "turn-live"
+            ),
+          ],
+          nextCursor: nil
+        )
+      )
+    )
+    await api.enqueueMessages(
+      conversationID: "failed-running",
+      result: .failure(
+        .server(
+          MobileAPIError(
+            code: "conversation_unavailable",
+            error: "Conversation unavailable",
+            retryable: true,
+            details: nil
+          ),
+          status: 500
+        )
+      )
+    )
+    await api.enqueueMessages(
+      conversationID: "live-running",
+      result: .success(
+        .init(
+          items: [message(id: "live-message", conversationID: "live-running")],
+          nextCursor: nil,
+          throughSeq: 4
+        )
+      )
+    )
+    let engine = makeEngine(store: store, api: api)
+    let stream = await engine.snapshots()
+    var snapshots = stream.makeAsyncIterator()
+
+    await engine.sceneDidEnterBackground()
+    await engine.sceneWillEnterForeground()
+    let snapshot = try #require(await snapshots.next())
+
+    #expect(
+      await api.messageListCalls.map(\.conversationID)
+        == ["failed-running", "live-running"]
+    )
+    #expect(try await store.cursor(gatewayID: "gw", conversationID: "live-running") == 4)
+    #expect(snapshot.connection == .online)
+  }
+
+  @Test(
+    "foreground omitted-detail audit preserves authoritative gateway failures",
+    arguments: [
+      (GatewayError.unauthorized, GatewayConnectionState.repairRequired),
+      (GatewayError.capabilityRequired, GatewayConnectionState.updateRequired),
+      (GatewayError.updateRequired, GatewayConnectionState.updateRequired),
+      (GatewayError.gatewayOffline, GatewayConnectionState.gatewayOffline),
+      (
+        GatewayError.rateLimited(retryAfter: .seconds(30)),
+        GatewayConnectionState.rateLimited(retryAt: instant(130))
+      ),
+      (
+        GatewayError.transport("detail transport failed"),
+        GatewayConnectionState.reconnecting(attempt: 1, retryAt: instant(101))
+      ),
+    ]
+  )
+  func foregroundDetailAuditPreservesAuthoritativeFailure(
+    failure: GatewayError,
+    expected: GatewayConnectionState
+  ) async throws {
+    let store = try PersistenceStore.inMemory()
+    try await store.upsertConversations(
+      [summary(id: "omitted", title: "Omitted")],
+      gatewayID: "gw"
+    )
+    let api = FakeConversationSyncAPI()
+    await api.enqueueAgents(.success([]))
+    await api.enqueueConversationPage(.success(.init(items: [], nextCursor: nil)))
+    await api.enqueueConversation(id: "omitted", result: .failure(failure))
+    let clock = SuspendedSleepClock(now: instant(100))
+    let engine = makeEngine(store: store, api: api, clock: clock)
+    let recorder = SnapshotRecorder()
+    let collector = Task {
+      for await snapshot in await engine.snapshots() {
+        await recorder.append(snapshot)
+      }
+    }
+
+    await engine.sceneDidEnterBackground()
+    await engine.sceneWillEnterForeground()
+    await eventually { await recorder.last?.connection == expected }
+    await settleSyncWork()
+
+    #expect(await recorder.last?.connection == expected)
+    #expect(await recorder.connections.contains(.online) == false)
+    #expect(await api.conversationCalls == ["omitted"])
+    collector.cancel()
+    await engine.shutdown()
+  }
+
+  @Test(
+    "foreground transcript refresh preserves authoritative gateway failures",
+    arguments: [
+      (GatewayError.unauthorized, GatewayConnectionState.repairRequired),
+      (GatewayError.capabilityRequired, GatewayConnectionState.updateRequired),
+      (GatewayError.updateRequired, GatewayConnectionState.updateRequired),
+      (GatewayError.gatewayOffline, GatewayConnectionState.gatewayOffline),
+      (
+        GatewayError.rateLimited(retryAfter: .seconds(30)),
+        GatewayConnectionState.rateLimited(retryAt: instant(130))
+      ),
+      (
+        GatewayError.transport("message transport failed"),
+        GatewayConnectionState.reconnecting(attempt: 1, retryAt: instant(101))
+      ),
+    ]
+  )
+  func foregroundTranscriptPreservesAuthoritativeFailure(
+    failure: GatewayError,
+    expected: GatewayConnectionState
+  ) async throws {
+    let store = try PersistenceStore.inMemory()
+    let running = summary(
+      id: "running",
+      title: "Running",
+      status: .running,
+      activeTurnID: "turn-running"
+    )
+    let api = FakeConversationSyncAPI()
+    await api.enqueueAgents(.success([]))
+    await api.enqueueConversationPage(.success(.init(items: [running], nextCursor: nil)))
+    await api.enqueueMessages(conversationID: running.id, result: .failure(failure))
+    let clock = SuspendedSleepClock(now: instant(100))
+    let engine = makeEngine(store: store, api: api, clock: clock)
+    let recorder = SnapshotRecorder()
+    let collector = Task {
+      for await snapshot in await engine.snapshots() {
+        await recorder.append(snapshot)
+      }
+    }
+
+    await engine.sceneDidEnterBackground()
+    await engine.sceneWillEnterForeground()
+    await eventually { await recorder.last?.connection == expected }
+    await settleSyncWork()
+
+    #expect(await recorder.last?.connection == expected)
+    #expect(await recorder.connections.contains(.online) == false)
+    #expect(await api.messageListCalls.map(\.conversationID) == [running.id])
+    collector.cancel()
+    await engine.shutdown()
+  }
+
+  @Test(
+    "foreground reconciliation preserves direct URL transport failures",
+    arguments: [ForegroundURLFailurePoint.omittedDetail, .activeTranscript]
+  )
+  func foregroundPreservesURLFailure(point: ForegroundURLFailurePoint) async throws {
+    let store = try PersistenceStore.inMemory()
+    if point == .omittedDetail {
+      try await store.upsertConversations(
+        [summary(id: "omitted", title: "Omitted")],
+        gatewayID: "gw"
+      )
+    }
+    let activeConversation = summary(
+      id: "running",
+      title: "Running",
+      status: .running,
+      activeTurnID: "turn-running"
+    )
+    let api = ForegroundURLFailureAPI(
+      point: point,
+      activeConversation: activeConversation
+    )
+    let clock = SuspendedSleepClock(now: instant(100))
+    let engine = ConversationSyncEngine(
+      gatewayID: "gw",
+      store: store,
+      api: api,
+      invalidations: FakeInvalidationSource(),
+      chat: FakeConversationChat(),
+      reachability: FakeReachability(),
+      clock: clock
+    )
+    let recorder = SnapshotRecorder()
+    let collector = Task {
+      for await snapshot in await engine.snapshots() {
+        await recorder.append(snapshot)
+      }
+    }
+    let expected = GatewayConnectionState.reconnecting(attempt: 1, retryAt: instant(101))
+
+    await engine.sceneDidEnterBackground()
+    await engine.sceneWillEnterForeground()
+    await eventually { await recorder.last?.connection == expected }
+    await settleSyncWork()
+
+    #expect(await recorder.last?.connection == expected)
+    #expect(await recorder.connections.contains(.online) == false)
+    collector.cancel()
+    await engine.shutdown()
+  }
+
+  @Test("foreground restarts invalidations before canonical reset completes")
+  func foregroundStartsInvalidationsBeforeResetCompletes() async throws {
+    let store = try PersistenceStore.inMemory()
+    let api = FakeConversationSyncAPI()
+    let invalidations = RestartableInvalidationSource()
+    await api.enqueueAgents(.success([]))
+    await api.enqueueConversationPage(.success(.init(items: [], nextCursor: nil)))
+    let engine = ConversationSyncEngine(
+      gatewayID: "gw",
+      store: store,
+      api: api,
+      invalidations: invalidations,
+      chat: FakeConversationChat(),
+      reachability: FakeReachability(),
+      clock: TestAppClock(now: instant(100))
+    )
+    await engine.bootstrap()
+    await eventually { await invalidations.subscriptionCount == 1 }
+    await engine.sceneDidEnterBackground()
+    await api.enqueueAgents(.success([]))
+    await api.enqueueConversationPage(.failure(.unauthorized))
+
+    await engine.sceneWillEnterForeground()
+
+    await eventually { await invalidations.subscriptionCount == 2 }
+    await engine.shutdown()
   }
 
   @Test("foreground canonical reconciliation restarts SSE invalidations without owning chat")
@@ -862,19 +1226,9 @@ struct ConversationSyncEngineTests {
         )
       )
     }
-    let sendError = await syncGatewayError {
-      try await engine.sendTurn(
-        id: "turn-after-shutdown",
-        agentID: "agent-1",
-        conversationID: "conversation-after-shutdown",
-        text: "Do not send",
-        images: []
-      )
-    }
     await engine.sceneDidEnterBackground()
 
     #expect(createError == .transport("Mutations require an online gateway"))
-    #expect(sendError == .transport("Mutations require an online gateway"))
     #expect(await api.createRequests.isEmpty)
     #expect(await chat.calls == [.shutdown])
   }
@@ -1021,226 +1375,6 @@ struct ConversationSyncEngineTests {
 
     #expect(thrown == error)
     #expect(await recorder.last?.connection == expected)
-    collector.cancel()
-    await engine.shutdown()
-  }
-
-  @Test("ambiguous send re-reads by turn ID and resumes the same durable mutation")
-  func ambiguousSendResumesSameTurn() async throws {
-    let store = try PersistenceStore.inMemory()
-    try await store.upsertConversations(
-      [
-        summary(
-          id: "c",
-          title: "Running",
-          status: .running,
-          activeTurnID: "turn-stable"
-        )
-      ],
-      gatewayID: "gw"
-    )
-    try await store.advanceCursor(gatewayID: "gw", conversationID: "c", to: 4)
-    let api = FakeConversationSyncAPI()
-    await api.enqueueMessages(
-      conversationID: "c",
-      result: .success(
-        .init(
-          items: [message(id: "m", turnID: "turn-stable", status: .streaming)], nextCursor: nil,
-          throughSeq: 4)
-      )
-    )
-    let chat = FakeConversationChat()
-    await chat.enqueueSend(.failure(.transport("ambiguous send")))
-    let engine = makeEngine(store: store, api: api, chat: chat)
-    await engine.bootstrap()
-
-    try await engine.sendTurn(
-      id: "turn-stable",
-      agentID: "agent-1",
-      conversationID: "c",
-      text: "Only once",
-      images: []
-    )
-
-    #expect(
-      await chat.calls
-        == [
-          .connect,
-          .sendTurn(
-            id: "turn-stable",
-            agentID: "agent-1",
-            conversationID: "c",
-            text: "Only once",
-            images: []
-          ),
-          .resume(
-            turnID: "turn-stable",
-            agentID: "agent-1",
-            conversationID: "c",
-            sinceSeq: 4
-          ),
-        ]
-    )
-    #expect(await api.messageListCalls.map(\.conversationID) == ["c"])
-  }
-
-  @Test("ambiguous send with no durable turn re-sends only the original turn ID")
-  func ambiguousSendResendsSameTurn() async throws {
-    let store = try PersistenceStore.inMemory()
-    try await store.upsertConversations(
-      [summary(id: "c", title: "Idle")],
-      gatewayID: "gw"
-    )
-    let api = FakeConversationSyncAPI()
-    await api.enqueueMessages(
-      conversationID: "c",
-      result: .success(.init(items: [], nextCursor: nil, throughSeq: 0))
-    )
-    let chat = FakeConversationChat()
-    await chat.enqueueSend(.failure(.transport("ambiguous send")))
-    await chat.enqueueSend(.success(()))
-    let engine = makeEngine(store: store, api: api, chat: chat)
-    await engine.bootstrap()
-
-    try await engine.sendTurn(
-      id: "turn-stable",
-      agentID: "agent-1",
-      conversationID: "c",
-      text: "Only once",
-      images: []
-    )
-
-    let sends = await chat.calls.compactMap { call -> String? in
-      guard case .sendTurn(let id, _, _, _, _) = call else { return nil }
-      return id
-    }
-    #expect(sends == ["turn-stable", "turn-stable"])
-  }
-
-  @Test("a non-transport send failure is never retried as an ambiguous mutation")
-  func nonTransportSendFailureIsNotRetried() async throws {
-    let store = try PersistenceStore.inMemory()
-    let api = FakeConversationSyncAPI()
-    let chat = FakeConversationChat()
-    await chat.enqueueSend(.failure(.unauthorized))
-    let engine = makeEngine(store: store, api: api, chat: chat)
-    let recorder = SnapshotRecorder()
-    let collector = Task {
-      for await snapshot in await engine.snapshots() {
-        await recorder.append(snapshot)
-      }
-    }
-    await engine.bootstrap()
-    await eventually { await recorder.count >= 2 }
-
-    let error = await syncGatewayError {
-      try await engine.sendTurn(
-        id: "turn-stable",
-        agentID: "agent-1",
-        conversationID: "c",
-        text: "Do not retry",
-        images: []
-      )
-    }
-
-    #expect(error == .unauthorized)
-    let sends = await chat.calls.compactMap { call -> String? in
-      guard case .sendTurn(let id, _, _, _, _) = call else { return nil }
-      return id
-    }
-    #expect(sends == ["turn-stable"])
-    #expect(await api.messageListCalls.isEmpty)
-    await settleSyncWork()
-    #expect(await recorder.last?.connection == .repairRequired)
-    collector.cancel()
-    await engine.shutdown()
-  }
-
-  @Test("ambiguous-send audit failures map state and rethrow")
-  func ambiguousSendAuditFailureMapsAndRethrows() async throws {
-    let store = try PersistenceStore.inMemory()
-    let api = FakeConversationSyncAPI()
-    await api.enqueueMessages(conversationID: "c", result: .failure(.gatewayOffline))
-    let chat = FakeConversationChat()
-    await chat.enqueueSend(.failure(.transport("ambiguous send")))
-    let engine = makeEngine(store: store, api: api, chat: chat)
-    let recorder = SnapshotRecorder()
-    let collector = Task {
-      for await snapshot in await engine.snapshots() {
-        await recorder.append(snapshot)
-      }
-    }
-    await engine.bootstrap()
-    await eventually { await recorder.count >= 2 }
-
-    let error = await syncGatewayError {
-      try await engine.sendTurn(
-        id: "turn-stable",
-        agentID: "agent-1",
-        conversationID: "c",
-        text: "Audit once",
-        images: []
-      )
-    }
-    await settleSyncWork()
-
-    #expect(error == .gatewayOffline)
-    #expect(await recorder.last?.connection == .gatewayOffline)
-    #expect(await api.messageListCalls.map(\.conversationID) == ["c"])
-    collector.cancel()
-    await engine.shutdown()
-  }
-
-  @Test("ambiguous-send resume failures map state and rethrow")
-  func ambiguousSendResumeFailureMapsAndRethrows() async throws {
-    let store = try PersistenceStore.inMemory()
-    let api = FakeConversationSyncAPI()
-    await api.enqueueMessages(
-      conversationID: "c",
-      result: .success(
-        .init(
-          items: [message(id: "m", turnID: "turn-stable", status: .streaming)],
-          nextCursor: nil,
-          throughSeq: 4
-        )
-      )
-    )
-    let chat = FakeConversationChat()
-    await chat.enqueueSend(.failure(.transport("ambiguous send")))
-    await chat.enqueueResume(.failure(.updateRequired))
-    let engine = makeEngine(store: store, api: api, chat: chat)
-    let recorder = SnapshotRecorder()
-    let collector = Task {
-      for await snapshot in await engine.snapshots() {
-        await recorder.append(snapshot)
-      }
-    }
-    await engine.bootstrap()
-    await eventually { await recorder.count >= 2 }
-
-    let error = await syncGatewayError {
-      try await engine.sendTurn(
-        id: "turn-stable",
-        agentID: "agent-1",
-        conversationID: "c",
-        text: "Resume once",
-        images: []
-      )
-    }
-    await settleSyncWork()
-
-    #expect(error == .updateRequired)
-    #expect(await recorder.last?.connection == .updateRequired)
-    #expect(
-      await chat.calls.contains(
-        .resume(
-          turnID: "turn-stable",
-          agentID: "agent-1",
-          conversationID: "c",
-          sinceSeq: 4
-        )
-      )
-    )
     collector.cancel()
     await engine.shutdown()
   }
@@ -1452,9 +1586,74 @@ private actor SnapshotRecorder {
 
   var count: Int { snapshots.count }
   var last: SyncSnapshot? { snapshots.last }
+  var connections: [GatewayConnectionState] { snapshots.map(\.connection) }
 
   func append(_ snapshot: SyncSnapshot) {
     snapshots.append(snapshot)
+  }
+}
+
+enum ForegroundURLFailurePoint: Equatable, Sendable {
+  case omittedDetail
+  case activeTranscript
+}
+
+private struct ForegroundURLFailureAPI: ConversationSyncAPI, Sendable {
+  let point: ForegroundURLFailurePoint
+  let activeConversation: ConversationSummaryDTO
+
+  func listAgents() async throws -> [RegisteredAgentDTO] { [] }
+
+  func conversations(
+    agentId _: String?,
+    limit _: Int,
+    cursor _: String?
+  ) async throws -> ConversationPageDTO {
+    ConversationPageDTO(
+      items: point == .activeTranscript ? [activeConversation] : [],
+      nextCursor: nil
+    )
+  }
+
+  func conversation(id _: String) async throws -> ConversationSummaryDTO {
+    throw URLError(.networkConnectionLost)
+  }
+
+  func messages(
+    conversationID _: String,
+    limit _: Int,
+    before _: String?
+  ) async throws -> ConversationMessagePageDTO {
+    throw URLError(.networkConnectionLost)
+  }
+
+  func replay(
+    agentID _: String,
+    conversationID _: String,
+    sinceSeq _: Int
+  ) async throws -> ReplayPageDTO {
+    throw GatewayError.updateRequired
+  }
+
+  func createConversation(
+    _ request: CreateConversationRequest
+  ) async throws -> ConversationSummaryDTO {
+    _ = request
+    throw GatewayError.updateRequired
+  }
+}
+
+private actor SuspendedSleepClock: AppClock {
+  private let current: Date
+
+  init(now: Date) {
+    current = now
+  }
+
+  func now() async -> Date { current }
+
+  func sleep(for _: Duration) async throws {
+    try await Task.sleep(for: .seconds(3_600))
   }
 }
 

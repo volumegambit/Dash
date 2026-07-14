@@ -10,6 +10,7 @@ final class GatewayProfileRecord {
   var managementPort: Int
   var chatPort: Int
   var secure: Bool
+  var tlsCertificateSha256: String?
   var modeRaw: String
   var publicKey: String
   var createdAt: Date
@@ -23,6 +24,7 @@ final class GatewayProfileRecord {
     managementPort: Int,
     chatPort: Int,
     secure: Bool,
+    tlsCertificateSha256: String? = nil,
     modeRaw: String,
     publicKey: String,
     createdAt: Date,
@@ -35,6 +37,7 @@ final class GatewayProfileRecord {
     self.managementPort = managementPort
     self.chatPort = chatPort
     self.secure = secure
+    self.tlsCertificateSha256 = tlsCertificateSha256
     self.modeRaw = modeRaw
     self.publicKey = publicKey
     self.createdAt = createdAt
@@ -185,6 +188,38 @@ final class DraftRecord {
     self.text = text
     self.attachmentsData = attachmentsData
     self.updatedAt = updatedAt
+  }
+}
+
+@Model
+final class PendingSendRecord {
+  @Attribute(.unique) var scopedConversationID: String
+  var gatewayID: String
+  var conversationID: String
+  var turnID: String
+  var localUserID: String
+  var draft: String
+  @Attribute(.externalStorage) var attachmentsData: Data
+  var createdAt: Date
+
+  init(
+    scopedConversationID: String,
+    gatewayID: String,
+    conversationID: String,
+    turnID: String,
+    localUserID: String,
+    draft: String,
+    attachmentsData: Data,
+    createdAt: Date
+  ) {
+    self.scopedConversationID = scopedConversationID
+    self.gatewayID = gatewayID
+    self.conversationID = conversationID
+    self.turnID = turnID
+    self.localUserID = localUserID
+    self.draft = draft
+    self.attachmentsData = attachmentsData
+    self.createdAt = createdAt
   }
 }
 

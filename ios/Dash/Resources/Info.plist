@@ -22,16 +22,24 @@
   <string>1</string>
   <key>LSRequiresIPhoneOS</key>
   <true/>
-  <key>NSAppTransportSecurity</key>
-  <dict>
-    <key>NSAllowsLocalNetworking</key>
-    <true/>
-  </dict>
   <key>NSCameraUsageDescription</key>
   <string>Scan a Dash pairing code to connect this device.</string>
   <key>NSLocalNetworkUsageDescription</key>
   <string>Connect to your Dash gateway on this network.</string>
   <key>UILaunchScreen</key>
   <dict/>
+  <key>UISupportedInterfaceOrientations</key>
+  <array>
+    <string>UIInterfaceOrientationPortrait</string>
+    <string>UIInterfaceOrientationLandscapeLeft</string>
+    <string>UIInterfaceOrientationLandscapeRight</string>
+  </array>
+  <key>UISupportedInterfaceOrientations~ipad</key>
+  <array>
+    <string>UIInterfaceOrientationPortrait</string>
+    <string>UIInterfaceOrientationPortraitUpsideDown</string>
+    <string>UIInterfaceOrientationLandscapeLeft</string>
+    <string>UIInterfaceOrientationLandscapeRight</string>
+  </array>
 </dict>
 </plist>

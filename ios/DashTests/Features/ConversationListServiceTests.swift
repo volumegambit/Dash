@@ -392,10 +392,12 @@ struct ConversationListServiceTests {
       publicKey: "public-key",
       label: "Test Gateway",
       host: "gateway.test",
-      managementPort: 9300,
-      chatPort: 9200,
-      secure: false,
+      managementPort: 9400,
+      chatPort: 9400,
+      secure: true,
       mode: .lan,
+      tlsCertificateSha256:
+        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
       createdAt: Date(timeIntervalSince1970: 0),
       lastSuccessfulSyncAt: nil
     )

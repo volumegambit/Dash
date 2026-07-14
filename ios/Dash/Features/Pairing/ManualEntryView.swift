@@ -25,11 +25,9 @@ struct ManualEntryView: View {
           .keyboardType(.URL)
 
         if input.mode == .lan {
-          TextField("Management port", text: $input.managementPort, prompt: Text("9300"))
+          TextField("LAN port", text: $input.managementPort, prompt: Text("9400"))
             .keyboardType(.numberPad)
-          TextField("Chat port", text: $input.chatPort, prompt: Text("9200"))
-            .keyboardType(.numberPad)
-          Toggle("Use secure connection", isOn: $input.secure)
+          LabeledContent("Security", value: "Pinned TLS")
         } else {
           LabeledContent("Ports", value: "443")
           LabeledContent("Security", value: "TLS")
@@ -37,16 +35,20 @@ struct ManualEntryView: View {
       }
 
       Section("Connection secrets") {
-        SecureField("Management token", text: $input.managementToken)
+        SecureField("Mobile token", text: $input.mobileToken)
           .textInputAutocapitalization(.never)
           .autocorrectionDisabled()
-        SecureField("Chat token", text: $input.chatToken)
-          .textInputAutocapitalization(.never)
-          .autocorrectionDisabled()
+          .textContentType(.oneTimeCode)
         if input.mode == .relay {
           SecureField("Relay credential", text: $input.relayCredential)
             .textInputAutocapitalization(.never)
             .autocorrectionDisabled()
+            .textContentType(.oneTimeCode)
+        } else {
+          SecureField("Certificate SHA-256", text: $input.tlsCertificateSha256)
+            .textInputAutocapitalization(.never)
+            .autocorrectionDisabled()
+            .textContentType(.oneTimeCode)
         }
       }
 
@@ -73,7 +75,7 @@ struct ManualEntryView: View {
   private var connectionHelp: String {
     switch input.mode {
     case .lan:
-      "Use this when the phone and gateway are on the same network. Empty ports use 9300 and 9200."
+      "Use this on the same network. Empty port uses 9400. Scan or paste the Mission Control code unless trusted local tooling supplied these values."
     case .relay:
       "Relay connections always use TLS on port 443 and require a device credential."
     }

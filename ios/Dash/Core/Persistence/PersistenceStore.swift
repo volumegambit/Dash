@@ -16,6 +16,17 @@ actor PersistenceStore {
     return PersistenceStore(modelContainer: container)
   }
 
+  static func stored(at url: URL) throws -> PersistenceStore {
+    let schema = persistenceSchema()
+    let configuration = ModelConfiguration(
+      schema: schema,
+      url: url,
+      cloudKitDatabase: .none
+    )
+    let container = try ModelContainer(for: schema, configurations: [configuration])
+    return PersistenceStore(modelContainer: container)
+  }
+
   func upsertProfile(
     _ profile: ConnectionProfile,
     identity: GatewayIdentityDTO,
@@ -29,6 +40,7 @@ actor PersistenceStore {
       record.managementPort = profile.managementPort
       record.chatPort = profile.chatPort
       record.secure = profile.secure
+      record.tlsCertificateSha256 = profile.tlsCertificateSha256
       record.modeRaw = profile.mode.rawValue
       record.publicKey = identity.publicKey
       record.createdAt = profile.createdAt
@@ -43,6 +55,7 @@ actor PersistenceStore {
           managementPort: profile.managementPort,
           chatPort: profile.chatPort,
           secure: profile.secure,
+          tlsCertificateSha256: profile.tlsCertificateSha256,
           modeRaw: profile.mode.rawValue,
           publicKey: identity.publicKey,
           createdAt: profile.createdAt,
@@ -79,6 +92,7 @@ actor PersistenceStore {
         chatPort: record.chatPort,
         secure: record.secure,
         mode: mode,
+        tlsCertificateSha256: record.tlsCertificateSha256,
         createdAt: record.createdAt,
         lastSuccessfulSyncAt: record.lastSuccessfulSyncAt
       )
@@ -94,13 +108,18 @@ actor PersistenceStore {
     _ values: [ConversationSummaryDTO],
     gatewayID: String
   ) throws {
-    for value in values {
-      try upsertConversation(value, gatewayID: gatewayID)
-      if value.status == .deleted {
-        try purgeConversationContent(gatewayID: gatewayID, conversationID: value.id)
+    do {
+      for value in values {
+        let wasApplied = try upsertConversation(value, gatewayID: gatewayID)
+        if wasApplied, value.status == .deleted {
+          try purgeConversationContent(gatewayID: gatewayID, conversationID: value.id)
+        }
       }
+      try modelContext.save()
+    } catch {
+      modelContext.rollback()
+      throw error
     }
-    try modelContext.save()
   }
 
   func conversations(gatewayID: String, limit: Int) throws -> [CachedConversation] {
@@ -130,23 +149,56 @@ actor PersistenceStore {
   }
 
   func applyTombstone(_ value: ConversationSummaryDTO, gatewayID: String) throws {
+    do {
+      try stageTombstone(value, gatewayID: gatewayID)
+      try modelContext.save()
+    } catch {
+      modelContext.rollback()
+      throw error
+    }
+  }
+
+  func applyTombstone(
+    _ value: ConversationSummaryDTO,
+    gatewayID: String,
+    saveChanges: @Sendable () throws -> Void
+  ) throws {
+    do {
+      try stageTombstone(value, gatewayID: gatewayID)
+      try saveChanges()
+    } catch {
+      modelContext.rollback()
+      throw error
+    }
+  }
+
+  private func stageTombstone(
+    _ value: ConversationSummaryDTO,
+    gatewayID: String
+  ) throws {
     guard value.status == .deleted else {
       throw PersistenceStoreError.invalidTombstoneStatus
     }
-    try upsertConversation(value, gatewayID: gatewayID)
-    try purgeConversationContent(gatewayID: gatewayID, conversationID: value.id)
-    try modelContext.save()
+    let wasApplied = try upsertConversation(value, gatewayID: gatewayID)
+    if wasApplied {
+      try purgeConversationContent(gatewayID: gatewayID, conversationID: value.id)
+    }
   }
 
   func removeConversation(gatewayID: String, conversationID: String) throws {
-    if let record = try conversationRecord(
-      gatewayID: gatewayID,
-      conversationID: conversationID
-    ) {
-      modelContext.delete(record)
+    do {
+      if let record = try conversationRecord(
+        gatewayID: gatewayID,
+        conversationID: conversationID
+      ) {
+        modelContext.delete(record)
+      }
+      try purgeConversationContent(gatewayID: gatewayID, conversationID: conversationID)
+      try modelContext.save()
+    } catch {
+      modelContext.rollback()
+      throw error
     }
-    try purgeConversationContent(gatewayID: gatewayID, conversationID: conversationID)
-    try modelContext.save()
   }
 
   func mergeMessages(
@@ -270,6 +322,120 @@ actor PersistenceStore {
     )
   }
 
+  func pendingSend(gatewayID: String, conversationID: String) throws -> PendingChatSend? {
+    let key = scopedID(gatewayID: gatewayID, resourceID: conversationID)
+    guard let record = try pendingSendRecord(scopedConversationID: key) else { return nil }
+    return PendingChatSend(
+      turnID: record.turnID,
+      localUserID: record.localUserID,
+      draft: record.draft,
+      attachments: try ContractCoding.decoder().decode(
+        [PreparedAttachment].self,
+        from: record.attachmentsData
+      ),
+      createdAt: record.createdAt
+    )
+  }
+
+  func stagePendingSend(
+    _ pending: PendingChatSend,
+    gatewayID: String,
+    conversationID: String
+  ) throws {
+    try requireWritableConversation(gatewayID: gatewayID, conversationID: conversationID)
+    let key = scopedID(gatewayID: gatewayID, resourceID: conversationID)
+    let attachments = try ContractCoding.encoder().encode(pending.attachments)
+    if let record = try pendingSendRecord(scopedConversationID: key) {
+      record.turnID = pending.turnID
+      record.localUserID = pending.localUserID
+      record.draft = pending.draft
+      record.attachmentsData = attachments
+      record.createdAt = pending.createdAt
+    } else {
+      modelContext.insert(
+        PendingSendRecord(
+          scopedConversationID: key,
+          gatewayID: gatewayID,
+          conversationID: conversationID,
+          turnID: pending.turnID,
+          localUserID: pending.localUserID,
+          draft: pending.draft,
+          attachmentsData: attachments,
+          createdAt: pending.createdAt
+        )
+      )
+    }
+    if let draft = try draftRecord(scopedConversationID: key) {
+      modelContext.delete(draft)
+    }
+    do {
+      try modelContext.save()
+    } catch {
+      modelContext.rollback()
+      throw error
+    }
+  }
+
+  func clearPendingSend(
+    gatewayID: String,
+    conversationID: String,
+    turnID: String
+  ) throws {
+    let key = scopedID(gatewayID: gatewayID, resourceID: conversationID)
+    guard let record = try pendingSendRecord(scopedConversationID: key),
+      record.turnID == turnID
+    else { return }
+    modelContext.delete(record)
+    do {
+      try modelContext.save()
+    } catch {
+      modelContext.rollback()
+      throw error
+    }
+  }
+
+  func restorePendingSendAsDraft(
+    gatewayID: String,
+    conversationID: String,
+    turnID: String
+  ) throws -> ConversationDraft? {
+    try requireWritableConversation(gatewayID: gatewayID, conversationID: conversationID)
+    let key = scopedID(gatewayID: gatewayID, resourceID: conversationID)
+    guard let pending = try pendingSendRecord(scopedConversationID: key),
+      pending.turnID == turnID
+    else { return nil }
+    let attachments = try ContractCoding.decoder().decode(
+      [PreparedAttachment].self,
+      from: pending.attachmentsData
+    )
+    let draftText = pending.draft
+    let updatedAt = Date()
+    if let draft = try draftRecord(scopedConversationID: key) {
+      draft.text = draftText
+      draft.attachmentsData = pending.attachmentsData
+      draft.updatedAt = updatedAt
+    } else {
+      modelContext.insert(
+        DraftRecord(
+          scopedConversationID: key,
+          gatewayID: gatewayID,
+          conversationID: conversationID,
+          text: draftText,
+          attachmentsData: pending.attachmentsData,
+          updatedAt: updatedAt
+        )
+      )
+    }
+    modelContext.delete(pending)
+    do {
+      try modelContext.save()
+    } catch {
+      modelContext.rollback()
+      throw error
+    }
+    return ConversationDraft(text: draftText, attachments: attachments, updatedAt: updatedAt)
+  }
+
   func replaceAgents(_ values: [RegisteredAgentDTO], gatewayID: String) throws {
     let targetGatewayID = gatewayID
     let descriptor = FetchDescriptor<AgentRecord>(
@@ -391,6 +557,13 @@ actor PersistenceStore {
       modelContext.delete(record)
     }
     for record in try modelContext.fetch(
+      FetchDescriptor<PendingSendRecord>(
+        predicate: #Predicate { $0.gatewayID == targetGatewayID }
+      )
+    ) {
+      modelContext.delete(record)
+    }
+    for record in try modelContext.fetch(
       FetchDescriptor<ReplayCursorRecord>(
         predicate: #Predicate { $0.gatewayID == targetGatewayID }
       )
@@ -403,9 +576,9 @@ actor PersistenceStore {
   private func upsertConversation(
     _ value: ConversationSummaryDTO,
     gatewayID: String
-  ) throws {
+  ) throws -> Bool {
     if let record = try conversationRecord(gatewayID: gatewayID, conversationID: value.id) {
-      guard value.revision > record.revision else { return }
+      guard value.revision > record.revision else { return false }
       apply(value, to: record)
     } else {
       modelContext.insert(
@@ -429,6 +602,7 @@ actor PersistenceStore {
         )
       )
     }
+    return true
   }
 
   private func requireWritableConversation(
@@ -570,6 +744,15 @@ actor PersistenceStore {
     return try modelContext.fetch(descriptor).first
   }
 
+  private func pendingSendRecord(scopedConversationID: String) throws -> PendingSendRecord? {
+    let key = scopedConversationID
+    var descriptor = FetchDescriptor<PendingSendRecord>(
+      predicate: #Predicate { $0.scopedConversationID == key }
+    )
+    descriptor.fetchLimit = 1
+    return try modelContext.fetch(descriptor).first
+  }
+
   private func replayCursorRecord(
     scopedConversationID: String
   ) throws -> ReplayCursorRecord? {
@@ -593,6 +776,7 @@ private func persistenceSchema() -> Schema {
     MessageRecord.self,
     AgentRecord.self,
     DraftRecord.self,
+    PendingSendRecord.self,
     ReplayCursorRecord.self,
   ])
 }

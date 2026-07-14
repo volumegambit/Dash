@@ -15,8 +15,37 @@ struct ConnectionProfile: Codable, Hashable, Identifiable, Sendable {
   let chatPort: Int
   let secure: Bool
   let mode: ConnectionMode
+  let tlsCertificateSha256: String?
   let createdAt: Date
   var lastSuccessfulSyncAt: Date?
+
+  init(
+    id: UUID,
+    gatewayId: String?,
+    publicKey: String?,
+    label: String,
+    host: String,
+    managementPort: Int,
+    chatPort: Int,
+    secure: Bool,
+    mode: ConnectionMode,
+    tlsCertificateSha256: String? = nil,
+    createdAt: Date,
+    lastSuccessfulSyncAt: Date?
+  ) {
+    self.id = id
+    self.gatewayId = gatewayId
+    self.publicKey = publicKey
+    self.label = label
+    self.host = host
+    self.managementPort = managementPort
+    self.chatPort = chatPort
+    self.secure = secure
+    self.mode = mode
+    self.tlsCertificateSha256 = tlsCertificateSha256
+    self.createdAt = createdAt
+    self.lastSuccessfulSyncAt = lastSuccessfulSyncAt
+  }
 }
 
 enum PairingValidationError: Error, Equatable, Sendable {
@@ -25,13 +54,30 @@ enum PairingValidationError: Error, Equatable, Sendable {
   case invalidPort(String)
   case blankSecret(String)
   case missingRelayCredential
+  case insecureLanPairing
+  case insecureRelayPairing
+  case mismatchedLANPorts
+  case mismatchedMobileTokens
+  case invalidCertificatePin
 }
 
 extension PairingPayload {
   func validated(profileID: UUID) throws -> (ConnectionProfile, ConnectionSecrets) {
+    switch v {
+    case 1:
+      throw PairingValidationError.insecureLanPairing
+    case 2, 3:
+      break
+    default:
+      throw PairingValidationError.unsupportedVersion(v)
+    }
+
     let normalizedHost = try validatedHost(host)
     let managementToken = try nonblank(mgmtToken, field: "mgmtToken")
     let normalizedChatToken = try nonblank(chatToken, field: "chatToken")
+    guard managementToken == normalizedChatToken else {
+      throw PairingValidationError.mismatchedMobileTokens
+    }
     let normalizedLabel = label?.trimmingCharacters(in: .whitespacesAndNewlines)
     let profileLabel =
       if let normalizedLabel, normalizedLabel.isEmpty == false {
@@ -41,9 +87,21 @@ extension PairingPayload {
       }
 
     switch v {
-    case 1:
-      let managementPort = try validatedPort(mgmtPort ?? 9300, field: "mgmtPort")
-      let chatPort = try validatedPort(chatPort ?? 9200, field: "chatPort")
+    case 3:
+      guard secure == true else {
+        throw PairingValidationError.insecureLanPairing
+      }
+      guard let mgmtPort, let chatPort else {
+        throw PairingValidationError.invalidPort(mgmtPort == nil ? "mgmtPort" : "chatPort")
+      }
+      let validatedManagementPort = try validatedPort(mgmtPort, field: "mgmtPort")
+      let validatedChatPort = try validatedPort(chatPort, field: "chatPort")
+      guard validatedManagementPort == validatedChatPort else {
+        throw PairingValidationError.mismatchedLANPorts
+      }
+      guard let pin = GatewayCertificatePin.normalize(tlsCertificateSha256) else {
+        throw PairingValidationError.invalidCertificatePin
+      }
       return (
         ConnectionProfile(
           id: profileID,
@@ -51,20 +109,24 @@ extension PairingPayload {
           publicKey: nil,
           label: profileLabel,
           host: normalizedHost,
-          managementPort: managementPort,
-          chatPort: chatPort,
-          secure: secure ?? false,
+          managementPort: validatedManagementPort,
+          chatPort: validatedChatPort,
+          secure: true,
           mode: .lan,
+          tlsCertificateSha256: pin,
           createdAt: Date(),
           lastSuccessfulSyncAt: nil
         ),
         ConnectionSecrets(
           managementToken: managementToken,
-          chatToken: normalizedChatToken,
+          chatToken: managementToken,
           relayCredential: nil
         )
       )
     case 2:
+      guard secure == true else {
+        throw PairingValidationError.insecureRelayPairing
+      }
       guard let relayCredential else {
         throw PairingValidationError.missingRelayCredential
       }
@@ -85,12 +147,13 @@ extension PairingPayload {
           chatPort: 443,
           secure: true,
           mode: .relay,
+          tlsCertificateSha256: nil,
           createdAt: Date(),
           lastSuccessfulSyncAt: nil
         ),
         ConnectionSecrets(
           managementToken: managementToken,
-          chatToken: normalizedChatToken,
+          chatToken: managementToken,
           relayCredential: normalizedRelayCredential
         )
       )
@@ -113,6 +176,16 @@ struct ConnectionEndpoint: CustomStringConvertible, Sendable {
     "\(profile.mode.rawValue)://\(profile.host)"
   }
 
+  func requireTrustedTransport() throws {
+    guard profile.mode == .lan else { return }
+    guard
+      profile.secure,
+      GatewayCertificatePin.normalize(profile.tlsCertificateSha256) != nil
+    else {
+      throw GatewayError.validation("Re-pair this gateway to use pinned LAN TLS")
+    }
+  }
+
   func managementURL(path: String, query: [URLQueryItem]) throws -> URL {
     try url(
       scheme: profile.secure ? "https" : "http",
@@ -127,9 +200,10 @@ struct ConnectionEndpoint: CustomStringConvertible, Sendable {
       scheme: profile.secure ? "wss" : "ws",
       port: profile.chatPort,
       path: "/ws/chat",
-      query: [URLQueryItem(name: "token", value: secrets.chatToken)]
+      query: []
     )
     var request = URLRequest(url: chatURL)
+    request.setValue("Bearer \(secrets.chatToken)", forHTTPHeaderField: "Authorization")
     if profile.mode == .relay, let relayCredential = secrets.relayCredential {
       request.setValue(relayCredential, forHTTPHeaderField: "x-dash-relay-credential")
     }

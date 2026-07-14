@@ -8,11 +8,13 @@ enum LiveGatewayEnvironmentError: Error, Equatable, Sendable {
   case invalidURL(String)
   case unsupportedScenario
   case incompatibleEndpoints
+  case invalidCertificatePin
 }
 
 struct LiveGatewayEnvironment: Sendable {
   let managementURL: URL
   let chatURL: URL
+  let tlsCertificateSha256: String
   let managementToken: String
   let chatToken: String
   let gatewayID: String
@@ -22,6 +24,7 @@ struct LiveGatewayEnvironment: Sendable {
   static func environment(_ values: [String: String]) throws -> Self {
     let managementURLValue = try required("DASH_TEST_MANAGEMENT_URL", in: values)
     let chatURLValue = try required("DASH_TEST_CHAT_URL", in: values)
+    let tlsCertificateSha256 = try required("DASH_TEST_TLS_CERTIFICATE_SHA256", in: values)
     let managementToken = try required("DASH_TEST_MANAGEMENT_TOKEN", in: values)
     let chatToken = try required("DASH_TEST_CHAT_TOKEN", in: values)
     let gatewayID = try required("DASH_TEST_GATEWAY_ID", in: values)
@@ -30,10 +33,14 @@ struct LiveGatewayEnvironment: Sendable {
     guard ["stream", "question", "slow"].contains(scenario) else {
       throw LiveGatewayEnvironmentError.unsupportedScenario
     }
+    guard let normalizedPin = GatewayCertificatePin.normalize(tlsCertificateSha256) else {
+      throw LiveGatewayEnvironmentError.invalidCertificatePin
+    }
 
     return LiveGatewayEnvironment(
       managementURL: try absoluteURL(managementURLValue, name: "DASH_TEST_MANAGEMENT_URL"),
       chatURL: try absoluteURL(chatURLValue, name: "DASH_TEST_CHAT_URL"),
+      tlsCertificateSha256: normalizedPin,
       managementToken: managementToken,
       chatToken: chatToken,
       gatewayID: gatewayID,
@@ -57,10 +64,14 @@ struct LiveGatewayEnvironment: Sendable {
       chatToken: chatToken,
       relayCredential: nil
     )
-    let transport = HTTPTransport(endpoint: endpoint, secrets: secrets)
+    let session = GatewayURLSessionFactory.make(profile: endpoint.profile)
+    let transport = HTTPTransport(endpoint: endpoint, secrets: secrets, session: session)
     let api = GatewayAPI(transport: transport)
-    let sse = SSEClient(endpoint: endpoint, secrets: secrets)
-    let chat = ChatConnection(endpoint: endpoint)
+    let sse = SSEClient(endpoint: endpoint, secrets: secrets, session: session)
+    let chat = ChatConnection(
+      endpoint: endpoint,
+      session: URLSessionWebSocketSession(session: session)
+    )
     let persistence = try store ?? PersistenceStore.inMemory()
     let sync = ConversationSyncEngine(
       gatewayID: gatewayID,
@@ -90,6 +101,7 @@ struct LiveGatewayEnvironment: Sendable {
     LiveGatewayEnvironment(
       managementURL: managementURL,
       chatURL: chatURL,
+      tlsCertificateSha256: tlsCertificateSha256,
       managementToken: managementToken ?? self.managementToken,
       chatToken: chatToken ?? self.chatToken,
       gatewayID: gatewayID,
@@ -124,16 +136,22 @@ struct LiveGatewayEnvironment: Sendable {
     }
 
     let secure = managementScheme == "https"
+    let managementPort = management.port ?? (secure ? 443 : 80)
+    let chatPort = chat.port ?? (secure ? 443 : 80)
+    guard secure, managementPort == chatPort else {
+      throw LiveGatewayEnvironmentError.incompatibleEndpoints
+    }
     let profile = ConnectionProfile(
       id: UUID(),
       gatewayId: gatewayID,
       publicKey: nil,
       label: "Live gateway integration",
       host: managementHost,
-      managementPort: management.port ?? (secure ? 443 : 80),
-      chatPort: chat.port ?? (secure ? 443 : 80),
+      managementPort: managementPort,
+      chatPort: chatPort,
       secure: secure,
       mode: .lan,
+      tlsCertificateSha256: tlsCertificateSha256,
       createdAt: Date(),
       lastSuccessfulSyncAt: nil
     )
@@ -211,7 +229,10 @@ final class LiveGatewayClient: Sendable {
 
   func releaseSlowEvent() async throws {
     try await transport.sendEmpty(
-      GatewayRequest(method: .post, path: ["__mobile-test", "slow", "release"])
+      GatewayRequest(
+        method: .post,
+        path: ["mobile", "v1", "__mobile-test", "slow", "release"]
+      )
     )
   }
 }

@@ -82,9 +82,13 @@ export function parseRunnerArguments(argv) {
 export function buildHarnessEnvironment(readiness, scenario) {
   if (!SCENARIOS.has(scenario)) throw new Error(`Unsupported live gateway scenario: ${scenario}`);
   const values = {
-    DASH_TEST_MANAGEMENT_URL: readiness?.managementBaseUrl,
-    DASH_TEST_CHAT_URL: readiness?.chatWebSocketUrl,
-    DASH_TEST_MANAGEMENT_TOKEN: readiness?.managementToken,
+    DASH_TEST_MANAGEMENT_URL: readiness?.mobileBaseUrl,
+    DASH_TEST_CHAT_URL: readiness?.mobileChatWebSocketUrl,
+    DASH_TEST_TLS_CERTIFICATE_SHA256: readiness?.tlsCertificateSha256,
+    // The phone's REST capability is intentionally the chat token. The gateway
+    // accepts it only under `/mobile/v1`; the administrative bearer never
+    // enters an iOS process or test environment.
+    DASH_TEST_MANAGEMENT_TOKEN: readiness?.chatToken,
     DASH_TEST_CHAT_TOKEN: readiness?.chatToken,
     DASH_TEST_GATEWAY_ID: readiness?.gatewayId,
     DASH_TEST_AGENT_ID: readiness?.agentId,

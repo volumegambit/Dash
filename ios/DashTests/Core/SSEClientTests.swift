@@ -167,10 +167,13 @@ private func makeSSEClient(relay: Bool = false) -> SSEClient {
     publicKey: "public-key",
     label: "Test Gateway",
     host: "gateway.test",
-    managementPort: relay ? 443 : 9300,
-    chatPort: relay ? 443 : 9200,
-    secure: relay,
+    managementPort: relay ? 443 : 9400,
+    chatPort: relay ? 443 : 9400,
+    secure: true,
     mode: relay ? .relay : .lan,
+    tlsCertificateSha256: relay
+      ? nil
+      : "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
     createdAt: Date(timeIntervalSince1970: 0),
     lastSuccessfulSyncAt: nil
   )

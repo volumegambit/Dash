@@ -27,6 +27,7 @@ actor SSEClient {
     return AsyncThrowingStream { continuation in
       let worker = Task {
         do {
+          try endpoint.requireTrustedTransport()
           var request = URLRequest(
             url: try endpoint.managementURL(path: "/mobile/v1/events", query: [])
           )

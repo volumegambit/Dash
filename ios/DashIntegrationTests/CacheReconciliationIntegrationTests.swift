@@ -25,7 +25,8 @@ final class CacheReconciliationIntegrationTests: XCTestCase {
       )
     )
     let turnID = UUID().uuidString.lowercased()
-    try await firstClient.sync.sendTurn(
+    try await firstClient.chat.connect()
+    try await firstClient.chat.sendTurn(
       id: turnID,
       agentID: environment.agentID,
       conversationID: conversation.id,
@@ -177,7 +178,8 @@ final class CacheReconciliationIntegrationTests: XCTestCase {
       )
     )
     let turnID = UUID().uuidString.lowercased()
-    try await client.sync.sendTurn(
+    try await client.chat.connect()
+    try await client.chat.sendTurn(
       id: turnID,
       agentID: environment.agentID,
       conversationID: conversation.id,

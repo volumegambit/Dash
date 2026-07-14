@@ -3,7 +3,7 @@ import Testing
 
 @testable import Dash
 
-@Suite("Chat feature")
+@Suite("Chat feature", .serialized)
 @MainActor
 struct ChatFeatureTests {
   @Test("opening publishes cache and draft before the canonical first page")
@@ -100,11 +100,443 @@ struct ChatFeatureTests {
     #expect(feature.state.activeTurnID == turnID.uuidString.lowercased())
     #expect(feature.state.messages.last?.user?.text == "Hello Dash")
     let operations = await recorder.operations
-    let clearedDraft = try #require(operations.lastIndex(of: "persist.draft.clear"))
+    let stagedSend = try #require(operations.lastIndex(of: "persist.pending.stage"))
     let connect = try #require(operations.lastIndex(of: "chat.connect"))
     let send = try #require(operations.lastIndex(of: "chat.send"))
-    #expect(clearedDraft < connect)
+    #expect(stagedSend < connect)
     #expect(connect < send)
+  }
+
+  @Test("an ambiguous send that was admitted reconciles and resumes the same turn ID")
+  func ambiguousAdmittedSendResumesSameTurn() async throws {
+    let persistence = FakeChatPersistence()
+    let sync = FakeChatSynchronizer()
+    let chat = FakeChatFeatureTransport()
+    await chat.enqueueSend(.failure(.transport("socket closed after send")))
+    let feature = makeFeature(persistence: persistence, sync: sync, chat: chat)
+    feature.setConnection(.online)
+    await feature.appear()
+    await sync.enqueueRefresh(
+      .success(
+        snapshot(
+          summary: summary(revision: 2, status: .running, activeTurnID: "turn-1", lastSeq: 4),
+          messages: [
+            message(id: "user-1", text: "Keep this admitted message", ordinal: 1),
+            message(
+              id: "assistant-1",
+              role: .assistant,
+              status: .streaming,
+              ordinal: 2
+            ),
+          ],
+          throughSeq: 4
+        )
+      )
+    )
+    await feature.updateDraft("Keep this admitted message")
+
+    await feature.send()
+
+    #expect(feature.state.draft.isEmpty)
+    #expect(feature.state.activeTurnID == "turn-1")
+    #expect(feature.state.messages.map(\.id) == ["user-1", "assistant-1"])
+    #expect(await persistence.persistedDraft == nil)
+    let calls = await chat.calls
+    let sends = calls.compactMap(\.sentPayload)
+    #expect(sends.count == 1)
+    #expect(
+      calls.contains(
+        .resume(
+          turnID: "turn-1",
+          agentID: "agent-1",
+          conversationID: "conv-1",
+          sinceSeq: 4
+        )
+      )
+    )
+  }
+
+  @Test("live tombstone refresh preserves a file-backed pending payload across restart")
+  func liveTombstonePreservesPendingPayloadAcrossRestart() async throws {
+    URLProtocolStub.reset()
+    let directory = FileManager.default.temporaryDirectory.appending(
+      path: UUID().uuidString,
+      directoryHint: .isDirectory
+    )
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let storeURL = directory.appending(path: "dash.store")
+    let store = try PersistenceStore.stored(at: storeURL)
+    let initial = summary()
+    let tombstone = deletedSummary(revision: 2)
+    try await store.upsertConversations([initial], gatewayID: "gateway-1")
+    URLProtocolStub.enqueue(
+      status: 200,
+      data: try ContractCoding.encoder().encode(initial)
+    )
+    URLProtocolStub.enqueue(
+      status: 200,
+      data: try ContractCoding.encoder().encode(
+        ConversationMessagePageDTO(items: [], nextCursor: nil, throughSeq: 0)
+      )
+    )
+    URLProtocolStub.enqueue(
+      status: 200,
+      data: try ContractCoding.encoder().encode(tombstone)
+    )
+    let api = makeChatGatewayAPI()
+    let sync = LiveChatSynchronizer(
+      gatewayID: "gateway-1",
+      store: store,
+      makeAPI: { api }
+    )
+    let chat = FakeChatFeatureTransport()
+    await chat.enqueueSend(.failure(.transport("socket closed after send")))
+    let ids = SequentialUUIDSource(ids: ["turn-live", "local-live"])
+    let feature = ChatFeature(
+      gatewayID: "gateway-1",
+      conversation: initial,
+      persistence: LiveChatPersistence(store: store),
+      synchronizer: sync,
+      transport: chat,
+      clock: TestAppClock(now: Date(timeIntervalSince1970: 1_000)),
+      announcer: FakeChatAccessibilityAnnouncer(),
+      validator: ImageAttachmentValidator(makeID: {
+        UUID(uuidString: "99999999-8888-7777-6666-555555555555")!
+      }),
+      makeID: { ids.next() }
+    )
+    feature.setConnection(.online)
+    await feature.appear()
+    await feature.updateDraft("  Preserve exact pending text  ")
+    await feature.addSelections([ImageSelection(data: Data([0x00, 0x7F, 0xFF]), type: .png)])
+    let attachments = feature.state.attachments
+
+    await feature.send()
+
+    let expected = PendingChatSend(
+      turnID: "turn-live",
+      localUserID: "local-live",
+      draft: "  Preserve exact pending text  ",
+      attachments: attachments,
+      createdAt: Date(timeIntervalSince1970: 1_000)
+    )
+    #expect(feature.state.conversation == tombstone)
+    #expect(feature.draftEditingAllowed == false)
+    #expect(feature.canSend == false)
+    #expect(
+      try await store.pendingSend(gatewayID: "gateway-1", conversationID: "conv-1") == expected
+    )
+    #expect(await chat.calls.compactMap(\.sentPayload).count == 1)
+
+    await feature.shutdown()
+    let reopened = try PersistenceStore.stored(at: storeURL)
+    #expect(
+      try await reopened.conversation(gatewayID: "gateway-1", id: "conv-1")?.summary
+        == tombstone
+    )
+    #expect(
+      try await reopened.pendingSend(gatewayID: "gateway-1", conversationID: "conv-1")
+        == expected
+    )
+    #expect(await chat.calls.compactMap(\.sentPayload).count == 1)
+  }
+
+  @Test("a protocol failure before acceptance keeps the pending composer locked")
+  func protocolFailureBeforeAcceptanceKeepsPending() async {
+    let persistence = FakeChatPersistence()
+    let sync = FakeChatSynchronizer()
+    let chat = FakeChatFeatureTransport()
+    let feature = makeFeature(persistence: persistence, sync: sync, chat: chat)
+    feature.setConnection(.online)
+    await feature.appear()
+    await feature.updateDraft("Keep this until acceptance")
+    await feature.addSelections([ImageSelection(data: Data([1, 2, 3]), type: .png)])
+    let originalAttachments = feature.state.attachments
+
+    await feature.send()
+    await sync.enqueueRefresh(.success(snapshot()))
+    await chat.finish(throwing: GatewayError.updateRequired)
+
+    await eventually {
+      guard await persistence.persistedPendingSend?.turnID == "turn-1" else { return false }
+      return await featureConnection(feature) == .updateRequired
+    }
+    #expect(feature.state.draft.isEmpty)
+    #expect(feature.state.attachments.isEmpty)
+    #expect(feature.state.activeTurnID == "turn-1")
+    #expect(feature.state.messages.first?.user?.text == "Keep this until acceptance")
+    #expect(feature.draftEditingAllowed == false)
+    #expect(await persistence.persistedPendingSend?.attachments == originalAttachments)
+    #expect(await persistence.persistedDraft == nil)
+    #expect(await chat.calls.compactMap(\.sentPayload).count == 1)
+  }
+
+  @Test("an explicit pre-admission rejection restores the original composer payload")
+  func explicitRejectionRestoresComposer() async {
+    let persistence = FakeChatPersistence()
+    let sync = FakeChatSynchronizer()
+    let chat = FakeChatFeatureTransport()
+    let feature = makeFeature(persistence: persistence, sync: sync, chat: chat)
+    feature.setConnection(.online)
+    await feature.appear()
+    await feature.updateDraft("Rejected without admission")
+    await feature.addSelections([ImageSelection(data: Data([3, 2, 1]), type: .png)])
+    let attachments = feature.state.attachments
+
+    await feature.send()
+    await sync.enqueueRefresh(.failure(.gatewayOffline))
+    await chat.yield(
+      .frame(
+        .error(
+          id: "turn-1",
+          conversationId: "conv-1",
+          seq: nil,
+          error: "The message was rejected",
+          code: "validation_failed",
+          retryable: false,
+          activeTurnId: nil
+        )
+      )
+    )
+
+    await eventually {
+      await persistence.persistedDraft?.text == "Rejected without admission"
+    }
+    #expect(feature.state.draft == "Rejected without admission")
+    #expect(feature.state.attachments == attachments)
+    #expect(feature.state.activeTurnID == nil)
+    #expect(await persistence.persistedPendingSend == nil)
+  }
+
+  @Test("restart and explicit retry reuse one pending identity until delayed admission")
+  func delayedAdmissionAfterRestartReusesPendingIdentity() async {
+    let persistence = FakeChatPersistence()
+    let firstSync = FakeChatSynchronizer()
+    let firstChat = FakeChatFeatureTransport()
+    await firstChat.enqueueSend(.failure(.transport("socket closed after send")))
+    let first = makeFeature(persistence: persistence, sync: firstSync, chat: firstChat)
+    first.setConnection(.online)
+    await first.appear()
+    await firstSync.enqueueRefresh(.failure(.gatewayOffline))
+    await first.updateDraft("Recover after restart")
+    await first.addSelections([ImageSelection(data: Data([4, 5, 6]), type: .png)])
+    let originalAttachments = first.state.attachments
+
+    await first.send()
+    await first.shutdown()
+
+    #expect(await persistence.persistedPendingSend?.turnID == "turn-1")
+    #expect(await persistence.persistedPendingSend?.attachments == originalAttachments)
+
+    let replacementSync = FakeChatSynchronizer()
+    await replacementSync.enqueueRefresh(.success(snapshot()))
+    let replacementChat = FakeChatFeatureTransport()
+    let replacement = makeFeature(
+      persistence: persistence,
+      sync: replacementSync,
+      chat: replacementChat,
+      ids: ["fresh-turn-must-not-be-used", "fresh-local-must-not-be-used"]
+    )
+    replacement.setConnection(.online)
+    await replacement.appear()
+
+    #expect(replacement.state.draft.isEmpty)
+    #expect(replacement.state.attachments.isEmpty)
+    #expect(replacement.state.activeTurnID == "turn-1")
+    #expect(replacement.state.messages.first?.id == "local-1")
+    #expect(replacement.state.messages.first?.user?.text == "Recover after restart")
+    #expect(replacement.draftEditingAllowed == false)
+    #expect(await persistence.persistedPendingSend?.attachments == originalAttachments)
+    #expect(await firstChat.calls.compactMap(\.sentPayload).count == 1)
+    #expect(await replacementChat.calls.compactMap(\.sentPayload).isEmpty)
+
+    await replacementSync.enqueueRefresh(.success(snapshot()))
+    await replacement.sceneWillEnterForeground()
+    #expect(await replacementChat.calls.compactMap(\.sentPayload).isEmpty)
+
+    await replacementChat.yield(.state(.reconnecting(attempt: 1)))
+    await replacementChat.yield(.state(.connected))
+    await eventually { await featureTransport(replacement) == .connected }
+    #expect(await replacementChat.calls.compactMap(\.sentPayload).isEmpty)
+
+    await replacementSync.enqueueRefresh(.success(snapshot()))
+    await replacement.retryConnection()
+
+    let firstSend = await firstChat.calls.compactMap(\.sendCall).first
+    let retriedSend = await replacementChat.calls.compactMap(\.sendCall).first
+    #expect(retriedSend == firstSend)
+    #expect(retriedSend?.turnID == "turn-1")
+    #expect(retriedSend?.text == "Recover after restart")
+    #expect(await persistence.persistedPendingSend?.turnID == "turn-1")
+    #expect(replacement.draftEditingAllowed == false)
+
+    await replacementSync.enqueueRefresh(
+      .success(
+        snapshot(
+          summary: summary(revision: 2),
+          messages: [
+            message(
+              id: "canonical-user",
+              text: "Recover after restart",
+              ordinal: 1
+            ),
+            message(
+              id: "canonical-assistant",
+              role: .assistant,
+              ordinal: 2
+            ),
+          ],
+          throughSeq: 1
+        )
+      )
+    )
+    await replacementChat.yield(.frame(accepted(seq: 1)))
+    await eventually {
+      guard await persistence.persistedPendingSend == nil else { return false }
+      return await featureMessageIDs(replacement) == ["canonical-user", "canonical-assistant"]
+    }
+
+    #expect(Set(replacement.state.messages.map(\.turnID)) == ["turn-1"])
+    #expect(replacement.state.messages.count == 2)
+    #expect(await firstChat.calls.compactMap(\.sentPayload).count == 1)
+    #expect(await replacementChat.calls.compactMap(\.sentPayload).count == 1)
+  }
+
+  @Test("an empty equal snapshot cannot prove that a pending send was not admitted")
+  func equalSnapshotRetainsPendingComposer() async {
+    let persistence = FakeChatPersistence()
+    let sync = FakeChatSynchronizer()
+    let chat = FakeChatFeatureTransport()
+    await chat.enqueueSend(.failure(.transport("socket closed before send")))
+    let feature = makeFeature(persistence: persistence, sync: sync, chat: chat)
+    feature.setConnection(.online)
+    await feature.appear()
+    await sync.enqueueRefresh(.success(snapshot()))
+    await feature.updateDraft("Keep this unsent message")
+    await feature.addSelections([ImageSelection(data: Data([1, 2, 3]), type: .png)])
+    let originalAttachments = feature.state.attachments
+
+    await feature.send()
+
+    #expect(feature.state.draft.isEmpty)
+    #expect(feature.state.attachments.isEmpty)
+    #expect(feature.state.activeTurnID == "turn-1")
+    #expect(feature.state.messages.first?.user?.text == "Keep this unsent message")
+    #expect(feature.draftEditingAllowed == false)
+    #expect(feature.canSend == false)
+    #expect(await persistence.persistedPendingSend?.attachments == originalAttachments)
+    #expect(await persistence.persistedDraft == nil)
+    #expect(await chat.calls.compactMap(\.sentPayload).count == 1)
+  }
+
+  @Test("automatic connection recovery audits a pending send without resending")
+  func automaticConnectionRecoveryDoesNotRetryPendingSend() async {
+    let persistence = FakeChatPersistence()
+    let sync = FakeChatSynchronizer()
+    let chat = FakeChatFeatureTransport()
+    await chat.enqueueSend(.failure(.transport("socket closed after send")))
+    let feature = makeFeature(persistence: persistence, sync: sync, chat: chat)
+    feature.setConnection(.online)
+    await feature.appear()
+    await sync.enqueueRefresh(.failure(.gatewayOffline))
+    await feature.updateDraft("Only retry after an explicit tap")
+    await feature.send()
+    feature.setConnection(.offline)
+    await sync.enqueueRefresh(.success(snapshot(summary: summary(revision: 2))))
+
+    feature.setConnection(.online)
+    await feature.connectionDidBecomeOnline()
+
+    #expect(await chat.calls.compactMap(\.sentPayload).count == 1)
+    #expect(await persistence.persistedPendingSend?.turnID == "turn-1")
+    #expect(feature.state.activeTurnID == "turn-1")
+    #expect(feature.draftEditingAllowed == false)
+  }
+
+  @Test("admission by active turn keeps optimistic content until messages are readable")
+  func admittedSummaryRetainsOptimisticMessage() async {
+    let sync = FakeChatSynchronizer()
+    let chat = FakeChatFeatureTransport()
+    await chat.enqueueSend(.failure(.transport("socket closed after send")))
+    let feature = makeFeature(sync: sync, chat: chat)
+    feature.setConnection(.online)
+    await feature.appear()
+    await sync.enqueueRefresh(
+      .success(
+        snapshot(
+          summary: summary(revision: 2, status: .running, activeTurnID: "turn-1", lastSeq: 1),
+          throughSeq: 1
+        )
+      )
+    )
+    await feature.updateDraft("Keep the optimistic content")
+
+    await feature.send()
+
+    #expect(feature.state.activeTurnID == "turn-1")
+    #expect(feature.state.messages.count == 1)
+    #expect(feature.state.messages.first?.turnID == "turn-1")
+    #expect(feature.state.messages.first?.user?.text == "Keep the optimistic content")
+    #expect(await chat.calls.compactMap(\.sentPayload).count == 1)
+  }
+
+  @Test("unavailable reconciliation preserves the pending turn until an explicit retry")
+  func unavailableSendReconciliationRetainsPendingTurn() async {
+    let persistence = FakeChatPersistence()
+    let sync = FakeChatSynchronizer()
+    let chat = FakeChatFeatureTransport()
+    await chat.enqueueSend(.failure(.transport("socket closed after send")))
+    let feature = makeFeature(persistence: persistence, sync: sync, chat: chat)
+    feature.setConnection(.online)
+    await feature.appear()
+    await sync.enqueueRefresh(.failure(.gatewayOffline))
+    await feature.updateDraft("Do not lose or duplicate this")
+
+    await feature.send()
+
+    #expect(feature.state.draft.isEmpty)
+    #expect(feature.state.activeTurnID == "turn-1")
+    #expect(feature.state.messages.count == 1)
+    #expect(feature.state.messages.first?.turnID == "turn-1")
+    #expect(feature.state.messages.first?.user?.text == "Do not lose or duplicate this")
+    #expect(feature.canSend == false)
+    #expect(await chat.calls.compactMap(\.sentPayload).count == 1)
+
+    feature.setConnection(.online)
+    await sync.enqueueRefresh(.success(snapshot(summary: summary(revision: 2))))
+    await feature.retryConnection()
+
+    let sends = await chat.calls.compactMap(\.sendCall)
+    #expect(sends.count == 2)
+    #expect(sends.map(\.turnID) == ["turn-1", "turn-1"])
+    #expect(
+      sends.map(\.text) == ["Do not lose or duplicate this", "Do not lose or duplicate this"]
+    )
+    #expect(feature.state.draft.isEmpty)
+    #expect(feature.state.activeTurnID == "turn-1")
+    #expect(await persistence.persistedPendingSend?.turnID == "turn-1")
+  }
+
+  @Test("a stale canonical read cannot prove that an ambiguous turn was rejected")
+  func staleSendReconciliationRetainsPendingTurn() async {
+    let sync = FakeChatSynchronizer()
+    let chat = FakeChatFeatureTransport()
+    await chat.enqueueSend(.failure(.transport("socket closed after send")))
+    let feature = makeFeature(sync: sync, chat: chat)
+    feature.setConnection(.online)
+    await feature.appear()
+    await sync.enqueueRefresh(.success(snapshot(summary: summary(revision: 0))))
+    await feature.updateDraft("Keep pending until a current read")
+
+    await feature.send()
+
+    #expect(feature.state.draft.isEmpty)
+    #expect(feature.state.activeTurnID == "turn-1")
+    #expect(feature.state.messages.first?.user?.text == "Keep pending until a current read")
+    #expect(feature.isAuthoritative == false)
+    #expect(feature.canSend == false)
+    #expect(await chat.calls.compactMap(\.sentPayload).count == 1)
   }
 
   @Test("an image-only draft can send and base64 conversion happens at the send boundary")
@@ -123,7 +555,7 @@ struct ChatFeatureTests {
     let sent = try #require(await chat.calls.compactMap(\.sentPayload).first)
     #expect(sent.text.isEmpty)
     #expect(sent.images == [MessageImage(mediaType: .png, data: raw.base64EncodedString())])
-    #expect(await persistence.savedDrafts.last?.attachments.isEmpty == true)
+    #expect(await persistence.persistedDraft == nil)
   }
 
   @Test("a failed draft clear aborts send and restores the unsent composer")
@@ -163,6 +595,72 @@ struct ChatFeatureTests {
     #expect(feature.state.draft == "Keep this message")
     #expect(await persistence.persistedDraft?.text == "Keep this message")
     #expect(feature.state.activeTurnID == nil)
+  }
+
+  @Test("shutdown during staging never clears the composer before the pending send is durable")
+  func shutdownDuringPendingSendStagingPreservesDraft() async {
+    let stageGate = TestGate()
+    let persistence = FakeChatPersistence(saveGates: [2: stageGate])
+    let chat = FakeChatFeatureTransport()
+    let feature = makeFeature(persistence: persistence, chat: chat)
+    feature.setConnection(.online)
+    await feature.appear()
+    await feature.updateDraft("Keep this through shutdown")
+
+    let sending = Task { await feature.send() }
+    await stageGate.waitUntilWaiting()
+    #expect(feature.state.draft == "Keep this through shutdown")
+
+    let shutdown = Task { await feature.shutdown() }
+    await Task.yield()
+    await stageGate.release()
+    await sending.value
+    await shutdown.value
+
+    #expect(await chat.calls.compactMap(\.sentPayload).isEmpty)
+    #expect(feature.state.draft == "Keep this through shutdown")
+    #expect(await persistence.persistedDraft?.text == "Keep this through shutdown")
+    #expect(await persistence.persistedPendingSend == nil)
+  }
+
+  @Test("shutdown closes dependencies before waiting for a blocked send")
+  func shutdownUnblocksActiveSendAndRetainsPendingIntent() async {
+    let sendGate = TestGate()
+    let persistence = FakeChatPersistence()
+    let sync = FakeChatSynchronizer()
+    let chat = FakeChatFeatureTransport(
+      sendGate: sendGate,
+      unblockSendOnShutdown: true
+    )
+    let feature = makeFeature(persistence: persistence, sync: sync, chat: chat)
+    feature.setConnection(.online)
+    await feature.appear()
+    await feature.updateDraft("Survive blocked transport shutdown")
+
+    let send = Task { await feature.send() }
+    await sendGate.waitUntilWaiting()
+    let shutdown = Task { await feature.shutdown() }
+
+    var dependenciesClosedBeforeFallback = false
+    for _ in 0..<200 {
+      let transportClosed = await chat.calls.contains(.shutdown)
+      let synchronizerClosed = await sync.shutdownCount == 1
+      if transportClosed && synchronizerClosed {
+        dependenciesClosedBeforeFallback = true
+        break
+      }
+      await Task.yield()
+    }
+    if dependenciesClosedBeforeFallback == false {
+      await sendGate.release()
+    }
+    await shutdown.value
+    await send.value
+
+    #expect(dependenciesClosedBeforeFallback)
+    #expect(await persistence.persistedPendingSend?.turnID == "turn-1")
+    #expect(await persistence.persistedPendingSend?.draft == "Survive blocked transport shutdown")
+    #expect(feature.isShutdown)
   }
 
   @Test("draft writes stay ordered when an older save finishes last")
@@ -245,6 +743,7 @@ struct ChatFeatureTests {
     await eventually { await feature.state.messages.map(\.id) == ["user-1", "assistant-1"] }
 
     #expect(await persistence.cursor == 1)
+    #expect(await persistence.persistedPendingSend == nil)
     #expect(
       await sync.refreshCalls == [
         ChatRefreshCall(conversationID: "conv-1", before: nil),
@@ -308,7 +807,7 @@ struct ChatFeatureTests {
     await sync.enqueueRefresh(.success(snapshot(summary: running, throughSeq: 4)))
 
     feature.setConnection(.online)
-    await feature.retryConnection()
+    await feature.connectionDidBecomeOnline()
 
     #expect(await chat.calls.filter { $0 == .resetAfterTerminalFailure }.count == 1)
     #expect(await chat.eventStreamRequestCount == 2)
@@ -445,7 +944,7 @@ struct ChatFeatureTests {
     await sync.enqueueRefresh(.success(snapshot(summary: running, throughSeq: 4)))
 
     feature.setConnection(.online)
-    await feature.retryConnection()
+    await feature.connectionDidBecomeOnline()
 
     #expect(
       await chat.calls.contains(
@@ -566,7 +1065,7 @@ struct ChatFeatureTests {
     await feature.updateDraft("Hello")
     await feature.send()
     await chat.yield(.frame(accepted(seq: 1)))
-    await eventually { await feature.state.activeTurnID == "turn-1" }
+    await eventually { await feature.canCancel }
 
     await feature.cancel()
     await feature.cancel()
@@ -578,7 +1077,11 @@ struct ChatFeatureTests {
     await chat.yield(
       .frame(.done(id: "turn-1", conversationId: "conv-1", seq: 2, outcome: .cancelled))
     )
-    await eventually { await feature.state.activeTurnID == nil }
+    await eventually {
+      let activeTurnID = await feature.state.activeTurnID
+      let isCancelling = await feature.isCancelling
+      return activeTurnID == nil && isCancelling == false
+    }
 
     #expect(feature.state.messages.last?.status == .cancelled)
     #expect(feature.isCancelling == false)
@@ -596,7 +1099,7 @@ struct ChatFeatureTests {
     await feature.updateDraft("Hello")
     await feature.send()
     await chat.yield(.frame(accepted(seq: 1)))
-    await eventually { await feature.state.activeTurnID == "turn-1" }
+    await eventually { await feature.canCancel }
 
     let first = Task { await feature.cancel() }
     await cancelGate.waitUntilWaiting()
@@ -618,7 +1121,7 @@ struct ChatFeatureTests {
     await feature.updateDraft("Hello")
     await feature.send()
     await chat.yield(.frame(accepted(seq: 1)))
-    await eventually { await feature.state.activeTurnID == "turn-1" }
+    await eventually { await feature.canCancel }
     await feature.cancel()
     #expect(feature.isCancelling)
 
@@ -1091,16 +1594,19 @@ private actor FakeChatPersistence: ChatFeaturePersisting {
   private let advanceGate: TestGate?
   private var cachedMessages: [ConversationMessageDTO]
   private var cachedDraft: ConversationDraft?
+  private var cachedPendingSend: PendingChatSend?
   private var saveCallCount = 0
   private var advanceCallCount = 0
   private(set) var cursor: Int
   private(set) var savedDrafts: [ConversationDraft] = []
 
   var persistedDraft: ConversationDraft? { cachedDraft }
+  var persistedPendingSend: PendingChatSend? { cachedPendingSend }
 
   init(
     messages: [ConversationMessageDTO] = [],
     draft: ConversationDraft? = nil,
+    pendingSend: PendingChatSend? = nil,
     cursor: Int = 0,
     failingSaveCalls: Set<Int> = [],
     failingAdvanceCalls: Set<Int> = [],
@@ -1110,6 +1616,7 @@ private actor FakeChatPersistence: ChatFeaturePersisting {
   ) {
     cachedMessages = messages
     cachedDraft = draft
+    cachedPendingSend = pendingSend
     self.cursor = cursor
     self.failingSaveCalls = failingSaveCalls
     self.failingAdvanceCalls = failingAdvanceCalls
@@ -1126,6 +1633,10 @@ private actor FakeChatPersistence: ChatFeaturePersisting {
 
   func draft(gatewayID: String, conversationID: String) async throws -> ConversationDraft? {
     cachedDraft
+  }
+
+  func pendingSend(gatewayID: String, conversationID: String) async throws -> PendingChatSend? {
+    cachedPendingSend
   }
 
   func cursor(gatewayID: String, conversationID: String) async throws -> Int {
@@ -1148,6 +1659,49 @@ private actor FakeChatPersistence: ChatFeaturePersisting {
       draft.text.isEmpty && draft.attachments.isEmpty
         ? "persist.draft.clear" : "persist.draft"
     )
+  }
+
+  func stagePendingSend(
+    _ pending: PendingChatSend,
+    gatewayID: String,
+    conversationID: String
+  ) async throws {
+    saveCallCount += 1
+    if let gate = saveGates[saveCallCount] { await gate.wait() }
+    guard failingSaveCalls.contains(saveCallCount) == false else {
+      throw FakeChatPersistenceError.unavailable
+    }
+    cachedPendingSend = pending
+    cachedDraft = nil
+    await recorder?.record("persist.pending.stage")
+  }
+
+  func clearPendingSend(
+    gatewayID: String,
+    conversationID: String,
+    turnID: String
+  ) async throws {
+    guard cachedPendingSend?.turnID == turnID else { return }
+    cachedPendingSend = nil
+    await recorder?.record("persist.pending.clear")
+  }
+
+  func restorePendingSendAsDraft(
+    gatewayID: String,
+    conversationID: String,
+    turnID: String
+  ) async throws -> ConversationDraft? {
+    guard let pending = cachedPendingSend, pending.turnID == turnID else { return nil }
+    let draft = ConversationDraft(
+      text: pending.draft,
+      attachments: pending.attachments,
+      updatedAt: pending.createdAt
+    )
+    cachedDraft = draft
+    cachedPendingSend = nil
+    savedDrafts.append(draft)
+    await recorder?.record("persist.pending.restore")
+    return draft
   }
 
   func advanceCursor(gatewayID: String, conversationID: String, to seq: Int) async throws {
@@ -1237,6 +1791,8 @@ private actor FakeChatSynchronizer: ChatFeatureSynchronizing {
 
 private actor FakeChatFeatureTransport: ChatFeatureTransporting {
   private let recorder: ChatOperationRecorder?
+  private let sendGate: TestGate?
+  private let unblockSendOnShutdown: Bool
   private let answerGate: TestGate?
   private let cancelGate: TestGate?
   private let shutdownGate: TestGate?
@@ -1244,17 +1800,22 @@ private actor FakeChatFeatureTransport: ChatFeatureTransporting {
   private var didUseCancelGate = false
   private var stream: AsyncThrowingStream<ChatConnectionEvent, Error>
   private var continuation: AsyncThrowingStream<ChatConnectionEvent, Error>.Continuation
+  private var sendResults: [FakeChatResult<Void>] = []
   private var answerResults: [FakeChatResult<Void>] = []
   private(set) var calls: [FakeChatTransportCall] = []
   private(set) var eventStreamRequestCount = 0
 
   init(
     recorder: ChatOperationRecorder? = nil,
+    sendGate: TestGate? = nil,
+    unblockSendOnShutdown: Bool = false,
     answerGate: TestGate? = nil,
     cancelGate: TestGate? = nil,
     shutdownGate: TestGate? = nil
   ) {
     self.recorder = recorder
+    self.sendGate = sendGate
+    self.unblockSendOnShutdown = unblockSendOnShutdown
     self.answerGate = answerGate
     self.cancelGate = cancelGate
     self.shutdownGate = shutdownGate
@@ -1279,6 +1840,10 @@ private actor FakeChatFeatureTransport: ChatFeatureTransporting {
     answerResults.append(result)
   }
 
+  func enqueueSend(_ result: FakeChatResult<Void>) {
+    sendResults.append(result)
+  }
+
   func connect() async throws {
     calls.append(.connect)
     await recorder?.record("chat.connect")
@@ -1301,6 +1866,17 @@ private actor FakeChatFeatureTransport: ChatFeatureTransporting {
       )
     )
     await recorder?.record("chat.send")
+    if let sendGate {
+      await sendGate.wait()
+      if unblockSendOnShutdown { throw CancellationError() }
+    }
+    guard sendResults.isEmpty == false else { return }
+    switch sendResults.removeFirst() {
+    case .success:
+      return
+    case .failure(let error):
+      throw error
+    }
   }
 
   func resume(
@@ -1343,6 +1919,9 @@ private actor FakeChatFeatureTransport: ChatFeatureTransporting {
 
   func shutdown() async {
     calls.append(.shutdown)
+    if unblockSendOnShutdown {
+      await sendGate?.release()
+    }
     if let shutdownGate { await shutdownGate.wait() }
   }
 
@@ -1381,6 +1960,21 @@ private enum FakeChatTransportCall: Equatable, Sendable {
   var sentPayload: (text: String, images: [MessageImage])? {
     guard case .send(_, _, _, let text, let images) = self else { return nil }
     return (text, images)
+  }
+
+  var sendCall: FakeChatTransportCall? {
+    if case .send = self { return self }
+    return nil
+  }
+
+  var turnID: String? {
+    guard case .send(let turnID, _, _, _, _) = self else { return nil }
+    return turnID
+  }
+
+  var text: String? {
+    guard case .send(_, _, _, let text, _) = self else { return nil }
+    return text
   }
 
   var isAnswer: Bool {
@@ -1438,6 +2032,56 @@ private func summary(
     createdAt: Date(timeIntervalSince1970: 1),
     updatedAt: Date(timeIntervalSince1970: 1),
     deletedAt: nil
+  )
+}
+
+private func deletedSummary(revision: Int) -> ConversationSummaryDTO {
+  ConversationSummaryDTO(
+    id: "conv-1",
+    agentId: "agent-1",
+    agentName: "Dash",
+    title: "Test conversation",
+    revision: revision,
+    status: .deleted,
+    activeTurnId: nil,
+    owningIssueId: nil,
+    projectId: nil,
+    lastSeq: 0,
+    lastMessagePreview: nil,
+    createdAt: Date(timeIntervalSince1970: 1),
+    updatedAt: Date(timeIntervalSince1970: 2),
+    deletedAt: Date(timeIntervalSince1970: 2)
+  )
+}
+
+private func makeChatGatewayAPI() -> GatewayAPI {
+  let profile = ConnectionProfile(
+    id: UUID(),
+    gatewayId: "gateway-1",
+    publicKey: "public-key",
+    label: "Test Gateway",
+    host: "gateway.test",
+    managementPort: 9400,
+    chatPort: 9400,
+    secure: true,
+    mode: .lan,
+    tlsCertificateSha256:
+      "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    createdAt: Date(timeIntervalSince1970: 0),
+    lastSuccessfulSyncAt: nil
+  )
+  let secrets = ConnectionSecrets(
+    managementToken: "management-test-token",
+    chatToken: "chat-test-token",
+    relayCredential: nil
+  )
+  return GatewayAPI(
+    transport: HTTPTransport(
+      endpoint: ConnectionEndpoint(profile: profile, secrets: secrets),
+      secrets: secrets,
+      session: testURLSession(),
+      clock: TestAppClock(now: Date(timeIntervalSince1970: 0))
+    )
   )
 }
 
@@ -1539,6 +2183,21 @@ private func replay(seq: Int, payload: ReplayPayload) -> ReplayEntryDTO {
 @MainActor
 private func pendingQuestion(in feature: ChatFeature) -> QuestionState? {
   feature.state.messages.compactMap(\.assistant?.pendingQuestion).first
+}
+
+@MainActor
+private func featureMessageIDs(_ feature: ChatFeature) -> [String] {
+  feature.state.messages.map(\.id)
+}
+
+@MainActor
+private func featureConnection(_ feature: ChatFeature) -> GatewayConnectionState {
+  feature.connection
+}
+
+@MainActor
+private func featureTransport(_ feature: ChatFeature) -> ChatTransportState {
+  feature.state.transport
 }
 
 private func eventually(

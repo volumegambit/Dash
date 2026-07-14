@@ -3,6 +3,7 @@ import XCTest
 @MainActor
 final class PairingUITests: DashUITestCase {
   func testCameraDenialKeepsPairingAlternativesAvailable() {
+    XCUIApplication().resetAuthorizationStatus(for: .camera)
     let app = launch(scenario: "unpaired")
 
     var deniedSystemCameraAlert = false
@@ -45,23 +46,18 @@ final class PairingUITests: DashUITestCase {
       clearExisting: false
     )
     replaceText(
-      in: field(withPlaceholder: "9300", from: app.textFields),
-      with: "9300",
+      in: field(withPlaceholder: "9400", from: app.textFields),
+      with: "9400",
       clearExisting: false
     )
     replaceText(
-      in: field(withPlaceholder: "9200", from: app.textFields),
-      with: "9200",
+      in: field(withPlaceholder: "Mobile token", from: app.secureTextFields),
+      with: "mobile-test-token",
       clearExisting: false
     )
     replaceText(
-      in: field(withPlaceholder: "Management token", from: app.secureTextFields),
-      with: "mgmt-test-token",
-      clearExisting: false
-    )
-    replaceText(
-      in: field(withPlaceholder: "Chat token", from: app.secureTextFields),
-      with: "chat-test-token",
+      in: field(withPlaceholder: "Certificate SHA-256", from: app.secureTextFields),
+      with: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
       clearExisting: false
     )
     app.collectionViews.buttons["Connect"].tap()

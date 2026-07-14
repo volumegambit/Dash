@@ -172,9 +172,9 @@ class DashUITestCase: XCTestCase {
     let contentIdentifier: String
     switch identifier {
     case "tab.agents":
-      contentIdentifier = "agent.create"
+      contentIdentifier = "agent.list"
     default:
-      contentIdentifier = "conversation.new"
+      contentIdentifier = "conversation.list"
     }
     revealSidebarIfNeeded(toExpose: contentIdentifier, in: app, file: file, line: line)
   }

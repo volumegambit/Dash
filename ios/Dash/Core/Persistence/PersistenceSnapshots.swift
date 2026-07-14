@@ -27,3 +27,11 @@ struct ConversationDraft: Equatable, Sendable {
   let attachments: [DraftAttachment]
   let updatedAt: Date
 }
+
+struct PendingChatSend: Equatable, Sendable {
+  let turnID: String
+  let localUserID: String
+  let draft: String
+  let attachments: [PreparedAttachment]
+  let createdAt: Date
+}

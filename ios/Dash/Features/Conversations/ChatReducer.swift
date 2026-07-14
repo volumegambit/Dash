@@ -19,6 +19,7 @@ enum ChatAction: Sendable {
   case cachedMessagesLoaded([ConversationMessageDTO], cursor: Int)
   case olderMessagesLoaded([ConversationMessageDTO], nextCursor: String?)
   case sendStarted(turnID: String, localUserID: String, text: String, images: [MessageImage])
+  case sendRejected(turnID: String)
   case frame(MobileWSServerFrame)
   case replayLoaded([ReplayEntryDTO])
   case transportChanged(ChatTransportState)
@@ -184,6 +185,15 @@ enum ChatReducer {
       state.activeTurnID = turnID
       state.composerBlock = nil
       state.errorBanner = nil
+      return []
+
+    case .sendRejected(let turnID):
+      state.messages.removeAll { message in
+        message.turnID == turnID && message.ordinal == nil
+      }
+      if state.activeTurnID == turnID {
+        state.activeTurnID = nil
+      }
       return []
 
     case let .frame(frame):

@@ -110,6 +110,7 @@ struct AppDependencies: Sendable {
       MessageRecord.self,
       AgentRecord.self,
       DraftRecord.self,
+      PendingSendRecord.self,
       ReplayCursorRecord.self,
     ])
     let container = try ModelContainer(
@@ -127,7 +128,12 @@ struct AppDependencies: Sendable {
         ConnectionEndpoint,
         ConnectionSecrets
       ) -> HTTPTransport = { endpoint, secrets in
-        HTTPTransport(endpoint: endpoint, secrets: secrets, clock: clock)
+        HTTPTransport(
+          endpoint: endpoint,
+          secrets: secrets,
+          session: GatewayURLSessionFactory.make(profile: endpoint.profile),
+          clock: clock
+        )
       }
     let makeCancellableTransport:
       @Sendable (
@@ -137,7 +143,10 @@ struct AppDependencies: Sendable {
         HTTPTransport(
           endpoint: endpoint,
           secrets: secrets,
-          session: URLSession(configuration: .default),
+          session: GatewayURLSessionFactory.make(
+            profile: endpoint.profile,
+            configuration: .default
+          ),
           clock: clock
         )
       }
@@ -149,7 +158,13 @@ struct AppDependencies: Sendable {
         ConnectionEndpoint,
         ConnectionSecrets
       ) -> SSEInvalidationSource = { endpoint, secrets in
-        SSEInvalidationSource(client: SSEClient(endpoint: endpoint, secrets: secrets))
+        SSEInvalidationSource(
+          client: SSEClient(
+            endpoint: endpoint,
+            secrets: secrets,
+            session: GatewayURLSessionFactory.make(profile: endpoint.profile)
+          )
+        )
       }
     let makeChat: @Sendable (ConnectionEndpoint) -> ChatConnection = { endpoint in
       ChatConnection(endpoint: endpoint, clock: clock)

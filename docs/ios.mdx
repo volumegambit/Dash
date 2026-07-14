@@ -25,14 +25,15 @@ In Mission Control, open **Settings → Devices** and choose **Pair Device**.
     enter the connection details manually.
   </Step>
   <Step title="Confirm the gateway">
-    Dash verifies the gateway before saving the connection. The Conversations tab opens after the
-    gateway identity and mobile capabilities are accepted.
+    For local pairing, the QR also carries the gateway's exact TLS certificate fingerprint. Dash
+    pins that certificate before sending a token. The Conversations tab opens after the gateway
+    identity and mobile capabilities are accepted.
   </Step>
 </Steps>
 
 If pairing fails, check that the phone can reach the gateway, that the code has not been altered,
-and that both sides are up to date. For local connections, also allow Local Network access in iOS
-Settings.
+and that both sides are up to date. A local certificate mismatch requires a fresh QR; Dash never
+falls back to plaintext. Also allow Local Network access in iOS Settings.
 
 ## Use shared conversations
 
@@ -56,7 +57,11 @@ answer an agent question, or cancel the active turn.
 Only one client owns a running turn at a time. If Mission Control or another phone started the turn,
 the composer shows **Active on another device** and stays read-only until that turn finishes. If the
 connection drops during your own turn, Dash keeps the partial response visible and resumes from the
-last durable event after reconnecting.
+last durable event after reconnecting. If the connection fails before Dash can confirm that a new
+message was admitted, the app checks the gateway's canonical conversation before doing anything
+else. An ambiguous message stays saved across app restarts and is never resent automatically. When
+you choose **Retry**, Dash reuses the exact original request ID so the gateway can resume or
+deduplicate the same turn instead of creating a second one.
 
 ## Manage agents
 

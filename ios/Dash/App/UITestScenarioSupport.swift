@@ -81,15 +81,15 @@ extension AppDependenciesFactory {
     var contents: String {
       switch self {
       case .canonicalLAN:
-        #"{"v":1,"host":"192.168.1.50","mgmtToken":"mgmt-test-token","chatToken":"chat-test-token","mgmtPort":9300,"chatPort":9200,"secure":false}"#
+        #"{"v":3,"host":"192.168.1.50","mgmtToken":"mobile-test-token","chatToken":"mobile-test-token","mgmtPort":9400,"chatPort":9400,"secure":true,"tlsCertificateSha256":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}"#
       case .canonicalRelay:
-        #"{"v":2,"host":"gateway-01.relay.dash.example","secure":true,"mgmtToken":"mgmt-test-token","chatToken":"chat-test-token","relayCredential":"relay-device-credential"}"#
+        #"{"v":2,"host":"gateway-01.relay.dash.example","secure":true,"mgmtToken":"mobile-test-token","chatToken":"mobile-test-token","relayCredential":"relay-device-credential"}"#
       case .malformedScheme:
         "dash://pair?payload=not-json"
       case .malformedPath:
-        #"{"v":1,"host":"gateway.local/path","mgmtToken":"m","chatToken":"c"}"#
+        #"{"v":1,"host":"gateway.local/path","mgmtToken":"m","chatToken":"m"}"#
       case .malformedPort:
-        #"{"v":1,"host":"gateway.local","mgmtToken":"m","chatToken":"c","mgmtPort":70000}"#
+        #"{"v":1,"host":"gateway.local","mgmtToken":"m","chatToken":"m","mgmtPort":70000}"#
       }
     }
   }
@@ -105,10 +105,12 @@ extension AppDependenciesFactory {
         publicKey: "ui-public-key-for-accessibility",
         label: "UI Test Gateway",
         host: "dash-ui.local",
-        managementPort: 9300,
-        chatPort: 9200,
-        secure: false,
+        managementPort: 9400,
+        chatPort: 9400,
+        secure: true,
         mode: .lan,
+        tlsCertificateSha256:
+          "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
         createdAt: now,
         lastSuccessfulSyncAt: now
       )
@@ -485,6 +487,7 @@ extension AppDependenciesFactory {
     private var agentValues: [RegisteredAgentDTO]
     private var messages: [String: [ConversationMessageDTO]]
     private var drafts: [String: ConversationDraft] = [:]
+    private var pendingSends: [String: PendingChatSend] = [:]
     private var cursors: [String: Int] = [:]
     private var retainedRequests: [String: String] = [:]
     private var didFailSleepingAgentEnable = false
@@ -517,6 +520,7 @@ extension AppDependenciesFactory {
       agentValues.removeAll()
       messages.removeAll()
       drafts.removeAll()
+      pendingSends.removeAll()
       cursors.removeAll()
       retainedRequests.removeAll()
       _ = dataIdentifier
@@ -747,6 +751,11 @@ extension AppDependenciesFactory {
       return drafts[conversationID]
     }
 
+    func pendingSend(gatewayID: String, conversationID: String) -> PendingChatSend? {
+      _ = gatewayID
+      return pendingSends[conversationID]
+    }
+
     func cursor(gatewayID: String, conversationID: String) -> Int {
       _ = gatewayID
       return cursors[conversationID] ?? 0
@@ -759,6 +768,41 @@ extension AppDependenciesFactory {
     ) {
       _ = gatewayID
       drafts[conversationID] = draft
+    }
+
+    func stagePendingSend(
+      _ pending: PendingChatSend,
+      gatewayID: String,
+      conversationID: String
+    ) {
+      _ = gatewayID
+      pendingSends[conversationID] = pending
+      drafts[conversationID] = nil
+    }
+
+    func clearPendingSend(gatewayID: String, conversationID: String, turnID: String) {
+      _ = gatewayID
+      guard pendingSends[conversationID]?.turnID == turnID else { return }
+      pendingSends[conversationID] = nil
+    }
+
+    func restorePendingSendAsDraft(
+      gatewayID: String,
+      conversationID: String,
+      turnID: String
+    ) -> ConversationDraft? {
+      _ = gatewayID
+      guard let pending = pendingSends[conversationID], pending.turnID == turnID else {
+        return nil
+      }
+      let draft = ConversationDraft(
+        text: pending.draft,
+        attachments: pending.attachments,
+        updatedAt: pending.createdAt
+      )
+      pendingSends[conversationID] = nil
+      drafts[conversationID] = draft
+      return draft
     }
 
     func advanceCursor(gatewayID: String, conversationID: String, to seq: Int) {

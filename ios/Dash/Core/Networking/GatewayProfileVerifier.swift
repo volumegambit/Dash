@@ -29,6 +29,8 @@ struct GatewayProfileVerifier: Sendable {
     profile: ConnectionProfileSnapshot,
     secrets: ConnectionSecrets
   ) async throws {
+    let endpoint = ConnectionEndpoint(profile: profile.profile, secrets: secrets)
+    try endpoint.requireTrustedTransport()
     guard
       profile.gatewayID.isEmpty == false,
       profile.profile.gatewayId == profile.gatewayID,
@@ -37,7 +39,6 @@ struct GatewayProfileVerifier: Sendable {
     else {
       throw GatewayProfileVerificationError.identityMismatch
     }
-    let endpoint = ConnectionEndpoint(profile: profile.profile, secrets: secrets)
     let gateway = makeGateway(endpoint, secrets)
     do {
       try Task.checkCancellation()

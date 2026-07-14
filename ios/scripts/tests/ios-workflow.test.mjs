@@ -16,11 +16,27 @@ const uiTestSources = await Promise.all(uiTestFiles.map((path) => readFile(path,
 const uiTestCaseSource = await readFile('ios/DashUITests/DashUITestCase.swift', 'utf8');
 const pairingUITestSource = await readFile('ios/DashUITests/PairingUITests.swift', 'utf8');
 const composerSource = await readFile('ios/Dash/Features/Conversations/ComposerView.swift', 'utf8');
+const chatFeatureSource = await readFile(
+  'ios/Dash/Features/Conversations/ChatFeature.swift',
+  'utf8',
+);
 const conversationListSource = await readFile(
   'ios/Dash/Features/Conversations/ConversationListView.swift',
   'utf8',
 );
 const agentDetailSource = await readFile('ios/Dash/Features/Agents/AgentDetailView.swift', 'utf8');
+const infoPlistSource = await readFile('ios/Dash/Resources/Info.plist', 'utf8');
+const privacyManifestSource = await readFile(
+  'ios/Dash/Resources/PrivacyInfo.xcprivacy',
+  'utf8',
+).catch(() => '');
+const xcodeProjectSource = await readFile('ios/Dash.xcodeproj/project.pbxproj', 'utf8');
+
+assert.doesNotMatch(
+  infoPlistSource,
+  /NSAllowsLocalNetworking|NSAllowsArbitraryLoads/,
+  'pinned HTTPS LAN transport must not depend on App Transport Security exceptions',
+);
 
 assert.ok(Array.isArray(steps), 'expected jobs.ios.steps in the parsed workflow');
 
@@ -127,16 +143,50 @@ assert.doesNotMatch(uiTestCaseSource, /DASH_UI_TEST_PASTEBOARD\b|--dash-ui-test-
 assert.match(composerSource, /\.keyboardShortcut\("l", modifiers: \.command\)/);
 assert.match(composerSource, /\.keyboardShortcut\(\.return, modifiers: \.command\)/);
 assert.match(composerSource, /\.keyboardShortcut\(\.cancelAction\)/);
+assert.match(
+  infoPlistSource,
+  /<key>UISupportedInterfaceOrientations<\/key>[\s\S]*?<string>UIInterfaceOrientationPortrait<\/string>[\s\S]*?<string>UIInterfaceOrientationLandscapeLeft<\/string>[\s\S]*?<string>UIInterfaceOrientationLandscapeRight<\/string>/,
+  'iPhone must declare its supported portrait and landscape orientations',
+);
+assert.match(
+  infoPlistSource,
+  /<key>UISupportedInterfaceOrientations~ipad<\/key>[\s\S]*?<string>UIInterfaceOrientationPortrait<\/string>[\s\S]*?<string>UIInterfaceOrientationPortraitUpsideDown<\/string>[\s\S]*?<string>UIInterfaceOrientationLandscapeLeft<\/string>[\s\S]*?<string>UIInterfaceOrientationLandscapeRight<\/string>/,
+  'iPad must support all orientations for multitasking',
+);
+assert.notEqual(
+  privacyManifestSource,
+  '',
+  'the app target must include ios/Dash/Resources/PrivacyInfo.xcprivacy',
+);
+assert.match(
+  privacyManifestSource,
+  /<key>NSPrivacyAccessedAPITypes<\/key>\s*<array>\s*<dict>\s*<key>NSPrivacyAccessedAPIType<\/key>\s*<string>NSPrivacyAccessedAPICategoryUserDefaults<\/string>\s*<key>NSPrivacyAccessedAPITypeReasons<\/key>\s*<array>\s*<string>CA92\.1<\/string>\s*<\/array>\s*<\/dict>\s*<\/array>/,
+  'the privacy manifest must declare app-only UserDefaults access with reason CA92.1',
+);
+assert.match(
+  xcodeProjectSource,
+  /PrivacyInfo\.xcprivacy in Resources/,
+  'the generated app target must copy PrivacyInfo.xcprivacy into the bundle',
+);
 for (const [source, hint] of [
   [conversationListSource, 'Connect to the gateway to rename'],
   [conversationListSource, 'Connect to the gateway to delete'],
-  [composerSource, 'Connect to the gateway to send'],
   [agentDetailSource, 'Connect to the gateway to start a conversation'],
   [agentDetailSource, 'Connect to the gateway to edit'],
   [agentDetailSource, 'Connect to the gateway to manage this agent'],
 ]) {
   assert.match(source, new RegExp(`accessibilityHint\\([\\s\\S]*${hint}`));
 }
+assert.match(
+  composerSource,
+  /accessibilityHint\(feature\.composerDisabledReason \?\? ""\)/,
+  'the composer must announce its actual disabled reason',
+);
+assert.match(
+  chatFeatureSource,
+  /if connection != \.online \{ return "Connect to the gateway to send" \}/,
+  'the dynamic composer hint must retain actionable offline guidance',
+);
 
 const uiTestSource = uiTestSources.join('\n');
 const uiTestCount = uiTestSource.match(/func test\w+\s*\(/g)?.length ?? 0;

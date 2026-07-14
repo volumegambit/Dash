@@ -170,6 +170,14 @@ struct PersistenceStoreTests {
       gatewayID: "gw"
     )
     try await cacheConversationContent(store, draft: draft)
+    let pending = PendingChatSend(
+      turnID: "turn-pending",
+      localUserID: "local-user",
+      draft: draft.text,
+      attachments: draft.attachments,
+      createdAt: instant(51)
+    )
+    try await store.stagePendingSend(pending, gatewayID: "gw", conversationID: "c")
     let tombstone = summary(
       id: "c",
       title: "Deleted",
@@ -185,9 +193,136 @@ struct PersistenceStoreTests {
     #expect(retained.summary.status == .deleted)
     #expect(retained.summary.revision == 5)
     try await expectConversationContentPurged(store)
+    #expect(try await store.pendingSend(gatewayID: "gw", conversationID: "c") == pending)
 
     try await store.applyTombstone(tombstone, gatewayID: "gw")
     try await expectConversationContentPurged(store)
+    #expect(try await store.pendingSend(gatewayID: "gw", conversationID: "c") == pending)
+  }
+
+  @Test("remote removal preserves the recoverable pending send payload")
+  func remoteRemovalPreservesPendingSend() async throws {
+    let store = try PersistenceStore.inMemory()
+    let pending = PendingChatSend(
+      turnID: "turn-pending",
+      localUserID: "local-user",
+      draft: "Recover after remote removal",
+      attachments: [
+        PreparedAttachment(
+          id: UUID(uuidString: "018f0f4a-5c42-7a8b-9c01-1234567890ab")!,
+          mediaType: "image/png",
+          data: Data([0x00, 0x7F, 0xFF])
+        )
+      ],
+      createdAt: instant(41)
+    )
+    try await store.upsertConversations(
+      [summary(id: "c", title: "Remote conversation")],
+      gatewayID: "gw"
+    )
+    try await store.stagePendingSend(pending, gatewayID: "gw", conversationID: "c")
+
+    try await store.removeConversation(gatewayID: "gw", conversationID: "c")
+
+    #expect(try await store.conversation(gatewayID: "gw", id: "c") == nil)
+    #expect(try await store.pendingSend(gatewayID: "gw", conversationID: "c") == pending)
+  }
+
+  @Test("a stale tombstone cannot purge newer conversation content")
+  func staleTombstonePreservesNewerContent() async throws {
+    let store = try PersistenceStore.inMemory()
+    let current = summary(id: "c", title: "Current", revision: 6)
+    let draft = ConversationDraft(
+      text: "Keep the newer draft",
+      attachments: [],
+      updatedAt: instant(50)
+    )
+    let pending = PendingChatSend(
+      turnID: "turn-pending",
+      localUserID: "local-user",
+      draft: draft.text,
+      attachments: [],
+      createdAt: instant(51)
+    )
+    let staleTombstone = summary(
+      id: "c",
+      title: "Stale deletion",
+      revision: 5,
+      status: .deleted,
+      deletedAt: instant(40)
+    )
+    let pendingConversation = summary(id: "pending", title: "Pending current", revision: 6)
+    let stalePendingTombstone = summary(
+      id: "pending",
+      title: "Stale pending deletion",
+      revision: 5,
+      status: .deleted,
+      deletedAt: instant(40)
+    )
+    try await store.upsertConversations([current], gatewayID: "gw")
+    try await cacheConversationContent(store, draft: draft)
+    try await store.upsertConversations([pendingConversation], gatewayID: "gw")
+    try await store.stagePendingSend(pending, gatewayID: "gw", conversationID: "pending")
+
+    try await store.upsertConversations(
+      [staleTombstone, stalePendingTombstone],
+      gatewayID: "gw"
+    )
+    try await store.applyTombstone(staleTombstone, gatewayID: "gw")
+    try await store.applyTombstone(stalePendingTombstone, gatewayID: "gw")
+
+    #expect(try await store.conversation(gatewayID: "gw", id: "c")?.summary == current)
+    #expect(
+      try await store.conversation(gatewayID: "gw", id: "pending")?.summary
+        == pendingConversation
+    )
+    #expect(try await store.messages(gatewayID: "gw", conversationID: "c") == [message(id: "m-1")])
+    #expect(try await store.cursor(gatewayID: "gw", conversationID: "c") == 9)
+    #expect(try await store.draft(gatewayID: "gw", conversationID: "c") == draft)
+    #expect(try await store.pendingSend(gatewayID: "gw", conversationID: "pending") == pending)
+  }
+
+  @Test("failed tombstone save rolls back summary purge and pending intent changes")
+  func failedTombstoneSaveRollsBack() async throws {
+    let store = try PersistenceStore.inMemory()
+    let original = summary(id: "c", title: "Still present", revision: 4)
+    let cachedMessage = message(id: "m-1")
+    let pending = PendingChatSend(
+      turnID: "turn-pending",
+      localUserID: "local-user",
+      draft: "Keep this intent",
+      attachments: [
+        PreparedAttachment(
+          id: UUID(uuidString: "018f0f4a-5c42-7a8b-9c01-1234567890ab")!,
+          mediaType: "image/webp",
+          data: Data([0x01, 0x02, 0x03])
+        )
+      ],
+      createdAt: instant(41)
+    )
+    try await store.upsertConversations([original], gatewayID: "gw")
+    try await store.mergeMessages([cachedMessage], gatewayID: "gw", conversationID: "c")
+    try await store.advanceCursor(gatewayID: "gw", conversationID: "c", to: 9)
+    try await store.stagePendingSend(pending, gatewayID: "gw", conversationID: "c")
+
+    await #expect(throws: PersistenceStoreTestError.save) {
+      try await store.applyTombstone(
+        summary(
+          id: "c",
+          title: "Deleted",
+          revision: 5,
+          status: .deleted,
+          deletedAt: instant(60)
+        ),
+        gatewayID: "gw",
+        saveChanges: { throw PersistenceStoreTestError.save }
+      )
+    }
+
+    #expect(try await store.conversation(gatewayID: "gw", id: "c")?.summary == original)
+    #expect(try await store.messages(gatewayID: "gw", conversationID: "c") == [cachedMessage])
+    #expect(try await store.cursor(gatewayID: "gw", conversationID: "c") == 9)
+    #expect(try await store.pendingSend(gatewayID: "gw", conversationID: "c") == pending)
   }
 
   @Test("a non-deleted summary cannot be applied as a tombstone")
@@ -302,6 +437,105 @@ struct PersistenceStoreTests {
     #expect(try await store.draft(gatewayID: "other", conversationID: "c") == nil)
   }
 
+  @Test("pending send staging and restoration move attachment bytes atomically")
+  func pendingSendRoundTrip() async throws {
+    let store = try PersistenceStore.inMemory()
+    let attachment = PreparedAttachment(
+      id: UUID(uuidString: "018f0f4a-5c42-7a8b-9c01-1234567890ab")!,
+      mediaType: "image/png",
+      data: Data([0x00, 0x7F, 0xFF])
+    )
+    let originalDraft = ConversationDraft(
+      text: "Recover me",
+      attachments: [attachment],
+      updatedAt: instant(40)
+    )
+    let pending = PendingChatSend(
+      turnID: "turn-pending",
+      localUserID: "local-user",
+      draft: originalDraft.text,
+      attachments: originalDraft.attachments,
+      createdAt: instant(41)
+    )
+    try await store.saveDraft(originalDraft, gatewayID: "gw", conversationID: "c")
+
+    try await store.stagePendingSend(pending, gatewayID: "gw", conversationID: "c")
+
+    #expect(try await store.draft(gatewayID: "gw", conversationID: "c") == nil)
+    #expect(try await store.pendingSend(gatewayID: "gw", conversationID: "c") == pending)
+
+    let restored = try #require(
+      try await store.restorePendingSendAsDraft(
+        gatewayID: "gw",
+        conversationID: "c",
+        turnID: pending.turnID
+      )
+    )
+
+    #expect(restored.text == originalDraft.text)
+    #expect(restored.attachments == originalDraft.attachments)
+    #expect(try await store.pendingSend(gatewayID: "gw", conversationID: "c") == nil)
+    #expect(
+      try await store.draft(gatewayID: "gw", conversationID: "c")?.attachments == [attachment]
+    )
+  }
+
+  @Test("canonical admission durably clears only the matching pending turn")
+  func pendingSendClearRequiresMatchingTurn() async throws {
+    let store = try PersistenceStore.inMemory()
+    let pending = PendingChatSend(
+      turnID: "turn-pending",
+      localUserID: "local-user",
+      draft: "Sent",
+      attachments: [],
+      createdAt: instant(41)
+    )
+    try await store.stagePendingSend(pending, gatewayID: "gw", conversationID: "c")
+
+    try await store.clearPendingSend(
+      gatewayID: "gw",
+      conversationID: "c",
+      turnID: "different-turn"
+    )
+    #expect(try await store.pendingSend(gatewayID: "gw", conversationID: "c") == pending)
+
+    try await store.clearPendingSend(
+      gatewayID: "gw",
+      conversationID: "c",
+      turnID: pending.turnID
+    )
+    #expect(try await store.pendingSend(gatewayID: "gw", conversationID: "c") == nil)
+  }
+
+  @Test("pending attachment bytes survive reopening the persistent store")
+  func pendingAttachmentSurvivesStoreRestart() async throws {
+    let directory = FileManager.default.temporaryDirectory.appending(
+      path: UUID().uuidString,
+      directoryHint: .isDirectory
+    )
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let storeURL = directory.appending(path: "dash.store")
+    let attachment = PreparedAttachment(
+      id: UUID(uuidString: "018f0f4a-5c42-7a8b-9c01-1234567890ab")!,
+      mediaType: "image/webp",
+      data: Data([0x00, 0x7F, 0xFF])
+    )
+    let pending = PendingChatSend(
+      turnID: "turn-pending",
+      localUserID: "local-user",
+      draft: "Recover after restart",
+      attachments: [attachment],
+      createdAt: instant(41)
+    )
+    let initialStore = try PersistenceStore.stored(at: storeURL)
+    try await initialStore.stagePendingSend(pending, gatewayID: "gw", conversationID: "c")
+
+    let reopenedStore = try PersistenceStore.stored(at: storeURL)
+
+    #expect(try await reopenedStore.pendingSend(gatewayID: "gw", conversationID: "c") == pending)
+  }
+
   @Test("agent replacement is gateway scoped and removes stale agents")
   func agentReplacement() async throws {
     let store = try PersistenceStore.inMemory()
@@ -350,6 +584,10 @@ struct PersistenceStoreTests {
     #expect(cached.gatewayID == "gw")
     #expect(cached.profile.gatewayId == "gw")
     #expect(cached.profile.publicKey == "public-key")
+    #expect(
+      cached.profile.tlsCertificateSha256
+        == "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    )
     #expect(cached.profile.lastSuccessfulSyncAt == instant(90))
   }
 
@@ -423,6 +661,7 @@ struct PersistenceStoreTests {
       MessageRecord.self,
       AgentRecord.self,
       DraftRecord.self,
+      PendingSendRecord.self,
       ReplayCursorRecord.self,
     ])
     let forbidden = schema.entities
@@ -546,8 +785,10 @@ struct PersistenceStoreTests {
       host: "gateway.local",
       managementPort: 9300,
       chatPort: 9200,
-      secure: false,
+      secure: true,
       mode: .lan,
+      tlsCertificateSha256:
+        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
       createdAt: instant(0),
       lastSuccessfulSyncAt: nil
     )

@@ -428,10 +428,12 @@ struct SettingsFeatureTests {
         publicKey: publicKey,
         label: "Tokyo Gateway",
         host: "private.example",
-        managementPort: 9_300,
-        chatPort: 9_200,
-        secure: false,
+        managementPort: 9_400,
+        chatPort: 9_400,
+        secure: true,
         mode: .lan,
+        tlsCertificateSha256:
+          "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
         createdAt: Date(timeIntervalSince1970: 1_000),
         lastSuccessfulSyncAt: nil
       )
@@ -440,8 +442,8 @@ struct SettingsFeatureTests {
 
   private func secrets() -> ConnectionSecrets {
     ConnectionSecrets(
-      managementToken: "management-secret",
-      chatToken: "chat-secret",
+      managementToken: "mobile-secret",
+      chatToken: "mobile-secret",
       relayCredential: nil
     )
   }

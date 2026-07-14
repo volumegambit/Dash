@@ -38,20 +38,6 @@ struct SSEInvalidationSource: GatewayInvalidationStreaming, Sendable {
 }
 
 protocol ConversationChatting: Sendable {
-  func connect() async throws
-  func sendTurn(
-    id: String,
-    agentID: String,
-    conversationID: String,
-    text: String,
-    images: [MessageImage]
-  ) async throws
-  func resume(
-    turnID: String,
-    agentID: String,
-    conversationID: String,
-    sinceSeq: Int
-  ) async throws
   func suspend() async
   func shutdown() async
 }
@@ -129,7 +115,6 @@ actor ConversationSyncEngine {
   private var reconnectTask: Task<Void, Never>?
   private var reachabilityTask: Task<Void, Never>?
   private var reconnectAttempt = 0
-  private var chatConnected = false
   private var isShutdown = false
   private var lifecycleGeneration = 0
   private var sceneGeneration = 0
@@ -457,7 +442,6 @@ actor ConversationSyncEngine {
     await invalidation?.value
     await reconnect?.value
     guard isShutdown == false, scene == sceneGeneration else { return }
-    chatConnected = false
     await chat.suspend()
   }
 
@@ -467,57 +451,56 @@ actor ConversationSyncEngine {
     conversationGeneration += 1
     let lifecycle = lifecycleGeneration
     let conversations = conversationGeneration
+    conversationResetGeneration = conversations
+    olderConversationGeneration = nil
     var messages: MessageLoadToken?
     defer {
+      if conversationResetGeneration == conversations {
+        conversationResetGeneration = nil
+      }
       if let messages {
         finishMessageReset(messages)
       }
     }
     startReachability()
+    startInvalidations()
     do {
       let agents = try await api.listAgents()
       try validate(lifecycle: lifecycle, conversations: conversations)
       try await store.replaceAgents(agents, gatewayID: gatewayID)
       try validate(lifecycle: lifecycle, conversations: conversations)
-      let cached = try await store.conversations(gatewayID: gatewayID, limit: 1_000)
-      try validate(lifecycle: lifecycle, conversations: conversations)
-      for value in cached {
-        let canonical: ConversationSummaryDTO
-        do {
-          canonical = try await api.conversation(id: value.id)
-          try validate(lifecycle: lifecycle, conversations: conversations)
-        } catch GatewayError.notFound {
-          try validate(lifecycle: lifecycle, conversations: conversations)
-          try await store.removeConversation(gatewayID: gatewayID, conversationID: value.id)
-          try validate(lifecycle: lifecycle, conversations: conversations)
-          pendingRemovedConversationIDs.insert(value.id)
-          conversationOrder.removeAll { $0 == value.id }
-          continue
-        }
-        try await persist(
-          canonical,
-          lifecycle: lifecycle,
-          conversations: conversations
-        )
-        guard canonical.status != .deleted else { continue }
+      let activeConversations = try await refreshAllConversationsFromNetwork(
+        lifecycle: lifecycle,
+        conversations: conversations
+      )
+      for canonical in activeConversations {
         let messageReset = beginMessageReset(conversationID: canonical.id)
         messages = messageReset
-        _ = try await loadMessagesFromNetwork(
-          conversationID: canonical.id,
-          reset: true,
-          lifecycle: lifecycle,
-          conversations: conversations,
-          messages: messageReset
-        )
+        var authoritativeFailure: Error?
+        do {
+          _ = try await loadMessagesFromNetwork(
+            conversationID: canonical.id,
+            reset: true,
+            lifecycle: lifecycle,
+            conversations: conversations,
+            messages: messageReset
+          )
+        } catch {
+          if isIsolatedForegroundResourceFailure(error) == false {
+            authoritativeFailure = error
+          }
+        }
         finishMessageReset(messageReset)
         messages = nil
+        if let authoritativeFailure {
+          throw authoritativeFailure
+        }
       }
       try await recordSuccessfulSync(lifecycle: lifecycle, conversations: conversations)
       try validate(lifecycle: lifecycle, conversations: conversations)
       try await reloadSnapshot(lifecycle: lifecycle, conversations: conversations)
       try validate(lifecycle: lifecycle, conversations: conversations)
       publish(.online)
-      startInvalidations()
     } catch is CancellationError {
       return
     } catch {
@@ -553,66 +536,6 @@ actor ConversationSyncEngine {
     }
   }
 
-  func sendTurn(
-    id: String,
-    agentID: String,
-    conversationID: String,
-    text: String,
-    images: [MessageImage]
-  ) async throws {
-    try requireOnlineMutation()
-    let lifecycle = lifecycleGeneration
-    var messages: MessageLoadToken?
-    defer {
-      if let messages {
-        finishMessageReset(messages)
-      }
-    }
-    do {
-      try await ensureChatConnected(lifecycle: lifecycle)
-      do {
-        try await chat.sendTurn(
-          id: id,
-          agentID: agentID,
-          conversationID: conversationID,
-          text: text,
-          images: images
-        )
-        try validate(lifecycle: lifecycle)
-      } catch let error as GatewayError {
-        guard case .transport = error else { throw error }
-        let messageReset = beginMessageReset(conversationID: conversationID)
-        messages = messageReset
-        try await recoverAmbiguousSend(
-          id: id,
-          agentID: agentID,
-          conversationID: conversationID,
-          text: text,
-          images: images,
-          lifecycle: lifecycle,
-          messages: messageReset
-        )
-      } catch is URLError {
-        let messageReset = beginMessageReset(conversationID: conversationID)
-        messages = messageReset
-        try await recoverAmbiguousSend(
-          id: id,
-          agentID: agentID,
-          conversationID: conversationID,
-          text: text,
-          images: images,
-          lifecycle: lifecycle,
-          messages: messageReset
-        )
-      }
-    } catch is CancellationError {
-      throw CancellationError()
-    } catch {
-      await handle(error, lifecycle: lifecycle, messages: messages)
-      throw error
-    }
-  }
-
   func shutdown() async {
     guard isShutdown == false else { return }
     isShutdown = true
@@ -636,7 +559,6 @@ actor ConversationSyncEngine {
     await reconnect?.value
     await reachable?.value
     await chat.shutdown()
-    chatConnected = false
     continuation.finish()
   }
 
@@ -696,6 +618,95 @@ actor ConversationSyncEngine {
     }
   }
 
+  private func refreshAllConversationsFromNetwork(
+    lifecycle: Int,
+    conversations: Int
+  ) async throws -> [ConversationSummaryDTO] {
+    let knownIDs = Set(
+      try await store.conversations(gatewayID: gatewayID, limit: Int.max).map(\.id)
+    )
+    try validate(lifecycle: lifecycle, conversations: conversations)
+
+    var cursor: String?
+    var seenCursors: Set<String> = []
+    var canonicalIDs: Set<String> = []
+    var canonicalOrder: [String] = []
+    var activeByID: [String: ConversationSummaryDTO] = [:]
+    repeat {
+      let page = try await api.conversations(agentId: nil, limit: pageSize, cursor: cursor)
+      try validate(lifecycle: lifecycle, conversations: conversations)
+      for item in page.items {
+        canonicalIDs.insert(item.id)
+        try await persist(
+          item,
+          lifecycle: lifecycle,
+          conversations: conversations
+        )
+        if item.status != .deleted, canonicalOrder.contains(item.id) == false {
+          canonicalOrder.append(item.id)
+        }
+        if item.status == .running {
+          activeByID[item.id] = item
+        } else {
+          activeByID[item.id] = nil
+        }
+      }
+      guard let nextCursor = page.nextCursor else {
+        cursor = nil
+        break
+      }
+      guard seenCursors.insert(nextCursor).inserted else {
+        throw GatewayError.updateRequired
+      }
+      cursor = nextCursor
+    } while true
+
+    conversationOrder = canonicalOrder
+    conversationCursor = nil
+
+    let omitted = knownIDs.subtracting(canonicalIDs).sorted()
+    for id in omitted {
+      let canonical: ConversationSummaryDTO
+      do {
+        canonical = try await api.conversation(id: id)
+        try validate(lifecycle: lifecycle, conversations: conversations)
+      } catch GatewayError.notFound {
+        try validate(lifecycle: lifecycle, conversations: conversations)
+        try await store.removeConversation(gatewayID: gatewayID, conversationID: id)
+        try validate(lifecycle: lifecycle, conversations: conversations)
+        pendingRemovedConversationIDs.insert(id)
+        conversationOrder.removeAll { $0 == id }
+        continue
+      } catch {
+        guard isIsolatedForegroundResourceFailure(error) else { throw error }
+        continue
+      }
+      try await persist(
+        canonical,
+        lifecycle: lifecycle,
+        conversations: conversations
+      )
+      if canonical.status == .running {
+        activeByID[canonical.id] = canonical
+      } else {
+        activeByID[canonical.id] = nil
+      }
+    }
+
+    return conversationOrder.compactMap { activeByID[$0] }
+  }
+
+  private func isIsolatedForegroundResourceFailure(_ error: Error) -> Bool {
+    guard let error = error as? GatewayError else { return false }
+    switch error {
+    case .notFound, .validation, .revisionConflict, .conversationBusy, .server:
+      return true
+    case .unauthorized, .rateLimited, .gatewayOffline, .capabilityRequired, .updateRequired,
+      .transport, .mutationOutcomeUnknown:
+      return false
+    }
+  }
+
   private func loadMessagesFromNetwork(
     conversationID: String,
     reset: Bool,
@@ -750,49 +761,6 @@ actor ConversationSyncEngine {
         conversationOrder.append(summary.id)
       }
     }
-  }
-
-  private func recoverAmbiguousSend(
-    id: String,
-    agentID: String,
-    conversationID: String,
-    text: String,
-    images: [MessageImage],
-    lifecycle: Int,
-    messages: MessageLoadToken
-  ) async throws {
-    let page = try await loadMessagesFromNetwork(
-      conversationID: conversationID,
-      reset: true,
-      lifecycle: lifecycle,
-      conversations: nil,
-      messages: messages
-    )
-    let sameTurn = page.items.filter { $0.turnId == id }
-    if sameTurn.isEmpty {
-      try await chat.sendTurn(
-        id: id,
-        agentID: agentID,
-        conversationID: conversationID,
-        text: text,
-        images: images
-      )
-      try validate(lifecycle: lifecycle)
-      return
-    }
-    let isTerminal = sameTurn.allSatisfy { message in
-      [.completed, .cancelled, .failed, .interrupted].contains(message.status)
-    }
-    guard isTerminal == false else { return }
-    let cursor = try await store.cursor(gatewayID: gatewayID, conversationID: conversationID)
-    try validate(lifecycle: lifecycle)
-    try await chat.resume(
-      turnID: id,
-      agentID: agentID,
-      conversationID: conversationID,
-      sinceSeq: cursor
-    )
-    try validate(lifecycle: lifecycle)
   }
 
   private func createAndPersist(
@@ -909,13 +877,6 @@ actor ConversationSyncEngine {
     case .unsatisfied, .requiresConnection:
       publish(.offline)
     }
-  }
-
-  private func ensureChatConnected(lifecycle: Int) async throws {
-    guard chatConnected == false else { return }
-    try await chat.connect()
-    try validate(lifecycle: lifecycle)
-    chatConnected = true
   }
 
   private func requireOnlineMutation() throws {

@@ -254,7 +254,7 @@ private struct ChatFeatureHostView: View {
     .onChange(of: appModel.connectionState) { _, connection in
       feature?.setConnection(connection)
       if connection == .online, let feature {
-        Task { await feature.retryConnection() }
+        Task { await feature.connectionDidBecomeOnline() }
       }
     }
   }
