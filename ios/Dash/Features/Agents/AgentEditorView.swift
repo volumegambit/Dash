@@ -88,11 +88,6 @@ struct AgentEditorView: View {
     .navigationTitle(original == nil ? "Create agent" : "Edit agent")
     .searchable(text: $modelSearch, prompt: "Search models")
     .task { await feature.loadModels() }
-    .alert("Agent update failed", isPresented: errorPresented) {
-      Button("OK") { feature.mutationError = nil }
-    } message: {
-      Text(feature.mutationError ?? "Dash couldn't complete the update.")
-    }
   }
 
   private var configuredMissingModel: String? {
@@ -150,13 +145,6 @@ struct AgentEditorView: View {
       .contentShape(Rectangle())
     }
     .buttonStyle(.plain)
-  }
-
-  private var errorPresented: Binding<Bool> {
-    Binding(
-      get: { feature.mutationError != nil },
-      set: { if $0 == false { feature.mutationError = nil } }
-    )
   }
 
   private func save() async {

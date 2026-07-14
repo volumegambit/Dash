@@ -297,7 +297,7 @@ class DashUITestCase: XCTestCase {
     return XCTWaiter.wait(for: [expectation], timeout: timeout) == .completed
   }
 
-  private func waitUntilHittable(_ element: XCUIElement, timeout: TimeInterval) -> Bool {
+  func waitUntilHittable(_ element: XCUIElement, timeout: TimeInterval) -> Bool {
     let expectation = XCTNSPredicateExpectation(
       predicate: NSPredicate(format: "exists == true AND hittable == true"),
       object: element

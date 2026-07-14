@@ -138,22 +138,10 @@ struct AgentDetailView: View {
     } message: {
       Text("Type the exact agent name. Its conversations stay archived and read-only.")
     }
-    .alert("Agent update failed", isPresented: errorPresented) {
-      Button("OK") { feature.mutationError = nil }
-    } message: {
-      Text(feature.mutationError ?? "Dash couldn't complete the update.")
-    }
   }
 
   private var agent: RegisteredAgentDTO? {
     feature.agents.first { $0.id == agentID }
-  }
-
-  private var errorPresented: Binding<Bool> {
-    Binding(
-      get: { feature.mutationError != nil && showDeleteConfirmation == false },
-      set: { if $0 == false { feature.mutationError = nil } }
-    )
   }
 
   @ViewBuilder

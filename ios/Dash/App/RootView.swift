@@ -17,6 +17,24 @@ struct RootView: View {
       }
     }
     .tint(DashTheme.accent)
+    .alert("Agent update failed", isPresented: agentMutationErrorPresented) {
+      Button("OK") { appModel.agentsFeature?.mutationError = nil }
+    } message: {
+      Text(appModel.agentsFeature?.mutationError ?? "Dash couldn't complete the update.")
+    }
+  }
+
+  private var agentMutationErrorPresented: Binding<Bool> {
+    Binding(
+      get: {
+        appModel.selectedTab == .agents && appModel.agentsFeature?.mutationError != nil
+      },
+      set: { isPresented in
+        if isPresented == false {
+          appModel.agentsFeature?.mutationError = nil
+        }
+      }
+    )
   }
 
   private var pairingNavigation: some View {

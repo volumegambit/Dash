@@ -62,11 +62,12 @@ final class AgentsUITests: DashUITestCase {
     XCTAssertTrue(sleepingActions.waitForExistence(timeout: 5))
     sleepingActions.tap()
     app.buttons["Enable"].tap()
-    XCTAssertTrue(app.alerts["Agent update failed"].waitForExistence(timeout: 5))
-    let ok = app.buttons["OK"]
-    if ok.waitForExistence(timeout: 1) {
-      ok.tap()
-    }
+    let failureAlert = app.alerts["Agent update failed"]
+    XCTAssertTrue(failureAlert.waitForExistence(timeout: 5))
+    let ok = failureAlert.buttons["OK"]
+    XCTAssertTrue(waitUntilHittable(ok, timeout: 3))
+    ok.tap()
+    XCTAssertFalse(failureAlert.waitForExistence(timeout: 2))
     XCTAssertTrue(app.staticTexts["Status, Disabled"].waitForExistence(timeout: 3))
 
     openAgent("research-agent", in: app)

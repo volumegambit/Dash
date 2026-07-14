@@ -86,18 +86,6 @@ struct AgentsListView: View {
       }
     }
     .task { await feature.start() }
-    .alert("Agent update failed", isPresented: errorPresented) {
-      Button("OK") { feature.mutationError = nil }
-    } message: {
-      Text(feature.mutationError ?? "Dash couldn't complete the update.")
-    }
-  }
-
-  private var errorPresented: Binding<Bool> {
-    Binding(
-      get: { feature.mutationError != nil },
-      set: { if $0 == false { feature.mutationError = nil } }
-    )
   }
 
   private func isSelected(_ agentID: String) -> Bool {
