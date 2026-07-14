@@ -2,7 +2,19 @@ import { readFile } from 'node:fs/promises';
 
 describe('mobile documentation', () => {
   it('documents both pairing clients and the iOS shared-history boundary', async () => {
-    const [root, gettingStarted, remote, architecture, api, troubleshooting, ios, qa, mcQA] =
+    const [
+      root,
+      gettingStarted,
+      remote,
+      architecture,
+      api,
+      troubleshooting,
+      iosGuide,
+      docsConfig,
+      ios,
+      qa,
+      mcQA,
+    ] =
       await Promise.all([
         readFile('README.md', 'utf8'),
         readFile('docs/getting-started.mdx', 'utf8'),
@@ -10,6 +22,8 @@ describe('mobile documentation', () => {
         readFile('docs/architecture.mdx', 'utf8'),
         readFile('docs/api-reference.mdx', 'utf8'),
         readFile('docs/troubleshooting.mdx', 'utf8'),
+        readFile('docs/ios.mdx', 'utf8'),
+        readFile('docs/docs.json', 'utf8'),
         readFile('ios/README.md', 'utf8'),
         readFile('ios/QA_CHECKLIST.md', 'utf8'),
         readFile('apps/mission-control/TEST_PLAN.md', 'utf8'),
@@ -18,7 +32,12 @@ describe('mobile documentation', () => {
     expect(root).toContain('| `ios/` |');
     expect(root).toContain('| `android/` |');
     expect(gettingStarted).toContain('Settings → Devices');
-    expect(gettingStarted).toContain('ios/README.md');
+    expect(gettingStarted).toContain('[Dash for iPhone and iPad](/ios)');
+    expect(iosGuide).toContain('## Pair your device');
+    expect(iosGuide).toContain('## Chat from your phone');
+    expect(iosGuide).toContain('## Manage agents');
+    expect(iosGuide).toContain('Disconnect & Forget');
+    expect(docsConfig).toContain('"ios"');
     expect(remote).toContain('Dash iOS or Android app');
     expect(remote).toContain('Android remains a legacy, non-resumable client');
     expect(architecture).toContain('gateway-authoritative conversation history');

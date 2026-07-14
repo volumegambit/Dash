@@ -7,8 +7,8 @@ reconciles when connectivity returns, and never runs an agent on the device.
 ## Supported scope
 
 - Pair with a Dash gateway over LAN or relay by scanning, pasting, or entering a pairing code.
-- Read, create, rename, archive, and delete canonical conversations.
-- Stream chat, resume interrupted turns, answer agent questions, cancel local turns, and attach
+- Read archived conversations and create, rename, or delete canonical conversations.
+- Stream chat, resume interrupted turns, answer agent questions, cancel active turns, and attach
   supported images.
 - Read and administer agents through the gateway-owned model catalog and configuration.
 - Inspect connection health and remove one gateway's secrets, cache, and drafts from this device.
@@ -139,9 +139,10 @@ metadata without those secrets.
 | `Features/Settings` | Sanitized gateway status, reconnect, and secure Disconnect & Forget. |
 
 The gateway is the source of truth. Cached rows remain readable during an outage, while canonical
-writes are disabled. A foreground transition refreshes state and replays durable events before a
-running turn resumes. Disconnect & Forget stops transports before deleting Keychain material,
-purging that gateway's SwiftData cache, and clearing the selected profile.
+writes are disabled. A foreground transition refreshes canonical state and restarts invalidation
+events. The visible chat separately replays durable events before its running turn resumes.
+Disconnect & Forget stops transports before deleting Keychain material, purging that gateway's
+SwiftData cache, and clearing the selected profile.
 
 ## Troubleshooting
 
