@@ -370,7 +370,7 @@ struct ChatConnectionTests {
     let otherConversationID = "018f0f4a-5c42-7a8b-9c01-8234567890ab"
     let task = FakeWebSocketTask()
     let connection = makeChatConnection(task: task)
-    let received = Task { await framesUntilEnd(from: connection) }
+    let received = Task { try await collectFrames(from: connection, count: 2) }
     try await connection.connect()
     try await connection.resume(
       turnID: turnID,
@@ -399,10 +399,9 @@ struct ChatConnectionTests {
 
     await task.enqueue(.string(serverJSON(first)))
     await task.enqueue(.string(serverJSON(second)))
-    await settleConcurrentWork()
-    await connection.detach()
 
-    #expect(await received.value == [first, second])
+    #expect(try await received.value == [first, second])
+    await connection.detach()
   }
 
   @Test("unsequenced conversation admission error remains a legal live frame")
