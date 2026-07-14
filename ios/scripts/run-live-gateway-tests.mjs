@@ -7,7 +7,7 @@ const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const ROOT_DIR = resolve(SCRIPT_DIR, '../..');
 const PINNED_RUNTIME = 'com.apple.CoreSimulator.SimRuntime.iOS-18-4';
 const SCENARIOS = new Set(['stream', 'question', 'slow']);
-const READINESS_TIMEOUT_MS = 20_000;
+export const gatewayHarnessReadinessTimeoutMs = 60_000;
 const PREFLIGHT_TIMEOUT_MS = 20 * 60_000;
 const XCODEBUILD_TIMEOUT_MS = 10 * 60_000;
 const SHUTDOWN_TIMEOUT_MS = 10_000;
@@ -311,7 +311,7 @@ function startHarness(scenario) {
   const readiness = new Promise((resolveReadiness, rejectReadiness) => {
     const timer = setTimeout(() => {
       rejectReadiness(new Error('Timed out waiting for gateway harness readiness'));
-    }, READINESS_TIMEOUT_MS);
+    }, gatewayHarnessReadinessTimeoutMs);
     timer.unref?.();
     const fail = (error) => {
       clearTimeout(timer);

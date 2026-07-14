@@ -2,11 +2,16 @@ import {
   assertSinglePassedTest,
   buildHarnessEnvironment,
   defaultScenarioMatrix,
+  gatewayHarnessReadinessTimeoutMs,
   parseRunnerArguments,
   selectIPhoneDestination,
 } from './run-live-gateway-tests.mjs';
 
 describe('live gateway iOS runner', () => {
+  it('uses a bounded 60-second gateway harness readiness timeout', () => {
+    expect(gatewayHarnessReadinessTimeoutMs).toBe(60_000);
+  });
+
   it('selects an available iPhone only from the pinned iOS 18.4 runtime', () => {
     const simctl = {
       devices: {
