@@ -142,6 +142,4 @@ const uiTestSource = uiTestSources.join('\n');
 const uiTestCount = uiTestSource.match(/func test\w+\s*\(/g)?.length ?? 0;
 assert.ok(uiTestCount >= 20, `expected at least 20 UI tests, found ${uiTestCount}`);
 
-console.log(
-  `PASS: iOS workflow runs ${uiTestCount} non-empty UI tests on exact simulator UDIDs`,
-);
+console.log(`PASS: iOS workflow runs ${uiTestCount} non-empty UI tests on exact simulator UDIDs`);
