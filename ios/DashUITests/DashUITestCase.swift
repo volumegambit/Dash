@@ -67,23 +67,21 @@ class DashUITestCase: XCTestCase {
     file: StaticString = #filePath,
     line: UInt = #line
   ) {
+    let app = XCUIApplication()
     XCTAssertTrue(field.waitForExistence(timeout: 5), file: file, line: line)
+    let initialValue = field.value as? String
+    let initialText = initialValue == field.placeholderValue ? "" : (initialValue ?? "")
     let frame = field.frame
-    let appFrame = XCUIApplication().windows.firstMatch.frame
+    let appFrame = app.windows.firstMatch.frame
     let center = CGPoint(x: frame.midX, y: frame.midY)
     if frame.isEmpty == false, appFrame.contains(center) {
       field.coordinate(withNormalizedOffset: CGVector(dx: 0.25, dy: 0.5)).tap()
     } else {
       field.tap()
     }
-    if waitForKeyboardFocus(in: field, timeout: 1) == false {
-      field.coordinate(withNormalizedOffset: CGVector(dx: 0.25, dy: 0.5)).tap()
-      XCTAssertTrue(
-        waitForKeyboardFocus(in: field, timeout: 2),
-        "Expected \(field.identifier) to accept keyboard focus",
-        file: file,
-        line: line
-      )
+    if waitForTextEntryReadiness(in: field, app: app, timeout: 5) == false {
+      field.tap()
+      _ = waitForTextEntryReadiness(in: field, app: app, timeout: 5)
     }
     if clearExisting,
       let current = field.value as? String,
@@ -91,14 +89,60 @@ class DashUITestCase: XCTestCase {
       current != field.placeholderValue
     {
       field.coordinate(withNormalizedOffset: CGVector(dx: 0.95, dy: 0.5)).tap()
-      field.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: current.count))
+      app.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: current.count))
     }
-    field.typeText(value)
+    app.typeText(value)
+
+    let expectedValue = clearExisting ? value : initialText + value
+    XCTAssertTrue(
+      waitForTextValue(
+        in: field,
+        expected: expectedValue,
+        changedFrom: initialValue,
+        timeout: 5
+      ),
+      "Expected \(field.identifier) to receive typed text",
+      file: file,
+      line: line
+    )
   }
 
-  private func waitForKeyboardFocus(in field: XCUIElement, timeout: TimeInterval) -> Bool {
+  private func waitForTextEntryReadiness(
+    in field: XCUIElement,
+    app: XCUIApplication,
+    timeout: TimeInterval
+  ) -> Bool {
+    let deadline = Date().addingTimeInterval(timeout)
+    repeat {
+      if app.keyboards.firstMatch.exists { return true }
+      let remaining = deadline.timeIntervalSinceNow
+      guard remaining > 0 else { break }
+      let focusExpectation = XCTNSPredicateExpectation(
+        predicate: NSPredicate(format: "hasKeyboardFocus == true"),
+        object: field
+      )
+      if XCTWaiter.wait(for: [focusExpectation], timeout: min(0.25, remaining)) == .completed {
+        return true
+      }
+    } while Date() < deadline
+    return app.keyboards.firstMatch.exists
+  }
+
+  private func waitForTextValue(
+    in field: XCUIElement,
+    expected: String,
+    changedFrom initialValue: String?,
+    timeout: TimeInterval
+  ) -> Bool {
     let expectation = XCTNSPredicateExpectation(
-      predicate: NSPredicate(format: "hasKeyboardFocus == true"),
+      predicate: NSPredicate { object, _ in
+        guard let field = object as? XCUIElement else { return false }
+        let currentValue = field.value as? String
+        if field.elementType == .secureTextField {
+          return currentValue != initialValue
+        }
+        return currentValue == expected
+      },
       object: field
     )
     return XCTWaiter.wait(for: [expectation], timeout: timeout) == .completed
