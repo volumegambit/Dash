@@ -8,6 +8,7 @@ trap 'rm -rf "$TMP_DIR"' EXIT
 IOS_DIR="$TMP_DIR/ios"
 MOCK_BIN="$TMP_DIR/mock-bin"
 SIM_STATE="$TMP_DIR/simulator-types"
+RUNTIME_STATE="$TMP_DIR/runtime-installed"
 CREATE_LOG="$TMP_DIR/create.log"
 
 mkdir -p "$IOS_DIR/scripts" "$MOCK_BIN"
@@ -21,6 +22,11 @@ set -euo pipefail
 
 if [[ "${1:-}" == '-version' ]]; then
   printf 'Xcode 16.3\nBuild version 16E140\n'
+  exit 0
+fi
+if [[ "${1:-}" == '-downloadPlatform' && "${2:-}" == 'iOS' ]]; then
+  printf 'Downloading iOS simulator runtime...\n'
+  : >"$RUNTIME_STATE"
   exit 0
 fi
 printf 'unexpected xcodebuild call: %s\n' "$*" >&2
@@ -44,7 +50,9 @@ if [[ "${1:-}" != 'simctl' ]]; then
   exit 2
 fi
 if [[ "${2:-}" == 'list' && "${3:-}" == 'runtimes' ]]; then
-  printf 'iOS 18.4 (18.4 - 22E238) - %s\n' "$RUNTIME_ID"
+  if [[ -f "$RUNTIME_STATE" ]]; then
+    printf 'iOS 18.4 (18.4 - 22E238) - %s\n' "$RUNTIME_ID"
+  fi
   exit 0
 fi
 if [[ "${2:-}" == 'list' && "${3:-}" == 'devices' && "${4:-}" == 'available' && -z "${5:-}" ]]; then
@@ -83,7 +91,7 @@ exit 2
 EOF
 chmod +x "$MOCK_BIN/xcrun"
 
-export SIM_STATE CREATE_LOG
+export SIM_STATE RUNTIME_STATE CREATE_LOG
 OUTPUT="$(PATH="$MOCK_BIN:/usr/bin:/bin" "$IOS_DIR/scripts/ensure-simulators.sh" --iphone-udid)"
 EXPECTED_CREATES="$(printf '%s\n%s' \
   'iPhone 16 Pro|com.apple.CoreSimulator.SimDeviceType.iPhone-16-Pro|com.apple.CoreSimulator.SimRuntime.iOS-18-4' \

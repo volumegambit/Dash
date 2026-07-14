@@ -15,7 +15,7 @@ if [[ "$(xcodebuild -version | sed -n '1p')" != 'Xcode 16.3' ]]; then
 fi
 
 if ! xcrun simctl list runtimes | grep -F "$RUNTIME_ID" | grep -Fqv 'unavailable'; then
-  xcodebuild -downloadPlatform iOS -buildVersion "$RUNTIME_VERSION"
+  xcodebuild -downloadPlatform iOS -buildVersion "$RUNTIME_VERSION" >&2
 fi
 xcrun simctl list runtimes | grep -F "$RUNTIME_ID" | grep -Fqv 'unavailable'
 
