@@ -187,15 +187,15 @@ describe('LegacyConversationRepository', () => {
   });
 
   it('throws when a legacy patch targets a missing conversation', async () => {
-    await expect(
-      repository.patch('missing', 0, { title: 'Does not exist' }),
-    ).rejects.toThrow('Conversation "missing" not found');
+    await expect(repository.patch('missing', 0, { title: 'Does not exist' })).rejects.toThrow(
+      'Conversation "missing" not found',
+    );
   });
 
   it('exposes canonical metadata types without adding a legacy field', async () => {
-    const metadata: Partial<
-      Pick<ConversationSummary, 'title' | 'owningIssueId' | 'projectId'>
-    > = { projectId: 'gateway-only-project' };
+    const metadata: Partial<Pick<ConversationSummary, 'title' | 'owningIssueId' | 'projectId'>> = {
+      projectId: 'gateway-only-project',
+    };
 
     const created = await repository.create('agent-1', 'request-4', metadata);
 
