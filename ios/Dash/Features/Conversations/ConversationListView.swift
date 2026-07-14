@@ -249,8 +249,17 @@ struct ConversationListView: View {
       .contentShape(Rectangle())
     }
     .buttonStyle(.plain)
+    .listRowBackground(
+      isSelected(conversation.id) ? DashTheme.accent.opacity(0.12) : Color.clear
+    )
     .accessibilityElement(children: .combine)
+    .accessibilityAddTraits(isSelected(conversation.id) ? .isSelected : [])
     .accessibilityIdentifier("conversation.row.\(conversation.id)")
+  }
+
+  private func isSelected(_ conversationID: String) -> Bool {
+    horizontalSizeClass == .regular
+      && appModel.splitConversationSelection == .transcript(conversationID)
   }
 }
 
