@@ -28,10 +28,15 @@ struct AssistantEventViews: View {
       }
 
       if !projection.text.isEmpty {
-        Text(projection.text)
-          .textSelection(.enabled)
-          .accessibilityIdentifier("chat.final.response")
-          .accessibilityHidden(!exposesResponseToAccessibility)
+        if exposesResponseToAccessibility {
+          Text(projection.text)
+            .textSelection(.enabled)
+            .accessibilityIdentifier("chat.final.response")
+        } else {
+          Text(projection.text)
+            .textSelection(.enabled)
+            .accessibilityHidden(true)
+        }
       }
 
       ForEach(projection.toolCards) { tool in
