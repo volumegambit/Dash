@@ -876,6 +876,68 @@ describe('ResumableChatHub', () => {
     });
   });
 
+  it.each([
+    { name: 'as the first provider event', partialText: undefined },
+    { name: 'after a partial response', partialText: 'Partial answer' },
+  ])(
+    'terminalizes a yielded provider error $name without completing the turn',
+    async (testCase) => {
+      const conversation = createConversation();
+      const scripted = register(conversation.id);
+      const sink = makeSink();
+      hub.start(sendFrame(conversation), sink);
+
+      if (testCase.partialText) {
+        scripted.emit({ type: 'text_delta', text: testCase.partialText });
+        await waitForFrames(sink, 2);
+      }
+      scripted.emit({ type: 'error', error: new Error('Provider rejected request') });
+      scripted.finish();
+      await vi.waitFor(() => expect(scripted.return).toHaveBeenCalledOnce());
+
+      expect(sink.frames.filter((frame) => frame.type === 'error')).toEqual([
+        expect.objectContaining({
+          id: 'turn-01',
+          conversationId: conversation.id,
+          error: 'Provider rejected request',
+          retryable: false,
+        }),
+      ]);
+      expect(sink.frames.filter((frame) => frame.type === 'done')).toEqual([]);
+      expect(
+        sink.frames.filter((frame) => frame.type === 'event' && frame.event.type === 'error'),
+      ).toEqual([]);
+      expect(conversations.get(conversation.id)).toMatchObject({
+        status: 'idle',
+        activeTurnId: null,
+      });
+      expect(
+        conversations.listMessages({ conversationId: conversation.id, limit: 10 }).items[1],
+      ).toMatchObject({
+        role: 'assistant',
+        status: 'failed',
+        ...(testCase.partialText
+          ? {
+              content: {
+                type: 'assistant',
+                events: [{ type: 'text_delta', text: testCase.partialText }],
+              },
+            }
+          : {}),
+      });
+
+      const retry = register(conversation.id);
+      const retrySink = makeSink();
+      hub.start(sendFrame(conversation, 'turn-02', 'Try again'), retrySink);
+      retry.finish();
+      await vi.waitFor(() => expect(retry.return).toHaveBeenCalledOnce());
+      expect(retrySink.frames).toEqual([
+        expect.objectContaining({ type: 'accepted', id: 'turn-02' }),
+        expect.objectContaining({ type: 'done', id: 'turn-02', outcome: 'completed' }),
+      ]);
+    },
+  );
+
   it('removes a finished turn from the live map even when generator cleanup rejects', async () => {
     const cleanup = deferred<void>();
     const conversation = createConversation();

@@ -193,7 +193,11 @@ export function createResumableChatHub(options: ResumableChatHubOptions): Resuma
         messageId: frame.id,
         signal: live.controller.signal,
       });
-      for await (const event of stream) {
+      while (true) {
+        const result = await stream.next();
+        if (result.done) break;
+        const event = result.value;
+        if (event.type === 'error') throw event.error;
         const persisted = conversations.appendTurnEvent(live.conversationId, live.turnId, event);
         if (persisted) broadcast(live, frameFromPersisted(live, persisted));
       }
