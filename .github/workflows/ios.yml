@@ -84,8 +84,10 @@ jobs:
           ipad_udid="$(ios/scripts/ensure-simulators.sh --ipad-udid)"
           printf 'IOS_TEST_DESTINATION=platform=iOS Simulator,id=%s\n' \
             "$iphone_udid" >> "$GITHUB_ENV"
+          printf 'IPHONE_UDID=%s\n' "$iphone_udid" >> "$GITHUB_ENV"
           printf 'IOS_IPAD_TEST_DESTINATION=platform=iOS Simulator,id=%s\n' \
             "$ipad_udid" >> "$GITHUB_ENV"
+          printf 'IPAD_UDID=%s\n' "$ipad_udid" >> "$GITHUB_ENV"
 
       - name: Verify generated project is committed
         run: ios/scripts/check-project.sh
@@ -114,21 +116,20 @@ jobs:
           test CODE_SIGNING_ALLOWED=NO
 
       - name: iPhone UI tests
-        run: >-
-          xcodebuild -project ios/Dash.xcodeproj -scheme DashUI
-          -destination "$IOS_TEST_DESTINATION"
-          -resultBundlePath ios/iPhoneUI.xcresult
-          test CODE_SIGNING_ALLOWED=NO
+        run: |
+          xcrun simctl privacy "$IPHONE_UDID" reset camera app.dash.ios 2>/dev/null || true
+          xcodebuild -project ios/Dash.xcodeproj -scheme DashUI \
+            -destination "$IOS_TEST_DESTINATION" \
+            -resultBundlePath ios/iPhoneUI.xcresult \
+            test CODE_SIGNING_ALLOWED=NO
 
       - name: iPad adaptive UI tests
-        run: >-
-          xcodebuild -project ios/Dash.xcodeproj -scheme DashUI
-          -destination "$IOS_IPAD_TEST_DESTINATION"
-          -resultBundlePath ios/iPadUI.xcresult
-          -only-testing:DashUITests/ConversationUITests/testIPadSplitNavigation
-          -only-testing:DashUITests/AgentsUITests/testIPadSplitNavigation
-          -only-testing:DashUITests/AccessibilityUITests/testAccessibilityXXXL
-          test CODE_SIGNING_ALLOWED=NO
+        run: |
+          xcrun simctl privacy "$IPAD_UDID" reset camera app.dash.ios 2>/dev/null || true
+          xcodebuild -project ios/Dash.xcodeproj -scheme DashUI \
+            -destination "$IOS_IPAD_TEST_DESTINATION" \
+            -resultBundlePath ios/iPadUI.xcresult \
+            test CODE_SIGNING_ALLOWED=NO
 
       - name: Real gateway integration matrix
         run: node ios/scripts/run-live-gateway-tests.mjs
