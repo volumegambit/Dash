@@ -365,6 +365,28 @@ describe('canonical chat store', () => {
     );
   });
 
+  it('removes only the rejected optimistic message when a send is not accepted', async () => {
+    const ref = { id: gatewayConversation.id, origin: 'gateway' as const };
+    const existing = message('existing-message', ref);
+    useChatStore.setState({
+      conversations: [gatewayConversation],
+      messages: { 'gateway:shared-id': [existing] },
+      gatewayOnline: true,
+      conversationAuthority: 'gateway',
+    });
+    mockApi.chatSend.mockRejectedValue({
+      code: 'conversation_busy',
+      error: 'Conversation already has an active turn',
+      retryable: true,
+    });
+
+    await expect(useChatStore.getState().sendMessage(ref, 'rejected')).rejects.toBeDefined();
+
+    expect(useChatStore.getState().messages['gateway:shared-id']).toEqual([existing]);
+    expect(useChatStore.getState().localTurnIds['gateway:shared-id']).toBeUndefined();
+    expect(useChatStore.getState().sending['gateway:shared-id']).toBe(false);
+  });
+
   it('ignores a duplicate frame sequence', async () => {
     const frame: MobileWsServerFrame = {
       type: 'event',

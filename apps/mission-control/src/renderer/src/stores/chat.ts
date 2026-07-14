@@ -526,6 +526,12 @@ export const useChatStore = create<ChatState>((set, get) => {
       } catch (error) {
         handleApiError(error);
         set((state) => ({
+          messages: {
+            ...state.messages,
+            [key]: (state.messages[key] ?? []).filter(
+              (message) => message.id !== `optimistic:${turnId}`,
+            ),
+          },
           localTurnIds: { ...state.localTurnIds, [key]: undefined },
           sending: { ...state.sending, [key]: false },
         }));
