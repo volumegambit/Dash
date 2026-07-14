@@ -69,6 +69,7 @@ struct SettingsView: View {
         )
       }
     }
+    .accessibilityIdentifier("settings.list")
     .navigationTitle("Settings")
     .confirmationDialog(
       "Disconnect & Forget?",

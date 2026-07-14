@@ -27,6 +27,7 @@ struct ComposerView: View {
           .background(Color.secondary.opacity(0.1), in: RoundedRectangle(cornerRadius: 18))
           .disabled(feature.draftEditingAllowed == false)
           .accessibilityIdentifier("chat.composer")
+          .keyboardShortcut("l", modifiers: .command)
           .submitLabel(.send)
           .onSubmit {
             guard feature.canSend else { return }
@@ -115,6 +116,7 @@ struct ComposerView: View {
         }
       }
       .disabled(feature.canCancel == false)
+      .keyboardShortcut(.cancelAction)
       .accessibilityLabel(feature.isCancelling ? "Cancelling response" : "Cancel response")
       .accessibilityIdentifier("chat.cancel")
     } else {
@@ -126,7 +128,9 @@ struct ComposerView: View {
           .frame(width: 44, height: 44)
       }
       .disabled(feature.canSend == false)
+      .keyboardShortcut(.return, modifiers: .command)
       .accessibilityLabel("Send message")
+      .accessibilityHint(feature.isAuthoritative ? "" : "Connect to the gateway to send")
       .accessibilityIdentifier("chat.send")
     }
   }

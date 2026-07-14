@@ -49,6 +49,9 @@ struct AgentDetailView: View {
             }
             .buttonStyle(.borderedProminent)
             .disabled(feature.mutationsAllowed == false || isWorking)
+            .accessibilityHint(
+              feature.mutationsAllowed ? "" : "Connect to the gateway to start a conversation"
+            )
             .accessibilityIdentifier("agent.startChat")
           }
 
@@ -76,6 +79,7 @@ struct AgentDetailView: View {
             )
           }
           .disabled(feature.mutationsAllowed == false || isWorking)
+          .accessibilityHint(feature.mutationsAllowed ? "" : "Connect to the gateway to edit")
           .accessibilityIdentifier("agent.edit")
         }
         ToolbarItem(placement: .topBarTrailing) {
@@ -104,6 +108,9 @@ struct AgentDetailView: View {
               .frame(minWidth: 44, minHeight: 44)
           }
           .disabled(feature.mutationsAllowed == false || isWorking)
+          .accessibilityHint(
+            feature.mutationsAllowed ? "" : "Connect to the gateway to manage this agent"
+          )
           .accessibilityIdentifier("agent.actions")
         }
       }

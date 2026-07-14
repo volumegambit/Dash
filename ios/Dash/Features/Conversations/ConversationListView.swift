@@ -29,6 +29,9 @@ struct ConversationListView: View {
                 Label("Rename", systemImage: "pencil")
               }
               .disabled(feature.mutationsAllowed == false)
+              .accessibilityHint(
+                feature.mutationsAllowed ? "" : "Connect to the gateway to rename"
+              )
 
               Button(role: .destructive) {
                 deleteTarget = conversation
@@ -36,6 +39,9 @@ struct ConversationListView: View {
                 Label("Delete", systemImage: "trash")
               }
               .disabled(feature.mutationsAllowed == false)
+              .accessibilityHint(
+                feature.mutationsAllowed ? "" : "Connect to the gateway to delete"
+              )
             }
         }
 
