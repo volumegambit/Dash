@@ -305,6 +305,8 @@ describe('GatewaySupervisor.ensureRunning()', () => {
     const spawner = createMockSpawner();
     const probe = createMockProbe({ type: 'free' });
     const keychain = new InMemoryKeychainStore();
+    await keychain.setGatewayToken('relay-management-token');
+    await keychain.setChatToken('relay-chat-token');
     await keychain.setIssuedGateway({
       gatewayId: 'alice-mbp',
       subdomain: 'alice-mbp.relay.dash.example',
@@ -331,6 +333,8 @@ describe('GatewaySupervisor.ensureRunning()', () => {
     expect(client.createGateway).not.toHaveBeenCalled();
     const args = (spawner.spawn as unknown as { mock: { calls: unknown[][] } }).mock
       .calls[0][1] as string[];
+    expect(args[args.indexOf('--token') + 1]).toBe('relay-management-token');
+    expect(args[args.indexOf('--chat-token') + 1]).toBe('relay-chat-token');
     expect(args[args.indexOf('--relay-url') + 1]).toBe('wss://alice-mbp.relay.dash.example');
     expect(args[args.indexOf('--relay-token') + 1]).toBe('seed-dial-1');
     expect(args[args.indexOf('--gateway-id') + 1]).toBe('alice-mbp');

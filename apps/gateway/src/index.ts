@@ -28,7 +28,12 @@ import { AgentRegistry } from './agent-registry.js';
 import { ensureCoreProvidersPlugin } from './bundled-plugin.js';
 import { ChannelRegistry } from './channel-registry.js';
 import { mountChatWs } from './chat-ws.js';
-import { parseFlags, resolveSwarmConfig, swarmOverridesFromEnv } from './config.js';
+import {
+  parseFlags,
+  resolveSwarmConfig,
+  swarmOverridesFromEnv,
+  validateGatewayStartupOptions,
+} from './config.js';
 import { createControlPlaneClient } from './control-plane-client.js';
 import { createConversationAutoTitleService } from './conversation-auto-title.js';
 import { SqliteConversationService } from './conversation-service-sqlite.js';
@@ -58,6 +63,7 @@ import { createGatewayWorkerFactory } from './swarm-wiring.js';
 
 async function main() {
   const flags = parseFlags(process.argv.slice(2));
+  validateGatewayStartupOptions(flags);
 
   const managementPort = flags.managementPort ?? 9300;
   const channelPort = flags.channelPort ?? 9200;

@@ -4,6 +4,7 @@ import {
   parseFlags,
   resolveSwarmConfig,
   swarmOverridesFromEnv,
+  validateGatewayStartupOptions,
 } from './config.js';
 
 describe('parseFlags', () => {
@@ -82,6 +83,55 @@ describe('parseFlags', () => {
 
   it('ignores flags without values', () => {
     expect(parseFlags(['--token'])).toEqual({});
+  });
+});
+
+describe('validateGatewayStartupOptions', () => {
+  const relayUrl = 'wss://relay.example.com';
+  const expectedError =
+    'Relay mode requires non-empty --token and --chat-token values to secure the management and chat servers';
+
+  it.each([
+    ['both tokens are absent', {}],
+    ['the management token is blank', { token: '', chatToken: 'chat-secret' }],
+    ['the management token is whitespace', { token: '   ', chatToken: 'chat-secret' }],
+    ['the chat token is blank', { token: 'management-secret', chatToken: '' }],
+    ['the chat token is whitespace', { token: 'management-secret', chatToken: '\t\n' }],
+    ['only the management token is supplied', { token: 'management-secret' }],
+    ['only the chat token is supplied', { chatToken: 'chat-secret' }],
+  ])('rejects relay mode when %s', (_description, tokenOptions) => {
+    expect(() => validateGatewayStartupOptions({ relayUrl, ...tokenOptions })).toThrow(
+      expectedError,
+    );
+  });
+
+  it('accepts relay mode when both tokens are nonblank', () => {
+    expect(() =>
+      validateGatewayStartupOptions({
+        relayUrl,
+        token: '  management-secret  ',
+        chatToken: '  chat-secret  ',
+      }),
+    ).not.toThrow();
+  });
+
+  it('keeps tokens optional in local-only mode', () => {
+    expect(() => validateGatewayStartupOptions({})).not.toThrow();
+    expect(() => validateGatewayStartupOptions({ token: '   ', chatToken: '' })).not.toThrow();
+  });
+
+  it('never includes a supplied token value in the error', () => {
+    const managementToken = 'do-not-echo-management-token';
+
+    expect(() =>
+      validateGatewayStartupOptions({ relayUrl, token: managementToken, chatToken: '   ' }),
+    ).toThrow(expectedError);
+
+    try {
+      validateGatewayStartupOptions({ relayUrl, token: managementToken, chatToken: '   ' });
+    } catch (error) {
+      expect((error as Error).message).not.toContain(managementToken);
+    }
   });
 });
 

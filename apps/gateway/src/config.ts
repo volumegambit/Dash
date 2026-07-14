@@ -78,6 +78,20 @@ export type SwarmConfigOverrides = Partial<{
   defaults: Partial<GatewaySwarmDefaults>;
 }>;
 
+/**
+ * Relay traffic reaches the gateway's loopback servers through the outbound
+ * tunnel, so both inner servers must require their own credentials. Local-only
+ * mode keeps its historical token-optional behavior.
+ */
+export function validateGatewayStartupOptions(options: LoadConfigOptions): void {
+  if (options.relayUrl === undefined) return;
+  if (!options.token?.trim() || !options.chatToken?.trim()) {
+    throw new Error(
+      'Relay mode requires non-empty --token and --chat-token values to secure the management and chat servers',
+    );
+  }
+}
+
 const SWARM_ENV_VARS = [
   ['SWARM_MAX_CONCURRENT_WORKERS_GLOBAL', 'maxConcurrentWorkersGlobal', null],
   ['SWARM_DEFAULT_MAX_CONCURRENT_WORKERS', 'maxConcurrentWorkers', 'defaults'],
