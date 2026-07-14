@@ -2,15 +2,18 @@ import SwiftUI
 
 struct AssistantEventViews: View {
   let projection: AssistantMessageProjection
+  let isAnsweringEnabled: Bool
   let onAnswer: (String, String) -> Void
   let exposesResponseToAccessibility: Bool
 
   init(
     projection: AssistantMessageProjection,
+    isAnsweringEnabled: Bool = true,
     onAnswer: @escaping (String, String) -> Void = { _, _ in },
     exposesResponseToAccessibility: Bool
   ) {
     self.projection = projection
+    self.isAnsweringEnabled = isAnsweringEnabled
     self.onAnswer = onAnswer
     self.exposesResponseToAccessibility = exposesResponseToAccessibility
   }
@@ -47,7 +50,11 @@ struct AssistantEventViews: View {
       }
 
       if let question = projection.pendingQuestion {
-        QuestionView(question: question, onAnswer: onAnswer)
+        QuestionView(
+          question: question,
+          isAnsweringEnabled: isAnsweringEnabled,
+          onAnswer: onAnswer
+        )
       }
 
       if let usage = projection.usage {
@@ -189,12 +196,18 @@ struct WorkerCardView: View {
 
 struct QuestionView: View {
   let question: QuestionState
+  let isAnsweringEnabled: Bool
   let onAnswer: (String, String) -> Void
 
   @State private var draft: QuestionDraftState
 
-  init(question: QuestionState, onAnswer: @escaping (String, String) -> Void) {
+  init(
+    question: QuestionState,
+    isAnsweringEnabled: Bool = true,
+    onAnswer: @escaping (String, String) -> Void
+  ) {
     self.question = question
+    self.isAnsweringEnabled = isAnsweringEnabled
     self.onAnswer = onAnswer
     _draft = State(initialValue: QuestionDraftState(question: question))
   }
@@ -213,7 +226,7 @@ struct QuestionView: View {
           }
           .buttonStyle(.bordered)
           .frame(minHeight: 44)
-          .disabled(question.answer != nil)
+          .disabled(isAnsweringEnabled == false || question.answer != nil)
         }
       }
 
@@ -221,7 +234,7 @@ struct QuestionView: View {
         TextField("Type an answer", text: $draft.text, axis: .vertical)
           .textFieldStyle(.roundedBorder)
           .frame(minHeight: 44)
-          .disabled(question.answer != nil)
+          .disabled(isAnsweringEnabled == false || question.answer != nil)
 
         Button("Send") {
           onAnswer(question.id, draft.text)
@@ -229,7 +242,8 @@ struct QuestionView: View {
         .buttonStyle(.borderedProminent)
         .frame(minHeight: 44)
         .disabled(
-          question.answer != nil
+          isAnsweringEnabled == false
+            || question.answer != nil
             || draft.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         )
       }

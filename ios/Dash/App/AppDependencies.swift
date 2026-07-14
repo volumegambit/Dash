@@ -52,6 +52,11 @@ struct AppDependencies: Sendable {
   let makeConversationListFeature:
     @MainActor @Sendable (ConnectionProfileSnapshot) -> ConversationListFeature?
   let makeAgentsFeature: @MainActor @Sendable (ConnectionProfileSnapshot) -> AgentsFeature?
+  let makeChatFeature:
+    @MainActor @Sendable (
+      ConnectionProfileSnapshot,
+      ConversationSummaryDTO
+    ) async -> ChatFeature?
   let pairingFeatureFactory: PairingFeatureFactory
 
   init(
@@ -77,6 +82,10 @@ struct AppDependencies: Sendable {
     makeAgentsFeature: @escaping @MainActor @Sendable (
       ConnectionProfileSnapshot
     ) -> AgentsFeature? = { _ in nil },
+    makeChatFeature: @escaping @MainActor @Sendable (
+      ConnectionProfileSnapshot,
+      ConversationSummaryDTO
+    ) async -> ChatFeature? = { _, _ in nil },
     pairingFeatureFactory: PairingFeatureFactory = .unavailable
   ) {
     self.clock = clock
@@ -89,6 +98,7 @@ struct AppDependencies: Sendable {
     self.forgetProfileSelection = forgetProfileSelection
     self.makeConversationListFeature = makeConversationListFeature
     self.makeAgentsFeature = makeAgentsFeature
+    self.makeChatFeature = makeChatFeature
     self.pairingFeatureFactory = pairingFeatureFactory
   }
 
@@ -231,6 +241,35 @@ struct AppDependencies: Sendable {
           makeAPI: makeProfileAPI
         )
         return AgentsFeature(gatewayID: profile.gatewayID, service: service)
+      },
+      makeChatFeature: { profile, conversation in
+        guard let secrets = try? await keychain.load(for: profile.id) else {
+          return nil
+        }
+        let endpoint = ConnectionEndpoint(profile: profile.profile, secrets: secrets)
+        let persistence = LiveChatPersistence(store: store)
+        let synchronizer = LiveChatSynchronizer(
+          gatewayID: profile.gatewayID,
+          store: store,
+          makeAPI: {
+            guard let currentSecrets = try await keychain.load(for: profile.id) else {
+              throw GatewayError.unauthorized
+            }
+            let currentEndpoint = ConnectionEndpoint(
+              profile: profile.profile,
+              secrets: currentSecrets
+            )
+            return makeAPI(makeCancellableTransport(currentEndpoint, currentSecrets))
+          }
+        )
+        return ChatFeature(
+          gatewayID: profile.gatewayID,
+          conversation: conversation,
+          persistence: persistence,
+          synchronizer: synchronizer,
+          transport: LiveChatFeatureTransport(makeConnection: { makeChat(endpoint) }),
+          clock: clock
+        )
       },
       pairingFeatureFactory: PairingFeatureFactory(
         verifier: PairingVerifier(

@@ -3,20 +3,27 @@ import UIKit
 
 struct MessageListView: View {
   let messages: [ChatMessageState]
+  let isAnsweringEnabled: Bool
   let onAnswer: (String, String) -> Void
 
   init(
     messages: [ChatMessageState],
+    isAnsweringEnabled: Bool = true,
     onAnswer: @escaping (String, String) -> Void = { _, _ in }
   ) {
     self.messages = messages
+    self.isAnsweringEnabled = isAnsweringEnabled
     self.onAnswer = onAnswer
   }
 
   var body: some View {
     LazyVStack(spacing: 16) {
       ForEach(messages) { message in
-        ChatMessageView(message: message, onAnswer: onAnswer)
+        ChatMessageView(
+          message: message,
+          isAnsweringEnabled: isAnsweringEnabled,
+          onAnswer: onAnswer
+        )
       }
     }
   }
@@ -24,13 +31,16 @@ struct MessageListView: View {
 
 struct ChatMessageView: View {
   let message: ChatMessageState
+  let isAnsweringEnabled: Bool
   let onAnswer: (String, String) -> Void
 
   init(
     message: ChatMessageState,
+    isAnsweringEnabled: Bool = true,
     onAnswer: @escaping (String, String) -> Void = { _, _ in }
   ) {
     self.message = message
+    self.isAnsweringEnabled = isAnsweringEnabled
     self.onAnswer = onAnswer
   }
 
@@ -64,6 +74,7 @@ struct ChatMessageView: View {
       if let assistant = message.assistant {
         AssistantEventViews(
           projection: assistant,
+          isAnsweringEnabled: isAnsweringEnabled,
           onAnswer: onAnswer,
           exposesResponseToAccessibility: message.exposesAssistantTextToAccessibility
         )

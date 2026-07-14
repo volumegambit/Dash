@@ -150,8 +150,17 @@ struct RootView: View {
   @ViewBuilder
   private func conversationDestination(_ route: ConversationRoute) -> some View {
     switch route {
-    case .transcript:
-      FeatureSlotView(title: "Conversation", systemImage: "bubble.left.and.bubble.right")
+    case .transcript(let id):
+      if let conversation = conversationSummary(id: id) {
+        ChatFeatureHostView(appModel: appModel, conversation: conversation)
+      } else {
+        ContentUnavailableView(
+          "Conversation unavailable",
+          systemImage: "bubble.left.and.bubble.right",
+          description: Text("Return to Conversations and choose another chat.")
+        )
+        .navigationTitle("Conversation")
+      }
     case .newConversation:
       if let feature = appModel.conversationListFeature {
         NewConversationView()
@@ -161,6 +170,11 @@ struct RootView: View {
         FeatureSlotView(title: "New conversation", systemImage: "square.and.pencil")
       }
     }
+  }
+
+  private func conversationSummary(id: String) -> ConversationSummaryDTO? {
+    appModel.conversationListFeature?.conversations.first { $0.id == id }?.summary
+      ?? appModel.snapshot?.conversations.first { $0.id == id }?.summary
   }
 
   @ViewBuilder
@@ -189,6 +203,47 @@ struct RootView: View {
       .id(route)
     } else {
       FeatureSlotView(title: "Agent", systemImage: "person.crop.circle")
+    }
+  }
+}
+
+@MainActor
+private struct ChatFeatureHostView: View {
+  @Bindable var appModel: AppModel
+  let conversation: ConversationSummaryDTO
+
+  @State private var feature: ChatFeature?
+  @State private var didFailToLoad = false
+
+  var body: some View {
+    Group {
+      if let feature {
+        ChatView()
+          .environment(feature)
+          .id(ObjectIdentifier(feature))
+      } else if didFailToLoad {
+        ContentUnavailableView(
+          "Chat unavailable",
+          systemImage: "exclamationmark.bubble",
+          description: Text("Check this gateway's connection and try again.")
+        )
+        .navigationTitle(conversation.title)
+      } else {
+        ProgressView("Opening conversation")
+          .frame(maxWidth: .infinity, maxHeight: .infinity)
+          .navigationTitle(conversation.title)
+      }
+    }
+    .task(id: conversation.id) {
+      guard feature == nil else { return }
+      feature = await appModel.makeChatFeature(conversation)
+      didFailToLoad = feature == nil
+    }
+    .onChange(of: appModel.connectionState) { _, connection in
+      feature?.setConnection(connection)
+      if connection == .online, let feature {
+        Task { await feature.retryConnection() }
+      }
     }
   }
 }

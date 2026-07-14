@@ -703,18 +703,22 @@ enum ChatReducer {
       case .completed:
         assistant.terminal = .completed
         assistant.isThinkingCollapsed = true
+        assistant.pendingQuestion = nil
       case .cancelled:
         assistant.terminal = .cancelled
         assistant.isThinkingCollapsed = true
+        assistant.pendingQuestion = nil
       case .failed:
         let failure =
           assistant.statusRows.last(where: { $0.kind == .agentError })?.detail
           ?? "Response failed"
         assistant.terminal = .failed(failure)
         assistant.isThinkingCollapsed = true
+        assistant.pendingQuestion = nil
       case .interrupted:
         assistant.terminal = .interrupted
         assistant.isThinkingCollapsed = true
+        assistant.pendingQuestion = nil
       case .accepted, .streaming:
         break
       }

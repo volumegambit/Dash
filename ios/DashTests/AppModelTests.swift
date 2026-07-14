@@ -824,6 +824,27 @@ struct AppModelTests {
     #expect(await service.shutdownCallCount == 1)
   }
 
+  @Test("chat feature creation uses the active gateway profile and selected conversation")
+  func chatFeatureUsesActiveGatewayScope() async {
+    let profile = connectionProfile()
+    let selectedConversation = conversation()
+    let model = AppModel(
+      dependencies: AppDependencies(
+        clock: TestAppClock(now: Date(timeIntervalSince1970: 100)),
+        loadProfile: { profile },
+        makeSyncEngine: { _ in FakeAppSyncEngine() },
+        makeChatFeature: { receivedProfile, receivedConversation in
+          #expect(receivedProfile == profile)
+          #expect(receivedConversation == selectedConversation)
+          return nil
+        }
+      )
+    )
+    await model.start()
+
+    #expect(await model.makeChatFeature(selectedConversation) == nil)
+  }
+
   @Test("persistent profile selection clears before cache purge can suspend")
   func persistentSelectionClearsBeforeCachePurge() async throws {
     let engine = FakeAppSyncEngine()
