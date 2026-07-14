@@ -196,11 +196,15 @@ export class GatewayConversationRepository implements ConversationRepository {
   }
 
   async replay(agentId: string, conversationId: string, sinceSeq: number): Promise<ReplayEntry[]> {
-    return this.readThrough(
-      async () =>
-        (await this.client.replayConversationEvents(agentId, conversationId, sinceSeq)).entries,
-      async () => [],
-    );
+    try {
+      const page = await this.client.replayConversationEvents(agentId, conversationId, sinceSeq);
+      this.offline = false;
+      return page.entries;
+    } catch (error) {
+      if (!isNetworkFailure(error)) throw error;
+      this.offline = true;
+      throw new ConversationRepositoryOfflineError();
+    }
   }
 
   async invalidate(id: string, deleted: boolean): Promise<void> {

@@ -1,4 +1,8 @@
-import type { ConversationRef } from '@dash/mc';
+import {
+  type ConversationRef,
+  ConversationRepositoryOfflineError,
+  GatewayHttpError,
+} from '@dash/mc';
 import type {
   ConversationSummary,
   MobileApiErrorCode,
@@ -96,8 +100,16 @@ function isInteger(value: unknown): value is number {
   return typeof value === 'number' && Number.isSafeInteger(value);
 }
 
-function isOptionalString(value: unknown): boolean {
-  return value === undefined || typeof value === 'string';
+function isPositiveInteger(value: unknown): value is number {
+  return isInteger(value) && value > 0;
+}
+
+function isNonblankString(value: unknown): value is string {
+  return typeof value === 'string' && value.trim().length > 0;
+}
+
+function isOptionalNonblankString(value: unknown): boolean {
+  return value === undefined || isNonblankString(value);
 }
 
 function invalidFrame(): never {
@@ -108,36 +120,36 @@ function invalidFrame(): never {
 }
 
 export function parseCapableServerFrame(value: unknown): MobileWsServerFrame {
-  if (!isRecord(value) || typeof value.type !== 'string' || typeof value.id !== 'string') {
+  if (!isRecord(value) || !isNonblankString(value.type) || !isNonblankString(value.id)) {
     return invalidFrame();
   }
 
   switch (value.type) {
     case 'accepted':
       if (
-        typeof value.conversationId !== 'string' ||
-        typeof value.userMessageId !== 'string' ||
-        typeof value.assistantMessageId !== 'string' ||
-        !isInteger(value.revision) ||
-        !isInteger(value.seq)
+        !isNonblankString(value.conversationId) ||
+        !isNonblankString(value.userMessageId) ||
+        !isNonblankString(value.assistantMessageId) ||
+        !isPositiveInteger(value.revision) ||
+        !isPositiveInteger(value.seq)
       ) {
         return invalidFrame();
       }
       break;
     case 'event':
       if (
-        typeof value.conversationId !== 'string' ||
-        !isInteger(value.seq) ||
+        !isNonblankString(value.conversationId) ||
+        !isPositiveInteger(value.seq) ||
         !isRecord(value.event) ||
-        typeof value.event.type !== 'string'
+        !isNonblankString(value.event.type)
       ) {
         return invalidFrame();
       }
       break;
     case 'done':
       if (
-        typeof value.conversationId !== 'string' ||
-        !isInteger(value.seq) ||
+        !isNonblankString(value.conversationId) ||
+        !isPositiveInteger(value.seq) ||
         (value.outcome !== 'completed' && value.outcome !== 'cancelled')
       ) {
         return invalidFrame();
@@ -147,15 +159,15 @@ export function parseCapableServerFrame(value: unknown): MobileWsServerFrame {
       const hasConversation = Object.hasOwn(value, 'conversationId');
       const hasSequence = Object.hasOwn(value, 'seq');
       if (
-        typeof value.error !== 'string' ||
+        !isNonblankString(value.error) ||
         (hasSequence && !hasConversation) ||
-        (hasConversation && typeof value.conversationId !== 'string') ||
-        (hasSequence && !isInteger(value.seq)) ||
+        (hasConversation && !isNonblankString(value.conversationId)) ||
+        (hasSequence && !isPositiveInteger(value.seq)) ||
         (value.code !== undefined &&
           (typeof value.code !== 'string' ||
             !API_ERROR_CODES.has(value.code as MobileApiErrorCode))) ||
         (value.retryable !== undefined && typeof value.retryable !== 'boolean') ||
-        !isOptionalString(value.activeTurnId)
+        !isOptionalNonblankString(value.activeTurnId)
       ) {
         return invalidFrame();
       }
@@ -180,7 +192,13 @@ function replayFrame(entry: ReplayEntry): MobileWsServerFrame {
   };
   switch (entry.payload.type) {
     case 'accepted':
-      return { ...base, ...entry.payload };
+      return {
+        type: 'accepted',
+        ...base,
+        userMessageId: entry.payload.userMessageId,
+        assistantMessageId: entry.payload.assistantMessageId,
+        revision: entry.payload.revision,
+      };
     case 'event':
       return { ...base, type: 'event', event: entry.payload.event };
     case 'done':
@@ -219,6 +237,65 @@ function retryAfterMs(reason: string): number | undefined {
   const seconds = /retryAfterSeconds\D+(\d+)/i.exec(reason)?.[1];
   if (seconds) return Number(seconds) * 1_000;
   return undefined;
+}
+
+function retryAfterFromHttpError(error: GatewayHttpError): number | undefined {
+  const details = error.apiError?.details;
+  if (!isRecord(details)) return undefined;
+  if (typeof details.retryAfterMs === 'number' && details.retryAfterMs >= 0) {
+    return details.retryAfterMs;
+  }
+  if (typeof details.retryAfterSeconds === 'number' && details.retryAfterSeconds >= 0) {
+    return details.retryAfterSeconds * 1_000;
+  }
+  return undefined;
+}
+
+function isReplayOfflineFailure(error: unknown): boolean {
+  if (error instanceof ConversationRepositoryOfflineError) return true;
+  if (error instanceof GatewayHttpError) {
+    return error.status === 502 || error.apiError?.code === 'gateway_offline';
+  }
+  if (error instanceof TypeError) return true;
+  return error instanceof DOMException && ['AbortError', 'TimeoutError'].includes(error.name);
+}
+
+function classifyReplayFailure(error: unknown): ResumableChatTransportError | null {
+  if (isReplayOfflineFailure(error)) return null;
+  if (error instanceof ResumableChatTransportError) return error;
+  if (error instanceof GatewayHttpError) {
+    const code = error.apiError?.code;
+    if (error.status === 401 || code === 'unauthorized') {
+      return new ResumableChatTransportError(
+        'repair_required',
+        'Gateway authorization failed. Reconnect this gateway to continue.',
+        code,
+        false,
+      );
+    }
+    if (error.status === 429 || code === 'rate_limited') {
+      return new ResumableChatTransportError(
+        'rate_limited',
+        error.apiError?.error ?? 'Gateway rate limit reached. Retry when the countdown finishes.',
+        code,
+        error.apiError?.retryable ?? true,
+        undefined,
+        retryAfterFromHttpError(error),
+      );
+    }
+    if (error.status === 426 || code === 'capability_required') {
+      return new ResumableChatTransportError(
+        'update_required',
+        `Update Dash: ${error.apiError?.error ?? 'the gateway requires a newer client'}`,
+        code,
+        error.apiError?.retryable ?? false,
+      );
+    }
+  }
+  return new ResumableChatTransportError(
+    'update_required',
+    `Update Dash: ${error instanceof Error ? error.message : String(error)}`,
+  );
 }
 
 const defaultSocketFactory: ChatSocketFactory = (url, options) =>
@@ -452,6 +529,7 @@ export class ResumableChatTransport {
   }
 
   private async receive(state: TurnState, frame: MobileWsServerFrame): Promise<void> {
+    this.assertOwnership(state, frame);
     const seq = sequence(frame);
     if (seq === null) {
       if (frame.type === 'error' && !state.accepted) {
@@ -468,18 +546,33 @@ export class ResumableChatTransport {
         this.finish(state.conversation.id);
         return;
       }
-      this.options.onProtocolError(state.conversation.id, 'Update Dash: chat frame is missing seq');
-      return;
+      return invalidFrame();
     }
     if (seq <= state.lastSeq) return;
     if (seq > state.lastSeq + 1) {
-      const replayed = await this.options.replay(
-        { id: state.conversation.id, origin: 'gateway' },
-        state.conversation.agentId,
-        state.lastSeq,
-      );
-      for (const missing of replayed.sort((a, b) => a.seq - b.seq)) {
-        await this.deliverIfNext(state, replayFrame(missing));
+      let replayed: ReplayEntry[];
+      try {
+        replayed = await this.options.replay(
+          { id: state.conversation.id, origin: 'gateway' },
+          state.conversation.agentId,
+          state.lastSeq,
+        );
+      } catch (error) {
+        const classified = classifyReplayFailure(error);
+        if (classified) throw classified;
+        this.restart(state);
+        return;
+      }
+      const replayFrames = replayed
+        .map((entry) => this.parseReplayEntry(state, entry))
+        .sort((a, b) => (sequence(a) as number) - (sequence(b) as number));
+      for (const missing of replayFrames) {
+        await this.deliverIfNext(state, missing);
+        if (state.terminal) return;
+      }
+      if (seq > state.lastSeq + 1) {
+        this.restart(state);
+        return;
       }
     }
     await this.deliverIfNext(state, frame);
@@ -503,6 +596,37 @@ export class ResumableChatTransport {
     if (state.terminal) this.finish(state.conversation.id);
   }
 
+  private assertOwnership(state: TurnState, frame: MobileWsServerFrame): void {
+    if (frame.id !== state.turnId) invalidFrame();
+    if (
+      'conversationId' in frame &&
+      frame.conversationId !== undefined &&
+      frame.conversationId !== state.conversation.id
+    ) {
+      invalidFrame();
+    }
+  }
+
+  private parseReplayEntry(state: TurnState, value: unknown): MobileWsServerFrame {
+    if (
+      !isRecord(value) ||
+      !isPositiveInteger(value.seq) ||
+      !isNonblankString(value.msgId) ||
+      !isNonblankString(value.agentId) ||
+      !isNonblankString(value.conversationId) ||
+      !isNonblankString(value.timestamp) ||
+      !isRecord(value.payload) ||
+      value.msgId !== state.turnId ||
+      value.agentId !== state.conversation.agentId ||
+      value.conversationId !== state.conversation.id
+    ) {
+      return invalidFrame();
+    }
+    const frame = parseCapableServerFrame(replayFrame(value as unknown as ReplayEntry));
+    this.assertOwnership(state, frame);
+    return frame;
+  }
+
   private sendWhenOpen(state: TurnState, frame: MobileWsClientFrame): void {
     if (state.socket?.readyState === 1) {
       this.write(state.socket, frame);
@@ -523,6 +647,14 @@ export class ResumableChatTransport {
       state.reconnectTimer = null;
       this.connect(state);
     }, delay);
+  }
+
+  private restart(state: TurnState): void {
+    if (state.terminal || this.closed || this.turns.get(state.conversation.id) !== state) return;
+    const socket = state.socket;
+    state.socket = null;
+    socket?.close();
+    this.scheduleReconnect(state);
   }
 
   private clearReconnect(state: TurnState): void {

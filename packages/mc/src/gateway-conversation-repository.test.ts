@@ -311,7 +311,7 @@ describe('GatewayConversationRepository', () => {
     expect(repository.offline).toBe(false);
   });
 
-  it('reads messages and replay online, then uses their offline fallbacks', async () => {
+  it('reads messages online and uses the cached message fallback while offline', async () => {
     const page = await fixture<ConversationPage>('conversations-page.json');
     const messages = await fixture<ConversationMessagePage>('conversation-messages-page.json');
     const replay = await fixture<ReplayPage>('replay.json');
@@ -320,15 +320,26 @@ describe('GatewayConversationRepository', () => {
     client.getConversationMessages
       .mockResolvedValueOnce(messages)
       .mockRejectedValueOnce(new TypeError('fetch failed'));
-    client.replayConversationEvents
-      .mockResolvedValueOnce(replay)
-      .mockRejectedValueOnce(new DOMException('aborted', 'AbortError'));
+    client.replayConversationEvents.mockResolvedValueOnce(replay);
     const repository = new GatewayConversationRepository('gateway-1', client, cache);
 
     await expect(repository.messages(id, { limit: 100 })).resolves.toEqual(messages);
     await expect(repository.messages(id, { limit: 100 })).resolves.toEqual(messages);
+    expect(repository.offline).toBe(true);
     await expect(repository.replay('agent-1', id, 2)).resolves.toEqual(replay.entries);
-    await expect(repository.replay('agent-1', id, 2)).resolves.toEqual([]);
+    expect(repository.offline).toBe(false);
+  });
+
+  it('surfaces an offline replay instead of silently replacing a gap with no entries', async () => {
+    const client = makeClient();
+    client.replayConversationEvents.mockRejectedValueOnce(
+      new DOMException('aborted', 'AbortError'),
+    );
+    const repository = new GatewayConversationRepository('gateway-1', client, cache);
+
+    await expect(repository.replay('agent-1', 'conversation-1', 2)).rejects.toBeInstanceOf(
+      ConversationRepositoryOfflineError,
+    );
     expect(repository.offline).toBe(true);
   });
 
