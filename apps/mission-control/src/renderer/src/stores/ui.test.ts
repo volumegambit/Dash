@@ -1,11 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { DEFAULT_PET } from '../companion/pets/kinds.js';
+import { DEFAULT_SQUAD } from '../companion/pets/squads.js';
 import { loadCompanionSelection, useUIStore } from './ui.js';
 
-describe('ui store companion flags', () => {
+describe('ui store squad flags', () => {
   beforeEach(() => {
     localStorage.clear();
-    useUIStore.setState({ companionVisible: true, companionSelection: DEFAULT_PET });
+    useUIStore.setState({ companionVisible: true, companionSelection: DEFAULT_SQUAD });
   });
 
   afterEach(() => {
@@ -16,7 +16,7 @@ describe('ui store companion flags', () => {
     expect(useUIStore.getState().companionVisible).toBe(true);
   });
 
-  it('toggles companion visibility and persists it', () => {
+  it('toggles squad visibility and persists it', () => {
     useUIStore.getState().setCompanionVisible(false);
     expect(useUIStore.getState().companionVisible).toBe(false);
     expect(localStorage.getItem('dash.companion.visible')).toBe('false');
@@ -26,35 +26,33 @@ describe('ui store companion flags', () => {
     expect(localStorage.getItem('dash.companion.visible')).toBe('true');
   });
 
-  it('companionSelection defaults to the default pet when unset', () => {
+  it('companionSelection defaults to the default squad when unset', () => {
     localStorage.removeItem('dash.companion.pet');
-    expect(loadCompanionSelection()).toBe(DEFAULT_PET);
+    expect(loadCompanionSelection()).toBe(DEFAULT_SQUAD);
   });
 
-  it('setCompanionSelection persists a pet and rejects an invalid one on reload', () => {
-    useUIStore.getState().setCompanionSelection('cat');
-    expect(localStorage.getItem('dash.companion.pet')).toBe('cat');
-    expect(useUIStore.getState().companionSelection).toBe('cat');
-    expect(loadCompanionSelection()).toBe('cat');
+  it('setCompanionSelection persists a squad and rejects an invalid one on reload', () => {
+    useUIStore.getState().setCompanionSelection('office');
+    expect(localStorage.getItem('dash.companion.pet')).toBe('office');
+    expect(useUIStore.getState().companionSelection).toBe('office');
+    expect(loadCompanionSelection()).toBe('office');
 
     localStorage.setItem('dash.companion.pet', 'nonsense');
-    expect(loadCompanionSelection()).toBe(DEFAULT_PET);
+    expect(loadCompanionSelection()).toBe(DEFAULT_SQUAD);
   });
 
-  it('setCompanionSelection persists a crew selection', () => {
-    useUIStore.getState().setCompanionSelection('crew:kitchen');
-    expect(localStorage.getItem('dash.companion.pet')).toBe('crew:kitchen');
-    expect(useUIStore.getState().companionSelection).toBe('crew:kitchen');
-    expect(loadCompanionSelection()).toBe('crew:kitchen');
+  it('legacy crew-prefixed values keep working (backward compat)', () => {
+    localStorage.setItem('dash.companion.pet', 'crew:gym');
+    expect(loadCompanionSelection()).toBe('gym');
   });
 
-  it('an invalid crew id falls back to the default pet on reload', () => {
+  it('an invalid crew id falls back to the default squad on reload', () => {
     localStorage.setItem('dash.companion.pet', 'crew:not-a-crew');
-    expect(loadCompanionSelection()).toBe(DEFAULT_PET);
+    expect(loadCompanionSelection()).toBe(DEFAULT_SQUAD);
   });
 
-  it('old persisted pet values keep working (backward compat)', () => {
+  it('retired single-pet values fall back to the default squad', () => {
     localStorage.setItem('dash.companion.pet', 'wok-uncle');
-    expect(loadCompanionSelection()).toBe('wok-uncle');
+    expect(loadCompanionSelection()).toBe(DEFAULT_SQUAD);
   });
 });

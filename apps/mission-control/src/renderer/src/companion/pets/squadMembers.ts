@@ -11,10 +11,11 @@ const STATUS_RANK: Record<CompanionAgentStatus['status'], number> = {
 };
 
 /**
- * One fleet slot: either a live agent (identity + aggregate mood + the preview
- * of its dominant session) or a spare (all null / idle).
+ * One visible squad slot: either a live agent (identity + aggregate mood + the
+ * preview of its dominant session) or the single idle placeholder shown when
+ * no agents are running (all null / idle).
  */
-export interface CrewMember {
+export interface SquadMember {
   agentId: string | null;
   agentName: string | null;
   mood: Mood;
@@ -29,7 +30,7 @@ interface AgentGroup {
 
 /**
  * Group per-session entries by agent, preserving first-seen order, then sort
- * agents by name (tiebreak by id) so a stable fleet member always maps to the
+ * agents by name (tiebreak by id) so a stable squad member always maps to the
  * same agent across ticks.
  */
 function groupSortedAgents(entries: CompanionAgentStatus[]): AgentGroup[] {
@@ -59,14 +60,15 @@ function dominantPreview(statuses: CompanionAgentStatus[]): string {
 }
 
 /**
- * Map the fleet's members to running agents. Member `i` mirrors the `i`-th
- * agent (agents sorted by name, tiebreak id); each agent's mood is the
- * {@link aggregateMood} of its sessions. Members beyond the agent count are
- * spares that render idle.
+ * Map visible squad slots to running agents: exactly `memberCount` slots,
+ * slot `i` mirroring the `i`-th agent (agents sorted by name, tiebreak id);
+ * each agent's mood is the {@link aggregateMood} of its sessions. Callers pass
+ * `visibleMemberCount(entries)` so there is one slot per running agent; only
+ * the no-agents case yields an idle placeholder slot.
  */
-export function crewMembers(entries: CompanionAgentStatus[], memberCount: number): CrewMember[] {
+export function squadMembers(entries: CompanionAgentStatus[], memberCount: number): SquadMember[] {
   const agents = groupSortedAgents(entries);
-  const members: CrewMember[] = [];
+  const members: SquadMember[] = [];
   for (let i = 0; i < memberCount; i++) {
     const agent = agents[i];
     if (agent) {
@@ -81,9 +83,4 @@ export function crewMembers(entries: CompanionAgentStatus[], memberCount: number
     }
   }
   return members;
-}
-
-/** The moods only, one per fleet member (see {@link crewMembers}). */
-export function crewMoods(entries: CompanionAgentStatus[], memberCount: number): Mood[] {
-  return crewMembers(entries, memberCount).map((m) => m.mood);
 }

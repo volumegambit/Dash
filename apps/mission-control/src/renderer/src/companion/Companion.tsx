@@ -7,11 +7,10 @@ import { selectCompanionSessions } from './selectCompanionSessions.js';
 import { buildSnapshot } from './snapshot.js';
 
 /**
- * Headless publisher: the companion now lives in its own always-on-top
- * window (see main/companion-window.ts), which renders the user's selected
- * pet. This component keeps computing the session statuses from the renderer
- * stores and streams them — along with the selected pet — over IPC; it
- * renders nothing.
+ * Headless publisher: the squad lives in its own always-on-top window (see
+ * main/companion-window.ts), which renders the user's selected squad. This
+ * component keeps computing the session statuses from the renderer stores and
+ * streams them — along with the selected squad — over IPC; it renders nothing.
  */
 export function Companion(): null {
   const chat = useChatStore();

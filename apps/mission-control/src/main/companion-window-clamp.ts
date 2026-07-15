@@ -1,5 +1,5 @@
 /**
- * Pure geometry helper for the companion widget window. Kept in its own module
+ * Pure geometry helper for the squad widget window. Kept in its own module
  * (no `electron` import) so it can be unit-tested under vitest, which cannot
  * load the `electron` runtime.
  */
@@ -13,27 +13,40 @@ export interface WindowSize {
   height: number;
 }
 
-/** Compact window for a single pet (128px sprite + padding). */
-export const PET_WINDOW: WindowSize = { width: 140, height: 190 };
+/** Per-member sprite width (must match MEMBER_SIZE in CompanionSquad). */
+const MEMBER_WIDTH = 88;
+
+/** Gap between members in the squad row (must match the renderer's row gap). */
+const MEMBER_GAP = 4;
 
 /**
- * Wide window for a crew's five-pet fleet: 5 × 88px sprites + gaps and side
- * padding, with vertical headroom for the staggered row and speech bubbles.
+ * Side padding on each edge (must match SIDE_PADDING in CompanionSquad). At
+ * least half the speech bubble's overhang beyond a member slot
+ * ((132 - 88) / 2 = 22), so an edge member's bubble is never clipped.
  */
-export const CREW_WINDOW: WindowSize = { width: 476, height: 200 };
+const SIDE_PADDING = 24;
 
 /**
- * The widget window size for a selection string. Crew selections (prefixed
- * `crew:`) get the wide fleet window; everything else — including old persisted
- * pet ids and unknown values — gets the compact pet window.
+ * Window height: an 88px sprite row + the 22px stagger + headroom for the
+ * speech bubbles floating above the staggered members.
  */
-export function windowSizeFor(selection: string): WindowSize {
-  return selection.startsWith('crew:') ? CREW_WINDOW : PET_WINDOW;
+const WINDOW_HEIGHT = 200;
+
+/**
+ * The widget window size for the number of visible squad members (one per
+ * running agent — see visibleMemberCount): the member row plus side padding
+ * wide enough that edge speech bubbles never clip.
+ */
+export function windowSizeFor(memberCount: number): WindowSize {
+  return {
+    width: memberCount * MEMBER_WIDTH + (memberCount - 1) * MEMBER_GAP + 2 * SIDE_PADDING,
+    height: WINDOW_HEIGHT,
+  };
 }
 
 /**
  * Resize the widget in place, keeping its bottom-right corner anchored (the
- * default resting corner), so switching between a pet and a crew grows/shrinks
+ * default resting corner), so a change in visible member count grows/shrinks
  * toward the screen edge rather than jumping. Returns the new top-left origin
  * for `oldSize → newSize` given the current top-left `pos`.
  */

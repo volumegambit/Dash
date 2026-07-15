@@ -2,6 +2,7 @@ import { join } from 'node:path';
 import type { SettingsStore } from '@dash/mc';
 import { BrowserWindow, app, screen } from 'electron';
 import type { CompanionAgentStatus, CompanionSelection } from '../shared/ipc.js';
+import { visibleMemberCount } from '../shared/squad.js';
 import { anchoredResize, clampToVisible, windowSizeFor } from './companion-window-clamp.js';
 
 /** Margin from the screen edge when placing the widget in its default corner. */
@@ -10,11 +11,11 @@ const MARGIN = 24;
 let companionWindow: BrowserWindow | undefined;
 
 /**
- * The last selection the renderer published, so the window can size itself
- * correctly when it (re)opens — before the renderer has replayed. Defaults to a
- * single pet; a crew selection resizes the window on the next `forwardPet`.
+ * How many squad members the last published statuses put on screen (one per
+ * running agent), so the window sizes itself correctly when it (re)opens —
+ * before the renderer has replayed. Defaults to the single idle member.
  */
-let currentSelection: CompanionSelection = 'red-panda';
+let currentMemberCount = 1;
 
 /**
  * Tracks the latest requested visibility. Because `createCompanionWindow` reads
@@ -38,12 +39,12 @@ function defaultCorner(size: { width: number; height: number }): { x: number; y:
 }
 
 /**
- * Create the always-on-top companion widget window. Idempotent — a second call
+ * Create the always-on-top squad widget window. Idempotent — a second call
  * while the window exists is a no-op. The window is sized for the current
- * selection (pet vs. crew fleet), loads its persisted position (clamped to a
- * currently-visible display), persists moves back to settings, and asks the
- * main window to replay statuses once the widget has loaded so it never starts
- * blank.
+ * visible member count (one per running agent), loads its persisted position
+ * (clamped to a currently-visible display), persists moves back to settings,
+ * and asks the main window to replay statuses once the widget has loaded so it
+ * never starts blank.
  */
 export function createCompanionWindow(opts: {
   settings: SettingsStore;
@@ -54,7 +55,7 @@ export function createCompanionWindow(opts: {
   void opts.settings.get().then((s) => {
     if (companionWindow) return; // a concurrent create won the race
     if (!desiredVisible) return; // hidden again while we were reading settings
-    const size = windowSizeFor(currentSelection);
+    const size = windowSizeFor(currentMemberCount);
     const pos = clampToVisible(
       s.companionWindowPos ?? defaultCorner(size),
       screen.getAllDisplays(),
@@ -108,7 +109,7 @@ export function createCompanionWindow(opts: {
   });
 }
 
-/** Close and clear the companion widget window if it exists. */
+/** Close and clear the squad widget window if it exists. */
 export function destroyCompanionWindow(): void {
   desiredVisible = false;
   if (companionWindow && !companionWindow.isDestroyed()) {
@@ -117,31 +118,24 @@ export function destroyCompanionWindow(): void {
   companionWindow = undefined;
 }
 
-/** The current companion widget window, if open. */
+/** The current squad widget window, if open. */
 export function getCompanionWindow(): BrowserWindow | undefined {
   return companionWindow;
 }
 
-/** Push the latest per-agent session statuses into the widget window, if open. */
-export function forwardStatuses(statuses: CompanionAgentStatus[]): void {
-  if (companionWindow && !companionWindow.isDestroyed()) {
-    companionWindow.webContents.send('companion:statuses', statuses);
-  }
-}
-
 /**
- * Push the selected pet or crew into the widget window, if open, resizing the
- * window to fit (a single pet vs. a five-wide fleet). The resize keeps the
- * window's bottom-right corner anchored and re-clamps to a visible display, and
- * persists the new origin so a subsequent unplug clamp uses the right size.
+ * Push the latest per-agent session statuses into the widget window, if open,
+ * first resizing the window to fit one squad member per running agent. The
+ * resize keeps the window's bottom-right corner anchored (so the row grows
+ * toward the screen edge) and re-clamps to a visible display.
  */
-export function forwardPet(selection: CompanionSelection): void {
-  const previous = currentSelection;
-  currentSelection = selection;
+export function forwardStatuses(statuses: CompanionAgentStatus[]): void {
+  const previous = currentMemberCount;
+  currentMemberCount = visibleMemberCount(statuses);
   if (!companionWindow || companionWindow.isDestroyed()) return;
 
   const oldSize = windowSizeFor(previous);
-  const newSize = windowSizeFor(selection);
+  const newSize = windowSizeFor(currentMemberCount);
   if (oldSize.width !== newSize.width || oldSize.height !== newSize.height) {
     const [x, y] = companionWindow.getPosition();
     const anchored = anchoredResize({ x, y }, oldSize, newSize);
@@ -154,5 +148,15 @@ export function forwardPet(selection: CompanionSelection): void {
     });
   }
 
-  companionWindow.webContents.send('companion:pet', selection);
+  companionWindow.webContents.send('companion:statuses', statuses);
+}
+
+/**
+ * Push the selected squad into the widget window, if open. All squads render
+ * the same window size (it depends only on the member count), so no resize.
+ */
+export function forwardPet(selection: CompanionSelection): void {
+  if (companionWindow && !companionWindow.isDestroyed()) {
+    companionWindow.webContents.send('companion:pet', selection);
+  }
 }

@@ -1,38 +1,23 @@
-import type { CompanionSelection, CrewKind, PetKind } from '../../../../shared/ipc.js';
-import { CREW_KINDS } from './crews.js';
-import { DEFAULT_PET, PET_KINDS } from './kinds.js';
+import type { CompanionSelection, SquadKind } from '../../../../shared/ipc.js';
+import { DEFAULT_SQUAD, SQUAD_KINDS } from './squads.js';
 
-/** A parsed companion selection: a single pet or a whole crew. */
-export type ParsedSelection = { type: 'pet'; pet: PetKind } | { type: 'crew'; crew: CrewKind };
+/** Legacy prefix from the era when squads were called crews (`crew:kitchen`). */
+const LEGACY_CREW_PREFIX = 'crew:';
 
-const CREW_PREFIX = 'crew:';
-
-function isPetKind(v: string): v is PetKind {
-  return (PET_KINDS as readonly string[]).includes(v);
-}
-
-function isCrewKind(v: string): v is CrewKind {
-  return (CREW_KINDS as readonly string[]).includes(v);
+function isSquadKind(v: string): v is SquadKind {
+  return (SQUAD_KINDS as readonly string[]).includes(v);
 }
 
 /**
- * Parse a persisted/IPC selection string into a discriminated union, falling
- * back to the default pet for anything unrecognized. Old persisted `PetKind`
- * strings (no `crew:` prefix) parse as `{ type: 'pet' }` unchanged.
+ * Normalize a persisted/IPC selection string to a squad. Legacy values keep
+ * working: `crew:<kind>` (the old crew selection) parses as `<kind>`, and
+ * anything unrecognized — including pet ids from the retired single-pet mode —
+ * falls back to the default squad.
  */
-export function parseCompanionSelection(raw: string | null): ParsedSelection {
+export function parseCompanionSelection(raw: string | null): CompanionSelection {
   if (raw) {
-    if (raw.startsWith(CREW_PREFIX)) {
-      const crew = raw.slice(CREW_PREFIX.length);
-      if (isCrewKind(crew)) return { type: 'crew', crew };
-    } else if (isPetKind(raw)) {
-      return { type: 'pet', pet: raw };
-    }
+    const kind = raw.startsWith(LEGACY_CREW_PREFIX) ? raw.slice(LEGACY_CREW_PREFIX.length) : raw;
+    if (isSquadKind(kind)) return kind;
   }
-  return { type: 'pet', pet: DEFAULT_PET };
-}
-
-/** Serialize a parsed selection back to its `CompanionSelection` string. */
-export function serializeCompanionSelection(selection: ParsedSelection): CompanionSelection {
-  return selection.type === 'crew' ? `crew:${selection.crew}` : selection.pet;
+  return DEFAULT_SQUAD;
 }

@@ -114,12 +114,11 @@ export type GatewayStatus = 'starting' | 'healthy' | 'unhealthy';
 // truth: the renderer's companion/types.ts re-exports this.
 export type CompanionStatus = 'working' | 'needs' | 'done' | 'error';
 
-// One entry per live session the companion tracks, carrying the identity of
+// One entry per live session the squad widget tracks, carrying the identity of
 // the agent it belongs to plus a short human-readable preview of what that
 // session is doing right now (the live tool, the question, the error, or the
-// final text). Crew mode groups these by `agentId` to map fleet members to
-// agents; the speech bubbles render `preview`. The single-pet path derives its
-// aggregate mood from `entries.map((e) => e.status)`, unchanged.
+// final text). The widget groups these by `agentId` to map squad members to
+// agents; the speech bubbles render `preview`.
 export interface CompanionAgentStatus {
   agentId: string;
   agentName: string;
@@ -127,35 +126,9 @@ export interface CompanionAgentStatus {
   preview: string;
 }
 
+// Every pixel-art sprite is a member of exactly one squad (see the rosters in
+// the renderer's companion/pets/squads.ts). Individual pets are not selectable.
 export type PetKind =
-  | 'astronaut'
-  | 'bear'
-  | 'beauty-guru'
-  | 'bigfoot'
-  | 'bollywood-star'
-  | 'cat'
-  | 'chef'
-  | 'dog'
-  | 'fitness-influencer'
-  | 'fortune-god'
-  | 'knight'
-  | 'lion'
-  | 'maneki-neko'
-  | 'merlion'
-  | 'ninja'
-  | 'pig'
-  | 'pirate'
-  | 'quokka'
-  | 'rabbit'
-  | 'red-panda'
-  | 'robot'
-  | 'royal-guard'
-  | 'streamer'
-  | 'tech-reviewer'
-  | 'travel-vlogger'
-  | 'unicorn'
-  | 'wizard'
-  | 'wok-uncle'
   | 'sous-chef'
   | 'pastry-chef'
   | 'sushi-chef'
@@ -202,10 +175,10 @@ export type PetKind =
   | 'kettlebell-athlete'
   | 'weightlifter';
 
-// A themed group of five pets that can be selected as a whole; the widget then
-// renders the crew as a fleet, one member per running agent. The renderer's
-// companion/pets/crews.ts owns the rosters and re-exports this type.
-export type CrewKind =
+// A themed squad of five pets, the only selectable unit; the widget renders
+// one member per running agent. The renderer's companion/pets/squads.ts owns
+// the rosters and re-exports this type.
+export type SquadKind =
   | 'kitchen'
   | 'office'
   | 'wait'
@@ -216,11 +189,11 @@ export type CrewKind =
   | 'farmer'
   | 'gym';
 
-// What the user selected for the companion widget: either a single pet or a
-// whole crew (rendered as a fleet). Persisted as a string in localStorage and
-// forwarded over IPC. Old persisted `PetKind` values parse as `{ type: 'pet' }`
-// unchanged (see parseCompanionSelection).
-export type CompanionSelection = PetKind | `crew:${CrewKind}`;
+// What the user selected for the squad widget. Persisted as a string in
+// localStorage and forwarded over IPC. Legacy persisted values (`crew:<kind>`
+// from the crew era, or a bare pet id from the single-pet era) are normalized
+// by parseCompanionSelection.
+export type CompanionSelection = SquadKind;
 
 // --- MCP Connectors ---
 
