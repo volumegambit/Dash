@@ -106,7 +106,17 @@ final class AgentsUITests: DashUITestCase {
     XCTAssertTrue(alert.waitForExistence(timeout: 3))
     replaceText(in: alert.textFields["Type the agent name"], with: "wrong")
     XCTAssertFalse(alert.buttons["Delete"].isEnabled)
-    replaceText(in: alert.textFields["Type the agent name"], with: "Delete Me")
+    alert.buttons["Cancel"].tap()
+    XCTAssertFalse(alert.waitForExistence(timeout: 2))
+
+    actions.tap()
+    app.buttons["Delete"].tap()
+    XCTAssertTrue(alert.waitForExistence(timeout: 3))
+    replaceText(
+      in: alert.textFields["Type the agent name"],
+      with: "Delete Me",
+      clearExisting: false
+    )
     XCTAssertTrue(alert.buttons["Delete"].isEnabled)
     alert.buttons["Delete"].tap()
     XCTAssertFalse(

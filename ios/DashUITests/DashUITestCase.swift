@@ -21,6 +21,10 @@ class DashUITestCase: XCTestCase {
     app.launchEnvironment["DASH_UI_TEST_SCENARIO"] = scenario
     app.launchEnvironment["DASH_UI_TEST_DATA_IDENTIFIER"] = dataIdentifier
     app.launchArguments += [
+      "-AppleLanguages",
+      "(en)",
+      "-AppleLocale",
+      "en_US",
       "--dash-ui-test-scenario",
       scenario,
       "--dash-ui-test-data-identifier",
@@ -101,8 +105,18 @@ class DashUITestCase: XCTestCase {
       current.isEmpty == false,
       current != field.placeholderValue
     {
-      field.coordinate(withNormalizedOffset: CGVector(dx: 0.95, dy: 0.5)).tap()
-      field.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: current.count))
+      field.press(forDuration: 1.0)
+      let selectAll = app.descendants(matching: .any).matching(
+        NSPredicate(format: "label == %@", "Select All")
+      ).firstMatch
+      XCTAssertTrue(
+        selectAll.waitForExistence(timeout: 3),
+        "Expected the native Select All action for \(field.identifier)",
+        file: file,
+        line: line
+      )
+      selectAll.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+      field.typeText(XCUIKeyboardKey.delete.rawValue)
       XCTAssertTrue(
         waitForClearedTextValue(in: field, timeout: 5),
         "Expected \(field.identifier) to clear existing text before replacement",

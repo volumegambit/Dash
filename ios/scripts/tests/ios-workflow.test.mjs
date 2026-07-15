@@ -234,8 +234,18 @@ assert.doesNotMatch(
 assert.doesNotMatch(uiTestCaseSource, /DASH_UI_TEST_PASTEBOARD\b|--dash-ui-test-pasteboard["']/);
 assert.match(
   uiTestCaseSource,
-  /field\.typeText\(String\(repeating: XCUIKeyboardKey\.delete\.rawValue, count: current\.count\)\)[\s\S]*waitForClearedTextValue\([\s\S]*field\.typeText\(value\)/,
-  'text replacement must observe the cleared field before typing the replacement value',
+  /"-AppleLanguages",\s*"\(en\)",\s*"-AppleLocale",\s*"en_US"/,
+  'UI tests must pin English so native edit-menu labels stay deterministic',
+);
+assert.match(
+  uiTestCaseSource,
+  /field\.press\(forDuration: 1\.0\)[\s\S]*label == %@[\s\S]*Select All[\s\S]*selectAll\.coordinate\(withNormalizedOffset: CGVector\(dx: 0\.5, dy: 0\.5\)\)\.tap\(\)[\s\S]*field\.typeText\(XCUIKeyboardKey\.delete\.rawValue\)[\s\S]*waitForClearedTextValue\([\s\S]*field\.typeText\(value\)/,
+  'text replacement must select all through the edit menu and observe the cleared field',
+);
+assert.doesNotMatch(
+  uiTestCaseSource,
+  /field\.typeText\(String\(repeating: XCUIKeyboardKey\.delete\.rawValue, count: current\.count\)\)/,
+  'text replacement must not assume that the current string length locates the caret',
 );
 
 assert.match(composerSource, /\.keyboardShortcut\("l", modifiers: \.command\)/);

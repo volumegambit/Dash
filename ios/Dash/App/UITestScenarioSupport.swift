@@ -175,8 +175,12 @@ extension AppDependenciesFactory {
       createdAt: now.addingTimeInterval(-60)
     )
 
+    static let recoveredNewerDraftText =
+      "  Preserve this exact newer draft text too through a "
+      + "horizontally scrolling composer  "
+
     static let recoveredNewerDraft = ConversationDraft(
-      text: "  Preserve this exact newer draft text too  ",
+      text: recoveredNewerDraftText,
       attachments: [
         PreparedAttachment(
           id: UUID(uuidString: "018F0F4A-5C42-7A8B-9C01-1234567890AD")!,

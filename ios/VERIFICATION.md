@@ -4,8 +4,9 @@
 
 Local automated release gates pass for the native iOS and Android clients, the shared gateway
 conversation authority, Mission Control synchronization, and the hosted relay boundary. The
-implementation snapshot is branch `feat/ios-conversation-sync` at commit
-`b67967b63097fc856bb6de21dd23cdd8bcd3600a`, verified on 2026-07-15.
+balanced-v1 implementation snapshot is branch `feat/ios-conversation-sync` at commit
+`b67967b63097fc856bb6de21dd23cdd8bcd3600a`, verified on 2026-07-15. Subsequent changes are
+CI and test-harness hardening, reverified locally on 2026-07-16.
 
 The pull request's pinned Xcode 16.3 / iOS 18.4 live-gateway job remains the authoritative hosted
 gate. Physical-device QA is also still required before calling the iOS build production-ready.
@@ -24,18 +25,24 @@ gate. Physical-device QA is also still required before calling the iOS build pro
 - Full `Dash` scheme on iPad: 570 logical tests / 609 parameterized executions, 0 failures,
   0 skips. Evidence: `/tmp/dash-ios-final-unit-contract-ipad-20260715-a.xcresult`.
 - iPhone UI suite: 23 executions, 21 passed, 2 intended iPad-only skips, 0 failures. Evidence:
-  `/tmp/dash-ios-final-ui-iphone-20260715-a.xcresult`.
+  `/tmp/dash-ios-full-iphone-ui-20260715T173829Z.xcresult`.
 - iPad UI suite: 23 executions, 22 passed, 1 intended iPhone-only skip, 0 failures. Evidence:
-  `/tmp/dash-ios-final-ui-ipad-20260715-a.xcresult`.
+  `/tmp/dash-ios-full-ipad-ui-20260715T175150Z.xcresult`.
 - Dark appearance with increased contrast: 1 passed, 0 failures. Simulator appearance and
   contrast were restored after the run. Evidence:
-  `/tmp/dash-ios-final-dark-contrast-iphone-20260715-a.xcresult`.
+  `/tmp/dash-ios-dark-contrast-core-20260715T180819Z.xcresult`.
+- Focused UI-scenario support suite: 11 passed, 0 failures. Evidence:
+  `/tmp/dash-ios-uitest-scenario-support-20260716-01.xcresult`.
 - Integration-support scenarios: 9 passed, 0 failures using isolated DerivedData. Evidence:
   `/tmp/dash-ios-final-integration-support-iphone-20260715-b.xcresult`.
 
 The first integration-support attempt used shared DerivedData while another Xcode test run was
 active, and Xcode lost the test bundle before executing a test. The isolated rerun above is the
 authoritative result.
+
+The 2026-07-16 UI matrix ran once without retry configuration. Its recovery fixture deliberately
+overflows the iPhone composer, and text replacement uses the English native edit menu so a partial
+caret-position delete cannot pass locally while failing on the hosted runner.
 
 ## iOS release artifacts and configuration
 

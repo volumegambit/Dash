@@ -2,6 +2,10 @@ import XCTest
 
 @MainActor
 final class ConversationUITests: DashUITestCase {
+  private static let recoveredNewerDraftText =
+    "  Preserve this exact newer draft text too through a "
+    + "horizontally scrolling composer  "
+
   func testCachedOfflineHistoryAllowsDraftButBlocksRemoteMutations() {
     let app = launch(scenario: "paired-offline")
 
@@ -156,7 +160,7 @@ final class ConversationUITests: DashUITestCase {
 
     XCTAssertEqual(
       element("recovery.draft.text.deleted-plan", in: app).label,
-      "  Preserve this exact newer draft text too  "
+      Self.recoveredNewerDraftText
     )
     let draftPreview = element(
       "recovery.preview.018F0F4A-5C42-7A8B-9C01-1234567890AD",
@@ -237,7 +241,7 @@ final class ConversationUITests: DashUITestCase {
     let guardedComposer = element("chat.composer", in: app)
     XCTAssertEqual(
       guardedComposer.value as? String,
-      "  Preserve this exact newer draft text too  "
+      Self.recoveredNewerDraftText
     )
     XCTAssertFalse(guardedComposer.isEnabled)
     XCTAssertFalse(element("chat.send", in: app).isEnabled)
@@ -264,7 +268,7 @@ final class ConversationUITests: DashUITestCase {
     )
     XCTAssertEqual(
       element("recovery.draft.text.shared-plan", in: app).label,
-      "  Preserve this exact newer draft text too  "
+      Self.recoveredNewerDraftText
     )
 
     element("recovery.discard.shared-plan", in: app).tap()
@@ -284,7 +288,7 @@ final class ConversationUITests: DashUITestCase {
     dismissSplitOverlayIfPresent(in: app)
 
     let composer = element("chat.composer", in: app)
-    let exactDraft = "  Preserve this exact newer draft text too  "
+    let exactDraft = Self.recoveredNewerDraftText
     XCTAssertEqual(
       XCTWaiter.wait(
         for: [
