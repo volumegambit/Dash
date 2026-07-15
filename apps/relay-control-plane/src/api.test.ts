@@ -73,10 +73,10 @@ function req(method: string, path: string, account?: string, body?: unknown): Pr
 }
 
 describe('GET /health', () => {
-  it('is open (no auth) and reports healthy', async () => {
+  it('is open and advertises pairing-id support before clients can mint', async () => {
     const res = await app.request('/health');
     expect(res.status).toBe(200);
-    expect(await res.json()).toMatchObject({ status: 'healthy' });
+    expect(await res.json()).toEqual({ status: 'healthy', capabilities: ['pairing-id-v1'] });
   });
 });
 
@@ -285,12 +285,19 @@ describe('pairings', () => {
       gatewayId: string;
     };
 
-    const createRes = await req('POST', `/v1/gateways/${a.gatewayId}/pairings`, 'a1', {
-      deviceLabel: 'iPhone',
-    });
+    const createRes = await req(
+      'POST',
+      `/v1/gateways/${a.gatewayId}/pairings/pairing-id-v1`,
+      'a1',
+      { deviceLabel: 'iPhone' },
+    );
     expect(createRes.status).toBe(200);
-    const { credential } = (await createRes.json()) as { credential: string };
+    const { credential, pairingId } = (await createRes.json()) as {
+      credential: string;
+      pairingId: string;
+    };
     expect(typeof credential).toBe('string');
+    expect(typeof pairingId).toBe('string');
     // The relay's hot path accepts the minted credential under this gateway.
     expect(relayStore.isValid(a.gatewayId, credential)).toBe(true);
 
@@ -300,11 +307,10 @@ describe('pairings', () => {
       pairings: Array<{ id: string; credentialHash: string; deviceLabel: string | null }>;
     };
     expect(list.pairings).toHaveLength(1);
+    expect(list.pairings[0].id).toBe(pairingId);
     expect(list.pairings[0].deviceLabel).toBe('iPhone');
     // Only the hash is ever exposed — never the raw credential.
     expect(list.pairings[0].credentialHash).not.toBe(credential);
-    const pairingId = list.pairings[0].id;
-
     const delRes = await req('DELETE', `/v1/gateways/${a.gatewayId}/pairings/${pairingId}`, 'a1');
     expect(delRes.status).toBe(200);
     expect(relayStore.isValid(a.gatewayId, credential)).toBe(false);
@@ -317,7 +323,7 @@ describe('pairings', () => {
       gatewayId: string;
     };
 
-    const res = await req('POST', `/v1/gateways/${a.gatewayId}/pairings`, 'a2', {
+    const res = await req('POST', `/v1/gateways/${a.gatewayId}/pairings/pairing-id-v1`, 'a2', {
       deviceLabel: 'iPhone',
     });
     expect(res.status).toBe(404);
@@ -337,7 +343,9 @@ describe('pairings', () => {
       gatewayId: string;
     };
     const { credential } = (await (
-      await req('POST', `/v1/gateways/${a.gatewayId}/pairings`, 'a1', { deviceLabel: 'iPhone' })
+      await req('POST', `/v1/gateways/${a.gatewayId}/pairings/pairing-id-v1`, 'a1', {
+        deviceLabel: 'iPhone',
+      })
     ).json()) as { credential: string };
     const list = (await (
       await req('GET', `/v1/gateways/${a.gatewayId}/pairings`, 'a1')
@@ -350,6 +358,27 @@ describe('pairings', () => {
     expect(res.status).toBe(404);
     // The credential is still valid — the cross-account delete touched nothing.
     expect(relayStore.isValid(a.gatewayId, credential)).toBe(true);
+  });
+
+  it('keeps the legacy unversioned create route compatible without exposing the pairing id', async () => {
+    const a = (await (
+      await req('POST', '/v1/gateways', 'a1', { subdomain: 'alice', publicKey: gwPubB64 })
+    ).json()) as { gatewayId: string };
+
+    const res = await req('POST', `/v1/gateways/${a.gatewayId}/pairings`, 'a1', {
+      deviceLabel: 'legacy-client',
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body).toEqual({ credential: expect.any(String) });
+    expect(relayStore.isValid(a.gatewayId, body.credential as string)).toBe(true);
+
+    const list = (await (
+      await req('GET', `/v1/gateways/${a.gatewayId}/pairings`, 'a1')
+    ).json()) as { pairings: Array<{ id: string; deviceLabel: string | null }> };
+    expect(list.pairings).toEqual([
+      expect.objectContaining({ id: expect.any(String), deviceLabel: 'legacy-client' }),
+    ]);
   });
 });
 

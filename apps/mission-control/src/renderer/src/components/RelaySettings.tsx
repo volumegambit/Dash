@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ControlPlaneStatus, DeviceInfo } from '../../../shared/ipc.js';
 
 /**
@@ -11,6 +11,13 @@ function isDnsSafeLabel(label: string): boolean {
   return /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(label);
 }
 
+export type PairingStateChange = { type: 'enrolled' } | { type: 'revoked'; deviceId: string };
+
+function withDisplayedPairing(devices: DeviceInfo[], pairingId: string | null): DeviceInfo[] {
+  if (!pairingId || devices.some((device) => device.id === pairingId)) return devices;
+  return [...devices, { id: pairingId, label: null }];
+}
+
 /**
  * Settings section for remote access via the hosted Dash relay. The user signs
  * in to Dash (Clerk, system browser), enrolls a gateway, and manages the
@@ -21,14 +28,26 @@ function isDnsSafeLabel(label: string): boolean {
  * This is the structural wiring; visual polish and the live browser flow are
  * exercised by manual MC QA.
  */
-export function RelaySettings({ onEnrolled }: { onEnrolled?: () => void }): JSX.Element {
+export function RelaySettings({
+  displayedPairingId = null,
+  onPairingStateChanged,
+}: {
+  displayedPairingId?: string | null;
+  onPairingStateChanged?: (change: PairingStateChange) => void;
+}): JSX.Element {
   const [status, setStatus] = useState<ControlPlaneStatus | null>(null);
   const [devices, setDevices] = useState<DeviceInfo[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [label, setLabel] = useState('');
   const [available, setAvailable] = useState<boolean | null>(null);
+  const displayedPairingIdRef = useRef(displayedPairingId);
+  displayedPairingIdRef.current = displayedPairingId;
   const valid = isDnsSafeLabel(label);
+
+  useEffect(() => {
+    setDevices((current) => withDisplayedPairing(current, displayedPairingId));
+  }, [displayedPairingId]);
 
   useEffect(() => {
     setAvailable(null);
@@ -58,7 +77,9 @@ export function RelaySettings({ onEnrolled }: { onEnrolled?: () => void }): JSX.
         if (s.enrolled) {
           window.api
             .devicesList()
-            .then(setDevices)
+            .then((listed) => {
+              setDevices(withDisplayedPairing(listed, displayedPairingIdRef.current));
+            })
             .catch(() => {});
         } else {
           setDevices([]);
@@ -90,11 +111,14 @@ export function RelaySettings({ onEnrolled }: { onEnrolled?: () => void }): JSX.
     run(() => window.api.controlPlaneSignIn(), 'Sign-in failed');
   const enroll = async (): Promise<void> => {
     if (await run(() => window.api.gatewayEnroll(label), 'Could not claim that subdomain')) {
-      onEnrolled?.();
+      onPairingStateChanged?.({ type: 'enrolled' });
     }
   };
-  const revoke = (id: string): Promise<boolean> =>
-    run(() => window.api.devicesRevoke(id), 'Could not revoke device');
+  const revoke = async (id: string): Promise<void> => {
+    if (await run(() => window.api.devicesRevoke(id), 'Could not revoke device')) {
+      onPairingStateChanged?.({ type: 'revoked', deviceId: id });
+    }
+  };
 
   const btnPrimary =
     'inline-flex items-center gap-2 rounded-lg bg-accent px-3 py-1.5 text-xs font-medium text-white hover:opacity-90 transition disabled:opacity-50';

@@ -33,23 +33,34 @@ export function qrPayload(i: PairingInfo): string {
  * The QR is built as an SVG data URI (pure JS, no canvas) so it renders
  * identically in Electron and under test.
  */
-export function PairDeviceCard(): JSX.Element {
+export function PairDeviceCard({
+  onPairingIdChanged,
+}: {
+  onPairingIdChanged?: (pairingId: string | null) => void;
+}): JSX.Element {
   const [info, setInfo] = useState<PairingInfo | null>(null);
   const [qrSrc, setQrSrc] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    let alive = true;
     window.api
       .pairingGetInfo()
       .then(async (i) => {
-        setInfo(i);
         const svg = await QRCode.toString(qrPayload(i), { type: 'svg', margin: 1, width: 280 });
+        if (!alive) return;
+        setInfo(i);
         setQrSrc(`data:image/svg+xml;utf8,${encodeURIComponent(svg)}`);
+        onPairingIdChanged?.(i.mode === 'relay' ? i.pairingId : null);
       })
       .catch((e: unknown) => {
+        if (!alive) return;
         setError(e instanceof Error ? e.message : 'Failed to load pairing info');
       });
-  }, []);
+    return () => {
+      alive = false;
+    };
+  }, [onPairingIdChanged]);
 
   return (
     <div className="rounded-lg border border-border bg-card-bg p-4">

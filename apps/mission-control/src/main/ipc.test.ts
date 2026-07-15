@@ -14,6 +14,7 @@ import {
   ConversationLifecycleEpoch,
   GatewayEventStreamManager,
   activatePendingConversationRuntime,
+  assertLocalPairingSource,
   configurePendingConversationRuntime,
   conversationContextFromOfflineProfile,
   createCanonicalChatHandlers,
@@ -32,6 +33,7 @@ import {
   pluginsListHandler,
   projectsAssignAgentHandler,
   resolveSetupStatus,
+  selectLanIpv4,
   shutdownGatewayOnQuit,
   verifiedConversationContext,
 } from './ipc.js';
@@ -44,6 +46,140 @@ const mobileFixtures = resolve(
 async function fixture<T>(name: string): Promise<T> {
   return JSON.parse(await readFile(resolve(mobileFixtures, name), 'utf8')) as T;
 }
+
+describe('device pairing source selection', () => {
+  it('rejects device pairing while Mission Control targets a remote gateway', () => {
+    expect(() => assertLocalPairingSource({ mode: 'local' })).not.toThrow();
+    expect(() => assertLocalPairingSource({ mode: 'remote' })).toThrow(
+      'Switch to the local gateway before pairing a device',
+    );
+  });
+
+  it('selects the physical LAN IPv4 chosen by the OS route', async () => {
+    const address = (value: string, internal = false) => ({
+      address: value,
+      netmask: '255.255.255.0',
+      family: 'IPv4' as const,
+      mac: '00:00:00:00:00:00',
+      internal,
+      cidr: `${value}/24`,
+    });
+
+    expect(
+      await selectLanIpv4(
+        {
+          utun3: [address('100.64.0.2')],
+          en1: [address('192.168.50.8')],
+          en0: [address('192.168.1.9')],
+          awdl0: [address('169.254.12.4')],
+          lo0: [address('127.0.0.1', true)],
+        },
+        async () => '192.168.50.8',
+      ),
+    ).toBe('192.168.50.8');
+  });
+
+  it('ignores a Linux bridge and selects the routed physical interface', async () => {
+    const address = (value: string) => ({
+      address: value,
+      netmask: '255.255.255.0',
+      family: 'IPv4' as const,
+      mac: '00:00:00:00:00:00',
+      internal: false,
+      cidr: `${value}/24`,
+    });
+
+    expect(
+      await selectLanIpv4(
+        {
+          br0: [address('172.18.0.1')],
+          enp4s0: [address('192.168.40.20')],
+        },
+        async () => '192.168.40.20',
+      ),
+    ).toBe('192.168.40.20');
+  });
+
+  it('accepts the sole usable LAN IPv4 when the route probe is unavailable', async () => {
+    const address = (value: string) => ({
+      address: value,
+      netmask: '255.255.255.0',
+      family: 'IPv4' as const,
+      mac: '00:00:00:00:00:00',
+      internal: false,
+      cidr: `${value}/24`,
+    });
+
+    expect(await selectLanIpv4({ enp4s0: [address('192.168.40.20')] }, async () => undefined)).toBe(
+      '192.168.40.20',
+    );
+    expect(
+      await selectLanIpv4({ enp4s0: [address('192.168.40.20')] }, async () => {
+        throw new Error('route probe unavailable');
+      }),
+    ).toBe('192.168.40.20');
+  });
+
+  it('fails closed when multiple LAN addresses have no matching OS route', async () => {
+    const address = (value: string) => ({
+      address: value,
+      netmask: '255.255.255.0',
+      family: 'IPv4' as const,
+      mac: '00:00:00:00:00:00',
+      internal: false,
+      cidr: `${value}/24`,
+    });
+
+    await expect(
+      async () =>
+        await selectLanIpv4(
+          {
+            en0: [address('192.168.1.9')],
+            en1: [address('192.168.50.8')],
+          },
+          async () => undefined,
+        ),
+    ).rejects.toThrow('Could not determine which LAN IPv4 address to use');
+  });
+
+  it('refuses to advertise loopback when no usable LAN IPv4 exists', async () => {
+    const unusable = (address: string, internal = false) => ({
+      address,
+      netmask: '255.0.0.0',
+      family: 'IPv4' as const,
+      mac: '00:00:00:00:00:00',
+      internal,
+      cidr: `${address}/8`,
+    });
+
+    await expect(
+      async () =>
+        await selectLanIpv4({
+          lo0: [unusable('127.0.0.1', true)],
+          awdl0: [unusable('169.254.4.2')],
+        }),
+    ).rejects.toThrow('No usable LAN IPv4 address is available');
+  });
+
+  it('refuses tunnel and virtual-only addresses instead of advertising an unreachable QR', async () => {
+    const virtualAddress = (address: string) => ({
+      address,
+      netmask: '255.255.255.0',
+      family: 'IPv4' as const,
+      mac: '00:00:00:00:00:00',
+      internal: false,
+      cidr: `${address}/24`,
+    });
+
+    await expect(
+      async () =>
+        await selectLanIpv4({
+          utun3: [virtualAddress('100.64.0.2')],
+          bridge100: [virtualAddress('192.168.64.1')],
+        }),
+    ).rejects.toThrow('No usable LAN IPv4 address is available');
+  });
+});
 
 function deferred<T>(): { promise: Promise<T>; resolve(value: T): void } {
   let resolve!: (value: T) => void;

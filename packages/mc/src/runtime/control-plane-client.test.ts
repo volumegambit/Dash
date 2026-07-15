@@ -135,7 +135,7 @@ function phoneGet(
       {
         hostname: '127.0.0.1',
         port: relayPort,
-        path: '/health',
+        path: '/mobile/v1/health',
         method: 'GET',
         headers: { host: `${gatewayId}.relay.local`, ...headers },
       },
@@ -187,9 +187,11 @@ describe('createControlPlaneClient against a real control plane + relay', () => 
     respondOk(gw);
     await waitFor(() => relayServer.hasGateway(provision.gatewayId));
 
-    const { credential } = await client.createPairing(provision.gatewayId, 'iPhone');
+    const { credential, pairingId } = await client.createPairing(provision.gatewayId, 'iPhone');
     expect(typeof credential).toBe('string');
     expect(credential.length).toBeGreaterThan(0);
+    expect(typeof pairingId).toBe('string');
+    expect(pairingId.length).toBeGreaterThan(0);
 
     // The relay validates the client-provisioned credential at its edge.
     const ok = await phoneGet(provision.gatewayId, {
@@ -301,5 +303,138 @@ describe('createControlPlaneClient request shapes (unit)', () => {
 
     expect(capturedUrl).toBe('https://cp.test/v1/subdomains/taken-label');
     expect(available).toBe(false);
+  });
+
+  it('createPairing returns the credential with its nonsecret pairing id', async () => {
+    const fetchMock = vi.fn(async (url: string, init: RequestInit) => {
+      if (url === 'https://cp.test/health') {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ status: 'healthy', capabilities: ['pairing-id-v1'] }),
+          text: async () => '',
+        } as unknown as Response;
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ credential: 'relay-secret', pairingId: 'pr-current' }),
+        text: async () => '',
+      } as unknown as Response;
+    });
+
+    const client = clientWith(fetchMock as unknown as typeof fetch);
+
+    await expect(client.createPairing('alice-mbp')).resolves.toEqual({
+      credential: 'relay-secret',
+      pairingId: 'pr-current',
+    });
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      'https://cp.test/health',
+      expect.objectContaining({ method: 'GET' }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      'https://cp.test/v1/gateways/alice-mbp/pairings/pairing-id-v1',
+      expect.objectContaining({ method: 'POST' }),
+    );
+  });
+
+  it('rejects a createPairing response without a pairing id', async () => {
+    const fetchImpl = (async (url: string) =>
+      ({
+        ok: true,
+        status: 200,
+        json: async () =>
+          url.endsWith('/health')
+            ? { status: 'healthy', capabilities: ['pairing-id-v1'] }
+            : { credential: 'relay-secret' },
+        text: async () => '',
+      }) as unknown as Response) as typeof fetch;
+
+    const client = clientWith(fetchImpl);
+
+    await expect(client.createPairing('alice-mbp')).rejects.toThrow(/pairing id/i);
+  });
+
+  it('refuses before POST when a legacy control plane lacks pairing-id support', async () => {
+    const fetchMock = vi.fn(async (_url: string, init: RequestInit) => {
+      if (init.method === 'POST') {
+        // This is the legacy response that would mint an orphan if called.
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ credential: 'orphaned-relay-secret' }),
+          text: async () => '',
+        } as unknown as Response;
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ status: 'healthy' }),
+        text: async () => '',
+      } as unknown as Response;
+    });
+    const client = clientWith(fetchMock as unknown as typeof fetch);
+
+    await expect(client.createPairing('alice-mbp')).rejects.toThrow(/pairing-id support/i);
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://cp.test/health',
+      expect.objectContaining({ method: 'GET' }),
+    );
+    expect(fetchMock.mock.calls.some(([, init]) => (init as RequestInit).method === 'POST')).toBe(
+      false,
+    );
+  });
+
+  it('never falls back to the legacy mint route during a mixed-version rollout', async () => {
+    const fetchMock = vi.fn(async (url: string, init: RequestInit) => {
+      if (url === 'https://cp.test/health') {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ status: 'healthy', capabilities: ['pairing-id-v1'] }),
+          text: async () => '',
+        } as unknown as Response;
+      }
+      if (url.endsWith('/pairings/pairing-id-v1')) {
+        return {
+          ok: false,
+          status: 404,
+          json: async () => ({ error: 'not found' }),
+          text: async () => 'not found',
+        } as unknown as Response;
+      }
+      if (url.endsWith('/pairings') && init.method === 'POST') {
+        // An old server would mint here. Reaching this branch creates an orphan.
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ credential: 'orphaned-relay-secret' }),
+          text: async () => '',
+        } as unknown as Response;
+      }
+      throw new Error(`unexpected request: ${init.method} ${url}`);
+    });
+    const client = clientWith(fetchMock as unknown as typeof fetch);
+
+    await expect(client.createPairing('alice-mbp')).rejects.toThrow(/404/);
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      'https://cp.test/v1/gateways/alice-mbp/pairings/pairing-id-v1',
+      expect.objectContaining({ method: 'POST' }),
+    );
+    expect(
+      fetchMock.mock.calls.some(
+        ([url, init]) =>
+          url === 'https://cp.test/v1/gateways/alice-mbp/pairings' &&
+          (init as RequestInit).method === 'POST',
+      ),
+    ).toBe(false);
   });
 });

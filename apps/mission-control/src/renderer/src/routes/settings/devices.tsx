@@ -1,13 +1,26 @@
 import { createFileRoute } from '@tanstack/react-router';
-import { useState } from 'react';
+import { useCallback, useState } from 'react';
 import { PairDeviceCard } from '../../components/PairDeviceCard.js';
-import { RelaySettings } from '../../components/RelaySettings.js';
+import { type PairingStateChange, RelaySettings } from '../../components/RelaySettings.js';
 
 export function DeviceSettings(): JSX.Element {
-  // The pairing QR payload switches from pinned LAN (v3) to relay (v2) the moment a
-  // gateway is enrolled, and both sections live on the same page — re-mount
-  // the card on enrollment so it re-fetches instead of showing a stale LAN QR.
+  // Re-mounting mints a durable relay credential. Do that only when enrollment
+  // changes the pairing mode or the user revoked the exact credential currently
+  // displayed in the QR; revoking a different device must leave this QR intact.
   const [pairingRefresh, setPairingRefresh] = useState(0);
+  const [displayedPairingId, setDisplayedPairingId] = useState<string | null>(null);
+  const refreshPairing = useCallback(() => {
+    setDisplayedPairingId(null);
+    setPairingRefresh((n) => n + 1);
+  }, []);
+  const onPairingStateChanged = useCallback(
+    (change: PairingStateChange) => {
+      if (change.type === 'enrolled' || change.deviceId === displayedPairingId) {
+        refreshPairing();
+      }
+    },
+    [displayedPairingId, refreshPairing],
+  );
 
   return (
     <div className="h-full flex flex-col overflow-hidden">
@@ -21,8 +34,11 @@ export function DeviceSettings(): JSX.Element {
       </div>
 
       <div className="flex-1 overflow-y-auto p-8">
-        <PairDeviceCard key={pairingRefresh} />
-        <RelaySettings onEnrolled={() => setPairingRefresh((n) => n + 1)} />
+        <PairDeviceCard key={pairingRefresh} onPairingIdChanged={setDisplayedPairingId} />
+        <RelaySettings
+          displayedPairingId={displayedPairingId}
+          onPairingStateChanged={onPairingStateChanged}
+        />
       </div>
     </div>
   );

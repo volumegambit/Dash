@@ -8,6 +8,9 @@ import {
   SubdomainTakenError,
 } from './provisioning.js';
 
+const PAIRING_ID_CAPABILITY = 'pairing-id-v1' as const;
+const CONTROL_PLANE_CAPABILITIES = [PAIRING_ID_CAPABILITY] as const;
+
 /** Collaborators the HTTP API binds its routes to. */
 export interface ApiDeps {
   provisioning: ProvisioningService;
@@ -38,7 +41,9 @@ export function createApi(deps: ApiDeps): Hono<ApiEnv> {
   const app = new Hono<ApiEnv>();
 
   // --- Health (open) ---
-  app.get('/health', (c) => c.json({ status: 'healthy' }));
+  app.get('/health', (c) =>
+    c.json({ status: 'healthy', capabilities: CONTROL_PLANE_CAPABILITIES }),
+  );
 
   // --- Gateway-driven dial-token refresh (open path, gateway-assertion auth) ---
   // Sibling to /health — NOT under the Clerk-gated /v1/* middleware. The gateway
@@ -104,6 +109,9 @@ export function createApi(deps: ApiDeps): Hono<ApiEnv> {
 
   // --- Pairings ---
 
+  // Backward compatibility for already-deployed Mission Control clients. They
+  // understand only the credential, while the control plane still persists the
+  // pairing id so the device remains listable and revocable.
   app.post('/v1/gateways/:id/pairings', async (c) => {
     const accountId = c.get('accountId');
     const gatewayId = c.req.param('id');
@@ -111,6 +119,22 @@ export function createApi(deps: ApiDeps): Hono<ApiEnv> {
     try {
       const { credential } = await provisioning.createPairing(accountId, gatewayId, deviceLabel);
       return c.json({ credential });
+    } catch {
+      // Cross-account or unknown gateway — don't disclose existence.
+      return c.json({ error: 'gateway not found' }, 404);
+    }
+  });
+
+  // The capability is also part of the mutation path. During a rolling deploy,
+  // an old server can never mistake this request for its legacy unversioned
+  // `{ credential }` mint route, even if /health was served by a new instance.
+  app.post(`/v1/gateways/:id/pairings/${PAIRING_ID_CAPABILITY}`, async (c) => {
+    const accountId = c.get('accountId');
+    const gatewayId = c.req.param('id');
+    const deviceLabel = await readDeviceLabel(c);
+    try {
+      const created = await provisioning.createPairing(accountId, gatewayId, deviceLabel);
+      return c.json(created);
     } catch {
       // Cross-account or unknown gateway — don't disclose existence.
       return c.json({ error: 'gateway not found' }, 404);

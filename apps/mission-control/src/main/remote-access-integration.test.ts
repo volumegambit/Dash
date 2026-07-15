@@ -154,7 +154,7 @@ function phoneGet(
       {
         hostname: '127.0.0.1',
         port: relayPort,
-        path: '/health',
+        path: '/mobile/v1/health',
         method: 'GET',
         headers: { host: `${gatewayId}.relay.local`, ...headers },
       },
@@ -267,16 +267,11 @@ describe('hosted remote-access slice (main-process integration)', () => {
     // provisioner (exactly the IPC handler's wiring). Asserts the fixed v2 shape.
     const info = await buildPairingInfo(
       {
+        mode: 'relay',
         mobileToken: 'mobile-tok',
-        chatToken: 'c-tok',
-        lan: {
-          host: '192.168.1.50',
-          port: 9400,
-          tlsCertificateSha256: 'a'.repeat(64),
-        },
         relay: { gatewayId: issued.gatewayId, host: issued.host },
       },
-      async (gatewayId) => (await client.createPairing(gatewayId)).credential,
+      (gatewayId) => client.createPairing(gatewayId),
     );
     if (info.mode !== 'relay') throw new Error('expected relay-mode pairing info');
     expect(info).toEqual({
@@ -284,8 +279,9 @@ describe('hosted remote-access slice (main-process integration)', () => {
       host: `${issued.gatewayId}.relay.example.com`,
       secure: true,
       mgmtToken: 'mobile-tok',
-      chatToken: 'c-tok',
+      chatToken: 'mobile-tok',
       relayCredential: expect.any(String),
+      pairingId: expect.any(String),
     });
 
     // The v2 QR payload the renderer encodes — the fixed Android wire shape.
@@ -302,7 +298,7 @@ describe('hosted remote-access slice (main-process integration)', () => {
       host: `${issued.gatewayId}.relay.example.com`,
       secure: true,
       mgmtToken: 'mobile-tok',
-      chatToken: 'c-tok',
+      chatToken: 'mobile-tok',
       relayCredential: info.relayCredential,
     });
 
@@ -319,6 +315,7 @@ describe('hosted remote-access slice (main-process integration)', () => {
     if (!match) throw new Error('enrolled gateway missing from listGateways');
     expect(match.devices).toHaveLength(1);
     const [device] = match.devices;
+    expect(device.id).toBe(info.pairingId);
 
     await client.revokePairing(issued.gatewayId, device.id);
 
@@ -337,16 +334,11 @@ describe('hosted remote-access slice (main-process integration)', () => {
     await expect(
       buildPairingInfo(
         {
+          mode: 'relay',
           mobileToken: 'mobile-tok',
-          chatToken: 'c-tok',
-          lan: {
-            host: '192.168.1.50',
-            port: 9400,
-            tlsCertificateSha256: 'a'.repeat(64),
-          },
           relay: { gatewayId: 'gw-unknown', host: 'relay.example.com' },
         },
-        async (gatewayId) => (await client.createPairing(gatewayId)).credential,
+        (gatewayId) => client.createPairing(gatewayId),
       ),
     ).rejects.toThrow(/Could not reach the relay.*401/);
   });

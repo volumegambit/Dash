@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto';
+import { createSocket } from 'node:dgram';
 import { createWriteStream, existsSync, mkdirSync } from 'node:fs';
 import { mkdir, readFile } from 'node:fs/promises';
+import { isIP } from 'node:net';
 import { networkInterfaces } from 'node:os';
 import { join } from 'node:path';
 import type {
@@ -417,15 +419,97 @@ export function createGatewaySubscriptionLifecycle(controls: {
   };
 }
 
-/** Best-effort LAN IPv4 so a phone on the same Wi-Fi can reach the gateway. */
-function getLanIp(): string {
-  const ifaces = networkInterfaces();
-  for (const name of Object.keys(ifaces)) {
-    for (const net of ifaces[name] ?? []) {
-      if (net.family === 'IPv4' && !net.internal) return net.address;
+function isVirtualOrTunnelInterface(name: string): boolean {
+  return /^(awdl|br(?:idge)?|docker|llw|tap|tailscale|tun|utun|veth|virbr|vmnet|wg)/i.test(name);
+}
+
+function isUsableLanIpv4(address: string): boolean {
+  if (isIP(address) !== 4) return false;
+  const [first, second] = address.split('.').map(Number);
+  return first !== 0 && first !== 127 && first < 224 && !(first === 169 && second === 254);
+}
+
+type LanRouteResolver = () => Promise<string | undefined>;
+
+function resolveDefaultRouteIpv4(): Promise<string | undefined> {
+  return new Promise((resolve) => {
+    const socket = createSocket('udp4');
+    let settled = false;
+    const finish = (address: string | undefined): void => {
+      if (settled) return;
+      settled = true;
+      socket.removeAllListeners();
+      try {
+        socket.close();
+      } catch {
+        // The socket may already be closed after an asynchronous error.
+      }
+      resolve(address);
+    };
+
+    socket.once('error', () => finish(undefined));
+    try {
+      // Connecting a UDP socket selects the OS route without sending a packet.
+      // A numeric destination also avoids making LAN pairing depend on DNS.
+      socket.connect(53, '1.1.1.1', () => {
+        try {
+          const selected = socket.address();
+          finish(typeof selected === 'string' ? undefined : selected.address);
+        } catch {
+          finish(undefined);
+        }
+      });
+    } catch {
+      finish(undefined);
     }
+  });
+}
+
+export async function selectLanIpv4(
+  ifaces: ReturnType<typeof networkInterfaces>,
+  resolveRoute: LanRouteResolver = resolveDefaultRouteIpv4,
+): Promise<string> {
+  const candidates = Object.entries(ifaces).flatMap(([name, addresses]) => {
+    if (isVirtualOrTunnelInterface(name)) return [];
+    return (addresses ?? [])
+      .filter(
+        (address) =>
+          String(address.family) === 'IPv4' &&
+          address.internal === false &&
+          isUsableLanIpv4(address.address),
+      )
+      .map((address) => address.address);
+  });
+  const uniqueCandidates = [...new Set(candidates)];
+  if (uniqueCandidates.length === 0) {
+    throw new Error(
+      'No usable LAN IPv4 address is available. Connect this Mac to the same network as the phone and try again.',
+    );
   }
-  return '127.0.0.1';
+  if (uniqueCandidates.length === 1) return uniqueCandidates[0];
+
+  let routedAddress: string | undefined;
+  try {
+    routedAddress = await resolveRoute();
+  } catch {
+    // Route discovery is best-effort; ambiguity is handled fail-closed below.
+  }
+  if (routedAddress && uniqueCandidates.includes(routedAddress)) return routedAddress;
+
+  throw new Error(
+    'Could not determine which LAN IPv4 address to use. Make the phone-reachable network the default route or disconnect extra networks, then try again.',
+  );
+}
+
+/** Select a stable, phone-reachable LAN address without ever advertising loopback. */
+function getLanIp(): Promise<string> {
+  return selectLanIpv4(networkInterfaces());
+}
+
+export function assertLocalPairingSource(profile: Pick<GatewayConnectionSettings, 'mode'>): void {
+  if (profile.mode !== 'local') {
+    throw new Error('Switch to the local gateway before pairing a device');
+  }
 }
 
 // Capture MC main process logs to a file (shared ~/.dash/logs)
@@ -1389,7 +1473,7 @@ export async function registerIpcHandlers(
   });
 
   ipcMain.handle('pairing:getInfo', async (): Promise<PairingInfo> => {
-    const gatewayState = await new GatewayStateStore(DATA_DIR).read();
+    assertLocalPairingSource(await getGatewayConnectionProfile());
     const chatToken = await gw.getChatToken();
     if (!chatToken) {
       throw new Error('Gateway not running — start it before pairing a device');
@@ -1399,23 +1483,43 @@ export async function registerIpcHandlers(
     // LAN pairing. The per-device credential is provisioned by the control
     // plane server-side — MC never holds the relay master secret.
     const issued = await gw.getIssuedGateway();
-    const managementClient = await getRequiredGatewayManagementClient();
-    const lanTlsFingerprint = await managementClient.getLanTlsFingerprint();
+    if (issued) {
+      return buildPairingInfo(
+        {
+          mode: 'relay',
+          // The frozen pairing wire name is `mgmtToken`, but the value is the
+          // phone-scoped mobile capability. Never disclose the administrative
+          // management bearer to a paired device.
+          mobileToken: chatToken,
+          relay: { gatewayId: issued.gatewayId, host: issued.host },
+        },
+        (gatewayId) => controlPlaneClient.createPairing(gatewayId),
+      );
+    }
+
+    // LAN pairing resolves its fingerprint from the same local supervisor that
+    // supplied the phone capability, even if the active connection profile
+    // changes while this handler is in flight.
+    const gatewayState = await new GatewayStateStore(DATA_DIR).read();
+    const managementClient = await gw.ensureRunning();
+    const [lanTlsFingerprint, lanHost] = await Promise.all([
+      managementClient.getLanTlsFingerprint(),
+      getLanIp(),
+    ]);
     return buildPairingInfo(
       {
+        mode: 'lan',
         // The frozen pairing wire name is `mgmtToken`, but the value is the
         // phone-scoped mobile capability. Never disclose the administrative
         // management bearer to a paired device.
         mobileToken: chatToken,
-        chatToken,
         lan: {
-          host: getLanIp(),
+          host: lanHost,
           port: gatewayState?.lanPort ?? gatewayPorts.lanPort,
           tlsCertificateSha256: lanTlsFingerprint,
         },
-        relay: issued ? { gatewayId: issued.gatewayId, host: issued.host } : undefined,
       },
-      async (gatewayId) => (await controlPlaneClient.createPairing(gatewayId)).credential,
+      (gatewayId) => controlPlaneClient.createPairing(gatewayId),
     );
   });
 

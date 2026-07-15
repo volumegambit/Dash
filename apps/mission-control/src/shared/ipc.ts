@@ -367,6 +367,8 @@ export interface RelayPairingInfo {
   chatToken: string;
   /** Per-device credential the phone presents to the relay (x-dash-relay-credential). */
   relayCredential: string;
+  /** Nonsecret control-plane id used only to match this rendered QR for revocation. */
+  pairingId: string;
 }
 
 export type PairingInfo = LanPairingInfo | RelayPairingInfo;
@@ -438,7 +440,7 @@ export interface MissionControlAPI {
   agentsDisable(id: string): Promise<void>;
   agentsEnable(id: string): Promise<void>;
 
-  // Pairing (Android app)
+  // Pairing (mobile apps)
   pairingGetInfo(): Promise<PairingInfo>;
 
   // Channels (gateway passthrough)

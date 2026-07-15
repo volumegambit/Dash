@@ -1,43 +1,51 @@
 import type { PairingInfo } from '../shared/ipc.js';
 
-/** Inputs the pairing builder needs, resolved by the IPC handler. */
-export interface PairingInputs {
+interface PairingBaseInputs {
   /** Capability bearer accepted only by the gateway's `/mobile/v1` namespace. */
   mobileToken: string;
-  chatToken: string;
-  lan: { host: string; port: number; tlsCertificateSha256: string };
-  /**
-   * Hosted-relay config, present only when the gateway has been enrolled with
-   * the control plane (a cached issued-gateway record with a `gatewayId` and the
-   * relay base `host`). Absent/partial falls back to LAN pairing.
-   */
-  relay?: { gatewayId: string; host: string };
 }
+
+/** Inputs the pairing builder needs, resolved by the IPC handler. */
+export type PairingInputs =
+  | (PairingBaseInputs & {
+      mode: 'relay';
+      relay: { gatewayId: string; host: string };
+    })
+  | (PairingBaseInputs & {
+      mode: 'lan';
+      lan: { host: string; port: number; tlsCertificateSha256: string };
+    });
 
 /**
  * Mints a per-device relay credential through the hosted control plane (which
  * calls the relay admin API server-side). MC only passes the gateway id — it
  * never holds the relay master secret.
  */
-export type Provisioner = (gatewayId: string) => Promise<string>;
+export type Provisioner = (gatewayId: string) => Promise<{ credential: string; pairingId: string }>;
 
 /**
- * Build the pairing payload. Relay mode is chosen only when the gateway is
- * enrolled (gatewayId + relay host present); otherwise LAN. In relay mode the
- * host is `<gatewayId>.<host>` (both HTTPS and WSS resolve there through the
- * relay) and a fresh per-device credential is provisioned via the control plane
- * — never reused — so revoking one device doesn't affect others.
+ * Build the pairing payload. The IPC handler selects relay or LAN before
+ * resolving mode-specific inputs. In relay mode the host is
+ * `<gatewayId>.<host>` (both HTTPS and WSS resolve there through the relay) and
+ * a fresh per-device credential is provisioned via the control plane — never
+ * reused — so revoking one device doesn't affect others.
  */
 export async function buildPairingInfo(
   inputs: PairingInputs,
   provision: Provisioner,
 ): Promise<PairingInfo> {
-  const { relay } = inputs;
-  if (relay?.gatewayId && relay.host) {
+  if (inputs.mode === 'relay') {
+    const { relay } = inputs;
+    if (!relay.gatewayId || !relay.host) {
+      throw new Error('Relay pairing requires an enrolled gateway and relay host');
+    }
     const host = `${relay.gatewayId}.${relay.host}`;
     let relayCredential: string;
+    let pairingId: string;
     try {
-      relayCredential = await provision(relay.gatewayId);
+      const pairing = await provision(relay.gatewayId);
+      relayCredential = pairing.credential;
+      pairingId = pairing.pairingId;
     } catch (err) {
       // Surface a clear, actionable reason rather than an opaque fetch error —
       // the Pair Device card (Settings → Devices) renders this message.
@@ -49,8 +57,9 @@ export async function buildPairingInfo(
       host,
       secure: true,
       mgmtToken: inputs.mobileToken,
-      chatToken: inputs.chatToken,
+      chatToken: inputs.mobileToken,
       relayCredential,
+      pairingId,
     };
   }
   return {
@@ -60,7 +69,7 @@ export async function buildPairingInfo(
     mgmtPort: inputs.lan.port,
     chatPort: inputs.lan.port,
     mgmtToken: inputs.mobileToken,
-    chatToken: inputs.chatToken,
+    chatToken: inputs.mobileToken,
     tlsCertificateSha256: inputs.lan.tlsCertificateSha256,
   };
 }

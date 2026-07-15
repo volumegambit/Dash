@@ -1170,6 +1170,8 @@ isolated MC profile. Do not run this against a personal gateway or production re
 7. **Verify:** iOS connects to the same gateway. Create a conversation on either client and confirm the same title, messages, running state, rename, and deletion appear on both clients.
 8. If a relay gateway is enrolled (see 22.7): **Verify:** the badge reads "relay" and the host is the relay address
 9. Claim a gateway in Remote access (22.7) without leaving the page: **Verify:** the QR re-renders in relay mode (no stale "local network" badge)
+10. On a computer with multiple physical network connections, leave local pairing active. **Verify:** the QR uses the address selected by the operating system's default route; if no active route identifies one connection, Pair Device shows an ambiguity error instead of choosing an arbitrary address.
+11. With relay mode active, make local network-interface discovery unavailable while preserving relay connectivity. **Verify:** Pair Device still renders the relay QR and does not show a LAN-address or certificate-fingerprint error.
 
 ### 22.7 Remote Access (Devices)
 1. On Settings → Devices, locate the "Remote access" section below Pair Device

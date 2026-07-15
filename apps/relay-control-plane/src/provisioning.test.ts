@@ -201,7 +201,7 @@ describe('ProvisioningService pairings', () => {
     const { store, service } = makeRealService();
     const gw = service.createGateway('acct-1', { subdomain: 'alice', publicKey: 'pk-a' });
 
-    const { credential } = await service.createPairing('acct-1', gw.gatewayId, 'iPhone');
+    const { credential, pairingId } = await service.createPairing('acct-1', gw.gatewayId, 'iPhone');
 
     // The relay's hot path accepts the credential under this gateway.
     expect(relayStore.isValid(gw.gatewayId, credential)).toBe(true);
@@ -209,6 +209,7 @@ describe('ProvisioningService pairings', () => {
     // The store persisted a pairing with the SHA-256 hash, the label, and no raw secret.
     const pairings = store.listPairings(gw.gatewayId);
     expect(pairings).toHaveLength(1);
+    expect(pairingId).toBe(pairings[0].id);
     expect(pairings[0].credentialHash).toBe(sha256(credential));
     expect(pairings[0].credentialHash).not.toBe(credential);
     expect(pairings[0].deviceLabel).toBe('iPhone');

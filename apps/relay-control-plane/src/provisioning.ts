@@ -18,9 +18,10 @@ export interface CreatedGateway {
   dialToken: string;
 }
 
-/** Result of provisioning a pairing: the one-time credential for the device. */
+/** Result of provisioning a pairing: its nonsecret id and one-time credential. */
 export interface CreatedPairing {
   credential: string;
+  pairingId: string;
 }
 
 /** Collaborators the {@link ProvisioningService} orchestrates. */
@@ -130,13 +131,14 @@ export class ProvisioningService {
       throw new Error(`gateway ${gatewayId} not found for account ${accountId}`);
     }
     const credential = await this.#relay.provisionPairing(accountId, gatewayId);
+    const pairingId = generatePairingId();
     this.#store.addPairing({
-      id: generatePairingId(),
+      id: pairingId,
       gatewayId,
       credentialHash: sha256(credential),
       deviceLabel: deviceLabel ?? null,
     });
-    return { credential };
+    return { credential, pairingId };
   }
 
   /**
