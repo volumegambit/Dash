@@ -94,7 +94,6 @@ struct ChatView: View {
       .frame(maxWidth: .infinity)
     }
     .scrollDismissesKeyboard(.interactively)
-    .defaultScrollAnchor(.bottom)
     .accessibilityIdentifier("chat.transcript")
   }
 
