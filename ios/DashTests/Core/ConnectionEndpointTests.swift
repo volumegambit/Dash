@@ -180,6 +180,26 @@ struct ConnectionEndpointTests {
     #expect(request.url?.absoluteString.contains("chat-secret") == false)
   }
 
+  @Test("persisted relay endpoints fail closed before constructing credentialed requests")
+  func relayRequestUseValidation() {
+    let invalidEndpoints = [
+      relayEndpoint(secure: false),
+      relayEndpoint(managementPort: 8443),
+      relayEndpoint(chatPort: 8443),
+      relayEndpoint(relayCredential: nil),
+      relayEndpoint(relayCredential: " \n "),
+    ]
+
+    for endpoint in invalidEndpoints {
+      #expect(throws: GatewayError.self) {
+        try endpoint.requireTrustedTransport()
+      }
+      #expect(throws: GatewayError.self) {
+        try endpoint.chatRequest()
+      }
+    }
+  }
+
   @Test("LAN chat request uses its configured port and no relay header")
   func lanChatRequest() throws {
     let request = try lanEndpoint().chatRequest()
@@ -249,7 +269,12 @@ struct ConnectionEndpointTests {
     )
   }
 
-  private func relayEndpoint() -> ConnectionEndpoint {
+  private func relayEndpoint(
+    managementPort: Int = 443,
+    chatPort: Int = 443,
+    secure: Bool = true,
+    relayCredential: String? = "relay-secret"
+  ) -> ConnectionEndpoint {
     ConnectionEndpoint(
       profile: ConnectionProfile(
         id: UUID(),
@@ -257,9 +282,9 @@ struct ConnectionEndpointTests {
         publicKey: nil,
         label: "Relay",
         host: "gateway.relay.example",
-        managementPort: 443,
-        chatPort: 443,
-        secure: true,
+        managementPort: managementPort,
+        chatPort: chatPort,
+        secure: secure,
         mode: .relay,
         createdAt: Date(timeIntervalSince1970: 0),
         lastSuccessfulSyncAt: nil
@@ -267,7 +292,7 @@ struct ConnectionEndpointTests {
       secrets: ConnectionSecrets(
         managementToken: "management-secret",
         chatToken: "chat-secret",
-        relayCredential: "relay-secret"
+        relayCredential: relayCredential
       )
     )
   }

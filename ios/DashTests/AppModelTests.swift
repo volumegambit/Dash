@@ -38,7 +38,7 @@ struct AppModelTests {
     await model.start()
     let cached = CachedConversation(gatewayID: profile.gatewayID, summary: conversation())
 
-    model.consume(
+    await model.consume(
       SyncSnapshot(
         connection: .repairRequired,
         conversations: [cached],
@@ -63,6 +63,32 @@ struct AppModelTests {
     #expect(model.selectedTab == .conversations)
     #expect(model.splitConversationSelection == .transcript("conversation-deep"))
     #expect(model.conversationPath == [.transcript("conversation-deep")])
+  }
+
+  @Test("large iPhone landscape keeps compact navigation")
+  func largeIPhoneLandscapeKeepsCompactNavigation() {
+    #expect(
+      AdaptiveNavigationPolicy.presentation(
+        idiom: .phone,
+        horizontalSizeClass: .regular
+      ) == .compact
+    )
+  }
+
+  @Test("iPad uses split navigation only at regular width")
+  func iPadUsesSplitNavigationOnlyAtRegularWidth() {
+    #expect(
+      AdaptiveNavigationPolicy.presentation(
+        idiom: .pad,
+        horizontalSizeClass: .regular
+      ) == .regular
+    )
+    #expect(
+      AdaptiveNavigationPolicy.presentation(
+        idiom: .pad,
+        horizontalSizeClass: .compact
+      ) == .compact
+    )
   }
 
   @Test("conversation navigation survives an adaptive width transition")
@@ -153,7 +179,7 @@ struct AppModelTests {
     let model = AppModel(dependencies: dependencies(profile: profile, engine: engine))
     await model.start()
     let cached = CachedConversation(gatewayID: profile.gatewayID, summary: conversation())
-    model.consume(
+    await model.consume(
       SyncSnapshot(
         connection: .online,
         conversations: [cached],
@@ -199,7 +225,7 @@ struct AppModelTests {
     )
     await model.start()
     let cached = CachedConversation(gatewayID: original.gatewayID, summary: conversation())
-    model.consume(
+    await model.consume(
       SyncSnapshot(
         connection: .online,
         conversations: [cached],
@@ -251,6 +277,40 @@ struct AppModelTests {
     #expect(await replacementEngine.bootstrapCallCount == 1)
     #expect(await originalEngine.bootstrapCallCount == 0)
     #expect(await originalEngine.shutdownCallCount == 1)
+  }
+
+  @Test("profile replacement drains the canceled snapshot loop before bootstrap")
+  func profileReplacementAwaitsSnapshotLoop() async {
+    let original = connectionProfile()
+    let replacement = replacementProfile()
+    let snapshotGate = TestGate()
+    let originalEngine = GatedSnapshotAppSyncEngine(snapshotGate: snapshotGate)
+    let replacementEngine = FakeAppSyncEngine()
+    let model = AppModel(
+      dependencies: AppDependencies(
+        clock: TestAppClock(now: Date(timeIntervalSince1970: 100)),
+        loadProfile: { original },
+        makeSyncEngine: { profile in
+          if profile == original {
+            return originalEngine as any AppSyncing
+          }
+          return replacementEngine as any AppSyncing
+        }
+      )
+    )
+    await model.start()
+    await snapshotGate.waitUntilWaiting()
+
+    let activation = Task { await model.installPairedProfile(replacement) }
+    for _ in 0..<100 where model.selectedProfile != replacement {
+      await Task.yield()
+    }
+
+    #expect(model.selectedProfile == replacement)
+    #expect(await replacementEngine.bootstrapCallCount == 0)
+    await snapshotGate.release()
+    await activation.value
+    #expect(await replacementEngine.bootstrapCallCount == 1)
   }
 
   @Test("disconnect invalidates an installed profile still creating its engine")
@@ -468,7 +528,7 @@ struct AppModelTests {
     )
     await model.start()
     let cached = CachedConversation(gatewayID: profile.gatewayID, summary: conversation())
-    model.consume(
+    await model.consume(
       SyncSnapshot(
         connection: .online,
         conversations: [cached],
@@ -517,7 +577,7 @@ struct AppModelTests {
       )
     )
     await model.start()
-    model.consume(
+    await model.consume(
       SyncSnapshot(
         connection: .online,
         conversations: [CachedConversation(gatewayID: profile.gatewayID, summary: conversation())],
@@ -600,7 +660,7 @@ struct AppModelTests {
       agents: [],
       lastSuccessfulSyncAt: Date(timeIntervalSince1970: 100)
     )
-    model.consume(online)
+    await model.consume(online)
     feature.consume(online)
 
     await feature.create(agentID: "agent-1")
@@ -635,7 +695,7 @@ struct AppModelTests {
       agents: [agent()],
       lastSuccessfulSyncAt: Date(timeIntervalSince1970: 100)
     )
-    model.consume(online)
+    await model.consume(online)
 
     let create = Task { await feature.create(agentID: "agent-old") }
     await nowGate.waitUntilWaiting()
@@ -667,7 +727,7 @@ struct AppModelTests {
     await model.start()
     let cached = CachedConversation(gatewayID: profile.gatewayID, summary: conversation())
 
-    model.consume(
+    await model.consume(
       SyncSnapshot(
         connection: .online,
         conversations: [cached],
@@ -677,7 +737,7 @@ struct AppModelTests {
     )
     #expect(feature.conversations == [cached])
 
-    model.consume(
+    await model.consume(
       SyncSnapshot(
         connection: .online,
         conversations: [],
@@ -709,7 +769,7 @@ struct AppModelTests {
     await model.start()
     let value = agent()
 
-    model.consume(
+    await model.consume(
       SyncSnapshot(
         connection: .online,
         conversations: [],
@@ -721,7 +781,7 @@ struct AppModelTests {
     #expect(feature.agents == [value])
     #expect(feature.mutationsAllowed)
 
-    model.consume(
+    await model.consume(
       SyncSnapshot(
         connection: .offline,
         conversations: [],
@@ -750,7 +810,7 @@ struct AppModelTests {
     )
     await model.start()
     let value = agent()
-    model.consume(
+    await model.consume(
       SyncSnapshot(
         connection: .online,
         conversations: [],
@@ -786,7 +846,7 @@ struct AppModelTests {
       )
     )
     await model.start()
-    model.consume(
+    await model.consume(
       SyncSnapshot(
         connection: .online,
         conversations: [],
@@ -820,7 +880,7 @@ struct AppModelTests {
     )
     await model.start()
     let value = agent()
-    model.consume(
+    await model.consume(
       SyncSnapshot(
         connection: .online,
         conversations: [],
@@ -968,7 +1028,7 @@ struct AppModelTests {
       )
     )
     await model.start()
-    model.consume(
+    await model.consume(
       SyncSnapshot(
         connection: .online,
         conversations: [],
@@ -1037,7 +1097,7 @@ struct AppModelTests {
     )
     await model.start()
     let cached = CachedConversation(gatewayID: original.gatewayID, summary: conversation())
-    model.consume(
+    await model.consume(
       SyncSnapshot(
         connection: .online,
         conversations: [cached],
@@ -1045,6 +1105,7 @@ struct AppModelTests {
         lastSuccessfulSyncAt: Date(timeIntervalSince1970: 100)
       )
     )
+    let originalChatHostGeneration = model.chatHostGeneration
 
     let install = Task { await model.installPairedProfile(replacement) }
     await bootstrapGate.waitUntilWaiting()
@@ -1054,9 +1115,11 @@ struct AppModelTests {
     #expect(model.snapshot?.agents == [agent()])
     #expect(model.snapshot?.mutationsAllowed == false)
     #expect(model.connectionState == .connecting)
+    #expect(model.chatHostGeneration == originalChatHostGeneration)
 
     await bootstrapGate.release()
     await install.value
+    #expect(model.chatHostGeneration == originalChatHostGeneration + 1)
   }
 
   private func dependencies(
@@ -1209,6 +1272,26 @@ private actor FakeAppSyncEngine: AppSyncing {
   }
 }
 
+private actor GatedSnapshotAppSyncEngine: AppSyncing {
+  private let snapshotGate: TestGate
+
+  init(snapshotGate: TestGate) {
+    self.snapshotGate = snapshotGate
+  }
+
+  func snapshots() -> AsyncStream<SyncSnapshot> {
+    AsyncStream(unfolding: { [snapshotGate] in
+      await snapshotGate.wait()
+      return nil
+    })
+  }
+
+  func bootstrap() async {}
+  func sceneDidEnterBackground() async {}
+  func sceneWillEnterForeground() async {}
+  func shutdown() async {}
+}
+
 private actor FakeForgetPipeline {
   enum Call: Equatable, Sendable {
     case deleteSecrets
@@ -1337,6 +1420,11 @@ private actor AppModelConversationService: ConversationListServicing {
     return ConversationPageDTO(items: [], nextCursor: nil)
   }
 
+  func conversation(id: String) throws -> ConversationSummaryDTO {
+    _ = id
+    throw GatewayError.updateRequired
+  }
+
   func create(_ request: CreateConversationRequest) throws -> ConversationSummaryDTO {
     _ = request
     if let createError { throw createError }
@@ -1361,12 +1449,17 @@ private actor AppModelConversationService: ConversationListServicing {
     throw GatewayError.updateRequired
   }
 
-  func replace(_ summary: ConversationSummaryDTO) {
-    _ = summary
+  func replace(_ summary: ConversationSummaryDTO) -> ConversationSummaryDTO {
+    summary
   }
 
-  func remove(id: String) {
+  func remove(
+    id: String,
+    expectedCanonical: ConversationSummaryDTO
+  ) -> ConversationRemovalOutcome {
     _ = id
+    _ = expectedCanonical
+    return .removed
   }
 
   func retainedCreateRequestID(agentID: String, suggested: String) -> String {

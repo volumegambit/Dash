@@ -1,4 +1,32 @@
 import SwiftUI
+import UIKit
+
+enum NavigationDeviceIdiom: Sendable {
+  case phone
+  case pad
+  case other
+}
+
+struct AdaptiveNavigationPolicy {
+  static func presentation(
+    idiom: NavigationDeviceIdiom,
+    horizontalSizeClass: UserInterfaceSizeClass?
+  ) -> NavigationPresentation {
+    idiom == .pad && horizontalSizeClass == .regular ? .regular : .compact
+  }
+
+  @MainActor
+  static func presentation(
+    horizontalSizeClass: UserInterfaceSizeClass?
+  ) -> NavigationPresentation {
+    let idiom: NavigationDeviceIdiom = switch UIDevice.current.userInterfaceIdiom {
+    case .phone: .phone
+    case .pad: .pad
+    default: .other
+    }
+    return presentation(idiom: idiom, horizontalSizeClass: horizontalSizeClass)
+  }
+}
 
 struct RootView: View {
   static let title = "Dash"
@@ -10,7 +38,7 @@ struct RootView: View {
     OfflineBanner(banner: appModel.banner) {
       if appModel.selectedProfile == nil {
         pairingNavigation
-      } else if horizontalSizeClass == .regular {
+      } else if navigationPresentation == .regular {
         regularNavigation
       } else {
         compactNavigation
@@ -22,6 +50,14 @@ struct RootView: View {
     } message: {
       Text(appModel.agentsFeature?.mutationError ?? "Dash couldn't complete the update.")
     }
+    .alert("Recovery update failed", isPresented: recoveryErrorPresented) {
+      Button("OK") { appModel.conversationListFeature?.recoveryError = nil }
+    } message: {
+      Text(
+        appModel.conversationListFeature?.recoveryError
+          ?? "The saved message remains available."
+      )
+    }
   }
 
   private var agentMutationErrorPresented: Binding<Bool> {
@@ -32,6 +68,20 @@ struct RootView: View {
       set: { isPresented in
         if isPresented == false {
           appModel.agentsFeature?.mutationError = nil
+        }
+      }
+    )
+  }
+
+  private var recoveryErrorPresented: Binding<Bool> {
+    Binding(
+      get: {
+        appModel.selectedTab == .conversations
+          && appModel.conversationListFeature?.recoveryError != nil
+      },
+      set: { isPresented in
+        if isPresented == false {
+          appModel.conversationListFeature?.recoveryError = nil
         }
       }
     )
@@ -174,7 +224,7 @@ struct RootView: View {
   }
 
   private var navigationPresentation: NavigationPresentation {
-    horizontalSizeClass == .regular ? .regular : .compact
+    AdaptiveNavigationPolicy.presentation(horizontalSizeClass: horizontalSizeClass)
   }
 
   @ViewBuilder
@@ -284,10 +334,18 @@ private struct ChatFeatureHostView: View {
           .navigationTitle(conversation.title)
       }
     }
-    .task(id: conversation.id) {
-      guard feature == nil else { return }
-      feature = await appModel.makeChatFeature(conversation)
-      didFailToLoad = feature == nil
+    .task(
+      id: ChatHostTaskID(
+        conversationID: conversation.id,
+        appGeneration: appModel.chatHostGeneration
+      )
+    ) {
+      feature = nil
+      didFailToLoad = false
+      let loaded = await appModel.makeChatFeature(conversation)
+      guard Task.isCancelled == false else { return }
+      feature = loaded
+      didFailToLoad = loaded == nil
     }
     .onChange(of: appModel.connectionState) { _, connection in
       feature?.setConnection(connection)
@@ -296,6 +354,11 @@ private struct ChatFeatureHostView: View {
       }
     }
   }
+}
+
+private struct ChatHostTaskID: Equatable {
+  let conversationID: String
+  let appGeneration: UInt64
 }
 
 @MainActor

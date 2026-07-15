@@ -75,7 +75,9 @@ struct NewConversationView: View {
     await Task.yield()
     appModel.openConversation(
       conversationID,
-      presentation: horizontalSizeClass == .regular ? .regular : .compact
+      presentation: AdaptiveNavigationPolicy.presentation(
+        horizontalSizeClass: horizontalSizeClass
+      )
     )
   }
 }

@@ -84,6 +84,7 @@
 		C12B9F0E99E41FCC634FE84C /* BackoffPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5B2E9D8F43E3734DD1CDECB5 /* BackoffPolicy.swift */; };
 		C3535839DA411BAC53CACB47 /* OfflineBanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = 742FADBC6EC9B81DED00708D /* OfflineBanner.swift */; };
 		C4CA2B38B085B40D3243B048 /* KeychainStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 40C319EEC75937C1BB5E6F70 /* KeychainStoreTests.swift */; };
+		C5F0F1A6D7C796410B67CE90 /* ConversationRecoveryPresentationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = ECF7169402CCE96924C9E4A9 /* ConversationRecoveryPresentationTests.swift */; };
 		C84A3B690FFEB2A6170DAB8C /* DashUITestCase.swift in Sources */ = {isa = PBXBuildFile; fileRef = 76AE84542DB1FFF33B421EB6 /* DashUITestCase.swift */; };
 		C93130D544958840EA56718A /* SequenceReconcilerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 98611F13566BC9C8A0C105F0 /* SequenceReconcilerTests.swift */; };
 		CC33C25272F46102059E80C2 /* ChatConnectionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4D6E272B4649EC1830609594 /* ChatConnectionTests.swift */; };
@@ -238,6 +239,7 @@
 		E89DC3766B8D80FAD54111DD /* AppDependencies.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDependencies.swift; sourceTree = "<group>"; };
 		E8B199747A892317AF02FEE1 /* SSEClientTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSEClientTests.swift; sourceTree = "<group>"; };
 		E96D1AB756929364C39A41C9 /* SSEClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSEClient.swift; sourceTree = "<group>"; };
+		ECF7169402CCE96924C9E4A9 /* ConversationRecoveryPresentationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationRecoveryPresentationTests.swift; sourceTree = "<group>"; };
 		EEF957521D399CF0D79B78B8 /* AgentContracts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentContracts.swift; sourceTree = "<group>"; };
 		F363DBD7CCB6424614684081 /* GatewayURLSessionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GatewayURLSessionTests.swift; sourceTree = "<group>"; };
 		F46886277E42B09BDD5197A6 /* EventViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EventViews.swift; sourceTree = "<group>"; };
@@ -516,6 +518,7 @@
 				25EDAF628CC06039429777EF /* ChatReducerTests.swift */,
 				4CEF5E6B43DC31B55FEA7B6A /* ConversationListFeatureTests.swift */,
 				F5CADE326E98556F3632D30D /* ConversationListServiceTests.swift */,
+				ECF7169402CCE96924C9E4A9 /* ConversationRecoveryPresentationTests.swift */,
 				A6DFC4918453CFB27EA6DED4 /* ImageAttachmentValidatorTests.swift */,
 				68E680199AE6553527011C5C /* PairingFeatureTests.swift */,
 				AC300B00CB8FBBB957AB0278 /* SettingsFeatureTests.swift */,
@@ -741,6 +744,7 @@
 				5403241B637660E5DE8681DD /* ConnectionEndpointTests.swift in Sources */,
 				1800412881B380B74C0951CB /* ConversationListFeatureTests.swift in Sources */,
 				D3C7C3AD27986FA80EDFFAC9 /* ConversationListServiceTests.swift in Sources */,
+				C5F0F1A6D7C796410B67CE90 /* ConversationRecoveryPresentationTests.swift in Sources */,
 				3766C2A158C6EB99A648EB7F /* ConversationSyncEngineTests.swift in Sources */,
 				DE173F96B5CDCE15F9A5945A /* FixtureLoader.swift in Sources */,
 				51E87DEB7932585EE7B1E34A /* GatewayAPITests.swift in Sources */,
@@ -888,6 +892,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -903,6 +908,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -918,6 +924,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -1003,6 +1010,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -1018,6 +1026,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -1033,6 +1042,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -1108,6 +1118,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -1140,6 +1151,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",

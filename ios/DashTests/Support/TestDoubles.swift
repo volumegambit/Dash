@@ -31,6 +31,7 @@ private final class URLProtocolStubState: @unchecked Sendable {
     let chunks: [Data]
     let failure: URLError?
     let holdOpen: Bool
+    let responseGate: URLProtocolResponseGate?
   }
 
   private let lock = NSLock()
@@ -84,6 +85,18 @@ private final class URLProtocolStubState: @unchecked Sendable {
   }
 }
 
+final class URLProtocolResponseGate: @unchecked Sendable {
+  private let semaphore = DispatchSemaphore(value: 0)
+
+  func wait() {
+    semaphore.wait()
+  }
+
+  func release() {
+    semaphore.signal()
+  }
+}
+
 final class URLProtocolStub: URLProtocol, @unchecked Sendable {
   private static let state = URLProtocolStubState()
 
@@ -103,13 +116,15 @@ final class URLProtocolStub: URLProtocol, @unchecked Sendable {
     status: Int,
     fixture: String,
     headers: [String: String] = [:],
-    holdOpen: Bool = false
+    holdOpen: Bool = false,
+    waitingOn responseGate: URLProtocolResponseGate? = nil
   ) throws {
     enqueue(
       status: status,
       data: try FixtureLoader.data(fixture),
       headers: headers,
-      holdOpen: holdOpen
+      holdOpen: holdOpen,
+      waitingOn: responseGate
     )
   }
 
@@ -118,7 +133,8 @@ final class URLProtocolStub: URLProtocol, @unchecked Sendable {
     data: Data = Data(),
     headers: [String: String] = [:],
     chunks: [Data]? = nil,
-    holdOpen: Bool = false
+    holdOpen: Bool = false,
+    waitingOn responseGate: URLProtocolResponseGate? = nil
   ) {
     state.enqueue(
       .init(
@@ -126,14 +142,22 @@ final class URLProtocolStub: URLProtocol, @unchecked Sendable {
         headers: headers,
         chunks: chunks ?? (data.isEmpty ? [] : [data]),
         failure: nil,
-        holdOpen: holdOpen
+        holdOpen: holdOpen,
+        responseGate: responseGate
       )
     )
   }
 
   static func enqueue(failure: URLError) {
     state.enqueue(
-      .init(status: 0, headers: [:], chunks: [], failure: failure, holdOpen: false)
+      .init(
+        status: 0,
+        headers: [:],
+        chunks: [],
+        failure: failure,
+        holdOpen: false,
+        responseGate: nil
+      )
     )
   }
 
@@ -151,6 +175,7 @@ final class URLProtocolStub: URLProtocol, @unchecked Sendable {
       client?.urlProtocol(self, didFailWithError: URLError(.resourceUnavailable))
       return
     }
+    response.responseGate?.wait()
     if let failure = response.failure {
       client?.urlProtocol(self, didFailWithError: failure)
       return

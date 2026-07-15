@@ -343,6 +343,232 @@ struct ConversationSyncEngineTests {
     #expect(await api.conversationCalls == ["c", "c"])
   }
 
+  @Test(
+    "stale and equal tombstones cannot retire a newer active cached conversation",
+    arguments: [5, 6]
+  )
+  func rejectedTombstoneDoesNotEmitRemoval(tombstoneRevision: Int) async throws {
+    let store = try PersistenceStore.inMemory()
+    let current = summary(id: "c", title: "Current", revision: 6, updatedAt: instant(60))
+    try await store.upsertConversations([current], gatewayID: "gw")
+    #expect(try await store.conversation(gatewayID: "gw", id: "c")?.summary == current)
+    let api = FakeConversationSyncAPI()
+    await api.enqueueConversationPage(
+      .success(
+        .init(
+          items: [
+            summary(
+              id: "c",
+              title: "Rejected tombstone",
+              revision: tombstoneRevision,
+              status: .deleted,
+              updatedAt: instant(50),
+              deletedAt: instant(50)
+            )
+          ],
+          nextCursor: nil
+        )
+      )
+    )
+    let engine = makeEngine(store: store, api: api)
+    let stream = await engine.snapshots()
+    var snapshots = stream.makeAsyncIterator()
+
+    await engine.refreshConversations(reset: true)
+
+    let snapshot = try #require(await snapshots.next())
+    #expect(snapshot.conversations.map(\.summary) == [current])
+    #expect(snapshot.removedConversationIDs.isEmpty)
+    #expect(try await store.conversation(gatewayID: "gw", id: "c")?.summary == current)
+    await engine.shutdown()
+  }
+
+  @Test("an accepted tombstone resets message sync state before a newer revival")
+  func acceptedTombstoneResetsMessageSyncState() async throws {
+    try await expectDeletionResetsMessageSyncState(
+      deletion: .success(
+        summary(
+          id: "c",
+          title: "Deleted",
+          revision: 2,
+          status: .deleted,
+          updatedAt: instant(20),
+          deletedAt: instant(20)
+        )
+      ),
+      revived: summary(id: "c", title: "Revived", revision: 3, updatedAt: instant(30))
+    )
+  }
+
+  @Test("a direct 404 removal resets message sync state before a newer revival")
+  func directNotFoundResetsMessageSyncState() async throws {
+    try await expectDeletionResetsMessageSyncState(
+      deletion: .failure(.notFound),
+      revived: summary(id: "c", title: "Revived", revision: 2, updatedAt: instant(30))
+    )
+  }
+
+  @Test("a delayed direct 404 retains a newer canonical conversation and its content")
+  func delayedDirectNotFoundRetainsNewerCanonical() async throws {
+    let store = try PersistenceStore.inMemory()
+    let initial = summary(id: "c", title: "Initial", revision: 1, updatedAt: instant(10))
+    let revived = summary(id: "c", title: "Revived", revision: 2, updatedAt: instant(20))
+    let revivedMessage = message(id: "revived-message")
+    let revivedDraft = ConversationDraft(
+      text: "Keep the revived draft",
+      attachments: [],
+      updatedAt: instant(21)
+    )
+    try await store.upsertConversations([initial], gatewayID: "gw")
+    let responseGate = TestGate()
+    let api = FakeConversationSyncAPI()
+    await api.enqueueConversation(id: initial.id, result: .failure(.notFound), waitingOn: responseGate)
+    let engine = makeEngine(store: store, api: api)
+
+    let refresh = Task { await engine.refreshConversation(id: initial.id) }
+    await responseGate.waitUntilWaiting()
+    try await store.upsertConversations([revived], gatewayID: "gw")
+    try await store.mergeMessages(
+      [revivedMessage],
+      gatewayID: "gw",
+      conversationID: revived.id
+    )
+    try await store.saveDraft(revivedDraft, gatewayID: "gw", conversationID: revived.id)
+    try await store.advanceCursor(gatewayID: "gw", conversationID: revived.id, to: 8)
+    await responseGate.release()
+    await refresh.value
+
+    #expect(try await store.conversation(gatewayID: "gw", id: revived.id)?.summary == revived)
+    #expect(try await store.messages(gatewayID: "gw", conversationID: revived.id) == [revivedMessage])
+    #expect(try await store.draft(gatewayID: "gw", conversationID: revived.id) == revivedDraft)
+    #expect(try await store.cursor(gatewayID: "gw", conversationID: revived.id) == 8)
+    await engine.shutdown()
+  }
+
+  @Test("a delayed omission 404 retains a newer canonical conversation without removal output")
+  func delayedOmissionNotFoundRetainsNewerCanonical() async throws {
+    let store = try PersistenceStore.inMemory()
+    let initial = summary(id: "c", title: "Initial", revision: 1, updatedAt: instant(10))
+    let revived = summary(id: "c", title: "Revived", revision: 2, updatedAt: instant(20))
+    try await store.upsertConversations([initial], gatewayID: "gw")
+    let responseGate = TestGate()
+    let api = FakeConversationSyncAPI()
+    await api.enqueueConversationPage(.success(.init(items: [], nextCursor: nil)))
+    await api.enqueueConversation(id: initial.id, result: .failure(.notFound), waitingOn: responseGate)
+    let engine = makeEngine(store: store, api: api)
+    let stream = await engine.snapshots()
+    var snapshots = stream.makeAsyncIterator()
+
+    let refresh = Task { await engine.refreshConversations(reset: true) }
+    await responseGate.waitUntilWaiting()
+    try await store.upsertConversations([revived], gatewayID: "gw")
+    await responseGate.release()
+    await refresh.value
+    let snapshot = try #require(await snapshots.next())
+
+    #expect(snapshot.conversations.map(\.summary) == [revived])
+    #expect(snapshot.removedConversationIDs.isEmpty)
+    #expect(try await store.conversation(gatewayID: "gw", id: revived.id)?.summary == revived)
+    await engine.shutdown()
+  }
+
+  @Test("a delayed foreground omission 404 retains a newer canonical conversation")
+  func delayedForegroundOmissionNotFoundRetainsNewerCanonical() async throws {
+    let store = try PersistenceStore.inMemory()
+    let initial = summary(id: "c", title: "Initial", revision: 1, updatedAt: instant(10))
+    let revived = summary(id: "c", title: "Revived", revision: 2, updatedAt: instant(20))
+    try await store.upsertConversations([initial], gatewayID: "gw")
+    let responseGate = TestGate()
+    let api = FakeConversationSyncAPI()
+    await api.enqueueConversationPage(.success(.init(items: [], nextCursor: nil)))
+    await api.enqueueConversation(id: initial.id, result: .failure(.notFound), waitingOn: responseGate)
+    let engine = makeEngine(store: store, api: api)
+    let stream = await engine.snapshots()
+    var snapshots = stream.makeAsyncIterator()
+
+    let foreground = Task { await engine.sceneWillEnterForeground() }
+    await responseGate.waitUntilWaiting()
+    try await store.upsertConversations([revived], gatewayID: "gw")
+    await responseGate.release()
+    await foreground.value
+    let snapshot = try #require(await snapshots.next())
+
+    #expect(snapshot.conversations.map(\.summary) == [revived])
+    #expect(snapshot.removedConversationIDs.isEmpty)
+    #expect(try await store.conversation(gatewayID: "gw", id: revived.id)?.summary == revived)
+    await engine.shutdown()
+  }
+
+  @Test("a revived row before publish suppresses a completed 404 removal output")
+  func revivedConversationSuppressesCompletedNotFoundRemovalOutput() async throws {
+    let store = try PersistenceStore.inMemory()
+    let initial = summary(id: "c", title: "Initial", revision: 1, updatedAt: instant(10))
+    let revived = summary(id: "c", title: "Revived", revision: 2, updatedAt: instant(20))
+    try await store.upsertConversations([initial], gatewayID: "gw")
+    let detailGate = TestGate()
+    let publishGate = TestGate()
+    let api = FakeConversationSyncAPI()
+    await api.enqueueConversationPage(.success(.init(items: [], nextCursor: nil)))
+    await api.enqueueConversation(id: initial.id, result: .failure(.notFound), waitingOn: detailGate)
+    let engine = makeEngine(
+      store: store,
+      api: api,
+      clock: GatedNowClock(value: instant(100), gate: publishGate)
+    )
+    let stream = await engine.snapshots()
+    var snapshots = stream.makeAsyncIterator()
+
+    let refresh = Task { await engine.refreshConversations(reset: true) }
+    await detailGate.waitUntilWaiting()
+    await detailGate.release()
+    await publishGate.waitUntilWaiting()
+    try await store.upsertConversations([revived], gatewayID: "gw")
+    await publishGate.release()
+    await refresh.value
+    let snapshot = try #require(await snapshots.next())
+
+    #expect(snapshot.conversations.map(\.summary) == [revived])
+    #expect(snapshot.removedConversationIDs.isEmpty)
+    await engine.shutdown()
+  }
+
+  @Test("a revived row before publish suppresses a completed tombstone removal output")
+  func revivedConversationSuppressesCompletedTombstoneRemovalOutput() async throws {
+    let store = try PersistenceStore.inMemory()
+    let initial = summary(id: "c", title: "Initial", revision: 1, updatedAt: instant(10))
+    let tombstone = summary(
+      id: initial.id,
+      title: "Deleted",
+      revision: 2,
+      status: .deleted,
+      updatedAt: instant(20),
+      deletedAt: instant(20)
+    )
+    let revived = summary(id: "c", title: "Revived", revision: 3, updatedAt: instant(30))
+    try await store.upsertConversations([initial], gatewayID: "gw")
+    let publishGate = TestGate()
+    let api = FakeConversationSyncAPI()
+    await api.enqueueConversationPage(.success(.init(items: [tombstone], nextCursor: nil)))
+    let engine = makeEngine(
+      store: store,
+      api: api,
+      clock: GatedNowClock(value: instant(100), gate: publishGate)
+    )
+    let stream = await engine.snapshots()
+    var snapshots = stream.makeAsyncIterator()
+
+    let refresh = Task { await engine.refreshConversations(reset: true) }
+    await publishGate.waitUntilWaiting()
+    try await store.upsertConversations([revived], gatewayID: "gw")
+    await publishGate.release()
+    await refresh.value
+    let snapshot = try #require(await snapshots.next())
+
+    #expect(snapshot.conversations.map(\.summary) == [revived])
+    #expect(snapshot.removedConversationIDs.isEmpty)
+    await engine.shutdown()
+  }
+
   @Test("a live sequence gap replays from the durable cursor before applying the pending frame")
   func replayGap() async throws {
     let store = try PersistenceStore.inMemory()
@@ -701,7 +927,9 @@ struct ConversationSyncEngineTests {
 
     #expect(await api.conversationCalls == ["probe-failed", "removed"])
     #expect(try await store.conversation(gatewayID: "gw", id: "probe-failed") != nil)
-    #expect(try await store.conversation(gatewayID: "gw", id: "removed") == nil)
+    #expect(
+      try await store.conversation(gatewayID: "gw", id: "removed")?.summary.status == .deleted
+    )
     #expect(await recorder.last?.connection == .online)
     collector.cancel()
     await engine.shutdown()
@@ -1430,7 +1658,9 @@ struct ConversationSyncEngineTests {
     #expect(await api.conversationCalls.sorted() == ["deleted", "stale"])
     #expect(
       try await store.conversation(gatewayID: "gw", id: "deleted")?.summary.status == .deleted)
-    #expect(try await store.conversation(gatewayID: "gw", id: "stale") == nil)
+    #expect(
+      try await store.conversation(gatewayID: "gw", id: "stale")?.summary.status == .deleted
+    )
     #expect(try await store.messages(gatewayID: "gw", conversationID: "stale").isEmpty)
     #expect(try await store.draft(gatewayID: "gw", conversationID: "stale") == nil)
     #expect(try await store.cursor(gatewayID: "gw", conversationID: "stale") == 0)
@@ -1460,6 +1690,89 @@ struct ConversationSyncEngineTests {
 
     #expect(monitor.startCount == 1)
     #expect(monitor.cancelCount == 1)
+  }
+
+  private func expectDeletionResetsMessageSyncState(
+    deletion: FakeSyncResult<ConversationSummaryDTO>,
+    revived: ConversationSummaryDTO
+  ) async throws {
+    let store = try PersistenceStore.inMemory()
+    try await store.upsertConversations(
+      [summary(id: "c", title: "Current", revision: 1)],
+      gatewayID: "gw"
+    )
+    let api = FakeConversationSyncAPI()
+    await api.enqueueMessages(
+      conversationID: "c",
+      result: .success(
+        .init(items: [message(id: "initial")], nextCursor: "stale-before", throughSeq: 4)
+      )
+    )
+    let staleLoadGate = TestGate()
+    await api.enqueueMessages(
+      conversationID: "c",
+      result: .success(
+        .init(
+          items: [message(id: "stale-after-delete")],
+          nextCursor: "still-stale",
+          throughSeq: 5
+        )
+      ),
+      waitingOn: staleLoadGate
+    )
+    await api.enqueueMessages(
+      conversationID: "c",
+      result: .success(
+        .init(items: [message(id: "revived-message")], nextCursor: nil, throughSeq: 1)
+      )
+    )
+    await api.enqueueConversation(id: "c", result: deletion)
+    await api.enqueueConversation(id: "c", result: .success(revived))
+    let engine = makeEngine(store: store, api: api)
+
+    await engine.loadMessages(conversationID: "c", reset: true)
+    let staleLoad = Task { await engine.loadOlderMessages(conversationID: "c") }
+    await staleLoadGate.waitUntilWaiting()
+
+    await engine.refreshConversation(id: "c")
+    #expect(try await store.conversation(gatewayID: "gw", id: "c")?.summary.status == .deleted)
+    #expect(try await store.cursor(gatewayID: "gw", conversationID: "c") == 0)
+    #expect(try await store.messages(gatewayID: "gw", conversationID: "c").isEmpty)
+
+    await engine.refreshConversation(id: "c")
+    #expect(try await store.conversation(gatewayID: "gw", id: "c")?.summary == revived)
+
+    await staleLoadGate.release()
+    await staleLoad.value
+    #expect(try await store.cursor(gatewayID: "gw", conversationID: "c") == 0)
+    #expect(try await store.messages(gatewayID: "gw", conversationID: "c").isEmpty)
+
+    await engine.loadOlderMessages(conversationID: "c")
+    await engine.consumeLiveFrame(
+      .event(
+        id: "turn-revived",
+        conversationId: "c",
+        seq: 1,
+        event: .textDelta(text: "revived")
+      ),
+      agentID: "agent-1"
+    )
+
+    #expect(
+      await api.messageListCalls
+        == [
+          .init(conversationID: "c", limit: 50, before: nil),
+          .init(conversationID: "c", limit: 50, before: "stale-before"),
+          .init(conversationID: "c", limit: 50, before: nil),
+        ]
+    )
+    #expect(await api.replayCalls.isEmpty)
+    #expect(
+      try await store.messages(gatewayID: "gw", conversationID: "c").map(\.id)
+        == ["revived-message"]
+    )
+    #expect(try await store.cursor(gatewayID: "gw", conversationID: "c") == 1)
+    await engine.shutdown()
   }
 
   private func makeEngine(

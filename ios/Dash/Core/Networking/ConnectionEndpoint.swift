@@ -59,6 +59,7 @@ enum PairingValidationError: Error, Equatable, Sendable {
   case mismatchedLANPorts
   case mismatchedMobileTokens
   case invalidCertificatePin
+  case invalidGatewayIdentity
 }
 
 extension PairingPayload {
@@ -177,12 +178,26 @@ struct ConnectionEndpoint: CustomStringConvertible, Sendable {
   }
 
   func requireTrustedTransport() throws {
-    guard profile.mode == .lan else { return }
-    guard
-      profile.secure,
-      GatewayCertificatePin.normalize(profile.tlsCertificateSha256) != nil
-    else {
-      throw GatewayError.validation("Re-pair this gateway to use pinned LAN TLS")
+    switch profile.mode {
+    case .lan:
+      guard
+        profile.secure,
+        GatewayCertificatePin.normalize(profile.tlsCertificateSha256) != nil
+      else {
+        throw GatewayError.validation("Re-pair this gateway to use pinned LAN TLS")
+      }
+    case .relay:
+      let relayCredential = secrets.relayCredential?.trimmingCharacters(
+        in: .whitespacesAndNewlines
+      )
+      guard
+        profile.secure,
+        profile.managementPort == 443,
+        profile.chatPort == 443,
+        relayCredential?.isEmpty == false
+      else {
+        throw GatewayError.validation("Re-pair this gateway to use secure relay transport")
+      }
     }
   }
 
@@ -196,6 +211,7 @@ struct ConnectionEndpoint: CustomStringConvertible, Sendable {
   }
 
   func chatRequest() throws -> URLRequest {
+    try requireTrustedTransport()
     let chatURL = try url(
       scheme: profile.secure ? "wss" : "ws",
       port: profile.chatPort,

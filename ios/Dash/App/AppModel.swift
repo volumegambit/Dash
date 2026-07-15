@@ -31,6 +31,7 @@ final class AppModel {
   var conversationListFeature: ConversationListFeature?
   var agentsFeature: AgentsFeature?
   var settingsFeature: SettingsFeature?
+  private(set) var chatHostGeneration: UInt64 = 0
 
   var route: AppRoute {
     guard selectedProfile != nil else { return .connect }
@@ -41,6 +42,8 @@ final class AppModel {
   @ObservationIgnored private var syncEngine: (any AppSyncing)?
   @ObservationIgnored private var snapshotTask: Task<Void, Never>?
   @ObservationIgnored private var chatFeatures: [String: ChatFeature] = [:]
+  @ObservationIgnored private var chatLifecycleByScope: [String: ChatLifecycleState] = [:]
+  @ObservationIgnored private var chatRetirementTasks: [String: ChatRetirementRecord] = [:]
   @ObservationIgnored private var transitionEpoch: UInt64 = 0
   @ObservationIgnored private var activeEpoch: UInt64 = 0
   @ObservationIgnored private var activeEngineBootstrapped = false
@@ -57,12 +60,36 @@ final class AppModel {
     let snapshots: AsyncStream<SyncSnapshot>
   }
 
+  private struct ChatLifecycleState: Equatable {
+    var generation: UInt64 = 0
+    var isRemoved = false
+    var revisionFloor: Int?
+  }
+
+  private struct ScopedChatFeature {
+    let scope: String
+    let feature: ChatFeature
+  }
+
+  private struct ChatRetirementRecord {
+    let id: UUID
+    let task: Task<Void, Never>
+  }
+
+  private enum CanonicalLifecycleResult {
+    case active(ConversationSummaryDTO)
+    case removed
+    case ignored
+  }
+
   private struct DetachedActivation {
     let engine: (any AppSyncing)?
+    let snapshotTask: Task<Void, Never>?
     let conversationFeature: ConversationListFeature?
     let agentsFeature: AgentsFeature?
     let settingsFeature: SettingsFeature?
     let chatFeatures: [ChatFeature]
+    let chatRetirementTasks: [Task<Void, Never>]
   }
 
   init(dependencies: AppDependencies) {
@@ -100,9 +127,13 @@ final class AppModel {
       for chatFeature in retired.chatFeatures {
         await chatFeature.shutdown()
       }
+      for retirement in retired.chatRetirementTasks {
+        await retirement.value
+      }
       if let retiredEngine = retired.engine, sameEngine(retiredEngine, prepared.engine) == false {
         await retiredEngine.shutdown()
       }
+      await retired.snapshotTask?.value
       guard activeEpoch == publishedEpoch, sameEngine(syncEngine, prepared.engine) else { return }
       await startPreparedEngine(prepared.engine, activeEpoch: publishedEpoch)
     } catch {
@@ -151,16 +182,24 @@ final class AppModel {
       for chatFeature in retired.chatFeatures {
         await chatFeature.shutdown()
       }
+      for retirement in retired.chatRetirementTasks {
+        await retirement.value
+      }
       if let retiredEngine = retired.engine, sameEngine(retiredEngine, prepared.engine) == false {
         await retiredEngine.shutdown()
       }
+      await retired.snapshotTask?.value
       guard activeEpoch == publishedEpoch, sameEngine(syncEngine, prepared.engine) else {
         return false
       }
       await startPreparedEngine(prepared.engine, activeEpoch: publishedEpoch)
-      return activeEpoch == publishedEpoch
+      let didActivate = activeEpoch == publishedEpoch
         && sameEngine(syncEngine, prepared.engine)
         && selectedProfile == profile
+      if didActivate {
+        chatHostGeneration &+= 1
+      }
+      return didActivate
     } catch {
       guard isCurrent(epoch) else { return false }
       if reportsFailureInBanner {
@@ -170,14 +209,31 @@ final class AppModel {
     }
   }
 
-  func consume(_ snapshot: SyncSnapshot) {
-    self.snapshot = snapshot
-    conversationListFeature?.consume(snapshot)
-    agentsFeature?.consume(snapshot)
-    settingsFeature?.consume(snapshot)
+  func consume(_ snapshot: SyncSnapshot) async {
     connectionState = snapshot.connection
+    let retiredChats: [ScopedChatFeature]
+    if let gatewayID = selectedProfile?.gatewayID {
+      retiredChats = reconcileSnapshotConversationLifecycle(snapshot, gatewayID: gatewayID)
+    } else {
+      self.snapshot = snapshot
+      retiredChats = []
+    }
+    let effectiveSnapshot = self.snapshot ?? snapshot
+    conversationListFeature?.consume(effectiveSnapshot)
+    agentsFeature?.consume(effectiveSnapshot)
+    settingsFeature?.consume(effectiveSnapshot)
     for feature in chatFeatures.values {
       feature.setConnection(snapshot.connection)
+    }
+    for cached in effectiveSnapshot.conversations {
+      let scope = chatScope(
+        gatewayID: cached.gatewayID,
+        conversationID: cached.summary.id
+      )
+      chatFeatures[scope]?.consumeCanonicalSummary(cached.summary)
+    }
+    for retired in retiredChats {
+      retired.feature.prepareForRemoteRemoval()
     }
     switch snapshot.connection {
     case .connecting, .online:
@@ -193,9 +249,21 @@ final class AppModel {
     case .updateRequired:
       banner = .updateRequired
     }
+    let retirements = retiredChats.map { retired in
+      scheduleChatRetirement(retired.feature, scope: retired.scope)
+    }
+    for retirement in retirements {
+      await retirement.value
+    }
   }
 
   func openConversation(_ id: String, presentation: NavigationPresentation) {
+    if let gatewayID = selectedProfile?.gatewayID,
+      chatLifecycleByScope[chatScope(gatewayID: gatewayID, conversationID: id)]?.isRemoved
+        == true
+    {
+      return
+    }
     selectedTab = .conversations
     let destination = ConversationRoute.transcript(id)
     openConversationDestination(destination, presentation: presentation)
@@ -301,22 +369,44 @@ final class AppModel {
   }
 
   func makeChatFeature(_ conversation: ConversationSummaryDTO) async -> ChatFeature? {
-    guard let profile = selectedProfile else { return nil }
+    guard let profile = selectedProfile, conversation.status != .deleted else { return nil }
     let scope = chatScope(gatewayID: profile.gatewayID, conversationID: conversation.id)
+    let lifecycle = chatLifecycleByScope[scope] ?? ChatLifecycleState()
+    guard lifecycle.isRemoved == false else { return nil }
+    let epoch = activeEpoch
+    while let retirement = chatRetirementTasks[scope] {
+      await retirement.task.value
+      guard
+        activeEpoch == epoch,
+        selectedProfile == profile,
+        (chatLifecycleByScope[scope] ?? ChatLifecycleState()) == lifecycle
+      else { return nil }
+    }
     if let feature = chatFeatures[scope] {
+      feature.consumeCanonicalSummary(conversation)
       return feature
     }
 
-    let epoch = activeEpoch
     guard let feature = await dependencies.makeChatFeature(profile, conversation) else {
       return nil
     }
-    guard activeEpoch == epoch, selectedProfile == profile else {
+    guard
+      activeEpoch == epoch,
+      selectedProfile == profile,
+      (chatLifecycleByScope[scope] ?? ChatLifecycleState()) == lifecycle
+    else {
       await feature.shutdown()
       return nil
     }
     if let existing = chatFeatures[scope] {
       await feature.shutdown()
+      guard
+        activeEpoch == epoch,
+        selectedProfile == profile,
+        (chatLifecycleByScope[scope] ?? ChatLifecycleState()) == lifecycle,
+        chatFeatures[scope] === existing
+      else { return nil }
+      existing.consumeCanonicalSummary(conversation)
       return existing
     }
     feature.setConnection(connectionState)
@@ -329,6 +419,21 @@ final class AppModel {
       else { return }
       await self.handleFeatureGatewayError(error, epoch: epoch)
     }
+    feature.setLifecycleChangeHandler { [weak self, weak feature] changes in
+      guard
+        let self,
+        let feature,
+        self.activeEpoch == epoch,
+        self.selectedProfile == profile,
+        self.chatFeatures[scope] === feature
+      else { return .ignored }
+      return await self.applyConversationLifecycleChanges(
+        changes,
+        gatewayID: profile.gatewayID,
+        originatingList: nil,
+        originatingChat: feature
+      )
+    }
     chatFeatures[scope] = feature
     return feature
   }
@@ -336,8 +441,27 @@ final class AppModel {
   func sceneDidEnterBackground() async {
     isBackgrounded = true
     activeEngineSceneRevision &+= 1
-    guard let engine = syncEngine else { return }
+    let sceneRevision = activeEngineSceneRevision
+    let transition = transitionEpoch
     let epoch = activeEpoch
+    let features = Array(chatFeatures.values)
+    let engine = syncEngine
+    for feature in features {
+      guard
+        isBackgrounded,
+        activeEngineSceneRevision == sceneRevision,
+        isCurrent(transition),
+        activeEpoch == epoch
+      else { return }
+      await feature.sceneDidEnterBackground()
+    }
+    guard
+      isBackgrounded,
+      activeEngineSceneRevision == sceneRevision,
+      isCurrent(transition),
+      activeEpoch == epoch,
+      let engine
+    else { return }
     activeEngineNeedsForegroundResume = true
     await suspendEngineIfNeeded(engine, activeEpoch: epoch)
   }
@@ -345,9 +469,28 @@ final class AppModel {
   func sceneWillEnterForeground() async {
     isBackgrounded = false
     activeEngineSceneRevision &+= 1
-    activeEngineSuspended = false
-    guard let engine = syncEngine else { return }
+    let sceneRevision = activeEngineSceneRevision
+    let transition = transitionEpoch
     let epoch = activeEpoch
+    let features = Array(chatFeatures.values)
+    let engine = syncEngine
+    activeEngineSuspended = false
+    for feature in features {
+      guard
+        isBackgrounded == false,
+        activeEngineSceneRevision == sceneRevision,
+        isCurrent(transition),
+        activeEpoch == epoch
+      else { return }
+      await feature.sceneWillEnterForeground()
+    }
+    guard
+      isBackgrounded == false,
+      activeEngineSceneRevision == sceneRevision,
+      isCurrent(transition),
+      activeEpoch == epoch,
+      let engine
+    else { return }
     await driveEngineToCurrentScene(engine, activeEpoch: epoch)
   }
 
@@ -370,9 +513,13 @@ final class AppModel {
     for chatFeature in retired.chatFeatures {
       await chatFeature.shutdown()
     }
+    for retirement in retired.chatRetirementTasks {
+      await retirement.value
+    }
     if let engine = retired.engine {
       await engine.shutdown()
     }
+    await retired.snapshotTask?.value
     guard isCurrent(epoch) else { return }
     do {
       try await dependencies.deleteProfileSecrets(profile)
@@ -486,16 +633,27 @@ final class AppModel {
     _ profile: ConnectionProfileSnapshot,
     prepared: PreparedActivation
   ) -> DetachedActivation {
+    let previousGatewayID = selectedProfile?.gatewayID
     let retired = DetachedActivation(
       engine: syncEngine,
+      snapshotTask: snapshotTask,
       conversationFeature: conversationListFeature,
       agentsFeature: agentsFeature,
       settingsFeature: settingsFeature,
-      chatFeatures: Array(chatFeatures.values)
+      chatFeatures: Array(chatFeatures.values),
+      chatRetirementTasks: chatRetirementTasks.values.map(\.task)
     )
+    retired.conversationFeature?.prepareForShutdown()
+    retired.agentsFeature?.prepareForShutdown()
     retired.settingsFeature?.prepareForShutdown()
+    for feature in retired.chatFeatures {
+      feature.prepareForShutdown()
+    }
     chatFeatures.removeAll()
-    let previousGatewayID = selectedProfile?.gatewayID
+    if previousGatewayID != profile.gatewayID {
+      chatLifecycleByScope.removeAll()
+    }
+    chatRetirementTasks.removeAll()
     snapshotTask?.cancel()
     activeEpoch &+= 1
     let epoch = activeEpoch
@@ -515,6 +673,22 @@ final class AppModel {
         self.conversationListFeature === conversationFeature
       else { return }
       await self.handleFeatureGatewayError(error, epoch: epoch)
+    }
+    conversationFeature?.setLifecycleChangeHandler {
+      [weak self, weak conversationFeature] changes in
+      guard
+        let self,
+        let conversationFeature,
+        self.activeEpoch == epoch,
+        self.selectedProfile == profile,
+        self.conversationListFeature === conversationFeature
+      else { return .ignored }
+      return await self.applyConversationLifecycleChanges(
+        changes,
+        gatewayID: profile.gatewayID,
+        originatingList: conversationFeature,
+        originatingChat: nil
+      )
     }
     conversationListFeature = conversationFeature
     let agentsFeature = dependencies.makeAgentsFeature(profile)
@@ -569,7 +743,7 @@ final class AppModel {
       for await value in prepared.snapshots {
         guard Task.isCancelled == false else { return }
         guard let self, self.activeEpoch == epoch else { return }
-        self.consume(value)
+        await self.consume(value)
       }
     }
     return retired
@@ -578,15 +752,22 @@ final class AppModel {
   private func detachActiveEngine(clearFeatures: Bool = false) -> DetachedActivation {
     let retired = DetachedActivation(
       engine: syncEngine,
+      snapshotTask: snapshotTask,
       conversationFeature: conversationListFeature,
       agentsFeature: agentsFeature,
       settingsFeature: settingsFeature,
-      chatFeatures: Array(chatFeatures.values)
+      chatFeatures: Array(chatFeatures.values),
+      chatRetirementTasks: chatRetirementTasks.values.map(\.task)
     )
-    chatFeatures.removeAll()
     retired.conversationFeature?.prepareForShutdown()
     retired.agentsFeature?.prepareForShutdown()
     retired.settingsFeature?.prepareForShutdown()
+    for feature in retired.chatFeatures {
+      feature.prepareForShutdown()
+    }
+    chatFeatures.removeAll()
+    chatLifecycleByScope.removeAll()
+    chatRetirementTasks.removeAll()
     snapshotTask?.cancel()
     snapshotTask = nil
     syncEngine = nil
@@ -679,7 +860,7 @@ final class AppModel {
     guard activeEpoch == epoch else { return }
     let cached = snapshot?.conversations ?? conversationListFeature?.conversations ?? []
     let agents = agentsFeature?.agents ?? snapshot?.agents ?? conversationListFeature?.agents ?? []
-    consume(
+    await consume(
       SyncSnapshot(
         connection: state,
         conversations: cached,
@@ -699,6 +880,301 @@ final class AppModel {
     transitionEpoch == epoch
   }
 
+  private func reconcileSnapshotConversationLifecycle(
+    _ incoming: SyncSnapshot,
+    gatewayID: String
+  ) -> [ScopedChatFeature] {
+    let previousByID = Dictionary(
+      uniqueKeysWithValues: (snapshot?.conversations ?? []).compactMap { cached in
+        cached.gatewayID == gatewayID ? (cached.id, cached.summary) : nil
+      }
+    )
+    var projected: [CachedConversation] = []
+    var removedConversationIDs = incoming.removedConversationIDs
+
+    for cached in incoming.conversations where cached.gatewayID == gatewayID {
+      switch applyCanonicalLifecycle(
+        cached.summary,
+        gatewayID: gatewayID,
+        currentRevision: previousByID[cached.id]?.revision
+      ) {
+      case .active(let effective):
+        projected.append(CachedConversation(gatewayID: gatewayID, summary: effective))
+        removedConversationIDs.remove(effective.id)
+
+      case .removed:
+        removedConversationIDs.insert(cached.id)
+        if cached.summary.status == .deleted {
+          projected.append(cached)
+        }
+
+      case .ignored:
+        let scope = chatScope(gatewayID: gatewayID, conversationID: cached.id)
+        if chatLifecycleByScope[scope]?.isRemoved == true {
+          removedConversationIDs.insert(cached.id)
+          if let previous = previousByID[cached.id], previous.status == .deleted {
+            projected.append(CachedConversation(gatewayID: gatewayID, summary: previous))
+          }
+        } else if let previous = previousByID[cached.id] {
+          projected.append(CachedConversation(gatewayID: gatewayID, summary: previous))
+        }
+      }
+    }
+
+    for conversationID in incoming.removedConversationIDs {
+      let currentRevision = previousByID[conversationID]?.revision
+        ?? incoming.conversations.first(where: { $0.id == conversationID })?.summary.revision
+      applyLifecycleRemoval(
+        conversationID: conversationID,
+        revisionFloor: currentRevision,
+        gatewayID: gatewayID
+      )
+      projected.removeAll { $0.id == conversationID }
+      removedConversationIDs.insert(conversationID)
+    }
+
+    removedConversationIDs.formUnion(lifecycleRemovedConversationIDs(gatewayID: gatewayID))
+    projected.removeAll { removedConversationIDs.contains($0.id) && $0.summary.status != .deleted }
+    self.snapshot = SyncSnapshot(
+      connection: incoming.connection,
+      conversations: projected,
+      agents: incoming.agents,
+      lastSuccessfulSyncAt: incoming.lastSuccessfulSyncAt,
+      removedConversationIDs: removedConversationIDs
+    )
+    pruneTranscriptRoutes(removedConversationIDs)
+    return removedConversationIDs.compactMap { conversationID in
+      let scope = chatScope(gatewayID: gatewayID, conversationID: conversationID)
+      guard let feature = chatFeatures.removeValue(forKey: scope) else { return nil }
+      return ScopedChatFeature(scope: scope, feature: feature)
+    }
+  }
+
+  private func applyCanonicalLifecycle(
+    _ incoming: ConversationSummaryDTO,
+    gatewayID: String,
+    currentRevision: Int?
+  ) -> CanonicalLifecycleResult {
+    let scope = chatScope(gatewayID: gatewayID, conversationID: incoming.id)
+    var lifecycle = chatLifecycleByScope[scope] ?? ChatLifecycleState()
+    lifecycle.revisionFloor = raisedRevisionFloor(
+      lifecycle.revisionFloor,
+      currentRevision
+    )
+
+    if incoming.status == .deleted {
+      if lifecycle.isRemoved {
+        if let floor = lifecycle.revisionFloor, incoming.revision < floor {
+          chatLifecycleByScope[scope] = lifecycle
+          return .ignored
+        }
+        lifecycle.revisionFloor = raisedRevisionFloor(
+          lifecycle.revisionFloor,
+          incoming.revision
+        )
+        chatLifecycleByScope[scope] = lifecycle
+        return .removed
+      }
+      if let floor = lifecycle.revisionFloor, incoming.revision <= floor {
+        chatLifecycleByScope[scope] = lifecycle
+        return .ignored
+      }
+      lifecycle.generation &+= 1
+      lifecycle.isRemoved = true
+      lifecycle.revisionFloor = incoming.revision
+      chatLifecycleByScope[scope] = lifecycle
+      return .removed
+    }
+
+    if lifecycle.isRemoved {
+      if let floor = lifecycle.revisionFloor, incoming.revision <= floor {
+        chatLifecycleByScope[scope] = lifecycle
+        return .ignored
+      }
+      lifecycle.generation &+= 1
+      lifecycle.isRemoved = false
+    } else if let floor = lifecycle.revisionFloor, incoming.revision < floor {
+      chatLifecycleByScope[scope] = lifecycle
+      return .ignored
+    }
+    lifecycle.revisionFloor = raisedRevisionFloor(lifecycle.revisionFloor, incoming.revision)
+    chatLifecycleByScope[scope] = lifecycle
+    return .active(incoming)
+  }
+
+  private func applyLifecycleRemoval(
+    conversationID: String,
+    revisionFloor: Int?,
+    gatewayID: String
+  ) {
+    let scope = chatScope(gatewayID: gatewayID, conversationID: conversationID)
+    var lifecycle = chatLifecycleByScope[scope] ?? ChatLifecycleState()
+    lifecycle.revisionFloor = raisedRevisionFloor(lifecycle.revisionFloor, revisionFloor)
+    if lifecycle.isRemoved == false {
+      lifecycle.generation &+= 1
+      lifecycle.isRemoved = true
+    }
+    chatLifecycleByScope[scope] = lifecycle
+  }
+
+  private func applyConversationLifecycleChanges(
+    _ changes: [ConversationLifecycleChange],
+    gatewayID: String,
+    originatingList: ConversationListFeature?,
+    originatingChat: ChatFeature?
+  ) async -> ConversationLifecycleAcknowledgement {
+    guard changes.isEmpty == false else { return .ignored }
+    let base = snapshot
+      ?? SyncSnapshot(
+        connection: connectionState,
+        conversations: [],
+        agents: agentsFeature?.agents ?? conversationListFeature?.agents ?? [],
+        lastSuccessfulSyncAt: selectedProfile?.profile.lastSuccessfulSyncAt
+      )
+    var projected = base.conversations
+    var removedConversationIDs = base.removedConversationIDs
+    var acceptedRemovedIDs: Set<String> = []
+    var acceptedCanonicalByID: [String: ConversationSummaryDTO] = [:]
+
+    for change in changes {
+      switch change {
+      case .canonical(let canonical):
+        let currentRevision = projected.first(where: { $0.id == canonical.id })?.summary.revision
+        switch applyCanonicalLifecycle(
+          canonical,
+          gatewayID: gatewayID,
+          currentRevision: currentRevision
+        ) {
+        case .active(let effective):
+          upsertSnapshotConversation(
+            CachedConversation(gatewayID: gatewayID, summary: effective),
+            in: &projected
+          )
+          removedConversationIDs.remove(effective.id)
+          acceptedCanonicalByID[effective.id] = effective
+
+        case .removed:
+          acceptedRemovedIDs.insert(canonical.id)
+          removedConversationIDs.insert(canonical.id)
+          if canonical.status == .deleted {
+            upsertSnapshotConversation(
+              CachedConversation(gatewayID: gatewayID, summary: canonical),
+              in: &projected
+            )
+          } else {
+            projected.removeAll { $0.id == canonical.id }
+          }
+
+        case .ignored:
+          break
+        }
+
+      case .removed(let id, let revisionFloor):
+        let currentRevision = projected.first(where: { $0.id == id })?.summary.revision
+        applyLifecycleRemoval(
+          conversationID: id,
+          revisionFloor: raisedRevisionFloor(revisionFloor, currentRevision),
+          gatewayID: gatewayID
+        )
+        projected.removeAll { $0.id == id }
+        removedConversationIDs.insert(id)
+        acceptedRemovedIDs.insert(id)
+      }
+    }
+
+    removedConversationIDs.formUnion(lifecycleRemovedConversationIDs(gatewayID: gatewayID))
+    projected.removeAll { removedConversationIDs.contains($0.id) && $0.summary.status != .deleted }
+    let effectiveSnapshot = SyncSnapshot(
+      connection: base.connection,
+      conversations: projected,
+      agents: base.agents,
+      lastSuccessfulSyncAt: base.lastSuccessfulSyncAt,
+      removedConversationIDs: removedConversationIDs
+    )
+    snapshot = effectiveSnapshot
+    pruneTranscriptRoutes(acceptedRemovedIDs)
+
+    let retiredChats: [ScopedChatFeature] = acceptedRemovedIDs.compactMap { conversationID in
+      let scope = chatScope(gatewayID: gatewayID, conversationID: conversationID)
+      guard let feature = chatFeatures.removeValue(forKey: scope) else { return nil }
+      return ScopedChatFeature(scope: scope, feature: feature)
+    }
+    for retired in retiredChats {
+      retired.feature.prepareForRemoteRemoval()
+    }
+
+    if conversationListFeature !== originatingList {
+      conversationListFeature?.consume(effectiveSnapshot)
+    }
+    for canonical in acceptedCanonicalByID.values {
+      let scope = chatScope(gatewayID: gatewayID, conversationID: canonical.id)
+      guard let feature = chatFeatures[scope], feature !== originatingChat else { continue }
+      feature.consumeCanonicalSummary(canonical)
+    }
+
+    let retirements = retiredChats.map { retired in
+      (
+        feature: retired.feature,
+        task: scheduleChatRetirement(retired.feature, scope: retired.scope)
+      )
+    }
+    for retirement in retirements where retirement.feature !== originatingChat {
+      await retirement.task.value
+    }
+
+    return ConversationLifecycleAcknowledgement(acceptedRemovedIDs: acceptedRemovedIDs)
+  }
+
+  private func scheduleChatRetirement(
+    _ feature: ChatFeature,
+    scope: String
+  ) -> Task<Void, Never> {
+    let predecessor = chatRetirementTasks[scope]?.task
+    let id = UUID()
+    let task = Task { [weak self] in
+      await predecessor?.value
+      await feature.retireAfterRemoteRemoval()
+      self?.completeChatRetirement(scope: scope, id: id)
+    }
+    chatRetirementTasks[scope] = ChatRetirementRecord(id: id, task: task)
+    return task
+  }
+
+  private func completeChatRetirement(scope: String, id: UUID) {
+    guard chatRetirementTasks[scope]?.id == id else { return }
+    chatRetirementTasks[scope] = nil
+  }
+
+  private func upsertSnapshotConversation(
+    _ value: CachedConversation,
+    in conversations: inout [CachedConversation]
+  ) {
+    if let index = conversations.firstIndex(where: { $0.id == value.id }) {
+      conversations[index] = value
+    } else {
+      conversations.append(value)
+    }
+  }
+
+  private func lifecycleRemovedConversationIDs(gatewayID: String) -> Set<String> {
+    let prefix = "\(gatewayID)\u{1f}"
+    return Set(
+      chatLifecycleByScope.compactMap { scope, lifecycle in
+        guard lifecycle.isRemoved, scope.hasPrefix(prefix) else { return nil }
+        return String(scope.dropFirst(prefix.count))
+      }
+    )
+  }
+
+  private func raisedRevisionFloor(_ lhs: Int?, _ rhs: Int?) -> Int? {
+    switch (lhs, rhs) {
+    case (.some(let lhs), .some(let rhs)): return max(lhs, rhs)
+    case (.some(let lhs), .none): return lhs
+    case (.none, .some(let rhs)): return rhs
+    case (.none, .none): return nil
+    }
+  }
+
   private func sameEngine(_ lhs: (any AppSyncing)?, _ rhs: any AppSyncing) -> Bool {
     guard let lhs else { return false }
     return ObjectIdentifier(lhs as AnyObject) == ObjectIdentifier(rhs as AnyObject)
@@ -706,6 +1182,21 @@ final class AppModel {
 
   private func chatScope(gatewayID: String, conversationID: String) -> String {
     "\(gatewayID)\u{1f}\(conversationID)"
+  }
+
+  private func pruneTranscriptRoutes(_ removedConversationIDs: Set<String>) {
+    guard removedConversationIDs.isEmpty == false else { return }
+    conversationPath.removeAll { route in
+      if case .transcript(let id) = route {
+        return removedConversationIDs.contains(id)
+      }
+      return false
+    }
+    if case .transcript(let id) = splitConversationSelection,
+      removedConversationIDs.contains(id)
+    {
+      splitConversationSelection = nil
+    }
   }
 
   private func resetToConnect() {

@@ -18,7 +18,11 @@ final class ConversationUITests: DashUITestCase {
     row.press(forDuration: 1)
     XCTAssertFalse(app.buttons["Rename"].isEnabled)
     XCTAssertFalse(app.buttons["Delete"].isEnabled)
-    app.tap()
+    app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.08)).tap()
+    XCTAssertTrue(
+      waitUntilHittable(row, timeout: 3),
+      "Expected the conversation row to become actionable after dismissing its context menu"
+    )
 
     row.tap()
     dismissSplitOverlayIfPresent(in: app)
@@ -115,6 +119,7 @@ final class ConversationUITests: DashUITestCase {
   func testDeletedPendingSendRecoveryIsReachablePreviewableAndExplicitlyDiscarded() {
     let app = launch(scenario: "pending-recovery")
 
+    revealSidebarIfNeeded(toExpose: "conversation.recovery.deleted-plan", in: app)
     let recoveryRow = element("conversation.recovery.deleted-plan", in: app)
     XCTAssertFalse(app.buttons["Retry"].exists)
     recoveryRow.tap()
@@ -124,30 +129,196 @@ final class ConversationUITests: DashUITestCase {
       element("recovery.text.deleted-plan", in: app).label,
       "  Preserve this exact recovery text  "
     )
-    XCTAssertTrue(
-      element(
-        "recovery.attachment.018F0F4A-5C42-7A8B-9C01-1234567890AB",
-        in: app
-      ).exists
+    let validPreview = element(
+      "recovery.preview.018F0F4A-5C42-7A8B-9C01-1234567890AB",
+      in: app
     )
-    XCTAssertTrue(element("recovery.share.018F0F4A-5C42-7A8B-9C01-1234567890AB", in: app).exists)
-    XCTAssertTrue(
-      element(
-        "recovery.attachment.018F0F4A-5C42-7A8B-9C01-1234567890AC",
-        in: app
-      ).exists
+    XCTAssertTrue(validPreview.waitForExistence(timeout: 5))
+    XCTAssertEqual(validPreview.label, "Recovered image attachment 1 of 2, PNG")
+    XCTAssertEqual(
+      element("recovery.share.018F0F4A-5C42-7A8B-9C01-1234567890AB", in: app).label,
+      "Share recovered image attachment 1 of 2, PNG"
     )
-    XCTAssertTrue(element("recovery.share.018F0F4A-5C42-7A8B-9C01-1234567890AC", in: app).exists)
+    let unavailablePreview = element(
+      "recovery.previewFallback.018F0F4A-5C42-7A8B-9C01-1234567890AC",
+      in: app
+    )
+    XCTAssertTrue(unavailablePreview.waitForExistence(timeout: 5))
+    XCTAssertEqual(
+      unavailablePreview.label,
+      "Recovered image attachment 2 of 2, JPEG, preview unavailable"
+    )
+    XCTAssertEqual(
+      element("recovery.share.018F0F4A-5C42-7A8B-9C01-1234567890AC", in: app).label,
+      "Share recovered image attachment 2 of 2, JPEG"
+    )
     XCTAssertTrue(element("recovery.copy.deleted-plan", in: app).exists)
+
+    XCTAssertEqual(
+      element("recovery.draft.text.deleted-plan", in: app).label,
+      "  Preserve this exact newer draft text too  "
+    )
+    let draftPreview = element(
+      "recovery.preview.018F0F4A-5C42-7A8B-9C01-1234567890AD",
+      in: app
+    )
+    XCTAssertTrue(draftPreview.waitForExistence(timeout: 5))
+    XCTAssertEqual(draftPreview.label, "Recovered image attachment 1 of 1, PNG")
+    XCTAssertEqual(
+      element("recovery.share.018F0F4A-5C42-7A8B-9C01-1234567890AD", in: app).label,
+      "Share recovered image attachment 1 of 1, PNG"
+    )
+    XCTAssertTrue(element("recovery.draft.copy.deleted-plan", in: app).exists)
     XCTAssertFalse(app.buttons["Retry"].exists)
 
     element("recovery.discard.deleted-plan", in: app).tap()
-    let confirmation = app.sheets.buttons["Discard Recovered Message"].firstMatch
-    XCTAssertTrue(confirmation.waitForExistence(timeout: 5))
-    confirmation.tap()
+    if app.windows.firstMatch.frame.width < 700 {
+      let confirmation = confirmationDialog(titled: "Discard both recovery copies?", in: app)
+      let cancel = confirmation.buttons["Cancel"].firstMatch
+      XCTAssertTrue(
+        waitUntilHittable(cancel, timeout: 3),
+        "Expected the recovery confirmation's Cancel action to be available"
+      )
+      cancel.tap()
+      XCTAssertTrue(
+        confirmation.waitForNonExistence(timeout: 3),
+        "Expected Cancel to dismiss the recovery confirmation"
+      )
+    } else {
+      let confirmation = app.sheets.matching(
+        NSPredicate(format: "label == %@", "Discard both recovery copies?")
+      ).firstMatch
+      XCTAssertTrue(confirmation.waitForExistence(timeout: 3))
+      let dismissRegion = app.otherElements.matching(identifier: "PopoverDismissRegion").firstMatch
+      XCTAssertTrue(dismissRegion.waitForExistence(timeout: 3))
+      dismissRegion.tap()
+    }
+
+    XCTAssertTrue(element("recovery.text.deleted-plan", in: app).exists)
+    XCTAssertTrue(element("recovery.draft.text.deleted-plan", in: app).exists)
+    XCTAssertTrue(element("recovery.discard.deleted-plan", in: app).exists)
+    XCTAssertFalse(app.buttons["Retry"].exists)
+
+    element("recovery.discard.deleted-plan", in: app).tap()
+    if app.windows.firstMatch.frame.width < 700 {
+      let confirmation = confirmationDialog(titled: "Discard both recovery copies?", in: app)
+      confirmation.buttons["Discard Recovered Message"].tap()
+    } else {
+      let confirmation = app.sheets.matching(
+        NSPredicate(format: "label == %@", "Discard both recovery copies?")
+      ).firstMatch
+      XCTAssertTrue(confirmation.waitForExistence(timeout: 3))
+      confirmation.buttons["Discard Recovered Message"].tap()
+    }
 
     XCTAssertTrue(recoveryRow.waitForNonExistence(timeout: 5))
+    if app.windows.firstMatch.frame.width < 700 {
+      XCTAssertTrue(element("conversation.list", in: app).exists)
+      XCTAssertTrue(tab("tab.conversations", in: app).isSelected)
+      XCTAssertFalse(app.staticTexts["Select a conversation"].exists)
+    } else {
+      XCTAssertTrue(app.staticTexts["Select a conversation"].waitForExistence(timeout: 5))
+      revealSidebarIfNeeded(toExpose: "conversation.list", in: app)
+      XCTAssertTrue(element("conversation.list", in: app).exists)
+    }
+    XCTAssertFalse(app.descendants(matching: .any)["recovery.text.deleted-plan"].exists)
+    XCTAssertFalse(app.descendants(matching: .any)["recovery.draft.text.deleted-plan"].exists)
     XCTAssertFalse(app.buttons["Retry"].exists)
+  }
+
+  func testActivePendingSendRecoveryDiscardPreservesNewerDraftInConversation() {
+    let app = launch(scenario: "active-recovery")
+
+    selectTab("tab.conversations", in: app)
+    revealSidebarIfNeeded(toExpose: "conversation.row.shared-plan", in: app)
+    element("conversation.row.shared-plan", in: app).tap()
+    dismissSplitOverlayIfPresent(in: app)
+    _ = element("chat.transcript", in: app)
+    let guardedComposer = element("chat.composer", in: app)
+    XCTAssertEqual(
+      guardedComposer.value as? String,
+      "  Preserve this exact newer draft text too  "
+    )
+    XCTAssertFalse(guardedComposer.isEnabled)
+    XCTAssertFalse(element("chat.send", in: app).isEnabled)
+    XCTAssertTrue(app.staticTexts["Message saved for recovery"].exists)
+
+    if app.windows.firstMatch.frame.width < 700 {
+      let back = app.navigationBars.buttons.firstMatch
+      XCTAssertTrue(
+        waitUntilHittable(back, timeout: 3),
+        "Expected compact navigation to return to the recovery list"
+      )
+      back.tap()
+      _ = element("conversation.list", in: app)
+    }
+
+    revealSidebarIfNeeded(toExpose: "conversation.recovery.shared-plan", in: app)
+    let recoveryRow = element("conversation.recovery.shared-plan", in: app)
+    recoveryRow.tap()
+    dismissSplitOverlayIfPresent(in: app)
+
+    XCTAssertEqual(
+      element("recovery.text.shared-plan", in: app).label,
+      "  Preserve this exact recovery text  "
+    )
+    XCTAssertEqual(
+      element("recovery.draft.text.shared-plan", in: app).label,
+      "  Preserve this exact newer draft text too  "
+    )
+
+    element("recovery.discard.shared-plan", in: app).tap()
+    let confirmation = confirmationDialog(titled: "Discard this recovered message?", in: app)
+    let preservationMessage =
+      "This permanently removes the earlier message recovery. The newer draft remains saved "
+      + "with its conversation."
+    XCTAssertTrue(
+      confirmation.staticTexts[preservationMessage].waitForExistence(timeout: 3),
+      "Expected confirmation to explain that the newer draft remains saved"
+    )
+    confirmation.buttons["Discard Recovered Message"].tap()
+
+    XCTAssertTrue(recoveryRow.waitForNonExistence(timeout: 5))
+    revealSidebarIfNeeded(toExpose: "conversation.row.shared-plan", in: app)
+    element("conversation.row.shared-plan", in: app).tap()
+    dismissSplitOverlayIfPresent(in: app)
+
+    let composer = element("chat.composer", in: app)
+    let exactDraft = "  Preserve this exact newer draft text too  "
+    XCTAssertEqual(
+      XCTWaiter.wait(
+        for: [
+          XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "value == %@", exactDraft),
+            object: composer
+          )
+        ],
+        timeout: 5
+      ),
+      .completed,
+      "Expected the exact newer draft to load into the composer"
+    )
+    XCTAssertTrue(
+      waitUntilHittable(composer, timeout: 5),
+      "Expected the mounted chat composer to become editable after discard"
+    )
+    XCTAssertTrue(composer.isEnabled)
+    let send = element("chat.send", in: app)
+    waitUntilEnabled(send)
+    let attachedImage1 = app.descendants(matching: .any).matching(
+      NSPredicate(format: "label == %@", "Attached image 1")
+    )
+    XCTAssertTrue(attachedImage1.firstMatch.waitForExistence(timeout: 5))
+    XCTAssertFalse(
+      app.descendants(matching: .any).matching(
+        NSPredicate(format: "label == %@", "Attached image 2")
+      ).firstMatch.exists
+    )
+
+    replaceText(in: composer, with: "Edited after discard")
+    XCTAssertEqual(composer.value as? String, "Edited after discard")
+    XCTAssertTrue(composer.isEnabled)
+    XCTAssertTrue(send.isEnabled)
   }
 
   func testIPhoneBackReturnsToConversationListInSameTab() throws {

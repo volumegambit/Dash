@@ -61,7 +61,8 @@ describe('mobile documentation', () => {
       readFile('docs/troubleshooting.mdx', 'utf8'),
     ]);
 
-    expect(api).toContain('pinned HTTPS/WSS listener on port `9400`');
+    expect(api).toContain('configured mobile port, which defaults to `9400`');
+    expect(api).toContain('Both frozen pairing port fields carry that same listener port');
     expect(api).toContain('one phone-scoped Mobile bearer');
     expect(api).toContain('Authorization: Bearer <your-mobile-token>');
     expect(api).toContain('Desktop loopback clients continue to use');
@@ -85,18 +86,42 @@ describe('mobile documentation', () => {
     expect(qa).toMatch(/- \[[ x]\] Hardware keyboard/i);
   });
 
-  it('documents safe recovery when an ambiguous send loses its conversation', async () => {
-    const [guide, readme] = await Promise.all([
+  it('documents safe manual recovery for deleted or unreadable pending sends', async () => {
+    const [guide, readme, troubleshooting] = await Promise.all([
       readFile('docs/ios.mdx', 'utf8'),
       readFile('ios/README.md', 'utf8'),
+      readFile('docs/troubleshooting.mdx', 'utf8'),
     ]);
 
     for (const document of [guide, readme]) {
       expect(document).toContain('Needs Recovery');
       expect(document).toContain('never recreates or resends');
       expect(document).toContain('copy the exact text');
-      expect(document).toContain('preview or share its attachments');
+      expect(document).toContain('preview or share its readable attachments');
+      expect(document).toContain('unreadable saved attachment data');
+      expect(document).toContain('read-only until you explicitly discard');
+      expect(document).toContain('cannot be previewed or shared');
     }
+    expect(troubleshooting).toContain('<Accordion title="Message saved for recovery">');
+    expect(troubleshooting).toContain('Open **Needs Recovery**');
+    expect(troubleshooting).toContain('read-only until you explicitly discard');
     expect(readme).toContain('Mobile bearer and optional relay credential');
+  });
+
+  it('keeps mobile pairing and conversation-start wording aligned with the shipped apps', async () => {
+    const [guide, troubleshooting, ipcContract] = await Promise.all([
+      readFile('docs/ios.mdx', 'utf8'),
+      readFile('docs/troubleshooting.mdx', 'utf8'),
+      readFile('apps/mission-control/src/shared/ipc.ts', 'utf8'),
+    ]);
+
+    expect(guide).toContain('Start a conversation by choosing an agent.');
+    expect(guide).not.toContain('optional title');
+    expect(ipcContract).toContain('// Pairing (mobile apps)');
+    expect(troubleshooting).toContain('No usable LAN IPv4 address is available');
+    expect(troubleshooting).toContain('same network as the phone');
+    expect(troubleshooting).toContain('Switch to the local gateway before pairing a device');
+    expect(troubleshooting).toContain('**Settings → General → Gateway**');
+    expect(troubleshooting).toContain('**Use this computer**');
   });
 });

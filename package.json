@@ -47,7 +47,7 @@
     "lint": "biome check . && npm run typecheck --workspace=apps/mission-control && npm run typecheck --workspace=packages/plugin-sdk && npm run typecheck --workspace=packages/plugins",
     "lint:fix": "biome check --write .",
     "clean": "rm -rf contracts/*/*/dist packages/*/dist apps/*/dist apps/*/out",
-    "version:sync": "V=$(node -p \"require('./package.json').version\") && for f in contracts/mobile/v1/package.json packages/*/package.json apps/*/package.json packages/skills/plugins/*/.claude-plugin/plugin.json; do node -e \"const fs=require('fs');const p=JSON.parse(fs.readFileSync('$f'));p.version='$V';fs.writeFileSync('$f',JSON.stringify(p,null,2)+'\\n')\"; done"
+    "version:sync": "V=$(node -p \"require('./package.json').version\") && for f in contracts/mobile/v1/package.json packages/*/package.json apps/*/package.json packages/skills/plugins/*/.claude-plugin/plugin.json; do node -e \"const fs=require('fs');const p=JSON.parse(fs.readFileSync('$f'));p.version='$V';fs.writeFileSync('$f',JSON.stringify(p,null,2)+'\\n')\"; done && tsx scripts/sync-ios-version.ts"
   },
   "devDependencies": {
     "@biomejs/biome": "^1.9.0",

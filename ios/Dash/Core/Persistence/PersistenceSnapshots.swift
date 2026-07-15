@@ -36,12 +36,70 @@ struct PendingChatSend: Equatable, Sendable {
   let createdAt: Date
 }
 
+enum PendingSendLoadResult: Equatable, Sendable {
+  case none
+  case resumable(PendingChatSend)
+  case recoveryRequired(RecoverablePendingSend)
+}
+
+enum PendingSendStageResult: Equatable, Sendable {
+  case staged
+  case pendingAlreadyExists
+}
+
+enum PendingSendClearResult: Equatable, Sendable {
+  case cleared
+  case conversationUnavailable
+}
+
+enum PendingSendAvailability: Equatable, Sendable {
+  case active
+  case conversationUnavailable
+  case pendingMissing
+}
+
+enum PendingSendRestoreResult: Equatable, Sendable {
+  case restored(ConversationDraft?)
+  case draftConflict(ConversationDraft)
+  case conversationUnavailable
+}
+
+enum RecoverableAttachmentIssue: Equatable, Sendable {
+  case unreadableStoredPayload
+}
+
 struct RecoverablePendingSend: Equatable, Identifiable, Sendable {
   let gatewayID: String
   let conversationID: String
   let conversationTitle: String?
   let agentName: String?
   let pendingSend: PendingChatSend
+  let attachmentIssue: RecoverableAttachmentIssue?
+  let coexistingDraft: ConversationDraft?
+  let coexistingDraftAttachmentIssue: RecoverableAttachmentIssue?
+  let conversationAvailable: Bool
+
+  init(
+    gatewayID: String,
+    conversationID: String,
+    conversationTitle: String?,
+    agentName: String?,
+    pendingSend: PendingChatSend,
+    attachmentIssue: RecoverableAttachmentIssue? = nil,
+    coexistingDraft: ConversationDraft? = nil,
+    coexistingDraftAttachmentIssue: RecoverableAttachmentIssue? = nil,
+    conversationAvailable: Bool = false
+  ) {
+    self.gatewayID = gatewayID
+    self.conversationID = conversationID
+    self.conversationTitle = conversationTitle
+    self.agentName = agentName
+    self.pendingSend = pendingSend
+    self.attachmentIssue = attachmentIssue
+    self.coexistingDraft = coexistingDraft
+    self.coexistingDraftAttachmentIssue = coexistingDraftAttachmentIssue
+    self.conversationAvailable = conversationAvailable
+  }
 
   var id: String { "\(gatewayID)\u{1f}\(conversationID)" }
 }

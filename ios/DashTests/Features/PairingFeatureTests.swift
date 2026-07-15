@@ -81,6 +81,46 @@ struct PairingFeatureTests {
     }
   }
 
+  @Test("blank gateway identity fields stop before persistence or activation")
+  func blankGatewayIdentityStopsPairing() async {
+    let invalidIdentities = [
+      GatewayIdentityDTO(gatewayId: "", publicKey: "public-key"),
+      GatewayIdentityDTO(gatewayId: " \n ", publicKey: "public-key"),
+      GatewayIdentityDTO(gatewayId: "gateway", publicKey: ""),
+      GatewayIdentityDTO(gatewayId: "gateway", publicKey: " \t "),
+    ]
+
+    for identity in invalidIdentities {
+      let recorder = PairingCallRecorder()
+      let gateway = FakePairingGateway(
+        recorder: recorder,
+        gatewayID: identity.gatewayId,
+        publicKey: identity.publicKey
+      )
+      let keychain = RecordingPairingKeychain(recorder: recorder)
+      let metadata = RecordingPairingMetadata(recorder: recorder)
+      let feature = PairingFeature(
+        verifier: PairingVerifier(
+          makeGateway: { _, _ in gateway },
+          makeChat: { _ in FakePairingChatProbe(recorder: recorder) }
+        ),
+        installer: PairingProfileInstaller(keychain: keychain, metadata: metadata),
+        onPaired: { _ in await recorder.append(.activated) }
+      )
+
+      await feature.pair(rawPayload: lanPayloadJSON)
+
+      #expect(await recorder.values == [.health, .identity])
+      #expect(await keychain.savedProfileIDs.isEmpty)
+      #expect(await metadata.savedGatewayIDs.isEmpty)
+      guard case .failed(let failure) = feature.state else {
+        Issue.record("Expected invalid identity failure, received \(feature.state)")
+        continue
+      }
+      #expect(failure.title == "Invalid connection details")
+    }
+  }
+
   @Test("successful pairing verifies before Keychain, metadata, and activation")
   func persistenceOrder() async throws {
     let recorder = PairingCallRecorder()
@@ -595,6 +635,62 @@ struct PairingFeatureTests {
     #expect(feature.state == .idle)
   }
 
+  @Test("cancelling after same-gateway metadata commit still completes activation coherently")
+  func cancellationAfterMetadataCommitCompletesActivation() async throws {
+    let gate = TestGate()
+    let recorder = PairingCallRecorder()
+    let canonicalID = UUID(uuidString: "018f0f4a-5c42-7a8b-9c01-555555555555")!
+    let priorSecrets = ConnectionSecrets(
+      managementToken: "old-management",
+      chatToken: "old-chat",
+      relayCredential: nil
+    )
+    let replacementSecrets = ConnectionSecrets(
+      managementToken: "mobile-token",
+      chatToken: "mobile-token",
+      relayCredential: nil
+    )
+    let keychain = RecordingPairingKeychain(
+      recorder: recorder,
+      initialSecrets: [canonicalID: priorSecrets]
+    )
+    let metadata = RecordingPairingMetadata(
+      recorder: recorder,
+      existingProfile: existingPairingProfile(id: canonicalID),
+      pauseAfterFirstSave: gate
+    )
+    let gateway = FakePairingGateway(recorder: recorder)
+    let feature = PairingFeature(
+      verifier: PairingVerifier(
+        makeGateway: { _, _ in gateway },
+        makeChat: { _ in FakePairingChatProbe(recorder: recorder) }
+      ),
+      installer: PairingProfileInstaller(keychain: keychain, metadata: metadata),
+      onPaired: { _ in await recorder.append(.activated) }
+    )
+
+    let pairing = Task { await feature.pair(rawPayload: lanPayloadJSON) }
+    await gate.waitUntilWaiting()
+
+    feature.cancelPairing()
+
+    #expect(feature.state == .verifying(.saving))
+    await gate.release()
+    await pairing.value
+
+    guard case .paired(let installed) = feature.state else {
+      Issue.record("Expected committed pairing to activate, received \(feature.state)")
+      return
+    }
+    #expect(installed.id == canonicalID)
+    #expect(await keychain.storedSecrets == [canonicalID: replacementSecrets])
+    let saved = try #require(await metadata.savedProfiles.last)
+    #expect(saved.id == canonicalID)
+    #expect(saved.gatewayId == installed.gatewayID)
+    #expect(saved.publicKey == "public-key-verified")
+    #expect(await recorder.values.last == .activated)
+  }
+
   @Test("AppDependencies pairing factory installs the verified profile through AppModel")
   func appComposition() async {
     let verifier = CapturingPairingVerifier()
@@ -691,17 +787,23 @@ private actor FakePairingGateway: PairingGatewayChecking {
   let status: String
   let apiVersion: Int
   let capabilities: [MobileCapability]
+  let gatewayID: String
+  let publicKey: String
 
   init(
     recorder: PairingCallRecorder,
     status: String = "healthy",
     apiVersion: Int = 1,
-    capabilities: [MobileCapability] = [.conversationSyncV1, .chatResumeV1]
+    capabilities: [MobileCapability] = [.conversationSyncV1, .chatResumeV1],
+    gatewayID: String = "gateway-verified",
+    publicKey: String = "public-key-verified"
   ) {
     self.recorder = recorder
     self.status = status
     self.apiVersion = apiVersion
     self.capabilities = capabilities
+    self.gatewayID = gatewayID
+    self.publicKey = publicKey
   }
 
   func health() async throws -> HealthResponse {
@@ -719,7 +821,7 @@ private actor FakePairingGateway: PairingGatewayChecking {
 
   func identity() async throws -> GatewayIdentityDTO {
     await recorder.append(.identity)
-    return GatewayIdentityDTO(gatewayId: "gateway-verified", publicKey: "public-key-verified")
+    return GatewayIdentityDTO(gatewayId: gatewayID, publicKey: publicKey)
   }
 
   func listAgents() async throws -> [RegisteredAgentDTO] {
@@ -794,6 +896,7 @@ private actor RecordingPairingMetadata: PairingMetadataStoring {
   let recorder: PairingCallRecorder
   let shouldFail: Bool
   let existingProfile: ConnectionProfileSnapshot?
+  let pauseAfterFirstSave: TestGate?
   private(set) var savedGatewayIDs: [String] = []
   private(set) var savedPublicKeys: [String] = []
   private(set) var savedProfiles: [ConnectionProfile] = []
@@ -801,11 +904,13 @@ private actor RecordingPairingMetadata: PairingMetadataStoring {
   init(
     recorder: PairingCallRecorder,
     saveError: (any Error)? = nil,
-    existingProfile: ConnectionProfileSnapshot? = nil
+    existingProfile: ConnectionProfileSnapshot? = nil,
+    pauseAfterFirstSave: TestGate? = nil
   ) {
     self.recorder = recorder
     shouldFail = saveError != nil
     self.existingProfile = existingProfile
+    self.pauseAfterFirstSave = pauseAfterFirstSave
   }
 
   func existingPairingProfile(gatewayID: String) async throws -> ConnectionProfileSnapshot? {
@@ -825,6 +930,9 @@ private actor RecordingPairingMetadata: PairingMetadataStoring {
     await recorder.append(.metadataSave)
     if shouldFail {
       throw PairingTestError.save
+    }
+    if savedProfiles.count == 1, let pauseAfterFirstSave {
+      await pauseAfterFirstSave.wait()
     }
   }
 }

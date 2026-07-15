@@ -62,6 +62,7 @@ extension AppDependenciesFactory {
     case streamingReconnect = "streaming-reconnect"
     case remoteBusy = "remote-busy"
     case pendingRecovery = "pending-recovery"
+    case activeRecovery = "active-recovery"
     case agents
     case settingsForget = "settings-forget"
 
@@ -172,6 +173,22 @@ extension AppDependenciesFactory {
         )
       ],
       createdAt: now.addingTimeInterval(-60)
+    )
+
+    static let recoveredNewerDraft = ConversationDraft(
+      text: "  Preserve this exact newer draft text too  ",
+      attachments: [
+        PreparedAttachment(
+          id: UUID(uuidString: "018F0F4A-5C42-7A8B-9C01-1234567890AD")!,
+          mediaType: "image/png",
+          data: Data(
+            base64Encoded:
+              "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8A"
+              + "AQUBAScY42YAAAAASUVORK5CYII="
+          )!
+        )
+      ],
+      updatedAt: now.addingTimeInterval(-30)
     )
 
     static let agents: [RegisteredAgentDTO] = [
@@ -350,6 +367,11 @@ extension AppDependenciesFactory {
       dataIdentifier: String = UUID().uuidString
     ) throws -> AppDependencies {
       let store = UITestScenarioStore(scenario: scenario, dataIdentifier: dataIdentifier)
+      let recoveryChanges = ConversationRecoveryChangeSignal()
+      let recoveryService = UITestConversationRecoveryService(
+        store: store,
+        recoveryChanges: recoveryChanges
+      )
       let keychain = UITestKeychainStore()
       let clock = UITestClock()
 
@@ -374,7 +396,8 @@ extension AppDependenciesFactory {
           ConversationListFeature(
             gatewayID: profile.gatewayID,
             service: store,
-            recoveryService: store
+            recoveryService: recoveryService,
+            recoveryChanges: recoveryChanges
           )
         },
         makeAgentsFeature: { profile in
@@ -390,6 +413,7 @@ extension AppDependenciesFactory {
             transport: UITestChatTransport(),
             clock: clock,
             announcer: UITestAccessibilityAnnouncer(),
+            recoveryChanges: recoveryChanges,
             makeID: { source.next() }
           )
         },
@@ -524,8 +548,8 @@ extension AppDependenciesFactory {
     }
   }
 
-  private actor UITestScenarioStore: ConversationListServicing, ConversationRecoveryServicing,
-    AgentsServicing, ChatFeaturePersisting, ChatFeatureSynchronizing
+  actor UITestScenarioStore: ConversationListServicing, AgentsServicing, ChatFeaturePersisting,
+    ChatFeatureSynchronizing
   {
     private let dataIdentifier: String
     private let scenario: UITestScenario
@@ -546,8 +570,9 @@ extension AppDependenciesFactory {
       agentValues = UITestScenarioFixtures.agents
       messages = [conversation.id: UITestScenarioFixtures.cachedMessages(for: scenario)]
       cursors[conversation.id] = conversation.lastSeq
-      if scenario == .pendingRecovery {
+      if scenario == .pendingRecovery || scenario == .activeRecovery {
         pendingSends[conversation.id] = UITestScenarioFixtures.recoveredPendingSend
+        drafts[conversation.id] = UITestScenarioFixtures.recoveredNewerDraft
       }
     }
 
@@ -598,6 +623,13 @@ extension AppDependenciesFactory {
         },
         nextCursor: nil
       )
+    }
+
+    func conversation(id: String) throws -> ConversationSummaryDTO {
+      guard let value = conversationValues.first(where: { $0.id == id }) else {
+        throw GatewayError.notFound
+      }
+      return value
     }
 
     func create(_ request: CreateConversationRequest) -> ConversationSummaryDTO {
@@ -667,17 +699,27 @@ extension AppDependenciesFactory {
       return deleted
     }
 
-    func replace(_ summary: ConversationSummaryDTO) {
+    func replace(_ summary: ConversationSummaryDTO) -> ConversationSummaryDTO {
       if let index = conversationValues.firstIndex(where: { $0.id == summary.id }) {
         conversationValues[index] = summary
       } else {
         conversationValues.append(summary)
       }
+      return summary
     }
 
-    func remove(id: String) {
+    func remove(
+      id: String,
+      expectedCanonical: ConversationSummaryDTO
+    ) -> ConversationRemovalOutcome {
+      if let current = conversationValues.first(where: { $0.id == id }),
+        current != expectedCanonical
+      {
+        return .retained(current)
+      }
       conversationValues.removeAll { $0.id == id }
       messages[id] = nil
+      return .removed
     }
 
     func retainedCreateRequestID(agentID: String, suggested: String) -> String {
@@ -693,13 +735,16 @@ extension AppDependenciesFactory {
     func recoverablePendingSends() -> [RecoverablePendingSend] {
       pendingSends.compactMap { conversationID, pendingSend in
         let conversation = conversationValues.first { $0.id == conversationID }
-        guard conversation == nil || conversation?.status == .deleted else { return nil }
+        let conversationAvailable = isConversationAvailable(conversationID)
+        guard conversationAvailable == false || drafts[conversationID] != nil else { return nil }
         return RecoverablePendingSend(
           gatewayID: "ui-gateway",
           conversationID: conversationID,
           conversationTitle: conversation?.title,
           agentName: conversation?.agentName,
-          pendingSend: pendingSend
+          pendingSend: pendingSend,
+          coexistingDraft: drafts[conversationID],
+          conversationAvailable: conversationAvailable
         )
       }
       .sorted { $0.pendingSend.createdAt > $1.pendingSend.createdAt }
@@ -709,8 +754,19 @@ extension AppDependenciesFactory {
       guard recovery.gatewayID == "ui-gateway",
         pendingSends[recovery.conversationID]?.turnID == recovery.pendingSend.turnID
       else { return false }
+      let conversationAvailable = isConversationAvailable(recovery.conversationID)
+      guard recovery.conversationAvailable == conversationAvailable else { return false }
       pendingSends[recovery.conversationID] = nil
+      if conversationAvailable == false {
+        drafts[recovery.conversationID] = nil
+      }
       return true
+    }
+
+    private func isConversationAvailable(_ conversationID: String) -> Bool {
+      conversationValues.contains {
+        $0.id == conversationID && $0.status != .deleted
+      }
     }
 
     func models() -> [ModelDTO] { UITestScenarioFixtures.models }
@@ -823,9 +879,24 @@ extension AppDependenciesFactory {
       return drafts[conversationID]
     }
 
-    func pendingSend(gatewayID: String, conversationID: String) -> PendingChatSend? {
-      _ = gatewayID
-      return pendingSends[conversationID]
+    func pendingSend(gatewayID: String, conversationID: String) -> PendingSendLoadResult {
+      guard let pending = pendingSends[conversationID] else { return .none }
+      let conversation = conversationValues.first { $0.id == conversationID }
+      let conversationAvailable = isConversationAvailable(conversationID)
+      guard conversationAvailable, drafts[conversationID] == nil else {
+        return .recoveryRequired(
+          RecoverablePendingSend(
+            gatewayID: gatewayID,
+            conversationID: conversationID,
+            conversationTitle: conversation?.title,
+            agentName: conversation?.agentName,
+            pendingSend: pending,
+            coexistingDraft: drafts[conversationID],
+            conversationAvailable: conversationAvailable
+          )
+        )
+      }
+      return .resumable(pending)
     }
 
     func cursor(gatewayID: String, conversationID: String) -> Int {
@@ -846,26 +917,53 @@ extension AppDependenciesFactory {
       _ pending: PendingChatSend,
       gatewayID: String,
       conversationID: String
-    ) {
+    ) -> PendingSendStageResult {
       _ = gatewayID
+      guard pendingSends[conversationID] == nil else { return .pendingAlreadyExists }
       pendingSends[conversationID] = pending
       drafts[conversationID] = nil
+      return .staged
     }
 
-    func clearPendingSend(gatewayID: String, conversationID: String, turnID: String) {
+    func clearPendingSend(
+      gatewayID: String,
+      conversationID: String,
+      turnID: String
+    ) -> PendingSendClearResult {
       _ = gatewayID
-      guard pendingSends[conversationID]?.turnID == turnID else { return }
+      guard isConversationAvailable(conversationID) else { return .conversationUnavailable }
+      guard pendingSends[conversationID]?.turnID == turnID else { return .cleared }
       pendingSends[conversationID] = nil
+      return .cleared
+    }
+
+    func pendingSendAvailability(
+      gatewayID: String,
+      conversationID: String,
+      turnID: String
+    ) -> PendingSendAvailability {
+      _ = gatewayID
+      guard pendingSends[conversationID]?.turnID == turnID else { return .pendingMissing }
+      guard
+        conversationValues.contains(where: {
+          $0.id == conversationID && $0.status != .deleted
+        })
+      else { return .conversationUnavailable }
+      return .active
     }
 
     func restorePendingSendAsDraft(
       gatewayID: String,
       conversationID: String,
       turnID: String
-    ) -> ConversationDraft? {
+    ) -> PendingSendRestoreResult {
       _ = gatewayID
+      guard isConversationAvailable(conversationID) else { return .conversationUnavailable }
       guard let pending = pendingSends[conversationID], pending.turnID == turnID else {
-        return nil
+        return .restored(nil)
+      }
+      if let existingDraft = drafts[conversationID] {
+        return .draftConflict(existingDraft)
       }
       let draft = ConversationDraft(
         text: pending.draft,
@@ -874,7 +972,7 @@ extension AppDependenciesFactory {
       )
       pendingSends[conversationID] = nil
       drafts[conversationID] = draft
-      return draft
+      return .restored(draft)
     }
 
     func advanceCursor(gatewayID: String, conversationID: String, to seq: Int) {
@@ -907,6 +1005,31 @@ extension AppDependenciesFactory {
     }
 
     func shutdown() {}
+  }
+
+  private actor UITestConversationRecoveryService: ConversationRecoveryServicing {
+    private let store: UITestScenarioStore
+    private let recoveryChanges: ConversationRecoveryChangeSignal
+
+    init(
+      store: UITestScenarioStore,
+      recoveryChanges: ConversationRecoveryChangeSignal
+    ) {
+      self.store = store
+      self.recoveryChanges = recoveryChanges
+    }
+
+    func recoverablePendingSends() async -> [RecoverablePendingSend] {
+      await store.recoverablePendingSends()
+    }
+
+    func discard(_ recovery: RecoverablePendingSend) async -> Bool {
+      let discarded = await store.discard(recovery)
+      if discarded {
+        await recoveryChanges.send(gatewayID: recovery.gatewayID)
+      }
+      return discarded
+    }
   }
 
   private final class UITestIdentifierSource: @unchecked Sendable {

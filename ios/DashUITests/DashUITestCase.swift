@@ -69,6 +69,12 @@ class DashUITestCase: XCTestCase {
   ) {
     let app = XCUIApplication()
     XCTAssertTrue(field.waitForExistence(timeout: 5), file: file, line: line)
+    XCTAssertTrue(
+      revealForTextEntry(field, in: app),
+      "Expected \(field.identifier) to be visible for text entry",
+      file: file,
+      line: line
+    )
     let initialValue = field.value as? String
     let initialText = initialValue == field.placeholderValue ? "" : (initialValue ?? "")
     let frame = field.frame
@@ -81,7 +87,14 @@ class DashUITestCase: XCTestCase {
     }
     if waitForTextEntryReadiness(in: field, app: app, timeout: 5) == false {
       field.tap()
-      _ = waitForTextEntryReadiness(in: field, app: app, timeout: 5)
+      if field.elementType != .secureTextField {
+        XCTAssertTrue(
+          waitForTextEntryReadiness(in: field, app: app, timeout: 5),
+          "Expected \(field.identifier) to receive keyboard focus",
+          file: file,
+          line: line
+        )
+      }
     }
     if clearExisting,
       let current = field.value as? String,
@@ -89,9 +102,9 @@ class DashUITestCase: XCTestCase {
       current != field.placeholderValue
     {
       field.coordinate(withNormalizedOffset: CGVector(dx: 0.95, dy: 0.5)).tap()
-      app.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: current.count))
+      field.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: current.count))
     }
-    app.typeText(value)
+    field.typeText(value)
 
     let expectedValue = clearExisting ? value : initialText + value
     XCTAssertTrue(
@@ -105,6 +118,23 @@ class DashUITestCase: XCTestCase {
       file: file,
       line: line
     )
+  }
+
+  private func revealForTextEntry(
+    _ field: XCUIElement,
+    in app: XCUIApplication
+  ) -> Bool {
+    for _ in 0..<6 {
+      if field.exists, field.isHittable { return true }
+      let fieldFrame = field.frame
+      let appFrame = app.windows.firstMatch.frame
+      if fieldFrame.isEmpty == false, fieldFrame.maxY < appFrame.minY {
+        app.swipeDown()
+      } else {
+        app.swipeUp()
+      }
+    }
+    return waitUntilHittable(field, timeout: 2)
   }
 
   private func waitForTextEntryReadiness(
@@ -375,6 +405,11 @@ class DashUITestCase: XCTestCase {
     file: StaticString = #filePath,
     line: UInt = #line
   ) -> XCUIElement {
+    let alert = app.alerts.containing(.staticText, identifier: title).firstMatch
+    if alert.waitForExistence(timeout: 0.5) {
+      return alert
+    }
+
     let sheet = app.sheets.containing(.staticText, identifier: title).firstMatch
     if sheet.waitForExistence(timeout: 0.5) {
       return sheet

@@ -156,7 +156,10 @@ struct AgentEditorView: View {
       await feature.create(draft)
     }
     guard feature.mutationError == nil else { return }
-    if horizontalSizeClass == .regular, let id = feature.savedAgentID {
+    let presentation = AdaptiveNavigationPolicy.presentation(
+      horizontalSizeClass: horizontalSizeClass
+    )
+    if presentation == .regular, let id = feature.savedAgentID {
       appModel.openAgent(.detail(id), presentation: .regular)
     } else {
       dismiss()

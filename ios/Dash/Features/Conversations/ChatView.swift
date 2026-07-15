@@ -3,10 +3,8 @@ import SwiftUI
 struct ChatView: View {
   @Environment(ChatFeature.self) private var feature
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
-  @Environment(\.scenePhase) private var scenePhase
 
   @State private var isNearBottom = true
-  @State private var wasBackgrounded = false
 
   private let bottomID = "chat-bottom"
 
@@ -32,20 +30,6 @@ struct ChatView: View {
     }
     .onDisappear {
       Task { await feature.disappear() }
-    }
-    .onChange(of: scenePhase) { _, phase in
-      switch phase {
-      case .background:
-        wasBackgrounded = true
-        Task { await feature.sceneDidEnterBackground() }
-      case .active where wasBackgrounded:
-        wasBackgrounded = false
-        Task { await feature.sceneWillEnterForeground() }
-      case .active, .inactive:
-        break
-      @unknown default:
-        break
-      }
     }
   }
 

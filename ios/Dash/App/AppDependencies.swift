@@ -104,15 +104,7 @@ struct AppDependencies: Sendable {
 
   @MainActor
   static func live() throws -> AppDependencies {
-    let schema = Schema([
-      GatewayProfileRecord.self,
-      ConversationRecord.self,
-      MessageRecord.self,
-      AgentRecord.self,
-      DraftRecord.self,
-      PendingSendRecord.self,
-      ReplayCursorRecord.self,
-    ])
+    let schema = PersistenceSchema.make()
     let container = try ModelContainer(
       for: schema,
       configurations: [ModelConfiguration(schema: schema)]

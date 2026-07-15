@@ -40,7 +40,7 @@ enum AgentRoute: Hashable, Sendable {
   }
 }
 
-enum NavigationPresentation: Sendable {
+enum NavigationPresentation: Equatable, Sendable {
   case compact
   case regular
 }

@@ -15,6 +15,10 @@ const uiTestFiles = [
 const uiTestSources = await Promise.all(uiTestFiles.map((path) => readFile(path, 'utf8')));
 const uiTestCaseSource = await readFile('ios/DashUITests/DashUITestCase.swift', 'utf8');
 const pairingUITestSource = await readFile('ios/DashUITests/PairingUITests.swift', 'utf8');
+const accessibilityUITestSource = await readFile(
+  'ios/DashUITests/AccessibilityUITests.swift',
+  'utf8',
+);
 const composerSource = await readFile('ios/Dash/Features/Conversations/ComposerView.swift', 'utf8');
 const chatFeatureSource = await readFile(
   'ios/Dash/Features/Conversations/ChatFeature.swift',
@@ -31,6 +35,7 @@ const privacyManifestSource = await readFile(
   'utf8',
 ).catch(() => '');
 const xcodeProjectSource = await readFile('ios/Dash.xcodeproj/project.pbxproj', 'utf8');
+const projectSpec = parse(await readFile('ios/project.yml', 'utf8'));
 
 assert.doesNotMatch(
   infoPlistSource,
@@ -39,6 +44,14 @@ assert.doesNotMatch(
 );
 
 assert.ok(Array.isArray(steps), 'expected jobs.ios.steps in the parsed workflow');
+
+for (const target of ['DashTests', 'DashContractTests', 'DashIntegrationTests', 'DashUITests']) {
+  assert.equal(
+    projectSpec?.targets?.[target]?.settings?.base?.GENERATE_INFOPLIST_FILE,
+    'YES',
+    `${target} must generate its test-bundle Info.plist on every supported Xcode version`,
+  );
+}
 
 const simulatorStep = steps.find(
   (step) => step.name === 'Ensure pinned simulator runtime and devices',
@@ -67,12 +80,77 @@ assert.match(
 
 const phoneStep = steps.find((step) => step.name === 'Unit and contract tests');
 const phoneUIStep = steps.find((step) => step.name === 'iPhone UI tests');
+const darkContrastUIStep = steps.find(
+  (step) => step.name === 'Dark increased-contrast core-flow UI test',
+);
 const ipadUIStep = steps.find((step) => step.name === 'iPad adaptive UI tests');
 
 assert.match(
   phoneUIStep?.run ?? '',
   /simctl privacy "\$IPHONE_UDID" reset camera app\.dash\.ios/,
   'iPhone UI tests must reset camera privacy on the exact pinned device',
+);
+assert.match(
+  phoneUIStep?.run ?? '',
+  /simctl ui "\$IPHONE_UDID" appearance light/,
+  'regular iPhone UI tests must explicitly use light appearance',
+);
+assert.match(
+  phoneUIStep?.run ?? '',
+  /simctl ui "\$IPHONE_UDID" increase_contrast disabled/,
+  'regular iPhone UI tests must explicitly disable increased contrast',
+);
+assert.match(
+  phoneUIStep?.run ?? '',
+  /test "\$\(xcrun simctl ui "\$IPHONE_UDID" appearance\)" = "light"/,
+  'regular iPhone UI tests must verify the selected appearance',
+);
+assert.match(
+  phoneUIStep?.run ?? '',
+  /test "\$\(xcrun simctl ui "\$IPHONE_UDID" increase_contrast\)" = "disabled"/,
+  'regular iPhone UI tests must verify the selected contrast state',
+);
+assert.equal(
+  typeof darkContrastUIStep?.run,
+  'string',
+  'expected an isolated dark increased-contrast UI-test step',
+);
+assert.match(
+  darkContrastUIStep?.run ?? '',
+  /original_appearance="\$\(xcrun simctl ui "\$IPHONE_UDID" appearance\)"/,
+  'dark appearance coverage must query the simulator state before changing it',
+);
+assert.match(
+  darkContrastUIStep?.run ?? '',
+  /original_contrast="\$\(xcrun simctl ui "\$IPHONE_UDID" increase_contrast\)"/,
+  'increased-contrast coverage must query the simulator state before changing it',
+);
+assert.match(
+  darkContrastUIStep?.run ?? '',
+  /trap restore_simulator_ui_state EXIT/,
+  'dark increased-contrast coverage must restore simulator state on every exit',
+);
+assert.match(darkContrastUIStep?.run ?? '', /appearance dark/);
+assert.match(darkContrastUIStep?.run ?? '', /increase_contrast enabled/);
+assert.match(
+  darkContrastUIStep?.run ?? '',
+  /test "\$\(xcrun simctl ui "\$IPHONE_UDID" appearance\)" = "dark"/,
+  'dark appearance coverage must verify the selected appearance',
+);
+assert.match(
+  darkContrastUIStep?.run ?? '',
+  /test "\$\(xcrun simctl ui "\$IPHONE_UDID" increase_contrast\)" = "enabled"/,
+  'dark appearance coverage must verify the selected contrast state',
+);
+assert.match(
+  darkContrastUIStep?.run ?? '',
+  /-only-testing:DashUITests\/AccessibilityUITests\/testCoreFlowsInCurrentAppearance/,
+  'dark increased-contrast coverage must isolate the appearance-safe core-flow test',
+);
+assert.match(
+  darkContrastUIStep?.run ?? '',
+  /-resultBundlePath ios\/iPhoneDarkContrastUI\.xcresult/,
+  'dark increased-contrast failures must create a distinct artifact for upload',
 );
 assert.match(
   ipadUIStep?.run ?? '',
@@ -169,13 +247,26 @@ assert.match(
   'the generated app target must copy PrivacyInfo.xcprivacy into the bundle',
 );
 for (const [source, hint] of [
-  [conversationListSource, 'Connect to the gateway to rename'],
-  [conversationListSource, 'Connect to the gateway to delete'],
   [agentDetailSource, 'Connect to the gateway to start a conversation'],
   [agentDetailSource, 'Connect to the gateway to edit'],
   [agentDetailSource, 'Connect to the gateway to manage this agent'],
 ]) {
   assert.match(source, new RegExp(`accessibilityHint\\([\\s\\S]*${hint}`));
+}
+for (const [policyProperty, hint] of [
+  ['renameDisabledHint', 'Connect to the gateway to rename'],
+  ['deleteDisabledHint', 'Connect to the gateway to delete'],
+]) {
+  assert.match(
+    conversationListSource,
+    new RegExp(`${policyProperty}[\\s\\S]*${hint}`),
+    `the conversation action policy must retain actionable ${policyProperty} guidance`,
+  );
+  assert.match(
+    conversationListSource,
+    new RegExp(`accessibilityHint\\(actions\\.${policyProperty}\\)`),
+    `the conversation row must announce its ${policyProperty}`,
+  );
 }
 assert.match(
   composerSource,
@@ -186,6 +277,26 @@ assert.match(
   chatFeatureSource,
   /if connection != \.online \{ return "Connect to the gateway to send" \}/,
   'the dynamic composer hint must retain actionable offline guidance',
+);
+assert.match(
+  accessibilityUITestSource,
+  /func testCoreFlowsInCurrentAppearance\(\)/,
+  'appearance CI must exercise an explicit core-flow UI test',
+);
+assert.match(
+  accessibilityUITestSource,
+  /func isExposed\(\) -> Bool \{[\s\S]*value\.exists[\s\S]*value\.isHittable[\s\S]*value\.frame\.intersects\(settingsList\.frame\)[\s\S]*value\.frame\.intersects\(window\.frame\)/,
+  'settings scrolling must require the target to be hittable and inside both list and window',
+);
+assert.match(
+  accessibilityUITestSource,
+  /for _ in 0\.\.<maxSwipes where isExposed\(\) == false/,
+  'settings scrolling must continue until the target is exposed',
+);
+assert.match(
+  accessibilityUITestSource,
+  /XCTAssertTrue\(\s*isExposed\(\)/,
+  'settings scrolling must assert that the target was exposed',
 );
 
 const uiTestSource = uiTestSources.join('\n');

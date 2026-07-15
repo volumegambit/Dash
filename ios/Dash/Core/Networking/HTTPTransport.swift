@@ -56,7 +56,7 @@ actor HTTPTransport {
     session.invalidateAndCancel()
   }
 
-  func send<Response: Decodable>(
+  func send<Response: Decodable & Sendable>(
     _ request: GatewayRequest,
     body: (any Encodable & Sendable)? = nil,
     ifMatch: Int? = nil

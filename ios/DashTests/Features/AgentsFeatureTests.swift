@@ -865,9 +865,27 @@ private actor InterleavingAgentPersistence: ConversationListPersisting {
     _ = gatewayID
   }
 
+  func persistConversationAndReturnCanonical(
+    _ value: ConversationSummaryDTO,
+    gatewayID: String
+  ) -> CachedConversation {
+    CachedConversation(gatewayID: gatewayID, summary: value)
+  }
+
   func removeConversation(gatewayID: String, conversationID: String) {
     _ = gatewayID
     _ = conversationID
+  }
+
+  func removeConversationIfCanonicalUnchanged(
+    gatewayID: String,
+    conversationID: String,
+    expectedCanonical: ConversationSummaryDTO?
+  ) -> ConversationRemovalOutcome {
+    _ = gatewayID
+    _ = conversationID
+    _ = expectedCanonical
+    return .removed
   }
 
   func installFullSync(_ values: [RegisteredAgentDTO]) {
@@ -914,6 +932,13 @@ private actor AgentServiceConversationStub: ConversationListServicing {
     return ConversationPageDTO(items: [], nextCursor: nil)
   }
 
+  func conversation(id: String) throws -> ConversationSummaryDTO {
+    guard let canonicalConversation, canonicalConversation.id == id else {
+      throw GatewayError.notFound
+    }
+    return canonicalConversation
+  }
+
   func create(_ request: CreateConversationRequest) throws -> ConversationSummaryDTO {
     createRequests.append(request)
     throw GatewayError.mutationOutcomeUnknown(resourceID: nil, requestID: request.requestId)
@@ -938,8 +963,15 @@ private actor AgentServiceConversationStub: ConversationListServicing {
     throw GatewayError.updateRequired
   }
 
-  func replace(_ summary: ConversationSummaryDTO) { _ = summary }
-  func remove(id: String) { _ = id }
+  func replace(_ summary: ConversationSummaryDTO) -> ConversationSummaryDTO { summary }
+  func remove(
+    id: String,
+    expectedCanonical: ConversationSummaryDTO
+  ) -> ConversationRemovalOutcome {
+    _ = id
+    _ = expectedCanonical
+    return .removed
+  }
   func retainedCreateRequestID(agentID: String, suggested: String) -> String {
     if let retained = retainedRequestIDs[agentID] { return retained }
     retainedRequestIDs[agentID] = suggested

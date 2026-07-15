@@ -254,28 +254,30 @@ actor ConversationSyncEngine {
     let lifecycle = lifecycleGeneration
     let conversations = conversationGeneration
     do {
-      let summary = try await api.conversation(id: id)
+      let requestStartCanonical = try await store.conversation(
+        gatewayID: gatewayID,
+        id: id
+      )?.summary
       try validate(lifecycle: lifecycle, conversations: conversations)
-      try await persist(summary, lifecycle: lifecycle, conversations: conversations)
-      try await recordSuccessfulSync(lifecycle: lifecycle, conversations: conversations)
-      try validate(lifecycle: lifecycle, conversations: conversations)
-      try await reloadSnapshot(lifecycle: lifecycle, conversations: conversations)
-      try validate(lifecycle: lifecycle, conversations: conversations)
-      publish(.online)
-    } catch GatewayError.notFound {
       do {
+        let summary = try await api.conversation(id: id)
         try validate(lifecycle: lifecycle, conversations: conversations)
-        try await store.removeConversation(gatewayID: gatewayID, conversationID: id)
+        _ = try await persist(summary, lifecycle: lifecycle, conversations: conversations)
+        try await recordSuccessfulSync(lifecycle: lifecycle, conversations: conversations)
         try validate(lifecycle: lifecycle, conversations: conversations)
-        pendingRemovedConversationIDs.insert(id)
-        conversationOrder.removeAll { $0 == id }
         try await reloadSnapshot(lifecycle: lifecycle, conversations: conversations)
         try validate(lifecycle: lifecycle, conversations: conversations)
         publish(.online)
-      } catch is CancellationError {
-        return
-      } catch {
-        await handle(error, lifecycle: lifecycle, conversations: conversations)
+      } catch GatewayError.notFound {
+        _ = try await reconcileNotFoundRemoval(
+          conversationID: id,
+          requestStartCanonical: requestStartCanonical,
+          lifecycle: lifecycle,
+          conversations: conversations
+        )
+        try await reloadSnapshot(lifecycle: lifecycle, conversations: conversations)
+        try validate(lifecycle: lifecycle, conversations: conversations)
+        publish(.online)
       }
     } catch is CancellationError {
       return
@@ -577,14 +579,18 @@ actor ConversationSyncEngine {
     let cursor = reset ? nil : conversationCursor
     let page = try await api.conversations(agentId: nil, limit: pageSize, cursor: cursor)
     try validate(lifecycle: lifecycle, conversations: conversations)
+    var effectiveItems: [ConversationSummaryDTO] = []
+    effectiveItems.reserveCapacity(page.items.count)
     for item in page.items {
-      try await persist(
+      effectiveItems.append(
+        try await persist(
         item,
         lifecycle: lifecycle,
         conversations: conversations
       )
+      )
     }
-    let pageIDs = page.items.filter { $0.status != .deleted }.map(\.id)
+    let pageIDs = effectiveItems.filter { $0.status != .deleted }.map(\.id)
     if reset {
       conversationOrder = pageIDs
     } else {
@@ -597,23 +603,29 @@ actor ConversationSyncEngine {
     guard reset else { return }
     let omitted = knownIDs.subtracting(Set(page.items.map(\.id))).sorted()
     for id in omitted {
+      let requestStartCanonical = try await store.conversation(
+        gatewayID: gatewayID,
+        id: id
+      )?.summary
+      try validate(lifecycle: lifecycle, conversations: conversations)
       do {
         let canonical = try await api.conversation(id: id)
         try validate(lifecycle: lifecycle, conversations: conversations)
-        try await persist(
+        let effective = try await persist(
           canonical,
           lifecycle: lifecycle,
           conversations: conversations
         )
-        if canonical.status != .deleted, conversationOrder.contains(id) == false {
+        if effective.status != .deleted, conversationOrder.contains(id) == false {
           conversationOrder.append(id)
         }
       } catch GatewayError.notFound {
-        try validate(lifecycle: lifecycle, conversations: conversations)
-        try await store.removeConversation(gatewayID: gatewayID, conversationID: id)
-        try validate(lifecycle: lifecycle, conversations: conversations)
-        pendingRemovedConversationIDs.insert(id)
-        conversationOrder.removeAll { $0 == id }
+        _ = try await reconcileNotFoundRemoval(
+          conversationID: id,
+          requestStartCanonical: requestStartCanonical,
+          lifecycle: lifecycle,
+          conversations: conversations
+        )
       }
     }
   }
@@ -637,18 +649,18 @@ actor ConversationSyncEngine {
       try validate(lifecycle: lifecycle, conversations: conversations)
       for item in page.items {
         canonicalIDs.insert(item.id)
-        try await persist(
+        let effective = try await persist(
           item,
           lifecycle: lifecycle,
           conversations: conversations
         )
-        if item.status != .deleted, canonicalOrder.contains(item.id) == false {
-          canonicalOrder.append(item.id)
+        if effective.status != .deleted, canonicalOrder.contains(effective.id) == false {
+          canonicalOrder.append(effective.id)
         }
-        if item.status == .running {
-          activeByID[item.id] = item
+        if effective.status == .running {
+          activeByID[effective.id] = effective
         } else {
-          activeByID[item.id] = nil
+          activeByID[effective.id] = nil
         }
       }
       guard let nextCursor = page.nextCursor else {
@@ -666,30 +678,41 @@ actor ConversationSyncEngine {
 
     let omitted = knownIDs.subtracting(canonicalIDs).sorted()
     for id in omitted {
+      let requestStartCanonical = try await store.conversation(
+        gatewayID: gatewayID,
+        id: id
+      )?.summary
+      try validate(lifecycle: lifecycle, conversations: conversations)
       let canonical: ConversationSummaryDTO
       do {
         canonical = try await api.conversation(id: id)
         try validate(lifecycle: lifecycle, conversations: conversations)
       } catch GatewayError.notFound {
-        try validate(lifecycle: lifecycle, conversations: conversations)
-        try await store.removeConversation(gatewayID: gatewayID, conversationID: id)
-        try validate(lifecycle: lifecycle, conversations: conversations)
-        pendingRemovedConversationIDs.insert(id)
-        conversationOrder.removeAll { $0 == id }
+        let retained = try await reconcileNotFoundRemoval(
+          conversationID: id,
+          requestStartCanonical: requestStartCanonical,
+          lifecycle: lifecycle,
+          conversations: conversations
+        )
+        if retained?.status == .running {
+          activeByID[id] = retained
+        } else {
+          activeByID[id] = nil
+        }
         continue
       } catch {
         guard isIsolatedForegroundResourceFailure(error) else { throw error }
         continue
       }
-      try await persist(
+      let effective = try await persist(
         canonical,
         lifecycle: lifecycle,
         conversations: conversations
       )
-      if canonical.status == .running {
-        activeByID[canonical.id] = canonical
+      if effective.status == .running {
+        activeByID[effective.id] = effective
       } else {
-        activeByID[canonical.id] = nil
+        activeByID[effective.id] = nil
       }
     }
 
@@ -747,20 +770,26 @@ actor ConversationSyncEngine {
     _ summary: ConversationSummaryDTO,
     lifecycle: Int,
     conversations: Int?
-  ) async throws {
+  ) async throws -> ConversationSummaryDTO {
     try validate(lifecycle: lifecycle, conversations: conversations)
-    if summary.status == .deleted {
-      try await store.applyTombstone(summary, gatewayID: gatewayID)
-      try validate(lifecycle: lifecycle, conversations: conversations)
-      pendingRemovedConversationIDs.insert(summary.id)
-      conversationOrder.removeAll { $0 == summary.id }
+    let effective = try await store.persistConversationAndReturnCanonical(
+      summary,
+      gatewayID: gatewayID
+    ).summary
+    if effective.status == .deleted {
+      resetMessageSyncState(conversationID: effective.id)
+    }
+    try validate(lifecycle: lifecycle, conversations: conversations)
+    if effective.status == .deleted {
+      pendingRemovedConversationIDs.insert(effective.id)
+      conversationOrder.removeAll { $0 == effective.id }
     } else {
-      try await store.upsertConversations([summary], gatewayID: gatewayID)
-      try validate(lifecycle: lifecycle, conversations: conversations)
-      if conversationOrder.contains(summary.id) == false {
-        conversationOrder.append(summary.id)
+      pendingRemovedConversationIDs.remove(effective.id)
+      if conversationOrder.contains(effective.id) == false {
+        conversationOrder.append(effective.id)
       }
     }
+    return effective
   }
 
   private func createAndPersist(
@@ -769,11 +798,11 @@ actor ConversationSyncEngine {
   ) async throws -> ConversationSummaryDTO {
     let summary = try await api.createConversation(request)
     try validate(lifecycle: lifecycle)
-    try await persist(summary, lifecycle: lifecycle, conversations: nil)
+    let persisted = try await persist(summary, lifecycle: lifecycle, conversations: nil)
     try await reloadSnapshot(lifecycle: lifecycle)
     try validate(lifecycle: lifecycle)
     publish(.online)
-    return summary
+    return persisted
   }
 
   private func reloadSnapshot(lifecycle: Int, conversations: Int? = nil) async throws {
@@ -796,6 +825,7 @@ actor ConversationSyncEngine {
     let lastSync = try await store.profile(gatewayID: gatewayID)?.profile.lastSuccessfulSyncAt
     try validate(lifecycle: lifecycle, conversations: conversations)
     snapshotConversations = ordered
+    pendingRemovedConversationIDs.subtract(ordered.map(\.id))
     snapshotAgents = agents
     lastSuccessfulSyncAt = lastSync
   }
@@ -986,6 +1016,49 @@ actor ConversationSyncEngine {
     messageResetTokens[conversationID] = token
     olderMessageTokens[conversationID] = nil
     return token
+  }
+
+  private func resetMessageSyncState(conversationID: String) {
+    messageCursors[conversationID] = nil
+    reconcilers[conversationID] = nil
+    messageGenerations[conversationID, default: 0] &+= 1
+    messageResetTokens[conversationID] = nil
+    olderMessageTokens[conversationID] = nil
+  }
+
+  private func reconcileNotFoundRemoval(
+    conversationID: String,
+    requestStartCanonical: ConversationSummaryDTO?,
+    lifecycle: Int,
+    conversations: Int
+  ) async throws -> ConversationSummaryDTO? {
+    try validate(lifecycle: lifecycle, conversations: conversations)
+    let outcome = try await store.removeConversationIfCanonicalUnchanged(
+      gatewayID: gatewayID,
+      conversationID: conversationID,
+      expectedCanonical: requestStartCanonical
+    )
+    try validate(lifecycle: lifecycle, conversations: conversations)
+    switch outcome {
+    case .removed:
+      resetMessageSyncState(conversationID: conversationID)
+      pendingRemovedConversationIDs.insert(conversationID)
+      conversationOrder.removeAll { $0 == conversationID }
+      return nil
+
+    case .retained(let current):
+      if current.status == .deleted {
+        resetMessageSyncState(conversationID: conversationID)
+        pendingRemovedConversationIDs.insert(conversationID)
+        conversationOrder.removeAll { $0 == conversationID }
+      } else {
+        pendingRemovedConversationIDs.remove(conversationID)
+        if conversationOrder.contains(conversationID) == false {
+          conversationOrder.append(conversationID)
+        }
+      }
+      return current
+    }
   }
 
   private func finishMessageReset(_ token: MessageLoadToken) {

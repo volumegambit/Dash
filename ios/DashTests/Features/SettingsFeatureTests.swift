@@ -147,7 +147,7 @@ struct SettingsFeatureTests {
       )
     )
     await model.start()
-    model.consume(
+    await model.consume(
       SyncSnapshot(
         connection: .offline,
         conversations: [],
@@ -210,7 +210,7 @@ struct SettingsFeatureTests {
       )
     )
     await model.start()
-    model.consume(
+    await model.consume(
       SyncSnapshot(
         connection: .offline,
         conversations: [],
@@ -239,7 +239,7 @@ struct SettingsFeatureTests {
       )
     )
     await model.start()
-    model.consume(
+    await model.consume(
       SyncSnapshot(
         connection: .offline,
         conversations: [],

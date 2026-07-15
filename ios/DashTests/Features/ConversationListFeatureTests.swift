@@ -46,6 +46,410 @@ struct ConversationListFeatureTests {
     #expect(await recoveryService.discarded == [recovery])
   }
 
+  @Test("live recovery discard keeps an active corrupt newer draft readable after restart")
+  func liveRecoveryDiscardPreservesCorruptCoexistingDraftText() async throws {
+    let directory = FileManager.default.temporaryDirectory.appending(
+      path: UUID().uuidString,
+      directoryHint: .isDirectory
+    )
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let storeURL = directory.appending(path: "dash.store")
+    let pending = PendingChatSend(
+      turnID: "turn-earlier",
+      localUserID: "local-earlier",
+      draft: "Earlier message",
+      attachments: [],
+      createdAt: Date(timeIntervalSince1970: 41)
+    )
+    let newerDraft = ConversationDraft(
+      text: "Newer composer text survives",
+      attachments: [
+        PreparedAttachment(
+          id: UUID(uuidString: "018f0f4a-5c42-7a8b-9c01-1234567890ae")!,
+          mediaType: "image/webp",
+          data: Data([0x02])
+        )
+      ],
+      updatedAt: Date(timeIntervalSince1970: 42)
+    )
+    let store = try PersistenceStore.stored(at: storeURL)
+    try await store.upsertConversations(
+      [summary(id: "active", title: "Active conversation")],
+      gatewayID: "gateway-1"
+    )
+    #expect(
+      try await store.stagePendingSend(
+        pending,
+        gatewayID: "gateway-1",
+        conversationID: "active"
+      ) == .staged
+    )
+    try await store.saveDraft(
+      newerDraft,
+      gatewayID: "gateway-1",
+      conversationID: "active",
+      encodeAttachments: { _ in Data("corrupt-draft-attachments".utf8) }
+    )
+    let service = LiveConversationRecoveryService(gatewayID: "gateway-1", store: store)
+    let recovery = try #require(try await service.recoverablePendingSends().first)
+    #expect(recovery.coexistingDraftAttachmentIssue == .unreadableStoredPayload)
+    #expect(recovery.conversationAvailable)
+
+    #expect(try await service.discard(recovery))
+
+    let reopenedStore = try PersistenceStore.stored(at: storeURL)
+    let chatPersistence = LiveChatPersistence(store: reopenedStore)
+    let restoredDraft = try? await chatPersistence.draft(
+      gatewayID: "gateway-1",
+      conversationID: "active"
+    )
+    #expect(
+      restoredDraft
+        == ConversationDraft(
+          text: newerDraft.text,
+          attachments: [],
+          updatedAt: newerDraft.updatedAt
+        )
+    )
+    #expect(
+      try await reopenedStore.pendingSend(gatewayID: "gateway-1", conversationID: "active")
+        == .none
+    )
+  }
+
+  @Test("a burst of sync snapshots coalesces recovery enumeration")
+  func snapshotBurstCoalescesRecoveryReload() async {
+    let recoveryService = FakeConversationRecoveryService()
+    let feature = makeFeature(
+      service: FakeConversationListService(),
+      recoveryService: recoveryService
+    )
+
+    feature.consume(snapshot(connection: .offline, conversations: []))
+    feature.consume(snapshot(connection: .offline, conversations: []))
+    feature.consume(snapshot(connection: .offline, conversations: []))
+    try? await Task.sleep(for: .milliseconds(20))
+
+    let callCount = await recoveryService.recoverableCallCount
+    #expect(callCount == 1)
+    feature.prepareForShutdown()
+  }
+
+  @Test("gateway-scoped recovery changes refresh the list without another sync snapshot")
+  func recoveryChangeSignalRefreshesMatchingGateway() async {
+    let recoveryService = FakeConversationRecoveryService()
+    let recoveryChanges = ConversationRecoveryChangeSignal()
+    let feature = makeFeature(
+      service: FakeConversationListService(),
+      recoveryService: recoveryService,
+      recoveryChanges: recoveryChanges
+    )
+    feature.consume(snapshot(connection: .offline, conversations: []))
+    await feature.start()
+    let initialCount = await recoveryService.recoverableCallCount
+
+    await recoveryChanges.send(gatewayID: "other-gateway")
+    try? await Task.sleep(for: .milliseconds(20))
+    let afterUnrelatedChange = await recoveryService.recoverableCallCount
+    #expect(afterUnrelatedChange == initialCount)
+
+    await recoveryChanges.send(gatewayID: "gateway-1")
+    try? await Task.sleep(for: .milliseconds(20))
+    let afterMatchingChange = await recoveryService.recoverableCallCount
+    #expect(afterMatchingChange == initialCount + 1)
+    feature.prepareForShutdown()
+  }
+
+  @Test("recovery signal preserves a matching change across unrelated gateway changes")
+  func recoverySignalPreservesMatchingChangeAcrossUnrelatedGateways() async {
+    let recoveryChanges = ConversationRecoveryChangeSignal()
+    let subscription = await recoveryChanges.subscription(gatewayID: "gateway-1")
+    #expect(await recoveryChanges.subscriberCount == 1)
+
+    await recoveryChanges.send(gatewayID: "gateway-1")
+    await recoveryChanges.send(gatewayID: "gateway-2")
+    var iterator = subscription.changes.makeAsyncIterator()
+
+    #expect(await iterator.next() == "gateway-1")
+    await subscription.cancel()
+    #expect(await recoveryChanges.subscriberCount == 0)
+  }
+
+  @Test("overlapping starts acquire exactly one recovery change subscription")
+  func overlappingStartsAcquireOneRecoveryChangeSubscription() async {
+    let recoveryService = FakeConversationRecoveryService()
+    let signal = ConversationRecoveryChangeSignal()
+    let recoveryChanges = CoordinatedRecoveryChangeSource(
+      signal: signal,
+      releaseOnSecondAcquisition: true
+    )
+    let feature = makeFeature(
+      service: FakeConversationListService(),
+      recoveryService: recoveryService,
+      recoveryChanges: recoveryChanges
+    )
+
+    let firstStart = Task { await feature.start() }
+    await recoveryChanges.waitUntilAcquisitionCount(1)
+    let overlappingStart = Task { await feature.start() }
+    await recoveryService.waitUntilRecoverableCallCount(1)
+    await recoveryChanges.releaseAcquisition()
+    await firstStart.value
+    await overlappingStart.value
+
+    #expect(await recoveryChanges.acquisitionCount == 1)
+    #expect(await signal.subscriberCount == 1)
+    feature.prepareForShutdown()
+  }
+
+  @Test("teardown during recovery subscription acquisition prevents a post-shutdown reload")
+  func teardownDuringRecoverySubscriptionAcquisition() async {
+    let recoveryService = FakeConversationRecoveryService()
+    let signal = ConversationRecoveryChangeSignal()
+    let recoveryChanges = CoordinatedRecoveryChangeSource(signal: signal)
+    let feature = makeFeature(
+      service: FakeConversationListService(),
+      recoveryService: recoveryService,
+      recoveryChanges: recoveryChanges
+    )
+
+    let start = Task { await feature.start() }
+    await recoveryChanges.waitUntilAcquisitionCount(1)
+    feature.prepareForShutdown()
+    await recoveryChanges.releaseAcquisition()
+    await start.value
+
+    #expect(await recoveryService.recoverableCallCount == 0)
+    #expect(await signal.subscriberCount == 0)
+    feature.prepareForShutdown()
+  }
+
+  @Test("shutdown drains an in-flight recovery subscription acquisition")
+  func shutdownDrainsRecoverySubscriptionAcquisition() async {
+    let signal = ConversationRecoveryChangeSignal()
+    let recoveryChanges = CoordinatedRecoveryChangeSource(signal: signal)
+    let service = FakeConversationListService()
+    let feature = makeFeature(
+      service: service,
+      recoveryChanges: recoveryChanges
+    )
+
+    let start = Task { await feature.start() }
+    await recoveryChanges.waitUntilAcquisitionCount(1)
+    let completion = ShutdownCompletionProbe()
+    let shutdown = Task {
+      await feature.shutdown()
+      await completion.record()
+    }
+    try? await Task.sleep(for: .milliseconds(20))
+
+    #expect(await completion.count == 0)
+
+    await recoveryChanges.releaseAcquisition()
+    await start.value
+    await shutdown.value
+
+    #expect(await completion.count == 1)
+    #expect(await signal.subscriberCount == 0)
+    #expect(await service.shutdownCallCount == 1)
+  }
+
+  @Test("shutdown drains a direct in-flight recovery reload")
+  func shutdownDrainsDirectRecoveryReload() async {
+    let recoveryGate = TestGate()
+    let recoveryService = FakeConversationRecoveryService()
+    await recoveryService.gateNextRecoverableCall(recoveryGate)
+    let service = FakeConversationListService()
+    let feature = makeFeature(service: service, recoveryService: recoveryService)
+
+    let reload = Task { await feature.reloadRecoverablePendingSends() }
+    await recoveryGate.waitUntilWaiting()
+    let completion = ShutdownCompletionProbe()
+    let shutdown = Task {
+      await feature.shutdown()
+      await completion.record()
+    }
+    try? await Task.sleep(for: .milliseconds(20))
+
+    #expect(await completion.count == 0)
+
+    await recoveryGate.release()
+    await reload.value
+    await shutdown.value
+
+    #expect(await completion.count == 1)
+    #expect(await service.shutdownCallCount == 1)
+  }
+
+  @Test("a discard awaits an overlapping explicit recovery reload through its final pass")
+  func discardAwaitsOverlappingExplicitRecoveryReload() async throws {
+    let recovery = RecoverablePendingSend(
+      gatewayID: "gateway-1",
+      conversationID: "deleted",
+      conversationTitle: "Deleted conversation",
+      agentName: "Agent",
+      pendingSend: PendingChatSend(
+        turnID: "turn-pending",
+        localUserID: "local-user",
+        draft: "Recover me",
+        attachments: [],
+        createdAt: Date(timeIntervalSince1970: 42)
+      )
+    )
+    let recoveryService = FakeConversationRecoveryService(values: [recovery])
+    let feature = makeFeature(
+      service: FakeConversationListService(),
+      recoveryService: recoveryService
+    )
+    feature.consume(snapshot(connection: .offline, conversations: []))
+    await feature.start()
+
+    let reloadGate = TestGate()
+    await recoveryService.gateNextRecoverableCall(reloadGate)
+    let leadingReload = Task { await feature.reloadRecoverablePendingSends() }
+    await reloadGate.waitUntilWaiting()
+
+    let discardCompletion = ShutdownCompletionProbe()
+    let discard = Task {
+      let discarded = await feature.discardRecovery(recovery)
+      await discardCompletion.record()
+      return discarded
+    }
+    try await Task.sleep(for: .milliseconds(20))
+
+    #expect(await discardCompletion.count == 0)
+
+    await reloadGate.release()
+    await leadingReload.value
+    #expect(await discard.value)
+    #expect(feature.recoverablePendingSends.isEmpty)
+    await feature.shutdown()
+  }
+
+  @Test("shutdown drains recovery discard and rejects another discard")
+  func shutdownDrainsRecoveryDiscard() async {
+    let recovery = RecoverablePendingSend(
+      gatewayID: "gateway-1",
+      conversationID: "deleted",
+      conversationTitle: "Deleted conversation",
+      agentName: "Agent",
+      pendingSend: PendingChatSend(
+        turnID: "turn-pending",
+        localUserID: "local-user",
+        draft: "Recover me",
+        attachments: [],
+        createdAt: Date(timeIntervalSince1970: 42)
+      )
+    )
+    let discardGate = TestGate()
+    let recoveryService = FakeConversationRecoveryService(values: [recovery])
+    await recoveryService.gateNextDiscard(discardGate)
+    let service = FakeConversationListService()
+    let feature = makeFeature(service: service, recoveryService: recoveryService)
+
+    let discard = Task { await feature.discardRecovery(recovery) }
+    await discardGate.waitUntilWaiting()
+    #expect(feature.discardingRecoveryID == recovery.id)
+    let completion = ShutdownCompletionProbe()
+    let shutdown = Task {
+      await feature.shutdown()
+      await completion.record()
+    }
+    try? await Task.sleep(for: .milliseconds(20))
+
+    #expect(await completion.count == 0)
+
+    await discardGate.release()
+    #expect(await discard.value)
+    await shutdown.value
+
+    #expect(await completion.count == 1)
+    #expect(feature.discardingRecoveryID == nil)
+    #expect(await service.shutdownCallCount == 1)
+    #expect(await feature.discardRecovery(recovery) == false)
+    #expect(await recoveryService.discarded == [recovery])
+  }
+
+  @Test("shutdown drains cancelled refresh and recovery work exactly once")
+  func shutdownDrainsCancelledRefreshAndRecoveryWork() async {
+    let pageGate = TestGate()
+    let recoveryGate = TestGate()
+    let serviceShutdownGate = TestGate()
+    let service = FakeConversationListService(
+      pageGate: pageGate,
+      shutdownGate: serviceShutdownGate
+    )
+    let recoveryService = FakeConversationRecoveryService()
+    let feature = makeFeature(service: service, recoveryService: recoveryService)
+    await feature.start()
+    await recoveryService.gateNextRecoverableCall(recoveryGate)
+
+    feature.consume(snapshot(connection: .online, conversations: []))
+    await pageGate.waitUntilWaiting()
+    await recoveryGate.waitUntilWaiting()
+
+    feature.prepareForShutdown()
+    let completion = ShutdownCompletionProbe()
+    let firstShutdown = Task {
+      await feature.shutdown()
+      await completion.record()
+    }
+    await serviceShutdownGate.waitUntilWaiting()
+    let overlappingShutdown = Task {
+      await feature.shutdown()
+      await completion.record()
+    }
+
+    await serviceShutdownGate.release()
+    try? await Task.sleep(for: .milliseconds(20))
+    #expect(await completion.count == 0)
+
+    await pageGate.release()
+    try? await Task.sleep(for: .milliseconds(20))
+    #expect(await completion.count == 0)
+
+    await recoveryGate.release()
+    await firstShutdown.value
+    await overlappingShutdown.value
+    await feature.shutdown()
+
+    #expect(await completion.count == 2)
+    #expect(await service.shutdownCallCount == 1)
+  }
+
+  @Test("shutdown waits for recovery stream cancellation to release its subscriber")
+  func shutdownWaitsForRecoveryStreamTermination() async {
+    let signal = ConversationRecoveryChangeSignal()
+    let cancellationGate = TestGate()
+    let recoveryChanges = GatedCancellationRecoveryChangeSource(
+      signal: signal,
+      cancellationGate: cancellationGate
+    )
+    let feature = makeFeature(
+      service: FakeConversationListService(),
+      recoveryChanges: recoveryChanges
+    )
+    await feature.start()
+    #expect(await signal.subscriberCount == 1)
+
+    let completion = ShutdownCompletionProbe()
+    let shutdown = Task {
+      await feature.shutdown()
+      await completion.record()
+    }
+    await cancellationGate.waitUntilWaiting()
+    try? await Task.sleep(for: .milliseconds(20))
+
+    #expect(await completion.count == 0)
+
+    await cancellationGate.release()
+    await shutdown.value
+
+    #expect(await completion.count == 1)
+    #expect(await signal.subscriberCount == 0)
+  }
+
   @Test("cached rows and agents publish before the online refresh finishes")
   func cachedFirstLoad() async {
     let cached = cachedConversation(summary(id: "cached", title: "Cached"))
@@ -158,6 +562,54 @@ struct ConversationListFeatureTests {
     #expect(await service.pageCalls.map(\.cursor) == [nil, nil])
   }
 
+  @Test("refresh cannot replace a newer active row with stale or equal tombstones")
+  func refreshRejectsNonNewerTombstones() async {
+    let active = summary(id: "conversation", title: "Active", revision: 6)
+    let staleTombstone = summary(
+      id: active.id,
+      title: active.title,
+      revision: 5,
+      status: .deleted
+    )
+    let equalTombstone = summary(
+      id: active.id,
+      title: active.title,
+      revision: active.revision,
+      status: .deleted
+    )
+    let service = FakeConversationListService()
+    await service.enqueuePage(
+      .success(ConversationPageDTO(items: [staleTombstone], nextCursor: nil))
+    )
+    await service.enqueuePage(
+      .success(ConversationPageDTO(items: [equalTombstone], nextCursor: nil))
+    )
+    let feature = makeFeature(service: service)
+    feature.consume(snapshot(connection: .online, conversations: [cachedConversation(active)]))
+
+    await feature.refresh()
+    #expect(feature.conversations.map(\.summary) == [active])
+
+    await feature.refresh()
+    #expect(feature.conversations.map(\.summary) == [active])
+  }
+
+  @Test("refresh revives a tombstone only with a strictly newer active row")
+  func refreshRevivesTombstoneWithNewerActiveRow() async {
+    let tombstone = summary(id: "conversation", revision: 3, status: .deleted)
+    let revived = summary(id: tombstone.id, title: "Revived", revision: 4)
+    let service = FakeConversationListService()
+    await service.enqueuePage(
+      .success(ConversationPageDTO(items: [revived], nextCursor: nil))
+    )
+    let feature = makeFeature(service: service)
+    feature.consume(snapshot(connection: .online, conversations: [cachedConversation(tombstone)]))
+
+    await feature.refresh()
+
+    #expect(feature.conversations.map(\.summary) == [revived])
+  }
+
   @Test("agent filter is applied to cache and sent on refresh")
   func agentFilter() async {
     let one = summary(id: "one", agentID: "agent-1")
@@ -209,6 +661,61 @@ struct ConversationListFeatureTests {
     #expect(await service.pageCalls.map(\.cursor) == [nil, "opaque/+cursor=="])
   }
 
+  @Test("pagination cannot replace a newer active row with stale or equal tombstones")
+  func paginationRejectsNonNewerTombstones() async {
+    let active = summary(id: "conversation", title: "Active", revision: 6, updatedAt: 200)
+    let fillers = (0..<8).map { summary(id: "filler-\($0)", updatedAt: 100 - $0) }
+    let staleTombstone = summary(
+      id: active.id,
+      title: active.title,
+      revision: 5,
+      status: .deleted
+    )
+    let equalTombstone = summary(
+      id: active.id,
+      title: active.title,
+      revision: active.revision,
+      status: .deleted
+    )
+    let service = FakeConversationListService()
+    await service.enqueuePage(
+      .success(ConversationPageDTO(items: [active] + fillers, nextCursor: "older"))
+    )
+    await service.enqueuePage(
+      .success(
+        ConversationPageDTO(items: [staleTombstone, equalTombstone], nextCursor: nil)
+      )
+    )
+    let feature = makeFeature(service: service)
+    feature.consume(snapshot(connection: .online, conversations: []))
+    await feature.start()
+
+    await feature.loadOlderIfNeeded(currentID: fillers[3].id)
+
+    #expect(feature.conversations.first?.summary == active)
+  }
+
+  @Test("pagination revives a tombstone only with a strictly newer active row")
+  func paginationRevivesTombstoneWithNewerActiveRow() async {
+    let tombstone = summary(id: "conversation", revision: 3, status: .deleted)
+    let revived = summary(id: tombstone.id, title: "Revived", revision: 4)
+    let fillers = (0..<8).map { summary(id: "filler-\($0)", updatedAt: 100 - $0) }
+    let service = FakeConversationListService()
+    await service.enqueuePage(
+      .success(ConversationPageDTO(items: fillers + [tombstone], nextCursor: "older"))
+    )
+    await service.enqueuePage(
+      .success(ConversationPageDTO(items: [revived], nextCursor: nil))
+    )
+    let feature = makeFeature(service: service)
+    feature.consume(snapshot(connection: .online, conversations: []))
+    await feature.start()
+
+    await feature.loadOlderIfNeeded(currentID: fillers[3].id)
+
+    #expect(feature.conversations.last?.summary == revived)
+  }
+
   @Test("ambiguous create reconciliation reuses exactly one request ID")
   func createRetainsRequestID() async {
     let canonical = summary(id: "created", agentID: "agent-1", title: "New conversation")
@@ -233,6 +740,29 @@ struct ConversationListFeatureTests {
     #expect(reconcile[0].requestId == create[0].requestId)
     #expect(feature.selectedID == canonical.id)
     #expect(feature.conversations.map(\.summary) == [canonical])
+  }
+
+  @Test("a newer tombstone during create finalization prevents deleted selection")
+  func createFinalizationDoesNotSelectNewerTombstone() async {
+    let created = summary(id: "created", revision: 7)
+    let newerTombstone = summary(id: created.id, revision: 8, status: .deleted)
+    let clearGate = TestGate()
+    let service = FakeConversationListService()
+    await service.enqueueCreate(.success(created))
+    await service.gateNextClearRetainedCreateRequestID(clearGate)
+    let feature = makeFeature(service: service)
+    feature.consume(snapshot(connection: .online, conversations: []))
+
+    let create = Task { await feature.create(agentID: created.agentId) }
+    await clearGate.waitUntilWaiting()
+    feature.consume(
+      snapshot(connection: .online, conversations: [cachedConversation(newerTombstone)])
+    )
+    await clearGate.release()
+    await create.value
+
+    #expect(feature.conversations.isEmpty)
+    #expect(feature.selectedID == nil)
   }
 
   @Test("an unresolved create keeps its request ID for an explicit retry")
@@ -328,6 +858,78 @@ struct ConversationListFeatureTests {
     #expect(await service.renameCalls.map(\.title) == ["Mine", "Mine"])
   }
 
+  @Test("conflict reconciliation applies the effective persisted canonical")
+  func conflictReconciliationUsesEffectivePersistedCanonical() async {
+    let local = summary(id: "conversation", title: "Local", revision: 5)
+    let staleTombstone = summary(
+      id: local.id,
+      title: local.title,
+      revision: 6,
+      status: .deleted
+    )
+    let effective = summary(id: local.id, title: "Newer active", revision: 7)
+    let service = FakeConversationListService()
+    await service.enqueueRename(.failure(.revisionConflict(current: staleTombstone)))
+    await service.enqueueReplace(.success(effective))
+    let feature = makeFeature(service: service)
+    feature.consume(snapshot(connection: .online, conversations: [cachedConversation(local)]))
+
+    await feature.rename(id: local.id, title: "Mine")
+
+    #expect(feature.conversations.map(\.summary) == [effective])
+    #expect(feature.mutationError == .revisionConflict(current: effective))
+  }
+
+  @Test("a newer active snapshot during conflict persistence remains retryable")
+  func conflictPersistenceKeepsNewerActiveSnapshotRetryable() async {
+    let local = summary(id: "conversation", title: "Local", revision: 5)
+    let conflict = summary(id: local.id, revision: 6, status: .deleted)
+    let persisted = summary(id: local.id, revision: 7, status: .deleted)
+    let newerActive = summary(id: local.id, title: "Newer active", revision: 8)
+    let replaceGate = TestGate()
+    let service = FakeConversationListService()
+    await service.enqueueRename(.failure(.revisionConflict(current: conflict)))
+    await service.enqueueReplace(.success(persisted), gate: replaceGate)
+    let feature = makeFeature(service: service)
+    feature.consume(snapshot(connection: .online, conversations: [cachedConversation(local)]))
+
+    let rename = Task { await feature.rename(id: local.id, title: "Mine") }
+    await replaceGate.waitUntilWaiting()
+    feature.consume(
+      snapshot(connection: .online, conversations: [cachedConversation(newerActive)])
+    )
+    await replaceGate.release()
+    await rename.value
+
+    #expect(feature.conversations.map(\.summary) == [newerActive])
+    #expect(feature.mutationError == .revisionConflict(current: newerActive))
+  }
+
+  @Test("a newer tombstone snapshot during conflict persistence clears a stale banner")
+  func conflictPersistenceKeepsNewerTombstoneAuthoritative() async {
+    let local = summary(id: "conversation", title: "Local", revision: 5)
+    let conflict = summary(id: local.id, title: "Conflict", revision: 6)
+    let persisted = summary(id: local.id, title: "Persisted", revision: 7)
+    let newerTombstone = summary(id: local.id, revision: 8, status: .deleted)
+    let replaceGate = TestGate()
+    let service = FakeConversationListService()
+    await service.enqueueRename(.failure(.revisionConflict(current: conflict)))
+    await service.enqueueReplace(.success(persisted), gate: replaceGate)
+    let feature = makeFeature(service: service)
+    feature.consume(snapshot(connection: .online, conversations: [cachedConversation(local)]))
+
+    let rename = Task { await feature.rename(id: local.id, title: "Mine") }
+    await replaceGate.waitUntilWaiting()
+    feature.consume(
+      snapshot(connection: .online, conversations: [cachedConversation(newerTombstone)])
+    )
+    await replaceGate.release()
+    await rename.value
+
+    #expect(feature.conversations.isEmpty)
+    #expect(feature.mutationError == nil)
+  }
+
   @Test("confirmed delete waits for and applies a canonical tombstone")
   func confirmedDeleteAppliesTombstone() async {
     let local = summary(id: "conversation", title: "Delete me", revision: 4)
@@ -340,8 +942,13 @@ struct ConversationListFeatureTests {
     let service = FakeConversationListService(cachedConversations: [cachedConversation(local)])
     await service.enqueueDelete(.success(tombstone))
     let feature = makeFeature(service: service)
+    let lifecycle = ConversationLifecycleChangeProbe()
     feature.consume(snapshot(connection: .online, conversations: [cachedConversation(local)]))
     await feature.start()
+    feature.setLifecycleChangeHandler { changes in
+      await lifecycle.record(changes)
+      return .ignored
+    }
 
     await feature.delete(id: local.id, confirmed: false)
     #expect(feature.conversations.map(\.id) == [local.id])
@@ -351,6 +958,269 @@ struct ConversationListFeatureTests {
 
     #expect(feature.conversations.isEmpty)
     #expect(await service.deleteCalls.map(\.revision) == [4])
+    #expect(await lifecycle.changes == [.canonical(tombstone)])
+  }
+
+  @Test("conversation row actions respect canonical status and connectivity")
+  func conversationRowActionsRespectCanonicalState() {
+    let idle = summary(id: "idle")
+    let running = summary(id: "running", status: .running)
+    let archived = summary(id: "archived", status: .archived)
+
+    let onlineIdle = ConversationRowActionPolicy(summary: idle, mutationsAllowed: true)
+    #expect(onlineIdle.showsRename)
+    #expect(onlineIdle.showsDelete)
+    #expect(onlineIdle.canRename)
+    #expect(onlineIdle.canDelete)
+
+    let onlineRunning = ConversationRowActionPolicy(summary: running, mutationsAllowed: true)
+    #expect(onlineRunning.showsRename)
+    #expect(onlineRunning.showsDelete)
+    #expect(onlineRunning.canRename)
+    #expect(onlineRunning.canDelete == false)
+    #expect(
+      onlineRunning.deleteDisabledHint
+        == "Wait for the active turn to finish before deleting"
+    )
+
+    let onlineArchived = ConversationRowActionPolicy(summary: archived, mutationsAllowed: true)
+    #expect(onlineArchived.showsRename == false)
+    #expect(onlineArchived.showsDelete == false)
+
+    let offlineIdle = ConversationRowActionPolicy(summary: idle, mutationsAllowed: false)
+    #expect(offlineIdle.showsRename)
+    #expect(offlineIdle.showsDelete)
+    #expect(offlineIdle.canRename == false)
+    #expect(offlineIdle.canDelete == false)
+    #expect(offlineIdle.renameDisabledHint == "Connect to the gateway to rename")
+    #expect(offlineIdle.deleteDisabledHint == "Connect to the gateway to delete")
+  }
+
+  @Test("a raced delete busy response remains actionable")
+  func busyDeleteMapsToActionableMutationError() async {
+    let local = summary(id: "conversation", title: "Busy", revision: 4)
+    let service = FakeConversationListService(cachedConversations: [cachedConversation(local)])
+    await service.enqueueDelete(.failure(.conversationBusy(activeTurnId: "remote-turn")))
+    let feature = makeFeature(service: service)
+    feature.consume(snapshot(connection: .online, conversations: [cachedConversation(local)]))
+
+    await feature.delete(id: local.id, confirmed: true)
+
+    #expect(
+      feature.mutationError
+        == .conversationBusy(conversationID: local.id, activeTurnID: "remote-turn")
+    )
+    #expect(feature.conversations.map(\.summary) == [local])
+  }
+
+  @Test("a raced archived delete reconciles only its canonical read-only row")
+  func archivedDeleteRaceReconcilesCanonicalState() async {
+    let local = summary(id: "conversation", title: "Local", revision: 4)
+    let unrelated = summary(id: "unrelated", title: "Keep me", revision: 7)
+    let archived = summary(
+      id: local.id,
+      title: "Archived elsewhere",
+      revision: 5,
+      status: .archived
+    )
+    let service = FakeConversationListService(
+      cachedConversations: [cachedConversation(local), cachedConversation(unrelated)]
+    )
+    await service.enqueueDelete(
+      .failure(.validation("Archived conversations cannot be deleted"))
+    )
+    await service.enqueueConversation(.success(archived))
+    let feature = makeFeature(service: service)
+    let lifecycle = ConversationLifecycleChangeProbe()
+    feature.consume(
+      snapshot(
+        connection: .online,
+        conversations: [cachedConversation(local), cachedConversation(unrelated)]
+      )
+    )
+    feature.setLifecycleChangeHandler { changes in
+      await lifecycle.record(changes)
+      return .ignored
+    }
+
+    await feature.delete(id: local.id, confirmed: true)
+
+    #expect(feature.conversations.map(\.summary) == [archived, unrelated])
+    #expect(feature.mutationError == .readOnly(conversationID: local.id))
+    #expect(await service.conversationCalls == [local.id])
+    #expect(await service.pageCalls.isEmpty)
+    #expect(await service.refreshAgentCallCount == 0)
+    #expect(await lifecycle.changes == [.canonical(archived)])
+  }
+
+  @Test("a missing archived reconciliation target removes its stale row")
+  func missingArchivedReconciliationTargetRemovesStaleRow() async {
+    let local = summary(id: "conversation", title: "Local", revision: 4)
+    let service = FakeConversationListService(cachedConversations: [cachedConversation(local)])
+    await service.enqueueDelete(
+      .failure(.validation("Archived conversations cannot be deleted"))
+    )
+    await service.enqueueConversation(.failure(.notFound))
+    let feature = makeFeature(service: service)
+    let lifecycle = ConversationLifecycleChangeProbe()
+    feature.consume(snapshot(connection: .online, conversations: [cachedConversation(local)]))
+    feature.setLifecycleChangeHandler { changes in
+      await lifecycle.record(changes)
+      return .ignored
+    }
+
+    await feature.delete(id: local.id, confirmed: true)
+
+    #expect(feature.conversations.isEmpty)
+    #expect(feature.mutationError == nil)
+    #expect(await service.conversationCalls == [local.id])
+    #expect(await service.removedIDs == [local.id])
+    #expect(await service.pageCalls.isEmpty)
+    #expect(
+      await lifecycle.changes == [.removed(id: local.id, revisionFloor: local.revision)]
+    )
+  }
+
+  @Test("a failed archived reconciliation target does not claim read-only")
+  func failedArchivedReconciliationTargetDoesNotClaimReadOnly() async {
+    let local = summary(id: "conversation", title: "Local", revision: 4)
+    let service = FakeConversationListService(cachedConversations: [cachedConversation(local)])
+    await service.enqueueRename(
+      .failure(.validation("Archived conversations cannot be updated"))
+    )
+    await service.enqueueConversation(.failure(.transport("connection lost")))
+    let feature = makeFeature(service: service)
+    feature.consume(snapshot(connection: .online, conversations: [cachedConversation(local)]))
+
+    await feature.rename(id: local.id, title: "Requested title")
+
+    #expect(feature.conversations.map(\.summary) == [local])
+    #expect(feature.mutationError == .failed)
+    #expect(await service.conversationCalls == [local.id])
+    #expect(await service.pageCalls.isEmpty)
+  }
+
+  @Test("a newer active row wins an archived reconciliation race")
+  func activeRowWinsArchivedReconciliationRace() async {
+    let local = summary(id: "conversation", title: "Local", revision: 4)
+    let archived = summary(id: local.id, title: "Archived", revision: 5, status: .archived)
+    let newerActive = summary(id: local.id, title: "Active again", revision: 6)
+    let targetGate = TestGate()
+    let service = FakeConversationListService(cachedConversations: [cachedConversation(local)])
+    await service.enqueueDelete(
+      .failure(.validation("Archived conversations cannot be deleted"))
+    )
+    await service.enqueueConversation(.success(archived), gate: targetGate)
+    let feature = makeFeature(service: service)
+    let lifecycle = ConversationLifecycleChangeProbe()
+    feature.consume(snapshot(connection: .online, conversations: [cachedConversation(local)]))
+    feature.setLifecycleChangeHandler { changes in
+      await lifecycle.record(changes)
+      return .ignored
+    }
+
+    let deletion = Task { await feature.delete(id: local.id, confirmed: true) }
+    await targetGate.waitUntilWaiting()
+    feature.consume(
+      snapshot(connection: .online, conversations: [cachedConversation(newerActive)])
+    )
+    await targetGate.release()
+    await deletion.value
+
+    #expect(feature.conversations.map(\.summary) == [newerActive])
+    #expect(feature.mutationError == .revisionConflict(current: newerActive))
+    #expect(await service.conversationCalls == [local.id])
+    #expect(await lifecycle.changes == [.canonical(newerActive)])
+  }
+
+  @Test("a missing archived reconciliation target cannot remove a newer active row")
+  func missingArchivedReconciliationTargetKeepsNewerActiveRow() async {
+    let local = summary(id: "conversation", title: "Local", revision: 4)
+    let newerActive = summary(id: local.id, title: "Active again", revision: 6)
+    let targetGate = TestGate()
+    let service = FakeConversationListService(cachedConversations: [cachedConversation(local)])
+    await service.enqueueDelete(
+      .failure(.validation("Archived conversations cannot be deleted"))
+    )
+    await service.enqueueConversation(.failure(.notFound), gate: targetGate)
+    let feature = makeFeature(service: service)
+    let lifecycle = ConversationLifecycleChangeProbe()
+    feature.consume(snapshot(connection: .online, conversations: [cachedConversation(local)]))
+    feature.setLifecycleChangeHandler { changes in
+      await lifecycle.record(changes)
+      return .ignored
+    }
+
+    let deletion = Task { await feature.delete(id: local.id, confirmed: true) }
+    await targetGate.waitUntilWaiting()
+    feature.consume(
+      snapshot(connection: .online, conversations: [cachedConversation(newerActive)])
+    )
+    await targetGate.release()
+    await deletion.value
+
+    #expect(feature.conversations.map(\.summary) == [newerActive])
+    #expect(feature.mutationError == .revisionConflict(current: newerActive))
+    #expect(await service.conversationCalls == [local.id])
+    #expect(await service.removedIDs.isEmpty)
+    #expect(await lifecycle.changes.isEmpty)
+  }
+
+  @Test("delete exposes the effective active canonical when its tombstone is rejected")
+  func deleteRejectedByPersistenceBecomesConflict() async {
+    let local = summary(id: "current", title: "Current", revision: 2)
+    let effective = summary(id: local.id, title: "Newer active", revision: 4)
+    let service = FakeConversationListService(cachedConversations: [cachedConversation(local)])
+    await service.enqueueDelete(.success(effective))
+    let feature = makeFeature(service: service)
+    feature.consume(snapshot(connection: .online, conversations: [cachedConversation(local)]))
+
+    await feature.delete(id: local.id, confirmed: true)
+
+    #expect(feature.conversations.map(\.summary) == [effective])
+    #expect(feature.mutationError == .revisionConflict(current: effective))
+  }
+
+  @Test("a newer active snapshot during delete remains visible and retryable")
+  func deleteKeepsNewerActiveSnapshotRetryable() async {
+    let local = summary(id: "conversation", title: "Local", revision: 5)
+    let returnedTombstone = summary(id: local.id, revision: 7, status: .deleted)
+    let newerActive = summary(id: local.id, title: "Newer active", revision: 8)
+    let deleteGate = TestGate()
+    let service = FakeConversationListService()
+    await service.enqueueDelete(.success(returnedTombstone), gate: deleteGate)
+    let feature = makeFeature(service: service)
+    feature.consume(snapshot(connection: .online, conversations: [cachedConversation(local)]))
+
+    let delete = Task { await feature.delete(id: local.id, confirmed: true) }
+    await deleteGate.waitUntilWaiting()
+    feature.consume(
+      snapshot(connection: .online, conversations: [cachedConversation(newerActive)])
+    )
+    await deleteGate.release()
+    await delete.value
+
+    #expect(feature.conversations.map(\.summary) == [newerActive])
+    #expect(feature.mutationError == .revisionConflict(current: newerActive))
+  }
+
+  @Test("mutation reconciliation cannot replace an active row with an equal tombstone")
+  func mutationReconciliationRejectsEqualTombstone() async {
+    let active = summary(id: "conversation", title: "Active", revision: 6)
+    let equalTombstone = summary(
+      id: active.id,
+      title: active.title,
+      revision: active.revision,
+      status: .deleted
+    )
+    let service = FakeConversationListService()
+    await service.enqueueRename(.success(equalTombstone))
+    let feature = makeFeature(service: service)
+    feature.consume(snapshot(connection: .online, conversations: [cachedConversation(active)]))
+
+    await feature.rename(id: active.id, title: "Requested title")
+
+    #expect(feature.conversations.map(\.summary) == [active])
   }
 
   @Test("a stale 404 removes the local row")
@@ -359,13 +1229,55 @@ struct ConversationListFeatureTests {
     let service = FakeConversationListService(cachedConversations: [cachedConversation(local)])
     await service.enqueueRename(.failure(.notFound))
     let feature = makeFeature(service: service)
+    let lifecycle = ConversationLifecycleChangeProbe()
     feature.consume(snapshot(connection: .online, conversations: [cachedConversation(local)]))
     await feature.start()
+    feature.setLifecycleChangeHandler { changes in
+      await lifecycle.record(changes)
+      return .ignored
+    }
 
     await feature.rename(id: local.id, title: "Still stale")
 
     #expect(feature.conversations.isEmpty)
     #expect(await service.removedIDs == [local.id])
+    #expect(
+      await lifecycle.changes == [.removed(id: local.id, revisionFloor: local.revision)]
+    )
+  }
+
+  @Test("a delayed 404 cannot remove an equal-revision newer active row")
+  func delayedNotFoundRetainsNewerActiveRow() async {
+    let local = summary(id: "conversation", title: "Before revival", revision: 5, updatedAt: 20)
+    let revived = summary(
+      id: local.id,
+      title: "Revived elsewhere",
+      revision: local.revision,
+      status: .running,
+      updatedAt: 30
+    )
+    let responseGate = TestGate()
+    let service = FakeConversationListService(cachedConversations: [cachedConversation(local)])
+    await service.enqueueRename(.failure(.notFound), gate: responseGate)
+    let feature = makeFeature(service: service)
+    let lifecycle = ConversationLifecycleChangeProbe()
+    feature.consume(snapshot(connection: .online, conversations: [cachedConversation(local)]))
+    await feature.start()
+    feature.setLifecycleChangeHandler { changes in
+      await lifecycle.record(changes)
+      return .ignored
+    }
+
+    let rename = Task { await feature.rename(id: local.id, title: "Rename") }
+    await responseGate.waitUntilWaiting()
+    feature.consume(snapshot(connection: .online, conversations: [cachedConversation(revived)]))
+    await responseGate.release()
+    await rename.value
+
+    #expect(feature.conversations.map(\.summary) == [revived])
+    #expect(feature.mutationError == .revisionConflict(current: revived))
+    #expect(await service.removedIDs.isEmpty)
+    #expect(await lifecycle.changes.isEmpty)
   }
 
   @Test("offline and local validation disable every mutation")
@@ -456,6 +1368,78 @@ struct ConversationListFeatureTests {
     feature.consume(snapshot(connection: .online, conversations: [cachedConversation(local)]))
 
     #expect(feature.conversations.isEmpty)
+  }
+
+  @Test("a snapshot cannot replace a newer active row with stale or equal tombstones")
+  func snapshotRejectsNonNewerTombstones() async {
+    let active = summary(id: "conversation", title: "Active", revision: 6)
+    let staleTombstone = summary(
+      id: active.id,
+      title: active.title,
+      revision: 5,
+      status: .deleted
+    )
+    let equalTombstone = summary(
+      id: active.id,
+      title: active.title,
+      revision: active.revision,
+      status: .deleted
+    )
+    let feature = makeFeature(service: FakeConversationListService())
+    feature.consume(snapshot(connection: .online, conversations: [cachedConversation(active)]))
+
+    feature.consume(
+      snapshot(connection: .online, conversations: [cachedConversation(staleTombstone)])
+    )
+    #expect(feature.conversations.map(\.summary) == [active])
+
+    feature.consume(
+      snapshot(connection: .online, conversations: [cachedConversation(equalTombstone)])
+    )
+    #expect(feature.conversations.map(\.summary) == [active])
+  }
+
+  @Test("a deleted canonical snapshot row suppresses the visible row without a removal ID")
+  func deletedCanonicalSnapshotSuppressesVisibleRow() async {
+    let local = summary(id: "deleted", title: "Delete me", revision: 2)
+    let tombstone = summary(
+      id: local.id,
+      title: local.title,
+      revision: 3,
+      status: .deleted
+    )
+    let feature = makeFeature(service: FakeConversationListService())
+    feature.consume(snapshot(connection: .online, conversations: [cachedConversation(local)]))
+
+    feature.consume(snapshot(connection: .online, conversations: [cachedConversation(tombstone)]))
+
+    #expect(feature.conversations.isEmpty)
+  }
+
+  @Test("an equal-revision active snapshot cannot override a canonical tombstone")
+  func equalRevisionSnapshotDoesNotResurrectDeletedRow() async {
+    let tombstone = summary(id: "deleted", revision: 3, status: .deleted)
+    let equalRevisionActive = summary(id: tombstone.id, revision: tombstone.revision)
+    let feature = makeFeature(service: FakeConversationListService())
+    feature.consume(snapshot(connection: .online, conversations: [cachedConversation(tombstone)]))
+
+    feature.consume(
+      snapshot(connection: .online, conversations: [cachedConversation(equalRevisionActive)])
+    )
+
+    #expect(feature.conversations.isEmpty)
+  }
+
+  @Test("a strictly newer active snapshot revives a canonical tombstone")
+  func newerActiveSnapshotRevivesDeletedRow() async {
+    let tombstone = summary(id: "deleted", revision: 3, status: .deleted)
+    let revived = summary(id: tombstone.id, title: "Revived", revision: 4)
+    let feature = makeFeature(service: FakeConversationListService())
+    feature.consume(snapshot(connection: .online, conversations: [cachedConversation(tombstone)]))
+
+    feature.consume(snapshot(connection: .online, conversations: [cachedConversation(revived)]))
+
+    #expect(feature.conversations.map(\.summary) == [revived])
   }
 
   @Test("a late reset refresh cannot roll back a completed rename")
@@ -653,8 +1637,8 @@ struct ConversationListFeatureTests {
     #expect(feature.conversations.map(\.id) == [canonical.id, older.id])
   }
 
-  @Test("an explicit sync removal drops a row and suppresses stale snapshots")
-  func explicitSyncRemovalDropsRow() async {
+  @Test("an explicit sync removal wins over an active row in the same snapshot")
+  func explicitSyncRemovalWinsOverSameSnapshotRow() async {
     let local = summary(id: "removed", revision: 2)
     let service = FakeConversationListService(cachedConversations: [cachedConversation(local)])
     let feature = makeFeature(service: service)
@@ -663,15 +1647,36 @@ struct ConversationListFeatureTests {
     feature.consume(
       SyncSnapshot(
         connection: .online,
-        conversations: [],
+        conversations: [cachedConversation(local)],
         agents: [],
         lastSuccessfulSyncAt: Date(timeIntervalSince1970: 200),
         removedConversationIDs: [local.id]
       )
     )
-    feature.consume(snapshot(connection: .online, conversations: [cachedConversation(local)]))
 
     #expect(feature.conversations.isEmpty)
+  }
+
+  @Test("a later active canonical snapshot revives an explicitly removed row")
+  func activeCanonicalSnapshotRevivesRemovedRow() async {
+    let removed = summary(id: "revived", revision: 2)
+    let revived = summary(id: removed.id, title: "Revived", revision: 3)
+    let feature = makeFeature(service: FakeConversationListService())
+
+    feature.consume(
+      SyncSnapshot(
+        connection: .online,
+        conversations: [],
+        agents: [],
+        lastSuccessfulSyncAt: Date(timeIntervalSince1970: 200),
+        removedConversationIDs: [removed.id]
+      )
+    )
+    feature.consume(
+      snapshot(connection: .online, conversations: [cachedConversation(revived)])
+    )
+
+    #expect(feature.conversations.map(\.summary) == [revived])
   }
 
   @Test("an explicit sync removal clears selection and conflict state")
@@ -706,12 +1711,14 @@ struct ConversationListFeatureTests {
   private func makeFeature(
     service: FakeConversationListService,
     recoveryService: any ConversationRecoveryServicing = FakeConversationRecoveryService(),
+    recoveryChanges: any ConversationRecoveryChangeStreaming = ConversationRecoveryChangeSignal(),
     requestID: @escaping @Sendable () -> UUID = { UUID() }
   ) -> ConversationListFeature {
     ConversationListFeature(
       gatewayID: "gateway-1",
       service: service,
       recoveryService: recoveryService,
+      recoveryChanges: recoveryChanges,
       requestID: requestID
     )
   }
@@ -805,23 +1812,119 @@ private actor GatewayErrorRecorder {
 private actor FakeConversationRecoveryService: ConversationRecoveryServicing {
   private var values: [RecoverablePendingSend]
   private(set) var discarded: [RecoverablePendingSend] = []
+  private(set) var recoverableCallCount = 0
+  private var recoverableCallObservers:
+    [(count: Int, continuation: CheckedContinuation<Void, Never>)] = []
+  private var nextRecoverableGate: TestGate?
+  private var nextDiscardGate: TestGate?
 
   init(values: [RecoverablePendingSend] = []) {
     self.values = values
   }
 
-  func recoverablePendingSends() -> [RecoverablePendingSend] {
-    values
+  func recoverablePendingSends() async -> [RecoverablePendingSend] {
+    recoverableCallCount += 1
+    let ready = recoverableCallObservers.filter { $0.count <= recoverableCallCount }
+    recoverableCallObservers.removeAll { $0.count <= recoverableCallCount }
+    for observer in ready {
+      observer.continuation.resume()
+    }
+    let gate = nextRecoverableGate
+    nextRecoverableGate = nil
+    await gate?.wait()
+    return values
   }
 
-  func discard(_ recovery: RecoverablePendingSend) -> Bool {
+  func gateNextRecoverableCall(_ gate: TestGate) {
+    nextRecoverableGate = gate
+  }
+
+  func gateNextDiscard(_ gate: TestGate) {
+    nextDiscardGate = gate
+  }
+
+  func waitUntilRecoverableCallCount(_ count: Int) async {
+    guard recoverableCallCount < count else { return }
+    await withCheckedContinuation { continuation in
+      recoverableCallObservers.append((count: count, continuation: continuation))
+    }
+  }
+
+  func discard(_ recovery: RecoverablePendingSend) async -> Bool {
     discarded.append(recovery)
+    let gate = nextDiscardGate
+    nextDiscardGate = nil
+    await gate?.wait()
     let count = values.count
     values.removeAll {
       $0.conversationID == recovery.conversationID
         && $0.pendingSend.turnID == recovery.pendingSend.turnID
     }
     return values.count < count
+  }
+}
+
+private actor CoordinatedRecoveryChangeSource: ConversationRecoveryChangeStreaming {
+  private let acquisitionGate = TestGate()
+  private let signal: ConversationRecoveryChangeSignal
+  private let releaseOnSecondAcquisition: Bool
+  private var acquisitionObservers:
+    [(count: Int, continuation: CheckedContinuation<Void, Never>)] = []
+  private(set) var acquisitionCount = 0
+
+  init(
+    signal: ConversationRecoveryChangeSignal,
+    releaseOnSecondAcquisition: Bool = false
+  ) {
+    self.signal = signal
+    self.releaseOnSecondAcquisition = releaseOnSecondAcquisition
+  }
+
+  func subscription(gatewayID: String) async -> ConversationRecoveryChangeSubscription {
+    acquisitionCount += 1
+    let ready = acquisitionObservers.filter { $0.count <= acquisitionCount }
+    acquisitionObservers.removeAll { $0.count <= acquisitionCount }
+    for observer in ready {
+      observer.continuation.resume()
+    }
+    if releaseOnSecondAcquisition, acquisitionCount == 2 {
+      await acquisitionGate.release()
+    }
+    await acquisitionGate.wait()
+    return await signal.subscription(gatewayID: gatewayID)
+  }
+
+  func waitUntilAcquisitionCount(_ count: Int) async {
+    guard acquisitionCount < count else { return }
+    await withCheckedContinuation { continuation in
+      acquisitionObservers.append((count: count, continuation: continuation))
+    }
+  }
+
+  func releaseAcquisition() async {
+    await acquisitionGate.release()
+  }
+}
+
+private actor GatedCancellationRecoveryChangeSource: ConversationRecoveryChangeStreaming {
+  private let signal: ConversationRecoveryChangeSignal
+  private let cancellationGate: TestGate
+
+  init(signal: ConversationRecoveryChangeSignal, cancellationGate: TestGate) {
+    self.signal = signal
+    self.cancellationGate = cancellationGate
+  }
+
+  func subscription(gatewayID: String) async -> ConversationRecoveryChangeSubscription {
+    let subscription = await signal.subscription(gatewayID: gatewayID)
+    let cancellationGate = cancellationGate
+    return ConversationRecoveryChangeSubscription(
+      changes: subscription.changes,
+      cancelAction: {
+        await cancellationGate.wait()
+        await subscription.cancel()
+      }
+    )
   }
 }
 
@@ -858,28 +1961,36 @@ private actor FakeConversationListService: ConversationListServicing {
   private let pageGate: TestGate?
   private var agentResults: [FakeListResult<[RegisteredAgentDTO]>] = []
   private var pageResults: [GatedPageResult] = []
+  private var conversationResults: [GatedMutationResult] = []
   private var createResults: [FakeListResult<ConversationSummaryDTO>] = []
   private var reconcileResults: [FakeListResult<ConversationSummaryDTO>] = []
   private var renameResults: [GatedMutationResult] = []
   private var deleteResults: [GatedMutationResult] = []
+  private var replaceResults: [GatedMutationResult] = []
+  private var clearRetainedCreateGate: TestGate?
+  private let shutdownGate: TestGate?
 
   private(set) var pageCalls: [PageCall] = []
+  private(set) var conversationCalls: [String] = []
   private(set) var createRequests: [CreateConversationRequest] = []
   private(set) var reconcileRequests: [CreateConversationRequest] = []
   private(set) var renameCalls: [RenameCall] = []
   private(set) var deleteCalls: [DeleteCall] = []
   private(set) var removedIDs: [String] = []
   private(set) var refreshAgentCallCount = 0
+  private(set) var shutdownCallCount = 0
   private var retainedCreateIDs: [String: String] = [:]
 
   init(
     cachedConversations: [CachedConversation] = [],
     cachedAgents: [RegisteredAgentDTO] = [],
-    pageGate: TestGate? = nil
+    pageGate: TestGate? = nil,
+    shutdownGate: TestGate? = nil
   ) {
     cachedConversationValues = cachedConversations
     cachedAgentValues = cachedAgents
     self.pageGate = pageGate
+    self.shutdownGate = shutdownGate
   }
 
   func enqueueAgents(_ result: FakeListResult<[RegisteredAgentDTO]>) {
@@ -891,6 +2002,13 @@ private actor FakeConversationListService: ConversationListServicing {
     gate: TestGate? = nil
   ) {
     pageResults.append(GatedPageResult(result: result, gate: gate))
+  }
+
+  func enqueueConversation(
+    _ result: FakeListResult<ConversationSummaryDTO>,
+    gate: TestGate? = nil
+  ) {
+    conversationResults.append(GatedMutationResult(result: result, gate: gate))
   }
 
   func enqueueCreate(_ result: FakeListResult<ConversationSummaryDTO>) {
@@ -913,6 +2031,17 @@ private actor FakeConversationListService: ConversationListServicing {
     gate: TestGate? = nil
   ) {
     deleteResults.append(GatedMutationResult(result: result, gate: gate))
+  }
+
+  func enqueueReplace(
+    _ result: FakeListResult<ConversationSummaryDTO>,
+    gate: TestGate? = nil
+  ) {
+    replaceResults.append(GatedMutationResult(result: result, gate: gate))
+  }
+
+  func gateNextClearRetainedCreateRequestID(_ gate: TestGate) {
+    clearRetainedCreateGate = gate
   }
 
   func cachedConversations() throws -> [CachedConversation] {
@@ -944,6 +2073,14 @@ private actor FakeConversationListService: ConversationListServicing {
     return try queued.result.get()
   }
 
+  func conversation(id: String) async throws -> ConversationSummaryDTO {
+    conversationCalls.append(id)
+    guard conversationResults.isEmpty == false else { throw GatewayError.updateRequired }
+    let queued = conversationResults.removeFirst()
+    await queued.gate?.wait()
+    return try queued.result.get()
+  }
+
   func create(_ request: CreateConversationRequest) throws -> ConversationSummaryDTO {
     createRequests.append(request)
     guard createResults.isEmpty == false else { throw GatewayError.updateRequired }
@@ -972,12 +2109,20 @@ private actor FakeConversationListService: ConversationListServicing {
     return try queued.result.get()
   }
 
-  func replace(_ summary: ConversationSummaryDTO) {
-    _ = summary
+  func replace(_ summary: ConversationSummaryDTO) async throws -> ConversationSummaryDTO {
+    guard replaceResults.isEmpty == false else { return summary }
+    let queued = replaceResults.removeFirst()
+    await queued.gate?.wait()
+    return try queued.result.get()
   }
 
-  func remove(id: String) {
+  func remove(
+    id: String,
+    expectedCanonical: ConversationSummaryDTO
+  ) -> ConversationRemovalOutcome {
     removedIDs.append(id)
+    _ = expectedCanonical
+    return .removed
   }
 
   func retainedCreateRequestID(agentID: String, suggested: String) -> String {
@@ -986,9 +2131,31 @@ private actor FakeConversationListService: ConversationListServicing {
     return suggested
   }
 
-  func clearRetainedCreateRequestID(agentID: String) {
+  func clearRetainedCreateRequestID(agentID: String) async {
+    let gate = clearRetainedCreateGate
+    clearRetainedCreateGate = nil
+    await gate?.wait()
     retainedCreateIDs[agentID] = nil
   }
 
-  func shutdown() {}
+  func shutdown() async {
+    shutdownCallCount += 1
+    await shutdownGate?.wait()
+  }
+}
+
+private actor ConversationLifecycleChangeProbe {
+  private(set) var changes: [ConversationLifecycleChange] = []
+
+  func record(_ values: [ConversationLifecycleChange]) {
+    changes.append(contentsOf: values)
+  }
+}
+
+private actor ShutdownCompletionProbe {
+  private(set) var count = 0
+
+  func record() {
+    count += 1
+  }
 }

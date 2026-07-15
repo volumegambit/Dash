@@ -1,11 +1,98 @@
 import Foundation
 import Observation
 
+enum ConversationLifecycleChange: Equatable, Sendable {
+  case canonical(ConversationSummaryDTO)
+  case removed(id: String, revisionFloor: Int?)
+}
+
+struct ConversationLifecycleAcknowledgement: Equatable, Sendable {
+  let acceptedRemovedIDs: Set<String>
+
+  static let ignored = ConversationLifecycleAcknowledgement(acceptedRemovedIDs: [])
+}
+
+struct ConversationRecoveryChangeSubscription: Sendable {
+  let changes: AsyncStream<String>
+  private let cancelAction: @Sendable () async -> Void
+
+  init(
+    changes: AsyncStream<String>,
+    cancelAction: @escaping @Sendable () async -> Void
+  ) {
+    self.changes = changes
+    self.cancelAction = cancelAction
+  }
+
+  func cancel() async {
+    await cancelAction()
+  }
+}
+
+protocol ConversationRecoveryChangeStreaming: Actor {
+  func subscription(gatewayID: String) async -> ConversationRecoveryChangeSubscription
+}
+
+protocol ConversationRecoveryChangeSignaling: ConversationRecoveryChangeStreaming {
+  func send(gatewayID: String) async
+}
+
+actor ConversationRecoveryChangeSignal: ConversationRecoveryChangeSignaling {
+  private struct Subscriber {
+    let gatewayID: String
+    let continuation: AsyncStream<String>.Continuation
+  }
+
+  static let shared = ConversationRecoveryChangeSignal()
+
+  private var subscribers: [UUID: Subscriber] = [:]
+  var subscriberCount: Int { subscribers.count }
+
+  func changes(gatewayID: String) async -> AsyncStream<String> {
+    makeSubscription(gatewayID: gatewayID).changes
+  }
+
+  func subscription(gatewayID: String) async -> ConversationRecoveryChangeSubscription {
+    makeSubscription(gatewayID: gatewayID)
+  }
+
+  private func makeSubscription(gatewayID: String) -> ConversationRecoveryChangeSubscription {
+    let id = UUID()
+    let changes = AsyncStream<String>(bufferingPolicy: .bufferingNewest(1)) { continuation in
+      subscribers[id] = Subscriber(gatewayID: gatewayID, continuation: continuation)
+      continuation.onTermination = { [weak self] _ in
+        Task { await self?.removeContinuation(id, finish: false) }
+      }
+    }
+    return ConversationRecoveryChangeSubscription(
+      changes: changes,
+      cancelAction: { [weak self] in
+        await self?.removeContinuation(id, finish: true)
+      }
+    )
+  }
+
+  func send(gatewayID: String) async {
+    for subscriber in subscribers.values where subscriber.gatewayID == gatewayID {
+      subscriber.continuation.yield(gatewayID)
+    }
+  }
+
+  private func removeContinuation(_ id: UUID, finish: Bool) {
+    guard let subscriber = subscribers.removeValue(forKey: id) else { return }
+    if finish {
+      subscriber.continuation.finish()
+    }
+  }
+}
+
 enum ConversationMutationError: Equatable, Sendable {
   case offline
   case invalidTitle
   case outcomeUnknown
   case revisionConflict(current: ConversationSummaryDTO)
+  case conversationBusy(conversationID: String, activeTurnID: String)
+  case readOnly(conversationID: String)
   case failed
 }
 
@@ -18,14 +105,18 @@ protocol ConversationListServicing: Actor {
     limit: Int,
     cursor: String?
   ) async throws -> ConversationPageDTO
+  func conversation(id: String) async throws -> ConversationSummaryDTO
   func create(_ request: CreateConversationRequest) async throws -> ConversationSummaryDTO
   func reconcileCreate(
     _ request: CreateConversationRequest
   ) async throws -> ConversationSummaryDTO
   func rename(id: String, title: String, revision: Int) async throws -> ConversationSummaryDTO
   func delete(id: String, revision: Int) async throws -> ConversationSummaryDTO
-  func replace(_ summary: ConversationSummaryDTO) async throws
-  func remove(id: String) async throws
+  func replace(_ summary: ConversationSummaryDTO) async throws -> ConversationSummaryDTO
+  func remove(
+    id: String,
+    expectedCanonical: ConversationSummaryDTO
+  ) async throws -> ConversationRemovalOutcome
   func retainedCreateRequestID(agentID: String, suggested: String) async -> String
   func clearRetainedCreateRequestID(agentID: String) async
   func shutdown() async
@@ -42,7 +133,16 @@ protocol ConversationListPersisting: Actor {
     gatewayID: String
   ) async throws
   func applyTombstone(_ value: ConversationSummaryDTO, gatewayID: String) async throws
+  func persistConversationAndReturnCanonical(
+    _ value: ConversationSummaryDTO,
+    gatewayID: String
+  ) async throws -> CachedConversation
   func removeConversation(gatewayID: String, conversationID: String) async throws
+  func removeConversationIfCanonicalUnchanged(
+    gatewayID: String,
+    conversationID: String,
+    expectedCanonical: ConversationSummaryDTO?
+  ) async throws -> ConversationRemovalOutcome
 }
 
 extension PersistenceStore: ConversationListPersisting {}
@@ -64,10 +164,16 @@ actor EmptyConversationRecoveryService: ConversationRecoveryServicing {
 actor LiveConversationRecoveryService: ConversationRecoveryServicing {
   private let gatewayID: String
   private let store: PersistenceStore
+  private let recoveryChanges: ConversationRecoveryChangeSignal
 
-  init(gatewayID: String, store: PersistenceStore) {
+  init(
+    gatewayID: String,
+    store: PersistenceStore,
+    recoveryChanges: ConversationRecoveryChangeSignal = .shared
+  ) {
     self.gatewayID = gatewayID
     self.store = store
+    self.recoveryChanges = recoveryChanges
   }
 
   func recoverablePendingSends() async throws -> [RecoverablePendingSend] {
@@ -76,15 +182,16 @@ actor LiveConversationRecoveryService: ConversationRecoveryServicing {
 
   func discard(_ recovery: RecoverablePendingSend) async throws -> Bool {
     guard recovery.gatewayID == gatewayID else { return false }
-    try await store.clearPendingSend(
+    let discarded = try await store.discardPendingSend(
       gatewayID: gatewayID,
       conversationID: recovery.conversationID,
-      turnID: recovery.pendingSend.turnID
+      turnID: recovery.pendingSend.turnID,
+      expectedConversationAvailable: recovery.conversationAvailable
     )
-    return try await store.recoverablePendingSends(gatewayID: gatewayID).contains {
-      $0.conversationID == recovery.conversationID
-        && $0.pendingSend.turnID == recovery.pendingSend.turnID
-    } == false
+    if discarded {
+      await recoveryChanges.send(gatewayID: gatewayID)
+    }
+    return discarded
   }
 }
 
@@ -177,9 +284,23 @@ actor LiveConversationListService: ConversationListServicing {
       cursor: cursor
     )
     try validate(lifecycle)
-    try await store.upsertConversations(page.items, gatewayID: gatewayID)
+    var canonicalItems: [ConversationSummaryDTO] = []
+    canonicalItems.reserveCapacity(page.items.count)
+    for value in page.items {
+      canonicalItems.append(try await persistCanonical(value))
+      try validate(lifecycle)
+    }
+    return ConversationPageDTO(items: canonicalItems, nextCursor: page.nextCursor)
+  }
+
+  func conversation(id: String) async throws -> ConversationSummaryDTO {
+    let lifecycle = try beginOperation()
+    defer { finishOperation() }
+    let summary = try await resolvedAPI().conversation(id: id)
     try validate(lifecycle)
-    return page
+    let persisted = try await persistCanonical(summary)
+    try validate(lifecycle)
+    return persisted
   }
 
   func create(_ request: CreateConversationRequest) async throws -> ConversationSummaryDTO {
@@ -187,8 +308,9 @@ actor LiveConversationListService: ConversationListServicing {
     defer { finishOperation() }
     let summary = try await resolvedAPI().createConversation(request)
     try validate(lifecycle)
+    let persisted: ConversationSummaryDTO
     do {
-      try await replace(summary)
+      persisted = try await persistCanonical(summary)
     } catch is CancellationError {
       throw CancellationError()
     } catch {
@@ -198,7 +320,7 @@ actor LiveConversationListService: ConversationListServicing {
       )
     }
     try validate(lifecycle)
-    return summary
+    return persisted
   }
 
   func reconcileCreate(
@@ -212,8 +334,9 @@ actor LiveConversationListService: ConversationListServicing {
     try validate(lifecycle)
     let summary = try await api.createConversation(request)
     try validate(lifecycle)
+    let persisted: ConversationSummaryDTO
     do {
-      try await replace(summary)
+      persisted = try await persistCanonical(summary)
     } catch is CancellationError {
       throw CancellationError()
     } catch {
@@ -223,7 +346,7 @@ actor LiveConversationListService: ConversationListServicing {
       )
     }
     try validate(lifecycle)
-    return summary
+    return persisted
   }
 
   func rename(id: String, title: String, revision: Int) async throws -> ConversationSummaryDTO {
@@ -275,22 +398,27 @@ actor LiveConversationListService: ConversationListServicing {
     return persisted
   }
 
-  func replace(_ summary: ConversationSummaryDTO) async throws {
+  func replace(_ summary: ConversationSummaryDTO) async throws -> ConversationSummaryDTO {
     let lifecycle = try beginOperation()
     defer { finishOperation() }
-    if summary.status == .deleted {
-      try await store.applyTombstone(summary, gatewayID: gatewayID)
-    } else {
-      try await store.upsertConversations([summary], gatewayID: gatewayID)
-    }
+    let persisted = try await persistCanonical(summary)
     try validate(lifecycle)
+    return persisted
   }
 
-  func remove(id: String) async throws {
+  func remove(
+    id: String,
+    expectedCanonical: ConversationSummaryDTO
+  ) async throws -> ConversationRemovalOutcome {
     let lifecycle = try beginOperation()
     defer { finishOperation() }
-    try await store.removeConversation(gatewayID: gatewayID, conversationID: id)
+    let outcome = try await store.removeConversationIfCanonicalUnchanged(
+      gatewayID: gatewayID,
+      conversationID: id,
+      expectedCanonical: expectedCanonical
+    )
     try validate(lifecycle)
+    return outcome
   }
 
   func retainedCreateRequestID(agentID: String, suggested: String) async -> String {
@@ -478,22 +606,31 @@ actor LiveConversationListService: ConversationListServicing {
     api: GatewayAPI
   ) async throws -> ConversationSummaryDTO {
     do {
-      try await replace(summary)
-      return summary
+      return try await persistCanonical(summary)
     } catch is CancellationError {
       throw CancellationError()
     } catch {
       let current = try await api.conversation(id: summary.id)
       guard current.revision >= summary.revision else { throw GatewayError.updateRequired }
-      try await replace(current)
-      return current
+      return try await persistCanonical(current)
     }
+  }
+
+  private func persistCanonical(
+    _ summary: ConversationSummaryDTO
+  ) async throws -> ConversationSummaryDTO {
+    try await store.persistConversationAndReturnCanonical(summary, gatewayID: gatewayID).summary
   }
 }
 
 @MainActor
 @Observable
 final class ConversationListFeature {
+  private enum CanonicalReconciliation {
+    case visible(ConversationSummaryDTO)
+    case hidden
+  }
+
   private enum PendingConflict: Equatable {
     case rename(id: String, title: String)
     case delete(id: String)
@@ -517,12 +654,14 @@ final class ConversationListFeature {
   @ObservationIgnored private let gatewayID: String
   @ObservationIgnored private let service: any ConversationListServicing
   @ObservationIgnored private let recoveryService: any ConversationRecoveryServicing
+  @ObservationIgnored private let recoveryChanges: any ConversationRecoveryChangeStreaming
   @ObservationIgnored private let requestID: @Sendable () -> UUID
   @ObservationIgnored private let pageSize: Int
   @ObservationIgnored private var allConversations: [CachedConversation] = []
   @ObservationIgnored private var connection: GatewayConnectionState = .connecting
   @ObservationIgnored private var loadedCursors: Set<String> = []
   @ObservationIgnored private var suppressedConversationIDs: Set<String> = []
+  @ObservationIgnored private var tombstoneRevisionsByConversationID: [String: Int] = [:]
   @ObservationIgnored private var listGeneration: UInt64 = 0
   @ObservationIgnored private var refreshQueued = false
   @ObservationIgnored private var hasStarted = false
@@ -533,19 +672,37 @@ final class ConversationListFeature {
   @ObservationIgnored private var pendingCreateAgentID: String?
   @ObservationIgnored private var pendingConflict: PendingConflict?
   @ObservationIgnored private var recoveryGeneration: UInt64 = 0
+  @ObservationIgnored private var recoveryReloadTask: Task<Void, Never>?
+  @ObservationIgnored private var isExplicitRecoveryReloadInProgress = false
+  @ObservationIgnored private var recoveryReloadRequested = false
+  @ObservationIgnored private var explicitRecoveryReloadWaiters:
+    [CheckedContinuation<Void, Never>] = []
+  @ObservationIgnored private var recoveryChangeTask: Task<Void, Never>?
+  @ObservationIgnored private var recoveryChangeGeneration: UInt64 = 0
+  @ObservationIgnored private var isStartingRecoveryChangeObservation = false
+  @ObservationIgnored private var activeRecoveryOperations = 0
+  @ObservationIgnored private var recoveryOperationWaiters:
+    [CheckedContinuation<Void, Never>] = []
+  @ObservationIgnored private var isPreparedForShutdown = false
+  @ObservationIgnored private var shutdownDrainTask: Task<Void, Never>?
   @ObservationIgnored private var gatewayErrorHandler:
     @MainActor @Sendable (GatewayError) async -> Void = { _ in }
+  @ObservationIgnored private var lifecycleChangeHandler:
+    @MainActor @Sendable ([ConversationLifecycleChange]) async
+      -> ConversationLifecycleAcknowledgement = { _ in .ignored }
 
   init(
     gatewayID: String,
     service: any ConversationListServicing,
     recoveryService: any ConversationRecoveryServicing = EmptyConversationRecoveryService(),
+    recoveryChanges: any ConversationRecoveryChangeStreaming = ConversationRecoveryChangeSignal.shared,
     requestID: @escaping @Sendable () -> UUID = { UUID() },
     pageSize: Int = 50
   ) {
     self.gatewayID = gatewayID
     self.service = service
     self.recoveryService = recoveryService
+    self.recoveryChanges = recoveryChanges
     self.requestID = requestID
     self.pageSize = pageSize
   }
@@ -559,9 +716,26 @@ final class ConversationListFeature {
     if isRefreshing, mutationsAllowed {
       refreshQueued = true
     }
+    let scopedCanonical = snapshot.conversations.filter { $0.gatewayID == gatewayID }
+    var currentByID = Dictionary(
+      uniqueKeysWithValues: allConversations.map { ($0.id, $0.summary) }
+    )
+    var merged: [CachedConversation] = []
+    var hiddenCanonicalIDs: Set<String> = []
+    for incoming in scopedCanonical {
+      switch reconcileCanonical(incoming.summary, current: currentByID[incoming.id]) {
+      case .visible(let effective):
+        currentByID[incoming.id] = effective
+        merged.append(CachedConversation(gatewayID: gatewayID, summary: effective))
+      case .hidden:
+        currentByID[incoming.id] = nil
+        hiddenCanonicalIDs.insert(incoming.id)
+      }
+    }
     suppressedConversationIDs.formUnion(snapshot.removedConversationIDs)
-    allConversations.removeAll { snapshot.removedConversationIDs.contains($0.id) }
-    if let selectedID, snapshot.removedConversationIDs.contains(selectedID) {
+    let snapshotRemovalIDs = snapshot.removedConversationIDs.union(hiddenCanonicalIDs)
+    merged.removeAll { snapshot.removedConversationIDs.contains($0.id) }
+    if let selectedID, snapshotRemovalIDs.contains(selectedID) {
       self.selectedID = nil
     }
     if let pendingConflict {
@@ -569,22 +743,14 @@ final class ConversationListFeature {
       switch pendingConflict {
       case .rename(let id, _), .delete(let id): conflictID = id
       }
-      if snapshot.removedConversationIDs.contains(conflictID) {
+      if snapshotRemovalIDs.contains(conflictID) {
         self.pendingConflict = nil
         if case .some(.revisionConflict) = mutationError {
           mutationError = nil
         }
       }
     }
-    let scoped = snapshot.conversations.filter {
-      $0.gatewayID == gatewayID && suppressedConversationIDs.contains($0.id) == false
-    }
-    let current = Dictionary(uniqueKeysWithValues: allConversations.map { ($0.id, $0) })
-    var merged = scoped.map { incoming in
-      guard let existing = current[incoming.id] else { return incoming }
-      return existing.summary.revision > incoming.summary.revision ? existing : incoming
-    }
-    let incomingIDs = Set(scoped.map(\.id))
+    let incomingIDs = Set(scopedCanonical.map(\.id))
     let retained = allConversations.filter {
       incomingIDs.contains($0.id) == false
         && suppressedConversationIDs.contains($0.id) == false
@@ -598,9 +764,7 @@ final class ConversationListFeature {
     allConversations = merged
     agents = snapshot.agents
     applyFilter()
-    Task { [weak self] in
-      await self?.reloadRecoverablePendingSends()
-    }
+    scheduleRecoveryReload()
     if hasFinishedInitialCacheLoad, wasOnline == false, mutationsAllowed {
       scheduleOnlineRefresh()
     }
@@ -612,24 +776,63 @@ final class ConversationListFeature {
     gatewayErrorHandler = handler
   }
 
+  func setLifecycleChangeHandler(
+    _ handler: @escaping @MainActor @Sendable ([ConversationLifecycleChange]) async
+      -> ConversationLifecycleAcknowledgement
+  ) {
+    lifecycleChangeHandler = handler
+  }
+
   func prepareForShutdown() {
+    guard isPreparedForShutdown == false else { return }
+    isPreparedForShutdown = true
     listGeneration &+= 1
     onlineRefreshGeneration &+= 1
     onlineRefreshTask?.cancel()
-    onlineRefreshTask = nil
     refreshQueued = false
     recoveryGeneration &+= 1
+    recoveryReloadTask?.cancel()
+    recoveryChangeGeneration &+= 1
+    isStartingRecoveryChangeObservation = false
+    recoveryChangeTask?.cancel()
+    lifecycleChangeHandler = { _ in .ignored }
     connection = .offline
     isAuthoritative = false
   }
 
   func shutdown() async {
     prepareForShutdown()
-    await service.shutdown()
+    if let shutdownDrainTask {
+      await shutdownDrainTask.value
+      return
+    }
+
+    let retiringOnlineRefresh = onlineRefreshTask
+    let retiringRecoveryReload = recoveryReloadTask
+    let retiringRecoveryChanges = recoveryChangeTask
+    let serviceShutdown = Task { [service] in
+      await service.shutdown()
+    }
+    let drain = Task { [self] in
+      await serviceShutdown.value
+      await retiringOnlineRefresh?.value
+      await retiringRecoveryReload?.value
+      await retiringRecoveryChanges?.value
+      await waitForRecoveryOperationsToFinish()
+    }
+    shutdownDrainTask = drain
+    await drain.value
+    onlineRefreshTask = nil
+    recoveryReloadTask = nil
+    recoveryChangeTask = nil
   }
 
   func start() async {
+    guard isPreparedForShutdown == false else { return }
+    await startRecoveryChangeObservation()
+    guard isPreparedForShutdown == false else { return }
     await reloadRecoverablePendingSends()
+    guard isPreparedForShutdown == false else { return }
     guard hasStarted == false else { return }
     hasStarted = true
     let generation = listGeneration
@@ -682,21 +885,31 @@ final class ConversationListFeature {
       let refreshedAgents = try await service.refreshAgents()
       if generation == listGeneration {
         loadedCursors.removeAll()
-        suppressedConversationIDs.formUnion(
-          page.items.filter { $0.status == .deleted }.map(\.id)
+        var currentByID = Dictionary(
+          uniqueKeysWithValues: allConversations.map { ($0.id, $0.summary) }
         )
-        allConversations = page.items.compactMap {
-          guard
-            $0.status != .deleted,
-            suppressedConversationIDs.contains($0.id) == false
-          else { return nil }
-          return CachedConversation(gatewayID: gatewayID, summary: $0)
+        var refreshed: [CachedConversation] = []
+        var lifecycleChanges: [ConversationLifecycleChange] = []
+        for incoming in page.items {
+          let reconciliation = reconcileCanonical(incoming, current: currentByID[incoming.id])
+          if let change = lifecycleChange(for: incoming, reconciliation: reconciliation) {
+            lifecycleChanges.append(change)
+          }
+          switch reconciliation {
+          case .visible(let effective):
+            currentByID[incoming.id] = effective
+            refreshed.append(CachedConversation(gatewayID: gatewayID, summary: effective))
+          case .hidden:
+            currentByID[incoming.id] = nil
+          }
         }
+        allConversations = refreshed
         agents = refreshedAgents
         nextCursor = page.nextCursor
         isAuthoritative = true
         mutationError = nil
         applyFilter()
+        await publishLifecycleChanges(lifecycleChanges)
       }
     } catch is CancellationError {
       refreshQueued = false
@@ -718,6 +931,56 @@ final class ConversationListFeature {
   }
 
   func reloadRecoverablePendingSends() async {
+    guard beginRecoveryOperation() else { return }
+    defer { finishRecoveryOperation() }
+    guard isExplicitRecoveryReloadInProgress == false else {
+      recoveryReloadRequested = true
+      await withCheckedContinuation { continuation in
+        explicitRecoveryReloadWaiters.append(continuation)
+      }
+      return
+    }
+    isExplicitRecoveryReloadInProgress = true
+    defer {
+      isExplicitRecoveryReloadInProgress = false
+      let waiters = explicitRecoveryReloadWaiters
+      explicitRecoveryReloadWaiters.removeAll()
+      for waiter in waiters {
+        waiter.resume()
+      }
+    }
+    let retiringReload = recoveryReloadTask
+    retiringReload?.cancel()
+    recoveryReloadTask = nil
+    await retiringReload?.value
+    repeat {
+      recoveryReloadRequested = false
+      await performRecoveryReload()
+    } while recoveryReloadRequested && isPreparedForShutdown == false
+  }
+
+  private func scheduleRecoveryReload() {
+    guard isPreparedForShutdown == false else { return }
+    if isExplicitRecoveryReloadInProgress {
+      recoveryReloadRequested = true
+      return
+    }
+    recoveryGeneration &+= 1
+    recoveryReloadTask?.cancel()
+    recoveryReloadTask = Task { [weak self] in
+      await Task.yield()
+      guard Task.isCancelled == false else { return }
+      await self?.performTrackedRecoveryReload()
+    }
+  }
+
+  private func performTrackedRecoveryReload() async {
+    guard beginRecoveryOperation() else { return }
+    defer { finishRecoveryOperation() }
+    await performRecoveryReload()
+  }
+
+  private func performRecoveryReload() async {
     recoveryGeneration &+= 1
     let generation = recoveryGeneration
     do {
@@ -733,7 +996,79 @@ final class ConversationListFeature {
     }
   }
 
+  private func startRecoveryChangeObservation() async {
+    guard
+      isPreparedForShutdown == false,
+      recoveryChangeTask == nil,
+      isStartingRecoveryChangeObservation == false
+    else { return }
+    guard beginRecoveryOperation() else { return }
+    defer { finishRecoveryOperation() }
+    isStartingRecoveryChangeObservation = true
+    recoveryChangeGeneration &+= 1
+    let generation = recoveryChangeGeneration
+    defer {
+      if generation == recoveryChangeGeneration {
+        isStartingRecoveryChangeObservation = false
+      }
+    }
+    let subscription = await recoveryChanges.subscription(gatewayID: gatewayID)
+    guard
+      isPreparedForShutdown == false,
+      generation == recoveryChangeGeneration,
+      recoveryChangeTask == nil
+    else {
+      await subscription.cancel()
+      return
+    }
+    recoveryChangeTask = Task { [weak self, gatewayID] in
+      guard Task.isCancelled == false else {
+        await subscription.cancel()
+        return
+      }
+      for await changedGatewayID in subscription.changes {
+        guard Task.isCancelled == false else { break }
+        guard changedGatewayID == gatewayID else { continue }
+        self?.receiveRecoveryChange(generation: generation)
+      }
+      await subscription.cancel()
+    }
+  }
+
+  private func receiveRecoveryChange(generation: UInt64) {
+    guard
+      isPreparedForShutdown == false,
+      generation == recoveryChangeGeneration
+    else { return }
+    scheduleRecoveryReload()
+  }
+
+  private func beginRecoveryOperation() -> Bool {
+    guard isPreparedForShutdown == false else { return false }
+    activeRecoveryOperations += 1
+    return true
+  }
+
+  private func finishRecoveryOperation() {
+    activeRecoveryOperations -= 1
+    guard activeRecoveryOperations == 0 else { return }
+    let waiters = recoveryOperationWaiters
+    recoveryOperationWaiters.removeAll()
+    for waiter in waiters {
+      waiter.resume()
+    }
+  }
+
+  private func waitForRecoveryOperationsToFinish() async {
+    guard activeRecoveryOperations > 0 else { return }
+    await withCheckedContinuation { continuation in
+      recoveryOperationWaiters.append(continuation)
+    }
+  }
+
   func discardRecovery(_ recovery: RecoverablePendingSend) async -> Bool {
+    guard beginRecoveryOperation() else { return false }
+    defer { finishRecoveryOperation() }
     guard discardingRecoveryID == nil else { return false }
     discardingRecoveryID = recovery.id
     defer { discardingRecoveryID = nil }
@@ -801,11 +1136,12 @@ final class ConversationListFeature {
       )
       guard generation == listGeneration, nextCursor == cursor else { return }
       loadedCursors.insert(cursor)
-      mergeOlder(page.items)
+      let lifecycleChanges = mergeOlder(page.items)
       nextCursor = page.nextCursor
       isAuthoritative = true
       mutationError = nil
       applyFilter()
+      await publishLifecycleChanges(lifecycleChanges)
     } catch is CancellationError {
       return
     } catch {
@@ -880,13 +1216,26 @@ final class ConversationListFeature {
         mutationError = .revisionConflict(current: latest)
         return
       }
-      replaceVisible(canonical)
+      let reconciliation = replaceVisible(canonical)
+      await publishLifecycleChange(for: canonical, reconciliation: reconciliation)
       pendingConflict = nil
       mutationError = nil
     } catch GatewayError.revisionConflict(let canonical) {
       await recordConflict(canonical, pending: .rename(id: id, title: trimmed))
     } catch GatewayError.notFound {
-      await removeStale(id: id)
+      await removeStale(
+        expectedCanonical: current,
+        pending: .rename(id: id, title: trimmed)
+      )
+    } catch GatewayError.validation(let message)
+      where isArchivedReadOnlyValidation(message)
+    {
+      await reconcileReadOnlyMutation(
+        conversationID: id,
+        message: message,
+        expectedCanonical: current,
+        pending: .rename(id: id, title: trimmed)
+      )
     } catch is CancellationError {
       return
     } catch {
@@ -901,19 +1250,39 @@ final class ConversationListFeature {
     guard let current = allConversations.first(where: { $0.id == id })?.summary else { return }
     do {
       let tombstone = try await service.delete(id: id, revision: current.revision)
-      guard tombstone.status == .deleted else {
-        mutationError = .failed
-        return
+      let reconciliation = replaceVisible(tombstone)
+      await publishLifecycleChange(for: tombstone, reconciliation: reconciliation)
+      switch reconciliation {
+      case .visible(let effective):
+        pendingConflict = .delete(id: id)
+        mutationError = .revisionConflict(current: effective)
+      case .hidden:
+        pendingConflict = nil
+        mutationError = nil
       }
-      suppressedConversationIDs.insert(id)
-      removeVisible(id: id)
-      pendingConflict = nil
-      mutationError = nil
       await reloadRecoverablePendingSends()
     } catch GatewayError.revisionConflict(let canonical) {
       await recordConflict(canonical, pending: .delete(id: id))
     } catch GatewayError.notFound {
-      await removeStale(id: id)
+      await removeStale(
+        expectedCanonical: current,
+        pending: .delete(id: id)
+      )
+    } catch GatewayError.conversationBusy(let activeTurnID) {
+      mutationError = .conversationBusy(
+        conversationID: id,
+        activeTurnID: activeTurnID
+      )
+      await reportGatewayError(GatewayError.conversationBusy(activeTurnId: activeTurnID))
+    } catch GatewayError.validation(let message)
+      where isArchivedReadOnlyValidation(message)
+    {
+      await reconcileReadOnlyMutation(
+        conversationID: id,
+        message: message,
+        expectedCanonical: current,
+        pending: .delete(id: id)
+      )
     } catch is CancellationError {
       return
     } catch {
@@ -958,8 +1327,11 @@ final class ConversationListFeature {
     pendingCreateRequestID = nil
     pendingCreateAgentID = nil
     mutationError = nil
-    replaceVisible(canonical, insertAtFront: true)
-    selectedID = canonical.id
+    let reconciliation = replaceVisible(canonical, insertAtFront: true)
+    await publishLifecycleChange(for: canonical, reconciliation: reconciliation)
+    if case .visible(let effective) = reconciliation {
+      selectedID = effective.id
+    }
   }
 
   private func reconcileCreate(_ request: CreateConversationRequest) async {
@@ -981,15 +1353,17 @@ final class ConversationListFeature {
     pending: PendingConflict
   ) async {
     do {
-      try await service.replace(canonical)
-      replaceVisible(canonical)
-      guard canonical.status != .deleted else {
+      let persisted = try await service.replace(canonical)
+      let reconciliation = replaceVisible(persisted)
+      await publishLifecycleChange(for: persisted, reconciliation: reconciliation)
+      switch reconciliation {
+      case .visible(let effective):
+        pendingConflict = pending
+        mutationError = .revisionConflict(current: effective)
+      case .hidden:
         pendingConflict = nil
         mutationError = nil
-        return
       }
-      pendingConflict = pending
-      mutationError = .revisionConflict(current: canonical)
     } catch is CancellationError {
       return
     } catch {
@@ -998,14 +1372,91 @@ final class ConversationListFeature {
     }
   }
 
-  private func removeStale(id: String) async {
+  private func reconcileCanonical(
+    _ incoming: ConversationSummaryDTO,
+    current: ConversationSummaryDTO?
+  ) -> CanonicalReconciliation {
+    if incoming.status == .deleted {
+      if let current, current.revision >= incoming.revision {
+        suppressedConversationIDs.remove(current.id)
+        tombstoneRevisionsByConversationID[current.id] = nil
+        return .visible(current)
+      }
+      suppressTombstone(incoming)
+      return .hidden
+    }
+
+    let effective: ConversationSummaryDTO
+    if let current, current.revision > incoming.revision {
+      effective = current
+    } else {
+      effective = incoming
+    }
+    if let tombstoneRevision = tombstoneRevisionsByConversationID[effective.id],
+      effective.revision <= tombstoneRevision
+    {
+      return .hidden
+    }
+    suppressedConversationIDs.remove(effective.id)
+    tombstoneRevisionsByConversationID[effective.id] = nil
+    return .visible(effective)
+  }
+
+  private func suppressTombstone(_ value: ConversationSummaryDTO) {
+    suppressedConversationIDs.insert(value.id)
+    tombstoneRevisionsByConversationID[value.id] = max(
+      tombstoneRevisionsByConversationID[value.id] ?? value.revision,
+      value.revision
+    )
+  }
+
+  private func removeStale(
+    expectedCanonical: ConversationSummaryDTO,
+    pending: PendingConflict
+  ) async {
+    let id = expectedCanonical.id
+    if let latest = allConversations.first(where: { $0.id == id })?.summary,
+      latest != expectedCanonical
+    {
+      pendingConflict = pending
+      mutationError = .revisionConflict(current: latest)
+      return
+    }
     do {
-      try await service.remove(id: id)
-      suppressedConversationIDs.insert(id)
-      removeVisible(id: id)
-      pendingConflict = nil
-      mutationError = nil
-      await reloadRecoverablePendingSends()
+      let outcome = try await service.remove(
+        id: id,
+        expectedCanonical: expectedCanonical
+      )
+      switch outcome {
+      case .removed:
+        if let latest = allConversations.first(where: { $0.id == id })?.summary,
+          latest != expectedCanonical
+        {
+          pendingConflict = pending
+          mutationError = .revisionConflict(current: latest)
+          return
+        }
+        suppressedConversationIDs.insert(id)
+        removeVisible(id: id)
+        pendingConflict = nil
+        mutationError = nil
+        await publishLifecycleChanges([
+          .removed(id: id, revisionFloor: expectedCanonical.revision)
+        ])
+        await reloadRecoverablePendingSends()
+
+      case .retained(let canonical):
+        let reconciliation = replaceVisible(canonical)
+        await publishLifecycleChange(for: canonical, reconciliation: reconciliation)
+        switch reconciliation {
+        case .visible(let effective):
+          pendingConflict = pending
+          mutationError = .revisionConflict(current: effective)
+        case .hidden:
+          pendingConflict = nil
+          mutationError = nil
+        }
+      }
     } catch is CancellationError {
       return
     } catch {
@@ -1018,44 +1469,87 @@ final class ConversationListFeature {
     return index >= max(0, conversations.count - 5)
   }
 
-  private func mergeOlder(_ values: [ConversationSummaryDTO]) {
-    for value in values {
-      if value.status == .deleted {
-        suppressedConversationIDs.insert(value.id)
-        allConversations.removeAll { $0.id == value.id }
-        continue
+  private func mergeOlder(
+    _ values: [ConversationSummaryDTO]
+  ) -> [ConversationLifecycleChange] {
+    var lifecycleChanges: [ConversationLifecycleChange] = []
+    for incoming in values {
+      let index = allConversations.firstIndex { $0.id == incoming.id }
+      let current = index.map { allConversations[$0].summary }
+      let reconciliation = reconcileCanonical(incoming, current: current)
+      if let change = lifecycleChange(for: incoming, reconciliation: reconciliation) {
+        lifecycleChanges.append(change)
       }
-      guard suppressedConversationIDs.contains(value.id) == false else { continue }
-      if let index = allConversations.firstIndex(where: { $0.id == value.id }) {
-        if value.revision >= allConversations[index].summary.revision {
-          allConversations[index] = CachedConversation(gatewayID: gatewayID, summary: value)
+      switch reconciliation {
+      case .visible(let effective):
+        let cached = CachedConversation(gatewayID: gatewayID, summary: effective)
+        if let index {
+          allConversations[index] = cached
+        } else {
+          allConversations.append(cached)
         }
-      } else {
-        allConversations.append(CachedConversation(gatewayID: gatewayID, summary: value))
+      case .hidden:
+        if let index {
+          allConversations.remove(at: index)
+        }
       }
+    }
+    return lifecycleChanges
+  }
+
+  private func lifecycleChange(
+    for incoming: ConversationSummaryDTO,
+    reconciliation: CanonicalReconciliation
+  ) -> ConversationLifecycleChange? {
+    switch reconciliation {
+    case .visible(let effective):
+      return .canonical(effective)
+    case .hidden where incoming.status == .deleted:
+      return .canonical(incoming)
+    case .hidden:
+      return nil
     }
   }
 
+  private func publishLifecycleChange(
+    for incoming: ConversationSummaryDTO,
+    reconciliation: CanonicalReconciliation
+  ) async {
+    guard let change = lifecycleChange(for: incoming, reconciliation: reconciliation) else {
+      return
+    }
+    await publishLifecycleChanges([change])
+  }
+
+  private func publishLifecycleChanges(_ changes: [ConversationLifecycleChange]) async {
+    guard isPreparedForShutdown == false, changes.isEmpty == false else { return }
+    _ = await lifecycleChangeHandler(changes)
+  }
+
+  @discardableResult
   private func replaceVisible(
     _ value: ConversationSummaryDTO,
     insertAtFront: Bool = false
-  ) {
+  ) -> CanonicalReconciliation {
     listGeneration &+= 1
-    if value.status == .deleted {
-      suppressedConversationIDs.insert(value.id)
+    let index = allConversations.firstIndex { $0.id == value.id }
+    let current = index.map { allConversations[$0].summary }
+    let reconciliation = reconcileCanonical(value, current: current)
+    switch reconciliation {
+    case .hidden:
       removeVisible(id: value.id)
-      return
+    case .visible(let effective):
+      let cached = CachedConversation(gatewayID: gatewayID, summary: effective)
+      if let index {
+        allConversations[index] = cached
+      } else if insertAtFront {
+        allConversations.insert(cached, at: 0)
+      } else {
+        allConversations.append(cached)
+      }
+      applyFilter()
     }
-    let cached = CachedConversation(gatewayID: gatewayID, summary: value)
-    if let index = allConversations.firstIndex(where: { $0.id == value.id }) {
-      guard value.revision >= allConversations[index].summary.revision else { return }
-      allConversations[index] = cached
-    } else if insertAtFront {
-      allConversations.insert(cached, at: 0)
-    } else {
-      allConversations.append(cached)
-    }
-    applyFilter()
+    return reconciliation
   }
 
   private func removeVisible(id: String) {
@@ -1063,6 +1557,47 @@ final class ConversationListFeature {
     allConversations.removeAll { $0.id == id }
     if selectedID == id { selectedID = nil }
     applyFilter()
+  }
+
+  private func reconcileReadOnlyMutation(
+    conversationID: String,
+    message: String,
+    expectedCanonical: ConversationSummaryDTO,
+    pending: PendingConflict
+  ) async {
+    do {
+      let canonical = try await service.conversation(id: conversationID)
+      let reconciliation = replaceVisible(canonical)
+      await publishLifecycleChange(for: canonical, reconciliation: reconciliation)
+      switch reconciliation {
+      case .visible(let effective) where effective.status == .archived:
+        pendingConflict = nil
+        mutationError = .readOnly(conversationID: conversationID)
+      case .visible(let effective):
+        pendingConflict = pending
+        mutationError = .revisionConflict(current: effective)
+      case .hidden:
+        pendingConflict = nil
+        mutationError = .failed
+      }
+      await reportGatewayError(GatewayError.validation(message))
+    } catch GatewayError.notFound {
+      await removeStale(
+        expectedCanonical: expectedCanonical,
+        pending: pending
+      )
+    } catch is CancellationError {
+      return
+    } catch {
+      mutationError = .failed
+      await reportGatewayError(error)
+    }
+  }
+
+  private func isArchivedReadOnlyValidation(_ message: String) -> Bool {
+    let normalized = message.lowercased()
+    return normalized.contains("archived conversation")
+      && (normalized.contains("cannot be updated") || normalized.contains("cannot be deleted"))
   }
 
   private func reportGatewayError(_ error: Error) async {

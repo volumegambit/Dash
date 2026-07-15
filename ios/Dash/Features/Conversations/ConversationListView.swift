@@ -1,7 +1,37 @@
 import CoreTransferable
+import ImageIO
+import Observation
 import SwiftUI
 import UIKit
 import UniformTypeIdentifiers
+
+struct ConversationRowActionPolicy: Equatable {
+  let showsRename: Bool
+  let showsDelete: Bool
+  let canRename: Bool
+  let canDelete: Bool
+  let renameDisabledHint: String
+  let deleteDisabledHint: String
+
+  init(summary: ConversationSummaryDTO, mutationsAllowed: Bool) {
+    let isReadOnly = summary.status == .archived || summary.status == .deleted
+    let hasActiveTurn = summary.status == .running || summary.activeTurnId != nil
+
+    showsRename = isReadOnly == false
+    showsDelete = isReadOnly == false
+    canRename = showsRename && mutationsAllowed
+    canDelete = showsDelete && mutationsAllowed && hasActiveTurn == false
+
+    renameDisabledHint = mutationsAllowed ? "" : "Connect to the gateway to rename"
+    if mutationsAllowed == false {
+      deleteDisabledHint = "Connect to the gateway to delete"
+    } else if hasActiveTurn {
+      deleteDisabledHint = "Wait for the active turn to finish before deleting"
+    } else {
+      deleteDisabledHint = ""
+    }
+  }
+}
 
 struct ConversationListView: View {
   @Environment(AppModel.self) private var appModel
@@ -34,26 +64,31 @@ struct ConversationListView: View {
                 await feature.loadOlderIfNeeded(currentID: conversation.id)
               }
               .contextMenu {
-                Button {
-                  renameTarget = conversation
-                  renameTitle = conversation.summary.title
-                } label: {
-                  Label("Rename", systemImage: "pencil")
-                }
-                .disabled(feature.mutationsAllowed == false)
-                .accessibilityHint(
-                  feature.mutationsAllowed ? "" : "Connect to the gateway to rename"
+                let actions = ConversationRowActionPolicy(
+                  summary: conversation.summary,
+                  mutationsAllowed: feature.mutationsAllowed
                 )
 
-                Button(role: .destructive) {
-                  deleteTarget = conversation
-                } label: {
-                  Label("Delete", systemImage: "trash")
+                if actions.showsRename {
+                  Button {
+                    renameTarget = conversation
+                    renameTitle = conversation.summary.title
+                  } label: {
+                    Label("Rename", systemImage: "pencil")
+                  }
+                  .disabled(actions.canRename == false)
+                  .accessibilityHint(actions.renameDisabledHint)
                 }
-                .disabled(feature.mutationsAllowed == false)
-                .accessibilityHint(
-                  feature.mutationsAllowed ? "" : "Connect to the gateway to delete"
-                )
+
+                if actions.showsDelete {
+                  Button(role: .destructive) {
+                    deleteTarget = conversation
+                  } label: {
+                    Label("Delete", systemImage: "trash")
+                  }
+                  .disabled(actions.canDelete == false)
+                  .accessibilityHint(actions.deleteDisabledHint)
+                }
               }
           }
 
@@ -118,14 +153,15 @@ struct ConversationListView: View {
       Text("This removes the conversation while preserving the gateway's canonical history rules.")
     }
     .alert("Conversation update failed", isPresented: genericErrorPresented) {
+      if let conversationID = actionableConversationID {
+        Button("Open Conversation") {
+          feature.mutationError = nil
+          appModel.openConversation(conversationID, presentation: presentation)
+        }
+      }
       Button("OK") { feature.mutationError = nil }
     } message: {
       Text(genericErrorMessage)
-    }
-    .alert("Recovery update failed", isPresented: recoveryErrorPresented) {
-      Button("OK") { feature.recoveryError = nil }
-    } message: {
-      Text(feature.recoveryError ?? "The saved message remains available.")
     }
   }
 
@@ -162,6 +198,10 @@ struct ConversationListView: View {
       "Enter a title that is not empty."
     case .outcomeUnknown:
       "Dash could not confirm the result. Retry to reconcile the same request."
+    case .conversationBusy:
+      "This conversation has an active turn. Resume or cancel it before deleting."
+    case .readOnly:
+      "This conversation was archived on another device and is now read-only."
     case .failed, .none:
       "Dash couldn't complete the update. Try again."
     case .revisionConflict:
@@ -169,11 +209,13 @@ struct ConversationListView: View {
     }
   }
 
-  private var recoveryErrorPresented: Binding<Bool> {
-    Binding(
-      get: { feature.recoveryError != nil },
-      set: { if $0 == false { feature.recoveryError = nil } }
-    )
+  private var actionableConversationID: String? {
+    switch feature.mutationError {
+    case .conversationBusy(let conversationID, _), .readOnly(let conversationID):
+      conversationID
+    case .offline, .invalidTitle, .outcomeUnknown, .revisionConflict, .failed, .none:
+      nil
+    }
   }
 
   @ViewBuilder
@@ -329,6 +371,11 @@ struct ConversationListView: View {
           .font(.caption)
           .foregroundStyle(.secondary)
         }
+        if let issue = RecoveryAttachmentIssuePresentation(recovery: recovery) {
+          Label(issue.rowLabel, systemImage: "photo.badge.exclamationmark")
+            .font(.caption)
+            .foregroundStyle(.orange)
+        }
         Text("Saved locally — it will not be sent automatically")
           .font(.caption)
           .foregroundStyle(.orange)
@@ -358,6 +405,49 @@ struct ConversationListView: View {
   }
 }
 
+enum PendingSendRecoveryPresentation {
+  static func explanation(for recovery: RecoverablePendingSend) -> String {
+    if recovery.coexistingDraft != nil {
+      return
+        "Dash could not confirm whether the earlier message was sent. A newer draft was also "
+        + "saved. Both local copies are kept separately and will not be sent automatically. "
+        + "Copy their exact text or share their readable images before discarding this "
+        + "recovery item."
+    }
+    if recovery.attachmentIssue == .unreadableStoredPayload {
+      return
+        "Dash could not read this saved message's image data. The exact text is still "
+        + "available and will not be sent automatically. Copy it before discarding this "
+        + "recovery item. Its unreadable images cannot be previewed or shared."
+    }
+    return
+      "Dash could not confirm whether this message was sent. This saved copy is kept separately "
+      + "and will not be sent automatically. Copy the exact text or share its readable images "
+      + "before discarding it."
+  }
+
+  static func discardTitle(for recovery: RecoverablePendingSend) -> String {
+    if recovery.coexistingDraft != nil, recovery.conversationAvailable == false {
+      return "Discard both recovery copies?"
+    }
+    return "Discard this recovered message?"
+  }
+
+  static func discardMessage(for recovery: RecoverablePendingSend) -> String {
+    if recovery.coexistingDraft != nil {
+      if recovery.conversationAvailable {
+        return
+          "This permanently removes the earlier message recovery. The newer draft remains "
+          + "saved with its conversation."
+      }
+      return
+        "This permanently removes both the earlier message and the newer draft, including "
+        + "their images. It cannot be undone."
+    }
+    return "This permanently removes the saved text and images. It cannot be undone."
+  }
+}
+
 struct PendingSendRecoveryView: View {
   @Environment(AppModel.self) private var appModel
   @Environment(ConversationListFeature.self) private var feature
@@ -374,14 +464,11 @@ struct PendingSendRecoveryView: View {
           .font(.headline)
           .foregroundStyle(.orange)
 
-        Text(
-          "This message was not sent because its conversation is no longer available. "
-            + "Copy the exact text or share its images before discarding it."
-        )
+        Text(PendingSendRecoveryPresentation.explanation(for: recovery))
         .font(.callout)
         .foregroundStyle(.secondary)
 
-        GroupBox("Message") {
+        GroupBox(recovery.coexistingDraft == nil ? "Message" : "Earlier Message") {
           Text(recovery.pendingSend.draft)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.vertical, 4)
@@ -390,9 +477,12 @@ struct PendingSendRecoveryView: View {
         }
 
         Button {
-          UIPasteboard.general.string = recovery.pendingSend.draft
+          RecoveryClipboardAction(clipboard: SystemRecoveryClipboard()).copy(recovery)
         } label: {
-          Label("Copy Message", systemImage: "doc.on.doc")
+          Label(
+            recovery.coexistingDraft == nil ? "Copy Message" : "Copy Earlier Message",
+            systemImage: "doc.on.doc"
+          )
             .frame(maxWidth: .infinity, minHeight: 44)
         }
         .buttonStyle(.bordered)
@@ -403,9 +493,76 @@ struct PendingSendRecoveryView: View {
           VStack(alignment: .leading, spacing: 12) {
             Text("Image Attachments")
               .font(.headline)
-            ForEach(recovery.pendingSend.attachments) { attachment in
-              attachmentView(attachment)
+            ForEach(recovery.pendingSend.attachments.indices, id: \.self) { index in
+              attachmentView(
+                recovery.pendingSend.attachments[index],
+                ordinal: index + 1,
+                count: recovery.pendingSend.attachments.count
+              )
             }
+          }
+        }
+
+        if let issue = RecoveryAttachmentIssuePresentation(recovery: recovery) {
+          GroupBox {
+            Text(issue.message)
+              .frame(maxWidth: .infinity, alignment: .leading)
+          } label: {
+            Label(issue.title, systemImage: "photo.badge.exclamationmark")
+          }
+          .accessibilityElement(children: .ignore)
+          .accessibilityLabel(issue.accessibilityLabel)
+          .accessibilityIdentifier(issue.identifier)
+        }
+
+        if let draft = recovery.coexistingDraft {
+          Divider()
+
+          GroupBox("Newer Draft") {
+            Text(draft.text)
+              .frame(maxWidth: .infinity, alignment: .leading)
+              .padding(.vertical, 4)
+              .textSelection(.enabled)
+              .accessibilityIdentifier("recovery.draft.text.\(recovery.conversationID)")
+          }
+
+          Button {
+            RecoveryClipboardAction(clipboard: SystemRecoveryClipboard()).copy(draft)
+          } label: {
+            Label("Copy Newer Draft", systemImage: "doc.on.doc")
+              .frame(maxWidth: .infinity, minHeight: 44)
+          }
+          .buttonStyle(.bordered)
+          .accessibilityHint("Copies the exact newer draft text without sending it")
+          .accessibilityIdentifier("recovery.draft.copy.\(recovery.conversationID)")
+
+          if draft.attachments.isEmpty == false {
+            VStack(alignment: .leading, spacing: 12) {
+              Text("Newer Draft Image Attachments")
+                .font(.headline)
+              ForEach(draft.attachments.indices, id: \.self) { index in
+                attachmentView(
+                  draft.attachments[index],
+                  ordinal: index + 1,
+                  count: draft.attachments.count
+                )
+              }
+            }
+          }
+
+          if let issue = RecoveryAttachmentIssuePresentation(
+            recovery: recovery,
+            scope: .coexistingDraft
+          ) {
+            GroupBox {
+              Text(issue.message)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            } label: {
+              Label(issue.title, systemImage: "photo.badge.exclamationmark")
+            }
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(issue.accessibilityLabel)
+            .accessibilityIdentifier(issue.identifier)
           }
         }
 
@@ -417,60 +574,54 @@ struct PendingSendRecoveryView: View {
         }
         .buttonStyle(.bordered)
         .disabled(feature.discardingRecoveryID != nil)
-        .accessibilityHint("Requires confirmation and permanently removes this local copy")
+        .accessibilityHint(
+          recovery.coexistingDraft == nil
+            ? "Requires confirmation and permanently removes this local copy"
+            : "Requires confirmation and explains which local copies will be removed"
+        )
         .accessibilityIdentifier("recovery.discard.\(recovery.conversationID)")
       }
       .padding()
     }
     .navigationTitle(recovery.conversationTitle ?? "Message Recovery")
     .navigationBarTitleDisplayMode(.inline)
-    .confirmationDialog(
-      "Discard this recovered message?",
-      isPresented: $showsDiscardConfirmation,
-      titleVisibility: .visible
-    ) {
-      Button("Discard Recovered Message", role: .destructive) {
-        Task {
-          if await feature.discardRecovery(recovery) {
-            appModel.closeConversationRecovery(
-              recovery.conversationID,
-              presentation: presentation
-            )
-          }
-        }
+    .modifier(
+      PendingSendRecoveryConfirmationModifier(
+        recovery: recovery,
+        presentation: presentation,
+        isPresented: $showsDiscardConfirmation,
+        discard: discardRecovery
+      )
+    )
+  }
+
+  private func discardRecovery() {
+    Task {
+      if await feature.discardRecovery(recovery) {
+        appModel.closeConversationRecovery(
+          recovery.conversationID,
+          presentation: presentation
+        )
       }
-      Button("Cancel", role: .cancel) {}
-    } message: {
-      Text("This permanently removes the saved text and images. It cannot be undone.")
-    }
-    .alert("Recovery update failed", isPresented: recoveryErrorPresented) {
-      Button("OK") { feature.recoveryError = nil }
-    } message: {
-      Text(feature.recoveryError ?? "The saved message remains available.")
     }
   }
 
   @ViewBuilder
-  private func attachmentView(_ attachment: PreparedAttachment) -> some View {
+  private func attachmentView(
+    _ attachment: PreparedAttachment,
+    ordinal: Int,
+    count: Int
+  ) -> some View {
+    let presentation = RecoveryAttachmentPresentation(
+      attachment: attachment,
+      ordinal: ordinal,
+      count: count
+    )
     VStack(alignment: .leading, spacing: 8) {
-      if let image = UIImage(data: attachment.data) {
-        Image(uiImage: image)
-          .resizable()
-          .scaledToFit()
-          .frame(maxWidth: .infinity, maxHeight: 280)
-          .clipShape(RoundedRectangle(cornerRadius: 12))
-          .accessibilityLabel("Recovered image attachment")
-          .accessibilityIdentifier("recovery.attachment.\(attachment.id.uuidString)")
-      } else {
-        ContentUnavailableView(
-          "Image unavailable",
-          systemImage: "photo.badge.exclamationmark",
-          description: Text(
-            "Dash couldn't preview this saved attachment, but you can still share it."
-          )
-        )
-        .accessibilityIdentifier("recovery.attachment.\(attachment.id.uuidString)")
-      }
+      RecoveryAttachmentPreviewView(
+        attachment: attachment,
+        presentation: presentation
+      )
 
       ShareLink(
         item: RecoveryAttachmentTransfer(attachment: attachment),
@@ -479,45 +630,472 @@ struct PendingSendRecoveryView: View {
         Label("Share Attachment", systemImage: "square.and.arrow.up")
           .frame(minWidth: 44, minHeight: 44)
       }
+      .accessibilityLabel(presentation.shareAccessibilityLabel)
       .accessibilityHint("Shares the original saved image without sending the message")
       .accessibilityIdentifier("recovery.share.\(attachment.id.uuidString)")
     }
   }
+}
 
-  private var recoveryErrorPresented: Binding<Bool> {
-    Binding(
-      get: { feature.recoveryError != nil },
-      set: { if $0 == false { feature.recoveryError = nil } }
+private struct PendingSendRecoveryConfirmationModifier: ViewModifier {
+  let recovery: RecoverablePendingSend
+  let presentation: NavigationPresentation
+  @Binding var isPresented: Bool
+  let discard: () -> Void
+
+  @ViewBuilder
+  func body(content: Content) -> some View {
+    switch presentation {
+    case .compact:
+      content.alert(
+        PendingSendRecoveryPresentation.discardTitle(for: recovery),
+        isPresented: $isPresented
+      ) {
+        Button("Discard Recovered Message", role: .destructive, action: discard)
+        Button("Cancel", role: .cancel) {}
+      } message: {
+        Text(PendingSendRecoveryPresentation.discardMessage(for: recovery))
+      }
+    case .regular:
+      content.confirmationDialog(
+        PendingSendRecoveryPresentation.discardTitle(for: recovery),
+        isPresented: $isPresented,
+        titleVisibility: .visible
+      ) {
+        Button("Discard Recovered Message", role: .destructive, action: discard)
+        Button("Cancel", role: .cancel) {}
+      } message: {
+        Text(PendingSendRecoveryPresentation.discardMessage(for: recovery))
+      }
+    }
+  }
+}
+
+private struct RecoveryAttachmentPreviewView: View {
+  let attachment: PreparedAttachment
+  let presentation: RecoveryAttachmentPresentation
+
+  @State private var model = RecoveryAttachmentPreviewModel()
+
+  private var request: RecoveryAttachmentPreviewRequest {
+    RecoveryAttachmentPreviewRequest(attachment: attachment)
+  }
+
+  var body: some View {
+    Group {
+      switch model.phase {
+      case .available(let key, let preview) where key == request.key:
+        Image(uiImage: preview.image)
+          .resizable()
+          .scaledToFit()
+          .frame(maxWidth: .infinity, maxHeight: 280)
+          .clipShape(RoundedRectangle(cornerRadius: 12))
+          .accessibilityLabel(presentation.previewAccessibilityLabel)
+          .accessibilityIdentifier(presentation.previewIdentifier)
+      case .unavailable(let key) where key == request.key:
+        unavailablePreview
+      case .idle, .loading, .available, .unavailable:
+        ProgressView("Loading image preview")
+          .frame(maxWidth: .infinity, minHeight: 120)
+          .accessibilityLabel("Loading \(presentation.previewAccessibilityLabel.lowercased())")
+          .accessibilityIdentifier(
+            "recovery.previewLoading.\(presentation.attachmentID.uuidString)"
+          )
+      }
+    }
+    .task(id: request.key) {
+      await model.load(request, using: .shared)
+    }
+  }
+
+  private var unavailablePreview: some View {
+    ContentUnavailableView(
+      "Image unavailable",
+      systemImage: "photo.badge.exclamationmark",
+      description: Text(
+        "Dash couldn't preview this saved attachment, but you can still share it."
+      )
+    )
+    .accessibilityElement(children: .ignore)
+    .accessibilityLabel(presentation.fallbackAccessibilityLabel)
+    .accessibilityIdentifier(presentation.fallbackIdentifier)
+  }
+}
+
+struct RecoveryAttachmentPreview: @unchecked Sendable, Equatable {
+  let image: UIImage
+  let pixelWidth: Int
+  let pixelHeight: Int
+
+  static func == (lhs: RecoveryAttachmentPreview, rhs: RecoveryAttachmentPreview) -> Bool {
+    lhs.image === rhs.image
+      && lhs.pixelWidth == rhs.pixelWidth
+      && lhs.pixelHeight == rhs.pixelHeight
+  }
+
+  var estimatedCost: Int {
+    let pixels = pixelWidth.multipliedReportingOverflow(by: pixelHeight)
+    guard pixels.overflow == false else { return Int.max }
+    let bytes = pixels.partialValue.multipliedReportingOverflow(by: 4)
+    return bytes.overflow ? Int.max : max(1, bytes.partialValue)
+  }
+}
+
+struct RecoveryAttachmentPreviewKey: Hashable, Sendable {
+  let attachmentID: UUID
+  let mediaType: String
+  let byteCount: Int
+  let maximumPixelDimension: Int
+}
+
+struct RecoveryAttachmentPreviewRequest: Sendable {
+  static let maximumPixelDimension = 1_024
+
+  let attachment: PreparedAttachment
+  let requestedMaxPixelDimension: Int
+  let key: RecoveryAttachmentPreviewKey
+
+  init(
+    attachment: PreparedAttachment,
+    requestedMaxPixelDimension: Int = maximumPixelDimension
+  ) {
+    let boundedTarget = min(
+      Self.maximumPixelDimension,
+      max(1, requestedMaxPixelDimension)
+    )
+    self.attachment = attachment
+    self.requestedMaxPixelDimension = boundedTarget
+    key = RecoveryAttachmentPreviewKey(
+      attachmentID: attachment.id,
+      mediaType: attachment.mediaType,
+      byteCount: attachment.data.count,
+      maximumPixelDimension: boundedTarget
     )
   }
 }
 
-private struct RecoveryAttachmentTransfer: Transferable {
-  let id: UUID
+enum RecoveryAttachmentThumbnailDecoder {
+  static func decode(
+    _ data: Data,
+    maxPixelDimension: Int
+  ) async -> RecoveryAttachmentPreview? {
+    let target = min(
+      RecoveryAttachmentPreviewRequest.maximumPixelDimension,
+      max(1, maxPixelDimension)
+    )
+    return await Task.detached(priority: .utility) {
+      guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
+      let options: [CFString: Any] = [
+        kCGImageSourceCreateThumbnailFromImageAlways: true,
+        kCGImageSourceCreateThumbnailWithTransform: true,
+        kCGImageSourceThumbnailMaxPixelSize: target,
+        kCGImageSourceShouldCacheImmediately: true,
+      ]
+      guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
+      else { return nil }
+      return RecoveryAttachmentPreview(
+        image: UIImage(cgImage: image),
+        pixelWidth: image.width,
+        pixelHeight: image.height
+      )
+    }.value
+  }
+}
+
+actor RecoveryAttachmentPreviewLoader {
+  typealias Decoder = @Sendable (Data, Int) async -> RecoveryAttachmentPreview?
+
+  static let shared = RecoveryAttachmentPreviewLoader()
+
+  private struct CacheEntry {
+    let preview: RecoveryAttachmentPreview?
+    let cost: Int
+    var access: UInt64
+  }
+
+  private let maximumEntryCount: Int
+  private let maximumCachedCost: Int
+  private let decoder: Decoder
+  private var cache: [RecoveryAttachmentPreviewKey: CacheEntry] = [:]
+  private var inFlight: [
+    RecoveryAttachmentPreviewKey: Task<RecoveryAttachmentPreview?, Never>
+  ] = [:]
+  private var cachedCost = 0
+  private var accessCounter: UInt64 = 0
+
+  init(
+    maximumEntryCount: Int = 12,
+    maximumCachedCost: Int = 24 * 1_024 * 1_024,
+    decoder: @escaping Decoder = { data, target in
+      await RecoveryAttachmentThumbnailDecoder.decode(data, maxPixelDimension: target)
+    }
+  ) {
+    self.maximumEntryCount = max(1, maximumEntryCount)
+    self.maximumCachedCost = max(1, maximumCachedCost)
+    self.decoder = decoder
+  }
+
+  func preview(
+    for attachment: PreparedAttachment,
+    requestedMaxPixelDimension: Int = RecoveryAttachmentPreviewRequest.maximumPixelDimension
+  ) async -> RecoveryAttachmentPreview? {
+    let request = RecoveryAttachmentPreviewRequest(
+      attachment: attachment,
+      requestedMaxPixelDimension: requestedMaxPixelDimension
+    )
+    if var cached = cache[request.key] {
+      cached.access = nextAccess()
+      cache[request.key] = cached
+      return cached.preview
+    }
+    if let existing = inFlight[request.key] {
+      return await existing.value
+    }
+
+    let decoder = decoder
+    let data = attachment.data
+    let target = request.requestedMaxPixelDimension
+    let task = Task { await decoder(data, target) }
+    inFlight[request.key] = task
+    let decoded = await task.value
+    inFlight[request.key] = nil
+    insert(decoded, for: request.key)
+    return decoded
+  }
+
+  private func insert(
+    _ preview: RecoveryAttachmentPreview?,
+    for key: RecoveryAttachmentPreviewKey
+  ) {
+    let cost = preview?.estimatedCost ?? 1
+    cache[key] = CacheEntry(preview: preview, cost: cost, access: nextAccess())
+    cachedCost = addingClamped(cachedCost, cost)
+    evictIfNeeded()
+  }
+
+  private func evictIfNeeded() {
+    while cache.count > maximumEntryCount || cachedCost > maximumCachedCost {
+      guard let oldest = cache.min(by: { $0.value.access < $1.value.access }) else { return }
+      cache[oldest.key] = nil
+      cachedCost = max(0, cachedCost - oldest.value.cost)
+    }
+  }
+
+  private func nextAccess() -> UInt64 {
+    accessCounter &+= 1
+    return accessCounter
+  }
+
+  private func addingClamped(_ lhs: Int, _ rhs: Int) -> Int {
+    let result = lhs.addingReportingOverflow(rhs)
+    return result.overflow ? Int.max : result.partialValue
+  }
+}
+
+@MainActor
+@Observable
+final class RecoveryAttachmentPreviewModel {
+  enum Phase: @unchecked Sendable {
+    case idle
+    case loading(RecoveryAttachmentPreviewKey)
+    case available(RecoveryAttachmentPreviewKey, RecoveryAttachmentPreview)
+    case unavailable(RecoveryAttachmentPreviewKey)
+  }
+
+  private(set) var phase: Phase = .idle
+  private var revision: UInt64 = 0
+
+  func load(
+    _ request: RecoveryAttachmentPreviewRequest,
+    using loader: RecoveryAttachmentPreviewLoader
+  ) async {
+    revision &+= 1
+    let loadRevision = revision
+    phase = .loading(request.key)
+    let preview = await loader.preview(
+      for: request.attachment,
+      requestedMaxPixelDimension: request.requestedMaxPixelDimension
+    )
+    guard Task.isCancelled == false, revision == loadRevision else { return }
+    if let preview {
+      phase = .available(request.key, preview)
+    } else {
+      phase = .unavailable(request.key)
+    }
+  }
+}
+
+@MainActor
+protocol RecoveryClipboardWriting {
+  func write(_ text: String)
+}
+
+@MainActor
+struct SystemRecoveryClipboard: RecoveryClipboardWriting {
+  func write(_ text: String) {
+    UIPasteboard.general.string = text
+  }
+}
+
+@MainActor
+struct RecoveryClipboardAction {
+  let clipboard: any RecoveryClipboardWriting
+
+  func copy(_ recovery: RecoverablePendingSend) {
+    clipboard.write(recovery.pendingSend.draft)
+  }
+
+  func copy(_ draft: ConversationDraft) {
+    clipboard.write(draft.text)
+  }
+}
+
+struct RecoveryAttachmentPresentation: Equatable {
+  let attachmentID: UUID
+  let ordinal: Int
+  let count: Int
+  let formatName: String
+
+  init(attachment: PreparedAttachment, ordinal: Int, count: Int) {
+    attachmentID = attachment.id
+    self.ordinal = ordinal
+    self.count = count
+    formatName = switch attachment.mediaType {
+    case ImageMediaType.jpeg.rawValue: "JPEG"
+    case ImageMediaType.png.rawValue: "PNG"
+    case ImageMediaType.gif.rawValue: "GIF"
+    case ImageMediaType.webp.rawValue: "WebP"
+    default: "image"
+    }
+  }
+
+  var previewAccessibilityLabel: String {
+    "Recovered image attachment \(ordinal) of \(count), \(formatName)"
+  }
+
+  var fallbackAccessibilityLabel: String {
+    "\(previewAccessibilityLabel), preview unavailable"
+  }
+
+  var shareAccessibilityLabel: String {
+    "Share recovered image attachment \(ordinal) of \(count), \(formatName)"
+  }
+
+  var previewIdentifier: String {
+    "recovery.preview.\(attachmentID.uuidString)"
+  }
+
+  var fallbackIdentifier: String {
+    "recovery.previewFallback.\(attachmentID.uuidString)"
+  }
+}
+
+enum RecoveryAttachmentIssueScope: Equatable {
+  case pendingMessage
+  case coexistingDraft
+}
+
+struct RecoveryAttachmentIssuePresentation: Equatable {
+  let conversationID: String
+  let scope: RecoveryAttachmentIssueScope
+
+  init?(
+    recovery: RecoverablePendingSend,
+    scope: RecoveryAttachmentIssueScope = .pendingMessage
+  ) {
+    let issue = switch scope {
+    case .pendingMessage: recovery.attachmentIssue
+    case .coexistingDraft: recovery.coexistingDraftAttachmentIssue
+    }
+    guard issue == .unreadableStoredPayload else { return nil }
+    conversationID = recovery.conversationID
+    self.scope = scope
+  }
+
+  var rowLabel: String {
+    switch scope {
+    case .pendingMessage: "Saved image attachments unavailable"
+    case .coexistingDraft: "Newer draft image attachments unavailable"
+    }
+  }
+
+  var title: String {
+    switch scope {
+    case .pendingMessage: "Saved attachments unavailable"
+    case .coexistingDraft: "Newer draft attachments unavailable"
+    }
+  }
+
+  var message: String {
+    switch scope {
+    case .pendingMessage:
+      "Dash couldn't read the saved image data. The exact message text is still available."
+    case .coexistingDraft:
+      "Dash couldn't read the newer draft's saved image data. Its exact text is still available."
+    }
+  }
+
+  var accessibilityLabel: String {
+    switch scope {
+    case .pendingMessage:
+      "Saved image attachments unavailable. The exact message text is still available."
+    case .coexistingDraft:
+      "Newer draft image attachments unavailable. Its exact text is still available."
+    }
+  }
+
+  var identifier: String {
+    switch scope {
+    case .pendingMessage: "recovery.attachmentsUnavailable.\(conversationID)"
+    case .coexistingDraft: "recovery.draft.attachmentsUnavailable.\(conversationID)"
+    }
+  }
+}
+
+struct RecoveryAttachmentExport: Equatable {
   let data: Data
-  let mediaType: String
+  let mimeType: String
+  let contentType: UTType
+  let suggestedFileName: String
+}
+
+struct RecoveryAttachmentTransfer: Transferable {
+  let export: RecoveryAttachmentExport
 
   init(attachment: PreparedAttachment) {
-    id = attachment.id
-    data = attachment.data
-    mediaType = attachment.mediaType
+    let (contentType, fileExtension): (UTType, String?) =
+      switch attachment.mediaType {
+      case ImageMediaType.jpeg.rawValue: (.jpeg, "jpg")
+      case ImageMediaType.png.rawValue: (.png, "png")
+      case ImageMediaType.gif.rawValue: (.gif, "gif")
+      case ImageMediaType.webp.rawValue: (.webP, "webp")
+      default: (.data, nil)
+      }
+    let basename = "recovered-\(attachment.id.uuidString)"
+    export = RecoveryAttachmentExport(
+      data: attachment.data,
+      mimeType: attachment.mediaType,
+      contentType: contentType,
+      suggestedFileName: fileExtension.map { "\(basename).\($0)" } ?? basename
+    )
   }
 
   static var transferRepresentation: some TransferRepresentation {
-    DataRepresentation(exportedContentType: .jpeg) { $0.data }
-      .exportingCondition { $0.mediaType == ImageMediaType.jpeg.rawValue }
-      .suggestedFileName { "recovered-\($0.id.uuidString).jpg" }
-    DataRepresentation(exportedContentType: .png) { $0.data }
-      .exportingCondition { $0.mediaType == ImageMediaType.png.rawValue }
-      .suggestedFileName { "recovered-\($0.id.uuidString).png" }
-    DataRepresentation(exportedContentType: .gif) { $0.data }
-      .exportingCondition { $0.mediaType == ImageMediaType.gif.rawValue }
-      .suggestedFileName { "recovered-\($0.id.uuidString).gif" }
-    DataRepresentation(exportedContentType: .webP) { $0.data }
-      .exportingCondition { $0.mediaType == ImageMediaType.webp.rawValue }
-      .suggestedFileName { "recovered-\($0.id.uuidString).webp" }
-    DataRepresentation(exportedContentType: .data) { $0.data }
-      .suggestedFileName { "recovered-\($0.id.uuidString)" }
+    DataRepresentation(exportedContentType: .jpeg) { $0.export.data }
+      .exportingCondition { $0.export.contentType == .jpeg }
+      .suggestedFileName { $0.export.suggestedFileName }
+    DataRepresentation(exportedContentType: .png) { $0.export.data }
+      .exportingCondition { $0.export.contentType == .png }
+      .suggestedFileName { $0.export.suggestedFileName }
+    DataRepresentation(exportedContentType: .gif) { $0.export.data }
+      .exportingCondition { $0.export.contentType == .gif }
+      .suggestedFileName { $0.export.suggestedFileName }
+    DataRepresentation(exportedContentType: .webP) { $0.export.data }
+      .exportingCondition { $0.export.contentType == .webP }
+      .suggestedFileName { $0.export.suggestedFileName }
+    DataRepresentation(exportedContentType: .data) { $0.export.data }
+      .exportingCondition { $0.export.contentType == .data }
+      .suggestedFileName { $0.export.suggestedFileName }
   }
 }
 

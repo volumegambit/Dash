@@ -4,6 +4,7 @@ import XCTest
 final class AgentsUITests: DashUITestCase {
   func testCreateAndEditAgent() {
     let app = launch(scenario: "agents")
+    _ = element("conversation.list", in: app)
     selectTab("tab.agents", in: app)
     revealSidebarIfNeeded(toExpose: "agent.create", in: app)
     element("agent.create", in: app).tap()
@@ -19,12 +20,7 @@ final class AgentsUITests: DashUITestCase {
       with: "openai/gpt-5",
       clearExisting: false
     )
-    let prompt = element("agent.editor.prompt", in: app)
-    for _ in 0..<4 where prompt.isHittable == false {
-      app.swipeUp()
-    }
-    XCTAssertTrue(
-      prompt.isHittable, "Expected the system prompt field to be visible above the keyboard")
+    let prompt = revealPromptForTextEntry(in: app)
     replaceText(
       in: prompt,
       with: "Coordinate releases",
@@ -44,7 +40,7 @@ final class AgentsUITests: DashUITestCase {
     XCTAssertTrue(edit.waitForExistence(timeout: 5))
     edit.tap()
     replaceText(
-      in: element("agent.editor.prompt", in: app),
+      in: revealPromptForTextEntry(in: app),
       with: "Coordinate releases and write summaries"
     )
     element("agent.editor.save", in: app).tap()
@@ -53,6 +49,24 @@ final class AgentsUITests: DashUITestCase {
     edit.tap()
     let savedPrompt = element("agent.editor.prompt", in: app)
     XCTAssertEqual(savedPrompt.value as? String, "Coordinate releases and write summaries")
+  }
+
+  private func revealPromptForTextEntry(in app: XCUIApplication) -> XCUIElement {
+    let prompt = element("agent.editor.prompt", in: app)
+    let tabBar = app.tabBars.firstMatch
+    for _ in 0..<4 {
+      let intendedTapY = prompt.frame.midY
+      if prompt.isHittable, tabBar.exists == false || intendedTapY < tabBar.frame.minY {
+        return prompt
+      }
+      app.swipeUp()
+    }
+
+    XCTAssertTrue(
+      prompt.isHittable && (tabBar.exists == false || prompt.frame.midY < tabBar.frame.minY),
+      "Expected the system prompt field's tap target to be above the tab bar"
+    )
+    return prompt
   }
 
   func testEnableFailureRollsBackAndDisableRequiresConfirmation() {

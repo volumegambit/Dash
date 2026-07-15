@@ -8,6 +8,21 @@ struct ChatCanonicalSnapshot: Equatable, Sendable {
   let messages: [ConversationMessageDTO]
   let nextCursor: String?
   let throughSeq: Int
+  let hasCanonicalMessagePage: Bool
+
+  init(
+    summary: ConversationSummaryDTO,
+    messages: [ConversationMessageDTO],
+    nextCursor: String?,
+    throughSeq: Int,
+    hasCanonicalMessagePage: Bool = true
+  ) {
+    self.summary = summary
+    self.messages = messages
+    self.nextCursor = nextCursor
+    self.throughSeq = throughSeq
+    self.hasCanonicalMessagePage = hasCanonicalMessagePage
+  }
 }
 
 protocol ChatFeaturePersisting: Actor {
@@ -16,7 +31,10 @@ protocol ChatFeaturePersisting: Actor {
     conversationID: String
   ) async throws -> [ConversationMessageDTO]
   func draft(gatewayID: String, conversationID: String) async throws -> ConversationDraft?
-  func pendingSend(gatewayID: String, conversationID: String) async throws -> PendingChatSend?
+  func pendingSend(
+    gatewayID: String,
+    conversationID: String
+  ) async throws -> PendingSendLoadResult
   func cursor(gatewayID: String, conversationID: String) async throws -> Int
   func saveDraft(
     _ draft: ConversationDraft,
@@ -27,17 +45,22 @@ protocol ChatFeaturePersisting: Actor {
     _ pending: PendingChatSend,
     gatewayID: String,
     conversationID: String
-  ) async throws
+  ) async throws -> PendingSendStageResult
   func clearPendingSend(
     gatewayID: String,
     conversationID: String,
     turnID: String
-  ) async throws
+  ) async throws -> PendingSendClearResult
+  func pendingSendAvailability(
+    gatewayID: String,
+    conversationID: String,
+    turnID: String
+  ) async throws -> PendingSendAvailability
   func restorePendingSendAsDraft(
     gatewayID: String,
     conversationID: String,
     turnID: String
-  ) async throws -> ConversationDraft?
+  ) async throws -> PendingSendRestoreResult
   func advanceCursor(
     gatewayID: String,
     conversationID: String,
@@ -63,7 +86,10 @@ actor LiveChatPersistence: ChatFeaturePersisting {
     try await store.draft(gatewayID: gatewayID, conversationID: conversationID)
   }
 
-  func pendingSend(gatewayID: String, conversationID: String) async throws -> PendingChatSend? {
+  func pendingSend(
+    gatewayID: String,
+    conversationID: String
+  ) async throws -> PendingSendLoadResult {
     try await store.pendingSend(gatewayID: gatewayID, conversationID: conversationID)
   }
 
@@ -83,7 +109,7 @@ actor LiveChatPersistence: ChatFeaturePersisting {
     _ pending: PendingChatSend,
     gatewayID: String,
     conversationID: String
-  ) async throws {
+  ) async throws -> PendingSendStageResult {
     try await store.stagePendingSend(
       pending,
       gatewayID: gatewayID,
@@ -95,8 +121,20 @@ actor LiveChatPersistence: ChatFeaturePersisting {
     gatewayID: String,
     conversationID: String,
     turnID: String
-  ) async throws {
+  ) async throws -> PendingSendClearResult {
     try await store.clearPendingSend(
+      gatewayID: gatewayID,
+      conversationID: conversationID,
+      turnID: turnID
+    )
+  }
+
+  func pendingSendAvailability(
+    gatewayID: String,
+    conversationID: String,
+    turnID: String
+  ) async throws -> PendingSendAvailability {
+    try await store.pendingSendAvailability(
       gatewayID: gatewayID,
       conversationID: conversationID,
       turnID: turnID
@@ -107,7 +145,7 @@ actor LiveChatPersistence: ChatFeaturePersisting {
     gatewayID: String,
     conversationID: String,
     turnID: String
-  ) async throws -> ConversationDraft? {
+  ) async throws -> PendingSendRestoreResult {
     try await store.restorePendingSendAsDraft(
       gatewayID: gatewayID,
       conversationID: conversationID,
@@ -183,6 +221,39 @@ private enum DraftWriteResult: Sendable {
     if case .saved = self { return true }
     return false
   }
+}
+
+private enum ChatCacheReadResult<Value: Sendable>: Sendable {
+  case value(Value)
+  case cancelled
+  case failed
+}
+
+private func readChatCacheValue<Value: Sendable>(
+  _ operation: @escaping @Sendable () async throws -> Value
+) async -> ChatCacheReadResult<Value> {
+  do {
+    let value = try await operation()
+    return Task.isCancelled ? .cancelled : .value(value)
+  } catch is CancellationError {
+    return .cancelled
+  } catch {
+    return .failed
+  }
+}
+
+private enum RecoveryClassificationResult: Equatable, Sendable {
+  case conclusive
+  case admitted
+  case notAdmitted
+  case deleted
+  case inconclusive
+  case summaryOnlyInconclusive
+}
+
+private enum PendingSendDraftResolution: Equatable, Sendable {
+  case restored(ConversationDraft)
+  case draftConflict(ConversationDraft)
 }
 
 enum ChatStatusPresentation: Equatable, Sendable {
@@ -289,26 +360,57 @@ actor LiveChatSynchronizer: ChatFeatureSynchronizing {
     defer { finishOperation() }
     let api = try await resolvedAPI()
     try validate(lifecycle)
-    let summary = try await api.conversation(id: conversationID)
+    let requestStartCanonical = try await store.conversation(
+      gatewayID: gatewayID,
+      id: conversationID
+    )?.summary
     try validate(lifecycle)
-    guard summary.status != .deleted else {
-      try await store.applyTombstone(summary, gatewayID: gatewayID)
-      try validate(lifecycle)
+    let summary: ConversationSummaryDTO
+    do {
+      summary = try await api.conversation(id: conversationID)
+    } catch GatewayError.notFound {
+      if let retained = try await retainedCanonicalAfterNotFound(
+        conversationID: conversationID,
+        requestStartCanonical: requestStartCanonical,
+        lifecycle: lifecycle
+      ) {
+        return summaryOnlySnapshot(retained)
+      }
+      throw GatewayError.notFound
+    }
+    try validate(lifecycle)
+    let persisted = try await store.persistConversationAndReturnCanonical(
+      summary,
+      gatewayID: gatewayID
+    )
+    try validate(lifecycle)
+    guard persisted.summary == summary, persisted.summary.status != .deleted else {
       return ChatCanonicalSnapshot(
-        summary: summary,
+        summary: persisted.summary,
         messages: [],
         nextCursor: nil,
-        throughSeq: summary.lastSeq
+        throughSeq: persisted.summary.lastSeq,
+        hasCanonicalMessagePage: false
       )
     }
 
-    let page = try await api.messages(
-      conversationID: conversationID,
-      limit: 50,
-      before: before
-    )
-    try validate(lifecycle)
-    try await store.upsertConversations([summary], gatewayID: gatewayID)
+    let page: ConversationMessagePageDTO
+    do {
+      page = try await api.messages(
+        conversationID: conversationID,
+        limit: 50,
+        before: before
+      )
+    } catch GatewayError.notFound {
+      if let retained = try await retainedCanonicalAfterNotFound(
+        conversationID: conversationID,
+        requestStartCanonical: persisted.summary,
+        lifecycle: lifecycle
+      ) {
+        return summaryOnlySnapshot(retained)
+      }
+      throw GatewayError.notFound
+    }
     try validate(lifecycle)
     try await store.mergeMessages(
       page.items,
@@ -323,7 +425,7 @@ actor LiveChatSynchronizer: ChatFeatureSynchronizing {
     )
     try validate(lifecycle)
     return ChatCanonicalSnapshot(
-      summary: summary,
+      summary: persisted.summary,
       messages: page.items,
       nextCursor: page.nextCursor,
       throughSeq: page.throughSeq
@@ -337,13 +439,32 @@ actor LiveChatSynchronizer: ChatFeatureSynchronizing {
   ) async throws -> [ReplayEntryDTO] {
     let lifecycle = try beginOperation()
     defer { finishOperation() }
-    let page = try await resolvedAPI().replay(
-      agentID: agentID,
-      conversationID: conversationID,
-      sinceSeq: sinceSeq
-    )
+    let api = try await resolvedAPI()
     try validate(lifecycle)
-    return page.entries
+    let requestStartCanonical = try await store.conversation(
+      gatewayID: gatewayID,
+      id: conversationID
+    )?.summary
+    try validate(lifecycle)
+    do {
+      let page = try await api.replay(
+        agentID: agentID,
+        conversationID: conversationID,
+        sinceSeq: sinceSeq
+      )
+      try validate(lifecycle)
+      return page.entries
+    } catch GatewayError.notFound {
+      if let retained = try await retainedCanonicalAfterNotFound(
+        conversationID: conversationID,
+        requestStartCanonical: requestStartCanonical,
+        lifecycle: lifecycle
+      ) {
+        guard retained.status != .deleted else { throw GatewayError.notFound }
+        throw GatewayError.revisionConflict(current: retained)
+      }
+      throw GatewayError.notFound
+    }
   }
 
   func shutdown() async {
@@ -387,6 +508,38 @@ actor LiveChatSynchronizer: ChatFeatureSynchronizing {
     for waiter in waiters { waiter.resume() }
   }
 
+  private func retainedCanonicalAfterNotFound(
+    conversationID: String,
+    requestStartCanonical: ConversationSummaryDTO?,
+    lifecycle: UInt64
+  ) async throws -> ConversationSummaryDTO? {
+    try validate(lifecycle)
+    let outcome = try await store.removeConversationIfCanonicalUnchanged(
+      gatewayID: gatewayID,
+      conversationID: conversationID,
+      expectedCanonical: requestStartCanonical
+    )
+    try validate(lifecycle)
+    switch outcome {
+    case .removed:
+      return nil
+    case .retained(let current):
+      return current
+    }
+  }
+
+  private func summaryOnlySnapshot(
+    _ summary: ConversationSummaryDTO
+  ) -> ChatCanonicalSnapshot {
+    ChatCanonicalSnapshot(
+      summary: summary,
+      messages: [],
+      nextCursor: nil,
+      throughSeq: summary.lastSeq,
+      hasCanonicalMessagePage: false
+    )
+  }
+
   private func validate(_ lifecycle: UInt64) throws {
     guard isShutdown == false, lifecycleGeneration == lifecycle else {
       throw CancellationError()
@@ -418,11 +571,13 @@ final class ChatFeature {
   private(set) var isShutdown = false
   private(set) var draftStatus: ChatDraftStatus = .saved
   private(set) var retryAt: Date?
+  private(set) var pendingSendRecovery: RecoverablePendingSend?
 
   var canSend: Bool {
     guard
       sendAuthorityIsAvailable,
       pendingSendReconciliation == nil,
+      pendingSendRecovery == nil,
       isSending == false,
       state.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
         || state.attachments.isEmpty == false
@@ -432,6 +587,7 @@ final class ChatFeature {
 
   var draftEditingAllowed: Bool {
     isShutdown == false && isSending == false && pendingSendReconciliation == nil
+      && pendingSendRecovery == nil
       && state.activeTurnID == nil
       && state.composerBlock == nil && isConversationReadOnly == false
   }
@@ -449,6 +605,7 @@ final class ChatFeature {
 
   var composerDisabledReason: String? {
     if isShutdown { return "Chat session is closed" }
+    if pendingSendRecovery != nil { return "A saved message needs recovery" }
     if isConversationReadOnly { return "This conversation is read-only" }
     if case .remoteActiveTurn? = state.composerBlock {
       return "This conversation is active on another device"
@@ -463,6 +620,7 @@ final class ChatFeature {
   }
 
   var statusPresentation: ChatStatusPresentation? {
+    if pendingSendRecovery != nil { return .recoveryRequired }
     if pendingSendReconciliation != nil, state.conversation.status == .deleted {
       return .recoveryRequired
     }
@@ -496,9 +654,19 @@ final class ChatFeature {
   @ObservationIgnored private let clock: any AppClock
   @ObservationIgnored private let announcer: any ChatAccessibilityAnnouncing
   @ObservationIgnored private let validator: ImageAttachmentValidator
+  @ObservationIgnored private let recoveryChanges: any ConversationRecoveryChangeSignaling
   @ObservationIgnored private let makeID: @Sendable () -> String
   @ObservationIgnored private var eventTask: Task<Void, Never>?
   @ObservationIgnored private var eventTaskGeneration: UInt64 = 0
+  @ObservationIgnored private var cacheLoadTask: Task<Void, Never>?
+  @ObservationIgnored private var cacheLoadGeneration: UInt64 = 0
+  @ObservationIgnored private var recoveryChangeTask: Task<Void, Never>?
+  @ObservationIgnored private var recoveryChangeGeneration: UInt64 = 0
+  @ObservationIgnored private var pendingSendReadRevision: UInt64 = 0
+  @ObservationIgnored private var isStartingRecoveryChangeObservation = false
+  @ObservationIgnored private var activeRecoveryChangeOperations = 0
+  @ObservationIgnored private var recoveryChangeOperationWaiters:
+    [CheckedContinuation<Void, Never>] = []
   @ObservationIgnored private var hasLoadedCache = false
   @ObservationIgnored private var isVisible = false
   @ObservationIgnored private var isConnected = false
@@ -515,7 +683,20 @@ final class ChatFeature {
   @ObservationIgnored private var attachmentIntentRevision: UInt64 = 0
   @ObservationIgnored private var attachmentRequested = false
   @ObservationIgnored private var canonicalRefreshRevision: UInt64 = 0
+  @ObservationIgnored private var recoveryClassificationRevision: UInt64?
+  @ObservationIgnored private var recoveryClassificationTurnID: String?
+  @ObservationIgnored private var recoveryResolutionHoldTurnID: String?
+  @ObservationIgnored private var summaryOnlyFollowUpTurnID: String?
+  @ObservationIgnored private var transportSendInFlightTurnID: String?
+  @ObservationIgnored private var deferredRecoveryFrames: [MobileWSServerFrame] = []
+  @ObservationIgnored private var deferredReplayTurnID: String?
   @ObservationIgnored private var gatewayErrorHandler: ChatGatewayErrorHandler?
+  @ObservationIgnored private var lifecycleChangeHandler:
+    @MainActor @Sendable ([ConversationLifecycleChange]) async
+      -> ConversationLifecycleAcknowledgement = { _ in .ignored }
+  @ObservationIgnored private var shutdownDrainStarted = false
+  @ObservationIgnored private var shutdownDrainCompleted = false
+  @ObservationIgnored private var shutdownDrainWaiters: [CheckedContinuation<Void, Never>] = []
 
   init(
     gatewayID: String,
@@ -526,6 +707,8 @@ final class ChatFeature {
     clock: any AppClock = SystemAppClock(),
     announcer: any ChatAccessibilityAnnouncing = SystemChatAccessibilityAnnouncer(),
     validator: ImageAttachmentValidator = ImageAttachmentValidator(),
+    recoveryChanges: any ConversationRecoveryChangeSignaling =
+      ConversationRecoveryChangeSignal.shared,
     makeID: @escaping @Sendable () -> String = { UUID().uuidString.lowercased() }
   ) {
     self.gatewayID = gatewayID
@@ -535,6 +718,7 @@ final class ChatFeature {
     self.clock = clock
     self.announcer = announcer
     self.validator = validator
+    self.recoveryChanges = recoveryChanges
     self.makeID = makeID
     state = ChatState(
       conversation: conversation,
@@ -553,6 +737,7 @@ final class ChatFeature {
   }
 
   func setConnection(_ connection: GatewayConnectionState) {
+    guard isShutdown == false else { return }
     let wasOnline = self.connection == .online
     self.connection = connection
     if connection != .online || wasOnline == false {
@@ -575,8 +760,34 @@ final class ChatFeature {
     }
   }
 
+  func consumeCanonicalSummary(_ canonical: ConversationSummaryDTO) {
+    guard
+      isShutdown == false,
+      canonical.id == state.conversation.id,
+      canonical.status != .deleted,
+      canonical.revision >= state.conversation.revision
+    else { return }
+    let previousActiveTurnID = state.activeTurnID
+    _ = ChatReducer.reduce(state: &state, action: .authoritativeSummary(canonical))
+    if let previousActiveTurnID, state.activeTurnID != previousActiveTurnID {
+      localTurnIDs.remove(previousActiveTurnID)
+      cancelRequestSent = false
+      isCancelling = false
+    }
+    reconcileSubmittedAnswers()
+  }
+
   func setGatewayErrorHandler(_ handler: @escaping ChatGatewayErrorHandler) {
+    guard isShutdown == false else { return }
     gatewayErrorHandler = handler
+  }
+
+  func setLifecycleChangeHandler(
+    _ handler: @escaping @MainActor @Sendable ([ConversationLifecycleChange]) async
+      -> ConversationLifecycleAcknowledgement
+  ) {
+    guard isShutdown == false else { return }
+    lifecycleChangeHandler = handler
   }
 
   func appear() async {
@@ -584,9 +795,12 @@ final class ChatFeature {
     let attachmentIntent = beginAttachmentIntent(attached: true)
     isVisible = true
     startEventTaskIfNeeded()
+    await startRecoveryChangeObservation()
+    guard isShutdown == false else { return }
     if hasLoadedCache == false {
       isLoadingInitial = true
       await loadCache()
+      guard isShutdown == false else { return }
       hasLoadedCache = true
       isLoadingInitial = false
     }
@@ -615,6 +829,8 @@ final class ChatFeature {
       state.isLoadingOlder == false,
       let cursor = state.olderCursor
     else { return }
+    let conversationID = state.conversation.id
+    let revisionFloor = state.conversation.revision
     state.isLoadingOlder = true
     defer { state.isLoadingOlder = false }
     do {
@@ -623,18 +839,30 @@ final class ChatFeature {
         before: cursor
       )
       var next = state
-      _ = ChatReducer.reduce(
-        state: &next,
-        action: .olderMessagesLoaded(canonical.messages, nextCursor: canonical.nextCursor)
-      )
+      if canonical.hasCanonicalMessagePage {
+        _ = ChatReducer.reduce(
+          state: &next,
+          action: .olderMessagesLoaded(canonical.messages, nextCursor: canonical.nextCursor)
+        )
+      }
       if canonical.summary.revision >= next.conversation.revision {
         _ = ChatReducer.reduce(state: &next, action: .authoritativeSummary(canonical.summary))
       }
       state = next
       reconcileSubmittedAnswers()
       isAuthoritative = connection == .online
+      _ = await lifecycleChangeHandler([.canonical(canonical.summary)])
     } catch is CancellationError {
       return
+    } catch GatewayError.notFound {
+      markConversationDeletedForRecovery()
+      if pendingSendReconciliation != nil {
+        await recoveryChanges.send(gatewayID: gatewayID)
+      }
+      await applyFailure(GatewayError.notFound)
+      _ = await lifecycleChangeHandler([
+        .removed(id: conversationID, revisionFloor: revisionFloor)
+      ])
     } catch {
       await applyFailure(error)
     }
@@ -714,6 +942,7 @@ final class ChatFeature {
           images: images
         )
       )
+      transportSendInFlightTurnID = turnID
       try await transport.sendTurn(
         id: turnID,
         agentID: state.conversation.agentId,
@@ -721,23 +950,53 @@ final class ChatFeature {
         text: text,
         images: images
       )
+      await finishTransportSendBarrier(
+        turnID: turnID,
+        classifyDeferredFrames: true,
+        replayDeferredFrames: true
+      )
     } catch is CancellationError {
       if localTurnIDs.contains(turnID) {
         await reconcileAmbiguousSend(pending)
+        await finishTransportSendBarrier(
+          turnID: turnID,
+          classifyDeferredFrames: false,
+          replayDeferredFrames: true
+        )
       } else {
         await restorePendingSendAsDraft(pending)
+        await finishTransportSendBarrier(
+          turnID: turnID,
+          classifyDeferredFrames: false,
+          replayDeferredFrames: false
+        )
       }
       return
     } catch {
       guard localTurnIDs.contains(turnID) else {
         await restorePendingSendAsDraft(pending)
+        await finishTransportSendBarrier(
+          turnID: turnID,
+          classifyDeferredFrames: false,
+          replayDeferredFrames: false
+        )
         await applyFailure(error)
         return
       }
       if sendFailureIsAmbiguous(error) {
         await reconcileAmbiguousSend(pending)
+        await finishTransportSendBarrier(
+          turnID: turnID,
+          classifyDeferredFrames: false,
+          replayDeferredFrames: true
+        )
       } else {
         await rejectSend(pending, error: error)
+        await finishTransportSendBarrier(
+          turnID: turnID,
+          classifyDeferredFrames: false,
+          replayDeferredFrames: false
+        )
       }
     }
   }
@@ -841,15 +1100,47 @@ final class ChatFeature {
     await attachToCanonicalTurnIfNeeded()
   }
 
-  func shutdown() async {
+  func prepareForShutdown() {
     guard isShutdown == false else { return }
     isShutdown = true
+    isAuthoritative = false
+    isLoadingInitial = false
+    gatewayErrorHandler = nil
+    lifecycleChangeHandler = { _ in .ignored }
     canonicalRefreshRevision &+= 1
+    recoveryClassificationRevision = nil
+    recoveryClassificationTurnID = nil
+    recoveryResolutionHoldTurnID = nil
+    summaryOnlyFollowUpTurnID = nil
+    transportSendInFlightTurnID = nil
+    deferredReplayTurnID = nil
+    deferredRecoveryFrames.removeAll()
     _ = beginAttachmentIntent(attached: false)
     isVisible = false
+    eventTask?.cancel()
+    cacheLoadGeneration &+= 1
+    cacheLoadTask?.cancel()
+    recoveryChangeGeneration &+= 1
+    isStartingRecoveryChangeObservation = false
+    recoveryChangeTask?.cancel()
+  }
+
+  func shutdown() async {
+    prepareForShutdown()
+    if shutdownDrainCompleted { return }
+    if shutdownDrainStarted {
+      await withCheckedContinuation { continuation in
+        shutdownDrainWaiters.append(continuation)
+      }
+      return
+    }
+    shutdownDrainStarted = true
     let retiringEventTask = eventTask
-    retiringEventTask?.cancel()
     eventTask = nil
+    let retiringCacheLoad = cacheLoadTask
+    cacheLoadTask = nil
+    let retiringRecoveryChangeTask = recoveryChangeTask
+    recoveryChangeTask = nil
     let retiringDraftWrite = draftWriteTask
     let transportShutdown = Task { [transport] in await transport.shutdown() }
     let synchronizerShutdown = Task { [synchronizer] in await synchronizer.shutdown() }
@@ -857,82 +1148,319 @@ final class ChatFeature {
     await transportShutdown.value
     await synchronizerShutdown.value
     await retiringEventTask?.value
+    await retiringCacheLoad?.value
+    await retiringRecoveryChangeTask?.value
+    await waitForRecoveryChangeOperationsToFinish()
     _ = await retiringDraftWrite?.value
     draftWriteTask = nil
     isConnected = false
     state.transport = .detached
+    shutdownDrainCompleted = true
+    let waiters = shutdownDrainWaiters
+    shutdownDrainWaiters.removeAll()
+    for waiter in waiters {
+      waiter.resume()
+    }
   }
 
   private func loadCache() async {
-    do {
-      async let messages = persistence.messages(
-        gatewayID: gatewayID,
-        conversationID: state.conversation.id
-      )
-      async let draft = persistence.draft(
-        gatewayID: gatewayID,
-        conversationID: state.conversation.id
-      )
-      async let pendingSend = persistence.pendingSend(
-        gatewayID: gatewayID,
-        conversationID: state.conversation.id
-      )
-      async let cursor = persistence.cursor(
-        gatewayID: gatewayID,
-        conversationID: state.conversation.id
-      )
-      let (cachedMessages, cachedDraft, cachedPendingSend, cachedCursor) = try await (
-        messages,
-        draft,
-        pendingSend,
-        cursor
-      )
+    cacheLoadGeneration &+= 1
+    let generation = cacheLoadGeneration
+    let task = Task { @MainActor [weak self] in
+      guard let self else { return }
+      await self.performCacheLoad(generation: generation)
+    }
+    cacheLoadTask = task
+    await task.value
+    if generation == cacheLoadGeneration {
+      cacheLoadTask = nil
+    }
+  }
+
+  private func performCacheLoad(generation: UInt64) async {
+    let persistence = persistence
+    let gatewayID = gatewayID
+    let conversationID = state.conversation.id
+    let initialPendingSendReadRevision = pendingSendReadRevision
+    async let messagesRead = readChatCacheValue {
+      try await persistence.messages(gatewayID: gatewayID, conversationID: conversationID)
+    }
+    async let draftRead = readChatCacheValue {
+      try await persistence.draft(gatewayID: gatewayID, conversationID: conversationID)
+    }
+    async let pendingRead = readChatCacheValue {
+      try await persistence.pendingSend(gatewayID: gatewayID, conversationID: conversationID)
+    }
+    async let cursorRead = readChatCacheValue {
+      try await persistence.cursor(gatewayID: gatewayID, conversationID: conversationID)
+    }
+    let (messagesResult, draftResult, initialPendingResult, cursorResult) = await (
+      messagesRead,
+      draftRead,
+      pendingRead,
+      cursorRead
+    )
+    guard cacheLoadIsCurrent(generation) else { return }
+
+    var pendingResult = initialPendingResult
+    var observedPendingSendReadRevision = initialPendingSendReadRevision
+    var pendingRefreshHadFailure = false
+    while pendingSendReadRevision != observedPendingSendReadRevision {
+      observedPendingSendReadRevision = pendingSendReadRevision
+      let refreshedPendingResult = await readChatCacheValue {
+        try await persistence.pendingSend(
+          gatewayID: gatewayID,
+          conversationID: conversationID
+        )
+      }
+      guard cacheLoadIsCurrent(generation) else { return }
+      switch refreshedPendingResult {
+      case .value:
+        pendingResult = refreshedPendingResult
+      case .failed:
+        pendingRefreshHadFailure = true
+      case .cancelled:
+        break
+      }
+    }
+
+    var cachedMessages: [ConversationMessageDTO] = []
+    var cachedCursor = state.lastAppliedSeq
+    var hasMessageOrCursorValue = false
+    var hasCachedDraft = false
+    var hadFailure = pendingRefreshHadFailure
+    switch messagesResult {
+    case .value(let messages):
+      cachedMessages = messages
+      hasMessageOrCursorValue = true
+    case .failed:
+      hadFailure = true
+    case .cancelled:
+      break
+    }
+    switch cursorResult {
+    case .value(let cursor):
+      cachedCursor = cursor
+      hasMessageOrCursorValue = true
+    case .failed:
+      hadFailure = true
+    case .cancelled:
+      break
+    }
+    if hasMessageOrCursorValue {
       _ = ChatReducer.reduce(
         state: &state,
         action: .cachedMessagesLoaded(cachedMessages, cursor: cachedCursor)
       )
-      if let cachedDraft {
-        state.draft = cachedDraft.text
-        state.attachments = cachedDraft.attachments
+    }
+    guard cacheLoadIsCurrent(generation) else { return }
+
+    switch draftResult {
+    case .value(let draft):
+      if let draft {
+        hasCachedDraft = true
+        state.draft = draft.text
+        state.attachments = draft.attachments
       }
-      if let cachedPendingSend {
-        pendingSendReconciliation = cachedPendingSend
-        localTurnIDs.insert(cachedPendingSend.turnID)
+    case .failed:
+      hadFailure = true
+    case .cancelled:
+      break
+    }
+    guard cacheLoadIsCurrent(generation) else { return }
+
+    switch pendingResult {
+    case .value(let result):
+      await applyPendingSendLoadResult(
+        result,
+        cachedMessages: cachedMessages,
+        preserveComposer: hasCachedDraft
+      )
+    case .failed:
+      hadFailure = true
+    case .cancelled:
+      break
+    }
+    guard cacheLoadIsCurrent(generation) else { return }
+    if hadFailure, state.errorBanner == nil {
+      state.errorBanner = "Saved conversation data couldn't be loaded."
+    }
+  }
+
+  private func cacheLoadIsCurrent(_ generation: UInt64) -> Bool {
+    isShutdown == false && generation == cacheLoadGeneration && Task.isCancelled == false
+  }
+
+  private func applyPendingSendLoadResult(
+    _ result: PendingSendLoadResult,
+    cachedMessages: [ConversationMessageDTO],
+    preserveComposer: Bool
+  ) async {
+    guard isShutdown == false else { return }
+    switch result {
+    case .none:
+      pendingSendRecovery = nil
+    case .recoveryRequired(let recovery):
+      installPendingSendRecovery(recovery, clearComposer: preserveComposer == false)
+    case .resumable(let pending):
+      pendingSendRecovery = nil
+      pendingSendReconciliation = pending
+      localTurnIDs.insert(pending.turnID)
+      if preserveComposer == false {
         state.draft = ""
         state.attachments = []
-        if cachedMessages.contains(where: { $0.turnId == cachedPendingSend.turnID }) {
-          _ = await clearPendingSendDurably(cachedPendingSend)
-        } else {
-          do {
-            let images = try cachedPendingSend.attachments.map { try $0.messageImage() }
-            _ = ChatReducer.reduce(
-              state: &state,
-              action: .sendStarted(
-                turnID: cachedPendingSend.turnID,
-                localUserID: cachedPendingSend.localUserID,
-                text: cachedPendingSend.draft.trimmingCharacters(in: .whitespacesAndNewlines),
-                images: images
-              )
+      }
+      if cachedMessages.contains(where: { $0.turnId == pending.turnID }) {
+        _ = await clearPendingSendDurably(pending)
+      } else {
+        do {
+          let images = try pending.attachments.map { try $0.messageImage() }
+          guard isShutdown == false else { return }
+          _ = ChatReducer.reduce(
+            state: &state,
+            action: .sendStarted(
+              turnID: pending.turnID,
+              localUserID: pending.localUserID,
+              text: pending.draft.trimmingCharacters(in: .whitespacesAndNewlines),
+              images: images
             )
-          } catch {
-            state.errorBanner = "A pending message attachment couldn't be restored."
-          }
+          )
+        } catch {
+          guard isShutdown == false else { return }
+          state.errorBanner = "A pending message attachment couldn't be restored."
         }
+      }
+    }
+  }
+
+  private func installPendingSendRecovery(
+    _ recovery: RecoverablePendingSend,
+    clearComposer: Bool = true
+  ) {
+    guard isShutdown == false else { return }
+    pendingSendRecovery = recovery
+    pendingSendReconciliation = nil
+    localTurnIDs.remove(recovery.pendingSend.turnID)
+    if clearComposer {
+      state.draft = ""
+      state.attachments = []
+    }
+  }
+
+  private func startRecoveryChangeObservation() async {
+    guard
+      isShutdown == false,
+      recoveryChangeTask == nil,
+      isStartingRecoveryChangeObservation == false
+    else { return }
+    guard beginRecoveryChangeOperation() else { return }
+    defer { finishRecoveryChangeOperation() }
+    isStartingRecoveryChangeObservation = true
+    recoveryChangeGeneration &+= 1
+    let generation = recoveryChangeGeneration
+    defer {
+      if generation == recoveryChangeGeneration {
+        isStartingRecoveryChangeObservation = false
+      }
+    }
+    let subscription = await recoveryChanges.subscription(gatewayID: gatewayID)
+    guard
+      isShutdown == false,
+      generation == recoveryChangeGeneration,
+      recoveryChangeTask == nil
+    else {
+      await subscription.cancel()
+      return
+    }
+    recoveryChangeTask = Task { @MainActor [weak self, gatewayID] in
+      guard Task.isCancelled == false else {
+        await subscription.cancel()
+        return
+      }
+      for await changedGatewayID in subscription.changes {
+        guard Task.isCancelled == false else { break }
+        guard changedGatewayID == gatewayID else { continue }
+        await self?.receiveRecoveryChange(generation: generation)
+      }
+      await subscription.cancel()
+    }
+  }
+
+  private func receiveRecoveryChange(generation: UInt64) async {
+    guard
+      isShutdown == false,
+      generation == recoveryChangeGeneration
+    else { return }
+    pendingSendReadRevision &+= 1
+    guard pendingSendRecovery != nil else { return }
+    do {
+      let result = try await persistence.pendingSend(
+        gatewayID: gatewayID,
+        conversationID: state.conversation.id
+      )
+      guard
+        isShutdown == false,
+        generation == recoveryChangeGeneration,
+        pendingSendRecovery != nil
+      else { return }
+      switch result {
+      case .none:
+        let draft = try await persistence.draft(
+          gatewayID: gatewayID,
+          conversationID: state.conversation.id
+        )
+        guard
+          isShutdown == false,
+          generation == recoveryChangeGeneration,
+          pendingSendRecovery != nil
+        else { return }
+        state.draft = draft?.text ?? ""
+        state.attachments = draft?.attachments ?? []
+        draftStatus = .saved
+        pendingSendRecovery = nil
+      case .recoveryRequired(let recovery):
+        installPendingSendRecovery(recovery, clearComposer: false)
+      case .resumable:
+        break
       }
     } catch is CancellationError {
       return
     } catch {
-      state.errorBanner = "Saved conversation data couldn't be loaded."
+      return
+    }
+  }
+
+  private func beginRecoveryChangeOperation() -> Bool {
+    guard isShutdown == false else { return false }
+    activeRecoveryChangeOperations += 1
+    return true
+  }
+
+  private func finishRecoveryChangeOperation() {
+    activeRecoveryChangeOperations -= 1
+    guard activeRecoveryChangeOperations == 0 else { return }
+    let waiters = recoveryChangeOperationWaiters
+    recoveryChangeOperationWaiters.removeAll()
+    for waiter in waiters {
+      waiter.resume()
+    }
+  }
+
+  private func waitForRecoveryChangeOperationsToFinish() async {
+    guard activeRecoveryChangeOperations > 0 else { return }
+    await withCheckedContinuation { continuation in
+      recoveryChangeOperationWaiters.append(continuation)
     }
   }
 
   @discardableResult
   private func persistDraft() async -> Bool {
-    guard pendingSendReconciliation == nil else { return true }
+    guard pendingSendReconciliation == nil, pendingSendRecovery == nil else { return true }
     return await persistDraft(text: state.draft, attachments: state.attachments)
   }
 
   private func persistDraft(text: String, attachments: [PreparedAttachment]) async -> Bool {
+    guard pendingSendRecovery == nil else { return false }
     draftWriteRevision &+= 1
     let revision = draftWriteRevision
     let previousWrite = draftWriteTask
@@ -973,9 +1501,20 @@ final class ChatFeature {
     return result.didSave
   }
 
-  private func refreshCanonical(preserveLiveProjection: Bool) async {
+  @discardableResult
+  private func refreshCanonical(
+    preserveLiveProjection: Bool,
+    allowSummaryOnlyFollowUp: Bool = true
+  ) async -> RecoveryClassificationResult {
     canonicalRefreshRevision &+= 1
     let refreshRevision = canonicalRefreshRevision
+    let conversationID = state.conversation.id
+    let revisionFloor = state.conversation.revision
+    let recoveryTurnID = pendingSendReconciliation?.turnID
+    if let recoveryTurnID {
+      recoveryClassificationRevision = refreshRevision
+      recoveryClassificationTurnID = recoveryTurnID
+    }
     do {
       let canonical = try await synchronizer.refresh(
         conversationID: state.conversation.id,
@@ -984,27 +1523,99 @@ final class ChatFeature {
       guard
         isShutdown == false,
         canonicalRefreshRevision == refreshRevision
-      else { return }
+      else {
+        await finishRecoveryClassification(
+          revision: refreshRevision,
+          turnID: recoveryTurnID,
+          result: .inconclusive
+        )
+        return .inconclusive
+      }
+      let canonicalDeletionIsAuthoritative = canonical.summary.status == .deleted
+      let result: RecoveryClassificationResult
       if let pendingSendReconciliation {
-        await resolvePendingSend(
+        result = await resolvePendingSend(
           pendingSendReconciliation,
           from: canonical,
+          deletionIsAuthoritative: canonicalDeletionIsAuthoritative,
           preserveLiveProjection: preserveLiveProjection
         )
       } else {
         applyCanonical(canonical, preserveLiveProjection: preserveLiveProjection)
         state.errorBanner = nil
+        result = .conclusive
       }
       isAuthoritative = connection == .online && pendingSendReconciliation == nil
+      await finishRecoveryClassification(
+        revision: refreshRevision,
+        turnID: recoveryTurnID,
+        result: result
+      )
+      _ = await lifecycleChangeHandler([.canonical(canonical.summary)])
+      if result == .summaryOnlyInconclusive,
+        allowSummaryOnlyFollowUp,
+        let recoveryTurnID,
+        pendingSendReconciliation?.turnID == recoveryTurnID
+      {
+        summaryOnlyFollowUpTurnID = recoveryTurnID
+        if let followUp = await performSummaryOnlyFollowUpIfNeeded(for: recoveryTurnID) {
+          return followUp
+        }
+      }
+      return result
     } catch is CancellationError {
-      return
+      await finishRecoveryClassification(
+        revision: refreshRevision,
+        turnID: recoveryTurnID,
+        result: .inconclusive
+      )
+      return .inconclusive
     } catch {
       guard
         isShutdown == false,
         canonicalRefreshRevision == refreshRevision
-      else { return }
+      else {
+        await finishRecoveryClassification(
+          revision: refreshRevision,
+          turnID: recoveryTurnID,
+          result: .inconclusive
+        )
+        return .inconclusive
+      }
       isAuthoritative = false
+      var result: RecoveryClassificationResult
+      let conversationWasRemoved: Bool
+      if case GatewayError.notFound = error {
+        markConversationDeletedForRecovery()
+        if pendingSendReconciliation != nil {
+          await recoveryChanges.send(gatewayID: gatewayID)
+        }
+        result = .deleted
+        conversationWasRemoved = true
+      } else {
+        result = .inconclusive
+        conversationWasRemoved = false
+      }
       await applyFailure(error)
+      if result == .inconclusive,
+        let pendingSendReconciliation
+      {
+        result = await classifyPendingAvailability(pendingSendReconciliation)
+      }
+      if statusPresentation == .recoveryRequired {
+        state.errorBanner = nil
+      }
+      await finishRecoveryClassification(
+        revision: refreshRevision,
+        turnID: recoveryTurnID,
+        result: result
+      )
+      if conversationWasRemoved {
+        _ = await lifecycleChangeHandler([
+          .removed(id: conversationID, revisionFloor: revisionFloor)
+        ])
+      }
+      return result
     }
   }
 
@@ -1013,19 +1624,23 @@ final class ChatFeature {
     preserveLiveProjection: Bool
   ) {
     let previousActiveTurnID = state.activeTurnID
-    let isCaughtUp = canonical.throughSeq >= state.lastAppliedSeq
-    let mayReplaceMessages = !preserveLiveProjection || state.messages.isEmpty || isCaughtUp
-    if mayReplaceMessages {
-      _ = ChatReducer.reduce(
-        state: &state,
-        action: .cachedMessagesLoaded(canonical.messages, cursor: canonical.throughSeq)
-      )
+    let isCaughtUp =
+      canonical.hasCanonicalMessagePage == false || canonical.throughSeq >= state.lastAppliedSeq
+    if canonical.hasCanonicalMessagePage {
+      let mayReplaceMessages = !preserveLiveProjection || state.messages.isEmpty || isCaughtUp
+      if mayReplaceMessages {
+        _ = ChatReducer.reduce(
+          state: &state,
+          action: .cachedMessagesLoaded(canonical.messages, cursor: canonical.throughSeq)
+        )
+      }
+      state.olderCursor = canonical.nextCursor
     }
-    state.olderCursor = canonical.nextCursor
 
     let canonicalIsCurrent =
       canonical.summary.revision >= state.conversation.revision
-      && (!preserveLiveProjection || isCaughtUp || state.activeTurnID == nil)
+      && (canonical.summary.status == .deleted
+        || !preserveLiveProjection || isCaughtUp || state.activeTurnID == nil)
     if canonicalIsCurrent {
       _ = ChatReducer.reduce(state: &state, action: .authoritativeSummary(canonical.summary))
       if let previousActiveTurnID, state.activeTurnID != previousActiveTurnID {
@@ -1128,32 +1743,218 @@ final class ChatFeature {
       }
 
     case .frame(let frame):
-      if frame.isAcceptedForFeature,
-        let pendingSendReconciliation,
-        pendingSendReconciliation.turnID == frame.turnIDForFeature
-      {
-        _ = await clearPendingSendDurably(pendingSendReconciliation)
-      }
-      await applyReducerAction(.frame(frame))
-      if frame.isRejectionForFeature,
-        let pendingSendReconciliation,
-        pendingSendReconciliation.turnID == frame.turnIDForFeature
-      {
-        _ = await restorePendingSendAsDraft(pendingSendReconciliation)
-      }
-      if frame.isAdmissionOrTerminal {
-        await refreshCanonical(preserveLiveProjection: true)
-      }
-      if frame.isTerminalForFeature {
-        if pendingSendReconciliation?.turnID != frame.turnIDForFeature {
-          localTurnIDs.remove(frame.turnIDForFeature)
-          cancelRequestSent = false
-          isCancelling = false
+      if shouldDeferForRecoveryClassification(frame) {
+        deferredRecoveryFrames.append(frame)
+        if frame.isAcceptedForFeature {
+          _ = await performSummaryOnlyFollowUpIfNeeded(for: frame.turnIDForFeature)
         }
-        if isVisible == false {
-          await suspendForDetachment()
-        }
+        return
       }
+      if state.conversation.status == .deleted,
+        let pendingSendReconciliation,
+        pendingSendReconciliation.turnID == frame.turnIDForFeature,
+        frame.isAdmissionOrTerminal
+      {
+        return
+      }
+      await consumeFrame(frame)
+    }
+  }
+
+  private func consumeFrame(_ frame: MobileWSServerFrame) async {
+    let wasCoveredByCanonicalState = frame.sequenceForFeature.map {
+      $0 <= state.lastAppliedSeq
+    } ?? false
+    if frame.isAcceptedForFeature,
+      let pendingSendReconciliation,
+      pendingSendReconciliation.turnID == frame.turnIDForFeature
+    {
+      guard await clearPendingSendDurably(pendingSendReconciliation) else { return }
+    }
+    if frame.isRejectionForFeature,
+      let pendingSendReconciliation,
+      pendingSendReconciliation.turnID == frame.turnIDForFeature
+    {
+      let rejectedPending = pendingSendReconciliation
+      let classification = await refreshCanonical(preserveLiveProjection: true)
+      switch classification {
+      case .admitted:
+        if state.conversation.status == .running,
+          state.activeTurnID == rejectedPending.turnID
+        {
+          return
+        }
+
+      case .notAdmitted:
+        await applyReducerAction(.frame(frame))
+        if self.pendingSendReconciliation?.turnID == rejectedPending.turnID,
+          state.conversation.status != .deleted,
+          let resolution = await persistPendingSendAsDraft(rejectedPending)
+        {
+          await applyPendingSendDraftResolution(resolution, pending: rejectedPending)
+          isAuthoritative = connection == .online && state.conversation.status != .deleted
+          if case .restored = resolution {
+            state.errorBanner = frame.rejectionMessageForFeature
+          }
+        }
+
+      case .deleted:
+        return
+
+      case .conclusive, .inconclusive, .summaryOnlyInconclusive:
+        await applyReducerAction(.frame(frame))
+      }
+      await finishTerminalFrame(frame)
+      return
+    }
+
+    await applyReducerAction(.frame(frame))
+    if frame.isAdmissionOrTerminal, wasCoveredByCanonicalState == false {
+      await refreshCanonical(preserveLiveProjection: true)
+    }
+    await finishTerminalFrame(frame)
+  }
+
+  private func finishTerminalFrame(_ frame: MobileWSServerFrame) async {
+    if frame.isTerminalForFeature {
+      if pendingSendReconciliation?.turnID != frame.turnIDForFeature {
+        localTurnIDs.remove(frame.turnIDForFeature)
+        cancelRequestSent = false
+        isCancelling = false
+      }
+      if isVisible == false, state.activeTurnID == nil {
+        await suspendForDetachment()
+      }
+    }
+  }
+
+  private func shouldDeferForRecoveryClassification(_ frame: MobileWSServerFrame) -> Bool {
+    let turnID = frame.turnIDForFeature
+    return transportSendInFlightTurnID == turnID
+      || recoveryResolutionHoldTurnID == turnID
+      || deferredReplayTurnID == turnID
+      || (recoveryClassificationRevision == canonicalRefreshRevision
+        && recoveryClassificationTurnID == turnID)
+  }
+
+  private func performSummaryOnlyFollowUpIfNeeded(
+    for turnID: String
+  ) async -> RecoveryClassificationResult? {
+    guard
+      summaryOnlyFollowUpTurnID == turnID,
+      pendingSendReconciliation?.turnID == turnID,
+      deferredRecoveryFrames.contains(where: {
+        $0.turnIDForFeature == turnID && $0.isAcceptedForFeature
+      })
+    else { return nil }
+    summaryOnlyFollowUpTurnID = nil
+    return await refreshCanonical(
+      preserveLiveProjection: true,
+      allowSummaryOnlyFollowUp: false
+    )
+  }
+
+  private func finishRecoveryClassification(
+    revision: UInt64,
+    turnID: String?,
+    result: RecoveryClassificationResult
+  ) async {
+    guard
+      let turnID,
+      recoveryClassificationRevision == revision,
+      recoveryClassificationTurnID == turnID
+    else { return }
+
+    recoveryClassificationRevision = nil
+    recoveryClassificationTurnID = nil
+    guard isShutdown == false else { return }
+    switch result {
+    case .conclusive, .admitted, .notAdmitted:
+      if summaryOnlyFollowUpTurnID == turnID {
+        summaryOnlyFollowUpTurnID = nil
+      }
+      if recoveryResolutionHoldTurnID == turnID {
+        recoveryResolutionHoldTurnID = nil
+      }
+      guard transportSendInFlightTurnID != turnID else { return }
+      await replayDeferredRecoveryFrames(for: turnID)
+
+    case .deleted:
+      if summaryOnlyFollowUpTurnID == turnID {
+        summaryOnlyFollowUpTurnID = nil
+      }
+      if recoveryResolutionHoldTurnID == turnID {
+        recoveryResolutionHoldTurnID = nil
+      }
+      deferredRecoveryFrames.removeAll { $0.turnIDForFeature == turnID }
+
+    case .inconclusive, .summaryOnlyInconclusive:
+      guard pendingSendReconciliation?.turnID == turnID else {
+        if recoveryResolutionHoldTurnID == turnID {
+          recoveryResolutionHoldTurnID = nil
+        }
+        guard transportSendInFlightTurnID != turnID else { return }
+        await replayDeferredRecoveryFrames(for: turnID)
+        return
+      }
+      recoveryResolutionHoldTurnID = turnID
+    }
+  }
+
+  private func finishTransportSendBarrier(
+    turnID: String,
+    classifyDeferredFrames: Bool,
+    replayDeferredFrames: Bool
+  ) async {
+    guard transportSendInFlightTurnID == turnID else { return }
+    if classifyDeferredFrames,
+      pendingSendReconciliation?.turnID == turnID,
+      deferredRecoveryFrames.contains(where: { $0.turnIDForFeature == turnID })
+    {
+      await refreshCanonical(preserveLiveProjection: true)
+    }
+    guard transportSendInFlightTurnID == turnID else { return }
+    transportSendInFlightTurnID = nil
+    guard replayDeferredFrames else {
+      if recoveryResolutionHoldTurnID == turnID {
+        recoveryResolutionHoldTurnID = nil
+      }
+      deferredRecoveryFrames.removeAll { $0.turnIDForFeature == turnID }
+      return
+    }
+    await replayDeferredRecoveryFrames(for: turnID)
+  }
+
+  private func replayDeferredRecoveryFrames(for turnID: String) async {
+    guard
+      recoveryResolutionHoldTurnID != turnID,
+      deferredReplayTurnID != turnID
+    else { return }
+    deferredReplayTurnID = turnID
+    defer {
+      if deferredReplayTurnID == turnID {
+        deferredReplayTurnID = nil
+      }
+    }
+
+    while isShutdown == false {
+      guard recoveryResolutionHoldTurnID != turnID else { return }
+      if state.conversation.status == .deleted,
+        pendingSendReconciliation?.turnID == turnID
+      {
+        return
+      }
+      guard let index = deferredRecoveryFrames.firstIndex(where: {
+        $0.turnIDForFeature == turnID
+      }) else { return }
+      let frame = deferredRecoveryFrames.remove(at: index)
+      if state.conversation.status == .deleted,
+        pendingSendReconciliation?.turnID == turnID,
+        frame.isAdmissionOrTerminal
+      {
+        return
+      }
+      await consumeFrame(frame)
     }
   }
 
@@ -1165,7 +1966,9 @@ final class ChatFeature {
         conversationID: state.conversation.id,
         sinceSeq: state.lastAppliedSeq
       )
-      await applyReducerAction(.replayLoaded(entries))
+      guard await applyReducerAction(.replayLoaded(entries)), state.activeTurnID == turnID else {
+        return
+      }
       try await transport.resume(
         turnID: turnID,
         agentID: state.conversation.agentId,
@@ -1179,10 +1982,12 @@ final class ChatFeature {
     }
   }
 
-  private func applyReducerAction(_ action: ChatAction) async {
+  @discardableResult
+  private func applyReducerAction(_ action: ChatAction) async -> Bool {
     let previous = state
     var next = state
     var effects = ChatReducer.reduce(state: &next, action: action)
+    var lifecycleChanges: [ConversationLifecycleChange] = []
     do {
       while effects.isEmpty == false {
         let effect = effects.removeFirst()
@@ -1209,17 +2014,20 @@ final class ChatFeature {
             conversationID: next.conversation.id,
             before: nil
           )
-          effects.append(
-            contentsOf: ChatReducer.reduce(
-              state: &next,
-              action: .cachedMessagesLoaded(
-                canonical.messages,
-                cursor: canonical.throughSeq
+          if canonical.hasCanonicalMessagePage {
+            effects.append(
+              contentsOf: ChatReducer.reduce(
+                state: &next,
+                action: .cachedMessagesLoaded(
+                  canonical.messages,
+                  cursor: canonical.throughSeq
+                )
               )
             )
-          )
+            next.olderCursor = canonical.nextCursor
+          }
           _ = ChatReducer.reduce(state: &next, action: .authoritativeSummary(canonical.summary))
-          next.olderCursor = canonical.nextCursor
+          lifecycleChanges.append(.canonical(canonical.summary))
 
         case .announceFinalResponse:
           if await announcer.isVoiceOverRunning() {
@@ -1235,11 +2043,31 @@ final class ChatFeature {
       }
       state = preservingComposer(in: next, from: state)
       reconcileSubmittedAnswers()
+      if lifecycleChanges.isEmpty == false {
+        _ = await lifecycleChangeHandler(lifecycleChanges)
+      }
+      return true
     } catch is CancellationError {
       state = preservingComposer(in: previous, from: state)
+      return false
+    } catch GatewayError.notFound {
+      state = preservingComposer(in: previous, from: state)
+      markConversationDeletedForRecovery()
+      if pendingSendReconciliation != nil {
+        await recoveryChanges.send(gatewayID: gatewayID)
+      }
+      await applyFailure(GatewayError.notFound)
+      _ = await lifecycleChangeHandler([
+        .removed(
+          id: previous.conversation.id,
+          revisionFloor: previous.conversation.revision
+        )
+      ])
+      return false
     } catch {
       state = preservingComposer(in: previous, from: state)
       await applyFailure(error)
+      return false
     }
   }
 
@@ -1325,6 +2153,7 @@ final class ChatFeature {
       && connection == .online
       && isAuthoritative
       && pendingSendReconciliation == nil
+      && pendingSendRecovery == nil
       && state.activeTurnID == nil
       && state.composerBlock == nil
       && isConversationReadOnly == false
@@ -1335,6 +2164,7 @@ final class ChatFeature {
       && connection == .online
       && isAuthoritative
       && pendingSendReconciliation == nil
+      && pendingSendRecovery == nil
       && state.activeTurnID != nil
       && state.composerBlock == nil
       && isConversationReadOnly == false
@@ -1344,6 +2174,7 @@ final class ChatFeature {
     isShutdown == false
       && isSending == false
       && pendingSendReconciliation == nil
+      && pendingSendRecovery == nil
       && state.composerBlock == nil
       && isConversationReadOnly == false
   }
@@ -1353,6 +2184,7 @@ final class ChatFeature {
       && connection == .online
       && isAuthoritative
       && pendingSendReconciliation?.turnID == turnID
+      && pendingSendRecovery == nil
       && state.activeTurnID == nil
       && state.composerBlock == nil
       && isConversationReadOnly == false
@@ -1365,13 +2197,21 @@ final class ChatFeature {
     _ = await previousWrite?.value
     draftWriteTask = nil
     do {
-      try await persistence.stagePendingSend(
-        pending,
-        gatewayID: gatewayID,
-        conversationID: state.conversation.id
-      )
-      draftStatus = .saved
-      return true
+      switch
+        try await persistence.stagePendingSend(
+          pending,
+          gatewayID: gatewayID,
+          conversationID: state.conversation.id
+        )
+      {
+      case .staged:
+        draftStatus = .saved
+        return true
+      case .pendingAlreadyExists:
+        draftStatus = .saved
+        await reconcilePendingSendStageCollision()
+        return false
+      }
     } catch is CancellationError {
       draftStatus = .failed
       state.errorBanner = "Draft couldn't be saved."
@@ -1380,6 +2220,34 @@ final class ChatFeature {
       draftStatus = .failed
       state.errorBanner = "Draft couldn't be saved."
       return false
+    }
+  }
+
+  private func reconcilePendingSendStageCollision() async {
+    do {
+      let result = try await persistence.pendingSend(
+        gatewayID: gatewayID,
+        conversationID: state.conversation.id
+      )
+      guard isShutdown == false else { return }
+      switch result {
+      case .none:
+        state.errorBanner = "A saved message changed while sending. Try again."
+      case .resumable(let existing):
+        pendingSendRecovery = nil
+        pendingSendReconciliation = existing
+        localTurnIDs.insert(existing.turnID)
+        state.errorBanner = "Confirming whether your earlier message was sent."
+      case .recoveryRequired(let recovery):
+        installPendingSendRecovery(recovery, clearComposer: false)
+        state.errorBanner = nil
+        await recoveryChanges.send(gatewayID: gatewayID)
+      }
+    } catch is CancellationError {
+      return
+    } catch {
+      guard isShutdown == false else { return }
+      state.errorBanner = "A saved message changed while sending. Try again."
     }
   }
 
@@ -1387,13 +2255,26 @@ final class ChatFeature {
   private func clearPendingSendDurably(_ pending: PendingChatSend) async -> Bool {
     guard pendingSendReconciliation?.turnID == pending.turnID else { return true }
     do {
-      try await persistence.clearPendingSend(
-        gatewayID: gatewayID,
-        conversationID: state.conversation.id,
-        turnID: pending.turnID
-      )
-      pendingSendReconciliation = nil
-      return true
+      switch
+        try await persistence.clearPendingSend(
+          gatewayID: gatewayID,
+          conversationID: state.conversation.id,
+          turnID: pending.turnID
+        )
+      {
+      case .cleared:
+        pendingSendReconciliation = nil
+        if summaryOnlyFollowUpTurnID == pending.turnID {
+          summaryOnlyFollowUpTurnID = nil
+        }
+        return true
+      case .conversationUnavailable:
+        markConversationDeletedForRecovery()
+        state.errorBanner = nil
+        await recoveryChanges.send(gatewayID: gatewayID)
+        await publishConversationRemoval()
+        return false
+      }
     } catch is CancellationError {
       state.errorBanner = "The message was accepted, but its local state couldn't be saved."
       return false
@@ -1403,39 +2284,139 @@ final class ChatFeature {
     }
   }
 
-  @discardableResult
-  private func restorePendingSendAsDraft(_ pending: PendingChatSend) async -> Bool {
-    guard pendingSendReconciliation?.turnID == pending.turnID else { return true }
+  private func classifyPendingAvailability(
+    _ pending: PendingChatSend
+  ) async -> RecoveryClassificationResult {
+    guard pendingSendReconciliation?.turnID == pending.turnID else { return .conclusive }
     do {
-      guard
-        let restored = try await persistence.restorePendingSendAsDraft(
+      switch
+        try await persistence.pendingSendAvailability(
           gatewayID: gatewayID,
           conversationID: state.conversation.id,
           turnID: pending.turnID
         )
-      else {
-        state.errorBanner =
-          "The pending message couldn't be restored. Retry to check the conversation."
-        return false
+      {
+      case .active, .pendingMissing:
+        return .inconclusive
+      case .conversationUnavailable:
+        markConversationDeletedForRecovery()
+        state.errorBanner = nil
+        await recoveryChanges.send(gatewayID: gatewayID)
+        await publishConversationRemoval()
+        return .deleted
       }
-      pendingSendReconciliation = nil
-      localTurnIDs.remove(pending.turnID)
-      _ = ChatReducer.reduce(state: &state, action: .sendRejected(turnID: pending.turnID))
-      state.draft = restored.text
-      state.attachments = restored.attachments
-      draftStatus = .saved
-      return true
+    } catch {
+      return .inconclusive
+    }
+  }
+
+  @discardableResult
+  private func restorePendingSendAsDraft(
+    _ pending: PendingChatSend
+  ) async -> PendingSendDraftResolution? {
+    guard let resolution = await persistPendingSendAsDraft(pending) else { return nil }
+    await applyPendingSendDraftResolution(resolution, pending: pending)
+    return resolution
+  }
+
+  private func persistPendingSendAsDraft(
+    _ pending: PendingChatSend
+  ) async -> PendingSendDraftResolution? {
+    guard pendingSendReconciliation?.turnID == pending.turnID else { return nil }
+    do {
+      switch
+        try await persistence.restorePendingSendAsDraft(
+          gatewayID: gatewayID,
+          conversationID: state.conversation.id,
+          turnID: pending.turnID
+        )
+      {
+      case .restored(let restored):
+        guard let restored else {
+          state.errorBanner =
+            "The pending message couldn't be restored. Retry to check the conversation."
+          return nil
+        }
+        return .restored(restored)
+      case .draftConflict(let draft):
+        return .draftConflict(draft)
+      case .conversationUnavailable:
+        markConversationDeletedForRecovery()
+        state.errorBanner = nil
+        await recoveryChanges.send(gatewayID: gatewayID)
+        await publishConversationRemoval()
+        return nil
+      }
     } catch is CancellationError {
       draftStatus = .failed
       state.errorBanner =
         "The pending message couldn't be restored. Retry to check the conversation."
-      return false
+      return nil
     } catch {
       draftStatus = .failed
       state.errorBanner =
         "The pending message couldn't be restored. Retry to check the conversation."
-      return false
+      return nil
     }
+  }
+
+  private func applyPendingSendDraftResolution(
+    _ resolution: PendingSendDraftResolution,
+    pending: PendingChatSend
+  ) async {
+    switch resolution {
+    case .restored(let draft):
+      applyRestoredPendingSend(pending, draft: draft)
+    case .draftConflict(let draft):
+      await applyPendingSendDraftConflict(pending, draft: draft)
+    }
+  }
+
+  private func applyPendingSendDraftConflict(
+    _ pending: PendingChatSend,
+    draft: ConversationDraft
+  ) async {
+    guard pendingSendReconciliation?.turnID == pending.turnID else { return }
+    _ = ChatReducer.reduce(state: &state, action: .sendRejected(turnID: pending.turnID))
+    installPendingSendRecovery(
+      RecoverablePendingSend(
+        gatewayID: gatewayID,
+        conversationID: state.conversation.id,
+        conversationTitle: state.conversation.title,
+        agentName: nil,
+        pendingSend: pending,
+        coexistingDraft: draft,
+        conversationAvailable: true
+      ),
+      clearComposer: false
+    )
+    state.draft = draft.text
+    state.attachments = draft.attachments
+    draftStatus = .saved
+    state.errorBanner = nil
+    await recoveryChanges.send(gatewayID: gatewayID)
+  }
+
+  private func applyRestoredPendingSend(
+    _ pending: PendingChatSend,
+    draft restored: ConversationDraft
+  ) {
+    guard pendingSendReconciliation?.turnID == pending.turnID else {
+      if pendingSendReconciliation == nil {
+        state.errorBanner =
+          "The pending message couldn't be restored. Retry to check the conversation."
+      }
+      return
+    }
+    pendingSendReconciliation = nil
+    if summaryOnlyFollowUpTurnID == pending.turnID {
+      summaryOnlyFollowUpTurnID = nil
+    }
+    localTurnIDs.remove(pending.turnID)
+    _ = ChatReducer.reduce(state: &state, action: .sendRejected(turnID: pending.turnID))
+    state.draft = restored.text
+    state.attachments = restored.attachments
+    draftStatus = .saved
   }
 
   private func sendFailureIsAmbiguous(_ error: Error) -> Bool {
@@ -1451,9 +2432,13 @@ final class ChatFeature {
   }
 
   private func reconcileAmbiguousSend(_ pending: PendingChatSend) async {
-    pendingSendReconciliation = pending
+    guard pendingSendReconciliation?.turnID == pending.turnID else { return }
     isConnected = false
     isAuthoritative = false
+    if state.conversation.status == .deleted {
+      state.errorBanner = nil
+      return
+    }
     await refreshCanonical(preserveLiveProjection: true)
   }
 
@@ -1500,6 +2485,7 @@ final class ChatFeature {
           images: images
         )
       )
+      transportSendInFlightTurnID = pending.turnID
       try await transport.sendTurn(
         id: pending.turnID,
         agentID: state.conversation.agentId,
@@ -1507,13 +2493,33 @@ final class ChatFeature {
         text: text,
         images: images
       )
+      await finishTransportSendBarrier(
+        turnID: pending.turnID,
+        classifyDeferredFrames: true,
+        replayDeferredFrames: true
+      )
     } catch is CancellationError {
       await reconcileAmbiguousSend(pending)
+      await finishTransportSendBarrier(
+        turnID: pending.turnID,
+        classifyDeferredFrames: false,
+        replayDeferredFrames: true
+      )
     } catch {
       if sendFailureIsAmbiguous(error) {
         await reconcileAmbiguousSend(pending)
+        await finishTransportSendBarrier(
+          turnID: pending.turnID,
+          classifyDeferredFrames: false,
+          replayDeferredFrames: true
+        )
       } else {
         await rejectSend(pending, error: error)
+        await finishTransportSendBarrier(
+          turnID: pending.turnID,
+          classifyDeferredFrames: false,
+          replayDeferredFrames: false
+        )
       }
     }
   }
@@ -1521,55 +2527,79 @@ final class ChatFeature {
   private func resolvePendingSend(
     _ pending: PendingChatSend,
     from canonical: ChatCanonicalSnapshot,
+    deletionIsAuthoritative: Bool,
     preserveLiveProjection: Bool
-  ) async {
-    guard pendingSendReconciliation?.turnID == pending.turnID else { return }
+  ) async -> RecoveryClassificationResult {
+    guard pendingSendReconciliation?.turnID == pending.turnID else { return .conclusive }
+    let minimumSummaryRevision = state.conversation.revision
+    let minimumThroughSeq = state.lastAppliedSeq
+    if deletionIsAuthoritative {
+      let pendingProjection = state.messages.filter { $0.turnID == pending.turnID }
+      applyCanonical(canonical, preserveLiveProjection: preserveLiveProjection)
+      restoreMissingProjection(pendingProjection, for: pending.turnID)
+      markConversationDeletedForRecovery()
+      state.errorBanner = nil
+      await recoveryChanges.send(gatewayID: gatewayID)
+      return .deleted
+    }
     let sameTurn = canonical.messages.filter { $0.turnId == pending.turnID }
     let wasAdmitted = canonical.summary.activeTurnId == pending.turnID || sameTurn.isEmpty == false
     if wasAdmitted {
       let pendingProjection = state.messages.filter { $0.turnID == pending.turnID }
       applyCanonical(canonical, preserveLiveProjection: preserveLiveProjection)
       restoreMissingProjection(pendingProjection, for: pending.turnID)
-      guard await clearPendingSendDurably(pending) else { return }
+      guard await clearPendingSendDurably(pending) else { return .admitted }
       state.errorBanner = nil
       guard
         canonical.summary.status == .running,
         canonical.summary.activeTurnId == pending.turnID
-      else { return }
+      else {
+        localTurnIDs.remove(pending.turnID)
+        cancelRequestSent = false
+        isCancelling = false
+        return .admitted
+      }
       do {
         try await ensureConnected()
         try await transport.resume(
           turnID: pending.turnID,
           agentID: canonical.summary.agentId,
           conversationID: canonical.summary.id,
-          sinceSeq: canonical.throughSeq
+          sinceSeq: state.lastAppliedSeq
         )
       } catch is CancellationError {
-        return
+        return .admitted
       } catch {
         await applyFailure(error)
       }
-      return
+      return .admitted
     }
 
+    let absenceIsConclusive =
+      canonical.hasCanonicalMessagePage
+      && canonical.summary.revision >= minimumSummaryRevision
+      && canonical.throughSeq >= minimumThroughSeq
+      && canonical.throughSeq >= canonical.summary.lastSeq
     let pendingProjection = state.messages.filter { $0.turnID == pending.turnID }
     applyCanonical(canonical, preserveLiveProjection: preserveLiveProjection)
     restoreMissingProjection(pendingProjection, for: pending.turnID)
-    if canonical.summary.status == .deleted {
-      isAuthoritative = false
-      state.errorBanner = nil
-      return
-    }
     if isConversationReadOnly == false, canonical.summary.activeTurnId == nil {
       state.activeTurnID = pending.turnID
     }
     isAuthoritative = false
     state.errorBanner = "The message outcome is unknown. Retry to send it again."
+    if canonical.hasCanonicalMessagePage == false {
+      return .summaryOnlyInconclusive
+    }
+    return absenceIsConclusive ? .notAdmitted : .inconclusive
   }
 
   private func rejectSend(_ pending: PendingChatSend, error: Error) async {
-    _ = await restorePendingSendAsDraft(pending)
+    let resolution = await persistPendingSendAsDraft(pending)
     await applyFailure(error)
+    if let resolution {
+      await applyPendingSendDraftResolution(resolution, pending: pending)
+    }
   }
 
   private func restoreMissingProjection(_ projection: [ChatMessageState], for turnID: String) {
@@ -1609,6 +2639,52 @@ final class ChatFeature {
     state.conversation.status == .archived || state.conversation.status == .deleted
   }
 
+  private func markConversationDeletedForRecovery() {
+    let current = state.conversation
+    let deleted = ConversationSummaryDTO(
+      id: current.id,
+      agentId: current.agentId,
+      agentName: current.agentName,
+      title: current.title,
+      revision: current.revision,
+      status: .deleted,
+      activeTurnId: nil,
+      owningIssueId: current.owningIssueId,
+      projectId: current.projectId,
+      lastSeq: current.lastSeq,
+      lastMessagePreview: current.lastMessagePreview,
+      createdAt: current.createdAt,
+      updatedAt: current.updatedAt,
+      deletedAt: current.deletedAt ?? current.updatedAt
+    )
+    _ = ChatReducer.reduce(state: &state, action: .authoritativeSummary(deleted))
+    isAuthoritative = false
+  }
+
+  private func publishConversationRemoval() async {
+    _ = await lifecycleChangeHandler([
+      .removed(
+        id: state.conversation.id,
+        revisionFloor: state.conversation.revision
+      )
+    ])
+  }
+
+  func prepareForRemoteRemoval() {
+    guard isShutdown == false else { return }
+    markConversationDeletedForRecovery()
+    state.errorBanner = nil
+    prepareForShutdown()
+  }
+
+  func retireAfterRemoteRemoval() async {
+    prepareForRemoteRemoval()
+    if pendingSendReconciliation != nil {
+      await recoveryChanges.send(gatewayID: gatewayID)
+    }
+    await shutdown()
+  }
+
   private func preservingComposer(in value: ChatState, from current: ChatState) -> ChatState {
     var preserved = value
     preserved.draft = current.draft
@@ -1640,8 +2716,13 @@ extension MobileWSServerFrame {
   }
 
   fileprivate var isRejectionForFeature: Bool {
-    if case .error = self { return true }
+    if case .error(_, _, seq: nil, _, _, _, _) = self { return true }
     return false
+  }
+
+  fileprivate var rejectionMessageForFeature: String? {
+    if case .error(_, _, seq: nil, let error, _, _, _) = self { return error }
+    return nil
   }
 
   fileprivate var isAdmissionOrTerminal: Bool {
@@ -1665,6 +2746,18 @@ extension MobileWSServerFrame {
       .done(let id, _, _, _),
       .error(let id, _, _, _, _, _, _):
       id
+    }
+  }
+
+  fileprivate var sequenceForFeature: Int? {
+    switch self {
+    case .accepted(_, _, _, _, _, let seq):
+      seq
+    case .event(_, _, let seq, _),
+      .done(_, _, let seq, _):
+      seq
+    case .error(_, _, let seq, _, _, _, _):
+      seq
     }
   }
 }

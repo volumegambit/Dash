@@ -75,7 +75,9 @@ struct AgentDetailView: View {
           Button("Edit") {
             appModel.openAgent(
               .edit(agent.id),
-              presentation: horizontalSizeClass == .regular ? .regular : .compact
+              presentation: AdaptiveNavigationPolicy.presentation(
+                horizontalSizeClass: horizontalSizeClass
+              )
             )
           }
           .disabled(feature.mutationsAllowed == false || isWorking)
@@ -227,7 +229,9 @@ struct AgentDetailView: View {
     guard let conversationID = await feature.startChat(agentID: agentID) else { return }
     appModel.openConversation(
       conversationID,
-      presentation: horizontalSizeClass == .regular ? .regular : .compact
+      presentation: AdaptiveNavigationPolicy.presentation(
+        horizontalSizeClass: horizontalSizeClass
+      )
     )
   }
 }

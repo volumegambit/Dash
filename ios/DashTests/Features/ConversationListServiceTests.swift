@@ -11,6 +11,101 @@ struct ConversationListServiceTests {
     URLProtocolStub.reset()
   }
 
+  @Test("point read persists and returns an archived canonical conversation")
+  func pointReadPersistsArchivedCanonical() async throws {
+    let archived = summary(title: "Archived elsewhere", revision: 5, status: .archived)
+    URLProtocolStub.enqueue(status: 200, data: try encode(archived))
+    let store = try PersistenceStore.inMemory()
+    let service = makeService(store: store)
+
+    let result = try await service.conversation(id: archived.id)
+
+    #expect(result == archived)
+    #expect(
+      try await store.conversation(gatewayID: gatewayID, id: archived.id)?.summary == archived
+    )
+    #expect(URLProtocolStub.requests.map(\.httpMethod) == ["GET"])
+  }
+
+  @Test("point read returns a newer active canonical retained by persistence")
+  func pointReadReturnsNewerPersistedCanonical() async throws {
+    let current = summary(title: "Active again", revision: 6)
+    let staleArchived = summary(title: "Stale archive", revision: 5, status: .archived)
+    let store = try PersistenceStore.inMemory()
+    try await store.upsertConversations([current], gatewayID: gatewayID)
+    URLProtocolStub.enqueue(status: 200, data: try encode(staleArchived))
+    let service = makeService(store: store)
+
+    let result = try await service.conversation(id: current.id)
+
+    #expect(result == current)
+    #expect(try await store.conversation(gatewayID: gatewayID, id: current.id)?.summary == current)
+  }
+
+  @Test(
+    "list refresh returns the effective active canonical over stale and equal tombstones",
+    arguments: [5, 6]
+  )
+  func listRefreshReturnsEffectiveCanonical(tombstoneRevision: Int) async throws {
+    let current = summary(title: "Current", revision: 6)
+    let tombstone = summary(
+      title: "Rejected tombstone",
+      revision: tombstoneRevision,
+      status: .deleted
+    )
+    let store = try PersistenceStore.inMemory()
+    try await store.upsertConversations([current], gatewayID: gatewayID)
+    URLProtocolStub.enqueue(
+      status: 200,
+      data: try ContractCoding.encoder().encode(
+        ConversationPageDTO(items: [tombstone], nextCursor: nil)
+      )
+    )
+    let service = makeService(store: store)
+
+    let page = try await service.conversations(agentID: nil, limit: 50, cursor: nil)
+
+    #expect(page.items == [current])
+    #expect(try await store.conversation(gatewayID: gatewayID, id: current.id)?.summary == current)
+  }
+
+  @Test("list refresh cannot resurrect a newer stored tombstone with a stale active row")
+  func listRefreshReturnsEffectiveStoredTombstone() async throws {
+    let tombstone = summary(title: "Deleted", revision: 6, status: .deleted)
+    let staleActive = summary(title: "Stale active", revision: 5)
+    let store = try PersistenceStore.inMemory()
+    try await store.applyTombstone(tombstone, gatewayID: gatewayID)
+    URLProtocolStub.enqueue(
+      status: 200,
+      data: try ContractCoding.encoder().encode(
+        ConversationPageDTO(items: [staleActive], nextCursor: nil)
+      )
+    )
+    let service = makeService(store: store)
+
+    let page = try await service.conversations(agentID: nil, limit: 50, cursor: nil)
+
+    #expect(page.items == [tombstone])
+    #expect(
+      try await store.conversation(gatewayID: gatewayID, id: tombstone.id)?.summary == tombstone
+    )
+  }
+
+  @Test("delete returns the effective active canonical when persistence rejects its tombstone")
+  func deleteReturnsEffectiveCanonical() async throws {
+    let current = summary(title: "Current", revision: 6)
+    let staleTombstone = summary(title: "Rejected tombstone", revision: 5, status: .deleted)
+    let store = try PersistenceStore.inMemory()
+    try await store.upsertConversations([current], gatewayID: gatewayID)
+    URLProtocolStub.enqueue(status: 200, data: try encode(staleTombstone))
+    let service = makeService(store: store)
+
+    let result = try await service.delete(id: current.id, revision: current.revision)
+
+    #expect(result == current)
+    #expect(try await store.conversation(gatewayID: gatewayID, id: current.id)?.summary == current)
+  }
+
   @Test("PATCH 410 resolves and persists the canonical tombstone")
   func renameTombstoneRecovery() async throws {
     let tombstone = summary(title: "Already deleted", revision: 3, status: .deleted)
@@ -519,7 +614,33 @@ private actor GatedConversationListPersistence: ConversationListPersisting {
     storedConversation = value
   }
 
+  func persistConversationAndReturnCanonical(
+    _ value: ConversationSummaryDTO,
+    gatewayID: String
+  ) async -> CachedConversation {
+    if value.status == .deleted {
+      await applyTombstone(value, gatewayID: gatewayID)
+    } else {
+      await upsertConversations([value], gatewayID: gatewayID)
+    }
+    return CachedConversation(gatewayID: gatewayID, summary: value)
+  }
+
   func removeConversation(gatewayID: String, conversationID: String) {}
+
+  func removeConversationIfCanonicalUnchanged(
+    gatewayID: String,
+    conversationID: String,
+    expectedCanonical: ConversationSummaryDTO?
+  ) -> ConversationRemovalOutcome {
+    _ = gatewayID
+    _ = conversationID
+    if let storedConversation, storedConversation != expectedCanonical {
+      return .retained(storedConversation)
+    }
+    storedConversation = nil
+    return .removed
+  }
 }
 
 private actor FailingConversationListPersistence: ConversationListPersisting {
@@ -549,7 +670,29 @@ private actor FailingConversationListPersistence: ConversationListPersisting {
     try write(value)
   }
 
+  func persistConversationAndReturnCanonical(
+    _ value: ConversationSummaryDTO,
+    gatewayID: String
+  ) throws -> CachedConversation {
+    try write(value)
+    return CachedConversation(gatewayID: gatewayID, summary: value)
+  }
+
   func removeConversation(gatewayID: String, conversationID: String) {}
+
+  func removeConversationIfCanonicalUnchanged(
+    gatewayID: String,
+    conversationID: String,
+    expectedCanonical: ConversationSummaryDTO?
+  ) -> ConversationRemovalOutcome {
+    _ = gatewayID
+    _ = conversationID
+    if let storedConversation, storedConversation != expectedCanonical {
+      return .retained(storedConversation)
+    }
+    storedConversation = nil
+    return .removed
+  }
 
   private func write(_ value: ConversationSummaryDTO?) throws {
     mutationWriteAttempts += 1

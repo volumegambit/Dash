@@ -95,4 +95,22 @@ describe('mobile CI wiring', () => {
     expect(commands).toContain('./gradlew test');
     expect(commands).toContain('./gradlew assembleDebug');
   });
+
+  it('keeps the iOS bundle version aligned with the unified release version', async () => {
+    const rootPackage = JSON.parse(await readFile('package.json', 'utf8')) as {
+      version: string;
+      scripts: Record<string, string>;
+    };
+    const baseConfiguration = await readFile('ios/Config/Base.xcconfig', 'utf8');
+    const infoPlist = await readFile('ios/Dash/Resources/Info.plist', 'utf8');
+
+    const marketingVersion = baseConfiguration.match(/^MARKETING_VERSION\s*=\s*(\S+)\s*$/m)?.[1];
+    const buildNumber = baseConfiguration.match(/^CURRENT_PROJECT_VERSION\s*=\s*(\S+)\s*$/m)?.[1];
+
+    expect(marketingVersion).toBe(rootPackage.version);
+    expect(buildNumber).toMatch(/^[1-9]\d*$/);
+    expect(infoPlist).toContain('<string>$(MARKETING_VERSION)</string>');
+    expect(infoPlist).toContain('<string>$(CURRENT_PROJECT_VERSION)</string>');
+    expect(rootPackage.scripts['version:sync']).toContain('tsx scripts/sync-ios-version.ts');
+  });
 });

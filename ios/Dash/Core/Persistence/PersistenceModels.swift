@@ -102,6 +102,26 @@ final class ConversationRecord {
 }
 
 @Model
+final class ConversationRemovalFenceRecord {
+  @Attribute(.unique) var scopedConversationID: String
+  var gatewayID: String
+  var conversationID: String
+  var revisionFloor: Int
+
+  init(
+    scopedConversationID: String,
+    gatewayID: String,
+    conversationID: String,
+    revisionFloor: Int
+  ) {
+    self.scopedConversationID = scopedConversationID
+    self.gatewayID = gatewayID
+    self.conversationID = conversationID
+    self.revisionFloor = revisionFloor
+  }
+}
+
+@Model
 final class MessageRecord {
   @Attribute(.unique) var scopedID: String
   var gatewayID: String
@@ -240,5 +260,20 @@ final class ReplayCursorRecord {
     self.gatewayID = gatewayID
     self.conversationID = conversationID
     self.lastSeq = lastSeq
+  }
+}
+
+enum PersistenceSchema {
+  static func make() -> Schema {
+    Schema([
+      GatewayProfileRecord.self,
+      ConversationRecord.self,
+      ConversationRemovalFenceRecord.self,
+      MessageRecord.self,
+      AgentRecord.self,
+      DraftRecord.self,
+      PendingSendRecord.self,
+      ReplayCursorRecord.self,
+    ])
   }
 }

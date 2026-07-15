@@ -2,6 +2,29 @@ import XCTest
 
 @MainActor
 final class AccessibilityUITests: DashUITestCase {
+  func testCoreFlowsInCurrentAppearance() {
+    let app = launch(scenario: "paired-online")
+
+    selectTab("tab.conversations", in: app)
+    revealSidebarIfNeeded(toExpose: "conversation.row.shared-plan", in: app)
+    let conversation = element("conversation.row.shared-plan", in: app)
+    XCTAssertTrue(conversation.isHittable)
+    conversation.tap()
+    dismissSplitOverlayIfPresent(in: app)
+    XCTAssertTrue(element("chat.composer", in: app).isHittable)
+
+    selectTab("tab.agents", in: app)
+    revealSidebarIfNeeded(toExpose: "agent.row.research-agent", in: app)
+    let agent = element("agent.row.research-agent", in: app)
+    XCTAssertTrue(agent.isHittable)
+    agent.tap()
+    dismissSplitOverlayIfPresent(in: app)
+    XCTAssertTrue(element("agent.startChat", in: app).isHittable)
+
+    selectTab("tab.settings", in: app)
+    XCTAssertTrue(scrollSettingsToElement("settings.disconnect", in: app).isHittable)
+  }
+
   func testSettingsForgetReturnsToConnectAndRemovesCachedRows() {
     let app = launch(scenario: "settings-forget")
     selectTab("tab.settings", in: app)
@@ -37,7 +60,7 @@ final class AccessibilityUITests: DashUITestCase {
     assertFitsHorizontally(element("agent.detail.research-agent", in: app), in: app)
 
     selectTab("tab.settings", in: app)
-    assertFitsHorizontally(scrollToElement("settings.disconnect", in: app), in: app)
+    assertFitsHorizontally(scrollSettingsToElement("settings.disconnect", in: app), in: app)
   }
 
   func testReduceMotionStreamingUsesStateNotAnimationTiming() {
@@ -81,5 +104,39 @@ final class AccessibilityUITests: DashUITestCase {
     XCTAssertEqual(final.label, "Recovered exactly once.")
     XCTAssertEqual(message.label, "Assistant message, completed")
     XCTAssertTrue(app.staticTexts["Response completed"].exists)
+  }
+
+  private func scrollSettingsToElement(
+    _ identifier: String,
+    in app: XCUIApplication,
+    maxSwipes: Int = 6,
+    file: StaticString = #filePath,
+    line: UInt = #line
+  ) -> XCUIElement {
+    let settingsList = element("settings.list", in: app, file: file, line: line)
+    let window = app.windows.firstMatch
+    XCTAssertTrue(
+      window.waitForExistence(timeout: 2),
+      "Expected the app window before scrolling settings",
+      file: file,
+      line: line
+    )
+    let value = app.descendants(matching: .any)[identifier]
+
+    func isExposed() -> Bool {
+      guard value.exists, value.isHittable else { return false }
+      return value.frame.intersects(settingsList.frame) && value.frame.intersects(window.frame)
+    }
+
+    for _ in 0..<maxSwipes where isExposed() == false {
+      settingsList.swipeUp()
+    }
+    XCTAssertTrue(
+      isExposed(),
+      "Expected \(identifier) to be exposed and hittable after \(maxSwipes) settings-list swipes",
+      file: file,
+      line: line
+    )
+    return value
   }
 }

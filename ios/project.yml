@@ -42,6 +42,7 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: app.dash.ios.tests
+        GENERATE_INFOPLIST_FILE: YES
   DashContractTests:
     type: bundle.unit-test
     platform: iOS
@@ -58,6 +59,7 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: app.dash.ios.contract-tests
+        GENERATE_INFOPLIST_FILE: YES
   DashIntegrationTests:
     type: bundle.unit-test
     platform: iOS
@@ -69,6 +71,7 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: app.dash.ios.integration-tests
+        GENERATE_INFOPLIST_FILE: YES
   DashUITests:
     type: bundle.ui-testing
     platform: iOS
@@ -80,6 +83,7 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: app.dash.ios.ui-tests
+        GENERATE_INFOPLIST_FILE: YES
 schemes:
   Dash:
     build:

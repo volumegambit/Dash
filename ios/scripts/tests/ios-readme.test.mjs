@@ -51,6 +51,26 @@ assert.match(
 );
 assert.match(
   readme,
+  /insert-only pending sends/,
+  'README must document that pending sends cannot overwrite an existing recovery record',
+);
+assert.match(
+  readme,
+  /durable deletion revision floors/,
+  'README must document the persistent monotonic deletion boundary',
+);
+assert.match(
+  readme,
+  /Same-gateway reactivation preserves that floor/,
+  'README must document the lifecycle boundary for reconnecting the same gateway',
+);
+assert.match(
+  readme,
+  /Only a strictly newer canonical active summary can revive the conversation ID/,
+  'README must document the strict-newer revival rule',
+);
+assert.match(
+  readme,
   /--scenario question[\s\\]+--only-testing[\s\\]+DashIntegrationTests\/ChatResumeIntegrationTests\/testQuestionAnswer/,
   'README must include one exact focused real-gateway example',
 );
