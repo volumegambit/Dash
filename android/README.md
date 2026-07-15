@@ -35,6 +35,8 @@ seams), so they're unit-testable without Android.
 
 **Contract source of truth (TypeScript).** The `core/model` DTOs mirror these files;
 keep them in sync:
+- `contracts/mobile/v1/fixtures/pairing-*.json` and `invalid/pairing-*.json` — accepted and
+  rejected pairing payloads consumed directly by Android unit tests
 - `packages/agent/src/types.ts` — `AgentEvent`, content blocks
 - `apps/gateway/src/chat-ws.ts` — `WsClientMessage` / `WsServerMessage` (the live
   `/ws/chat` route + `agentId`; **not** the unmounted legacy `packages/chat/src/chat-server.ts`)
@@ -71,8 +73,9 @@ The unit suite covers serialization round-trips, the REST client + WebSocket Flo
 pairing parser + encrypted store, and every ViewModel/reducer. **Instrumented Compose UI
 tests require a device/emulator and are not part of `./gradlew test`.**
 
-CI runs `./gradlew test` + `assembleDebug` via `.github/workflows/android.yml`, triggered
-only on `android/**` changes (separate from the Node CI so each toolchain stays isolated).
+CI runs `./gradlew test` + `assembleDebug` via `.github/workflows/android.yml`. It runs for Android
+changes and for gateway, agent-event, or pairing-wire changes that can affect this legacy client
+(separate from the Node CI so each toolchain stays isolated).
 
 ## Connecting
 

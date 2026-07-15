@@ -7,8 +7,8 @@ on:
       - 'ios/**'
       - 'contracts/mobile/v1/**'
       - 'apps/website/app/icon.svg'
-      - 'apps/gateway/src/**'
-      - 'packages/mobile-contract/**'
+      - 'apps/gateway/**'
+      - 'packages/**'
       - 'package.json'
       - 'package-lock.json'
       - '.github/workflows/ios.yml'
@@ -18,8 +18,8 @@ on:
       - 'ios/**'
       - 'contracts/mobile/v1/**'
       - 'apps/website/app/icon.svg'
-      - 'apps/gateway/src/**'
-      - 'packages/mobile-contract/**'
+      - 'apps/gateway/**'
+      - 'packages/**'
       - 'package.json'
       - 'package-lock.json'
       - '.github/workflows/ios.yml'
@@ -67,6 +67,7 @@ jobs:
           ios/scripts/tests/bootstrap-xcodegen.test.sh
           ios/scripts/tests/ensure-simulators.test.sh
           ios/scripts/tests/check-project.test.sh
+          ios/scripts/tests/verify-built-app.test.sh
           node ios/scripts/tests/ios-workflow.test.mjs
           node ios/scripts/tests/ios-readme.test.mjs
           npx vitest run ios/scripts/run-live-gateway-tests.test.ts scripts/mobile-ci-config.test.ts
@@ -92,14 +93,19 @@ jobs:
       - name: Verify generated project is committed
         run: ios/scripts/check-project.sh
 
-      - name: Build simulator app and verify AppIcon diagnostics
+      - name: Build Release simulator app and verify bundle metadata
         run: |
           set -o pipefail
+          simulator_derived_data="$RUNNER_TEMP/DashSimulatorDerivedData"
           xcodebuild -project ios/Dash.xcodeproj -scheme Dash \
+            -configuration Release \
             -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath "$simulator_derived_data" \
             build CODE_SIGNING_ALLOWED=NO 2>&1 | tee ios/SimulatorBuild.log
           test -z "$(rg -ni 'warning:.*(app ?icon|AppIcon)|AppIcon.*warning' \
             ios/SimulatorBuild.log || true)"
+          ios/scripts/verify-built-app.sh \
+            "$simulator_derived_data/Build/Products/Release-iphonesimulator/Dash.app"
 
       - name: Unit and contract tests
         run: >-
@@ -131,14 +137,27 @@ jobs:
             -resultBundlePath ios/iPadUI.xcresult \
             test CODE_SIGNING_ALLOWED=NO
 
+      - name: Integration support tests
+        run: >-
+          xcodebuild -project ios/Dash.xcodeproj -scheme DashIntegration
+          -destination "$IOS_TEST_DESTINATION"
+          -resultBundlePath ios/IntegrationSupport.xcresult
+          -only-testing:DashIntegrationTests/LiveGatewayEnvironmentTests
+          test CODE_SIGNING_ALLOWED=NO
+
       - name: Real gateway integration matrix
         run: node ios/scripts/run-live-gateway-tests.mjs
 
-      - name: Generic iOS build without signing
-        run: >-
-          xcodebuild -project ios/Dash.xcodeproj -scheme Dash
-          -destination 'generic/platform=iOS'
-          build CODE_SIGNING_ALLOWED=NO
+      - name: Generic Release iOS build without signing
+        run: |
+          device_derived_data="$RUNNER_TEMP/DashDeviceDerivedData"
+          xcodebuild -project ios/Dash.xcodeproj -scheme Dash \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath "$device_derived_data" \
+            build CODE_SIGNING_ALLOWED=NO
+          ios/scripts/verify-built-app.sh \
+            "$device_derived_data/Build/Products/Release-iphoneos/Dash.app"
 
       - uses: actions/upload-artifact@v4
         if: failure()

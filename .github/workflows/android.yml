@@ -8,11 +8,25 @@ on:
     branches: [main]
     paths:
       - 'android/**'
+      - 'contracts/mobile/v1/**'
+      - 'apps/gateway/**'
+      - 'apps/mission-control/src/main/ipc.ts'
+      - 'apps/mission-control/src/main/pairing.ts'
+      - 'apps/mission-control/src/renderer/src/components/PairDeviceCard.tsx'
+      - 'apps/mission-control/src/shared/ipc.ts'
+      - 'packages/agent/**'
       - '.github/workflows/android.yml'
   pull_request:
-    branches: [main]
+    branches: [main, codex/mc-vps-gateway-relay]
     paths:
       - 'android/**'
+      - 'contracts/mobile/v1/**'
+      - 'apps/gateway/**'
+      - 'apps/mission-control/src/main/ipc.ts'
+      - 'apps/mission-control/src/main/pairing.ts'
+      - 'apps/mission-control/src/renderer/src/components/PairDeviceCard.tsx'
+      - 'apps/mission-control/src/shared/ipc.ts'
+      - 'packages/agent/**'
       - '.github/workflows/android.yml'
 
 jobs:

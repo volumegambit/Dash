@@ -9,6 +9,41 @@ class PairingPayloadTest {
     private val certificateSha256 =
         "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 
+    private fun sharedFixture(name: String): String =
+        requireNotNull(javaClass.classLoader?.getResource(name)) {
+            "Missing shared mobile contract fixture: $name"
+        }.readText()
+
+    @Test fun acceptsSharedCurrentPairingFixtures() {
+        val lan = PairingPayload.parse(sharedFixture("pairing-lan-v3.json")).getOrThrow()
+        val relay = PairingPayload.parse(sharedFixture("pairing-relay-v2.json")).getOrThrow()
+
+        assertEquals(9400, lan.mgmtPort)
+        assertEquals(lan.mgmtToken, lan.chatToken)
+        assertTrue(lan.tlsCertificateSha256 != null)
+        assertEquals(null, lan.relayCredential)
+        assertEquals(443, relay.mgmtPort)
+        assertEquals(relay.mgmtToken, relay.chatToken)
+        assertTrue(relay.relayCredential != null)
+        assertEquals(null, relay.tlsCertificateSha256)
+    }
+
+    @Test fun rejectsSharedLegacyAndInvalidPairingFixtures() {
+        val rejected = listOf(
+            "pairing-lan-v1.json",
+            "invalid/pairing-blank-secret.json",
+            "invalid/pairing-host-with-scheme.json",
+            "invalid/pairing-port-out-of-range.json",
+            "invalid/pairing-v2-mismatched-mobile-token.json",
+            "invalid/pairing-v3-mismatched-mobile-token.json",
+            "invalid/pairing-v3-mismatched-ports.json",
+        )
+
+        for (fixture in rejected) {
+            assertTrue(fixture, PairingPayload.parse(sharedFixture(fixture)).isFailure)
+        }
+    }
+
     @Test fun parsesV3PinnedTlsLanPayload() {
         val p = PairingPayload.parse(
             """{"v":3,"host":"10.0.0.5","mgmtToken":"mobile","chatToken":"mobile","mgmtPort":9443,"chatPort":9443,"label":"Office","secure":true,"tlsCertificateSha256":"$certificateSha256"}""",
