@@ -103,6 +103,12 @@ class DashUITestCase: XCTestCase {
     {
       field.coordinate(withNormalizedOffset: CGVector(dx: 0.95, dy: 0.5)).tap()
       field.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: current.count))
+      XCTAssertTrue(
+        waitForClearedTextValue(in: field, timeout: 5),
+        "Expected \(field.identifier) to clear existing text before replacement",
+        file: file,
+        line: line
+      )
     }
     field.typeText(value)
 
@@ -172,6 +178,23 @@ class DashUITestCase: XCTestCase {
           return currentValue != initialValue
         }
         return currentValue == expected
+      },
+      object: field
+    )
+    return XCTWaiter.wait(for: [expectation], timeout: timeout) == .completed
+  }
+
+  private func waitForClearedTextValue(
+    in field: XCUIElement,
+    timeout: TimeInterval
+  ) -> Bool {
+    let expectation = XCTNSPredicateExpectation(
+      predicate: NSPredicate { object, _ in
+        guard
+          let field = object as? XCUIElement,
+          let currentValue = field.value as? String
+        else { return false }
+        return currentValue.isEmpty || currentValue == (field.placeholderValue ?? "")
       },
       object: field
     )

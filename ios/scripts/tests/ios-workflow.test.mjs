@@ -232,6 +232,11 @@ assert.doesNotMatch(
   'token-bearing pasteboard payload fixtures must stay inside the debug app binary',
 );
 assert.doesNotMatch(uiTestCaseSource, /DASH_UI_TEST_PASTEBOARD\b|--dash-ui-test-pasteboard["']/);
+assert.match(
+  uiTestCaseSource,
+  /field\.typeText\(String\(repeating: XCUIKeyboardKey\.delete\.rawValue, count: current\.count\)\)[\s\S]*waitForClearedTextValue\([\s\S]*field\.typeText\(value\)/,
+  'text replacement must observe the cleared field before typing the replacement value',
+);
 
 assert.match(composerSource, /\.keyboardShortcut\("l", modifiers: \.command\)/);
 assert.match(composerSource, /\.keyboardShortcut\(\.return, modifiers: \.command\)/);
