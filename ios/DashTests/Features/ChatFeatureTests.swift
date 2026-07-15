@@ -224,9 +224,20 @@ struct ChatFeatureTests {
     #expect(feature.state.conversation == tombstone)
     #expect(feature.draftEditingAllowed == false)
     #expect(feature.canSend == false)
+    if case .failed = feature.statusPresentation {
+      Issue.record("A deleted conversation must not present the generic Retry action")
+    }
+    #expect(feature.statusPresentation != nil)
     #expect(
       try await store.pendingSend(gatewayID: "gateway-1", conversationID: "conv-1") == expected
     )
+    #expect(await chat.calls.compactMap(\.sentPayload).count == 1)
+
+    URLProtocolStub.enqueue(
+      status: 200,
+      data: try ContractCoding.encoder().encode(tombstone)
+    )
+    await feature.retryConnection()
     #expect(await chat.calls.compactMap(\.sentPayload).count == 1)
 
     await feature.shutdown()

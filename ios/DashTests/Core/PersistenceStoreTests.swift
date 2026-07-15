@@ -536,6 +536,106 @@ struct PersistenceStoreTests {
     #expect(try await reopenedStore.pendingSend(gatewayID: "gw", conversationID: "c") == pending)
   }
 
+  @Test("deleted and missing pending sends remain recoverable after restart until discarded")
+  func recoverablePendingSendsSurviveStoreRestart() async throws {
+    let directory = FileManager.default.temporaryDirectory.appending(
+      path: UUID().uuidString,
+      directoryHint: .isDirectory
+    )
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let storeURL = directory.appending(path: "dash.store")
+    let attachment = PreparedAttachment(
+      id: UUID(uuidString: "018f0f4a-5c42-7a8b-9c01-1234567890ab")!,
+      mediaType: "image/png",
+      data: Data([0x00, 0x7F, 0xFF])
+    )
+    let deletedPending = PendingChatSend(
+      turnID: "turn-deleted",
+      localUserID: "local-deleted",
+      draft: "  Preserve deleted text exactly  ",
+      attachments: [attachment],
+      createdAt: instant(43)
+    )
+    let missingPending = PendingChatSend(
+      turnID: "turn-missing",
+      localUserID: "local-missing",
+      draft: "Preserve missing text",
+      attachments: [],
+      createdAt: instant(42)
+    )
+    let activePending = PendingChatSend(
+      turnID: "turn-active",
+      localUserID: "local-active",
+      draft: "Still belongs to an active chat",
+      attachments: [],
+      createdAt: instant(41)
+    )
+    let initialStore = try PersistenceStore.stored(at: storeURL)
+    try await initialStore.upsertConversations(
+      [
+        summary(id: "deleted", title: "Deleted launch plan"),
+        summary(id: "missing", title: "Removed remotely"),
+        summary(id: "active", title: "Active conversation"),
+      ],
+      gatewayID: "gw"
+    )
+    try await initialStore.stagePendingSend(
+      deletedPending,
+      gatewayID: "gw",
+      conversationID: "deleted"
+    )
+    try await initialStore.stagePendingSend(
+      missingPending,
+      gatewayID: "gw",
+      conversationID: "missing"
+    )
+    try await initialStore.stagePendingSend(
+      activePending,
+      gatewayID: "gw",
+      conversationID: "active"
+    )
+    try await initialStore.applyTombstone(
+      summary(
+        id: "deleted",
+        title: "Deleted launch plan",
+        revision: 2,
+        status: .deleted,
+        deletedAt: instant(44)
+      ),
+      gatewayID: "gw"
+    )
+    try await initialStore.removeConversation(gatewayID: "gw", conversationID: "missing")
+
+    let reopenedStore = try PersistenceStore.stored(at: storeURL)
+    let recoveries = try await reopenedStore.recoverablePendingSends(gatewayID: "gw")
+
+    #expect(recoveries.map(\.conversationID) == ["deleted", "missing"])
+    #expect(recoveries[0].conversationTitle == "Deleted launch plan")
+    #expect(recoveries[0].agentName == "Agent One")
+    #expect(recoveries[0].pendingSend == deletedPending)
+    #expect(recoveries[1].conversationTitle == nil)
+    #expect(recoveries[1].agentName == nil)
+    #expect(recoveries[1].pendingSend == missingPending)
+
+    try await reopenedStore.clearPendingSend(
+      gatewayID: "gw",
+      conversationID: "deleted",
+      turnID: "different-turn"
+    )
+    #expect(try await reopenedStore.recoverablePendingSends(gatewayID: "gw") == recoveries)
+
+    try await reopenedStore.clearPendingSend(
+      gatewayID: "gw",
+      conversationID: "deleted",
+      turnID: deletedPending.turnID
+    )
+    #expect(
+      try await reopenedStore.recoverablePendingSends(gatewayID: "gw").map(\.conversationID)
+        == ["missing"]
+    )
+  }
+
   @Test("agent replacement is gateway scoped and removes stale agents")
   func agentReplacement() async throws {
     let store = try PersistenceStore.inMemory()

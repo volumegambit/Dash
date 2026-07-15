@@ -134,11 +134,11 @@ metadata without those secrets.
 | --- | --- |
 | `Core/Contracts` | Strict Swift mirrors of `contracts/mobile/v1`, including forward-compatible agent events. |
 | `Core/Networking` | Authenticated `/mobile/v1` HTTP, SSE invalidations, capable WebSocket chat, and reachability. |
-| `Core/Security` | Device-only Keychain storage for management, chat, and relay credentials. |
+| `Core/Security` | Device-only Keychain storage for the Mobile bearer and optional relay credential. |
 | `Core/Persistence` | Gateway-scoped SwiftData cache, replay cursors, drafts, and external attachment data. |
 | `Core/Sync` | Cache-first bootstrap, canonical reconciliation, tombstones, replay gaps, and reconnect backoff. |
 | `Features/Pairing` | QR, paste, and manual pairing with identity verification. |
-| `Features/Conversations` | Canonical list mutations, transcript projection, resumable chat, answers, cancel, and images. |
+| `Features/Conversations` | Canonical list mutations, transcript projection, resumable chat, recovery, answers, cancel, and images. |
 | `Features/Agents` | Cache-first agent list, safe owned-field edits, enable/disable/delete, and Start Chat. |
 | `Features/Settings` | Sanitized gateway status, reconnect, and secure Disconnect & Forget. |
 
@@ -147,7 +147,9 @@ writes are disabled. A foreground transition refreshes canonical state and resta
 events. The visible chat separately replays durable events before its running turn resumes.
 Messages whose admission could not be confirmed remain durably pending across launches and are
 never retried automatically. An explicit retry reuses the original turn ID so gateway admission is
-idempotent.
+idempotent while the conversation still exists. If another client deleted the conversation, Dash
+never recreates or resends the message. The **Needs Recovery** section keeps it. Open the recovery
+item to copy the exact text, preview or share its attachments, and explicitly confirm discarding it.
 Disconnect & Forget stops transports before deleting Keychain material, purging that gateway's
 SwiftData cache, and clearing the selected profile.
 

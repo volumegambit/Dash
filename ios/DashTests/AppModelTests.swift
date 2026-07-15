@@ -82,6 +82,25 @@ struct AppModelTests {
     #expect(model.splitConversationSelection == .transcript("regular"))
   }
 
+  @Test("discarding recovery closes compact and regular destinations")
+  func recoveryDiscardClosesEveryDestination() {
+    let model = AppModel(
+      dependencies: dependencies(profile: nil, engine: FakeAppSyncEngine())
+    )
+
+    model.openConversationRecovery("deleted", presentation: .compact)
+    model.closeConversationRecovery("deleted", presentation: .compact)
+
+    #expect(model.conversationPath.isEmpty)
+    #expect(model.splitConversationSelection == nil)
+
+    model.openConversationRecovery("deleted", presentation: .regular)
+    model.closeConversationRecovery("deleted", presentation: .regular)
+
+    #expect(model.conversationPath.isEmpty)
+    #expect(model.splitConversationSelection == nil)
+  }
+
   @Test("agent navigation survives an adaptive width transition")
   func agentNavigationSurvivesWidthTransition() {
     let model = AppModel(

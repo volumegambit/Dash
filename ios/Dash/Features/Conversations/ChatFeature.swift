@@ -186,6 +186,7 @@ private enum DraftWriteResult: Sendable {
 }
 
 enum ChatStatusPresentation: Equatable, Sendable {
+  case recoveryRequired
   case reconnecting(attempt: Int)
   case offline
   case gatewayOffline
@@ -462,6 +463,10 @@ final class ChatFeature {
   }
 
   var statusPresentation: ChatStatusPresentation? {
+    if pendingSendReconciliation != nil, state.conversation.status == .deleted {
+      return .recoveryRequired
+    }
+
     switch connection {
     case .connecting, .online:
       if case .reconnecting(let attempt) = state.transport {
@@ -1550,6 +1555,11 @@ final class ChatFeature {
     let pendingProjection = state.messages.filter { $0.turnID == pending.turnID }
     applyCanonical(canonical, preserveLiveProjection: preserveLiveProjection)
     restoreMissingProjection(pendingProjection, for: pending.turnID)
+    if canonical.summary.status == .deleted {
+      isAuthoritative = false
+      state.errorBanner = nil
+      return
+    }
     if isConversationReadOnly == false, canonical.summary.activeTurnId == nil {
       state.activeTurnID = pending.turnID
     }

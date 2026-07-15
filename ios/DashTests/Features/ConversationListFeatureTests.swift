@@ -6,6 +6,46 @@ import Testing
 @Suite("Conversation list feature")
 @MainActor
 struct ConversationListFeatureTests {
+  @Test("recoverable pending sends load from cache and disappear only after exact discard")
+  func recoverablePendingSendsLoadAndDiscard() async {
+    let recovery = RecoverablePendingSend(
+      gatewayID: "gateway-1",
+      conversationID: "deleted",
+      conversationTitle: "Deleted launch plan",
+      agentName: "Research Agent",
+      pendingSend: PendingChatSend(
+        turnID: "turn-pending",
+        localUserID: "local-user",
+        draft: "  Recover this exact text  ",
+        attachments: [
+          PreparedAttachment(
+            id: UUID(uuidString: "018f0f4a-5c42-7a8b-9c01-1234567890ab")!,
+            mediaType: "image/png",
+            data: Data([0x00, 0x7F, 0xFF])
+          )
+        ],
+        createdAt: Date(timeIntervalSince1970: 42)
+      )
+    )
+    let recoveryService = FakeConversationRecoveryService(values: [recovery])
+    let feature = makeFeature(
+      service: FakeConversationListService(),
+      recoveryService: recoveryService
+    )
+    feature.consume(snapshot(connection: .offline, conversations: []))
+
+    await feature.start()
+
+    #expect(feature.recoverablePendingSends == [recovery])
+    #expect(feature.recoveryError == nil)
+
+    let discarded = await feature.discardRecovery(recovery)
+
+    #expect(discarded)
+    #expect(feature.recoverablePendingSends.isEmpty)
+    #expect(await recoveryService.discarded == [recovery])
+  }
+
   @Test("cached rows and agents publish before the online refresh finishes")
   func cachedFirstLoad() async {
     let cached = cachedConversation(summary(id: "cached", title: "Cached"))
@@ -665,11 +705,13 @@ struct ConversationListFeatureTests {
 
   private func makeFeature(
     service: FakeConversationListService,
+    recoveryService: any ConversationRecoveryServicing = FakeConversationRecoveryService(),
     requestID: @escaping @Sendable () -> UUID = { UUID() }
   ) -> ConversationListFeature {
     ConversationListFeature(
       gatewayID: "gateway-1",
       service: service,
+      recoveryService: recoveryService,
       requestID: requestID
     )
   }
@@ -757,6 +799,29 @@ private actor GatewayErrorRecorder {
 
   func record(_ error: GatewayError) {
     values.append(error)
+  }
+}
+
+private actor FakeConversationRecoveryService: ConversationRecoveryServicing {
+  private var values: [RecoverablePendingSend]
+  private(set) var discarded: [RecoverablePendingSend] = []
+
+  init(values: [RecoverablePendingSend] = []) {
+    self.values = values
+  }
+
+  func recoverablePendingSends() -> [RecoverablePendingSend] {
+    values
+  }
+
+  func discard(_ recovery: RecoverablePendingSend) -> Bool {
+    discarded.append(recovery)
+    let count = values.count
+    values.removeAll {
+      $0.conversationID == recovery.conversationID
+        && $0.pendingSend.turnID == recovery.pendingSend.turnID
+    }
+    return values.count < count
   }
 }
 

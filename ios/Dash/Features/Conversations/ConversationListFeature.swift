@@ -47,6 +47,47 @@ protocol ConversationListPersisting: Actor {
 
 extension PersistenceStore: ConversationListPersisting {}
 
+protocol ConversationRecoveryServicing: Actor {
+  func recoverablePendingSends() async throws -> [RecoverablePendingSend]
+  func discard(_ recovery: RecoverablePendingSend) async throws -> Bool
+}
+
+actor EmptyConversationRecoveryService: ConversationRecoveryServicing {
+  func recoverablePendingSends() -> [RecoverablePendingSend] { [] }
+
+  func discard(_ recovery: RecoverablePendingSend) -> Bool {
+    _ = recovery
+    return false
+  }
+}
+
+actor LiveConversationRecoveryService: ConversationRecoveryServicing {
+  private let gatewayID: String
+  private let store: PersistenceStore
+
+  init(gatewayID: String, store: PersistenceStore) {
+    self.gatewayID = gatewayID
+    self.store = store
+  }
+
+  func recoverablePendingSends() async throws -> [RecoverablePendingSend] {
+    try await store.recoverablePendingSends(gatewayID: gatewayID)
+  }
+
+  func discard(_ recovery: RecoverablePendingSend) async throws -> Bool {
+    guard recovery.gatewayID == gatewayID else { return false }
+    try await store.clearPendingSend(
+      gatewayID: gatewayID,
+      conversationID: recovery.conversationID,
+      turnID: recovery.pendingSend.turnID
+    )
+    return try await store.recoverablePendingSends(gatewayID: gatewayID).contains {
+      $0.conversationID == recovery.conversationID
+        && $0.pendingSend.turnID == recovery.pendingSend.turnID
+    } == false
+  }
+}
+
 actor PendingConversationCreateStore {
   private let defaults: UserDefaults
   private let keyPrefix = "app.dash.ios.pending-conversation-create"
@@ -467,11 +508,15 @@ final class ConversationListFeature {
   var nextCursor: String?
   var mutationError: ConversationMutationError?
   var isAuthoritative = false
+  var recoverablePendingSends: [RecoverablePendingSend] = []
+  var recoveryError: String?
+  var discardingRecoveryID: String?
 
   var mutationsAllowed: Bool { connection == .online }
 
   @ObservationIgnored private let gatewayID: String
   @ObservationIgnored private let service: any ConversationListServicing
+  @ObservationIgnored private let recoveryService: any ConversationRecoveryServicing
   @ObservationIgnored private let requestID: @Sendable () -> UUID
   @ObservationIgnored private let pageSize: Int
   @ObservationIgnored private var allConversations: [CachedConversation] = []
@@ -487,17 +532,20 @@ final class ConversationListFeature {
   @ObservationIgnored private var pendingCreateRequestID: String?
   @ObservationIgnored private var pendingCreateAgentID: String?
   @ObservationIgnored private var pendingConflict: PendingConflict?
+  @ObservationIgnored private var recoveryGeneration: UInt64 = 0
   @ObservationIgnored private var gatewayErrorHandler:
     @MainActor @Sendable (GatewayError) async -> Void = { _ in }
 
   init(
     gatewayID: String,
     service: any ConversationListServicing,
+    recoveryService: any ConversationRecoveryServicing = EmptyConversationRecoveryService(),
     requestID: @escaping @Sendable () -> UUID = { UUID() },
     pageSize: Int = 50
   ) {
     self.gatewayID = gatewayID
     self.service = service
+    self.recoveryService = recoveryService
     self.requestID = requestID
     self.pageSize = pageSize
   }
@@ -550,6 +598,9 @@ final class ConversationListFeature {
     allConversations = merged
     agents = snapshot.agents
     applyFilter()
+    Task { [weak self] in
+      await self?.reloadRecoverablePendingSends()
+    }
     if hasFinishedInitialCacheLoad, wasOnline == false, mutationsAllowed {
       scheduleOnlineRefresh()
     }
@@ -567,6 +618,7 @@ final class ConversationListFeature {
     onlineRefreshTask?.cancel()
     onlineRefreshTask = nil
     refreshQueued = false
+    recoveryGeneration &+= 1
     connection = .offline
     isAuthoritative = false
   }
@@ -577,6 +629,7 @@ final class ConversationListFeature {
   }
 
   func start() async {
+    await reloadRecoverablePendingSends()
     guard hasStarted == false else { return }
     hasStarted = true
     let generation = listGeneration
@@ -610,6 +663,7 @@ final class ConversationListFeature {
   func refresh() async {
     guard mutationsAllowed else {
       isAuthoritative = false
+      await reloadRecoverablePendingSends()
       return
     }
     guard isRefreshing == false else {
@@ -658,6 +712,40 @@ final class ConversationListFeature {
     refreshQueued = false
     if shouldRefreshAgain {
       await refresh()
+    } else {
+      await reloadRecoverablePendingSends()
+    }
+  }
+
+  func reloadRecoverablePendingSends() async {
+    recoveryGeneration &+= 1
+    let generation = recoveryGeneration
+    do {
+      let values = try await recoveryService.recoverablePendingSends()
+      guard generation == recoveryGeneration else { return }
+      recoverablePendingSends = values
+      recoveryError = nil
+    } catch is CancellationError {
+      return
+    } catch {
+      guard generation == recoveryGeneration else { return }
+      recoveryError = "Dash couldn't load saved messages that need recovery."
+    }
+  }
+
+  func discardRecovery(_ recovery: RecoverablePendingSend) async -> Bool {
+    guard discardingRecoveryID == nil else { return false }
+    discardingRecoveryID = recovery.id
+    defer { discardingRecoveryID = nil }
+    do {
+      let discarded = try await recoveryService.discard(recovery)
+      await reloadRecoverablePendingSends()
+      return discarded
+    } catch is CancellationError {
+      return false
+    } catch {
+      recoveryError = "Dash couldn't discard this saved message. It remains available."
+      return false
     }
   }
 
@@ -821,6 +909,7 @@ final class ConversationListFeature {
       removeVisible(id: id)
       pendingConflict = nil
       mutationError = nil
+      await reloadRecoverablePendingSends()
     } catch GatewayError.revisionConflict(let canonical) {
       await recordConflict(canonical, pending: .delete(id: id))
     } catch GatewayError.notFound {
@@ -916,6 +1005,7 @@ final class ConversationListFeature {
       removeVisible(id: id)
       pendingConflict = nil
       mutationError = nil
+      await reloadRecoverablePendingSends()
     } catch is CancellationError {
       return
     } catch {

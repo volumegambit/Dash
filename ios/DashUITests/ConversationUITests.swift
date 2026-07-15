@@ -112,6 +112,44 @@ final class ConversationUITests: DashUITestCase {
     XCTAssertFalse(app.descendants(matching: .any)["chat.cancel"].exists)
   }
 
+  func testDeletedPendingSendRecoveryIsReachablePreviewableAndExplicitlyDiscarded() {
+    let app = launch(scenario: "pending-recovery")
+
+    let recoveryRow = element("conversation.recovery.deleted-plan", in: app)
+    XCTAssertFalse(app.buttons["Retry"].exists)
+    recoveryRow.tap()
+    dismissSplitOverlayIfPresent(in: app)
+
+    XCTAssertEqual(
+      element("recovery.text.deleted-plan", in: app).label,
+      "  Preserve this exact recovery text  "
+    )
+    XCTAssertTrue(
+      element(
+        "recovery.attachment.018F0F4A-5C42-7A8B-9C01-1234567890AB",
+        in: app
+      ).exists
+    )
+    XCTAssertTrue(element("recovery.share.018F0F4A-5C42-7A8B-9C01-1234567890AB", in: app).exists)
+    XCTAssertTrue(
+      element(
+        "recovery.attachment.018F0F4A-5C42-7A8B-9C01-1234567890AC",
+        in: app
+      ).exists
+    )
+    XCTAssertTrue(element("recovery.share.018F0F4A-5C42-7A8B-9C01-1234567890AC", in: app).exists)
+    XCTAssertTrue(element("recovery.copy.deleted-plan", in: app).exists)
+    XCTAssertFalse(app.buttons["Retry"].exists)
+
+    element("recovery.discard.deleted-plan", in: app).tap()
+    let confirmation = app.sheets.buttons["Discard Recovered Message"].firstMatch
+    XCTAssertTrue(confirmation.waitForExistence(timeout: 5))
+    confirmation.tap()
+
+    XCTAssertTrue(recoveryRow.waitForNonExistence(timeout: 5))
+    XCTAssertFalse(app.buttons["Retry"].exists)
+  }
+
   func testIPhoneBackReturnsToConversationListInSameTab() throws {
     let app = launch(scenario: "paired-online")
     try XCTSkipIf(app.windows.firstMatch.frame.width >= 700, "Compact navigation is iPhone-only")

@@ -233,7 +233,14 @@ struct AppDependencies: Sendable {
             return makeAPI(makeCancellableTransport(endpoint, secrets))
           }
         )
-        return ConversationListFeature(gatewayID: profile.gatewayID, service: service)
+        return ConversationListFeature(
+          gatewayID: profile.gatewayID,
+          service: service,
+          recoveryService: LiveConversationRecoveryService(
+            gatewayID: profile.gatewayID,
+            store: store
+          )
+        )
       },
       makeAgentsFeature: { profile in
         let makeProfileAPI: @Sendable () async throws -> GatewayAPI = {

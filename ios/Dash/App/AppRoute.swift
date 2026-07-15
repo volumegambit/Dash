@@ -20,6 +20,7 @@ enum PairingRoute: Hashable, Sendable {
 
 enum ConversationRoute: Hashable, Sendable {
   case transcript(String)
+  case recovery(String)
   case newConversation
 }
 

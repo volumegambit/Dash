@@ -209,6 +209,8 @@ private struct ChatStatusBanner: View {
 
   private var title: String {
     switch presentation {
+    case .recoveryRequired:
+      "Message saved for recovery"
     case .reconnecting:
       "Reconnecting"
     case .offline:
@@ -229,6 +231,8 @@ private struct ChatStatusBanner: View {
   @ViewBuilder
   private var detail: some View {
     switch presentation {
+    case .recoveryRequired:
+      Text("Open Conversations to copy the message, share its attachments, or discard it.")
     case .reconnecting(let attempt):
       Text("Attempt \(attempt). Saved messages remain available.")
     case .offline:
@@ -248,6 +252,7 @@ private struct ChatStatusBanner: View {
 
   private var icon: String {
     switch presentation {
+    case .recoveryRequired: "archivebox"
     case .reconnecting: "arrow.triangle.2.circlepath"
     case .offline: "wifi.slash"
     case .gatewayOffline: "server.rack"
@@ -262,8 +267,8 @@ private struct ChatStatusBanner: View {
     switch presentation {
     case .failed:
       true
-    case .reconnecting, .offline, .gatewayOffline, .rateLimited, .repairRequired,
-      .updateRequired:
+    case .recoveryRequired, .reconnecting, .offline, .gatewayOffline, .rateLimited,
+      .repairRequired, .updateRequired:
       false
     }
   }
@@ -272,7 +277,7 @@ private struct ChatStatusBanner: View {
     switch presentation {
     case .repairRequired, .updateRequired, .failed:
       .red
-    case .reconnecting, .offline, .gatewayOffline, .rateLimited:
+    case .recoveryRequired, .reconnecting, .offline, .gatewayOffline, .rateLimited:
       .primary
     }
   }
@@ -281,7 +286,7 @@ private struct ChatStatusBanner: View {
     switch presentation {
     case .repairRequired, .updateRequired, .failed:
       Color.red.opacity(0.12)
-    case .reconnecting, .offline, .gatewayOffline, .rateLimited:
+    case .recoveryRequired, .reconnecting, .offline, .gatewayOffline, .rateLimited:
       Color.orange.opacity(0.12)
     }
   }

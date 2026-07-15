@@ -61,6 +61,7 @@ extension AppDependenciesFactory {
     case pairedOffline = "paired-offline"
     case streamingReconnect = "streaming-reconnect"
     case remoteBusy = "remote-busy"
+    case pendingRecovery = "pending-recovery"
     case agents
     case settingsForget = "settings-forget"
 
@@ -133,6 +134,46 @@ extension AppDependenciesFactory {
       deletedAt: nil
     )
 
+    static let deletedConversation = ConversationSummaryDTO(
+      id: "deleted-plan",
+      agentId: "research-agent",
+      agentName: "Research Agent",
+      title: "Deleted launch plan",
+      revision: 2,
+      status: .deleted,
+      activeTurnId: nil,
+      owningIssueId: nil,
+      projectId: nil,
+      lastSeq: 0,
+      lastMessagePreview: nil,
+      createdAt: now.addingTimeInterval(-600),
+      updatedAt: now,
+      deletedAt: now
+    )
+
+    static let recoveredPendingSend = PendingChatSend(
+      turnID: "pending-recovery-turn",
+      localUserID: "pending-recovery-user",
+      draft: "  Preserve this exact recovery text  ",
+      attachments: [
+        PreparedAttachment(
+          id: UUID(uuidString: "018F0F4A-5C42-7A8B-9C01-1234567890AB")!,
+          mediaType: "image/png",
+          data: Data(
+            base64Encoded:
+              "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8A"
+              + "AQUBAScY42YAAAAASUVORK5CYII="
+          )!
+        ),
+        PreparedAttachment(
+          id: UUID(uuidString: "018F0F4A-5C42-7A8B-9C01-1234567890AC")!,
+          mediaType: "image/jpeg",
+          data: Data([0xFF, 0xD8, 0xFF])
+        )
+      ],
+      createdAt: now.addingTimeInterval(-60)
+    )
+
     static let agents: [RegisteredAgentDTO] = [
       agent(
         id: "research-agent",
@@ -168,6 +209,7 @@ extension AppDependenciesFactory {
     ]
 
     static func conversation(for scenario: UITestScenario) -> ConversationSummaryDTO {
+      if scenario == .pendingRecovery { return deletedConversation }
       guard scenario == .remoteBusy else { return sharedConversation }
       return copy(
         sharedConversation,
@@ -179,7 +221,7 @@ extension AppDependenciesFactory {
     }
 
     static func cachedMessages(for scenario: UITestScenario) -> [ConversationMessageDTO] {
-      if scenario == .streamingReconnect { return [] }
+      if scenario == .streamingReconnect || scenario == .pendingRecovery { return [] }
       if scenario == .remoteBusy {
         return [
           message(
@@ -329,7 +371,11 @@ extension AppDependenciesFactory {
         },
         forgetProfileSelection: { _ in },
         makeConversationListFeature: { profile in
-          ConversationListFeature(gatewayID: profile.gatewayID, service: store)
+          ConversationListFeature(
+            gatewayID: profile.gatewayID,
+            service: store,
+            recoveryService: store
+          )
         },
         makeAgentsFeature: { profile in
           AgentsFeature(gatewayID: profile.gatewayID, service: store)
@@ -478,8 +524,8 @@ extension AppDependenciesFactory {
     }
   }
 
-  private actor UITestScenarioStore: ConversationListServicing, AgentsServicing,
-    ChatFeaturePersisting, ChatFeatureSynchronizing
+  private actor UITestScenarioStore: ConversationListServicing, ConversationRecoveryServicing,
+    AgentsServicing, ChatFeaturePersisting, ChatFeatureSynchronizing
   {
     private let dataIdentifier: String
     private let scenario: UITestScenario
@@ -500,6 +546,9 @@ extension AppDependenciesFactory {
       agentValues = UITestScenarioFixtures.agents
       messages = [conversation.id: UITestScenarioFixtures.cachedMessages(for: scenario)]
       cursors[conversation.id] = conversation.lastSeq
+      if scenario == .pendingRecovery {
+        pendingSends[conversation.id] = UITestScenarioFixtures.recoveredPendingSend
+      }
     }
 
     func syncSnapshot() -> SyncSnapshot {
@@ -639,6 +688,29 @@ extension AppDependenciesFactory {
 
     func clearRetainedCreateRequestID(agentID: String) {
       retainedRequests[agentID] = nil
+    }
+
+    func recoverablePendingSends() -> [RecoverablePendingSend] {
+      pendingSends.compactMap { conversationID, pendingSend in
+        let conversation = conversationValues.first { $0.id == conversationID }
+        guard conversation == nil || conversation?.status == .deleted else { return nil }
+        return RecoverablePendingSend(
+          gatewayID: "ui-gateway",
+          conversationID: conversationID,
+          conversationTitle: conversation?.title,
+          agentName: conversation?.agentName,
+          pendingSend: pendingSend
+        )
+      }
+      .sorted { $0.pendingSend.createdAt > $1.pendingSend.createdAt }
+    }
+
+    func discard(_ recovery: RecoverablePendingSend) -> Bool {
+      guard recovery.gatewayID == "ui-gateway",
+        pendingSends[recovery.conversationID]?.turnID == recovery.pendingSend.turnID
+      else { return false }
+      pendingSends[recovery.conversationID] = nil
+      return true
     }
 
     func models() -> [ModelDTO] { UITestScenarioFixtures.models }

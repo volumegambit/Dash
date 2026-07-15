@@ -337,6 +337,43 @@ actor PersistenceStore {
     )
   }
 
+  func recoverablePendingSends(gatewayID: String) throws -> [RecoverablePendingSend] {
+    let targetGatewayID = gatewayID
+    let deleted = ConversationStatus.deleted.rawValue
+    let records = try modelContext.fetch(
+      FetchDescriptor<PendingSendRecord>(
+        predicate: #Predicate { $0.gatewayID == targetGatewayID },
+        sortBy: [
+          SortDescriptor(\PendingSendRecord.createdAt, order: .reverse),
+          SortDescriptor(\PendingSendRecord.conversationID),
+        ]
+      )
+    )
+    return try records.compactMap { record in
+      let conversation = try conversationRecord(
+        gatewayID: gatewayID,
+        conversationID: record.conversationID
+      )
+      guard conversation == nil || conversation?.statusRaw == deleted else { return nil }
+      return RecoverablePendingSend(
+        gatewayID: gatewayID,
+        conversationID: record.conversationID,
+        conversationTitle: conversation?.title,
+        agentName: conversation?.agentName,
+        pendingSend: PendingChatSend(
+          turnID: record.turnID,
+          localUserID: record.localUserID,
+          draft: record.draft,
+          attachments: try ContractCoding.decoder().decode(
+            [PreparedAttachment].self,
+            from: record.attachmentsData
+          ),
+          createdAt: record.createdAt
+        )
+      )
+    }
+  }
+
   func stagePendingSend(
     _ pending: PendingChatSend,
     gatewayID: String,

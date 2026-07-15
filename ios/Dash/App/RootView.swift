@@ -191,6 +191,26 @@ struct RootView: View {
         )
         .navigationTitle("Conversation")
       }
+    case .recovery(let id):
+      if let feature = appModel.conversationListFeature,
+        let recovery = feature.recoverablePendingSends.first(where: {
+          $0.conversationID == id
+        })
+      {
+        PendingSendRecoveryView(
+          recovery: recovery,
+          presentation: navigationPresentation
+        )
+          .environment(feature)
+          .id(recovery.pendingSend.turnID)
+      } else {
+        ContentUnavailableView(
+          "Recovered message unavailable",
+          systemImage: "tray",
+          description: Text("Return to Conversations to see messages that still need recovery.")
+        )
+        .navigationTitle("Message Recovery")
+      }
     case .newConversation:
       if let feature = appModel.conversationListFeature {
         NewConversationView()

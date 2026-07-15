@@ -35,3 +35,13 @@ struct PendingChatSend: Equatable, Sendable {
   let attachments: [PreparedAttachment]
   let createdAt: Date
 }
+
+struct RecoverablePendingSend: Equatable, Identifiable, Sendable {
+  let gatewayID: String
+  let conversationID: String
+  let conversationTitle: String?
+  let agentName: String?
+  let pendingSend: PendingChatSend
+
+  var id: String { "\(gatewayID)\u{1f}\(conversationID)" }
+}

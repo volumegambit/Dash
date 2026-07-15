@@ -60,8 +60,13 @@ connection drops during your own turn, Dash keeps the partial response visible a
 last durable event after reconnecting. If the connection fails before Dash can confirm that a new
 message was admitted, the app checks the gateway's canonical conversation before doing anything
 else. An ambiguous message stays saved across app restarts and is never resent automatically. When
-you choose **Retry**, Dash reuses the exact original request ID so the gateway can resume or
-deduplicate the same turn instead of creating a second one.
+the conversation still exists, **Retry** reuses the exact original request ID so the gateway can
+resume or deduplicate the same turn instead of creating a second one.
+
+If another client deleted that conversation, Dash never recreates or resends the saved message.
+It appears in **Needs Recovery** at the top of Conversations. Open it to copy the exact text and
+preview or share its attachments, then discard it with confirmation when you no longer need it.
+Recovery items survive app restarts and never include a Retry action.
 
 ## Manage agents
 

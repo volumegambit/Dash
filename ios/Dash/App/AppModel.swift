@@ -198,6 +198,36 @@ final class AppModel {
   func openConversation(_ id: String, presentation: NavigationPresentation) {
     selectedTab = .conversations
     let destination = ConversationRoute.transcript(id)
+    openConversationDestination(destination, presentation: presentation)
+  }
+
+  func openConversationRecovery(_ id: String, presentation: NavigationPresentation) {
+    selectedTab = .conversations
+    let destination = ConversationRoute.recovery(id)
+    openConversationDestination(destination, presentation: presentation)
+  }
+
+  func closeConversationRecovery(_ id: String, presentation: NavigationPresentation) {
+    let destination = ConversationRoute.recovery(id)
+    if splitConversationSelection == destination {
+      splitConversationSelection = nil
+    }
+    switch presentation {
+    case .compact:
+      if conversationPath.last == destination {
+        conversationPath.removeLast()
+      } else {
+        conversationPath.removeAll { $0 == destination }
+      }
+    case .regular:
+      conversationPath.removeAll { $0 == destination }
+    }
+  }
+
+  private func openConversationDestination(
+    _ destination: ConversationRoute,
+    presentation: NavigationPresentation
+  ) {
     splitConversationSelection = destination
     switch presentation {
     case .compact:
