@@ -51,8 +51,52 @@ describe('mobile documentation', () => {
     expect(qa).toContain('## Pairing and security');
     expect(qa).toContain('## Conversation synchronization');
     expect(qa).toContain('## Device quality');
-    expect(qa).not.toMatch(/- \[x\]/i);
     expect(mcQA).toContain('On this Mac');
     expect(mcQA).toContain('Scan this code with the Dash mobile app for Android or iOS.');
+  });
+
+  it('distinguishes native Mobile bearer auth from desktop loopback credentials', async () => {
+    const [api, troubleshooting] = await Promise.all([
+      readFile('docs/api-reference.mdx', 'utf8'),
+      readFile('docs/troubleshooting.mdx', 'utf8'),
+    ]);
+
+    expect(api).toContain('pinned HTTPS/WSS listener on port `9400`');
+    expect(api).toContain('one phone-scoped Mobile bearer');
+    expect(api).toContain('Authorization: Bearer <your-mobile-token>');
+    expect(api).toContain('Desktop loopback clients continue to use');
+    expect(api).toContain(
+      'Native WebSocket clients send that same bearer in the `Authorization` header',
+    );
+    expect(troubleshooting).toContain('same phone-scoped Mobile bearer');
+    expect(troubleshooting).toContain(
+      '`Authorization` header for both `/mobile/v1` and `/ws/chat`',
+    );
+    expect(troubleshooting).toContain('`x-dash-relay-credential`');
+    expect(troubleshooting).not.toContain('`/ws/chat` uses the separate chat token in `?token=`');
+  });
+
+  it('keeps every remaining hardware-only check explicit', async () => {
+    const qa = await readFile('ios/QA_CHECKLIST.md', 'utf8');
+
+    expect(qa).toMatch(/- \[[ x]\] Local Network permission denied/i);
+    expect(qa).toMatch(/- \[[ x]\] App termination\/relaunch/i);
+    expect(qa).toMatch(/- \[[ x]\] Uninstall\/reinstall/i);
+    expect(qa).toMatch(/- \[[ x]\] Hardware keyboard/i);
+  });
+
+  it('documents safe recovery when an ambiguous send loses its conversation', async () => {
+    const [guide, readme] = await Promise.all([
+      readFile('docs/ios.mdx', 'utf8'),
+      readFile('ios/README.md', 'utf8'),
+    ]);
+
+    for (const document of [guide, readme]) {
+      expect(document).toContain('Needs Recovery');
+      expect(document).toContain('never recreates or resends');
+      expect(document).toContain('copy the exact text');
+      expect(document).toContain('preview or share its attachments');
+    }
+    expect(readme).toContain('Mobile bearer and optional relay credential');
   });
 });

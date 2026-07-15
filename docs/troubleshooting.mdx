@@ -20,10 +20,14 @@ Something not working? Here are the most common issues and how to fix them.
     **Fix:** Make sure the gateway is running. If using Mission Control, check that the gateway process is healthy from the app. If running standalone, check the server logs for "Gateway channel server listening on port 9200".
   </Accordion>
 
-  <Accordion title="Chat unauthorized (4001)">
-    **Symptom:** WebSocket connection closes immediately with code `4001`.
+  <Accordion title="Desktop loopback chat unauthorized (4001)">
+    **Symptom:** A Mission Control or other loopback WebSocket connection closes immediately with
+    code `4001`.
 
-    **Fix:** Include the correct token as a query parameter: `ws://localhost:9200/ws/chat?token=your-chat-token`. Make sure you're using the chat token, not the management token — they are separate.
+    **Fix:** Include the desktop chat token as a query parameter:
+    `ws://localhost:9200/ws/chat?token=your-chat-token`. This loopback compatibility path uses the
+    chat token, not the administrative management bearer. Native apps use the Mobile bearer flow
+    described below instead.
   </Accordion>
 
   <Accordion title="Unknown agent error">
@@ -80,11 +84,11 @@ Something not working? Here are the most common issues and how to fix them.
     **Symptom:** A management request returns HTTP `401`, direct chat closes with WebSocket code
     `4001`, or a relayed WebSocket closes with `4401`.
 
-    **Fix:** Check each credential at its own boundary. `/mobile/v1` management requests use the
-    management Bearer token; `/ws/chat` uses the separate chat token in `?token=`; a hosted relay
-    additionally requires the paired device's relay credential. A relay credential does not
-    replace either gateway token. Correct the mismatched token, or pair the phone again if its
-    credential was revoked. Never paste tokens into logs or support messages.
+    **Fix:** Both native routes use the same phone-scoped Mobile bearer. Send it in the
+    `Authorization` header for both `/mobile/v1` and `/ws/chat`; never put it in the URL. A hosted
+    relay additionally requires `x-dash-relay-credential`, but that credential does not replace the
+    Mobile bearer enforced by the gateway. Pair the phone again if either credential was revoked.
+    Never paste tokens into logs or support messages.
   </Accordion>
 
   <Accordion title="Mobile client is rate limited (429 or 4429)">

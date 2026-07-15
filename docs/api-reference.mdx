@@ -4,27 +4,39 @@ description: "HTTP API for monitoring and controlling a running Dash gateway."
 ---
 
 The Management API lets you monitor and control the gateway programmatically. It's the same API
-Mission Control uses to deploy agents, connect messaging apps, and store credentials. The gateway
-serves it on port `9300` by default and binds to `127.0.0.1`.
+Mission Control uses to deploy agents, connect messaging apps, and store credentials. Its
+unprefixed administrative surface binds to `127.0.0.1` on port `9300` by default.
 
-Native clients use the versioned `/mobile/v1` namespace for gateway identity, agents, models,
-conversation sync, replay, and change events. Paths in the **Conversations** section are relative
-to `/mobile/v1`. Live chat uses the channel server on port `9200` at the unprefixed `/ws/chat`
-path.
+Native clients do not receive that administrative access. On a local network they use the
+gateway's pinned HTTPS/WSS listener on port `9400`, which exposes only `/mobile/v1` and `/ws/chat`.
+Paths in the **Conversations** section are relative to `/mobile/v1`. A relay exposes the same
+native surface over TLS on port `443`.
 
 ## Authentication
 
 The health resource — `GET /health`, also available as `GET /mobile/v1/health` — is the only
-management resource that does not require authentication. Every other management request requires
-the gateway's management Bearer token. A missing or invalid token returns HTTP `401`.
+management resource that does not require authentication.
+
+Desktop loopback clients continue to use the management Bearer for unprefixed management routes
+and the separate chat token accepted by the loopback channel server on port `9200`:
 
 ```text
 Authorization: Bearer <your-management-token>
+ws://localhost:9200/ws/chat?token=<your-chat-token>
 ```
 
-The chat server uses a separate chat token in the WebSocket query string. When a request travels
-through the hosted relay, the device also sends `x-dash-relay-credential`. That relay credential
-is additional proof for the relay; it does not replace either gateway token.
+Native clients instead receive one phone-scoped Mobile bearer. They send it in the
+`Authorization` header for every authenticated `/mobile/v1` HTTP or SSE request and for the
+`/ws/chat` WebSocket upgrade:
+
+```text
+Authorization: Bearer <your-mobile-token>
+```
+
+Native WebSocket clients send that same bearer in the `Authorization` header, never in the URL.
+When a request travels through the hosted relay, the device additionally sends
+`x-dash-relay-credential`. The relay credential authorizes that device at the relay; it does not
+replace the Mobile bearer enforced by the gateway.
 
 ## Health
 
@@ -69,12 +81,12 @@ Use `conversation-sync-v1` to enable gateway-authoritative conversation lists an
 ### GET /identity
 
 Returns the gateway's stable ID and Ed25519 public key. Native clients call
-`GET /mobile/v1/identity`; the route requires the management Bearer token even when relay mode is
-not enabled.
+`GET /mobile/v1/identity` with their phone-scoped Mobile bearer. The unprefixed loopback
+`GET /identity` alias requires the administrative management bearer instead.
 
 ```bash
-curl "$MGMT_URL/mobile/v1/identity" \
-  -H "Authorization: Bearer $MGMT_TOKEN"
+curl "$MOBILE_URL/mobile/v1/identity" \
+  -H "Authorization: Bearer $MOBILE_TOKEN"
 ```
 
 ```json
@@ -114,8 +126,8 @@ Agent skills are managed under the unprefixed agent routes — `GET/POST /agents
 **Example: create a mobile agent**
 
 ```bash
-curl -X POST "$MGMT_URL/mobile/v1/agents" \
-  -H "Authorization: Bearer $MGMT_TOKEN" \
+curl -X POST "$MOBILE_URL/mobile/v1/agents" \
+  -H "Authorization: Bearer $MOBILE_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
     "name": "assistant",
@@ -127,8 +139,8 @@ curl -X POST "$MGMT_URL/mobile/v1/agents" \
 ## Conversations
 
 The gateway is the authority for capable clients' conversation metadata, messages, active turn,
-revision, and replay sequence. All routes below use the `/mobile/v1` management base and require
-the management Bearer token.
+revision, and replay sequence. All routes below use the `/mobile/v1` native base and require the
+phone-scoped Mobile bearer.
 
 | Route | Purpose |
 |-------|---------|
@@ -149,8 +161,8 @@ return that page in chronological order, and paginate backward by passing `nextC
 ### Create and read a conversation
 
 ```bash
-curl -i -X POST "$MGMT_URL/mobile/v1/conversations" \
-  -H "Authorization: Bearer $MGMT_TOKEN" \
+curl -i -X POST "$MOBILE_URL/mobile/v1/conversations" \
+  -H "Authorization: Bearer $MOBILE_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
     "agentId": "agent-01",
@@ -173,8 +185,8 @@ Reusing the same `requestId` returns the original conversation instead of creati
 Pass the revision you last read in a quoted `If-Match` header:
 
 ```bash
-curl -i -X PATCH "$MGMT_URL/mobile/v1/conversations/$CONVERSATION_ID" \
-  -H "Authorization: Bearer $MGMT_TOKEN" \
+curl -i -X PATCH "$MOBILE_URL/mobile/v1/conversations/$CONVERSATION_ID" \
+  -H "Authorization: Bearer $MOBILE_TOKEN" \
   -H "Content-Type: application/json" \
   -H 'If-Match: "1"' \
   -d '{"title":"Launch checklist"}'
@@ -234,11 +246,23 @@ conversation routes even though the agent can no longer start a turn.
 
 ## Resumable chat
 
-Connect to the channel server's unprefixed WebSocket path with the separate chat token:
+Desktop loopback clients use the channel server on port `9200`, including its browser-compatible
+query-token fallback:
 
 ```text
 ws://localhost:9200/ws/chat?token=<your-chat-token>
 ```
+
+Native clients connect to the same unprefixed path on the pinned mobile listener and keep the
+Mobile bearer out of the URL:
+
+```text
+wss://<gateway-host>:9400/ws/chat
+Authorization: Bearer <your-mobile-token>
+```
+
+For relay connections, use `wss://<relay-host>/ws/chat` on port `443` with the same
+`Authorization` header plus `x-dash-relay-credential`.
 
 Only use resumable frames after health advertises `chat-resume-v1`. A capable send includes
 `resumable: true` and uses one stable turn ID:
@@ -347,7 +371,8 @@ Some unprefixed compatibility routes return the older `{ "error": "..." }` shape
 should use `/mobile/v1` and the structured errors above.
 
 <Note>
-  The Management API (port 9300) and channel server (port 9200) use separate tokens and ports. A
-  management token cannot be used on the chat server, and a chat token cannot authorize
-  management requests.
+  The loopback administrative API on port 9300 and desktop channel server on port 9200 retain their
+  separate management and chat credentials. Native clients do not receive the administrative
+  bearer: the pinned mobile listener uses one phone-scoped Mobile bearer for both `/mobile/v1` and
+  `/ws/chat`.
 </Note>

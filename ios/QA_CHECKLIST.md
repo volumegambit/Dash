@@ -16,9 +16,12 @@ replace camera, Keychain, local-network, cellular relay, or background execution
 ## Pairing and security
 
 - [ ] Fresh install: camera denied -> paste/manual fallback remains usable
+- [ ] Local Network permission denied -> enable it in iOS Settings and reconnect without re-pairing
 - [ ] LAN v3 QR on same Wi-Fi -> pinned HTTPS/WSS health, agents, and chat succeed
 - [ ] Relay v2 QR on cellular -> HTTPS/WSS chat succeeds
 - [ ] Revoke this device in Mission Control -> iOS requests re-pairing
+- [ ] App termination/relaunch -> paired profile and device-only Keychain credential remain usable
+- [ ] Uninstall/reinstall -> app starts unpaired and never reconnects from Keychain material alone
 - [ ] Disconnect & Forget -> Keychain item and gateway cache are removed
 
 ## Conversation synchronization
@@ -36,6 +39,7 @@ replace camera, Keychain, local-network, cellular relay, or background execution
 - [ ] Largest Dynamic Type does not clip pairing, chat, agent, or settings flows
 - [ ] Reduce Motion removes nonessential streaming/navigation animation
 - [ ] iPad split view works in full screen and multitasking widths
+- [ ] Hardware keyboard -> Tab traversal, Return-to-send, and cancel shortcuts work on iPad
 
 ## Evidence notes
 
