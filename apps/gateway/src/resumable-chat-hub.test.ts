@@ -629,6 +629,70 @@ describe('ResumableChatHub', () => {
     await vi.waitFor(() => expect(scripted.return).toHaveBeenCalledOnce());
   });
 
+  it('retains a finished live turn until terminal persistence can release its lease', async () => {
+    const conversation = createConversation();
+    const scripted = register(conversation.id);
+    const sink = makeSink();
+    const finishTurn = vi.spyOn(conversations, 'finishTurn').mockImplementation(() => {
+      throw new Error('SQLite unavailable');
+    });
+    hub.start(sendFrame(conversation), sink);
+
+    scripted.finish();
+    await vi.waitFor(() => expect(scripted.return).toHaveBeenCalledOnce());
+
+    expect(finishTurn).toHaveBeenCalledTimes(2);
+    expect(conversations.get(conversation.id)).toMatchObject({
+      status: 'running',
+      activeTurnId: 'turn-01',
+      lastSeq: 1,
+    });
+    finishTurn.mockRestore();
+
+    await hub.cancel('turn-01', sink);
+
+    expect(conversations.get(conversation.id)).toMatchObject({
+      status: 'idle',
+      activeTurnId: null,
+      lastSeq: 2,
+    });
+    expect(harness.cancel).toHaveBeenCalledWith(conversation.agentId, conversation.id);
+    expect(sink.frames.filter((frame) => frame.type === 'done')).toEqual([
+      expect.objectContaining({ outcome: 'cancelled', seq: 2 }),
+    ]);
+  });
+
+  it.each(['cancelAgent', 'stop'] as const)(
+    'allows %s to recover a retained turn after terminal persistence returns',
+    async (operation) => {
+      const conversation = createConversation();
+      const scripted = register(conversation.id);
+      const finishTurn = vi.spyOn(conversations, 'finishTurn').mockImplementation(() => {
+        throw new Error('SQLite unavailable');
+      });
+      hub.start(sendFrame(conversation), makeSink());
+
+      scripted.finish();
+      await vi.waitFor(() => expect(scripted.return).toHaveBeenCalledOnce());
+      expect(finishTurn).toHaveBeenCalledTimes(2);
+      expect(conversations.get(conversation.id)).toMatchObject({
+        status: 'running',
+        activeTurnId: 'turn-01',
+      });
+      finishTurn.mockRestore();
+
+      const recovery =
+        operation === 'cancelAgent' ? hub.cancelAgent(conversation.agentId) : hub.stop();
+      await expect(recovery).resolves.toBeUndefined();
+
+      expect(conversations.get(conversation.id)).toMatchObject({
+        status: 'idle',
+        activeTurnId: null,
+      });
+      expect(harness.cancel).toHaveBeenCalledWith(conversation.agentId, conversation.id);
+    },
+  );
+
   it('cancelAgent terminalizes every live turn for that agent and no other agent', async () => {
     const first = createConversation('agent-01');
     const second = createConversation('agent-01');

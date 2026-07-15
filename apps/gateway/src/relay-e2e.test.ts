@@ -58,13 +58,13 @@ beforeEach(async () => {
 
   // --- Stub gateway management server (:9300 stand-in) ---
   mgmt = http.createServer((req, res) => {
-    if (req.url === '/agents') {
+    if (req.url === '/mobile/v1/agents') {
       seen.agentsAuth = req.headers.authorization;
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end(JSON.stringify([{ id: 'a1', name: 'demo' }]));
       return;
     }
-    if (req.url === '/events') {
+    if (req.url === '/mobile/v1/events') {
       // SSE: emit one event promptly, then another later, keeping the stream
       // open — proves streaming passthrough (chunks arrive as they are written).
       res.writeHead(200, {
@@ -171,7 +171,9 @@ function phoneGet(
 
 describe('relay end-to-end (real server + real client)', () => {
   it('round-trips a phone HTTP request and forwards the Bearer token', async () => {
-    const { status, body } = await phoneGet('/agents', { authorization: 'Bearer apptoken' });
+    const { status, body } = await phoneGet('/mobile/v1/agents', {
+      authorization: 'Bearer apptoken',
+    });
     expect(status).toBe(200);
     expect(JSON.parse(body)).toEqual([{ id: 'a1', name: 'demo' }]);
     // The phone's auth reached the gateway untouched — auth is end-to-end.
@@ -184,7 +186,7 @@ describe('relay end-to-end (real server + real client)', () => {
         {
           hostname: '127.0.0.1',
           port: relayPort,
-          path: '/agents',
+          path: '/mobile/v1/agents',
           method: 'GET',
           headers: { host: 'nobody.relay.local' },
         },
@@ -206,7 +208,7 @@ describe('relay end-to-end (real server + real client)', () => {
         {
           hostname: '127.0.0.1',
           port: relayPort,
-          path: '/events',
+          path: '/mobile/v1/events',
           method: 'GET',
           headers: { host: PHONE_HOST },
         },

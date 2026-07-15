@@ -49,6 +49,7 @@ interface LiveTurn {
   subscribers: Set<TurnFrameSink>;
   cancelled: boolean;
   terminal: boolean;
+  settled: boolean;
   promise: Promise<void>;
 }
 
@@ -219,7 +220,8 @@ export function createResumableChatHub(options: ResumableChatHubOptions): Resuma
       try {
         if (stream) await stream.return(undefined);
       } finally {
-        if (turns.get(live.turnId) === live) turns.delete(live.turnId);
+        live.settled = true;
+        if (live.terminal && turns.get(live.turnId) === live) turns.delete(live.turnId);
       }
     }
   };
@@ -228,11 +230,17 @@ export function createResumableChatHub(options: ResumableChatHubOptions): Resuma
     if (live.terminal) return;
     if (sink) live.subscribers.add(sink);
     if (live.cancelled) return;
+    const recoveringSettledFailure = live.settled;
     finish(live, 'cancelled');
     live.cancelled = true;
     live.controller.abort();
     agents.cancel(live.agentId, live.conversationId);
     options.swarmCoordinator?.cancelTurn(live.agentId, live.conversationId);
+    // A settled, non-terminal live turn exists only when its earlier terminal
+    // persistence failed. Once this retry succeeds, do not let that historical
+    // rejection make cancelAgent() or stop() report a false cleanup failure.
+    if (recoveringSettledFailure) live.promise = live.promise.catch(() => {});
+    if (live.settled && turns.get(live.turnId) === live) turns.delete(live.turnId);
   };
 
   const hub: ResumableChatHub = {
@@ -262,6 +270,7 @@ export function createResumableChatHub(options: ResumableChatHubOptions): Resuma
         subscribers: new Set(acceptedSent ? [sink] : []),
         cancelled: false,
         terminal: false,
+        settled: false,
         promise: Promise.resolve(),
       };
       turns.set(frame.id, live);

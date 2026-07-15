@@ -216,6 +216,12 @@ function handlePhoneHttp(
   req: http.IncomingMessage,
   res: http.ServerResponse,
 ): void {
+  if (!isCanonicalMobileHttpTarget(req.url ?? '/')) {
+    res.writeHead(404, { 'content-type': 'text/plain' });
+    res.end('Not Found');
+    return;
+  }
+
   const gatewayId = gatewayIdFromHost(req.headers.host);
   const conn = gatewayId ? gateways.get(gatewayId) : undefined;
   if (!gatewayId || !conn) {
@@ -324,7 +330,7 @@ function handlePhoneHttp(
   });
 }
 
-/** Bridge a phone WebSocket (/ws/chat → chat:9200, /projects/ws → mgmt:9300). */
+/** Bridge the sole public phone WebSocket route (/ws/chat → chat:9200). */
 function handlePhoneWsUpgrade(
   gateways: Map<string, GatewayConn>,
   deps: RelayDeps,
@@ -335,6 +341,11 @@ function handlePhoneWsUpgrade(
   socket: Duplex,
   head: Buffer,
 ): void {
+  if (!isCanonicalChatWsTarget(req.url ?? '/')) {
+    socket.end('HTTP/1.1 404 Not Found\r\nConnection: close\r\nContent-Length: 0\r\n\r\n');
+    return;
+  }
+
   const gatewayId = gatewayIdFromHost(req.headers.host);
   const conn = gatewayId ? gateways.get(gatewayId) : undefined;
   if (!gatewayId || !conn) {
@@ -364,7 +375,7 @@ function handlePhoneWsUpgrade(
   }
 
   const fullPath = req.url ?? '/';
-  const target: Target = fullPath.split('?')[0].startsWith('/ws/chat') ? 'chat' : 'mgmt';
+  const target: Target = 'chat';
 
   wss.handleUpgrade(req, socket, head, (phoneWs) => {
     const streamId = conn.nextStreamId++;
@@ -409,6 +420,54 @@ function handlePhoneWsUpgrade(
       }
     });
   });
+}
+
+/**
+ * Return the request's pathname only when it is a canonical origin-form path.
+ * URL parsing normalizes literal and percent-encoded dot segments, so comparing
+ * the parsed pathname to the wire pathname rejects traversal before forwarding.
+ * Repeated decoding also catches encoded separators and double-encoded traversal
+ * that a downstream router could otherwise interpret differently.
+ */
+function canonicalPathname(requestTarget: string): string | undefined {
+  if (!requestTarget.startsWith('/') || requestTarget.includes('#')) return undefined;
+
+  const rawPathname = requestTarget.split('?')[0];
+  let parsed: URL;
+  try {
+    parsed = new URL(requestTarget, 'http://relay.invalid');
+  } catch {
+    return undefined;
+  }
+  if (parsed.origin !== 'http://relay.invalid' || parsed.pathname !== rawPathname) return undefined;
+
+  let decoded = rawPathname;
+  for (let depth = 0; depth < 5; depth++) {
+    let next: string;
+    try {
+      next = decodeURIComponent(decoded);
+    } catch {
+      return undefined;
+    }
+    if (
+      next.includes('\\') ||
+      next.split('/').some((segment) => segment === '.' || segment === '..')
+    ) {
+      return undefined;
+    }
+    if (next === decoded) return rawPathname;
+    decoded = next;
+  }
+  return undefined;
+}
+
+function isCanonicalMobileHttpTarget(requestTarget: string): boolean {
+  const pathname = canonicalPathname(requestTarget);
+  return pathname === '/mobile/v1' || pathname?.startsWith('/mobile/v1/') === true;
+}
+
+function isCanonicalChatWsTarget(requestTarget: string): boolean {
+  return canonicalPathname(requestTarget) === '/ws/chat';
 }
 
 /**
