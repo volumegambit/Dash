@@ -5,9 +5,9 @@
 Local automated release gates pass for the native iOS and Android clients, the shared gateway
 conversation authority, Mission Control synchronization, and the hosted relay boundary. The
 balanced-v1 implementation snapshot is branch `feat/ios-conversation-sync` at commit
-`b67967b63097fc856bb6de21dd23cdd8bcd3600a`, verified on 2026-07-15. Subsequent changes are
-CI, test-harness, and recovery-confirmation accessibility/safety hardening, reverified locally on
-2026-07-16.
+`58fb0b4376b4f84211f9beb3bdbde9c476414ea3`, verified on 2026-07-16. This includes the CI,
+test-harness, recovery-confirmation accessibility/safety hardening, and the iOS 18.4 transcript
+navigation-layout remediation.
 
 The pull request's pinned Xcode 16.3 / iOS 18.4 live-gateway job remains the authoritative hosted
 gate. Physical-device QA is also still required before calling the iOS build production-ready.
@@ -15,7 +15,9 @@ gate. Physical-device QA is also still required before calling the iOS build pro
 ## Local iOS environment
 
 - macOS 26.5.2 (25F84), Xcode 26.6 (17F113), and Swift 6.3.3.
+- iOS 18.4 simulator runtime (22E238), used to reproduce and verify the hosted-runtime failure.
 - iOS 26.5 simulator runtime (23F77) with iOS 26.5 SDK (23F81a).
+- iPhone 16 Pro iOS 18.4 simulator: `BC8AEC19-01DF-48EA-9F84-89FFA90C3A16`.
 - iPhone 17 Pro simulator: `5FDDE3B1-B6F6-448B-9959-EF56292D8E51`.
 - iPad Pro 13-inch (M5) simulator: `B6F9A163-7775-4EEB-A8C2-D7C78401EC50`.
 
@@ -25,10 +27,16 @@ gate. Physical-device QA is also still required before calling the iOS build pro
   0 skips. Evidence: `/tmp/dash-ios-final-unit-contract-iphone-20260715-a.xcresult`.
 - Full `Dash` scheme on iPad: 570 logical tests / 609 parameterized executions, 0 failures,
   0 skips. Evidence: `/tmp/dash-ios-final-unit-contract-ipad-20260715-a.xcresult`.
-- iPhone UI suite: 23 executions, 21 passed, 2 intended iPad-only skips, 0 failures. Evidence:
-  `/tmp/dash-ios-full-iphone-ui-20260715T173829Z.xcresult`.
+- iPhone UI suite on iOS 18.4: 23 executions, 21 passed, 2 intended iPad-only skips,
+  0 failures. Evidence: `/tmp/dash-ios-full-iphone-final-18_4-20260716-01.xcresult`.
 - iPad UI suite: 23 executions, 22 passed, 1 intended iPhone-only skip, 0 failures. Evidence:
-  `/tmp/dash-ios-full-ipad-ui-20260716-03.xcresult`.
+  `/tmp/dash-ios-ipad-full-20260716-064735.xcresult`.
+- Exact recovery-discard/reopen regression on iOS 18.4: 10 repeated launches, 10 passed,
+  0 failures. Evidence: `/tmp/dash-ios-no-anchor-only-18_4-20260716-01.xcresult`.
+- The same recovery regression on iOS 26.5: 10 repeated launches, 10 passed, 0 failures.
+  Evidence: `/tmp/dash-ios-26_5-noanchor-20260716-063524.xcresult`.
+- XXXL accessibility regression on iOS 18.4: 5 repeated launches, 5 passed, 0 failures.
+  Evidence: `/tmp/dash-ios-accessibility-xxxl-stress-18_4-20260716-01.xcresult`.
 - Focused iPhone remediation regressions: agent creation/editing and both recovery-confirmation
   paths passed, 3 tests total with 0 failures. Evidence:
   `/tmp/dash-ios-iphone-remediation-regressions-20260716-01.xcresult`.
@@ -51,8 +59,15 @@ The 2026-07-16 UI matrix ran once without retry configuration. Its recovery fixt
 overflows the iPhone composer, and text replacement uses the English native edit menu so a partial
 caret-position delete cannot pass locally while failing on the hosted runner. Recovery discard
 uses an alert in both size classes so its safety message, Cancel action, and destructive action
-remain available to local iOS 26.5 accessibility automation. The pinned iOS 18.4 hosted rerun must
-confirm equivalent availability before merge.
+remain available to local iOS 18.4 and 26.5 accessibility automation.
+
+Two hosted attempts at commit `bce54d6313775fc8ce24aca117768d7658abcc39` reproduced an iOS
+18.4 main-thread layout loop after recovery discard and conversation reopen. Local process samples
+localized the loop to SwiftUI scroll anchoring, safe-area updates, content-offset notification, and
+UIKit navigation-bar layout. Removing the transcript's default scroll anchor while preserving its
+explicit initial/new-content scrolling and near-bottom observation passed 10 repeated launches on
+both local runtimes plus the complete phone and iPad UI suites. Commit `58fb0b43` still requires a
+fresh pinned hosted run before merge.
 
 ## iOS release artifacts and configuration
 
