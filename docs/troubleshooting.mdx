@@ -118,6 +118,19 @@ Something not working? Here are the most common issues and how to fix them.
     creating, sending, renaming, and deleting until that gateway reconnects.
   </Accordion>
 
+  <Accordion title="Message saved for recovery">
+    **Symptom:** Dash for iOS shows **Message saved for recovery**, and that chat's composer is
+    unavailable.
+
+    **Fix:** Open **Needs Recovery** from Conversations and copy the exact message text. Preview or
+    share any readable attachments before discarding the item. If Dash could not read the saved
+    attachment data, the text remains available but those attachments cannot be previewed or
+    shared. If a newer draft exists, Dash keeps that draft separate and places the earlier message
+    here so neither payload is overwritten. The chat remains read-only until you explicitly discard
+    the recovery item. Do not clear the app's data or reinstall it before preserving anything you
+    need.
+  </Accordion>
+
   <Accordion title="A conversation says Active on another device">
     **Fix:** Another paired client owns the canonical active turn. Wait for it to finish, watch the
     shared stream in Mission Control, or explicitly stop it. Sending a second turn, renaming, and
@@ -177,6 +190,28 @@ Something not working? Here are the most common issues and how to fix them.
     Dash and retry. If Dash is already enabled, confirm both devices are on the same network and
     that the gateway is running. You can still use the paste/manual pairing fallback when camera
     access is unavailable.
+  </Accordion>
+
+  <Accordion title="Mission Control cannot create a local pairing code">
+    **Symptom:** **Pair Device** shows **No usable LAN IPv4 address is available. Connect this Mac
+    to the same network as the phone and try again.** Or it shows **Could not determine which LAN
+    IPv4 address to use** when the computer has several active network connections.
+
+    **Fix:** Connect this Mac to a Wi-Fi or Ethernet network the phone can reach, then reopen
+    **Settings → Devices** to request a fresh code. If several networks are connected, make the
+    phone-reachable network the default route or disconnect the others. Dash will not guess an
+    address or put a loopback-only address in a phone pairing code. If a shared local network is
+    unavailable, configure **Remote access** and use its relay pairing code instead.
+  </Accordion>
+
+  <Accordion title="Pair Device asks to switch to the local gateway">
+    **Symptom:** **Pair Device** shows **Switch to the local gateway before pairing a device**
+    while Mission Control is connected to a gateway on another machine.
+
+    **Fix:** Open **Settings → General → Gateway** and click **Use this computer**. Wait for the
+    gateway row to show **This computer**, then return to **Settings → Devices** and request a fresh
+    pairing code. Mission Control only generates phone pairing codes for the local gateway it can
+    provision safely.
   </Accordion>
 
   <Accordion title="Sign-in failed">

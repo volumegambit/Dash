@@ -40,7 +40,7 @@ falls back to plaintext. Also allow Local Network access in iOS Settings.
 The **Conversations** tab shows the gateway's canonical conversation list. Changes made here also
 appear in Mission Control.
 
-- Start a conversation by choosing an agent and an optional title.
+- Start a conversation by choosing an agent.
 - Open existing and archived conversations, including messages created on another paired device.
 - Rename or delete an idle conversation from its context menu.
 - Pull to refresh when you want to check the gateway immediately.
@@ -65,7 +65,17 @@ resume or deduplicate the same turn instead of creating a second one.
 
 If another client deleted that conversation, Dash never recreates or resends the saved message.
 It appears in **Needs Recovery** at the top of Conversations. Open it to copy the exact text and
-preview or share its attachments, then discard it with confirmation when you no longer need it.
+preview or share its readable attachments, then discard it with confirmation when you no longer
+need it. Dash uses the same manual recovery flow if it finds unreadable saved attachment data. The
+same flow also protects an earlier rejected message if a newer draft was saved separately: the newer
+draft and earlier message are both preserved in one recovery item. You can copy either text and
+preview or share readable attachments from either copy. If the conversation is still available,
+discarding the earlier message preserves the newer draft in the composer. If the conversation is
+unavailable, the confirmation makes clear that discarding removes both copies. Dash checks again
+before deleting anything; if availability changed while the confirmation was open, it stops and
+asks you to review and confirm the current outcome.
+The affected chat stays read-only until you explicitly discard the recovery item. Corrupt
+attachment data cannot be previewed or shared, but the exact text for that copy remains available.
 Recovery items survive app restarts and never include a Retry action.
 
 ## Manage agents

@@ -2,42 +2,78 @@
 
 ## Result
 
-The automated balanced v1 release gates pass for the native iOS and Android clients, the shared
-gateway conversation authority, and Mission Control synchronization. Physical-device QA is still
-required before calling the iOS build production-ready.
+Local automated release gates pass for the native iOS and Android clients, the shared gateway
+conversation authority, Mission Control synchronization, and the hosted relay boundary. The
+implementation snapshot is branch `feat/ios-conversation-sync` at commit
+`b67967b63097fc856bb6de21dd23cdd8bcd3600a`, verified on 2026-07-15.
+
+The pull request's pinned Xcode 16.3 / iOS 18.4 live-gateway job remains the authoritative hosted
+gate. Physical-device QA is also still required before calling the iOS build production-ready.
+
+## Local iOS environment
+
+- macOS 26.5.2 (25F84), Xcode 26.6 (17F113), and Swift 6.3.3.
+- iOS 26.5 simulator runtime (23F77) with iOS 26.5 SDK (23F81a).
+- iPhone 17 Pro simulator: `5FDDE3B1-B6F6-448B-9959-EF56292D8E51`.
+- iPad Pro 13-inch (M5) simulator: `B6F9A163-7775-4EEB-A8C2-D7C78401EC50`.
 
 ## iOS simulator coverage
 
-- iPhone 16 Pro, iOS 18.4:
-  - Contract and app tests: 416 logical tests / 453 parameterized executions, 0 failures,
-    0 skips.
-  - 20 UI tests: 18 passed, 2 intended iPad-only skips, 0 failures.
-- iPad Pro, iOS 18.4:
-  - Contract and app tests: 416 logical tests / 453 parameterized executions, 0 failures,
-    0 skips.
-  - 20 UI tests: 19 passed, 1 intended iPhone-only skip, 0 failures.
-- Six live pinned-gateway cases passed: HTTP/SSE, detach/replay/resume, cold bootstrap/restart,
-  question/answer, explicit cancel, and background-detach/foreground reconciliation.
+- Full `Dash` scheme on iPhone: 570 logical tests / 609 parameterized executions, 0 failures,
+  0 skips. Evidence: `/tmp/dash-ios-final-unit-contract-iphone-20260715-a.xcresult`.
+- Full `Dash` scheme on iPad: 570 logical tests / 609 parameterized executions, 0 failures,
+  0 skips. Evidence: `/tmp/dash-ios-final-unit-contract-ipad-20260715-a.xcresult`.
+- iPhone UI suite: 23 executions, 21 passed, 2 intended iPad-only skips, 0 failures. Evidence:
+  `/tmp/dash-ios-final-ui-iphone-20260715-a.xcresult`.
+- iPad UI suite: 23 executions, 22 passed, 1 intended iPhone-only skip, 0 failures. Evidence:
+  `/tmp/dash-ios-final-ui-ipad-20260715-a.xcresult`.
+- Dark appearance with increased contrast: 1 passed, 0 failures. Simulator appearance and
+  contrast were restored after the run. Evidence:
+  `/tmp/dash-ios-final-dark-contrast-iphone-20260715-a.xcresult`.
+- Integration-support scenarios: 9 passed, 0 failures using isolated DerivedData. Evidence:
+  `/tmp/dash-ios-final-integration-support-iphone-20260715-b.xcresult`.
+
+The first integration-support attempt used shared DerivedData while another Xcode test run was
+active, and Xcode lost the test bundle before executing a test. The isolated rerun above is the
+authoritative result.
+
+## iOS release artifacts and configuration
+
 - Generic Release builds passed for the iOS Simulator (`arm64` and `x86_64`) and unsigned iOS
   device (`arm64`).
+- Both Release products report version `0.2.0` and build `1`.
 - The source and embedded privacy manifests linted and matched byte-for-byte. Both built
   `Info.plist` files contain no App Transport Security exceptions.
-- The generated 1024x1024 app icon matched the checked-in icon byte-for-byte and has no alpha.
+- The deterministic 1024x1024 app icon matched the checked-in icon byte-for-byte and has no alpha.
+- `ios/scripts/check-project.sh` regenerated `Dash.xcodeproj` with no committed-project drift.
+- The generic simulator product is under `/tmp/dash-ios-final-release-sim-20260715-a` and the
+  unsigned device product is under `/tmp/dash-ios-final-release-device-20260715-a`.
 
 ## Shared runtime and Android coverage
 
-- Repository lint passed for 921 files.
-- All 18 Node package/application builds and the Mission Control production build passed.
-- Vitest passed 249 files and 3,365 tests.
-- The mobile contract passed all 11 fixtures and the desktop/iOS canonical transcript end-to-end
-  check passed.
+- Repository lint passed for 923 files.
+- All 17 root Node workspaces and the separate Mission Control production build passed.
+- Vitest passed 250 files and 3,411 tests.
+- The mobile contract passed all 11 fixtures. The canonical desktop/iOS transcript, conflict,
+  cancel, and archive end-to-end checks passed.
 - Model-catalog freshness passed.
-- Android Gradle verification completed 374 tasks. All 21 test suites and 168 test executions
-  passed with no failures, errors, or skips, and `app-debug.apk` was assembled.
+- Android `test assembleDebug` completed 424 tasks. All 21 XML test suites and 172 test
+  executions passed with no failures, errors, or skips.
+- Android debug APK SHA-256:
+  `81f38519bcb8ca155e01ca2bfeb98865079dacd950eadf399d748a5770fe669f`.
+
+## Hosted live-gateway gate
+
+The pinned GitHub Actions environment uses Xcode 16.3 and iOS 18.4 for six live cases: HTTP/SSE,
+detach/replay/resume, cold bootstrap/restart, question/answer, explicit cancel, and
+background-detach/foreground reconciliation. Local setup intentionally refuses Xcode 26.6 because
+it cannot prove the pinned CI toolchain. The pull request's hosted iOS check must be green before
+merge.
 
 ## Physical-device work still required
 
-The simulator cannot prove the following. Keep the matching cases unchecked in
+The physical checklist remains 0 of 19 complete. Gerry's iPhone 17 Pro was unavailable during this
+verification run, and no physical iPad was available. Keep the matching cases unchecked in
 [`QA_CHECKLIST.md`](QA_CHECKLIST.md) until evidence is captured on real hardware:
 
 - Camera permission and QR scanning on a real camera.

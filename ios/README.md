@@ -135,7 +135,7 @@ metadata without those secrets.
 | `Core/Contracts` | Strict Swift mirrors of `contracts/mobile/v1`, including forward-compatible agent events. |
 | `Core/Networking` | Authenticated `/mobile/v1` HTTP, SSE invalidations, capable WebSocket chat, and reachability. |
 | `Core/Security` | Device-only Keychain storage for the Mobile bearer and optional relay credential. |
-| `Core/Persistence` | Gateway-scoped SwiftData cache, replay cursors, drafts, and external attachment data. |
+| `Core/Persistence` | Gateway-scoped SwiftData cache, replay cursors, drafts, insert-only pending sends, durable deletion revision floors, and external attachment data. |
 | `Core/Sync` | Cache-first bootstrap, canonical reconciliation, tombstones, replay gaps, and reconnect backoff. |
 | `Features/Pairing` | QR, paste, and manual pairing with identity verification. |
 | `Features/Conversations` | Canonical list mutations, transcript projection, resumable chat, recovery, answers, cancel, and images. |
@@ -145,11 +145,27 @@ metadata without those secrets.
 The gateway is the source of truth. Cached rows remain readable during an outage, while canonical
 writes are disabled. A foreground transition refreshes canonical state and restarts invalidation
 events. The visible chat separately replays durable events before its running turn resumes.
+A canonical deletion or not-found response raises a hidden gateway-scoped revision floor before
+cached content is purged. Same-gateway reactivation preserves that floor, so stale or equal
+summaries and late message or cursor writes remain suppressed.
+Only a strictly newer canonical active summary can revive the conversation ID.
+
 Messages whose admission could not be confirmed remain durably pending across launches and are
-never retried automatically. An explicit retry reuses the original turn ID so gateway admission is
-idempotent while the conversation still exists. If another client deleted the conversation, Dash
-never recreates or resends the message. The **Needs Recovery** section keeps it. Open the recovery
-item to copy the exact text, preview or share its attachments, and explicitly confirm discarding it.
+never retried automatically, and insert-only staging prevents a second send from overwriting the
+saved record. An explicit retry reuses the original turn ID so gateway admission is idempotent while
+the conversation still exists. If another client deleted the conversation, Dash
+never recreates or resends the message. The **Needs Recovery** section keeps it.
+Open the recovery item to copy the exact text, preview or share its readable attachments, and
+explicitly confirm discarding it. Dash uses the same manual recovery flow for
+unreadable saved attachment data and for an earlier rejected message that collides with a separately
+saved newer draft. In the collision case, both payloads survive in one recovery item. You can copy
+either text and preview or share readable attachments from either copy. If the conversation is
+active, discarding the earlier message preserves the newer draft in the composer. If it is
+unavailable, the confirmation makes clear that discarding removes both copies. Dash rechecks that
+status before deletion; if it changed while the confirmation was open, the app stops and asks you
+to review and confirm again. The affected chat stays read-only until you explicitly discard the
+recovery item. Corrupt attachment data cannot be previewed or shared, but the exact text for that
+copy remains available.
 Disconnect & Forget stops transports before deleting Keychain material, purging that gateway's
 SwiftData cache, and clearing the selected profile.
 

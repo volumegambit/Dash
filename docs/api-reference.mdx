@@ -8,9 +8,10 @@ Mission Control uses to deploy agents, connect messaging apps, and store credent
 unprefixed administrative surface binds to `127.0.0.1` on port `9300` by default.
 
 Native clients do not receive that administrative access. On a local network they use the
-gateway's pinned HTTPS/WSS listener on port `9400`, which exposes only `/mobile/v1` and `/ws/chat`.
-Paths in the **Conversations** section are relative to `/mobile/v1`. A relay exposes the same
-native surface over TLS on port `443`.
+gateway's pinned HTTPS/WSS listener on the configured mobile port, which defaults to `9400`.
+Both frozen pairing port fields carry that same listener port. The listener exposes only
+`/mobile/v1` and `/ws/chat`. Paths in the **Conversations** section are relative to `/mobile/v1`.
+A relay exposes the same native surface over TLS on port `443`.
 
 ## Authentication
 
@@ -254,7 +255,8 @@ ws://localhost:9200/ws/chat?token=<your-chat-token>
 ```
 
 Native clients connect to the same unprefixed path on the pinned mobile listener and keep the
-Mobile bearer out of the URL:
+Mobile bearer out of the URL. This example uses the default port; use the port from the pairing
+payload when the gateway configured an override:
 
 ```text
 wss://<gateway-host>:9400/ws/chat
