@@ -176,27 +176,17 @@ final class ConversationUITests: DashUITestCase {
     XCTAssertFalse(app.buttons["Retry"].exists)
 
     element("recovery.discard.deleted-plan", in: app).tap()
-    if app.windows.firstMatch.frame.width < 700 {
-      let confirmation = confirmationDialog(titled: "Discard both recovery copies?", in: app)
-      let cancel = confirmation.buttons["Cancel"].firstMatch
-      XCTAssertTrue(
-        waitUntilHittable(cancel, timeout: 3),
-        "Expected the recovery confirmation's Cancel action to be available"
-      )
-      cancel.tap()
-      XCTAssertTrue(
-        confirmation.waitForNonExistence(timeout: 3),
-        "Expected Cancel to dismiss the recovery confirmation"
-      )
-    } else {
-      let confirmation = app.sheets.matching(
-        NSPredicate(format: "label == %@", "Discard both recovery copies?")
-      ).firstMatch
-      XCTAssertTrue(confirmation.waitForExistence(timeout: 3))
-      let dismissRegion = app.otherElements.matching(identifier: "PopoverDismissRegion").firstMatch
-      XCTAssertTrue(dismissRegion.waitForExistence(timeout: 3))
-      dismissRegion.tap()
-    }
+    let confirmation = confirmationDialog(titled: "Discard both recovery copies?", in: app)
+    let cancel = confirmation.buttons["Cancel"].firstMatch
+    XCTAssertTrue(
+      waitUntilHittable(cancel, timeout: 3),
+      "Expected the recovery confirmation's Cancel action to be available"
+    )
+    cancel.tap()
+    XCTAssertTrue(
+      confirmation.waitForNonExistence(timeout: 3),
+      "Expected Cancel to dismiss the recovery confirmation"
+    )
 
     XCTAssertTrue(element("recovery.text.deleted-plan", in: app).exists)
     XCTAssertTrue(element("recovery.draft.text.deleted-plan", in: app).exists)
@@ -204,16 +194,16 @@ final class ConversationUITests: DashUITestCase {
     XCTAssertFalse(app.buttons["Retry"].exists)
 
     element("recovery.discard.deleted-plan", in: app).tap()
-    if app.windows.firstMatch.frame.width < 700 {
-      let confirmation = confirmationDialog(titled: "Discard both recovery copies?", in: app)
-      confirmation.buttons["Discard Recovered Message"].tap()
-    } else {
-      let confirmation = app.sheets.matching(
-        NSPredicate(format: "label == %@", "Discard both recovery copies?")
-      ).firstMatch
-      XCTAssertTrue(confirmation.waitForExistence(timeout: 3))
-      confirmation.buttons["Discard Recovered Message"].tap()
-    }
+    let destructiveConfirmation = confirmationDialog(
+      titled: "Discard both recovery copies?",
+      in: app
+    )
+    let discard = destructiveConfirmation.buttons["Discard Recovered Message"].firstMatch
+    XCTAssertTrue(
+      waitUntilHittable(discard, timeout: 3),
+      "Expected the recovery confirmation's destructive action to be available"
+    )
+    discard.tap()
 
     XCTAssertTrue(recoveryRow.waitForNonExistence(timeout: 5))
     if app.windows.firstMatch.frame.width < 700 {

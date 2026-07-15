@@ -442,14 +442,35 @@ class DashUITestCase: XCTestCase {
     file: StaticString = #filePath,
     line: UInt = #line
   ) -> XCUIElement {
+    let labeledAlert = app.alerts.matching(
+      NSPredicate(format: "label == %@", title)
+    ).firstMatch
+    if labeledAlert.waitForExistence(timeout: 0.5) {
+      return labeledAlert
+    }
+
     let alert = app.alerts.containing(.staticText, identifier: title).firstMatch
     if alert.waitForExistence(timeout: 0.5) {
       return alert
     }
 
+    let labeledSheet = app.sheets.matching(
+      NSPredicate(format: "label == %@", title)
+    ).firstMatch
+    if labeledSheet.waitForExistence(timeout: 0.5) {
+      return labeledSheet
+    }
+
     let sheet = app.sheets.containing(.staticText, identifier: title).firstMatch
     if sheet.waitForExistence(timeout: 0.5) {
       return sheet
+    }
+
+    let labeledPopover = app.popovers.matching(
+      NSPredicate(format: "label == %@", title)
+    ).firstMatch
+    if labeledPopover.waitForExistence(timeout: 0.5) {
+      return labeledPopover
     }
 
     let popover = app.popovers.containing(.staticText, identifier: title).firstMatch

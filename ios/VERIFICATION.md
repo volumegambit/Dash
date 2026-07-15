@@ -6,7 +6,8 @@ Local automated release gates pass for the native iOS and Android clients, the s
 conversation authority, Mission Control synchronization, and the hosted relay boundary. The
 balanced-v1 implementation snapshot is branch `feat/ios-conversation-sync` at commit
 `b67967b63097fc856bb6de21dd23cdd8bcd3600a`, verified on 2026-07-15. Subsequent changes are
-CI and test-harness hardening, reverified locally on 2026-07-16.
+CI, test-harness, and recovery-confirmation accessibility/safety hardening, reverified locally on
+2026-07-16.
 
 The pull request's pinned Xcode 16.3 / iOS 18.4 live-gateway job remains the authoritative hosted
 gate. Physical-device QA is also still required before calling the iOS build production-ready.
@@ -27,7 +28,13 @@ gate. Physical-device QA is also still required before calling the iOS build pro
 - iPhone UI suite: 23 executions, 21 passed, 2 intended iPad-only skips, 0 failures. Evidence:
   `/tmp/dash-ios-full-iphone-ui-20260715T173829Z.xcresult`.
 - iPad UI suite: 23 executions, 22 passed, 1 intended iPhone-only skip, 0 failures. Evidence:
-  `/tmp/dash-ios-full-ipad-ui-20260715T175150Z.xcresult`.
+  `/tmp/dash-ios-full-ipad-ui-20260716-03.xcresult`.
+- Focused iPhone remediation regressions: agent creation/editing and both recovery-confirmation
+  paths passed, 3 tests total with 0 failures. Evidence:
+  `/tmp/dash-ios-iphone-remediation-regressions-20260716-01.xcresult`.
+- Focused recovery-presentation unit suite: 15 passed, 0 failures, including the exact safety
+  copy that promises a newer draft remains saved. Evidence:
+  `/tmp/dash-ios-recovery-presentation-20260716-02.xcresult`.
 - Dark appearance with increased contrast: 1 passed, 0 failures. Simulator appearance and
   contrast were restored after the run. Evidence:
   `/tmp/dash-ios-dark-contrast-core-20260715T180819Z.xcresult`.
@@ -42,7 +49,10 @@ authoritative result.
 
 The 2026-07-16 UI matrix ran once without retry configuration. Its recovery fixture deliberately
 overflows the iPhone composer, and text replacement uses the English native edit menu so a partial
-caret-position delete cannot pass locally while failing on the hosted runner.
+caret-position delete cannot pass locally while failing on the hosted runner. Recovery discard
+uses an alert in both size classes so its safety message, Cancel action, and destructive action
+remain available to local iOS 26.5 accessibility automation. The pinned iOS 18.4 hosted rerun must
+confirm equivalent availability before merge.
 
 ## iOS release artifacts and configuration
 
@@ -54,7 +64,8 @@ caret-position delete cannot pass locally while failing on the hosted runner.
 - The deterministic 1024x1024 app icon matched the checked-in icon byte-for-byte and has no alpha.
 - `ios/scripts/check-project.sh` regenerated `Dash.xcodeproj` with no committed-project drift.
 - The generic simulator product is under `/tmp/dash-ios-final-release-sim-20260715-a` and the
-  unsigned device product is under `/tmp/dash-ios-final-release-device-20260715-a`.
+  current unsigned device product is under
+  `/tmp/dash-ios-remediation-release-device-20260716-01`.
 
 ## Shared runtime and Android coverage
 

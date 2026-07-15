@@ -588,7 +588,6 @@ struct PendingSendRecoveryView: View {
     .modifier(
       PendingSendRecoveryConfirmationModifier(
         recovery: recovery,
-        presentation: presentation,
         isPresented: $showsDiscardConfirmation,
         discard: discardRecovery
       )
@@ -639,34 +638,18 @@ struct PendingSendRecoveryView: View {
 
 private struct PendingSendRecoveryConfirmationModifier: ViewModifier {
   let recovery: RecoverablePendingSend
-  let presentation: NavigationPresentation
   @Binding var isPresented: Bool
   let discard: () -> Void
 
-  @ViewBuilder
   func body(content: Content) -> some View {
-    switch presentation {
-    case .compact:
-      content.alert(
-        PendingSendRecoveryPresentation.discardTitle(for: recovery),
-        isPresented: $isPresented
-      ) {
-        Button("Discard Recovered Message", role: .destructive, action: discard)
-        Button("Cancel", role: .cancel) {}
-      } message: {
-        Text(PendingSendRecoveryPresentation.discardMessage(for: recovery))
-      }
-    case .regular:
-      content.confirmationDialog(
-        PendingSendRecoveryPresentation.discardTitle(for: recovery),
-        isPresented: $isPresented,
-        titleVisibility: .visible
-      ) {
-        Button("Discard Recovered Message", role: .destructive, action: discard)
-        Button("Cancel", role: .cancel) {}
-      } message: {
-        Text(PendingSendRecoveryPresentation.discardMessage(for: recovery))
-      }
+    content.alert(
+      PendingSendRecoveryPresentation.discardTitle(for: recovery),
+      isPresented: $isPresented
+    ) {
+      Button("Discard Recovered Message", role: .destructive, action: discard)
+      Button("Cancel", role: .cancel) {}
+    } message: {
+      Text(PendingSendRecoveryPresentation.discardMessage(for: recovery))
     }
   }
 }

@@ -4,7 +4,7 @@ import XCTest
 final class AgentsUITests: DashUITestCase {
   func testCreateAndEditAgent() {
     let app = launch(scenario: "agents")
-    _ = element("conversation.list", in: app)
+    revealSidebarIfNeeded(toExpose: "conversation.list", in: app)
     selectTab("tab.agents", in: app)
     revealSidebarIfNeeded(toExpose: "agent.create", in: app)
     element("agent.create", in: app).tap()

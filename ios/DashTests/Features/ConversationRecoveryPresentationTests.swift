@@ -49,6 +49,39 @@ struct ConversationRecoveryPresentationTests {
     )
   }
 
+  @Test("active draft conflict discard copy promises that the newer draft remains")
+  func activeDraftConflictDiscardCopy() {
+    let recovery = RecoverablePendingSend(
+      gatewayID: "gateway",
+      conversationID: "available",
+      conversationTitle: "Available conversation",
+      agentName: "Agent",
+      pendingSend: PendingChatSend(
+        turnID: "turn",
+        localUserID: "local-user",
+        draft: "Earlier message",
+        attachments: [],
+        createdAt: Date(timeIntervalSince1970: 1)
+      ),
+      coexistingDraft: ConversationDraft(
+        text: "Newer draft",
+        attachments: [],
+        updatedAt: Date(timeIntervalSince1970: 2)
+      ),
+      conversationAvailable: true
+    )
+
+    #expect(
+      PendingSendRecoveryPresentation.discardTitle(for: recovery)
+        == "Discard this recovered message?"
+    )
+    #expect(
+      PendingSendRecoveryPresentation.discardMessage(for: recovery)
+        == "This permanently removes the earlier message recovery. The newer draft remains "
+          + "saved with its conversation."
+    )
+  }
+
   @Test("unreadable recovery explanation never offers unavailable image actions")
   func unreadableRecoveryExplanationCopy() {
     let unreadable = RecoverablePendingSend(

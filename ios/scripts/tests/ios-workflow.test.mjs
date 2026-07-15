@@ -13,6 +13,8 @@ const uiTestFiles = [
   'AccessibilityUITests.swift',
 ].map((name) => `ios/DashUITests/${name}`);
 const uiTestSources = await Promise.all(uiTestFiles.map((path) => readFile(path, 'utf8')));
+const conversationUITestSource = uiTestSources[1];
+const agentUITestSource = uiTestSources[2];
 const uiTestCaseSource = await readFile('ios/DashUITests/DashUITestCase.swift', 'utf8');
 const pairingUITestSource = await readFile('ios/DashUITests/PairingUITests.swift', 'utf8');
 const accessibilityUITestSource = await readFile(
@@ -28,6 +30,12 @@ const conversationListSource = await readFile(
   'ios/Dash/Features/Conversations/ConversationListView.swift',
   'utf8',
 );
+const recoveryConfirmationModifierSource = conversationListSource.match(
+  /private struct PendingSendRecoveryConfirmationModifier[\s\S]*?private struct RecoveryAttachmentPreviewView/,
+)?.[0];
+const deletedRecoveryUITestSource = conversationUITestSource.match(
+  /func testDeletedPendingSendRecoveryIsReachablePreviewableAndExplicitlyDiscarded\(\)[\s\S]*?func testActivePendingSendRecovery/,
+)?.[0];
 const agentDetailSource = await readFile('ios/Dash/Features/Agents/AgentDetailView.swift', 'utf8');
 const infoPlistSource = await readFile('ios/Dash/Resources/Info.plist', 'utf8');
 const privacyManifestSource = await readFile(
@@ -232,6 +240,38 @@ assert.doesNotMatch(
   'token-bearing pasteboard payload fixtures must stay inside the debug app binary',
 );
 assert.doesNotMatch(uiTestCaseSource, /DASH_UI_TEST_PASTEBOARD\b|--dash-ui-test-pasteboard["']/);
+assert.match(
+  agentUITestSource,
+  /revealSidebarIfNeeded\(toExpose: "conversation\.list", in: app\)/,
+  'agent creation must reveal a collapsed iPad sidebar before checking launch readiness',
+);
+assert.match(
+  uiTestCaseSource,
+  /app\.sheets\.matching\(\s*NSPredicate\(format: "label == %@", title\)\s*\)\.firstMatch/,
+  'confirmation lookup must accept iOS 18 sheets that expose the title as their own label',
+);
+assert.ok(recoveryConfirmationModifierSource, 'expected the recovery confirmation modifier');
+assert.match(
+  recoveryConfirmationModifierSource,
+  /\.alert\(/,
+  'recovery discard must use an accessible alert presentation',
+);
+assert.doesNotMatch(
+  recoveryConfirmationModifierSource,
+  /\.confirmationDialog\(/,
+  'recovery discard must not lose its safety message in an iPad confirmation popover',
+);
+assert.ok(deletedRecoveryUITestSource, 'expected the deleted recovery UI test');
+assert.match(
+  deletedRecoveryUITestSource,
+  /confirmationDialog\(titled: "Discard both recovery copies\?", in: app\)/,
+  'deleted recovery UI coverage must use the adaptive confirmation lookup',
+);
+assert.doesNotMatch(
+  deletedRecoveryUITestSource,
+  /app\.sheets|PopoverDismissRegion/,
+  'deleted recovery UI coverage must not hard-code an iPad popover representation',
+);
 assert.match(
   uiTestCaseSource,
   /"-AppleLanguages",\s*"\(en\)",\s*"-AppleLocale",\s*"en_US"/,
