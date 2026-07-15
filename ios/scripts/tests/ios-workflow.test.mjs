@@ -87,6 +87,11 @@ const ipadUIStep = steps.find((step) => step.name === 'iPad adaptive UI tests');
 
 assert.match(
   phoneUIStep?.run ?? '',
+  /simctl boot "\$IPHONE_UDID"[\s\S]*simctl bootstatus "\$IPHONE_UDID" -b[\s\S]*simctl ui "\$IPHONE_UDID" appearance light/,
+  'iPhone UI tests must boot the pinned simulator before mutating its UI state',
+);
+assert.match(
+  phoneUIStep?.run ?? '',
   /simctl privacy "\$IPHONE_UDID" reset camera app\.dash\.ios/,
   'iPhone UI tests must reset camera privacy on the exact pinned device',
 );
@@ -114,6 +119,11 @@ assert.equal(
   typeof darkContrastUIStep?.run,
   'string',
   'expected an isolated dark increased-contrast UI-test step',
+);
+assert.match(
+  darkContrastUIStep?.run ?? '',
+  /simctl boot "\$IPHONE_UDID"[\s\S]*simctl bootstatus "\$IPHONE_UDID" -b[\s\S]*original_appearance="\$\(xcrun simctl ui "\$IPHONE_UDID" appearance\)"/,
+  'dark appearance coverage must boot the pinned simulator before querying its UI state',
 );
 assert.match(
   darkContrastUIStep?.run ?? '',
@@ -151,6 +161,11 @@ assert.match(
   darkContrastUIStep?.run ?? '',
   /-resultBundlePath ios\/iPhoneDarkContrastUI\.xcresult/,
   'dark increased-contrast failures must create a distinct artifact for upload',
+);
+assert.match(
+  ipadUIStep?.run ?? '',
+  /simctl boot "\$IPAD_UDID"[\s\S]*simctl bootstatus "\$IPAD_UDID" -b[\s\S]*simctl privacy "\$IPAD_UDID" reset camera app\.dash\.ios/,
+  'iPad UI tests must boot the pinned simulator before resetting privacy state',
 );
 assert.match(
   ipadUIStep?.run ?? '',
