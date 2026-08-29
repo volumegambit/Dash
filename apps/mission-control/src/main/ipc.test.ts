@@ -7,8 +7,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 // We need to import makePackagedSpawner — it doesn't exist yet, so this will fail
 // Import it from ipc.ts after you implement it
 import { InMemoryKeychainStore } from '@dash/mc';
+import type { GatewaySupervisorOptions, ProcessSpawner } from '@dash/mc';
 import {
   enrollGateway,
+  getGatewaySupervisor,
   isSetupConfigured,
   makePackagedSpawner,
   pluginInstallHandler,
@@ -20,6 +22,16 @@ import {
   resolveSetupStatus,
   shutdownGatewayOnQuit,
 } from './ipc.js';
+
+// ipc.ts imports `app` from electron. Outside an Electron runtime `require('electron')`
+// resolves to the binary PATH string, so `app` would be undefined — stub the one
+// property the gateway wiring reads.
+vi.mock('electron', () => ({
+  app: { isPackaged: true },
+  dialog: {},
+  ipcMain: { handle: vi.fn(), on: vi.fn() },
+  shell: {},
+}));
 
 describe('enrollGateway', () => {
   it('reads the gateway pubkey, claims the subdomain, persists {id,subdomain,host}, restarts', async () => {
@@ -92,6 +104,38 @@ describe('makePackagedSpawner', () => {
     notPackaged.spawn('node', ['script.js'], { env: {} });
 
     expect(spawned[0].command).toBe('node');
+  });
+});
+
+describe('getGatewaySupervisor', () => {
+  // Regression guard: makePackagedSpawner existed and was unit-tested, but an
+  // IPC refactor dropped it from the supervisor construction. The packaged app
+  // then spawned the literal `node`, which is absent from a GUI-launched app's
+  // PATH (nvm installs live in ~/.nvm) — `spawn node ENOENT`, crashing the main
+  // process. Assert the supervisor is built with the packaged spawner, not the
+  // raw default.
+  it('wraps the gateway spawner so a packaged app re-execs Electron instead of `node`', () => {
+    const spawned: { command: string; env: Record<string, string | undefined> }[] = [];
+    const base: ProcessSpawner = {
+      spawn: (command, _args, options) => {
+        spawned.push({ command, env: options.env ?? {} });
+        return { exitCode: null, kill: vi.fn(), on: vi.fn(), stdout: null, stderr: null };
+      },
+    };
+
+    const gw = getGatewaySupervisor(
+      { gatewayDataDir: '/tmp/gw', projectRoot: '/tmp/root' } as GatewaySupervisorOptions,
+      new InMemoryKeychainStore() as never,
+      undefined,
+      base,
+    );
+
+    (gw as unknown as { spawner: ProcessSpawner }).spawner.spawn('node', ['gateway.js'], {
+      env: {},
+    });
+
+    expect(spawned[0].command).toBe(process.execPath);
+    expect(spawned[0].env.ELECTRON_RUN_AS_NODE).toBe('1');
   });
 });
 

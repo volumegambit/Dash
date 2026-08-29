@@ -503,12 +503,28 @@ export class GatewaySupervisor {
     (gateway as { unref?: () => void }).unref?.();
     closeSync(logFd); // Child inherited the fd; parent can close its copy
 
+    // `spawn` reports a failed LAUNCH asynchronously on the 'error' event
+    // (ENOENT when the binary isn't on PATH, EACCES when it isn't
+    // executable, ...) rather than by throwing. With no listener attached
+    // Node re-raises it as an uncaught exception — inside Electron that
+    // kills the whole main process with a crash dialog. Capture it here so
+    // the wait loop below can fail fast with the real cause.
+    let spawnError: Error | undefined;
+    gateway.on('error', (err: Error) => {
+      spawnError = err;
+    });
+
     // Wait for health endpoint
     const newClient = makeClient(`http://localhost:${managementPort}`, token);
     const deadline = Date.now() + 10_000;
     let health: GatewayHealthResponse | null = null;
     while (Date.now() < deadline) {
       await new Promise<void>((r) => setTimeout(r, 300));
+      if (spawnError) {
+        throw new Error(`Failed to launch the gateway process: ${spawnError.message}`, {
+          cause: spawnError,
+        });
+      }
       try {
         health = await newClient.health();
         break;

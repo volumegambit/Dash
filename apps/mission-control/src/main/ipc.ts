@@ -112,15 +112,24 @@ let gatewaySupervisor: GatewaySupervisor | undefined;
 // when null; torn down on quit.
 let projectsWs: WebSocket | null = null;
 
-function getGatewaySupervisor(
+/**
+ * Build (once) the gateway supervisor. The spawner MUST be the packaged
+ * wrapper: a packaged Dash.app is launched by Finder/launchd, whose PATH
+ * (`/usr/bin:/bin:/usr/sbin:/sbin`) contains no `node` — Homebrew and nvm
+ * installs are both invisible to it. `makePackagedSpawner` re-execs
+ * Electron's own bundled Node instead, so the gateway daemon always has an
+ * interpreter. `baseSpawner` is a seam for tests only.
+ */
+export function getGatewaySupervisor(
   options: GatewaySupervisorOptions,
   keychain: ReturnType<typeof createDefaultKeychainStore>,
   controlPlaneClient?: ControlPlaneClient,
+  baseSpawner: ProcessSpawner = defaultProcessSpawner,
 ): GatewaySupervisor {
   if (!gatewaySupervisor) {
     gatewaySupervisor = new GatewaySupervisor(
       options,
-      undefined,
+      makePackagedSpawner(process.execPath, baseSpawner, app.isPackaged),
       undefined,
       undefined,
       keychain,
