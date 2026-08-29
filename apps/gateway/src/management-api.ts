@@ -12,6 +12,7 @@ import type { ProjectsDb } from '@dash/projects';
 import type { SwarmCoordinator } from '@dash/swarm';
 import { Hono } from 'hono';
 import type { Context } from 'hono';
+import type { BlankEnv } from 'hono/types';
 
 import type { AgentChatCoordinator } from './agent-chat-coordinator.js';
 import type { AgentRegistry, GatewayAgentConfig, RegisteredAgent } from './agent-registry.js';
@@ -359,6 +360,9 @@ export function mapPluginError(err: unknown): {
           : 500;
   return { status, body: { error: message } };
 }
+
+/** Shared by the loopback and `/mobile/v1` registrations of the replay route. */
+const REPLAY_EVENTS_PATH = '/agents/:agentId/conversations/:conversationId/events' as const;
 
 export function createGatewayManagementApp(options: GatewayManagementOptions): Hono {
   const { gateway, agents, agentRegistry, channelRegistry, credentialStore, token, eventBus } =
@@ -1201,7 +1205,10 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
   // passes `sinceSeq` as a query param; the gateway returns every
   // entry with `seq > sinceSeq` in seq order. Empty array when
   // there's nothing to replay.
-  const replayConversationEventsHandler = (c: Context) => {
+  // Typed with its route path so `c.req.param()` returns `string`, not
+  // `string | undefined`: a bare `Context` knows nothing about the path, and
+  // both registrations below share these two params.
+  const replayConversationEventsHandler = (c: Context<BlankEnv, typeof REPLAY_EVENTS_PATH>) => {
     const agentId = c.req.param('agentId');
     const conversationId = c.req.param('conversationId');
     const url = new URL(c.req.url);
@@ -1234,11 +1241,8 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
     );
     return c.json({ entries });
   };
-  app.get('/agents/:agentId/conversations/:conversationId/events', replayConversationEventsHandler);
-  mobileV1.get(
-    '/agents/:agentId/conversations/:conversationId/events',
-    replayConversationEventsHandler,
-  );
+  app.get(REPLAY_EVENTS_PATH, replayConversationEventsHandler);
+  mobileV1.get(REPLAY_EVENTS_PATH, replayConversationEventsHandler);
 
   // --- Conversation title generation ---
   //

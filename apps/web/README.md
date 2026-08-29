@@ -36,23 +36,46 @@ any static host works as long as:
 - It serves `index.html` for unknown paths (client-side routing has none today, but
   a hard refresh on `/` must still work).
 - It sets the **Content-Security-Policy** header below (or an equivalent
-  `<meta>` tag — see [`index.html`](index.html), which already ships one for local/dev
-  use). Set it at the host in production so it can't be stripped or altered by an
+  `<meta>` tag — see [`index.html`](index.html), which already ships one and is the
+  source of truth this section mirrors; `src/csp.test.ts` fails if the two drift).
+  Set it at the host in production so it can't be stripped or altered by an
   intermediary that only understands HTTP headers.
 
 ```
-Content-Security-Policy: default-src 'self'; connect-src 'self' https:; script-src 'self' https://*.clerk.accounts.dev; style-src 'self' 'unsafe-inline'
+Content-Security-Policy: default-src 'self'; connect-src 'self' %VITE_CONTROL_PLANE_URL% https://*.%VITE_RELAY_DOMAIN% wss://*.%VITE_RELAY_DOMAIN% https://*.clerk.accounts.dev https://*.clerk.com; script-src 'self' https://*.clerk.accounts.dev https://*.clerk.com; style-src 'self' 'unsafe-inline'; img-src 'self' https://img.clerk.com data:; font-src 'self' data:; frame-src 'self' https://*.clerk.accounts.dev https://*.clerk.com; worker-src 'self' blob:; base-uri 'self'; form-action 'self'; object-src 'none'
 ```
+
+The `VITE_` placeholders are substituted by Vite at build time from the same
+environment variables documented below, so the rendered `index.html` already
+carries this policy pinned to your control plane and relay domain. When you set
+the header at the host instead, substitute them yourself — with the *same* values
+the bundle was built with.
 
 Notes on that policy:
 
-- `connect-src 'self' https:` is intentionally broad on the network side — the app
-  calls the control plane and an arbitrary number of gateway subdomains
-  (`https://<gatewayId>.<relay-domain>`), which can't be enumerated statically.
-- `script-src` allows only Clerk's own script origin in addition to `'self'` — no
-  other third-party script origins are needed.
-- If you serve the web client under a different Clerk configuration (a different
-  Clerk instance/domain), update `script-src` to match.
+- `connect-src` is pinned to exactly three network destinations: the control
+  plane, any gateway subdomain under your relay domain, and Clerk. It replaces an
+  earlier blanket `https:`, which allowed the app to talk to any HTTPS origin at
+  all — a meaningful difference given the pairing credential lives in IndexedDB
+  and is therefore readable by any script that runs on this origin.
+- `wss://*.<relay-domain>` is listed separately and is **load-bearing**: `connect-src`
+  governs WebSockets too, but an `https://` source does not match a `wss://` URL,
+  so without it the chat socket is blocked while REST keeps working.
+- `img-src` allows `https://img.clerk.com` (Clerk renders user avatars from it) and
+  `data:` (inline icons).
+- `script-src` allows only Clerk's own script origins in addition to `'self'` — no
+  other third-party script origins are needed. `frame-src` and `worker-src` cover
+  Clerk's sign-in widget internals.
+- If you serve the web client under a different Clerk configuration (a Clerk
+  production instance has its own frontend-API domain, e.g. `clerk.example.com`),
+  add that origin to `script-src`, `connect-src` and `frame-src`.
+
+> **Launch checklist:** the Clerk directives above are derived from Clerk's
+> documented load points, not from an observed production render. Before going
+> live, open the deployed app in a real browser with this policy active, complete
+> a full passkey sign-in, and confirm the console reports **zero** CSP violations
+> — a Clerk instance on a custom domain in particular will need its own origin
+> added. Do this against the header the host serves, not just the `<meta>` tag.
 
 ## Environment variables
 

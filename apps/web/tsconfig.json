@@ -10,17 +10,5 @@
     "skipLibCheck": true,
     "types": ["vitest/globals"]
   },
-  "include": ["src"],
-  // The gateway integration test reaches across the workspace boundary into
-  // `apps/gateway/src` (the real Hono/WS boot helper — see the file itself
-  // for why) to drive the real protocol stack against a real gateway. Those
-  // gateway sources are type-checked under `apps/gateway`'s own tsconfig
-  // (built via tsup, not a standalone `tsc --noEmit`); pulling them into
-  // this program via that cross-package import surfaces pre-existing
-  // cross-config strictness mismatches unrelated to this app. Vitest
-  // type-checks nothing at run time (esbuild transform only), so excluding
-  // this directory from `tsc --noEmit` costs nothing at test time — same
-  // precedent as `scripts/*.test.ts` never being part of any package's
-  // `include` either.
-  "exclude": ["src/integration"]
+  "include": ["src"]
 }
