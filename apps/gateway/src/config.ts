@@ -18,9 +18,6 @@ export interface LoadConfigOptions {
   /** Control-plane base URL (e.g. `https://cp.example.com`). When set in relay
    *  mode, the gateway refreshes its own dial token via POST /gw/dial-token. */
   controlPlaneUrl?: string;
-  /** Browser origins allowed to call the `/mobile/v1` surface cross-origin
-   *  (exact match only). Empty/unset disables CORS on that surface entirely. */
-  webOrigins?: string[];
 }
 
 /**
@@ -158,6 +155,54 @@ export function webOriginsFromEnv(env: Record<string, string | undefined> = proc
     .split(',')
     .map((origin) => origin.trim())
     .filter((origin) => origin.length > 0);
+}
+
+/**
+ * The web client's canonical origin for a relay zone: the hosted SPA is
+ * deployed at `app.<zone>` (see apps/web/README.md, "Deploy: its own origin").
+ *
+ * The relay URL a gateway dials is `wss://<gatewayId>.<zone>`, so the zone is
+ * the hostname with the gateway's own label removed. `gatewayId` is required to
+ * do that safely — without it we cannot tell a gateway label from a real one,
+ * so the whole hostname is treated as the zone rather than guessing. Returns
+ * undefined for anything that isn't a real domain (a bare `localhost`, an
+ * unparseable URL), where there is no sensible web origin to allow.
+ */
+function webOriginForRelayZone(relayUrl: string, gatewayId?: string): string | undefined {
+  let hostname: string;
+  try {
+    hostname = new URL(relayUrl).hostname;
+  } catch {
+    return undefined;
+  }
+  const prefix = gatewayId ? `${gatewayId}.` : '';
+  const zone = prefix && hostname.startsWith(prefix) ? hostname.slice(prefix.length) : hostname;
+  if (!zone.includes('.')) return undefined;
+  return `https://app.${zone}`;
+}
+
+/**
+ * Resolve the browser-origin allowlist for the `/mobile/v1` CORS surface.
+ *
+ * A relay-enrolled gateway is reachable by the hosted web client at
+ * `app.<relay zone>`, so that origin is allowed by default — otherwise every
+ * hosted browser session would need a manual env var on every machine, and the
+ * web client would appear broken out of the box.
+ *
+ * `DASH_WEB_ORIGINS` takes precedence when present:
+ *   - unset            → the derived default (or none, when not relay-enrolled)
+ *   - set, non-empty   → exactly that list (extend by naming the default too)
+ *   - set, empty       → no origins at all; CORS stays fully disabled, which is
+ *                        how an operator opts out of browser access entirely
+ */
+export function resolveWebOrigins(
+  options: Pick<LoadConfigOptions, 'relayUrl' | 'gatewayId'>,
+  env: Record<string, string | undefined> = process.env,
+): string[] {
+  if (env.DASH_WEB_ORIGINS !== undefined) return webOriginsFromEnv(env);
+  if (!options.relayUrl) return [];
+  const derived = webOriginForRelayZone(options.relayUrl, options.gatewayId);
+  return derived ? [derived] : [];
 }
 
 export function parseFlags(argv: string[]): LoadConfigOptions {

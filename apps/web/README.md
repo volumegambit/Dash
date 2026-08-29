@@ -104,15 +104,36 @@ chain the design doc for this feature describes, wired through config:
 
 | Where | What to set | Why |
 |---|---|---|
-| Gateway (`apps/gateway`) | `DASH_WEB_ORIGINS` — comma-separated exact origins, e.g. `https://app.relay.example.com` | Gates the gateway's `/mobile/v1` CORS allowlist for browser `fetch`/`XHR`. Unset or empty disables browser CORS on that surface entirely (native/mobile clients are unaffected — they don't send `Origin`). |
+| Gateway (`apps/gateway`) | Usually **nothing** — see below. `DASH_WEB_ORIGINS` (comma-separated exact origins) overrides. | Gates the gateway's `/mobile/v1` CORS allowlist for browser `fetch`/`XHR`. A relay-enrolled gateway defaults to allowing `https://app.<relay zone>`, derived from the relay URL it dials, so the standard deployment needs no per-machine configuration. Native/mobile clients are unaffected either way — they don't send `Origin`. |
 | Control plane (`apps/relay-control-plane`) | `RELAY_CP_WEB_ORIGINS` (env) or `--web-origins` (flag), comma-separated exact origins | Gates CORS on `/v1/*` and `/gw/dial-token` for the browser calls this app makes (listing gateways, minting/revoking pairings). Same rule: unset/empty disables CORS on those routes. |
 | Control plane | Clerk OIDC config (`RELAY_CP_CLERK_FRONTEND_API`, `RELAY_CP_CLERK_CLIENT_ID`) | Must point at the **same Clerk application** as this app's `VITE_CLERK_PUBLISHABLE_KEY`, or the control plane can't verify the ID token this app sends. |
 | Relay (`apps/relay`) | Nothing to configure for this — noted for context | The relay exempts CORS preflights (`OPTIONS`) to canonical mobile targets from its credential check so the gateway's CORS allowlist stays the single origin-policy holder, and rate-limits those preflights on a separate, tighter bucket (`preflightBurst` default 10, `preflightRatePerSec` default 5 per gateway — internal defaults, not currently exposed as flags/env). If browser requests get unexpectedly rate-limited, this is why. |
 
-In short: pick the web client's deployed origin first, then put that exact origin
-in both `DASH_WEB_ORIGINS` (gateway) and `RELAY_CP_WEB_ORIGINS`/`--web-origins`
-(control plane). A mismatch shows up as a browser CORS error at the relevant hop,
-not as an application error message.
+### The gateway's default allowlist
+
+A gateway enrolled with the hosted control plane dials
+`wss://<gatewayId>.<relay zone>`, so it can work out where the web client lives:
+it allows `https://app.<relay zone>` automatically. Deploying this app at that
+origin — the layout "Deploy: its own origin" above recommends — means there is
+nothing to set on each user's machine.
+
+`DASH_WEB_ORIGINS` takes precedence whenever it is present:
+
+| `DASH_WEB_ORIGINS` | Result |
+|---|---|
+| unset | `https://app.<relay zone>` when relay-enrolled; no origins otherwise |
+| `https://a.example, https://b.example` | exactly those — to *extend* rather than replace, list the default alongside your own |
+| set but empty | no origins at all: browser access to this gateway is off |
+
+A gateway that is not relay-enrolled derives nothing (there is no zone to derive
+from) and so has CORS disabled unless `DASH_WEB_ORIGINS` says otherwise.
+
+In short: pick the web client's deployed origin first. If it is
+`https://app.<relay zone>` the gateway already agrees; otherwise put that exact
+origin in `DASH_WEB_ORIGINS`. Either way it must also be in the control plane's
+`RELAY_CP_WEB_ORIGINS`/`--web-origins`, which has no such derivation. A mismatch
+shows up as a browser CORS error at the relevant hop, not as an application
+error message.
 
 ## Auth model (what this client actually holds)
 

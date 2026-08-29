@@ -33,9 +33,9 @@ import { mountChatWs } from './chat-ws.js';
 import {
   parseFlags,
   resolveSwarmConfig,
+  resolveWebOrigins,
   swarmOverridesFromEnv,
   validateGatewayStartupOptions,
-  webOriginsFromEnv,
 } from './config.js';
 import { createControlPlaneClient } from './control-plane-client.js';
 import { createConversationAutoTitleService } from './conversation-auto-title.js';
@@ -74,7 +74,6 @@ async function main() {
   const managementPort = flags.managementPort ?? 9300;
   const channelPort = flags.channelPort ?? 9200;
   const lanPort = flags.lanPort ?? 9400;
-  const webOrigins = webOriginsFromEnv();
   const startedAt = new Date().toISOString();
 
   // One structured logger for the whole gateway process. Text format for
@@ -121,6 +120,11 @@ async function main() {
   // control-plane token refresh.
   const gatewayId = await loadOrCreateGatewayId(flags.gatewayId, dataDir);
   const relayIdentity = await loadOrCreateGatewayIdentity(dataDir);
+  // A relay-enrolled gateway allows the hosted web client at `app.<relay zone>`
+  // by default; DASH_WEB_ORIGINS overrides it (and an empty value opts out).
+  // Resolved here, after `gatewayId`, so the gateway's own label is stripped
+  // from the relay hostname even when it was derived rather than passed in.
+  const webOrigins = resolveWebOrigins({ relayUrl: flags.relayUrl, gatewayId });
   const mobileIdentity: GatewayIdentity = {
     gatewayId,
     publicKey: relayIdentity.publicKeyB64,

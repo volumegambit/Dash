@@ -3,6 +3,7 @@ import {
   DEFAULT_SWARM_CONFIG,
   parseFlags,
   resolveSwarmConfig,
+  resolveWebOrigins,
   swarmOverridesFromEnv,
   validateGatewayStartupOptions,
   webOriginsFromEnv,
@@ -270,5 +271,61 @@ describe('webOriginsFromEnv', () => {
     expect(webOriginsFromEnv({ DASH_WEB_ORIGINS: 'https://app.example.com,,' })).toEqual([
       'https://app.example.com',
     ]);
+  });
+});
+
+describe('resolveWebOrigins', () => {
+  const RELAY = 'wss://alice-mbp.relay.example.com';
+
+  it('derives https://app.<relay zone> when relay-enrolled and the env is unset', () => {
+    expect(resolveWebOrigins({ relayUrl: RELAY, gatewayId: 'alice-mbp' }, {})).toEqual([
+      'https://app.relay.example.com',
+    ]);
+  });
+
+  it('strips only the gateway label, never a real zone label', () => {
+    // The relay URL is `wss://<gatewayId>.<zone>`; without the gatewayId we
+    // must not guess which leading label to drop.
+    expect(resolveWebOrigins({ relayUrl: RELAY }, {})).toEqual([
+      'https://app.alice-mbp.relay.example.com',
+    ]);
+    expect(
+      resolveWebOrigins({ relayUrl: 'wss://relay.example.com', gatewayId: 'alice-mbp' }, {}),
+    ).toEqual(['https://app.relay.example.com']);
+  });
+
+  it('is empty when the gateway is not relay-enrolled', () => {
+    expect(resolveWebOrigins({}, {})).toEqual([]);
+  });
+
+  it('lets DASH_WEB_ORIGINS override the derived default', () => {
+    expect(
+      resolveWebOrigins(
+        { relayUrl: RELAY, gatewayId: 'alice-mbp' },
+        { DASH_WEB_ORIGINS: 'https://staging.example.com' },
+      ),
+    ).toEqual(['https://staging.example.com']);
+  });
+
+  it('lets DASH_WEB_ORIGINS extend by listing the default alongside its own', () => {
+    expect(
+      resolveWebOrigins(
+        { relayUrl: RELAY, gatewayId: 'alice-mbp' },
+        { DASH_WEB_ORIGINS: 'https://app.relay.example.com, https://staging.example.com' },
+      ),
+    ).toEqual(['https://app.relay.example.com', 'https://staging.example.com']);
+  });
+
+  it('treats an explicitly empty DASH_WEB_ORIGINS as "no browser access at all"', () => {
+    // Distinct from unset: this is how an operator who does not want the hosted
+    // web client reaching this gateway turns CORS off entirely.
+    expect(
+      resolveWebOrigins({ relayUrl: RELAY, gatewayId: 'alice-mbp' }, { DASH_WEB_ORIGINS: '' }),
+    ).toEqual([]);
+  });
+
+  it('derives nothing from a relay URL with no real domain', () => {
+    expect(resolveWebOrigins({ relayUrl: 'wss://localhost:8080' }, {})).toEqual([]);
+    expect(resolveWebOrigins({ relayUrl: 'not a url' }, {})).toEqual([]);
   });
 });
