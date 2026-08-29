@@ -179,6 +179,37 @@ describe('createControlPlaneClient against a real control plane + relay', () => 
     gw.close();
   });
 
+  it('setWebChatToken registers the token a later web pairing hands back', async () => {
+    const client = createControlPlaneClient(cpBaseUrl, token);
+    const provision = await client.createGateway('cp-test-1', gwPubB64);
+
+    await client.setWebChatToken(provision.gatewayId, 'chat-capability-token');
+
+    // Registering is idempotent — MC re-uploads on every enroll refresh.
+    await client.setWebChatToken(provision.gatewayId, 'chat-capability-token');
+
+    const res = await fetch(
+      `${cpBaseUrl}/v1/gateways/${provision.gatewayId}/pairings/pairing-id-v1`,
+      {
+        method: 'POST',
+        headers: { authorization: 'Bearer acct-1', 'content-type': 'application/json' },
+        body: JSON.stringify({ clientKind: 'web' }),
+      },
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ chatToken: 'chat-capability-token' });
+  });
+
+  it('setWebChatToken throws on a cross-account gateway (404)', async () => {
+    const client = createControlPlaneClient(cpBaseUrl, token);
+    const provision = await client.createGateway('cp-test-1', gwPubB64);
+
+    const otherAccount = createControlPlaneClient(cpBaseUrl, async () => 'acct-2');
+    await expect(otherAccount.setWebChatToken(provision.gatewayId, 'stolen')).rejects.toThrow(
+      /404/,
+    );
+  });
+
   it('createPairing returns a credential the relay validates at its edge', async () => {
     const client = createControlPlaneClient(cpBaseUrl, token);
     const provision = await client.createGateway('cp-test-1', gwPubB64);

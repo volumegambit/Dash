@@ -582,14 +582,21 @@ function getGatewaySupervisor(
  *   2. claim the label and bind the pubkey; the CP returns the full subdomain
  *      `<gatewayId>.<zone>`, so we derive the bare `host` zone for the dial URL,
  *   3. cache the non-secret issued record (NO gateway secret/key),
- *   4. restart so the supervisor's relay block picks up the cached record.
+ *   4. register the chat capability for browser pairings (best-effort),
+ *   5. restart so the supervisor's relay block picks up the cached record.
  */
 export async function enrollGateway(deps: {
   subdomain: string;
   ensureRunning: () => Promise<GatewayManagementClient>;
   restart: () => Promise<unknown>;
   keychain: { setIssuedGateway: (value: IssuedGateway) => Promise<void> };
-  controlPlaneClient: Pick<ControlPlaneClient, 'createGateway'>;
+  /**
+   * Reads the gateway's chat-scoped capability — the SAME value
+   * `pairing:getInfo` passes as `inputs.mobileToken`, never the administrative
+   * management bearer.
+   */
+  getChatToken: () => Promise<string | null>;
+  controlPlaneClient: Pick<ControlPlaneClient, 'createGateway' | 'setWebChatToken'>;
 }): Promise<void> {
   const client = await deps.ensureRunning();
   const { publicKey } = await client.getRelayIdentity();
@@ -604,7 +611,34 @@ export async function enrollGateway(deps: {
     host,
     dialToken: provision.dialToken,
   });
+  // Browser clients have no QR channel, so the control plane hands them this
+  // capability when they pair. Best-effort and idempotent: enrollment is the
+  // user-visible action and must not fail because web pairing isn't ready, and
+  // every enroll refresh re-uploads (last value wins).
+  await registerWebChatToken(deps, provision.gatewayId);
   await deps.restart();
+}
+
+/** Upload the gateway's chat capability for web pairings. Never throws. */
+async function registerWebChatToken(
+  deps: {
+    getChatToken: () => Promise<string | null>;
+    controlPlaneClient: Pick<ControlPlaneClient, 'setWebChatToken'>;
+  },
+  gatewayId: string,
+): Promise<void> {
+  try {
+    const chatToken = await deps.getChatToken();
+    if (!chatToken) return; // nothing minted yet — a later enroll re-uploads
+    await deps.controlPlaneClient.setWebChatToken(gatewayId, chatToken);
+  } catch (err) {
+    console.warn(
+      `[mc] could not register the web chat token for ${gatewayId}; ` +
+        `browser pairing will be unavailable until the next enroll: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+    );
+  }
 }
 
 async function getClient(gw: GatewaySupervisor): Promise<GatewayManagementClient> {
@@ -1568,6 +1602,9 @@ export async function registerIpcHandlers(
       ensureRunning: () => gw.ensureRunning(),
       restart: () => gw.restart(),
       keychain,
+      // The phone-scoped chat capability — the same one `pairing:getInfo`
+      // sends as `mobileToken`. Never the administrative management bearer.
+      getChatToken: () => gw.getChatToken(),
       controlPlaneClient,
     });
     await refreshGatewayConnection();

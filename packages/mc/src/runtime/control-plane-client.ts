@@ -14,6 +14,7 @@
  * Contract (`apps/relay-control-plane/src/api.ts`):
  *   GET    /health                                  → { status, capabilities }
  *   POST   /v1/gateways {subdomain, publicKey}      → { gatewayId, subdomain, dialToken }
+ *   PUT    /v1/gateways/:id/web-chat-token {chatToken} → { ok: true }
  *   POST   /v1/gateways/:id/pairings/pairing-id-v1 → { credential, pairingId }
  *   GET    /v1/gateways                             → { gateways: GatewayRecord[] }
  *   GET    /v1/gateways/:id/pairings                → { pairings: PairingRecord[] }
@@ -56,6 +57,13 @@ export interface ControlPlaneClient {
   isSubdomainAvailable(label: string): Promise<boolean>;
   /** Provision a one-time pairing credential for an owned gateway. */
   createPairing(gatewayId: string, deviceLabel?: string): Promise<PairingProvision>;
+  /**
+   * Register the chat-scoped capability the control plane hands to browser
+   * pairings of `gatewayId`. Browsers have no QR channel, so this is how a web
+   * client ever receives one. Pass the gateway's MOBILE/chat token — the same
+   * value the pairing QR carries — never the administrative bearer. Idempotent.
+   */
+  setWebChatToken(gatewayId: string, chatToken: string): Promise<void>;
   /** List the gateways the signed-in account owns, each with its devices. */
   listGateways(): Promise<GatewaySummary[]>;
   /** Revoke a single device pairing. */
@@ -149,6 +157,14 @@ export function createControlPlaneClient(
         throw new Error('control plane: createPairing returned no pairing id');
       }
       return { credential: body.credential, pairingId: body.pairingId };
+    },
+
+    async setWebChatToken(gatewayId: string, chatToken: string): Promise<void> {
+      await request<unknown>(
+        'PUT',
+        `/v1/gateways/${encodeURIComponent(gatewayId)}/web-chat-token`,
+        { chatToken },
+      );
     },
 
     async listGateways(): Promise<GatewaySummary[]> {

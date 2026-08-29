@@ -852,13 +852,15 @@ describe('enrollGateway', () => {
       subdomain: 'alice-mbp.relay.dash.example',
       dialToken: 'dial-1',
     });
+    const setWebChatToken = vi.fn().mockResolvedValue(undefined);
 
     await enrollGateway({
       subdomain: 'alice-mbp',
       ensureRunning,
       restart,
       keychain,
-      controlPlaneClient: { createGateway } as never,
+      getChatToken: async () => 'chat-capability',
+      controlPlaneClient: { createGateway, setWebChatToken } as never,
     });
 
     // Pubkey read over loopback, then label claimed with that pubkey.
@@ -873,6 +875,82 @@ describe('enrollGateway', () => {
     });
     // Relay mode is applied through a restart.
     expect(restart).toHaveBeenCalledOnce();
+  });
+
+  it('uploads the chat-scoped capability — never the administrative bearer', async () => {
+    const keychain = new InMemoryKeychainStore();
+    await keychain.setGatewayToken('ADMIN-MANAGEMENT-BEARER');
+    await keychain.setChatToken('chat-capability');
+    const getRelayIdentity = vi.fn().mockResolvedValue({ publicKey: 'pubkey-b64' });
+    const createGateway = vi.fn().mockResolvedValue({
+      gatewayId: 'alice-mbp',
+      subdomain: 'alice-mbp.relay.dash.example',
+      dialToken: 'dial-1',
+    });
+    const setWebChatToken = vi.fn().mockResolvedValue(undefined);
+
+    await enrollGateway({
+      subdomain: 'alice-mbp',
+      ensureRunning: vi.fn().mockResolvedValue({ getRelayIdentity }),
+      restart: vi.fn().mockResolvedValue(undefined),
+      keychain,
+      // Exactly the source `pairing:getInfo` uses for `inputs.mobileToken`.
+      getChatToken: () => keychain.getChatToken(),
+      controlPlaneClient: { createGateway, setWebChatToken } as never,
+    });
+
+    expect(setWebChatToken).toHaveBeenCalledWith('alice-mbp', 'chat-capability');
+    expect(setWebChatToken).not.toHaveBeenCalledWith('alice-mbp', 'ADMIN-MANAGEMENT-BEARER');
+  });
+
+  it('does not fail enrollment when the chat-token upload fails', async () => {
+    const keychain = new InMemoryKeychainStore();
+    const getRelayIdentity = vi.fn().mockResolvedValue({ publicKey: 'pubkey-b64' });
+    const restart = vi.fn().mockResolvedValue(undefined);
+    const createGateway = vi.fn().mockResolvedValue({
+      gatewayId: 'alice-mbp',
+      subdomain: 'alice-mbp.relay.dash.example',
+      dialToken: 'dial-1',
+    });
+    const setWebChatToken = vi.fn().mockRejectedValue(new Error('control plane down'));
+
+    await expect(
+      enrollGateway({
+        subdomain: 'alice-mbp',
+        ensureRunning: vi.fn().mockResolvedValue({ getRelayIdentity }),
+        restart,
+        keychain,
+        getChatToken: async () => 'chat-capability',
+        controlPlaneClient: { createGateway, setWebChatToken } as never,
+      }),
+    ).resolves.toBeUndefined();
+
+    // Enrollment still completed: the issued record is cached and the gateway
+    // restarted into relay mode. Web pairings just aren't available yet.
+    expect(await keychain.getIssuedGateway()).toMatchObject({ gatewayId: 'alice-mbp' });
+    expect(restart).toHaveBeenCalledOnce();
+  });
+
+  it('skips the upload when no chat token exists yet', async () => {
+    const keychain = new InMemoryKeychainStore();
+    const getRelayIdentity = vi.fn().mockResolvedValue({ publicKey: 'pubkey-b64' });
+    const createGateway = vi.fn().mockResolvedValue({
+      gatewayId: 'alice-mbp',
+      subdomain: 'alice-mbp.relay.dash.example',
+      dialToken: 'dial-1',
+    });
+    const setWebChatToken = vi.fn().mockResolvedValue(undefined);
+
+    await enrollGateway({
+      subdomain: 'alice-mbp',
+      ensureRunning: vi.fn().mockResolvedValue({ getRelayIdentity }),
+      restart: vi.fn().mockResolvedValue(undefined),
+      keychain,
+      getChatToken: async () => null,
+      controlPlaneClient: { createGateway, setWebChatToken } as never,
+    });
+
+    expect(setWebChatToken).not.toHaveBeenCalled();
   });
 });
 
