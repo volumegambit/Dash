@@ -324,6 +324,21 @@ paths:
                   - $ref: '#/components/schemas/ConversationDeletedEvent'
         '401':
           $ref: '#/components/responses/Unauthorized'
+  /ws-ticket:
+    post:
+      operationId: createWsTicket
+      summary: Mint a single-use, short-lived WebSocket upgrade ticket.
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Ticket created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WsTicketResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
 components:
   securitySchemes:
     bearerAuth:
@@ -789,3 +804,14 @@ components:
         type: { const: 'conversation:deleted' }
         conversationId: { type: string, format: uuid }
         revision: { type: integer, minimum: 1 }
+    WsTicketResponse:
+      type: object
+      required: [ticket, expiresAt]
+      additionalProperties: false
+      properties:
+        ticket:
+          type: string
+          minLength: 32
+        expiresAt:
+          type: string
+          format: date-time

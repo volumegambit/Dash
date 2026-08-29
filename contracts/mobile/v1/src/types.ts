@@ -286,3 +286,9 @@ export interface ConversationDeletedEvent {
   conversationId: string;
   revision: number;
 }
+
+/** Response of POST /mobile/v1/ws-ticket — single-use WebSocket upgrade ticket. */
+export interface WsTicketResponse {
+  ticket: string;
+  expiresAt: string;
+}
