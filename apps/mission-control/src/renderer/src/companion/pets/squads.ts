@@ -1,21 +1,21 @@
-import type { CrewKind, PetKind } from '../../../../shared/ipc.js';
+import type { PetKind, SquadKind } from '../../../../shared/ipc.js';
 
-export type { CrewKind };
+export type { SquadKind };
 
-type CrewMembers = readonly [PetKind, PetKind, PetKind, PetKind, PetKind];
+type SquadMembers = readonly [PetKind, PetKind, PetKind, PetKind, PetKind];
 
-export interface Crew {
+export interface Squad {
   label: string;
-  members: CrewMembers;
+  members: SquadMembers;
 }
 
 /**
- * The nine selectable crews. Each renders five pets side by side, one per
- * running agent (see {@link crewMoods}). Members are listed in display order.
- * The `gym` kind is named to avoid clashing with the standalone
- * `fitness-influencer` pet.
+ * The nine selectable squads. The widget renders one member per running agent
+ * (see {@link squadMembers}), taking members in the display order listed here.
+ * The `gym` kind keeps its historical id from the crew era; persisted values
+ * must keep parsing (see parseCompanionSelection).
  */
-export const CREWS: Record<CrewKind, Crew> = {
+export const SQUADS: Record<SquadKind, Squad> = {
   kitchen: {
     label: 'Kitchen',
     members: ['sous-chef', 'pastry-chef', 'sushi-chef', 'butcher', 'dishwasher'],
@@ -37,7 +37,7 @@ export const CREWS: Record<CrewKind, Crew> = {
     members: ['police-officer', 'detective', 'k9-handler', 'swat', 'motorcycle-cop'],
   },
   fire: {
-    label: 'Fire Crew',
+    label: 'Fire Squad',
     members: [
       'firefighter',
       'fire-chief',
@@ -60,8 +60,8 @@ export const CREWS: Record<CrewKind, Crew> = {
   },
 };
 
-/** Crews in picker display order. */
-export const CREW_KINDS: readonly CrewKind[] = [
+/** Squads in picker display order. */
+export const SQUAD_KINDS: readonly SquadKind[] = [
   'kitchen',
   'office',
   'wait',
@@ -73,5 +73,8 @@ export const CREW_KINDS: readonly CrewKind[] = [
   'gym',
 ];
 
-/** Number of pets in every crew (fleet size). */
-export const CREW_SIZE = 5;
+/** Maximum members a squad can show at once (roster size). */
+export const SQUAD_SIZE = 5;
+
+/** Squad used when the stored selection is unset or invalid. */
+export const DEFAULT_SQUAD: SquadKind = 'kitchen';

@@ -68,9 +68,9 @@ describe('Companion (headless publisher)', () => {
     ]);
   });
 
-  it('publishes the selected pet when visible and on replay', () => {
+  it('publishes the selected squad when visible and on replay', () => {
     seedOneWorkingSession();
-    useUIStore.setState({ companionVisible: true, companionSelection: 'cat' });
+    useUIStore.setState({ companionVisible: true, companionSelection: 'office' });
 
     let replay: (() => void) | undefined;
     mockApi.onCompanionReplayRequest.mockImplementation((cb: () => void) => {
@@ -80,13 +80,13 @@ describe('Companion (headless publisher)', () => {
 
     render(<Companion />);
 
-    expect(mockApi.companionPublishPet).toHaveBeenCalledWith('cat');
+    expect(mockApi.companionPublishPet).toHaveBeenCalledWith('office');
     mockApi.companionPublishPet.mockClear();
 
     expect(replay).toBeTypeOf('function');
     replay?.();
 
-    expect(mockApi.companionPublishPet).toHaveBeenCalledWith('cat');
+    expect(mockApi.companionPublishPet).toHaveBeenCalledWith('office');
   });
 
   it('keeps the widget window in sync with the visibility preference', () => {

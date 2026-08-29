@@ -948,7 +948,7 @@ There is no pre-send "missing credential" banner in chat; the input is not gated
 
 ## Section 22: Settings
 
-The Settings page has its own left sub-nav with seven sections: **General** (Gateway, Companion, About) and **Agent Defaults** (Default Model Chain, Web Search) at the top, then **PROVIDERS & TOOLS** (AI Providers, Connectors (MCP), Plugins) and **ACCESS** (Messaging Apps, Devices). AI Providers, Connectors, Plugins, and Messaging Apps keep their existing behavior (Sections 3, 19, 20) — only their location changed.
+The Settings page has its own left sub-nav with seven sections: **General** (Gateway, Squad, About) and **Agent Defaults** (Default Model Chain, Web Search) at the top, then **PROVIDERS & TOOLS** (AI Providers, Connectors (MCP), Plugins) and **ACCESS** (Messaging Apps, Devices). AI Providers, Connectors, Plugins, and Messaging Apps keep their existing behavior (Sections 3, 19, 20) — only their location changed.
 
 ### 22.0 Settings Sub-nav
 1. Navigate to Settings (sidebar footer entry)
@@ -995,13 +995,13 @@ The Settings page has its own left sub-nav with seven sections: **General** (Gat
 ### 22.4 About Section (General)
 1. **Verify:** App version number is displayed (e.g., "DashSquad v0.x.x")
 
-### 22.5 Companion Toggle (General)
-1. **Verify:** "Companion" section with a "Show the companion" checkbox
-2. **Verify:** When the checkbox is on, a pet picker with a wrapping grid of animated thumbnails (28 pets) appears below it
+### 22.5 Squad Toggle (General)
+1. **Verify:** "Squad" section with a "Show the squad" checkbox
+2. **Verify:** When the checkbox is on, a squad picker with nine squad cards (each a row of five animated thumbnails + label) appears below it — no individual pet grid
 3. Toggle the checkbox off
-4. **Verify:** The floating companion widget disappears and the pet picker is hidden
+4. **Verify:** The floating squad widget disappears and the squad picker is hidden
 5. Toggle it back on
-6. **Verify:** The companion widget reappears (full widget behavior is covered in Section 30)
+6. **Verify:** The squad widget reappears (full widget behavior is covered in Section 30)
 
 ### 22.6 Pair Device (Devices)
 1. Navigate to Settings → Devices
@@ -1385,30 +1385,32 @@ Covers the Plugins screen (P3), plugin trust, per-agent plugin selection (P5), a
 7. Agent detail → Config tab: the plugins multiselect lists built-ins and installed plugins alike. Select only "Assistant" for an agent. **Verify:** in chat, that agent can `load_skill deep-research` but NOT `code-review`.
 8. Agent detail → Skills tab. **Verify:** there is NO "Include bundled skill library" checkbox; built-in skills appear in the list as read-only plugin skills.
 
-## Section 30: Companion widget (floating pet)
+## Section 30: Squad widget (floating desktop squad)
 
-**Precondition:** App running, gateway healthy, at least one agent created, and the **Show the companion** toggle enabled (Settings → General → Companion). The companion is a separate always-on-top desktop window (not part of the main MC window); the in-app component is a headless publisher that streams per-agent session statuses (each carrying the agent's identity and a short **activity preview**) and the selected pet **or crew** to that window over IPC. The user selects **either a single pet or a whole crew** (Settings → General → Companion → PetPicker, which has a **Crews** section above the **Pets** grid). A single-pet selection renders one **selectable, frame-animated pixel-art pet** (PixelLab-generated) — one of **73 pets** — animals (cat, dog with green head-ribbon, pig, rabbit, red panda, bear, lion, quokka, unicorn), characters (wizard, ninja, chef, pirate, knight, robot, astronaut, Bigfoot, Bollywood star, royal guard), cultural icons (Fortune God/Cai Shen, Merlion, maneki-neko), influencer archetypes (wok uncle, fitness influencer, streamer, beauty guru, tech reviewer, travel vlogger), and the members of **nine themed crews** of five each — **kitchen** (sous chef, pastry chef, sushi chef, butcher, dishwasher), **office** (boss, accountant, intern, IT support, receptionist), **wait staff** (waiter, barista, sommelier, bartender, bubble-tea maker), **soldiers** (sergeant, scout, combat medic, rifleman, rocket soldier), **police** (police officer, detective, K9 handler, SWAT, motorcycle cop), **fire crew** (firefighter, fire chief, ladder firefighter, rookie firefighter, fire dalmatian), **villagers** (baker, blacksmith, fisherman, shepherd, delivery courier), **farmers** (farmer, dairy farmer, fruit picker, beekeeper, scarecrow), and **gym** (sled pusher, wall baller, rower, kettlebell athlete, weightlifter) — default **red panda**. A **crew** selection renders all five members side by side as a **fleet**: member *i* mirrors the *i*-th running agent (agents sorted by name), each member showing that agent's own aggregate mood; extra members render idle.
+**Precondition:** App running, gateway healthy, at least one agent created, and the **Show the squad** toggle enabled (Settings → General → Squad). The squad is a separate always-on-top desktop window (not part of the main MC window); the in-app component is a headless publisher that streams per-agent session statuses (each carrying the agent's identity and a short **activity preview**) and the selected squad to that window over IPC. The user selects **one of nine themed squads** (Settings → General → Squad → SquadPicker — squads are the only selectable unit; there is **no** individual-pet selection): **kitchen** (sous chef, pastry chef, sushi chef, butcher, dishwasher), **office** (boss, accountant, intern, IT support, receptionist), **wait staff** (waiter, barista, sommelier, bartender, bubble-tea maker), **soldiers** (sergeant, scout, combat medic, rifleman, rocket soldier), **police** (police officer, detective, K9 handler, SWAT, motorcycle cop), **fire squad** (firefighter, fire chief, ladder firefighter, rookie firefighter, fire dalmatian), **villagers** (baker, blacksmith, fisherman, shepherd, delivery courier), **farmers** (farmer, dairy farmer, fruit picker, beekeeper, scarecrow), and **gym** (sled pusher, wall baller, rower, kettlebell athlete, weightlifter) — default **kitchen**. Each member is a frame-animated pixel-art sprite (PixelLab-generated), 45 sprites total.
 
-For a single pet, the widget shows one **aggregate mood** across all sessions; each mood plays a distinct, pet-appropriate animation — working is especially characterful (dog runs, rabbit digs, pig roots, wizard casts fireballs, chef chops, Fortune God counts gold coins, Merlion spouts water, royal guard marches in place) — and shows the mood hue as a small **collar badge dot**. Mood priority (highest wins): **error** (red `#f87171`) > **needs** (amber `#f5c518`) > **working** (blue `#3da5d9`) > **done** (green `#34c759`) > **idle** (gray `#9aa0a6` — no sessions). A **speech bubble** above the pet (or each crew member) surfaces what the agent is doing — the live tool (e.g. "Edit: auth.ts"), the question when it needs you, the error, or the final result when done.
+The widget renders **exactly one squad member per running agent** (capped at five): member *i* mirrors the *i*-th running agent (agents **sorted by name**), members are taken from the squad roster in display order, and the window **resizes live** to fit the member count. With **no agents running, a single idle member** remains (the widget never renders empty and never shows idle spares). Each member shows its own agent's aggregate mood via a distinct animation and a **collar badge dot**. Mood priority (highest wins): **error** (red `#f87171`) > **needs** (amber `#f5c518`) > **working** (blue `#3da5d9`) > **done** (green `#34c759`) > **idle** (gray `#9aa0a6` — no sessions). A **speech bubble** above each member surfaces what its agent is doing — the live tool (e.g. "Edit: auth.ts"), the question when it needs you, the error, or the final result when done. Bubbles must never be clipped by the window edges: the window pads 24px on each side (more than the bubble's max overhang past an edge member), and every other member's bubble is raised so adjacent bubbles don't collide.
+
+Legacy persisted selections keep working: an old `crew:<kind>` value selects that squad; an old single-pet id falls back to the default squad.
 
 ### 30.1 Widget appears and floats
-1. Launch MC with the companion enabled.
-2. **Verify:** A small pixel-art pet widget appears at the **bottom-right** of the screen (frameless, transparent background, not shown in the taskbar/dock switcher). With no sessions running, the pet is **idle** (gray collar dot, slow idle animation).
-3. **Verify:** The pet is the one selected in Settings (default **red panda** on a fresh install) — it does **not** start blank (the selection is replayed to the widget when it opens).
+1. Launch MC with the squad enabled.
+2. **Verify:** A pixel-art squad widget appears at the **bottom-right** of the screen (frameless, transparent background, not shown in the taskbar/dock switcher). With no agents running it shows a **single idle member** — the first member of the selected squad (gray collar dot, slow idle animation) — never an empty window and never five idle spares.
+3. **Verify:** The member belongs to the squad selected in Settings (default **kitchen** → sous chef on a fresh install) — it does **not** start blank (the selection is replayed to the widget when it opens).
 4. Bring another application fully in front of MC.
 5. **Verify:** The widget still floats **on top of** that other app.
 
-### 30.2 Pet picker swaps the pet live
-1. In Settings → General → Companion, confirm the **PetPicker** shows a **Crews** section (nine crew cards, each a row of five 24px thumbnails + label) above a **Pets** grid of 73 labeled thumbnails, both wrapping neatly below the **Show the companion** checkbox, with the current selection highlighted.
-2. Click the **Cat** thumbnail.
-3. **Verify:** The floating widget swaps to the **cat** sprite **live** (no restart needed).
-4. Click the **Red panda** thumbnail.
-5. **Verify:** The floating widget swaps back to the **red panda** sprite live.
+### 30.2 Squad picker swaps the squad live
+1. In Settings → General → Squad, confirm the **SquadPicker** shows a single **Squads** section (nine squad cards, each a row of five 24px thumbnails + label) below the **Show the squad** checkbox, with the current selection highlighted. **Verify:** there is **no "Pets" section** and no individual pet thumbnails are selectable.
+2. Click the **Office** squad card.
+3. **Verify:** The floating widget swaps to the office roster **live** (no restart needed) — with no agents running, the single idle member becomes the **boss**.
+4. Click the **Kitchen** squad card.
+5. **Verify:** The widget swaps back to the kitchen roster live.
 
-### 30.3 Pet selection persists across restart
-1. Select a pet (e.g. **Cat**) in Settings → General → Companion.
+### 30.3 Squad selection persists across restart
+1. Select a squad (e.g. **Police**) in Settings → General → Squad.
 2. Fully quit and relaunch MC.
-3. **Verify:** The widget reappears rendering the **same pet** you selected (selection persisted; the picker shows it highlighted).
+3. **Verify:** The widget reappears rendering the **same squad** you selected (selection persisted; the picker shows it highlighted).
 
 ### 30.4 Survives main-window minimize
 1. Minimize the main MC window.
@@ -1423,10 +1425,10 @@ For a single pet, the widget shows one **aggregate mood** across all sessions; e
 4. **Verify:** The widget reappears **at the position you left it** (position persisted across restarts).
 
 ### 30.6 Settings toggle hides/shows it
-1. In Settings → General → Companion, uncheck **Show the companion**.
-2. **Verify:** The widget disappears immediately, and the PetPicker is hidden (only shown when the companion is visible).
+1. In Settings → General → Squad, uncheck **Show the squad**.
+2. **Verify:** The widget disappears immediately, and the SquadPicker is hidden (only shown when the squad is visible).
 3. Re-check the toggle.
-4. **Verify:** The widget reappears (bottom-right, or its last persisted position) with the previously selected pet, and the PetPicker reappears.
+4. **Verify:** The widget reappears (bottom-right, or its last persisted position) with the previously selected squad, and the SquadPicker reappears.
 5. Toggle it **off**, then fully quit and relaunch MC.
 6. **Verify:** The widget stays hidden after restart (the visibility preference is persisted).
 
@@ -1439,62 +1441,63 @@ For a single pet, the widget shows one **aggregate mood** across all sessions; e
 2. Disconnect / unplug that secondary display (or disable it in the OS display settings).
 3. **Verify:** The widget is **clamped back onto a visible display** (it does not vanish off-screen).
 
-### 30.9 Aggregate mood reflects session state
-The widget shows a **single aggregate mood** across all sessions, not one indicator per session. Drive sessions into each state and observe the pet: each mood plays a distinct animation, and the collar badge dot shows the mood hue. Test the priority ordering too.
+### 30.9 Per-member mood reflects its agent's session state
+Each visible member shows **its own agent's aggregate mood** (across that agent's sessions). Drive one agent's sessions into each state and observe its member: each mood plays a distinct animation, and the collar badge dot shows the mood hue. Test the priority ordering too.
 1. With **no sessions** running.
-2. **Verify:** The pet is **idle** — gray collar dot, slow idle animation.
+2. **Verify:** The single member is **idle** — gray collar dot, slow idle animation.
 3. Start a long-running task so a session is **working**.
-4. **Verify:** The pet shows the **working** mood — **blue collar dot**, the pet's working animation (e.g. running, digging, rooting, spell-casting, chopping, coin-counting).
+4. **Verify:** That agent's member shows the **working** mood — **blue collar dot**, the member's working animation (e.g. chopping, filing, marching).
 5. Ask a question the agent surfaces so a session **needs you** (unanswered).
-6. **Verify:** The pet shows the **needs** mood — **amber collar dot**, the pet's needs-you animation (e.g. barking, roaring, bell-ringing, spyglass-scanning, red-envelope offering). (Needs outranks working: with both a working and a needs session, the pet is amber.)
+6. **Verify:** The member shows the **needs** mood — **amber collar dot**. (Needs outranks working: with both a working and a needs session on the same agent, its member is amber.)
 7. Let a session **finish** while you are away (unread done), with nothing working or needing attention.
-8. **Verify:** The pet shows the **done** mood — **green collar dot**, celebratory jumping.
+8. **Verify:** The member shows the **done** mood — **green collar dot**, celebratory jumping.
 9. Force a session to **error**.
-10. **Verify:** The pet shows the **error** mood — **red collar dot**, the pet's error animation (e.g. growling, foot-thumping, short-circuiting, spell backfiring, hat slipping over the eyes). (Error is highest priority: with an errored session present, the pet is red regardless of any working/needs/done sessions.)
+10. **Verify:** The member shows the **error** mood — **red collar dot**. (Error is highest priority: with an errored session present, that agent's member is red regardless of any working/needs/done sessions.)
 
 ### 30.10 Animation quality and reduced motion
-Spot-check at least five pets including one humanoid (e.g. wizard) and one v3-custom-heavy pet (e.g. royal guard).
+Spot-check at least five members across different squads (e.g. sous chef, boss, sergeant, fire dalmatian, weightlifter).
 1. With any mood active, watch the widget for ~10 seconds.
 2. **Verify:** The animation loops smoothly (no stutter, no flashing, no visible frame seams) and the pixels stay crisp (no blur from scaling).
 3. **Verify:** Playback speed feels right for the mood: idle is calm/slow, working is brisk, done is a lively jump loop.
 4. Switch moods (e.g. start then stop a task) and **verify:** the animation restarts cleanly from the new mood's first frame — no flash of the previous mood's frame.
 5. Enable the OS reduced-motion setting (macOS: System Settings → Accessibility → Display → Reduce motion), then reopen the widget.
-6. **Verify:** The pet holds a **static frame** (first frame of the mood) instead of animating; the collar badge dot still shows the mood color.
-7. In Settings → General → Companion, **verify:** all PetPicker thumbnails play their idle animations (static under reduced motion).
-11. Clear all sessions (none active or needing attention).
-12. **Verify:** The pet returns to **idle/asleep** (gray).
+6. **Verify:** Each member holds a **static frame** (first frame of the mood) instead of animating; the collar badge dot still shows the mood color.
+7. In Settings → General → Squad, **verify:** all SquadPicker thumbnails play their idle animations (static under reduced motion).
+8. Clear all sessions (none active or needing attention).
+9. **Verify:** The remaining single member returns to **idle/asleep** (gray).
 
-### 30.11 Crew selection & fleet display
-The companion can render a whole **crew** as a fleet instead of a single pet: five members side by side, member *i* mirroring the *i*-th running agent (agents sorted by name).
-1. In Settings → General → Companion → PetPicker, open the **Crews** section and click the **Kitchen** crew card.
-2. **Verify:** The widget window **grows wider** and renders the **five kitchen members** (sous chef, pastry chef, sushi chef, butcher, dishwasher) side by side, anchored at the same bottom-right corner (it grows leftward, not off-screen). With no agents running, all five are **idle** (gray collar dots).
+### 30.11 One member per running agent (window resizes live)
+The widget shows exactly one squad member per distinct running agent, capped at five, and the window width tracks the member count.
+1. Select the **Kitchen** squad with **no agents running**.
+2. **Verify:** Exactly **one** idle member (sous chef) renders in a compact window — not five.
 3. Create/enable **two agents** and drive one into **working** and the other into **error** (each with an active session).
-4. **Verify:** The first two fleet members (agents **sorted by name**) show those agents' moods — one blue (working), one red (error) — and the remaining three stay **idle**. Each member's collar dot reflects **its own** agent's mood (this is not a single aggregate).
-5. Stop/clear the working agent's session.
-6. **Verify:** That member returns to **idle**; the other member is unchanged.
-7. Reselect a **single pet** (e.g. **Red panda**) in the picker.
-8. **Verify:** The widget window **shrinks back** to the compact single-pet size, anchored at the same corner, and shows just that pet.
-9. Reselect a crew, then fully quit and relaunch MC.
-10. **Verify:** The **crew selection persists** — the widget reopens as the fleet (wide window), not a single pet, and the picker shows that crew highlighted.
-11. Enable OS reduced-motion and reopen the widget on a crew.
-12. **Verify:** Each member holds a **static frame** for its mood (no animation); collar dots still show the right hues.
+4. **Verify:** The window **grows** (anchored at the same bottom-right corner, growing leftward) to show exactly **two members** — the first two kitchen roster members, mapped to the agents **sorted by name** — one blue (working), one red (error). Each member's collar dot reflects **its own** agent's mood; there are **no idle spares**.
+5. Run **two sessions on the same agent**.
+6. **Verify:** That agent still gets **one** member (sessions aggregate into the member's mood; the count is per agent, not per session).
+7. Stop/clear one agent's sessions entirely.
+8. **Verify:** The window **shrinks back** to one fewer member; no idle placeholder is left behind for the stopped agent (unless it was the last one — then the single idle member remains).
+9. Drive **six** agents at once.
+10. **Verify:** Only **five** members render (the first five agents by name); the window does not grow past the five-member width.
+11. Enable OS reduced-motion and repeat step 3.
+12. **Verify:** Members still appear/disappear with agent count; each holds a static frame for its mood.
 
-### 30.12 Companion speech bubbles
-A bubble above the pet (or each crew member) surfaces what the agent is actually doing.
-1. With a **single pet** selected, start a task that runs tools (e.g. an edit).
-2. **Verify:** A small mood-tinted **speech bubble** appears above the pet showing the **live tool** activity (e.g. "Edit: auth.ts"); it updates as the tool changes and truncates long text with an ellipsis.
-3. Trigger a state where the agent **asks a question** (needs you).
-4. **Verify:** The bubble shows the **question text** (amber-tinted).
-5. Force an **error**.
-6. **Verify:** The bubble shows the **error text** (red-tinted).
-7. Let the session **finish** (done).
-8. **Verify:** The bubble shows the **final text** briefly (~4s) then **fades**, so it reads as a notification rather than permanent chrome.
-9. Clear all sessions (idle).
-10. **Verify:** **No bubble** is shown when idle.
-11. Switch to a **crew** and run two agents.
-12. **Verify:** Each active member shows **its own** bubble with that agent's activity; the bubbles are staggered so they don't overlap in the five-wide row. Idle members show no bubble.
-13. Enable OS reduced-motion.
-14. **Verify:** Bubbles still appear with the right text but **without** the fade-in animation.
+### 30.12 Squad speech bubbles (always visible, never clipped)
+A bubble above each member surfaces what its agent is actually doing.
+1. With one agent running, start a task that runs tools (e.g. an edit).
+2. **Verify:** A small mood-tinted **speech bubble** appears above the member showing the **live tool** activity (e.g. "Edit: auth.ts"); it updates as the tool changes and truncates long text with an ellipsis.
+3. **Verify (no clipping):** the bubble is **fully visible** — its rounded border is complete on both sides, not cut off by the widget window's left or right edge. This must hold for the **leftmost and rightmost** members when several agents run.
+4. Trigger a state where the agent **asks a question** (needs you).
+5. **Verify:** The bubble shows the **question text** (amber-tinted).
+6. Force an **error**.
+7. **Verify:** The bubble shows the **error text** (red-tinted).
+8. Let the session **finish** (done).
+9. **Verify:** The bubble shows the **final text** briefly (~4s) then **fades**, so it reads as a notification rather than permanent chrome.
+10. Clear all sessions (idle).
+11. **Verify:** **No bubble** is shown when idle.
+12. Run **two or more agents**.
+13. **Verify:** **Every** visible member shows **its own** bubble with that agent's activity (working/needs/error moods always show a bubble); adjacent bubbles are staggered vertically so they don't overlap, and none is clipped at the window edges.
+14. Enable OS reduced-motion.
+15. **Verify:** Bubbles still appear with the right text but **without** the fade-in animation.
 
 ## Section 31: Agent Swarm
 

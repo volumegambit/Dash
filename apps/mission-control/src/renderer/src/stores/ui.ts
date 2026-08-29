@@ -1,14 +1,11 @@
 import { create } from 'zustand';
 import type { CompanionSelection } from '../../../shared/ipc.js';
-import {
-  parseCompanionSelection,
-  serializeCompanionSelection,
-} from '../companion/pets/companionSelection.js';
+import { parseCompanionSelection } from '../companion/pets/companionSelection.js';
 
 const COMPANION_VISIBLE_KEY = 'dash.companion.visible';
-// Holds a CompanionSelection string (a PetKind or `crew:<CrewKind>`). The key
-// is unchanged from when it held only a PetKind, so old values migrate for
-// free: a persisted pet id is already a valid selection.
+// Holds a CompanionSelection (squad kind) string. The key is unchanged from
+// the single-pet/crew eras so old values migrate for free: legacy `crew:*`
+// and pet-id values normalize via parseCompanionSelection.
 const COMPANION_SELECTION_KEY = 'dash.companion.pet';
 
 function loadCompanionVisible(): boolean {
@@ -23,8 +20,8 @@ function loadCompanionVisible(): boolean {
 }
 
 /**
- * Load the persisted companion selection, normalized: unknown or malformed
- * values (including invalid crews) collapse to the default pet.
+ * Load the persisted squad selection, normalized: unknown or malformed values
+ * (including retired pet ids) collapse to the default squad.
  */
 export function loadCompanionSelection(): CompanionSelection {
   let raw: string | null = null;
@@ -33,7 +30,7 @@ export function loadCompanionSelection(): CompanionSelection {
   } catch {
     // ignore
   }
-  return serializeCompanionSelection(parseCompanionSelection(raw));
+  return parseCompanionSelection(raw);
 }
 
 interface UIState {

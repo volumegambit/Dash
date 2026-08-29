@@ -1,7 +1,7 @@
 import { createFileRoute } from '@tanstack/react-router';
 import { RefreshCw } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
-import { PetPicker } from '../../companion/pets/PetPicker.js';
+import { SquadPicker } from '../../companion/pets/SquadPicker.js';
 import { useUIStore } from '../../stores/ui.js';
 
 export function GeneralSettings(): JSX.Element {
@@ -38,7 +38,7 @@ export function GeneralSettings(): JSX.Element {
         <h1 className="font-[family-name:var(--font-display)] text-[22px] font-semibold text-foreground">
           General
         </h1>
-        <p className="mt-1 text-sm text-muted">Application, gateway, and companion settings.</p>
+        <p className="mt-1 text-sm text-muted">Application, gateway, and squad settings.</p>
       </div>
 
       <div className="flex-1 overflow-y-auto p-8">
@@ -70,12 +70,12 @@ export function GeneralSettings(): JSX.Element {
 
         <div className="mt-6 rounded-lg border border-border bg-card-bg p-4">
           <h2 className="mb-1 font-[family-name:var(--font-mono)] text-[11px] uppercase tracking-[2px] text-accent">
-            Companion
+            Squad
           </h2>
           <p className="mb-3 text-xs text-muted">
-            Your companion floats on your desktop and shows which sessions are working, need you, or
-            finished while you were away. Pick a single pet, or a crew — a crew shows one member per
-            running agent, each with a speech bubble of what it's doing.
+            Your squad floats on your desktop and shows which sessions are working, need you, or
+            finished while you were away. One member appears per running agent, each with a speech
+            bubble of what it's doing.
           </p>
           <label className="flex cursor-pointer items-center gap-3">
             <input
@@ -84,10 +84,10 @@ export function GeneralSettings(): JSX.Element {
               onChange={(e) => setCompanionVisible(e.target.checked)}
               className="rounded border border-border"
             />
-            <span className="text-xs font-medium text-foreground">Show the companion</span>
+            <span className="text-xs font-medium text-foreground">Show the squad</span>
           </label>
           {companionVisible && (
-            <PetPicker value={companionSelection} onChange={setCompanionSelection} />
+            <SquadPicker value={companionSelection} onChange={setCompanionSelection} />
           )}
         </div>
 

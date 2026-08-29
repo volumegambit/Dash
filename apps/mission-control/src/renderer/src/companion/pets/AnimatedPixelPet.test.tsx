@@ -6,8 +6,8 @@ import type { AnimatedPetSprite } from './types.js';
 const f = (n: string): string => `data:image/png;base64,${n}`;
 
 const sprite: AnimatedPetSprite = {
-  kind: 'red-panda',
-  name: 'Red panda',
+  kind: 'baker',
+  name: 'Test pet',
   moods: {
     idle: { frames: [f('idle0'), f('idle1'), f('idle2')], fps: 10, collar: '#9aa0a6' },
     working: { frames: [f('run0'), f('run1')], fps: 10, collar: '#3da5d9' },
@@ -26,7 +26,7 @@ afterEach(() => {
 });
 
 function currentSrc(): string | undefined {
-  return screen.getByRole('img', { name: 'Red panda' }).querySelector('img')?.src;
+  return screen.getByRole('img', { name: 'Test pet' }).querySelector('img')?.src;
 }
 
 test('renders the first frame and is labeled with the pet name', () => {
