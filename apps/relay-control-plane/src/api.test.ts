@@ -381,6 +381,52 @@ describe('pairings', () => {
     ]);
   });
 
+  it('projects pairing rows, exposing status and never the credential hash', async () => {
+    const a = (await (
+      await req('POST', '/v1/gateways', 'a1', { subdomain: 'alice', publicKey: gwPubB64 })
+    ).json()) as { gatewayId: string };
+    const created = (await (
+      await req('POST', `/v1/gateways/${a.gatewayId}/pairings/pairing-id-v1`, 'a1', {
+        deviceLabel: 'iPhone',
+      })
+    ).json()) as { pairingId: string };
+
+    const listed = await req('GET', `/v1/gateways/${a.gatewayId}/pairings`, 'a1');
+    const raw = await listed.text();
+    expect(JSON.parse(raw)).toEqual({
+      pairings: [
+        {
+          id: created.pairingId,
+          deviceLabel: 'iPhone',
+          clientKind: 'mobile',
+          status: 'active',
+          createdAt: expect.any(Number),
+        },
+      ],
+    });
+    // The stored digest must never reach a client.
+    expect(raw).not.toContain('credentialHash');
+    expect(raw).not.toContain('gatewayId');
+  });
+
+  it('reports a revoked pairing as revoked rather than dropping or faking it', async () => {
+    // Revoked rows are kept forever, so a client that assumed everything listed
+    // was live would show dead devices as active.
+    const a = (await (
+      await req('POST', '/v1/gateways', 'a1', { subdomain: 'alice', publicKey: gwPubB64 })
+    ).json()) as { gatewayId: string };
+    const created = (await (
+      await req('POST', `/v1/gateways/${a.gatewayId}/pairings/pairing-id-v1`, 'a1', {})
+    ).json()) as { pairingId: string };
+
+    await req('DELETE', `/v1/gateways/${a.gatewayId}/pairings/${created.pairingId}`, 'a1');
+
+    const listed = (await (
+      await req('GET', `/v1/gateways/${a.gatewayId}/pairings`, 'a1')
+    ).json()) as { pairings: Array<{ status: string }> };
+    expect(listed.pairings).toEqual([expect.objectContaining({ status: 'revoked' })]);
+  });
+
   it('creates a web pairing via the legacy route and lists it with clientKind web', async () => {
     const a = (await (
       await req('POST', '/v1/gateways', 'a1', { subdomain: 'alice', publicKey: gwPubB64 })
@@ -700,7 +746,9 @@ describe('CORS', () => {
     expect(res.headers.get('access-control-allow-origin')).toBeNull();
   });
 
-  it('answers a /gw/dial-token preflight from an allowlisted origin with 204', async () => {
+  it('does not advertise /gw/dial-token to browsers at all', async () => {
+    // Gateway-to-control-plane only, authenticated by a holder-of-key
+    // assertion — no browser ever calls it, so it carries no CORS.
     const corsApp = appWithOrigins(['https://app.example.com']);
     const res = await corsApp.request('/gw/dial-token', {
       method: 'OPTIONS',
@@ -710,8 +758,14 @@ describe('CORS', () => {
         'access-control-request-headers': 'authorization',
       },
     });
-    expect(res.status).toBe(204);
-    expect(res.headers.get('access-control-allow-origin')).toBe('https://app.example.com');
+    expect(res.headers.get('access-control-allow-origin')).toBeNull();
+  });
+
+  it('still serves /gw/dial-token itself to its real (non-browser) caller', async () => {
+    const corsApp = appWithOrigins(['https://app.example.com']);
+    const res = await corsApp.request('/gw/dial-token', { method: 'POST' });
+    // No assertion → 401, not a CORS-layer rejection: the route is untouched.
+    expect(res.status).toBe(401);
   });
 });
 

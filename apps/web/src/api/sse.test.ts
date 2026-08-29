@@ -197,3 +197,34 @@ describe('readSse', () => {
     expect(events).toEqual([{ a: 1 }, { b: 2 }]);
   });
 });
+
+describe('readSse relay credential', () => {
+  function headersOf(fetchImpl: ReturnType<typeof vi.fn>): Record<string, string> {
+    return (fetchImpl.mock.calls[0][1] as RequestInit).headers as Record<string, string>;
+  }
+
+  it('sends x-dash-relay-credential alongside the bearer when reached via the relay', async () => {
+    const fetchImpl = fakeFetch(streamOf([]));
+    const controller = new AbortController();
+    await collect(
+      readSse(
+        'https://relay.example/sse',
+        tokenSource(),
+        controller.signal,
+        fetchImpl,
+        'relay-cred',
+      ),
+    );
+    expect(headersOf(fetchImpl)['x-dash-relay-credential']).toBe('relay-cred');
+    expect(headersOf(fetchImpl).Authorization).toBe(`Bearer ${TOKEN}`);
+  });
+
+  it('omits the header entirely on a direct gateway connection', async () => {
+    const fetchImpl = fakeFetch(streamOf([]));
+    const controller = new AbortController();
+    await collect(
+      readSse('https://relay.example/sse', tokenSource(), controller.signal, fetchImpl),
+    );
+    expect(headersOf(fetchImpl)['x-dash-relay-credential']).toBeUndefined();
+  });
+});

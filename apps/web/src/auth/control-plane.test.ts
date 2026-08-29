@@ -130,7 +130,7 @@ describe('ControlPlaneClient', () => {
 
   describe('listPairings', () => {
     it('GETs /v1/gateways/:id/pairings and unwraps { pairings }', async () => {
-      const pairings = [{ id: 'p1', deviceLabel: 'Laptop', clientKind: 'web' }];
+      const pairings = [{ id: 'p1', deviceLabel: 'Laptop', clientKind: 'web', status: 'active' }];
       const fetchImpl = fakeFetch(jsonResponse({ pairings }));
       const client = new ControlPlaneClient(
         'https://control.dash.example',
@@ -143,6 +143,28 @@ describe('ControlPlaneClient', () => {
         'https://control.dash.example/v1/gateways/acme/pairings',
       );
       expect(fetchImpl.mock.calls[0][1]?.method).toBe('GET');
+    });
+
+    it('drops revoked pairings — the control plane keeps those rows forever', async () => {
+      const fetchImpl = fakeFetch(
+        jsonResponse({
+          pairings: [
+            { id: 'p1', deviceLabel: 'Laptop', clientKind: 'web', status: 'active' },
+            { id: 'p2', deviceLabel: 'Old phone', clientKind: 'mobile', status: 'revoked' },
+          ],
+        }),
+      );
+      const client = new ControlPlaneClient(
+        'https://control.dash.example',
+        tokenSource(),
+        fetchImpl,
+      );
+
+      // A revoked device is dead; listing it would invite "revoke" on a
+      // pairing that no longer exists.
+      await expect(client.listPairings('acme')).resolves.toEqual([
+        { id: 'p1', deviceLabel: 'Laptop', clientKind: 'web', status: 'active' },
+      ]);
     });
   });
 

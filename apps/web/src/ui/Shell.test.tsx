@@ -229,7 +229,7 @@ describe('Shell', () => {
       listGateways: vi.fn(async () => [GATEWAY]),
       createWebPairing: vi.fn(),
       listPairings: vi.fn(async () => [
-        { id: 'p-1', deviceLabel: 'Web · Chrome', clientKind: 'web' },
+        { id: 'p-1', deviceLabel: 'Web · Chrome', clientKind: 'web', status: 'active' as const },
       ]),
       deletePairing: vi.fn(async () => undefined),
     };

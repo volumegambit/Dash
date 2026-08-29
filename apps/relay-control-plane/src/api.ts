@@ -56,13 +56,16 @@ export function createApi(deps: ApiDeps): Hono<ApiEnv> {
     c.json({ status: 'healthy', capabilities: CONTROL_PLANE_CAPABILITIES }),
   );
 
-  // --- CORS for the browser-reachable surfaces ---
-  // Registered before both the dial-token route and the /v1 auth middleware so
-  // a preflight OPTIONS request is answered (and short-circuited) here first,
-  // never reaching auth. See web-cors.ts for the exact-origin/no-credentials
-  // ruleset (mirrors apps/gateway/src/mobile-cors.ts).
+  // --- CORS for the browser-reachable surface ---
+  // Registered before the /v1 auth middleware so a preflight OPTIONS request is
+  // answered (and short-circuited) here first, never reaching auth. See
+  // web-cors.ts for the exact-origin/no-credentials ruleset (mirrors
+  // apps/gateway/src/mobile-cors.ts).
+  //
+  // `/gw/dial-token` is deliberately NOT covered: it is a gateway-to-control-
+  // plane call authenticated by a holder-of-key assertion, never made from a
+  // browser. Advertising it to browser origins only widened the surface.
   app.use('/v1/*', webCors(webOrigins));
-  app.use('/gw/dial-token', webCors(webOrigins));
 
   // --- Gateway-driven dial-token refresh (open path, gateway-assertion auth) ---
   // Sibling to /health — NOT under the Clerk-gated /v1/* middleware. The gateway
@@ -208,7 +211,20 @@ export function createApi(deps: ApiDeps): Hono<ApiEnv> {
     const gatewayId = c.req.param('id');
     const pairings = provisioning.listPairings(accountId, gatewayId);
     if (pairings === null) return c.json({ error: 'gateway not found' }, 404);
-    return c.json({ pairings });
+    // Projected, not the raw record: `credentialHash` has no business reaching
+    // a browser (or any client), and shipping the whole row means every future
+    // column is published by accident. `status` IS included — revoked rows are
+    // kept forever, so a client that filtered nothing would show dead devices
+    // as live; now it can label or hide them deliberately.
+    return c.json({
+      pairings: pairings.map((pairing) => ({
+        id: pairing.id,
+        deviceLabel: pairing.deviceLabel,
+        clientKind: pairing.clientKind,
+        status: pairing.status,
+        createdAt: pairing.createdAt,
+      })),
+    });
   });
 
   app.delete('/v1/gateways/:id/pairings/:pid', async (c) => {

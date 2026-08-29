@@ -467,6 +467,11 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
           }
           throw err;
         }
+        // `dispose()` can land while the replay round-trip is in flight. Without
+        // this check we would go on to open a socket the store no longer owns
+        // and never closes — `haltReconnectMachinery` has already run and only
+        // tears down the socket that existed when it did.
+        if (disposed) return;
         lastSeq = replay.lastSeq;
         updateTranscript(conversationId, (t) => ({
           ...t,
@@ -475,7 +480,31 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
 
         const attached = createAttachedSocket();
         socket = attached;
-        await attached.connect();
+        try {
+          await attached.connect();
+        } catch (err) {
+          if (socket === attached) socket = null;
+          attached.close();
+          if (disposed) return;
+          if (isAuthError(err)) {
+            enterUnauthorized();
+            return;
+          }
+          // A gateway that is simply unreachable is not a programming error, and
+          // the only caller is a React effect — rejecting there would surface as
+          // an unhandled rejection and leave `connection` stuck on its previous
+          // value. Treat it exactly like a socket that drops later: report the
+          // outage and retry on the normal backoff schedule.
+          set({ connection: 'reconnecting' });
+          scheduleReconnect();
+          return;
+        }
+        // Same race as above, on the far side of the connect round-trip.
+        if (disposed) {
+          if (socket === attached) socket = null;
+          attached.close();
+          return;
+        }
         set({ connection: 'connected' });
       },
 

@@ -9,21 +9,26 @@ import type { TokenSource } from './rest';
  * with `:`, and other fields like `event:`/`id:`/`retry:`) is ignored per the
  * YAGNI note in the Task 9 brief: SSE event ids aren't needed because replay
  * position comes from the REST cursor, not SSE ids.
+ *
+ * `relayCredential` mirrors `MobileRestClient`: when the gateway is reached
+ * through the hosted relay, every request must carry the per-pairing credential
+ * or the relay rejects it with a 401 before the gateway ever sees it. Omitted
+ * on a direct/LAN gateway connection, exactly as in `rest.ts`.
  */
 export async function* readSse(
   url: string,
   tokens: TokenSource,
   signal: AbortSignal,
   fetchImpl: typeof fetch = fetch,
+  relayCredential?: string,
 ): AsyncGenerator<unknown> {
   const token = await tokens.getToken();
+  const headers: Record<string, string> = { Authorization: `Bearer ${token}` };
+  if (relayCredential) headers['x-dash-relay-credential'] = relayCredential;
 
   let response: Response;
   try {
-    response = await fetchImpl(url, {
-      headers: { Authorization: `Bearer ${token}` },
-      signal,
-    });
+    response = await fetchImpl(url, { headers, signal });
   } catch (err) {
     if (isAbortError(err)) return;
     throw err;

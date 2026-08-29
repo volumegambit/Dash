@@ -32,9 +32,14 @@ function renderParagraphs(text: string, keyPrefix: string): ReactNode[] {
   return text
     .split(/\n{2,}/)
     .filter((para) => para.length > 0)
-    .map((para) => (
+    .map((para, index) => (
       <p
-        key={`${keyPrefix}-${para}`}
+        // Keyed by position, not content: two identical paragraphs in one block
+        // (a repeated "..." or a duplicated line) would otherwise collide, and
+        // React drops all but the first. `keyPrefix` already carries the
+        // flush-order counter, so prefix+index is unique across the message.
+        // biome-ignore lint/suspicious/noArrayIndexKey: the rule guards against losing component state when a list reorders; these <p>s are stateless, derived purely from splitting one immutable string, and streaming only appends — a paragraph never changes position once rendered.
+        key={`${keyPrefix}-${index}`}
         data-testid="text-block"
         style={{ whiteSpace: 'pre-wrap', margin: '0 0 0.5em' }}
       >

@@ -41,7 +41,14 @@ export function ChatView({ conversationId, gatewayLabel }: ChatViewProps) {
 
   useEffect(() => {
     if (!conversationId) return;
-    void openConversation(conversationId);
+    // The store handles every expected failure itself (auth → 'unauthorized',
+    // unreachable gateway → 'reconnecting' + backoff), so a rejection here is
+    // genuinely unexpected. Catch it anyway: an effect cannot await, and a bare
+    // `void` on a rejected promise becomes an unhandled rejection that some
+    // hosts escalate to a page-level error.
+    openConversation(conversationId).catch((err: unknown) => {
+      console.error('ChatView: failed to open conversation', err);
+    });
   }, [conversationId, openConversation]);
 
   // 'unauthorized' is Shell's cue to clear the dead credential and route

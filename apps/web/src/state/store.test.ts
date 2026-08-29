@@ -602,6 +602,63 @@ describe('createWebAppStore', () => {
     });
   });
 
+  describe('openConversation lifecycle races', () => {
+    it('attaches no socket when dispose() lands during the replay round-trip', async () => {
+      let releaseReplay!: (page: ConversationMessagePage) => void;
+      const { rest } = fakeRest({
+        getMessagesImpl: () =>
+          new Promise<ConversationMessagePage>((resolve) => {
+            releaseReplay = resolve;
+          }),
+      });
+      const { factory } = scriptedSocketFactory();
+      const store = createWebAppStore({ rest, socketFactory: factory });
+
+      const opening = store.getState().openConversation(CONVERSATION_ID);
+      store.getState().dispose();
+      releaseReplay({ items: [], nextCursor: null, throughSeq: 0 });
+      await opening;
+
+      // Without the post-await disposed check this opened a socket that the
+      // already-completed dispose() could never close — a leaked connection.
+      expect(factory).not.toHaveBeenCalled();
+    });
+
+    it('closes the socket when dispose() lands while connect() is in flight', async () => {
+      const { rest } = fakeRest({});
+      const { factory, sockets } = scriptedSocketFactory();
+      const store = createWebAppStore({ rest, socketFactory: factory });
+
+      const opening = store.getState().openConversation(CONVERSATION_ID);
+      await vi.waitFor(() => expect(sockets).toHaveLength(1));
+      store.getState().dispose();
+      sockets[0].open();
+      await opening;
+
+      expect(sockets[0].closed).toBe(true);
+      expect(store.getState().connection).not.toBe('connected');
+    });
+
+    it("reports 'reconnecting' and retries when the initial connect fails, instead of rejecting", async () => {
+      const { rest } = fakeRest({});
+      const { factory, sockets } = scriptedSocketFactory();
+      const store = createWebAppStore({ rest, socketFactory: factory });
+
+      const opening = store.getState().openConversation(CONVERSATION_ID);
+      await vi.waitFor(() => expect(sockets).toHaveLength(1));
+      sockets[0].failToOpen();
+
+      // Resolves rather than rejecting: the only caller is a React effect.
+      await expect(opening).resolves.toBeUndefined();
+      expect(sockets[0].closed).toBe(true);
+      expect(store.getState().connection).toBe('reconnecting');
+
+      // And it retries on the usual backoff rather than giving up silently.
+      await vi.advanceTimersByTimeAsync(RECONNECT_BASE_MS);
+      await vi.waitFor(() => expect(factory).toHaveBeenCalledTimes(2));
+    });
+  });
+
   describe('auth failures (design doc: never a silent retry loop on 401)', () => {
     it("a 401 during openConversation's initial replay goes straight to 'unauthorized', with no socket ever attempted", async () => {
       const { rest, getMessages } = fakeRest({

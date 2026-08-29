@@ -28,6 +28,9 @@ export interface PairingInfo {
   id: string;
   deviceLabel: string | null;
   clientKind: string;
+  /** Revoked rows are kept forever by the control plane, so a listing mixes
+   * live and dead devices — never assume everything returned is usable. */
+  status: 'active' | 'revoked';
 }
 
 /** Thrown for any non-2xx control-plane REST response. */
@@ -112,12 +115,14 @@ export class ControlPlaneClient {
     );
   }
 
+  /** Live pairings only. The control plane never deletes a revoked row, so
+   *  they are filtered here rather than in each consumer. */
   async listPairings(gatewayId: string): Promise<PairingInfo[]> {
     const { pairings } = await this.request<{ pairings: PairingInfo[] }>(
       'GET',
       `/v1/gateways/${encodeURIComponent(gatewayId)}/pairings`,
     );
-    return pairings;
+    return pairings.filter((pairing) => pairing.status !== 'revoked');
   }
 
   async deletePairing(gatewayId: string, pairingId: string): Promise<void> {

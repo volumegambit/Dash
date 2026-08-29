@@ -6,11 +6,13 @@ const CURRENT_PAIRING: PairingInfo = {
   id: 'p-current',
   deviceLabel: 'Web · Chrome',
   clientKind: 'web',
+  status: 'active',
 };
 const OTHER_PAIRING: PairingInfo = {
   id: 'p-other',
   deviceLabel: 'iPhone 15',
   clientKind: 'mobile',
+  status: 'active',
 };
 
 describe('Devices', () => {

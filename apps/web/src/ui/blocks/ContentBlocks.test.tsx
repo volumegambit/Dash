@@ -138,3 +138,16 @@ describe('ContentBlocks', () => {
     expect(screen.getByTestId('unknown-block')).toBeTruthy();
   });
 });
+
+describe('paragraph keys', () => {
+  it('renders every paragraph when a block repeats identical text', () => {
+    // Keys were derived from paragraph content, so identical paragraphs
+    // collided and React rendered only the first of them.
+    const content: ConversationContent = {
+      type: 'assistant',
+      events: [{ type: 'text_delta', text: 'same\n\nsame\n\nsame' }],
+    };
+    render(<ContentBlocks content={content} />);
+    expect(screen.getAllByTestId('text-block')).toHaveLength(3);
+  });
+});
