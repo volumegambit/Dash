@@ -33,13 +33,10 @@ function tokenSource(token: string): TokenSource {
 }
 
 /** `ChatSocket`'s `wsFactory` hook, satisfied here by the `ws` package's
- * `WebSocket` (Node has no native client `WebSocket` that supports the
- * self-signed LAN certificate below) — matches the pattern already used for
- * Node-side gateway sockets elsewhere in the repo (e.g. Mission Control's
- * `resumable-chat-transport.ts`). The pinned LAN surface's certificate is
- * self-signed (see `lan-tls.ts`), so `rejectUnauthorized` is disabled here —
- * exactly as the gateway's own real-TLS tests already do (see
- * `mobile-test-harness.test.ts`'s `pinnedSurfaceRequest`/socket helpers). */
+ * `WebSocket` — matches the pattern already used for Node-side gateway sockets
+ * elsewhere in the repo (e.g. Mission Control's `resumable-chat-transport.ts`).
+ * `rejectUnauthorized` stays disabled so this factory also works against the
+ * pinned LAN surface's self-signed certificate (see `lan-tls.ts`). */
 function nodeWsFactory(url: string, protocols?: string[]): WebSocket {
   return new NodeWebSocket(url, protocols, { rejectUnauthorized: false }) as unknown as WebSocket;
 }
@@ -92,13 +89,13 @@ describe('web protocol stack against a real gateway (no relay)', () => {
     // (mounted directly on the management app — see `management-api.ts`),
     // plain HTTP, matching the brief's `http://127.0.0.1:<port>/mobile/v1`.
     restBaseUrl = `${harness.managementBaseUrl}/mobile/v1`;
-    // The ticketed chat WS only exists on the pinned LAN surface
-    // (`createLanMobileAppWithTickets`, wss://.../ws/chat) — the plain
-    // `chatWebSocketUrl` accepts only `?token=`/`Authorization`, never a
-    // ticket. Both surfaces share the same management app instance (and
-    // therefore the same `WsTicketStore`), so minting over `restBaseUrl`
-    // and redeeming over `wsBaseUrl` is exactly the real production split.
-    wsBaseUrl = harness.mobileChatWebSocketUrl;
+    // Deliberately the CHANNEL listener, not the pinned LAN surface: this is
+    // the socket the relay forwards a browser's `/ws/chat` to, so it is the one
+    // a hosted web client actually reaches. (Using the LAN surface here is what
+    // let a ticket store missing from this listener ship unnoticed.) One
+    // `WsTicketStore` is shared across every `/ws/chat` mount, so minting over
+    // `restBaseUrl` and redeeming here is exactly the production split.
+    wsBaseUrl = harness.chatWebSocketUrl;
   }, 30_000);
 
   afterAll(async () => {

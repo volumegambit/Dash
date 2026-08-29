@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
-import { createLanMobileApp, createLanMobileAppWithTickets } from './lan-mobile-app.js';
+import { createLanMobileApp } from './lan-mobile-app.js';
 import { createGatewayManagementApp } from './management-api.js';
+import { mountWsTicketRoute } from './ws-ticket-store.js';
 
 const MOBILE_TOKEN = 'mobile-test-token';
 const ADMIN_TOKEN = 'admin-test-token';
@@ -57,23 +58,9 @@ function makeAuthedManagementApp(): Hono {
 const ALLOWED_ORIGIN = 'https://app.example.com';
 
 describe('createLanMobileApp', () => {
-  it('applies the mobile CORS allowlist to forwarded routes', async () => {
-    const managementApp = new Hono();
-    managementApp.all('*', async (c) => c.json({ path: c.req.path }));
-    const app = createLanMobileApp(managementApp, [ALLOWED_ORIGIN]);
-
-    const allowed = await app.request('/mobile/v1/agents', {
-      headers: { origin: ALLOWED_ORIGIN },
-    });
-    expect(allowed.headers.get('access-control-allow-origin')).toBe(ALLOWED_ORIGIN);
-
-    const denied = await app.request('/mobile/v1/agents', {
-      headers: { origin: 'https://evil.example.com' },
-    });
-    expect(denied.headers.get('access-control-allow-origin')).toBeNull();
-  });
-
-  it('sets no CORS headers when no web origins are configured', async () => {
+  it('adds no CORS of its own — the management app owns the single policy', async () => {
+    // CORS lives on `managementApp` so the LAN-forward and relay-replay paths
+    // share one policy; a second mount here would only double `Vary: Origin`.
     const managementApp = new Hono();
     managementApp.all('*', async (c) => c.json({ path: c.req.path }));
     const app = createLanMobileApp(managementApp);
@@ -111,9 +98,11 @@ describe('createLanMobileApp', () => {
   });
 });
 
-describe('createLanMobileAppWithTickets', () => {
-  it('rejects an unauthenticated POST /mobile/v1/ws-ticket with the same status as other mobile routes', async () => {
-    const { app } = createLanMobileAppWithTickets(makeAuthedManagementApp());
+describe('mountWsTicketRoute', () => {
+  it('rejects an unauthenticated POST /mobile/v1/ws-ticket like any other mobile route', async () => {
+    const managementApp = makeAuthedManagementApp();
+    mountWsTicketRoute(managementApp);
+    const app = createLanMobileApp(managementApp);
 
     const unauth = await app.request('/mobile/v1/ws-ticket', { method: 'POST' });
     const otherRoute = await app.request('/mobile/v1/agents');
@@ -122,8 +111,10 @@ describe('createLanMobileAppWithTickets', () => {
     expect(unauth.status).toBe(otherRoute.status);
   });
 
-  it('mints a redeemable ticket for an authenticated POST', async () => {
-    const { app, wsTickets } = createLanMobileAppWithTickets(makeAuthedManagementApp());
+  it('mints a ticket redeemable through the returned store', async () => {
+    const managementApp = makeAuthedManagementApp();
+    const wsTickets = mountWsTicketRoute(managementApp);
+    const app = createLanMobileApp(managementApp);
 
     const res = await app.request('/mobile/v1/ws-ticket', {
       method: 'POST',
@@ -134,13 +125,30 @@ describe('createLanMobileAppWithTickets', () => {
     const body = await res.json();
     expect(body.ticket).toMatch(/^[0-9a-f]{64}$/);
     expect(new Date(body.expiresAt).toISOString()).toBe(body.expiresAt);
-    // Confirms this is the same store instance the caller gets back —
-    // Task 4 relies on that to redeem tickets minted through this route.
+    // The caller gets back the very store the route mints into — that identity
+    // is what every `/ws/chat` mount depends on to redeem.
     expect(wsTickets.redeem(body.ticket)).toBe(true);
   });
 
+  it('mints over the management app directly, not only through the LAN forward', async () => {
+    // The relay never touches the LAN app: it replays `/mobile/v1` against the
+    // management server, so the mint route has to answer there too.
+    const managementApp = makeAuthedManagementApp();
+    const wsTickets = mountWsTicketRoute(managementApp);
+
+    const res = await managementApp.request('/mobile/v1/ws-ticket', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${MOBILE_TOKEN}` },
+    });
+
+    expect(res.status).toBe(200);
+    expect(wsTickets.redeem((await res.json()).ticket)).toBe(true);
+  });
+
   it('still forwards other /mobile/v1 routes unchanged', async () => {
-    const { app } = createLanMobileAppWithTickets(makeAuthedManagementApp());
+    const managementApp = makeAuthedManagementApp();
+    mountWsTicketRoute(managementApp);
+    const app = createLanMobileApp(managementApp);
 
     const res = await app.request('/mobile/v1/agents', {
       headers: { Authorization: `Bearer ${MOBILE_TOKEN}` },
@@ -149,31 +157,16 @@ describe('createLanMobileAppWithTickets', () => {
     expect(res.status).toBe(200);
     await expect(res.json()).resolves.toEqual({ path: '/mobile/v1/agents' });
   });
-
-  // The mint route is registered directly on managementApp (see buildLanMobileApp's
-  // doc comment), reached only via the lan app's forwarding — but CORS is applied
-  // as middleware on `app` itself, so it must intercept this route's preflight too,
-  // without ever reaching managementApp (which has no CORS handling of its own).
-  it('answers a preflight OPTIONS to /mobile/v1/ws-ticket from an allowlisted origin', async () => {
-    const { app } = createLanMobileAppWithTickets(makeAuthedManagementApp(), [ALLOWED_ORIGIN]);
-
-    const res = await app.request('/mobile/v1/ws-ticket', {
-      method: 'OPTIONS',
-      headers: { origin: ALLOWED_ORIGIN, 'access-control-request-method': 'POST' },
-    });
-
-    expect(res.status).toBe(204);
-    expect(res.headers.get('access-control-allow-origin')).toBe(ALLOWED_ORIGIN);
-    expect(res.headers.get('access-control-allow-credentials')).toBeNull();
-  });
 });
 
-describe('createLanMobileAppWithTickets against the real management app', () => {
+describe('mountWsTicketRoute against the real management app', () => {
   // Proves the route is guarded by createGatewayManagementApp's actual bearer
   // middleware (not a stand-in), including that it's scoped to the mobile
   // bearer specifically — an administrative token must not work either.
   it('enforces the real mobile-bearer middleware end to end', async () => {
-    const { app } = createLanMobileAppWithTickets(makeRealManagementApp());
+    const managementApp = makeRealManagementApp();
+    mountWsTicketRoute(managementApp);
+    const app = createLanMobileApp(managementApp);
 
     const unauth = await app.request('/mobile/v1/ws-ticket', { method: 'POST' });
     expect(unauth.status).toBe(401);
@@ -192,6 +185,23 @@ describe('createLanMobileAppWithTickets against the real management app', () => 
     const body = await mobileAuthed.json();
     expect(body.ticket).toMatch(/^[0-9a-f]{64}$/);
     expect(typeof body.expiresAt).toBe('string');
+  });
+
+  it('answers a preflight OPTIONS to /mobile/v1/ws-ticket from an allowlisted origin', async () => {
+    // CORS is on the management app now, so the preflight is answered there —
+    // reached identically through the LAN forward or the relay replay.
+    const managementApp = makeRealManagementApp([ALLOWED_ORIGIN]);
+    mountWsTicketRoute(managementApp);
+    const app = createLanMobileApp(managementApp);
+
+    const res = await app.request('/mobile/v1/ws-ticket', {
+      method: 'OPTIONS',
+      headers: { origin: ALLOWED_ORIGIN, 'access-control-request-method': 'POST' },
+    });
+
+    expect(res.status).toBe(204);
+    expect(res.headers.get('access-control-allow-origin')).toBe(ALLOWED_ORIGIN);
+    expect(res.headers.get('access-control-allow-credentials')).toBeNull();
   });
 });
 

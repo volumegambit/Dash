@@ -324,6 +324,11 @@ export function mountChatWs(app: Hono, options: ChatWsOptions): void {
       // when the header is absent; a malformed/present header never downgrades.
       if (options.token) {
         const authorization = c.req.header('Authorization');
+        // An empty header is "no header": both guards below must agree on that,
+        // or an `Authorization: ` sent by a proxy would take the header branch
+        // (rejecting) AFTER the ticket fallback had already redeemed — burning
+        // a single-use ticket on a request that was never going to succeed.
+        const headerPresent = authorization !== undefined && authorization !== '';
         // Browsers also can't set headers at all, so a single-use ticket
         // (minted over HTTP, see WsTicketStore) is a second query-string
         // fallback — but ONLY when no Authorization header was sent. A
@@ -331,11 +336,10 @@ export function mountChatWs(app: Hono, options: ChatWsOptions): void {
         // header alone; the ticket is left unredeemed in that case.
         const ticket = c.req.query('ticket');
         const ticketOk =
-          !authorization && ticket !== undefined && wsTickets?.redeem(ticket) === true;
-        const authorized =
-          authorization !== undefined
-            ? authorization === `Bearer ${options.token}`
-            : c.req.query('token') === options.token || ticketOk;
+          !headerPresent && ticket !== undefined && wsTickets?.redeem(ticket) === true;
+        const authorized = headerPresent
+          ? authorization === `Bearer ${options.token}`
+          : c.req.query('token') === options.token || ticketOk;
         if (!authorized) {
           return {
             onOpen(_event, ws) {

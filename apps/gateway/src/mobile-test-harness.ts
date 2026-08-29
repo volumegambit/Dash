@@ -18,11 +18,12 @@ import { SqliteConversationService } from './conversation-service-sqlite.js';
 import { GatewayCredentialStore } from './credential-store.js';
 import { EventBus } from './event-bus.js';
 import { createDynamicGateway } from './gateway.js';
-import { createLanMobileAppWithTickets } from './lan-mobile-app.js';
+import { createLanMobileApp } from './lan-mobile-app.js';
 import { loadOrCreateLanTlsIdentity } from './lan-tls.js';
 import { createGatewayManagementApp } from './management-api.js';
 import { ModelsStore } from './models-store.js';
 import { createResumableChatHub } from './resumable-chat-hub.js';
+import { mountWsTicketRoute } from './ws-ticket-store.js';
 
 export type MobileTestHarnessScenario = 'stream' | 'question' | 'slow';
 
@@ -367,6 +368,14 @@ export async function startMobileTestHarness(
     const managementWebSocket = createNodeWebSocket({ app: managementApp });
     managementServer = await listen(managementApp, managementWebSocket.injectWebSocket);
 
+    // Mirrors the production wiring in index.ts: ONE ticket store, created
+    // before any listener (which also registers `POST /mobile/v1/ws-ticket` on
+    // `managementApp`), threaded into EVERY `/ws/chat` mount below. The chat
+    // listener is the one the relay forwards browser traffic to, so a ticket
+    // minted over HTTP has to be redeemable there — not only on the pinned LAN
+    // surface.
+    const wsTickets = mountWsTicketRoute(managementApp);
+
     const chatApp = new Hono();
     const chatWebSocket = createNodeWebSocket({ app: chatApp });
     mountChatWs(chatApp, {
@@ -376,17 +385,11 @@ export async function startMobileTestHarness(
       upgradeWebSocket: chatWebSocket.upgradeWebSocket,
       eventLogStore: conversations.eventLog,
       verbose: false,
+      wsTickets,
     });
     chatServer = await listen(chatApp, chatWebSocket.injectWebSocket);
 
-    // Mirrors the production wiring in index.ts: `createLanMobileAppWithTickets`
-    // both mints (`POST /mobile/v1/ws-ticket`, registered directly onto
-    // `managementApp`) and returns the `WsTicketStore` instance, which must be
-    // threaded into this same surface's `mountChatWs` so a minted ticket can
-    // actually be redeemed at upgrade time. Without this, `ws-ticket` mints a
-    // ticket nothing ever checks and every ticketed upgrade attempt on this
-    // pinned LAN surface falls through to the (failing) token/header checks.
-    const { app: lanApp, wsTickets } = createLanMobileAppWithTickets(managementApp);
+    const lanApp = createLanMobileApp(managementApp);
     const lanWebSocket = createNodeWebSocket({ app: lanApp });
     mountChatWs(lanApp, {
       agents,

@@ -128,6 +128,53 @@ async function openChat(harness: RunningMobileTestHarness): Promise<FrameInbox> 
   return new FrameInbox(socket);
 }
 
+/**
+ * Resolve how the server judged a `/ws/chat` upgrade.
+ *
+ * The reject path completes the HTTP handshake and only then closes with 4001
+ * (Hono's `upgradeWebSocket` can only act in `onOpen`), so a client always sees
+ * `open` first — racing `open` against `close` would pass even when rejected.
+ * We therefore wait for the close, and treat "still open after a grace period"
+ * as accepted: the rejection closes in the same tick the handshake completes.
+ */
+async function chatUpgradeOutcome(
+  url: string,
+  options?: { rejectUnauthorized?: boolean; headers?: Record<string, string> },
+): Promise<'open' | number> {
+  const socket = new WebSocket(url, options);
+  try {
+    return await new Promise<'open' | number>((resolve, reject) => {
+      const timer = setTimeout(() => resolve('open'), 400);
+      socket.addEventListener(
+        'close',
+        (event) => {
+          clearTimeout(timer);
+          resolve(event.code);
+        },
+        { once: true },
+      );
+      socket.addEventListener(
+        'error',
+        (event) => {
+          clearTimeout(timer);
+          reject(event.error);
+        },
+        { once: true },
+      );
+    });
+  } finally {
+    socket.close();
+  }
+}
+
+async function mintWsTicket(harness: RunningMobileTestHarness): Promise<string> {
+  const response = await mobileRequest(harness, '/ws-ticket', { method: 'POST' });
+  expect(response.status).toBe(200);
+  const { ticket } = (await response.json()) as { ticket: string };
+  expect(typeof ticket).toBe('string');
+  return ticket;
+}
+
 function turnFrames(inbox: FrameInbox, turnId: string): MobileWsServerFrame[] {
   return inbox.frames.filter((frame) => frame.id === turnId);
 }
@@ -191,6 +238,114 @@ describe('mobile test harness', () => {
         socket.addEventListener('error', (event) => reject(event.error), { once: true });
       });
       socket.close();
+    } finally {
+      await harness.stop();
+    }
+  });
+
+  it('redeems a ws-ticket minted over the management surface at the relayed chat listener', async () => {
+    // The exact shipped topology a browser hits: the relay forwards `/ws/chat`
+    // to the CHAT listener (`chatWebSocketUrl`), NOT the pinned LAN surface. A
+    // ticket minted over `/mobile/v1/ws-ticket` must be redeemable there or the
+    // web client's socket is dead on arrival with a 4001.
+    const harness = await startMobileTestHarness({ scenario: 'stream' });
+    try {
+      const ticket = await mintWsTicket(harness);
+      const outcome = await chatUpgradeOutcome(
+        `${harness.chatWebSocketUrl}?ticket=${encodeURIComponent(ticket)}`,
+      );
+      expect(outcome).toBe('open');
+    } finally {
+      await harness.stop();
+    }
+  });
+
+  it('serves a real turn over a ticket-authenticated relayed chat socket', async () => {
+    // Beyond "not closed": the ticketed socket is a fully working chat socket.
+    const harness = await startMobileTestHarness({ scenario: 'stream' });
+    let chat: FrameInbox | undefined;
+    try {
+      const ticket = await mintWsTicket(harness);
+      const conversation = await createConversation(harness);
+      const socket = new WebSocket(
+        `${harness.chatWebSocketUrl}?ticket=${encodeURIComponent(ticket)}`,
+      );
+      await new Promise<void>((resolve, reject) => {
+        socket.addEventListener('open', () => resolve(), { once: true });
+        socket.addEventListener('error', (event) => reject(event.error), { once: true });
+      });
+      chat = new FrameInbox(socket);
+      const turnId = randomUUID();
+      chat.send({
+        type: 'message',
+        id: turnId,
+        agentId: harness.agentId,
+        channelId: 'web',
+        conversationId: conversation.id,
+        text: 'Hello from a ticketed browser socket',
+      });
+      await chat.waitFor((frame) => frame.type === 'done' && frame.id === turnId);
+    } finally {
+      await chat?.close();
+      await harness.stop();
+    }
+  });
+
+  it('burns a ws-ticket on redemption — the same ticket cannot open a second socket', async () => {
+    const harness = await startMobileTestHarness({ scenario: 'stream' });
+    try {
+      const ticket = await mintWsTicket(harness);
+      const url = `${harness.chatWebSocketUrl}?ticket=${encodeURIComponent(ticket)}`;
+      expect(await chatUpgradeOutcome(url)).toBe('open');
+      expect(await chatUpgradeOutcome(url)).toBe(4001);
+    } finally {
+      await harness.stop();
+    }
+  });
+
+  it('shares ONE ticket store across the chat and pinned LAN listeners', async () => {
+    // Both listeners mount `/ws/chat` from the same store, so a ticket works at
+    // whichever surface the client reaches — and is single-use across both.
+    const harness = await startMobileTestHarness({ scenario: 'stream' });
+    try {
+      const ticket = await mintWsTicket(harness);
+      const lan = await chatUpgradeOutcome(
+        `${harness.mobileChatWebSocketUrl}?ticket=${encodeURIComponent(ticket)}`,
+        { rejectUnauthorized: false },
+      );
+      expect(lan).toBe('open');
+
+      // Redeemed on the LAN surface — the chat listener must reject the reuse.
+      const reused = await chatUpgradeOutcome(
+        `${harness.chatWebSocketUrl}?ticket=${encodeURIComponent(ticket)}`,
+      );
+      expect(reused).toBe(4001);
+    } finally {
+      await harness.stop();
+    }
+  });
+
+  it('rejects an unknown ticket at the relayed chat listener', async () => {
+    const harness = await startMobileTestHarness({ scenario: 'stream' });
+    try {
+      expect(await chatUpgradeOutcome(`${harness.chatWebSocketUrl}?ticket=not-a-ticket`)).toBe(
+        4001,
+      );
+    } finally {
+      await harness.stop();
+    }
+  });
+
+  it('treats an empty Authorization header as absent, and does not burn the ticket', async () => {
+    // An empty header (a proxy can add one) must be "no header" for BOTH the
+    // ticket fallback and the header branch. When they disagreed, the header
+    // branch rejected the upgrade AFTER the fallback had already redeemed —
+    // burning a single-use ticket on a request that could never succeed.
+    const harness = await startMobileTestHarness({ scenario: 'stream' });
+    try {
+      const ticket = await mintWsTicket(harness);
+      const url = `${harness.chatWebSocketUrl}?ticket=${encodeURIComponent(ticket)}`;
+      expect(await chatUpgradeOutcome(url, { headers: { authorization: '' } })).toBe('open');
     } finally {
       await harness.stop();
     }

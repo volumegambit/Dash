@@ -753,6 +753,34 @@ describe('mountChatWs protocol ownership', () => {
     expect(wsTickets.redeem(ticket)).toBe(true);
   });
 
+  it('treats an empty Authorization header as absent and honours the ticket', () => {
+    const wsTickets = new WsTicketStore();
+    const harness = makeWsHarness({ token: 'secret', wsTickets });
+    const { ticket } = wsTickets.issue();
+
+    // A proxy-injected empty header must not flip the request onto the header
+    // branch: both guards read it as "no header", so the ticket governs.
+    const connection = harness.connect('not-the-real-token', '', ticket);
+    connection.handlers.onOpen?.({}, connection.socket);
+
+    expect(connection.socket.close).not.toHaveBeenCalled();
+    expect(connection.handlers.onMessage).toBeDefined();
+  });
+
+  it('does not burn a ticket when an empty-header upgrade is otherwise rejected', () => {
+    const wsTickets = new WsTicketStore();
+    const harness = makeWsHarness({ token: 'secret', wsTickets });
+    const { ticket } = wsTickets.issue();
+
+    // Empty header, and the ticket is what authorizes — so it IS spent here.
+    const accepted = harness.connect('not-the-real-token', '', ticket);
+    accepted.handlers.onOpen?.({}, accepted.socket);
+    expect(accepted.socket.close).not.toHaveBeenCalled();
+
+    // Spent exactly once: a replay of the same ticket finds nothing left.
+    expect(wsTickets.redeem(ticket)).toBe(false);
+  });
+
   it('contains a valid JSON null frame as a structured validation error', () => {
     const harness = makeWsHarness();
     const connection = harness.connect();

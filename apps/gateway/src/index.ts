@@ -47,7 +47,7 @@ import { EventBus } from './event-bus.js';
 import { loadOrCreateGatewayId, loadOrCreateGatewayIdentity } from './gateway-identity.js';
 import { recoverGatewayTurns } from './gateway-recovery.js';
 import { createDynamicGateway } from './gateway.js';
-import { createLanMobileAppWithTickets } from './lan-mobile-app.js';
+import { createLanMobileApp } from './lan-mobile-app.js';
 import { loadOrCreateLanTlsIdentity } from './lan-tls.js';
 import { createGatewayManagementApp } from './management-api.js';
 import { McpConfigStore } from './mcp-store.js';
@@ -65,6 +65,7 @@ import { type RelayClient, startRelayClient } from './relay-client.js';
 import { createResumableChatHub } from './resumable-chat-hub.js';
 import { safeStep } from './shutdown.js';
 import { createGatewayWorkerFactory } from './swarm-wiring.js';
+import { mountWsTicketRoute } from './ws-ticket-store.js';
 
 async function main() {
   const flags = parseFlags(process.argv.slice(2));
@@ -879,6 +880,14 @@ async function main() {
 
   injectMgmtWs(managementServer);
 
+  // ONE ws-ticket store for the process, created before any listener and shared
+  // by every `/ws/chat` mount below. Browsers can't set headers on a WebSocket
+  // upgrade, so they mint a single-use ticket over HTTP and present it in the
+  // query string; the relay forwards `/ws/chat` to the CHANNEL listener, so
+  // that mount needs this store just as much as the LAN one does — and it must
+  // exist whether or not LAN TLS is configured.
+  const wsTickets = mountWsTicketRoute(managementApp);
+
   // Channel server (HTTP + WebSocket for /ws/chat)
   const channelApp = new Hono();
   const { injectWebSocket, upgradeWebSocket } = createNodeWebSocket({ app: channelApp });
@@ -895,6 +904,8 @@ async function main() {
     eventLogStore,
     verbose: verboseWs,
     swarmCoordinator,
+    // This is the listener the relay forwards browser `/ws/chat` traffic to.
+    wsTickets,
   });
   if (verboseWs) {
     console.log('[gateway] chat-ws verbose logging enabled');
@@ -913,11 +924,7 @@ async function main() {
   // only `/ws/chat`; all administrative routes remain bound to loopback.
   let lanServer: Server | undefined;
   if (lanTls) {
-    // CORS is applied once, on `managementApp` above — every `/mobile/v1`
-    // request (LAN-forwarded or relay-replayed) passes through it, so mounting
-    // it here as well would only double the `Vary` header. The parameter stays
-    // for embedders/tests that build a LAN app over a CORS-less management app.
-    const { app: lanApp, wsTickets } = createLanMobileAppWithTickets(managementApp);
+    const lanApp = createLanMobileApp(managementApp);
     const { injectWebSocket: injectLanWebSocket, upgradeWebSocket: lanUpgradeWebSocket } =
       createNodeWebSocket({ app: lanApp });
     mountChatWs(lanApp, {
