@@ -35,6 +35,8 @@
     "website:build": "npm run build --workspace=apps/website",
     "waitlist:dev": "npm run dev --workspace=apps/waitlist",
     "waitlist:build": "npm run build --workspace=apps/waitlist",
+    "web:dev": "npm run dev --workspace=apps/web",
+    "web:build": "npm run build --workspace=apps/web",
     "models:audit": "tsx scripts/audit-models.ts",
     "models:audit:apply": "tsx scripts/audit-models.ts --apply",
     "models:check": "tsx scripts/check-models-freshness.ts",

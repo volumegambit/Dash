@@ -1,0 +1,29 @@
+{
+  "name": "@dash/web",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@clerk/clerk-react": "^5",
+    "@dash/mobile-contract": "*",
+    "react": "^19",
+    "react-dom": "^19",
+    "zustand": "^5"
+  },
+  "devDependencies": {
+    "@testing-library/react": "^16",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "@vitejs/plugin-react": "^4",
+    "happy-dom": "^15",
+    "typescript": "^5.7",
+    "vite": "^6",
+    "vitest": "^3"
+  }
+}
