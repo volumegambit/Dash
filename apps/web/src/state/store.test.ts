@@ -625,6 +625,29 @@ describe('createWebAppStore', () => {
       expect(store.getState().connection).toBe('unauthorized');
     });
 
+    it("a relay-shaped 401 (plain text, no code) still reaches 'unauthorized'", async () => {
+      // The relay rejects a revoked pairing credential before the gateway ever
+      // sees the request, so the body is plain text and `code` is undefined —
+      // only the status distinguishes it. It must be just as terminal as the
+      // gateway's structured 401: this credential is dead either way.
+      const { rest, listConversations } = fakeRest({
+        listConversationsImpl: async () => {
+          throw new MobileApiError(401, undefined);
+        },
+      });
+      const { factory } = scriptedSocketFactory();
+      const store = createWebAppStore({ rest, socketFactory: factory });
+
+      await expect(store.getState().loadConversations()).resolves.toBeUndefined();
+
+      expect(listConversations).toHaveBeenCalledTimes(1);
+      expect(store.getState().connection).toBe('unauthorized');
+      // Terminal: no reconnect is ever armed out of it.
+      await vi.advanceTimersByTimeAsync(RECONNECT_MAX_MS * 10);
+      expect(factory).not.toHaveBeenCalled();
+      expect(store.getState().connection).toBe('unauthorized');
+    });
+
     it("a 401 from loadConversations() goes to 'unauthorized' without throwing", async () => {
       const { rest, listConversations } = fakeRest({
         listConversationsImpl: async () => {

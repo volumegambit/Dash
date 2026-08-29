@@ -261,10 +261,15 @@ function handlePhoneHttp(
     return;
   }
 
+  // Past this point the target is a validated canonical `/mobile/v1` path, so
+  // every response the relay generates itself is an error a browser client
+  // needs to be able to READ (see errorCorsHeaders).
+  const cors = errorCorsHeaders(req.headers.origin);
+
   const gatewayId = gatewayIdFromHost(req.headers.host);
   const conn = gatewayId ? gateways.get(gatewayId) : undefined;
   if (!gatewayId || !conn) {
-    res.writeHead(502, { 'content-type': 'text/plain' });
+    res.writeHead(502, { 'content-type': 'text/plain', ...cors });
     res.end('No gateway connected');
     return;
   }
@@ -288,7 +293,7 @@ function handlePhoneHttp(
     !isCorsPreflight &&
     !deps.pairingCredentialValid(gatewayId, headerValue(req.headers[PAIRING_CREDENTIAL_HEADER]))
   ) {
-    res.writeHead(401, { 'content-type': 'text/plain' });
+    res.writeHead(401, { 'content-type': 'text/plain', ...cors });
     res.end('Unauthorized');
     return;
   }
@@ -304,7 +309,7 @@ function handlePhoneHttp(
   // phone and browser. The two budgets are independent in both directions.
   const budget = isCorsPreflight ? preflightLimiter : limiter;
   if (!budget.allow(gatewayId) || conn.streams.size >= maxStreams) {
-    res.writeHead(429, { 'content-type': 'text/plain', 'retry-after': '1' });
+    res.writeHead(429, { 'content-type': 'text/plain', 'retry-after': '1', ...cors });
     res.end('Too Many Requests');
     return;
   }
@@ -681,6 +686,34 @@ function gatewayIdFromHost(host: string | undefined): string | undefined {
   if (!host) return undefined;
   const label = host.split(':')[0].split('.')[0];
   return label || undefined;
+}
+
+/**
+ * CORS headers for an error the RELAY generates on a canonical `/mobile/v1`
+ * target (401 / 429 / 502). Without them a browser sees an opaque network
+ * failure instead of the status, so a revoked credential surfaces as "offline,
+ * retrying" rather than "your session was revoked, sign in again".
+ *
+ * The origin is echoed with no allowlist, and that is safe HERE specifically:
+ *
+ *  - These are relay-authored responses only. Anything the gateway produces is
+ *    piped back with the gateway's own headers, so the real `/mobile/v1` data
+ *    surface keeps its exact-match allowlist (`mobile-cors.ts`) — the relay
+ *    never becomes the policy holder for anything that carries data.
+ *  - The bodies are fixed constants ("Unauthorized", "Too Many Requests", "No
+ *    gateway connected"). Reading one tells an attacker's page nothing it could
+ *    not learn by making the same request from a server.
+ *  - `Access-Control-Allow-Credentials` is deliberately never set, so no
+ *    ambient cookie or HTTP-auth credential can ride along — the echoed origin
+ *    grants read access to a constant, not to an authenticated response.
+ *
+ * `Vary: Origin` keeps a shared cache from serving one origin's echoed header
+ * to another. Absent an `Origin` header (every native client) this returns an
+ * empty object, so the non-browser path is byte-for-byte unchanged.
+ */
+function errorCorsHeaders(origin: string | undefined): Record<string, string> {
+  if (!origin) return {};
+  return { 'access-control-allow-origin': origin, vary: 'Origin' };
 }
 
 /** The `Sec-WebSocket-Protocol` entries a client offered, in order. */

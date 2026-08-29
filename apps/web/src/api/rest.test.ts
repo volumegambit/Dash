@@ -30,6 +30,20 @@ function relayCredentialHeader(init: RequestInit | undefined): string | undefine
   return headers?.['x-dash-relay-credential'];
 }
 
+/** Byte-for-byte what the relay returns when it rejects a revoked credential
+ *  before the request reaches the gateway: plain text, no JSON error envelope,
+ *  plus the CORS headers that make it readable from a browser at all. */
+function relayUnauthorizedResponse(): Response {
+  return new Response('Unauthorized', {
+    status: 401,
+    headers: {
+      'content-type': 'text/plain',
+      'access-control-allow-origin': 'https://app.example.com',
+      vary: 'Origin',
+    },
+  });
+}
+
 describe('MobileRestClient', () => {
   describe('URL joining under the /mobile/v1 base', () => {
     it('joins health() under a base without a trailing slash', async () => {
@@ -307,5 +321,28 @@ describe('MobileRestClient', () => {
       await expect(client.createWsTicket()).resolves.toEqual(body);
       expect(fetchImpl.mock.calls[0][1]?.method).toBe('POST');
     });
+  });
+});
+
+describe('relay-generated errors (no JSON envelope)', () => {
+  it("surfaces the relay's plain-text 401 as MobileApiError(401) with an undefined code", async () => {
+    // The relay answers a revoked pairing credential itself, so there is no
+    // gateway `{ code, error, retryable }` body to parse. The status is the
+    // whole signal — and it is only visible to a browser because the relay
+    // echoes Access-Control-Allow-Origin on its own error responses.
+    const fetchImpl = fakeFetch(relayUnauthorizedResponse);
+    const client = new MobileRestClient(
+      'https://sub.relay.example/mobile/v1',
+      tokenSource(),
+      fetchImpl,
+    );
+
+    const error = await client.listConversations().then(
+      () => undefined,
+      (err: unknown) => err,
+    );
+    expect(error).toBeInstanceOf(MobileApiError);
+    expect((error as MobileApiError).status).toBe(401);
+    expect((error as MobileApiError).code).toBeUndefined();
   });
 });

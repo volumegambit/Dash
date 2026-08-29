@@ -1268,6 +1268,75 @@ describe('relay-server', () => {
     gw2.close();
   });
 
+  // --- I2: relay-generated errors must be readable cross-origin -----------
+
+  it('echoes the Origin on a 401 so a browser can read the revoked-credential failure', async () => {
+    const store = await restartWithCredentialStore();
+    const gw = await connectGateway('g1', 'good');
+    respondOk(gw);
+    await waitFor(() => server.hasGateway('g1'));
+    const credential = store.provision('t1', 'g1');
+    store.revoke('t1', 'g1', credential);
+
+    const res = await httpRequest('GET', '/mobile/v1/conversations', {
+      host: 'g1.relay.local',
+      origin: 'https://app.example.com',
+      'x-dash-relay-credential': credential,
+    });
+    expect(res.status).toBe(401);
+    expect(res.headers['access-control-allow-origin']).toBe('https://app.example.com');
+    expect(res.headers.vary).toContain('Origin');
+    // Never credentialed: the browser must not be able to attach cookies.
+    expect(res.headers['access-control-allow-credentials']).toBeUndefined();
+  });
+
+  it('echoes the Origin on a 502 when no gateway is connected', async () => {
+    const res = await httpRequest('GET', '/mobile/v1/agents', {
+      host: 'nope.relay.local',
+      origin: 'https://app.example.com',
+    });
+    expect(res.status).toBe(502);
+    expect(res.headers['access-control-allow-origin']).toBe('https://app.example.com');
+    expect(res.headers.vary).toContain('Origin');
+  });
+
+  it('echoes the Origin on a 429', async () => {
+    await restartWithLimits({ maxStreamsPerGateway: 0 });
+    const gw = await connectGateway('g1', 'good');
+    await waitFor(() => server.hasGateway('g1'));
+
+    const res = await httpRequest('GET', '/mobile/v1/agents', {
+      host: 'g1.relay.local',
+      origin: 'https://app.example.com',
+    });
+    expect(res.status).toBe(429);
+    expect(res.headers['access-control-allow-origin']).toBe('https://app.example.com');
+    expect(res.headers.vary).toContain('Origin');
+    gw.close();
+  });
+
+  it('adds no CORS headers when the request carries no Origin (native clients)', async () => {
+    const res = await httpGet('/mobile/v1/agents', { host: 'nope.relay.local' });
+    expect(res.status).toBe(502);
+    // The native path is byte-for-byte unchanged: no Origin in, none out.
+    const withHeaders = await httpRequest('GET', '/mobile/v1/agents', {
+      host: 'nope.relay.local',
+    });
+    expect(withHeaders.headers['access-control-allow-origin']).toBeUndefined();
+    expect(withHeaders.headers.vary).toBeUndefined();
+  });
+
+  it('does not add CORS headers to the non-canonical 404', async () => {
+    // Not a canonical mobile target — nothing here is a browser-visible error
+    // worth explaining, and echoing on an unvalidated path widens the surface.
+    const res = await httpRequest('OPTIONS', '/credentials', {
+      host: 'g1.relay.local',
+      origin: 'https://app.example.com',
+    });
+    expect(res.status).toBe(404);
+    expect(res.headers['access-control-allow-origin']).toBeUndefined();
+  });
+
   it('does not exempt OPTIONS on a non-canonical path', async () => {
     const gw = await connectGateway('g1', 'good');
     const forwarded: Frame[] = [];
