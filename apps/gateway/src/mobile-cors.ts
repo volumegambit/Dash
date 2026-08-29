@@ -19,6 +19,10 @@ export function mobileCors(allowedOrigins: readonly string[]): MiddlewareHandler
   return cors({
     origin: (origin) => (allowed.has(origin) ? origin : undefined),
     allowMethods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowHeaders: ['Authorization', 'Content-Type'],
+    // `x-dash-relay-credential` is the per-pairing credential a browser sends on
+    // every relayed `/mobile/v1` request. It is consumed and stripped at the
+    // relay edge (it never reaches this server), but the browser still needs it
+    // preflight-approved or it will not issue the real request at all.
+    allowHeaders: ['Authorization', 'Content-Type', 'x-dash-relay-credential'],
   });
 }

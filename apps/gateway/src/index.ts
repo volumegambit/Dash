@@ -839,6 +839,11 @@ async function main() {
     // The management app accepts it only under `/mobile/v1`.
     mobileToken: flags.chatToken,
     token: flags.token,
+    // Browser origins for `/mobile/v1`. Configured on the management app (not
+    // only on the LAN app below) because the relay replays phone traffic
+    // directly against THIS server — a relayed preflight never passes through
+    // `createLanMobileApp`, so this is the CORS answer a web client gets.
+    webOrigins,
     lanTlsFingerprint: lanTls?.fingerprint,
     startedAt,
     eventBus,
@@ -908,7 +913,11 @@ async function main() {
   // only `/ws/chat`; all administrative routes remain bound to loopback.
   let lanServer: Server | undefined;
   if (lanTls) {
-    const { app: lanApp, wsTickets } = createLanMobileAppWithTickets(managementApp, webOrigins);
+    // CORS is applied once, on `managementApp` above — every `/mobile/v1`
+    // request (LAN-forwarded or relay-replayed) passes through it, so mounting
+    // it here as well would only double the `Vary` header. The parameter stays
+    // for embedders/tests that build a LAN app over a CORS-less management app.
+    const { app: lanApp, wsTickets } = createLanMobileAppWithTickets(managementApp);
     const { injectWebSocket: injectLanWebSocket, upgradeWebSocket: lanUpgradeWebSocket } =
       createNodeWebSocket({ app: lanApp });
     mountChatWs(lanApp, {

@@ -8,7 +8,7 @@ const ADMIN_TOKEN = 'admin-test-token';
 // Minimal stub deps for createGatewayManagementApp — same pattern as
 // management-api.projects.test.ts's makeStubDeps. Only the auth middleware
 // and the ws-ticket route mounted onto it are exercised here.
-function makeRealManagementApp(): Hono {
+function makeRealManagementApp(webOrigins: string[] = []): Hono {
   return createGatewayManagementApp({
     // biome-ignore lint/suspicious/noExplicitAny: stubs for unrelated subsystems
     gateway: {} as any,
@@ -30,6 +30,7 @@ function makeRealManagementApp(): Hono {
     resumableChatHub: {} as any,
     token: ADMIN_TOKEN,
     mobileToken: MOBILE_TOKEN,
+    webOrigins,
     // biome-ignore lint/suspicious/noExplicitAny: stub deps cast, mirrors management-api.projects.test.ts
   } as any);
 }
@@ -191,5 +192,60 @@ describe('createLanMobileAppWithTickets against the real management app', () => 
     const body = await mobileAuthed.json();
     expect(body.ticket).toMatch(/^[0-9a-f]{64}$/);
     expect(typeof body.expiresAt).toBe('string');
+  });
+});
+
+// The relay replays phone traffic straight against the management server
+// (`managementPort`), bypassing the LAN app entirely — so the CORS answer a
+// browser needs has to come from the management app itself, not just from
+// `createLanMobileApp`. These tests pin that.
+describe('management app CORS on /mobile/v1 (the relay replay path)', () => {
+  it('answers a preflight from an allowlisted origin without a bearer', async () => {
+    const app = makeRealManagementApp([ALLOWED_ORIGIN]);
+    const res = await app.request('/mobile/v1/agents', {
+      method: 'OPTIONS',
+      headers: {
+        origin: ALLOWED_ORIGIN,
+        'access-control-request-method': 'GET',
+        'access-control-request-headers': 'authorization,x-dash-relay-credential',
+      },
+    });
+    // The bearer middleware must never see it — a preflight carries no auth.
+    expect(res.status).toBe(204);
+    expect(res.headers.get('access-control-allow-origin')).toBe(ALLOWED_ORIGIN);
+    expect(res.headers.get('access-control-allow-headers')).toContain('x-dash-relay-credential');
+  });
+
+  it('sets no CORS headers for a non-allowlisted origin', async () => {
+    const app = makeRealManagementApp([ALLOWED_ORIGIN]);
+    const res = await app.request('/mobile/v1/agents', {
+      method: 'OPTIONS',
+      headers: { origin: 'https://evil.example.com', 'access-control-request-method': 'GET' },
+    });
+    expect(res.headers.get('access-control-allow-origin')).toBeNull();
+  });
+
+  it('still requires the mobile bearer on the real request', async () => {
+    const app = makeRealManagementApp([ALLOWED_ORIGIN]);
+    const res = await app.request('/mobile/v1/agents', {
+      headers: { origin: ALLOWED_ORIGIN },
+    });
+    expect(res.status).toBe(401);
+  });
+
+  it('leaves administrative routes free of CORS entirely', async () => {
+    const app = makeRealManagementApp([ALLOWED_ORIGIN]);
+    const res = await app.request('/agents', { headers: { origin: ALLOWED_ORIGIN } });
+    expect(res.headers.get('access-control-allow-origin')).toBeNull();
+  });
+
+  it('is inert when no web origins are configured (default)', async () => {
+    const app = makeRealManagementApp();
+    const res = await app.request('/mobile/v1/agents', {
+      method: 'OPTIONS',
+      headers: { origin: ALLOWED_ORIGIN, 'access-control-request-method': 'GET' },
+    });
+    expect(res.headers.get('access-control-allow-origin')).toBeNull();
+    expect(res.status).toBe(401);
   });
 });

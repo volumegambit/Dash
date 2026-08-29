@@ -30,6 +30,21 @@ describe('mobileCors', () => {
     expect(res.headers.get('access-control-allow-headers')).toContain('Authorization');
     expect(res.headers.get('access-control-allow-credentials')).toBeNull();
   });
+  it('allows the relay credential header on preflight (browser relay path)', async () => {
+    // A browser sends x-dash-relay-credential on every /mobile/v1 request, so
+    // the preflight must list it or the real request is never issued.
+    const res = await appWith(['https://app.example.com']).request('/x', {
+      method: 'OPTIONS',
+      headers: {
+        origin: 'https://app.example.com',
+        'access-control-request-method': 'GET',
+        'access-control-request-headers': 'authorization,x-dash-relay-credential',
+      },
+    });
+    expect(res.status).toBe(204);
+    expect(res.headers.get('access-control-allow-headers')).toContain('x-dash-relay-credential');
+  });
+
   it('is inert with an empty allowlist', async () => {
     const res = await appWith([]).request('/x', { headers: { origin: 'https://app.example.com' } });
     expect(res.headers.get('access-control-allow-origin')).toBeNull();

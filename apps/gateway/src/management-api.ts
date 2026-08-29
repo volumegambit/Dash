@@ -24,6 +24,7 @@ import type { EventBus, GatewayEvent } from './event-bus.js';
 import type { DynamicGateway } from './gateway.js';
 import type { McpManagementDeps } from './mcp-management.js';
 import { mountMcpRoutes } from './mcp-management.js';
+import { mobileCors } from './mobile-cors.js';
 import { createModelsController, createModelsRoute } from './models-route.js';
 import type { ModelsStore } from './models-store.js';
 import type { PluginWiringState } from './plugins-wiring.js';
@@ -63,6 +64,14 @@ export interface GatewayManagementOptions {
   mobileToken?: string;
   /** Administrative bearer accepted by every non-mobile management route. */
   token?: string;
+  /**
+   * Browser origins allowed to call `/mobile/v1` cross-origin (exact match).
+   * Empty/unset (the default) disables CORS entirely. Configured here — not
+   * only on the LAN app — because the relay replays phone traffic directly
+   * against this server, bypassing `createLanMobileApp`; without it a browser
+   * reaching the gateway through the relay gets no preflight answer.
+   */
+  webOrigins?: readonly string[];
   /** SHA-256 fingerprint for the persistent LAN HTTPS leaf, exposed only to MC. */
   lanTlsFingerprint?: string;
   startedAt?: string;
@@ -471,6 +480,16 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
       );
     }
   }
+
+  // CORS for the `/mobile/v1` namespace, registered BEFORE the auth middleware
+  // so a preflight OPTIONS is answered and short-circuited here: browsers strip
+  // author-set headers from preflights, so one can never carry a bearer. Scoped
+  // to `/mobile/v1` only — every administrative route stays CORS-free. See
+  // mobile-cors.ts for the exact-origin/no-credentials ruleset; an empty
+  // allowlist (the default) mounts a no-op.
+  const mobileCorsMiddleware = mobileCors(options.webOrigins ?? []);
+  app.use('/mobile/v1', mobileCorsMiddleware);
+  app.use('/mobile/v1/*', mobileCorsMiddleware);
 
   // Auth middleware — /health is exempt. /projects/ws is exempt too:
   // WebSocket clients cannot send an Authorization header, and the route
