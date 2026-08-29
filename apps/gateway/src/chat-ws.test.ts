@@ -12,6 +12,7 @@ import { isValidConversationId, mountChatWs, parseChatClientFrame } from './chat
 import { ConversationServiceError } from './conversation-service.js';
 import type { EventLogStore } from './event-log-store.js';
 import type { ResumableChatHub } from './resumable-chat-hub.js';
+import { WsTicketStore } from './ws-ticket-store.js';
 
 const FIXTURE_ROOT = fileURLToPath(
   new URL('../../../contracts/mobile/v1/fixtures/', import.meta.url),
@@ -439,6 +440,7 @@ function makeWsHarness(
     verbose?: boolean;
     streamFactory?: () => ScriptedStream;
     eventLogStore?: EventLogStore;
+    wsTickets?: WsTicketStore;
   } = {},
 ) {
   const hub = makeResumableHub();
@@ -486,6 +488,7 @@ function makeWsHarness(
     swarmCoordinator: { cancelTurn: swarmCancel },
     verbose: options.verbose,
     eventLogStore: options.eventLogStore,
+    wsTickets: options.wsTickets,
   });
 
   return {
@@ -501,11 +504,11 @@ function makeWsHarness(
     swarmCancel,
     requests,
     streams,
-    connect(token = options.token, authorization?: string) {
+    connect(token = options.token, authorization?: string, ticket?: string) {
       if (!createEvents) throw new Error('WebSocket handler was not mounted');
       const handlers = createEvents({
         req: {
-          query: () => token,
+          query: (name) => (name === 'ticket' ? ticket : token),
           header: (name) => (name.toLowerCase() === 'authorization' ? authorization : undefined),
         },
       });
@@ -695,6 +698,59 @@ describe('mountChatWs protocol ownership', () => {
 
     expect(connection.socket.close).toHaveBeenCalledWith(4001, 'Unauthorized');
     expect(connection.handlers.onMessage).toBeUndefined();
+  });
+
+  it('upgrades with a valid single-use ticket in the query', () => {
+    const wsTickets = new WsTicketStore();
+    const harness = makeWsHarness({ token: 'secret', wsTickets });
+    const { ticket } = wsTickets.issue();
+
+    const connection = harness.connect('not-the-real-token', undefined, ticket);
+    connection.handlers.onOpen?.({}, connection.socket);
+
+    expect(connection.socket.close).not.toHaveBeenCalled();
+    expect(connection.handlers.onMessage).toBeDefined();
+  });
+
+  it('rejects a reused ticket', () => {
+    const wsTickets = new WsTicketStore();
+    const harness = makeWsHarness({ token: 'secret', wsTickets });
+    const { ticket } = wsTickets.issue();
+
+    const first = harness.connect('not-the-real-token', undefined, ticket);
+    first.handlers.onOpen?.({}, first.socket);
+    expect(first.socket.close).not.toHaveBeenCalled();
+
+    const second = harness.connect('not-the-real-token', undefined, ticket);
+    second.handlers.onOpen?.({}, second.socket);
+    expect(second.socket.close).toHaveBeenCalledWith(4001, 'Unauthorized');
+    expect(second.handlers.onMessage).toBeUndefined();
+  });
+
+  it('rejects when neither header nor ticket present', () => {
+    const wsTickets = new WsTicketStore();
+    const harness = makeWsHarness({ token: 'secret', wsTickets });
+
+    const connection = harness.connect('wrong-query-token');
+    connection.handlers.onOpen?.({}, connection.socket);
+
+    expect(connection.socket.close).toHaveBeenCalledWith(4001, 'Unauthorized');
+    expect(connection.handlers.onMessage).toBeUndefined();
+  });
+
+  it('evaluates a request with both a header and a ticket on the header alone', () => {
+    const wsTickets = new WsTicketStore();
+    const harness = makeWsHarness({ token: 'secret', wsTickets });
+    const { ticket } = wsTickets.issue();
+
+    // Wrong header + a valid ticket must still be rejected: the header's
+    // presence must not be silently downgraded to the ticket fallback.
+    const connection = harness.connect('not-the-real-token', 'Bearer wrong-secret', ticket);
+    connection.handlers.onOpen?.({}, connection.socket);
+
+    expect(connection.socket.close).toHaveBeenCalledWith(4001, 'Unauthorized');
+    // The ticket must remain unredeemed since the header path alone governs.
+    expect(wsTickets.redeem(ticket)).toBe(true);
   });
 
   it('contains a valid JSON null frame as a structured validation error', () => {

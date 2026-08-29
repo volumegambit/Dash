@@ -7,6 +7,7 @@ import { toMobileApiError } from './conversation-routes.js';
 import { ConversationServiceError } from './conversation-service.js';
 import type { EventLogStore } from './event-log-store.js';
 import type { ResumableChatHub, ResumableSendFrame, TurnFrameSink } from './resumable-chat-hub.js';
+import type { WsTicketStore } from './ws-ticket-store.js';
 
 export interface ChatWsOptions {
   agents: AgentChatCoordinator;
@@ -31,6 +32,15 @@ export interface ChatWsOptions {
    * workers finish). Structural type so tests can pass a stub.
    */
   swarmCoordinator?: { cancelTurn(agentId: string, conversationId: string): boolean };
+  /**
+   * Single-use ticket store for browser WebSocket upgrades. Browsers cannot
+   * set an `Authorization` header on a WebSocket handshake, so a caller that
+   * exposes `/ws/chat` to browser clients mints short-lived tickets via HTTP
+   * (`POST /mobile/v1/ws-ticket`, see `lan-mobile-app.ts`) and passes the same
+   * store instance here. A ticket is only ever considered when no
+   * `Authorization` header is present — see the upgrade handler below.
+   */
+  wsTickets?: WsTicketStore;
 }
 
 const KNOWN_CLIENT_FRAME_TYPES = new Set(['message', 'resume', 'answer', 'cancel']);
@@ -220,7 +230,14 @@ function conversationKey(agentId: string, conversationId: string): string {
 }
 
 export function mountChatWs(app: Hono, options: ChatWsOptions): void {
-  const { agents, resumableChatHub, upgradeWebSocket, verbose = false, eventLogStore } = options;
+  const {
+    agents,
+    resumableChatHub,
+    upgradeWebSocket,
+    verbose = false,
+    eventLogStore,
+    wsTickets,
+  } = options;
 
   /**
    * Append a payload to the durable event log and return the assigned
@@ -307,10 +324,18 @@ export function mountChatWs(app: Hono, options: ChatWsOptions): void {
       // when the header is absent; a malformed/present header never downgrades.
       if (options.token) {
         const authorization = c.req.header('Authorization');
+        // Browsers also can't set headers at all, so a single-use ticket
+        // (minted over HTTP, see WsTicketStore) is a second query-string
+        // fallback — but ONLY when no Authorization header was sent. A
+        // request carrying both a header and a ticket is judged on the
+        // header alone; the ticket is left unredeemed in that case.
+        const ticket = c.req.query('ticket');
+        const ticketOk =
+          !authorization && ticket !== undefined && wsTickets?.redeem(ticket) === true;
         const authorized =
           authorization !== undefined
             ? authorization === `Bearer ${options.token}`
-            : c.req.query('token') === options.token;
+            : c.req.query('token') === options.token || ticketOk;
         if (!authorized) {
           return {
             onOpen(_event, ws) {

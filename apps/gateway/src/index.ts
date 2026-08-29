@@ -46,7 +46,7 @@ import { EventBus } from './event-bus.js';
 import { loadOrCreateGatewayId, loadOrCreateGatewayIdentity } from './gateway-identity.js';
 import { recoverGatewayTurns } from './gateway-recovery.js';
 import { createDynamicGateway } from './gateway.js';
-import { createLanMobileApp } from './lan-mobile-app.js';
+import { createLanMobileAppWithTickets } from './lan-mobile-app.js';
 import { loadOrCreateLanTlsIdentity } from './lan-tls.js';
 import { createGatewayManagementApp } from './management-api.js';
 import { McpConfigStore } from './mcp-store.js';
@@ -906,7 +906,7 @@ async function main() {
   // only `/ws/chat`; all administrative routes remain bound to loopback.
   let lanServer: Server | undefined;
   if (lanTls) {
-    const lanApp = createLanMobileApp(managementApp);
+    const { app: lanApp, wsTickets } = createLanMobileAppWithTickets(managementApp);
     const { injectWebSocket: injectLanWebSocket, upgradeWebSocket: lanUpgradeWebSocket } =
       createNodeWebSocket({ app: lanApp });
     mountChatWs(lanApp, {
@@ -917,6 +917,7 @@ async function main() {
       eventLogStore,
       verbose: verboseWs,
       swarmCoordinator,
+      wsTickets,
     });
     lanServer = serve({
       fetch: lanApp.fetch,
