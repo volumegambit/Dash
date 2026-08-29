@@ -44,6 +44,18 @@ export function ChatView({ conversationId, gatewayLabel }: ChatViewProps) {
     void openConversation(conversationId);
   }, [conversationId, openConversation]);
 
+  // 'unauthorized' is Shell's cue to clear the dead credential and route
+  // back to 'pick-gateway' (see Shell's store-subscription effect) — by the
+  // time that happens this component unmounts anyway, but guard explicitly
+  // rather than falling through to the 'offline'/'reconnecting' banners
+  // below, which would misdescribe a revoked credential as a transport
+  // problem. Exhaustive over the `connection` union on purpose: every value
+  // gets its own branch rather than relying on the negative space of the
+  // other checks.
+  if (connection === 'unauthorized') {
+    return null;
+  }
+
   if (connection === 'offline') {
     return (
       <div>

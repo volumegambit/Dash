@@ -1,11 +1,11 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { create } from 'zustand';
 import { ChatSocket } from '../api/chat-socket.js';
 import { MobileRestClient } from '../api/rest.js';
 import type { GatewayInfo } from '../auth/control-plane.js';
 import type { StoredCredential } from '../auth/credential-store.js';
 import type { WebAppState, WebAppStoreDeps } from '../state/store.js';
-import { Shell } from './Shell.js';
+import { SESSION_REVOKED_COPY, Shell } from './Shell.js';
 
 vi.mock('../api/rest.js', () => ({
   MobileRestClient: vi.fn().mockImplementation(() => ({})),
@@ -262,6 +262,108 @@ describe('Shell', () => {
     // torn down, not left retrying in the background.
     expect(createdStores).toHaveLength(1);
     await waitFor(() => expect(createdStores[0].getState().dispose).toHaveBeenCalledTimes(1));
+  });
+
+  it("routes back to the gateway picker with the session-revoked notice when the store's connection becomes 'unauthorized', and clears the dead credential", async () => {
+    const controlPlaneClient = baseControlPlaneClient();
+    const credentialStore = {
+      get: vi.fn(async (gatewayId: string) => (gatewayId === GATEWAY.gatewayId ? STORED : null)),
+      set: vi.fn(),
+      delete: vi.fn(async () => undefined),
+    };
+
+    render(
+      <Shell
+        controlPlaneClient={controlPlaneClient}
+        credentialStore={credentialStore}
+        relayDomain="relay.example.com"
+      />,
+    );
+
+    await waitFor(() => expect(screen.getByTestId('chat-workspace')).toBeTruthy());
+    expect(createdStores).toHaveLength(1);
+
+    // Simulate the store detecting a revoked credential (e.g. a 401 during
+    // openConversation's replay, or the reconnect-exhaustion probe) — see
+    // `state/store.ts` `enterUnauthorized`.
+    act(() => {
+      createdStores[0].setState({ connection: 'unauthorized' });
+    });
+
+    await waitFor(() => expect(screen.getByText(SESSION_REVOKED_COPY)).toBeTruthy());
+    expect(screen.getByText('acme')).toBeTruthy(); // back on the gateway picker
+    expect(screen.queryByTestId('chat-workspace')).toBeNull();
+    expect(credentialStore.delete).toHaveBeenCalledWith('gw-1');
+
+    // The abandoned store must be torn down too, same as self-revocation.
+    await waitFor(() => expect(createdStores[0].getState().dispose).toHaveBeenCalledTimes(1));
+  });
+
+  it('still routes back to the gateway picker (and shows the notice) even if clearing the credential store fails', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const controlPlaneClient = baseControlPlaneClient();
+    const credentialStore = {
+      get: vi.fn(async (gatewayId: string) => (gatewayId === GATEWAY.gatewayId ? STORED : null)),
+      set: vi.fn(),
+      delete: vi.fn(async () => {
+        throw new Error('IndexedDB is unavailable');
+      }),
+    };
+
+    render(
+      <Shell
+        controlPlaneClient={controlPlaneClient}
+        credentialStore={credentialStore}
+        relayDomain="relay.example.com"
+      />,
+    );
+
+    await waitFor(() => expect(screen.getByTestId('chat-workspace')).toBeTruthy());
+
+    act(() => {
+      createdStores[0].setState({ connection: 'unauthorized' });
+    });
+
+    await waitFor(() => expect(screen.getByText(SESSION_REVOKED_COPY)).toBeTruthy());
+    expect(screen.queryByTestId('chat-workspace')).toBeNull();
+    consoleError.mockRestore();
+  });
+
+  it('clears the session-revoked notice once a gateway is (re-)picked', async () => {
+    const controlPlaneClient = {
+      listGateways: vi.fn(async () => [GATEWAY]),
+      createWebPairing: vi.fn(async () => ({
+        credential: 'fresh-relay-cred',
+        pairingId: 'p-2',
+        chatToken: 'fresh-chat-token',
+      })),
+      listPairings: vi.fn(async () => []),
+      deletePairing: vi.fn(),
+    };
+    const credentialStore = {
+      get: vi.fn(async (gatewayId: string) => (gatewayId === GATEWAY.gatewayId ? STORED : null)),
+      set: vi.fn(async () => undefined),
+      delete: vi.fn(async () => undefined),
+    };
+
+    render(
+      <Shell
+        controlPlaneClient={controlPlaneClient}
+        credentialStore={credentialStore}
+        relayDomain="relay.example.com"
+      />,
+    );
+
+    await waitFor(() => expect(screen.getByTestId('chat-workspace')).toBeTruthy());
+    act(() => {
+      createdStores[0].setState({ connection: 'unauthorized' });
+    });
+    await waitFor(() => expect(screen.getByText(SESSION_REVOKED_COPY)).toBeTruthy());
+
+    fireEvent.click(screen.getByText('acme'));
+
+    await waitFor(() => expect(screen.getByTestId('chat-workspace')).toBeTruthy());
+    expect(screen.queryByText(SESSION_REVOKED_COPY)).toBeNull();
   });
 
   it('disposes the store on unmount', async () => {

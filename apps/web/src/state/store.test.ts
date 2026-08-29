@@ -10,8 +10,8 @@ import type {
   MobileWsServerFrame,
 } from '@dash/mobile-contract';
 import type { ChatSocket, FrameHandler } from '../api/chat-socket';
-import type { MobileRestClient } from '../api/rest';
-import { RECONNECT_BASE_MS, RECONNECT_FACTOR, createWebAppStore } from './store';
+import { MobileApiError, type MobileRestClient } from '../api/rest';
+import { RECONNECT_BASE_MS, RECONNECT_FACTOR, RECONNECT_MAX_MS, createWebAppStore } from './store';
 
 // apps/web/src/state -> apps/web -> apps -> repo root
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '../../../..');
@@ -124,27 +124,50 @@ interface FakeRest {
   rest: MobileRestClient;
   listConversations: ReturnType<typeof vi.fn>;
   getMessages: ReturnType<typeof vi.fn>;
+  identity: ReturnType<typeof vi.fn>;
 }
 
 function fakeRest(opts: {
   conversationPage?: ConversationPage;
   messagePages?: ConversationMessagePage[];
+  /** Override for `rest.listConversations()` — takes precedence over
+   * `conversationPage` when set. Used by tests simulating a 401 (revoked
+   * credential) on this call, whether from `loadConversations()` directly or
+   * `resolveAgentId`'s fallback fetch during a reconnect. */
+  listConversationsImpl?: () => Promise<ConversationPage>;
+  /** Override for `rest.getMessages()` — used by tests simulating a 401 on
+   * the initial `openConversation()` replay. */
+  getMessagesImpl?: (conversationId: string, cursor?: string) => Promise<ConversationMessagePage>;
+  /** Override for `rest.identity()` — defaults to a successful resolve.
+   * `finalizeReconnectExhausted` (store.ts) probes this once the reconnect-
+   * attempt cap is hit, so every test that drives a store past that cap
+   * needs *some* `identity()` behavior; tests simulating a remotely-revoked
+   * credential pass a rejecting fn here. */
+  identityImpl?: () => Promise<unknown>;
 }): FakeRest {
   const messagePages = opts.messagePages ?? [{ items: [], nextCursor: null, throughSeq: 0 }];
   let getMessagesCall = 0;
   const listConversations = vi.fn(
-    async () => opts.conversationPage ?? { items: [summary()], nextCursor: null },
+    opts.listConversationsImpl ??
+      (async () => opts.conversationPage ?? { items: [summary()], nextCursor: null }),
   );
-  const getMessages = vi.fn(async (_conversationId: string, _cursor?: string) => {
-    const page = messagePages[Math.min(getMessagesCall, messagePages.length - 1)];
-    getMessagesCall += 1;
-    return page;
-  });
+  const getMessages = vi.fn(
+    opts.getMessagesImpl ??
+      (async (_conversationId: string, _cursor?: string) => {
+        const page = messagePages[Math.min(getMessagesCall, messagePages.length - 1)];
+        getMessagesCall += 1;
+        return page;
+      }),
+  );
+  const identity = vi.fn(
+    opts.identityImpl ?? (async () => ({ gatewayId: 'gw-1', publicKey: 'pk-stub' })),
+  );
   const rest = {
     listConversations,
     getMessages,
+    identity,
   } as unknown as MobileRestClient;
-  return { rest, listConversations, getMessages };
+  return { rest, listConversations, getMessages, identity };
 }
 
 /** Drives a store through `openConversation`, resolving the scripted
@@ -576,6 +599,137 @@ describe('createWebAppStore', () => {
       expect(store.getState().connection).toBe('reconnecting');
       await vi.advanceTimersByTimeAsync(RECONNECT_BASE_MS);
       await vi.waitFor(() => expect(factory).toHaveBeenCalledTimes(3));
+    });
+  });
+
+  describe('auth failures (design doc: never a silent retry loop on 401)', () => {
+    it("a 401 during openConversation's initial replay goes straight to 'unauthorized', with no socket ever attempted", async () => {
+      const { rest, getMessages } = fakeRest({
+        getMessagesImpl: async () => {
+          throw new MobileApiError(401, undefined);
+        },
+      });
+      const { factory } = scriptedSocketFactory();
+      const store = createWebAppStore({ rest, socketFactory: factory });
+
+      await store.getState().openConversation(CONVERSATION_ID); // resolves — never rethrows an auth error
+
+      expect(store.getState().connection).toBe('unauthorized');
+      expect(getMessages).toHaveBeenCalledTimes(1);
+      expect(factory).not.toHaveBeenCalled(); // no socket was ever attempted
+
+      // No reconnect timer was armed either — waiting past every backoff
+      // window confirms nothing fires afterwards.
+      await vi.advanceTimersByTimeAsync(RECONNECT_MAX_MS * 10);
+      expect(factory).not.toHaveBeenCalled();
+      expect(store.getState().connection).toBe('unauthorized');
+    });
+
+    it("a 401 from loadConversations() goes to 'unauthorized' without throwing", async () => {
+      const { rest, listConversations } = fakeRest({
+        listConversationsImpl: async () => {
+          throw new MobileApiError(401, 'unauthorized');
+        },
+      });
+      const { factory } = scriptedSocketFactory();
+      const store = createWebAppStore({ rest, socketFactory: factory });
+
+      await expect(store.getState().loadConversations()).resolves.toBeUndefined();
+
+      expect(listConversations).toHaveBeenCalledTimes(1);
+      expect(store.getState().connection).toBe('unauthorized');
+    });
+
+    it('a non-401 error from loadConversations() still propagates (not swallowed into a connection state)', async () => {
+      const { rest } = fakeRest({
+        listConversationsImpl: async () => {
+          throw new Error('network blip');
+        },
+      });
+      const { factory } = scriptedSocketFactory();
+      const store = createWebAppStore({ rest, socketFactory: factory });
+
+      await expect(store.getState().loadConversations()).rejects.toThrow('network blip');
+      expect(store.getState().connection).toBe('offline'); // untouched initial value, not reinterpreted
+    });
+
+    it("a 401 from resolveAgentId's listConversations fallback during an in-flight reconnect goes straight to 'unauthorized' (no further scheduleReconnect)", async () => {
+      // `openConversation()` never itself calls `listConversations` — only
+      // `attemptReconnect`'s `resolveAgentId` fallback does, since
+      // `conversations` is otherwise still empty at this point (no prior
+      // `loadConversations()` call) — so this is the call the 401 lands on.
+      const rest = {
+        listConversations: vi.fn(async () => {
+          throw new MobileApiError(401, undefined);
+        }),
+        getMessages: vi.fn(async () => ({ items: [], nextCursor: null, throughSeq: 0 })),
+        identity: vi.fn(async () => ({ gatewayId: 'gw-1', publicKey: 'pk' })),
+      } as unknown as MobileRestClient;
+      const { factory, sockets, onCloses } = scriptedSocketFactory();
+      const store = createWebAppStore({ rest, socketFactory: factory });
+      await openAndConnect(store, sockets, CONVERSATION_ID);
+
+      onCloses[0]('error'); // schedules reconnect attempt 1
+      await vi.advanceTimersByTimeAsync(RECONNECT_BASE_MS);
+      await vi.waitFor(() => expect(factory).toHaveBeenCalledTimes(2));
+      sockets[1].open(); // connect() succeeds; resolveAgentId's listConversations 401s next
+
+      await vi.waitFor(() => expect(store.getState().connection).toBe('unauthorized'));
+      expect(sockets[1].closed).toBe(true);
+
+      // No further reconnect attempt — well past every backoff window.
+      await vi.advanceTimersByTimeAsync(RECONNECT_MAX_MS * 10);
+      expect(factory).toHaveBeenCalledTimes(2);
+      expect(store.getState().connection).toBe('unauthorized');
+    });
+
+    it("once reconnect attempts exhaust, a 401 from the identity() probe means the credential was revoked — 'unauthorized', not 'offline'", async () => {
+      const { rest } = fakeRest({
+        identityImpl: async () => {
+          throw new MobileApiError(401, undefined);
+        },
+      });
+      const { factory, sockets, onCloses } = scriptedSocketFactory();
+      const store = createWebAppStore({
+        rest,
+        socketFactory: factory,
+        reconnect: { maxAttempts: 1 },
+      });
+      await openAndConnect(store, sockets, CONVERSATION_ID);
+
+      onCloses[0]('error'); // attempt 1 scheduled
+      await vi.advanceTimersByTimeAsync(RECONNECT_BASE_MS);
+      await vi.waitFor(() => expect(factory).toHaveBeenCalledTimes(2));
+      sockets[1].failToOpen(); // cap reached (maxAttempts: 1) — probe fires
+
+      await vi.waitFor(() => expect(store.getState().connection).toBe('unauthorized'));
+
+      // No further reconnect attempts after landing on 'unauthorized'.
+      await vi.advanceTimersByTimeAsync(RECONNECT_MAX_MS * 10);
+      expect(factory).toHaveBeenCalledTimes(2);
+      expect(store.getState().connection).toBe('unauthorized');
+    });
+
+    it("once reconnect attempts exhaust, a genuine network error from the identity() probe still lands on 'offline' (not misclassified as unauthorized)", async () => {
+      const { rest } = fakeRest({
+        identityImpl: async () => {
+          throw new TypeError('fetch failed'); // a plain network error, not MobileApiError
+        },
+      });
+      const { factory, sockets, onCloses } = scriptedSocketFactory();
+      const store = createWebAppStore({
+        rest,
+        socketFactory: factory,
+        reconnect: { maxAttempts: 1 },
+      });
+      await openAndConnect(store, sockets, CONVERSATION_ID);
+
+      onCloses[0]('error'); // attempt 1 scheduled
+      await vi.advanceTimersByTimeAsync(RECONNECT_BASE_MS);
+      await vi.waitFor(() => expect(factory).toHaveBeenCalledTimes(2));
+      sockets[1].failToOpen(); // cap reached — probe fires and also fails (network partition)
+
+      await vi.waitFor(() => expect(store.getState().connection).toBe('offline'));
     });
   });
 

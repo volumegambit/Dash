@@ -7,13 +7,24 @@ import type {
 import { create } from 'zustand';
 import type { StoreApi, UseBoundStore } from 'zustand';
 import type { ChatSocket, FrameHandler } from '../api/chat-socket';
-import type { MobileRestClient } from '../api/rest';
+import { MobileApiError, type MobileRestClient } from '../api/rest';
 import { type Transcript, applyServerFrame } from './assemble';
 
 export interface WebAppState {
   conversations: ConversationSummary[];
   transcripts: Record<string, Transcript>;
-  connection: 'connected' | 'reconnecting' | 'offline';
+  /**
+   * `'unauthorized'` is terminal, same spirit as `'offline'` but for a
+   * *credential* problem rather than a *transport* one: the gateway's own
+   * `chatToken` or this browser's relay credential was rejected (401) —
+   * remotely revoked from another device/Mission Control, most commonly.
+   * Design doc (`docs/plans/2026-08-29-web-interface-design.md`, Error
+   * Handling): "revoked/rejected credential → GatewayPicker with
+   * explanation. Never a silent retry loop on auth failures." — so unlike
+   * `'reconnecting'`/`'offline'`, nothing in this store ever retries out of
+   * `'unauthorized'` on its own; see `enterUnauthorized`/`isAuthError`.
+   */
+  connection: 'connected' | 'reconnecting' | 'offline' | 'unauthorized';
   loadConversations(): Promise<void>;
   openConversation(id: string): Promise<void>;
   sendMessage(conversationId: string, text: string): Promise<void>;
@@ -64,6 +75,21 @@ export const RECONNECT_MAX_ATTEMPTS = 6;
 
 function reconnectDelay(attempt: number): number {
   return Math.min(RECONNECT_MAX_MS, RECONNECT_BASE_MS * RECONNECT_FACTOR ** attempt);
+}
+
+/**
+ * True for a 401 from any mobile-v1 REST call — the gateway rejecting this
+ * browser's `chatToken`, or (just as often in practice) the *relay* itself
+ * rejecting a revoked relay credential before the request ever reaches the
+ * gateway. The latter comes back as a plain-text "Unauthorized" body rather
+ * than the gateway's structured `{ code, error, retryable }` JSON —
+ * `MobileApiError`'s `code` is `undefined` in that case (see
+ * `readErrorCode`'s catch in `api/rest.ts`) — but the status is still 401,
+ * which is all this checks: both cases mean the same thing to this store,
+ * "this credential is dead," and get the same treatment.
+ */
+function isAuthError(err: unknown): boolean {
+  return err instanceof MobileApiError && err.status === 401;
 }
 
 /** Channel identifier this browser client identifies itself with on outgoing frames. */
@@ -177,7 +203,11 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
     /** Looks up `agentId` for a conversation, refreshing the conversation
      * list once from REST if it isn't already loaded (so `openConversation`
      * never *requires* a prior `loadConversations()` call — see
-     * `attemptReconnect`, which needs `agentId` to build a `resume` frame). */
+     * `attemptReconnect`, which needs `agentId` to build a `resume` frame).
+     * A 401 is rethrown rather than swallowed into `null`: `attemptReconnect`
+     * needs to tell "this credential is dead" apart from "the network call
+     * failed for some other reason" so it can go straight to `'unauthorized'`
+     * instead of just trying (and failing) the resume again next attempt. */
     async function resolveAgentId(conversationId: string): Promise<string | null> {
       const known = get().conversations.find((c) => c.id === conversationId)?.agentId;
       if (known) return known;
@@ -185,7 +215,8 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
         const page = await rest.listConversations();
         set({ conversations: page.items });
         return page.items.find((c) => c.id === conversationId)?.agentId ?? null;
-      } catch {
+      } catch (err) {
+        if (isAuthError(err)) throw err;
         return null;
       }
     }
@@ -260,6 +291,39 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
       return created;
     }
 
+    /** Shared teardown for both `dispose()` and `enterUnauthorized()`: closes
+     * the live socket (nulling the closure `socket` variable *first*, so the
+     * async native-close event that follows can't be misattributed via the
+     * identity guard in `createAttachedSocket`/`onSocketClose` — same
+     * pattern `openConversation` already relies on when switching
+     * conversations), cancels any pending reconnect timer, and sets
+     * `disposed` so nothing already in flight (a `scheduleReconnect` call, an
+     * in-progress `attemptReconnect`) can resurrect a connection afterwards.
+     * Does not touch `connection` itself — callers set their own terminal
+     * value. */
+    function haltReconnectMachinery(): void {
+      disposed = true;
+      currentConversationId = null;
+      clearReconnectTimer();
+      if (socket) {
+        const closing = socket;
+        socket = null;
+        closing.close();
+      }
+    }
+
+    /** Terminal auth-failure state (design doc, Error Handling: "revoked/
+     * rejected credential → GatewayPicker with explanation. Never a silent
+     * retry loop on auth failures."). Unlike `'offline'`, nothing in this
+     * store ever retries out of `'unauthorized'` on its own — a consumer
+     * (`Shell`) must notice it, clear the dead credential, and either drive a
+     * fresh `openConversation()` after re-pairing or discard the store via
+     * `dispose()`; both already clear `disposed`/tear down cleanly. */
+    function enterUnauthorized(): void {
+      haltReconnectMachinery();
+      set({ connection: 'unauthorized' });
+    }
+
     function onSocketClose(closingSocket: ChatSocket, reason: 'error' | 'closed'): void {
       void reason; // Both reasons mean "this connection is gone" — either warrants a reconnect.
       if (closingSocket !== socket) return; // stale/detached socket — already superseded, ignore.
@@ -268,11 +332,35 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
       scheduleReconnect();
     }
 
+    /** Reached once the reconnect-attempt cap is exhausted. A plain network
+     * partition and a remotely-revoked credential look identical from the
+     * WS side alone (both just fail to (re)connect), so this probes a cheap
+     * authenticated REST call (`identity()`) to tell them apart before
+     * settling on a terminal state: 401 means the credential is dead
+     * (`'unauthorized'`, and reconnecting stops for good); anything else —
+     * including the probe itself failing to reach the gateway — means it's
+     * still just offline, matching the design doc's "gateway offline (relay
+     * reports no dial) → honest 'gateway unreachable' screen." */
+    async function finalizeReconnectExhausted(): Promise<void> {
+      if (disposed) return;
+      try {
+        await rest.identity();
+        if (!disposed) set({ connection: 'offline' });
+      } catch (err) {
+        if (disposed) return;
+        if (isAuthError(err)) {
+          enterUnauthorized();
+        } else {
+          set({ connection: 'offline' });
+        }
+      }
+    }
+
     function scheduleReconnect(): void {
       if (disposed) return;
       if (reconnectTimer || !currentConversationId) return;
       if (reconnectAttempt >= maxReconnectAttempts) {
-        set({ connection: 'offline' });
+        void finalizeReconnectExhausted();
         return;
       }
       const delay = reconnectDelay(reconnectAttempt);
@@ -290,7 +378,13 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
      * in-flight when the connection dropped, its `pending.turnId` is reused
      * as the resume frame's `id` (matching the original turn's
      * correlation id) so replayed `event`/`done` frames finalize it via the
-     * same `pending` bookkeeping that was already in the transcript. */
+     * same `pending` bookkeeping that was already in the transcript.
+     *
+     * A 401 anywhere in this attempt — `attempted.connect()`'s own ws-ticket
+     * mint (the relay rejecting a revoked relay credential) just as much as
+     * `resolveAgentId`'s `listConversations` call — goes straight to
+     * `enterUnauthorized()` instead of another `scheduleReconnect()`: no
+     * point retrying a credential that's already confirmed dead. */
     async function attemptReconnect(): Promise<void> {
       const conversationId = currentConversationId;
       if (!conversationId || disposed) return;
@@ -323,10 +417,15 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
         attempted.send(resumeFrame);
         reconnectAttempt = 0;
         set({ connection: 'connected' });
-      } catch {
+      } catch (err) {
         if (socket === attempted) socket = null;
         attempted.close();
-        if (!disposed) scheduleReconnect();
+        if (disposed) return;
+        if (isAuthError(err)) {
+          enterUnauthorized();
+          return;
+        }
+        scheduleReconnect();
       }
     }
 
@@ -336,8 +435,16 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
       connection: 'offline',
 
       async loadConversations() {
-        const page = await rest.listConversations();
-        set({ conversations: page.items });
+        try {
+          const page = await rest.listConversations();
+          set({ conversations: page.items });
+        } catch (err) {
+          if (isAuthError(err)) {
+            enterUnauthorized();
+            return;
+          }
+          throw err;
+        }
       },
 
       async openConversation(conversationId: string) {
@@ -350,7 +457,16 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
         disposed = false; // a disposed store is reusable — this is a fresh connect intent.
         currentConversationId = conversationId;
 
-        const replay = await replayHistory(conversationId);
+        let replay: { messages: ConversationMessage[]; lastSeq: number };
+        try {
+          replay = await replayHistory(conversationId);
+        } catch (err) {
+          if (isAuthError(err)) {
+            enterUnauthorized();
+            return;
+          }
+          throw err;
+        }
         lastSeq = replay.lastSeq;
         updateTranscript(conversationId, (t) => ({
           ...t,
@@ -417,14 +533,7 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
       },
 
       dispose() {
-        disposed = true;
-        currentConversationId = null;
-        clearReconnectTimer();
-        if (socket) {
-          const closing = socket;
-          socket = null; // clear first — see `createAttachedSocket`'s identity guard on `onClose`.
-          closing.close();
-        }
+        haltReconnectMachinery();
         set({ connection: 'offline' });
       },
     };

@@ -26,6 +26,13 @@ type WebAppStore = UseBoundStore<StoreApi<WebAppState>>;
  * scripted store without going through the full `Shell` mount. */
 export const WebAppStoreContext = createContext<WebAppStore | null>(null);
 
+/** Exact copy shown on `GatewayPicker` after `Shell` routes back to it
+ * because the store's `connection` went to `'unauthorized'` — a remotely
+ * revoked/rejected credential (design doc, Error Handling: "revoked/rejected
+ * credential → GatewayPicker with explanation"). */
+export const SESSION_REVOKED_COPY =
+  'Your web session for this gateway was revoked. Pair again to continue.';
+
 /** Reads the store `Shell` created for the picked gateway. Must be called
  * from a component mounted under `Shell`'s `'chat'` view (Task 13's
  * ConversationList/ChatView/Devices). */
@@ -84,6 +91,9 @@ export function Shell({ controlPlaneClient, credentialStore, relayDomain }: Shel
   const [gateways, setGateways] = useState<GatewayInfo[]>([]);
   const [activeGateway, setActiveGateway] = useState<GatewayInfo | null>(null);
   const [activeCredential, setActiveCredential] = useState<StoredCredential | null>(null);
+  /** Set when `handleUnauthorized` routes back to `GatewayPicker` after a
+   * revoked/rejected credential; cleared once a gateway is (re-)picked. */
+  const [pickGatewayNotice, setPickGatewayNotice] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -148,9 +158,51 @@ export function Shell({ controlPlaneClient, credentialStore, relayDomain }: Shel
     };
   }, [store]);
 
+  /** Design doc, Error Handling: "revoked/rejected credential →
+   * GatewayPicker with explanation. Never a silent retry loop on auth
+   * failures." The store itself already stops reconnecting the moment its
+   * `connection` reaches `'unauthorized'` (see `state/store.ts`
+   * `enterUnauthorized`) — this effect is what notices that from the Shell
+   * side and acts on it: the dead credential is no good to keep around, so
+   * drop it, then clear `activeGateway`/`activeCredential`, which both
+   * routes `view` back to `'pick-gateway'` and (via the teardown effect
+   * above, once `store` recomputes to `null`) disposes the abandoned store.
+   * Subscribes via the store's vanilla `subscribe`/`getState()` rather than
+   * the React hook form since `Shell` itself sits *outside*
+   * `WebAppStoreContext.Provider` — `useWebAppStore()` isn't available here. */
+  useEffect(() => {
+    if (!store || !activeGateway) return;
+    const gatewayId = activeGateway.gatewayId;
+
+    async function handleUnauthorized(): Promise<void> {
+      try {
+        await credentialStore.delete(gatewayId);
+      } catch (err) {
+        // The credential is dead server-side regardless of whether the
+        // *local* copy was successfully cleared — never strand the user on
+        // a chat view backed by a revoked session just because this step
+        // failed.
+        console.error('Shell: failed to clear the credential store after an auth failure', err);
+      } finally {
+        setPickGatewayNotice(SESSION_REVOKED_COPY);
+        setActiveGateway(null);
+        setActiveCredential(null);
+      }
+    }
+
+    if (store.getState().connection === 'unauthorized') {
+      void handleUnauthorized();
+      return;
+    }
+    return store.subscribe((state) => {
+      if (state.connection === 'unauthorized') void handleUnauthorized();
+    });
+  }, [store, activeGateway, credentialStore]);
+
   const view: ShellView = activeGateway && activeCredential && store ? 'chat' : 'pick-gateway';
 
   function handleReady(gateway: GatewayInfo, stored: StoredCredential): void {
+    setPickGatewayNotice(null);
     setActiveGateway(gateway);
     setActiveCredential(stored);
   }
@@ -183,12 +235,15 @@ export function Shell({ controlPlaneClient, credentialStore, relayDomain }: Shel
   }
 
   return (
-    <GatewayPicker
-      gateways={gateways}
-      controlPlaneClient={controlPlaneClient}
-      credentialStore={credentialStore}
-      onReady={handleReady}
-    />
+    <>
+      {pickGatewayNotice && <p role="alert">{pickGatewayNotice}</p>}
+      <GatewayPicker
+        gateways={gateways}
+        controlPlaneClient={controlPlaneClient}
+        credentialStore={credentialStore}
+        onReady={handleReady}
+      />
+    </>
   );
 }
 

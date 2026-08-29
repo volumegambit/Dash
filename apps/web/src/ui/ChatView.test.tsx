@@ -216,4 +216,18 @@ describe('ChatView', () => {
 
     await waitFor(() => expect(screen.getByText('Failed to send')).toBeTruthy());
   });
+
+  it("renders neither the Reconnecting… banner nor the gateway-unreachable message when connection is 'unauthorized' (Shell routes away; this guard is exhaustive)", async () => {
+    const { store } = await renderConnected({
+      messages: [message({ content: { type: 'user', text: 'Ping' } })],
+    });
+
+    act(() => {
+      store.setState({ connection: 'unauthorized' });
+    });
+
+    await waitFor(() => expect(screen.queryByText('Ping')).toBeNull());
+    expect(screen.queryByText(RECONNECTING_COPY)).toBeNull();
+    expect(screen.queryByText("Your gateway 'acme' is unreachable.")).toBeNull();
+  });
 });
