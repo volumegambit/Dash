@@ -21,6 +21,7 @@
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "@vitejs/plugin-react": "^4",
+    "fake-indexeddb": "^6",
     "happy-dom": "^15",
     "typescript": "^5.7",
     "vite": "^6",
