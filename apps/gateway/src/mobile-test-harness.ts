@@ -18,7 +18,7 @@ import { SqliteConversationService } from './conversation-service-sqlite.js';
 import { GatewayCredentialStore } from './credential-store.js';
 import { EventBus } from './event-bus.js';
 import { createDynamicGateway } from './gateway.js';
-import { createLanMobileApp } from './lan-mobile-app.js';
+import { createLanMobileAppWithTickets } from './lan-mobile-app.js';
 import { loadOrCreateLanTlsIdentity } from './lan-tls.js';
 import { createGatewayManagementApp } from './management-api.js';
 import { ModelsStore } from './models-store.js';
@@ -379,7 +379,14 @@ export async function startMobileTestHarness(
     });
     chatServer = await listen(chatApp, chatWebSocket.injectWebSocket);
 
-    const lanApp = createLanMobileApp(managementApp);
+    // Mirrors the production wiring in index.ts: `createLanMobileAppWithTickets`
+    // both mints (`POST /mobile/v1/ws-ticket`, registered directly onto
+    // `managementApp`) and returns the `WsTicketStore` instance, which must be
+    // threaded into this same surface's `mountChatWs` so a minted ticket can
+    // actually be redeemed at upgrade time. Without this, `ws-ticket` mints a
+    // ticket nothing ever checks and every ticketed upgrade attempt on this
+    // pinned LAN surface falls through to the (failing) token/header checks.
+    const { app: lanApp, wsTickets } = createLanMobileAppWithTickets(managementApp);
     const lanWebSocket = createNodeWebSocket({ app: lanApp });
     mountChatWs(lanApp, {
       agents,
@@ -388,6 +395,7 @@ export async function startMobileTestHarness(
       upgradeWebSocket: lanWebSocket.upgradeWebSocket,
       eventLogStore: conversations.eventLog,
       verbose: false,
+      wsTickets,
     });
     lanServer = await listen(lanApp, lanWebSocket.injectWebSocket, lanTls);
 

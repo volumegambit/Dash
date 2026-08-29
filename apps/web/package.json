@@ -25,6 +25,7 @@
     "happy-dom": "^15",
     "typescript": "^5.7",
     "vite": "^6",
-    "vitest": "^3"
+    "vitest": "^3",
+    "ws": "*"
   }
 }
