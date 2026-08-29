@@ -102,7 +102,7 @@ async function waitForSocket(
   return sockets[countBefore];
 }
 
-function setup(tickets = ['ticket-1']) {
+function setup(tickets = ['ticket-1'], wsBaseUrl = 'wss://relay.example/mobile/v1/ws') {
   const rest = restClientWithTickets(tickets);
   const frames: MobileWsServerFrame[] = [];
   const onFrame: FrameHandler = (frame) => frames.push(frame);
@@ -114,13 +114,7 @@ function setup(tickets = ['ticket-1']) {
     sockets.push(socket);
     return socket as unknown as WebSocket;
   };
-  const chat = new ChatSocket(
-    'wss://relay.example/mobile/v1/ws',
-    rest,
-    onFrame,
-    onClose,
-    wsFactory,
-  );
+  const chat = new ChatSocket(wsBaseUrl, rest, onFrame, onClose, wsFactory);
   return { chat, frames, closeReasons, sockets, rest };
 }
 
@@ -142,6 +136,15 @@ describe('ChatSocket', () => {
     const socket = await connectAndOpen(chat, sockets);
 
     expect(socket.url).toBe('wss://relay.example/mobile/v1/ws?ticket=abc123');
+  });
+
+  it('appends ?ticket= without dropping an existing query string on wsBaseUrl', async () => {
+    const { chat, sockets } = setup(['abc123'], 'wss://relay.example/mobile/v1/ws?region=us');
+    const socket = await connectAndOpen(chat, sockets);
+
+    const url = new URL(socket.url);
+    expect(url.searchParams.get('region')).toBe('us');
+    expect(url.searchParams.get('ticket')).toBe('abc123');
   });
 
   it('fetches a fresh ticket on every connect() call rather than caching one', async () => {
@@ -196,6 +199,15 @@ describe('ChatSocket', () => {
     expect(() => chat.send(frame)).toThrow();
   });
 
+  it('send() throws when called after close()', async () => {
+    const { chat, sockets } = setup();
+    await connectAndOpen(chat, sockets);
+    chat.close();
+
+    const frame: MobileWsClientFrame = { type: 'cancel', id: 'req-1' };
+    expect(() => chat.send(frame)).toThrow();
+  });
+
   it('close() triggers onClose("closed") exactly once', async () => {
     const { chat, sockets, closeReasons } = setup();
     await connectAndOpen(chat, sockets);
@@ -231,6 +243,28 @@ describe('ChatSocket', () => {
     socket.triggerServerClose();
 
     await expect(connecting).rejects.toBeTruthy();
+    expect(closeReasons).toEqual(['closed']);
+  });
+
+  it('detaches a still-live prior socket on reconnect so its late events cannot fire onClose for the new connection', async () => {
+    const { chat, sockets, closeReasons } = setup(['first-ticket', 'second-ticket']);
+    const firstSocket = await connectAndOpen(chat, sockets);
+
+    // Reconnecting without an explicit close() first must detach the still-open
+    // first socket rather than leaving it live alongside the new one.
+    const secondSocket = await connectAndOpen(chat, sockets);
+
+    expect(firstSocket.closeCalls.length).toBeGreaterThan(0);
+    // Detaching the stale socket must not itself surface as an onClose for
+    // the caller — only the still-current connection's own close should.
+    expect(closeReasons).toEqual([]);
+
+    // Late events from the now-detached first socket must be inert.
+    firstSocket.triggerError();
+    firstSocket.triggerServerClose();
+    expect(closeReasons).toEqual([]);
+
+    secondSocket.triggerServerClose();
     expect(closeReasons).toEqual(['closed']);
   });
 });

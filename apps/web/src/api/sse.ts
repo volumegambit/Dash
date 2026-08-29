@@ -17,10 +17,17 @@ export async function* readSse(
   fetchImpl: typeof fetch = fetch,
 ): AsyncGenerator<unknown> {
   const token = await tokens.getToken();
-  const response = await fetchImpl(url, {
-    headers: { Authorization: `Bearer ${token}` },
-    signal,
-  });
+
+  let response: Response;
+  try {
+    response = await fetchImpl(url, {
+      headers: { Authorization: `Bearer ${token}` },
+      signal,
+    });
+  } catch (err) {
+    if (isAbortError(err)) return;
+    throw err;
+  }
 
   if (!response.body) return;
 
@@ -36,14 +43,26 @@ export async function* readSse(
 
   try {
     while (!signal.aborted) {
-      const { value, done } = await reader.read();
+      let value: Uint8Array | undefined;
+      let done: boolean | undefined;
+      try {
+        ({ value, done } = await reader.read());
+      } catch (err) {
+        // Real fetch rejects the pending read() with an AbortError when the
+        // signal fires (rather than resolving `done: true`) — swallow that
+        // and stop cleanly, but let genuine stream/network errors propagate.
+        if (isAbortError(err) || signal.aborted) return;
+        throw err;
+      }
       if (done) break;
 
       buffer += decoder.decode(value, { stream: true });
       const lines = buffer.split('\n');
       buffer = lines.pop() ?? '';
 
-      for (const line of lines) {
+      for (const rawLine of lines) {
+        // SSE allows CRLF line endings; strip a trailing \r left by split('\n').
+        const line = rawLine.endsWith('\r') ? rawLine.slice(0, -1) : rawLine;
         if (line === '') {
           if (dataLines.length > 0) {
             const parsed = tryParse(dataLines.join('\n'));
@@ -61,6 +80,10 @@ export async function* readSse(
   } finally {
     signal.removeEventListener('abort', onAbort);
   }
+}
+
+function isAbortError(err: unknown): boolean {
+  return err instanceof Error && err.name === 'AbortError';
 }
 
 function tryParse(payload: string): unknown {

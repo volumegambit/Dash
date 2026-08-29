@@ -97,7 +97,7 @@ describe('readSse', () => {
     expect(init?.signal).toBe(controller.signal);
   });
 
-  it('stops cleanly without yielding further events once aborted', async () => {
+  it('stops cleanly without yielding further events once aborted (cancel() path)', async () => {
     const controller = new AbortController();
     let cancelled = false;
     const encoder = new TextEncoder();
@@ -120,5 +120,80 @@ describe('readSse', () => {
     const next = await gen.next();
     expect(next.done).toBe(true);
     expect(cancelled).toBe(true);
+  });
+
+  it('stops cleanly (does not throw) when a pending read() rejects with AbortError, matching real fetch', async () => {
+    // Real fetch does NOT resolve a pending reader.read() with `done: true`
+    // when its signal aborts — it *rejects* the read with a DOMException
+    // named 'AbortError'. Simulate that faithfully via controller.error(),
+    // which is what a real fetch implementation does internally on abort.
+    const controller = new AbortController();
+    const encoder = new TextEncoder();
+    let erroredWith: unknown;
+    const stream = new ReadableStream<Uint8Array>({
+      start(streamController) {
+        streamController.enqueue(encoder.encode('data: {"a":1}\n\n'));
+        controller.signal.addEventListener('abort', () => {
+          const abortError = new DOMException('The operation was aborted.', 'AbortError');
+          erroredWith = abortError;
+          streamController.error(abortError);
+        });
+        // Leave the stream open (no close()) to simulate an in-progress SSE connection.
+      },
+    });
+    const fetchImpl = fakeFetch(stream);
+
+    const gen = readSse('https://relay.example/sse', tokenSource(), controller.signal, fetchImpl);
+    const first = await gen.next();
+    expect(first).toEqual({ value: { a: 1 }, done: false });
+
+    controller.abort();
+    await expect(gen.next()).resolves.toEqual({ value: undefined, done: true });
+    expect(erroredWith).toBeInstanceOf(DOMException);
+  });
+
+  it('propagates a genuine (non-abort) stream error instead of swallowing it', async () => {
+    const controller = new AbortController();
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream<Uint8Array>({
+      start(streamController) {
+        streamController.enqueue(encoder.encode('data: {"a":1}\n\n'));
+      },
+      pull(streamController) {
+        streamController.error(new Error('network exploded'));
+      },
+    });
+    const fetchImpl = fakeFetch(stream);
+
+    const gen = readSse('https://relay.example/sse', tokenSource(), controller.signal, fetchImpl);
+    const first = await gen.next();
+    expect(first).toEqual({ value: { a: 1 }, done: false });
+
+    await expect(gen.next()).rejects.toThrow('network exploded');
+    expect(controller.signal.aborted).toBe(false);
+  });
+
+  it('parses a single CRLF-terminated data: event', async () => {
+    const stream = streamOf(['data: {"a":1}\r\n\r\n']);
+    const fetchImpl = fakeFetch(stream);
+    const controller = new AbortController();
+
+    const events = await collect(
+      readSse('https://relay.example/sse', tokenSource(), controller.signal, fetchImpl),
+    );
+
+    expect(events).toEqual([{ a: 1 }]);
+  });
+
+  it('reassembles a CRLF-terminated event even when split at the CR/LF boundary', async () => {
+    const stream = streamOf(['data: {"a":1}\r', '\n\r\n', 'data: {"b":2}\r\n\r\n']);
+    const fetchImpl = fakeFetch(stream);
+    const controller = new AbortController();
+
+    const events = await collect(
+      readSse('https://relay.example/sse', tokenSource(), controller.signal, fetchImpl),
+    );
+
+    expect(events).toEqual([{ a: 1 }, { b: 2 }]);
   });
 });
