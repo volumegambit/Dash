@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 import type { DialTokenSigner } from './dial-token-signer.js';
 import type { RelayAdminClient } from './relay-admin-client.js';
-import type { GatewayRecord, PairingRecord, Store } from './store.js';
+import type { ClientKind, GatewayRecord, PairingRecord, Store } from './store.js';
 import { validateSubdomainLabel } from './subdomain.js';
 
 /** Thrown when a requested subdomain label is not DNS-safe or is reserved. */
@@ -120,11 +120,17 @@ export class ProvisioningService {
    * or unknown-gateway request throws and never reaches the relay. The relay
    * mints the credential; only its SHA-256 hash is persisted, never the raw
    * secret, which is returned once to the caller.
+   *
+   * `clientKind` classes the paired device — `'mobile'` (the default, matching
+   * every pairing minted before browser clients existed) or `'web'` for a
+   * browser session. Callers at the HTTP boundary validate the two-value union
+   * before reaching here; this layer just threads it through to the store.
    */
   async createPairing(
     accountId: string,
     gatewayId: string,
     deviceLabel?: string,
+    clientKind: ClientKind = 'mobile',
   ): Promise<CreatedPairing> {
     const gateway = this.#store.getGateway(gatewayId);
     if (!gateway || gateway.accountId !== accountId) {
@@ -137,6 +143,7 @@ export class ProvisioningService {
       gatewayId,
       credentialHash: sha256(credential),
       deviceLabel: deviceLabel ?? null,
+      clientKind,
     });
     return { credential, pairingId };
   }

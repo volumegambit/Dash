@@ -22,6 +22,9 @@ export interface ControlPlaneConfig {
    * the ID token needs only the public Frontend API JWKS, so no secret key.
    */
   clerk?: { frontendApi: string; clientId: string };
+  /** Browser origins allowed to call `/v1/*` and `/gw/dial-token` cross-origin
+   *  (exact match only). Empty/unset disables CORS on those surfaces entirely. */
+  webOrigins: string[];
 }
 
 /** A subset of {@link ControlPlaneConfig} parsed from CLI flags. */
@@ -33,6 +36,7 @@ export interface ControlPlaneFlags {
   relayZone?: string;
   dialTokenTtlSec?: number;
   dialTokenPrivateKeyPath?: string;
+  webOrigins?: string[];
 }
 
 export interface ControlPlaneConfigSources {
@@ -70,9 +74,26 @@ export function parseControlPlaneFlags(argv: string[]): ControlPlaneFlags {
     } else if (argv[i] === '--dial-token-private-key' && argv[i + 1]) {
       flags.dialTokenPrivateKeyPath = argv[i + 1];
       i++;
+    } else if (argv[i] === '--web-origins' && argv[i + 1]) {
+      flags.webOrigins = parseOriginsList(argv[i + 1]);
+      i++;
     }
   }
   return flags;
+}
+
+/**
+ * Split a comma-separated origin list (from a flag or env var), trimming each
+ * entry and dropping blanks (e.g. from a trailing or doubled comma). Unset or
+ * empty yields `[]`, which keeps CORS disabled on the browser-reachable
+ * surfaces.
+ */
+function parseOriginsList(raw: string | undefined): string[] {
+  if (!raw) return [];
+  return raw
+    .split(',')
+    .map((origin) => origin.trim())
+    .filter((origin) => origin.length > 0);
 }
 
 /**
@@ -115,6 +136,8 @@ export function loadConfig(sources: ControlPlaneConfigSources = {}): ControlPlan
   const clientId = env.RELAY_CP_CLERK_CLIENT_ID;
   const clerk = frontendApi && clientId ? { frontendApi, clientId } : undefined;
 
+  const webOrigins = flags.webOrigins ?? parseOriginsList(env.RELAY_CP_WEB_ORIGINS);
+
   return {
     port,
     dbPath,
@@ -124,5 +147,6 @@ export function loadConfig(sources: ControlPlaneConfigSources = {}): ControlPlan
     dialTokenTtlSec,
     dialTokenPrivateKeyPath,
     clerk,
+    webOrigins,
   };
 }

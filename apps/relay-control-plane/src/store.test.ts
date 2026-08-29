@@ -1,7 +1,12 @@
 import { mkdtempSync, rmSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import type { DatabaseSync } from 'node:sqlite';
 import { SqliteStore } from './store.js';
+
+const nodeRequire = createRequire(import.meta.url);
+const { DatabaseSync: Database } = nodeRequire('node:sqlite') as typeof import('node:sqlite');
 
 describe('SqliteStore', () => {
   let store: SqliteStore;
@@ -117,11 +122,13 @@ describe('SqliteStore', () => {
         gatewayId: 'gw-1',
         credentialHash: 'deadbeefhash',
         deviceLabel: 'iPhone',
+        clientKind: 'mobile',
       });
       expect(added.id).toBe('pair-1');
       expect(added.gatewayId).toBe('gw-1');
       expect(added.credentialHash).toBe('deadbeefhash');
       expect(added.deviceLabel).toBe('iPhone');
+      expect(added.clientKind).toBe('mobile');
       expect(added.status).toBe('active');
       expect(typeof added.createdAt).toBe('number');
     });
@@ -132,11 +139,24 @@ describe('SqliteStore', () => {
         gatewayId: 'gw-1',
         credentialHash: 'hash-only',
         deviceLabel: null,
+        clientKind: 'mobile',
       });
       // The store takes a hash; the record carries exactly that and nothing
       // resembling a raw secret field.
       expect(added.credentialHash).toBe('hash-only');
       expect(JSON.stringify(added)).not.toContain('credential"');
+    });
+
+    it('stores a web client kind', () => {
+      const added = store.addPairing({
+        id: 'pair-web',
+        gatewayId: 'gw-1',
+        credentialHash: 'h-web',
+        deviceLabel: 'Safari on iPhone',
+        clientKind: 'web',
+      });
+      expect(added.clientKind).toBe('web');
+      expect(store.listPairings('gw-1').find((p) => p.id === 'pair-web')?.clientKind).toBe('web');
     });
 
     it('allows a null device label', () => {
@@ -145,19 +165,38 @@ describe('SqliteStore', () => {
         gatewayId: 'gw-1',
         credentialHash: 'h2',
         deviceLabel: null,
+        clientKind: 'mobile',
       });
       expect(added.deviceLabel).toBeNull();
     });
 
     it('lists pairings for a gateway', () => {
-      store.addPairing({ id: 'p1', gatewayId: 'gw-1', credentialHash: 'h1', deviceLabel: 'a' });
-      store.addPairing({ id: 'p2', gatewayId: 'gw-1', credentialHash: 'h2', deviceLabel: 'b' });
+      store.addPairing({
+        id: 'p1',
+        gatewayId: 'gw-1',
+        credentialHash: 'h1',
+        deviceLabel: 'a',
+        clientKind: 'mobile',
+      });
+      store.addPairing({
+        id: 'p2',
+        gatewayId: 'gw-1',
+        credentialHash: 'h2',
+        deviceLabel: 'b',
+        clientKind: 'mobile',
+      });
       const list = store.listPairings('gw-1');
       expect(list.map((p) => p.id).sort()).toEqual(['p1', 'p2']);
     });
 
     it('revokes a pairing', () => {
-      store.addPairing({ id: 'p1', gatewayId: 'gw-1', credentialHash: 'h1', deviceLabel: null });
+      store.addPairing({
+        id: 'p1',
+        gatewayId: 'gw-1',
+        credentialHash: 'h1',
+        deviceLabel: null,
+        clientKind: 'mobile',
+      });
       expect(store.revokePairing('gw-1', 'p1')).toBe(true);
       const list = store.listPairings('gw-1');
       expect(list[0]?.status).toBe('revoked');
@@ -181,13 +220,68 @@ describe('SqliteStore', () => {
           subdomain: 'gw-1.z',
           publicKey: 'pk-1',
         });
-        first.addPairing({ id: 'p1', gatewayId: 'gw-1', credentialHash: 'h1', deviceLabel: 'X' });
+        first.addPairing({
+          id: 'p1',
+          gatewayId: 'gw-1',
+          credentialHash: 'h1',
+          deviceLabel: 'X',
+          clientKind: 'mobile',
+        });
         first.close();
 
         const reopened = new SqliteStore(dbPath);
         expect(reopened.getGateway('gw-1')?.accountId).toBe('acct-1');
         expect(reopened.listPairings('gw-1').map((p) => p.id)).toEqual(['p1']);
         reopened.close();
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it('backfills client_kind as mobile for pairing rows written before the column existed', () => {
+      const dir = mkdtempSync(join(tmpdir(), 'cp-store-migrate-'));
+      const dbPath = join(dir, 'cp.db');
+      try {
+        // Hand-build the pre-migration schema (no client_kind column) and seed
+        // a row directly, bypassing SqliteStore so it can't add the column.
+        const raw: DatabaseSync = new Database(dbPath);
+        raw.exec(`
+          CREATE TABLE accounts (account_id TEXT PRIMARY KEY);
+          CREATE TABLE gateways (
+            gateway_id TEXT PRIMARY KEY,
+            account_id TEXT NOT NULL REFERENCES accounts(account_id),
+            subdomain  TEXT NOT NULL,
+            public_key TEXT NOT NULL DEFAULT '',
+            status     TEXT NOT NULL,
+            created_at INTEGER NOT NULL
+          );
+          CREATE TABLE pairings (
+            id              TEXT PRIMARY KEY,
+            gateway_id      TEXT NOT NULL REFERENCES gateways(gateway_id),
+            credential_hash TEXT NOT NULL,
+            device_label    TEXT,
+            status          TEXT NOT NULL,
+            created_at      INTEGER NOT NULL
+          );
+        `);
+        raw.prepare('INSERT INTO accounts (account_id) VALUES (?)').run('acct-1');
+        raw
+          .prepare(
+            'INSERT INTO gateways (gateway_id, account_id, subdomain, public_key, status, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+          )
+          .run('gw-old', 'acct-1', 'gw-old.z', 'pk-old', 'active', 1);
+        raw
+          .prepare(
+            'INSERT INTO pairings (id, gateway_id, credential_hash, device_label, status, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+          )
+          .run('p-old', 'gw-old', 'h-old', 'legacy-device', 'active', 1);
+        raw.close();
+
+        const migrated = new SqliteStore(dbPath);
+        const pairings = migrated.listPairings('gw-old');
+        expect(pairings).toHaveLength(1);
+        expect(pairings[0]?.clientKind).toBe('mobile');
+        migrated.close();
       } finally {
         rmSync(dir, { recursive: true, force: true });
       }

@@ -225,6 +225,24 @@ describe('ProvisioningService pairings', () => {
     expect(store.listPairings(gw.gatewayId)[0].deviceLabel).toBeNull();
   });
 
+  it('defaults the client kind to mobile when omitted', async () => {
+    const { store, service } = makeRealService();
+    const gw = service.createGateway('acct-1', { subdomain: 'alice', publicKey: 'pk-a' });
+
+    await service.createPairing('acct-1', gw.gatewayId, 'iPhone');
+
+    expect(store.listPairings(gw.gatewayId)[0].clientKind).toBe('mobile');
+  });
+
+  it('persists an explicit web client kind', async () => {
+    const { store, service } = makeRealService();
+    const gw = service.createGateway('acct-1', { subdomain: 'alice', publicKey: 'pk-a' });
+
+    await service.createPairing('acct-1', gw.gatewayId, 'Safari on iPhone', 'web');
+
+    expect(store.listPairings(gw.gatewayId)[0].clientKind).toBe('web');
+  });
+
   it('refuses a cross-account createPairing: throws, no relay credential minted', async () => {
     const { store, service } = makeRealService();
     const gw = service.createGateway('acct-1', { subdomain: 'alice', publicKey: 'pk-a' });

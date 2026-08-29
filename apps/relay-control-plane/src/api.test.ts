@@ -380,6 +380,140 @@ describe('pairings', () => {
       expect.objectContaining({ id: expect.any(String), deviceLabel: 'legacy-client' }),
     ]);
   });
+
+  it('creates a web pairing via the legacy route and lists it with clientKind web', async () => {
+    const a = (await (
+      await req('POST', '/v1/gateways', 'a1', { subdomain: 'alice', publicKey: gwPubB64 })
+    ).json()) as { gatewayId: string };
+
+    const res = await req('POST', `/v1/gateways/${a.gatewayId}/pairings`, 'a1', {
+      deviceLabel: 'Safari on iPhone',
+      clientKind: 'web',
+    });
+    expect(res.status).toBe(200);
+
+    const list = (await (
+      await req('GET', `/v1/gateways/${a.gatewayId}/pairings`, 'a1')
+    ).json()) as { pairings: Array<{ deviceLabel: string | null; clientKind: string }> };
+    expect(list.pairings).toEqual([
+      expect.objectContaining({ deviceLabel: 'Safari on iPhone', clientKind: 'web' }),
+    ]);
+  });
+
+  it('defaults clientKind to mobile when omitted', async () => {
+    const a = (await (
+      await req('POST', '/v1/gateways', 'a1', { subdomain: 'alice', publicKey: gwPubB64 })
+    ).json()) as { gatewayId: string };
+
+    await req('POST', `/v1/gateways/${a.gatewayId}/pairings`, 'a1', { deviceLabel: 'iPhone' });
+
+    const list = (await (
+      await req('GET', `/v1/gateways/${a.gatewayId}/pairings`, 'a1')
+    ).json()) as { pairings: Array<{ clientKind: string }> };
+    expect(list.pairings).toEqual([expect.objectContaining({ clientKind: 'mobile' })]);
+  });
+
+  it('400s an invalid clientKind', async () => {
+    const a = (await (
+      await req('POST', '/v1/gateways', 'a1', { subdomain: 'alice', publicKey: gwPubB64 })
+    ).json()) as { gatewayId: string };
+
+    const res = await req('POST', `/v1/gateways/${a.gatewayId}/pairings`, 'a1', {
+      deviceLabel: 'iPhone',
+      clientKind: 'desktop',
+    });
+    expect(res.status).toBe(400);
+
+    const list = (await (
+      await req('GET', `/v1/gateways/${a.gatewayId}/pairings`, 'a1')
+    ).json()) as { pairings: unknown[] };
+    expect(list.pairings).toEqual([]);
+  });
+
+  it('also threads clientKind through the pairing-id-v1 create route', async () => {
+    const a = (await (
+      await req('POST', '/v1/gateways', 'a1', { subdomain: 'alice', publicKey: gwPubB64 })
+    ).json()) as { gatewayId: string };
+
+    const res = await req('POST', `/v1/gateways/${a.gatewayId}/pairings/pairing-id-v1`, 'a1', {
+      deviceLabel: 'Safari on iPhone',
+      clientKind: 'web',
+    });
+    expect(res.status).toBe(200);
+
+    const list = (await (
+      await req('GET', `/v1/gateways/${a.gatewayId}/pairings`, 'a1')
+    ).json()) as { pairings: Array<{ clientKind: string }> };
+    expect(list.pairings).toEqual([expect.objectContaining({ clientKind: 'web' })]);
+  });
+});
+
+describe('CORS', () => {
+  function appWithOrigins(origins: string[]): ReturnType<typeof createApi> {
+    return createApi({
+      provisioning: new ProvisioningService({
+        store,
+        signer: new DialTokenSigner(privateKey, 3600, () => 1000),
+        relay: new RelayAdminClient('http://127.0.0.1:0', 'master'),
+        relayZone: 'relay.example.com',
+      }),
+      authenticator: new StubAuthenticator(),
+      gatewayAssertionAuth: new GatewayAssertionAuthenticator({
+        store,
+        signer: new DialTokenSigner(privateKey, 3600, () => 1000),
+        verifyPublicKey: (b64) =>
+          createPublicKey({ key: { kty: 'OKP', crv: 'Ed25519', x: b64 }, format: 'jwk' }),
+        now: () => 1000,
+      }),
+      webOrigins: origins,
+    });
+  }
+
+  it('answers a /v1/* preflight from an allowlisted origin with 204 and allows Authorization', async () => {
+    const corsApp = appWithOrigins(['https://app.example.com']);
+    const res = await corsApp.request('/v1/gateways', {
+      method: 'OPTIONS',
+      headers: {
+        origin: 'https://app.example.com',
+        'access-control-request-method': 'GET',
+        'access-control-request-headers': 'authorization',
+      },
+    });
+    expect(res.status).toBe(204);
+    expect(res.headers.get('access-control-allow-origin')).toBe('https://app.example.com');
+    expect(res.headers.get('access-control-allow-headers')).toContain('Authorization');
+    expect(res.headers.get('access-control-allow-credentials')).toBeNull();
+  });
+
+  it('sets no CORS headers for a non-allowlisted origin on /v1/*', async () => {
+    const corsApp = appWithOrigins(['https://app.example.com']);
+    const res = await corsApp.request('/v1/gateways', {
+      headers: { origin: 'https://evil.example.com', 'x-test-account': 'a1' },
+    });
+    expect(res.headers.get('access-control-allow-origin')).toBeNull();
+  });
+
+  it('is inert with an empty allowlist (default)', async () => {
+    const corsApp = appWithOrigins([]);
+    const res = await corsApp.request('/v1/gateways', {
+      headers: { origin: 'https://app.example.com', 'x-test-account': 'a1' },
+    });
+    expect(res.headers.get('access-control-allow-origin')).toBeNull();
+  });
+
+  it('answers a /gw/dial-token preflight from an allowlisted origin with 204', async () => {
+    const corsApp = appWithOrigins(['https://app.example.com']);
+    const res = await corsApp.request('/gw/dial-token', {
+      method: 'OPTIONS',
+      headers: {
+        origin: 'https://app.example.com',
+        'access-control-request-method': 'POST',
+        'access-control-request-headers': 'authorization',
+      },
+    });
+    expect(res.status).toBe(204);
+    expect(res.headers.get('access-control-allow-origin')).toBe('https://app.example.com');
+  });
 });
 
 // The public key the test wires into the relay is derivable from the CP private

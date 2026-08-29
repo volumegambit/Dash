@@ -7,9 +7,13 @@ import {
   type ProvisioningService,
   SubdomainTakenError,
 } from './provisioning.js';
+import type { ClientKind } from './store.js';
+import { webCors } from './web-cors.js';
 
 const PAIRING_ID_CAPABILITY = 'pairing-id-v1' as const;
 const CONTROL_PLANE_CAPABILITIES = [PAIRING_ID_CAPABILITY] as const;
+
+const CLIENT_KINDS: readonly ClientKind[] = ['mobile', 'web'];
 
 /** Collaborators the HTTP API binds its routes to. */
 export interface ApiDeps {
@@ -17,6 +21,9 @@ export interface ApiDeps {
   authenticator: Authenticator;
   /** Authenticates the gateway-driven `/gw/dial-token` refresh (non-Clerk). */
   gatewayAssertionAuth: GatewayAssertionAuthenticator;
+  /** Browser origins allowed to call `/v1/*` and `/gw/dial-token` cross-origin
+   *  (exact match only). Empty/unset (the default) disables CORS entirely. */
+  webOrigins?: readonly string[];
 }
 
 /**
@@ -37,13 +44,21 @@ type ApiEnv = { Variables: { accountId: string } };
  * under another account.
  */
 export function createApi(deps: ApiDeps): Hono<ApiEnv> {
-  const { provisioning, authenticator, gatewayAssertionAuth } = deps;
+  const { provisioning, authenticator, gatewayAssertionAuth, webOrigins = [] } = deps;
   const app = new Hono<ApiEnv>();
 
   // --- Health (open) ---
   app.get('/health', (c) =>
     c.json({ status: 'healthy', capabilities: CONTROL_PLANE_CAPABILITIES }),
   );
+
+  // --- CORS for the browser-reachable surfaces ---
+  // Registered before both the dial-token route and the /v1 auth middleware so
+  // a preflight OPTIONS request is answered (and short-circuited) here first,
+  // never reaching auth. See web-cors.ts for the exact-origin/no-credentials
+  // ruleset (mirrors apps/gateway/src/mobile-cors.ts).
+  app.use('/v1/*', webCors(webOrigins));
+  app.use('/gw/dial-token', webCors(webOrigins));
 
   // --- Gateway-driven dial-token refresh (open path, gateway-assertion auth) ---
   // Sibling to /health — NOT under the Clerk-gated /v1/* middleware. The gateway
@@ -115,9 +130,15 @@ export function createApi(deps: ApiDeps): Hono<ApiEnv> {
   app.post('/v1/gateways/:id/pairings', async (c) => {
     const accountId = c.get('accountId');
     const gatewayId = c.req.param('id');
-    const deviceLabel = await readDeviceLabel(c);
+    const parsed = await readPairingRequest(c);
+    if (!parsed.ok) return c.json({ error: 'invalid clientKind' }, 400);
     try {
-      const { credential } = await provisioning.createPairing(accountId, gatewayId, deviceLabel);
+      const { credential } = await provisioning.createPairing(
+        accountId,
+        gatewayId,
+        parsed.deviceLabel,
+        parsed.clientKind,
+      );
       return c.json({ credential });
     } catch {
       // Cross-account or unknown gateway — don't disclose existence.
@@ -131,9 +152,15 @@ export function createApi(deps: ApiDeps): Hono<ApiEnv> {
   app.post(`/v1/gateways/:id/pairings/${PAIRING_ID_CAPABILITY}`, async (c) => {
     const accountId = c.get('accountId');
     const gatewayId = c.req.param('id');
-    const deviceLabel = await readDeviceLabel(c);
+    const parsed = await readPairingRequest(c);
+    if (!parsed.ok) return c.json({ error: 'invalid clientKind' }, 400);
     try {
-      const created = await provisioning.createPairing(accountId, gatewayId, deviceLabel);
+      const created = await provisioning.createPairing(
+        accountId,
+        gatewayId,
+        parsed.deviceLabel,
+        parsed.clientKind,
+      );
       return c.json(created);
     } catch {
       // Cross-account or unknown gateway — don't disclose existence.
@@ -168,18 +195,37 @@ function headerRecord(headers: Headers): Record<string, string | undefined> {
   return out;
 }
 
+/** A parsed, valid pairing-create request body. */
+interface ParsedPairingRequest {
+  ok: true;
+  deviceLabel?: string;
+  clientKind?: ClientKind;
+}
+
 /**
- * Pull an optional `deviceLabel` from a (possibly absent or non-JSON) body.
- * Pairing creation must work with no body at all, so a parse failure is treated
- * as "no label" rather than a 400.
+ * Pull the optional `deviceLabel` and `clientKind` from a (possibly absent or
+ * non-JSON) pairing-create body. Pairing creation must work with no body at
+ * all, so a parse failure or a missing/non-string `deviceLabel` is treated as
+ * "no label" rather than a 400 — but a `clientKind` present and not one of the
+ * two known values is rejected (`{ ok: false }`) so the route can 400 rather
+ * than silently mis-classing the device.
  */
-async function readDeviceLabel(c: {
+async function readPairingRequest(c: {
   req: { json: () => Promise<unknown> };
-}): Promise<string | undefined> {
+}): Promise<ParsedPairingRequest | { ok: false }> {
+  let raw: unknown;
   try {
-    const body = (await c.req.json()) as { deviceLabel?: unknown };
-    return typeof body?.deviceLabel === 'string' ? body.deviceLabel : undefined;
+    raw = await c.req.json();
   } catch {
-    return undefined;
+    return { ok: true };
   }
+  const body = raw as { deviceLabel?: unknown; clientKind?: unknown };
+  const deviceLabel = typeof body?.deviceLabel === 'string' ? body.deviceLabel : undefined;
+  if (body?.clientKind === undefined) {
+    return { ok: true, deviceLabel };
+  }
+  if (typeof body.clientKind === 'string' && CLIENT_KINDS.includes(body.clientKind as ClientKind)) {
+    return { ok: true, deviceLabel, clientKind: body.clientKind as ClientKind };
+  }
+  return { ok: false };
 }

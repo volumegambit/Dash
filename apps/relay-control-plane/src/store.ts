@@ -19,6 +19,13 @@ export interface GatewayRecord {
 }
 
 /**
+ * The device class a pairing was minted for. Distinguishes browser sessions
+ * (revocable as their own class) from the original mobile/desktop clients.
+ * Every pre-existing row predates this column and is treated as `'mobile'`.
+ */
+export type ClientKind = 'mobile' | 'web';
+
+/**
  * A paired device's credential — stored as a hash only. The raw credential is
  * returned once at provisioning time and never persisted at rest.
  */
@@ -27,6 +34,7 @@ export interface PairingRecord {
   gatewayId: string;
   credentialHash: string;
   deviceLabel: string | null;
+  clientKind: ClientKind;
   status: 'active' | 'revoked';
   createdAt: number;
 }
@@ -70,6 +78,7 @@ interface PairingRow {
   gateway_id: string;
   credential_hash: string;
   device_label: string | null;
+  client_kind: string;
   status: string;
   created_at: number;
 }
@@ -99,6 +108,7 @@ export class SqliteStore implements Store {
         gateway_id      TEXT NOT NULL REFERENCES gateways(gateway_id),
         credential_hash TEXT NOT NULL,
         device_label    TEXT,
+        client_kind     TEXT NOT NULL DEFAULT 'mobile',
         status          TEXT NOT NULL,
         created_at      INTEGER NOT NULL
       );
@@ -111,6 +121,16 @@ export class SqliteStore implements Store {
     const cols = this.db.prepare('PRAGMA table_info(gateways)').all() as Array<{ name: string }>;
     if (!cols.some((c) => c.name === 'public_key')) {
       this.db.exec("ALTER TABLE gateways ADD COLUMN public_key TEXT NOT NULL DEFAULT ''");
+    }
+    // Guarded migration: a dev DB created before client-kind existed lacks
+    // `client_kind`. SQLite backfills every existing row with the column
+    // default on ADD COLUMN, so pre-existing pairings become `'mobile'` —
+    // the only device class that existed before browser pairings did.
+    const pairingCols = this.db.prepare('PRAGMA table_info(pairings)').all() as Array<{
+      name: string;
+    }>;
+    if (!pairingCols.some((c) => c.name === 'client_kind')) {
+      this.db.exec("ALTER TABLE pairings ADD COLUMN client_kind TEXT NOT NULL DEFAULT 'mobile'");
     }
   }
 
@@ -184,13 +204,14 @@ export class SqliteStore implements Store {
     };
     this.db
       .prepare(
-        'INSERT INTO pairings (id, gateway_id, credential_hash, device_label, status, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+        'INSERT INTO pairings (id, gateway_id, credential_hash, device_label, client_kind, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
       )
       .run(
         record.id,
         record.gatewayId,
         record.credentialHash,
         record.deviceLabel,
+        record.clientKind,
         record.status,
         record.createdAt,
       );
@@ -233,6 +254,7 @@ export class SqliteStore implements Store {
       gatewayId: row.gateway_id,
       credentialHash: row.credential_hash,
       deviceLabel: row.device_label,
+      clientKind: row.client_kind as ClientKind,
       status: row.status as PairingRecord['status'],
       createdAt: row.created_at,
     };

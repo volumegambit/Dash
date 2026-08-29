@@ -61,7 +61,12 @@ async function main(): Promise<void> {
       createPublicKey({ key: { kty: 'OKP', crv: 'Ed25519', x: b64 }, format: 'jwk' }),
   });
 
-  const app = createApi({ provisioning, authenticator, gatewayAssertionAuth });
+  const app = createApi({
+    provisioning,
+    authenticator,
+    gatewayAssertionAuth,
+    webOrigins: config.webOrigins,
+  });
 
   const server = serve({ fetch: app.fetch, port: config.port }, (info) => {
     logger.info(`control plane listening on :${info.port}`);
