@@ -3,3 +3,12 @@ DerivedData/
 *.xcresult
 **/xcuserdata/
 **/*.xcuserstate
+
+# Build products (archives, exported ipa, OTA staging)
+build/
+
+# The root .gitignore's `config/` rule also matches `ios/Config/` on a
+# case-insensitive filesystem. Re-include it so the shared xcconfigs and
+# export options are versioned, but keep machine-local signing out.
+!Config/
+Config/Local.xcconfig
