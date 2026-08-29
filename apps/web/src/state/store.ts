@@ -17,6 +17,19 @@ export interface WebAppState {
   loadConversations(): Promise<void>;
   openConversation(id: string): Promise<void>;
   sendMessage(conversationId: string, text: string): Promise<void>;
+  /**
+   * Tears down this store's live connection: closes the current socket (if
+   * any), cancels any pending reconnect timer, and stops any reconnect
+   * attempt already in flight from resurrecting a connection afterwards.
+   * Sets `connection` to `'offline'`. For when the *store itself* is being
+   * abandoned — e.g. `Shell` dropping back to `'pick-gateway'` after this
+   * browser's own pairing was revoked — not for an in-app "close this
+   * conversation" action (that's just `openConversation()` with a different
+   * id, which already detaches the previous socket). A disposed store can
+   * still be reused: `openConversation()` clears the disposed flag, same as
+   * it already resets the reconnect-attempt counter.
+   */
+  dispose(): void;
 }
 
 export interface WebAppStoreDeps {
@@ -108,6 +121,19 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
   let lastSeq = 0;
   let reconnectAttempt = 0;
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Set by `dispose()`; checked at every point that would otherwise
+   * (re)establish a connection or resurrect `connection` out of `'offline'`
+   * — see `scheduleReconnect`/`attemptReconnect` — so a reconnect already in
+   * flight when `dispose()` runs can't undo it. Cleared by `openConversation`
+   * so a disposed store remains reusable. */
+  let disposed = false;
+
+  function clearReconnectTimer(): void {
+    if (reconnectTimer) {
+      clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+    }
+  }
 
   /** Backward-paginated replay: `getMessages` walks from newest to oldest via
    * `before` cursors (see rest.ts), so pages are accumulated oldest-first
@@ -243,6 +269,7 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
     }
 
     function scheduleReconnect(): void {
+      if (disposed) return;
       if (reconnectTimer || !currentConversationId) return;
       if (reconnectAttempt >= maxReconnectAttempts) {
         set({ connection: 'offline' });
@@ -266,11 +293,19 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
      * same `pending` bookkeeping that was already in the transcript. */
     async function attemptReconnect(): Promise<void> {
       const conversationId = currentConversationId;
-      if (!conversationId) return;
+      if (!conversationId || disposed) return;
       const attempted = createAttachedSocket();
       socket = attempted;
       try {
         await attempted.connect();
+        if (disposed) {
+          // `dispose()` ran while `connect()` was in flight — this
+          // connection is unwanted now; tear it straight back down rather
+          // than resuming the turn and reporting `'connected'`.
+          if (socket === attempted) socket = null;
+          attempted.close();
+          return;
+        }
         const agentId = await resolveAgentId(conversationId);
         if (!agentId) {
           throw new Error(
@@ -291,7 +326,7 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
       } catch {
         if (socket === attempted) socket = null;
         attempted.close();
-        scheduleReconnect();
+        if (!disposed) scheduleReconnect();
       }
     }
 
@@ -310,11 +345,9 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
           socket.close();
           socket = null;
         }
-        if (reconnectTimer) {
-          clearTimeout(reconnectTimer);
-          reconnectTimer = null;
-        }
+        clearReconnectTimer();
         reconnectAttempt = 0;
+        disposed = false; // a disposed store is reusable — this is a fresh connect intent.
         currentConversationId = conversationId;
 
         const replay = await replayHistory(conversationId);
@@ -381,6 +414,18 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
           }));
           throw err;
         }
+      },
+
+      dispose() {
+        disposed = true;
+        currentConversationId = null;
+        clearReconnectTimer();
+        if (socket) {
+          const closing = socket;
+          socket = null; // clear first — see `createAttachedSocket`'s identity guard on `onClose`.
+          closing.close();
+        }
+        set({ connection: 'offline' });
       },
     };
   });

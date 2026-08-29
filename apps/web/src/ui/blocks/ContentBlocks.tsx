@@ -105,14 +105,19 @@ function ThinkingBlock({ text }: { text: string }): ReactNode {
 
 /**
  * Walks an assistant message's raw `events` array (streamed `text_delta` /
- * `thinking_delta` / `tool_use_start` / `tool_use_delta` / `tool_result` —
- * see `packages/agent/src/types.ts` `AgentEvent` and
- * `contracts/mobile/v1/fixtures/chat-stream.jsonl`) into four renderable
+ * `thinking_delta` / `tool_use_start` / `tool_use_delta` / `tool_result` /
+ * `response` / `question` — see `packages/agent/src/types.ts` `AgentEvent`
+ * and `contracts/mobile/v1/fixtures/chat-stream.jsonl`) into four renderable
  * block kinds: text (paragraphs), tool-use (collapsed `<details>` with the
  * tool name), tool-result (nested inside its tool-use's `<details>`), and
- * thinking (muted/italic, collapsed by default). Anything else — an event
- * type this renderer doesn't know, or a known type with a malformed shape —
- * degrades to `UnknownBlock` rather than throwing.
+ * thinking (muted/italic, collapsed by default). `tool_use_delta` and
+ * `response` are deliberate no-ops (streamed partial input, and an
+ * end-of-turn metadata summary that duplicates already-streamed text,
+ * respectively — `response` in particular ends *every* real turn, so
+ * treating it as unknown would badge every ordinary reply). `question`
+ * renders its prompt text as a paragraph (no answer affordance here yet).
+ * Anything else — an event type this renderer doesn't know, or a known type
+ * with a malformed shape — degrades to `UnknownBlock` rather than throwing.
  */
 function renderAssistantEvents(events: MobileAgentEvent[]): ReactNode[] {
   const nodes: ReactNode[] = [];
@@ -191,6 +196,32 @@ function renderAssistantEvents(events: MobileAgentEvent[]): ReactNode[] {
         // Streamed partial JSON for the tool's input — not rendered
         // directly; the final `input` (from `tool_use_start`) is what's
         // shown, so this is a deliberate no-op rather than unknown content.
+        break;
+      }
+
+      case 'response': {
+        // Emitted once at the end of every real assistant turn (see
+        // `packages/agent/src/backends/piagent.ts`) as a metadata summary —
+        // its `content` duplicates the text already streamed via
+        // `text_delta`, and `usage` has no visual representation here. A
+        // deliberate no-op, same treatment as `tool_use_delta`, so an
+        // ordinary reply doesn't end in a spurious unknown-content badge.
+        break;
+      }
+
+      case 'question': {
+        // The agent is asking the user something. There's no answer
+        // affordance in this surface yet either way, but the question's
+        // text is user-facing content worth keeping visible rather than
+        // silently dropping — rendered as a plain paragraph alongside the
+        // rest of the turn's text.
+        if (typeof event.question !== 'string') {
+          pushUnknown();
+          break;
+        }
+        flushThinking();
+        flushText();
+        nodes.push(...renderParagraphs(event.question, `question-${key++}`));
         break;
       }
 

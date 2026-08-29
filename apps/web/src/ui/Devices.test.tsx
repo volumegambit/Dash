@@ -116,6 +116,42 @@ describe('Devices', () => {
     expect(screen.queryByText('Web · Chrome')).toBeNull();
   });
 
+  it('still calls onCurrentDeviceRevoked when deletePairing succeeds but the local credentialStore.delete throws', async () => {
+    // The server-side pairing is dead either way once deletePairing
+    // succeeds — a failure to also clear the *local* credential must not
+    // strand the user on a Devices screen backed by a revoked pairing.
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const controlPlaneClient = {
+      listPairings: vi.fn(async () => [CURRENT_PAIRING]),
+      deletePairing: vi.fn(async () => undefined),
+    };
+    const credentialStore = {
+      delete: vi.fn(async () => {
+        throw new Error('IndexedDB is unavailable');
+      }),
+    };
+    const onCurrentDeviceRevoked = vi.fn();
+
+    render(
+      <Devices
+        gatewayId="gw-1"
+        currentPairingId="p-current"
+        controlPlaneClient={controlPlaneClient}
+        credentialStore={credentialStore}
+        onCurrentDeviceRevoked={onCurrentDeviceRevoked}
+      />,
+    );
+
+    await waitFor(() => expect(screen.getByText('Web · Chrome')).toBeTruthy());
+    fireEvent.click(screen.getByText('Revoke'));
+
+    await waitFor(() => expect(onCurrentDeviceRevoked).toHaveBeenCalledTimes(1));
+    expect(controlPlaneClient.deletePairing).toHaveBeenCalledWith('gw-1', 'p-current');
+    expect(credentialStore.delete).toHaveBeenCalledWith('gw-1');
+    expect(screen.queryByText('Web · Chrome')).toBeNull(); // row still removed regardless
+    consoleError.mockRestore();
+  });
+
   it('surfaces an error and leaves the row in place when deletePairing fails', async () => {
     const controlPlaneClient = {
       listPairings: vi.fn(async () => [OTHER_PAIRING]),

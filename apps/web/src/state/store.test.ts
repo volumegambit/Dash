@@ -578,4 +578,76 @@ describe('createWebAppStore', () => {
       await vi.waitFor(() => expect(factory).toHaveBeenCalledTimes(3));
     });
   });
+
+  describe('dispose', () => {
+    it('closes the live socket and sets connection to offline', async () => {
+      const { rest } = fakeRest({});
+      const { factory, sockets } = scriptedSocketFactory();
+      const store = createWebAppStore({ rest, socketFactory: factory });
+      await openAndConnect(store, sockets, CONVERSATION_ID);
+
+      store.getState().dispose();
+
+      expect(sockets[0].closed).toBe(true);
+      expect(store.getState().connection).toBe('offline');
+    });
+
+    it('cancels a pending reconnect timer so a dropped connection never comes back on its own', async () => {
+      const { rest } = fakeRest({});
+      const { factory, sockets, onCloses } = scriptedSocketFactory();
+      const store = createWebAppStore({ rest, socketFactory: factory });
+      await openAndConnect(store, sockets, CONVERSATION_ID);
+
+      onCloses[0]('error'); // schedules a reconnect attempt
+      expect(store.getState().connection).toBe('reconnecting');
+
+      store.getState().dispose();
+      expect(store.getState().connection).toBe('offline');
+
+      // The reconnect timer that was pending at dispose time must not fire.
+      await vi.advanceTimersByTimeAsync(RECONNECT_BASE_MS * RECONNECT_FACTOR ** 3);
+      expect(factory).toHaveBeenCalledTimes(1); // no second (reconnect) socket was ever created
+      expect(store.getState().connection).toBe('offline');
+    });
+
+    it('discards a reconnect attempt already in flight when dispose runs mid-connect', async () => {
+      const { rest } = fakeRest({});
+      const { factory, sockets, onCloses } = scriptedSocketFactory();
+      const store = createWebAppStore({ rest, socketFactory: factory });
+      await openAndConnect(store, sockets, CONVERSATION_ID);
+
+      onCloses[0]('error');
+      await vi.advanceTimersByTimeAsync(RECONNECT_BASE_MS);
+      await vi.waitFor(() => expect(factory).toHaveBeenCalledTimes(2)); // reconnect socket created, connect() pending
+
+      store.getState().dispose();
+      sockets[1].open(); // the in-flight connect() now resolves, after dispose
+
+      await vi.waitFor(() => expect(sockets[1].closed).toBe(true));
+      expect(store.getState().connection).toBe('offline'); // never flipped back to 'connected'
+    });
+
+    it('is idempotent and safe to call with no live socket', async () => {
+      const { rest } = fakeRest({});
+      const { factory } = scriptedSocketFactory();
+      const store = createWebAppStore({ rest, socketFactory: factory });
+
+      expect(() => store.getState().dispose()).not.toThrow();
+      expect(() => store.getState().dispose()).not.toThrow();
+      expect(store.getState().connection).toBe('offline');
+    });
+
+    it('is reusable: a subsequent openConversation() clears the disposed flag and reconnects normally', async () => {
+      const { rest } = fakeRest({});
+      const { factory, sockets } = scriptedSocketFactory();
+      const store = createWebAppStore({ rest, socketFactory: factory });
+      await openAndConnect(store, sockets, CONVERSATION_ID);
+
+      store.getState().dispose();
+      expect(store.getState().connection).toBe('offline');
+
+      await openAndConnect(store, sockets, CONVERSATION_ID);
+      expect(store.getState().connection).toBe('connected');
+    });
+  });
 });

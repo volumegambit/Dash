@@ -134,6 +134,20 @@ export function Shell({ controlPlaneClient, credentialStore, relayDomain }: Shel
     });
   }, [activeGateway, activeCredential, relayDomain]);
 
+  // The single teardown spot for whichever store is currently live: fires on
+  // a real unmount, AND whenever `store` itself changes identity — i.e. this
+  // browser picks/re-pairs a *different* gateway, or `handleGatewayForgotten`
+  // nulls `activeGateway`/`activeCredential` (self-revocation), which makes
+  // the `useMemo` above recompute `store` to `null`. Either way, the just-
+  // abandoned store's `dispose()` closes its live socket and cancels any
+  // pending reconnect timer/attempt rather than leaving it to retry (bounded,
+  // but pointless) against a credential that's no longer valid.
+  useEffect(() => {
+    return () => {
+      store?.getState().dispose();
+    };
+  }, [store]);
+
   const view: ShellView = activeGateway && activeCredential && store ? 'chat' : 'pick-gateway';
 
   function handleReady(gateway: GatewayInfo, stored: StoredCredential): void {
@@ -144,7 +158,9 @@ export function Shell({ controlPlaneClient, credentialStore, relayDomain }: Shel
   /** Revoking this browser's own pairing from the Devices screen leaves the
    * stored credential dangling (the relay/gateway will reject it from here
    * on) — drop back to `GatewayPicker` so the user re-pairs rather than
-   * sitting on a chat view that silently stops working. */
+   * sitting on a chat view that silently stops working. Disposing the store
+   * itself is handled by the `useEffect` above, triggered by `store`
+   * recomputing to `null` once `activeGateway`/`activeCredential` clear. */
   function handleGatewayForgotten(): void {
     setActiveGateway(null);
     setActiveCredential(null);
@@ -211,14 +227,14 @@ function ChatWorkspace({
           <button
             type="button"
             onClick={() => setScreen('conversations')}
-            disabled={screen === 'conversations'}
+            aria-current={screen === 'conversations' ? 'page' : undefined}
           >
             Conversations
           </button>{' '}
           <button
             type="button"
             onClick={() => setScreen('devices')}
-            disabled={screen === 'devices'}
+            aria-current={screen === 'devices' ? 'page' : undefined}
           >
             Devices
           </button>

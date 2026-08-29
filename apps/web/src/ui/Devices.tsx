@@ -59,15 +59,25 @@ export function Devices({
     setRevokingId(pairingId);
     try {
       await controlPlaneClient.deletePairing(gatewayId, pairingId);
-      setPairings((prev) => (prev ?? []).filter((p) => p.id !== pairingId));
-      if (pairingId === currentPairingId) {
-        await credentialStore.delete(gatewayId);
-        onCurrentDeviceRevoked();
-      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to revoke this device.');
-    } finally {
       setRevokingId(null);
+      return;
+    }
+    setPairings((prev) => (prev ?? []).filter((p) => p.id !== pairingId));
+    setRevokingId(null);
+
+    if (pairingId !== currentPairingId) return;
+    try {
+      await credentialStore.delete(gatewayId);
+    } catch (err) {
+      // The server-side pairing is dead either way (deletePairing above
+      // already succeeded) — a failure to also clear the *local* credential
+      // must not strand the user on a Devices screen backed by a pairing
+      // that no longer exists, so `onCurrentDeviceRevoked` still fires below.
+      console.error('Devices: failed to clear the local credential store', err);
+    } finally {
+      onCurrentDeviceRevoked();
     }
   }
 

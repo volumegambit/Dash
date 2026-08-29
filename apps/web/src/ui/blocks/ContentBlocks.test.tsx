@@ -77,6 +77,43 @@ describe('ContentBlocks', () => {
     expect(thinkingBlock.textContent).toContain('Considering the options...');
   });
 
+  it('renders a realistic turn (text_delta, text_delta, response) with no unknown-block, since response is a silent end-of-turn metadata event', () => {
+    const content: ConversationContent = {
+      type: 'assistant',
+      events: [
+        { type: 'text_delta', text: 'All set. ' },
+        { type: 'text_delta', text: 'Mobile access is ready.' },
+        {
+          type: 'response',
+          content: 'All set. Mobile access is ready.',
+          usage: { inputTokens: 12, outputTokens: 6 },
+        },
+      ],
+    };
+    render(<ContentBlocks content={content} />);
+    expect(screen.getByText('All set. Mobile access is ready.')).toBeTruthy();
+    expect(screen.queryByTestId('unknown-block')).toBeNull();
+  });
+
+  it("renders a question event's prompt text as a paragraph, with no unknown-block", () => {
+    const content: ConversationContent = {
+      type: 'assistant',
+      events: [
+        { type: 'text_delta', text: 'One more thing — ' },
+        {
+          type: 'question',
+          id: 'question-01',
+          question: 'Confirm mobile access?',
+          options: ['Yes', 'No'],
+        },
+      ],
+    };
+    render(<ContentBlocks content={content} />);
+    expect(screen.getByText('One more thing —')).toBeTruthy();
+    expect(screen.getByText('Confirm mobile access?')).toBeTruthy();
+    expect(screen.queryByTestId('unknown-block')).toBeNull();
+  });
+
   it('renders a fallback unknown-block for an unrecognized event type, without throwing', () => {
     const content: ConversationContent = {
       type: 'assistant',

@@ -29,6 +29,7 @@ function fakeWebAppState() {
     loadConversations: vi.fn(async () => undefined),
     openConversation: vi.fn(async () => undefined),
     sendMessage: vi.fn(async () => undefined),
+    dispose: vi.fn(),
   }));
 }
 
@@ -38,10 +39,16 @@ function fakeWebAppState() {
 // independent of ChatView's own behavior, capture `deps` here and invoke
 // `socketFactory` directly.
 const capturedStoreDeps: WebAppStoreDeps[] = [];
+// Also capture each created store's bound `dispose` mock, so tests can
+// assert Shell tears down the store it's abandoning (self-revocation,
+// gateway switch, unmount) rather than leaking a live socket/reconnect timer.
+const createdStores: ReturnType<typeof fakeWebAppState>[] = [];
 vi.mock('../state/store.js', () => ({
   createWebAppStore: vi.fn().mockImplementation((deps: WebAppStoreDeps) => {
     capturedStoreDeps.push(deps);
-    return fakeWebAppState();
+    const store = fakeWebAppState();
+    createdStores.push(store);
+    return store;
   }),
 }));
 
@@ -72,6 +79,7 @@ describe('Shell', () => {
     vi.mocked(MobileRestClient).mockClear();
     vi.mocked(ChatSocket).mockClear();
     capturedStoreDeps.length = 0;
+    createdStores.length = 0;
   });
 
   it('skips straight to the chat view when a gateway credential is already stored', async () => {
@@ -249,5 +257,34 @@ describe('Shell', () => {
     expect(controlPlaneClient.deletePairing).toHaveBeenCalledWith('gw-1', 'p-1');
     await waitFor(() => expect(screen.getByText('acme')).toBeTruthy());
     expect(screen.queryByTestId('chat-workspace')).toBeNull();
+
+    // The abandoned store (this browser's own pairing is now dead) must be
+    // torn down, not left retrying in the background.
+    expect(createdStores).toHaveLength(1);
+    await waitFor(() => expect(createdStores[0].getState().dispose).toHaveBeenCalledTimes(1));
+  });
+
+  it('disposes the store on unmount', async () => {
+    const controlPlaneClient = baseControlPlaneClient();
+    const credentialStore = {
+      get: vi.fn(async (gatewayId: string) => (gatewayId === GATEWAY.gatewayId ? STORED : null)),
+      set: vi.fn(),
+      delete: vi.fn(),
+    };
+
+    const { unmount } = render(
+      <Shell
+        controlPlaneClient={controlPlaneClient}
+        credentialStore={credentialStore}
+        relayDomain="relay.example.com"
+      />,
+    );
+
+    await waitFor(() => expect(screen.getByTestId('chat-workspace')).toBeTruthy());
+    expect(createdStores).toHaveLength(1);
+
+    unmount();
+
+    expect(createdStores[0].getState().dispose).toHaveBeenCalledTimes(1);
   });
 });
