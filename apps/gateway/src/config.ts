@@ -18,6 +18,9 @@ export interface LoadConfigOptions {
   /** Control-plane base URL (e.g. `https://cp.example.com`). When set in relay
    *  mode, the gateway refreshes its own dial token via POST /gw/dial-token. */
   controlPlaneUrl?: string;
+  /** Browser origins allowed to call the `/mobile/v1` surface cross-origin
+   *  (exact match only). Empty/unset disables CORS on that surface entirely. */
+  webOrigins?: string[];
 }
 
 /**
@@ -140,6 +143,21 @@ export function swarmOverridesFromEnv(env: Record<string, string | undefined> = 
   }
 
   return { overrides, warnings };
+}
+
+/**
+ * Read the browser-origin allowlist for the `/mobile/v1` CORS surface from
+ * `DASH_WEB_ORIGINS` (comma-separated). Unset or empty yields `[]`, which
+ * keeps CORS disabled on that surface. Each entry is trimmed; blank entries
+ * (e.g. from a trailing comma) are dropped.
+ */
+export function webOriginsFromEnv(env: Record<string, string | undefined> = process.env): string[] {
+  const raw = env.DASH_WEB_ORIGINS;
+  if (!raw) return [];
+  return raw
+    .split(',')
+    .map((origin) => origin.trim())
+    .filter((origin) => origin.length > 0);
 }
 
 export function parseFlags(argv: string[]): LoadConfigOptions {

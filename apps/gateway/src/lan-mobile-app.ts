@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import { mobileCors } from './mobile-cors.js';
 import { WsTicketStore } from './ws-ticket-store.js';
 
 export interface LanMobileApp {
@@ -26,25 +27,36 @@ export interface LanMobileApp {
  * guards this handler exactly like it guards `/mobile/v1/identity`. The
  * request never needs to pass back through `app`'s own forwarding wildcard —
  * `managementApp.fetch` routes it directly.
+ *
+ * CORS for browser clients is applied here, on `app`, via `mobileCors`
+ * mounted at `/mobile/v1/*`. Because it's Hono middleware on `app` itself
+ * (not on `managementApp`), it runs — and can short-circuit an OPTIONS
+ * preflight — before the request ever reaches the forwarding handlers,
+ * covering both the forwarded routes and the `/mobile/v1/ws-ticket` route
+ * registered directly on `managementApp` above.
  */
-function buildLanMobileApp(managementApp: Hono): LanMobileApp {
+function buildLanMobileApp(managementApp: Hono, webOrigins: readonly string[] = []): LanMobileApp {
   const app = new Hono();
   const forward = (request: Request) => managementApp.fetch(request);
   const wsTickets = new WsTicketStore();
 
   managementApp.post('/mobile/v1/ws-ticket', (c) => c.json(wsTickets.issue()));
 
+  app.use('/mobile/v1/*', mobileCors(webOrigins));
   app.all('/mobile/v1', (c) => forward(c.req.raw));
   app.all('/mobile/v1/*', (c) => forward(c.req.raw));
   return { app, wsTickets };
 }
 
-export function createLanMobileApp(managementApp: Hono): Hono {
-  return buildLanMobileApp(managementApp).app;
+export function createLanMobileApp(managementApp: Hono, webOrigins: readonly string[] = []): Hono {
+  return buildLanMobileApp(managementApp, webOrigins).app;
 }
 
 /** Same as `createLanMobileApp`, but also returns the ws-ticket store so the
  * caller can share it with the chat-ws upgrade handler mounted on the same app. */
-export function createLanMobileAppWithTickets(managementApp: Hono): LanMobileApp {
-  return buildLanMobileApp(managementApp);
+export function createLanMobileAppWithTickets(
+  managementApp: Hono,
+  webOrigins: readonly string[] = [],
+): LanMobileApp {
+  return buildLanMobileApp(managementApp, webOrigins);
 }

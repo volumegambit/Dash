@@ -35,6 +35,7 @@ import {
   resolveSwarmConfig,
   swarmOverridesFromEnv,
   validateGatewayStartupOptions,
+  webOriginsFromEnv,
 } from './config.js';
 import { createControlPlaneClient } from './control-plane-client.js';
 import { createConversationAutoTitleService } from './conversation-auto-title.js';
@@ -72,6 +73,7 @@ async function main() {
   const managementPort = flags.managementPort ?? 9300;
   const channelPort = flags.channelPort ?? 9200;
   const lanPort = flags.lanPort ?? 9400;
+  const webOrigins = webOriginsFromEnv();
   const startedAt = new Date().toISOString();
 
   // One structured logger for the whole gateway process. Text format for
@@ -906,7 +908,7 @@ async function main() {
   // only `/ws/chat`; all administrative routes remain bound to loopback.
   let lanServer: Server | undefined;
   if (lanTls) {
-    const { app: lanApp, wsTickets } = createLanMobileAppWithTickets(managementApp);
+    const { app: lanApp, wsTickets } = createLanMobileAppWithTickets(managementApp, webOrigins);
     const { injectWebSocket: injectLanWebSocket, upgradeWebSocket: lanUpgradeWebSocket } =
       createNodeWebSocket({ app: lanApp });
     mountChatWs(lanApp, {

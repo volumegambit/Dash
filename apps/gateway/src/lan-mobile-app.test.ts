@@ -53,7 +53,34 @@ function makeAuthedManagementApp(): Hono {
   return managementApp;
 }
 
+const ALLOWED_ORIGIN = 'https://app.example.com';
+
 describe('createLanMobileApp', () => {
+  it('applies the mobile CORS allowlist to forwarded routes', async () => {
+    const managementApp = new Hono();
+    managementApp.all('*', async (c) => c.json({ path: c.req.path }));
+    const app = createLanMobileApp(managementApp, [ALLOWED_ORIGIN]);
+
+    const allowed = await app.request('/mobile/v1/agents', {
+      headers: { origin: ALLOWED_ORIGIN },
+    });
+    expect(allowed.headers.get('access-control-allow-origin')).toBe(ALLOWED_ORIGIN);
+
+    const denied = await app.request('/mobile/v1/agents', {
+      headers: { origin: 'https://evil.example.com' },
+    });
+    expect(denied.headers.get('access-control-allow-origin')).toBeNull();
+  });
+
+  it('sets no CORS headers when no web origins are configured', async () => {
+    const managementApp = new Hono();
+    managementApp.all('*', async (c) => c.json({ path: c.req.path }));
+    const app = createLanMobileApp(managementApp);
+
+    const res = await app.request('/mobile/v1/agents', { headers: { origin: ALLOWED_ORIGIN } });
+    expect(res.headers.get('access-control-allow-origin')).toBeNull();
+  });
+
   it('forwards only the exact mobile namespace and preserves the request', async () => {
     const managementApp = new Hono();
     managementApp.all('*', async (c) =>
@@ -120,6 +147,23 @@ describe('createLanMobileAppWithTickets', () => {
 
     expect(res.status).toBe(200);
     await expect(res.json()).resolves.toEqual({ path: '/mobile/v1/agents' });
+  });
+
+  // The mint route is registered directly on managementApp (see buildLanMobileApp's
+  // doc comment), reached only via the lan app's forwarding — but CORS is applied
+  // as middleware on `app` itself, so it must intercept this route's preflight too,
+  // without ever reaching managementApp (which has no CORS handling of its own).
+  it('answers a preflight OPTIONS to /mobile/v1/ws-ticket from an allowlisted origin', async () => {
+    const { app } = createLanMobileAppWithTickets(makeAuthedManagementApp(), [ALLOWED_ORIGIN]);
+
+    const res = await app.request('/mobile/v1/ws-ticket', {
+      method: 'OPTIONS',
+      headers: { origin: ALLOWED_ORIGIN, 'access-control-request-method': 'POST' },
+    });
+
+    expect(res.status).toBe(204);
+    expect(res.headers.get('access-control-allow-origin')).toBe(ALLOWED_ORIGIN);
+    expect(res.headers.get('access-control-allow-credentials')).toBeNull();
   });
 });
 

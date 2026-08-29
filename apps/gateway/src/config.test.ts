@@ -5,6 +5,7 @@ import {
   resolveSwarmConfig,
   swarmOverridesFromEnv,
   validateGatewayStartupOptions,
+  webOriginsFromEnv,
 } from './config.js';
 
 describe('parseFlags', () => {
@@ -245,5 +246,29 @@ describe('swarmOverridesFromEnv', () => {
       overrides: {},
       warnings: [],
     });
+  });
+});
+
+describe('webOriginsFromEnv', () => {
+  it('returns an empty array when DASH_WEB_ORIGINS is unset', () => {
+    expect(webOriginsFromEnv({})).toEqual([]);
+  });
+
+  it('returns an empty array when DASH_WEB_ORIGINS is an empty string', () => {
+    expect(webOriginsFromEnv({ DASH_WEB_ORIGINS: '' })).toEqual([]);
+  });
+
+  it('splits a comma-separated list and trims whitespace around each entry', () => {
+    expect(
+      webOriginsFromEnv({
+        DASH_WEB_ORIGINS: ' https://app.example.com , https://other.example.com ',
+      }),
+    ).toEqual(['https://app.example.com', 'https://other.example.com']);
+  });
+
+  it('drops blank entries left by a trailing or doubled comma', () => {
+    expect(webOriginsFromEnv({ DASH_WEB_ORIGINS: 'https://app.example.com,,' })).toEqual([
+      'https://app.example.com',
+    ]);
   });
 });
