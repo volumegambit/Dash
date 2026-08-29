@@ -1,0 +1,70 @@
+---
+title: "Web Client"
+description: "Chat with your agents from any browser — no app to install."
+---
+
+Dash has a web client: a page you open in your browser to chat with your agents.
+There's nothing to install. It works anywhere you have a browser and an internet
+connection, and it uses the same [remote access](/remote-access) your phone uses to
+reach your gateway.
+
+<Note>
+The web client is a separate address from Mission Control. Mission Control still
+runs on the machine with your agents; the web client is a page hosted elsewhere that
+you can open on a laptop, a shared computer, or a phone browser.
+</Note>
+
+## Before you start
+
+The web client needs your gateway to already be set up for remote access. If you
+haven't done that yet, follow [Remote Access](/remote-access) first — sign in to
+Dash from Mission Control, create your gateway, and confirm it shows **Gateway
+ready at** followed by your address.
+
+## Sign in and chat
+
+<Steps>
+  <Step title="Open the web client">
+    Go to the web client's address (your organization gives you this link — it looks
+    something like `https://app.<your relay domain>`).
+  </Step>
+  <Step title="Sign in with a passkey">
+    Sign in using a passkey — the fingerprint, face, or device unlock your browser
+    already offers. There's no password to remember.
+  </Step>
+  <Step title="Pick your gateway">
+    If you have more than one gateway, choose the one you want to chat through.
+    The web client remembers your choice on this browser next time.
+  </Step>
+  <Step title="Start chatting">
+    Open a conversation, or start a new one, and chat with your agent the same way
+    you would in Mission Control or the phone app.
+  </Step>
+</Steps>
+
+<Tip>
+Conversations you have here are the same ones you see in Mission Control and on
+your phone. Anything you send from the web client shows up everywhere else too.
+</Tip>
+
+## Manage your devices
+
+Open **Devices** in the web client to see every browser that's signed in and
+connected to this gateway. Click **Revoke** next to any browser you no longer
+recognize or use — for example, a shared or public computer. Revoking your own
+current browser signs it out immediately and sends you back to the gateway picker.
+
+## Troubleshooting
+
+| What you see | What's happening | What to do |
+|---|---|---|
+| "Your gateway is unreachable" | The machine running your gateway is off, asleep, or not connected to the internet | Turn on or wake the machine running Dash and check its internet connection. The web client reconnects automatically once it's back. |
+| "This gateway needs to be re-enrolled from Mission Control before web access works" | This gateway was set up for remote access before web support existed, so it hasn't shared what it needs with the web client yet | In Mission Control, open **Settings → Devices → Remote access** and re-run enrollment for this gateway. Then come back and pick it again. |
+| You're signed out and asked to reconnect a device | Your session on this browser was revoked — either by you from the Devices screen, or by someone else with access to the gateway | Sign in again and pick your gateway. If you didn't revoke it yourself, check the Devices screen on your other clients for anything you don't recognize. |
+| "No gateways linked to your account yet" | Your Dash account isn't linked to any gateway | In Mission Control, open **Settings → Devices → Remote access** and enroll this machine. |
+
+<Note>
+Revoking a browser's access stops it from reaching your agents. It does not
+change any other device's access, and your conversations stay exactly where
+they are.
+</Note>

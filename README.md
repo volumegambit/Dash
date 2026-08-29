@@ -55,6 +55,7 @@ All configuration lives inside Mission Control. There are no config files to han
 - **Tools + MCP** — Built-in tools (files, shell, fetch, web search) plus any MCP server you plug in.
 - **Messaging channels** — Agents can listen on Telegram, WhatsApp, or the built-in chat WebSocket.
 - **Gateway supervisor** — MC automatically restarts a crashed gateway and never silently kills processes it didn't spawn.
+- **Use Dash from the web** — Sign in with a passkey and chat with your agents from any browser, no install required, over the same hosted relay your phone uses for remote access. See [`apps/web/README.md`](apps/web/README.md) to deploy it and [docs/web.mdx](docs/web.mdx) for the end-user guide.
 
 ## Architecture
 
@@ -118,6 +119,7 @@ For the full development guide — coding conventions, testing strategy, git wor
 | `apps/mission-control` | Electron desktop app (main + renderer + preload) |
 | `apps/mc-cli` | Command-line companion for scripted operations |
 | `apps/relay` | Self-hosted reverse-tunnel relay for reaching a gateway remotely — see [`apps/relay/README.md`](apps/relay/README.md) |
+| `apps/web` | Browser-based chat client (passkey sign-in, no install) — see [`apps/web/README.md`](apps/web/README.md) |
 | `ios/` | Native iPhone and iPad client with shared, resumable conversation history — see [`ios/README.md`](ios/README.md) |
 | `android/` | Native Android client (chat + agent monitoring) — see [`android/README.md`](android/README.md) |
 
