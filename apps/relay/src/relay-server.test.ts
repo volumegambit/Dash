@@ -18,6 +18,9 @@ const deps = {
   pairingCredentialValid: () => true,
 };
 
+/** Mirrors relay-server.ts's close code for a revoked/unauthorized peer. */
+const RELAY_AUTH_CLOSE = 4401;
+
 let server: RelayServer;
 let port: number;
 
@@ -762,6 +765,256 @@ describe('relay-server', () => {
     expect(code).toBe(4401);
     await waitFor(() => !server.hasGateway('gw-1'));
     expect(server.hasGateway('gw-1')).toBe(false);
+  });
+
+  // --- I3: revoking a pairing drops its LIVE connections ------------------
+
+  it('closes a live phone WebSocket when its credential is revoked', async () => {
+    const store = await restartWithCredentialStore();
+    const gw = await connectGateway('g1', 'good');
+    gw.on('message', (raw: Buffer) => {
+      const f = decodeFrame(raw.toString());
+      if (f.t === 'open' && f.kind === 'ws') {
+        gw.send(encodeFrame({ t: 'head', streamId: f.streamId, status: 101, headers: {} }));
+      }
+    });
+    await waitFor(() => server.hasGateway('g1'));
+    const credential = store.provision('t1', 'g1');
+
+    const phone = new WebSocket(`ws://127.0.0.1:${port}/ws/chat?token=t`, {
+      headers: { host: 'g1.relay.local', 'x-dash-relay-credential': credential },
+    });
+    await new Promise<void>((resolve, reject) => {
+      phone.on('open', () => resolve());
+      phone.on('error', reject);
+    });
+    const closed = new Promise<number>((resolve) => phone.on('close', (c) => resolve(c)));
+
+    const rev = await httpPost(
+      '/admin/pairings/revoke',
+      { authorization: 'Bearer admin-secret' },
+      { tenantId: 't1', gatewayId: 'g1', credential },
+    );
+    expect(rev.status).toBe(200);
+
+    // The live socket drops immediately — revocation is not "next request".
+    expect(await closed).toBe(RELAY_AUTH_CLOSE);
+    gw.close();
+  });
+
+  it('closes a live socket when revoked by credentialHash (the control plane path)', async () => {
+    const store = await restartWithCredentialStore();
+    const gw = await connectGateway('g1', 'good');
+    gw.on('message', (raw: Buffer) => {
+      const f = decodeFrame(raw.toString());
+      if (f.t === 'open' && f.kind === 'ws') {
+        gw.send(encodeFrame({ t: 'head', streamId: f.streamId, status: 101, headers: {} }));
+      }
+    });
+    await waitFor(() => server.hasGateway('g1'));
+    const credential = store.provision('t1', 'g1');
+
+    const phone = new WebSocket(`ws://127.0.0.1:${port}/ws/chat?token=t`, {
+      headers: { host: 'g1.relay.local', 'x-dash-relay-credential': credential },
+    });
+    await new Promise<void>((resolve, reject) => {
+      phone.on('open', () => resolve());
+      phone.on('error', reject);
+    });
+    const closed = new Promise<number>((resolve) => phone.on('close', (c) => resolve(c)));
+
+    await httpPost(
+      '/admin/pairings/revoke',
+      { authorization: 'Bearer admin-secret' },
+      {
+        tenantId: 't1',
+        gatewayId: 'g1',
+        credentialHash: createHash('sha256').update(credential).digest('base64url'),
+      },
+    );
+
+    expect(await closed).toBe(RELAY_AUTH_CLOSE);
+    gw.close();
+  });
+
+  it('leaves another device’s live socket untouched when one credential is revoked', async () => {
+    const store = await restartWithCredentialStore();
+    const gw = await connectGateway('g1', 'good');
+    gw.on('message', (raw: Buffer) => {
+      const f = decodeFrame(raw.toString());
+      if (f.t === 'open' && f.kind === 'ws') {
+        gw.send(encodeFrame({ t: 'head', streamId: f.streamId, status: 101, headers: {} }));
+      }
+    });
+    await waitFor(() => server.hasGateway('g1'));
+    const a = store.provision('t1', 'g1');
+    const b = store.provision('t1', 'g1');
+
+    const open = async (credential: string): Promise<WebSocket> => {
+      const socket = new WebSocket(`ws://127.0.0.1:${port}/ws/chat?token=t`, {
+        headers: { host: 'g1.relay.local', 'x-dash-relay-credential': credential },
+      });
+      await new Promise<void>((resolve, reject) => {
+        socket.on('open', () => resolve());
+        socket.on('error', reject);
+      });
+      return socket;
+    };
+    const deviceA = await open(a);
+    const deviceB = await open(b);
+    const closedA = new Promise<number>((resolve) => deviceA.on('close', (c) => resolve(c)));
+
+    await httpPost(
+      '/admin/pairings/revoke',
+      { authorization: 'Bearer admin-secret' },
+      { tenantId: 't1', gatewayId: 'g1', credential: a },
+    );
+
+    expect(await closedA).toBe(RELAY_AUTH_CLOSE);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(deviceB.readyState).toBe(WebSocket.OPEN);
+    deviceB.close();
+    gw.close();
+  });
+
+  it('ends a live phone HTTP/SSE stream when its credential is revoked', async () => {
+    const store = await restartWithCredentialStore();
+    const gw = await connectGateway('g1', 'good');
+    let openStreamId: number | undefined;
+    const gatewaySawClose = new Promise<void>((resolve) => {
+      gw.on('message', (raw: Buffer) => {
+        const f = decodeFrame(raw.toString());
+        if (f.t === 'open') {
+          openStreamId = f.streamId;
+          // An open-ended SSE response: headers, one event, never ended.
+          gw.send(
+            encodeFrame({
+              t: 'head',
+              streamId: f.streamId,
+              status: 200,
+              headers: { 'content-type': 'text/event-stream' },
+            }),
+          );
+          gw.send(
+            encodeFrame({
+              t: 'data',
+              streamId: f.streamId,
+              chunk: encodeChunk(Buffer.from(':\n')),
+            }),
+          );
+        }
+        // The relay must also tear down the gateway's loopback request.
+        if (f.t === 'close' && f.streamId === openStreamId) resolve();
+      });
+    });
+    await waitFor(() => server.hasGateway('g1'));
+    const credential = store.provision('t1', 'g1');
+
+    const streamEnded = new Promise<void>((resolve, reject) => {
+      const request = http.request(
+        {
+          hostname: '127.0.0.1',
+          port,
+          path: '/mobile/v1/events',
+          method: 'GET',
+          headers: { host: 'g1.relay.local', 'x-dash-relay-credential': credential },
+        },
+        (response) => {
+          expect(response.statusCode).toBe(200);
+          response.on('data', () => {});
+          response.on('end', () => resolve());
+        },
+      );
+      request.on('error', reject);
+      request.end();
+    });
+    await waitFor(() => openStreamId !== undefined);
+
+    await httpPost(
+      '/admin/pairings/revoke',
+      { authorization: 'Bearer admin-secret' },
+      { tenantId: 't1', gatewayId: 'g1', credential },
+    );
+
+    await streamEnded;
+    await gatewaySawClose;
+    gw.close();
+  });
+
+  it('closes every live connection for the gateway on an un-targeted revoke-all', async () => {
+    const store = await restartWithCredentialStore();
+    const gw = await connectGateway('g1', 'good');
+    gw.on('message', (raw: Buffer) => {
+      const f = decodeFrame(raw.toString());
+      if (f.t === 'open' && f.kind === 'ws') {
+        gw.send(encodeFrame({ t: 'head', streamId: f.streamId, status: 101, headers: {} }));
+      }
+    });
+    await waitFor(() => server.hasGateway('g1'));
+    const a = store.provision('t1', 'g1');
+    const b = store.provision('t1', 'g1');
+
+    const sockets = await Promise.all(
+      [a, b].map(async (credential) => {
+        const socket = new WebSocket(`ws://127.0.0.1:${port}/ws/chat?token=t`, {
+          headers: { host: 'g1.relay.local', 'x-dash-relay-credential': credential },
+        });
+        await new Promise<void>((resolve, reject) => {
+          socket.on('open', () => resolve());
+          socket.on('error', reject);
+        });
+        return socket;
+      }),
+    );
+    const closed = sockets.map(
+      (socket) => new Promise<number>((resolve) => socket.on('close', (c) => resolve(c))),
+    );
+
+    await httpPost(
+      '/admin/pairings/revoke',
+      { authorization: 'Bearer admin-secret' },
+      { tenantId: 't1', gatewayId: 'g1' }, // no credential/hash → un-pair all
+    );
+
+    expect(await Promise.all(closed)).toEqual([RELAY_AUTH_CLOSE, RELAY_AUTH_CLOSE]);
+    gw.close();
+  });
+
+  it('does not disturb another gateway’s live connections', async () => {
+    const store = await restartWithCredentialStore();
+    const gw1 = await connectGateway('g1', 'good');
+    const gw2 = await connectGateway('g2', 'good');
+    for (const gw of [gw1, gw2]) {
+      gw.on('message', (raw: Buffer) => {
+        const f = decodeFrame(raw.toString());
+        if (f.t === 'open' && f.kind === 'ws') {
+          gw.send(encodeFrame({ t: 'head', streamId: f.streamId, status: 101, headers: {} }));
+        }
+      });
+    }
+    await waitFor(() => server.hasGateway('g1') && server.hasGateway('g2'));
+    store.provision('t1', 'g1');
+    const other = store.provision('t1', 'g2');
+
+    const phone = new WebSocket(`ws://127.0.0.1:${port}/ws/chat?token=t`, {
+      headers: { host: 'g2.relay.local', 'x-dash-relay-credential': other },
+    });
+    await new Promise<void>((resolve, reject) => {
+      phone.on('open', () => resolve());
+      phone.on('error', reject);
+    });
+
+    await httpPost(
+      '/admin/pairings/revoke',
+      { authorization: 'Bearer admin-secret' },
+      { tenantId: 't1', gatewayId: 'g1' }, // revoke-all, but only for g1
+    );
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(phone.readyState).toBe(WebSocket.OPEN);
+    phone.close();
+    gw1.close();
+    gw2.close();
   });
 
   it('admin pairing routes require tenantId', async () => {

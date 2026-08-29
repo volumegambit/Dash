@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import http from 'node:http';
 import type { Duplex } from 'node:stream';
 import { type RawData, type WebSocket, WebSocketServer } from 'ws';
@@ -85,10 +86,25 @@ const APP_SUBPROTOCOL = 'dash.v1';
 
 /** A phone-originated stream's callbacks, driven by frames from the gateway. */
 interface PhoneStream {
+  /**
+   * SHA-256 (base64url) of the pairing credential that opened this stream —
+   * the same digest the credential store and the admin revoke API key by. Kept
+   * so a revoke can find this stream's live connection; the raw credential is
+   * never retained. Undefined for the credential-less CORS-preflight path.
+   */
+  credentialHash?: string;
   onHead(status: number, headers: Record<string, string>): void;
   onData(chunk: Buffer, binary: boolean): void;
   onEnd(): void;
   onClose(code?: number, reason?: string): void;
+  /**
+   * Drop this connection because its credential was revoked. Terminating the
+   * PHONE side is enough: the existing `close` handlers on the response/socket
+   * fire, which delete the stream and send the gateway its `close` frame — so
+   * the loopback request upstream is torn down by the same path a normal
+   * client disconnect uses.
+   */
+  revoke(): void;
 }
 
 interface GatewayConn {
@@ -289,10 +305,8 @@ function handlePhoneHttp(
   // is a separate gate authorizing the phone to reach THIS gateway at all.
   // Checked BEFORE the rate limiter so an unauthenticated caller can't spend a
   // gateway's shared token budget and throttle its legitimately paired phones.
-  if (
-    !isCorsPreflight &&
-    !deps.pairingCredentialValid(gatewayId, headerValue(req.headers[PAIRING_CREDENTIAL_HEADER]))
-  ) {
+  const credential = headerValue(req.headers[PAIRING_CREDENTIAL_HEADER]);
+  if (!isCorsPreflight && !deps.pairingCredentialValid(gatewayId, credential)) {
     res.writeHead(401, { 'content-type': 'text/plain', ...cors });
     res.end('Unauthorized');
     return;
@@ -327,6 +341,15 @@ function handlePhoneHttp(
   };
 
   conn.streams.set(streamId, {
+    credentialHash: credential ? hashCredential(credential) : undefined,
+    revoke() {
+      if (res.writableEnded) return;
+      // A revoked long-lived stream (SSE/chat) has already sent headers, so all
+      // we can do is end it — the client sees the stream close and re-requests,
+      // getting a clean 401 then. One that hasn't responded yet still can.
+      if (!res.headersSent) res.writeHead(401, { 'content-type': 'text/plain', ...cors });
+      res.end();
+    },
     onHead(status, headers) {
       // Guard against a duplicate/late `head` frame: writeHead after headers are
       // already sent throws ERR_HTTP_HEADERS_SENT (which would otherwise crash
@@ -449,6 +472,10 @@ function handlePhoneWsUpgrade(
   wss.handleUpgrade(req, socket, head, (phoneWs) => {
     const streamId = conn.nextStreamId++;
     conn.streams.set(streamId, {
+      credentialHash: hashCredential(credential),
+      revoke() {
+        phoneWs.close(RELAY_AUTH_CLOSE, 'Revoked');
+      },
       onHead() {
         // 101 — the phone connection is already upgraded at the relay edge.
       },
@@ -614,6 +641,15 @@ function handleAdmin(
         if (credentialHash) admin.store.revokeByHash(tenantId, gatewayId, credentialHash);
         else if (credential) admin.store.revoke(tenantId, gatewayId, credential);
         else admin.store.revokeAll(tenantId, gatewayId);
+        // Revocation must be immediate, not "from the next request": a phone
+        // holding a live chat socket or an open SSE stream would otherwise keep
+        // it indefinitely. Mirrors the force-close /admin/gateways/revoke does
+        // for the whole tunnel, but scoped to the revoked device's streams.
+        closeRevokedStreams(
+          gateways,
+          gatewayId,
+          credentialHash ?? (credential ? hashCredential(credential) : undefined),
+        );
         return respondJson(res, 200, { ok: true });
       }
       if (path === '/admin/gateways/revoke') {
@@ -629,6 +665,38 @@ function handleAdmin(
       respondJson(res, 404, { error: 'Unknown admin route' });
     })
     .catch(() => respondJson(res, 400, { error: 'Invalid JSON body' }));
+}
+
+/** The relay's canonical credential digest — base64url, as the stores key by. */
+function hashCredential(credential: string): string {
+  return createHash('sha256').update(credential).digest('base64url');
+}
+
+/**
+ * Drop the live phone connections a revoke just invalidated.
+ *
+ * `credentialHash` targets one device; `undefined` means the caller revoked
+ * every pairing for the gateway, so every credentialed stream goes. Streams
+ * opened without a credential (the CORS-preflight exemption) carry no hash and
+ * are never matched by a targeted revoke.
+ */
+function closeRevokedStreams(
+  gateways: Map<string, GatewayConn>,
+  gatewayId: string,
+  credentialHash: string | undefined,
+): void {
+  const conn = gateways.get(gatewayId);
+  if (!conn) return;
+  // Snapshot first: `revoke()` triggers close handlers that mutate the map.
+  for (const stream of [...conn.streams.values()]) {
+    if (credentialHash !== undefined && stream.credentialHash !== credentialHash) continue;
+    if (credentialHash === undefined && stream.credentialHash === undefined) continue;
+    try {
+      stream.revoke();
+    } catch {
+      // A stream already torn down by a racing disconnect — nothing to do.
+    }
+  }
 }
 
 /** Read a request body as JSON ({} when empty); caps size to 64 KiB. */
