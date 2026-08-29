@@ -107,6 +107,110 @@ the harness without printing its credentials. Successful result bundles are remo
 selector keeps its secret-free `ios/LiveGateway-*.xcresult` for CI diagnostics. Never put tokens in
 a committed scheme or command history.
 
+## Run on a physical iPhone
+
+`ios/scripts/deploy-device.sh` builds the app and installs it on a paired iPhone over Wi-Fi — no
+cable, no TestFlight round trip.
+
+```bash
+ios/scripts/deploy-device.sh              # build, install, launch once
+ios/scripts/deploy-device.sh --watch      # redeploy every time a source file changes
+ios/scripts/deploy-device.sh --list       # show paired devices
+```
+
+The build uses a `generic/platform=iOS` destination, so it compiles a signed device `.app` whether
+or not the phone is awake; only the install step waits for the device. `devicectl` then pushes and
+launches it. Use `--watch` while iterating: save a file, and the phone has the new build shortly
+after.
+
+### One-time setup
+
+1. **Pair the phone for wireless development.** Connect it by cable once, open Xcode >
+   Window > Devices and Simulators, select the phone and tick **Connect via network**. After that
+   the cable is unnecessary.
+2. **Enable Developer Mode** on the phone: Settings > Privacy & Security > Developer Mode.
+3. **Trust the signing certificate** on the phone the first time you deploy, and again whenever
+   Xcode issues a new one: Settings > General > VPN & Device Management > Developer App > Trust.
+   Until you do, the app installs but iOS refuses to launch it with "profile has not been
+   explicitly trusted by the user".
+4. **Give the build a signing identity.** Automatic signing needs an Apple ID that belongs to the
+   team in `Config/Local.xcconfig` (`DEVELOPMENT_TEAM`). Sign in under Xcode > Settings >
+   Accounts, or create an App Store Connect API key and put it in `~/.dash-ios-deploy.env`:
+
+   ```bash
+   ASC_KEY_PATH=/path/to/AuthKey_XXXXXXXX.p8
+   ASC_KEY_ID=XXXXXXXX
+   ASC_ISSUER_ID=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+   ```
+
+   The API key route is fully headless and is the same file `deploy-testflight.sh` reads. Without
+   one of these the build fails with `No Account for Team` / `No profiles for 'app.dash.ios'`.
+
+   `DEVELOPMENT_TEAM` must be the **Team ID**, which is the `OU` field of your signing
+   certificate — *not* the identifier in parentheses after your email, which is a different thing
+   and produces a confusing `No Account for Team <id>` error. Read it with:
+
+   ```bash
+   security find-certificate -c "Apple Development" -p |
+     openssl x509 -noout -subject          # OU=<team id>
+   ```
+
+### Free Personal Team limits
+
+If your Apple ID has no paid Apple Developer Program membership, Xcode signs with a free
+"Personal Team". That is enough for both scripts here, with two consequences:
+
+- **Provisioning profiles expire after 7 days.** The installed app stops launching after that
+  and you have to deploy again. A paid membership raises this to a year.
+- **TestFlight is unavailable.** `deploy-testflight.sh` needs a paid membership; a Personal Team
+  cannot create distribution certificates or upload to App Store Connect.
+
+The phone must be unlocked and on the same network as the Mac for the install step; a sleeping
+phone stops advertising itself and the script waits (`DASH_IOS_WAIT`, default 120s) before giving
+up.
+
+## Install over the tailnet
+
+`deploy-device.sh` only works on the local network. Apple discovers wireless devices with
+Bonjour/mDNS, which is multicast; Tailscale is a layer-3 overlay with no multicast, so `devicectl`
+cannot see a phone that is only reachable over the tailnet — it will answer pings and still report
+`unavailable`.
+
+`ios/scripts/deploy-tailnet.sh` takes the other route: it exports a development-signed `.ipa`,
+serves it over Tailscale HTTPS, and lets iOS install it over the air. That works anywhere the
+phone has the tailnet, cellular included.
+
+```bash
+ios/scripts/deploy-tailnet.sh            # build, publish, print the install URL
+ios/scripts/deploy-tailnet.sh --stop     # take the serve down when you're done
+```
+
+Open the printed URL on the iPhone and tap **Install**.
+
+The macOS Tailscale app is sandboxed and refuses to serve a directory ("Path serving is not
+supported on macOS"), so the script runs a local static server on `127.0.0.1:8787`
+(`DASH_IOS_PORT`) and has Tailscale proxy that port. `--stop` shuts down both the proxy and that
+server.
+
+Requirements:
+
+- **HTTPS must be enabled** for your tailnet in the Tailscale admin console. iOS refuses an OTA
+  install without a valid certificate, and Tailscale's `*.ts.net` certs satisfy it. The script
+  checks this and stops early with a clear message if it is off.
+- **The phone must already be registered** with the development team. Registration only happens
+  when a build targets the real device, so run `deploy-device.sh` once with the phone on the local
+  network before using this script. A free Personal Team will not issue a profile at all until at
+  least one device is registered, and a `generic/platform=iOS` destination — which this script
+  uses, since the phone may be remote — cannot register one.
+- Every run bumps `CURRENT_PROJECT_VERSION`, so iOS treats each deploy as an upgrade and keeps
+  your existing app data.
+
+iOS cannot install an app silently — only an MDM-enrolled device can. So this path always ends in
+one tap on the phone; there is no way around that short of enrolling the device in an MDM.
+`deploy-testflight.sh` is the third option: it reaches the phone anywhere without Tailscale and
+adds Apple's processing delay (~5-15 min), but it requires a paid Apple Developer Program
+membership.
+
 ## Pair a gateway
 
 Open Dash and choose one of three paths:
