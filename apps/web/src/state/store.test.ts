@@ -1,3 +1,6 @@
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type {
   ConversationMessage,
   ConversationMessagePage,
@@ -8,7 +11,18 @@ import type {
 } from '@dash/mobile-contract';
 import type { ChatSocket, FrameHandler } from '../api/chat-socket';
 import type { MobileRestClient } from '../api/rest';
-import { RECONNECT_BASE_MS, createWebAppStore } from './store';
+import { RECONNECT_BASE_MS, RECONNECT_FACTOR, createWebAppStore } from './store';
+
+// apps/web/src/state -> apps/web -> apps -> repo root
+const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '../../../..');
+const FIXTURES_DIR = join(REPO_ROOT, 'contracts/mobile/v1/fixtures');
+
+function readJsonl<T>(file: string): T[] {
+  return readFileSync(join(FIXTURES_DIR, file), 'utf8')
+    .split('\n')
+    .filter((line) => line.trim().length > 0)
+    .map((line) => JSON.parse(line) as T);
+}
 
 const CONVERSATION_ID = 'conv-1';
 
@@ -52,6 +66,11 @@ function message(overrides: Partial<ConversationMessage> = {}): ConversationMess
 class ScriptedChatSocket {
   readonly sent: MobileWsClientFrame[] = [];
   closed = false;
+  /** When set, `send()` throws synchronously instead of recording the frame
+   * — simulates the socket having gone stale between `connect()` resolving
+   * and the caller actually writing to it (see the ChatSocket contract:
+   * `send()` throws if the socket isn't open). */
+  sendShouldThrow = false;
   private settle: ((outcome: 'resolve' | 'reject') => void) | null = null;
 
   connect(): Promise<void> {
@@ -61,6 +80,9 @@ class ScriptedChatSocket {
   }
 
   send(frame: MobileWsClientFrame): void {
+    if (this.sendShouldThrow) {
+      throw new Error('ChatSocket: cannot send while the socket is not open');
+    }
     this.sent.push(frame);
   }
 
@@ -82,7 +104,6 @@ interface ScriptedFactory {
   sockets: ScriptedChatSocket[];
   onFrames: FrameHandler[];
   onCloses: Array<(reason: 'error' | 'closed') => void>;
-  callCount: () => number;
 }
 
 function scriptedSocketFactory(): ScriptedFactory {
@@ -96,7 +117,7 @@ function scriptedSocketFactory(): ScriptedFactory {
     onCloses.push(onClose);
     return socket as unknown as ChatSocket;
   });
-  return { factory, sockets, onFrames, onCloses, callCount: () => factory.mock.calls.length };
+  return { factory, sockets, onFrames, onCloses };
 }
 
 interface FakeRest {
@@ -124,6 +145,22 @@ function fakeRest(opts: {
     getMessages,
   } as unknown as MobileRestClient;
   return { rest, listConversations, getMessages };
+}
+
+/** Drives a store through `openConversation`, resolving the scripted
+ * socket's `connect()` once it exists. Returns once fully connected. */
+async function openAndConnect(
+  store: ReturnType<typeof createWebAppStore>,
+  sockets: ScriptedChatSocket[],
+  conversationId: string,
+): Promise<ScriptedChatSocket> {
+  const opening = store.getState().openConversation(conversationId);
+  const countBefore = sockets.length;
+  await vi.waitFor(() => expect(sockets.length).toBe(countBefore + 1));
+  const socket = sockets[countBefore];
+  socket.open();
+  await opening;
+  return socket;
 }
 
 describe('createWebAppStore', () => {
@@ -161,10 +198,7 @@ describe('createWebAppStore', () => {
       const { factory, sockets } = scriptedSocketFactory();
       const store = createWebAppStore({ rest, socketFactory: factory });
 
-      const opening = store.getState().openConversation(CONVERSATION_ID);
-      await vi.waitFor(() => expect(sockets.length).toBe(1));
-      sockets[0].open();
-      await opening;
+      await openAndConnect(store, sockets, CONVERSATION_ID);
 
       // Oldest-first, reconstructed from the two backward pages.
       expect(store.getState().transcripts[CONVERSATION_ID]?.messages).toEqual([older, newer]);
@@ -172,6 +206,43 @@ describe('createWebAppStore', () => {
       expect(getMessages).toHaveBeenNthCalledWith(2, CONVERSATION_ID, 'cursor-1');
       expect(factory).toHaveBeenCalledTimes(1);
       expect(store.getState().connection).toBe('connected');
+    });
+
+    it('merges re-replayed history with local state by turnId, dropping a stale optimistic stand-in', async () => {
+      // Regression for: reopening a conversation after sendMessage() added an
+      // optimistic (unreconciled) local message, where the server has since
+      // assigned it a real id — the merge must not keep both.
+      let getMessagesCall = 0;
+      let secondPageItems: ConversationMessage[] = [];
+      const rest = {
+        listConversations: vi.fn(async () => ({ items: [summary()], nextCursor: null })),
+        getMessages: vi.fn(async () => {
+          const page =
+            getMessagesCall === 0
+              ? { items: [], nextCursor: null, throughSeq: 0 }
+              : { items: secondPageItems, nextCursor: null, throughSeq: 1 };
+          getMessagesCall += 1;
+          return page;
+        }),
+      } as unknown as MobileRestClient;
+      const { factory, sockets } = scriptedSocketFactory();
+      const store = createWebAppStore({ rest, socketFactory: factory });
+      await store.getState().loadConversations();
+
+      await openAndConnect(store, sockets, CONVERSATION_ID);
+      await store.getState().sendMessage(CONVERSATION_ID, 'quick note');
+      const optimistic = store.getState().transcripts[CONVERSATION_ID]?.messages[0];
+      expect(optimistic).toBeDefined();
+      const turnId = optimistic?.turnId as string;
+
+      // The server now has the authoritative message for that same turn,
+      // under a different (server-assigned) id.
+      secondPageItems = [message({ id: 'server-msg-1', turnId, ordinal: 1, status: 'completed' })];
+
+      await openAndConnect(store, sockets, CONVERSATION_ID);
+
+      const finalMessages = store.getState().transcripts[CONVERSATION_ID]?.messages ?? [];
+      expect(finalMessages.map((m) => m.id)).toEqual(['server-msg-1']);
     });
   });
 
@@ -182,11 +253,7 @@ describe('createWebAppStore', () => {
       const store = createWebAppStore({ rest, socketFactory: factory });
       await store.getState().loadConversations();
 
-      const opening = store.getState().openConversation(CONVERSATION_ID);
-      await vi.waitFor(() => expect(sockets.length).toBe(1));
-      sockets[0].open();
-      await opening;
-
+      await openAndConnect(store, sockets, CONVERSATION_ID);
       await store.getState().sendMessage(CONVERSATION_ID, 'hello there');
 
       const transcript = store.getState().transcripts[CONVERSATION_ID];
@@ -207,6 +274,39 @@ describe('createWebAppStore', () => {
       });
       expect(typeof (sent as { channelId?: string }).channelId).toBe('string');
     });
+
+    it('throws and adds no optimistic message when not connected', async () => {
+      const { rest } = fakeRest({ conversationPage: { items: [summary()], nextCursor: null } });
+      const { factory, sockets, onCloses } = scriptedSocketFactory();
+      const store = createWebAppStore({ rest, socketFactory: factory });
+      await store.getState().loadConversations();
+      await openAndConnect(store, sockets, CONVERSATION_ID);
+
+      onCloses[0]('error');
+      expect(store.getState().connection).toBe('reconnecting');
+
+      await expect(store.getState().sendMessage(CONVERSATION_ID, 'hello')).rejects.toThrow();
+      expect(store.getState().transcripts[CONVERSATION_ID]?.messages ?? []).toHaveLength(0);
+    });
+
+    it('marks the optimistic message failed (not stuck "accepted") when socket.send() throws', async () => {
+      const { rest } = fakeRest({ conversationPage: { items: [summary()], nextCursor: null } });
+      const { factory, sockets } = scriptedSocketFactory();
+      const store = createWebAppStore({ rest, socketFactory: factory });
+      await store.getState().loadConversations();
+      const socket = await openAndConnect(store, sockets, CONVERSATION_ID);
+
+      socket.sendShouldThrow = true;
+      await expect(store.getState().sendMessage(CONVERSATION_ID, 'fails')).rejects.toThrow();
+
+      expect(socket.sent).toHaveLength(0);
+      const transcript = store.getState().transcripts[CONVERSATION_ID];
+      expect(transcript?.messages).toHaveLength(1);
+      expect(transcript?.messages[0]).toMatchObject({
+        status: 'failed',
+        content: { text: 'fails' },
+      });
+    });
   });
 
   describe('frame handling', () => {
@@ -215,11 +315,7 @@ describe('createWebAppStore', () => {
       const { factory, sockets, onFrames } = scriptedSocketFactory();
       const store = createWebAppStore({ rest, socketFactory: factory });
       await store.getState().loadConversations();
-
-      const opening = store.getState().openConversation(CONVERSATION_ID);
-      await vi.waitFor(() => expect(sockets.length).toBe(1));
-      sockets[0].open();
-      await opening;
+      await openAndConnect(store, sockets, CONVERSATION_ID);
 
       await store.getState().sendMessage(CONVERSATION_ID, 'hello there');
       const turnId = sockets[0].sent[0].id;
@@ -267,47 +363,141 @@ describe('createWebAppStore', () => {
         'real-assistant-msg-id',
       ]);
     });
+
+    it('marks the conversation interrupted on an error frame while leaving the transcript intact', async () => {
+      const { rest } = fakeRest({ conversationPage: { items: [summary()], nextCursor: null } });
+      const { factory, sockets, onFrames } = scriptedSocketFactory();
+      const store = createWebAppStore({ rest, socketFactory: factory });
+      await store.getState().loadConversations();
+      await openAndConnect(store, sockets, CONVERSATION_ID);
+
+      await store.getState().sendMessage(CONVERSATION_ID, 'hello there');
+      const turnId = sockets[0].sent[0].id;
+      onFrames[0]({
+        type: 'accepted',
+        id: turnId,
+        conversationId: CONVERSATION_ID,
+        userMessageId: 'real-user-msg-id',
+        assistantMessageId: 'real-assistant-msg-id',
+        revision: 2,
+        seq: 1,
+      });
+      const beforeMessages = store.getState().transcripts[CONVERSATION_ID]?.messages;
+      const beforeStreaming = store.getState().transcripts[CONVERSATION_ID]?.streaming;
+
+      onFrames[0]({
+        type: 'error',
+        id: turnId,
+        conversationId: CONVERSATION_ID,
+        seq: 2,
+        error: 'Conversation already has an active turn',
+        code: 'conversation_busy',
+        retryable: true,
+      });
+
+      expect(store.getState().conversations.find((c) => c.id === CONVERSATION_ID)?.status).toBe(
+        'interrupted',
+      );
+      const transcript = store.getState().transcripts[CONVERSATION_ID];
+      expect(transcript?.messages).toEqual(beforeMessages);
+      expect(transcript?.streaming).toEqual(beforeStreaming);
+      expect(transcript?.error).toMatchObject({
+        message: 'Conversation already has an active turn',
+        code: 'conversation_busy',
+        retryable: true,
+      });
+    });
   });
 
   describe('reconnect', () => {
-    it('flips to reconnecting on error close, retries with backoff, and reconciles by message id', async () => {
-      const existing = message({ id: 'msg-a', ordinal: 1 });
-      const reconciled = message({
-        id: 'msg-b',
-        ordinal: 2,
-        role: 'assistant',
-        content: { type: 'assistant', events: [{ type: 'text_delta', text: 'back online' }] },
-      });
+    it('resumes from lastSeq via a typed resume frame (chat-resume.jsonl) instead of refetching history, and finalizes the interrupted turn through replay', async () => {
+      // Real fixture: contracts/mobile/v1/fixtures/chat-resume.jsonl. Line 0
+      // is the client `resume` frame this store must send, verbatim, on
+      // reconnect. Lines 1-3 replay the rest of the turn that was mid-stream
+      // when the connection dropped (an `event`, `event`, `done`).
+      const fixtureLines = readJsonl<Record<string, unknown>>('chat-resume.jsonl');
+      const expectedResumeFrame = fixtureLines[0] as unknown as MobileWsClientFrame;
+      const replayFrames = fixtureLines.slice(1, 4) as unknown as MobileWsServerFrame[];
+      const turn2Frames = fixtureLines.slice(4, 6) as unknown as MobileWsServerFrame[];
+
+      const FIXTURE_CONVERSATION_ID = '018f0f4a-5c42-7a8b-9c01-1234567890ab';
+      const FIXTURE_TURN_ID = '018f0f4a-5c42-7a8b-9c01-2234567890ab';
+      const FIXTURE_ASSISTANT_MSG_ID = '018f0f4a-5c42-7a8b-9c01-4234567890ab';
+
       const { rest, getMessages } = fakeRest({
-        messagePages: [
-          { items: [existing], nextCursor: null, throughSeq: 1 }, // initial replay
-          { items: [existing, reconciled], nextCursor: null, throughSeq: 2 }, // post-reconnect reconcile
-        ],
+        conversationPage: {
+          items: [summary({ id: FIXTURE_CONVERSATION_ID, agentId: 'agent-01' })],
+          nextCursor: null,
+        },
+        messagePages: [{ items: [], nextCursor: null, throughSeq: 0 }],
       });
-      const { factory, sockets, onCloses } = scriptedSocketFactory();
+      const { factory, sockets, onFrames, onCloses } = scriptedSocketFactory();
       const store = createWebAppStore({ rest, socketFactory: factory });
+      await store.getState().loadConversations();
 
-      const opening = store.getState().openConversation(CONVERSATION_ID);
-      await vi.waitFor(() => expect(sockets.length).toBe(1));
-      sockets[0].open();
-      await opening;
-      expect(store.getState().connection).toBe('connected');
+      await openAndConnect(store, sockets, FIXTURE_CONVERSATION_ID);
 
-      // The live socket drops with an error.
+      // Pre-drop: the turn was accepted and one event streamed (seq 1, 2) —
+      // matching the fixture's `sinceSeq: 2`.
+      onFrames[0]({
+        type: 'accepted',
+        id: FIXTURE_TURN_ID,
+        conversationId: FIXTURE_CONVERSATION_ID,
+        userMessageId: '018f0f4a-5c42-7a8b-9c01-3234567890ab',
+        assistantMessageId: FIXTURE_ASSISTANT_MSG_ID,
+        revision: 2,
+        seq: 1,
+      });
+      onFrames[0]({
+        type: 'event',
+        id: FIXTURE_TURN_ID,
+        conversationId: FIXTURE_CONVERSATION_ID,
+        seq: 2,
+        event: { type: 'text_delta', text: 'partial ' },
+      });
+
+      // The connection drops mid-stream.
       onCloses[0]('error');
       expect(store.getState().connection).toBe('reconnecting');
-      expect(factory).toHaveBeenCalledTimes(1); // no new attempt yet — still waiting out backoff
 
       await vi.advanceTimersByTimeAsync(RECONNECT_BASE_MS);
-      await vi.waitFor(() => expect(factory).toHaveBeenCalledTimes(2)); // fresh ticket per attempt
+      await vi.waitFor(() => expect(factory).toHaveBeenCalledTimes(2));
       sockets[1].open();
       await vi.waitFor(() => expect(store.getState().connection).toBe('connected'));
-      await vi.waitFor(() => expect(getMessages).toHaveBeenCalledTimes(2));
 
-      const finalMessages = store.getState().transcripts[CONVERSATION_ID]?.messages ?? [];
-      const ids = finalMessages.map((m) => m.id);
-      expect(ids).toEqual(['msg-a', 'msg-b']); // merged, no duplicates
-      expect(new Set(ids).size).toBe(ids.length);
+      // CRITICAL-1: a typed `resume` frame — matching the real fixture
+      // exactly — not a REST refetch.
+      expect(sockets[1].sent).toEqual([expectedResumeFrame]);
+      expect(getMessages).toHaveBeenCalledTimes(1); // only the initial replay — never again on reconnect
+
+      for (const frame of replayFrames) onFrames[1](frame);
+
+      // CRITICAL-2: streaming cleared, exactly one finalized assistant message.
+      const afterReplay = store.getState().transcripts[FIXTURE_CONVERSATION_ID];
+      expect(afterReplay?.streaming).toBeNull();
+      const assistantMessages = afterReplay?.messages.filter((m) => m.role === 'assistant') ?? [];
+      expect(assistantMessages).toHaveLength(1);
+      expect(assistantMessages[0]).toMatchObject({
+        id: FIXTURE_ASSISTANT_MSG_ID,
+        status: 'completed',
+        content: {
+          type: 'assistant',
+          events: [
+            { type: 'text_delta', text: 'partial ' },
+            expect.objectContaining({ type: 'question' }),
+            expect.objectContaining({ type: 'response' }),
+          ],
+        },
+      });
+
+      // The fixture continues with an unrelated second turn (accepted ->
+      // cancelled) — confirms replay doesn't confuse it with the first.
+      for (const frame of turn2Frames) onFrames[1](frame);
+      const final = store.getState().transcripts[FIXTURE_CONVERSATION_ID];
+      const finalAssistantMessages = final?.messages.filter((m) => m.role === 'assistant') ?? [];
+      expect(finalAssistantMessages).toHaveLength(2);
+      expect(finalAssistantMessages[1]).toMatchObject({ status: 'cancelled' });
+      expect(final?.streaming).toBeNull();
     });
 
     it('keeps retrying with a fresh socket-factory call on each failed attempt', async () => {
@@ -315,19 +505,77 @@ describe('createWebAppStore', () => {
       const { factory, sockets, onCloses } = scriptedSocketFactory();
       const store = createWebAppStore({ rest, socketFactory: factory });
 
-      const opening = store.getState().openConversation(CONVERSATION_ID);
-      await vi.waitFor(() => expect(sockets.length).toBe(1));
-      sockets[0].open();
-      await opening;
+      await openAndConnect(store, sockets, CONVERSATION_ID);
 
       onCloses[0]('error');
       await vi.advanceTimersByTimeAsync(RECONNECT_BASE_MS);
       await vi.waitFor(() => expect(factory).toHaveBeenCalledTimes(2));
       sockets[1].failToOpen();
 
-      await vi.advanceTimersByTimeAsync(RECONNECT_BASE_MS * 2);
+      await vi.advanceTimersByTimeAsync(RECONNECT_BASE_MS * RECONNECT_FACTOR);
       await vi.waitFor(() => expect(factory).toHaveBeenCalledTimes(3));
       expect(store.getState().connection).toBe('reconnecting');
+    });
+
+    it('gives up and transitions to offline after the configured attempt cap', async () => {
+      const { rest } = fakeRest({});
+      const { factory, sockets, onCloses } = scriptedSocketFactory();
+      const store = createWebAppStore({
+        rest,
+        socketFactory: factory,
+        reconnect: { maxAttempts: 2 },
+      });
+
+      await openAndConnect(store, sockets, CONVERSATION_ID);
+
+      onCloses[0]('error'); // attempt 1 scheduled
+      await vi.advanceTimersByTimeAsync(RECONNECT_BASE_MS);
+      await vi.waitFor(() => expect(factory).toHaveBeenCalledTimes(2));
+      sockets[1].failToOpen(); // attempt 2 scheduled
+
+      await vi.advanceTimersByTimeAsync(RECONNECT_BASE_MS * RECONNECT_FACTOR);
+      await vi.waitFor(() => expect(factory).toHaveBeenCalledTimes(3));
+      sockets[2].failToOpen(); // cap reached — no attempt 3
+
+      await vi.waitFor(() => expect(store.getState().connection).toBe('offline'));
+
+      // No further attempts even after waiting well past another backoff window.
+      await vi.advanceTimersByTimeAsync(RECONNECT_BASE_MS * RECONNECT_FACTOR ** 3);
+      expect(factory).toHaveBeenCalledTimes(3);
+
+      // A fresh openConversation() call restarts the cycle (manual retry).
+      await openAndConnect(store, sockets, CONVERSATION_ID);
+      expect(store.getState().connection).toBe('connected');
+    });
+
+    it('closing the socket to switch conversations does not disable reconnect for a later, genuine drop', async () => {
+      const rest = {
+        listConversations: vi.fn(async () => ({
+          items: [summary(), summary({ id: 'conv-2', agentId: 'agent-02' })],
+          nextCursor: null,
+        })),
+        getMessages: vi.fn(async () => ({ items: [], nextCursor: null, throughSeq: 0 })),
+      } as unknown as MobileRestClient;
+      const { factory, sockets, onCloses } = scriptedSocketFactory();
+      const store = createWebAppStore({ rest, socketFactory: factory });
+      await store.getState().loadConversations();
+
+      await openAndConnect(store, sockets, CONVERSATION_ID);
+      // Switching conversations closes the first socket without a global flag.
+      await openAndConnect(store, sockets, 'conv-2');
+      expect(sockets[0].closed).toBe(true);
+
+      // A late close from the now-detached first socket must not affect
+      // the (unrelated, still-live) current connection.
+      onCloses[0]('closed');
+      expect(store.getState().connection).toBe('connected');
+      expect(factory).toHaveBeenCalledTimes(2); // no spurious reconnect attempt
+
+      // A genuine drop of the *current* socket still reconnects normally.
+      onCloses[1]('error');
+      expect(store.getState().connection).toBe('reconnecting');
+      await vi.advanceTimersByTimeAsync(RECONNECT_BASE_MS);
+      await vi.waitFor(() => expect(factory).toHaveBeenCalledTimes(3));
     });
   });
 });

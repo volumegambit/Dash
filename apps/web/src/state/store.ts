@@ -25,6 +25,13 @@ export interface WebAppStoreDeps {
     onFrame: FrameHandler,
     onClose: (reason: 'error' | 'closed') => void,
   ) => ChatSocket;
+  /** Overrides for the reconnect policy; both are test/consumer hooks — the
+   * defaults (below) are what production code gets. */
+  reconnect?: {
+    /** Give up and transition to `'offline'` after this many failed
+     * attempts. Defaults to `RECONNECT_MAX_ATTEMPTS`. */
+    maxAttempts?: number;
+  };
 }
 
 /**
@@ -37,62 +44,95 @@ export interface WebAppStoreDeps {
 export const RECONNECT_BASE_MS = 1_000;
 export const RECONNECT_FACTOR = 2;
 export const RECONNECT_MAX_MS = 30_000;
+/** Default cap on reconnect attempts before giving up and going `'offline'`
+ * (≈1+2+4+8+16+30 ≈ 61s of retrying). A subsequent `openConversation()` call
+ * (e.g. from a UI "retry" action) resets the counter and starts over. */
+export const RECONNECT_MAX_ATTEMPTS = 6;
 
 function reconnectDelay(attempt: number): number {
   return Math.min(RECONNECT_MAX_MS, RECONNECT_BASE_MS * RECONNECT_FACTOR ** attempt);
 }
 
-/** Channel identifier this browser client identifies itself with on `ChatSend` frames. */
+/** Channel identifier this browser client identifies itself with on outgoing frames. */
 const CHANNEL_ID = 'web';
 
 function emptyTranscript(): Transcript {
   return { messages: [], streaming: null };
 }
 
-/** Merges by message `id`; `incoming` (freshly fetched via REST) wins on
- * conflict since it reflects the server's authoritative state. Result is
- * sorted by `ordinal` so replayed/reconciled pages always read chronologically. */
+/**
+ * Merges by message `id`; `incoming` (freshly fetched via REST) wins on
+ * conflict since it reflects the server's authoritative state. Also drops
+ * any *local* message whose `turnId` matches an incoming message under a
+ * *different* id — that's the optimistic stand-in for a turn the server has
+ * since assigned a real id to (e.g. a `sendMessage` call whose `accepted`
+ * frame hadn't arrived yet when this merge ran); keeping both would produce
+ * a permanent duplicate. Result is sorted by `ordinal` so replayed/merged
+ * pages always read chronologically.
+ */
 function mergeMessagesById(
   existing: ConversationMessage[],
   incoming: ConversationMessage[],
 ): ConversationMessage[] {
   const byId = new Map<string, ConversationMessage>();
   for (const m of existing) byId.set(m.id, m);
+
+  const incomingTurnIds = new Set(incoming.map((m) => m.turnId));
+  const incomingIds = new Set(incoming.map((m) => m.id));
+  for (const [id, m] of byId) {
+    if (incomingTurnIds.has(m.turnId) && !incomingIds.has(id)) {
+      byId.delete(id);
+    }
+  }
+
   for (const m of incoming) byId.set(m.id, m);
   return [...byId.values()].sort((a, b) => a.ordinal - b.ordinal);
 }
 
 /**
  * Conversation store: streaming assembly (via `assemble.ts`) plus REST
- * replay/reconnect. Built on zustand v5's `create` (the React-hook flavor,
- * not `zustand/vanilla`) since its return type — `UseBoundStore<StoreApi<T>>`
- * — is exactly the shape the brief specifies; no separate vanilla-store +
- * `useStore` adapter is needed for that reason. Non-reactive plumbing
- * (the live socket, reconnect timer/attempt count, which conversation is
- * open) lives in closure variables rather than store state — it's wiring,
- * not UI-observable data.
+ * replay and WS resume-based reconnect. Built on zustand v5's `create` (the
+ * React-hook flavor, not `zustand/vanilla`) since its return type —
+ * `UseBoundStore<StoreApi<T>>` — is exactly the shape the brief specifies;
+ * no separate vanilla-store + `useStore` adapter is needed for that reason.
+ * Non-reactive plumbing (the live socket, reconnect timer/attempt count,
+ * the last-seen seq, which conversation is open) lives in closure variables
+ * rather than store state — it's wiring, not UI-observable data.
  */
 export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi<WebAppState>> {
   const { rest, socketFactory } = deps;
+  const maxReconnectAttempts = deps.reconnect?.maxAttempts ?? RECONNECT_MAX_ATTEMPTS;
 
   let currentConversationId: string | null = null;
   let socket: ChatSocket | null = null;
+  let lastSeq = 0;
   let reconnectAttempt = 0;
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-  let intentionalClose = false;
 
   /** Backward-paginated replay: `getMessages` walks from newest to oldest via
    * `before` cursors (see rest.ts), so pages are accumulated oldest-first
-   * before flattening to produce a chronological list. */
-  async function fetchAllMessages(conversationId: string): Promise<ConversationMessage[]> {
+   * before flattening to produce a chronological list. The newest (first)
+   * page's `throughSeq` becomes the resume baseline — everything up to it is
+   * already reflected in `messages`. This is the *initial* load only: after
+   * a mid-session drop, reconnect resumes from `lastSeq` over the socket
+   * instead of re-walking history (see `attemptReconnect`). */
+  async function replayHistory(
+    conversationId: string,
+  ): Promise<{ messages: ConversationMessage[]; lastSeq: number }> {
     const pages: ConversationMessage[][] = [];
     let cursor: string | undefined;
+    let throughSeq = 0;
+    let first = true;
     do {
       const page = await rest.getMessages(conversationId, cursor);
+      if (first) {
+        throughSeq = page.throughSeq;
+        first = false;
+      }
       pages.unshift(page.items);
       cursor = page.nextCursor ?? undefined;
     } while (cursor);
-    return pages.flat();
+    return { messages: pages.flat(), lastSeq: throughSeq };
   }
 
   return create<WebAppState>((set, get) => {
@@ -108,22 +148,52 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
       }));
     }
 
+    /** Looks up `agentId` for a conversation, refreshing the conversation
+     * list once from REST if it isn't already loaded (so `openConversation`
+     * never *requires* a prior `loadConversations()` call — see
+     * `attemptReconnect`, which needs `agentId` to build a `resume` frame). */
+    async function resolveAgentId(conversationId: string): Promise<string | null> {
+      const known = get().conversations.find((c) => c.id === conversationId)?.agentId;
+      if (known) return known;
+      try {
+        const page = await rest.listConversations();
+        set({ conversations: page.items });
+        return page.items.find((c) => c.id === conversationId)?.agentId ?? null;
+      } catch {
+        return null;
+      }
+    }
+
     function handleFrame(frame: MobileWsServerFrame): void {
       const frameConversationId = 'conversationId' in frame ? frame.conversationId : undefined;
       const conversationId = frameConversationId ?? currentConversationId;
       if (!conversationId) return;
 
+      if (conversationId === currentConversationId) {
+        const seq = 'seq' in frame ? frame.seq : undefined;
+        if (typeof seq === 'number' && seq > lastSeq) lastSeq = seq;
+      }
+
       if (frame.type === 'error') {
-        // Surfaced against the conversation itself; assemble.ts leaves the
-        // transcript (messages/streaming) untouched for `error` frames so
-        // partially-streamed content is never discarded.
+        // Surfaced against the conversation and in a dedicated transcript
+        // slot; applyServerFrame leaves `messages`/`streaming`/`pending`
+        // untouched for `error` frames so partially-streamed content (and
+        // the ability to resume it) is never discarded.
         set((state) => ({
           conversations: state.conversations.map((c) =>
-            c.id === conversationId
-              ? { ...c, status: 'interrupted', lastMessagePreview: frame.error }
-              : c,
+            c.id === conversationId ? { ...c, status: 'interrupted' as const } : c,
           ),
         }));
+        updateTranscript(conversationId, (t) => ({
+          ...t,
+          error: {
+            message: frame.error,
+            code: frame.code,
+            retryable: frame.retryable,
+            activeTurnId: frame.activeTurnId,
+          },
+        }));
+        return;
       }
 
       updateTranscript(conversationId, (t) => {
@@ -146,8 +216,38 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
       });
     }
 
+    /** Wraps a fresh `ChatSocket` so its `onClose` can tell a genuine drop
+     * of the *current* socket apart from a late event from one this store
+     * itself already detached (e.g. `openConversation` switching to a
+     * different conversation). Comparing by identity against the live
+     * `socket` variable — captured per-instance here, checked at fire time —
+     * means no separate "was this intentional" flag is needed, and so a
+     * real drop can never be swallowed by an unrelated close. */
+    function createAttachedSocket(): ChatSocket {
+      // `created` is referenced inside the `onClose` closure before its own
+      // `const` initializer finishes — safe here because that closure only
+      // ever runs asynchronously (after `connect()`'s network round-trip),
+      // by which point `created` is already initialized.
+      const created: ChatSocket = socketFactory(handleFrame, (reason) =>
+        onSocketClose(created, reason),
+      );
+      return created;
+    }
+
+    function onSocketClose(closingSocket: ChatSocket, reason: 'error' | 'closed'): void {
+      void reason; // Both reasons mean "this connection is gone" — either warrants a reconnect.
+      if (closingSocket !== socket) return; // stale/detached socket — already superseded, ignore.
+      socket = null;
+      set({ connection: 'reconnecting' });
+      scheduleReconnect();
+    }
+
     function scheduleReconnect(): void {
       if (reconnectTimer || !currentConversationId) return;
+      if (reconnectAttempt >= maxReconnectAttempts) {
+        set({ connection: 'offline' });
+        return;
+      }
       const delay = reconnectDelay(reconnectAttempt);
       reconnectAttempt += 1;
       reconnectTimer = setTimeout(() => {
@@ -156,37 +256,43 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
       }, delay);
     }
 
+    /** Resume, not refetch: sends a typed `resume` frame (`sinceSeq:
+     * lastSeq`) over the fresh socket so the gateway replays only what was
+     * missed, through the existing `handleFrame` → `applyServerFrame` path —
+     * no REST history re-walk on the reconnect path. If a turn was
+     * in-flight when the connection dropped, its `pending.turnId` is reused
+     * as the resume frame's `id` (matching the original turn's
+     * correlation id) so replayed `event`/`done` frames finalize it via the
+     * same `pending` bookkeeping that was already in the transcript. */
     async function attemptReconnect(): Promise<void> {
       const conversationId = currentConversationId;
       if (!conversationId) return;
-      const fresh = socketFactory(handleFrame, handleClose);
-      socket = fresh;
+      const attempted = createAttachedSocket();
+      socket = attempted;
       try {
-        await fresh.connect();
+        await attempted.connect();
+        const agentId = await resolveAgentId(conversationId);
+        if (!agentId) {
+          throw new Error(
+            `Cannot resume conversation "${conversationId}": agentId is unknown (call loadConversations() first)`,
+          );
+        }
+        const pendingTurnId = get().transcripts[conversationId]?.pending?.turnId;
+        const resumeFrame: MobileWsClientFrame = {
+          type: 'resume',
+          id: pendingTurnId ?? crypto.randomUUID(),
+          agentId,
+          conversationId,
+          sinceSeq: lastSeq,
+        };
+        attempted.send(resumeFrame);
+        reconnectAttempt = 0;
+        set({ connection: 'connected' });
       } catch {
+        if (socket === attempted) socket = null;
+        attempted.close();
         scheduleReconnect();
-        return;
       }
-      reconnectAttempt = 0;
-      set({ connection: 'connected' });
-
-      // Reconcile: re-fetch messages and merge by id so nothing sent/updated
-      // while disconnected is lost, and nothing already known is duplicated.
-      const messages = await fetchAllMessages(conversationId);
-      updateTranscript(conversationId, (t) => ({
-        ...t,
-        messages: mergeMessagesById(t.messages, messages),
-      }));
-    }
-
-    function handleClose(reason: 'error' | 'closed'): void {
-      if (intentionalClose) {
-        intentionalClose = false;
-        return;
-      }
-      void reason; // Both reasons trigger a reconnect; only a store-initiated close skips it.
-      set({ connection: 'reconnecting' });
-      scheduleReconnect();
     }
 
     return {
@@ -201,7 +307,6 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
 
       async openConversation(conversationId: string) {
         if (socket) {
-          intentionalClose = true;
           socket.close();
           socket = null;
         }
@@ -212,18 +317,24 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
         reconnectAttempt = 0;
         currentConversationId = conversationId;
 
-        const messages = await fetchAllMessages(conversationId);
-        updateTranscript(conversationId, (t) => ({ ...t, messages }));
+        const replay = await replayHistory(conversationId);
+        lastSeq = replay.lastSeq;
+        updateTranscript(conversationId, (t) => ({
+          ...t,
+          messages: mergeMessagesById(t.messages, replay.messages),
+        }));
 
-        const fresh = socketFactory(handleFrame, handleClose);
-        socket = fresh;
-        await fresh.connect();
+        const attached = createAttachedSocket();
+        socket = attached;
+        await attached.connect();
         set({ connection: 'connected' });
       },
 
       async sendMessage(conversationId: string, text: string) {
-        if (!socket) {
-          throw new Error('No active chat socket: call openConversation() first');
+        if (!socket || get().connection !== 'connected') {
+          throw new Error(
+            'Cannot send: no connected chat socket (call openConversation() and wait for it to connect)',
+          );
         }
         const conversation = get().conversations.find((c) => c.id === conversationId);
         if (!conversation) {
@@ -256,7 +367,20 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
           text,
           resumable: true,
         };
-        socket.send(frame);
+        try {
+          socket.send(frame);
+        } catch (err) {
+          // Never leave a stuck 'accepted'-status message behind when the
+          // send itself failed — mark it failed so the UI can show a retry
+          // affordance instead of a message stuck "pending" forever.
+          updateTranscript(conversationId, (t) => ({
+            ...t,
+            messages: t.messages.map((m) =>
+              m.id === turnId ? { ...m, status: 'failed' as const } : m,
+            ),
+          }));
+          throw err;
+        }
       },
     };
   });

@@ -2,8 +2,33 @@ import type {
   ConversationContent,
   ConversationMessage,
   MobileAgentEvent,
+  MobileApiErrorCode,
   MobileWsServerFrame,
 } from '@dash/mobile-contract';
+
+/**
+ * Bookkeeping for the turn currently being assembled into `streaming`.
+ * `done` needs `assistantMessageId`/`conversationId` that only arrived
+ * several frames earlier, in `accepted`, to build a real
+ * `ConversationMessage` — this carries it forward. It's an explicit,
+ * documented field of `Transcript` (not hidden state smuggled onto the
+ * object): pass the whole `Transcript` back into `applyServerFrame` rather
+ * than reconstructing one from `messages`/`streaming` alone, or `done` will
+ * mis-key the finalized message.
+ */
+export interface PendingTurn {
+  turnId: string;
+  conversationId: string;
+  assistantMessageId: string;
+}
+
+/** The most recent `error` frame surfaced for this conversation, if any. */
+export interface TranscriptError {
+  message: string;
+  code?: MobileApiErrorCode;
+  retryable?: boolean;
+  activeTurnId?: string;
+}
 
 /**
  * A single conversation's local view: confirmed messages plus, while a turn
@@ -12,25 +37,13 @@ import type {
 export interface Transcript {
   messages: ConversationMessage[];
   streaming: ConversationContent | null;
-}
-
-/**
- * Bookkeeping for the turn currently being assembled into `streaming`.
- * Not part of the public `Transcript` shape (UI code only ever reads
- * `messages`/`streaming`), but carried on the same object across
- * `applyServerFrame` calls: `done` needs `assistantMessageId`/`conversationId`
- * that arrived several frames earlier, in `accepted`, to build a real
- * `ConversationMessage`. Kept as an extra runtime property rather than
- * widening the public interface.
- */
-interface PendingTurn {
-  turnId: string;
-  conversationId: string;
-  assistantMessageId: string;
-}
-
-interface InternalTranscript extends Transcript {
   pending?: PendingTurn;
+  /**
+   * Set by the store (not by `applyServerFrame`, which leaves `error`
+   * frames a no-op for `messages`/`streaming`/`pending` — see below) so UI
+   * can show an inline banner without losing transcript history.
+   */
+  error?: TranscriptError | null;
 }
 
 function streamingEvents(t: Transcript): MobileAgentEvent[] {
@@ -54,17 +67,18 @@ function fallbackPending(frame: { id: string; conversationId?: string }): Pendin
  * Pure reducer: applies one server frame to a `Transcript`, returning the
  * next `Transcript`. Never mutates its input. Exhaustively covers the four
  * `MobileWsServerFrame` variants (`accepted`, `event`, `done`, `error`) plus
- * a defensive default for any frame shape that doesn't match (the frame
+ * a defensive default for any frame shape that doesn't match — the frame
  * arrives over the wire as `JSON.parse`d data, so its runtime shape isn't
- * guaranteed by the `MobileWsServerFrame` type alone).
+ * guaranteed by the `MobileWsServerFrame` type alone (this includes
+ * `JSON.parse('null')`, which is valid JSON but not an object).
  */
 export function applyServerFrame(t: Transcript, frame: MobileWsServerFrame): Transcript {
-  const internal = t as InternalTranscript;
+  if (frame === null || typeof frame !== 'object') return t;
 
   switch (frame.type) {
     case 'accepted': {
-      const next: InternalTranscript = {
-        messages: internal.messages,
+      return {
+        messages: t.messages,
         streaming: { type: 'assistant', events: [] },
         pending: {
           turnId: frame.id,
@@ -72,32 +86,30 @@ export function applyServerFrame(t: Transcript, frame: MobileWsServerFrame): Tra
           assistantMessageId: frame.assistantMessageId,
         },
       };
-      return next;
     }
 
     case 'event': {
-      const pending = internal.pending ?? fallbackPending(frame);
-      const events = [...streamingEvents(internal), frame.event];
-      const next: InternalTranscript = {
-        messages: internal.messages,
+      const pending = t.pending ?? fallbackPending(frame);
+      const events = [...streamingEvents(t), frame.event];
+      return {
+        messages: t.messages,
         streaming: { type: 'assistant', events },
         pending,
       };
-      return next;
     }
 
     case 'done': {
-      const pending = internal.pending ?? fallbackPending(frame);
+      const pending = t.pending ?? fallbackPending(frame);
       const content: ConversationContent = {
         type: 'assistant',
-        events: streamingEvents(internal),
+        events: streamingEvents(t),
       };
       const now = new Date().toISOString();
       const finalized: ConversationMessage = {
         id: pending.assistantMessageId,
         conversationId: pending.conversationId || frame.conversationId || '',
         turnId: pending.turnId,
-        ordinal: internal.messages.length + 1,
+        ordinal: t.messages.length + 1,
         role: 'assistant',
         status: frame.outcome === 'cancelled' ? 'cancelled' : 'completed',
         content,
@@ -105,15 +117,16 @@ export function applyServerFrame(t: Transcript, frame: MobileWsServerFrame): Tra
         updatedAt: now,
       };
       return {
-        messages: [...internal.messages, finalized],
+        messages: [...t.messages, finalized],
         streaming: null,
       };
     }
 
     case 'error':
       // Server-level errors are surfaced against the conversation itself
-      // (see store.ts), not the transcript: messages/streaming are left
-      // completely untouched so any partially-streamed content survives.
+      // (see store.ts), not the transcript: messages/streaming/pending are
+      // left completely untouched so any partially-streamed content
+      // survives and a subsequent resume can still finish the turn.
       return t;
 
     default:

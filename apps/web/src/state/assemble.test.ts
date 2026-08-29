@@ -167,6 +167,14 @@ describe('applyServerFrame', () => {
 
       expect(result).toEqual(t);
     });
+
+    it('returns the transcript unchanged for a null frame (JSON.parse("null") is valid JSON)', () => {
+      const t = applyServerFrame(emptyTranscript(), accepted);
+
+      const result = applyServerFrame(t, null as unknown as MobileWsServerFrame);
+
+      expect(result).toBe(t);
+    });
   });
 
   describe('full stream fixture end-to-end', () => {
