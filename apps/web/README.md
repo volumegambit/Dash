@@ -98,7 +98,10 @@ Summarized from the design doc's as-built amendment
 
 1. The browser signs in with Clerk (passkey-first — see `src/ui/SignIn.tsx`).
 2. It calls the control plane to mint a **web pairing**:
-   `POST /v1/gateways/:id/pairings` → `{ credential, pairingId, chatToken }`.
+   `POST /v1/gateways/:id/pairings/pairing-id-v1` → `{ credential, pairingId, chatToken }`.
+   The plain `/v1/gateways/:id/pairings` route (no `pairing-id-v1` suffix) is a
+   legacy Mission-Control-compat route that returns only `{ credential }` — no
+   `pairingId`, no `chatToken` — so it can't be used here.
    - `credential` is a per-device, individually revocable relay pairing credential.
    - `chatToken` is the gateway's **gateway-wide chat-scoped bearer** — the same one
      Mission Control embeds in QR pairings — registered with the control plane by
@@ -123,6 +126,15 @@ Consequence worth knowing: revoking a web pairing from the Devices screen revoke
 this browser's relay reach, but **not** the chat bearer it already received (that
 bearer is gateway-wide, not per-device). Tighter per-device isolation is a
 reversible follow-up, not something this build does.
+
+A pairing credential rejected as a 401 by the relay or gateway (revoked from
+another device, from Mission Control, or expired) puts the store's `connection`
+into a terminal `'unauthorized'` state — it never silently retries an auth
+failure. `Shell.tsx` notices that state, clears the local `CredentialStore` entry
+for that gateway, and routes back to the gateway picker with
+`SESSION_REVOKED_COPY`: *"Your web session for this gateway was revoked. Pair
+again to continue."* Picking the gateway again mints a fresh pairing and clears
+the notice.
 
 ## Testing
 
