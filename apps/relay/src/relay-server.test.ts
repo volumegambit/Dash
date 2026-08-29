@@ -493,6 +493,8 @@ describe('relay-server', () => {
     maxStreamsPerGateway?: number;
     ratePerSec?: number;
     rateBurst?: number;
+    preflightRatePerSec?: number;
+    preflightBurst?: number;
   }): Promise<void> {
     return restartWith(deps, limits);
   }
@@ -1130,6 +1132,140 @@ describe('relay-server', () => {
     });
     expect(denied.status).toBe(401);
     gw.close();
+  });
+
+  /** A gateway that answers every proxied request with the mobileCors 204. */
+  function respondPreflight(gw: WebSocket): void {
+    gw.on('message', (raw: Buffer) => {
+      const f = decodeFrame(raw.toString());
+      if (f.t === 'open') {
+        gw.send(
+          encodeFrame({
+            t: 'head',
+            streamId: f.streamId,
+            status: 204,
+            headers: { 'access-control-allow-origin': 'https://app.example.com' },
+          }),
+        );
+        gw.send(encodeFrame({ t: 'end', streamId: f.streamId }));
+      }
+    });
+  }
+
+  it('rate-limits exempt preflights with their own dedicated bucket', async () => {
+    // A preflight burst of 1 with no refill: the 2nd OPTIONS in the same
+    // instant is throttled even though the authenticated bucket is untouched.
+    await restartWithLimits({ preflightBurst: 1, preflightRatePerSec: 0 });
+    const gw = await connectGateway('g1', 'good');
+    respondPreflight(gw);
+    await waitFor(() => server.hasGateway('g1'));
+
+    const first = await httpRequest('OPTIONS', '/mobile/v1/agents', { host: 'g1.relay.local' });
+    expect(first.status).toBe(204);
+    const second = await httpRequest('OPTIONS', '/mobile/v1/agents', { host: 'g1.relay.local' });
+    expect(second.status).toBe(429);
+    gw.close();
+  });
+
+  it('does not spend the authenticated rate-limit budget on exempt preflights', async () => {
+    // The authenticated bucket holds a single token. An unauthenticated caller
+    // who knows the subdomain floods preflights; the paired phone must still be
+    // served, i.e. preflights can never starve authenticated traffic.
+    await restartWith(
+      {
+        verifyDialIn: (_gatewayId, t) => t === 'good',
+        pairingCredentialValid: (_gatewayId, cred) => cred === 'valid',
+      },
+      { rateBurst: 1, ratePerSec: 0, preflightBurst: 50, preflightRatePerSec: 0 },
+    );
+    const gw = await connectGateway('g1', 'good');
+    gw.on('message', (raw: Buffer) => {
+      const f = decodeFrame(raw.toString());
+      if (f.t === 'open') {
+        const status = f.method === 'OPTIONS' ? 204 : 200;
+        gw.send(encodeFrame({ t: 'head', streamId: f.streamId, status, headers: {} }));
+        gw.send(encodeFrame({ t: 'end', streamId: f.streamId }));
+      }
+    });
+    await waitFor(() => server.hasGateway('g1'));
+
+    for (let i = 0; i < 20; i++) {
+      const flood = await httpRequest('OPTIONS', '/mobile/v1/agents', {
+        host: 'g1.relay.local',
+        origin: 'https://app.example.com',
+        'access-control-request-method': 'GET',
+      });
+      expect(flood.status).toBe(204);
+    }
+
+    // The paired phone's single token was never spent by the flood.
+    const authed = await httpGet('/mobile/v1/agents', {
+      host: 'g1.relay.local',
+      'x-dash-relay-credential': 'valid',
+    });
+    expect(authed.status).toBe(200);
+    gw.close();
+  });
+
+  it('does not spend the preflight budget on authenticated traffic', async () => {
+    // The converse guard: a busy paired app must not exhaust the small
+    // preflight bucket and break a browser's ability to preflight.
+    await restartWith(
+      {
+        verifyDialIn: (_gatewayId, t) => t === 'good',
+        pairingCredentialValid: (_gatewayId, cred) => cred === 'valid',
+      },
+      { rateBurst: 50, ratePerSec: 0, preflightBurst: 1, preflightRatePerSec: 0 },
+    );
+    const gw = await connectGateway('g1', 'good');
+    gw.on('message', (raw: Buffer) => {
+      const f = decodeFrame(raw.toString());
+      if (f.t === 'open') {
+        const status = f.method === 'OPTIONS' ? 204 : 200;
+        gw.send(encodeFrame({ t: 'head', streamId: f.streamId, status, headers: {} }));
+        gw.send(encodeFrame({ t: 'end', streamId: f.streamId }));
+      }
+    });
+    await waitFor(() => server.hasGateway('g1'));
+
+    for (let i = 0; i < 10; i++) {
+      const ok = await httpGet('/mobile/v1/agents', {
+        host: 'g1.relay.local',
+        'x-dash-relay-credential': 'valid',
+      });
+      expect(ok.status).toBe(200);
+    }
+
+    const preflight = await httpRequest('OPTIONS', '/mobile/v1/agents', {
+      host: 'g1.relay.local',
+    });
+    expect(preflight.status).toBe(204);
+    gw.close();
+  });
+
+  it('releases the preflight bucket when the gateway disconnects', async () => {
+    await restartWithLimits({ preflightBurst: 1, preflightRatePerSec: 0 });
+    const gw = await connectGateway('g1', 'good');
+    respondPreflight(gw);
+    await waitFor(() => server.hasGateway('g1'));
+
+    expect(
+      (await httpRequest('OPTIONS', '/mobile/v1/agents', { host: 'g1.relay.local' })).status,
+    ).toBe(204);
+    expect(
+      (await httpRequest('OPTIONS', '/mobile/v1/agents', { host: 'g1.relay.local' })).status,
+    ).toBe(429);
+
+    // Reconnecting the gateway drops the stale bucket, like the authed one.
+    gw.close();
+    await waitFor(() => !server.hasGateway('g1'));
+    const gw2 = await connectGateway('g1', 'good');
+    respondPreflight(gw2);
+    await waitFor(() => server.hasGateway('g1'));
+    expect(
+      (await httpRequest('OPTIONS', '/mobile/v1/agents', { host: 'g1.relay.local' })).status,
+    ).toBe(204);
+    gw2.close();
   });
 
   it('does not exempt OPTIONS on a non-canonical path', async () => {

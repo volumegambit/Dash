@@ -216,13 +216,17 @@ describe('management app CORS on /mobile/v1 (the relay replay path)', () => {
     expect(res.headers.get('access-control-allow-headers')).toContain('x-dash-relay-credential');
   });
 
-  it('sets no CORS headers for a non-allowlisted origin', async () => {
+  it('sets no CORS headers for a non-allowlisted origin, but answers identically', async () => {
     const app = makeRealManagementApp([ALLOWED_ORIGIN]);
     const res = await app.request('/mobile/v1/agents', {
       method: 'OPTIONS',
       headers: { origin: 'https://evil.example.com', 'access-control-request-method': 'GET' },
     });
     expect(res.headers.get('access-control-allow-origin')).toBeNull();
+    // The status is deliberately the same 204 an allowlisted origin gets: the
+    // allowlist is enforced by the ABSENT header, not by a distinguishable
+    // status, so a preflight can't be used to probe allowlist membership.
+    expect(res.status).toBe(204);
   });
 
   it('still requires the mobile bearer on the real request', async () => {

@@ -529,6 +529,26 @@ describe('PUT /v1/gateways/:id/web-chat-token', () => {
     ).toBe(400);
   });
 
+  it('400s an oversized chatToken without persisting it', async () => {
+    const gatewayId = await makeGateway('a1', 'alice');
+    const res = await req('PUT', `/v1/gateways/${gatewayId}/web-chat-token`, 'a1', {
+      chatToken: 'x'.repeat(4097),
+    });
+    expect(res.status).toBe(400);
+
+    // Nothing was stored — a web pairing still reports "not registered".
+    const pairing = await req('POST', `/v1/gateways/${gatewayId}/pairings/pairing-id-v1`, 'a1', {
+      clientKind: 'web',
+    });
+    expect(pairing.status).toBe(409);
+
+    // The boundary itself is accepted.
+    const atLimit = await req('PUT', `/v1/gateways/${gatewayId}/web-chat-token`, 'a1', {
+      chatToken: 'x'.repeat(4096),
+    });
+    expect(atLimit.status).toBe(200);
+  });
+
   it('never leaks the token through GET /v1/gateways', async () => {
     const gatewayId = await makeGateway('a1', 'alice');
     await req('PUT', `/v1/gateways/${gatewayId}/web-chat-token`, 'a1', { chatToken: 'chat-tok' });

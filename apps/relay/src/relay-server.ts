@@ -29,6 +29,19 @@ export interface RelayLimits {
   ratePerSec?: number;
   /** Burst capacity per gateway (token bucket size). Default 100. */
   rateBurst?: number;
+  /**
+   * Sustained CORS-preflight requests/sec per gateway. Default 5.
+   *
+   * Preflights are the ONE thing the relay forwards without a pairing
+   * credential (see handlePhoneHttp), so they get their own much smaller
+   * bucket. Sharing the authenticated bucket would let anyone who knows a
+   * subdomain hold it empty at zero cost and 429 every legitimate phone and
+   * browser request. A browser preflights once per (origin, method, header-set)
+   * and then caches, so a handful per second is generous for real clients.
+   */
+  preflightRatePerSec?: number;
+  /** Burst capacity of the preflight bucket per gateway. Default 10. */
+  preflightBurst?: number;
 }
 
 /** Admin API config for the pairing-credential lifecycle (Bearer-gated). */
@@ -105,6 +118,11 @@ export function createRelayServer(deps: RelayDeps, options: RelayServerOptions =
 
   const maxStreams = options.maxStreamsPerGateway ?? 256;
   const limiter = new RateLimiter(options.rateBurst ?? 100, options.ratePerSec ?? 50);
+  // Separate, deliberately tight bucket for the unauthenticated preflight path.
+  const preflightLimiter = new RateLimiter(
+    options.preflightBurst ?? 10,
+    options.preflightRatePerSec ?? 5,
+  );
   const admin = options.admin;
 
   const httpServer = http.createServer((req, res) => {
@@ -114,7 +132,7 @@ export function createRelayServer(deps: RelayDeps, options: RelayServerOptions =
       handleAdmin(admin, gateways, req, res);
       return;
     }
-    handlePhoneHttp(gateways, deps, limiter, maxStreams, req, res);
+    handlePhoneHttp(gateways, deps, limiter, preflightLimiter, maxStreams, req, res);
   });
 
   httpServer.on('upgrade', (req, socket, head) => {
@@ -135,7 +153,7 @@ export function createRelayServer(deps: RelayDeps, options: RelayServerOptions =
         ws.close(RELAY_AUTH_CLOSE, 'Unauthorized');
         return;
       }
-      registerGateway(gateways, limiter, gatewayId, ws);
+      registerGateway(gateways, limiter, preflightLimiter, gatewayId, ws);
     });
   });
 
@@ -155,6 +173,7 @@ export function createRelayServer(deps: RelayDeps, options: RelayServerOptions =
 function registerGateway(
   gateways: Map<string, GatewayConn>,
   limiter: RateLimiter,
+  preflightLimiter: RateLimiter,
   gatewayId: string,
   socket: WebSocket,
 ): void {
@@ -177,7 +196,9 @@ function registerGateway(
   socket.on('close', () => {
     if (gateways.get(gatewayId) === conn) {
       gateways.delete(gatewayId);
-      limiter.forget(gatewayId); // release the rate-limit bucket for this gateway
+      // Release both rate-limit buckets for this gateway.
+      limiter.forget(gatewayId);
+      preflightLimiter.forget(gatewayId);
     }
     for (const stream of conn.streams.values()) stream.onClose();
     conn.streams.clear();
@@ -229,6 +250,7 @@ function handlePhoneHttp(
   gateways: Map<string, GatewayConn>,
   deps: RelayDeps,
   limiter: RateLimiter,
+  preflightLimiter: RateLimiter,
   maxStreams: number,
   req: http.IncomingMessage,
   res: http.ServerResponse,
@@ -274,9 +296,14 @@ function handlePhoneHttp(
   // Abuse limits on the public edge: a per-gateway token bucket caps sustained
   // request rate, and a concurrent-stream cap bounds in-flight work. Both reject
   // with 429 so a flood can't exhaust the gateway's loopback or the relay.
-  // Exempt-from-auth preflights DO pass through here: they are the one
-  // unauthenticated thing we forward, so the limiter is what bounds them.
-  if (!limiter.allow(gatewayId) || conn.streams.size >= maxStreams) {
+  //
+  // Credential-less preflights draw on a SEPARATE, much smaller bucket. They
+  // must be bounded (they are the one unauthenticated thing we forward), but
+  // they must not share the authenticated budget: anyone who knows a subdomain
+  // could otherwise hold that bucket empty at zero cost and 429 every paired
+  // phone and browser. The two budgets are independent in both directions.
+  const budget = isCorsPreflight ? preflightLimiter : limiter;
+  if (!budget.allow(gatewayId) || conn.streams.size >= maxStreams) {
     res.writeHead(429, { 'content-type': 'text/plain', 'retry-after': '1' });
     res.end('Too Many Requests');
     return;

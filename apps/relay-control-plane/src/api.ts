@@ -16,6 +16,9 @@ const CONTROL_PLANE_CAPABILITIES = [PAIRING_ID_CAPABILITY] as const;
 
 const CLIENT_KINDS: readonly ClientKind[] = ['mobile', 'web'];
 
+/** Upper bound on a registered web chat token (see the PUT route below). */
+const MAX_WEB_CHAT_TOKEN_LENGTH = 4096;
+
 /** Collaborators the HTTP API binds its routes to. */
 export interface ApiDeps {
   provisioning: ProvisioningService;
@@ -128,6 +131,12 @@ export function createApi(deps: ApiDeps): Hono<ApiEnv> {
     const body = (await c.req.json().catch(() => ({}))) as { chatToken?: unknown };
     const chatToken = typeof body.chatToken === 'string' ? body.chatToken : '';
     if (!chatToken) return c.json({ error: 'chatToken required' }, 400);
+    // A gateway bearer is a 256-bit token; this ceiling is orders of magnitude
+    // above any legitimate value and just stops an authenticated caller from
+    // parking megabytes of arbitrary text in the gateways table.
+    if (chatToken.length > MAX_WEB_CHAT_TOKEN_LENGTH) {
+      return c.json({ error: 'chatToken too long' }, 400);
+    }
     const ok = provisioning.setWebChatToken(accountId, c.req.param('id'), chatToken);
     if (!ok) return c.json({ error: 'gateway not found' }, 404);
     return c.json({ ok: true });
