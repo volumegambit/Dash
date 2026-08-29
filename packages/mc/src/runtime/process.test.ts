@@ -209,6 +209,54 @@ describe('GatewaySupervisor.ensureRunning()', () => {
     expect(await keychain.getChatToken()).toBeTruthy();
   });
 
+  // ------------------------------------------------------------------
+  // Spawn failure path: the child never launches
+  // ------------------------------------------------------------------
+
+  it('rejects with the spawn error when the gateway child fails to launch', async () => {
+    // `child_process.spawn` reports a failed launch ASYNCHRONOUSLY via an
+    // 'error' event, not by throwing. With no 'error' listener attached,
+    // Node re-raises it as an uncaught exception — in Electron that kills
+    // the main process with a crash dialog instead of surfacing a normal
+    // error to the caller. Real trigger: a GUI-launched packaged app where
+    // `node` is not on PATH (ENOENT).
+    const spawnError = Object.assign(new Error('spawn node ENOENT'), { code: 'ENOENT' });
+    const errorListeners: ((err: Error) => void)[] = [];
+    const spawner: ProcessSpawner = {
+      spawn: vi.fn(() => {
+        setTimeout(() => {
+          for (const listener of errorListeners) listener(spawnError);
+        }, 0);
+        return {
+          pid: undefined,
+          exitCode: null,
+          stdout: null,
+          stderr: null,
+          kill: vi.fn(),
+          unref: vi.fn(),
+          on: vi.fn((event: string, listener: (...args: never[]) => void) => {
+            if (event === 'error') errorListeners.push(listener as (err: Error) => void);
+          }),
+        };
+      }),
+    };
+    // The gateway never came up, so /health never answers.
+    const mockClient = createMockGatewayClient();
+    mockClient.health.mockRejectedValue(new Error('ECONNREFUSED'));
+
+    const gp = new GatewaySupervisor(
+      makeOptions(tmpDir, { makeGatewayClient: () => mockClient }),
+      spawner,
+      undefined,
+      createMockProbe({ type: 'free' }),
+      new InMemoryKeychainStore(),
+    );
+
+    // Fails fast with the real cause, rather than after the 10s health
+    // timeout with a generic 'failed to start' message.
+    await expect(gp.ensureRunning()).rejects.toThrow(/ENOENT/);
+  });
+
   it('threads managementPort/channelPort options into probe, spawn args, client URL, and state.json', async () => {
     const spawner = createMockSpawner();
     const probe = createMockProbe({ type: 'free' });
