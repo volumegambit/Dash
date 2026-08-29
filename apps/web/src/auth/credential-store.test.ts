@@ -1,8 +1,8 @@
 import 'fake-indexeddb/auto';
 import { CredentialStore, type StoredCredential } from './credential-store';
 
-function cred(relayCredential: string, chatToken: string): StoredCredential {
-  return { relayCredential, chatToken };
+function cred(relayCredential: string, chatToken: string, pairingId = 'p-1'): StoredCredential {
+  return { relayCredential, chatToken, pairingId };
 }
 
 describe('CredentialStore', () => {
@@ -63,5 +63,22 @@ describe('CredentialStore', () => {
     });
 
     await expect(store.get('gw-legacy')).resolves.toBeNull();
+  });
+
+  it('treats a pre-pairingId-migration record (missing pairingId) as absent rather than misreading it', async () => {
+    const store = new CredentialStore();
+    // Simulate data written by the pre-Task-13 two-field shape.
+    const db = await (store as unknown as { getDb(): Promise<IDBDatabase> }).getDb();
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction('credentials', 'readwrite');
+      tx.objectStore('credentials').put(
+        { relayCredential: 'relay-old', chatToken: 'chat-old' },
+        'gw-two-field',
+      );
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+
+    await expect(store.get('gw-two-field')).resolves.toBeNull();
   });
 });

@@ -69,11 +69,11 @@ export function GatewayPicker({
     setPendingId(gateway.gatewayId);
     try {
       const deviceLabel = buildWebDeviceLabel(navigator.userAgent);
-      const { credential, chatToken } = await controlPlaneClient.createWebPairing(
+      const { credential, pairingId, chatToken } = await controlPlaneClient.createWebPairing(
         gateway.gatewayId,
         deviceLabel,
       );
-      const stored: StoredCredential = { relayCredential: credential, chatToken };
+      const stored: StoredCredential = { relayCredential: credential, chatToken, pairingId };
       await credentialStore.set(gateway.gatewayId, stored);
       onReady(gateway, stored);
     } catch (err) {

@@ -76,7 +76,7 @@ describe('GatewayPicker', () => {
     await waitFor(() => expect(onReady).toHaveBeenCalled());
 
     expect(createWebPairing).toHaveBeenCalledWith('gw-1', 'Web · Safari');
-    const stored = { relayCredential: 'cred-123', chatToken: 'chat-abc' };
+    const stored = { relayCredential: 'cred-123', chatToken: 'chat-abc', pairingId: 'p-1' };
     expect(set).toHaveBeenCalledWith('gw-1', stored);
     expect(onReady).toHaveBeenCalledWith(GATEWAY, stored);
   });

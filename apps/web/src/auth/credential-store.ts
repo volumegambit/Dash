@@ -44,6 +44,15 @@ function openDb(): Promise<IDBDatabase> {
 export interface StoredCredential {
   relayCredential: string;
   chatToken: string;
+  /**
+   * This browser's own pairing id, as returned by `createWebPairing` at
+   * pairing time. Lets the Devices screen (Task 13) identify "this device"
+   * among the gateway's pairing list, so revoking it there can also clear
+   * this credential and route back to `'pick-gateway'`. Added after the
+   * two-field shape shipped — see `isStoredCredential`'s migration guard
+   * below for records written before this field existed.
+   */
+  pairingId: string;
 }
 
 function isStoredCredential(value: unknown): value is StoredCredential {
@@ -51,7 +60,8 @@ function isStoredCredential(value: unknown): value is StoredCredential {
     typeof value === 'object' &&
     value !== null &&
     typeof (value as Partial<StoredCredential>).relayCredential === 'string' &&
-    typeof (value as Partial<StoredCredential>).chatToken === 'string'
+    typeof (value as Partial<StoredCredential>).chatToken === 'string' &&
+    typeof (value as Partial<StoredCredential>).pairingId === 'string'
   );
 }
 

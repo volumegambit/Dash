@@ -6,6 +6,9 @@ import type { ControlPlaneClient, GatewayInfo } from '../auth/control-plane.js';
 import type { CredentialStore, StoredCredential } from '../auth/credential-store.js';
 import { createWebAppStore } from '../state/store.js';
 import type { WebAppState } from '../state/store.js';
+import { ChatView } from './ChatView.js';
+import { ConversationList } from './ConversationList.js';
+import { Devices } from './Devices.js';
 import { GatewayPicker } from './GatewayPicker.js';
 
 /**
@@ -18,7 +21,10 @@ export type ShellView = 'sign-in' | 'pick-gateway' | 'chat';
 
 type WebAppStore = UseBoundStore<StoreApi<WebAppState>>;
 
-const WebAppStoreContext = createContext<WebAppStore | null>(null);
+/** Exported so Task 13's own component tests (`ChatView.test.tsx`,
+ * `ConversationList.test.tsx`) can wrap a component under test with a
+ * scripted store without going through the full `Shell` mount. */
+export const WebAppStoreContext = createContext<WebAppStore | null>(null);
 
 /** Reads the store `Shell` created for the picked gateway. Must be called
  * from a component mounted under `Shell`'s `'chat'` view (Task 13's
@@ -32,8 +38,11 @@ export function useWebAppStore(): WebAppStore {
 }
 
 export interface ShellProps {
-  controlPlaneClient: Pick<ControlPlaneClient, 'listGateways' | 'createWebPairing'>;
-  credentialStore: Pick<CredentialStore, 'get' | 'set'>;
+  controlPlaneClient: Pick<
+    ControlPlaneClient,
+    'listGateways' | 'createWebPairing' | 'listPairings' | 'deletePairing'
+  >;
+  credentialStore: Pick<CredentialStore, 'get' | 'set' | 'delete'>;
   /** Domain the relay is served under; combined with the gateway's
    * `subdomain` to build its REST/WS base URLs (see `gatewayBaseUrls`). Note
    * there is no Clerk-token prop here: once a gateway is picked, REST/WS auth
@@ -66,9 +75,9 @@ function gatewayBaseUrls(
  * authenticating both with the gateway's own `chatToken` (as the mobile-v1
  * bearer) and `relayCredential` (as the relay hop's WS subprotocol / REST
  * header) — never the Clerk token, which the gateway doesn't understand —
- * and exposes both via `WebAppStoreContext` (see `useWebAppStore`) so
- * Task 13's real chat surface can mount under it without Shell being
- * reworked. This task only renders a placeholder in that slot.
+ * and exposes it via `WebAppStoreContext` (see `useWebAppStore`) to
+ * `ChatWorkspace`, which composes the actual chat surface
+ * (`ConversationList`/`ChatView`/`Devices`).
  */
 export function Shell({ controlPlaneClient, credentialStore, relayDomain }: ShellProps) {
   const [loading, setLoading] = useState(true);
@@ -125,19 +134,34 @@ export function Shell({ controlPlaneClient, credentialStore, relayDomain }: Shel
     });
   }, [activeGateway, activeCredential, relayDomain]);
 
-  const view: ShellView = activeGateway && store ? 'chat' : 'pick-gateway';
+  const view: ShellView = activeGateway && activeCredential && store ? 'chat' : 'pick-gateway';
 
   function handleReady(gateway: GatewayInfo, stored: StoredCredential): void {
     setActiveGateway(gateway);
     setActiveCredential(stored);
   }
 
+  /** Revoking this browser's own pairing from the Devices screen leaves the
+   * stored credential dangling (the relay/gateway will reject it from here
+   * on) — drop back to `GatewayPicker` so the user re-pairs rather than
+   * sitting on a chat view that silently stops working. */
+  function handleGatewayForgotten(): void {
+    setActiveGateway(null);
+    setActiveCredential(null);
+  }
+
   if (loading) return null;
 
-  if (view === 'chat' && store) {
+  if (view === 'chat' && store && activeGateway && activeCredential) {
     return (
       <WebAppStoreContext.Provider value={store}>
-        <div data-testid="chat-view-placeholder" />
+        <ChatWorkspace
+          gateway={activeGateway}
+          currentPairingId={activeCredential.pairingId}
+          controlPlaneClient={controlPlaneClient}
+          credentialStore={credentialStore}
+          onGatewayForgotten={handleGatewayForgotten}
+        />
       </WebAppStoreContext.Provider>
     );
   }
@@ -149,6 +173,77 @@ export function Shell({ controlPlaneClient, credentialStore, relayDomain }: Shel
       credentialStore={credentialStore}
       onReady={handleReady}
     />
+  );
+}
+
+interface ChatWorkspaceProps {
+  gateway: GatewayInfo;
+  currentPairingId: string;
+  controlPlaneClient: Pick<ControlPlaneClient, 'listPairings' | 'deletePairing'>;
+  credentialStore: Pick<CredentialStore, 'delete'>;
+  onGatewayForgotten: () => void;
+}
+
+/**
+ * The `'chat'` view's own internal navigation — a conversations screen
+ * (`ConversationList` + `ChatView`) and a `Devices` screen, switched locally
+ * (no router in this app; see `AppRoot`/`App`, which only gate
+ * signed-in/signed-out). `WebAppStoreContext` is already provided by the
+ * caller (`Shell`), so `ConversationList`/`ChatView` reach the store via
+ * `useWebAppStore()` same as any consumer mounted under `Shell`'s `'chat'`
+ * view.
+ */
+function ChatWorkspace({
+  gateway,
+  currentPairingId,
+  controlPlaneClient,
+  credentialStore,
+  onGatewayForgotten,
+}: ChatWorkspaceProps) {
+  const [screen, setScreen] = useState<'conversations' | 'devices'>('conversations');
+  const [selectedConversationId, setSelectedConversationId] = useState<string | null>(null);
+
+  return (
+    <div data-testid="chat-workspace">
+      <header style={{ display: 'flex', justifyContent: 'space-between', padding: 8 }}>
+        <strong>{gateway.subdomain}</strong>
+        <nav>
+          <button
+            type="button"
+            onClick={() => setScreen('conversations')}
+            disabled={screen === 'conversations'}
+          >
+            Conversations
+          </button>{' '}
+          <button
+            type="button"
+            onClick={() => setScreen('devices')}
+            disabled={screen === 'devices'}
+          >
+            Devices
+          </button>
+        </nav>
+      </header>
+      {screen === 'devices' ? (
+        <Devices
+          gatewayId={gateway.gatewayId}
+          currentPairingId={currentPairingId}
+          controlPlaneClient={controlPlaneClient}
+          credentialStore={credentialStore}
+          onCurrentDeviceRevoked={onGatewayForgotten}
+        />
+      ) : (
+        <div style={{ display: 'flex' }}>
+          <ConversationList
+            selectedConversationId={selectedConversationId}
+            onSelect={setSelectedConversationId}
+          />
+          <div style={{ flex: 1 }}>
+            <ChatView conversationId={selectedConversationId} gatewayLabel={gateway.subdomain} />
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
 
