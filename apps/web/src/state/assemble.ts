@@ -1,6 +1,7 @@
 import type {
   ConversationContent,
   ConversationMessage,
+  ConversationMessageStatus,
   MobileAgentEvent,
   MobileApiErrorCode,
   MobileWsServerFrame,
@@ -64,6 +65,67 @@ function fallbackPending(frame: { id: string; conversationId?: string }): Pendin
 }
 
 /**
+ * Writes the finalized assistant message for `pending`'s turn into
+ * `messages` — replacing an existing row rather than appending one whenever
+ * a match already exists. This matters when a conversation is opened
+ * mid-turn: the gateway's REST replay already contains the assistant row
+ * (inserted at accept-time with `status: 'streaming'` — see
+ * `apps/gateway/src/conversation-service-sqlite.ts`). Appending
+ * unconditionally there would leave both a permanently-stuck `'streaming'`
+ * row *and* a duplicate finalized one. Matched by `assistantMessageId`
+ * first (the normal case, from a real `accepted` frame), falling back to
+ * `turnId` + `role: 'assistant'` for the `fallbackPending` case, where
+ * there's no real `assistantMessageId` to match on but the REST row's
+ * `turnId` still equals the frame's correlation id.
+ */
+function finalizeAssistantMessage(
+  messages: ConversationMessage[],
+  pending: PendingTurn,
+  finalized: {
+    conversationId: string;
+    content: ConversationContent;
+    status: ConversationMessageStatus;
+    now: string;
+  },
+): ConversationMessage[] {
+  const matchIndex = messages.findIndex(
+    (m) =>
+      m.role === 'assistant' &&
+      (m.id === pending.assistantMessageId || m.turnId === pending.turnId),
+  );
+
+  if (matchIndex === -1) {
+    const appended: ConversationMessage = {
+      id: pending.assistantMessageId,
+      conversationId: finalized.conversationId,
+      turnId: pending.turnId,
+      ordinal: messages.length + 1,
+      role: 'assistant',
+      status: finalized.status,
+      content: finalized.content,
+      createdAt: finalized.now,
+      updatedAt: finalized.now,
+    };
+    return [...messages, appended];
+  }
+
+  // Keep `existing.id` rather than overwriting with `pending.assistantMessageId`:
+  // when the match came from the turnId fallback (no real `accepted` frame seen
+  // this session), `pending.assistantMessageId` is only a placeholder (the
+  // frame's correlation id) — the REST-replayed row already carries the real,
+  // server-assigned id, and clobbering it would break subsequent lookups by id.
+  const existing = messages[matchIndex];
+  const next = [...messages];
+  next[matchIndex] = {
+    ...existing,
+    status: finalized.status,
+    content: finalized.content,
+    updatedAt: finalized.now,
+  };
+  return next;
+}
+
+/**
  * Pure reducer: applies one server frame to a `Transcript`, returning the
  * next `Transcript`. Never mutates its input. Exhaustively covers the four
  * `MobileWsServerFrame` variants (`accepted`, `event`, `done`, `error`) plus
@@ -104,20 +166,16 @@ export function applyServerFrame(t: Transcript, frame: MobileWsServerFrame): Tra
         type: 'assistant',
         events: streamingEvents(t),
       };
+      const status: ConversationMessageStatus =
+        frame.outcome === 'cancelled' ? 'cancelled' : 'completed';
       const now = new Date().toISOString();
-      const finalized: ConversationMessage = {
-        id: pending.assistantMessageId,
-        conversationId: pending.conversationId || frame.conversationId || '',
-        turnId: pending.turnId,
-        ordinal: t.messages.length + 1,
-        role: 'assistant',
-        status: frame.outcome === 'cancelled' ? 'cancelled' : 'completed',
-        content,
-        createdAt: now,
-        updatedAt: now,
-      };
       return {
-        messages: [...t.messages, finalized],
+        messages: finalizeAssistantMessage(t.messages, pending, {
+          conversationId: pending.conversationId || frame.conversationId || '',
+          content,
+          status,
+          now,
+        }),
         streaming: null,
       };
     }

@@ -137,6 +137,54 @@ describe('applyServerFrame', () => {
       expect(t.messages).toHaveLength(1);
       expect(t.messages[0].status).toBe('completed');
     });
+
+    it('replaces (not duplicates) an already-streaming assistant row from REST replay of a mid-turn conversation', () => {
+      // Regression: opening a conversation mid-turn means the gateway's REST
+      // replay already contains the assistant row inserted at accept-time
+      // (status 'streaming') — see apps/gateway/src/conversation-service-sqlite.ts.
+      // There's no `pending` yet in this fresh transcript (the browser never
+      // saw the original `accepted` frame), so `event`/`done` fall back to
+      // keying by `turnId`, which the REST row already carries.
+      const turnId = accepted.type === 'accepted' ? accepted.id : '';
+      const conversationId = '018f0f4a-5c42-7a8b-9c01-1234567890ab';
+      const userRow: ConversationMessage = {
+        id: 'server-user-1',
+        conversationId,
+        turnId,
+        ordinal: 1,
+        role: 'user',
+        status: 'completed',
+        content: { type: 'user', text: 'Is the mobile connection ready?' },
+        createdAt: '2026-07-12T00:00:01.000Z',
+        updatedAt: '2026-07-12T00:00:01.000Z',
+      };
+      const streamingAssistantRow: ConversationMessage = {
+        id: 'server-assistant-1',
+        conversationId,
+        turnId,
+        ordinal: 2,
+        role: 'assistant',
+        status: 'streaming',
+        content: { type: 'assistant', events: [{ type: 'text_delta', text: 'partial ' }] },
+        createdAt: '2026-07-12T00:00:02.000Z',
+        updatedAt: '2026-07-12T00:00:02.000Z',
+      };
+      const midTurnReplay: Transcript = {
+        messages: [userRow, streamingAssistantRow],
+        streaming: null,
+      };
+
+      let t = applyServerFrame(midTurnReplay, event);
+      t = applyServerFrame(t, done);
+
+      expect(t.streaming).toBeNull();
+      expect(t.messages).toHaveLength(2); // no duplicate — the streaming row was replaced
+      const assistantMessages = t.messages.filter((m) => m.role === 'assistant');
+      expect(assistantMessages).toHaveLength(1);
+      expect(assistantMessages[0].status).toBe('completed'); // not stuck at 'streaming'
+      expect(assistantMessages[0].id).toBe('server-assistant-1');
+      expect(t.messages[0]).toBe(userRow); // untouched
+    });
   });
 
   describe('error', () => {
