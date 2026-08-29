@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import type { GatewayInfo } from '../auth/control-plane.js';
-import { GatewayPicker } from './GatewayPicker.js';
+import { ControlPlaneApiError, type GatewayInfo } from '../auth/control-plane.js';
+import { GATEWAY_NEEDS_REENROLL_COPY, GatewayPicker } from './GatewayPicker.js';
 
 const GATEWAY: GatewayInfo = {
   gatewayId: 'gw-1',
@@ -52,9 +52,13 @@ describe('GatewayPicker', () => {
     ).toBeTruthy();
   });
 
-  it('pairs with the chosen gateway, stores the credential, and calls onReady', async () => {
+  it('pairs with the chosen gateway, stores both the relay credential and chat token, and calls onReady', async () => {
     stubUserAgent(SAFARI_UA);
-    const createWebPairing = vi.fn(async () => ({ credential: 'cred-123' }));
+    const createWebPairing = vi.fn(async () => ({
+      credential: 'cred-123',
+      pairingId: 'p-1',
+      chatToken: 'chat-abc',
+    }));
     const set = vi.fn(async () => undefined);
     const onReady = vi.fn();
 
@@ -72,8 +76,9 @@ describe('GatewayPicker', () => {
     await waitFor(() => expect(onReady).toHaveBeenCalled());
 
     expect(createWebPairing).toHaveBeenCalledWith('gw-1', 'Web · Safari');
-    expect(set).toHaveBeenCalledWith('gw-1', 'cred-123');
-    expect(onReady).toHaveBeenCalledWith(GATEWAY, 'cred-123');
+    const stored = { relayCredential: 'cred-123', chatToken: 'chat-abc' };
+    expect(set).toHaveBeenCalledWith('gw-1', stored);
+    expect(onReady).toHaveBeenCalledWith(GATEWAY, stored);
   });
 
   it('surfaces an error and re-enables the choice when pairing fails', async () => {
@@ -100,5 +105,29 @@ describe('GatewayPicker', () => {
     expect(onReady).not.toHaveBeenCalled();
     const button = screen.getByText('acme').closest('button') as HTMLButtonElement;
     expect(button.disabled).toBe(false);
+  });
+
+  it('shows the re-enroll copy, exactly, when pairing 409s because the gateway has no chat token registered', async () => {
+    stubUserAgent(SAFARI_UA);
+    const createWebPairing = vi.fn(async () => {
+      throw new ControlPlaneApiError(409, 'no web chat token registered for this gateway');
+    });
+    const set = vi.fn();
+    const onReady = vi.fn();
+
+    render(
+      <GatewayPicker
+        gateways={[GATEWAY]}
+        controlPlaneClient={{ createWebPairing }}
+        credentialStore={{ set }}
+        onReady={onReady}
+      />,
+    );
+
+    fireEvent.click(screen.getByText('acme'));
+
+    await waitFor(() => expect(screen.getByText(GATEWAY_NEEDS_REENROLL_COPY)).toBeTruthy());
+    expect(set).not.toHaveBeenCalled();
+    expect(onReady).not.toHaveBeenCalled();
   });
 });

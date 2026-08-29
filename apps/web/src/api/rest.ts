@@ -73,6 +73,12 @@ export class MobileRestClient {
     private readonly baseUrl: string,
     private readonly tokens: TokenSource,
     private readonly fetchImpl: typeof fetch = fetch,
+    /** When set, sent as `x-dash-relay-credential` on every request
+     * (including `health()`) so the relay can authenticate this browser's hop
+     * to the gateway — separate from the `Authorization` bearer, which
+     * authenticates to the gateway itself. The gateway/relay CORS allowlists
+     * already permit this header. */
+    private readonly relayCredential?: string,
   ) {}
 
   health(): Promise<MobileHealth> {
@@ -112,6 +118,9 @@ export class MobileRestClient {
     if (body !== undefined) headers['Content-Type'] = 'application/json';
     if (auth) {
       headers.Authorization = `Bearer ${await this.tokens.getToken()}`;
+    }
+    if (this.relayCredential) {
+      headers['x-dash-relay-credential'] = this.relayCredential;
     }
 
     const response = await this.fetchImpl(buildUrl(this.baseUrl, path, query).toString(), {

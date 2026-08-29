@@ -102,20 +102,26 @@ async function waitForSocket(
   return sockets[countBefore];
 }
 
-function setup(tickets = ['ticket-1'], wsBaseUrl = 'wss://relay.example/mobile/v1/ws') {
+function setup(
+  tickets = ['ticket-1'],
+  wsBaseUrl = 'wss://relay.example/mobile/v1/ws',
+  relayCredential?: string,
+) {
   const rest = restClientWithTickets(tickets);
   const frames: MobileWsServerFrame[] = [];
   const onFrame: FrameHandler = (frame) => frames.push(frame);
   const closeReasons: Array<'error' | 'closed'> = [];
   const onClose = (reason: 'error' | 'closed') => closeReasons.push(reason);
   const sockets: ScriptedWebSocket[] = [];
-  const wsFactory = (url: string) => {
+  const wsFactoryCalls: Array<{ url: string; protocols?: string[] }> = [];
+  const wsFactory = (url: string, protocols?: string[]) => {
+    wsFactoryCalls.push({ url, protocols });
     const socket = new ScriptedWebSocket(url);
     sockets.push(socket);
     return socket as unknown as WebSocket;
   };
-  const chat = new ChatSocket(wsBaseUrl, rest, onFrame, onClose, wsFactory);
-  return { chat, frames, closeReasons, sockets, rest };
+  const chat = new ChatSocket(wsBaseUrl, rest, onFrame, onClose, wsFactory, relayCredential);
+  return { chat, frames, closeReasons, sockets, rest, wsFactoryCalls };
 }
 
 /** Drives `connect()` through ticket-fetch + socket-open, returning the opened fake socket. */
@@ -266,5 +272,40 @@ describe('ChatSocket', () => {
 
     secondSocket.triggerServerClose();
     expect(closeReasons).toEqual(['closed']);
+  });
+
+  describe('relay credential subprotocol', () => {
+    it('opens with no subprotocols when no relayCredential is configured (native/LAN path)', async () => {
+      const { chat, sockets, wsFactoryCalls } = setup();
+      await connectAndOpen(chat, sockets);
+      expect(wsFactoryCalls[0].protocols).toBeUndefined();
+    });
+
+    it('opens offering dash.v1 + dash.relay-credential.<value> when a relayCredential is configured', async () => {
+      const { chat, sockets, wsFactoryCalls } = setup(
+        ['ticket-1'],
+        'wss://relay.example/mobile/v1/ws',
+        'relay-cred-abc',
+      );
+      await connectAndOpen(chat, sockets);
+      expect(wsFactoryCalls[0].protocols).toEqual([
+        'dash.v1',
+        'dash.relay-credential.relay-cred-abc',
+      ]);
+    });
+
+    it('offers the same subprotocols again on reconnect', async () => {
+      const { chat, sockets, wsFactoryCalls } = setup(
+        ['first-ticket', 'second-ticket'],
+        'wss://relay.example/mobile/v1/ws',
+        'relay-cred-abc',
+      );
+      await connectAndOpen(chat, sockets);
+      await connectAndOpen(chat, sockets);
+      expect(wsFactoryCalls).toHaveLength(2);
+      for (const call of wsFactoryCalls) {
+        expect(call.protocols).toEqual(['dash.v1', 'dash.relay-credential.relay-cred-abc']);
+      }
+    });
   });
 });

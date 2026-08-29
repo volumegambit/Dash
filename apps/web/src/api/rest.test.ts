@@ -25,6 +25,11 @@ function authHeader(init: RequestInit | undefined): string | undefined {
   return headers?.Authorization;
 }
 
+function relayCredentialHeader(init: RequestInit | undefined): string | undefined {
+  const headers = init?.headers as Record<string, string> | undefined;
+  return headers?.['x-dash-relay-credential'];
+}
+
 describe('MobileRestClient', () => {
   describe('URL joining under the /mobile/v1 base', () => {
     it('joins health() under a base without a trailing slash', async () => {
@@ -143,6 +148,47 @@ describe('MobileRestClient', () => {
         fetchImpl,
       );
       await call(client);
+      expect(authHeader(fetchImpl.mock.calls[0][1])).toBe(`Bearer ${TOKEN}`);
+    });
+  });
+
+  describe('relay credential', () => {
+    it('omits x-dash-relay-credential when none is configured', async () => {
+      const fetchImpl = fakeFetch(jsonResponse({ status: 'healthy' }));
+      const client = new MobileRestClient(
+        'https://sub.relay.example/mobile/v1',
+        tokenSource(),
+        fetchImpl,
+      );
+      await client.health();
+      expect(relayCredentialHeader(fetchImpl.mock.calls[0][1])).toBeUndefined();
+    });
+
+    it('sends x-dash-relay-credential on health() (an unauthenticated request) when configured', async () => {
+      const fetchImpl = fakeFetch(jsonResponse({ status: 'healthy' }));
+      const client = new MobileRestClient(
+        'https://sub.relay.example/mobile/v1',
+        tokenSource(),
+        fetchImpl,
+        'relay-cred-xyz',
+      );
+      await client.health();
+      expect(relayCredentialHeader(fetchImpl.mock.calls[0][1])).toBe('relay-cred-xyz');
+      // health() still sends no Authorization header — relayCredential is a
+      // separate, additive header, not a replacement for the bearer scheme.
+      expect(authHeader(fetchImpl.mock.calls[0][1])).toBeUndefined();
+    });
+
+    it('sends x-dash-relay-credential alongside Authorization on an authenticated request', async () => {
+      const fetchImpl = fakeFetch(jsonResponse({ gatewayId: 'g', publicKey: 'p' }));
+      const client = new MobileRestClient(
+        'https://sub.relay.example/mobile/v1',
+        tokenSource(),
+        fetchImpl,
+        'relay-cred-xyz',
+      );
+      await client.identity();
+      expect(relayCredentialHeader(fetchImpl.mock.calls[0][1])).toBe('relay-cred-xyz');
       expect(authHeader(fetchImpl.mock.calls[0][1])).toBe(`Bearer ${TOKEN}`);
     });
   });

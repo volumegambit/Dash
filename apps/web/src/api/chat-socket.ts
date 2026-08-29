@@ -5,6 +5,11 @@ export type FrameHandler = (frame: MobileWsServerFrame) => void;
 
 const WS_OPEN = 1;
 
+/** Matches the relay's `APP_SUBPROTOCOL`/`CREDENTIAL_SUBPROTOCOL_PREFIX`
+ * constants (`apps/relay/src/relay-server.ts`) exactly. */
+const APP_SUBPROTOCOL = 'dash.v1';
+const CREDENTIAL_SUBPROTOCOL_PREFIX = 'dash.relay-credential.';
+
 function buildWsUrl(base: string, ticket: string): string {
   const url = new URL(base);
   url.searchParams.set('ticket', ticket);
@@ -25,7 +30,16 @@ export class ChatSocket {
     private readonly rest: MobileRestClient,
     private readonly onFrame: FrameHandler,
     private readonly onClose: (reason: 'error' | 'closed') => void,
-    private readonly wsFactory: (url: string) => WebSocket = (url) => new WebSocket(url),
+    private readonly wsFactory: (url: string, protocols?: string[]) => WebSocket = (
+      url,
+      protocols,
+    ) => new WebSocket(url, protocols),
+    /** When set, the socket is opened offering `['dash.v1',
+     * 'dash.relay-credential.<value>']` as WS subprotocols — the relay
+     * validates and strips the credential entry before forwarding upstream
+     * and echoes back `dash.v1` as selected. Native/LAN connections (no
+     * relay hop) leave this unset and offer no subprotocols at all. */
+    private readonly relayCredential?: string,
   ) {}
 
   async connect(): Promise<void> {
@@ -42,7 +56,10 @@ export class ChatSocket {
 
     const { ticket } = await this.rest.createWsTicket();
     const url = buildWsUrl(this.wsBaseUrl, ticket);
-    const socket = this.wsFactory(url);
+    const protocols = this.relayCredential
+      ? [APP_SUBPROTOCOL, `${CREDENTIAL_SUBPROTOCOL_PREFIX}${this.relayCredential}`]
+      : undefined;
+    const socket = this.wsFactory(url, protocols);
     this.socket = socket;
     this.closeFired = false;
     const isCurrent = () => this.socket === socket;

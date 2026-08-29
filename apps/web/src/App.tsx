@@ -9,9 +9,11 @@ import { SignIn } from './ui/SignIn.js';
 
 /** Mounted only under `<SignedIn>` (see `App` below), so `useAuth()` always
  * has a live Clerk session to mint tokens from. Builds the real
- * `ControlPlaneClient`/`CredentialStore` Shell needs and wires Clerk's
- * `getToken` as the `TokenSource` used for both the control plane and (once
- * a gateway is picked) the mobile v1 REST/WS surface. */
+ * `ControlPlaneClient`/`CredentialStore` Shell needs, wiring Clerk's
+ * `getToken` as the `TokenSource` for the control plane only — once a
+ * gateway is picked, Shell authenticates to it with the gateway's own chat
+ * token and relay credential (from `CredentialStore`), never the Clerk
+ * token, so `Shell` has no `tokens` prop to receive here. */
 function AuthenticatedShell() {
   const { getToken } = useAuth();
 
@@ -36,7 +38,6 @@ function AuthenticatedShell() {
     <Shell
       controlPlaneClient={controlPlaneClient}
       credentialStore={credentialStore}
-      tokens={tokens}
       relayDomain={config.relayDomain}
     />
   );

@@ -1,5 +1,9 @@
 import 'fake-indexeddb/auto';
-import { CredentialStore } from './credential-store';
+import { CredentialStore, type StoredCredential } from './credential-store';
+
+function cred(relayCredential: string, chatToken: string): StoredCredential {
+  return { relayCredential, chatToken };
+}
 
 describe('CredentialStore', () => {
   it('returns null for a gatewayId that was never set', async () => {
@@ -9,20 +13,20 @@ describe('CredentialStore', () => {
 
   it('round-trips set -> get for a gatewayId', async () => {
     const store = new CredentialStore();
-    await store.set('gw-1', 'credential-abc');
-    await expect(store.get('gw-1')).resolves.toBe('credential-abc');
+    await store.set('gw-1', cred('relay-abc', 'chat-abc'));
+    await expect(store.get('gw-1')).resolves.toEqual(cred('relay-abc', 'chat-abc'));
   });
 
   it('overwrites an existing credential for the same gatewayId', async () => {
     const store = new CredentialStore();
-    await store.set('gw-2', 'first');
-    await store.set('gw-2', 'second');
-    await expect(store.get('gw-2')).resolves.toBe('second');
+    await store.set('gw-2', cred('relay-1', 'chat-1'));
+    await store.set('gw-2', cred('relay-2', 'chat-2'));
+    await expect(store.get('gw-2')).resolves.toEqual(cred('relay-2', 'chat-2'));
   });
 
   it('deletes a credential, after which get resolves to null', async () => {
     const store = new CredentialStore();
-    await store.set('gw-3', 'to-be-deleted');
+    await store.set('gw-3', cred('relay-3', 'chat-3'));
     await store.delete('gw-3');
     await expect(store.get('gw-3')).resolves.toBeNull();
   });
@@ -34,16 +38,30 @@ describe('CredentialStore', () => {
 
   it('keeps credentials for different gatewayIds independent', async () => {
     const store = new CredentialStore();
-    await store.set('gw-a', 'cred-a');
-    await store.set('gw-b', 'cred-b');
-    await expect(store.get('gw-a')).resolves.toBe('cred-a');
-    await expect(store.get('gw-b')).resolves.toBe('cred-b');
+    await store.set('gw-a', cred('relay-a', 'chat-a'));
+    await store.set('gw-b', cred('relay-b', 'chat-b'));
+    await expect(store.get('gw-a')).resolves.toEqual(cred('relay-a', 'chat-a'));
+    await expect(store.get('gw-b')).resolves.toEqual(cred('relay-b', 'chat-b'));
   });
 
   it('persists across separate CredentialStore instances (same underlying IndexedDB)', async () => {
     const writer = new CredentialStore();
-    await writer.set('gw-shared', 'shared-cred');
+    await writer.set('gw-shared', cred('relay-shared', 'chat-shared'));
     const reader = new CredentialStore();
-    await expect(reader.get('gw-shared')).resolves.toBe('shared-cred');
+    await expect(reader.get('gw-shared')).resolves.toEqual(cred('relay-shared', 'chat-shared'));
+  });
+
+  it('treats a pre-migration bare-string value as absent rather than misreading it', async () => {
+    const store = new CredentialStore();
+    // Simulate data written by the pre-Task-12b-fix shape (a bare string).
+    const db = await (store as unknown as { getDb(): Promise<IDBDatabase> }).getDb();
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction('credentials', 'readwrite');
+      tx.objectStore('credentials').put('legacy-bare-string', 'gw-legacy');
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+
+    await expect(store.get('gw-legacy')).resolves.toBeNull();
   });
 });

@@ -25,7 +25,15 @@ export default defineConfig({
       'apps/*/src/**/*.test.{ts,tsx}',
       'scripts/**/*.test.ts',
     ],
-    environmentMatchGlobs: [['apps/mission-control/**/*.test.{ts,tsx}', 'jsdom']],
+    environmentMatchGlobs: [
+      ['apps/mission-control/**/*.test.{ts,tsx}', 'jsdom'],
+      // apps/web's own vitest.config.ts uses happy-dom for its React
+      // component tests (Shell, GatewayPicker, AppRoot, App) — match that
+      // here so the root `npm test` run doesn't execute them under the
+      // default `node` environment, where `render()` fails with
+      // "document is not defined".
+      ['apps/web/**/*.test.{ts,tsx}', 'happy-dom'],
+    ],
     setupFiles: ['apps/mission-control/vitest.setup.ts'],
     pool: 'forks',
     poolOptions: {

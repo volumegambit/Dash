@@ -1,5 +1,10 @@
 import type { TokenSource } from '../api/rest';
 
+/** Same capability id `apps/relay-control-plane/src/api.ts` and Mission
+ * Control's `control-plane-client.ts` use for the pairing route that returns
+ * `pairingId` (and, for `clientKind: 'web'`, `chatToken`). */
+const PAIRING_ID_CAPABILITY = 'pairing-id-v1';
+
 /**
  * A gateway as returned by `GET /v1/gateways` (control plane). Property names
  * match `GatewayRecord` in `apps/relay-control-plane/src/store.ts` exactly —
@@ -84,11 +89,25 @@ export class ControlPlaneClient {
     return gateways;
   }
 
-  /** Mints a browser-session pairing credential. Always sends `clientKind: 'web'`. */
-  createWebPairing(gatewayId: string, deviceLabel: string): Promise<{ credential: string }> {
-    return this.request<{ credential: string }>(
+  /**
+   * Mints a browser-session pairing credential via the `pairing-id-v1`
+   * capability route (not the legacy `/pairings` route) — only that route
+   * returns `pairingId`, and always sends `clientKind: 'web'`, which is what
+   * makes the control plane resolve and return the gateway's registered
+   * `chatToken` (the mobile-v1 bearer the browser needs — see
+   * `MobileRestClient`/`ChatSocket`). Throws `ControlPlaneApiError` with
+   * `status === 409` if the gateway hasn't registered a chat token yet (i.e.
+   * needs to be re-enrolled from Mission Control since chat-token delivery
+   * shipped) — see `GatewayPicker`, which turns that into a user-facing
+   * message.
+   */
+  createWebPairing(
+    gatewayId: string,
+    deviceLabel: string,
+  ): Promise<{ credential: string; pairingId: string; chatToken: string }> {
+    return this.request<{ credential: string; pairingId: string; chatToken: string }>(
       'POST',
-      `/v1/gateways/${encodeURIComponent(gatewayId)}/pairings`,
+      `/v1/gateways/${encodeURIComponent(gatewayId)}/pairings/${PAIRING_ID_CAPABILITY}`,
       { body: { deviceLabel, clientKind: 'web' } },
     );
   }

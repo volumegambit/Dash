@@ -1,11 +1,21 @@
 import { useState } from 'react';
-import type { ControlPlaneClient, GatewayInfo } from '../auth/control-plane.js';
-import type { CredentialStore } from '../auth/credential-store.js';
+import {
+  ControlPlaneApiError,
+  type ControlPlaneClient,
+  type GatewayInfo,
+} from '../auth/control-plane.js';
+import type { CredentialStore, StoredCredential } from '../auth/credential-store.js';
 
 /** Exact copy the brief mandates — points the user at Mission Control, since
  * gateways are enrolled there, not from the web client. */
 export const GATEWAY_EMPTY_STATE_COPY =
   'No gateways linked to your account yet. Open Mission Control → Settings → Devices → Remote access to enroll this machine.';
+
+/** Exact copy for the 409 the control plane returns when a gateway hasn't
+ * registered a chat token yet (`ControlPlaneClient.createWebPairing`) — it
+ * needs a fresh Mission Control enroll before browser pairing can work. */
+export const GATEWAY_NEEDS_REENROLL_COPY =
+  'This gateway needs to be re-enrolled from Mission Control before web access works.';
 
 /** Coarse UA sniffing for a human-readable device label only (never used for
  * feature detection) — order matters: Edge/Opera UAs also contain "Chrome",
@@ -31,7 +41,7 @@ export interface GatewayPickerProps {
   gateways: GatewayInfo[];
   controlPlaneClient: Pick<ControlPlaneClient, 'createWebPairing'>;
   credentialStore: Pick<CredentialStore, 'set'>;
-  onReady: (gateway: GatewayInfo, credential: string) => void;
+  onReady: (gateway: GatewayInfo, credential: StoredCredential) => void;
 }
 
 /**
@@ -59,14 +69,19 @@ export function GatewayPicker({
     setPendingId(gateway.gatewayId);
     try {
       const deviceLabel = buildWebDeviceLabel(navigator.userAgent);
-      const { credential } = await controlPlaneClient.createWebPairing(
+      const { credential, chatToken } = await controlPlaneClient.createWebPairing(
         gateway.gatewayId,
         deviceLabel,
       );
-      await credentialStore.set(gateway.gatewayId, credential);
-      onReady(gateway, credential);
+      const stored: StoredCredential = { relayCredential: credential, chatToken };
+      await credentialStore.set(gateway.gatewayId, stored);
+      onReady(gateway, stored);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to pair with this gateway.');
+      if (err instanceof ControlPlaneApiError && err.status === 409) {
+        setError(GATEWAY_NEEDS_REENROLL_COPY);
+      } else {
+        setError(err instanceof Error ? err.message : 'Failed to pair with this gateway.');
+      }
       setPendingId(null);
     }
   }

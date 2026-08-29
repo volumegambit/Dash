@@ -67,8 +67,10 @@ describe('ControlPlaneClient', () => {
   });
 
   describe('createWebPairing', () => {
-    it('POSTs to /v1/gateways/:id/pairings with clientKind: web and the device label', async () => {
-      const fetchImpl = fakeFetch(jsonResponse({ credential: 'cred-123' }));
+    it('POSTs to the pairing-id-v1 capability route with clientKind: web and the device label', async () => {
+      const fetchImpl = fakeFetch(
+        jsonResponse({ credential: 'cred-123', pairingId: 'p-1', chatToken: 'chat-abc' }),
+      );
       const client = new ControlPlaneClient(
         'https://control.dash.example',
         tokenSource(),
@@ -77,10 +79,12 @@ describe('ControlPlaneClient', () => {
 
       await expect(client.createWebPairing('acme', 'My Browser')).resolves.toEqual({
         credential: 'cred-123',
+        pairingId: 'p-1',
+        chatToken: 'chat-abc',
       });
 
       const [url, init] = fetchImpl.mock.calls[0];
-      expect(url).toBe('https://control.dash.example/v1/gateways/acme/pairings');
+      expect(url).toBe('https://control.dash.example/v1/gateways/acme/pairings/pairing-id-v1');
       expect(init?.method).toBe('POST');
       expect(JSON.parse(init?.body as string)).toEqual({
         deviceLabel: 'My Browser',
@@ -92,7 +96,9 @@ describe('ControlPlaneClient', () => {
     });
 
     it('URL-encodes the gatewayId path segment', async () => {
-      const fetchImpl = fakeFetch(jsonResponse({ credential: 'c' }));
+      const fetchImpl = fakeFetch(
+        jsonResponse({ credential: 'c', pairingId: 'p', chatToken: 't' }),
+      );
       const client = new ControlPlaneClient(
         'https://control.dash.example',
         tokenSource(),
@@ -100,7 +106,25 @@ describe('ControlPlaneClient', () => {
       );
       await client.createWebPairing('gw/with/slash', 'Label');
       const url = fetchImpl.mock.calls[0][0] as string;
-      expect(url).toBe('https://control.dash.example/v1/gateways/gw%2Fwith%2Fslash/pairings');
+      expect(url).toBe(
+        'https://control.dash.example/v1/gateways/gw%2Fwith%2Fslash/pairings/pairing-id-v1',
+      );
+    });
+
+    it('throws ControlPlaneApiError with status 409 when the gateway has no registered chat token', async () => {
+      const fetchImpl = fakeFetch(
+        jsonResponse({ error: 'no web chat token registered for this gateway' }, 409),
+      );
+      const client = new ControlPlaneClient(
+        'https://control.dash.example',
+        tokenSource(),
+        fetchImpl,
+      );
+
+      await expect(client.createWebPairing('acme', 'My Browser')).rejects.toMatchObject({
+        status: 409,
+        code: 'no web chat token registered for this gateway',
+      });
     });
   });
 
