@@ -281,6 +281,10 @@ describe('SqliteStore', () => {
         const pairings = migrated.listPairings('gw-old');
         expect(pairings).toHaveLength(1);
         expect(pairings[0]?.clientKind).toBe('mobile');
+        // The same open also adds web_chat_token to the legacy gateways table.
+        expect(migrated.getWebChatToken('gw-old')).toBeNull();
+        expect(migrated.setWebChatToken('gw-old', 'chat-token')).toBe(true);
+        expect(migrated.getWebChatToken('gw-old')).toBe('chat-token');
         migrated.close();
       } finally {
         rmSync(dir, { recursive: true, force: true });
@@ -318,6 +322,40 @@ describe('SqliteStore', () => {
       expect(store.getGateway('alice-mbp')?.status).toBe('revoked');
       // The row persists, so the label can never be re-claimed.
       expect(store.isSubdomainAvailable('alice-mbp')).toBe(false);
+    });
+
+    it('stores and returns a per-gateway web chat token, null until registered', () => {
+      store.createGateway({
+        gatewayId: 'alice-mbp',
+        accountId: 'acct-1',
+        subdomain: 'alice-mbp.relay.local',
+        publicKey: 'pk-alice',
+      });
+      expect(store.getWebChatToken('alice-mbp')).toBeNull();
+      expect(store.setWebChatToken('alice-mbp', 'chat-token-1')).toBe(true);
+      expect(store.getWebChatToken('alice-mbp')).toBe('chat-token-1');
+      // Idempotent re-registration overwrites (MC re-uploads on enroll refresh).
+      expect(store.setWebChatToken('alice-mbp', 'chat-token-2')).toBe(true);
+      expect(store.getWebChatToken('alice-mbp')).toBe('chat-token-2');
+    });
+
+    it('refuses to set a web chat token for an unknown gateway', () => {
+      expect(store.setWebChatToken('gw-missing', 'chat-token')).toBe(false);
+      expect(store.getWebChatToken('gw-missing')).toBeNull();
+    });
+
+    it('never exposes the web chat token through gateway records', () => {
+      store.createGateway({
+        gatewayId: 'alice-mbp',
+        accountId: 'acct-1',
+        subdomain: 'alice-mbp.relay.local',
+        publicKey: 'pk-alice',
+      });
+      store.setWebChatToken('alice-mbp', 'chat-token-1');
+      // GET /v1/gateways serializes these records verbatim — the token must not
+      // ride along, or every signed-in browser would get it without a pairing.
+      expect(JSON.stringify(store.getGateway('alice-mbp'))).not.toContain('chat-token-1');
+      expect(JSON.stringify(store.listGateways('acct-1'))).not.toContain('chat-token-1');
     });
 
     it('returns the stored public key, or null for an unknown gateway', () => {

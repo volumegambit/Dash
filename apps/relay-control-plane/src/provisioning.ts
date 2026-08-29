@@ -10,6 +10,14 @@ export class InvalidSubdomainError extends Error {}
 export class SubdomainTakenError extends Error {}
 /** Thrown when the supplied gateway public key is empty/malformed. */
 export class InvalidPublicKeyError extends Error {}
+/**
+ * Thrown when a `'web'` pairing is requested for a gateway whose owner has not
+ * yet registered a web chat token (Mission Control uploads it during the
+ * Remote-access enroll flow). Distinct from the not-found path so the HTTP
+ * layer can answer 409 — the gateway exists and is yours, it just is not ready
+ * for browser clients.
+ */
+export class WebChatTokenMissingError extends Error {}
 
 /** Result of provisioning a new gateway: its id, subdomain, and a dial token. */
 export interface CreatedGateway {
@@ -22,6 +30,12 @@ export interface CreatedGateway {
 export interface CreatedPairing {
   credential: string;
   pairingId: string;
+  /**
+   * The gateway's chat-scoped bearer, returned ONLY for `'web'` pairings. A
+   * browser has no QR channel to receive it (see `Store.setWebChatToken`);
+   * native clients get it out of band and never see this field.
+   */
+  chatToken?: string;
 }
 
 /** Collaborators the {@link ProvisioningService} orchestrates. */
@@ -103,6 +117,18 @@ export class ProvisioningService {
   }
 
   /**
+   * Register the chat-scoped bearer that browser pairings for `gatewayId` will
+   * receive. Ownership is enforced here: a cross-account or unknown gateway
+   * returns false and writes nothing. Idempotent — Mission Control re-uploads
+   * on every enroll refresh, and the latest value wins.
+   */
+  setWebChatToken(accountId: string, gatewayId: string, chatToken: string): boolean {
+    const gateway = this.#store.getGateway(gatewayId);
+    if (!gateway || gateway.accountId !== accountId) return false;
+    return this.#store.setWebChatToken(gatewayId, chatToken);
+  }
+
+  /**
    * Revoke a gateway. Ownership is checked in the store first; only on a real
    * revocation does the relay force-close the live tunnel. Returns false (and
    * skips the relay) when the caller does not own the gateway.
@@ -136,6 +162,18 @@ export class ProvisioningService {
     if (!gateway || gateway.accountId !== accountId) {
       throw new Error(`gateway ${gatewayId} not found for account ${accountId}`);
     }
+    // A browser cannot be handed the chat bearer out of band, so a web pairing
+    // is only useful with one. Resolve it BEFORE minting: failing afterwards
+    // would leave an orphan credential live on the relay that the caller never
+    // received and cannot revoke by id.
+    let chatToken: string | undefined;
+    if (clientKind === 'web') {
+      const registered = this.#store.getWebChatToken(gatewayId);
+      if (!registered) {
+        throw new WebChatTokenMissingError(`no web chat token registered for gateway ${gatewayId}`);
+      }
+      chatToken = registered;
+    }
     const credential = await this.#relay.provisionPairing(accountId, gatewayId);
     const pairingId = generatePairingId();
     this.#store.addPairing({
@@ -145,7 +183,9 @@ export class ProvisioningService {
       deviceLabel: deviceLabel ?? null,
       clientKind,
     });
-    return { credential, pairingId };
+    return chatToken === undefined
+      ? { credential, pairingId }
+      : { credential, pairingId, chatToken };
   }
 
   /**

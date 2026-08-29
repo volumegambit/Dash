@@ -40,8 +40,19 @@ export interface PairingRecord {
 }
 
 /**
- * Source of truth for accounts → gateways → pairings. Holds only hashes of
- * pairing credentials, never the raw secret.
+ * Source of truth for accounts → gateways → pairings. Pairing credentials are
+ * held as hashes only, never as the raw secret.
+ *
+ * ONE deliberate exception: `webChatToken` (see {@link Store.setWebChatToken}).
+ * Documented in `docs/plans/2026-08-29-web-interface-design.md` (Auth &
+ * Security) — a browser has no QR channel to receive the gateway's chat
+ * capability, so Mission Control registers it here and the control plane hands
+ * it back once per web pairing. That REQUIRES a recoverable value, so it is
+ * stored as one. Scope of the trust change: this is the gateway's chat-scoped
+ * mobile bearer (the same value the QR already ships to phones), never the
+ * administrative management bearer, and it is readable only through an
+ * account-scoped route. Reversible once the gateway can mint per-web-session
+ * tokens itself.
  */
 export interface Store {
   /** Idempotent: creating an existing account is a no-op. */
@@ -57,6 +68,15 @@ export interface Store {
   isSubdomainAvailable(label: string): boolean;
   /** The stored public key for `gatewayId`, or null when unknown. */
   getGatewayPublicKey(gatewayId: string): string | null;
+  /**
+   * Register (or replace) the chat-scoped bearer handed to browser pairings for
+   * `gatewayId`. Returns false when no such gateway exists. Ownership is NOT
+   * checked here — callers go through `ProvisioningService.setWebChatToken`,
+   * which enforces it, mirroring `revokePairing`'s split.
+   */
+  setWebChatToken(gatewayId: string, chatToken: string): boolean;
+  /** The registered web chat token for `gatewayId`, or null when unregistered. */
+  getWebChatToken(gatewayId: string): string | null;
   /** Ownership-checked: only the owning account may revoke. Keeps the row. */
   revokeGateway(accountId: string, gatewayId: string): boolean;
   addPairing(r: Omit<PairingRecord, 'status' | 'createdAt'>): PairingRecord;
@@ -71,6 +91,7 @@ interface GatewayRow {
   public_key: string;
   status: string;
   created_at: number;
+  web_chat_token: string | null;
 }
 
 interface PairingRow {
@@ -101,7 +122,8 @@ export class SqliteStore implements Store {
         subdomain  TEXT NOT NULL,
         public_key TEXT NOT NULL DEFAULT '',
         status     TEXT NOT NULL,
-        created_at INTEGER NOT NULL
+        created_at INTEGER NOT NULL,
+        web_chat_token TEXT
       );
       CREATE TABLE IF NOT EXISTS pairings (
         id              TEXT PRIMARY KEY,
@@ -121,6 +143,12 @@ export class SqliteStore implements Store {
     const cols = this.db.prepare('PRAGMA table_info(gateways)').all() as Array<{ name: string }>;
     if (!cols.some((c) => c.name === 'public_key')) {
       this.db.exec("ALTER TABLE gateways ADD COLUMN public_key TEXT NOT NULL DEFAULT ''");
+    }
+    // Guarded migration: a dev DB created before browser pairings existed lacks
+    // `web_chat_token`. It is nullable, so existing rows simply read as "not
+    // registered" and web pairings for them are refused until MC uploads one.
+    if (!cols.some((c) => c.name === 'web_chat_token')) {
+      this.db.exec('ALTER TABLE gateways ADD COLUMN web_chat_token TEXT');
     }
     // Guarded migration: a dev DB created before client-kind existed lacks
     // `client_kind`. SQLite backfills every existing row with the column
@@ -189,6 +217,20 @@ export class SqliteStore implements Store {
     return row ? row.public_key : null;
   }
 
+  setWebChatToken(gatewayId: string, chatToken: string): boolean {
+    const result = this.db
+      .prepare('UPDATE gateways SET web_chat_token = ? WHERE gateway_id = ?')
+      .run(chatToken, gatewayId);
+    return result.changes > 0;
+  }
+
+  getWebChatToken(gatewayId: string): string | null {
+    const row = this.db
+      .prepare('SELECT web_chat_token FROM gateways WHERE gateway_id = ?')
+      .get(gatewayId) as { web_chat_token: string | null } | undefined;
+    return row?.web_chat_token ?? null;
+  }
+
   revokeGateway(accountId: string, gatewayId: string): boolean {
     const result = this.db
       .prepare("UPDATE gateways SET status = 'revoked' WHERE gateway_id = ? AND account_id = ?")
@@ -237,6 +279,11 @@ export class SqliteStore implements Store {
     this.db.close();
   }
 
+  /**
+   * Project a row onto the public {@link GatewayRecord}. `web_chat_token` is
+   * deliberately omitted: `GET /v1/gateways` serializes these records verbatim,
+   * and the token must only ever leave through a web pairing.
+   */
   private toGateway(row: GatewayRow): GatewayRecord {
     return {
       gatewayId: row.gateway_id,

@@ -6,6 +6,7 @@ import {
   InvalidSubdomainError,
   type ProvisioningService,
   SubdomainTakenError,
+  WebChatTokenMissingError,
 } from './provisioning.js';
 import type { ClientKind } from './store.js';
 import { webCors } from './web-cors.js';
@@ -115,6 +116,23 @@ export function createApi(deps: ApiDeps): Hono<ApiEnv> {
     return c.json({ available: provisioning.isSubdomainAvailable(label) });
   });
 
+  /**
+   * Register the chat-scoped bearer that this gateway's browser pairings
+   * receive. Mission Control PUTs it during the Remote-access enroll flow — it
+   * is the same phone capability the pairing QR already carries, never the
+   * administrative management bearer. Account-scoped like every other `/v1`
+   * route: a cross-account or unknown gateway is a 404 that discloses nothing.
+   */
+  app.put('/v1/gateways/:id/web-chat-token', async (c) => {
+    const accountId = c.get('accountId');
+    const body = (await c.req.json().catch(() => ({}))) as { chatToken?: unknown };
+    const chatToken = typeof body.chatToken === 'string' ? body.chatToken : '';
+    if (!chatToken) return c.json({ error: 'chatToken required' }, 400);
+    const ok = provisioning.setWebChatToken(accountId, c.req.param('id'), chatToken);
+    if (!ok) return c.json({ error: 'gateway not found' }, 404);
+    return c.json({ ok: true });
+  });
+
   app.delete('/v1/gateways/:id', async (c) => {
     const accountId = c.get('accountId');
     const ok = await provisioning.deleteGateway(accountId, c.req.param('id'));
@@ -133,14 +151,19 @@ export function createApi(deps: ApiDeps): Hono<ApiEnv> {
     const parsed = await readPairingRequest(c);
     if (!parsed.ok) return c.json({ error: 'invalid clientKind' }, 400);
     try {
-      const { credential } = await provisioning.createPairing(
+      const { credential, chatToken } = await provisioning.createPairing(
         accountId,
         gatewayId,
         parsed.deviceLabel,
         parsed.clientKind,
       );
-      return c.json({ credential });
-    } catch {
+      // Browser pairings additionally carry the gateway's chat bearer; native
+      // clients see the unchanged `{ credential }` body.
+      return c.json(chatToken === undefined ? { credential } : { credential, chatToken });
+    } catch (err) {
+      if (err instanceof WebChatTokenMissingError) {
+        return c.json({ error: 'no web chat token registered for this gateway' }, 409);
+      }
       // Cross-account or unknown gateway — don't disclose existence.
       return c.json({ error: 'gateway not found' }, 404);
     }
@@ -162,7 +185,10 @@ export function createApi(deps: ApiDeps): Hono<ApiEnv> {
         parsed.clientKind,
       );
       return c.json(created);
-    } catch {
+    } catch (err) {
+      if (err instanceof WebChatTokenMissingError) {
+        return c.json({ error: 'no web chat token registered for this gateway' }, 409);
+      }
       // Cross-account or unknown gateway — don't disclose existence.
       return c.json({ error: 'gateway not found' }, 404);
     }

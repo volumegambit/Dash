@@ -8,7 +8,7 @@ import {
   verifyDialToken,
 } from '@dash/relay';
 import { DialTokenSigner } from './dial-token-signer.js';
-import { ProvisioningService } from './provisioning.js';
+import { ProvisioningService, WebChatTokenMissingError } from './provisioning.js';
 import { RelayAdminClient } from './relay-admin-client.js';
 import { SqliteStore } from './store.js';
 
@@ -237,10 +237,66 @@ describe('ProvisioningService pairings', () => {
   it('persists an explicit web client kind', async () => {
     const { store, service } = makeRealService();
     const gw = service.createGateway('acct-1', { subdomain: 'alice', publicKey: 'pk-a' });
+    // Web pairings require a registered chat token (see setWebChatToken).
+    service.setWebChatToken('acct-1', gw.gatewayId, 'chat-1');
 
     await service.createPairing('acct-1', gw.gatewayId, 'Safari on iPhone', 'web');
 
     expect(store.listPairings(gw.gatewayId)[0].clientKind).toBe('web');
+  });
+
+  it('setWebChatToken stores a token the owner can register and re-register', async () => {
+    const { store, service } = makeRealService();
+    const gw = service.createGateway('acct-1', { subdomain: 'alice', publicKey: 'pk-a' });
+
+    expect(service.setWebChatToken('acct-1', gw.gatewayId, 'chat-1')).toBe(true);
+    expect(store.getWebChatToken(gw.gatewayId)).toBe('chat-1');
+    expect(service.setWebChatToken('acct-1', gw.gatewayId, 'chat-2')).toBe(true);
+    expect(store.getWebChatToken(gw.gatewayId)).toBe('chat-2');
+  });
+
+  it('setWebChatToken refuses a cross-account or unknown gateway without writing', () => {
+    const { store, service } = makeRealService();
+    const gw = service.createGateway('acct-1', { subdomain: 'alice', publicKey: 'pk-a' });
+
+    expect(service.setWebChatToken('acct-2', gw.gatewayId, 'chat-1')).toBe(false);
+    expect(service.setWebChatToken('acct-1', 'gw-missing', 'chat-1')).toBe(false);
+    expect(store.getWebChatToken(gw.gatewayId)).toBeNull();
+  });
+
+  it('returns the registered chat token alongside a web pairing', async () => {
+    const { service } = makeRealService();
+    const gw = service.createGateway('acct-1', { subdomain: 'alice', publicKey: 'pk-a' });
+    service.setWebChatToken('acct-1', gw.gatewayId, 'chat-1');
+
+    const created = await service.createPairing('acct-1', gw.gatewayId, 'Safari', 'web');
+
+    expect(created.chatToken).toBe('chat-1');
+    expect(created.credential).toBeTruthy();
+    expect(created.pairingId).toBeTruthy();
+  });
+
+  it('never returns a chat token for a mobile pairing, even when one is registered', async () => {
+    const { service } = makeRealService();
+    const gw = service.createGateway('acct-1', { subdomain: 'alice', publicKey: 'pk-a' });
+    service.setWebChatToken('acct-1', gw.gatewayId, 'chat-1');
+
+    const created = await service.createPairing('acct-1', gw.gatewayId, 'iPhone');
+
+    expect(created.chatToken).toBeUndefined();
+  });
+
+  it('refuses a web pairing before minting when no chat token is registered', async () => {
+    const { store, service } = makeRealService();
+    const gw = service.createGateway('acct-1', { subdomain: 'alice', publicKey: 'pk-a' });
+
+    await expect(
+      service.createPairing('acct-1', gw.gatewayId, 'Safari', 'web'),
+    ).rejects.toBeInstanceOf(WebChatTokenMissingError);
+
+    // Nothing was minted or persisted — a failed web pairing leaves no orphan
+    // pairing row and no credential the relay would still honour.
+    expect(store.listPairings(gw.gatewayId)).toHaveLength(0);
   });
 
   it('refuses a cross-account createPairing: throws, no relay credential minted', async () => {

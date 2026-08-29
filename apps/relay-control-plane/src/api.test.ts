@@ -386,6 +386,10 @@ describe('pairings', () => {
       await req('POST', '/v1/gateways', 'a1', { subdomain: 'alice', publicKey: gwPubB64 })
     ).json()) as { gatewayId: string };
 
+    await req('PUT', `/v1/gateways/${a.gatewayId}/web-chat-token`, 'a1', {
+      chatToken: 'chat-tok',
+    });
+
     const res = await req('POST', `/v1/gateways/${a.gatewayId}/pairings`, 'a1', {
       deviceLabel: 'Safari on iPhone',
       clientKind: 'web',
@@ -435,6 +439,10 @@ describe('pairings', () => {
       await req('POST', '/v1/gateways', 'a1', { subdomain: 'alice', publicKey: gwPubB64 })
     ).json()) as { gatewayId: string };
 
+    await req('PUT', `/v1/gateways/${a.gatewayId}/web-chat-token`, 'a1', {
+      chatToken: 'chat-tok',
+    });
+
     const res = await req('POST', `/v1/gateways/${a.gatewayId}/pairings/pairing-id-v1`, 'a1', {
       deviceLabel: 'Safari on iPhone',
       clientKind: 'web',
@@ -445,6 +453,177 @@ describe('pairings', () => {
       await req('GET', `/v1/gateways/${a.gatewayId}/pairings`, 'a1')
     ).json()) as { pairings: Array<{ clientKind: string }> };
     expect(list.pairings).toEqual([expect.objectContaining({ clientKind: 'web' })]);
+  });
+});
+
+describe('PUT /v1/gateways/:id/web-chat-token', () => {
+  async function makeGateway(account: string, subdomain: string): Promise<string> {
+    const res = await req('POST', '/v1/gateways', account, { subdomain, publicKey: gwPubB64 });
+    return ((await res.json()) as { gatewayId: string }).gatewayId;
+  }
+
+  it('401s without authentication', async () => {
+    const gatewayId = await makeGateway('a1', 'alice');
+    const res = await req('PUT', `/v1/gateways/${gatewayId}/web-chat-token`, undefined, {
+      chatToken: 'chat-tok',
+    });
+    expect(res.status).toBe(401);
+  });
+
+  it('registers a token for the owning account', async () => {
+    const gatewayId = await makeGateway('a1', 'alice');
+    const res = await req('PUT', `/v1/gateways/${gatewayId}/web-chat-token`, 'a1', {
+      chatToken: 'chat-tok',
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true });
+  });
+
+  it('is idempotent — re-registering overwrites', async () => {
+    const gatewayId = await makeGateway('a1', 'alice');
+    await req('PUT', `/v1/gateways/${gatewayId}/web-chat-token`, 'a1', { chatToken: 'chat-1' });
+    const res = await req('PUT', `/v1/gateways/${gatewayId}/web-chat-token`, 'a1', {
+      chatToken: 'chat-2',
+    });
+    expect(res.status).toBe(200);
+
+    const pairing = await req('POST', `/v1/gateways/${gatewayId}/pairings/pairing-id-v1`, 'a1', {
+      clientKind: 'web',
+    });
+    expect((await pairing.json()) as { chatToken: string }).toMatchObject({ chatToken: 'chat-2' });
+  });
+
+  it('404s a cross-account registration without disclosing the gateway', async () => {
+    const gatewayId = await makeGateway('a1', 'alice');
+    const res = await req('PUT', `/v1/gateways/${gatewayId}/web-chat-token`, 'a2', {
+      chatToken: 'stolen',
+    });
+    expect(res.status).toBe(404);
+
+    // And the owner's gateway was untouched: a web pairing still 409s.
+    const pairing = await req('POST', `/v1/gateways/${gatewayId}/pairings/pairing-id-v1`, 'a1', {
+      clientKind: 'web',
+    });
+    expect(pairing.status).toBe(409);
+  });
+
+  it('404s an unknown gateway', async () => {
+    const res = await req('PUT', '/v1/gateways/gw-missing/web-chat-token', 'a1', {
+      chatToken: 'chat-tok',
+    });
+    expect(res.status).toBe(404);
+  });
+
+  it('400s a missing or non-string chatToken', async () => {
+    const gatewayId = await makeGateway('a1', 'alice');
+    expect((await req('PUT', `/v1/gateways/${gatewayId}/web-chat-token`, 'a1', {})).status).toBe(
+      400,
+    );
+    expect(
+      (await req('PUT', `/v1/gateways/${gatewayId}/web-chat-token`, 'a1', { chatToken: 42 }))
+        .status,
+    ).toBe(400);
+    expect(
+      (await req('PUT', `/v1/gateways/${gatewayId}/web-chat-token`, 'a1', { chatToken: '' }))
+        .status,
+    ).toBe(400);
+  });
+
+  it('never leaks the token through GET /v1/gateways', async () => {
+    const gatewayId = await makeGateway('a1', 'alice');
+    await req('PUT', `/v1/gateways/${gatewayId}/web-chat-token`, 'a1', { chatToken: 'chat-tok' });
+
+    const body = await (await req('GET', '/v1/gateways', 'a1')).text();
+    expect(body).not.toContain('chat-tok');
+  });
+});
+
+describe('web pairings return the registered chat token', () => {
+  async function makeGateway(account: string, subdomain: string): Promise<string> {
+    const res = await req('POST', '/v1/gateways', account, { subdomain, publicKey: gwPubB64 });
+    return ((await res.json()) as { gatewayId: string }).gatewayId;
+  }
+
+  it('pairing-id-v1 returns { credential, pairingId, chatToken } for a web client', async () => {
+    const gatewayId = await makeGateway('a1', 'alice');
+    await req('PUT', `/v1/gateways/${gatewayId}/web-chat-token`, 'a1', { chatToken: 'chat-tok' });
+
+    const res = await req('POST', `/v1/gateways/${gatewayId}/pairings/pairing-id-v1`, 'a1', {
+      deviceLabel: 'Safari',
+      clientKind: 'web',
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body).toEqual({
+      credential: expect.any(String),
+      pairingId: expect.any(String),
+      chatToken: 'chat-tok',
+    });
+    // The credential is real: the relay's edge accepts it.
+    expect(relayStore.isValid(gatewayId, body.credential as string)).toBe(true);
+  });
+
+  it('the legacy route also returns the chat token for a web client', async () => {
+    const gatewayId = await makeGateway('a1', 'alice');
+    await req('PUT', `/v1/gateways/${gatewayId}/web-chat-token`, 'a1', { chatToken: 'chat-tok' });
+
+    const res = await req('POST', `/v1/gateways/${gatewayId}/pairings`, 'a1', {
+      clientKind: 'web',
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      credential: expect.any(String),
+      chatToken: 'chat-tok',
+    });
+  });
+
+  it('mobile pairings never carry a chat token, even when one is registered', async () => {
+    const gatewayId = await makeGateway('a1', 'alice');
+    await req('PUT', `/v1/gateways/${gatewayId}/web-chat-token`, 'a1', { chatToken: 'chat-tok' });
+
+    const legacy = await req('POST', `/v1/gateways/${gatewayId}/pairings`, 'a1', {
+      deviceLabel: 'iPhone',
+    });
+    expect(await legacy.json()).toEqual({ credential: expect.any(String) });
+
+    const versioned = await req('POST', `/v1/gateways/${gatewayId}/pairings/pairing-id-v1`, 'a1', {
+      deviceLabel: 'iPhone',
+    });
+    expect(await versioned.json()).toEqual({
+      credential: expect.any(String),
+      pairingId: expect.any(String),
+    });
+  });
+
+  it('409s a web pairing when no chat token is registered, minting nothing', async () => {
+    const gatewayId = await makeGateway('a1', 'alice');
+
+    const res = await req('POST', `/v1/gateways/${gatewayId}/pairings/pairing-id-v1`, 'a1', {
+      clientKind: 'web',
+    });
+    expect(res.status).toBe(409);
+    expect((await res.json()) as { error: string }).toMatchObject({
+      error: expect.stringContaining('web chat token'),
+    });
+
+    const list = (await (await req('GET', `/v1/gateways/${gatewayId}/pairings`, 'a1')).json()) as {
+      pairings: unknown[];
+    };
+    expect(list.pairings).toEqual([]);
+  });
+
+  it('409s (not 404) so a missing token is distinguishable from a missing gateway', async () => {
+    const gatewayId = await makeGateway('a1', 'alice');
+
+    const missingToken = await req('POST', `/v1/gateways/${gatewayId}/pairings`, 'a1', {
+      clientKind: 'web',
+    });
+    expect(missingToken.status).toBe(409);
+
+    const crossAccount = await req('POST', `/v1/gateways/${gatewayId}/pairings`, 'a2', {
+      clientKind: 'web',
+    });
+    expect(crossAccount.status).toBe(404);
   });
 });
 
