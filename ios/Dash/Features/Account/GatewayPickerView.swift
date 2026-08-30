@@ -201,13 +201,35 @@ struct GatewayPickerView: View {
         gatewayRow(gateway)
       }
       .listStyle(.insetGrouped)
+      // A gateway enrolled in Mission Control after this list loaded is
+      // otherwise invisible until the app is relaunched. `retry()` is
+      // re-entrancy-guarded, so an over-eager pull issues exactly one request.
+      .refreshable { await viewModel.retry() }
 
     case .empty:
-      ContentUnavailableView(
-        "No Gateways Yet",
-        systemImage: "server.rack",
-        description: Text(AccountCopy.emptyAccount)
-      )
+      ContentUnavailableView {
+        Label("No Gateways Yet", systemImage: "server.rack")
+      } description: {
+        Text(AccountCopy.emptyAccount)
+      } actions: {
+        // The empty-state copy sends the user off to Mission Control to enroll
+        // a machine; this is how they get back to a populated list without
+        // relaunching. There is no pull-to-refresh here to fall back on —
+        // `ContentUnavailableView` is not a scroll view.
+        Button {
+          Task { await viewModel.retry() }
+        } label: {
+          if viewModel.isRefreshing {
+            ProgressView()
+          } else {
+            Text("Refresh")
+          }
+        }
+        .buttonStyle(.borderedProminent)
+        .frame(minWidth: 44, minHeight: 44)
+        .disabled(viewModel.isRefreshing)
+        .accessibilityIdentifier("account.refresh")
+      }
 
     case .error(let message):
       VStack(spacing: 16) {
