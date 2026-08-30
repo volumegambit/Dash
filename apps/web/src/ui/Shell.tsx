@@ -64,9 +64,18 @@ function gatewayBaseUrls(
   gateway: GatewayInfo,
   relayDomain: string,
 ): { restBaseUrl: string; wsBaseUrl: string } {
+  // The control plane's `subdomain` field carries the FULL relay host
+  // (e.g. `mygw.relay.example.com`), not just the label — appending
+  // `relayDomain` again would double the zone. Use it verbatim when it is
+  // already dotted, carrying over any explicit port from `relayDomain`.
+  const portIndex = relayDomain.indexOf(':');
+  const port = portIndex === -1 ? '' : relayDomain.slice(portIndex);
+  const host = gateway.subdomain.includes('.')
+    ? `${gateway.subdomain}${port}`
+    : `${gateway.subdomain}.${relayDomain}`;
   return {
-    restBaseUrl: `https://${gateway.subdomain}.${relayDomain}/mobile/v1`,
-    wsBaseUrl: `wss://${gateway.subdomain}.${relayDomain}/ws/chat`,
+    restBaseUrl: `https://${host}/mobile/v1`,
+    wsBaseUrl: `wss://${host}/ws/chat`,
   };
 }
 
@@ -115,6 +124,13 @@ export function Shell({ controlPlaneClient, credentialStore, relayDomain }: Shel
         }
       } catch (err) {
         console.error('Shell: failed to load gateways', err);
+        // Surface the real failure instead of masquerading as an empty
+        // account — an unreachable control plane or a failed Clerk token
+        // exchange must read differently from "no gateways enrolled".
+        if (!cancelled) {
+          const message = err instanceof Error ? err.message : String(err);
+          setPickGatewayNotice(`Couldn't load your gateways: ${message}`);
+        }
       } finally {
         if (!cancelled) setLoading(false);
       }
