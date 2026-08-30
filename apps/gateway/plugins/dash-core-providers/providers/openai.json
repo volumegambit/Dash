@@ -7,9 +7,9 @@
   "models": [
     {
       "id": "gpt-5.5",
-      "name": "GPT-5.5",
       "contextWindow": 272000,
       "maxTokens": 128000,
+      "name": "GPT-5.5",
       "reasoning": true,
       "input": [
         "text",
@@ -24,9 +24,9 @@
     },
     {
       "id": "gpt-5.4",
-      "name": "GPT-5.4",
       "contextWindow": 272000,
       "maxTokens": 128000,
+      "name": "GPT-5.4",
       "reasoning": true,
       "input": [
         "text",
@@ -41,9 +41,9 @@
     },
     {
       "id": "gpt-5.4-mini",
-      "name": "GPT-5.4-Mini",
       "contextWindow": 400000,
       "maxTokens": 128000,
+      "name": "GPT-5.4-Mini",
       "reasoning": true,
       "input": [
         "text",
@@ -111,6 +111,10 @@
     {
       "pattern": "gpt-*-codex*",
       "tier": 9
+    },
+    {
+      "pattern": "gpt-5.6*",
+      "tier": 8
     },
     {
       "pattern": "gpt-5.5",
@@ -189,7 +193,25 @@
       "tier": 30
     }
   ],
-  "reviewedAt": "2026-06-21",
+  "excludedPatterns": [
+    "text-embedding-*",
+    "omni-moderation-*",
+    "whisper-*",
+    "tts-1*",
+    "*-tts*",
+    "*-transcribe*",
+    "gpt-audio*",
+    "gpt-realtime*",
+    "gpt-image-*",
+    "chatgpt-image-*",
+    "sora-*",
+    "*-deep-research*",
+    "*-search-preview*",
+    "gpt-5-search-api*",
+    "davinci*",
+    "babbage-*"
+  ],
+  "reviewedAt": "2026-08-30",
   "ui": {
     "keyConsoleUrl": "https://platform.openai.com/api-keys",
     "keyPlaceholder": "sk-...",
