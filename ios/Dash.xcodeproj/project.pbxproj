@@ -12,6 +12,7 @@
 		05C3D7786DB5826DFE5CEB65 /* AgentContracts.swift in Sources */ = {isa = PBXBuildFile; fileRef = EEF957521D399CF0D79B78B8 /* AgentContracts.swift */; };
 		082DDB0B3C8AC1E6A8DC4ED4 /* NewConversationView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5D29D8A4F5587FD42816ACA4 /* NewConversationView.swift */; };
 		08998E1B231821CDF5A759D8 /* UITestScenarioSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = A190A09C7EE7AD101760D087 /* UITestScenarioSupport.swift */; };
+		0A7351701D2222D88EA76125 /* AccountConnectFeatureTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C221F00F7183A92CFB4F6AEC /* AccountConnectFeatureTests.swift */; };
 		0B33D0135C4892B5C95A0AFB /* PairingFixtureTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E2CAF389B04EB957A4A047B7 /* PairingFixtureTests.swift */; };
 		0E135AF5789F1DA32CBC80FE /* ChatFrames.swift in Sources */ = {isa = PBXBuildFile; fileRef = 247BD9B6EABCDC4C3283949B /* ChatFrames.swift */; };
 		1250439B2E7BD0B38FD196A8 /* PersistenceModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = D5F3871A70767D81C6B6533D /* PersistenceModels.swift */; };
@@ -91,6 +92,7 @@
 		C84A3B690FFEB2A6170DAB8C /* DashUITestCase.swift in Sources */ = {isa = PBXBuildFile; fileRef = 76AE84542DB1FFF33B421EB6 /* DashUITestCase.swift */; };
 		C93130D544958840EA56718A /* SequenceReconcilerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 98611F13566BC9C8A0C105F0 /* SequenceReconcilerTests.swift */; };
 		CC33C25272F46102059E80C2 /* ChatConnectionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4D6E272B4649EC1830609594 /* ChatConnectionTests.swift */; };
+		CDCB930B00943139EB0B3EF7 /* AccountConnectFeature.swift in Sources */ = {isa = PBXBuildFile; fileRef = 802CB5BE377C22DC1D1F8E82 /* AccountConnectFeature.swift */; };
 		D1A1D32F8972DE9BCD72F836 /* ChatReducerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 25EDAF628CC06039429777EF /* ChatReducerTests.swift */; };
 		D232F0CD364D9F618D884512 /* GatewayURLSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6D0545A13FB1490609CAA806 /* GatewayURLSession.swift */; };
 		D3C7C3AD27986FA80EDFFAC9 /* ConversationListServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F5CADE326E98556F3632D30D /* ConversationListServiceTests.swift */; };
@@ -201,6 +203,7 @@
 		78E4D55EA4AFA96AF8587BD5 /* HTTPAndSSEIntegrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HTTPAndSSEIntegrationTests.swift; sourceTree = "<group>"; };
 		7C480C0A39BF7A911C42D1B5 /* AgentDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentDetailView.swift; sourceTree = "<group>"; };
 		7F905FA5BADAB9C3505C5E98 /* fixtures */ = {isa = PBXFileReference; lastKnownFileType = folder; name = fixtures; path = ../contracts/mobile/v1/fixtures; sourceTree = SOURCE_ROOT; };
+		802CB5BE377C22DC1D1F8E82 /* AccountConnectFeature.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccountConnectFeature.swift; sourceTree = "<group>"; };
 		81664675C56F74B53EE930CE /* Dash.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = Dash.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		844575E4F7C49AD33BEA49F3 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		8D0AD75CCB7719441B1328C0 /* FixtureLoader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FixtureLoader.swift; sourceTree = "<group>"; };
@@ -227,6 +230,7 @@
 		B9D472E7216F5D49490082C3 /* AgentsFeature.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentsFeature.swift; sourceTree = "<group>"; };
 		B9DA6410B51480914E590149 /* ContractFixtureTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContractFixtureTests.swift; sourceTree = "<group>"; };
 		BF63D93795D70EF22218E585 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		C221F00F7183A92CFB4F6AEC /* AccountConnectFeatureTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccountConnectFeatureTests.swift; sourceTree = "<group>"; };
 		C2365E2F6933354B532C3E31 /* ContractCoding.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContractCoding.swift; sourceTree = "<group>"; };
 		C5E07B25904F537DFD919A32 /* ControlPlaneClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ControlPlaneClient.swift; sourceTree = "<group>"; };
 		CF68BCD8217DED6A249CEBE7 /* AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModel.swift; sourceTree = "<group>"; };
@@ -260,6 +264,14 @@
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
+		0EDB9020F4BDFFA2BFD3EEB9 /* Account */ = {
+			isa = PBXGroup;
+			children = (
+				802CB5BE377C22DC1D1F8E82 /* AccountConnectFeature.swift */,
+			);
+			path = Account;
+			sourceTree = "<group>";
+		};
 		150B91BBC7C0CE7A5144F95A /* DashIntegrationTests */ = {
 			isa = PBXGroup;
 			children = (
@@ -425,6 +437,7 @@
 		8644222FC6B3B996A8ECC9E1 /* Features */ = {
 			isa = PBXGroup;
 			children = (
+				0EDB9020F4BDFFA2BFD3EEB9 /* Account */,
 				84FD8BC82515285E7ADE9D4F /* Agents */,
 				61A7809592F4C0725C9C9675 /* Conversations */,
 				9EC140CF24C4EECB4715C4D4 /* Pairing */,
@@ -527,6 +540,7 @@
 		C6D259DC8D41EC60B34A9688 /* Features */ = {
 			isa = PBXGroup;
 			children = (
+				C221F00F7183A92CFB4F6AEC /* AccountConnectFeatureTests.swift */,
 				FE80FDD8FB6ACAB48ADB048D /* AgentsFeatureTests.swift */,
 				0203D495290D5C03FE6AB2AB /* ChatFeatureTests.swift */,
 				25EDAF628CC06039429777EF /* ChatReducerTests.swift */,
@@ -758,6 +772,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				0A7351701D2222D88EA76125 /* AccountConnectFeatureTests.swift in Sources */,
 				D61D56976702ECF8EA100005 /* AccountSessionTests.swift in Sources */,
 				FA5146987F59ECCC880147D8 /* AgentsFeatureTests.swift in Sources */,
 				BB2D3D42B8C75FEA6DD783AD /* AppModelTests.swift in Sources */,
@@ -816,6 +831,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				D3DFA6F6397150DE42590074 /* AccountAuthConfig.swift in Sources */,
+				CDCB930B00943139EB0B3EF7 /* AccountConnectFeature.swift in Sources */,
 				5F2AF93FBF01709C0236E6B6 /* AccountSession.swift in Sources */,
 				05C3D7786DB5826DFE5CEB65 /* AgentContracts.swift in Sources */,
 				A10EBF8D6EEB84AE48B36853 /* AgentDetailView.swift in Sources */,
