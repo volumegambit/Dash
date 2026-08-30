@@ -1,3 +1,7 @@
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
 import { createControlPlaneClient } from './control-plane-client.js';
 import { createDialTokenManager } from './dial-token-manager.js';
 import { loadOrCreateGatewayIdentity } from './gateway-identity.js';
@@ -91,11 +95,22 @@ async function registerWebChatToken(
 
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
-  const harness = await startMobileTestHarness({ scenario: 'stream' });
+  // The data dir is created (and the Ed25519 relay identity minted) BEFORE the
+  // harness starts, so the harness can self-report that same key from its
+  // `/identity` route. A client that cross-checks the gateway's verified
+  // identity against the key enrolled with the control plane (iOS'
+  // `AccountConnectFeature.connect`) only passes when the two agree — this
+  // rig has to model a real gateway, where they always do.
+  const dataDir = await mkdtemp(join(tmpdir(), 'dash-live-account-flow-'));
+  const identity = await loadOrCreateGatewayIdentity(dataDir);
+  const harness = await startMobileTestHarness({
+    scenario: 'stream',
+    dataDir,
+    publicKey: identity.publicKeyB64,
+  });
   const managementPort = Number(new URL(harness.managementBaseUrl).port);
   const channelPort = Number(new URL(harness.chatWebSocketUrl).port);
 
-  const identity = await loadOrCreateGatewayIdentity(harness.dataDir);
   const created = await registerGateway(
     args.cpUrl,
     args.account,
@@ -145,6 +160,9 @@ async function main(): Promise<void> {
     dialTokenManager.stop();
     void harness
       .stop()
+      // `startMobileTestHarness` only removes a data dir it created itself;
+      // this one was made here (see `main`), so clean it up here too.
+      .then(() => rm(dataDir, { recursive: true, force: true }))
       .then(() => process.exit(0))
       .catch((error: unknown) => {
         console.error(
