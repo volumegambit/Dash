@@ -39,7 +39,7 @@ final class SettingsFeature {
     case .offline: "Offline"
     case .gatewayOffline: "Gateway offline"
     case .rateLimited: "Rate limited"
-    case .repairRequired: "Re-pair required"
+    case .repairRequired: "Session no longer authorized"
     case .updateRequired: "Update required"
     }
   }
@@ -57,6 +57,13 @@ final class SettingsFeature {
   var reconnectButtonTitle: String {
     isReconnecting ? "Reconnecting" : "Reconnect"
   }
+
+  /// Shown when the gateway no longer accepts this device's credentials.
+  /// There is no QR/manual re-pair entry any more — the only way back is
+  /// through the account gateway list, which needs the current connection
+  /// dropped first, so the copy names both halves of that in order.
+  static let reauthorizeMessage =
+    "Sign in again from the gateway list, or Disconnect & Forget this gateway, then try again."
 
   var displayValues: String {
     [
@@ -135,11 +142,11 @@ final class SettingsFeature {
     } catch is CancellationError {
       return
     } catch is AppDependencyError {
-      error = "Re-pair this device with the gateway, then try again."
+      error = Self.reauthorizeMessage
     } catch GatewayProfileVerificationError.identityMismatch {
-      error = "Re-pair this device with the gateway, then try again."
+      error = Self.reauthorizeMessage
     } catch GatewayError.unauthorized {
-      error = "Re-pair this device with the gateway, then try again."
+      error = Self.reauthorizeMessage
     } catch GatewayError.capabilityRequired, GatewayError.updateRequired {
       error = "Update Dash on this device and the gateway, then try again."
     } catch {

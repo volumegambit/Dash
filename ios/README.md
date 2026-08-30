@@ -317,7 +317,7 @@ If the app reports **Update Dash**, the gateway advertises a newer incompatible 
 missing `conversation-sync-v1` or `chat-resume-v1`. Update the older side, then reconnect. Do not
 retry mutations against an incompatible contract.
 
-### Re-pair required
+### Session no longer authorized
 
 An unauthorized response means the stored credentials are no longer accepted. Cached content
 stays visible but read-only. Open **Settings** and use **Disconnect & Forget**, then sign back in
