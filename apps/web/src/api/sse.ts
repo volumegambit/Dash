@@ -19,7 +19,7 @@ export async function* readSse(
   url: string,
   tokens: TokenSource,
   signal: AbortSignal,
-  fetchImpl: typeof fetch = fetch,
+  fetchImpl: typeof fetch = (...args) => fetch(...args),
   relayCredential?: string,
 ): AsyncGenerator<unknown> {
   const token = await tokens.getToken();

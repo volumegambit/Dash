@@ -72,7 +72,9 @@ export class MobileRestClient {
   constructor(
     private readonly baseUrl: string,
     private readonly tokens: TokenSource,
-    private readonly fetchImpl: typeof fetch = fetch,
+    private readonly fetchImpl: typeof fetch = (...args) => fetch(...args),
+    // ^ never store bare `fetch`: calling it as a method rebinds `this` and real
+    //   browsers throw "Illegal invocation" (tests always inject, so only live use hit it)
     /** When set, sent as `x-dash-relay-credential` on every request
      * (including `health()`) so the relay can authenticate this browser's hop
      * to the gateway — separate from the `Authorization` bearer, which
