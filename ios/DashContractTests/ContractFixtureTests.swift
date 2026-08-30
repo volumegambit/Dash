@@ -337,6 +337,8 @@ struct ContractFixtureTests {
       try decodeIfValid(HealthResponse.self, fixture)
     case ("json", "openapi", "GatewayIdentity"):
       try decodeIfValid(GatewayIdentityDTO.self, fixture)
+    case ("json", "openapi", "WsTicketResponse"):
+      try decodeIfValid(WsTicketResponseDTO.self, fixture)
     case ("json", "openapi", "MobileAgentList"):
       if fixture.valid {
         _ = try FixtureLoader.decode([RegisteredAgentDTO].self, fixture.file)
