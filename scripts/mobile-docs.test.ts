@@ -134,13 +134,14 @@ describe('mobile documentation', () => {
   });
 
   it('keeps iOS account sign-in copy and QR-retirement scoping consistent', async () => {
-    const [guide, readme, qa, remote, troubleshooting, pairDeviceCard, pairDeviceCardTest] =
+    const [guide, readme, qa, remote, troubleshooting, web, pairDeviceCard, pairDeviceCardTest] =
       await Promise.all([
         readFile('docs/ios.mdx', 'utf8'),
         readFile('ios/README.md', 'utf8'),
         readFile('ios/QA_CHECKLIST.md', 'utf8'),
         readFile('docs/remote-access.mdx', 'utf8'),
         readFile('docs/troubleshooting.mdx', 'utf8'),
+        readFile('docs/web.mdx', 'utf8'),
         readFile('apps/mission-control/src/renderer/src/components/PairDeviceCard.tsx', 'utf8'),
         readFile(
           'apps/mission-control/src/renderer/src/components/PairDeviceCard.test.tsx',
@@ -181,10 +182,13 @@ describe('mobile documentation', () => {
 
     // notEnrolled has a working, self-service remedy (`healEnrolledGatewayChatToken` re-pushes
     // the chat token on every local-gateway launch) — docs must point at that, not a dead end.
-    for (const document of [guide, troubleshooting, readme]) {
+    // `docs/web.mdx` describes the SAME not-enrolled gateway healed by the SAME token push, so
+    // it must not keep telling browser users to re-run enrollment by hand.
+    for (const document of [guide, troubleshooting, readme, web]) {
       expect(document).toContain('updates the gateway');
       expect(document).not.toContain('redo Remote access setup');
     }
+    expect(web).not.toContain('re-run enrollment');
 
     expect(pairDeviceCard).toContain('Scan this code with the Dash mobile app for Android.');
     expect(pairDeviceCard).not.toContain('for Android or iOS');
