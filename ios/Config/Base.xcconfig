@@ -9,8 +9,12 @@ ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor
 TARGETED_DEVICE_FAMILY = 1,2
 
 // Account sign-in (Clerk PKCE against the control plane). `Local.xcconfig`
-// (gitignored, optionally included by Debug.xcconfig) overrides
-// DASH_CONTROL_PLANE_URL for live testing against a real deployment.
+// (gitignored, optionally included by BOTH Debug.xcconfig and
+// Release.xcconfig) overrides DASH_CONTROL_PLANE_URL for testing against a
+// real deployment. The value below is a deliberate placeholder:
+// `AccountAuthConfig.fromBundle` REFUSES it at launch with a message naming
+// this file, so an unconfigured build fails visibly instead of turning every
+// account request into an opaque network error.
 DASH_CLERK_FRONTEND_API = resolved-seahorse-39.clerk.accounts.dev
 DASH_CLERK_CLIENT_ID = 5KwDiIAztapVfeoE
 DASH_CONTROL_PLANE_URL = https:/$()/api.dash.example

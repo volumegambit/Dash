@@ -119,6 +119,78 @@ struct AccountSessionTests {
     }
   }
 
+  @Test(
+    """
+    the committed placeholder control-plane host is refused outright, \
+    so an unconfigured build fails visibly at launch instead of at every request
+    """
+  )
+  func configPlaceholderControlPlaneURLThrows() throws {
+    try withConfigBundle([
+      "DashClerkFrontendAPI": "example.clerk.accounts.dev",
+      "DashClerkClientID": "client-123",
+      // Verbatim from `ios/Config/Base.xcconfig`.
+      "DashControlPlaneURL": "https://api.dash.example",
+    ]) { bundle in
+      #expect(
+        throws: AccountAuthConfig.ConfigError.placeholderControlPlaneURL(
+          "https://api.dash.example"
+        )
+      ) {
+        _ = try AccountAuthConfig.fromBundle(bundle)
+      }
+    }
+  }
+
+  @Test("the placeholder is matched by host, not by substring, and is case-insensitive")
+  func configPlaceholderMatchIsHostScoped() throws {
+    // Same host, different scheme/path/case — still the placeholder.
+    for value in [
+      "https://API.Dash.Example",
+      "https://api.dash.example/v1",
+      "http://api.dash.example",
+    ] {
+      try withConfigBundle([
+        "DashClerkFrontendAPI": "example.clerk.accounts.dev",
+        "DashClerkClientID": "client-123",
+        "DashControlPlaneURL": value,
+      ]) { bundle in
+        #expect(throws: AccountAuthConfig.ConfigError.placeholderControlPlaneURL(value)) {
+          _ = try AccountAuthConfig.fromBundle(bundle)
+        }
+      }
+    }
+
+    // A real deployment that merely MENTIONS the placeholder is untouched.
+    let real = "https://cp.dash.test/api.dash.example"
+    let config = try withConfigBundle([
+      "DashClerkFrontendAPI": "example.clerk.accounts.dev",
+      "DashClerkClientID": "client-123",
+      "DashControlPlaneURL": real,
+    ]) { bundle in
+      try AccountAuthConfig.fromBundle(bundle)
+    }
+    #expect(config.controlPlaneURL == URL(string: real))
+  }
+
+  @Test("a placeholder build's launch failure says what is wrong, not 'operation couldn't be completed'")
+  @MainActor
+  func configPlaceholderHasAnHonestUserFacingMessage() {
+    let message = AppLaunch.message(
+      for: AccountAuthConfig.ConfigError.placeholderControlPlaneURL("https://api.dash.example")
+    )
+
+    #expect(message != AppLaunch.storageFailureMessage)
+    #expect(message.contains("Local.xcconfig"))
+    #expect(message.contains("account service"))
+    // Anything without its own description keeps the storage guidance rather
+    // than leaking a Cocoa "The operation couldn't be completed" string.
+    #expect(
+      AppLaunch.message(for: AppDependencyError.missingSecrets(profileID: UUID()))
+        == AppLaunch.storageFailureMessage
+    )
+  }
+
   // MARK: - signIn / PKCE
 
   @Test("signIn builds a PKCE authorize URL and exchanges the callback code for a token")
@@ -359,7 +431,10 @@ struct AccountSessionTests {
 private func makeConfig(
   frontendAPIHost: String = "resolved-seahorse-39.clerk.accounts.dev",
   clientID: String = "test-client-id",
-  controlPlaneURL: String = "https://api.dash.example"
+  // NOT `api.dash.example`: `AccountAuthConfig.fromBundle` refuses that host
+  // outright as the committed placeholder (see
+  // `configPlaceholderControlPlaneURLThrows`).
+  controlPlaneURL: String = "https://cp.dash.test"
 ) throws -> AccountAuthConfig {
   try withConfigBundle([
     "DashClerkFrontendAPI": frontendAPIHost,

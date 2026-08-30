@@ -1,3 +1,10 @@
 #include "Base.xcconfig"
 
 SWIFT_COMPILATION_MODE = wholemodule
+
+// Same optional local override Debug.xcconfig takes. Without it a Release
+// build could only ever carry Base.xcconfig's placeholder control-plane URL,
+// which `AccountAuthConfig.fromBundle` now refuses outright — so a locally
+// built Release archive had no way to reach a real deployment at all.
+// Gitignored (ios/.gitignore); absent in CI, where the `?` makes this a no-op.
+#include? "Local.xcconfig"
