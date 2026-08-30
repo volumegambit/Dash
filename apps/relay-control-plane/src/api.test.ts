@@ -1,4 +1,4 @@
-import { createPublicKey, generateKeyPairSync, randomBytes } from 'node:crypto';
+import { createPublicKey, generateKeyPairSync, randomBytes, sign } from 'node:crypto';
 import type { AddressInfo } from 'node:net';
 import {
   DurableCredentialStore,
@@ -12,7 +12,7 @@ import { createApi } from './api.js';
 import { StubAuthenticator } from './auth.js';
 import { DialTokenSigner } from './dial-token-signer.js';
 import { GatewayAssertionAuthenticator } from './gateway-assertion-auth.js';
-import { ProvisioningService } from './provisioning.js';
+import { ProvisioningService, approvalMessage } from './provisioning.js';
 import { RelayAdminClient } from './relay-admin-client.js';
 import { SqliteStore } from './store.js';
 
@@ -33,8 +33,13 @@ let relayServer: RelayServer;
 let relayStore: DurableCredentialStore;
 let store: SqliteStore;
 let app: ReturnType<typeof createApi>;
+// Mutable so approval-expiry tests can fast-forward the ProvisioningService's
+// clock without needing a whole separate app instance (the #now() injection
+// pattern used by DialTokenSigner/GatewayAssertionAuthenticator).
+let clockMs = 1000;
 
 beforeEach(async () => {
+  clockMs = 1000;
   relayStore = new DurableCredentialStore(':memory:');
   relayServer = createRelayServer(hostedRelayAuth({ publicKey, store: relayStore }), {
     admin: { secret: 'master', store: relayStore },
@@ -50,6 +55,7 @@ beforeEach(async () => {
     signer,
     relay,
     relayZone: 'relay.example.com',
+    now: () => clockMs,
   });
   const gatewayAssertionAuth = new GatewayAssertionAuthenticator({
     store,
@@ -846,6 +852,362 @@ describe('GET /v1/signers', () => {
     const res = await req('GET', '/v1/signers', 'a1');
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ signers: [] });
+  });
+});
+
+describe('signer-gated web approvals over HTTP (Task 3)', () => {
+  async function makeGatewayWithChatToken(account: string, subdomain: string): Promise<string> {
+    const res = await req('POST', '/v1/gateways', account, { subdomain, publicKey: gwPubB64 });
+    const gatewayId = ((await res.json()) as { gatewayId: string }).gatewayId;
+    await req('PUT', `/v1/gateways/${gatewayId}/web-chat-token`, account, { chatToken: 'chat-1' });
+    return gatewayId;
+  }
+
+  function signerKeypair() {
+    const { publicKey: pub, privateKey: priv } = generateKeyPairSync('ed25519');
+    const rawPub = (pub.export({ format: 'jwk' }) as { x: string }).x;
+    return { rawPub, priv };
+  }
+
+  async function registerSigner(account: string, rawPub: string): Promise<string> {
+    const res = await req('POST', '/v1/signers', account, { publicKey: rawPub, label: 'iPhone' });
+    return ((await res.json()) as { signerId: string }).signerId;
+  }
+
+  function signDecision(
+    priv: ReturnType<typeof generateKeyPairSync>['privateKey'],
+    approvalId: string,
+    pairingId: string,
+    decision: 'approve' | 'deny',
+  ): string {
+    return sign(
+      null,
+      Buffer.from(approvalMessage(approvalId, pairingId, decision), 'utf8'),
+      priv,
+    ).toString('base64url');
+  }
+
+  it('mints a pending approval (no secrets) for a signer-gated web pairing via pairing-id-v1', async () => {
+    const gatewayId = await makeGatewayWithChatToken('a1', 'alice');
+    const { rawPub } = signerKeypair();
+    await registerSigner('a1', rawPub);
+
+    const res = await req('POST', `/v1/gateways/${gatewayId}/pairings/pairing-id-v1`, 'a1', {
+      deviceLabel: 'Safari',
+      clientKind: 'web',
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body).toEqual({
+      pairingId: expect.any(String),
+      status: 'pending',
+      approvalId: expect.any(String),
+      approvalExpiresAt: expect.any(Number),
+    });
+
+    const list = (await (await req('GET', `/v1/gateways/${gatewayId}/pairings`, 'a1')).json()) as {
+      pairings: Array<{ status: string }>;
+    };
+    expect(list.pairings).toEqual([expect.objectContaining({ status: 'pending' })]);
+  });
+
+  it('mints a pending approval via the legacy route too, never leaking a credential', async () => {
+    const gatewayId = await makeGatewayWithChatToken('a1', 'alice');
+    const { rawPub } = signerKeypair();
+    await registerSigner('a1', rawPub);
+
+    const res = await req('POST', `/v1/gateways/${gatewayId}/pairings`, 'a1', {
+      deviceLabel: 'Safari',
+      clientKind: 'web',
+    });
+    expect(res.status).toBe(200);
+    const raw = await res.text();
+    expect(JSON.parse(raw)).toEqual({
+      pairingId: expect.any(String),
+      status: 'pending',
+      approvalId: expect.any(String),
+      approvalExpiresAt: expect.any(Number),
+    });
+    expect(raw).not.toContain('credential');
+    expect(raw).not.toContain('chatToken');
+  });
+
+  it('full happy path: register -> pending mint -> GET approval -> signed decision (204) -> claim once (200) -> 410 on second claim', async () => {
+    const gatewayId = await makeGatewayWithChatToken('a1', 'alice');
+    const { rawPub, priv } = signerKeypair();
+    const signerId = await registerSigner('a1', rawPub);
+
+    const minted = (await (
+      await req('POST', `/v1/gateways/${gatewayId}/pairings/pairing-id-v1`, 'a1', {
+        deviceLabel: 'Safari',
+        clientKind: 'web',
+      })
+    ).json()) as { pairingId: string; approvalId: string; approvalExpiresAt: number };
+
+    const fetched = await req('GET', `/v1/approvals/${minted.approvalId}`, 'a1');
+    expect(fetched.status).toBe(200);
+    expect(await fetched.json()).toEqual({
+      approvalId: minted.approvalId,
+      pairingId: minted.pairingId,
+      gatewayId,
+      deviceLabel: 'Safari',
+      expiresAt: minted.approvalExpiresAt,
+    });
+
+    const signature = signDecision(priv, minted.approvalId, minted.pairingId, 'approve');
+    const decisionRes = await req('POST', `/v1/approvals/${minted.approvalId}/decision`, 'a1', {
+      decision: 'approve',
+      signerId,
+      signature,
+    });
+    expect(decisionRes.status).toBe(204);
+
+    const list = (await (await req('GET', `/v1/gateways/${gatewayId}/pairings`, 'a1')).json()) as {
+      pairings: Array<{ status: string }>;
+    };
+    expect(list.pairings).toEqual([expect.objectContaining({ status: 'active' })]);
+
+    const claimRes = await req(
+      'POST',
+      `/v1/gateways/${gatewayId}/pairings/${minted.pairingId}/credential`,
+      'a1',
+    );
+    expect(claimRes.status).toBe(200);
+    const claimed = (await claimRes.json()) as { credential: string; chatToken: string };
+    expect(claimed).toEqual({ credential: expect.any(String), chatToken: 'chat-1' });
+    expect(relayStore.isValid(gatewayId, claimed.credential)).toBe(true);
+
+    const secondClaim = await req(
+      'POST',
+      `/v1/gateways/${gatewayId}/pairings/${minted.pairingId}/credential`,
+      'a1',
+    );
+    expect(secondClaim.status).toBe(410);
+  });
+
+  it('claim reports 409 { status: "pending" } before a decision is made', async () => {
+    const gatewayId = await makeGatewayWithChatToken('a1', 'alice');
+    const { rawPub } = signerKeypair();
+    await registerSigner('a1', rawPub);
+
+    const minted = (await (
+      await req('POST', `/v1/gateways/${gatewayId}/pairings/pairing-id-v1`, 'a1', {
+        clientKind: 'web',
+      })
+    ).json()) as { pairingId: string };
+
+    const res = await req(
+      'POST',
+      `/v1/gateways/${gatewayId}/pairings/${minted.pairingId}/credential`,
+      'a1',
+    );
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ status: 'pending' });
+  });
+
+  it('deny (204) deletes the pairing outright — it drops off the list, and claim 404s', async () => {
+    const gatewayId = await makeGatewayWithChatToken('a1', 'alice');
+    const { rawPub, priv } = signerKeypair();
+    const signerId = await registerSigner('a1', rawPub);
+
+    const minted = (await (
+      await req('POST', `/v1/gateways/${gatewayId}/pairings/pairing-id-v1`, 'a1', {
+        clientKind: 'web',
+      })
+    ).json()) as { pairingId: string; approvalId: string };
+
+    const signature = signDecision(priv, minted.approvalId, minted.pairingId, 'deny');
+    const decisionRes = await req('POST', `/v1/approvals/${minted.approvalId}/decision`, 'a1', {
+      decision: 'deny',
+      signerId,
+      signature,
+    });
+    expect(decisionRes.status).toBe(204);
+
+    const list = (await (await req('GET', `/v1/gateways/${gatewayId}/pairings`, 'a1')).json()) as {
+      pairings: unknown[];
+    };
+    expect(list.pairings).toEqual([]);
+
+    const claimRes = await req(
+      'POST',
+      `/v1/gateways/${gatewayId}/pairings/${minted.pairingId}/credential`,
+      'a1',
+    );
+    expect(claimRes.status).toBe(404);
+  });
+
+  it('410s a decision made after the approval TTL elapses, removing the orphan pairing', async () => {
+    const gatewayId = await makeGatewayWithChatToken('a1', 'alice');
+    const { rawPub, priv } = signerKeypair();
+    const signerId = await registerSigner('a1', rawPub);
+
+    const minted = (await (
+      await req('POST', `/v1/gateways/${gatewayId}/pairings/pairing-id-v1`, 'a1', {
+        clientKind: 'web',
+      })
+    ).json()) as { pairingId: string; approvalId: string };
+
+    clockMs += 120_001; // one ms past the 120s TTL
+
+    const signature = signDecision(priv, minted.approvalId, minted.pairingId, 'approve');
+    const decisionRes = await req('POST', `/v1/approvals/${minted.approvalId}/decision`, 'a1', {
+      decision: 'approve',
+      signerId,
+      signature,
+    });
+    expect(decisionRes.status).toBe(410);
+
+    const list = (await (await req('GET', `/v1/gateways/${gatewayId}/pairings`, 'a1')).json()) as {
+      pairings: unknown[];
+    };
+    expect(list.pairings).toEqual([]);
+  });
+
+  it('403s a decision whose signature does not verify', async () => {
+    const gatewayId = await makeGatewayWithChatToken('a1', 'alice');
+    const { rawPub } = signerKeypair();
+    const impostor = signerKeypair();
+    const signerId = await registerSigner('a1', rawPub);
+
+    const minted = (await (
+      await req('POST', `/v1/gateways/${gatewayId}/pairings/pairing-id-v1`, 'a1', {
+        clientKind: 'web',
+      })
+    ).json()) as { pairingId: string; approvalId: string };
+
+    // Signed with a DIFFERENT key than the one registered as signerId.
+    const signature = signDecision(impostor.priv, minted.approvalId, minted.pairingId, 'approve');
+    const decisionRes = await req('POST', `/v1/approvals/${minted.approvalId}/decision`, 'a1', {
+      decision: 'approve',
+      signerId,
+      signature,
+    });
+    expect(decisionRes.status).toBe(403);
+
+    // Still pending — a rejected forgery doesn't burn the approval.
+    const list = (await (await req('GET', `/v1/gateways/${gatewayId}/pairings`, 'a1')).json()) as {
+      pairings: Array<{ status: string }>;
+    };
+    expect(list.pairings).toEqual([expect.objectContaining({ status: 'pending' })]);
+  });
+
+  it('410s a second decision on an already-decided approval', async () => {
+    const gatewayId = await makeGatewayWithChatToken('a1', 'alice');
+    const { rawPub, priv } = signerKeypair();
+    const signerId = await registerSigner('a1', rawPub);
+
+    const minted = (await (
+      await req('POST', `/v1/gateways/${gatewayId}/pairings/pairing-id-v1`, 'a1', {
+        clientKind: 'web',
+      })
+    ).json()) as { pairingId: string; approvalId: string };
+
+    const approveSig = signDecision(priv, minted.approvalId, minted.pairingId, 'approve');
+    await req('POST', `/v1/approvals/${minted.approvalId}/decision`, 'a1', {
+      decision: 'approve',
+      signerId,
+      signature: approveSig,
+    });
+
+    const denySig = signDecision(priv, minted.approvalId, minted.pairingId, 'deny');
+    const secondDecision = await req('POST', `/v1/approvals/${minted.approvalId}/decision`, 'a1', {
+      decision: 'deny',
+      signerId,
+      signature: denySig,
+    });
+    expect(secondDecision.status).toBe(410);
+  });
+
+  it('404s a GET of an approval fetched from the wrong account', async () => {
+    const gatewayId = await makeGatewayWithChatToken('a1', 'alice');
+    const { rawPub } = signerKeypair();
+    await registerSigner('a1', rawPub);
+
+    const minted = (await (
+      await req('POST', `/v1/gateways/${gatewayId}/pairings/pairing-id-v1`, 'a1', {
+        clientKind: 'web',
+      })
+    ).json()) as { approvalId: string };
+
+    const res = await req('GET', `/v1/approvals/${minted.approvalId}`, 'a2');
+    expect(res.status).toBe(404);
+  });
+
+  it('404s an unknown approval id', async () => {
+    const res = await req('GET', '/v1/approvals/ap-missing', 'a1');
+    expect(res.status).toBe(404);
+  });
+
+  it('400s a decision request missing required fields', async () => {
+    const gatewayId = await makeGatewayWithChatToken('a1', 'alice');
+    const { rawPub } = signerKeypair();
+    await registerSigner('a1', rawPub);
+
+    const minted = (await (
+      await req('POST', `/v1/gateways/${gatewayId}/pairings/pairing-id-v1`, 'a1', {
+        clientKind: 'web',
+      })
+    ).json()) as { approvalId: string };
+
+    const res = await req('POST', `/v1/approvals/${minted.approvalId}/decision`, 'a1', {
+      decision: 'approve',
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it('401s all three new routes without authentication', async () => {
+    expect((await req('GET', '/v1/approvals/ap-x')).status).toBe(401);
+    expect((await req('POST', '/v1/approvals/ap-x/decision')).status).toBe(401);
+    expect((await req('POST', '/v1/gateways/gw-x/pairings/pr-x/credential')).status).toBe(401);
+  });
+
+  it('zero-signer accounts mint immediately via pairing-id-v1, byte-compatible with today', async () => {
+    const gatewayId = await makeGatewayWithChatToken('a1', 'alice');
+
+    const res = await req('POST', `/v1/gateways/${gatewayId}/pairings/pairing-id-v1`, 'a1', {
+      deviceLabel: 'Safari',
+      clientKind: 'web',
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      credential: expect.any(String),
+      pairingId: expect.any(String),
+      chatToken: 'chat-1',
+      status: 'active',
+    });
+  });
+
+  it('zero-signer accounts mint immediately via the legacy route, byte-compatible with today', async () => {
+    const gatewayId = await makeGatewayWithChatToken('a1', 'alice');
+
+    const res = await req('POST', `/v1/gateways/${gatewayId}/pairings`, 'a1', {
+      deviceLabel: 'Safari',
+      clientKind: 'web',
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      credential: expect.any(String),
+      chatToken: 'chat-1',
+    });
+  });
+
+  it('mobile mints stay immediate and unaffected even when the account has registered signers', async () => {
+    const gatewayId = await makeGatewayWithChatToken('a1', 'alice');
+    const { rawPub } = signerKeypair();
+    await registerSigner('a1', rawPub);
+
+    const res = await req('POST', `/v1/gateways/${gatewayId}/pairings/pairing-id-v1`, 'a1', {
+      deviceLabel: 'iPhone',
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body).toEqual({
+      credential: expect.any(String),
+      pairingId: expect.any(String),
+      chatToken: 'chat-1',
+      status: 'active',
+    });
   });
 });
 

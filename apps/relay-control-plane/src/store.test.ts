@@ -458,4 +458,188 @@ describe('SqliteStore', () => {
       expect(store.signerByAccountAndId('acct-1', 'sg-missing')).toBeNull();
     });
   });
+
+  describe('approvals + pending pairing claim (Task 3)', () => {
+    beforeEach(() => {
+      store.createAccount('acct-1');
+      store.createGateway({
+        gatewayId: 'alice-mbp',
+        accountId: 'acct-1',
+        subdomain: 'alice-mbp.relay.local',
+        publicKey: 'pk-alice',
+      });
+    });
+
+    function addPendingPairing(id = 'pr-pending-1') {
+      return store.addPairing({
+        id,
+        gatewayId: 'alice-mbp',
+        credentialHash: '',
+        deviceLabel: 'Safari',
+        clientKind: 'web',
+        status: 'pending',
+      });
+    }
+
+    it('addPairing accepts an explicit pending status (defaults to active otherwise)', () => {
+      const pending = addPendingPairing();
+      expect(pending.status).toBe('pending');
+      const active = store.addPairing({
+        id: 'pr-active-1',
+        gatewayId: 'alice-mbp',
+        credentialHash: 'hash',
+        deviceLabel: null,
+        clientKind: 'mobile',
+      });
+      expect(active.status).toBe('active');
+    });
+
+    it('createApproval + getApproval round-trips a pending approval', () => {
+      addPendingPairing();
+      const created = store.createApproval({
+        approvalId: 'ap-1',
+        accountId: 'acct-1',
+        gatewayId: 'alice-mbp',
+        pairingId: 'pr-pending-1',
+        deviceLabel: 'Safari',
+        expiresAt: 5000,
+      });
+      expect(created).toEqual({
+        approvalId: 'ap-1',
+        accountId: 'acct-1',
+        gatewayId: 'alice-mbp',
+        pairingId: 'pr-pending-1',
+        deviceLabel: 'Safari',
+        status: 'pending',
+        expiresAt: 5000,
+        createdAt: expect.any(Number),
+      });
+      expect(store.getApproval('ap-1')).toEqual(created);
+    });
+
+    it('getApproval returns null for an unknown id', () => {
+      expect(store.getApproval('ap-missing')).toBeNull();
+    });
+
+    it('decideApproval transitions a pending approval exactly once', () => {
+      addPendingPairing();
+      store.createApproval({
+        approvalId: 'ap-1',
+        accountId: 'acct-1',
+        gatewayId: 'alice-mbp',
+        pairingId: 'pr-pending-1',
+        deviceLabel: 'Safari',
+        expiresAt: 5000,
+      });
+
+      expect(store.decideApproval('ap-1', 'approved')).toBe(true);
+      expect(store.getApproval('ap-1')?.status).toBe('approved');
+
+      // Already decided — the second call is a no-op (false), not a second write.
+      expect(store.decideApproval('ap-1', 'denied')).toBe(false);
+      expect(store.getApproval('ap-1')?.status).toBe('approved');
+    });
+
+    it('decideApproval returns false for an unknown approval', () => {
+      expect(store.decideApproval('ap-missing', 'denied')).toBe(false);
+    });
+
+    it('discardPendingPairing hard-deletes a pending pairing row', () => {
+      addPendingPairing();
+      expect(store.listPairings('alice-mbp')).toHaveLength(1);
+
+      expect(store.discardPendingPairing('alice-mbp', 'pr-pending-1')).toBe(true);
+      expect(store.listPairings('alice-mbp')).toEqual([]);
+    });
+
+    it('discardPendingPairing refuses to touch a non-pending pairing', () => {
+      const active = store.addPairing({
+        id: 'pr-active-1',
+        gatewayId: 'alice-mbp',
+        credentialHash: 'hash',
+        deviceLabel: null,
+        clientKind: 'web',
+      });
+      expect(active.status).toBe('active');
+
+      expect(store.discardPendingPairing('alice-mbp', 'pr-active-1')).toBe(false);
+      expect(store.listPairings('alice-mbp')).toHaveLength(1);
+    });
+
+    it('discardPendingPairing returns false for an unknown pairing', () => {
+      expect(store.discardPendingPairing('alice-mbp', 'pr-missing')).toBe(false);
+    });
+
+    it('activatePairing transitions a pending pairing to active and stores the pending-claim value', () => {
+      addPendingPairing();
+
+      const ok = store.activatePairing('alice-mbp', 'pr-pending-1', {
+        credentialHash: 'hash-1',
+        credential: 'raw-credential-1',
+        chatToken: 'chat-1',
+      });
+      expect(ok).toBe(true);
+
+      const pairing = store.listPairings('alice-mbp')[0];
+      expect(pairing.status).toBe('active');
+      expect(pairing.credentialHash).toBe('hash-1');
+    });
+
+    it('activatePairing refuses to touch a pairing that is not pending', () => {
+      const active = store.addPairing({
+        id: 'pr-active-1',
+        gatewayId: 'alice-mbp',
+        credentialHash: 'original-hash',
+        deviceLabel: null,
+        clientKind: 'web',
+      });
+      expect(active.status).toBe('active');
+
+      const ok = store.activatePairing('alice-mbp', 'pr-active-1', {
+        credentialHash: 'hash-1',
+        credential: 'raw-credential-1',
+        chatToken: null,
+      });
+      expect(ok).toBe(false);
+      expect(store.listPairings('alice-mbp')[0].credentialHash).toBe('original-hash');
+    });
+
+    it('claimCredential returns the stored value exactly once, then null (single-use)', () => {
+      addPendingPairing();
+      store.activatePairing('alice-mbp', 'pr-pending-1', {
+        credentialHash: 'hash-1',
+        credential: 'raw-credential-1',
+        chatToken: 'chat-1',
+      });
+
+      const first = store.claimCredential('alice-mbp', 'pr-pending-1');
+      expect(first).toEqual({ credential: 'raw-credential-1', chatToken: 'chat-1' });
+
+      const second = store.claimCredential('alice-mbp', 'pr-pending-1');
+      expect(second).toBeNull();
+    });
+
+    it('claimCredential returns null for a pairing with no pending-claim value (never activated)', () => {
+      addPendingPairing();
+      expect(store.claimCredential('alice-mbp', 'pr-pending-1')).toBeNull();
+    });
+
+    it('claimCredential returns null for an unknown pairing', () => {
+      expect(store.claimCredential('alice-mbp', 'pr-missing')).toBeNull();
+    });
+
+    it('claimCredential tolerates a null chat token', () => {
+      addPendingPairing();
+      store.activatePairing('alice-mbp', 'pr-pending-1', {
+        credentialHash: 'hash-1',
+        credential: 'raw-credential-1',
+        chatToken: null,
+      });
+
+      expect(store.claimCredential('alice-mbp', 'pr-pending-1')).toEqual({
+        credential: 'raw-credential-1',
+        chatToken: null,
+      });
+    });
+  });
 });

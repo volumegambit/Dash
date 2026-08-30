@@ -29,6 +29,14 @@ export type ClientKind = 'mobile' | 'web';
 /**
  * A paired device's credential — stored as a hash only. The raw credential is
  * returned once at provisioning time and never persisted at rest.
+ *
+ * `'pending'` (Task 3) is a THIRD status, distinct from `'active'`/`'revoked'`:
+ * a signer-gated web mint persists the row before any credential exists, and
+ * `credentialHash` is a meaningless placeholder (`''`) until
+ * {@link Store.activatePairing} fills it in on approval. A pending row is
+ * never revoked — it is either activated or hard-deleted via
+ * {@link Store.discardPendingPairing} (deny/expiry), so no dead placeholder
+ * ever lingers the way a revoked row deliberately does.
  */
 export interface PairingRecord {
   id: string;
@@ -36,7 +44,7 @@ export interface PairingRecord {
   credentialHash: string;
   deviceLabel: string | null;
   clientKind: ClientKind;
-  status: 'active' | 'revoked';
+  status: 'active' | 'revoked' | 'pending';
   createdAt: number;
 }
 
@@ -53,6 +61,35 @@ export interface SignerRecord {
    *  `ProvisioningService.registerSigner`), stored verbatim here. */
   publicKey: string;
   label: string;
+  createdAt: number;
+}
+
+/**
+ * A short-lived, single-decision challenge minted when a signer-gated web
+ * pairing is requested (Task 3). The web app renders `approvalId` as a QR
+ * (`dash-approve:v1:<approvalId>`, Task 4); a signed-in iOS signer scans it,
+ * fetches this record via `GET /v1/approvals/:id`, and posts an
+ * Ed25519-signed decision (`POST /v1/approvals/:id/decision`, see
+ * `ProvisioningService.decideApproval`) that either activates or discards the
+ * associated PENDING `pairingId`.
+ *
+ * `status` starts `'pending'` and transitions AT MOST ONCE, to `'approved'`
+ * or `'denied'` — enforced atomically by {@link Store.decideApproval}'s
+ * `WHERE status = 'pending'` guard, which is what makes "single decision" a
+ * store-level invariant rather than something callers have to get right.
+ *
+ * `expiresAt`/`createdAt` are unix MILLISECONDS, matching every other
+ * timestamp in this store (contrast `apps/relay-control-plane/src/dial-token-signer.ts`,
+ * whose `now()` is unix seconds — a distinct, unrelated clock).
+ */
+export interface ApprovalRecord {
+  approvalId: string;
+  accountId: string;
+  gatewayId: string;
+  pairingId: string;
+  deviceLabel: string | null;
+  status: 'pending' | 'approved' | 'denied';
+  expiresAt: number;
   createdAt: number;
 }
 
@@ -96,9 +133,49 @@ export interface Store {
   getWebChatToken(gatewayId: string): string | null;
   /** Ownership-checked: only the owning account may revoke. Keeps the row. */
   revokeGateway(accountId: string, gatewayId: string): boolean;
-  addPairing(r: Omit<PairingRecord, 'status' | 'createdAt'>): PairingRecord;
+  /**
+   * `status` defaults to `'active'` (every caller before Task 3 relied on
+   * this) — pass `status: 'pending'` to persist a signer-gated web mint
+   * before its credential exists.
+   */
+  addPairing(
+    r: Omit<PairingRecord, 'status' | 'createdAt'> & { status?: PairingRecord['status'] },
+  ): PairingRecord;
   listPairings(gatewayId: string): PairingRecord[];
   revokePairing(gatewayId: string, id: string): boolean;
+  /**
+   * Hard-delete a PENDING pairing row outright (never just marks it revoked,
+   * unlike {@link revokePairing}). Only ever removes a row whose status is
+   * still `'pending'` — a race that activates the pairing first wins, and
+   * this becomes a no-op (`false`). Used when an approval is denied or
+   * expires before activation, so a device that was never actually paired
+   * leaves no dead row and no placeholder credential hash behind.
+   */
+  discardPendingPairing(gatewayId: string, id: string): boolean;
+  /**
+   * Approve a PENDING pairing: atomically (guarded by `status = 'pending'`)
+   * sets `credentialHash` (the durable record) and persists the raw
+   * `credential` (+ optional `chatToken`) as a recoverable value awaiting
+   * exactly one claim via {@link claimCredential} — the same documented
+   * exception as `webChatToken` (see the class doc comment) and for the same
+   * reason: nothing else can hand a browser this secret out of band. Returns
+   * `false` (no write) if the pairing is unknown or was not still pending.
+   */
+  activatePairing(
+    gatewayId: string,
+    id: string,
+    v: { credentialHash: string; credential: string; chatToken: string | null },
+  ): boolean;
+  /**
+   * Read-then-scrub the pending-claim value {@link activatePairing} stored.
+   * Returns `null` when the pairing is unknown OR the value was already
+   * claimed (single-use) — callers distinguish "still pending" themselves via
+   * `listPairings`' `status` before calling this.
+   */
+  claimCredential(
+    gatewayId: string,
+    id: string,
+  ): { credential: string; chatToken: string | null } | null;
   /** All signers registered for `accountId`, newest-agnostic (no ordering guarantee). */
   listSigners(accountId: string): SignerRecord[];
   /**
@@ -112,6 +189,24 @@ export interface Store {
   signerCount(accountId: string): number;
   /** The signer, scoped to `accountId` — `null` if unknown OR owned by another account. */
   signerByAccountAndId(accountId: string, signerId: string): SignerRecord | null;
+  /** Create a pending approval challenge tied to an already-persisted PENDING pairing. */
+  createApproval(r: {
+    approvalId: string;
+    accountId: string;
+    gatewayId: string;
+    pairingId: string;
+    deviceLabel: string | null;
+    expiresAt: number;
+  }): ApprovalRecord;
+  /** The approval, or `null` if unknown. Never filters on status/expiry — callers decide what an old record means. */
+  getApproval(approvalId: string): ApprovalRecord | null;
+  /**
+   * Atomically transition a PENDING approval to `'approved'` or `'denied'`.
+   * Returns `false` (no write) when the approval is unknown or was already
+   * decided — the `WHERE status = 'pending'` guard is what makes "exactly one
+   * decision" a race-free store invariant rather than a caller convention.
+   */
+  decideApproval(approvalId: string, decision: 'approved' | 'denied'): boolean;
 }
 
 interface GatewayRow {
@@ -139,6 +234,17 @@ interface SignerRow {
   account_id: string;
   public_key: string;
   label: string | null;
+  created_at: number;
+}
+
+interface ApprovalRow {
+  id: string;
+  account_id: string;
+  gateway_id: string;
+  pairing_id: string;
+  device_label: string | null;
+  status: string;
+  expires_at: number;
   created_at: number;
 }
 
@@ -180,9 +286,24 @@ export class SqliteStore implements Store {
         created_at INTEGER NOT NULL,
         UNIQUE(account_id, public_key)
       );
+      CREATE TABLE IF NOT EXISTS approvals (
+        id           TEXT PRIMARY KEY,
+        account_id   TEXT NOT NULL REFERENCES accounts(account_id),
+        gateway_id   TEXT NOT NULL REFERENCES gateways(gateway_id),
+        -- Deliberately NOT a FOREIGN KEY: a denied/expired approval outlives
+        -- its pairing row (discardPendingPairing hard-deletes it), so the
+        -- approval stays a readable historical record instead of also being
+        -- swept away by referential integrity.
+        pairing_id   TEXT NOT NULL,
+        device_label TEXT,
+        status       TEXT NOT NULL,
+        expires_at   INTEGER NOT NULL,
+        created_at   INTEGER NOT NULL
+      );
       CREATE INDEX IF NOT EXISTS idx_gateways_account ON gateways(account_id);
       CREATE INDEX IF NOT EXISTS idx_pairings_gateway ON pairings(gateway_id);
       CREATE INDEX IF NOT EXISTS idx_signers_account ON signers(account_id);
+      CREATE INDEX IF NOT EXISTS idx_approvals_account ON approvals(account_id);
     `);
     // Guarded migration: a dev DB created before the pubkey model lacks
     // `public_key`. Add it if absent (CREATE TABLE IF NOT EXISTS won't alter an
@@ -206,6 +327,18 @@ export class SqliteStore implements Store {
     }>;
     if (!pairingCols.some((c) => c.name === 'client_kind')) {
       this.db.exec("ALTER TABLE pairings ADD COLUMN client_kind TEXT NOT NULL DEFAULT 'mobile'");
+    }
+    // Guarded migration: a dev DB created before the signer-approval flow
+    // (Task 3) lacks the pending-claim columns — the raw credential (and its
+    // paired chat token) an approved pairing holds as a recoverable value
+    // awaiting exactly one claim (see `activatePairing`/`claimCredential`).
+    // Both are nullable: every pre-existing (already-active, never-pending)
+    // pairing simply reads as "nothing to claim".
+    if (!pairingCols.some((c) => c.name === 'pending_credential')) {
+      this.db.exec('ALTER TABLE pairings ADD COLUMN pending_credential TEXT');
+    }
+    if (!pairingCols.some((c) => c.name === 'pending_chat_token')) {
+      this.db.exec('ALTER TABLE pairings ADD COLUMN pending_chat_token TEXT');
     }
   }
 
@@ -285,10 +418,12 @@ export class SqliteStore implements Store {
     return result.changes > 0;
   }
 
-  addPairing(r: Omit<PairingRecord, 'status' | 'createdAt'>): PairingRecord {
+  addPairing(
+    r: Omit<PairingRecord, 'status' | 'createdAt'> & { status?: PairingRecord['status'] },
+  ): PairingRecord {
     const record: PairingRecord = {
       ...r,
-      status: 'active',
+      status: r.status ?? 'active',
       createdAt: this.now(),
     };
     this.db
@@ -319,6 +454,51 @@ export class SqliteStore implements Store {
       .prepare("UPDATE pairings SET status = 'revoked' WHERE id = ? AND gateway_id = ?")
       .run(id, gatewayId);
     return result.changes > 0;
+  }
+
+  discardPendingPairing(gatewayId: string, id: string): boolean {
+    const result = this.db
+      .prepare("DELETE FROM pairings WHERE id = ? AND gateway_id = ? AND status = 'pending'")
+      .run(id, gatewayId);
+    return result.changes > 0;
+  }
+
+  activatePairing(
+    gatewayId: string,
+    id: string,
+    v: { credentialHash: string; credential: string; chatToken: string | null },
+  ): boolean {
+    const result = this.db
+      .prepare(
+        `UPDATE pairings
+         SET status = 'active', credential_hash = ?, pending_credential = ?, pending_chat_token = ?
+         WHERE id = ? AND gateway_id = ? AND status = 'pending'`,
+      )
+      .run(v.credentialHash, v.credential, v.chatToken, id, gatewayId);
+    return result.changes > 0;
+  }
+
+  claimCredential(
+    gatewayId: string,
+    id: string,
+  ): { credential: string; chatToken: string | null } | null {
+    const row = this.db
+      .prepare(
+        'SELECT pending_credential, pending_chat_token FROM pairings WHERE id = ? AND gateway_id = ?',
+      )
+      .get(id, gatewayId) as
+      | { pending_credential: string | null; pending_chat_token: string | null }
+      | undefined;
+    if (!row || row.pending_credential === null) return null;
+    // Scrub immediately so a second call (or a concurrent one) sees nothing —
+    // this UPDATE, not a separate "mark claimed" flag, IS the single-use
+    // enforcement.
+    this.db
+      .prepare(
+        'UPDATE pairings SET pending_credential = NULL, pending_chat_token = NULL WHERE id = ? AND gateway_id = ?',
+      )
+      .run(id, gatewayId);
+    return { credential: row.pending_credential, chatToken: row.pending_chat_token };
   }
 
   listSigners(accountId: string): SignerRecord[] {
@@ -365,6 +545,50 @@ export class SqliteStore implements Store {
     return row ? this.toSigner(row) : null;
   }
 
+  createApproval(r: {
+    approvalId: string;
+    accountId: string;
+    gatewayId: string;
+    pairingId: string;
+    deviceLabel: string | null;
+    expiresAt: number;
+  }): ApprovalRecord {
+    const record: ApprovalRecord = {
+      ...r,
+      status: 'pending',
+      createdAt: this.now(),
+    };
+    this.db
+      .prepare(
+        'INSERT INTO approvals (id, account_id, gateway_id, pairing_id, device_label, status, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+      )
+      .run(
+        record.approvalId,
+        record.accountId,
+        record.gatewayId,
+        record.pairingId,
+        record.deviceLabel,
+        record.status,
+        record.expiresAt,
+        record.createdAt,
+      );
+    return record;
+  }
+
+  getApproval(approvalId: string): ApprovalRecord | null {
+    const row = this.db.prepare('SELECT * FROM approvals WHERE id = ?').get(approvalId) as
+      | ApprovalRow
+      | undefined;
+    return row ? this.toApproval(row) : null;
+  }
+
+  decideApproval(approvalId: string, decision: 'approved' | 'denied'): boolean {
+    const result = this.db
+      .prepare("UPDATE approvals SET status = ? WHERE id = ? AND status = 'pending'")
+      .run(decision, approvalId);
+    return result.changes > 0;
+  }
+
   /** Close the underlying database handle. */
   close(): void {
     this.db.close();
@@ -404,6 +628,19 @@ export class SqliteStore implements Store {
       accountId: row.account_id,
       publicKey: row.public_key,
       label: row.label ?? '',
+      createdAt: row.created_at,
+    };
+  }
+
+  private toApproval(row: ApprovalRow): ApprovalRecord {
+    return {
+      approvalId: row.id,
+      accountId: row.account_id,
+      gatewayId: row.gateway_id,
+      pairingId: row.pairing_id,
+      deviceLabel: row.device_label,
+      status: row.status as ApprovalRecord['status'],
+      expiresAt: row.expires_at,
       createdAt: row.created_at,
     };
   }

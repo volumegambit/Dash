@@ -1,4 +1,4 @@
-import { createHash, generateKeyPairSync, randomBytes } from 'node:crypto';
+import { createHash, generateKeyPairSync, randomBytes, sign } from 'node:crypto';
 import type { AddressInfo } from 'node:net';
 import {
   DurableCredentialStore,
@@ -9,9 +9,14 @@ import {
 } from '@dash/relay';
 import { DialTokenSigner } from './dial-token-signer.js';
 import {
+  ApprovalClosedError,
+  type CreatedPairing,
+  InvalidApprovalSignatureError,
   InvalidPublicKeyError,
+  type PendingApproval,
   ProvisioningService,
   WebChatTokenMissingError,
+  approvalMessage,
 } from './provisioning.js';
 import { RelayAdminClient } from './relay-admin-client.js';
 import { SqliteStore } from './store.js';
@@ -19,6 +24,17 @@ import { SqliteStore } from './store.js';
 /** A fresh, canonical unpadded-base64url-encoded 32-byte Ed25519-shaped key. */
 function freshSignerKey(): string {
   return randomBytes(32).toString('base64url');
+}
+
+/**
+ * Narrow a mint result to the immediate-credential shape for tests that mint
+ * on an account with no registered signers (or a mobile client) — those never
+ * hit the Task 3 pending-approval branch, so an unexpected `PendingApproval`
+ * here is a real test failure, not a type-only formality.
+ */
+function asActive(result: CreatedPairing | PendingApproval): CreatedPairing {
+  if (result.status === 'pending') throw new Error('expected an immediate (non-pending) pairing');
+  return result;
 }
 
 const { publicKey, privateKey } = generateKeyPairSync('ed25519');
@@ -289,7 +305,7 @@ describe('ProvisioningService pairings', () => {
     await server.close();
   });
 
-  function makeRealService() {
+  function makeRealService(now: () => number = () => 1000, approvalTtlMs?: number) {
     const store = new SqliteStore(':memory:');
     const signer = new DialTokenSigner(privateKey, 3600, () => 1000);
     const service = new ProvisioningService({
@@ -297,6 +313,8 @@ describe('ProvisioningService pairings', () => {
       signer,
       relay,
       relayZone: 'relay.example.com',
+      now,
+      approvalTtlMs,
     });
     return { store, service };
   }
@@ -305,7 +323,9 @@ describe('ProvisioningService pairings', () => {
     const { store, service } = makeRealService();
     const gw = service.createGateway('acct-1', { subdomain: 'alice', publicKey: 'pk-a' });
 
-    const { credential, pairingId } = await service.createPairing('acct-1', gw.gatewayId, 'iPhone');
+    const { credential, pairingId } = asActive(
+      await service.createPairing('acct-1', gw.gatewayId, 'iPhone'),
+    );
 
     // The relay's hot path accepts the credential under this gateway.
     expect(relayStore.isValid(gw.gatewayId, credential)).toBe(true);
@@ -373,7 +393,7 @@ describe('ProvisioningService pairings', () => {
     const gw = service.createGateway('acct-1', { subdomain: 'alice', publicKey: 'pk-a' });
     service.setWebChatToken('acct-1', gw.gatewayId, 'chat-1');
 
-    const created = await service.createPairing('acct-1', gw.gatewayId, 'Safari', 'web');
+    const created = asActive(await service.createPairing('acct-1', gw.gatewayId, 'Safari', 'web'));
 
     expect(created.chatToken).toBe('chat-1');
     expect(created.credential).toBeTruthy();
@@ -386,7 +406,9 @@ describe('ProvisioningService pairings', () => {
     const gw = service.createGateway('acct-1', { subdomain: 'alice', publicKey: 'pk-a' });
     service.setWebChatToken('acct-1', gw.gatewayId, 'chat-1');
 
-    const created = await service.createPairing('acct-1', gw.gatewayId, 'iPhone', 'mobile');
+    const created = asActive(
+      await service.createPairing('acct-1', gw.gatewayId, 'iPhone', 'mobile'),
+    );
 
     expect(created.chatToken).toBe('chat-1');
     expect(created.status).toBe('active');
@@ -396,7 +418,7 @@ describe('ProvisioningService pairings', () => {
     const { service } = makeRealService();
     const gw = service.createGateway('acct-1', { subdomain: 'alice', publicKey: 'pk-a' });
 
-    const created = await service.createPairing('acct-1', gw.gatewayId, 'iPhone');
+    const created = asActive(await service.createPairing('acct-1', gw.gatewayId, 'iPhone'));
 
     expect(created.chatToken).toBeUndefined();
     expect(created.status).toBe('active');
@@ -433,7 +455,7 @@ describe('ProvisioningService pairings', () => {
   it('deletePairing revokes on the relay and in the store', async () => {
     const { store, service } = makeRealService();
     const gw = service.createGateway('acct-1', { subdomain: 'alice', publicKey: 'pk-a' });
-    const { credential } = await service.createPairing('acct-1', gw.gatewayId, 'iPhone');
+    const { credential } = asActive(await service.createPairing('acct-1', gw.gatewayId, 'iPhone'));
     const pairingId = store.listPairings(gw.gatewayId)[0].id;
 
     const ok = await service.deletePairing('acct-1', gw.gatewayId, pairingId);
@@ -446,8 +468,12 @@ describe('ProvisioningService pairings', () => {
   it('deletePairing revokes only the targeted device, leaving the others paired', async () => {
     const { store, service } = makeRealService();
     const gw = service.createGateway('acct-1', { subdomain: 'alice', publicKey: 'pk-a' });
-    const { credential: credA } = await service.createPairing('acct-1', gw.gatewayId, 'iPhone');
-    const { credential: credB } = await service.createPairing('acct-1', gw.gatewayId, 'iPad');
+    const { credential: credA } = asActive(
+      await service.createPairing('acct-1', gw.gatewayId, 'iPhone'),
+    );
+    const { credential: credB } = asActive(
+      await service.createPairing('acct-1', gw.gatewayId, 'iPad'),
+    );
     const pairingA = store.listPairings(gw.gatewayId).find((p) => p.deviceLabel === 'iPhone');
     if (!pairingA) throw new Error('expected an iPhone pairing');
 
@@ -466,7 +492,7 @@ describe('ProvisioningService pairings', () => {
   it('refuses a cross-account deletePairing: returns false, store and relay untouched', async () => {
     const { store, service } = makeRealService();
     const gw = service.createGateway('acct-1', { subdomain: 'alice', publicKey: 'pk-a' });
-    const { credential } = await service.createPairing('acct-1', gw.gatewayId, 'iPhone');
+    const { credential } = asActive(await service.createPairing('acct-1', gw.gatewayId, 'iPhone'));
     const pairingId = store.listPairings(gw.gatewayId)[0].id;
 
     const ok = await service.deletePairing('acct-2', gw.gatewayId, pairingId);
@@ -474,5 +500,242 @@ describe('ProvisioningService pairings', () => {
     expect(ok).toBe(false);
     expect(relayStore.isValid(gw.gatewayId, credential)).toBe(true);
     expect(store.listPairings(gw.gatewayId)[0].status).toBe('active');
+  });
+
+  describe('signer-gated web approvals (Task 3)', () => {
+    function signerKeypair() {
+      const { publicKey: pub, privateKey: priv } = generateKeyPairSync('ed25519');
+      const rawPub = (pub.export({ format: 'jwk' }) as { x: string }).x;
+      return { rawPub, priv };
+    }
+
+    function signDecision(
+      priv: ReturnType<typeof generateKeyPairSync>['privateKey'],
+      approvalId: string,
+      pairingId: string,
+      decision: 'approve' | 'deny',
+    ): string {
+      const message = approvalMessage(approvalId, pairingId, decision);
+      return sign(null, Buffer.from(message, 'utf8'), priv).toString('base64url');
+    }
+
+    it('gates a web mint behind a pending approval once a signer is registered, withholding all secrets', async () => {
+      const { store, service } = makeRealService();
+      const gw = service.createGateway('acct-1', { subdomain: 'alice', publicKey: 'pk-a' });
+      service.setWebChatToken('acct-1', gw.gatewayId, 'chat-1');
+      const { rawPub } = signerKeypair();
+      service.registerSigner('acct-1', { publicKey: rawPub, label: 'iPhone' });
+
+      const result = await service.createPairing('acct-1', gw.gatewayId, 'Safari', 'web');
+
+      expect(result).toEqual({
+        pairingId: expect.any(String),
+        status: 'pending',
+        approvalId: expect.any(String),
+        approvalExpiresAt: expect.any(Number),
+      });
+      expect('credential' in result).toBe(false);
+      expect('chatToken' in result).toBe(false);
+
+      const pending = store.listPairings(gw.gatewayId)[0];
+      expect(pending.status).toBe('pending');
+    });
+
+    it('full happy path: register signer -> pending mint -> real-key signed approval -> active -> claim once -> 410-shaped on second claim', async () => {
+      const { store, service } = makeRealService();
+      const gw = service.createGateway('acct-1', { subdomain: 'alice', publicKey: 'pk-a' });
+      service.setWebChatToken('acct-1', gw.gatewayId, 'chat-1');
+      const { rawPub, priv } = signerKeypair();
+      const signerRecord = service.registerSigner('acct-1', { publicKey: rawPub, label: 'iPhone' });
+
+      const minted = await service.createPairing('acct-1', gw.gatewayId, 'Safari', 'web');
+      if (minted.status !== 'pending') throw new Error('expected a pending approval');
+
+      const fetched = service.getApproval('acct-1', minted.approvalId);
+      expect(fetched).toMatchObject({
+        approvalId: minted.approvalId,
+        pairingId: minted.pairingId,
+        gatewayId: gw.gatewayId,
+        deviceLabel: 'Safari',
+      });
+
+      const signature = signDecision(priv, minted.approvalId, minted.pairingId, 'approve');
+      await service.decideApproval('acct-1', minted.approvalId, {
+        decision: 'approve',
+        signerId: signerRecord.signerId,
+        signature,
+      });
+
+      const activated = store.listPairings(gw.gatewayId).find((p) => p.id === minted.pairingId);
+      expect(activated?.status).toBe('active');
+
+      const claimed = service.claimCredential('acct-1', gw.gatewayId, minted.pairingId);
+      expect(claimed).toEqual({ kind: 'ok', credential: expect.any(String), chatToken: 'chat-1' });
+      if (claimed.kind === 'ok') {
+        expect(relayStore.isValid(gw.gatewayId, claimed.credential)).toBe(true);
+      }
+
+      const secondClaim = service.claimCredential('acct-1', gw.gatewayId, minted.pairingId);
+      expect(secondClaim).toEqual({ kind: 'claimed' });
+    });
+
+    it('claim reports pending before a decision is made', async () => {
+      const { service } = makeRealService();
+      const gw = service.createGateway('acct-1', { subdomain: 'alice', publicKey: 'pk-a' });
+      service.setWebChatToken('acct-1', gw.gatewayId, 'chat-1');
+      const { rawPub } = signerKeypair();
+      service.registerSigner('acct-1', { publicKey: rawPub, label: 'iPhone' });
+
+      const minted = await service.createPairing('acct-1', gw.gatewayId, 'Safari', 'web');
+      if (minted.status !== 'pending') throw new Error('expected pending');
+
+      expect(service.claimCredential('acct-1', gw.gatewayId, minted.pairingId)).toEqual({
+        kind: 'pending',
+      });
+    });
+
+    it('deny deletes the pending pairing outright, and a claim afterwards reports not-found', async () => {
+      const { store, service } = makeRealService();
+      const gw = service.createGateway('acct-1', { subdomain: 'alice', publicKey: 'pk-a' });
+      service.setWebChatToken('acct-1', gw.gatewayId, 'chat-1');
+      const { rawPub, priv } = signerKeypair();
+      const signerRecord = service.registerSigner('acct-1', { publicKey: rawPub, label: 'iPhone' });
+
+      const minted = await service.createPairing('acct-1', gw.gatewayId, 'Safari', 'web');
+      if (minted.status !== 'pending') throw new Error('expected pending');
+
+      const signature = signDecision(priv, minted.approvalId, minted.pairingId, 'deny');
+      await service.decideApproval('acct-1', minted.approvalId, {
+        decision: 'deny',
+        signerId: signerRecord.signerId,
+        signature,
+      });
+
+      expect(store.listPairings(gw.gatewayId)).toEqual([]);
+      expect(service.claimCredential('acct-1', gw.gatewayId, minted.pairingId)).toEqual({
+        kind: 'not-found',
+      });
+    });
+
+    it('expiry: a decision attempt after the TTL throws ApprovalClosedError and removes the orphan pairing', async () => {
+      let clock = 1_000_000;
+      const { store, service } = makeRealService(() => clock, 120_000);
+      const gw = service.createGateway('acct-1', { subdomain: 'alice', publicKey: 'pk-a' });
+      service.setWebChatToken('acct-1', gw.gatewayId, 'chat-1');
+      const { rawPub, priv } = signerKeypair();
+      const signerRecord = service.registerSigner('acct-1', { publicKey: rawPub, label: 'iPhone' });
+
+      const minted = await service.createPairing('acct-1', gw.gatewayId, 'Safari', 'web');
+      if (minted.status !== 'pending') throw new Error('expected pending');
+
+      clock += 120_001; // one ms past the 120s TTL
+      const signature = signDecision(priv, minted.approvalId, minted.pairingId, 'approve');
+
+      await expect(
+        service.decideApproval('acct-1', minted.approvalId, {
+          decision: 'approve',
+          signerId: signerRecord.signerId,
+          signature,
+        }),
+      ).rejects.toBeInstanceOf(ApprovalClosedError);
+
+      expect(store.listPairings(gw.gatewayId)).toEqual([]);
+    });
+
+    it('wrong-account approval fetch returns null (the route answers 404)', async () => {
+      const { service } = makeRealService();
+      const gw = service.createGateway('acct-1', { subdomain: 'alice', publicKey: 'pk-a' });
+      service.setWebChatToken('acct-1', gw.gatewayId, 'chat-1');
+      const { rawPub } = signerKeypair();
+      service.registerSigner('acct-1', { publicKey: rawPub, label: 'iPhone' });
+
+      const minted = await service.createPairing('acct-1', gw.gatewayId, 'Safari', 'web');
+      if (minted.status !== 'pending') throw new Error('expected pending');
+
+      expect(service.getApproval('acct-2', minted.approvalId)).toBeNull();
+    });
+
+    it('a signature over the wrong message (tampered decision) is rejected, leaving the approval pending', async () => {
+      const { store, service } = makeRealService();
+      const gw = service.createGateway('acct-1', { subdomain: 'alice', publicKey: 'pk-a' });
+      service.setWebChatToken('acct-1', gw.gatewayId, 'chat-1');
+      const { rawPub, priv } = signerKeypair();
+      const signerRecord = service.registerSigner('acct-1', { publicKey: rawPub, label: 'iPhone' });
+
+      const minted = await service.createPairing('acct-1', gw.gatewayId, 'Safari', 'web');
+      if (minted.status !== 'pending') throw new Error('expected pending');
+
+      // Sign 'deny' but submit 'approve' — the signature does not cover the
+      // decision actually being requested.
+      const signature = signDecision(priv, minted.approvalId, minted.pairingId, 'deny');
+
+      await expect(
+        service.decideApproval('acct-1', minted.approvalId, {
+          decision: 'approve',
+          signerId: signerRecord.signerId,
+          signature,
+        }),
+      ).rejects.toBeInstanceOf(InvalidApprovalSignatureError);
+
+      // Still pending — a rejected forgery does not burn the approval.
+      expect(store.listPairings(gw.gatewayId).find((p) => p.id === minted.pairingId)?.status).toBe(
+        'pending',
+      );
+    });
+
+    it('a signer id that does not belong to the account is rejected the same as a bad signature', async () => {
+      const { service } = makeRealService();
+      const gw = service.createGateway('acct-1', { subdomain: 'alice', publicKey: 'pk-a' });
+      service.setWebChatToken('acct-1', gw.gatewayId, 'chat-1');
+      const outsider = signerKeypair();
+      service.registerSigner('acct-2', { publicKey: outsider.rawPub, label: 'outsider phone' });
+      const insider = signerKeypair();
+      service.registerSigner('acct-1', { publicKey: insider.rawPub, label: 'real iPhone' });
+
+      const minted = await service.createPairing('acct-1', gw.gatewayId, 'Safari', 'web');
+      if (minted.status !== 'pending') throw new Error('expected pending');
+
+      const signature = signDecision(outsider.priv, minted.approvalId, minted.pairingId, 'approve');
+      const crossAccountSigner = service.listSigners('acct-2')[0];
+
+      await expect(
+        service.decideApproval('acct-1', minted.approvalId, {
+          decision: 'approve',
+          signerId: crossAccountSigner.signerId,
+          signature,
+        }),
+      ).rejects.toBeInstanceOf(InvalidApprovalSignatureError);
+    });
+
+    it('zero-signer accounts mint immediately, byte-compatible with today', async () => {
+      const { service } = makeRealService();
+      const gw = service.createGateway('acct-1', { subdomain: 'alice', publicKey: 'pk-a' });
+      service.setWebChatToken('acct-1', gw.gatewayId, 'chat-1');
+
+      const result = await service.createPairing('acct-1', gw.gatewayId, 'Safari', 'web');
+
+      expect(result).toEqual({
+        credential: expect.any(String),
+        pairingId: expect.any(String),
+        chatToken: 'chat-1',
+        status: 'active',
+      });
+    });
+
+    it('mobile mints are unaffected even when the account has registered signers', async () => {
+      const { store, service } = makeRealService();
+      const gw = service.createGateway('acct-1', { subdomain: 'alice', publicKey: 'pk-a' });
+      const { rawPub } = signerKeypair();
+      service.registerSigner('acct-1', { publicKey: rawPub, label: 'iPhone' });
+
+      const result = await service.createPairing('acct-1', gw.gatewayId, 'iPhone', 'mobile');
+
+      expect(result).toEqual({
+        credential: expect.any(String),
+        pairingId: expect.any(String),
+        status: 'active',
+      });
+      expect(store.listPairings(gw.gatewayId)[0].status).toBe('active');
+    });
   });
 });

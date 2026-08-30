@@ -2,6 +2,10 @@ import { Hono } from 'hono';
 import type { Authenticator } from './auth.js';
 import type { GatewayAssertionAuthenticator } from './gateway-assertion-auth.js';
 import {
+  ApprovalClosedError,
+  type ApprovalDecision,
+  ApprovalNotFoundError,
+  InvalidApprovalSignatureError,
   InvalidPublicKeyError,
   InvalidSubdomainError,
   type ProvisioningService,
@@ -179,12 +183,25 @@ export function createApi(deps: ApiDeps): Hono<ApiEnv> {
     const parsed = await readPairingRequest(c);
     if (!parsed.ok) return c.json({ error: 'invalid clientKind' }, 400);
     try {
-      const { credential, chatToken } = await provisioning.createPairing(
+      const created = await provisioning.createPairing(
         accountId,
         gatewayId,
         parsed.deviceLabel,
         parsed.clientKind,
       );
+      // Task 3: a signer-gated web mint returns a pending approval instead of
+      // a credential — surfaced here too (this legacy route also accepts
+      // `clientKind: 'web'`), since withholding the credential is a security
+      // requirement, not a shape nicety limited to the newer route.
+      if (created.status === 'pending') {
+        return c.json({
+          pairingId: created.pairingId,
+          status: created.status,
+          approvalId: created.approvalId,
+          approvalExpiresAt: created.approvalExpiresAt,
+        });
+      }
+      const { credential, chatToken } = created;
       // Any client whose gateway has a registered chat token gets it back
       // additively; a mobile pairing with none registered keeps the exact
       // historical `{ credential }` body (never a 409 — MC/Android compat).
@@ -287,6 +304,89 @@ export function createApi(deps: ApiDeps): Hono<ApiEnv> {
       createdAt: signer.createdAt,
     }));
     return c.json({ signers });
+  });
+
+  // --- Approvals (Task 3: signer-gated web pairings) ---
+
+  /**
+   * Fetch a pending (or already-decided/expired) approval. 404s unless the
+   * approval belongs to the caller's account — never disclosing whether an id
+   * exists under someone else's account. Returned regardless of status; the
+   * signer client learns "too late" from the decision route's 410, not from
+   * this GET.
+   */
+  app.get('/v1/approvals/:id', (c) => {
+    const accountId = c.get('accountId');
+    const approval = provisioning.getApproval(accountId, c.req.param('id'));
+    if (!approval) return c.json({ error: 'approval not found' }, 404);
+    return c.json({
+      approvalId: approval.approvalId,
+      pairingId: approval.pairingId,
+      gatewayId: approval.gatewayId,
+      deviceLabel: approval.deviceLabel,
+      expiresAt: approval.expiresAt,
+    });
+  });
+
+  /**
+   * Record a signer's Ed25519-signed decision on a pending approval. See
+   * `ProvisioningService.decideApproval` for the full security-ordering
+   * rationale (existence/ownership → TTL/decided → signature → atomic
+   * transition). `204` on success (approve or deny alike — the caller learns
+   * the outcome by polling `GET .../pairings`' `status`, not from this
+   * response body).
+   */
+  app.post('/v1/approvals/:id/decision', async (c) => {
+    const accountId = c.get('accountId');
+    const approvalId = c.req.param('id');
+    const body = (await c.req.json().catch(() => ({}))) as {
+      decision?: unknown;
+      signerId?: unknown;
+      signature?: unknown;
+    };
+    const decision: ApprovalDecision | undefined =
+      body.decision === 'approve' || body.decision === 'deny' ? body.decision : undefined;
+    const signerId = typeof body.signerId === 'string' ? body.signerId : '';
+    const signature = typeof body.signature === 'string' ? body.signature : '';
+    if (!decision || !signerId || !signature) {
+      return c.json({ error: 'invalid request' }, 400);
+    }
+    try {
+      await provisioning.decideApproval(accountId, approvalId, { decision, signerId, signature });
+      return c.body(null, 204);
+    } catch (err) {
+      if (err instanceof ApprovalNotFoundError) {
+        return c.json({ error: 'approval not found' }, 404);
+      }
+      if (err instanceof ApprovalClosedError) {
+        return c.json({ error: 'approval expired or already decided' }, 410);
+      }
+      if (err instanceof InvalidApprovalSignatureError) {
+        return c.json({ error: 'invalid signature' }, 403);
+      }
+      throw err;
+    }
+  });
+
+  /**
+   * Claim the single-use credential (+ chat token) an approved pairing is
+   * holding. `409 { status: 'pending' }` is the poll-and-retry signal for a
+   * not-yet-decided approval — deliberately not an error shape, since the web
+   * app is expected to see this repeatedly while waiting. `410` covers both a
+   * genuine double-claim and (harmlessly) a pairing that never went through
+   * the approval flow at all.
+   */
+  app.post('/v1/gateways/:id/pairings/:pid/credential', (c) => {
+    const accountId = c.get('accountId');
+    const result = provisioning.claimCredential(accountId, c.req.param('id'), c.req.param('pid'));
+    if (result.kind === 'not-found') return c.json({ error: 'pairing not found' }, 404);
+    if (result.kind === 'pending') return c.json({ status: 'pending' }, 409);
+    if (result.kind === 'claimed') return c.json({ error: 'credential already claimed' }, 410);
+    return c.json(
+      result.chatToken === undefined
+        ? { credential: result.credential }
+        : { credential: result.credential, chatToken: result.chatToken },
+    );
   });
 
   return app;

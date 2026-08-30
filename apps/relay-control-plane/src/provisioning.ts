@@ -1,7 +1,14 @@
-import { createHash, randomBytes } from 'node:crypto';
+import { type KeyObject, createHash, createPublicKey, randomBytes, verify } from 'node:crypto';
 import type { DialTokenSigner } from './dial-token-signer.js';
 import type { RelayAdminClient } from './relay-admin-client.js';
-import type { ClientKind, GatewayRecord, PairingRecord, SignerRecord, Store } from './store.js';
+import type {
+  ApprovalRecord,
+  ClientKind,
+  GatewayRecord,
+  PairingRecord,
+  SignerRecord,
+  Store,
+} from './store.js';
 import { validateSubdomainLabel } from './subdomain.js';
 
 /** Thrown when a requested subdomain label is not DNS-safe or is reserved. */
@@ -22,6 +29,32 @@ export class InvalidPublicKeyError extends Error {}
  * for browser clients.
  */
 export class WebChatTokenMissingError extends Error {}
+/**
+ * Thrown by {@link ProvisioningService.decideApproval}: the approval id does
+ * not exist, OR it exists under a different account than the caller.
+ * Deliberately a single case (never disclosing which) — the HTTP layer
+ * answers 404 either way, mirroring every other cross-account lookup in this
+ * service. `ProvisioningService.getApproval` uses the same rule but returns
+ * `null` instead of throwing, since its caller is a GET route.
+ */
+export class ApprovalNotFoundError extends Error {}
+/**
+ * Thrown by {@link ProvisioningService.decideApproval} when the approval is
+ * no longer decidable: either its TTL has elapsed, or it already received a
+ * decision. Both map to `410 Gone` at the HTTP layer — from the caller's
+ * perspective "too late" and "already answered" are the same outcome, a
+ * fresh approval must be minted.
+ */
+export class ApprovalClosedError extends Error {}
+/**
+ * Thrown by {@link ProvisioningService.decideApproval} when the Ed25519
+ * signature does not verify over the exact {@link approvalMessage}, OR when
+ * `signerId` does not resolve to a signer registered under the approval's
+ * account. The two failure modes are deliberately indistinguishable to the
+ * caller (both → `403`) — a signer id from another account carries no more
+ * trust than a forged signature.
+ */
+export class InvalidApprovalSignatureError extends Error {}
 
 /** Result of provisioning a new gateway: its id, subdomain, and a dial token. */
 export interface CreatedGateway {
@@ -45,9 +78,96 @@ export interface CreatedPairing {
    * historical response shape.
    */
   chatToken?: string;
-  /** Lifecycle status of the freshly minted pairing — always `'active'`. */
-  status: PairingRecord['status'];
+  /**
+   * Lifecycle status of the freshly minted pairing — always the literal
+   * `'active'` (a fresh immediate mint is never created pre-revoked). A
+   * signer-gated web mint returns {@link PendingApproval} instead of this
+   * type, which is what makes the two shapes discriminable on `status`.
+   */
+  status: 'active';
 }
+
+/**
+ * Result of minting a signer-gated web pairing (Task 3): no credential, no
+ * chat token — both stay withheld until a signer approves (see
+ * `ProvisioningService.decideApproval`) and the caller claims them exactly
+ * once (`ProvisioningService.claimCredential`). `pairingId` already exists in
+ * the store with `status: 'pending'`; the web app polls
+ * `GET /v1/gateways/:id/pairings` for that status to flip.
+ */
+export interface PendingApproval {
+  pairingId: string;
+  status: 'pending';
+  approvalId: string;
+  /** Unix milliseconds — matches every other timestamp this store returns. */
+  approvalExpiresAt: number;
+}
+
+/** The caller-facing decision value — the literal wire form signed over (see {@link approvalMessage}). */
+export type ApprovalDecision = 'approve' | 'deny';
+
+/** Default approval TTL: 120 seconds, per the signer-device design spec. */
+const DEFAULT_APPROVAL_TTL_MS = 120_000;
+
+/**
+ * The exact UTF-8 message an approval decision is signed over. THIS is the
+ * single documented source of truth both this control plane and the separate
+ * iOS codebase (Tasks 5/6) must independently reproduce byte-for-byte — every
+ * signer and verifier in this repo MUST build the message through this
+ * function rather than inlining the template, so the two implementations
+ * cannot silently drift apart.
+ *
+ * Wire format: `${approvalId}\n${pairingId}\n${decision}`, encoded UTF-8.
+ * `decision` is the literal wire value (`'approve'` or `'deny'`), never a
+ * normalized/aliased form.
+ */
+export function approvalMessage(
+  approvalId: string,
+  pairingId: string,
+  decision: ApprovalDecision,
+): string {
+  return `${approvalId}\n${pairingId}\n${decision}`;
+}
+
+/**
+ * Decode a raw 32-byte base64url Ed25519 public key into a verifiable
+ * `KeyObject` via JWK — identical convention to
+ * `apps/relay/src/assertion.ts`'s `rawEd25519ToKeyObject`. Returns `null` on
+ * any malformed input (never throws).
+ */
+function rawEd25519ToKeyObject(raw: string): KeyObject | null {
+  try {
+    return createPublicKey({ key: { kty: 'OKP', crv: 'Ed25519', x: raw }, format: 'jwk' });
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Verify `signatureB64url` (base64url) over `message` (UTF-8) with `key`.
+ * Never throws — a malformed signature (wrong length/encoding) is a `false`,
+ * exactly like a merely-wrong one, mirroring `apps/relay/src/assertion.ts`'s
+ * `verifyAssertion`.
+ */
+function safeVerify(message: string, signatureB64url: string, key: KeyObject): boolean {
+  try {
+    return verify(
+      null,
+      Buffer.from(message, 'utf8'),
+      key,
+      Buffer.from(signatureB64url, 'base64url'),
+    );
+  } catch {
+    return false;
+  }
+}
+
+/** Result of {@link ProvisioningService.claimCredential} — a discriminated union over `kind`. */
+export type ClaimResult =
+  | { kind: 'not-found' }
+  | { kind: 'pending' }
+  | { kind: 'claimed' }
+  | { kind: 'ok'; credential: string; chatToken?: string };
 
 /** Collaborators the {@link ProvisioningService} orchestrates. */
 export interface ProvisioningDeps {
@@ -56,6 +176,16 @@ export interface ProvisioningDeps {
   relay: RelayAdminClient;
   /** DNS zone subdomains hang off, e.g. `relay.example.com`. */
   relayZone: string;
+  /**
+   * Clock (unix MILLISECONDS — matches the store's `createdAt`/`expiresAt`,
+   * NOT `DialTokenSigner`'s unix-seconds clock) used to stamp and check
+   * approval expiry. Defaults to `Date.now`; tests inject a fixed/advancing
+   * clock, the same `#now()` injection pattern as `DialTokenSigner` and
+   * `GatewayAssertionAuthenticator`.
+   */
+  now?: () => number;
+  /** Approval TTL in milliseconds. Defaults to 120 000 (120s, per the signer-device design spec). */
+  approvalTtlMs?: number;
 }
 
 /**
@@ -70,12 +200,16 @@ export class ProvisioningService {
   readonly #signer: DialTokenSigner;
   readonly #relay: RelayAdminClient;
   readonly #relayZone: string;
+  readonly #now: () => number;
+  readonly #approvalTtlMs: number;
 
   constructor(deps: ProvisioningDeps) {
     this.#store = deps.store;
     this.#signer = deps.signer;
     this.#relay = deps.relay;
     this.#relayZone = deps.relayZone;
+    this.#now = deps.now ?? Date.now;
+    this.#approvalTtlMs = deps.approvalTtlMs ?? DEFAULT_APPROVAL_TTL_MS;
   }
 
   /**
@@ -162,13 +296,23 @@ export class ProvisioningService {
    * every pairing minted before browser clients existed) or `'web'` for a
    * browser session. Callers at the HTTP boundary validate the two-value union
    * before reaching here; this layer just threads it through to the store.
+   *
+   * Task 3: when `clientKind === 'web'` AND the account has registered at
+   * least one signer device, minting does NOT hand back a credential at all —
+   * it returns a {@link PendingApproval} instead, and no relay credential is
+   * provisioned until a signer approves (`decideApproval`). Mobile mints and
+   * zero-signer accounts are completely unaffected (byte-compat pinned by
+   * tests): the gate applies to `'web'` only in v1 — a mobile client signs in
+   * as the account and IS itself the signer, so gating it would deadlock
+   * enrolling the very first device. See
+   * docs/plans/2026-08-31-signer-device-plan.md for the full design.
    */
   async createPairing(
     accountId: string,
     gatewayId: string,
     deviceLabel?: string,
     clientKind: ClientKind = 'mobile',
-  ): Promise<CreatedPairing> {
+  ): Promise<CreatedPairing | PendingApproval> {
     const gateway = this.#store.getGateway(gatewayId);
     if (!gateway || gateway.accountId !== accountId) {
       throw new Error(`gateway ${gatewayId} not found for account ${accountId}`);
@@ -190,9 +334,14 @@ export class ProvisioningService {
       // MC-driven mints for Android QR pairing keep their exact behavior.
       chatToken = registered;
     }
+
+    if (clientKind === 'web' && this.#store.signerCount(accountId) > 0) {
+      return this.#mintPendingApproval(accountId, gatewayId, deviceLabel ?? null, clientKind);
+    }
+
     const credential = await this.#relay.provisionPairing(accountId, gatewayId);
     const pairingId = generatePairingId();
-    const pairing = this.#store.addPairing({
+    this.#store.addPairing({
       id: pairingId,
       gatewayId,
       credentialHash: sha256(credential),
@@ -200,8 +349,159 @@ export class ProvisioningService {
       clientKind,
     });
     return chatToken === undefined
-      ? { credential, pairingId, status: pairing.status }
-      : { credential, pairingId, chatToken, status: pairing.status };
+      ? { credential, pairingId, status: 'active' }
+      : { credential, pairingId, chatToken, status: 'active' };
+  }
+
+  /**
+   * Persist a PENDING pairing (no credential yet) plus its approval
+   * challenge, and return the mint response Task 4's web client renders as a
+   * QR. Never touches the relay — see `decideApproval` for where the
+   * credential is actually minted.
+   */
+  #mintPendingApproval(
+    accountId: string,
+    gatewayId: string,
+    deviceLabel: string | null,
+    clientKind: ClientKind,
+  ): PendingApproval {
+    const pairingId = generatePairingId();
+    this.#store.addPairing({
+      id: pairingId,
+      gatewayId,
+      credentialHash: '',
+      deviceLabel,
+      clientKind,
+      status: 'pending',
+    });
+    const approvalId = randomBytes(16).toString('base64url');
+    const approvalExpiresAt = this.#now() + this.#approvalTtlMs;
+    this.#store.createApproval({
+      approvalId,
+      accountId,
+      gatewayId,
+      pairingId,
+      deviceLabel,
+      expiresAt: approvalExpiresAt,
+    });
+    return { pairingId, status: 'pending', approvalId, approvalExpiresAt };
+  }
+
+  /**
+   * Fetch an approval, scoped to `accountId` — `null` if unknown OR owned by
+   * another account (never disclosing which, matching every other ownership
+   * check in this service). Returns the record regardless of whether it has
+   * already been decided or has expired; the HTTP layer projects it as-is —
+   * `decideApproval` is where "too late" is actually enforced.
+   */
+  getApproval(accountId: string, approvalId: string): ApprovalRecord | null {
+    const approval = this.#store.getApproval(approvalId);
+    if (!approval || approval.accountId !== accountId) return null;
+    return approval;
+  }
+
+  /**
+   * Record a signer's decision on a pending approval.
+   *
+   * Order of checks matters for security, not just correctness:
+   *  1. Existence + account match (`ApprovalNotFoundError`, 404) — never
+   *     disclose a cross-account approval id.
+   *  2. Still pending AND unexpired. An expired-but-still-pending approval is
+   *     swept right here (denied + its orphan pairing discarded) so no dead
+   *     PENDING row survives past its TTL even without a background sweep.
+   *     Either way: `ApprovalClosedError` (410).
+   *  3. Signature verification — a signer that does not belong to
+   *     `accountId`, OR a signature that does not verify over
+   *     `approvalMessage(approvalId, pairingId, decision)`, throws
+   *     `InvalidApprovalSignatureError` (403) WITHOUT marking the approval
+   *     decided. A forged/garbage attempt must not be able to burn a
+   *     legitimate approval out from under the real signer.
+   *  4. Only once signed off does the transition to `'approved'`/`'denied'`
+   *     happen — atomically, via the store's `WHERE status = 'pending'`
+   *     guard, which is the actual race-closing single-decision enforcement
+   *     (step 2's read is just an optimization/early-exit).
+   *
+   * On approval: mints the relay credential now (not at initial mint time —
+   * see the class-level Task 3 note on `createPairing`), flips the pairing to
+   * `'active'`, and stores the raw credential (+ the gateway's registered
+   * chat token) as a value awaiting exactly one claim via
+   * {@link claimCredential}. On denial: the pending pairing row is hard-deleted
+   * — there was never a live device to keep a record of.
+   */
+  async decideApproval(
+    accountId: string,
+    approvalId: string,
+    opts: { decision: ApprovalDecision; signerId: string; signature: string },
+  ): Promise<void> {
+    const approval = this.#store.getApproval(approvalId);
+    if (!approval || approval.accountId !== accountId) {
+      throw new ApprovalNotFoundError(`approval ${approvalId} not found for account ${accountId}`);
+    }
+
+    const expired = approval.expiresAt <= this.#now();
+    if (approval.status !== 'pending' || expired) {
+      if (
+        approval.status === 'pending' &&
+        expired &&
+        this.#store.decideApproval(approvalId, 'denied')
+      ) {
+        this.#store.discardPendingPairing(approval.gatewayId, approval.pairingId);
+      }
+      throw new ApprovalClosedError(`approval ${approvalId} is expired or already decided`);
+    }
+
+    const signer = this.#store.signerByAccountAndId(accountId, opts.signerId);
+    const key = signer ? rawEd25519ToKeyObject(signer.publicKey) : null;
+    const message = approvalMessage(approvalId, approval.pairingId, opts.decision);
+    const ok = key !== null && safeVerify(message, opts.signature, key);
+    if (!ok) {
+      throw new InvalidApprovalSignatureError(`invalid signature for approval ${approvalId}`);
+    }
+
+    // Atomic pending -> decided transition. Loses a same-instant race to a
+    // second decision request (including a concurrent expiry sweep above).
+    const decided = this.#store.decideApproval(
+      approvalId,
+      opts.decision === 'approve' ? 'approved' : 'denied',
+    );
+    if (!decided) {
+      throw new ApprovalClosedError(`approval ${approvalId} is expired or already decided`);
+    }
+
+    if (opts.decision === 'deny') {
+      this.#store.discardPendingPairing(approval.gatewayId, approval.pairingId);
+      return;
+    }
+
+    const credential = await this.#relay.provisionPairing(accountId, approval.gatewayId);
+    const chatToken = this.#store.getWebChatToken(approval.gatewayId);
+    this.#store.activatePairing(approval.gatewayId, approval.pairingId, {
+      credentialHash: sha256(credential),
+      credential,
+      chatToken,
+    });
+  }
+
+  /**
+   * Claim the single-use credential (+ chat token) an approved pairing is
+   * holding. Ownership is checked via the gateway (cross-account or unknown
+   * gateway/pairing → `'not-found'`). `'pending'` means the approval has not
+   * been decided yet — the caller (the web app's poll loop) should keep
+   * waiting, not treat it as an error. `'claimed'` means activation happened
+   * but the one-time value is already gone — either a real double-claim or a
+   * pairing that was never routed through the approval flow at all.
+   */
+  claimCredential(accountId: string, gatewayId: string, pairingId: string): ClaimResult {
+    const gateway = this.#store.getGateway(gatewayId);
+    if (!gateway || gateway.accountId !== accountId) return { kind: 'not-found' };
+    const pairing = this.#store.listPairings(gatewayId).find((p) => p.id === pairingId);
+    if (!pairing) return { kind: 'not-found' };
+    if (pairing.status === 'pending') return { kind: 'pending' };
+    const claimed = this.#store.claimCredential(gatewayId, pairingId);
+    if (!claimed) return { kind: 'claimed' };
+    return claimed.chatToken === null
+      ? { kind: 'ok', credential: claimed.credential }
+      : { kind: 'ok', credential: claimed.credential, chatToken: claimed.chatToken };
   }
 
   /**
