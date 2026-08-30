@@ -13,8 +13,7 @@ class DashUITestCase: XCTestCase {
   func launch(
     scenario: String,
     contentSize: String? = nil,
-    reduceMotion: Bool = false,
-    pasteboardFixture: String? = nil
+    reduceMotion: Bool = false
   ) -> XCUIApplication {
     let app = XCUIApplication()
     let dataIdentifier = UUID().uuidString
@@ -38,10 +37,6 @@ class DashUITestCase: XCTestCase {
     }
     if reduceMotion {
       app.launchArguments += ["-UIAccessibilityReduceMotionEnabled", "YES"]
-    }
-    if let pasteboardFixture {
-      app.launchEnvironment["DASH_UI_TEST_PASTEBOARD_FIXTURE"] = pasteboardFixture
-      app.launchArguments += ["--dash-ui-test-pasteboard-fixture", pasteboardFixture]
     }
     app.launch()
     return app

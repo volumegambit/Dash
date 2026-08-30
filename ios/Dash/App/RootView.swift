@@ -412,32 +412,6 @@ private struct AccountNavigationView: View {
   }
 }
 
-@MainActor
-private struct PairingNavigationView: View {
-  @Bindable var appModel: AppModel
-  @State private var feature: PairingFeature
-
-  init(appModel: AppModel) {
-    self.appModel = appModel
-    _feature = State(initialValue: appModel.makePairingFeature())
-  }
-
-  var body: some View {
-    NavigationStack(path: $appModel.pairingPath) {
-      ConnectView()
-        .navigationDestination(for: PairingRoute.self) { route in
-          switch route {
-          case .scanner:
-            QRScannerView()
-          case .manual:
-            ManualEntryView()
-          }
-        }
-    }
-    .environment(feature)
-  }
-}
-
 private struct FeatureSlotView: View {
   let title: String
   let systemImage: String

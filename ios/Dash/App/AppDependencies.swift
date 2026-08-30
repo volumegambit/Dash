@@ -13,16 +13,13 @@ typealias PairedProfileHandler =
 struct PairingFeatureFactory: Sendable {
   let verifier: any PairingVerifying
   let installer: any PairingProfileInstalling
-  let makeScanner: @Sendable () -> any QRScanning
 
   init(
     verifier: any PairingVerifying,
-    installer: any PairingProfileInstalling,
-    makeScanner: @escaping @Sendable () -> any QRScanning = { UnavailableQRScanner() }
+    installer: any PairingProfileInstalling
   ) {
     self.verifier = verifier
     self.installer = installer
-    self.makeScanner = makeScanner
   }
 
   @MainActor
@@ -30,7 +27,6 @@ struct PairingFeatureFactory: Sendable {
     PairingFeature(
       verifier: verifier,
       installer: installer,
-      scanner: makeScanner(),
       onPaired: onPaired
     )
   }
@@ -412,8 +408,7 @@ struct AppDependencies: Sendable {
       },
       pairingFeatureFactory: PairingFeatureFactory(
         verifier: pairingVerifier,
-        installer: pairingInstaller,
-        makeScanner: { QRScannerService() }
+        installer: pairingInstaller
       ),
       accountFeatureFactory: AccountFeatureFactory(
         session: accountSession,

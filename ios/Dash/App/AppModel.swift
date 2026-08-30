@@ -17,7 +17,6 @@ final class AppModel {
   var selectedProfile: ConnectionProfileSnapshot?
   var connectionState: GatewayConnectionState = .connecting
   var selectedTab: AppTab = .conversations
-  var pairingPath: [PairingRoute] = []
   var conversationPath: [ConversationRoute] = []
   var agentPath: [AgentRoute] = [] {
     didSet {
@@ -806,7 +805,6 @@ final class AppModel {
     )
     self.settingsFeature = settingsFeature
     selectedTab = .conversations
-    pairingPath.removeAll()
     if previousGatewayID != nil, previousGatewayID != profile.gatewayID {
       conversationPath.removeAll()
       agentPath.removeAll()
@@ -1283,7 +1281,6 @@ final class AppModel {
     selectedProfile = nil
     connectionState = .connecting
     selectedTab = .conversations
-    pairingPath.removeAll()
     conversationPath.removeAll()
     agentPath.removeAll()
     splitConversationSelection = nil

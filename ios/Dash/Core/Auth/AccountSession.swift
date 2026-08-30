@@ -57,6 +57,28 @@ actor AccountSession {
     self.clock = clock
   }
 
+  #if DEBUG
+    /// Test-only: seeds the actor with an already-valid cached token so
+    /// UI-test scenarios can reach the signed-in `GatewayPickerView` without a
+    /// live PKCE round trip. `presenter`/`session` still back a real sign-out
+    /// → sign-in-again path if a test ever exercises one.
+    init(
+      preSignedInWithIDToken idToken: String,
+      expiresAt: Date,
+      config: AccountAuthConfig,
+      presenter: any WebAuthPresenting,
+      session: URLSession = .shared,
+      clock: any AppClock = SystemAppClock()
+    ) {
+      self.config = config
+      self.presenter = presenter
+      self.session = session
+      self.clock = clock
+      self.cachedIDToken = idToken
+      self.cachedExpiresAt = expiresAt
+    }
+  #endif
+
   var isSignedIn: Bool {
     get async {
       (try? await currentToken()) != nil

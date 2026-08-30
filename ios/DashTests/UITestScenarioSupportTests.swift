@@ -23,31 +23,6 @@ import Testing
       )
     }
 
-    @Test("pasteboard fixture identifiers are stable and resolve inside the debug binary")
-    func pasteboardFixtures() {
-      #expect(
-        UITestPasteboardFixture.allCases.map(\.rawValue) == [
-          "canonical-lan",
-          "canonical-relay",
-          "malformed-scheme",
-          "malformed-path",
-          "malformed-port",
-        ]
-      )
-      #expect(
-        UITestPasteboardFixture.canonicalLAN.contents.contains(
-          #""mgmtToken":"mobile-test-token""#
-        )
-      )
-      #expect(
-        UITestPasteboardFixture.canonicalLAN.contents.contains(
-          #""chatToken":"mobile-test-token""#
-        )
-      )
-      #expect(UITestPasteboardFixture.canonicalRelay.contents.contains("relay-device-credential"))
-      #expect(UITestPasteboardFixture.malformedScheme.contents == "dash://pair?payload=not-json")
-    }
-
     @Test("unpaired is the only scenario without a selected profile")
     func profileSelection() async throws {
       let unpaired = try AppDependencies.uiTesting(scenario: .unpaired)

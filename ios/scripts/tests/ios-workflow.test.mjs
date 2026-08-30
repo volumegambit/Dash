@@ -7,16 +7,14 @@ const workflowSource = await readFile('.github/workflows/ios.yml', 'utf8');
 const workflow = parse(workflowSource);
 const steps = workflow?.jobs?.ios?.steps;
 const uiTestFiles = [
-  'PairingUITests.swift',
   'ConversationUITests.swift',
   'AgentsUITests.swift',
   'AccessibilityUITests.swift',
 ].map((name) => `ios/DashUITests/${name}`);
 const uiTestSources = await Promise.all(uiTestFiles.map((path) => readFile(path, 'utf8')));
-const conversationUITestSource = uiTestSources[1];
-const agentUITestSource = uiTestSources[2];
+const conversationUITestSource = uiTestSources[0];
+const agentUITestSource = uiTestSources[1];
 const uiTestCaseSource = await readFile('ios/DashUITests/DashUITestCase.swift', 'utf8');
-const pairingUITestSource = await readFile('ios/DashUITests/PairingUITests.swift', 'utf8');
 const accessibilityUITestSource = await readFile(
   'ios/DashUITests/AccessibilityUITests.swift',
   'utf8',
@@ -226,18 +224,10 @@ for (const [index, source] of uiTestSources.entries()) {
   );
 }
 
-assert.match(pairingUITestSource, /addUIInterruptionMonitor/);
-assert.match(pairingUITestSource, /Don’t Allow/);
-assert.match(pairingUITestSource, /Don't Allow/);
 assert.doesNotMatch(
   uiTestCaseSource,
   /mgmt-test-token|chat-test-token|relay-device-credential/,
   'token-bearing values must never travel through launch environment or arguments',
-);
-assert.doesNotMatch(
-  pairingUITestSource,
-  /#?"\{"v":|relay-device-credential/,
-  'token-bearing pasteboard payload fixtures must stay inside the debug app binary',
 );
 assert.doesNotMatch(uiTestCaseSource, /DASH_UI_TEST_PASTEBOARD\b|--dash-ui-test-pasteboard["']/);
 assert.match(
@@ -371,6 +361,8 @@ assert.match(
 
 const uiTestSource = uiTestSources.join('\n');
 const uiTestCount = uiTestSource.match(/func test\w+\s*\(/g)?.length ?? 0;
-assert.ok(uiTestCount >= 20, `expected at least 20 UI tests, found ${uiTestCount}`);
+// PairingUITests.swift (4 tests) was deleted in Task 7 of the iOS account
+// sign-in plan along with the QR/paste/manual pairing entry it covered.
+assert.ok(uiTestCount >= 19, `expected at least 19 UI tests, found ${uiTestCount}`);
 
 console.log(`PASS: iOS workflow runs ${uiTestCount} non-empty UI tests on exact simulator UDIDs`);

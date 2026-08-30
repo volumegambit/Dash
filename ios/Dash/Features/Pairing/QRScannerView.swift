@@ -2,9 +2,20 @@ import AVFoundation
 import SwiftUI
 import UIKit
 
+/// Camera-scanning UI. Retained (currently unreferenced by product code) for
+/// an upcoming signer-device feature that reuses camera scanning. QR pairing
+/// entry — which used to host this view via `PairingFeature`/`PairingRoute`
+/// — was retired in Task 7 of the iOS account sign-in plan; this view no
+/// longer depends on either.
 struct QRScannerView: View {
-  @Environment(PairingFeature.self) private var feature
+  let scanner: any QRScanning
+  var onScanned: (String) -> Void = { _ in }
+  var onCancel: () -> Void = {}
+
   @Environment(\.dismiss) private var dismiss
+  @State private var cameraAuthorization: AVAuthorizationStatus = .notDetermined
+  @State private var errorMessage: String?
+  @State private var activeScanID: UUID?
 
   var body: some View {
     ScrollView {
@@ -12,14 +23,14 @@ struct QRScannerView: View {
         ZStack {
           RoundedRectangle(cornerRadius: 24)
             .fill(Color.black.gradient)
-          if let previewSource = feature.scannerPreviewSource {
+          if let previewSource = scanner.previewSource {
             QRScannerPreview(source: previewSource)
               .clipShape(RoundedRectangle(cornerRadius: 24))
           }
           RoundedRectangle(cornerRadius: 20)
             .strokeBorder(.white.opacity(0.8), lineWidth: 3)
             .frame(width: 230, height: 230)
-          if feature.cameraAuthorization != .authorized {
+          if cameraAuthorization != .authorized {
             Image(systemName: scannerSymbol)
               .font(.system(size: 64, weight: .light))
               .foregroundStyle(.white)
@@ -33,12 +44,12 @@ struct QRScannerView: View {
           .font(.headline)
           .multilineTextAlignment(.center)
 
-        Text("The code contains the gateway address and connection credentials.")
-          .font(.subheadline)
-          .foregroundStyle(.secondary)
-          .multilineTextAlignment(.center)
-
-        PairingStatusView(state: feature.state)
+        if let errorMessage {
+          Text(errorMessage)
+            .font(.subheadline)
+            .foregroundStyle(.secondary)
+            .multilineTextAlignment(.center)
+        }
       }
       .frame(maxWidth: 520)
       .padding(20)
@@ -47,58 +58,63 @@ struct QRScannerView: View {
     .background(Color(uiColor: .systemGroupedBackground))
     .navigationTitle("Scan code")
     .navigationBarTitleDisplayMode(.inline)
-    .safeAreaInset(edge: .bottom, spacing: 0) {
-      fallbackActions
-    }
     .toolbar {
       ToolbarItem(placement: .topBarLeading) {
         Button("Close") {
-          feature.cancelPairing()
+          activeScanID = nil
+          onCancel()
           dismiss()
         }
         .frame(minWidth: 44, minHeight: 44)
       }
     }
-    .task { await feature.requestCameraAndScan() }
+    .task { await requestCameraAndScan() }
     .onDisappear {
-      feature.cancelPairing()
-      Task { await feature.stopScanning() }
+      activeScanID = nil
+      Task { await scanner.stop() }
     }
   }
 
-  private var fallbackActions: some View {
-    VStack(spacing: 10) {
-      Button {
-        let value = UIPasteboard.general.string ?? ""
-        feature.invalidateScanning()
-        Task {
-          await feature.stopScanning()
-          await feature.pair(rawPayload: value)
-        }
-      } label: {
-        Label("Paste Pairing Code", systemImage: "doc.on.clipboard")
-          .frame(maxWidth: .infinity, minHeight: 44)
-      }
-      .buttonStyle(.bordered)
-      .accessibilityIdentifier("pairing.paste")
-
-      NavigationLink(value: PairingRoute.manual) {
-        Label("Enter Manually", systemImage: "keyboard")
-          .frame(maxWidth: .infinity, minHeight: 44)
-      }
-      .buttonStyle(.bordered)
-      .accessibilityIdentifier("pairing.manual")
+  private func requestCameraAndScan() async {
+    let scanID = UUID()
+    activeScanID = scanID
+    var authorization = await scanner.authorizationStatus()
+    guard activeScanID == scanID else { return }
+    cameraAuthorization = authorization
+    if authorization == .notDetermined {
+      _ = await scanner.requestAccess()
+      guard activeScanID == scanID else { return }
+      authorization = await scanner.authorizationStatus()
+      guard activeScanID == scanID else { return }
+      cameraAuthorization = authorization
     }
-    .frame(maxWidth: 520)
-    .disabled(feature.state.isWorking)
-    .padding(.horizontal, 20)
-    .padding(.vertical, 12)
-    .frame(maxWidth: .infinity)
-    .background(.regularMaterial)
+    guard authorization == .authorized else {
+      activeScanID = nil
+      return
+    }
+    do {
+      let payload = try await scanner.scan()
+      try Task.checkCancellation()
+      guard activeScanID == scanID else { return }
+      activeScanID = nil
+      onScanned(payload)
+    } catch is CancellationError {
+      if activeScanID == scanID {
+        activeScanID = nil
+      }
+    } catch QRScannerError.stopped {
+      if activeScanID == scanID {
+        activeScanID = nil
+      }
+    } catch {
+      guard activeScanID == scanID else { return }
+      activeScanID = nil
+      errorMessage = "Couldn't scan the code. Try again."
+    }
   }
 
   private var scannerSymbol: String {
-    switch feature.cameraAuthorization {
+    switch cameraAuthorization {
     case .denied, .restricted:
       "camera.fill"
     case .authorized, .notDetermined:
@@ -109,13 +125,13 @@ struct QRScannerView: View {
   }
 
   private var scannerLabel: String {
-    switch feature.cameraAuthorization {
+    switch cameraAuthorization {
     case .denied, .restricted:
-      "Camera access is unavailable. Paste the code or enter the connection manually."
+      "Camera access is unavailable."
     case .authorized, .notDetermined:
-      "Point the camera at the Dash pairing code in Mission Control."
+      "Point the camera at the code."
     @unknown default:
-      "Paste the code or enter the connection manually."
+      "Camera access is unavailable."
     }
   }
 }

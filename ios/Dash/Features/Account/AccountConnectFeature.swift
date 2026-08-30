@@ -64,10 +64,10 @@ final class AccountConnectFeature {
       throw AccountConnectError.notEnrolled
     }
 
-    // Same relay payload shape `ManualPairingInput.payload()` builds for
-    // `.relay`: v2, both mobile tokens equal (required by
-    // `PairingPayload.validated`), no explicit ports (validated() pins these
-    // to 443), `gateway.subdomain` carried verbatim as the host.
+    // The canonical v2 relay payload shape: both mobile tokens equal
+    // (required by `PairingPayload.validated`), no explicit ports
+    // (validated() pins these to 443), `gateway.subdomain` carried verbatim
+    // as the host.
     let payload = PairingPayload(
       v: 2,
       host: gateway.subdomain,

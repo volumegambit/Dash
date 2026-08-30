@@ -1,6 +1,4 @@
-@preconcurrency import AVFoundation
 import Foundation
-import UIKit
 
 extension AppDependenciesFactory {
   @MainActor
@@ -12,9 +10,6 @@ extension AppDependenciesFactory {
         environment["DASH_UI_TEST_SCENARIO"]
         ?? arguments.uiTestValue(after: "--dash-ui-test-scenario")
       if let rawScenario {
-        let rawPasteboardFixture =
-          environment["DASH_UI_TEST_PASTEBOARD_FIXTURE"]
-          ?? arguments.uiTestValue(after: "--dash-ui-test-pasteboard-fixture")
         let dataIdentifier =
           environment["DASH_UI_TEST_DATA_IDENTIFIER"]
           ?? arguments.uiTestValue(after: "--dash-ui-test-data-identifier")
@@ -22,12 +17,6 @@ extension AppDependenciesFactory {
         return AppDependenciesFactory {
           guard let scenario = UITestScenario(rawValue: rawScenario) else {
             throw UITestScenarioError.unsupported(rawScenario)
-          }
-          if let rawPasteboardFixture {
-            guard let fixture = UITestPasteboardFixture(rawValue: rawPasteboardFixture) else {
-              throw UITestScenarioError.unsupportedPasteboardFixture(rawPasteboardFixture)
-            }
-            UIPasteboard.general.string = fixture.contents
           }
           return try AppDependencies.uiTesting(
             scenario: scenario,
@@ -52,7 +41,6 @@ extension AppDependenciesFactory {
 
   enum UITestScenarioError: Error, Equatable, Sendable {
     case unsupported(String)
-    case unsupportedPasteboardFixture(String)
   }
 
   enum UITestScenario: String, CaseIterable, Sendable {
@@ -70,29 +58,6 @@ extension AppDependenciesFactory {
 
     var connection: GatewayConnectionState {
       self == .pairedOffline ? .offline : .online
-    }
-  }
-
-  enum UITestPasteboardFixture: String, CaseIterable, Sendable {
-    case canonicalLAN = "canonical-lan"
-    case canonicalRelay = "canonical-relay"
-    case malformedScheme = "malformed-scheme"
-    case malformedPath = "malformed-path"
-    case malformedPort = "malformed-port"
-
-    var contents: String {
-      switch self {
-      case .canonicalLAN:
-        #"{"v":3,"host":"192.168.1.50","mgmtToken":"mobile-test-token","chatToken":"mobile-test-token","mgmtPort":9400,"chatPort":9400,"secure":true,"tlsCertificateSha256":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}"#
-      case .canonicalRelay:
-        #"{"v":2,"host":"gateway-01.relay.dash.example","secure":true,"mgmtToken":"mobile-test-token","chatToken":"mobile-test-token","relayCredential":"relay-device-credential"}"#
-      case .malformedScheme:
-        "dash://pair?payload=not-json"
-      case .malformedPath:
-        #"{"v":1,"host":"gateway.local/path","mgmtToken":"m","chatToken":"m"}"#
-      case .malformedPort:
-        #"{"v":1,"host":"gateway.local","mgmtToken":"m","chatToken":"m","mgmtPort":70000}"#
-      }
     }
   }
 
@@ -362,6 +327,35 @@ extension AppDependenciesFactory {
         deletedAt: deletedAt
       )
     }
+
+    /// A minimal, fully offline `AccountFeatureFactory` that reports as
+    /// already signed in — see the call site's comment for why paired
+    /// scenarios need one at all despite never showing `GatewayPickerView`
+    /// for more than a stray frame.
+    static func signedInAccountFactory(
+      keychain: any KeychainStoring,
+      clock: any AppClock
+    ) -> AccountFeatureFactory {
+      let config = AccountAuthConfig(
+        frontendAPIHost: "ui-test-account.invalid",
+        clientID: "ui-test",
+        controlPlaneURL: URL(string: "https://ui-test-account.invalid")!,
+        redirectURI: "dash://oauth-callback"
+      )
+      let session = AccountSession(
+        preSignedInWithIDToken: "ui-test-id-token",
+        expiresAt: Date.distantFuture,
+        config: config,
+        presenter: UITestWebAuthPresenter(),
+        clock: clock
+      )
+      return AccountFeatureFactory(
+        session: session,
+        client: ControlPlaneClient(config: config, tokens: session),
+        verifier: UITestPairingVerifier(),
+        installer: UITestPairingInstaller(keychain: keychain)
+      )
+    }
   }
 
   extension AppDependencies {
@@ -423,14 +417,21 @@ extension AppDependenciesFactory {
         },
         pairingFeatureFactory: PairingFeatureFactory(
           verifier: UITestPairingVerifier(),
-          installer: UITestPairingInstaller(keychain: keychain),
-          makeScanner: {
-            if scenario == .unpaired {
-              return QRScannerService()
-            }
-            return UITestCameraScanner()
-          }
-        )
+          installer: UITestPairingInstaller(keychain: keychain)
+        ),
+        // Account sign-in (`SignInView`/`GatewayPickerView`) fronts every
+        // scenario's unpaired state now that QR/manual pairing entry is
+        // retired. `.unpaired` needs an actually-signed-out factory so its UI
+        // tests can exercise `SignInView`; every other (already-paired)
+        // scenario gets a minimal pre-signed-in fake purely so `RootView`'s
+        // brief pre-`start()` render (before `selectedProfile` is set) has
+        // somewhere sensible to land instead of a stray `SignInView` flash.
+        accountFeatureFactory: scenario.startsPaired
+          ? UITestScenarioFixtures.signedInAccountFactory(
+            keychain: keychain,
+            clock: clock
+          )
+          : .unavailable
       )
     }
   }
@@ -504,23 +505,15 @@ extension AppDependenciesFactory {
     }
   }
 
-  private actor UITestCameraScanner: QRScanning {
-    private var status: AVAuthorizationStatus = .notDetermined
-
-    func authorizationStatus() -> AVAuthorizationStatus {
-      status
+  /// Never actually invoked by current scenarios (nothing signs out and
+  /// back in mid-test), but backs `signedInAccountFactory`'s pre-signed-in
+  /// `AccountSession` the same way `UnavailableWebAuthPresenter` backs
+  /// `AccountFeatureFactory.unavailable` — a harmless placeholder that fails
+  /// closed if it's ever reached.
+  private struct UITestWebAuthPresenter: WebAuthPresenting {
+    func authenticate(url: URL, callbackScheme: String) async throws -> URL {
+      throw AccountSessionError.exchangeFailed
     }
-
-    func requestAccess() async -> Bool {
-      status = .denied
-      return false
-    }
-
-    func scan() async throws -> String {
-      throw QRScannerError.cameraUnavailable
-    }
-
-    func stop() {}
   }
 
   private actor UITestSyncEngine: AppSyncing {
